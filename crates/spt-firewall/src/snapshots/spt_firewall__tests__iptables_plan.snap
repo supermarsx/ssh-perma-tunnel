@@ -1,0 +1,7 @@
+---
+source: crates/spt-firewall/src/lib.rs
+expression: plan.script
+---
+# spt-firewall: iptables plan
+iptables -A INPUT -p udp -d 127.0.0.1/32 --dport 5353 -m comment --comment "spt:dns-udp" -j ACCEPT
+iptables -A INPUT -i eth0 -p tcp -s 10.0.0.0/8 --dport 2525 -m comment --comment "spt:smtp-in" -j ACCEPT

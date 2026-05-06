@@ -1,0 +1,5 @@
+---
+source: crates/spt-service/src/task_scheduler.rs
+expression: out
+---
+/Create /TN spt-relay /TR ""/usr/local/bin/spt" service run --config /etc/spt/relay.toml" /SC ONSTART /RL HIGHEST /F /RU spt

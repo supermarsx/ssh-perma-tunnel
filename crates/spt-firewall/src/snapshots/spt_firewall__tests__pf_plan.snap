@@ -1,0 +1,7 @@
+---
+source: crates/spt-firewall/src/lib.rs
+expression: plan.script
+---
+# spt-firewall: pf anchor com.spt
+pass in quick proto udp from any to 127.0.0.1/32 port 5353 label "spt:dns-udp"
+pass in quick on eth0 proto tcp from 10.0.0.0/8 to any port 2525 label "spt:smtp-in"

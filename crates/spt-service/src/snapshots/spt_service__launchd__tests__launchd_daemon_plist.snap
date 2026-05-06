@@ -1,0 +1,41 @@
+---
+source: crates/spt-service/src/launchd.rs
+expression: out
+---
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>io.spt.spt-relay</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/spt</string>
+        <string>service</string>
+        <string>run</string>
+        <string>--config</string>
+        <string>/etc/spt/relay.toml</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>/var/lib/spt</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/var/log/spt/relay.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/var/log/spt/relay.err.log</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>RUST_LOG</key>
+        <string>info</string>
+        <key>SPT_STATE_DIR</key>
+        <string>/var/lib/spt</string>
+    </dict>
+    <key>UserName</key>
+    <string>spt</string>
+    <key>GroupName</key>
+    <string>spt</string>
+</dict>
+</plist>

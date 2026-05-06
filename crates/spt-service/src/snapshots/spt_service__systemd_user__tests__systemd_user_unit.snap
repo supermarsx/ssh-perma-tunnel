@@ -1,0 +1,28 @@
+---
+source: crates/spt-service/src/systemd_user.rs
+expression: out
+---
+[Unit]
+Description=spt — SMTP relay tunnel
+Documentation=https://github.com/Mariana/ssh-perma-tunnel
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+ExecStart=/usr/local/bin/spt service run --config /etc/spt/relay.toml
+WorkingDirectory=/var/lib/spt
+Environment="RUST_LOG=info"
+Environment="SPT_STATE_DIR=/var/lib/spt"
+
+
+Restart=on-failure
+RestartSec=5s
+LimitNOFILE=65536
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+
+[Install]
+WantedBy=default.target

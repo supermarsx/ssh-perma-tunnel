@@ -1,0 +1,8 @@
+---
+source: crates/spt-service/src/windows_scm.rs
+expression: out
+---
+sc.exe create spt-relay binPath= "\"/usr/local/bin/spt\" service run --config /etc/spt/relay.toml" start= auto DisplayName= "spt — SMTP relay tunnel"
+sc.exe description spt-relay "spt — SMTP relay tunnel"
+rem env: RUST_LOG=info
+rem env: SPT_STATE_DIR=/var/lib/spt

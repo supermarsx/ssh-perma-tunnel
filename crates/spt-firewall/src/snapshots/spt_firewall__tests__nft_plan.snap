@@ -1,0 +1,15 @@
+---
+source: crates/spt-firewall/src/lib.rs
+expression: plan.script
+---
+# spt-firewall: nftables plan
+table inet spt {
+    chain input {
+        type filter hook input priority 0; policy accept;
+        udp dport 5353 ip daddr 127.0.0.1/32 accept comment "spt:dns-udp"
+        iif "eth0" tcp dport 2525 ip saddr 10.0.0.0/8 accept comment "spt:smtp-in"
+    }
+    chain output {
+        type filter hook output priority 0; policy accept;
+    }
+}

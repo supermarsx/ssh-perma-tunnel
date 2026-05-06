@@ -1,0 +1,23 @@
+[Unit]
+Description={{description}}
+Documentation=https://github.com/Mariana/ssh-perma-tunnel
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type={{service_type}}
+ExecStart={{exec_path}} {{args}}
+WorkingDirectory={{working_dir}}
+{{env_lines}}
+{{user_line}}
+{{group_line}}
+Restart={{restart_policy}}
+RestartSec=5s
+LimitNOFILE=65536
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+
+[Install]
+WantedBy={{wanted_by}}
