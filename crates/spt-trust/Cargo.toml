@@ -1,0 +1,33 @@
+[package]
+name = "spt-trust"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+description = "known_hosts, SHA-256 host pinning, and TLS pin verification for spt."
+
+[lints]
+workspace = true
+
+[dependencies]
+spt-core = { workspace = true }
+spt-key = { workspace = true }
+ssh-key = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+sha2 = { workspace = true }
+hmac = { workspace = true }
+sha1 = { workspace = true }
+base64 = { workspace = true }
+rand = { workspace = true }
+x509-parser = { workspace = true }
+rustls-pki-types = { workspace = true }
+atomicwrites = { workspace = true }
+subtle = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

@@ -1,0 +1,25 @@
+[package]
+name = "spt-protocol"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+description = "Tunnel protocol traits shared by SSH2 and SSH3 backends."
+
+[lints]
+workspace = true
+
+[dependencies]
+spt-core = { workspace = true }
+spt-auth = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
