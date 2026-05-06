@@ -75,7 +75,7 @@ impl Default for Ssh3Config {
 }
 
 /// TLS configuration applied to the QUIC handshake.
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Ssh3TlsConfig {
     /// Optional explicit CA bundle (PEM). When present, replaces system roots.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -104,6 +104,17 @@ fn TlsPin_is_empty(pin: &TlsPin) -> bool {
 
 fn default_alpn() -> Vec<String> {
     vec!["h3".to_string()]
+}
+
+impl Default for Ssh3TlsConfig {
+    fn default() -> Self {
+        Self {
+            ca_file: None,
+            pin: TlsPin::default(),
+            allow_self_signed: false,
+            alpn: default_alpn(),
+        }
+    }
 }
 
 /// Auth extras specific to SSH3 transports.

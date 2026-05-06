@@ -25,7 +25,21 @@ tokio = { workspace = true }
 url = { workspace = true }
 bytes = "1"
 
+# Real SSH3 transport (QUIC + HTTP/3 + rustls).
+quinn = { workspace = true }
+rustls = { workspace = true }
+rustls-native-certs = { workspace = true }
+rustls-pemfile = { workspace = true }
+rustls-pki-types = { workspace = true }
+h3 = "=0.0.8"
+h3-quinn = "=0.0.10"
+http = "1"
+base64 = { workspace = true }
+sha2 = { workspace = true }
+x509-parser = { workspace = true }
+
 [dev-dependencies]
 tracing-test = "0.2"
 tokio = { workspace = true }
 serde_json = { workspace = true }
+rcgen = "0.13"

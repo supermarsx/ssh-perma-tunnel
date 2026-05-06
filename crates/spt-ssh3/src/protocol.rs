@@ -1,25 +1,40 @@
 //! [`Ssh3Protocol`] — the [`TunnelProtocol`] implementation for SSH3.
 //!
-//! This is the **stub-mode** implementation. `connect()` always emits the
-//! experimental warning (unless acknowledged) and then returns
-//! [`Error::UnsupportedPlatform`] with a build-blocker reason. The capability
-//! set, name, and trait shape are real so downstream code compiles unchanged.
+//! ## Status: PARTIAL-REAL
+//!
+//! - QUIC client + rustls TLS 1.3 (system roots, optional CA file, optional
+//!   SHA-256 SPKI pin via [`spt_trust::TlsPin`], `allow_self_signed`,
+//!   ALPN=`h3`) — **live**.
+//! - HTTP/3 Extended CONNECT with `:protocol = ssh3`, Bearer/Basic auth —
+//!   **live**.
+//! - Per-forward channel framing (direct-tcp, tcpip-forward, UDP datagram
+//!   association) — **gapped**: [`crate::session::Ssh3Session::open_*_forward`]
+//!   currently returns [`Error::UnsupportedPlatform`] until the SSH3
+//!   control-channel framing is wired against the francoismichel/ssh3 reference.
+//!   See `crates/spt-ssh3/README.md` and the `// TODO(spec-clarify)` markers
+//!   in `frame.rs`.
+//!
+//! The experimental warning emission contract is preserved: `connect()`
+//! emits the spec-§4.2 warning unless
+//! [`Ssh3Config::acknowledge_experimental`] is `true`.
 
 use async_trait::async_trait;
 use spt_auth::AuthConfig;
-use spt_core::{Error, Result};
+use spt_core::Result;
 use spt_protocol::{Endpoint, ProtocolCapabilities, TunnelProtocol, TunnelSession};
 use tracing::warn;
 
 use crate::config::Ssh3Config;
+use crate::session::Ssh3Session;
+use crate::transport::bootstrap;
 
-/// Reason returned when the stubbed `connect()` is invoked.
-///
-/// Wired into the error message so operators see the build-time blocker
-/// directly in CLI output.
-pub const STUB_BLOCKER_REASON: &str =
-    "SSH3 backend disabled at build: stub mode (quinn/h3 transport not yet wired \
-     under MSRV 1.83 — see crates/spt-ssh3/README.md)";
+/// Build-blocker reason emitted by `open_*_forward` calls — kept exported for
+/// CLI/diagnostics surfaces and for the README.
+pub const PARTIAL_REAL_REASON: &str =
+    "SSH3 backend is in partial-real mode: QUIC + TLS + Extended CONNECT \
+     bootstrap is implemented, but per-forward channel framing is not yet \
+     wired against the francoismichel/ssh3 reference. Run with \
+     `acknowledge_experimental = true` and watch the spt-ssh3 issue tracker.";
 
 /// The verbatim experimental-warning message emitted on every `connect()`
 /// (and on every `validate`/`doctor`/`tunnel run` startup, when those code
@@ -34,6 +49,18 @@ pub const EXPERIMENTAL_WARNING: &str =
 ///
 /// Construct with [`Ssh3Protocol::new`] and pass to the supervisor as a
 /// `Box<dyn TunnelProtocol>`.
+///
+/// ```no_run
+/// use spt_protocol::TunnelProtocol;
+/// use spt_ssh3::{Ssh3Config, Ssh3Protocol};
+///
+/// let cfg = Ssh3Config {
+///     acknowledge_experimental: true,
+///     ..Ssh3Config::default()
+/// };
+/// let proto = Ssh3Protocol::new(cfg);
+/// assert_eq!(proto.name(), "ssh3");
+/// ```
 #[derive(Debug, Clone, Default)]
 pub struct Ssh3Protocol {
     config: Ssh3Config,
@@ -68,13 +95,14 @@ impl Ssh3Protocol {
 impl TunnelProtocol for Ssh3Protocol {
     async fn connect(
         &self,
-        _endpoint: &Endpoint,
-        _auth: &AuthConfig,
+        endpoint: &Endpoint,
+        auth: &AuthConfig,
     ) -> Result<Box<dyn TunnelSession>> {
         self.emit_experimental_warning_if_needed();
         self.config.validate()?;
-        // Stub mode: no transport. Surface the blocker reason verbatim.
-        Err(Error::UnsupportedPlatform(STUB_BLOCKER_REASON.to_string()))
+        let bs = bootstrap(&endpoint.host, endpoint.port, &self.config, auth).await?;
+        let session = Ssh3Session::from_bootstrap(bs);
+        Ok(Box::new(session))
     }
 
     fn capabilities(&self) -> ProtocolCapabilities {
@@ -90,13 +118,14 @@ impl TunnelProtocol for Ssh3Protocol {
 mod tests {
     use super::*;
     use spt_auth::{AuthConfig, AuthMethod, SecretRef};
+    use spt_core::Error;
     use tracing_test::traced_test;
 
     fn dummy_auth() -> AuthConfig {
         AuthConfig::new(
             "alice",
             vec![AuthMethod::Bearer {
-                token: SecretRef::parse("env:SSH3_TOKEN").unwrap(),
+                token: SecretRef::parse("env:SSH3_TEST_TOKEN").unwrap(),
             }],
         )
     }
@@ -118,43 +147,40 @@ mod tests {
         assert_eq!(Ssh3Protocol::default().name(), "ssh3");
     }
 
-    fn assert_err(r: Result<Box<dyn TunnelSession>>) -> Error {
-        match r {
-            Ok(_) => panic!("expected Err from stub-mode connect"),
-            Err(e) => e,
-        }
-    }
-
     #[tokio::test]
     #[traced_test]
     async fn connect_emits_experimental_warning_by_default() {
+        // This test only checks the warning emission — the connect call will
+        // fail when env-var resolution / DNS / QUIC handshake fail (the env
+        // var is unset on a typical CI box). What we assert is that the
+        // experimental warning fires before any of that.
+        std::env::set_var("SSH3_TEST_TOKEN", "x");
         let p = Ssh3Protocol::default();
-        let endpoint = Endpoint::new("ssh3.example.com", 443);
-        let err = assert_err(p.connect(&endpoint, &dummy_auth()).await);
-        assert!(matches!(err, Error::UnsupportedPlatform(_)));
-        assert!(format!("{err}").contains("SSH3 backend disabled at build"));
+        let endpoint = Endpoint::new("127.0.0.1", 1); // unlikely to be SSH3
+        let _ = p.connect(&endpoint, &dummy_auth()).await; // expect Err
         assert!(logs_contain("EXPERIMENTAL"));
+        std::env::remove_var("SSH3_TEST_TOKEN");
     }
 
     #[tokio::test]
     #[traced_test]
     async fn connect_suppresses_warning_when_acknowledged() {
+        std::env::set_var("SSH3_TEST_TOKEN", "x");
         let cfg = Ssh3Config {
             acknowledge_experimental: true,
             ..Ssh3Config::default()
         };
         let p = Ssh3Protocol::new(cfg);
-        let endpoint = Endpoint::new("ssh3.example.com", 443);
-        let err = assert_err(p.connect(&endpoint, &dummy_auth()).await);
-        assert!(matches!(err, Error::UnsupportedPlatform(_)));
+        let endpoint = Endpoint::new("127.0.0.1", 1);
+        let _ = p.connect(&endpoint, &dummy_auth()).await;
         assert!(!logs_contain("EXPERIMENTAL"));
+        std::env::remove_var("SSH3_TEST_TOKEN");
     }
 
     #[tokio::test]
     #[traced_test]
     async fn connect_validates_config_first() {
-        // ack=false, allow_self_signed=true triggers a validate() error before
-        // the stub blocker — but the warning still fires.
+        std::env::set_var("SSH3_TEST_TOKEN", "x");
         let cfg = Ssh3Config {
             tls: crate::Ssh3TlsConfig {
                 allow_self_signed: true,
@@ -163,10 +189,15 @@ mod tests {
             ..Ssh3Config::default()
         };
         let p = Ssh3Protocol::new(cfg);
-        let endpoint = Endpoint::new("ssh3.example.com", 443);
-        let err = assert_err(p.connect(&endpoint, &dummy_auth()).await);
+        let endpoint = Endpoint::new("127.0.0.1", 1);
+        let res = p.connect(&endpoint, &dummy_auth()).await;
+        let err = match res {
+            Ok(_) => panic!("expected validation error"),
+            Err(e) => e,
+        };
         assert!(matches!(err, Error::InvalidConfig(_)));
         assert!(logs_contain("EXPERIMENTAL"));
+        std::env::remove_var("SSH3_TEST_TOKEN");
     }
 
     #[test]
