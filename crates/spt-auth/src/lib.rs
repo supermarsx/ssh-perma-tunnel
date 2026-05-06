@@ -15,10 +15,15 @@
 
 pub mod kbi;
 pub mod method;
+pub mod oidc_device_flow;
 pub mod secret_ref;
 pub mod validate;
 
 pub use kbi::KbiAnswer;
 pub use method::{AuthConfig, AuthMethod};
+pub use oidc_device_flow::{
+    store_token, DeviceCodeResponse, DiscoveryDocument, OidcDeviceFlowClient, OidcError,
+    TokenResponse,
+};
 pub use secret_ref::{SecretRef, SecretRefError};
 pub use validate::validate;
