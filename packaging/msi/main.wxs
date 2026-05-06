@@ -1,0 +1,47 @@
+<?xml version='1.0' encoding='windows-1252'?>
+<!--
+  WiX template consumed by `cargo wix`. Replaces tokens via the
+  `[package.metadata.wix]` table in `crates/spt-bin/Cargo.toml`.
+
+  CI flow:
+      cargo build --release -p spt-bin
+      cargo wix -p spt-bin
+-->
+<Wix xmlns='http://schemas.microsoft.com/wix/2006/wi'>
+  <Product
+      Id='*'
+      Name='spt'
+      UpgradeCode='8B6E0B7B-3A0E-4F72-B7D1-B66B2C1A11AA'
+      Manufacturer='Mariana'
+      Language='1033'
+      Codepage='1252'
+      Version='$(var.Version)'>
+
+    <Package Id='*'
+        Keywords='Installer'
+        Description='spt - permanent SSH2/SSH3 tunnel'
+        Manufacturer='Mariana'
+        InstallerVersion='450'
+        Languages='1033'
+        Compressed='yes'
+        InstallScope='perMachine'
+        SummaryCodepage='1252' />
+
+    <MajorUpgrade DowngradeErrorMessage='A newer version of [ProductName] is already installed.' />
+    <Media Id='1' Cabinet='media1.cab' EmbedCab='yes' />
+
+    <Directory Id='TARGETDIR' Name='SourceDir'>
+      <Directory Id='ProgramFiles64Folder'>
+        <Directory Id='APPLICATIONFOLDER' Name='spt'>
+          <Component Id='SptExe' Guid='*'>
+            <File Id='SptExe' Source='target\release\spt.exe' KeyPath='yes' />
+          </Component>
+        </Directory>
+      </Directory>
+    </Directory>
+
+    <Feature Id='Main' Title='spt' Level='1'>
+      <ComponentRef Id='SptExe' />
+    </Feature>
+  </Product>
+</Wix>

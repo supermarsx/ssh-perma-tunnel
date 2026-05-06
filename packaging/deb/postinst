@@ -1,0 +1,26 @@
+#!/bin/sh
+# Post-install hook for the `spt` Debian package.
+set -e
+
+case "$1" in
+    configure)
+        # Create the unprivileged user and required directories.
+        if ! getent passwd spt >/dev/null; then
+            adduser --system --group --home /var/lib/spt --shell /usr/sbin/nologin spt
+        fi
+        install -d -o spt -g spt -m 0750 /var/lib/spt /var/log/spt
+        install -d -m 0755 /etc/spt
+        if [ ! -f /etc/spt/spt.toml ]; then
+            install -m 0640 -o root -g spt /usr/share/doc/spt/examples/minimal.toml /etc/spt/spt.toml
+        fi
+        # systemd unit is shipped under /lib/systemd/system; reload + advise.
+        if [ -d /run/systemd/system ]; then
+            systemctl --system daemon-reload || true
+            echo "spt: edit /etc/spt/spt.toml then run: sudo systemctl enable --now spt.service"
+        fi
+        ;;
+    abort-upgrade|abort-remove|abort-deconfigure)
+        ;;
+esac
+
+exit 0

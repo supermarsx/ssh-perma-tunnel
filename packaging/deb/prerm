@@ -1,0 +1,16 @@
+#!/bin/sh
+# Pre-remove hook for the `spt` Debian package.
+set -e
+
+case "$1" in
+    remove|upgrade|deconfigure)
+        if [ -d /run/systemd/system ]; then
+            systemctl --system stop spt.service >/dev/null 2>&1 || true
+            systemctl --system disable spt.service >/dev/null 2>&1 || true
+        fi
+        ;;
+    failed-upgrade)
+        ;;
+esac
+
+exit 0

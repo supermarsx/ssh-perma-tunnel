@@ -1,0 +1,137 @@
+[package]
+name = "spt-bin"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+description = "spt — permanent SSH2/SSH3 tunnel CLI binary."
+
+[[bin]]
+name = "spt"
+path = "src/main.rs"
+
+[dependencies]
+# Internal crates
+spt-core = { workspace = true }
+spt-config = { workspace = true }
+spt-secrets = { workspace = true }
+spt-state = { workspace = true }
+spt-cli = { workspace = true }
+spt-net = { workspace = true }
+spt-protocol = { workspace = true }
+spt-auth = { workspace = true }
+spt-key = { workspace = true }
+spt-trust = { workspace = true }
+spt-forward = { workspace = true }
+spt-supervisor = { workspace = true }
+spt-ssh2 = { workspace = true }
+spt-ssh3 = { workspace = true }
+spt-dns = { workspace = true }
+spt-firewall = { workspace = true }
+spt-service = { workspace = true }
+spt-stats = { workspace = true }
+spt-events = { workspace = true }
+spt-observability = { workspace = true }
+spt-mcp = { workspace = true }
+spt-tui = { workspace = true }
+spt-diagnostics = { workspace = true }
+spt-benchmark = { workspace = true }
+spt-remote-config = { workspace = true }
+
+# Async + std
+tokio = { workspace = true }
+async-trait = { workspace = true }
+futures = { workspace = true }
+
+# CLI / serde
+clap = { workspace = true }
+clap_complete = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+toml = { workspace = true }
+toml_edit = { workspace = true }
+
+# Diagnostics
+tracing = { workspace = true }
+miette = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+
+# Misc
+hex = { workspace = true }
+chrono = { workspace = true }
+secrecy = { workspace = true }
+ssh-key = { workspace = true }
+tempfile = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+nix = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-service = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+async-trait = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+tokio = { workspace = true }
+clap = { workspace = true }
+clap_complete = { workspace = true }
+# `testing` feature exposes MockTunnelProtocol for the lifecycle integration test.
+spt-forward = { workspace = true, features = ["testing"] }
+
+[lints]
+workspace = true
+
+# ---------------------------------------------------------------------------
+# Packaging metadata. CI tooling (cargo-deb, cargo-generate-rpm, cargo-wix)
+# reads these tables. The resulting artifacts are produced by CI, not by
+# `cargo build`.
+# ---------------------------------------------------------------------------
+
+[package.metadata.deb]
+name = "spt"
+maintainer = "Mariana <noreply@example.com>"
+copyright = "2026, Mariana"
+license-file = ["../../license.md", "0"]
+extended-description = """\
+spt — permanent SSH2/SSH3 tunnels with reconnect, observability, and
+service integration."""
+depends = "$auto, systemd"
+section = "net"
+priority = "optional"
+assets = [
+    ["target/release/spt", "usr/bin/", "755"],
+    ["../../packaging/systemd/spt.service", "lib/systemd/system/", "644"],
+    ["../../docs/getting-started.md", "usr/share/doc/spt/getting-started.md", "644"],
+    ["../../docs/configuration.md", "usr/share/doc/spt/configuration.md", "644"],
+    ["../../docs/cli-reference.md", "usr/share/doc/spt/cli-reference.md", "644"],
+    ["../../examples/minimal.toml", "usr/share/doc/spt/examples/minimal.toml", "644"],
+]
+maintainer-scripts = "../../packaging/deb/"
+conf-files = ["/etc/spt/spt.toml"]
+
+[package.metadata.generate-rpm]
+name = "spt"
+license = "MIT"
+summary = "Permanent SSH2/SSH3 tunnels with reconnect, observability, and service integration"
+assets = [
+    { source = "target/release/spt", dest = "/usr/bin/spt", mode = "755" },
+    { source = "packaging/systemd/spt.service", dest = "/lib/systemd/system/spt.service", mode = "644" },
+    { source = "docs/getting-started.md", dest = "/usr/share/doc/spt/getting-started.md", mode = "644", doc = true },
+    { source = "examples/minimal.toml", dest = "/usr/share/doc/spt/examples/minimal.toml", mode = "644" },
+]
+
+[package.metadata.generate-rpm.requires]
+systemd = "*"
+
+[package.metadata.wix]
+upgrade-guid = "8B6E0B7B-3A0E-4F72-B7D1-B66B2C1A11AA"
+path-guid = "B0A5C24F-9F3A-4E7B-9F88-3E1A8E7B9F2C"
+license = false
+eula = false
