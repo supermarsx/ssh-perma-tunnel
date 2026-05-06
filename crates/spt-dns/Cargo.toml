@@ -1,0 +1,33 @@
+[package]
+name = "spt-dns"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+description = "Transparent DNS resolver and hosts-file manager for spt."
+
+[lints]
+workspace = true
+
+[dependencies]
+hickory-server = { workspace = true }
+hickory-resolver = { workspace = true }
+hickory-proto = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+parking_lot = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["full", "test-util", "macros"] }
+hickory-server = { workspace = true }
+hickory-resolver = { workspace = true }
+hickory-proto = { workspace = true }
+async-trait = { workspace = true }
+parking_lot = { workspace = true }
