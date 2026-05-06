@@ -18,10 +18,12 @@ spt-config = { workspace = true }
 spt-protocol = { workspace = true }
 spt-auth = { workspace = true }
 spt-state = { workspace = true }
+spt-stats = { workspace = true }
 spt-forward = { workspace = true }
 
 tokio = { workspace = true }
 async-trait = { workspace = true }
+chrono = { workspace = true }
 dashmap = { workspace = true }
 parking_lot = { workspace = true }
 tracing = { workspace = true }

@@ -26,18 +26,31 @@
     clippy::match_same_arms
 )]
 
+pub mod control;
 pub mod failover;
 pub mod instability;
+pub mod live_connector;
 pub mod orchestrator;
 pub mod profile;
 pub mod reconnect;
+pub mod reconnect_trigger;
 pub mod reload;
+pub mod session;
 pub mod state_machine;
+pub mod stats;
 
+pub use control::{Control, DrainReport, EndpointKey};
 pub use failover::{EndpointSelector, FailoverMode, ManualOverride, SelectorError};
 pub use instability::{InstabilityDetector, InstabilityWindow};
+pub use live_connector::{
+    AsyncReadWrite, BoxedStream, EchoLiveConnector, LiveConnector, UdpEndpoint,
+    UnavailableConnector,
+};
 pub use orchestrator::Orchestrator;
 pub use profile::{ProfileEvent, ProfileSupervisor, ProfileSupervisorConfig};
 pub use reconnect::{Backoff, BackoffConfig};
+pub use reconnect_trigger::{LiveReconnectTrigger, ReconnectTrigger};
 pub use reload::{ReloadAction, ReloadPlan};
+pub use session::{SessionRegistry, SessionRow, SessionState};
 pub use state_machine::{ForwardEvent, ProfileEvent as SmEvent, ProfileStateMachine, ProfileStateName};
+pub use stats::{ProfileStats, StatsTick, StatsTickConfig};
