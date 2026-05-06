@@ -551,6 +551,33 @@ pub struct EventSink {
     /// Per-call timeout. §9.7.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout: Option<String>,
+
+    // ---------------- WebPush (`kind = "webpush"`) ---------------- §9.7
+    /// VAPID private key (base64url-no-padding-encoded 32-byte scalar).
+    /// May also be a `secret://ns/name` reference resolved at runtime.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vapid_private_key: Option<String>,
+    /// VAPID `sub` claim — usually a `mailto:` URL.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vapid_subject: Option<String>,
+    /// Body template (a `{{var}}` template rendered against the event).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body_template: Option<String>,
+    /// Push subscriptions. Each entry is a JSON object with
+    /// `endpoint`, `p256dh`, `auth` (the standard `PushSubscription` fields).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subscriptions: Option<Vec<EventSinkSubscription>>,
+}
+
+/// Subset of a Push API `PushSubscription` we persist. §9.7.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct EventSinkSubscription {
+    /// Subscription endpoint URL.
+    pub endpoint: String,
+    /// Browser-supplied P256 ECDH key (base64url-no-padding).
+    pub p256dh: String,
+    /// Browser-supplied auth secret (base64url-no-padding, 16 bytes).
+    pub auth: String,
 }
 
 /// `[[events.commands]]`. Spec §9.7.

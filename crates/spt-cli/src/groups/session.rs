@@ -75,15 +75,14 @@ pub struct SessionClose {
 /// `spt session drain`.
 #[derive(Args, Debug)]
 pub struct SessionDrain {
-    /// Profile name.
-    #[arg(long)]
+    /// Profile name. Accepted positionally or via `--profile`.
     pub profile: String,
     /// Filter by forward.
     #[arg(long)]
     pub forward: Option<String>,
-    /// Drain timeout.
-    #[arg(long, value_name = "DURATION")]
-    pub timeout: Option<String>,
+    /// Drain timeout / grace period. Synonym: `--timeout`.
+    #[arg(long, alias = "timeout", value_name = "DURATION")]
+    pub grace: Option<String>,
 }
 
 /// Sort key for `spt session top`.

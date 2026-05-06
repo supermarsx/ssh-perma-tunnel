@@ -127,9 +127,9 @@ pub struct TunnelHealth {
 pub struct TunnelFailover {
     /// Profile name.
     pub profile: String,
-    /// Override target endpoint.
-    #[arg(long, value_name = "ENDPOINT")]
-    pub to: Option<String>,
+    /// Override target endpoint as `host:port`. Synonym: `--to`.
+    #[arg(long, alias = "to", value_name = "ENDPOINT")]
+    pub endpoint: Option<String>,
     /// Free-form reason for audit.
     #[arg(long, value_name = "TEXT")]
     pub reason: Option<String>,

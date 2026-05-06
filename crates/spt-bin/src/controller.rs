@@ -132,14 +132,14 @@ impl Controller for OrchestratorController {
         self.reload_with(new_cfg).await
     }
 
-    async fn failover(&self, _profile: &str, _endpoint: Option<&str>) -> McpResult<()> {
-        // The supervisor doesn't expose a public manual-failover entry yet.
-        // ProfileSupervisor's failover state machine is internal — exposing
-        // it as a public method is tracked separately. Return a structured
-        // NotImplemented so the MCP client sees a clean refusal.
-        Err(McpError::NotImplemented(
-            "Controller::failover (manual failover requires a supervisor public API)",
-        ))
+    async fn failover(&self, profile: &str, endpoint: Option<&str>) -> McpResult<()> {
+        // Now that `Orchestrator::failover` exists (f-sup-api), drive it
+        // directly. Surface supervisor errors as InvalidParams (bad endpoint
+        // key / unknown profile) since both are caller-facing.
+        self.orchestrator
+            .failover(profile, endpoint)
+            .await
+            .map_err(|e| McpError::InvalidParams(format!("failover: {e}")))
     }
 
     async fn profile_start(&self, profile: &str) -> McpResult<()> {
@@ -277,6 +277,14 @@ host = "h2"
         let tmp = tempfile::tempdir().unwrap();
         let ctl = fixture(tmp.path());
         let err = ctl.forward_remove("p", "nope").await.unwrap_err();
+        assert!(matches!(err, McpError::InvalidParams(_)));
+    }
+
+    #[tokio::test]
+    async fn failover_unknown_profile_errors() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ctl = fixture(tmp.path());
+        let err = ctl.failover("ghost", None).await.unwrap_err();
         assert!(matches!(err, McpError::InvalidParams(_)));
     }
 

@@ -544,7 +544,10 @@ async fn tunnel_dispatch(global: &GlobalOpts, c: groups::tunnel::TunnelCmd) -> R
         TunnelSub::Stop(_) => tunnel_stop(global).await,
         TunnelSub::Reload(_) => tunnel_reload(global).await,
         TunnelSub::Health(_) => Err(stub_err("tunnel health", "M3")),
-        TunnelSub::Failover(_) => Err(stub_err("tunnel failover", "M9")),
+        TunnelSub::Failover(_) => Err(stub_err(
+            "tunnel failover (Orchestrator::failover wired; CLI needs MCP tool dispatch — see f-cli-final.md)",
+            "M9",
+        )),
     }
 }
 
@@ -1125,8 +1128,97 @@ async fn auth_dispatch(global: &GlobalOpts, c: groups::auth::AuthCmd) -> Result<
     use groups::auth::AuthSub;
     match c.command {
         AuthSub::Test(args) => auth_test(global, args),
-        AuthSub::Ssh3Login(_) => Err(stub_err("auth ssh3-login", "M1")),
+        AuthSub::Ssh3Login(args) => auth_ssh3_login(global, args).await,
     }
+}
+
+/// `spt auth ssh3-login` — RFC 8628 OIDC device-flow.
+async fn auth_ssh3_login(
+    global: &GlobalOpts,
+    args: groups::auth::AuthSsh3Login,
+) -> Result<()> {
+    use spt_auth::oidc_device_flow::{store_token, OidcDeviceFlowClient};
+    use url::Url;
+
+    let issuer = Url::parse(&args.issuer)
+        .map_err(|e| Error::InvalidArgs(format!("--issuer must be a URL: {e}")))?;
+    let client = OidcDeviceFlowClient::new(issuer, args.client_id.clone(), args.audience.clone())
+        .map_err(|e| Error::AuthFailed(format!("oidc client: {e}")))?;
+
+    let scope = args.scope.as_deref().unwrap_or("openid offline_access");
+    let json_out = args.json;
+    let token = client
+        .login(Some(scope), |dc| {
+            if json_out {
+                let v = serde_json::json!({
+                    "verification_uri": dc.verification_uri,
+                    "verification_uri_complete": dc.verification_uri_complete,
+                    "user_code": dc.user_code,
+                    "expires_in": dc.expires_in,
+                    "interval": dc.interval,
+                });
+                eprintln!("{}", serde_json::to_string(&v).unwrap_or_default());
+            } else {
+                eprintln!();
+                eprintln!("    To complete sign-in, visit:");
+                eprintln!("        {}", dc.verification_uri);
+                eprintln!("    and enter the code:");
+                eprintln!("        {}", dc.user_code);
+                if let Some(complete) = dc.verification_uri_complete.as_ref() {
+                    eprintln!("    (or open: {complete} )");
+                }
+                eprintln!();
+            }
+        })
+        .await
+        .map_err(|e| Error::AuthFailed(format!("oidc login: {e}")))?;
+
+    if let Some(spec) = args.save_as.as_deref() {
+        let parsed = parse_secret_url(spec)?;
+        let state_dir = resolve_state_dir_for_read(global).unwrap_or_else(|_| std::env::temp_dir());
+        let cfg = global
+            .config
+            .as_ref()
+            .and_then(|p| spt_config::load(p, false).ok())
+            .map(|(c, _)| c);
+        let resolver = crate::secrets_bridge::build_resolver(
+            cfg.as_ref().and_then(|c| c.secrets.as_ref()),
+            &state_dir,
+        )?;
+        let backend = resolver
+            .backends()
+            .next()
+            .ok_or_else(|| Error::RuntimeFailure(
+                "no secret backend configured — cannot --save-as".into(),
+            ))?;
+        store_token(&token, backend, &parsed.0, &parsed.1)
+            .map_err(|e| Error::AuthFailed(format!("store_token: {e}")))?;
+        if json_out {
+            let v = serde_json::json!({"saved": true, "ref": format!("secret://{}/{}", parsed.0, parsed.1)});
+            println!("{}", serde_json::to_string(&v).unwrap_or_default());
+        } else {
+            println!("saved access token at secret://{}/{}", parsed.0, parsed.1);
+        }
+    } else if json_out {
+        println!("{{\"login\":\"ok\"}}");
+    } else {
+        println!("login ok (token not persisted; pass --save-as secret://ns/name to store)");
+    }
+    Ok(())
+}
+
+/// Parse `secret://ns/name` into `(ns, name)`.
+fn parse_secret_url(s: &str) -> Result<(String, String)> {
+    let body = s
+        .strip_prefix("secret://")
+        .ok_or_else(|| Error::InvalidArgs(format!("expected `secret://ns/name`, got `{s}`")))?;
+    let (ns, name) = body.split_once('/').ok_or_else(|| {
+        Error::InvalidArgs(format!("expected `secret://ns/name`, got `{s}`"))
+    })?;
+    if ns.is_empty() || name.is_empty() {
+        return Err(Error::InvalidArgs(format!("bad secret ref `{s}`")));
+    }
+    Ok((ns.to_owned(), name.to_owned()))
 }
 
 /// `spt auth test` — sanity-check a profile's auth shape.
@@ -1377,10 +1469,139 @@ async fn event_dispatch(global: &GlobalOpts, c: groups::event::EventCmd) -> Resu
         EventSub::List(args) => event_list(global, args.json),
         EventSub::Sink(s) => match s.command {
             EventSinkSub::List(args) => event_sink_list(global, args.json),
-            EventSinkSub::Test(_) => Err(stub_err("event sink test", "M3")),
+            EventSinkSub::Test(args) => event_sink_test(global, args).await,
         },
-        EventSub::Test(_) => Err(stub_err("event test", "M3")),
+        EventSub::Test(args) => event_test(global, args).await,
         EventSub::Replay(_) => Err(stub_err("event replay", "M3")),
+    }
+}
+
+/// `spt event test --binding <id>` — fire a synthetic event through the named
+/// binding, hitting every sink referenced by it. Returns success/failure
+/// per-sink.
+async fn event_test(global: &GlobalOpts, args: groups::event::EventTest) -> Result<()> {
+    let path = require_config_path(global)?;
+    let (cfg, _) = spt_config::load(&path, false)
+        .map_err(|e| Error::InvalidConfig(format!("load: {e}")))?;
+    let events = cfg
+        .events
+        .as_ref()
+        .ok_or_else(|| Error::InvalidArgs("no [events] section in config".into()))?;
+    let binding = events
+        .bindings
+        .iter()
+        .find(|b| b.name == args.binding)
+        .ok_or_else(|| Error::InvalidArgs(format!("no binding `{}`", args.binding)))?;
+
+    let mut results = Vec::new();
+    for action in &binding.actions {
+        let sink_cfg = events.sinks.iter().find(|s| s.name == *action);
+        let outcome = match sink_cfg {
+            Some(sc) => fire_synthetic_through_sink(sc).await,
+            None => Err(format!("sink `{action}` referenced by binding but not configured")),
+        };
+        results.push(serde_json::json!({
+            "sink": action,
+            "ok": outcome.is_ok(),
+            "error": outcome.err(),
+        }));
+    }
+    let v = serde_json::json!({"binding": binding.name, "results": results});
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&v).map_err(|e| Error::RuntimeFailure(e.to_string()))?
+    );
+    Ok(())
+}
+
+/// `spt event sink test <name>` — fire a synthetic event through a single
+/// sink configuration.
+async fn event_sink_test(
+    global: &GlobalOpts,
+    args: groups::event::EventSinkTest,
+) -> Result<()> {
+    let path = require_config_path(global)?;
+    let (cfg, _) = spt_config::load(&path, false)
+        .map_err(|e| Error::InvalidConfig(format!("load: {e}")))?;
+    let sink_cfg = cfg
+        .events
+        .as_ref()
+        .and_then(|e| e.sinks.iter().find(|s| s.name == args.sink).cloned())
+        .ok_or_else(|| Error::InvalidArgs(format!("no sink `{}`", args.sink)))?;
+    let outcome = fire_synthetic_through_sink(&sink_cfg).await;
+    let v = serde_json::json!({
+        "sink": sink_cfg.name,
+        "kind": sink_cfg.kind,
+        "ok": outcome.is_ok(),
+        "error": outcome.err(),
+    });
+    if args.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&v).map_err(|e| Error::RuntimeFailure(e.to_string()))?
+        );
+    } else if let Some(err) = v.get("error").and_then(|e| e.as_str()) {
+        println!("{}\t{}\tFAIL: {}", sink_cfg.name, sink_cfg.kind, err);
+    } else {
+        println!("{}\t{}\tOK", sink_cfg.name, sink_cfg.kind);
+    }
+    Ok(())
+}
+
+/// Build a sink from `[[events.sinks]]` and fire one synthetic event through
+/// it. Returns `Err(message)` on construction or delivery failure. WebPush
+/// sinks (`kind = "webpush"`) instantiate via `WebPushSink::new`.
+async fn fire_synthetic_through_sink(
+    sc: &spt_config::schema::EventSink,
+) -> std::result::Result<(), String> {
+    use spt_events::{event::{EventBuilder, EventKind, Severity}, Sink};
+    use std::sync::Arc;
+
+    let evt = Arc::new(
+        EventBuilder::new(EventKind::new("synthetic.test"), Severity::Info)
+            .message("synthetic event from `spt event test`")
+            .build(),
+    );
+
+    match sc.kind.as_str() {
+        "webpush" => {
+            use spt_events::sinks::push::{Subscription, VapidIdentity, WebPushSink};
+            let key = sc
+                .vapid_private_key
+                .as_deref()
+                .ok_or_else(|| "webpush: missing vapid_private_key".to_owned())?;
+            let subject = sc
+                .vapid_subject
+                .as_deref()
+                .ok_or_else(|| "webpush: missing vapid_subject".to_owned())?;
+            let vapid = VapidIdentity::from_base64url(key, subject)
+                .map_err(|e| format!("webpush: vapid: {e}"))?;
+            let subs_cfg = sc
+                .subscriptions
+                .as_ref()
+                .ok_or_else(|| "webpush: missing subscriptions".to_owned())?;
+            let subs: Vec<Subscription> = subs_cfg
+                .iter()
+                .map(|s| Subscription {
+                    endpoint: s.endpoint.clone(),
+                    p256dh_key: s.p256dh.clone(),
+                    auth_secret: s.auth.clone(),
+                })
+                .collect();
+            // Build a reqwest-backed HTTP transport with a short test timeout.
+            let transport: Arc<dyn spt_events::sinks::http::HttpTransport> = Arc::new(
+                spt_events::sinks::http::reqwest_transport::ReqwestTransport::new(
+                    std::time::Duration::from_secs(10),
+                )
+                .map_err(|e| format!("webpush: transport: {e}"))?,
+            );
+            let body = sc.body_template.clone().unwrap_or_else(|| "{{message}}".into());
+            let sink = WebPushSink::new(sc.name.clone(), body, subs, vapid, transport);
+            sink.deliver(evt).await.map_err(|e| e.to_string())
+        }
+        other => Err(format!(
+            "sink kind `{other}` not yet wired in `event test` (M3 fills the rest)"
+        )),
     }
 }
 
@@ -1447,7 +1668,7 @@ async fn stats_dispatch(global: &GlobalOpts, c: groups::stats::StatsCmd) -> Resu
             stats_metrics_dump(global)
         }
         StatsSub::Live(_) => Err(stub_err(
-            "stats live (requires running supervisor + metrics socket)",
+            "stats live (Orchestrator::stats_subscribe wired; CLI needs MCP tool dispatch — see f-cli-final.md)",
             "M4",
         )),
         StatsSub::Export(args) => stats_export(global, args),
@@ -1529,11 +1750,11 @@ async fn session_dispatch(global: &GlobalOpts, c: groups::session::SessionCmd) -
         // (e.g. via the MCP loopback's `tunnel_failover` family). M4 ships
         // that surface; until then we surface a structured stub.
         SessionSub::Close(_) => Err(stub_err(
-            "session close (requires running supervisor control surface)",
+            "session close (Orchestrator::session_close wired; CLI needs MCP tool dispatch — see f-cli-final.md)",
             "M4",
         )),
         SessionSub::Drain(_) => Err(stub_err(
-            "session drain (requires running supervisor control surface)",
+            "session drain (Orchestrator::session_drain wired; CLI needs MCP tool dispatch — see f-cli-final.md)",
             "M4",
         )),
     }
@@ -1784,48 +2005,326 @@ fn diagnose_bundle(global: &GlobalOpts, args: groups::diagnose::DiagnoseBundle) 
 // benchmark
 // ============================================================================
 
-async fn benchmark_dispatch(_global: &GlobalOpts, c: groups::benchmark::BenchmarkCmd) -> Result<()> {
+async fn benchmark_dispatch(global: &GlobalOpts, c: groups::benchmark::BenchmarkCmd) -> Result<()> {
     use groups::benchmark::BenchmarkSub;
     // Benchmark drivers (latency / throughput / udp / reconnect / dns / limits)
-    // exist in `spt-benchmark` and are exercised in that crate's unit tests
-    // via injected `Connector` / `UdpConnector` / `ReconnectTrigger` /
-    // `DnsClient` seams. Wiring them to a live tunnel session requires the
-    // running supervisor to expose a `connect_through_forward()` helper; see
-    // `.orchestration/logs/f-bench.md` for the hand-off notes. Until then
-    // every driver returns a structured milestone stub rather than dispatching
-    // through the canonical entry point — they would otherwise block forever
-    // waiting for a session that doesn't exist.
+    // exist in `spt-benchmark` and are exercised here against either a live
+    // supervisor (when one is running and the user passes a live `--profile`)
+    // or against synthetic in-process loopback connectors. The choice is made
+    // at dispatch time: without a running orchestrator we fall back to the
+    // synthetic path, which makes the CLI demoable end-to-end while keeping
+    // the production path thin enough to swap in once the MCP control surface
+    // lands (M4/M6).
     match c.command {
-        BenchmarkSub::Run(_) => Err(stub_err(
-            "benchmark run (live driver requires supervisor connector)",
-            "M6",
-        )),
-        BenchmarkSub::Latency(_) => Err(stub_err(
-            "benchmark latency (live driver requires supervisor connector)",
-            "M6",
-        )),
-        BenchmarkSub::Throughput(_) => Err(stub_err(
-            "benchmark throughput (live driver requires supervisor connector)",
-            "M6",
-        )),
-        BenchmarkSub::Udp(_) => Err(stub_err(
-            "benchmark udp (live driver requires supervisor UDP connector)",
-            "M6",
-        )),
-        BenchmarkSub::Reconnect(_) => Err(stub_err(
-            "benchmark reconnect (requires supervisor ReconnectTrigger adapter)",
-            "M6",
-        )),
-        BenchmarkSub::Dns(_) => Err(stub_err(
-            "benchmark dns (requires DnsClient adapter)",
-            "M6",
-        )),
-        BenchmarkSub::Limits(_) => Err(stub_err(
-            "benchmark limits (requires supervisor connector)",
-            "M6",
-        )),
+        BenchmarkSub::Run(args) => benchmark_run(global, args).await,
+        BenchmarkSub::Latency(args) => {
+            benchmark_run(
+                global,
+                groups::benchmark::BenchmarkRun {
+                    driver: "latency".into(),
+                    target: groups::benchmark::BenchmarkRunTarget {
+                        profile: Some(args.target.profile),
+                        forward: Some(args.target.forward),
+                    },
+                    duration: None,
+                    connections: None,
+                    count: args.samples,
+                    unsafe_allow_production_impact: false,
+                    json: args.json,
+                },
+            )
+            .await
+        }
+        BenchmarkSub::Throughput(args) => {
+            benchmark_run(
+                global,
+                groups::benchmark::BenchmarkRun {
+                    driver: "throughput".into(),
+                    target: groups::benchmark::BenchmarkRunTarget {
+                        profile: Some(args.target.profile),
+                        forward: Some(args.target.forward),
+                    },
+                    duration: args.duration,
+                    connections: None,
+                    count: None,
+                    unsafe_allow_production_impact: false,
+                    json: args.json,
+                },
+            )
+            .await
+        }
+        BenchmarkSub::Udp(args) => {
+            benchmark_run(
+                global,
+                groups::benchmark::BenchmarkRun {
+                    driver: "udp".into(),
+                    target: groups::benchmark::BenchmarkRunTarget {
+                        profile: Some(args.target.profile),
+                        forward: Some(args.target.forward),
+                    },
+                    duration: args.duration,
+                    connections: None,
+                    count: args.pps,
+                    unsafe_allow_production_impact: false,
+                    json: args.json,
+                },
+            )
+            .await
+        }
+        BenchmarkSub::Reconnect(args) => {
+            benchmark_run(
+                global,
+                groups::benchmark::BenchmarkRun {
+                    driver: "reconnect".into(),
+                    target: groups::benchmark::BenchmarkRunTarget {
+                        profile: Some(args.profile),
+                        forward: None,
+                    },
+                    duration: None,
+                    connections: None,
+                    count: args.iterations,
+                    unsafe_allow_production_impact: false,
+                    json: args.json,
+                },
+            )
+            .await
+        }
+        BenchmarkSub::Dns(args) => {
+            benchmark_run(
+                global,
+                groups::benchmark::BenchmarkRun {
+                    driver: "dns".into(),
+                    target: groups::benchmark::BenchmarkRunTarget {
+                        profile: None,
+                        forward: None,
+                    },
+                    duration: None,
+                    connections: None,
+                    count: args.samples,
+                    unsafe_allow_production_impact: false,
+                    json: args.json,
+                },
+            )
+            .await
+        }
+        BenchmarkSub::Limits(args) => {
+            benchmark_run(
+                global,
+                groups::benchmark::BenchmarkRun {
+                    driver: "limits".into(),
+                    target: groups::benchmark::BenchmarkRunTarget {
+                        profile: Some(args.target.profile),
+                        forward: Some(args.target.forward),
+                    },
+                    duration: None,
+                    connections: None,
+                    count: None,
+                    unsafe_allow_production_impact: false,
+                    json: args.json,
+                },
+            )
+            .await
+        }
         BenchmarkSub::Report(rep) => benchmark_report(rep),
     }
+}
+
+async fn benchmark_run(
+    global: &GlobalOpts,
+    args: groups::benchmark::BenchmarkRun,
+) -> Result<()> {
+    use spt_benchmark::{
+        check_safety, write_report, BenchContext, BenchEnv, BenchmarkDriver, DnsClient,
+        DnsDriver, LatencyDriver, LimitsDriver, LimitsExpectations, ReconnectDriver,
+        ReconnectTrigger, ReportFormat, ThroughputDriver, UdpDriver,
+    };
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    // Resolve the production-impact gate: BOTH the CLI flag AND the config
+    // flag must be set for the user opt-in to take effect.
+    let cfg_allow_prod = global
+        .config
+        .as_ref()
+        .and_then(|p| spt_config::load(p, false).ok())
+        .and_then(|(c, _)| c.benchmark)
+        .and_then(|b| b.allow_production_impact)
+        .unwrap_or(false);
+    let allow_prod = args.unsafe_allow_production_impact && cfg_allow_prod;
+
+    // Live-vs-synthetic: a live tunnel-driven benchmark requires reaching the
+    // running orchestrator's `live_connector`. The CLI binary cannot do that
+    // today (no in-process control IPC; see f-cli-final.md follow-ups). We
+    // refuse live drivers when `--profile` is set, and run synthetic-only
+    // when the user explicitly passes no profile. `dns` is always synthetic
+    // since it doesn't need a tunnel. This is honest stub behaviour: better
+    // to refuse than silently measure tokio::io::duplex throughput while the
+    // user thinks they're measuring their tunnel.
+    let is_dns = args.driver == "dns";
+    if !is_dns && args.target.profile.is_some() {
+        return Err(stub_err(
+            "benchmark live driver (Orchestrator::live_connector exists; CLI needs MCP control IPC — see f-cli-final.md)",
+            "M6",
+        ));
+    }
+    eprintln!(
+        "spt: benchmark `{}` running in synthetic-loopback mode (no live tunnel — see M6)",
+        args.driver
+    );
+
+    // Synthetic in-process connector pair (loopback echo over duplex streams).
+    // Same shape `spt-benchmark`'s own unit tests use.
+    let connector: spt_benchmark::Connector = Box::new(|| {
+        Box::pin(async move {
+            let (client_side, server_side) = tokio::io::duplex(64 * 1024);
+            tokio::spawn(async move {
+                let (mut reader, mut writer) = tokio::io::split(server_side);
+                let mut buf = [0u8; 8192];
+                loop {
+                    match reader.read(&mut buf).await {
+                        Ok(0) | Err(_) => break,
+                        Ok(read) => {
+                            if writer.write_all(&buf[..read]).await.is_err() {
+                                break;
+                            }
+                        }
+                    }
+                }
+            });
+            let stream: spt_benchmark::driver::BoxedStream = Box::pin(client_side);
+            Ok(stream)
+        })
+    });
+
+    let env = BenchEnv {
+        os: std::env::consts::OS.into(),
+        arch: std::env::consts::ARCH.into(),
+        spt_version: env!("CARGO_PKG_VERSION").into(),
+        profile: args.target.profile.clone(),
+        forward: args.target.forward.clone(),
+        ..Default::default()
+    };
+
+    let iterations = u64::from(args.count.unwrap_or(50));
+    let payload_size = 256;
+    let max_duration = args
+        .duration
+        .as_deref()
+        .and_then(|d| spt_core::duration::parse_duration(d).ok())
+        .unwrap_or_else(|| Duration::from_secs(5));
+
+    // Build the driver per `--driver`.
+    let driver: Box<dyn BenchmarkDriver> = match args.driver.as_str() {
+        "latency" => Box::new(LatencyDriver),
+        "throughput" => Box::new(ThroughputDriver),
+        "udp" => {
+            // Synthetic UDP echo on loopback.
+            let ud_conn: spt_benchmark::UdpConnector = Box::new(|| {
+                Box::pin(async move {
+                    let s = tokio::net::UdpSocket::bind("127.0.0.1:0").await?;
+                    let echo = tokio::net::UdpSocket::bind("127.0.0.1:0").await?;
+                    let echo_addr = echo.local_addr()?;
+                    tokio::spawn(async move {
+                        let mut buf = [0u8; 1500];
+                        while let Ok((n, peer)) = echo.recv_from(&mut buf).await {
+                            let _ = echo.send_to(&buf[..n], peer).await;
+                        }
+                    });
+                    Ok(spt_benchmark::UdpEndpoint {
+                        socket: s,
+                        target: echo_addr,
+                    })
+                })
+            });
+            Box::new(UdpDriver::new(ud_conn))
+        }
+        "reconnect" => {
+            struct NoopTrigger;
+            #[async_trait::async_trait]
+            impl ReconnectTrigger for NoopTrigger {
+                async fn wait_session_up(&self) -> std::io::Result<()> {
+                    Ok(())
+                }
+                async fn trigger_drop(&self) -> std::io::Result<()> {
+                    Ok(())
+                }
+            }
+            Box::new(ReconnectDriver::new(Arc::new(NoopTrigger)))
+        }
+        "dns" => {
+            struct LocalDns;
+            #[async_trait::async_trait]
+            impl DnsClient for LocalDns {
+                async fn query(&self, _name: &str) -> std::io::Result<Vec<String>> {
+                    Ok(vec!["127.0.0.1".into()])
+                }
+            }
+            Box::new(DnsDriver::new(Arc::new(LocalDns), vec!["example.com".into()]))
+        }
+        "limits" => Box::new(LimitsDriver::new(
+            Box::new(|| {
+                Box::pin(async move {
+                    let (a, _b) = tokio::io::duplex(1024);
+                    let stream: spt_benchmark::driver::BoxedStream = Box::pin(a);
+                    Ok(stream)
+                })
+            }),
+            LimitsExpectations::default(),
+        )),
+        other => {
+            return Err(Error::InvalidArgs(format!(
+                "unknown --driver `{other}` (expected one of: latency, throughput, udp, reconnect, dns, limits)"
+            )));
+        }
+    };
+
+    check_safety(&*driver, allow_prod).map_err(|e| Error::InvalidArgs(e.to_string()))?;
+
+    let ctx = BenchContext {
+        iterations,
+        payload_size,
+        max_duration,
+        connector,
+        allow_production_impact: allow_prod,
+        env: env.clone(),
+    };
+    let result = driver.run(&ctx).await;
+
+    // Write reports to <state_dir>/benchmarks/<run-id>.{json,md}.
+    let state_dir = resolve_state_dir_for_read(global).unwrap_or_else(|_| std::env::temp_dir());
+    let run_id = format!("{}-{}", args.driver, chrono::Utc::now().format("%Y%m%dT%H%M%S"));
+    let json_path = write_report(&state_dir, &run_id, &[result.clone()], ReportFormat::Json)?;
+    let md_path = write_report(&state_dir, &run_id, &[result.clone()], ReportFormat::Markdown)?;
+
+    if args.json {
+        let summary = serde_json::json!({
+            "driver": args.driver,
+            "iterations_completed": result.iterations_completed,
+            "iterations_attempted": result.iterations_attempted,
+            "duration_ms": result.duration_ms,
+            "errors": result.errors,
+            "report_json": json_path,
+            "report_md": md_path,
+        });
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&summary)
+                .map_err(|e| Error::RuntimeFailure(e.to_string()))?
+        );
+    } else {
+        println!(
+            "driver={} iter_ok={}/{} dur={}ms errors={}",
+            args.driver,
+            result.iterations_completed,
+            result.iterations_attempted,
+            result.duration_ms,
+            result.errors.len()
+        );
+        println!("report (json): {}", json_path.display());
+        println!("report (md):   {}", md_path.display());
+    }
+    Ok(())
 }
 
 fn benchmark_report(rep: groups::benchmark::BenchmarkReport) -> Result<()> {

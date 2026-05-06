@@ -8,7 +8,7 @@ Usage: spt auth [OPTIONS] <COMMAND>
 
 Commands:
   test        Test authentication for a profile
-  ssh3-login  Run an SSH3 OIDC / bearer login flow
+  ssh3-login  Run an SSH3 OIDC device-flow login and optionally store the token
   help        Print this message or the help of the given subcommand(s)
 
 Options:

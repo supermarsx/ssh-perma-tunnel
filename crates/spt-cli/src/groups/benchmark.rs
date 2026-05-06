@@ -55,18 +55,40 @@ pub struct BenchmarkTarget {
 /// `spt benchmark run`.
 #[derive(Args, Debug)]
 pub struct BenchmarkRun {
-    /// Forward target.
+    /// Driver to dispatch (one of `latency`, `throughput`, `udp`,
+    /// `reconnect`, `dns`, `limits`).
+    #[arg(long, value_name = "NAME")]
+    pub driver: String,
+    /// Forward target (optional for synthetic drivers like `dns`).
     #[command(flatten)]
-    pub target: BenchmarkTarget,
+    pub target: BenchmarkRunTarget,
     /// Duration.
     #[arg(long, value_name = "DURATION")]
     pub duration: Option<String>,
     /// Concurrent connections.
     #[arg(long, value_name = "N")]
     pub connections: Option<u32>,
+    /// Iteration / sample count override.
+    #[arg(long, value_name = "N")]
+    pub count: Option<u32>,
+    /// Allow drivers that may impact production. Combined with the
+    /// `[benchmark.allow_production_impact]` config flag.
+    #[arg(long)]
+    pub unsafe_allow_production_impact: bool,
     /// JSON output.
     #[arg(long)]
     pub json: bool,
+}
+
+/// Optional forward target (subset of `BenchmarkTarget`, both flags optional).
+#[derive(Args, Debug, Clone)]
+pub struct BenchmarkRunTarget {
+    /// Profile name.
+    #[arg(long)]
+    pub profile: Option<String>,
+    /// Forward name.
+    #[arg(long)]
+    pub forward: Option<String>,
 }
 
 /// `spt benchmark latency`.

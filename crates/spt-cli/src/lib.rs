@@ -325,6 +325,8 @@ mod tests {
             "spt",
             "benchmark",
             "run",
+            "--driver",
+            "latency",
             "--profile",
             "p1",
             "--forward",
