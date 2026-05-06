@@ -151,6 +151,7 @@ mod tests {
                     p99_ms: 3.0,
                     p999_ms: 4.0,
                     max_ms: 5.0,
+                    ..Default::default()
                 }),
                 ..Default::default()
             },

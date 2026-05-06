@@ -82,6 +82,9 @@ async-trait = "0.1"
 # CLI
 clap = { version = "4.5", features = ["derive", "env", "wrap_help"] }
 clap_complete = "4.5"
+# Pinned to 0.2.31: 0.2.32 pulls roff 1.x (edition2024); 0.2.33+ requires Rust 1.85.
+# 0.2.31 declares rust-version 1.74 and depends on roff ^0.2.1 (rust-version 1.70).
+clap_mangen = "=0.2.31"
 
 # Serde / config
 serde = { version = "1", features = ["derive"] }
@@ -105,8 +108,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"]
 tracing-appender = "0.2"
 tracing-journald = "0.3"
 opentelemetry = "0.24"
-opentelemetry-otlp = "0.17"
-opentelemetry_sdk = "0.24"
+opentelemetry-otlp = { version = "0.17", default-features = false, features = ["grpc-tonic", "trace", "metrics", "logs"] }
+opentelemetry_sdk = { version = "0.24", features = ["rt-tokio", "trace", "metrics", "logs"] }
 prometheus = "0.13"
 
 # Filesystem / paths
@@ -150,7 +153,17 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 rustls-native-certs = "0.7"
 rustls-pemfile = "2"
 rustls-pki-types = "1"
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+webpki-roots = "0.26"
 x509-parser = "0.16"
+
+# Email + WebPush transports for spt-events sinks
+# Pinned to 0.11.19: 0.11.20+ requires Cargo edition2024 (Rust 1.85). MSRV 1.83.
+lettre = { version = "=0.11.19", default-features = false, features = ["smtp-transport", "tokio1-rustls-tls", "builder", "ring", "webpki-roots"] }
+# `web-push` 0.10/0.11 transitively pull in deps that fail under MSRV 1.83
+# (chumsky → stacker → psm → ar_archive_writer requires edition2024). Until
+# MSRV moves, the PushSink uses a plain reqwest HTTPS POST transport; full
+# RFC 8030 web-push (VAPID + ECE) is left as a future addition.
 h3 = "0.0.6"
 h3-quinn = "0.0.7"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream", "gzip"] }

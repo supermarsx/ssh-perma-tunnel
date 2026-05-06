@@ -28,4 +28,11 @@ chrono = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "io-util", "time"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "io-util", "time", "net", "sync"] }
+spt-forward = { workspace = true }
+hickory-resolver = { workspace = true }
+
+[features]
+# Optional integration test against a real `hickory-resolver`. Off by default
+# because it needs network/loopback DNS reachable.
+hickory-test = []

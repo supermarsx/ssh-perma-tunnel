@@ -6,9 +6,8 @@
 //!
 //! # Layout
 //! - [`driver`]  — [`BenchmarkDriver`] trait + [`BenchContext`].
-//! - [`drivers`] — concrete drivers (latency, throughput) plus stub drivers
-//!                 for the rest (UDP / reconnect / DNS / limits) marked
-//!                 unimplemented until t1-e18 wires real protocol crates.
+//! - [`drivers`] — concrete drivers: latency, throughput, UDP loss/jitter,
+//!                 reconnect time, DNS query rate, and limits enforcement.
 //! - [`result`]  — [`BenchResult`] + serialisation.
 //! - [`safety`]  — production-impact gating.
 //! - [`compare`] — load two reports → side-by-side diff.
@@ -28,8 +27,14 @@ pub mod result;
 pub mod safety;
 
 pub use compare::{compare_reports, ComparedMetric, ReportComparison};
-pub use driver::{BenchContext, BenchmarkDriver, Connector};
-pub use drivers::{LatencyDriver, ThroughputDriver};
+pub use driver::{
+    BenchContext, BenchmarkDriver, Connector, DnsClient, ReconnectTrigger, UdpConnector,
+    UdpEndpoint,
+};
+pub use drivers::{
+    DnsDriver, LatencyDriver, LimitsDriver, ReconnectDriver, ThroughputDriver, UdpDriver,
+};
+pub use drivers::limits::LimitsExpectations;
 pub use report::{write_report, ReportFormat};
 pub use result::{BenchEnv, BenchResult, MetricSet, Percentiles};
 pub use safety::{check_safety, SafetyError};

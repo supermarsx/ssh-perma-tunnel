@@ -11,12 +11,24 @@ pub struct Percentiles {
     pub p50_ms: f64,
     /// 90th.
     pub p90_ms: f64,
+    /// 95th.
+    #[serde(default)]
+    pub p95_ms: f64,
     /// 99th.
     pub p99_ms: f64,
     /// 99.9th.
     pub p999_ms: f64,
     /// Worst observed.
     pub max_ms: f64,
+    /// Best observed.
+    #[serde(default)]
+    pub min_ms: f64,
+    /// Arithmetic mean.
+    #[serde(default)]
+    pub mean_ms: f64,
+    /// Sample standard deviation (Bessel-corrected, 0 if n<2).
+    #[serde(default)]
+    pub stddev_ms: f64,
 }
 
 impl Percentiles {
@@ -31,12 +43,31 @@ impl Percentiles {
             let idx = ((samples.len() as f64 - 1.0) * q).round() as usize;
             samples[idx.min(samples.len() - 1)]
         };
+        let n = samples.len() as f64;
+        let mean = samples.iter().copied().sum::<f64>() / n;
+        let stddev = if samples.len() >= 2 {
+            let var = samples
+                .iter()
+                .map(|x| {
+                    let d = x - mean;
+                    d * d
+                })
+                .sum::<f64>()
+                / (n - 1.0);
+            var.sqrt()
+        } else {
+            0.0
+        };
         Self {
             p50_ms: pick(0.50),
             p90_ms: pick(0.90),
+            p95_ms: pick(0.95),
             p99_ms: pick(0.99),
             p999_ms: pick(0.999),
             max_ms: *samples.last().unwrap(),
+            min_ms: *samples.first().unwrap(),
+            mean_ms: mean,
+            stddev_ms: stddev,
         }
     }
 }

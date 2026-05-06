@@ -26,6 +26,61 @@ pub type Connector = Box<
         + Sync,
 >;
 
+// --------------------------------------------------------------------------
+// UDP / Reconnect / DNS injection seams (used by the eponymous drivers).
+// --------------------------------------------------------------------------
+
+/// A bound UDP socket plus the address of the (echo) target.
+///
+/// Returned by a [`UdpConnector`]. The driver sends datagrams to `target`
+/// and expects them echoed back to `socket`'s local address.
+pub struct UdpEndpoint {
+    /// Bound socket the driver sends/receives datagrams on.
+    pub socket: tokio::net::UdpSocket,
+    /// Echo target address.
+    pub target: std::net::SocketAddr,
+}
+
+/// Produces a UDP endpoint for the [`crate::drivers::UdpDriver`].
+///
+/// In tests this binds a loopback `UdpSocket` and spawns an in-process
+/// echo task. In production it asks the SSH3 backend for a UDP-forwarded
+/// endpoint.
+pub type UdpConnector = Box<
+    dyn Fn() -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = std::io::Result<UdpEndpoint>> + Send>,
+        > + Send
+        + Sync,
+>;
+
+/// Drives the [`crate::drivers::ReconnectDriver`] across one reconnect cycle.
+///
+/// The driver flow:
+/// 1. [`Self::wait_session_up`] — block until a session is ready, returning T0.
+/// 2. [`Self::trigger_drop`] — cause the session to drop (e.g. close the
+///    underlying transport). The driver records the time of this call as the
+///    "session-down event".
+/// 3. [`Self::wait_session_up`] — block until the next session is ready;
+///    the elapsed since the drop is the reconnect time.
+///
+/// Implementations MUST be `Sync` so the driver can call them in a loop.
+#[async_trait::async_trait]
+pub trait ReconnectTrigger: Send + Sync {
+    /// Block until the next session OPEN-handshake completes.
+    async fn wait_session_up(&self) -> std::io::Result<()>;
+    /// Cause the current session to drop. Returns when the loss has been
+    /// signalled (not necessarily when the next reconnect has started).
+    async fn trigger_drop(&self) -> std::io::Result<()>;
+}
+
+/// Async DNS query injection seam used by [`crate::drivers::DnsDriver`].
+#[async_trait::async_trait]
+pub trait DnsClient: Send + Sync {
+    /// Resolve `name` to one or more IP addresses (as strings, opaque to
+    /// the driver). Errors are recorded by the driver as failed queries.
+    async fn query(&self, name: &str) -> std::io::Result<Vec<String>>;
+}
+
 /// Whether the benchmark may impact a real production system.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImpactLevel {

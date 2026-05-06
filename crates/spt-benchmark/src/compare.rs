@@ -129,6 +129,7 @@ mod tests {
                     p99_ms: p50,
                     p999_ms: p50,
                     max_ms: p50,
+                    ..Default::default()
                 }),
                 throughput_bps: Some(tput),
                 ..Default::default()
