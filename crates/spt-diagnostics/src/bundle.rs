@@ -245,6 +245,57 @@ mod tests {
     }
 
     #[test]
+    fn new_check_ids_land_in_bundle() {
+        // Synthesise a report that exercises every new check group from
+        // f-diagnostics so we can confirm the bundle preserves them verbatim
+        // through redaction.
+        let d = tempdir().unwrap();
+        let mut report = DiagnosticReport::default();
+        for id in [
+            "secrets.backend.keychain",
+            "secrets.round_trip.keychain",
+            "firewall.plan",
+            "firewall.live_rules",
+            "service.status",
+            "mcp.handshake",
+            "mcp.resources_count",
+            "mcp.tools_count",
+            "runtime.snapshot",
+            "runtime.uptime",
+            "runtime.profiles",
+            "runtime.recent_errors",
+            "ssh2.libssh2_init",
+            "ssh2.supported_algs.kex",
+            "ssh2.crypto_policy.kex",
+        ] {
+            report.checks.push(Check::new(id, Severity::Info, Status::Pass));
+        }
+        let path = build_bundle(
+            d.path(),
+            "run-new",
+            &BundleInputs {
+                report: Some(report),
+                ..Default::default()
+            },
+            &BundleConfig::default(),
+        )
+        .unwrap();
+        let entries = read_archive_entries(&path);
+        let (_, body) = entries.iter().find(|(n, _)| n == "report.json").unwrap();
+        let body = std::str::from_utf8(body).unwrap();
+        for id in [
+            "secrets.backend.keychain",
+            "firewall.plan",
+            "service.status",
+            "mcp.handshake",
+            "runtime.snapshot",
+            "ssh2.libssh2_init",
+        ] {
+            assert!(body.contains(&format!("\"{id}\"")), "missing {id} in bundle");
+        }
+    }
+
+    #[test]
     fn budget_truncates() {
         let d = tempdir().unwrap();
         let big = "x".repeat(10_000);

@@ -28,4 +28,8 @@ pub mod port_autodetect;
 pub use bundle::{build_bundle, BundleConfig, BundleInputs};
 pub use check::{Check, Severity, Status};
 pub use framework::{Diagnostic, DiagnosticContext, DiagnosticReport, DiagnosticRunner};
-pub use port_autodetect::{autodetect, DetectedService, ServiceClass};
+pub use port_autodetect::{
+    autodetect, classify_banner, default_chain, AmqpDetector, BannerDetector, DetectedService,
+    Detector, HttpDetector, LdapDetector, MqttDetector, PostgresDetector, RedisDetector,
+    ServiceClass, TlsDetector,
+};

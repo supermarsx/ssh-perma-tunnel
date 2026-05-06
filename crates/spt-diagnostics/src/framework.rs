@@ -12,7 +12,12 @@ use crate::check::{Check, Status};
 /// Concrete diagnostics typically need a state directory, an effective
 /// config path, and optionally OS info. This is intentionally minimal — add
 /// fields here as new diagnostics need them, rather than per-check.
-#[derive(Debug, Clone, Default)]
+///
+/// All injected handles are `Option<Arc<...>>`. A diagnostic whose handle is
+/// `None` MUST emit `Status::Skipped` rather than fail. This keeps
+/// `DiagnosticContext::default()` usable from the runner's unit tests and
+/// from CI environments where some subsystems are absent.
+#[derive(Clone, Default)]
 pub struct DiagnosticContext {
     /// Where the running daemon's state lives, or where it would.
     pub state_dir: Option<PathBuf>,
@@ -21,6 +26,48 @@ pub struct DiagnosticContext {
     pub effective_config: Option<String>,
     /// Free-form key/value tags (e.g. `os=linux`, `arch=x86_64`).
     pub tags: Vec<(String, String)>,
+
+    // -- Injected handles (deeper checks) ----------------------------------
+    /// Resolver for the secrets check. None → `Skipped`.
+    pub resolver: Option<Arc<spt_secrets::Resolver>>,
+    /// Whether write probes (round-trip set/get/delete) are permitted.
+    /// Defaults to false: diagnostics are read-only by default per spec.
+    pub allow_write_probes: bool,
+    /// Firewall planner for the firewall check. None → `Skipped`.
+    pub firewall_planner: Option<Arc<dyn spt_firewall::FirewallPlanner>>,
+    /// Firewall rules to plan and verify. Empty → `Skipped`.
+    pub firewall_rules: Vec<spt_firewall::Rule>,
+    /// Service manager for the service check. None → `Skipped`.
+    pub service_manager: Option<Arc<dyn spt_service::ServiceManager>>,
+    /// Service name to query. None → `Skipped`.
+    pub service_name: Option<String>,
+    /// Whether the MCP server is enabled in config.
+    pub mcp_enabled: bool,
+    /// Path to the spt binary used to spawn `spt mcp serve --stdio`.
+    /// None → `Skipped`.
+    pub mcp_binary: Option<PathBuf>,
+    /// SSH2 crypto policy (allow-lists) to vet against libssh2's support.
+    /// None → only the libssh2 version + supported-algs probe runs.
+    pub crypto_policy: Option<spt_ssh2::CryptoPolicy>,
+}
+
+impl std::fmt::Debug for DiagnosticContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DiagnosticContext")
+            .field("state_dir", &self.state_dir)
+            .field("effective_config_present", &self.effective_config.is_some())
+            .field("tags", &self.tags)
+            .field("resolver", &self.resolver.is_some())
+            .field("allow_write_probes", &self.allow_write_probes)
+            .field("firewall_planner", &self.firewall_planner.is_some())
+            .field("firewall_rules", &self.firewall_rules.len())
+            .field("service_manager", &self.service_manager.is_some())
+            .field("service_name", &self.service_name)
+            .field("mcp_enabled", &self.mcp_enabled)
+            .field("mcp_binary", &self.mcp_binary)
+            .field("crypto_policy", &self.crypto_policy.is_some())
+            .finish()
+    }
 }
 
 /// A single diagnostic. Async because most checks do IO (DNS lookup, file

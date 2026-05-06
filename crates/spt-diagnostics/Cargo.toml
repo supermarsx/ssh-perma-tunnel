@@ -16,6 +16,10 @@ workspace = true
 spt-core = { workspace = true }
 spt-config = { workspace = true }
 spt-state = { workspace = true }
+spt-secrets = { workspace = true }
+spt-firewall = { workspace = true }
+spt-service = { workspace = true }
+spt-ssh2 = { workspace = true }
 
 async-trait = { workspace = true }
 flate2 = "1"
@@ -23,12 +27,14 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
+ssh2 = { workspace = true }
+secrecy = { workspace = true }
 tar = "0.4"
 thiserror = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["process", "io-util", "macros", "rt-multi-thread", "net", "time", "sync"] }
 tracing = { workspace = true }
 chrono = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "io-util", "net", "time"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "io-util", "net", "time", "process", "sync"] }
