@@ -29,6 +29,10 @@ operational drift.
 - A **TUI** profile configurator (`spt profile configure --tui`).
 - Diagnostics with redacted bundles and a benchmarking driver framework.
 
+> **`spt` is client-only.** It connects to existing SSH/SSH3 servers (OpenSSH,
+> dropbear, the francoismichel/ssh3 reference, etc.) and maintains forwards
+> through them. There is no built-in server role; bring your own remote.
+
 ## Install
 
 ### From a release artifact
