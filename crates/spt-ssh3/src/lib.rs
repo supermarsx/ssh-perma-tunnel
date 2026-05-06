@@ -1,12 +1,13 @@
 //! SSH3 backend for spt built on QUIC, rustls, and HTTP/3.
 //!
-//! # Status: PARTIAL-REAL
+//! # Status: PARTIAL-REAL (spt↔spt channel framing live)
 //!
 //! This crate ships a real QUIC + TLS 1.3 + HTTP/3 Extended-CONNECT bootstrap
-//! against the francoismichel/ssh3 reference, but per-forward channel framing
-//! (direct-tcp, tcpip-forward, UDP datagram association) is not yet wired —
-//! the corresponding `open_*_forward` calls return
-//! [`spt_core::Error::UnsupportedPlatform`].
+//! against the francoismichel/ssh3 reference. Per-forward channel framing
+//! (direct-tcp, tcpip-forward, UDP datagram association) is live for spt↔spt
+//! interop on a custom wire contract documented in [`forward`] and [`frame`].
+//! Bit-compat with francoismichel/ssh3's reference framing is NOT claimed —
+//! real-server interop is gated on the `SPT_SSH3_TEST_SERVER` integration test.
 //!
 //! Live today:
 //!
@@ -29,6 +30,7 @@
 
 pub mod auth_header;
 pub mod config;
+pub mod forward;
 pub mod frame;
 pub mod protocol;
 pub mod session;
@@ -37,7 +39,13 @@ pub mod transport;
 
 pub use auth_header::build_authorization_header;
 pub use config::{Ssh3AuthExtras, Ssh3Config, Ssh3TlsConfig};
-pub use frame::{Ssh3Frame, Ssh3FrameKind, Ssh3Settings, Ssh3StreamKind};
+pub use frame::{
+    ChannelOpenPayload, ForwardOpenResponse, Ssh3Frame, Ssh3FrameKind, Ssh3Settings,
+    Ssh3StreamKind, UdpAssociatePayload,
+};
 pub use protocol::{Ssh3Protocol, EXPERIMENTAL_WARNING, PARTIAL_REAL_REASON};
 pub use session::Ssh3Session;
-pub use transport::{bootstrap, build_connect_request, BootstrappedSession};
+pub use transport::{
+    accept_control_stream, bootstrap, build_connect_request, open_control_stream,
+    BootstrappedSession,
+};

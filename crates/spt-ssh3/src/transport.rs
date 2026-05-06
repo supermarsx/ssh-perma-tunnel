@@ -45,6 +45,15 @@ pub struct BootstrappedSession {
     pub peer_version: Option<String>,
     /// Negotiated TLS protocol description (suite name, ALPN, etc.).
     pub negotiated: Option<String>,
+    /// Control-stream send half (SSH3 control frames travel here).
+    pub control_send: quinn::SendStream,
+    /// Control-stream recv half.
+    pub control_recv: quinn::RecvStream,
+    /// Peer-advertised settings (from the first frame on the control stream).
+    pub peer_settings: crate::frame::Ssh3Settings,
+    /// Driver task handle for the h3 connection (so the session can `.abort()`
+    /// on close).
+    pub h3_driver: tokio::task::JoinHandle<()>,
 }
 
 /// Resolve the endpoint host:port to a `SocketAddr`.
@@ -190,9 +199,6 @@ pub async fn bootstrap(
         });
     }
 
-    // We retain the driver task; cancellation happens at session close.
-    // Leak the task handle here — the session owns it via close()/abort.
-    // A more thorough impl would store this in the Ssh3Session.
     let peer_version = resp
         .headers()
         .get(http::header::SERVER)
@@ -200,12 +206,100 @@ pub async fn bootstrap(
         .map(str::to_owned);
     let negotiated = Some("TLS1.3 + QUIC + h3".to_string());
 
+    // Open the SSH3 control bidi stream and exchange `Settings` frames. We
+    // run on a fresh raw QUIC stream (bypassing h3) — the spt↔spt
+    // channel-framing contract is documented in `forward.rs`.
+    let (control_send, control_recv, peer_settings) =
+        open_control_stream(&connection, default_local_settings()).await?;
+
     Ok(BootstrappedSession {
         connection,
         status,
         peer_version,
         negotiated,
+        control_send,
+        control_recv,
+        peer_settings,
+        h3_driver: driver_task,
     })
+}
+
+/// Default capabilities advertised by the spt client.
+fn default_local_settings() -> crate::frame::Ssh3Settings {
+    crate::frame::Ssh3Settings {
+        direct_tcp: true,
+        remote_tcp: true,
+        udp_datagrams: true,
+        agent_forwarding: false,
+        max_forwards: Some(64),
+        version: Some(concat!("spt-ssh3/", env!("CARGO_PKG_VERSION")).to_string()),
+        extras: Vec::new(),
+    }
+}
+
+/// Open the SSH3 control bidi stream and exchange [`Ssh3FrameKind::Settings`]
+/// frames with the peer.
+///
+/// **spt↔spt convention**: the client (whichever side calls `open_bi`) is the
+/// initiator and writes its own settings first; the responder reads, replies,
+/// and the initiator reads. See `forward.rs` for the broader wire contract.
+pub async fn open_control_stream(
+    connection: &quinn::Connection,
+    local: crate::frame::Ssh3Settings,
+) -> Result<(quinn::SendStream, quinn::RecvStream, crate::frame::Ssh3Settings)> {
+    use crate::frame::{Ssh3Frame, Ssh3FrameKind};
+    let (mut send, mut recv) = connection
+        .open_bi()
+        .await
+        .map_err(|e| Error::RuntimeFailure(format!("ssh3 open control stream: {e}")))?;
+    let our = Ssh3Frame::new(Ssh3FrameKind::Settings, local.encode_payload());
+    our.write_async(&mut send).await?;
+    // Read peer's settings (first frame on the stream) within a generous
+    // timeout — a non-SSH3 peer would never answer.
+    let frame = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        Ssh3Frame::read_async(&mut recv),
+    )
+    .await
+    .map_err(|_| Error::RuntimeFailure("ssh3 control: timeout waiting for peer settings".into()))??;
+    if frame.kind != Ssh3FrameKind::Settings {
+        return Err(Error::RuntimeFailure(format!(
+            "ssh3 control: expected Settings, got {:?}",
+            frame.kind
+        )));
+    }
+    let peer = crate::frame::Ssh3Settings::decode_payload(frame.payload)?;
+    Ok((send, recv, peer))
+}
+
+/// Server-side counterpart to [`open_control_stream`] — accept the first
+/// inbound bidi stream as the SSH3 control stream and respond. Used by the
+/// test harness "fake server".
+pub async fn accept_control_stream(
+    connection: &quinn::Connection,
+    local: crate::frame::Ssh3Settings,
+) -> Result<(quinn::SendStream, quinn::RecvStream, crate::frame::Ssh3Settings)> {
+    use crate::frame::{Ssh3Frame, Ssh3FrameKind};
+    let (mut send, mut recv) = connection
+        .accept_bi()
+        .await
+        .map_err(|e| Error::RuntimeFailure(format!("ssh3 accept control stream: {e}")))?;
+    let frame = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        Ssh3Frame::read_async(&mut recv),
+    )
+    .await
+    .map_err(|_| Error::RuntimeFailure("ssh3 control: timeout waiting for client settings".into()))??;
+    if frame.kind != Ssh3FrameKind::Settings {
+        return Err(Error::RuntimeFailure(format!(
+            "ssh3 control: expected Settings, got {:?}",
+            frame.kind
+        )));
+    }
+    let peer = crate::frame::Ssh3Settings::decode_payload(frame.payload)?;
+    let ours = Ssh3Frame::new(Ssh3FrameKind::Settings, local.encode_payload());
+    ours.write_async(&mut send).await?;
+    Ok((send, recv, peer))
 }
 
 fn map_connection_error(e: quinn::ConnectionError) -> Error {

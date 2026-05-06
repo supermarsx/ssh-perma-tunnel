@@ -24,6 +24,7 @@ thiserror = { workspace = true }
 tokio = { workspace = true }
 url = { workspace = true }
 bytes = "1"
+dashmap = { workspace = true }
 
 # Real SSH3 transport (QUIC + HTTP/3 + rustls).
 quinn = { workspace = true }

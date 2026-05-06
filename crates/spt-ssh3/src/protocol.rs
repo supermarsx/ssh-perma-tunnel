@@ -1,6 +1,6 @@
 //! [`Ssh3Protocol`] — the [`TunnelProtocol`] implementation for SSH3.
 //!
-//! ## Status: PARTIAL-REAL
+//! ## Status: PARTIAL-REAL (spt↔spt channel framing live)
 //!
 //! - QUIC client + rustls TLS 1.3 (system roots, optional CA file, optional
 //!   SHA-256 SPKI pin via [`spt_trust::TlsPin`], `allow_self_signed`,
@@ -8,11 +8,10 @@
 //! - HTTP/3 Extended CONNECT with `:protocol = ssh3`, Bearer/Basic auth —
 //!   **live**.
 //! - Per-forward channel framing (direct-tcp, tcpip-forward, UDP datagram
-//!   association) — **gapped**: [`crate::session::Ssh3Session::open_*_forward`]
-//!   currently returns [`Error::UnsupportedPlatform`] until the SSH3
-//!   control-channel framing is wired against the francoismichel/ssh3 reference.
-//!   See `crates/spt-ssh3/README.md` and the `// TODO(spec-clarify)` markers
-//!   in `frame.rs`.
+//!   association) — **live for spt↔spt**, gapped against
+//!   francoismichel/ssh3's exact wire format. See `forward.rs` and
+//!   `session.rs` top-of-file. Real-server interop is gated on
+//!   `SPT_SSH3_TEST_SERVER`.
 //!
 //! The experimental warning emission contract is preserved: `connect()`
 //! emits the spec-§4.2 warning unless
