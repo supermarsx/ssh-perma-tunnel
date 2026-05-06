@@ -1,0 +1,108 @@
+---
+source: crates/spt-cli/tests/help_snapshots.rs
+expression: out
+---
+Permanent SSH2/SSH3 tunnels with reconnect, observability, and service integration.
+
+Usage: spt [OPTIONS] <COMMAND>
+
+Commands:
+  config      Manage configuration files (init, validate, diff, render, reload)
+  profile     Manage SSH/SSH3 tunnel profiles
+  forward     Manage forwards (local/remote TCP, UDP)
+  tunnel      Run, inspect, and control tunnels
+  service     Install and control native services
+  key         Generate, inspect, and install SSH keys
+  secret      Manage the secret vault and OS keychain references
+  auth        Authentication helpers
+  dns         Built-in DNS resolver and hosts-file management
+  firewall    Inspect and manage OS firewall / packet-filter rules
+  log         Log tailing, sink testing, and export
+  observe     Metrics, SNMP, and Windows Event Log helpers
+  event       Event bindings and sinks
+  stats       Statistics summaries and live counters
+  session     Inspect and manage active sessions
+  diagnose    Targeted diagnostics and support bundles
+  benchmark   Controlled benchmarking against forwards
+  mcp         Built-in MCP server controls
+  completion  Generate shell completions
+  help        Print this message or the help of the given subcommand(s)
+
+Options:
+      --config <PATH>
+          Path to a single config file
+          
+          [env: SPT_CONFIG=]
+
+      --config-dir <PATH>
+          Path to a directory of `*.toml` configs (loaded in lexical order)
+
+      --config-url <URL>
+          HTTPS URL of a remote config to fetch
+          
+          [env: SPT_CONFIG_URL=]
+
+      --config-fingerprint <SHA256>
+          SHA-256 fingerprint pin for `--config-url`
+
+      --state-dir <PATH>
+          Override the runtime state directory
+          
+          [env: SPT_STATE_DIR=]
+
+      --profile <NAME>
+          Restrict operations to the named profile
+
+      --output <OUTPUT>
+          Output format for command results
+
+          Possible values:
+          - human: Human-readable text (default)
+          - json:  Structured JSON
+          - jsonl: JSON Lines (one record per line)
+          - yaml:  YAML
+          
+          [default: human]
+
+      --json
+          Convenience alias for `--output json`
+
+      --log-level <LOG_LEVEL>
+          Tracing log level
+
+          Possible values:
+          - error: Only errors
+          - warn:  Warnings and above
+          - info:  Informational and above (default)
+          - debug: Debug and above
+          - trace: Trace and above (very verbose)
+          
+          [default: info]
+
+      --color <COLOR>
+          Color policy for human output
+
+          Possible values:
+          - auto:   Auto-detect based on tty
+          - always: Always emit color escapes
+          - never:  Never emit color escapes
+          
+          [default: auto]
+
+  -q, --quiet
+          Suppress non-essential output
+
+  -v, --verbose...
+          Increase verbosity (repeat for more)
+
+      --no-color
+          Disable color (legacy convenience flag; use `--color never`)
+
+      --dry-run
+          Show what would happen without making changes
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+  -V, --version
+          Print version

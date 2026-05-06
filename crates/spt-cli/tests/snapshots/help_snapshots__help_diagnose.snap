@@ -1,0 +1,108 @@
+---
+source: crates/spt-cli/tests/help_snapshots.rs
+expression: out
+---
+Targeted diagnostics and support bundles
+
+Usage: spt diagnose [OPTIONS] <COMMAND>
+
+Commands:
+  run            Run a battery of diagnostic checks
+  network        Network checks
+  auth           Authentication checks for a profile
+  trust          Trust checks for a profile
+  dns            DNS checks
+  bind           Bind checks
+  port           Probe a host:port
+  service        Service-manager checks
+  secrets        Secret-backend checks
+  observability  Observability sink checks
+  mcp            MCP server checks
+  bundle         Build a redacted support bundle
+  help           Print this message or the help of the given subcommand(s)
+
+Options:
+      --config <PATH>
+          Path to a single config file
+          
+          [env: SPT_CONFIG=]
+
+      --config-dir <PATH>
+          Path to a directory of `*.toml` configs (loaded in lexical order)
+
+      --config-url <URL>
+          HTTPS URL of a remote config to fetch
+          
+          [env: SPT_CONFIG_URL=]
+
+      --config-fingerprint <SHA256>
+          SHA-256 fingerprint pin for `--config-url`
+
+      --state-dir <PATH>
+          Override the runtime state directory
+          
+          [env: SPT_STATE_DIR=]
+
+      --profile <NAME>
+          Restrict operations to the named profile
+
+      --output <OUTPUT>
+          Output format for command results
+
+          Possible values:
+          - human: Human-readable text (default)
+          - json:  Structured JSON
+          - jsonl: JSON Lines (one record per line)
+          - yaml:  YAML
+          
+          [default: human]
+
+      --json
+          Convenience alias for `--output json`
+
+      --log-level <LOG_LEVEL>
+          Tracing log level
+
+          Possible values:
+          - error: Only errors
+          - warn:  Warnings and above
+          - info:  Informational and above (default)
+          - debug: Debug and above
+          - trace: Trace and above (very verbose)
+          
+          [default: info]
+
+      --color <COLOR>
+          Color policy for human output
+
+          Possible values:
+          - auto:   Auto-detect based on tty
+          - always: Always emit color escapes
+          - never:  Never emit color escapes
+          
+          [default: auto]
+
+  -q, --quiet
+          Suppress non-essential output
+
+  -v, --verbose...
+          Increase verbosity (repeat for more)
+
+      --no-color
+          Disable color (legacy convenience flag; use `--color never`)
+
+      --dry-run
+          Show what would happen without making changes
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+  -V, --version
+          Print version
+
+EXAMPLES:
+  spt diagnose run --all --report report.json
+  spt diagnose port --host db --port 5432 --tcp --autodetect-service
+  spt diagnose bundle --out support.tgz --redacted --since 24h
+  spt diagnose service --config /etc/ssh-perma-tunnel/config.toml --system
+  spt diagnose dns --name db.local

@@ -1,0 +1,104 @@
+---
+source: crates/spt-cli/tests/help_snapshots.rs
+expression: out
+---
+Controlled benchmarking against forwards
+
+Usage: spt benchmark [OPTIONS] <COMMAND>
+
+Commands:
+  run         End-to-end mixed workload
+  latency     Latency-focused benchmark
+  throughput  Throughput-focused benchmark
+  udp         UDP benchmark (SSH3 only)
+  reconnect   Reconnect benchmark
+  dns         DNS benchmark
+  limits      Limit/throttle introspection
+  report      Report tooling
+  help        Print this message or the help of the given subcommand(s)
+
+Options:
+      --config <PATH>
+          Path to a single config file
+          
+          [env: SPT_CONFIG=]
+
+      --config-dir <PATH>
+          Path to a directory of `*.toml` configs (loaded in lexical order)
+
+      --config-url <URL>
+          HTTPS URL of a remote config to fetch
+          
+          [env: SPT_CONFIG_URL=]
+
+      --config-fingerprint <SHA256>
+          SHA-256 fingerprint pin for `--config-url`
+
+      --state-dir <PATH>
+          Override the runtime state directory
+          
+          [env: SPT_STATE_DIR=]
+
+      --profile <NAME>
+          Restrict operations to the named profile
+
+      --output <OUTPUT>
+          Output format for command results
+
+          Possible values:
+          - human: Human-readable text (default)
+          - json:  Structured JSON
+          - jsonl: JSON Lines (one record per line)
+          - yaml:  YAML
+          
+          [default: human]
+
+      --json
+          Convenience alias for `--output json`
+
+      --log-level <LOG_LEVEL>
+          Tracing log level
+
+          Possible values:
+          - error: Only errors
+          - warn:  Warnings and above
+          - info:  Informational and above (default)
+          - debug: Debug and above
+          - trace: Trace and above (very verbose)
+          
+          [default: info]
+
+      --color <COLOR>
+          Color policy for human output
+
+          Possible values:
+          - auto:   Auto-detect based on tty
+          - always: Always emit color escapes
+          - never:  Never emit color escapes
+          
+          [default: auto]
+
+  -q, --quiet
+          Suppress non-essential output
+
+  -v, --verbose...
+          Increase verbosity (repeat for more)
+
+      --no-color
+          Disable color (legacy convenience flag; use `--color never`)
+
+      --dry-run
+          Show what would happen without making changes
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+  -V, --version
+          Print version
+
+EXAMPLES:
+  spt benchmark run --profile edge --forward db --duration 30s --connections 16
+  spt benchmark latency --profile edge --forward db --samples 1000
+  spt benchmark throughput --profile edge --forward db --duration 60s --payload-size 64KiB
+  spt benchmark report compare --baseline base.json --candidate cand.json
+  spt benchmark report export --format markdown --out report.md

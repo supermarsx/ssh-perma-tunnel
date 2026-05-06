@@ -1,0 +1,105 @@
+---
+source: crates/spt-cli/tests/help_snapshots.rs
+expression: out
+---
+Manage SSH/SSH3 tunnel profiles
+
+Usage: spt profile [OPTIONS] <COMMAND>
+
+Commands:
+  list       List configured profiles
+  show       Show the resolved profile (optionally redacted)
+  add        Add a new profile
+  configure  Interactive TUI configurator
+  set        Set one or more `key=value` overrides
+  enable     Enable a profile
+  disable    Disable a profile
+  remove     Remove a profile
+  test       Run targeted profile tests
+  help       Print this message or the help of the given subcommand(s)
+
+Options:
+      --config <PATH>
+          Path to a single config file
+          
+          [env: SPT_CONFIG=]
+
+      --config-dir <PATH>
+          Path to a directory of `*.toml` configs (loaded in lexical order)
+
+      --config-url <URL>
+          HTTPS URL of a remote config to fetch
+          
+          [env: SPT_CONFIG_URL=]
+
+      --config-fingerprint <SHA256>
+          SHA-256 fingerprint pin for `--config-url`
+
+      --state-dir <PATH>
+          Override the runtime state directory
+          
+          [env: SPT_STATE_DIR=]
+
+      --profile <NAME>
+          Restrict operations to the named profile
+
+      --output <OUTPUT>
+          Output format for command results
+
+          Possible values:
+          - human: Human-readable text (default)
+          - json:  Structured JSON
+          - jsonl: JSON Lines (one record per line)
+          - yaml:  YAML
+          
+          [default: human]
+
+      --json
+          Convenience alias for `--output json`
+
+      --log-level <LOG_LEVEL>
+          Tracing log level
+
+          Possible values:
+          - error: Only errors
+          - warn:  Warnings and above
+          - info:  Informational and above (default)
+          - debug: Debug and above
+          - trace: Trace and above (very verbose)
+          
+          [default: info]
+
+      --color <COLOR>
+          Color policy for human output
+
+          Possible values:
+          - auto:   Auto-detect based on tty
+          - always: Always emit color escapes
+          - never:  Never emit color escapes
+          
+          [default: auto]
+
+  -q, --quiet
+          Suppress non-essential output
+
+  -v, --verbose...
+          Increase verbosity (repeat for more)
+
+      --no-color
+          Disable color (legacy convenience flag; use `--color never`)
+
+      --dry-run
+          Show what would happen without making changes
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+  -V, --version
+          Print version
+
+EXAMPLES:
+  spt profile add edge --protocol ssh2 --host gw.example --user ubuntu
+  spt profile configure --tui --name edge
+  spt profile set edge keepalive.interval=30s reconnect.max_backoff=2m
+  spt profile enable edge
+  spt profile test edge --connect-only

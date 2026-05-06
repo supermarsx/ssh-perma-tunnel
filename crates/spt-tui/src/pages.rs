@@ -1,0 +1,142 @@
+//! Wizard pages.
+//!
+//! Each module under `pages/` exposes a [`Page`] that can render itself and
+//! handle key events given a mutable reference to the [`Model`]. To minimize
+//! code duplication, fields shared across many pages are described as
+//! [`FieldDef`] entries and rendered by the generic [`FieldList`] runner.
+
+mod auth;
+mod basics;
+mod connection;
+mod crypto;
+mod diagnostics;
+mod dns;
+mod events;
+mod failover;
+mod field;
+mod forwards;
+mod keepalive;
+mod limits;
+mod review;
+mod trust;
+
+pub use field::{Field, FieldDef, FieldList, FieldValue};
+
+use crossterm::event::KeyEvent;
+use ratatui::buffer::Buffer;
+use ratatui::layout::Rect;
+
+use crate::model::Model;
+
+/// Stable identifier for each wizard page. Used for navigation and for
+/// keying snapshot tests.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PageKind {
+    /// `1. Profile basics` — id, description, protocol.
+    Basics,
+    /// `2. Connection` — endpoints, hops, timings.
+    Connection,
+    /// `3. Auth` — auth method + secret refs.
+    Auth,
+    /// `4. Trust` — known_hosts, SHA-256 pins, TLS pins.
+    Trust,
+    /// `5. Crypto` — cipher / kex / mac / hostkey allow-lists.
+    Crypto,
+    /// `6. Keepalive`.
+    Keepalive,
+    /// `7. Reconnect / instability / failover`.
+    Failover,
+    /// `8. Limits` — connection caps, throttles.
+    Limits,
+    /// `9. Forwards` — local / remote / udp forward entries.
+    Forwards,
+    /// `10. DNS` — managed records bound to this profile.
+    Dns,
+    /// `11. Events` — per-profile binding tags.
+    Events,
+    /// `12. Diagnostics / observability` — tags + metrics labels.
+    Diagnostics,
+    /// `13. Review & save`.
+    Review,
+}
+
+impl PageKind {
+    /// Total number of pages in the wizard.
+    pub const COUNT: usize = 13;
+
+    /// Ordered list, in the order shown in the navigation tabs.
+    #[must_use]
+    pub fn all() -> [PageKind; Self::COUNT] {
+        [
+            PageKind::Basics,
+            PageKind::Connection,
+            PageKind::Auth,
+            PageKind::Trust,
+            PageKind::Crypto,
+            PageKind::Keepalive,
+            PageKind::Failover,
+            PageKind::Limits,
+            PageKind::Forwards,
+            PageKind::Dns,
+            PageKind::Events,
+            PageKind::Diagnostics,
+            PageKind::Review,
+        ]
+    }
+
+    /// Human-readable label for the page tab.
+    #[must_use]
+    pub fn title(self) -> &'static str {
+        match self {
+            PageKind::Basics => "Basics",
+            PageKind::Connection => "Connection",
+            PageKind::Auth => "Auth",
+            PageKind::Trust => "Trust",
+            PageKind::Crypto => "Crypto",
+            PageKind::Keepalive => "Keepalive",
+            PageKind::Failover => "Reconnect/Failover",
+            PageKind::Limits => "Limits",
+            PageKind::Forwards => "Forwards",
+            PageKind::Dns => "DNS",
+            PageKind::Events => "Events",
+            PageKind::Diagnostics => "Diagnostics",
+            PageKind::Review => "Review & Save",
+        }
+    }
+
+    /// Index in the [`PageKind::all`] order.
+    #[must_use]
+    pub fn index(self) -> usize {
+        Self::all().iter().position(|p| *p == self).unwrap_or(0)
+    }
+}
+
+/// Trait implemented by every wizard page.
+pub trait Page {
+    /// Render the page into the provided rect.
+    fn render(&mut self, area: Rect, buf: &mut Buffer, model: &Model);
+    /// Handle a key event. Returns `true` if the model was changed.
+    fn on_key(&mut self, key: KeyEvent, model: &mut Model) -> bool;
+}
+
+/// Construct one [`Page`] per [`PageKind`], with state ready for the first
+/// render. Pages own only their UI state; the [`Model`] is the source of truth
+/// for the underlying [`spt_config::Profile`].
+#[must_use]
+pub fn build_pages() -> Vec<Box<dyn Page>> {
+    vec![
+        Box::new(basics::BasicsPage::new()),
+        Box::new(connection::ConnectionPage::new()),
+        Box::new(auth::AuthPage::new()),
+        Box::new(trust::TrustPage::new()),
+        Box::new(crypto::CryptoPage::new()),
+        Box::new(keepalive::KeepalivePage::new()),
+        Box::new(failover::FailoverPage::new()),
+        Box::new(limits::LimitsPage::new()),
+        Box::new(forwards::ForwardsPage::new()),
+        Box::new(dns::DnsPage::new()),
+        Box::new(events::EventsPage::new()),
+        Box::new(diagnostics::DiagnosticsPage::new()),
+        Box::new(review::ReviewPage::new()),
+    ]
+}
