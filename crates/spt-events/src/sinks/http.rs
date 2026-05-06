@@ -30,6 +30,12 @@ pub struct HttpRequest {
     pub content_type: String,
     pub body: Vec<u8>,
     pub auth: HttpAuth,
+    /// Extra request headers (in addition to `Content-Type` / `Authorization`
+    /// already derived from the fields above). Used by the WebPush sink to
+    /// attach `TTL`, `Urgency`, `Content-Encoding: aes128gcm`, and the VAPID
+    /// `Authorization: vapid t=…, k=…` value.
+    #[doc(hidden)]
+    pub extra_headers: Vec<(String, String)>,
 }
 
 /// HTTP transport trait — implemented by reqwest for production, mocked in
@@ -94,6 +100,7 @@ impl Sink for HttpSink {
             content_type: self.content_type.clone(),
             body: body.into_bytes(),
             auth: self.auth.clone(),
+            extra_headers: Vec::new(),
         };
         self.transport.send(req).await
     }
@@ -105,7 +112,7 @@ impl Sink for HttpSink {
 pub mod reqwest_transport {
     use super::{HttpAuth, HttpRequest, HttpTransport, SinkError};
     use async_trait::async_trait;
-    use reqwest::header::{HeaderValue, AUTHORIZATION, CONTENT_TYPE};
+    use reqwest::header::{HeaderName, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
     use reqwest::{Client, Method};
     use std::time::Duration;
 
@@ -151,6 +158,14 @@ pub mod reqwest_transport {
                     if let Ok(v) = HeaderValue::from_str(&format!("Basic {t}")) {
                         rb = rb.header(AUTHORIZATION, v);
                     }
+                }
+            }
+            for (name, value) in &req.extra_headers {
+                if let (Ok(n), Ok(v)) = (
+                    HeaderName::from_bytes(name.as_bytes()),
+                    HeaderValue::from_str(value),
+                ) {
+                    rb = rb.header(n, v);
                 }
             }
             let resp = rb

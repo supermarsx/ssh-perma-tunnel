@@ -67,6 +67,7 @@ impl Sink for SmsSink {
             content_type: "application/x-www-form-urlencoded".into(),
             body: body.into_bytes(),
             auth: self.auth.clone(),
+            extra_headers: Vec::new(),
         };
         self.transport.send(req).await
     }

@@ -26,16 +26,26 @@ once_cell = { workspace = true }
 tracing = { workspace = true }
 humantime = { workspace = true }
 
+# WebPush sink crypto + encoding (RFC 8030/8291/8292).
+web-push-native = { workspace = true }
+# Direct pin so the workspace resolver picks our MSRV-clean versions for
+# the VAPID JWT signing chain. `superboring` is unused in our code but
+# declared here to constrain the transitive resolution away from the
+# edition2024 ml-dsa chain (see workspace Cargo.toml comment).
+jwt-simple = { workspace = true }
+superboring = { workspace = true }
+blake2b_simd = { workspace = true }
+base64ct = { workspace = true }
+http = { workspace = true }
+
 # Real transports
 reqwest = { workspace = true, optional = true }
 lettre = { workspace = true, optional = true }
 url = { workspace = true, optional = true }
-
 [features]
 default = ["transports"]
-# Real network transports: lettre (SMTP), reqwest (HTTPS). Push is a plain
-# HTTPS POST through reqwest; full RFC 8030 WebPush is deferred (see
-# Cargo.toml comment on the `web-push` workspace dep).
+# Real network transports: lettre (SMTP), reqwest (HTTPS), web-push-native
+# (RFC 8030 ECE + VAPID for the WebPushSink).
 transports = ["dep:reqwest", "dep:lettre", "dep:url"]
 
 [dev-dependencies]
