@@ -33,6 +33,13 @@ once_cell = { workspace = true }
 chrono = { workspace = true }
 thiserror = { workspace = true }
 
+# Remote sinks
+reqwest = { workspace = true }
+rustls = { workspace = true }
+rustls-pki-types = { workspace = true }
+tokio-rustls = { workspace = true }
+webpki-roots = { workspace = true }
+
 opentelemetry = { workspace = true, optional = true }
 opentelemetry-otlp = { workspace = true, optional = true }
 opentelemetry_sdk = { workspace = true, optional = true }
@@ -42,6 +49,7 @@ tracing-journald = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+rcgen = { version = "0.13", default-features = false, features = ["aws_lc_rs", "pem"] }
 
 [lints]
 workspace = true

@@ -99,6 +99,81 @@ impl Sink for HttpSink {
     }
 }
 
+/// Real HTTPS transport via `reqwest`. Available when `transports` feature
+/// is on (default).
+#[cfg(feature = "transports")]
+pub mod reqwest_transport {
+    use super::{HttpAuth, HttpRequest, HttpTransport, SinkError};
+    use async_trait::async_trait;
+    use reqwest::header::{HeaderValue, AUTHORIZATION, CONTENT_TYPE};
+    use reqwest::{Client, Method};
+    use std::time::Duration;
+
+    /// reqwest-backed transport. Construct once and reuse for many sinks.
+    pub struct ReqwestTransport {
+        client: Client,
+    }
+
+    impl ReqwestTransport {
+        /// Build with a per-request timeout.
+        pub fn new(timeout: Duration) -> Result<Self, SinkError> {
+            let client = Client::builder()
+                .timeout(timeout)
+                .build()
+                .map_err(|e| SinkError::Config(format!("reqwest: {e}")))?;
+            Ok(Self { client })
+        }
+
+        /// Use a pre-built `reqwest::Client`.
+        #[must_use]
+        pub fn from_client(client: Client) -> Self {
+            Self { client }
+        }
+    }
+
+    #[async_trait]
+    impl HttpTransport for ReqwestTransport {
+        async fn send(&self, req: HttpRequest) -> Result<(), SinkError> {
+            let method = Method::from_bytes(req.method.as_bytes())
+                .map_err(|e| SinkError::Config(format!("method: {e}")))?;
+            let mut rb = self.client.request(method, &req.url).body(req.body);
+            if let Ok(ct) = HeaderValue::from_str(&req.content_type) {
+                rb = rb.header(CONTENT_TYPE, ct);
+            }
+            match req.auth {
+                HttpAuth::None => {}
+                HttpAuth::Bearer(t) => {
+                    if let Ok(v) = HeaderValue::from_str(&format!("Bearer {t}")) {
+                        rb = rb.header(AUTHORIZATION, v);
+                    }
+                }
+                HttpAuth::Basic(t) => {
+                    if let Ok(v) = HeaderValue::from_str(&format!("Basic {t}")) {
+                        rb = rb.header(AUTHORIZATION, v);
+                    }
+                }
+            }
+            let resp = rb
+                .send()
+                .await
+                .map_err(|e| SinkError::Transient(format!("reqwest: {e}")))?;
+            if resp.status().is_success() {
+                Ok(())
+            } else if resp.status().is_server_error() {
+                Err(SinkError::Transient(format!(
+                    "http {}: server error",
+                    resp.status()
+                )))
+            } else {
+                Err(SinkError::Permanent(format!(
+                    "http {}: client error",
+                    resp.status()
+                )))
+            }
+        }
+    }
+}
+
 /// Stub transport that never makes network IO — records every request to a
 /// `parking_lot::Mutex<Vec<HttpRequest>>`. Used by tests in this crate plus
 /// downstream crates that want to assert on what would be sent.

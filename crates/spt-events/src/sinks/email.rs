@@ -82,6 +82,73 @@ impl Sink for EmailSink {
     }
 }
 
+/// Real SMTP+STARTTLS transport via `lettre`. Built only when the
+/// `transports` feature is on.
+#[cfg(feature = "transports")]
+pub mod smtp {
+    use super::{EmailMessage, EmailTransport, SinkError};
+    use async_trait::async_trait;
+    use lettre::message::header::ContentType;
+    use lettre::transport::smtp::authentication::Credentials;
+    use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
+
+    /// Production SMTP transport.
+    pub struct SmtpTransport {
+        inner: AsyncSmtpTransport<Tokio1Executor>,
+    }
+
+    impl SmtpTransport {
+        /// Build a STARTTLS-only transport for `host:port` with optional
+        /// username/password.
+        pub fn build(
+            host: &str,
+            port: u16,
+            user_pass: Option<(String, String)>,
+        ) -> Result<Self, SinkError> {
+            let mut b = AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(host)
+                .map_err(|e| SinkError::Config(format!("smtp tls config: {e}")))?
+                .port(port);
+            if let Some((u, p)) = user_pass {
+                b = b.credentials(Credentials::new(u, p));
+            }
+            Ok(Self { inner: b.build() })
+        }
+    }
+
+    #[async_trait]
+    impl EmailTransport for SmtpTransport {
+        async fn send(&self, msg: EmailMessage) -> Result<(), SinkError> {
+            let mut b = Message::builder()
+                .from(
+                    msg.from
+                        .parse()
+                        .map_err(|e| SinkError::Permanent(format!("from: {e}")))?,
+                )
+                .subject(msg.subject)
+                .header(ContentType::TEXT_PLAIN);
+            for to in &msg.to {
+                b = b.to(to
+                    .parse()
+                    .map_err(|e| SinkError::Permanent(format!("to {to}: {e}")))?);
+            }
+            let email = b
+                .body(msg.body)
+                .map_err(|e| SinkError::Permanent(format!("body: {e}")))?;
+            self.inner
+                .send(email)
+                .await
+                .map(|_| ())
+                .map_err(|e| {
+                    if e.is_permanent() {
+                        SinkError::Permanent(format!("smtp: {e}"))
+                    } else {
+                        SinkError::Transient(format!("smtp: {e}"))
+                    }
+                })
+        }
+    }
+}
+
 /// Test transport.
 #[derive(Default)]
 pub struct RecordingEmailTransport {

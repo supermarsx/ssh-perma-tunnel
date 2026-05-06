@@ -26,6 +26,18 @@ once_cell = { workspace = true }
 tracing = { workspace = true }
 humantime = { workspace = true }
 
+# Real transports
+reqwest = { workspace = true, optional = true }
+lettre = { workspace = true, optional = true }
+url = { workspace = true, optional = true }
+
+[features]
+default = ["transports"]
+# Real network transports: lettre (SMTP), reqwest (HTTPS). Push is a plain
+# HTTPS POST through reqwest; full RFC 8030 WebPush is deferred (see
+# Cargo.toml comment on the `web-push` workspace dep).
+transports = ["dep:reqwest", "dep:lettre", "dep:url"]
+
 [dev-dependencies]
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["full", "test-util"] }

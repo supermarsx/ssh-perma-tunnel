@@ -87,6 +87,14 @@ pub enum RotationPolicy {
     Daily,
     /// Never rotate.
     Never,
+    /// Size-based rotation; file rotated when active size would exceed
+    /// `max_bytes`. Combined with daily rotation when `daily` is true.
+    Size {
+        /// Byte cap before rotation triggers.
+        max_bytes: u64,
+        /// Whether to also rotate at local-midnight.
+        daily: bool,
+    },
 }
 
 /// Remote log sink spec consumed by `init` (only used to construct sink layers

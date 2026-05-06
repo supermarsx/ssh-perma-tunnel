@@ -19,6 +19,9 @@ pub mod config;
 pub mod init;
 pub mod metrics;
 pub mod redaction;
+pub mod rotation;
+pub mod syslog_tls;
+pub mod https_jsonl;
 
 #[cfg(feature = "otlp")]
 pub mod otlp;
