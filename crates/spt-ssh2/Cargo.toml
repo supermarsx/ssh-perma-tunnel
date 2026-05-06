@@ -1,0 +1,45 @@
+[package]
+name = "spt-ssh2"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+description = "SSH2 backend for spt built on libssh2 (async-ssh2-lite)."
+
+[lints]
+workspace = true
+
+[dependencies]
+spt-core = { workspace = true }
+spt-protocol = { workspace = true }
+spt-auth = { workspace = true }
+spt-key = { workspace = true }
+spt-trust = { workspace = true }
+spt-net = { workspace = true }
+spt-secrets = { workspace = true }
+
+tokio = { workspace = true }
+async-trait = { workspace = true }
+async-ssh2-lite = { workspace = true }
+ssh2 = { workspace = true }
+ssh-key = { workspace = true }
+secrecy = { workspace = true }
+zeroize = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+bytes = "1"
+parking_lot = { workspace = true }
+serde = { workspace = true }
+futures = { workspace = true }
+tempfile = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+russh = { workspace = true }
+russh-keys = { workspace = true }
+tempfile = { workspace = true }
+rand = { workspace = true }
+async-trait = { workspace = true }
