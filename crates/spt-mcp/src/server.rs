@@ -7,16 +7,22 @@
 //! - the [`crate::audit::McpAuditSink`] sink,
 //! - the [`crate::controller::Controller`] runtime adapter,
 //! - the [`crate::sources::ConfigSource`] / [`crate::sources::StateSource`] adapters,
-//! - the [`crate::transport::stdio`] framing layer.
+//! - the chosen [`crate::transport::Transport`] (stdio or loopback TCP).
 //!
 //! `spt-bin` constructs an `McpServer`, then calls [`McpServer::run`] which
-//! drives the request/response loop until stdin closes.
+//! drives the transport loop until the transport closes.
 //!
 //! # The audit invariant
 //!
 //! Every successful tool call emits exactly one audit event. Policy denials
 //! also emit one event with `ok = false`. Resource reads do not emit events;
 //! they are read-only by construction and tracked separately by `tracing`.
+//!
+//! # Concurrency
+//!
+//! The server's mutable state lives behind an [`Arc`] so the loopback
+//! transport can spawn one task per accepted connection. The stdio transport
+//! is single-connection.
 
 use crate::audit::{AuditEvent, DynAuditSink, NoopAuditSink};
 use crate::controller::{DynController, NoopController};
@@ -25,7 +31,7 @@ use crate::protocol::{Id, Request, Response};
 use crate::resources::ResourceRegistry;
 use crate::sources::{DynConfigSource, DynStateSource, NoopSources};
 use crate::tools::{ToolContext, ToolRegistry};
-use crate::transport::stdio::StdioFraming;
+use crate::transport::{stdio::StdioTransport, Transport, TransportKind};
 use serde_json::{json, Value};
 use std::sync::Arc;
 
@@ -52,8 +58,12 @@ impl Default for ServerCapabilities {
     }
 }
 
-/// MCP server handle. Built once per `spt mcp serve` invocation.
-pub struct McpServer {
+/// Shared state of an MCP server.
+///
+/// All transports hand requests to an `Arc<McpServerInner>`. This allows the
+/// loopback transport to spawn one connection task per accepted peer while
+/// stdio runs the same dispatch on a single task.
+pub struct McpServerInner {
     capabilities: ServerCapabilities,
     policy: Policy,
     audit: DynAuditSink,
@@ -64,92 +74,31 @@ pub struct McpServer {
     tools: Arc<ToolRegistry>,
 }
 
-impl McpServer {
-    /// Build a server with the given policy and adapter set.
-    #[must_use]
-    pub fn new(
-        policy: Policy,
-        audit: DynAuditSink,
-        controller: DynController,
-        config: DynConfigSource,
-        state: DynStateSource,
-    ) -> Self {
-        Self {
-            capabilities: ServerCapabilities::default(),
-            policy,
-            audit,
-            controller,
-            config,
-            state,
-            resources: Arc::new(ResourceRegistry::new()),
-            tools: Arc::new(ToolRegistry::new()),
-        }
-    }
-
-    /// Build a server with all-noop dependencies. Useful for tests and
-    /// initial wiring.
-    #[must_use]
-    pub fn new_noop(policy: McpPolicy) -> Self {
-        let sources = Arc::new(NoopSources);
-        Self::new(
-            Policy::new(policy),
-            Arc::new(NoopAuditSink),
-            Arc::new(NoopController),
-            sources.clone() as DynConfigSource,
-            sources as DynStateSource,
-        )
-    }
-
-    /// Override advertised capabilities.
-    #[must_use]
-    pub fn with_capabilities(mut self, caps: ServerCapabilities) -> Self {
-        self.capabilities = caps;
-        self
-    }
-
-    /// Server capabilities (advertised to clients during `initialize`).
+impl McpServerInner {
+    /// Capabilities (advertised to clients during `initialize`).
     #[must_use]
     pub fn capabilities(&self) -> &ServerCapabilities {
         &self.capabilities
     }
 
-    /// Drive the stdio loop until stdin closes.
-    ///
-    /// The server **does not** check `policy.enabled` here — that gate is the
-    /// binary's responsibility (the bin emits the audit event on `--enable`
-    /// and refuses to spawn the server otherwise per spec §16). Inside the
-    /// loop we still refuse `tools/call` on disabled policies, so this is
-    /// belt-and-braces.
-    pub async fn run(self) -> crate::Result<()> {
-        let mut io = StdioFraming::new();
-        loop {
-            let req = match io.read().await? {
-                None => break, // EOF
-                Some(r) if r.method.is_empty() => continue, // empty line
-                Some(r) => r,
-            };
-            if req.is_notification() {
-                self.handle_notification(&req).await;
-                continue;
+    /// Dispatch a single JSON-RPC request to a result. Notification handling
+    /// is the transport's responsibility; this method is only called for
+    /// request frames.
+    pub async fn dispatch(&self, req: Request) -> Response {
+        let id = req.id.clone().unwrap_or(Id::Null);
+        match self.handle_request(req).await {
+            Ok(value) => Response::ok(id, value),
+            Err(e) => {
+                let code = e.rpc_code();
+                Response::err(id, code, e.to_string())
             }
-            let id = req.id.clone().unwrap_or(Id::Null);
-            let response = match self.handle_request(req).await {
-                Ok(value) => Response::ok(id, value),
-                Err(e) => {
-                    let code = e.rpc_code();
-                    Response::err(id, code, e.to_string())
-                }
-            };
-            io.write(&response).await?;
         }
-        io.flush().await?;
-        Ok(())
     }
 
-    #[allow(clippy::unused_async)]
-    async fn handle_notification(&self, req: &Request) {
-        // `initialized` is fire-and-forget. Anything else is logged and
-        // ignored — JSON-RPC forbids responding to notifications.
+    /// Log a notification frame. Returns nothing — JSON-RPC forbids responses
+    /// to notifications.
+    #[allow(clippy::unused_self)]
+    pub fn note(&self, req: &Request) {
         tracing::debug!(method = %req.method, "received notification");
     }
 
@@ -223,7 +172,6 @@ impl McpServer {
             .and_then(Value::as_str)
             .map(str::to_owned);
 
-        // Tool dispatch: enabled gate, write-policy gate, then run.
         let result = self.dispatch_tool(name, arguments.clone()).await;
         let (ok, error_text) = match &result {
             Ok(_) => (true, None),
@@ -266,6 +214,117 @@ impl McpServer {
     }
 }
 
+/// MCP server handle. Built once per `spt mcp serve` invocation.
+pub struct McpServer {
+    inner: Arc<McpServerInner>,
+}
+
+impl McpServer {
+    /// Build a server with the given policy and adapter set.
+    #[must_use]
+    pub fn new(
+        policy: Policy,
+        audit: DynAuditSink,
+        controller: DynController,
+        config: DynConfigSource,
+        state: DynStateSource,
+    ) -> Self {
+        Self {
+            inner: Arc::new(McpServerInner {
+                capabilities: ServerCapabilities::default(),
+                policy,
+                audit,
+                controller,
+                config,
+                state,
+                resources: Arc::new(ResourceRegistry::new()),
+                tools: Arc::new(ToolRegistry::new()),
+            }),
+        }
+    }
+
+    /// Build a server with all-noop dependencies. Useful for tests and
+    /// initial wiring.
+    #[must_use]
+    pub fn new_noop(policy: McpPolicy) -> Self {
+        let sources = Arc::new(NoopSources);
+        Self::new(
+            Policy::new(policy),
+            Arc::new(NoopAuditSink),
+            Arc::new(NoopController),
+            sources.clone() as DynConfigSource,
+            sources as DynStateSource,
+        )
+    }
+
+    /// Override advertised capabilities.
+    #[must_use]
+    pub fn with_capabilities(mut self, caps: ServerCapabilities) -> Self {
+        // We hold the only Arc here in the typical builder flow; if not, we
+        // copy-on-write via `Arc::make_mut` … but `McpServerInner` is not
+        // `Clone`. Instead, deconstruct via `Arc::try_unwrap` and rebuild.
+        let inner = match Arc::try_unwrap(self.inner) {
+            Ok(mut i) => {
+                i.capabilities = caps;
+                i
+            }
+            Err(arc) => McpServerInner {
+                capabilities: caps,
+                policy: arc.policy.clone(),
+                audit: arc.audit.clone(),
+                controller: arc.controller.clone(),
+                config: arc.config.clone(),
+                state: arc.state.clone(),
+                resources: arc.resources.clone(),
+                tools: arc.tools.clone(),
+            },
+        };
+        self.inner = Arc::new(inner);
+        self
+    }
+
+    /// Server capabilities (advertised to clients during `initialize`).
+    #[must_use]
+    pub fn capabilities(&self) -> &ServerCapabilities {
+        &self.inner.capabilities
+    }
+
+    /// Shared inner handle. Useful when wiring custom transports.
+    #[must_use]
+    pub fn inner(&self) -> Arc<McpServerInner> {
+        self.inner.clone()
+    }
+
+    /// Drive the chosen transport until it closes.
+    ///
+    /// `transport` selects the concrete I/O strategy; the dispatch logic is
+    /// transport-agnostic and lives on [`McpServerInner`].
+    ///
+    /// The server **does not** check `policy.enabled` here — that gate is
+    /// the binary's responsibility. Inside dispatch we still refuse
+    /// `tools/call` on disabled policies, so this is belt-and-braces.
+    pub async fn run<T: Transport>(self, transport: T) -> crate::Result<()> {
+        transport.serve(self.inner).await
+    }
+
+    /// Convenience: drive the stdio transport.
+    pub async fn run_stdio(self) -> crate::Result<()> {
+        self.run(StdioTransport::new()).await
+    }
+
+    /// Convenience: pick a transport from a [`TransportKind`] discriminant.
+    /// Loopback callers should use [`crate::transport::loopback::LoopbackTransport`]
+    /// directly to supply a bind address.
+    pub async fn run_kind(self, kind: TransportKind) -> crate::Result<()> {
+        match kind {
+            TransportKind::Stdio => self.run_stdio().await,
+            TransportKind::Loopback => Err(crate::Error::InvalidParams(
+                "loopback transport requires an explicit bind address".to_owned(),
+            )),
+        }
+    }
+}
+
 fn now_ms() -> i64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now()
@@ -278,6 +337,7 @@ fn now_ms() -> i64 {
 mod tests {
     use super::*;
     use crate::audit::test_support::MockAuditSink;
+    use crate::controller::testing::{ControllerCall, RecordingController};
     use crate::policy::McpPolicy;
     use serde_json::json;
 
@@ -292,10 +352,38 @@ mod tests {
         )
     }
 
+    fn server_with_controller(
+        policy: McpPolicy,
+        audit: MockAuditSink,
+        ctrl: RecordingController,
+    ) -> McpServer {
+        let sources = Arc::new(NoopSources);
+        McpServer::new(
+            Policy::new(policy),
+            Arc::new(audit),
+            Arc::new(ctrl),
+            sources.clone() as DynConfigSource,
+            sources as DynStateSource,
+        )
+    }
+
+    fn write_enabled_policy() -> McpPolicy {
+        McpPolicy {
+            enabled: true,
+            allow_write_tools: vec![
+                "tunnel_reload".to_owned(),
+                "tunnel_failover".to_owned(),
+                "forward_add".to_owned(),
+                "forward_remove".to_owned(),
+            ],
+            ..Default::default()
+        }
+    }
+
     #[tokio::test]
     async fn initialize_returns_capabilities() {
         let s = server_with(McpPolicy::default(), MockAuditSink::new());
-        let v = s.initialize_result();
+        let v = s.inner.initialize_result();
         assert_eq!(v["protocolVersion"], "2024-11-05");
         assert_eq!(v["serverInfo"]["name"], "spt-mcp");
     }
@@ -303,14 +391,14 @@ mod tests {
     #[tokio::test]
     async fn resources_list_returns_sixteen() {
         let s = server_with(McpPolicy::default(), MockAuditSink::new());
-        let v = s.list_resources();
+        let v = s.inner.list_resources();
         assert_eq!(v["resources"].as_array().unwrap().len(), 16);
     }
 
     #[tokio::test]
     async fn tools_list_returns_thirtyone() {
         let s = server_with(McpPolicy::default(), MockAuditSink::new());
-        let v = s.list_tools();
+        let v = s.inner.list_tools();
         assert_eq!(v["tools"].as_array().unwrap().len(), 31);
     }
 
@@ -318,6 +406,7 @@ mod tests {
     async fn read_resource_returns_well_formed_envelope() {
         let s = server_with(McpPolicy::default(), MockAuditSink::new());
         let v = s
+            .inner
             .read_resource(Some(json!({"uri": "spt://status"})))
             .await
             .expect("read");
@@ -325,7 +414,6 @@ mod tests {
         assert_eq!(arr.len(), 1);
         assert_eq!(arr[0]["uri"], "spt://status");
         assert_eq!(arr[0]["mimeType"], "application/json");
-        // text is a JSON-encoded JSON object — re-parse and check it has fields.
         let body: Value = serde_json::from_str(arr[0]["text"].as_str().unwrap()).unwrap();
         assert!(body.is_object());
     }
@@ -334,6 +422,7 @@ mod tests {
     async fn read_unknown_resource_errors() {
         let s = server_with(McpPolicy::default(), MockAuditSink::new());
         let err = s
+            .inner
             .read_resource(Some(json!({"uri": "spt://nope"})))
             .await
             .unwrap_err();
@@ -349,14 +438,14 @@ mod tests {
         let audit = MockAuditSink::new();
         let s = server_with(policy, audit.clone());
         let err = s
+            .inner
             .call_tool(Some(json!({
                 "name": "forward_add",
-                "arguments": {"profile": "p", "forward": {}}
+                "arguments": {"profile": "p", "forward": {"name":"x","type":"local","transport":"tcp"}}
             })))
             .await
             .unwrap_err();
         assert!(matches!(err, crate::Error::PolicyDenied(_)));
-        // Audit event still emitted with ok=false.
         let events = audit.snapshot();
         assert_eq!(events.len(), 1);
         assert!(!events[0].ok);
@@ -372,6 +461,7 @@ mod tests {
         let audit = MockAuditSink::new();
         let s = server_with(policy, audit.clone());
         let _ = s
+            .inner
             .call_tool(Some(json!({"name": "tunnel_status", "arguments": {}})))
             .await
             .expect("ok");
@@ -385,6 +475,7 @@ mod tests {
     async fn disabled_policy_blocks_tool_calls() {
         let s = server_with(McpPolicy::default(), MockAuditSink::new());
         let err = s
+            .inner
             .call_tool(Some(json!({"name": "tunnel_status", "arguments": {}})))
             .await
             .unwrap_err();
@@ -399,6 +490,7 @@ mod tests {
         };
         let s = server_with(policy, MockAuditSink::new());
         let err = s
+            .inner
             .call_tool(Some(json!({"name": "nope_nope"})))
             .await
             .unwrap_err();
@@ -409,6 +501,7 @@ mod tests {
     async fn unknown_method_returns_method_not_found() {
         let s = server_with(McpPolicy::default(), MockAuditSink::new());
         let err = s
+            .inner
             .handle_request(Request {
                 jsonrpc: "2.0".to_owned(),
                 id: Some(Id::Num(1)),
@@ -467,11 +560,118 @@ mod tests {
             Arc::new(NoopSources) as DynStateSource,
         );
         let v = s
+            .inner
             .call_tool(Some(json!({"name": "config_validate", "arguments": {}})))
             .await
             .expect("ok");
         let text = v["content"][0]["text"].as_str().unwrap();
         assert!(!text.contains("PLAINTEXT"), "secret leaked: {text}");
         assert!(text.contains("***"));
+    }
+
+    // ----- Controller-mutating tools route through the controller. -----
+
+    #[tokio::test]
+    async fn tunnel_reload_invokes_controller() {
+        let ctrl = RecordingController::new();
+        let s = server_with_controller(write_enabled_policy(), MockAuditSink::new(), ctrl.clone());
+        let _ = s
+            .inner
+            .call_tool(Some(json!({"name": "tunnel_reload", "arguments": {}})))
+            .await
+            .expect("ok");
+        assert_eq!(ctrl.snapshot(), vec![ControllerCall::Reload]);
+    }
+
+    #[tokio::test]
+    async fn tunnel_failover_passes_endpoint() {
+        let ctrl = RecordingController::new();
+        let s = server_with_controller(write_enabled_policy(), MockAuditSink::new(), ctrl.clone());
+        let _ = s
+            .inner
+            .call_tool(Some(json!({
+                "name": "tunnel_failover",
+                "arguments": {"profile": "alpha", "endpoint": "edge-2"}
+            })))
+            .await
+            .expect("ok");
+        assert_eq!(
+            ctrl.snapshot(),
+            vec![ControllerCall::Failover {
+                profile: "alpha".to_owned(),
+                endpoint: Some("edge-2".to_owned()),
+            }]
+        );
+    }
+
+    #[tokio::test]
+    async fn forward_add_deserializes_and_routes() {
+        let ctrl = RecordingController::new();
+        let s = server_with_controller(write_enabled_policy(), MockAuditSink::new(), ctrl.clone());
+        let _ = s
+            .inner
+            .call_tool(Some(json!({
+                "name": "forward_add",
+                "arguments": {
+                    "profile": "alpha",
+                    "forward": {
+                        "name": "web",
+                        "type": "local",
+                        "transport": "tcp",
+                        "bind": "127.0.0.1:8080",
+                        "target": "10.0.0.5:80"
+                    }
+                }
+            })))
+            .await
+            .expect("ok");
+        let calls = ctrl.snapshot();
+        assert_eq!(calls.len(), 1);
+        match &calls[0] {
+            ControllerCall::ForwardAdd { profile, forward } => {
+                assert_eq!(profile, "alpha");
+                assert_eq!(forward.name, "web");
+                assert_eq!(forward.transport, "tcp");
+            }
+            other => panic!("unexpected call: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn forward_add_invalid_payload_errors_invalid_params() {
+        let ctrl = RecordingController::new();
+        let s = server_with_controller(write_enabled_policy(), MockAuditSink::new(), ctrl.clone());
+        // Missing required `name`/`type`/`transport` fields.
+        let err = s
+            .inner
+            .call_tool(Some(json!({
+                "name": "forward_add",
+                "arguments": {"profile": "p", "forward": {}}
+            })))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, crate::Error::InvalidParams(_)));
+        assert!(ctrl.snapshot().is_empty());
+    }
+
+    #[tokio::test]
+    async fn forward_remove_routes_to_controller() {
+        let ctrl = RecordingController::new();
+        let s = server_with_controller(write_enabled_policy(), MockAuditSink::new(), ctrl.clone());
+        let _ = s
+            .inner
+            .call_tool(Some(json!({
+                "name": "forward_remove",
+                "arguments": {"profile": "alpha", "forward_id": "web"}
+            })))
+            .await
+            .expect("ok");
+        assert_eq!(
+            ctrl.snapshot(),
+            vec![ControllerCall::ForwardRemove {
+                profile: "alpha".to_owned(),
+                forward_id: "web".to_owned(),
+            }]
+        );
     }
 }

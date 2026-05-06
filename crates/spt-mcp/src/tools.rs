@@ -18,6 +18,7 @@ use crate::protocol::ToolDescriptor;
 use crate::sources::{DynConfigSource, DynStateSource};
 use async_trait::async_trait;
 use serde_json::{json, Value};
+use spt_config::schema::Forward;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -81,16 +82,6 @@ pub const ALL_TOOL_NAMES: &[&str] = &[
 /// Internal helper: build a no-arguments JSON-Schema.
 fn empty_schema() -> Value {
     json!({"type": "object", "properties": {}, "additionalProperties": false})
-}
-
-/// Internal helper: build a one-string-arg JSON-Schema.
-fn one_string_schema(arg: &str, desc: &str) -> Value {
-    json!({
-        "type": "object",
-        "properties": { arg: {"type": "string", "description": desc} },
-        "required": [arg],
-        "additionalProperties": true,
-    })
 }
 
 /// Macro: define a tool implementing [`ToolHandler`].
@@ -210,8 +201,15 @@ impl ToolHandler for ForwardAdd {
         let profile = args.get("profile").and_then(Value::as_str).ok_or_else(|| {
             crate::Error::InvalidParams("missing string field 'profile'".to_owned())
         })?;
-        let forward = args.get("forward").cloned().unwrap_or(Value::Null);
-        ctx.controller.forward_add(profile, forward).await
+        let forward_value = args.get("forward").cloned().ok_or_else(|| {
+            crate::Error::InvalidParams("missing object field 'forward'".to_owned())
+        })?;
+        let forward: Forward = serde_json::from_value(forward_value).map_err(|e| {
+            crate::Error::InvalidParams(format!("invalid 'forward' object: {e}"))
+        })?;
+        ctx.controller.forward_add(profile, &forward).await?;
+        let name = forward.name.clone();
+        Ok(json!({"applied": true, "profile": profile, "forward": name}))
     }
 }
 
@@ -246,7 +244,8 @@ impl ToolHandler for ForwardRemove {
             .ok_or_else(|| {
                 crate::Error::InvalidParams("missing string field 'forward_id'".to_owned())
             })?;
-        ctx.controller.forward_remove(profile, forward_id).await
+        ctx.controller.forward_remove(profile, forward_id).await?;
+        Ok(json!({"applied": true, "profile": profile, "forward": forward_id}))
     }
 }
 
@@ -265,7 +264,8 @@ impl ToolHandler for TunnelReload {
         }
     }
     async fn call(&self, ctx: &ToolContext, _args: Value) -> crate::Result<Value> {
-        ctx.controller.reload().await
+        ctx.controller.reload().await?;
+        Ok(json!({"applied": true}))
     }
 }
 
@@ -280,14 +280,24 @@ impl ToolHandler for TunnelFailover {
         ToolDescriptor {
             name: self.name().to_owned(),
             description: "Force one failover step on a profile.".to_owned(),
-            input_schema: one_string_schema("profile", "Profile name."),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "profile": {"type": "string"},
+                    "endpoint": {"type": "string", "description": "Optional endpoint id to mark failed."}
+                },
+                "required": ["profile"],
+                "additionalProperties": true,
+            }),
         }
     }
     async fn call(&self, ctx: &ToolContext, args: Value) -> crate::Result<Value> {
         let profile = args.get("profile").and_then(Value::as_str).ok_or_else(|| {
             crate::Error::InvalidParams("missing string field 'profile'".to_owned())
         })?;
-        ctx.controller.failover(profile).await
+        let endpoint = args.get("endpoint").and_then(Value::as_str);
+        ctx.controller.failover(profile, endpoint).await?;
+        Ok(json!({"applied": true, "profile": profile, "endpoint": endpoint}))
     }
 }
 
