@@ -1,0 +1,39 @@
+[package]
+name = "spt-snmp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+description = "Standalone SNMPv3 USM agent and trap sender (RFC 3411/3412/3414/3826/7860)."
+readme = "README.md"
+keywords = ["snmp", "snmpv3", "usm", "agent", "mib"]
+categories = ["network-programming", "asynchronous"]
+
+[lints]
+workspace = true
+
+[dependencies]
+tokio = { workspace = true }
+bytes = { workspace = true }
+aes = { workspace = true }
+cfb-mode = { workspace = true }
+hmac = { workspace = true }
+sha2 = { workspace = true }
+sha1 = { workspace = true }
+md-5 = { workspace = true }
+rand = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+zeroize = { workspace = true }
+secrecy = { workspace = true }
+async-trait = { workspace = true }
+subtle = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full", "test-util", "macros"] }
+proptest = { workspace = true }
+tempfile = { workspace = true }
+hex = { workspace = true }

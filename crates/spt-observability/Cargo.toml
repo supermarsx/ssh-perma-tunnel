@@ -1,0 +1,47 @@
+[package]
+name = "spt-observability"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+description = "Tracing, log rotation, OTLP, and metrics for spt."
+
+[features]
+default = []
+# OTLP support (logs + metrics). Disabled by default to keep MSRV-1.83 clean
+# and avoid pulling in tonic/prost transitive deps that may need newer rustc.
+# Wire-up is a thin wrapper; tests do not require this feature.
+otlp = ["dep:opentelemetry", "dep:opentelemetry-otlp", "dep:opentelemetry_sdk"]
+
+[dependencies]
+spt-core = { workspace = true }
+spt-state = { workspace = true }
+
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tracing-appender = { workspace = true }
+
+tokio = { workspace = true }
+prometheus = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+parking_lot = { workspace = true }
+once_cell = { workspace = true }
+chrono = { workspace = true }
+thiserror = { workspace = true }
+
+opentelemetry = { workspace = true, optional = true }
+opentelemetry-otlp = { workspace = true, optional = true }
+opentelemetry_sdk = { workspace = true, optional = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+tracing-journald = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true
