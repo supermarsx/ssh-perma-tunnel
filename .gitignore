@@ -1,0 +1,30 @@
+# Orchestration scratch (plans/state are not committed)
+/.orchestration
+
+# Rust build artifacts
+/target
+**/*.rs.bk
+
+# IDE
+.vscode/
+.idea/
+*.iml
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Environment / secrets
+.env
+.env.local
+*.pem
+*.key
+
+# Coverage / profiling
+*.profraw
+/coverage/
+
+# Cargo.lock is intentionally tracked (workspace contains a binary).
