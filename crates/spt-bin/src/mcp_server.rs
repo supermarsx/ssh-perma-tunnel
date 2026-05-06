@@ -2,18 +2,28 @@
 
 use std::sync::Arc;
 
-use spt_mcp::{McpPolicy, McpServer, NoopSources, Policy};
+use spt_mcp::{Controller, McpPolicy, McpServer, NoopSources, Policy};
 
-/// Build an MCP server with all-noop sources/controller and the supplied
-/// policy. The binary uses the noop wiring for `mcp serve` until the full
-/// adapter set is connected to the running orchestrator (tracked in M9).
-pub fn build_noop_server(policy: McpPolicy) -> McpServer {
+/// Build an MCP server with all-noop sources, given an arbitrary controller.
+///
+/// `[mcp]` config sources / state sources are still M9 work — we hand the
+/// server `NoopSources` so resource reads return shape-only fixtures. The
+/// controller, audit sink, and policy are real wiring once the caller passes
+/// a real `OrchestratorController`.
+pub fn build_server(policy: McpPolicy, controller: Arc<dyn Controller>) -> McpServer {
     let sources = Arc::new(NoopSources);
     McpServer::new(
         Policy::new(policy),
         Arc::new(spt_mcp::NoopAuditSink),
-        Arc::new(spt_mcp::NoopController),
+        controller,
         sources.clone() as spt_mcp::sources::DynConfigSource,
         sources as spt_mcp::sources::DynStateSource,
     )
+}
+
+/// Build an MCP server with all-noop sources/controller and the supplied
+/// policy. Used by `spt mcp serve` when the binary has no running
+/// orchestrator (i.e. ad-hoc inspection / smoke tests).
+pub fn build_noop_server(policy: McpPolicy) -> McpServer {
+    build_server(policy, Arc::new(spt_mcp::NoopController))
 }

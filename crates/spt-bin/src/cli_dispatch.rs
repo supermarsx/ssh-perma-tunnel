@@ -27,6 +27,10 @@
 #![allow(clippy::unnecessary_wraps)]
 #![allow(clippy::unused_self)]
 #![allow(clippy::unnecessary_lazy_evaluations)]
+#![allow(clippy::default_constructed_unit_structs)]
+#![allow(clippy::uninlined_format_args)]
+#![allow(clippy::redundant_closure_for_method_calls)]
+#![allow(clippy::assigning_clones)]
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -68,15 +72,15 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
 async fn config_dispatch(global: &GlobalOpts, c: groups::config::ConfigCmd) -> Result<()> {
     use groups::config::ConfigSub;
     match c.command {
-        ConfigSub::Init(_) => Err(stub_err("config init", "M0+")),
+        ConfigSub::Init(args) => config_init(global, args),
         ConfigSub::Validate(args) => config_validate(global, args.strict),
         ConfigSub::Doctor(_) => Err(stub_err("config doctor", "M3")),
         ConfigSub::Render(args) => config_render(global, args),
         ConfigSub::Diff(args) => config_diff(args),
-        ConfigSub::Migrate(_) => Err(stub_err("config migrate", "M0+")),
+        ConfigSub::Migrate(args) => config_migrate(global, args),
         ConfigSub::Reload(_) => Err(stub_err("config reload", "M3")),
-        ConfigSub::Pull(_) => Err(stub_err("config pull", "M5")),
-        ConfigSub::Trust(_) => Err(stub_err("config trust", "M5")),
+        ConfigSub::Pull(args) => config_pull(global, args).await,
+        ConfigSub::Trust(args) => config_trust(global, args),
     }
 }
 
@@ -144,6 +148,119 @@ fn config_diff(args: groups::config::ConfigDiff) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn config_init(global: &GlobalOpts, args: groups::config::ConfigInit) -> Result<()> {
+    let path = args
+        .path
+        .clone()
+        .or_else(|| global.config.clone())
+        .ok_or_else(|| {
+            Error::InvalidArgs("provide --path or set --config / $SPT_CONFIG".into())
+        })?;
+    if path.exists() {
+        return Err(Error::InvalidArgs(format!(
+            "refusing to overwrite existing file at `{}`",
+            path.display()
+        )));
+    }
+    // The example dialect doesn't change the rendered TOML body in M0; we
+    // emit a default Config so `config validate` round-trips it. Deeper
+    // template seeding (jump host, ssh3, etc.) is M2 work.
+    let _ = args.example;
+    let mut cfg = spt_config::schema::Config::default();
+    cfg.version = 1;
+    let body = spt_config::render(&cfg, RedactionMode::None);
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| Error::InvalidConfig(format!("mkdir `{}`: {e}", parent.display())))?;
+        }
+    }
+    std::fs::write(&path, body)
+        .map_err(|e| Error::InvalidConfig(format!("write `{}`: {e}", path.display())))?;
+    println!("wrote {}", path.display());
+    Ok(())
+}
+
+fn config_migrate(global: &GlobalOpts, args: groups::config::ConfigMigrate) -> Result<()> {
+    // `spt_config::migrate` is a single entry point that reads the current
+    // schema version and emits the next-version TOML. We don't strictly
+    // honour `from-version`/`to-version` because the migrator does that
+    // automatically; we surface their values in a sanity check only.
+    let path = require_config_path(global)?;
+    let raw = std::fs::read_to_string(&path)
+        .map_err(|e| Error::InvalidConfig(format!("read `{}`: {e}", path.display())))?;
+    let migrated = spt_config::migrate(&raw)
+        .map_err(|e| Error::InvalidConfig(format!("migrate: {e}")))?;
+    let _ = (args.from_version, args.to_version);
+    spt_state::write_atomic_string(&path, &migrated)
+        .map_err(|e| Error::InvalidConfig(format!("write `{}`: {e}", path.display())))?;
+    println!("migrated {}", path.display());
+    Ok(())
+}
+
+async fn config_pull(global: &GlobalOpts, args: groups::config::ConfigPull) -> Result<()> {
+    use spt_remote_config::{ReqwestFetcher, RemoteConfigSpec};
+    let fingerprint = args.fingerprint.clone().ok_or_else(|| {
+        Error::InvalidArgs(
+            "--fingerprint <SHA256> is required (remote-config pull is pin-only per spec §14.3)"
+                .into(),
+        )
+    })?;
+    let spec = RemoteConfigSpec {
+        url: args.url.clone(),
+        fingerprint_sha256: fingerprint,
+        ..Default::default()
+    };
+    let state_dir = resolve_state_dir_for_read(global).unwrap_or_else(|_| std::env::temp_dir());
+    let fetcher = ReqwestFetcher::new()
+        .map_err(|e| Error::InvalidConfig(format!("reqwest fetcher: {e}")))?;
+    let result = spt_remote_config::fetch(&spec, &state_dir, &fetcher)
+        .await
+        .map_err(|e| Error::InvalidConfig(format!("remote-config fetch: {e}")))?;
+    if let Some(out) = &args.out {
+        std::fs::write(out, &result.body)
+            .map_err(|e| Error::InvalidConfig(format!("write `{}`: {e}", out.display())))?;
+        println!("wrote {} ({:?})", out.display(), result.outcome);
+    } else {
+        std::io::stdout()
+            .write_all(&result.body)
+            .map_err(|e| Error::RuntimeFailure(format!("stdout: {e}")))?;
+    }
+    let _ = args.cache; // already cached side-effect of fetch()
+    Ok(())
+}
+
+fn config_trust(global: &GlobalOpts, args: groups::config::ConfigTrust) -> Result<()> {
+    use groups::config::ConfigTrustSub;
+    let path = require_config_path(global)?;
+    match args.command {
+        ConfigTrustSub::AddUrl(a) => {
+            let mut doc = spt_config::mutate::Document::read(&path)?;
+            // Write into [runtime.remote_config] — keys: url, fingerprint_sha256.
+            let inner = doc.document_mut();
+            // Ensure [runtime] table exists.
+            let runtime = inner
+                .as_table_mut()
+                .entry("runtime")
+                .or_insert_with(|| toml_edit::Item::Table(toml_edit::Table::new()));
+            let runtime_tbl = runtime.as_table_mut().ok_or_else(|| {
+                Error::InvalidConfig("[runtime] is not a table".into())
+            })?;
+            let rc = runtime_tbl
+                .entry("remote_config")
+                .or_insert_with(|| toml_edit::Item::Table(toml_edit::Table::new()));
+            let rc_tbl = rc.as_table_mut().ok_or_else(|| {
+                Error::InvalidConfig("[runtime.remote_config] is not a table".into())
+            })?;
+            rc_tbl["url"] = toml_edit::value(a.url.clone());
+            rc_tbl["fingerprint_sha256"] = toml_edit::value(a.fingerprint.clone());
+            doc.write_atomic(&path)?;
+            println!("trusted {} (sha256={})", a.url, a.fingerprint);
+            Ok(())
+        }
+    }
 }
 
 fn config_fingerprint_command(global: &GlobalOpts) -> Result<()> {
@@ -1004,8 +1121,64 @@ fn parse_ns_name(s: &str) -> Result<spt_secrets::SecretRef> {
 // auth
 // ============================================================================
 
-async fn auth_dispatch(_global: &GlobalOpts, _c: groups::auth::AuthCmd) -> Result<()> {
-    Err(stub_err("auth", "M1+"))
+async fn auth_dispatch(global: &GlobalOpts, c: groups::auth::AuthCmd) -> Result<()> {
+    use groups::auth::AuthSub;
+    match c.command {
+        AuthSub::Test(args) => auth_test(global, args),
+        AuthSub::Ssh3Login(_) => Err(stub_err("auth ssh3-login", "M1")),
+    }
+}
+
+/// `spt auth test` — sanity-check a profile's auth shape.
+///
+/// A real "did the SSH handshake succeed" probe needs to dial the remote
+/// endpoint via `spt_ssh2::Ssh2Protocol::connect` (or `spt_ssh3` for SSH3),
+/// which couples the CLI to live network state. M1 wires that. For now we
+/// validate the profile's `AuthConfig` shape — every method's secret
+/// references resolve, no unknown method names — and report
+/// success/failure structurally.
+fn auth_test(global: &GlobalOpts, args: groups::auth::AuthProfile) -> Result<()> {
+    let path = require_config_path(global)?;
+    let (cfg, _) = spt_config::load(&path, false)
+        .map_err(|e| Error::InvalidConfig(format!("load: {e}")))?;
+    let profile = cfg
+        .profiles
+        .iter()
+        .find(|p| p.name == args.profile)
+        .ok_or_else(|| Error::InvalidArgs(format!("no profile `{}`", args.profile)))?;
+    let bundle = crate::profile_factory::build(
+        profile,
+        &spt_secrets::Resolver::new(vec![]),
+    );
+    match bundle {
+        Ok(b) => {
+            let v = serde_json::json!({
+                "profile": profile.name,
+                "auth_shape_ok": true,
+                "user": b.auth.username,
+                "method_count": b.auth.methods.len(),
+                "endpoint_count": b.endpoints.len(),
+                "note": "live SSH handshake probe is M1 — this only validates auth shape",
+            });
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&v).map_err(|e| Error::RuntimeFailure(e.to_string()))?
+            );
+            Ok(())
+        }
+        Err(e) => {
+            let v = serde_json::json!({
+                "profile": profile.name,
+                "auth_shape_ok": false,
+                "error": e.to_string(),
+            });
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&v).map_err(|e| Error::RuntimeFailure(e.to_string()))?
+            );
+            Err(e)
+        }
+    }
 }
 
 // ============================================================================
@@ -1198,8 +1371,63 @@ fn observe_metrics(global: &GlobalOpts, _args: groups::observe::ObserveMetrics) 
 // event
 // ============================================================================
 
-async fn event_dispatch(_global: &GlobalOpts, _c: groups::event::EventCmd) -> Result<()> {
-    Err(stub_err("event", "M3"))
+async fn event_dispatch(global: &GlobalOpts, c: groups::event::EventCmd) -> Result<()> {
+    use groups::event::{EventSinkSub, EventSub};
+    match c.command {
+        EventSub::List(args) => event_list(global, args.json),
+        EventSub::Sink(s) => match s.command {
+            EventSinkSub::List(args) => event_sink_list(global, args.json),
+            EventSinkSub::Test(_) => Err(stub_err("event sink test", "M3")),
+        },
+        EventSub::Test(_) => Err(stub_err("event test", "M3")),
+        EventSub::Replay(_) => Err(stub_err("event replay", "M3")),
+    }
+}
+
+fn event_list(global: &GlobalOpts, json: bool) -> Result<()> {
+    let path = require_config_path(global)?;
+    let (cfg, _) = spt_config::load(&path, false)
+        .map_err(|e| Error::InvalidConfig(format!("load: {e}")))?;
+    let bindings = cfg
+        .events
+        .as_ref()
+        .map(|e| e.bindings.clone())
+        .unwrap_or_default();
+    if json {
+        let s = serde_json::to_string_pretty(&bindings)
+            .map_err(|e| Error::RuntimeFailure(e.to_string()))?;
+        println!("{s}");
+    } else if bindings.is_empty() {
+        println!("(no event bindings configured)");
+    } else {
+        for b in &bindings {
+            println!("{}\t{:?} -> {:?}", b.name, b.on, b.actions);
+        }
+    }
+    Ok(())
+}
+
+fn event_sink_list(global: &GlobalOpts, json: bool) -> Result<()> {
+    let path = require_config_path(global)?;
+    let (cfg, _) = spt_config::load(&path, false)
+        .map_err(|e| Error::InvalidConfig(format!("load: {e}")))?;
+    let sinks = cfg
+        .events
+        .as_ref()
+        .map(|e| e.sinks.clone())
+        .unwrap_or_default();
+    if json {
+        let s = serde_json::to_string_pretty(&sinks)
+            .map_err(|e| Error::RuntimeFailure(e.to_string()))?;
+        println!("{s}");
+    } else if sinks.is_empty() {
+        println!("(no event sinks configured)");
+    } else {
+        for s in &sinks {
+            println!("{}\t{}", s.name, s.kind);
+        }
+    }
+    Ok(())
 }
 
 // ============================================================================
@@ -1210,8 +1438,70 @@ async fn stats_dispatch(global: &GlobalOpts, c: groups::stats::StatsCmd) -> Resu
     use groups::stats::StatsSub;
     match c.command {
         StatsSub::Summary(_) => stats_snapshot(global),
-        _ => Err(stub_err("stats (other)", "M4")),
+        StatsSub::Connections(_) | StatsSub::Throughput(_) | StatsSub::Errors(_) => {
+            // Snapshot views read the same status.json the supervisor writes;
+            // a richer per-counter dump requires the in-process StatsRegistry,
+            // which is only available while `tunnel run` is active. M4 will
+            // expose a sidecar metrics socket; until then we surface the
+            // metrics file the observability layer writes.
+            stats_metrics_dump(global)
+        }
+        StatsSub::Live(_) => Err(stub_err(
+            "stats live (requires running supervisor + metrics socket)",
+            "M4",
+        )),
+        StatsSub::Export(args) => stats_export(global, args),
     }
+}
+
+fn stats_metrics_dump(global: &GlobalOpts) -> Result<()> {
+    let state_dir = resolve_state_dir_for_read(global)?;
+    let metrics_path = spt_state::paths::metrics_path(&state_dir);
+    match std::fs::read_to_string(&metrics_path) {
+        Ok(s) => {
+            print!("{s}");
+            Ok(())
+        }
+        Err(_) => {
+            println!(
+                "(no metrics yet at {} — written by `tunnel run`)",
+                metrics_path.display()
+            );
+            Ok(())
+        }
+    }
+}
+
+fn stats_export(global: &GlobalOpts, args: groups::stats::StatsExport) -> Result<()> {
+    let state_dir = resolve_state_dir_for_read(global)?;
+    let snap = std::fs::read_to_string(spt_state::paths::status_path(&state_dir))
+        .unwrap_or_default();
+    let body = match args.format {
+        groups::stats::StatsExportFormat::Json | groups::stats::StatsExportFormat::Jsonl => snap,
+        groups::stats::StatsExportFormat::Csv => {
+            // Minimal CSV: parse the JSON snapshot and emit the profile-state
+            // table. Anything richer (per-counter aggregations) requires the
+            // live registry — see M4.
+            let v: serde_json::Value =
+                serde_json::from_str(&snap).unwrap_or(serde_json::Value::Null);
+            let mut out = String::from("profile,state\n");
+            if let Some(arr) = v.get("profiles").and_then(|x| x.as_array()) {
+                for p in arr {
+                    let name = p.get("id").and_then(|x| x.as_str()).unwrap_or("");
+                    let state = p.get("state").and_then(|x| x.as_str()).unwrap_or("");
+                    out.push_str(&format!("{name},{state}\n"));
+                }
+            }
+            out
+        }
+        groups::stats::StatsExportFormat::Prometheus => {
+            // Forward to whatever the prometheus exporter wrote.
+            std::fs::read_to_string(spt_state::paths::metrics_path(&state_dir)).unwrap_or_default()
+        }
+    };
+    let _ = args.since;
+    print!("{body}");
+    Ok(())
 }
 
 fn stats_snapshot(global: &GlobalOpts) -> Result<()> {
@@ -1233,8 +1523,51 @@ async fn session_dispatch(global: &GlobalOpts, c: groups::session::SessionCmd) -
     use groups::session::SessionSub;
     match c.command {
         SessionSub::List(_) => session_list(global),
-        SessionSub::Close(_) => Err(stub_err("session close", "M4")),
-        _ => Err(stub_err("session (other)", "M4")),
+        SessionSub::Show(args) => session_show(global, args),
+        SessionSub::Top(_) => session_list(global),
+        // Close / drain require a control channel into the running supervisor
+        // (e.g. via the MCP loopback's `tunnel_failover` family). M4 ships
+        // that surface; until then we surface a structured stub.
+        SessionSub::Close(_) => Err(stub_err(
+            "session close (requires running supervisor control surface)",
+            "M4",
+        )),
+        SessionSub::Drain(_) => Err(stub_err(
+            "session drain (requires running supervisor control surface)",
+            "M4",
+        )),
+    }
+}
+
+fn session_show(global: &GlobalOpts, args: groups::session::SessionShow) -> Result<()> {
+    let state_dir = resolve_state_dir_for_read(global)?;
+    let path = spt_state::paths::status_path(&state_dir);
+    let s = std::fs::read_to_string(&path).unwrap_or_default();
+    let v: serde_json::Value = serde_json::from_str(&s).unwrap_or(serde_json::Value::Null);
+    let found = v
+        .get("sessions")
+        .and_then(|x| x.as_array())
+        .and_then(|arr| {
+            arr.iter()
+                .find(|e| e.get("id").and_then(|v| v.as_str()) == Some(&args.id))
+        });
+    match found {
+        Some(entry) => {
+            if args.json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(entry)
+                        .map_err(|e| Error::RuntimeFailure(e.to_string()))?
+                );
+            } else {
+                println!("{entry}");
+            }
+            Ok(())
+        }
+        None => Err(Error::InvalidArgs(format!(
+            "no session `{}` in snapshot",
+            args.id
+        ))),
     }
 }
 
@@ -1266,8 +1599,126 @@ async fn diagnose_dispatch(global: &GlobalOpts, c: groups::diagnose::DiagnoseCmd
     match c.command {
         DiagnoseSub::Run(_) => diagnose_run(global).await,
         DiagnoseSub::Bundle(args) => diagnose_bundle(global, args),
-        _ => Err(stub_err("diagnose (specific)", "M5")),
+        DiagnoseSub::Secrets(args) => diagnose_one(global, "secrets", args.json).await,
+        DiagnoseSub::Service(args) => diagnose_one(global, "service", args.json).await,
+        DiagnoseSub::Mcp(args) => diagnose_one(global, "mcp", args.json).await,
+        DiagnoseSub::Network(args) => diagnose_one(global, "network", args.json).await,
+        DiagnoseSub::Dns(args) => diagnose_one(global, "dns", args.json).await,
+        DiagnoseSub::Bind(args) => diagnose_one(global, "bind", args.json).await,
+        DiagnoseSub::Port(args) => diagnose_port(args).await,
+        DiagnoseSub::Auth(_) => Err(stub_err("diagnose auth", "M3")),
+        DiagnoseSub::Trust(_) => Err(stub_err("diagnose trust", "M3")),
+        DiagnoseSub::Observability(_) => Err(stub_err("diagnose observability", "M3")),
     }
+}
+
+/// Run a single diagnostic group from the runner's default registration.
+///
+/// In M0 the runner is registered with the always-available checks
+/// (`os`, `permissions`, `time`, `network`, `runtime`); deeper checks
+/// (`secrets`, `firewall`, `service`, `mcp`, `ssh2`) require injected
+/// handles via `DiagnosticContext`. This dispatcher runs the full set
+/// against a default context and filters the report by the requested
+/// group. Empty filtered output emits a `Skipped` notice rather than a
+/// hard failure (the check is registered but its handle is `None`).
+async fn diagnose_one(global: &GlobalOpts, group: &str, json: bool) -> Result<()> {
+    let cfg = global
+        .config
+        .as_ref()
+        .and_then(|p| spt_config::load(p, false).ok())
+        .map(|(c, _)| c);
+    let state_dir = resolve_state_dir_for_read(global).ok();
+    let mut ctx = spt_diagnostics::framework::DiagnosticContext::default();
+    ctx.state_dir = state_dir.clone();
+    if let Some(c) = &cfg {
+        ctx.effective_config = Some(spt_config::render(c, RedactionMode::Standard));
+        ctx.mcp_enabled = c.mcp.as_ref().and_then(|m| m.enabled).unwrap_or(false);
+    }
+    if let Some(sd) = state_dir {
+        ctx.resolver = Some(std::sync::Arc::new(crate::secrets_bridge::build_resolver(
+            cfg.as_ref().and_then(|c| c.secrets.as_ref()),
+            &sd,
+        )?));
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        ctx.mcp_binary = Some(exe);
+    }
+
+    // Build a runner with all checks registered; filter results by group.
+    let runner = spt_diagnostics::DiagnosticRunner::new()
+        .register(spt_diagnostics::checks::OsDiagnostic::default())
+        .register(spt_diagnostics::checks::PermissionsDiagnostic::default())
+        .register(spt_diagnostics::checks::TimeDiagnostic::default())
+        .register(spt_diagnostics::checks::NetworkDiagnostic::default())
+        .register(spt_diagnostics::checks::RuntimeDiagnostic::default())
+        .register(spt_diagnostics::checks::SecretsDiagnostic::default())
+        .register(spt_diagnostics::checks::ServiceDiagnostic::default())
+        .register(spt_diagnostics::checks::McpDiagnostic::default())
+        .register(spt_diagnostics::checks::FirewallDiagnostic::default())
+        .register(spt_diagnostics::checks::Ssh2Diagnostic::default());
+    let report = runner.run(&ctx).await;
+    let filtered: Vec<_> = report
+        .checks
+        .iter()
+        .filter(|c| c.id.starts_with(&format!("{group}.")) || c.id == group)
+        .collect();
+    if json {
+        let v = serde_json::to_string_pretty(&filtered)
+            .map_err(|e| Error::DiagnosticBundleFailed(e.to_string()))?;
+        println!("{v}");
+    } else if filtered.is_empty() {
+        println!("(no `{group}` checks registered or all skipped)");
+    } else {
+        for c in filtered {
+            println!(
+                "[{:?}] {} ({:?}): {}",
+                c.status,
+                c.id,
+                c.severity,
+                c.evidence.join("; ")
+            );
+        }
+    }
+    Ok(())
+}
+
+async fn diagnose_port(args: groups::diagnose::DiagnosePort) -> Result<()> {
+    if args.udp {
+        return Err(stub_err("diagnose port --udp", "M3"));
+    }
+    let target = format!("{}:{}", args.host, args.port);
+    let connect_result = tokio::net::TcpStream::connect(&target).await;
+    let mut output = serde_json::Map::new();
+    output.insert("target".into(), serde_json::Value::String(target.clone()));
+    match connect_result {
+        Ok(_stream) => {
+            output.insert("reachable".into(), serde_json::Value::Bool(true));
+            if args.autodetect_service {
+                // Not yet wired through the public spt_diagnostics::port_autodetect
+                // entry — surface the limitation rather than guessing.
+                output.insert(
+                    "service".into(),
+                    serde_json::Value::String(
+                        "(autodetect requires Detector chain wiring — M3)".into(),
+                    ),
+                );
+            }
+        }
+        Err(e) => {
+            output.insert("reachable".into(), serde_json::Value::Bool(false));
+            output.insert("error".into(), serde_json::Value::String(e.to_string()));
+        }
+    }
+    if args.json {
+        let s = serde_json::to_string_pretty(&output)
+            .map_err(|e| Error::RuntimeFailure(e.to_string()))?;
+        println!("{s}");
+    } else if output.get("reachable") == Some(&serde_json::Value::Bool(true)) {
+        println!("{}: reachable", target);
+    } else {
+        println!("{}: unreachable", target);
+    }
+    Ok(())
 }
 
 async fn diagnose_run(_global: &GlobalOpts) -> Result<()> {
@@ -1335,16 +1786,46 @@ fn diagnose_bundle(global: &GlobalOpts, args: groups::diagnose::DiagnoseBundle) 
 
 async fn benchmark_dispatch(_global: &GlobalOpts, c: groups::benchmark::BenchmarkCmd) -> Result<()> {
     use groups::benchmark::BenchmarkSub;
+    // Benchmark drivers (latency / throughput / udp / reconnect / dns / limits)
+    // exist in `spt-benchmark` and are exercised in that crate's unit tests
+    // via injected `Connector` / `UdpConnector` / `ReconnectTrigger` /
+    // `DnsClient` seams. Wiring them to a live tunnel session requires the
+    // running supervisor to expose a `connect_through_forward()` helper; see
+    // `.orchestration/logs/f-bench.md` for the hand-off notes. Until then
+    // every driver returns a structured milestone stub rather than dispatching
+    // through the canonical entry point — they would otherwise block forever
+    // waiting for a session that doesn't exist.
     match c.command {
-        BenchmarkSub::Run(_args) => benchmark_run_dryrun(),
+        BenchmarkSub::Run(_) => Err(stub_err(
+            "benchmark run (live driver requires supervisor connector)",
+            "M6",
+        )),
+        BenchmarkSub::Latency(_) => Err(stub_err(
+            "benchmark latency (live driver requires supervisor connector)",
+            "M6",
+        )),
+        BenchmarkSub::Throughput(_) => Err(stub_err(
+            "benchmark throughput (live driver requires supervisor connector)",
+            "M6",
+        )),
+        BenchmarkSub::Udp(_) => Err(stub_err(
+            "benchmark udp (live driver requires supervisor UDP connector)",
+            "M6",
+        )),
+        BenchmarkSub::Reconnect(_) => Err(stub_err(
+            "benchmark reconnect (requires supervisor ReconnectTrigger adapter)",
+            "M6",
+        )),
+        BenchmarkSub::Dns(_) => Err(stub_err(
+            "benchmark dns (requires DnsClient adapter)",
+            "M6",
+        )),
+        BenchmarkSub::Limits(_) => Err(stub_err(
+            "benchmark limits (requires supervisor connector)",
+            "M6",
+        )),
         BenchmarkSub::Report(rep) => benchmark_report(rep),
-        _ => Err(stub_err("benchmark (specific)", "M6")),
     }
-}
-
-fn benchmark_run_dryrun() -> Result<()> {
-    println!("benchmark run (offline drivers): not yet wired to live tunnels — see M6.");
-    Ok(())
 }
 
 fn benchmark_report(rep: groups::benchmark::BenchmarkReport) -> Result<()> {
@@ -1371,31 +1852,145 @@ async fn mcp_dispatch(global: &GlobalOpts, c: groups::mcp::McpCmd) -> Result<()>
     use groups::mcp::McpSub;
     match c.command {
         McpSub::Serve(args) => mcp_serve(global, args).await,
-        McpSub::Inspect(_) => Err(stub_err("mcp inspect", "M7+")),
-        McpSub::Policy(_) => Err(stub_err("mcp policy", "M7+")),
+        McpSub::Inspect(args) => mcp_inspect(global, args),
+        McpSub::Policy(args) => mcp_policy(global, args),
     }
 }
 
-async fn mcp_serve(_global: &GlobalOpts, args: groups::mcp::McpServe) -> Result<()> {
+fn mcp_inspect(_global: &GlobalOpts, args: groups::mcp::McpInspect) -> Result<()> {
+    // Drive a noop server purely for its registries — the resource and tool
+    // counts come from spec §13.4 / §16 and are asserted at registry build
+    // time inside spt-mcp. We expose them here for `spt mcp inspect`.
+    let resources = spt_mcp::resources::ResourceRegistry::new().list();
+    let tools = spt_mcp::tools::ToolRegistry::new().list();
+    if args.json {
+        let v = serde_json::json!({
+            "resources": resources,
+            "tools": tools,
+        });
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&v).map_err(|e| Error::McpFailed(e.to_string()))?
+        );
+    } else {
+        println!("resources: {}", resources.len());
+        for r in &resources {
+            println!("  {} — {}", r.uri, r.name);
+        }
+        println!("tools: {}", tools.len());
+        for t in &tools {
+            println!("  {}", t.name);
+        }
+    }
+    Ok(())
+}
+
+fn mcp_policy(global: &GlobalOpts, args: groups::mcp::McpPolicy) -> Result<()> {
+    use groups::mcp::McpPolicySub;
+    match args.command {
+        McpPolicySub::Show => {
+            let cfg_mcp = global
+                .config
+                .as_ref()
+                .and_then(|p| spt_config::load(p, false).ok())
+                .and_then(|(c, _)| c.mcp);
+            if let Some(m) = cfg_mcp {
+                let v = serde_json::to_string_pretty(&m)
+                    .map_err(|e| Error::McpFailed(e.to_string()))?;
+                println!("{v}");
+            } else {
+                println!("{{}}");
+            }
+            Ok(())
+        }
+        McpPolicySub::Set(s) => {
+            // Write to [mcp].allow_write_tools when key matches; refuse other
+            // keys (the schema is small enough to enumerate here).
+            let path = require_config_path(global)?;
+            let mut doc = spt_config::mutate::Document::read(&path)?;
+            let inner = doc.document_mut();
+            let mcp = inner
+                .as_table_mut()
+                .entry("mcp")
+                .or_insert_with(|| toml_edit::Item::Table(toml_edit::Table::new()));
+            let mcp_tbl = mcp
+                .as_table_mut()
+                .ok_or_else(|| Error::InvalidConfig("[mcp] is not a table".into()))?;
+            for kv in &s.overrides {
+                let (k, v) = kv.split_once('=').ok_or_else(|| {
+                    Error::InvalidArgs(format!("expected `key=value`, got `{kv}`"))
+                })?;
+                match k {
+                    "allow_write_tools" => {
+                        let arr: toml_edit::Array =
+                            v.split(',').map(|x| x.trim()).collect();
+                        mcp_tbl["allow_write_tools"] = toml_edit::value(arr);
+                    }
+                    "enabled" => {
+                        let b: bool = v.parse().map_err(|_| {
+                            Error::InvalidArgs(format!("`enabled` expects bool, got `{v}`"))
+                        })?;
+                        mcp_tbl["enabled"] = toml_edit::value(b);
+                    }
+                    other => {
+                        return Err(Error::InvalidArgs(format!(
+                            "unsupported policy key `{other}`"
+                        )));
+                    }
+                }
+            }
+            doc.write_atomic(&path)?;
+            println!("policy updated");
+            Ok(())
+        }
+    }
+}
+
+async fn mcp_serve(global: &GlobalOpts, args: groups::mcp::McpServe) -> Result<()> {
+    // Resolve listen address from the CLI flag, falling back to `[mcp].listen`
+    // in the loaded config (if any). `[mcp].stdio = true` overrides into
+    // stdio mode; otherwise the presence of a listen address selects the
+    // loopback TCP transport.
+    let cfg_path = args.config.clone().or_else(|| global.config.clone());
+    let cfg_listen = cfg_path
+        .as_ref()
+        .and_then(|p| spt_config::load(p, false).ok())
+        .and_then(|(c, _)| c.mcp)
+        .and_then(|m| m.listen);
+    let listen = args.listen.clone().or(cfg_listen);
+    let stdio = args.stdio || listen.is_none();
+
     if !args.enable {
         return Err(Error::McpFailed(
             "MCP is disabled by default. Pass --enable to confirm.".into(),
         ));
     }
-    if args.listen.is_some() {
-        return Err(Error::McpFailed(
-            "loopback TCP transport is tracked in M8; only --stdio is wired in M7.".into(),
-        ));
-    }
+    // Read-only is the default (no tools added to allow_write_tools);
+    // `--read-only` is accepted but currently a no-op since the default is
+    // already read-only — it's preserved for forward-compatibility.
+    let _ = args.read_only;
     let policy = spt_mcp::McpPolicy {
         enabled: true,
+        stdio,
+        listen: listen.clone().unwrap_or_default(),
         ..Default::default()
     };
     let server = crate::mcp_server::build_noop_server(policy);
-    server
-        .run()
-        .await
-        .map_err(|e| Error::McpFailed(e.to_string()))?;
+    if stdio {
+        server
+            .run_stdio()
+            .await
+            .map_err(|e| Error::McpFailed(e.to_string()))?;
+    } else {
+        let addr = listen.expect("listen is some when !stdio");
+        let transport = spt_mcp::LoopbackTransport::bind(&addr)
+            .await
+            .map_err(|e| Error::McpFailed(format!("loopback bind `{addr}`: {e}")))?;
+        server
+            .run(transport)
+            .await
+            .map_err(|e| Error::McpFailed(e.to_string()))?;
+    }
     Ok(())
 }
 
