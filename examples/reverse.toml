@@ -1,0 +1,28 @@
+# Remote (reverse) TCP forward.
+# Asks the SSH2 server to listen on its side and forward back to us.
+version = 1
+
+[[profiles]]
+name = "reverse-admin"
+enabled = true
+protocol = "ssh2"
+host = "edge.example.com"
+port = 22
+user = "edge"
+
+[profiles.auth]
+method = "public_key"
+identity_file = "~/.ssh/id_ed25519"
+
+[profiles.trust]
+mode = "known_hosts"
+strict = true
+
+[[profiles.forwards]]
+name = "callback"
+type = "remote"
+transport = "tcp"
+bind = "127.0.0.1:18080"
+target = "127.0.0.1:8080"
+target_resolve = "local"
+required = true

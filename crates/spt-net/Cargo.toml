@@ -1,0 +1,35 @@
+[package]
+name = "spt-net"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+description = "Address parsing, interface enumeration, and bind policy for spt."
+
+[lints]
+workspace = true
+
+[dependencies]
+spt-core = { workspace = true }
+tokio = { workspace = true }
+socket2 = { workspace = true }
+if-addrs = { workspace = true }
+ipnet = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+nix = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+caps = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["full", "macros", "rt-multi-thread"] }

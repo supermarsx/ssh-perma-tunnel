@@ -1,0 +1,38 @@
+# SSH3 profile — experimental, must acknowledge per spec §14.7.
+# UDP forward via QUIC datagrams (spec §10.4).
+version = 1
+
+[[profiles]]
+name = "ssh3-dns"
+enabled = true
+protocol = "ssh3"
+acknowledge_experimental = true
+endpoint = "https://edge.example.com:443/ssh3?user={username}"
+user = "netops"
+connect_timeout = "10s"
+
+[profiles.auth]
+method = "bearer_token"
+token = "secret://ssh3/edge/token"
+
+[profiles.tls]
+server_name = "edge.example.com"
+system_roots = true
+allow_self_signed = false
+
+[profiles.ssh3]
+draft = "michel-remote-terminal-http3-00"
+protocol_token = "remote-terminal"
+enable_datagrams = true
+
+[[profiles.forwards]]
+name = "dns"
+type = "local"
+transport = "udp"
+bind = "127.0.0.1:1053"
+target = "dns.internal:53"
+target_resolve = "remote"
+required = true
+udp_idle_timeout = "30s"
+max_datagram_size = 1200
+max_packets_per_second = 5000

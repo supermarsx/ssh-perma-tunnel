@@ -1,0 +1,54 @@
+# Internal DNS resolver with split-horizon and managed records.
+# Bind on :5353 keeps it unprivileged (spec §9.4 / §10.5).
+version = 1
+
+[dns]
+enabled = true
+mode = "transparent_forwarder"
+bind = "127.0.0.1:5353"
+zone = "spt.local"
+ttl = "30s"
+auto_records = true
+upstream = ["1.1.1.1:53", "8.8.8.8:53"]
+hosts_file_mode = "render_only"
+
+[[dns.records]]
+name = "smtp.relay.spt.local"
+type = "A"
+value = "127.0.0.1"
+ttl = "30s"
+
+[[dns.records]]
+name = "_smtp._tcp.spt.local"
+type = "SRV"
+value = "smtp.relay.spt.local"
+priority = 10
+weight = 5
+port = 2525
+ttl = "30s"
+
+[[profiles]]
+name = "smtp-relay"
+enabled = true
+protocol = "ssh2"
+host = "bastion.example.com"
+port = 22
+user = "relay"
+
+[profiles.auth]
+method = "agent"
+
+[profiles.trust]
+mode = "known_hosts"
+strict = true
+
+[[profiles.forwards]]
+name = "smtp"
+type = "local"
+transport = "tcp"
+bind = "127.0.0.1:2525"
+target = "smtp.internal:25"
+dns_names = ["smtp.relay.spt.local"]
+sni_name = "smtp.relay.spt.local"
+target_resolve = "remote"
+required = true

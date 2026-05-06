@@ -1,0 +1,75 @@
+# SMTP STARTTLS relay over a local SSH2 forward.
+# Mirrors spec.md §8.1.
+version = 1
+
+[runtime]
+state_dir = "~/.local/state/ssh-perma-tunnel"
+required_profiles = ["smtp-relay"]
+shutdown_grace = "20s"
+
+[runtime.threads]
+model = "multi_thread"
+orchestrator_threads = 1
+service_threads = 2
+logging_threads = 1
+dns_threads = 1
+observability_threads = 1
+blocking_worker_threads = 4
+idle_tick = "1s"
+
+[logging]
+level = "info"
+format = "json"
+destinations = ["file"]
+file = "~/.local/state/ssh-perma-tunnel/spt.jsonl"
+rotate = "daily"
+max_files = 14
+redact = ["secrets"]
+
+[secrets]
+backend = "auto"
+encrypt_at_rest = true
+
+[[profiles]]
+name = "smtp-relay"
+enabled = true
+protocol = "ssh2"
+host = "bastion.example.com"
+port = 22
+user = "relay"
+connect_timeout = "10s"
+
+[profiles.auth]
+method = "public_key"
+identity_file = "~/.ssh/id_ed25519"
+passphrase = "secret://ssh/smtp-relay/passphrase"
+
+[profiles.trust]
+mode = "known_hosts"
+known_hosts_file = "~/.ssh/known_hosts"
+strict = true
+
+[profiles.keepalive]
+interval = "30s"
+timeout = "10s"
+max_missed = 3
+
+[profiles.reconnect]
+initial_delay = "1s"
+max_delay = "5m"
+jitter = "20%"
+reset_after = "10m"
+max_attempts = 0
+
+[[profiles.forwards]]
+name = "smtp"
+type = "local"
+transport = "tcp"
+bind = "127.0.0.1:2525"
+target = "smtp.internal:25"
+target_resolve = "remote"
+required = true
+idle_timeout = "10m"
+max_connections = 256
+max_bytes_per_second_in = "5MiB"
+max_bytes_per_second_out = "5MiB"

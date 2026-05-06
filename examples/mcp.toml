@@ -1,0 +1,36 @@
+# MCP server enabled with read-only default and a small allow_write_tools list.
+# Loopback stdio only — secret reveal stays disabled (spec §9.8 / §16).
+version = 1
+
+[mcp]
+enabled = true
+default_mode = "read_only"
+stdio = true
+listen = ""
+allow_secret_reveal = false
+allow_write_tools = ["forward.add", "tunnel.failover"]
+audit_events = true
+
+[[profiles]]
+name = "mcp-managed"
+enabled = true
+protocol = "ssh2"
+host = "bastion.example.com"
+port = 22
+user = "ops"
+
+[profiles.auth]
+method = "agent"
+
+[profiles.trust]
+mode = "known_hosts"
+strict = true
+
+[[profiles.forwards]]
+name = "demo"
+type = "local"
+transport = "tcp"
+bind = "127.0.0.1:8000"
+target = "service.internal:8000"
+target_resolve = "remote"
+required = false
