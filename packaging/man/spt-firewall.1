@@ -1,0 +1,42 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH SPT-FIREWALL 1  "firewall " 
+.SH NAME
+firewall \- Inspect and manage OS firewall / packet\-filter rules
+.SH SYNOPSIS
+\fBfirewall\fR [\fB\-h\fR|\fB\-\-help\fR] <\fIsubcommands\fR>
+.SH DESCRIPTION
+Inspect and manage OS firewall / packet\-filter rules
+.SH OPTIONS
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help
+.SH SUBCOMMANDS
+.TP
+firewall\-plan(1)
+Plan rules without applying
+.TP
+firewall\-apply(1)
+Apply rules (idempotent)
+.TP
+firewall\-remove(1)
+Remove rules
+.TP
+firewall\-status(1)
+Show current applied state
+.TP
+firewall\-interfaces(1)
+List interfaces / bind targets
+.TP
+firewall\-bind\-preview(1)
+Preview the bind for a forward
+.TP
+firewall\-help(1)
+Print this message or the help of the given subcommand(s)
+.SH EXTRA
+EXAMPLES:
+  spt firewall plan \-\-profile edge \-\-json
+  spt firewall apply \-\-system \-\-dry\-run
+  spt firewall remove \-\-user
+  spt firewall bind\-preview \-\-forward edge/db
+  spt firewall interfaces \-\-json

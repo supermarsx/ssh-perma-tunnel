@@ -1,0 +1,45 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH SPT-SERVICE 1  "service " 
+.SH NAME
+service \- Install and control native services
+.SH SYNOPSIS
+\fBservice\fR [\fB\-h\fR|\fB\-\-help\fR] <\fIsubcommands\fR>
+.SH DESCRIPTION
+Install and control native services
+.SH OPTIONS
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help
+.SH SUBCOMMANDS
+.TP
+service\-install(1)
+Install a service for a config file
+.TP
+service\-uninstall(1)
+Uninstall a service
+.TP
+service\-start(1)
+Start a service
+.TP
+service\-stop(1)
+Stop a service
+.TP
+service\-restart(1)
+Restart a service
+.TP
+service\-status(1)
+Show service status
+.TP
+service\-render(1)
+Render the would\-be service unit
+.TP
+service\-help(1)
+Print this message or the help of the given subcommand(s)
+.SH EXTRA
+EXAMPLES:
+  spt service install \-\-config /etc/ssh\-perma\-tunnel/config.toml \-\-system
+  spt service start \-\-config /etc/ssh\-perma\-tunnel/config.toml \-\-system
+  spt service status \-\-config /etc/ssh\-perma\-tunnel/config.toml \-\-json
+  spt service render \-\-config config.toml \-\-format unit
+  spt service uninstall \-\-config config.toml \-\-user

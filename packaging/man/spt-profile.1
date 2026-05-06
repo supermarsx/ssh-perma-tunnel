@@ -1,0 +1,51 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH SPT-PROFILE 1  "profile " 
+.SH NAME
+profile \- Manage SSH/SSH3 tunnel profiles
+.SH SYNOPSIS
+\fBprofile\fR [\fB\-h\fR|\fB\-\-help\fR] <\fIsubcommands\fR>
+.SH DESCRIPTION
+Manage SSH/SSH3 tunnel profiles
+.SH OPTIONS
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help
+.SH SUBCOMMANDS
+.TP
+profile\-list(1)
+List configured profiles
+.TP
+profile\-show(1)
+Show the resolved profile (optionally redacted)
+.TP
+profile\-add(1)
+Add a new profile
+.TP
+profile\-configure(1)
+Interactive TUI configurator
+.TP
+profile\-set(1)
+Set one or more `key=value` overrides
+.TP
+profile\-enable(1)
+Enable a profile
+.TP
+profile\-disable(1)
+Disable a profile
+.TP
+profile\-remove(1)
+Remove a profile
+.TP
+profile\-test(1)
+Run targeted profile tests
+.TP
+profile\-help(1)
+Print this message or the help of the given subcommand(s)
+.SH EXTRA
+EXAMPLES:
+  spt profile add edge \-\-protocol ssh2 \-\-host gw.example \-\-user ubuntu
+  spt profile configure \-\-tui \-\-name edge
+  spt profile set edge keepalive.interval=30s reconnect.max_backoff=2m
+  spt profile enable edge
+  spt profile test edge \-\-connect\-only

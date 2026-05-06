@@ -1,0 +1,48 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH SPT-BENCHMARK 1  "benchmark " 
+.SH NAME
+benchmark \- Controlled benchmarking against forwards
+.SH SYNOPSIS
+\fBbenchmark\fR [\fB\-h\fR|\fB\-\-help\fR] <\fIsubcommands\fR>
+.SH DESCRIPTION
+Controlled benchmarking against forwards
+.SH OPTIONS
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help
+.SH SUBCOMMANDS
+.TP
+benchmark\-run(1)
+End\-to\-end mixed workload
+.TP
+benchmark\-latency(1)
+Latency\-focused benchmark
+.TP
+benchmark\-throughput(1)
+Throughput\-focused benchmark
+.TP
+benchmark\-udp(1)
+UDP benchmark (SSH3 only)
+.TP
+benchmark\-reconnect(1)
+Reconnect benchmark
+.TP
+benchmark\-dns(1)
+DNS benchmark
+.TP
+benchmark\-limits(1)
+Limit/throttle introspection
+.TP
+benchmark\-report(1)
+Report tooling
+.TP
+benchmark\-help(1)
+Print this message or the help of the given subcommand(s)
+.SH EXTRA
+EXAMPLES:
+  spt benchmark run \-\-profile edge \-\-forward db \-\-duration 30s \-\-connections 16
+  spt benchmark latency \-\-profile edge \-\-forward db \-\-samples 1000
+  spt benchmark throughput \-\-profile edge \-\-forward db \-\-duration 60s \-\-payload\-size 64KiB
+  spt benchmark report compare \-\-baseline base.json \-\-candidate cand.json
+  spt benchmark report export \-\-format markdown \-\-out report.md

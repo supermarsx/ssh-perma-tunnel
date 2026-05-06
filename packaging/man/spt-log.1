@@ -1,0 +1,33 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH SPT-LOG 1  "log " 
+.SH NAME
+log \- Log tailing, sink testing, and export
+.SH SYNOPSIS
+\fBlog\fR [\fB\-h\fR|\fB\-\-help\fR] <\fIsubcommands\fR>
+.SH DESCRIPTION
+Log tailing, sink testing, and export
+.SH OPTIONS
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help
+.SH SUBCOMMANDS
+.TP
+log\-tail(1)
+Tail logs
+.TP
+log\-test(1)
+Probe a configured sink
+.TP
+log\-export(1)
+Export logs to a structured format
+.TP
+log\-help(1)
+Print this message or the help of the given subcommand(s)
+.SH EXTRA
+EXAMPLES:
+  spt log tail \-\-follow \-\-profile edge \-\-since 15m
+  spt log test \-\-sink remote\-syslog
+  spt log export \-\-format jsonl \-\-since 24h
+  spt log tail \-\-since 1h \-\-json
+  spt log export \-\-format csv \-\-since 7d

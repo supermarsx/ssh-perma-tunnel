@@ -1,0 +1,45 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH SPT-KEY 1  "key " 
+.SH NAME
+key \- Generate, inspect, and install SSH keys
+.SH SYNOPSIS
+\fBkey\fR [\fB\-h\fR|\fB\-\-help\fR] <\fIsubcommands\fR>
+.SH DESCRIPTION
+Generate, inspect, and install SSH keys
+.SH OPTIONS
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help
+.SH SUBCOMMANDS
+.TP
+key\-generate(1)
+Generate a new keypair
+.TP
+key\-inspect(1)
+Inspect a key file
+.TP
+key\-public(1)
+Print a public key (optionally to a file)
+.TP
+key\-change\-passphrase(1)
+Change the passphrase on a private key
+.TP
+key\-sign\-cert(1)
+Sign an OpenSSH certificate
+.TP
+key\-verify\-cert(1)
+Verify an OpenSSH certificate
+.TP
+key\-install\-public(1)
+Install a public key on a remote host
+.TP
+key\-help(1)
+Print this message or the help of the given subcommand(s)
+.SH EXTRA
+EXAMPLES:
+  spt key generate \-\-type ed25519 \-\-out ~/.ssh/spt_ed25519 \-\-comment spt
+  spt key inspect ~/.ssh/spt_ed25519 \-\-fingerprint sha256
+  spt key sign\-cert \-\-ca\-key ca \-\-public\-key user.pub \-\-principal alice \-\-out user\-cert.pub
+  spt key install\-public \-\-profile edge \-\-key ~/.ssh/spt_ed25519.pub
+  spt key change\-passphrase ~/.ssh/spt_ed25519

@@ -1,0 +1,23 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH SPT-AUTH 1  "auth " 
+.SH NAME
+auth \- Authentication helpers
+.SH SYNOPSIS
+\fBauth\fR [\fB\-h\fR|\fB\-\-help\fR] <\fIsubcommands\fR>
+.SH DESCRIPTION
+Authentication helpers
+.SH OPTIONS
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help
+.SH SUBCOMMANDS
+.TP
+auth\-test(1)
+Test authentication for a profile
+.TP
+auth\-ssh3\-login(1)
+Run an SSH3 OIDC / bearer login flow
+.TP
+auth\-help(1)
+Print this message or the help of the given subcommand(s)

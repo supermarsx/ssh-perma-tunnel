@@ -1,0 +1,51 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH SPT-CONFIG 1  "config " 
+.SH NAME
+config \- Manage configuration files (init, validate, diff, render, reload)
+.SH SYNOPSIS
+\fBconfig\fR [\fB\-h\fR|\fB\-\-help\fR] <\fIsubcommands\fR>
+.SH DESCRIPTION
+Manage configuration files (init, validate, diff, render, reload)
+.SH OPTIONS
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help
+.SH SUBCOMMANDS
+.TP
+config\-init(1)
+Initialize a new config file from a template
+.TP
+config\-validate(1)
+Validate config syntax, schema, and obvious mistakes
+.TP
+config\-doctor(1)
+Run environment checks against the loaded config
+.TP
+config\-render(1)
+Render the canonical (optionally redacted) config
+.TP
+config\-diff(1)
+Diff two config files
+.TP
+config\-migrate(1)
+Migrate a config between schema versions
+.TP
+config\-reload(1)
+Reload the running service\*(Aqs config
+.TP
+config\-pull(1)
+Pull a remote config over HTTPS with pinning
+.TP
+config\-trust(1)
+Manage remote\-config trust pins
+.TP
+config\-help(1)
+Print this message or the help of the given subcommand(s)
+.SH EXTRA
+EXAMPLES:
+  spt config init \-\-example smtp \-\-path /etc/ssh\-perma\-tunnel/config.toml
+  spt config validate \-\-strict
+  spt config render \-\-redacted
+  spt config diff \-\-from old.toml \-\-to new.toml
+  spt config pull \-\-url https://cfg.example/spt.toml \-\-fingerprint <sha256> \-\-cache

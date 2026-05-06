@@ -1,0 +1,35 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH SPT-STATS 1  "stats " 
+.SH NAME
+stats \- Statistics summaries and live counters
+.SH SYNOPSIS
+\fBstats\fR [\fB\-h\fR|\fB\-\-help\fR] <\fIsubcommands\fR>
+.SH DESCRIPTION
+Statistics summaries and live counters
+.SH OPTIONS
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help
+.SH SUBCOMMANDS
+.TP
+stats\-summary(1)
+Snapshot summary
+.TP
+stats\-live(1)
+Live updating view
+.TP
+stats\-connections(1)
+Connection table
+.TP
+stats\-throughput(1)
+Throughput windows
+.TP
+stats\-errors(1)
+Recent errors
+.TP
+stats\-export(1)
+Export stats to a file
+.TP
+stats\-help(1)
+Print this message or the help of the given subcommand(s)

@@ -1,0 +1,33 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH SPT-MCP 1  "mcp " 
+.SH NAME
+mcp \- Built\-in MCP server controls
+.SH SYNOPSIS
+\fBmcp\fR [\fB\-h\fR|\fB\-\-help\fR] <\fIsubcommands\fR>
+.SH DESCRIPTION
+Built\-in MCP server controls
+.SH OPTIONS
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help
+.SH SUBCOMMANDS
+.TP
+mcp\-serve(1)
+Run the MCP server
+.TP
+mcp\-inspect(1)
+Inspect MCP capabilities, resources, tools
+.TP
+mcp\-policy(1)
+Manage the MCP policy
+.TP
+mcp\-help(1)
+Print this message or the help of the given subcommand(s)
+.SH EXTRA
+EXAMPLES:
+  spt mcp serve \-\-stdio \-\-read\-only \-\-enable
+  spt mcp serve \-\-listen 127.0.0.1:9095 \-\-read\-only \-\-enable
+  spt mcp inspect \-\-json
+  spt mcp policy show
+  spt mcp policy set allow_write_tools=profile.set,event.test
