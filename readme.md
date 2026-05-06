@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/Mariana/ssh-perma-tunnel/actions/workflows/ci.yml/badge.svg)](https://github.com/Mariana/ssh-perma-tunnel/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](license.md)
-[![MSRV 1.83](https://img.shields.io/badge/rust-1.83+-orange.svg)](rust-toolchain.toml)
+[![Built with Rust 1.83+](https://img.shields.io/badge/built_with-Rust_1.83+-dea584?logo=rust&logoColor=white)](rust-toolchain.toml)
 
 A single Rust command-line tool, `spt`, that establishes and maintains
 **permanent SSH tunnels** — local and reverse port forwards that survive
@@ -28,17 +28,6 @@ operational drift.
   never returns plaintext secrets.
 - A **TUI** profile configurator (`spt profile configure --tui`).
 - Diagnostics with redacted bundles and a benchmarking driver framework.
-
-## Status
-
-This implementation tracks the full specification ([`spec.md`](spec.md)).
-M0 (scaffold + skeleton wiring) is functional today: `spt --version`,
-`spt --help`, `spt config validate`, `spt completion generate`, the
-state-lock + status-snapshot path, and most read-only subcommands work
-end-to-end. Subcommands tracked in later milestones return a clear
-"not yet implemented in this milestone" message rather than panicking;
-see [`docs/cli-reference.md`](docs/cli-reference.md) for the per-command
-status table.
 
 ## Install
 
@@ -113,13 +102,6 @@ The full specification lives at [`spec.md`](spec.md).
 - Single-supervisor `fs4` lock per state directory.
 
 For the full threat model, see [`docs/security.md`](docs/security.md).
-
-## Contributing
-
-Plans, executor notes, and milestone tracking live under
-[`/.orchestration/`](./.orchestration/). The MSRV is 1.83 and the lockfile
-is committed for reproducibility — please don't run `cargo update` in this
-repository.
 
 ## License
 
