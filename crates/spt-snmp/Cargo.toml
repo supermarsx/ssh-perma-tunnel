@@ -12,6 +12,11 @@ readme = "README.md"
 keywords = ["snmp", "snmpv3", "usm", "agent", "mib"]
 categories = ["network-programming", "asynchronous"]
 
+[features]
+default = []
+# Public test helpers in `spt_snmp::testing`.
+testing = []
+
 [lints]
 workspace = true
 

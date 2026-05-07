@@ -47,6 +47,8 @@ default = ["transports"]
 # Real network transports: lettre (SMTP), reqwest (HTTPS), web-push-native
 # (RFC 8030 ECE + VAPID for the WebPushSink).
 transports = ["dep:reqwest", "dep:lettre", "dep:url"]
+# Public test helpers in `spt_events::testing`.
+testing = []
 
 [dev-dependencies]
 tempfile = { workspace = true }

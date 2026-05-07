@@ -34,6 +34,9 @@ pub mod mcp_notifier;
 pub mod sinks;
 pub mod template;
 
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
+
 pub use binding::{Binding, BindingMatch, Dedupe, SinkRef};
 pub use bus::{EventBus, EventBusConfig};
 pub use dispatcher::{Dispatcher, DispatcherConfig};

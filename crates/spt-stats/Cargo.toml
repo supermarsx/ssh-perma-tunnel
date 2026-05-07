@@ -9,6 +9,12 @@ homepage.workspace = true
 authors.workspace = true
 description = "Rolling counters, sliding windows, and session tables for spt."
 
+[features]
+default = []
+# Public test helpers in `spt_stats::testing`. Off by default so production
+# builds don't carry the extra fixtures.
+testing = []
+
 [dependencies]
 spt-core = { workspace = true }
 serde = { workspace = true }

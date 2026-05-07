@@ -19,6 +19,9 @@ pub mod instability;
 pub mod tables;
 pub mod windows;
 
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
+
 pub use clock::{Clock, SystemClock, TestClock};
 pub use counters::RollingCounter;
 pub use ewma::Ewma;

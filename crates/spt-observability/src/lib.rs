@@ -26,6 +26,9 @@ pub mod https_jsonl;
 #[cfg(feature = "otlp")]
 pub mod otlp;
 
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
+
 pub use config::{LoggingConfig, RemoteSink, RemoteSinkKind, RotationPolicy};
 pub use init::{init, init_for_test, TracingGuard};
 pub use metrics::{MetricsExporter, MetricsExporterConfig, MetricsExporterHandle};

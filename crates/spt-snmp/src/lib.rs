@@ -74,6 +74,9 @@
 
 pub mod agent;
 pub mod ber;
+
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
 pub mod engine;
 pub mod error;
 pub mod message;
