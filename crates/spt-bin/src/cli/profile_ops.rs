@@ -1,0 +1,830 @@
+//! `spt profile {set, enable, disable, test}` operations.
+//!
+//! The dispatch wiring lives in `cli_dispatch.rs` (Phase B). This module
+//! provides the four async functions consumed there.
+//!
+//! Design notes:
+//!
+//! * **Atomic mutation.** Edits go through [`spt_config::mutate::Document`]
+//!   which serialises the document with `toml_edit` (preserving comments) and
+//!   writes via [`atomicwrites`]. We *parse + validate before writing*, so a
+//!   rejected edit never reaches disk — the file on disk is always either the
+//!   pre-edit version or a fully-validated post-edit version.
+//! * **Dotted field paths.** `spt-config::mutate` only exposes top-level
+//!   profile mutators today. We walk the `toml_edit::Item` tree ourselves to
+//!   support `connection.host`, `keepalive.interval`,
+//!   `auth.methods.0.public_key.key`, etc. Numeric path segments index into
+//!   array-of-tables.
+//! * **Hot reload on enable/disable.** If the supervisor's MCP loopback is
+//!   reachable we call `tunnel_reload` so the change takes effect immediately;
+//!   otherwise we print a friendly note and rely on the change being picked up
+//!   the next time `spt tunnel run` starts.
+//! * **`profile test`.** Builds the protocol bundle via
+//!   [`crate::profile_factory::build`], iterates endpoints in priority order,
+//!   times each `connect()`, and reports per-endpoint status. No forwards
+//!   opened.
+
+#![allow(clippy::needless_pass_by_value)]
+#![allow(clippy::missing_errors_doc)]
+
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use serde_json::json;
+use spt_cli::{groups::profile, GlobalOpts, OutputFormat};
+use spt_config::mutate::Document;
+use spt_core::{Error, Result};
+use spt_protocol::Endpoint;
+use toml_edit::{value, Item, Value};
+
+// ---------------------------------------------------------------------------
+// Public entry points
+// ---------------------------------------------------------------------------
+
+/// Default per-endpoint connect timeout for `profile test` when the profile
+/// does not set one.
+const DEFAULT_TEST_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// `spt profile set <name> KEY=VALUE [KEY=VALUE …]`.
+pub async fn set(global: &GlobalOpts, args: profile::ProfileSet) -> Result<()> {
+    let path = require_config_path(global)?;
+    let raw = std::fs::read_to_string(&path).map_err(|e| {
+        Error::InvalidConfig(format!("read `{}`: {e}", path.display()))
+    })?;
+
+    // Parse + validate the *current* state once. We compare new validation
+    // diagnostics against this baseline so an edit that's neutral against
+    // pre-existing warnings does not get rejected for someone else's bug.
+    let baseline_errors = baseline_error_count(&raw);
+
+    let mut doc = Document::parse(&raw)?;
+    let mut changes: Vec<ChangeRecord> = Vec::with_capacity(args.overrides.len());
+
+    for ov in &args.overrides {
+        let (field, val) = parse_override(ov)?;
+        let old = read_field(&mut doc, &args.name, field);
+        write_field(&mut doc, &args.name, field, val)?;
+        changes.push(ChangeRecord {
+            field: field.to_owned(),
+            old,
+            new: val.to_owned(),
+        });
+    }
+
+    // Validate the post-edit document. Reject if it introduces *new* errors;
+    // do not write to disk in that case.
+    let rendered = doc.to_string();
+    let (cfg, _warnings) = spt_config::load_str(&rendered, false).map_err(|e| {
+        Error::InvalidConfig(format!("post-edit parse failed: {e}"))
+    })?;
+    let diags = spt_config::validate(&cfg);
+    if diags.errors.len() > baseline_errors {
+        let first = diags
+            .errors
+            .first()
+            .map_or_else(|| "validation failed".to_owned(), |e| e.to_string());
+        return Err(Error::InvalidConfig(format!(
+            "edit rejected: post-edit config fails validation: {first}"
+        )));
+    }
+
+    doc.write_atomic(&path)?;
+
+    emit_set_report(global, &args.name, &changes);
+    Ok(())
+}
+
+/// `spt profile enable <name>`.
+pub async fn enable(global: &GlobalOpts, args: profile::ProfileName) -> Result<()> {
+    toggle_enabled(global, &args.name, true).await
+}
+
+/// `spt profile disable <name>`.
+pub async fn disable(global: &GlobalOpts, args: profile::ProfileName) -> Result<()> {
+    toggle_enabled(global, &args.name, false).await
+}
+
+/// `spt profile test <name>` — build the profile bundle, attempt one
+/// `connect()` per endpoint in priority order, and report timing.
+pub async fn test(global: &GlobalOpts, args: profile::ProfileTest) -> Result<()> {
+    let path = require_config_path(global)?;
+    let (cfg, _w) = spt_config::load(&path, false)
+        .map_err(|e| Error::InvalidConfig(format!("load: {e}")))?;
+    let prof = cfg
+        .profiles
+        .iter()
+        .find(|p| p.name == args.name)
+        .ok_or_else(|| Error::InvalidArgs(format!("no profile named `{}`", args.name)))?;
+
+    let state_dir = spt_state::resolve_state_dir(global.state_dir.as_deref())?;
+    let resolver =
+        crate::secrets_bridge::build_resolver(cfg.secrets.as_ref(), &state_dir)?;
+    let bundle = crate::profile_factory::build(prof, &resolver)?;
+
+    if bundle.endpoints.is_empty() {
+        return Err(Error::InvalidConfig(format!(
+            "profile `{}` has no endpoints (set `host` or `[[profiles.endpoints]]`)",
+            args.name
+        )));
+    }
+
+    let mut endpoints = bundle.endpoints.clone();
+    endpoints.sort_by_key(|e| e.priority);
+
+    let timeout = profile_connect_timeout(prof).unwrap_or(DEFAULT_TEST_TIMEOUT);
+
+    let mut results: Vec<EndpointResult> = Vec::with_capacity(endpoints.len());
+    for ep in &endpoints {
+        let r = test_one_endpoint(Arc::clone(&bundle.protocol), ep, &bundle.auth, timeout).await;
+        results.push(r);
+    }
+
+    emit_test_report(global, &args.name, &results);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Internal helpers
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+struct ChangeRecord {
+    field: String,
+    old: Option<String>,
+    new: String,
+}
+
+#[derive(Debug)]
+struct EndpointResult {
+    id: String,
+    host: String,
+    port: u16,
+    status: EndpointStatus,
+    latency_ms: u128,
+}
+
+#[derive(Debug)]
+enum EndpointStatus {
+    Connected { peer_version: Option<String> },
+    Failed(String),
+}
+
+fn parse_override(ov: &str) -> Result<(&str, &str)> {
+    let (k, v) = ov.split_once('=').ok_or_else(|| {
+        Error::InvalidArgs(format!(
+            "invalid override `{ov}` (expected `KEY=VALUE`)"
+        ))
+    })?;
+    let key = k.trim();
+    let val = v.trim();
+    if key.is_empty() {
+        return Err(Error::InvalidArgs(format!(
+            "invalid override `{ov}`: empty key"
+        )));
+    }
+    Ok((key, val))
+}
+
+fn baseline_error_count(raw: &str) -> usize {
+    spt_config::load_str(raw, false)
+        .ok()
+        .map(|(c, _)| spt_config::validate(&c).errors.len())
+        .unwrap_or(0)
+}
+
+async fn toggle_enabled(global: &GlobalOpts, name: &str, on: bool) -> Result<()> {
+    let path = require_config_path(global)?;
+    let raw = std::fs::read_to_string(&path).map_err(|e| {
+        Error::InvalidConfig(format!("read `{}`: {e}", path.display()))
+    })?;
+    let baseline = baseline_error_count(&raw);
+
+    let mut doc = Document::parse(&raw)?;
+    write_field(&mut doc, name, "enabled", if on { "true" } else { "false" })?;
+
+    let rendered = doc.to_string();
+    let (cfg, _w) = spt_config::load_str(&rendered, false)
+        .map_err(|e| Error::InvalidConfig(format!("post-edit parse: {e}")))?;
+    let diags = spt_config::validate(&cfg);
+    if diags.errors.len() > baseline {
+        let first = diags
+            .errors
+            .first()
+            .map_or_else(|| "validation failed".to_owned(), |e| e.to_string());
+        return Err(Error::InvalidConfig(format!(
+            "edit rejected: {first}"
+        )));
+    }
+
+    doc.write_atomic(&path)?;
+
+    let json_out = use_json(global);
+    let action = if on { "enabled" } else { "disabled" };
+
+    // Best-effort hot reload via MCP. If the supervisor isn't running we
+    // simply note that and exit success.
+    let reloaded = try_mcp_reload(global).await;
+
+    if json_out {
+        let msg = json!({
+            "ok": true,
+            "profile": name,
+            "enabled": on,
+            "reloaded": reloaded.is_ok(),
+            "reload_error": reloaded.as_ref().err().map(ToString::to_string),
+        });
+        println!("{msg}");
+    } else {
+        match reloaded {
+            Ok(()) => println!("ok: profile `{name}` {action} (supervisor reloaded)"),
+            Err(_) => println!(
+                "ok: profile `{name}` {action} (supervisor not running; will apply on next start)"
+            ),
+        }
+    }
+    Ok(())
+}
+
+/// Fire `tunnel_reload` against the running supervisor.
+async fn try_mcp_reload(global: &GlobalOpts) -> std::result::Result<(), String> {
+    let state_dir = spt_state::resolve_state_dir(global.state_dir.as_deref())
+        .map_err(|e| e.to_string())?;
+    let mut client = crate::mcp_client::McpClient::connect_from_state_dir(&state_dir)
+        .await
+        .map_err(|e| e.to_string())?;
+    client.initialize().await.map_err(|e| e.to_string())?;
+    client
+        .call_tool("tunnel_reload", json!({}))
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+async fn test_one_endpoint(
+    protocol: Arc<dyn spt_protocol::TunnelProtocol>,
+    endpoint: &Endpoint,
+    auth: &spt_auth::AuthConfig,
+    timeout: Duration,
+) -> EndpointResult {
+    let id = format!("{}:{}", endpoint.host, endpoint.port);
+    let start = Instant::now();
+    let outcome = tokio::time::timeout(timeout, protocol.connect(endpoint, auth)).await;
+    let elapsed = start.elapsed().as_millis();
+
+    match outcome {
+        Ok(Ok(session)) => {
+            let info = session.session_info();
+            // Drain the session cleanly. Errors here are non-fatal: connect
+            // succeeded, which is what the test reports on.
+            let _ = session.close().await;
+            EndpointResult {
+                id,
+                host: endpoint.host.clone(),
+                port: endpoint.port,
+                status: EndpointStatus::Connected {
+                    peer_version: info.peer_version,
+                },
+                latency_ms: elapsed,
+            }
+        }
+        Ok(Err(e)) => EndpointResult {
+            id,
+            host: endpoint.host.clone(),
+            port: endpoint.port,
+            status: EndpointStatus::Failed(e.to_string()),
+            latency_ms: elapsed,
+        },
+        Err(_) => EndpointResult {
+            id,
+            host: endpoint.host.clone(),
+            port: endpoint.port,
+            status: EndpointStatus::Failed(format!(
+                "timeout after {}ms",
+                timeout.as_millis()
+            )),
+            latency_ms: elapsed,
+        },
+    }
+}
+
+fn profile_connect_timeout(p: &spt_config::schema::Profile) -> Option<Duration> {
+    let raw = p
+        .connection
+        .as_ref()
+        .and_then(|c| c.connect_timeout.clone())
+        .or_else(|| p.connect_timeout.clone())?;
+    spt_core::duration::parse_duration(&raw).ok()
+}
+
+// ---------------------------------------------------------------------------
+// Output helpers
+// ---------------------------------------------------------------------------
+
+fn use_json(global: &GlobalOpts) -> bool {
+    global.json
+        || matches!(global.output, OutputFormat::Json | OutputFormat::Jsonl)
+}
+
+fn emit_set_report(global: &GlobalOpts, profile: &str, changes: &[ChangeRecord]) {
+    if use_json(global) {
+        let arr: Vec<_> = changes
+            .iter()
+            .map(|c| {
+                json!({
+                    "field": c.field,
+                    "old": c.old,
+                    "new": c.new,
+                })
+            })
+            .collect();
+        let v = json!({
+            "ok": true,
+            "profile": profile,
+            "changes": arr,
+        });
+        println!("{v}");
+    } else {
+        for c in changes {
+            println!(
+                "ok: profile {profile}.{field} = {new} (was {old})",
+                field = c.field,
+                new = display_for_human(&c.new),
+                old = c
+                    .old
+                    .as_deref()
+                    .map(display_for_human)
+                    .unwrap_or_else(|| "<unset>".to_owned()),
+            );
+        }
+    }
+}
+
+fn display_for_human(s: &str) -> String {
+    if s.contains(char::is_whitespace) {
+        format!("\"{s}\"")
+    } else {
+        s.to_owned()
+    }
+}
+
+fn emit_test_report(global: &GlobalOpts, profile: &str, results: &[EndpointResult]) {
+    if use_json(global) {
+        let arr: Vec<_> = results
+            .iter()
+            .map(|r| match &r.status {
+                EndpointStatus::Connected { peer_version } => json!({
+                    "id": r.id,
+                    "host": r.host,
+                    "port": r.port,
+                    "status": "connected",
+                    "latency_ms": r.latency_ms,
+                    "peer_version": peer_version,
+                }),
+                EndpointStatus::Failed(err) => json!({
+                    "id": r.id,
+                    "host": r.host,
+                    "port": r.port,
+                    "status": "failed",
+                    "latency_ms": r.latency_ms,
+                    "error": err,
+                }),
+            })
+            .collect();
+        let v = json!({ "profile": profile, "endpoints": arr });
+        println!("{v}");
+    } else {
+        for r in results {
+            match &r.status {
+                EndpointStatus::Connected { peer_version } => println!(
+                    "endpoint {id}: connected in {ms}ms{peer}",
+                    id = r.id,
+                    ms = r.latency_ms,
+                    peer = peer_version
+                        .as_ref()
+                        .map(|v| format!(" (peer: {v})"))
+                        .unwrap_or_default(),
+                ),
+                EndpointStatus::Failed(err) => println!(
+                    "endpoint {id}: failed in {ms}ms — {err}",
+                    id = r.id,
+                    ms = r.latency_ms,
+                ),
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Dotted-path TOML mutation
+// ---------------------------------------------------------------------------
+
+fn require_config_path(global: &GlobalOpts) -> Result<PathBuf> {
+    global.config.clone().ok_or_else(|| {
+        Error::InvalidArgs(
+            "no config path supplied (pass --config or set $SPT_CONFIG)".into(),
+        )
+    })
+}
+
+/// Resolve `profile` into a mutable reference to its `[[profiles]]` table.
+fn profile_table_mut<'a>(
+    doc: &'a mut Document,
+    name: &str,
+) -> Result<&'a mut toml_edit::Table> {
+    let arr = match doc.document_mut().entry("profiles").or_insert_with(|| {
+        Item::ArrayOfTables(toml_edit::ArrayOfTables::new())
+    }) {
+        Item::ArrayOfTables(arr) => arr,
+        _ => {
+            return Err(Error::InvalidConfig(
+                "[[profiles]] is not an array of tables".into(),
+            ))
+        }
+    };
+    let idx = (0..arr.len()).find(|&i| {
+        arr.get(i)
+            .and_then(|t| t.get("name"))
+            .and_then(|v| v.as_str())
+            == Some(name)
+    });
+    let idx = idx.ok_or_else(|| {
+        Error::InvalidConfig(format!("profile `{name}` does not exist"))
+    })?;
+    Ok(arr.get_mut(idx).expect("index in range"))
+}
+
+/// Best-effort read of `profile.<field>` from `doc`. Returns `None` if any
+/// segment is missing — never errors, since reading is informational only.
+fn read_field(doc: &mut Document, profile: &str, field: &str) -> Option<String> {
+    let arr = match doc.document_mut().get("profiles")? {
+        Item::ArrayOfTables(a) => a,
+        _ => return None,
+    };
+    let prof_tbl = arr
+        .iter()
+        .find(|t| t.get("name").and_then(|v| v.as_str()) == Some(profile))?;
+
+    let mut cur: &Item = prof_tbl.get(field.split('.').next()?)?;
+    let mut segs = field.split('.');
+    let _ = segs.next(); // first already consumed above
+    for seg in segs {
+        cur = descend(cur, seg)?;
+    }
+    Some(item_to_display(cur))
+}
+
+fn descend<'a>(item: &'a Item, seg: &str) -> Option<&'a Item> {
+    if let Ok(idx) = seg.parse::<usize>() {
+        if let Some(arr) = item.as_array_of_tables() {
+            // `ArrayOfTables::get` returns &Table; we need &Item. There is no
+            // direct conversion in toml_edit, so descent into AOT entries
+            // happens by the *caller* using the table as the next root.
+            // For the read path we accept losing the index step here —
+            // diagnostics are best-effort.
+            let _ = arr.get(idx);
+            return None;
+        }
+    }
+    if let Some(tbl) = item.as_table() {
+        return tbl.get(seg);
+    }
+    None
+}
+
+fn item_to_display(item: &Item) -> String {
+    if let Some(v) = item.as_value() {
+        match v {
+            Value::String(s) => s.value().clone(),
+            other => other.to_string().trim().to_owned(),
+        }
+    } else {
+        item.to_string().trim().to_owned()
+    }
+}
+
+/// Walk the dotted path and overwrite the leaf with `val`. Numeric path
+/// segments index into arrays-of-tables; string segments descend into
+/// regular tables.
+fn write_field(
+    doc: &mut Document,
+    profile: &str,
+    field: &str,
+    val: &str,
+) -> Result<()> {
+    let prof_tbl = profile_table_mut(doc, profile)?;
+    write_field_in_table(prof_tbl, field, val)
+}
+
+fn write_field_in_table(
+    tbl: &mut toml_edit::Table,
+    field: &str,
+    val: &str,
+) -> Result<()> {
+    let segs: Vec<&str> = field.split('.').collect();
+    if segs.is_empty() || segs.iter().any(|s| s.is_empty()) {
+        return Err(Error::InvalidArgs(format!(
+            "invalid field path `{field}`"
+        )));
+    }
+    write_path(tbl, &segs, val, field)
+}
+
+fn write_path(
+    tbl: &mut toml_edit::Table,
+    segs: &[&str],
+    val: &str,
+    full_path: &str,
+) -> Result<()> {
+    if segs.len() == 1 {
+        let leaf = segs[0];
+        if leaf.parse::<usize>().is_ok() {
+            return Err(Error::InvalidArgs(format!(
+                "invalid field path `{full_path}`: cannot assign to numeric leaf in a table"
+            )));
+        }
+        tbl.insert(leaf, value_for(val));
+        return Ok(());
+    }
+
+    let head = segs[0];
+    let rest = &segs[1..];
+
+    if let Ok(idx) = head.parse::<usize>() {
+        // Numeric segment at this position is meaningful only when the
+        // *previous* level resolved to an array-of-tables. Descending
+        // through a numeric segment from a regular table is a path error.
+        return Err(Error::InvalidArgs(format!(
+            "invalid field path `{full_path}`: numeric segment `{idx}` requires an array-of-tables parent"
+        )));
+    }
+
+    // Look ahead to decide whether `head` should be an array-of-tables or a
+    // plain subtable.
+    let next_is_index = rest
+        .first()
+        .is_some_and(|s| s.parse::<usize>().is_ok());
+
+    if next_is_index {
+        let arr_idx: usize = rest[0].parse().expect("checked above");
+        let inner_rest = &rest[1..];
+        let entry = tbl.entry(head).or_insert_with(|| {
+            Item::ArrayOfTables(toml_edit::ArrayOfTables::new())
+        });
+        let arr = entry.as_array_of_tables_mut().ok_or_else(|| {
+            Error::InvalidConfig(format!(
+                "field path `{full_path}`: `{head}` exists but is not an array of tables"
+            ))
+        })?;
+        while arr.len() <= arr_idx {
+            arr.push(toml_edit::Table::new());
+        }
+        let inner = arr.get_mut(arr_idx).expect("just sized");
+        if inner_rest.is_empty() {
+            return Err(Error::InvalidArgs(format!(
+                "invalid field path `{full_path}`: trailing array index without a leaf field"
+            )));
+        }
+        return write_path(inner, inner_rest, val, full_path);
+    }
+
+    let entry = tbl
+        .entry(head)
+        .or_insert_with(|| Item::Table(toml_edit::Table::new()));
+    let sub = entry.as_table_mut().ok_or_else(|| {
+        Error::InvalidConfig(format!(
+            "field path `{full_path}`: `{head}` exists but is not a table"
+        ))
+    })?;
+    write_path(sub, rest, val, full_path)
+}
+
+fn value_for(s: &str) -> Item {
+    // Try integer, then float, then bool, finally string. This matches a
+    // user typing `port=2222` (integer) vs `host=example.com` (string) vs
+    // `enabled=true` (bool).
+    if let Ok(i) = s.parse::<i64>() {
+        return value(i);
+    }
+    if let Ok(f) = s.parse::<f64>() {
+        if !f.is_nan() && f.is_finite() && s.contains('.') {
+            return value(f);
+        }
+    }
+    match s {
+        "true" => return value(true),
+        "false" => return value(false),
+        _ => {}
+    }
+    value(s)
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use spt_cli::{ColorMode, LogLevel, OutputFormat as OF};
+    use std::path::Path;
+
+    const RAW: &str = r#"version = 1
+
+[[profiles]]
+name = "p"
+protocol = "ssh2"
+host = "example.com"
+port = 22
+user = "alice"
+
+[profiles.connection]
+connect_timeout = "5s"
+"#;
+
+    fn global_with_path(p: &Path) -> GlobalOpts {
+        GlobalOpts {
+            config: Some(p.to_path_buf()),
+            config_dir: None,
+            config_url: None,
+            config_fingerprint: None,
+            state_dir: None,
+            profile: None,
+            output: OF::Human,
+            json: false,
+            log_level: LogLevel::Info,
+            color: ColorMode::Never,
+            quiet: true,
+            verbose: 0,
+            no_color: false,
+            dry_run: false,
+        }
+    }
+
+    fn write_tmp(raw: &str) -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("c.toml");
+        std::fs::write(&path, raw).unwrap();
+        (dir, path)
+    }
+
+    #[tokio::test]
+    async fn set_changes_top_level_field() {
+        let (_d, path) = write_tmp(RAW);
+        let g = global_with_path(&path);
+        let args = profile::ProfileSet {
+            name: "p".into(),
+            overrides: vec!["port=2222".into()],
+        };
+        set(&g, args).await.unwrap();
+        let new_raw = std::fs::read_to_string(&path).unwrap();
+        let (cfg, _) = spt_config::load_str(&new_raw, false).unwrap();
+        assert_eq!(cfg.profiles[0].port, Some(2222));
+    }
+
+    #[tokio::test]
+    async fn set_changes_nested_field() {
+        let (_d, path) = write_tmp(RAW);
+        let g = global_with_path(&path);
+        let args = profile::ProfileSet {
+            name: "p".into(),
+            overrides: vec!["connection.connect_timeout=10s".into()],
+        };
+        set(&g, args).await.unwrap();
+        let new_raw = std::fs::read_to_string(&path).unwrap();
+        let (cfg, _) = spt_config::load_str(&new_raw, false).unwrap();
+        assert_eq!(
+            cfg.profiles[0]
+                .connection
+                .as_ref()
+                .and_then(|c| c.connect_timeout.clone())
+                .as_deref(),
+            Some("10s")
+        );
+    }
+
+    #[tokio::test]
+    async fn set_creates_missing_subtable() {
+        let (_d, path) = write_tmp(RAW);
+        let g = global_with_path(&path);
+        let args = profile::ProfileSet {
+            name: "p".into(),
+            overrides: vec!["keepalive.interval=30s".into()],
+        };
+        set(&g, args).await.unwrap();
+        let new_raw = std::fs::read_to_string(&path).unwrap();
+        assert!(new_raw.contains("interval = \"30s\""));
+    }
+
+    #[tokio::test]
+    async fn set_invalid_field_path_rejected() {
+        let (_d, path) = write_tmp(RAW);
+        let g = global_with_path(&path);
+        let args = profile::ProfileSet {
+            name: "p".into(),
+            overrides: vec!["=value".into()], // empty key
+        };
+        let err = set(&g, args).await.unwrap_err();
+        assert!(matches!(err, Error::InvalidArgs(_)));
+    }
+
+    #[tokio::test]
+    async fn set_unknown_profile_rejected() {
+        let (_d, path) = write_tmp(RAW);
+        let g = global_with_path(&path);
+        let args = profile::ProfileSet {
+            name: "nope".into(),
+            overrides: vec!["port=2222".into()],
+        };
+        let err = set(&g, args).await.unwrap_err();
+        assert!(matches!(err, Error::InvalidConfig(_)));
+        // File untouched.
+        let same = std::fs::read_to_string(&path).unwrap();
+        assert!(same.contains("port = 22"));
+    }
+
+    #[tokio::test]
+    async fn set_validation_failure_does_not_write() {
+        // Setting `protocol` to an unsupported value triggers
+        // `validate::check_profiles`. The on-disk file must remain identical.
+        let (_d, path) = write_tmp(RAW);
+        let original = std::fs::read_to_string(&path).unwrap();
+        let g = global_with_path(&path);
+        let args = profile::ProfileSet {
+            name: "p".into(),
+            overrides: vec!["protocol=carrier-pigeon".into()],
+        };
+        let err = set(&g, args).await.unwrap_err();
+        assert!(matches!(err, Error::InvalidConfig(_)));
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(original, after);
+    }
+
+    #[tokio::test]
+    async fn enable_disable_round_trip() {
+        let (_d, path) = write_tmp(RAW);
+        let g = global_with_path(&path);
+
+        disable(&g, profile::ProfileName { name: "p".into() })
+            .await
+            .unwrap();
+        let raw = std::fs::read_to_string(&path).unwrap();
+        let (cfg, _) = spt_config::load_str(&raw, false).unwrap();
+        assert_eq!(cfg.profiles[0].enabled, Some(false));
+
+        enable(&g, profile::ProfileName { name: "p".into() })
+            .await
+            .unwrap();
+        let raw = std::fs::read_to_string(&path).unwrap();
+        let (cfg, _) = spt_config::load_str(&raw, false).unwrap();
+        assert_eq!(cfg.profiles[0].enabled, Some(true));
+    }
+
+    // ---- profile test ------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_reports_connected_for_mock_protocol() {
+        // Drive `test_one_endpoint` directly against a MockTunnelProtocol.
+        let proto: Arc<dyn spt_protocol::TunnelProtocol> =
+            Arc::new(spt_forward::testing::MockTunnelProtocol::new());
+        let ep = Endpoint::new("127.0.0.1", 22);
+        let auth = spt_auth::AuthConfig::new("u".to_owned(), Vec::new());
+        let r = test_one_endpoint(proto, &ep, &auth, Duration::from_secs(5)).await;
+        assert!(matches!(r.status, EndpointStatus::Connected { .. }));
+    }
+
+    #[tokio::test]
+    async fn test_reports_failed_when_protocol_errors() {
+        let mock = spt_forward::testing::MockTunnelProtocol::new();
+        mock.set_connect_fails(true);
+        let proto: Arc<dyn spt_protocol::TunnelProtocol> = Arc::new(mock);
+        let ep = Endpoint::new("127.0.0.1", 22);
+        let auth = spt_auth::AuthConfig::new("u".to_owned(), Vec::new());
+        let r = test_one_endpoint(proto, &ep, &auth, Duration::from_secs(5)).await;
+        assert!(matches!(r.status, EndpointStatus::Failed(_)));
+    }
+
+    // ---- value_for / parse_override ---------------------------------------
+
+    #[test]
+    fn value_for_picks_native_type() {
+        assert_eq!(value_for("42").to_string().trim(), "42");
+        assert_eq!(value_for("true").to_string().trim(), "true");
+        assert_eq!(value_for("false").to_string().trim(), "false");
+        assert_eq!(value_for("hello").to_string().trim(), "\"hello\"");
+        assert_eq!(value_for("30s").to_string().trim(), "\"30s\"");
+        assert_eq!(value_for("1.5").to_string().trim(), "1.5");
+    }
+
+    #[test]
+    fn parse_override_splits_on_first_equals() {
+        let (k, v) = parse_override("a=b=c").unwrap();
+        assert_eq!(k, "a");
+        assert_eq!(v, "b=c");
+    }
+
+    #[test]
+    fn parse_override_rejects_missing_equals() {
+        assert!(parse_override("noequals").is_err());
+    }
+}
