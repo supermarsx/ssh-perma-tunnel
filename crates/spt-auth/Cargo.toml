@@ -12,6 +12,9 @@ description = "Authentication method types and validation for spt."
 [lints]
 workspace = true
 
+[features]
+testing = ["dep:axum"]
+
 [dependencies]
 spt-core = { workspace = true }
 spt-secrets = { workspace = true }
@@ -25,6 +28,7 @@ secrecy = { workspace = true }
 reqwest = { workspace = true }
 tokio = { workspace = true }
 rand = { workspace = true }
+axum = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

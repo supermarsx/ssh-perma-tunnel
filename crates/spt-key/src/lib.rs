@@ -18,6 +18,9 @@ pub mod fingerprint;
 pub mod io;
 pub mod keypair;
 
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
+
 pub use algorithm::KeyAlgorithm;
 pub use cert::{sign_cert, verify_cert, CertOptions, Certificate};
 pub use fingerprint::fingerprint_sha256;

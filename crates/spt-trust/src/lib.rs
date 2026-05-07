@@ -13,6 +13,9 @@ pub mod known_hosts;
 pub mod sha256_pin;
 pub mod tls_pin;
 
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
+
 pub use known_hosts::{KnownHosts, KnownHostsResult};
 pub use sha256_pin::Sha256HostPin;
 pub use tls_pin::TlsPin;

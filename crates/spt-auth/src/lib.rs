@@ -19,6 +19,9 @@ pub mod oidc_device_flow;
 pub mod secret_ref;
 pub mod validate;
 
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
+
 pub use kbi::KbiAnswer;
 pub use method::{AuthConfig, AuthMethod};
 pub use oidc_device_flow::{

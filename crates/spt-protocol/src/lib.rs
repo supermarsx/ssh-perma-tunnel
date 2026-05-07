@@ -18,6 +18,9 @@ pub mod forward;
 pub mod handle;
 pub mod session;
 
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
+
 use async_trait::async_trait;
 use spt_auth::AuthConfig;
 use spt_core::Result;

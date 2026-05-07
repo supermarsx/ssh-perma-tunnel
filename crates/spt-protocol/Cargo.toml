@@ -12,6 +12,9 @@ description = "Tunnel protocol traits shared by SSH2 and SSH3 backends."
 [lints]
 workspace = true
 
+[features]
+testing = []
+
 [dependencies]
 spt-core = { workspace = true }
 spt-auth = { workspace = true }
