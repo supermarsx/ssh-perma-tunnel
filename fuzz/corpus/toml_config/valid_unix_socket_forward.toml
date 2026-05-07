@@ -1,0 +1,20 @@
+
+version = 1
+[[profiles]]
+name = "uds"
+enabled = true
+protocol = "ssh2"
+host = "h"
+port = 22
+user = "u"
+[profiles.auth]
+method = "agent"
+[profiles.trust]
+mode = "known_hosts"
+strict = true
+[[profiles.forwards]]
+name = "u1"
+type = "local"
+transport = "tcp"
+bind = "unix:///run/spt.sock"
+target = "svc:80"

@@ -1,0 +1,94 @@
+[package]
+name = "spt-fuzz"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+# Empty workspace block: this fuzz crate is its own workspace, decoupled from
+# the main one, so cargo-fuzz can use a different toolchain (nightly) without
+# affecting the main MSRV-1.83 contract. The main workspace excludes "fuzz".
+[workspace]
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+arbitrary = { version = "1", features = ["derive"] }
+bytes = "1"
+
+spt-core = { path = "../crates/spt-core" }
+spt-config = { path = "../crates/spt-config" }
+spt-snmp = { path = "../crates/spt-snmp" }
+spt-ssh3 = { path = "../crates/spt-ssh3" }
+spt-trust = { path = "../crates/spt-trust" }
+
+[[bin]]
+name = "toml_config"
+path = "fuzz_targets/toml_config.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ber_decode"
+path = "fuzz_targets/ber_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "snmpv3_message"
+path = "fuzz_targets/snmpv3_message.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "usm_authenticate"
+path = "fuzz_targets/usm_authenticate.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ssh3_frame"
+path = "fuzz_targets/ssh3_frame.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "address_parse"
+path = "fuzz_targets/address_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "duration_parse"
+path = "fuzz_targets/duration_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "size_parse"
+path = "fuzz_targets/size_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "redaction"
+path = "fuzz_targets/redaction.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "known_hosts"
+path = "fuzz_targets/known_hosts.rs"
+test = false
+doc = false
+bench = false

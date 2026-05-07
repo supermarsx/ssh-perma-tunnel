@@ -1,0 +1,10 @@
+F:\Projects\ssh-perma-tunnel\fuzz\target\debug\deps\libfutures_channel-cadc72a43b29f34d.rmeta: C:\Users\Mariana\.cargo\registry\src\index.crates.io-6f17d22bba15001f\futures-channel-0.3.32\src/lib.rs C:\Users\Mariana\.cargo\registry\src\index.crates.io-6f17d22bba15001f\futures-channel-0.3.32\src\lock.rs C:\Users\Mariana\.cargo\registry\src\index.crates.io-6f17d22bba15001f\futures-channel-0.3.32\src\mpsc\mod.rs C:\Users\Mariana\.cargo\registry\src\index.crates.io-6f17d22bba15001f\futures-channel-0.3.32\src\mpsc\queue.rs C:\Users\Mariana\.cargo\registry\src\index.crates.io-6f17d22bba15001f\futures-channel-0.3.32\src\mpsc\sink_impl.rs C:\Users\Mariana\.cargo\registry\src\index.crates.io-6f17d22bba15001f\futures-channel-0.3.32\src\oneshot.rs
+
+F:\Projects\ssh-perma-tunnel\fuzz\target\debug\deps\futures_channel-cadc72a43b29f34d.d: C:\Users\Mariana\.cargo\registry\src\index.crates.io-6f17d22bba15001f\futures-channel-0.3.32\src/lib.rs C:\Users\Mariana\.cargo\registry\src\index.crates.io-6f17d22bba15001f\futures-channel-0.3.32\src\lock.rs C:\Users\Mariana\.cargo\registry\src\index.crates.io-6f17d22bba15001f\futures-channel-0.3.32\src\mpsc\mod.rs C:\Users\Mariana\.cargo\registry\src\index.crates.io-6f17d22bba15001f\futures-channel-0.3.32\src\mpsc\queue.rs C:\Users\Mariana\.cargo\registry\src\index.crates.io-6f17d22bba15001f\futures-channel-0.3.32\src\mpsc\sink_impl.rs C:\Users\Mariana\.cargo\registry\src\index.crates.io-6f17d22bba15001f\futures-channel-0.3.32\src\oneshot.rs
+
+C:\Users\Mariana\.cargo\registry\src\index.crates.io-6f17d22bba15001f\futures-channel-0.3.32\src/lib.rs:
+C:\Users\Mariana\.cargo\registry\src\index.crates.io-6f17d22bba15001f\futures-channel-0.3.32\src\lock.rs:
+C:\Users\Mariana\.cargo\registry\src\index.crates.io-6f17d22bba15001f\futures-channel-0.3.32\src\mpsc\mod.rs:
+C:\Users\Mariana\.cargo\registry\src\index.crates.io-6f17d22bba15001f\futures-channel-0.3.32\src\mpsc\queue.rs:
+C:\Users\Mariana\.cargo\registry\src\index.crates.io-6f17d22bba15001f\futures-channel-0.3.32\src\mpsc\sink_impl.rs:
+C:\Users\Mariana\.cargo\registry\src\index.crates.io-6f17d22bba15001f\futures-channel-0.3.32\src\oneshot.rs:

@@ -1,0 +1,26 @@
+
+version = 1
+[[profiles]]
+name = "a"
+enabled = true
+protocol = "ssh2"
+host = "ha"
+port = 22
+user = "u"
+[profiles.auth]
+method = "agent"
+[profiles.trust]
+mode = "known_hosts"
+strict = true
+[[profiles]]
+name = "b"
+enabled = true
+protocol = "ssh2"
+host = "hb"
+port = 2222
+user = "v"
+[profiles.auth]
+method = "agent"
+[profiles.trust]
+mode = "known_hosts"
+strict = false

@@ -1,0 +1,19 @@
+
+version = 1
+[[profiles]]
+name = "ssh3"
+enabled = true
+protocol = "ssh3"
+acknowledge_experimental = true
+endpoint = "https://x.example.com:443/ssh3?user={username}"
+user = "u"
+[profiles.auth]
+method = "bearer_token"
+token = "secret://t"
+[profiles.tls]
+server_name = "x.example.com"
+system_roots = true
+[profiles.ssh3]
+draft = "michel-remote-terminal-http3-00"
+protocol_token = "remote-terminal"
+enable_datagrams = true

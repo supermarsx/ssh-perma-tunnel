@@ -1,0 +1,27 @@
+# Minimal spt config — single profile, single local TCP forward.
+# See spec.md §8.1 for the canonical layout.
+version = 1
+
+[[profiles]]
+name = "minimal"
+enabled = true
+protocol = "ssh2"
+host = "bastion.example.com"
+port = 22
+user = "alice"
+
+[profiles.auth]
+method = "agent"
+
+[profiles.trust]
+mode = "known_hosts"
+strict = true
+
+[[profiles.forwards]]
+name = "web"
+type = "local"
+transport = "tcp"
+bind = "127.0.0.1:8080"
+target = "service.internal:80"
+target_resolve = "remote"
+required = true
