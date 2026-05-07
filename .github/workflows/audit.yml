@@ -1,0 +1,41 @@
+# Audit workflow.
+#
+# Runs cargo-audit (RustSec advisory DB) and cargo-deny on a weekly schedule,
+# on Cargo.lock changes landing on main, and on manual dispatch. The CI
+# pipeline already runs cargo-deny per-PR; this workflow ensures we still
+# notice newly disclosed advisories against an unchanged dependency graph.
+name: Audit
+
+on:
+  schedule:
+    # Mondays 03:17 UTC — off-peak, off-hour to avoid colliding with a
+    # crate.io publish wave.
+    - cron: '17 3 * * 1'
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'Cargo.lock'
+      - 'deny.toml'
+      - '.github/workflows/audit.yml'
+
+jobs:
+  cargo-audit:
+    name: cargo-audit (RustSec advisories)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: rustsec/audit-check@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  cargo-deny:
+    name: cargo-deny (scheduled re-run)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check

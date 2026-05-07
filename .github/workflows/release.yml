@@ -1,0 +1,207 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  build-linux:
+    name: build-linux (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - x86_64-unknown-linux-gnu
+          - x86_64-unknown-linux-musl
+          - aarch64-unknown-linux-gnu
+          - aarch64-unknown-linux-musl
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-linux-${{ matrix.target }}
+      - name: Install cross
+        run: cargo install cross --locked --version 0.2.5
+      - name: Install cargo-deb
+        if: endsWith(matrix.target, '-linux-gnu')
+        run: cargo install cargo-deb --locked
+      - name: Install cargo-generate-rpm
+        if: endsWith(matrix.target, '-linux-gnu')
+        run: cargo install cargo-generate-rpm --locked
+      - name: Build ${{ matrix.target }}
+        run: bash scripts/build/build-target.sh ${{ matrix.target }}
+      - name: Pack tarball ${{ matrix.target }}
+        run: bash scripts/package/pack-tarball.sh ${{ matrix.target }}
+      - name: Pack deb ${{ matrix.target }}
+        if: endsWith(matrix.target, '-linux-gnu')
+        run: bash scripts/package/pack-deb.sh ${{ matrix.target }}
+      - name: Pack rpm ${{ matrix.target }}
+        if: endsWith(matrix.target, '-linux-gnu')
+        run: bash scripts/package/pack-rpm.sh ${{ matrix.target }}
+      - name: Upload Linux artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-linux-${{ matrix.target }}
+          path: dist/**
+          retention-days: 7
+          if-no-files-found: error
+
+  build-macos:
+    name: build-macos (${{ matrix.target }})
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - x86_64-apple-darwin
+          - aarch64-apple-darwin
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-macos-${{ matrix.target }}
+      - name: Build ${{ matrix.target }}
+        run: bash scripts/build/build-target.sh ${{ matrix.target }}
+      - name: Pack tarball ${{ matrix.target }}
+        run: bash scripts/package/pack-tarball.sh ${{ matrix.target }}
+      - name: Upload macOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-macos-${{ matrix.target }}
+          path: |
+            dist/**
+            target/${{ matrix.target }}/release/spt
+          retention-days: 7
+          if-no-files-found: error
+
+  build-macos-universal:
+    name: build-macos-universal
+    needs: build-macos
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Download x86_64 macOS artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build-macos-x86_64-apple-darwin
+          path: artifacts/x86_64-apple-darwin
+      - name: Download aarch64 macOS artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build-macos-aarch64-apple-darwin
+          path: artifacts/aarch64-apple-darwin
+      - name: Lipo macOS universal binary
+        run: bash scripts/build/lipo-macos.sh
+      - name: Pack macOS universal pkg
+        run: bash scripts/package/pack-pkg-macos.sh universal-apple-darwin
+      - name: Sign macOS universal pkg
+        if: ${{ env.MACOS_SIGNING_IDENTITY != '' }}
+        env:
+          MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+          MACOS_NOTARY_USER: ${{ secrets.MACOS_NOTARY_USER }}
+          MACOS_NOTARY_PASSWORD: ${{ secrets.MACOS_NOTARY_PASSWORD }}
+        run: bash scripts/sign/sign-macos.sh
+      - name: Upload macOS universal artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-macos-universal
+          path: dist/**
+          retention-days: 7
+          if-no-files-found: error
+
+  build-windows:
+    name: build-windows (${{ matrix.target }})
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - x86_64-pc-windows-msvc
+          - aarch64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-windows-${{ matrix.target }}
+      - name: Install cargo-wix
+        run: cargo install cargo-wix --locked
+      - name: Build ${{ matrix.target }}
+        shell: pwsh
+        run: ./scripts/build/build-target.ps1 ${{ matrix.target }}
+      - name: Pack zip ${{ matrix.target }}
+        shell: pwsh
+        run: ./scripts/package/pack-zip.ps1 ${{ matrix.target }}
+      - name: Pack MSI ${{ matrix.target }}
+        shell: pwsh
+        run: ./scripts/package/pack-msi-windows.ps1 ${{ matrix.target }}
+      - name: Sign Windows artifacts
+        if: ${{ env.WINDOWS_SIGNING_CERT_BASE64 != '' }}
+        shell: pwsh
+        env:
+          WINDOWS_SIGNING_CERT_BASE64: ${{ secrets.WINDOWS_SIGNING_CERT_BASE64 }}
+          WINDOWS_SIGNING_PASSWORD: ${{ secrets.WINDOWS_SIGNING_PASSWORD }}
+        run: ./scripts/sign/sign-windows.ps1
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-windows-${{ matrix.target }}
+          path: dist/**
+          retention-days: 7
+          if-no-files-found: error
+
+  collect-and-publish:
+    name: collect-and-publish
+    needs: [build-linux, build-macos-universal, build-windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-collect
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Collect artifacts
+        run: bash scripts/release/collect-artifacts.sh
+      - name: Generate SBOM
+        run: bash scripts/sbom/gen-sbom.sh
+      - name: Generate checksums
+        env:
+          LINUX_GPG_KEY: ${{ secrets.LINUX_GPG_KEY }}
+        run: bash scripts/sign/checksum-all.sh
+      - name: Minisign all artifacts
+        if: ${{ env.MINISIGN_SECRET_KEY != '' }}
+        env:
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+          MINISIGN_PASSWORD: ${{ secrets.MINISIGN_PASSWORD }}
+        run: bash scripts/sign/minisign-all.sh
+      - name: Build release manifest
+        run: bash scripts/release/manifest.sh
+      - name: Create draft GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release create --draft "$TAG" \
+            --title "$TAG" \
+            --generate-notes \
+            dist/"$TAG"/*

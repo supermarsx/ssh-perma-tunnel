@@ -48,3 +48,82 @@ jobs:
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check
+
+  cross-build:
+    name: cross-build (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - x86_64-unknown-linux-gnu
+          - x86_64-unknown-linux-musl
+          - aarch64-unknown-linux-gnu
+          - aarch64-unknown-linux-musl
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: cross-${{ matrix.target }}
+      - name: Install cross
+        run: cargo install cross --locked --version 0.2.5
+      - name: Run cross build for ${{ matrix.target }}
+        run: bash scripts/build/build-target.sh ${{ matrix.target }}
+
+  testing-features:
+    name: testing-features (${{ matrix.crate }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        crate:
+          - spt-auth
+          - spt-benchmark
+          - spt-cli
+          - spt-config
+          - spt-core
+          - spt-diagnostics
+          - spt-dns
+          - spt-events
+          - spt-firewall
+          - spt-forward
+          - spt-key
+          - spt-mcp
+          - spt-net
+          - spt-observability
+          - spt-protocol
+          - spt-remote-config
+          - spt-secrets
+          - spt-service
+          - spt-snmp
+          - spt-ssh2
+          - spt-ssh3
+          - spt-state
+          - spt-stats
+          - spt-supervisor
+          - spt-trust
+          - spt-tui
+          - spt-winevent
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: testing-${{ matrix.crate }}
+      - name: Build ${{ matrix.crate }} with testing feature
+        run: cargo build -p ${{ matrix.crate }} --features testing --locked
+
+  verify-msrv:
+    name: verify-msrv (1.83.0)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.83.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: msrv-1.83.0
+      - name: cargo build --workspace --locked
+        run: cargo build --workspace --locked

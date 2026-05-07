@@ -1,0 +1,68 @@
+# MSRV workflow — load-bearing MSRV contract.
+#
+# This is the load-bearing MSRV contract for ssh-perma-tunnel: the project
+# commits to compile, lint, and test cleanly at exactly Rust 1.83 with the
+# committed Cargo.lock. ci.yml runs on stable, which would silently absorb
+# any unintentional bump in MSRV; this workflow is the gate that fails when
+# a dependency or new code starts requiring a newer rustc.
+#
+# If this job fails, the fix is one of:
+#   1. Pin the offending dependency back in Cargo.lock (no `cargo update`),
+#   2. Replace the dep with a 1.83-compatible alternative,
+#   3. Refactor the project code to avoid the newer-rustc feature.
+#
+# Bumping rust-toolchain.toml is a deliberate, separately reviewed change —
+# never the workaround for a red MSRV CI.
+name: MSRV
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  msrv-check:
+    name: build+test (1.83.0, --locked)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install MSRV toolchain (1.83.0)
+        uses: dtolnay/rust-toolchain@1.83.0
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: msrv-1.83.0
+
+      - name: Build with MSRV (locked)
+        run: cargo build --workspace --locked
+
+      # `--no-run` builds the test binaries (verifying API compatibility
+      # under MSRV) without paying for execution; CI on stable already runs
+      # the tests on every push.
+      - name: Test build with MSRV (locked)
+        run: cargo test --workspace --locked --no-run
+
+  msrv-clippy:
+    name: clippy (1.83.0, --locked)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install MSRV toolchain (1.83.0) with clippy
+        uses: dtolnay/rust-toolchain@1.83.0
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: msrv-1.83.0-clippy
+
+      # Catches lints the older rustc rejects but newer rustc tolerates.
+      - name: clippy (MSRV, --locked, deny warnings)
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
