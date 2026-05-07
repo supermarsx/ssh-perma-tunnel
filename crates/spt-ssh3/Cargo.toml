@@ -23,6 +23,7 @@ spt-core = { workspace = true }
 spt-protocol = { workspace = true }
 spt-auth = { workspace = true }
 spt-trust = { workspace = true }
+spt-key = { workspace = true }
 async-trait = { workspace = true }
 tracing = { workspace = true }
 serde = { workspace = true }
@@ -44,6 +45,10 @@ http = "1"
 base64 = { workspace = true }
 sha2 = { workspace = true }
 x509-parser = { workspace = true }
+ssh-key = { workspace = true }
+signature = "2"
+serde_json = { workspace = true }
+rand = { workspace = true }
 rcgen = { version = "0.13", optional = true }
 
 [dev-dependencies]

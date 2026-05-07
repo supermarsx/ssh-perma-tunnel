@@ -27,7 +27,7 @@ use quinn::{ClientConfig as QuinnClientConfig, Endpoint, TransportConfig};
 use spt_auth::AuthConfig;
 use spt_core::{Error, Result};
 
-use crate::auth_header::build_authorization_header;
+use crate::auth_header::build_authorization_header_for;
 use crate::config::Ssh3Config;
 use crate::tls::build_client_config;
 
@@ -102,7 +102,7 @@ pub fn build_connect_request(
     url_path: &str,
     auth: &AuthConfig,
 ) -> Result<Request<()>> {
-    let auth_header = build_authorization_header(auth)?;
+    let auth_header = build_authorization_header_for(auth, host, port, url_path)?;
     let authority = format!("{host}:{port}");
     let uri = Uri::builder()
         .scheme("https")

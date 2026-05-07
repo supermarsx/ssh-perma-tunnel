@@ -32,6 +32,7 @@ pub mod auth_header;
 pub mod config;
 pub mod forward;
 pub mod frame;
+pub mod jwt;
 pub mod protocol;
 pub mod session;
 pub mod tls;

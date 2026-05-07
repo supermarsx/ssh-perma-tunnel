@@ -433,10 +433,15 @@ pub async fn open_udp(
             "ssh3 peer does not advertise udp_datagrams capability".into(),
         ));
     }
-    if spec.direction != ForwardDirection::Local {
-        return Err(Error::UnsupportedPlatform(
-            "ssh3 remote UDP forwards are not yet implemented (local UDP only)".into(),
-        ));
+    if spec.direction == ForwardDirection::Remote {
+        return open_remote_udp(
+            conn,
+            state,
+            control_send,
+            next_flow_id,
+            spec,
+        )
+        .await;
     }
     if conn.max_datagram_size().is_none() {
         return Err(Error::UnsupportedPlatform(
@@ -713,6 +718,268 @@ pub async fn serve_local_tcp_acceptor(
 /// and waiting for `ForwardOpenResponse`). Public for test harness use.
 pub async fn read_one_frame(recv: &mut RecvStream) -> Result<Ssh3Frame> {
     Ssh3Frame::read_async(recv).await
+}
+
+/// Open a remote UDP forward.
+///
+/// Symmetric to [`open_udp`] for the local case. The flow:
+///
+/// 1. Allocate a fresh `flow_id`.
+/// 2. Send a [`Ssh3FrameKind::RemoteUdpForwardRequest`] frame on the control
+///    stream carrying `(flow_id, bind_host, bind_port)`.
+/// 3. (The peer's control-stream reader — see
+///    [`serve_remote_udp_forwards`] — binds a UDP socket on `bind` and
+///    starts proxying inbound datagrams as `[u32_be flow_id][bytes]` QUIC
+///    datagrams toward us.)
+/// 4. Local datagram dispatch (`session.rs::read_datagram` loop) routes
+///    incoming traffic by `flow_id` into our `state.udp_flows` map; we
+///    forward each payload to `spec.target` over a fresh local
+///    [`UdpSocket`] and reflect any reply back over QUIC.
+async fn open_remote_udp(
+    conn: Connection,
+    state: Arc<SessionState>,
+    control_send: Arc<AsyncMutex<SendStream>>,
+    next_flow_id: Arc<std::sync::atomic::AtomicU32>,
+    spec: &UdpForwardSpec,
+) -> Result<ForwardHandle> {
+    if conn.max_datagram_size().is_none() {
+        return Err(Error::UnsupportedPlatform(
+            "ssh3 QUIC peer disabled datagrams (negotiated)".into(),
+        ));
+    }
+    let (bind_host, bind_port) = bind_host_port(&spec.listen)?;
+    let flow_id = next_flow_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+    let req = Ssh3Frame::new(
+        Ssh3FrameKind::RemoteUdpForwardRequest,
+        UdpAssociatePayload {
+            flow_id,
+            host: bind_host.clone(),
+            port: bind_port,
+        }
+        .encode(),
+    );
+    {
+        let mut g = control_send.lock().await;
+        req.write_async(&mut *g).await?;
+    }
+
+    // Register flow demux entry so any datagrams the peer races to deliver
+    // before our response arrives aren't dropped.
+    let (inbound_tx, mut inbound_rx) = mpsc::unbounded_channel::<Bytes>();
+    state.udp_flows.insert(flow_id, inbound_tx);
+
+    let (state_tx, state_rx) = watch::channel(ForwardState::Active);
+    let (close_tx, mut close_rx) = oneshot::channel();
+    let id = ForwardId::new();
+    let name = spec.name.clone();
+    let target = spec.target.clone();
+    let state_clone = state.clone();
+    let name_t = name.clone();
+
+    // For each inbound datagram, dial target; reflect replies back over the
+    // QUIC datagram channel.
+    tokio::spawn(async move {
+        let dial_target = format!("{}:{}", target.host, target.port);
+        let inbound_loop = async {
+            while let Some(payload) = inbound_rx.recv().await {
+                // Resolve + connect a fresh local UDP socket per inbound
+                // datagram (stateless mapping). For long-lived flows the
+                // caller can layer a connection-tracking table on top.
+                let sock = match UdpSocket::bind(("0.0.0.0", 0)).await {
+                    Ok(s) => s,
+                    Err(e) => {
+                        warn!(
+                            target: "spt_ssh3::forward",
+                            error = %e,
+                            "remote-udp local bind failed"
+                        );
+                        continue;
+                    }
+                };
+                if let Err(e) = sock.send_to(&payload, &dial_target).await {
+                    warn!(
+                        target: "spt_ssh3::forward",
+                        error = %e,
+                        target = %dial_target,
+                        "remote-udp send_to local target failed"
+                    );
+                    continue;
+                }
+                // Best-effort: read one reply with a short timeout, send back.
+                let mut buf = vec![0u8; 64 * 1024];
+                let conn_clone = conn.clone();
+                tokio::spawn(async move {
+                    let r = tokio::time::timeout(
+                        std::time::Duration::from_secs(5),
+                        sock.recv(&mut buf),
+                    )
+                    .await;
+                    if let Ok(Ok(n)) = r {
+                        let mut out = Vec::with_capacity(4 + n);
+                        out.extend_from_slice(&flow_id.to_be_bytes());
+                        out.extend_from_slice(&buf[..n]);
+                        let _ = conn_clone.send_datagram(Bytes::from(out));
+                    }
+                });
+            }
+        };
+        #[allow(clippy::ignored_unit_patterns)]
+        {
+            tokio::select! {
+                _ = &mut close_rx => {}
+                _ = inbound_loop => {}
+            }
+        }
+        state_clone.udp_flows.remove(&flow_id);
+        debug!(target: "spt_ssh3::forward", forward = %name_t, "remote-udp forward stopped");
+        let _ = state_tx.send(ForwardState::Stopped);
+    });
+
+    Ok(ForwardHandle::new(id, name, state_rx, close_tx))
+}
+
+/// Server-side datagram dispatcher: reads QUIC datagrams from `conn` and
+/// routes them by their 4-byte big-endian `flow_id` prefix into
+/// `state.udp_flows`. Symmetric to the client-side dispatch loop in
+/// [`crate::session::Ssh3Session::from_parts`]. Used by the test harness.
+pub async fn serve_datagram_demux(conn: Connection, state: Arc<SessionState>) {
+    while let Ok(payload) = conn.read_datagram().await {
+        if payload.len() < 4 {
+            continue;
+        }
+        let flow_id = u32::from_be_bytes([payload[0], payload[1], payload[2], payload[3]]);
+        let body = payload.slice(4..);
+        if let Some(tx) = state.udp_flows.get(&flow_id) {
+            let _ = tx.value().send(body);
+        }
+    }
+}
+
+/// Server-side acceptor: drains the control stream, and for each
+/// [`Ssh3FrameKind::RemoteUdpForwardRequest`] the peer sends, binds a UDP
+/// listener on the requested address and pumps inbound datagrams as
+/// `[flow_id][bytes]` QUIC datagrams back toward the requester. Replies
+/// (received over `state.udp_flows[flow_id]`) are sent to the most recent
+/// external source.
+///
+/// Used by the test harness "fake server" and by an spt instance running
+/// as the server end of an SSH3 tunnel. Pair with
+/// [`serve_datagram_demux`] on the same `state` so server-side
+/// `udp_flows` entries actually receive client replies.
+pub async fn serve_remote_udp_forwards(
+    conn: Connection,
+    mut control_recv: RecvStream,
+    control_send: Arc<AsyncMutex<SendStream>>,
+    state: Arc<SessionState>,
+) {
+    loop {
+        let frame = match Ssh3Frame::read_async(&mut control_recv).await {
+            Ok(f) => f,
+            Err(e) => {
+                debug!(target: "spt_ssh3::forward", error = %e, "remote-udp acceptor: control stream closed");
+                return;
+            }
+        };
+        if frame.kind != Ssh3FrameKind::RemoteUdpForwardRequest {
+            // Ignore other control frames here; the test harness only cares
+            // about the remote-UDP path.
+            continue;
+        }
+        let payload = match UdpAssociatePayload::decode(frame.payload) {
+            Ok(p) => p,
+            Err(e) => {
+                warn!(target: "spt_ssh3::forward", error = %e, "remote-udp: bad payload");
+                continue;
+            }
+        };
+        let socket = match UdpSocket::bind((payload.host.as_str(), payload.port)).await {
+            Ok(s) => s,
+            Err(e) => {
+                warn!(
+                    target: "spt_ssh3::forward",
+                    error = %e,
+                    bind = %format!("{}:{}", payload.host, payload.port),
+                    "remote-udp: bind failed"
+                );
+                continue;
+            }
+        };
+        let conn = conn.clone();
+        let state = state.clone();
+        let _ctl = control_send.clone();
+        tokio::spawn(server_remote_udp_loop(socket, conn, state, payload.flow_id));
+    }
+}
+
+async fn server_remote_udp_loop(
+    socket: UdpSocket,
+    conn: Connection,
+    state: Arc<SessionState>,
+    flow_id: u32,
+) {
+    let socket = Arc::new(socket);
+    // Track the most recent external source so replies can be delivered.
+    let last_peer: Arc<AsyncMutex<Option<std::net::SocketAddr>>> =
+        Arc::new(AsyncMutex::new(None));
+
+    // Register an inbound channel so the session-level datagram dispatch
+    // can deliver replies (if the client sends back via the same flow_id).
+    let (reply_tx, mut reply_rx) = mpsc::unbounded_channel::<Bytes>();
+    state.udp_flows.insert(flow_id, reply_tx);
+
+    // External → QUIC.
+    let outbound_socket = socket.clone();
+    let outbound_peer = last_peer.clone();
+    let outbound_conn = conn.clone();
+    let outbound = async move {
+        let mut buf = vec![0u8; 64 * 1024];
+        loop {
+            let (n, peer) = match outbound_socket.recv_from(&mut buf).await {
+                Ok(v) => v,
+                Err(e) => {
+                    warn!(target: "spt_ssh3::forward", error = %e, "remote-udp: server recv_from failed");
+                    return;
+                }
+            };
+            {
+                let mut g = outbound_peer.lock().await;
+                *g = Some(peer);
+            }
+            let mut out = Vec::with_capacity(4 + n);
+            out.extend_from_slice(&flow_id.to_be_bytes());
+            out.extend_from_slice(&buf[..n]);
+            if let Err(e) = outbound_conn.send_datagram(Bytes::from(out)) {
+                warn!(target: "spt_ssh3::forward", error = %e, "remote-udp: server send_datagram failed");
+            }
+        }
+    };
+
+    // QUIC reply → external.
+    let inbound_peer = last_peer.clone();
+    let inbound_socket = socket.clone();
+    let inbound = async move {
+        while let Some(payload) = reply_rx.recv().await {
+            let peer = {
+                let g = inbound_peer.lock().await;
+                *g
+            };
+            if let Some(peer) = peer {
+                if let Err(e) = inbound_socket.send_to(&payload, peer).await {
+                    warn!(target: "spt_ssh3::forward", error = %e, "remote-udp: server send_to external failed");
+                }
+            }
+        }
+    };
+
+    #[allow(clippy::ignored_unit_patterns)]
+    {
+        tokio::select! {
+            _ = outbound => {}
+            _ = inbound => {}
+        }
+    }
+    state.udp_flows.remove(&flow_id);
 }
 
 #[cfg(test)]

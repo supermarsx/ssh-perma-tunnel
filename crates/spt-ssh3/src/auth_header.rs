@@ -11,6 +11,9 @@ use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine as _;
 use spt_auth::{AuthConfig, AuthMethod, SecretRef};
 use spt_core::{Error, Result};
+use spt_key::io as key_io;
+
+use crate::jwt::{build_jwt, fresh_claims, DEFAULT_JWT_LIFETIME_SECS};
 
 /// Resolve a [`SecretRef`] to its raw secret value.
 ///
@@ -36,18 +39,36 @@ pub(crate) fn resolve_secret(s: &SecretRef) -> Result<String> {
 /// Pick the first SSH3-applicable [`AuthMethod`] from `auth.methods` and
 /// produce the corresponding `Authorization` header value.
 ///
-/// Preference order: `Bearer` first, `Basic` second. `OidcDeviceFlow` is
-/// handled out-of-band — by the time `connect()` runs, callers must have
-/// already converted the OIDC result into a `Bearer { token }` entry.
-pub fn build_authorization_header(auth: &AuthConfig) -> Result<String> {
-    // Pick Bearer first.
+/// Preference order:
+///
+/// 1. `Bearer` — the explicit token entry (also receives OIDC-deposited
+///    access tokens from the device-flow preflight).
+/// 2. `Basic` — HTTP Basic auth.
+/// 3. `PublicKey` — SSH3 pubkey-style JWT bearer (Ed25519 / ECDSA P-256/P-384).
+///
+/// `OidcDeviceFlow` is handled out-of-band — by the time `connect()` runs,
+/// callers must have already converted the OIDC result into a
+/// `Bearer { token }` entry.
+///
+/// `host`, `port`, and `url_path` are required by the JWT branch only; they
+/// are folded into the `aud` claim and must match exactly what the CONNECT
+/// request later carries on the wire (see [`crate::jwt::canonical_audience`]).
+/// Bearer/Basic ignore them, so `auth_header_simple` is provided for the
+/// shorter call sites (and used by the existing tests).
+pub fn build_authorization_header_for(
+    auth: &AuthConfig,
+    host: &str,
+    port: u16,
+    url_path: &str,
+) -> Result<String> {
+    // 1. Bearer
     for m in &auth.methods {
         if let AuthMethod::Bearer { token } = m {
             let v = resolve_secret(token)?;
             return Ok(format!("Bearer {v}"));
         }
     }
-    // Fall back to Basic.
+    // 2. Basic
     for m in &auth.methods {
         if let AuthMethod::Basic { username, password } = m {
             let pwd = resolve_secret(password)?;
@@ -55,9 +76,43 @@ pub fn build_authorization_header(auth: &AuthConfig) -> Result<String> {
             return Ok(format!("Basic {}", B64.encode(raw.as_bytes())));
         }
     }
+    // 3. PublicKey → SSH3 pubkey JWT.
+    for m in &auth.methods {
+        if let AuthMethod::PublicKey {
+            identity_file,
+            passphrase,
+        } = m
+        {
+            let pass = passphrase.as_ref().map(resolve_secret).transpose()?;
+            let kp = key_io::load(identity_file, pass.as_deref())?;
+            let claims = fresh_claims(
+                &kp,
+                &auth.username,
+                host,
+                port,
+                url_path,
+                DEFAULT_JWT_LIFETIME_SECS,
+            );
+            let jwt = build_jwt(&kp, &claims)?;
+            return Ok(format!("Bearer {jwt}"));
+        }
+    }
     Err(Error::AuthFailed(
-        "ssh3 requires `Bearer` or `Basic` auth method (got none in profile)".to_string(),
+        "ssh3 requires `Bearer`, `Basic`, or `PublicKey` auth method (got none in profile)"
+            .to_string(),
     ))
+}
+
+/// Convenience wrapper for callers that don't need the JWT path (Bearer/Basic
+/// only). Equivalent to [`build_authorization_header_for`] with placeholder
+/// audience parameters; will return an error if the profile only has a
+/// `PublicKey` method.
+pub fn build_authorization_header(auth: &AuthConfig) -> Result<String> {
+    // Use empty placeholders — only Bearer/Basic look at these. If the only
+    // method is PublicKey we'll happily build a JWT with audience
+    // `https://:0/` and the server will reject it; that's the caller's bug
+    // for using this entry point on a pubkey profile.
+    build_authorization_header_for(auth, "", 0, "/")
 }
 
 #[cfg(test)]

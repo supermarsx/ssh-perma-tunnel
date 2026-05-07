@@ -54,6 +54,14 @@ pub enum Ssh3FrameKind {
     UdpAssociate = 0x06,
     /// Application-level keepalive (in addition to QUIC PING).
     AppPing = 0x07,
+    /// Remote-direction UDP forward request: server listens on `bind`, dials
+    /// `target` per inbound datagram, and proxies bytes back over a flow-id
+    /// keyed datagram channel toward the client.
+    ///
+    /// Note: the original task brief specified `0x07` for this frame, but
+    /// `AppPing` already owns that tag — `0x08` is the actual on-the-wire
+    /// value.
+    RemoteUdpForwardRequest = 0x08,
 }
 
 impl Ssh3FrameKind {
@@ -68,6 +76,7 @@ impl Ssh3FrameKind {
             0x05 => Self::Close,
             0x06 => Self::UdpAssociate,
             0x07 => Self::AppPing,
+            0x08 => Self::RemoteUdpForwardRequest,
             _ => return None,
         })
     }
@@ -317,9 +326,19 @@ impl ForwardOpenResponse {
     }
 }
 
-/// Payload for [`Ssh3FrameKind::UdpAssociate`].
+/// Payload for [`Ssh3FrameKind::UdpAssociate`] *and*
+/// [`Ssh3FrameKind::RemoteUdpForwardRequest`].
 ///
 /// Wire: `[flow_id:u32_be][host_len:u16_be][host_utf8…][port:u16_be]`.
+///
+/// Local-UDP (initiator → peer, kind `UdpAssociate`): `host:port` is the
+/// remote target the peer should dial outbound for each datagram tagged
+/// with `flow_id`.
+///
+/// Remote-UDP (initiator → peer, kind `RemoteUdpForwardRequest`):
+/// `host:port` is the **bind** address the peer should listen on; the
+/// initiator demuxes inbound datagrams (any external source) by `flow_id`
+/// and forwards them to its locally configured target.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UdpAssociatePayload {
     /// Flow id allocated by the requester. UDP datagrams on this association
