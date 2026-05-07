@@ -32,7 +32,8 @@ pub use bundle::{build_bundle, BundleConfig, BundleInputs};
 pub use check::{Check, Severity, Status};
 pub use framework::{Diagnostic, DiagnosticContext, DiagnosticReport, DiagnosticRunner};
 pub use port_autodetect::{
-    autodetect, classify_banner, default_chain, AmqpDetector, BannerDetector, DetectedService,
-    Detector, HttpDetector, LdapDetector, MqttDetector, PostgresDetector, RedisDetector,
-    ServiceClass, TlsDetector,
+    autodetect, autodetect_udp, classify_banner, default_chain, default_udp_chain, AmqpDetector,
+    BannerDetector, DetectedService, Detector, DnsUdpDetector, HttpDetector, LdapDetector,
+    MqttDetector, NtpUdpDetector, PostgresDetector, QuicUdpDetector, RedisDetector, ServiceClass,
+    SnmpUdpDetector, TlsDetector, UdpDetector,
 };

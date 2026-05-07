@@ -31,7 +31,7 @@ use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpStream;
+use tokio::net::{TcpStream, UdpSocket};
 use tokio::time::timeout;
 
 /// What we believe is on the other side of the socket.
@@ -64,6 +64,16 @@ pub enum ServiceClass {
     Amqp,
     /// LDAP — typed BindResponse.
     Ldap,
+    /// DNS — typed DNS response over UDP.
+    Dns,
+    /// NTP — 48-byte server response over UDP.
+    Ntp,
+    /// QUIC — Long-header response (Version Negotiation / Initial / Handshake).
+    Quic,
+    /// SNMP — typed v1 GetResponse over UDP.
+    Snmp,
+    /// mDNS — DNS-over-multicast response.
+    Mdns,
     /// We exchanged bytes but couldn't classify.
     Unknown,
     /// The remote closed before saying anything.
@@ -521,6 +531,220 @@ fn lossy(b: &[u8]) -> String {
     String::from_utf8_lossy(&b[..take]).to_string()
 }
 
+// ---------------------------------------------------------------------------
+// UDP autodetect chain.
+
+/// One UDP probe strategy. Each implementation owns its own UDP socket —
+/// there is no shared connection state between detectors.
+#[async_trait]
+pub trait UdpDetector: Send + Sync {
+    /// Stable, lowercase identifier (used in tracing).
+    fn name(&self) -> &str;
+    /// Try to detect by sending a probe packet and reading the response.
+    /// `None` means "this protocol isn't here, fall through"; `Some(_)`
+    /// ends the chain.
+    async fn try_detect(&self, addr: SocketAddr, budget: Duration) -> Option<DetectedService>;
+}
+
+/// Run the default UDP detector chain in order, returning the first hit.
+/// Returns `Some(NoBanner)` if every detector falls through (no UDP server
+/// responded within the per-probe budget — UDP is connectionless so we can
+/// only infer this from missing responses).
+pub async fn autodetect_udp(addr: SocketAddr, budget: Duration) -> Option<DetectedService> {
+    let per = (budget / 4).max(Duration::from_millis(250));
+    for d in default_udp_chain() {
+        if let Some(verdict) = d.try_detect(addr, per).await {
+            if !matches!(verdict.class, ServiceClass::Unknown) {
+                return Some(verdict);
+            }
+        }
+    }
+    Some(DetectedService {
+        class: ServiceClass::NoBanner,
+        evidence: String::new(),
+    })
+}
+
+/// The default UDP detector chain. mDNS is intentionally excluded — its
+/// multicast group (`224.0.0.251:5353`) is unroutable in many CI sandboxes
+/// and produces flaky test results.
+#[must_use]
+pub fn default_udp_chain() -> Vec<Box<dyn UdpDetector>> {
+    vec![
+        Box::new(DnsUdpDetector),
+        Box::new(NtpUdpDetector),
+        Box::new(SnmpUdpDetector),
+        Box::new(QuicUdpDetector),
+    ]
+}
+
+async fn udp_send_and_read(
+    addr: SocketAddr,
+    payload: &[u8],
+    budget: Duration,
+    buf: &mut [u8],
+) -> Option<usize> {
+    let bind = if addr.is_ipv6() { "[::]:0" } else { "0.0.0.0:0" };
+    let sock = UdpSocket::bind(bind).await.ok()?;
+    sock.connect(addr).await.ok()?;
+    timeout(budget, sock.send(payload)).await.ok()?.ok()?;
+    let n = timeout(budget, sock.recv(buf)).await.ok()?.ok()?;
+    Some(n)
+}
+
+/// DNS over UDP: send a query for `.` IN NS; expect a response with
+/// matching transaction id.
+pub struct DnsUdpDetector;
+
+#[async_trait]
+impl UdpDetector for DnsUdpDetector {
+    fn name(&self) -> &str {
+        "dns"
+    }
+    async fn try_detect(&self, addr: SocketAddr, budget: Duration) -> Option<DetectedService> {
+        // Wire form: txid=0xc0de, std-query, qdcount=1, qname=".", qtype=NS, qclass=IN.
+        let query: [u8; 17] = [
+            0xc0, 0xde, // transaction id
+            0x01, 0x00, // flags: std query, RD=1
+            0x00, 0x01, // qdcount
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // an/ns/ar counts
+            0x00, // root label
+            0x00, 0x02, // qtype = NS
+            0x00, 0x01, // qclass = IN
+        ];
+        let mut buf = [0u8; 512];
+        let n = udp_send_and_read(addr, &query, budget, &mut buf).await?;
+        if n < 12 {
+            return None;
+        }
+        // Confirm txid echo + QR bit.
+        if buf[0] != 0xc0 || buf[1] != 0xde {
+            return None;
+        }
+        if buf[2] & 0x80 == 0 {
+            return None;
+        }
+        Some(DetectedService {
+            class: ServiceClass::Dns,
+            evidence: format!("dns response, {n} bytes"),
+        })
+    }
+}
+
+/// NTP over UDP: send an NTPv4 client packet; expect a 48-byte server reply.
+pub struct NtpUdpDetector;
+
+#[async_trait]
+impl UdpDetector for NtpUdpDetector {
+    fn name(&self) -> &str {
+        "ntp"
+    }
+    async fn try_detect(&self, addr: SocketAddr, budget: Duration) -> Option<DetectedService> {
+        // 48 zeros with mode-3 (client), version 4, leap 0 in byte 0.
+        let mut packet = [0u8; 48];
+        packet[0] = 0b00_100_011; // li=0, vn=4, mode=3
+        let mut buf = [0u8; 64];
+        let n = udp_send_and_read(addr, &packet, budget, &mut buf).await?;
+        if n != 48 {
+            return None;
+        }
+        // Mode in reply must be 4 (server) and version field present.
+        let mode = buf[0] & 0b00_000_111;
+        let vn = (buf[0] >> 3) & 0b111;
+        if mode != 4 || !(1..=4).contains(&vn) {
+            return None;
+        }
+        Some(DetectedService {
+            class: ServiceClass::Ntp,
+            evidence: format!("ntp v{vn} server reply, 48 bytes"),
+        })
+    }
+}
+
+/// QUIC over UDP: send a minimal Initial packet with version 1; expect a
+/// long-header response (Version Negotiation, or any long-header reply).
+pub struct QuicUdpDetector;
+
+#[async_trait]
+impl UdpDetector for QuicUdpDetector {
+    fn name(&self) -> &str {
+        "quic"
+    }
+    async fn try_detect(&self, addr: SocketAddr, budget: Duration) -> Option<DetectedService> {
+        // Long-header Initial probe (version=0x00000001 / RFC 9000):
+        // We cannot construct a fully valid Initial without crypto, so the
+        // server may respond with Version Negotiation (version=0). Any
+        // long-header reply (high bit of byte 0 set) confirms QUIC.
+        // Header byte: long form (0x80) | fixed bit (0x40) | initial type (0x00).
+        let mut packet = vec![0xc0u8]; // 0x80 | 0x40
+        packet.extend_from_slice(&[0x00, 0x00, 0x00, 0x01]); // version
+        packet.push(8); // dcid len
+        packet.extend_from_slice(&[0xde, 0xad, 0xbe, 0xef, 0xca, 0xfe, 0xba, 0xbe]); // dcid
+        packet.push(0); // scid len
+        // Token length (varint = 0)
+        packet.push(0x00);
+        // Length (varint = remaining packet length, well under 64): 0x00
+        packet.push(0x00);
+        // Pad to 1200 bytes — RFC 9000 §14 minimum Initial size.
+        packet.resize(1200, 0);
+
+        let mut buf = [0u8; 1500];
+        let n = udp_send_and_read(addr, &packet, budget, &mut buf).await?;
+        if n == 0 {
+            return None;
+        }
+        // Long-header bit must be set in the reply.
+        if buf[0] & 0x80 == 0 {
+            return None;
+        }
+        Some(DetectedService {
+            class: ServiceClass::Quic,
+            evidence: format!("quic long-header reply, {n} bytes"),
+        })
+    }
+}
+
+/// SNMP v1 GetRequest for `1.3.6.1.2.1.1.1.0` (sysDescr.0); expect a
+/// matching GetResponse.
+pub struct SnmpUdpDetector;
+
+#[async_trait]
+impl UdpDetector for SnmpUdpDetector {
+    fn name(&self) -> &str {
+        "snmp"
+    }
+    async fn try_detect(&self, addr: SocketAddr, budget: Duration) -> Option<DetectedService> {
+        // Hand-encoded BER for SNMPv1 GetRequest with community="public",
+        // request-id=1, sysDescr.0.
+        let frame: &[u8] = &[
+            0x30, 0x29, // SEQUENCE, len 41
+            0x02, 0x01, 0x00, // version INTEGER 0 (v1)
+            0x04, 0x06, b'p', b'u', b'b', b'l', b'i', b'c', // community
+            0xa0, 0x1c, // GetRequest [0] IMPLICIT
+            0x02, 0x01, 0x01, // request-id 1
+            0x02, 0x01, 0x00, // error-status 0
+            0x02, 0x01, 0x00, // error-index 0
+            0x30, 0x11, // varbind list
+            0x30, 0x0f, // varbind
+            0x06, 0x08, 0x2b, 0x06, 0x01, 0x02, 0x01, 0x01, 0x01, 0x00, // sysDescr.0
+            0x05, 0x00, // NULL
+        ];
+        let mut buf = [0u8; 1024];
+        let n = udp_send_and_read(addr, frame, budget, &mut buf).await?;
+        if n < 4 || buf[0] != 0x30 {
+            return None;
+        }
+        // Look for GetResponse PDU tag (0xa2) somewhere in the payload.
+        if !buf[..n].iter().any(|&b| b == 0xa2) {
+            return None;
+        }
+        Some(DetectedService {
+            class: ServiceClass::Snmp,
+            evidence: format!("snmp GetResponse, {n} bytes"),
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -686,6 +910,117 @@ mod tests {
         reply.extend_from_slice(version);
         reply.push(0);
         run_with_fake(reply, ServiceClass::Mysql).await;
+    }
+
+    /// Spawn a UDP fake server that handles every detector in the chain by
+    /// inspecting the inbound payload and replying with `responder(payload)`.
+    /// Returning `None` from the responder drops the packet (so detectors
+    /// for other protocols time out cleanly).
+    async fn run_udp_fake<F>(responder: F, expect: ServiceClass)
+    where
+        F: Fn(&[u8]) -> Option<Vec<u8>> + Send + Sync + 'static,
+    {
+        let server = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let addr = server.local_addr().unwrap();
+        let stop = std::sync::Arc::new(tokio::sync::Notify::new());
+        let stop_for_server = stop.clone();
+        let task = tokio::spawn(async move {
+            let mut buf = [0u8; 4096];
+            loop {
+                tokio::select! {
+                    () = stop_for_server.notified() => break,
+                    incoming = server.recv_from(&mut buf) => {
+                        let Ok((n, peer)) = incoming else { break };
+                        if let Some(reply) = responder(&buf[..n]) {
+                            let _ = server.send_to(&reply, peer).await;
+                        }
+                    }
+                }
+            }
+        });
+        let det = autodetect_udp(addr, Duration::from_secs(3)).await.unwrap();
+        stop.notify_waiters();
+        let _ = task.await;
+        assert_eq!(det.class, expect, "got {det:?}");
+    }
+
+    #[tokio::test]
+    async fn detects_dns_over_udp() {
+        run_udp_fake(
+            |payload| {
+                if payload.len() < 12 {
+                    return None;
+                }
+                // qtype/qclass follow root label at offset 12 → only DNS layout matches.
+                if payload[12] != 0x00 {
+                    return None;
+                }
+                let mut reply = vec![payload[0], payload[1], 0x81, 0x80];
+                reply.extend_from_slice(&[0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
+                reply.extend_from_slice(&payload[12..]);
+                Some(reply)
+            },
+            ServiceClass::Dns,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn detects_ntp_over_udp() {
+        run_udp_fake(
+            |payload| {
+                // NTP probe is exactly 48 bytes with byte 0 = 0b00_100_011.
+                if payload.len() != 48 || payload[0] != 0b00_100_011 {
+                    return None;
+                }
+                let mut reply = [0u8; 48];
+                reply[0] = 0b00_100_100;
+                Some(reply.to_vec())
+            },
+            ServiceClass::Ntp,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn detects_snmp_over_udp() {
+        run_udp_fake(
+            |payload| {
+                // SNMP probe begins with SEQUENCE 0x30 and contains "public".
+                if !payload.starts_with(&[0x30]) || !payload.windows(6).any(|w| w == b"public") {
+                    return None;
+                }
+                Some(vec![
+                    0x30, 0x18, 0x02, 0x01, 0x00, 0x04, 0x06, b'p', b'u', b'b', b'l', b'i', b'c',
+                    0xa2, 0x0b, 0x02, 0x01, 0x01, 0x02, 0x01, 0x00, 0x02, 0x01, 0x00, 0x30, 0x00,
+                ])
+            },
+            ServiceClass::Snmp,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn detects_quic_over_udp() {
+        run_udp_fake(
+            |payload| {
+                // QUIC Initial probe is 1200 bytes with long-header high bit set.
+                if payload.len() != 1200 || (payload[0] & 0x80) == 0 {
+                    return None;
+                }
+                Some(vec![0xc0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])
+            },
+            ServiceClass::Quic,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn udp_unbound_returns_nobanner() {
+        // Use a port we did not bind. recvfrom will time out.
+        let addr: SocketAddr = "127.0.0.1:1".parse().unwrap();
+        let det = autodetect_udp(addr, Duration::from_millis(400)).await.unwrap();
+        assert_eq!(det.class, ServiceClass::NoBanner);
     }
 
     #[tokio::test]

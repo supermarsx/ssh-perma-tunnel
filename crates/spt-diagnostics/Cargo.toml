@@ -20,8 +20,12 @@ spt-secrets = { workspace = true }
 spt-firewall = { workspace = true }
 spt-service = { workspace = true }
 spt-ssh2 = { workspace = true }
+spt-auth = { workspace = true }
+spt-trust = { workspace = true }
 async-trait = { workspace = true }
+base64 = { workspace = true }
 flate2 = "1"
+url = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
