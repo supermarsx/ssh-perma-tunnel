@@ -37,6 +37,9 @@ pub mod session;
 pub mod tls;
 pub mod transport;
 
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
+
 pub use auth_header::build_authorization_header;
 pub use config::{Ssh3AuthExtras, Ssh3Config, Ssh3TlsConfig};
 pub use frame::{

@@ -12,6 +12,13 @@ description = "Profile state machine, reconnect, and failover supervisor for spt
 [lints]
 workspace = true
 
+[features]
+default = []
+# Exposes the `testing` module: OrchestratorBuilder, RecordingConnector,
+# wait_for_state, synthetic_stats_tick, plus re-exports of the existing
+# Echo/Unavailable connectors and LiveReconnectTrigger.
+testing = ["spt-forward/testing"]
+
 [dependencies]
 spt-core = { workspace = true }
 spt-config = { workspace = true }

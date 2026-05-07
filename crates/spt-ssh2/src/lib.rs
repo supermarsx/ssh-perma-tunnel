@@ -30,6 +30,9 @@ pub mod multi_hop;
 pub mod protocol;
 pub mod session;
 
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
+
 pub use crypto::CryptoPolicy;
 pub use protocol::{Ssh2Protocol, Ssh2ProtocolBuilder, TrustPolicy};
 pub use session::Ssh2Session;

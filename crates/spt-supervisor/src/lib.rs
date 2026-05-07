@@ -39,6 +39,9 @@ pub mod session;
 pub mod state_machine;
 pub mod stats;
 
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
+
 pub use control::{Control, DrainReport, EndpointKey};
 pub use failover::{EndpointSelector, FailoverMode, ManualOverride, SelectorError};
 pub use instability::{InstabilityDetector, InstabilityWindow};

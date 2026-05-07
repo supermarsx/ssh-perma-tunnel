@@ -12,6 +12,12 @@ description = "SSH3 backend for spt built on QUIC, rustls, and HTTP/3."
 [lints]
 workspace = true
 
+[features]
+default = []
+# Exposes the `testing` module: Ssh3TestServer + fixtures. Pulls in `rcgen` as
+# an optional non-dev dep so downstream test crates can reuse the harness.
+testing = ["dep:rcgen"]
+
 [dependencies]
 spt-core = { workspace = true }
 spt-protocol = { workspace = true }
@@ -38,6 +44,7 @@ http = "1"
 base64 = { workspace = true }
 sha2 = { workspace = true }
 x509-parser = { workspace = true }
+rcgen = { version = "0.13", optional = true }
 
 [dev-dependencies]
 tracing-test = "0.2"
