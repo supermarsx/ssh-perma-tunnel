@@ -39,3 +39,92 @@ pub use hosts::{HostsApplyReport, HostsEntry, HostsManager, HOSTS_BEGIN_MARKER, 
 pub use server::{DnsHandle, DnsServer, DnsServerBuilder};
 pub use split_horizon::SplitHorizonHandler;
 pub use zone::{AnswerPolicy, ManagedZone, Record, RecordKind};
+
+// ---------------------------------------------------------------------------
+// CLI-facing helpers used by `spt dns query` and friends.
+// ---------------------------------------------------------------------------
+
+use std::net::SocketAddr;
+use std::time::Duration;
+
+/// Result of a one-shot DNS query.
+///
+/// Mirrors the answer-section data that `spt dns query` formats. The
+/// strings are already rendered (`A` → dotted-quad, `AAAA` → colon-hex,
+/// `SRV` → `priority weight port target`, `TXT` → joined chunks).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DnsAnswer {
+    /// Record kind that was answered.
+    pub kind: RecordKind,
+    /// Rendered value.
+    pub value: String,
+    /// TTL as advertised by the resolver.
+    pub ttl: Duration,
+}
+
+/// Issue a one-shot DNS query against a specific resolver address.
+///
+/// Used by the `spt dns query` CLI to talk to a running spt's loopback
+/// resolver, but useful in tests too — a short timeout (2s) and a single
+/// attempt mean the call returns quickly when the resolver is unreachable.
+///
+/// Returns the answer section as a list of [`DnsAnswer`]. An empty vector
+/// means `NXDOMAIN` / no records of the requested type — this is **not**
+/// an error.
+pub async fn query_resolver(
+    addr: SocketAddr,
+    name: &str,
+    kind: RecordKind,
+) -> Result<Vec<DnsAnswer>> {
+    use hickory_proto::rr::RData;
+    use hickory_resolver::config::{NameServerConfigGroup, ResolverConfig, ResolverOpts};
+    use hickory_resolver::error::ResolveErrorKind;
+    use hickory_resolver::TokioAsyncResolver;
+
+    let group = NameServerConfigGroup::from_ips_clear(&[addr.ip()], addr.port(), true);
+    let cfg = ResolverConfig::from_parts(None, vec![], group);
+    let mut opts = ResolverOpts::default();
+    opts.timeout = Duration::from_secs(2);
+    opts.attempts = 1;
+    opts.use_hosts_file = false;
+    let resolver = TokioAsyncResolver::tokio(cfg, opts);
+
+    let lookup = match resolver.lookup(name, kind.to_record_type()).await {
+        Ok(l) => l,
+        Err(e) => {
+            // NXDOMAIN / NoRecordsFound is empty-answer, not an error.
+            if matches!(e.kind(), ResolveErrorKind::NoRecordsFound { .. }) {
+                return Ok(Vec::new());
+            }
+            return Err(map_resolve_error(&e));
+        }
+    };
+
+    let mut out = Vec::new();
+    for rec in lookup.records() {
+        let ttl = Duration::from_secs(u64::from(rec.ttl()));
+        let Some(rdata) = rec.data() else { continue };
+        let value = match (kind, rdata) {
+            (RecordKind::A, RData::A(a)) => a.0.to_string(),
+            (RecordKind::AAAA, RData::AAAA(a)) => a.0.to_string(),
+            (RecordKind::SRV, RData::SRV(s)) => format!(
+                "{} {} {} {}",
+                s.priority(),
+                s.weight(),
+                s.port(),
+                s.target()
+            ),
+            (RecordKind::TXT, RData::TXT(t)) => t
+                .iter()
+                .map(|chunk| String::from_utf8_lossy(chunk).into_owned())
+                .collect::<String>(),
+            _ => continue,
+        };
+        out.push(DnsAnswer { kind, value, ttl });
+    }
+    Ok(out)
+}
+
+fn map_resolve_error(e: &hickory_resolver::error::ResolveError) -> DnsError {
+    DnsError::Upstream(e.to_string())
+}
