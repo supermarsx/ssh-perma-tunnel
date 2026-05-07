@@ -26,6 +26,9 @@ pub mod report;
 pub mod result;
 pub mod safety;
 
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
+
 pub use compare::{compare_reports, ComparedMetric, ReportComparison};
 pub use driver::{
     BenchContext, BenchmarkDriver, Connector, DnsClient, ReconnectTrigger, UdpConnector,

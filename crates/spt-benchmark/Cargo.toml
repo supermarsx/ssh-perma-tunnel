@@ -36,3 +36,5 @@ hickory-resolver = { workspace = true }
 # Optional integration test against a real `hickory-resolver`. Off by default
 # because it needs network/loopback DNS reachable.
 hickory-test = []
+# Public test facilities: reusable mocks, fixtures, and synthetic builders.
+testing = []

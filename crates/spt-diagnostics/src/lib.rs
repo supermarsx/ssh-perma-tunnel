@@ -25,6 +25,9 @@ pub mod checks;
 pub mod framework;
 pub mod port_autodetect;
 
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
+
 pub use bundle::{build_bundle, BundleConfig, BundleInputs};
 pub use check::{Check, Severity, Status};
 pub use framework::{Diagnostic, DiagnosticContext, DiagnosticReport, DiagnosticRunner};

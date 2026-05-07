@@ -20,7 +20,6 @@ spt-secrets = { workspace = true }
 spt-firewall = { workspace = true }
 spt-service = { workspace = true }
 spt-ssh2 = { workspace = true }
-
 async-trait = { workspace = true }
 flate2 = "1"
 serde = { workspace = true }
@@ -35,6 +34,16 @@ tokio = { workspace = true, features = ["process", "io-util", "macros", "rt-mult
 tracing = { workspace = true }
 chrono = { workspace = true }
 
+[features]
+# Public test facilities: synthetic Check/Report builders + FakeDiagnosticContext.
+# Pulls in sibling crates' `testing` features for ready-wired fakes.
+testing = ["spt-firewall/testing", "spt-service/testing"]
+
 [dev-dependencies]
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "io-util", "net", "time", "process", "sync"] }
+# Enable sibling crates' `testing` modules for the in-crate `#[cfg(test)]` path
+# of `src/testing.rs` so `cargo test -p spt-diagnostics` (without explicit
+# `--features testing`) still compiles.
+spt-firewall = { workspace = true, features = ["testing"] }
+spt-service = { workspace = true, features = ["testing"] }

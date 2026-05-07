@@ -22,6 +22,9 @@ pub mod cache;
 pub mod fetch;
 pub mod http;
 
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
+
 pub use cache::{cache_path, fingerprint_sidecar_path, load_cached, save_atomic};
 pub use fetch::{fetch, FetchOutcome, FetchResult, RemoteConfigError};
 pub use http::{HttpFetcher, HttpResponse, ReqwestFetcher};
