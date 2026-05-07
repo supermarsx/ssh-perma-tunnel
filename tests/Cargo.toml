@@ -1,0 +1,37 @@
+[package]
+name = "spt-e2e-tests"
+version = "0.0.0"
+edition = "2021"
+rust-version = "1.83"
+publish = false
+license = "MIT"
+description = "Workspace-level end-to-end integration tests for spt."
+
+[lints]
+workspace = true
+
+# An empty library is required so cargo treats this as a real package; the
+# tests below live under `e2e/` (not the cargo-conventional `tests/` dir)
+# because the brief's layout names the directory `e2e/`. Each file is wired
+# explicitly via a `[[test]]` entry.
+[lib]
+path = "support/mod.rs"
+
+[[test]]
+name = "reload_diff"
+path = "e2e/reload_diff.rs"
+
+[dependencies]
+
+[dev-dependencies]
+# Only the dependencies actually exercised by the shipped tests are listed.
+# The brief named more (assert_cmd, predicates, spt-ssh2/spt-key/spt-secrets/
+# spt-auth/etc.); they are intentionally omitted because the corresponding
+# tests are not shipped -- see `.orchestration/state.md` Escalations:
+# "f-e2e-russh" for rationale (libssh2-vs-russh interop is `#[ignore]`'d at
+# baseline; assert_cmd is MSRV-1.83 blocked per t1-e18 log).
+spt-config = { workspace = true, features = ["testing"] }
+spt-supervisor = { workspace = true, features = ["testing"] }
+spt-protocol = { workspace = true }
+spt-auth = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
