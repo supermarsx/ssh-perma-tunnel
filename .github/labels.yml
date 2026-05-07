@@ -1,0 +1,52 @@
+# Canonical issue/PR labels for ssh-perma-tunnel.
+#
+# Apply with a tool like `crazy-max/ghaction-github-labeler` or the
+# `gh label` CLI. Hex colors are without the leading `#`.
+
+- name: bug
+  color: "d73a4a"
+  description: "Something isn't working as documented or specified."
+
+- name: enhancement
+  color: "a2eeef"
+  description: "New feature or behavior change request."
+
+- name: docs
+  color: "0075ca"
+  description: "Improvements or additions to documentation."
+
+- name: dependencies
+  color: "0366d6"
+  description: "Updates to project dependencies (Cargo, Actions, Docker)."
+
+- name: ci
+  color: "ededed"
+  description: "Continuous-integration workflows and tooling."
+
+- name: packaging
+  color: "5319e7"
+  description: "Release artifacts: deb, rpm, msi, pkg, tarballs, images."
+
+- name: security
+  color: "b60205"
+  description: "Security-relevant changes. Triaged with care."
+
+- name: good-first-issue
+  color: "7057ff"
+  description: "A well-scoped task suitable for a first contribution."
+
+- name: help-wanted
+  color: "008672"
+  description: "Maintainers are looking for outside help on this one."
+
+- name: breaking-change
+  color: "e11d21"
+  description: "Changes the public CLI, config schema, or stable API."
+
+- name: msrv
+  color: "fbca04"
+  description: "Touches the Minimum Supported Rust Version or the pinned lockfile."
+
+- name: performance
+  color: "fef2c0"
+  description: "Throughput, latency, memory, or startup-time work."

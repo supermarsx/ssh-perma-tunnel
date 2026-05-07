@@ -1,0 +1,86 @@
+name: Feature request
+description: Propose a new feature or behavior change in `spt`.
+title: "[feature] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for proposing a feature. The clearer the motivation and
+        the proposed behavior, the more likely the proposal lands.
+
+        If your proposal touches specified behavior, please cite the
+        relevant `spec.md` section so reviewers can place it in context.
+
+  - type: textarea
+    id: motivation
+    attributes:
+      label: Motivation
+      description: |
+        What problem does this feature solve? Who is affected? What
+        does the workaround look like today?
+      placeholder: |
+        I run spt across hosts that roam between corporate VPN and
+        public internet. Today I have to …
+    validations:
+      required: true
+
+  - type: textarea
+    id: current-behavior
+    attributes:
+      label: Current behavior
+      description: How does `spt` behave today in the situation your
+        proposal addresses?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposed-behavior
+    attributes:
+      label: Proposed behavior
+      description: |
+        Describe what `spt` should do instead. Be concrete: CLI flag
+        names, config keys, exit codes, log lines — whatever is
+        relevant. If this would be a breaking change, say so.
+    validations:
+      required: true
+
+  - type: input
+    id: spec-section
+    attributes:
+      label: Spec section reference
+      description: |
+        Section(s) of `spec.md` this proposal touches, or "new section"
+        if it would require adding one.
+      placeholder: "spec.md §11 (forwards), or 'new section: roaming'"
+    validations:
+      required: false
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: |
+        Other approaches you considered and why you ruled them out.
+        Include "do nothing" if it's a real option.
+    validations:
+      required: true
+
+  - type: textarea
+    id: additional-context
+    attributes:
+      label: Additional context
+      description: Mockups, links to upstream issues, prior art in
+        other tools, etc.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: confirmations
+    attributes:
+      label: Confirmations
+      options:
+        - label: I have searched existing issues and this is not a duplicate.
+          required: true
+        - label: I am willing to discuss design tradeoffs in the comments.
+          required: true

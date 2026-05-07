@@ -1,0 +1,66 @@
+# Dependabot configuration for ssh-perma-tunnel.
+#
+# Three ecosystems are tracked. All Cargo updates are advisory: the
+# lockfile is pinned for MSRV reasons (see CONTRIBUTING.md), so a
+# Dependabot PR is the *start* of a review, not the end. A human must
+# verify the proposed lockfile still builds on Rust 1.83 before merge.
+
+version: 2
+updates:
+  # Rust dependencies. Weekly cadence — frequent enough to catch
+  # security advisories quickly, infrequent enough that the manual
+  # MSRV check doesn't become a treadmill.
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+      - "msrv"
+    commit-message:
+      prefix: "deps"
+      include: "scope"
+    # NOTE: every Cargo PR opened by Dependabot needs manual MSRV
+    # verification before merge. The lockfile is intentionally pinned
+    # to versions that build on Rust 1.83; transitive bumps can
+    # silently raise that floor. Run the msrv.yml workflow on the PR
+    # branch and confirm green before clicking merge.
+    groups:
+      patch-updates:
+        update-types:
+          - "patch"
+      minor-updates:
+        update-types:
+          - "minor"
+
+  # GitHub Actions used by our workflows. Weekly to stay current with
+  # security fixes in third-party actions.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "ci"
+    commit-message:
+      prefix: "ci"
+      include: "scope"
+
+  # Base images used by the Docker release pipeline. Monthly is
+  # sufficient — the images we depend on are slow-moving distroless
+  # bases, and a more aggressive cadence just adds noise.
+  - package-ecosystem: "docker"
+    directory: "/packaging/docker"
+    schedule:
+      interval: "monthly"
+    open-pull-requests-limit: 3
+    labels:
+      - "dependencies"
+      - "packaging"
+    commit-message:
+      prefix: "docker"
+      include: "scope"

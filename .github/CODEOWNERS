@@ -1,0 +1,18 @@
+# CODEOWNERS for ssh-perma-tunnel.
+#
+# `@<owner>` is a placeholder — replace with the GitHub handle (or team
+# slug, e.g. `@my-org/spt-maintainers`) that should receive review
+# requests. Until that substitution happens, GitHub will silently treat
+# unresolved handles as no-owner; merging will not be blocked, but
+# review-required protections won't fire.
+#
+# Order matters: later patterns win for the same path.
+
+# Default fallback owner — every file in the repo.
+*                       @<owner>
+
+# Sensitive areas — require explicit maintainer review.
+/crates/spt-snmp/       @<owner>
+/packaging/             @<owner>
+/.github/               @<owner>
+SECURITY.md             @<owner>

@@ -1,0 +1,121 @@
+name: Bug report
+description: Report a defect in `spt`.
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug report. Please fill in
+        every section — the more context you give us, the faster we can
+        reproduce and fix the issue.
+
+        **Do not** report security vulnerabilities through this form.
+        Follow the process in [SECURITY.md](../../SECURITY.md) instead.
+
+  - type: input
+    id: version
+    attributes:
+      label: spt version
+      description: Output of `spt --version`.
+      placeholder: "spt 0.1.0 (rev abc1234)"
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      description: Distribution and release, kernel version where relevant.
+      placeholder: "Ubuntu 24.04 LTS, kernel 6.8.0-31-generic"
+    validations:
+      required: true
+
+  - type: input
+    id: target-triple
+    attributes:
+      label: Target triple
+      description: Rust target triple of the binary you ran.
+      placeholder: "x86_64-unknown-linux-gnu"
+    validations:
+      required: true
+
+  - type: textarea
+    id: command
+    attributes:
+      label: Command run
+      description: The exact `spt ...` invocation, including relevant flags.
+      render: shell
+      placeholder: "spt tunnel run --foreground --config /etc/spt/spt.toml"
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Minimal, deterministic steps. Include a redacted
+        config snippet if the bug is configuration-driven.
+      placeholder: |
+        1. Save the attached `spt.toml`.
+        2. Run `spt tunnel run --config spt.toml --foreground`.
+        3. Wait ~30s for the upstream SSH server to drop the session.
+        4. Observe …
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What you expected `spt` to do.
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: What `spt` actually did. Include exit codes if any.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: trace-level
+    attributes:
+      label: Trace level used to capture logs
+      description: Set via `RUST_LOG` or `--log-level`.
+      options:
+        - error
+        - warn
+        - info
+        - debug
+        - trace
+      default: 2
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Redacted logs
+      description: |
+        Paste relevant log output. Run `spt diagnose --redact strict`
+        if possible and attach the resulting bundle. **Double-check
+        that no secrets, hostnames, or IPs you don't want public are
+        included** — this is a public issue.
+      render: text
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: confirmations
+    attributes:
+      label: Confirmations
+      options:
+        - label: I have searched existing issues and this is not a duplicate.
+          required: true
+        - label: I have read [SECURITY.md](../../SECURITY.md) and this is not a security vulnerability.
+          required: true
+        - label: I have redacted secrets and sensitive hostnames from the logs above.
+          required: true

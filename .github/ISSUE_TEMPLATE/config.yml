@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security disclosures
+    url: https://github.com/<owner>/<repo>/security/advisories/new
+    about: Use SECURITY.md, not a public issue.
