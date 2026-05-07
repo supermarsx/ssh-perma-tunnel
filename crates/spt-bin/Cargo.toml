@@ -72,8 +72,10 @@ anyhow = { workspace = true }
 thiserror = { workspace = true }
 
 # Misc
+base64 = { workspace = true }
 hex = { workspace = true }
 chrono = { workspace = true }
+rand = { workspace = true }
 url = { workspace = true }
 secrecy = { workspace = true }
 ssh-key = { workspace = true }
@@ -88,6 +90,10 @@ windows-service = { workspace = true }
 [dev-dependencies]
 tempfile = { workspace = true }
 async-trait = { workspace = true }
+base64 = { workspace = true }
+futures = { workspace = true }
+rand = { workspace = true }
+serde = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
 tokio = { workspace = true }

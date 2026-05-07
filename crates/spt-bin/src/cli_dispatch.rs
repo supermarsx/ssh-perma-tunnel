@@ -544,11 +544,27 @@ async fn tunnel_dispatch(global: &GlobalOpts, c: groups::tunnel::TunnelCmd) -> R
         TunnelSub::Stop(_) => tunnel_stop(global).await,
         TunnelSub::Reload(_) => tunnel_reload(global).await,
         TunnelSub::Health(_) => Err(stub_err("tunnel health", "M3")),
-        TunnelSub::Failover(_) => Err(stub_err(
-            "tunnel failover (Orchestrator::failover wired; CLI needs MCP tool dispatch — see f-cli-final.md)",
-            "M9",
-        )),
+        TunnelSub::Failover(args) => tunnel_failover(global, args).await,
     }
+}
+
+async fn tunnel_failover(
+    global: &GlobalOpts,
+    args: groups::tunnel::TunnelFailover,
+) -> Result<()> {
+    let state_dir = resolve_state_dir_for_read(global)?;
+    let mut client = crate::mcp_client::McpClient::connect_from_state_dir(&state_dir).await?;
+    client.initialize().await?;
+    let mut payload = serde_json::json!({"profile": args.profile});
+    if let Some(ep) = args.endpoint {
+        payload["endpoint"] = serde_json::Value::String(ep);
+    }
+    let v = client.call_tool("tunnel_failover", payload).await?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&v).map_err(|e| Error::RuntimeFailure(e.to_string()))?
+    );
+    Ok(())
 }
 
 async fn tunnel_run(global: &GlobalOpts, args: groups::tunnel::TunnelRun) -> Result<()> {
@@ -634,6 +650,14 @@ async fn tunnel_run(global: &GlobalOpts, args: groups::tunnel::TunnelRun) -> Res
         .await;
     writer.flush().await?;
 
+    // Optional: bring up the MCP loopback control surface if `[mcp].listen`
+    // is configured. The server runs on a background task; we write a small
+    // sidecar (`<state_dir>/mcp-listen.json`) so CLI subcommands can find
+    // and authenticate against it.
+    let resolver = std::sync::Arc::new(resolver);
+    let mcp_handle =
+        maybe_spawn_mcp_loopback(&cfg, &state_dir, &orchestrator, &resolver, &path).await?;
+
     let signal_rx = crate::signals::spawn();
 
     if args.once {
@@ -682,9 +706,89 @@ async fn tunnel_run(global: &GlobalOpts, args: groups::tunnel::TunnelRun) -> Res
         }
     }
     orchestrator.shutdown().await;
+    if let Some(h) = mcp_handle {
+        h.shutdown(&state_dir).await;
+    }
     writer.flush().await?;
     writer_handle.stop().await;
     Ok(())
+}
+
+/// Handle for a spawned MCP loopback control surface.
+struct McpLoopbackHandle {
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl McpLoopbackHandle {
+    async fn shutdown(self, state_dir: &Path) {
+        // Best-effort: abort the listener task and remove the sidecar so the
+        // next CLI invocation gets a clear error.
+        self.task.abort();
+        let _ = self.task.await;
+        crate::mcp_listen::remove(state_dir);
+    }
+}
+
+/// Spawn the loopback MCP server backed by an [`OrchestratorController`] when
+/// `[mcp].listen` is set. Writes the `<state_dir>/mcp-listen.json` sidecar so
+/// CLI subcommands can discover the listener.
+async fn maybe_spawn_mcp_loopback(
+    cfg: &spt_config::schema::Config,
+    state_dir: &Path,
+    orchestrator: &std::sync::Arc<spt_supervisor::Orchestrator>,
+    resolver: &std::sync::Arc<spt_secrets::Resolver>,
+    config_path: &Path,
+) -> Result<Option<McpLoopbackHandle>> {
+    let Some(mcp) = cfg.mcp.as_ref() else {
+        return Ok(None);
+    };
+    if mcp.enabled != Some(true) {
+        return Ok(None);
+    }
+    let Some(listen) = mcp.listen.clone() else {
+        return Ok(None);
+    };
+    let transport = spt_mcp::LoopbackTransport::bind(&listen).await.map_err(|e| {
+        Error::McpFailed(format!("loopback bind `{listen}`: {e}"))
+    })?;
+    let bound = transport
+        .local_addr()
+        .map_err(|e| Error::McpFailed(format!("local_addr: {e}")))?;
+    let token = crate::mcp_listen::generate_token();
+    let sidecar = crate::mcp_listen::McpListenSidecar {
+        host: bound.ip().to_string(),
+        port: bound.port(),
+        token: token.clone(),
+    };
+    crate::mcp_listen::write(state_dir, &sidecar)?;
+
+    // Build OrchestratorController with the cached config.
+    let controller = std::sync::Arc::new(crate::controller::OrchestratorController::new(
+        orchestrator.clone(),
+        resolver.clone(),
+        config_path.to_path_buf(),
+        cfg.clone(),
+    )) as std::sync::Arc<dyn spt_mcp::Controller>;
+
+    let policy = spt_mcp::McpPolicy {
+        enabled: true,
+        listen: listen.clone(),
+        // Allow every write tool the live-bridge surface needs.
+        allow_write_tools: spt_mcp::policy::WRITE_TOOLS
+            .iter()
+            .map(|s| (*s).to_owned())
+            .collect(),
+        ..Default::default()
+    };
+    let server = crate::mcp_server::build_server(policy, controller).with_auth_token(token);
+
+    let task = tokio::spawn(async move {
+        if let Err(e) = server.run(transport).await {
+            tracing::warn!(error = %e, "MCP loopback server exited");
+        }
+    });
+    tracing::info!(addr = %bound, "MCP loopback control surface listening");
+    Ok(Some(McpLoopbackHandle { task }))
 }
 
 /// Re-read the config from disk and apply a [`ReloadPlan`] against the
@@ -1683,12 +1787,70 @@ async fn stats_dispatch(global: &GlobalOpts, c: groups::stats::StatsCmd) -> Resu
             // metrics file the observability layer writes.
             stats_metrics_dump(global)
         }
-        StatsSub::Live(_) => Err(stub_err(
-            "stats live (Orchestrator::stats_subscribe wired; CLI needs MCP tool dispatch — see f-cli-final.md)",
-            "M4",
-        )),
+        StatsSub::Live(args) => stats_live_dispatch(global, args).await,
         StatsSub::Export(args) => stats_export(global, args),
     }
+}
+
+async fn stats_live_dispatch(
+    global: &GlobalOpts,
+    args: groups::stats::StatsLive,
+) -> Result<()> {
+    use futures::StreamExt;
+    let state_dir = resolve_state_dir_for_read(global)?;
+    let mut client = crate::mcp_client::McpClient::connect_from_state_dir(&state_dir).await?;
+    client.initialize().await?;
+    let interval_ms = args
+        .interval
+        .as_deref()
+        .and_then(|s| spt_core::duration::parse_duration(s).ok())
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    let mut stream = client
+        .subscribe(
+            "stats_subscribe",
+            serde_json::json!({"interval_ms": interval_ms}),
+        )
+        .await?;
+    // Read until Ctrl-C / stream close.
+    let ctrl_c = tokio::signal::ctrl_c();
+    tokio::pin!(ctrl_c);
+    loop {
+        tokio::select! {
+            _ = &mut ctrl_c => {
+                eprintln!("stats live: interrupted");
+                break;
+            }
+            next = stream.next() => {
+                match next {
+                    Some(Ok(v)) => {
+                        // Profile/forward filter is best-effort: filter the
+                        // `profiles` array post-fetch when set.
+                        let mut emit = v;
+                        if let Some(filter_profile) = args.profile.as_ref() {
+                            if let Some(arr) = emit.get_mut("profiles").and_then(|x| x.as_array_mut()) {
+                                arr.retain(|p| p.get("profile").and_then(|x| x.as_str()) == Some(filter_profile.as_str()));
+                            }
+                        }
+                        let _ = args.forward; // forward-level filter not surfaced by StatsTick
+                        println!(
+                            "{}",
+                            serde_json::to_string(&emit)
+                                .map_err(|e| Error::RuntimeFailure(e.to_string()))?
+                        );
+                    }
+                    Some(Err(e)) => {
+                        return Err(e);
+                    }
+                    None => {
+                        eprintln!("stats live: stream closed");
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 fn stats_metrics_dump(global: &GlobalOpts) -> Result<()> {
@@ -1765,15 +1927,55 @@ async fn session_dispatch(global: &GlobalOpts, c: groups::session::SessionCmd) -
         // Close / drain require a control channel into the running supervisor
         // (e.g. via the MCP loopback's `tunnel_failover` family). M4 ships
         // that surface; until then we surface a structured stub.
-        SessionSub::Close(_) => Err(stub_err(
-            "session close (Orchestrator::session_close wired; CLI needs MCP tool dispatch — see f-cli-final.md)",
-            "M4",
-        )),
-        SessionSub::Drain(_) => Err(stub_err(
-            "session drain (Orchestrator::session_drain wired; CLI needs MCP tool dispatch — see f-cli-final.md)",
-            "M4",
-        )),
+        SessionSub::Close(args) => session_close_dispatch(global, args).await,
+        SessionSub::Drain(args) => session_drain_dispatch(global, args).await,
     }
+}
+
+async fn session_close_dispatch(
+    global: &GlobalOpts,
+    args: groups::session::SessionClose,
+) -> Result<()> {
+    let state_dir = resolve_state_dir_for_read(global)?;
+    let mut client = crate::mcp_client::McpClient::connect_from_state_dir(&state_dir).await?;
+    client.initialize().await?;
+    let v = client
+        .call_tool("session_close", serde_json::json!({"id": args.id}))
+        .await?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&v).map_err(|e| Error::RuntimeFailure(e.to_string()))?
+    );
+    Ok(())
+}
+
+async fn session_drain_dispatch(
+    global: &GlobalOpts,
+    args: groups::session::SessionDrain,
+) -> Result<()> {
+    let state_dir = resolve_state_dir_for_read(global)?;
+    let mut client = crate::mcp_client::McpClient::connect_from_state_dir(&state_dir).await?;
+    client.initialize().await?;
+    let grace_seconds = args
+        .grace
+        .as_deref()
+        .and_then(|s| spt_core::duration::parse_duration(s).ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(5);
+    let v = client
+        .call_tool(
+            "session_drain",
+            serde_json::json!({
+                "profile": args.profile,
+                "grace_seconds": grace_seconds,
+            }),
+        )
+        .await?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&v).map_err(|e| Error::RuntimeFailure(e.to_string()))?
+    );
+    Ok(())
 }
 
 fn session_show(global: &GlobalOpts, args: groups::session::SessionShow) -> Result<()> {
@@ -2178,11 +2380,52 @@ async fn benchmark_run(
     // to refuse than silently measure tokio::io::duplex throughput while the
     // user thinks they're measuring their tunnel.
     let is_dns = args.driver == "dns";
+    // Live mode: when `--profile` is set and the driver is tunnel-aware,
+    // dispatch to the running spt via MCP loopback. The server-side
+    // `benchmark_run` tool wires `Orchestrator::live_connector(profile,
+    // forward)` into the same driver suite this function exposes.
     if !is_dns && args.target.profile.is_some() {
-        return Err(stub_err(
-            "benchmark live driver (Orchestrator::live_connector exists; CLI needs MCP control IPC — see f-cli-final.md)",
-            "M6",
-        ));
+        let state_dir = resolve_state_dir_for_read(global)?;
+        let mut client =
+            crate::mcp_client::McpClient::connect_from_state_dir(&state_dir).await?;
+        client.initialize().await?;
+        let mut payload = serde_json::json!({
+            "driver": args.driver,
+            "profile": args.target.profile.clone().unwrap(),
+            "count": args.count.unwrap_or(50),
+            "duration_seconds": args
+                .duration
+                .as_deref()
+                .and_then(|d| spt_core::duration::parse_duration(d).ok())
+                .map(|d| d.as_secs())
+                .unwrap_or(5),
+            "allow_production_impact": allow_prod,
+        });
+        if let Some(f) = args.target.forward.clone() {
+            payload["forward"] = serde_json::Value::String(f);
+        }
+        let v = client.call_tool("benchmark_run", payload).await?;
+        if args.json {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&v)
+                    .map_err(|e| Error::RuntimeFailure(e.to_string()))?
+            );
+        } else {
+            let iter_ok = v.get("iterations_completed").and_then(|x| x.as_u64()).unwrap_or(0);
+            let iter_attempt = v.get("iterations_attempted").and_then(|x| x.as_u64()).unwrap_or(0);
+            let dur = v.get("duration_ms").and_then(|x| x.as_u64()).unwrap_or(0);
+            let errors = v
+                .get("errors")
+                .and_then(|x| x.as_array())
+                .map(Vec::len)
+                .unwrap_or(0);
+            println!(
+                "driver={} (live) iter_ok={iter_ok}/{iter_attempt} dur={dur}ms errors={errors}",
+                args.driver
+            );
+        }
+        return Ok(());
     }
     eprintln!(
         "spt: benchmark `{}` running in synthetic-loopback mode (no live tunnel — see M6)",

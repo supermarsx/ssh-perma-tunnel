@@ -72,6 +72,10 @@ pub struct McpServerInner {
     state: DynStateSource,
     resources: Arc<ResourceRegistry>,
     tools: Arc<ToolRegistry>,
+    /// Optional bearer token. When `Some`, `initialize` requires a matching
+    /// `params.token` string. Per-connection `authenticated` flag is enforced
+    /// by the transport runner.
+    auth_token: Option<String>,
 }
 
 impl McpServerInner {
@@ -85,8 +89,23 @@ impl McpServerInner {
     /// is the transport's responsibility; this method is only called for
     /// request frames.
     pub async fn dispatch(&self, req: Request) -> Response {
+        self.dispatch_with_notify(req, None).await
+    }
+
+    /// Dispatch with an optional per-connection notification sender. The
+    /// loopback transport supplies one so streaming tools work.
+    pub async fn dispatch_with_notify(
+        &self,
+        req: Request,
+        notify: Option<tokio::sync::mpsc::Sender<Value>>,
+    ) -> Response {
         let id = req.id.clone().unwrap_or(Id::Null);
-        match self.handle_request(req).await {
+        let res = if req.method == "tools/call" {
+            self.call_tool_with_notify(req.params, notify).await
+        } else {
+            self.handle_request(req).await
+        };
+        match res {
             Ok(value) => Response::ok(id, value),
             Err(e) => {
                 let code = e.rpc_code();
@@ -104,13 +123,39 @@ impl McpServerInner {
 
     async fn handle_request(&self, req: Request) -> crate::Result<Value> {
         match req.method.as_str() {
-            "initialize" => Ok(self.initialize_result()),
+            "initialize" => {
+                self.verify_init_token(req.params.as_ref())?;
+                Ok(self.initialize_result())
+            }
             "resources/list" => Ok(self.list_resources()),
             "resources/read" => self.read_resource(req.params).await,
             "tools/list" => Ok(self.list_tools()),
             "tools/call" => self.call_tool(req.params).await,
             "ping" => Ok(json!({"pong": true})),
             other => Err(crate::Error::MethodNotFound(other.to_owned())),
+        }
+    }
+
+    /// Verify the optional bearer token. When `auth_token` is `None` this
+    /// is a no-op; when `Some`, `params.token` must match exactly.
+    fn verify_init_token(&self, params: Option<&Value>) -> crate::Result<()> {
+        let Some(expected) = &self.auth_token else {
+            return Ok(());
+        };
+        let supplied = params
+            .and_then(|p| p.get("token"))
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                crate::Error::PolicyDenied(
+                    "initialize requires `params.token` for this MCP listener".to_owned(),
+                )
+            })?;
+        if supplied == expected {
+            Ok(())
+        } else {
+            Err(crate::Error::PolicyDenied(
+                "initialize token mismatch".to_owned(),
+            ))
         }
     }
 
@@ -199,6 +244,18 @@ impl McpServerInner {
     }
 
     async fn dispatch_tool(&self, name: &str, arguments: Value) -> crate::Result<Value> {
+        self.dispatch_tool_with_notify(name, arguments, None).await
+    }
+
+    /// Dispatch a tool with an optional per-connection notification sender.
+    /// Streaming tools (e.g. `stats_subscribe`) consult the sender; for
+    /// non-streaming transports `notify` is `None`.
+    pub async fn dispatch_tool_with_notify(
+        &self,
+        name: &str,
+        arguments: Value,
+        notify: Option<tokio::sync::mpsc::Sender<Value>>,
+    ) -> crate::Result<Value> {
         self.policy.ensure_enabled()?;
         self.policy.ensure_write_allowed(name)?;
         let handler = self
@@ -209,8 +266,63 @@ impl McpServerInner {
             config: self.config.clone(),
             state: self.state.clone(),
             controller: self.controller.clone(),
+            notification_sender: notify,
         };
         handler.call(&ctx, arguments).await
+    }
+
+    /// Public: full `tools/call` path with optional notification sender.
+    /// Used by the loopback transport to expose streaming tools.
+    pub async fn call_tool_with_notify(
+        &self,
+        params: Option<Value>,
+        notify: Option<tokio::sync::mpsc::Sender<Value>>,
+    ) -> crate::Result<Value> {
+        let params = params.unwrap_or(Value::Null);
+        let name = params.get("name").and_then(Value::as_str).ok_or_else(|| {
+            crate::Error::InvalidParams("missing string field 'name'".to_owned())
+        })?;
+        let arguments = params
+            .get("arguments")
+            .cloned()
+            .unwrap_or_else(|| json!({}));
+        let client_id = params
+            .get("clientId")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+
+        let result = self
+            .dispatch_tool_with_notify(name, arguments.clone(), notify)
+            .await;
+        let (ok, error_text) = match &result {
+            Ok(_) => (true, None),
+            Err(e) => (false, Some(e.to_string())),
+        };
+        let event = AuditEvent {
+            tool: name.to_owned(),
+            arguments: self.policy.redact(arguments),
+            ok,
+            client_id,
+            error: error_text,
+            timestamp_ms: now_ms(),
+        };
+        self.audit.record(event).await;
+
+        let payload = result?;
+        let redacted = self.policy.redact(payload);
+        Ok(json!({
+            "content": [{
+                "type": "text",
+                "text": serde_json::to_string(&redacted)?,
+            }],
+            "isError": false,
+        }))
+    }
+
+    /// Optional bearer token. When `Some`, the `initialize` request must
+    /// carry a matching `params.token` string. Set via [`McpServer::with_auth_token`].
+    pub fn auth_token(&self) -> Option<&str> {
+        self.auth_token.as_deref()
     }
 }
 
@@ -239,8 +351,37 @@ impl McpServer {
                 state,
                 resources: Arc::new(ResourceRegistry::new()),
                 tools: Arc::new(ToolRegistry::new()),
+                auth_token: None,
             }),
         }
+    }
+
+    /// Require `initialize` to carry `params.token` matching the supplied
+    /// value. The token is **per-process** — generated by `tunnel run` and
+    /// written to `<state_dir>/mcp-listen.json` for the CLI to read.
+    /// Connections that omit or mis-match the token are dropped with a
+    /// `PolicyDenied` after `initialize`.
+    #[must_use]
+    pub fn with_auth_token(mut self, token: impl Into<String>) -> Self {
+        let inner = match Arc::try_unwrap(self.inner) {
+            Ok(mut i) => {
+                i.auth_token = Some(token.into());
+                i
+            }
+            Err(arc) => McpServerInner {
+                capabilities: arc.capabilities.clone(),
+                policy: arc.policy.clone(),
+                audit: arc.audit.clone(),
+                controller: arc.controller.clone(),
+                config: arc.config.clone(),
+                state: arc.state.clone(),
+                resources: arc.resources.clone(),
+                tools: arc.tools.clone(),
+                auth_token: Some(token.into()),
+            },
+        };
+        self.inner = Arc::new(inner);
+        self
     }
 
     /// Build a server with all-noop dependencies. Useful for tests and
@@ -257,7 +398,7 @@ impl McpServer {
         )
     }
 
-    /// Override advertised capabilities.
+    /// Override advertised capabilities (kept).
     #[must_use]
     pub fn with_capabilities(mut self, caps: ServerCapabilities) -> Self {
         // We hold the only Arc here in the typical builder flow; if not, we
@@ -277,6 +418,7 @@ impl McpServer {
                 state: arc.state.clone(),
                 resources: arc.resources.clone(),
                 tools: arc.tools.clone(),
+                auth_token: arc.auth_token.clone(),
             },
         };
         self.inner = Arc::new(inner);
@@ -396,10 +538,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tools_list_returns_thirtyone() {
+    async fn tools_list_returns_all_tools() {
         let s = server_with(McpPolicy::default(), MockAuditSink::new());
         let v = s.inner.list_tools();
-        assert_eq!(v["tools"].as_array().unwrap().len(), 31);
+        assert_eq!(
+            v["tools"].as_array().unwrap().len(),
+            crate::tools::ALL_TOOL_NAMES.len()
+        );
     }
 
     #[tokio::test]

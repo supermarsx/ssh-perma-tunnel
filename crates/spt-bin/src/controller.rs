@@ -199,6 +199,98 @@ impl Controller for OrchestratorController {
         let new_cfg = self.read_disk_config()?;
         self.reload_with(new_cfg).await
     }
+
+    async fn session_close(&self, session_id: &str) -> McpResult<()> {
+        let id: spt_core::SessionId = session_id
+            .parse()
+            .map_err(|e| McpError::InvalidParams(format!("session id: {e}")))?;
+        self.orchestrator
+            .session_close(&id)
+            .await
+            .map_err(|e| McpError::InvalidParams(format!("session_close: {e}")))
+    }
+
+    async fn session_drain(
+        &self,
+        profile: &str,
+        grace_seconds: u64,
+    ) -> McpResult<serde_json::Value> {
+        let report = self
+            .orchestrator
+            .session_drain(profile, std::time::Duration::from_secs(grace_seconds))
+            .await
+            .map_err(|e| McpError::InvalidParams(format!("session_drain: {e}")))?;
+        Ok(serde_json::json!({
+            "drained": report.drained,
+            "force_closed": report.force_closed,
+            "already_closed": report.already_closed,
+        }))
+    }
+
+    async fn stats_subscribe(
+        &self,
+        interval_ms: u64,
+        tx: tokio::sync::mpsc::Sender<serde_json::Value>,
+    ) -> McpResult<()> {
+        let mut rx = self.orchestrator.stats_subscribe();
+        let _ = interval_ms; // interval is governed by stats_cfg.interval
+        tokio::spawn(async move {
+            loop {
+                match rx.recv().await {
+                    Ok(tick) => {
+                        let v = serde_json::to_value(&tick).unwrap_or(serde_json::Value::Null);
+                        if tx.send(v).await.is_err() {
+                            break;
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        });
+        Ok(())
+    }
+
+    async fn run_benchmark(&self, args: serde_json::Value) -> McpResult<serde_json::Value> {
+        // Bridge into spt-benchmark using `Orchestrator::live_connector` for
+        // tunnel-aware drivers. `dns` is synthetic on the server too.
+        let driver = args
+            .get("driver")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| McpError::InvalidParams("missing string field 'driver'".to_owned()))?
+            .to_owned();
+        let profile = args
+            .get("profile")
+            .and_then(|v| v.as_str())
+            .map(str::to_owned);
+        let forward = args
+            .get("forward")
+            .and_then(|v| v.as_str())
+            .map(str::to_owned);
+        let count = args
+            .get("count")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(50);
+        let allow_prod = args
+            .get("allow_production_impact")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        let max_duration_secs = args
+            .get("duration_seconds")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(5);
+
+        let live = profile
+            .as_deref()
+            .map(|p| self.orchestrator.live_connector(p, forward.as_deref()));
+
+        let result =
+            crate::run_live_benchmark(driver.as_str(), live, count, max_duration_secs, allow_prod)
+                .await
+                .map_err(|e| McpError::Internal(format!("benchmark: {e}")))?;
+        serde_json::to_value(&result)
+            .map_err(|e| McpError::Internal(format!("serialize bench: {e}")))
+    }
 }
 
 #[cfg(test)]

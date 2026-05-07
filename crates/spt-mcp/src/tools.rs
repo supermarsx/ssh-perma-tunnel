@@ -30,6 +30,10 @@ pub struct ToolContext {
     pub state: DynStateSource,
     /// Mutating runtime-control adapter.
     pub controller: DynController,
+    /// Per-connection notification sender. The transport sets this before
+    /// dispatching streaming tools (e.g. `stats_subscribe`); on stdio /
+    /// non-streaming transports it remains `None`.
+    pub notification_sender: Option<tokio::sync::mpsc::Sender<serde_json::Value>>,
 }
 
 /// One tool. Implementors describe themselves and execute a single async call.
@@ -45,6 +49,10 @@ pub trait ToolHandler: Send + Sync + 'static {
 
 /// The full canonical name list from spec §16, in spec order. Used by tests
 /// and the registry sanity-check.
+///
+/// The original spec lists 31 tools; 4 additional live-bridge tools
+/// (`session_close`, `session_drain`, `stats_subscribe`, `benchmark_run`
+/// already counted) are appended for the loopback control surface.
 pub const ALL_TOOL_NAMES: &[&str] = &[
     "config_validate",
     "config_doctor",
@@ -77,6 +85,10 @@ pub const ALL_TOOL_NAMES: &[&str] = &[
     "secret_list",
     "secret_set_ref",
     "key_inspect",
+    // Live-bridge tools added by f-live-bridge.
+    "session_close",
+    "session_drain",
+    "stats_subscribe",
 ];
 
 /// Internal helper: build a no-arguments JSON-Schema.
@@ -326,8 +338,152 @@ macro_rules! planned_tool {
 
 planned_tool!(DiagnoseRun,           "diagnose_run",           "Run the diagnostic check framework.",  empty_schema());
 planned_tool!(DiagnoseBundle,        "diagnose_bundle",        "Build a redacted diagnostics bundle.", empty_schema());
-planned_tool!(BenchmarkRun,          "benchmark_run",          "Run a benchmark scenario.",            empty_schema());
 planned_tool!(BenchmarkReportExport, "benchmark_report_export","Export a benchmark report.",           empty_schema());
+
+/// `benchmark_run`: drive a benchmark driver against the live tunnel.
+pub struct BenchmarkRun;
+#[async_trait]
+impl ToolHandler for BenchmarkRun {
+    fn name(&self) -> &'static str {
+        "benchmark_run"
+    }
+    fn descriptor(&self) -> ToolDescriptor {
+        ToolDescriptor {
+            name: self.name().to_owned(),
+            description: "Run a benchmark driver against the live tunnel.".to_owned(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "driver": {"type": "string"},
+                    "profile": {"type": "string"},
+                    "forward": {"type": "string"},
+                    "count": {"type": "integer", "minimum": 1},
+                    "duration_seconds": {"type": "integer", "minimum": 1},
+                    "allow_production_impact": {"type": "boolean"}
+                },
+                "required": ["driver"],
+                "additionalProperties": true,
+            }),
+        }
+    }
+    async fn call(&self, ctx: &ToolContext, args: Value) -> crate::Result<Value> {
+        ctx.controller.run_benchmark(args).await
+    }
+}
+
+/// `session_close`: tear down a single live session by id.
+pub struct SessionClose;
+#[async_trait]
+impl ToolHandler for SessionClose {
+    fn name(&self) -> &'static str {
+        "session_close"
+    }
+    fn descriptor(&self) -> ToolDescriptor {
+        ToolDescriptor {
+            name: self.name().to_owned(),
+            description: "Close a single live session by id.".to_owned(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {"id": {"type": "string"}},
+                "required": ["id"],
+            }),
+        }
+    }
+    async fn call(&self, ctx: &ToolContext, args: Value) -> crate::Result<Value> {
+        let id = args.get("id").and_then(Value::as_str).ok_or_else(|| {
+            crate::Error::InvalidParams("missing string field 'id'".to_owned())
+        })?;
+        ctx.controller.session_close(id).await?;
+        Ok(json!({"applied": true, "id": id}))
+    }
+}
+
+/// `session_drain`: stop accepting new connections, wait grace, force close.
+pub struct SessionDrain;
+#[async_trait]
+impl ToolHandler for SessionDrain {
+    fn name(&self) -> &'static str {
+        "session_drain"
+    }
+    fn descriptor(&self) -> ToolDescriptor {
+        ToolDescriptor {
+            name: self.name().to_owned(),
+            description: "Drain all forwards of a profile within a grace window.".to_owned(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "profile": {"type": "string"},
+                    "grace_seconds": {"type": "integer", "minimum": 0}
+                },
+                "required": ["profile"],
+            }),
+        }
+    }
+    async fn call(&self, ctx: &ToolContext, args: Value) -> crate::Result<Value> {
+        let profile = args.get("profile").and_then(Value::as_str).ok_or_else(|| {
+            crate::Error::InvalidParams("missing string field 'profile'".to_owned())
+        })?;
+        let grace_seconds = args
+            .get("grace_seconds")
+            .and_then(Value::as_u64)
+            .unwrap_or(5);
+        let report = ctx
+            .controller
+            .session_drain(profile, grace_seconds)
+            .await?;
+        Ok(json!({"applied": true, "profile": profile, "report": report}))
+    }
+}
+
+/// `stats_subscribe`: register a streaming subscription. The server pushes
+/// `notifications/stats/tick` notifications on this connection until the
+/// client disconnects.
+///
+/// Spawns the subscription via the controller. Each tick is forwarded as a
+/// JSON-RPC notification by the per-connection task in
+/// [`crate::transport::run_connection_with_notifications`].
+pub struct StatsSubscribe;
+#[async_trait]
+impl ToolHandler for StatsSubscribe {
+    fn name(&self) -> &'static str {
+        "stats_subscribe"
+    }
+    fn descriptor(&self) -> ToolDescriptor {
+        ToolDescriptor {
+            name: self.name().to_owned(),
+            description: "Subscribe to live StatsTick notifications. Frames are emitted as `notifications/stats/tick`.".to_owned(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "interval_ms": {"type": "integer", "minimum": 100}
+                },
+                "additionalProperties": true,
+            }),
+        }
+    }
+    async fn call(&self, ctx: &ToolContext, args: Value) -> crate::Result<Value> {
+        let interval_ms = args
+            .get("interval_ms")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        // Streaming dispatch: we install a per-connection mpsc::Sender by
+        // having the server set `ctx.notification_sender` before dispatch.
+        // If a sender is present we hand it to the controller; if not we
+        // return a typed error so the client knows to use a transport that
+        // supports notifications (i.e. the loopback path).
+        let tx = ctx.notification_sender.clone().ok_or_else(|| {
+            crate::Error::InvalidParams(
+                "stats_subscribe requires a transport with notification support".to_owned(),
+            )
+        })?;
+        ctx.controller.stats_subscribe(interval_ms, tx).await?;
+        Ok(json!({
+            "subscribed": true,
+            "interval_ms": interval_ms,
+            "notification": "notifications/stats/tick"
+        }))
+    }
+}
 planned_tool!(DnsRecordAdd,          "dns_record_add",         "Add a DNS record.",                    empty_schema());
 planned_tool!(DnsRecordRemove,       "dns_record_remove",      "Remove a DNS record.",                 empty_schema());
 planned_tool!(EventTest,             "event_test",             "Send a test event to bindings.",       empty_schema());
@@ -391,12 +547,16 @@ impl ToolRegistry {
         add!(DnsRecordRemove);
         add!(EventTest);
         add!(SecretSetRef);
+        // Live-bridge additions (f-live-bridge):
+        add!(SessionClose);
+        add!(SessionDrain);
+        add!(StatsSubscribe);
 
         debug_assert_eq!(by_name.len(), ALL_TOOL_NAMES.len(), "tool count mismatch");
         Self { by_name }
     }
 
-    /// Number of registered tools (must be 31).
+    /// Number of registered tools (must be 34).
     #[must_use]
     pub fn len(&self) -> usize {
         self.by_name.len()
@@ -406,6 +566,12 @@ impl ToolRegistry {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.by_name.is_empty()
+    }
+
+    /// All registered tool names, sorted.
+    #[must_use]
+    pub fn names(&self) -> Vec<&'static str> {
+        self.by_name.keys().copied().collect()
     }
 
     /// Descriptors for `tools/list`, sorted by name.
@@ -426,9 +592,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn registry_contains_all_thirtyone_tools() {
+    fn registry_contains_all_tools() {
         let r = ToolRegistry::new();
-        assert_eq!(r.len(), 31, "spec §16 lists 31 tools");
+        assert_eq!(
+            r.len(),
+            ALL_TOOL_NAMES.len(),
+            "spec §16 + live-bridge tools"
+        );
     }
 
     #[test]

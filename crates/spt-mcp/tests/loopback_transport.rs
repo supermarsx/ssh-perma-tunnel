@@ -89,8 +89,8 @@ async fn loopback_round_trip_initialize_and_list() {
     .await;
     assert_eq!(
         res["result"]["tools"].as_array().unwrap().len(),
-        31,
-        "spec §16 lists 31 tools"
+        spt_mcp::tools::ALL_TOOL_NAMES.len(),
+        "spec §16 + live-bridge tools"
     );
 
     drop(stream);

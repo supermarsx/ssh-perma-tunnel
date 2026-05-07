@@ -67,6 +67,10 @@ pub const WRITE_TOOLS: &[&str] = &[
     "dns_record_remove",
     "event_test",
     "secret_set_ref",
+    // Live-bridge tools (f-live-bridge):
+    "session_close",
+    "session_drain",
+    "stats_subscribe",
 ];
 
 /// Runtime policy wrapper that applies `enabled`, `allow_write_tools`, and

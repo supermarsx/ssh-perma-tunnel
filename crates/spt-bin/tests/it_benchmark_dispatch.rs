@@ -98,9 +98,13 @@ fn benchmark_live_driver_with_profile_refuses_cleanly() {
     // With `--profile` set the dispatcher refuses (live path not wired).
     assert!(!out.status.success(), "expected non-zero for live driver");
     let stderr = String::from_utf8_lossy(&out.stderr);
+    // With no running spt and no mcp-listen.json sidecar, the live path
+    // fails fast with a clear "is `spt tunnel run` running" error.
     assert!(
-        stderr.contains("M6") || stderr.contains("live"),
-        "expected M6-stub error, got stderr: {stderr}"
+        stderr.contains("mcp-listen.json")
+            || stderr.contains("tunnel run")
+            || stderr.contains("[mcp].listen"),
+        "expected sidecar-missing error, got stderr: {stderr}"
     );
 }
 

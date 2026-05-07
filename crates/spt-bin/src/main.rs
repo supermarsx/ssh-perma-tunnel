@@ -11,14 +11,20 @@
 // orchestrator controller hookup). Suppress the dead-code warnings.
 #![allow(dead_code)]
 
+mod benchmark_bridge;
 mod cli_dispatch;
 mod controller;
+mod mcp_client;
+mod mcp_listen;
 mod mcp_server;
 mod profile_factory;
 mod runtime;
+mod scm_dispatch;
 mod secrets_bridge;
 mod signals;
 mod tracing_init;
+
+pub(crate) use benchmark_bridge::run_live_benchmark;
 
 use std::path::PathBuf;
 use std::process::ExitCode as ProcExitCode;
@@ -27,6 +33,20 @@ use spt_cli::{Cli, ColorMode, GlobalOpts, LogLevel};
 use spt_core::{Error, ExitCode, Result};
 
 fn main() -> ProcExitCode {
+    // Windows SCM dispatch path: if SCM started us, the ImagePath ends in
+    // `--scm-dispatch`. Detect it BEFORE clap parses `Cli` (clap doesn't
+    // know about the flag and would reject it). The dispatch handler builds
+    // its own tokio runtime, so we short-circuit out of the normal
+    // CLI/runtime bootstrap entirely.
+    if scm_dispatch::is_scm_dispatch_invocation() {
+        // Tracing initialisation deferred to the orchestrator path inside
+        // `enter_scm_dispatch` — once the config has been loaded the full
+        // `spt-observability` pipeline can be wired. Until then the only
+        // visible output is whatever ships via `tracing` defaults (no-op).
+        let result = scm_dispatch::enter_scm_dispatch("spt");
+        return map_exit(result);
+    }
+
     let cli = Cli::parse_args();
 
     // Tracing: best-effort init from CLI flags. We can't read config yet

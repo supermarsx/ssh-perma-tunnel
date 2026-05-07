@@ -353,7 +353,7 @@ mod tests {
             .unwrap();
         let tools_v = r.result.unwrap()["tools"].clone();
         let tools: Vec<ToolDescriptor> = serde_json::from_value(tools_v).unwrap();
-        assert_eq!(tools.len(), 31);
+        assert_eq!(tools.len(), crate::tools::ALL_TOOL_NAMES.len());
         assert_tool_listed(&tools, "tunnel_status");
 
         drop(client);

@@ -51,6 +51,6 @@ pub use policy::{McpPolicy, Policy};
 pub use server::{McpServer, McpServerInner, ServerCapabilities};
 pub use sources::{ConfigSource, NoopSources, StateSource};
 pub use transport::{
-    loopback::LoopbackTransport, stdio::StdioTransport, LoopbackConfig, Transport, TransportConfig,
-    TransportKind,
+    loopback::LoopbackTransport, run_connection, run_connection_with_notifications,
+    stdio::StdioTransport, LoopbackConfig, Transport, TransportConfig, TransportKind,
 };

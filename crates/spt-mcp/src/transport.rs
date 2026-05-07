@@ -151,18 +151,93 @@ where
     R: AsyncBufReadExt + Unpin,
     W: AsyncWrite + Unpin,
 {
+    run_connection_inner(inner, reader, writer, /* with_notify */ false).await
+}
+
+/// Same as [`run_connection`] but multiplexes server→client JSON-RPC
+/// notifications onto the same writer. Streaming tools (e.g.
+/// `stats_subscribe`) push values onto a per-connection mpsc; this loop
+/// drains the channel as `notifications/stats/tick` frames between
+/// inbound requests.
+pub async fn run_connection_with_notifications<R, W>(
+    inner: Arc<McpServerInner>,
+    reader: &mut R,
+    writer: &mut W,
+) -> crate::Result<()>
+where
+    R: AsyncBufReadExt + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    run_connection_inner(inner, reader, writer, /* with_notify */ true).await
+}
+
+async fn run_connection_inner<R, W>(
+    inner: Arc<McpServerInner>,
+    reader: &mut R,
+    writer: &mut W,
+    with_notify: bool,
+) -> crate::Result<()>
+where
+    R: AsyncBufReadExt + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    use tokio::sync::mpsc;
+    let (notify_tx, mut notify_rx) = mpsc::channel::<Value>(64);
+    // Track whether `initialize` has succeeded for this connection. When the
+    // server has an auth token configured, every other method is rejected
+    // until initialize succeeds.
+    let mut initialized = false;
+    let needs_token = inner.auth_token().is_some();
     loop {
-        let req = match read_request(reader).await? {
-            None => break,                              // EOF
-            Some(r) if r.method.is_empty() => continue, // empty line
-            Some(r) => r,
-        };
-        if req.is_notification() {
-            inner.note(&req);
-            continue;
+        tokio::select! {
+            biased;
+            // Drain pending notifications first so they are not delayed by a
+            // long-running request read.
+            maybe_payload = notify_rx.recv(), if with_notify => {
+                match maybe_payload {
+                    Some(payload) => {
+                        write_notification(writer, "notifications/stats/tick", payload).await?;
+                    }
+                    None => {
+                        // All notify_tx senders have dropped. This shouldn't
+                        // happen — we hold the original — but treat it as a
+                        // disabled arm rather than a loop exit.
+                        tracing::trace!("notify_rx returned None — channel closed");
+                    }
+                }
+            }
+            req = read_request(reader) => {
+                let req = match req? {
+                    None => {
+                        tracing::trace!("read_request: EOF — closing connection");
+                        break;
+                    }
+                    Some(r) if r.method.is_empty() => continue,
+                    Some(r) => r,
+                };
+                if req.is_notification() {
+                    inner.note(&req);
+                    continue;
+                }
+                if needs_token && !initialized && req.method != "initialize" {
+                    let resp = crate::protocol::Response::err(
+                        req.id.clone().unwrap_or(crate::protocol::Id::Null),
+                        crate::Error::PolicyDenied("not initialized".to_owned()).rpc_code(),
+                        "MCP loopback requires authenticated initialize",
+                    );
+                    write_response(writer, &resp).await?;
+                    break;
+                }
+                let is_init = req.method == "initialize";
+                let notify_for_call = if with_notify { Some(notify_tx.clone()) } else { None };
+                let response = inner.dispatch_with_notify(req, notify_for_call).await;
+                let success = response.error.is_none();
+                write_response(writer, &response).await?;
+                if is_init && success {
+                    initialized = true;
+                }
+            }
         }
-        let response = inner.dispatch(req).await;
-        write_response(writer, &response).await?;
     }
     writer.flush().await?;
     Ok(())
@@ -199,7 +274,7 @@ pub mod stdio {
 
 /// Loopback TCP transport.
 pub mod loopback {
-    use super::{run_connection, McpServerInner, Transport};
+    use super::{McpServerInner, Transport};
     use async_trait::async_trait;
     use std::net::SocketAddr;
     use std::sync::Arc;
@@ -259,7 +334,13 @@ pub mod loopback {
                 tokio::spawn(async move {
                     let (read_half, mut write_half) = stream.into_split();
                     let mut reader = BufReader::new(read_half);
-                    if let Err(e) = run_connection(inner, &mut reader, &mut write_half).await {
+                    if let Err(e) = super::run_connection_with_notifications(
+                        inner,
+                        &mut reader,
+                        &mut write_half,
+                    )
+                    .await
+                    {
                         tracing::warn!(peer = %peer, error = %e, "MCP loopback connection ended with error");
                     }
                 });

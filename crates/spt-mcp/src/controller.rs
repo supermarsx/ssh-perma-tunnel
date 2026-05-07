@@ -22,8 +22,10 @@
 //!   restarting the whole profile.
 
 use async_trait::async_trait;
+use serde_json::Value;
 use spt_config::schema::Forward;
 use std::sync::Arc;
+use tokio::sync::mpsc;
 
 /// Runtime control operations exposed to mutating MCP tools.
 ///
@@ -54,6 +56,44 @@ pub trait Controller: Send + Sync + 'static {
     /// Remove a forward from a profile by id. Implementations are expected
     /// to persist the change and trigger a reload.
     async fn forward_remove(&self, profile: &str, forward_id: &str) -> crate::Result<()>;
+
+    /// Close a single live session by id.
+    async fn session_close(&self, session_id: &str) -> crate::Result<()> {
+        let _ = session_id;
+        Err(crate::Error::NotImplemented("Controller::session_close"))
+    }
+
+    /// Drain all forwards of `profile` with the given grace, return a JSON
+    /// summary (`{"drained": N, "force_closed": N, "already_closed": N}`).
+    async fn session_drain(
+        &self,
+        profile: &str,
+        grace_seconds: u64,
+    ) -> crate::Result<Value> {
+        let _ = (profile, grace_seconds);
+        Err(crate::Error::NotImplemented("Controller::session_drain"))
+    }
+
+    /// Spawn a background task that pushes [`StatsTick`]-shaped JSON values
+    /// onto the supplied channel until the receiver drops. Returns once the
+    /// task has been spawned. Implementations should respect the requested
+    /// `interval_ms` (or treat 0 as "use default").
+    async fn stats_subscribe(
+        &self,
+        interval_ms: u64,
+        tx: mpsc::Sender<Value>,
+    ) -> crate::Result<()> {
+        let _ = (interval_ms, tx);
+        Err(crate::Error::NotImplemented("Controller::stats_subscribe"))
+    }
+
+    /// Run a benchmark driver against the live tunnel. The implementation
+    /// may consult the running orchestrator's `live_connector(profile,
+    /// forward)`. Returns the BenchResult-shaped JSON value.
+    async fn run_benchmark(&self, args: Value) -> crate::Result<Value> {
+        let _ = args;
+        Err(crate::Error::NotImplemented("Controller::run_benchmark"))
+    }
 }
 
 /// Default no-op controller for embedding harnesses and tests. Every method
@@ -118,6 +158,19 @@ pub mod testing {
             profile: String,
             forward_id: String,
         },
+        SessionClose {
+            session_id: String,
+        },
+        SessionDrain {
+            profile: String,
+            grace_seconds: u64,
+        },
+        StatsSubscribe {
+            interval_ms: u64,
+        },
+        RunBenchmark {
+            args: serde_json::Value,
+        },
     }
 
     /// In-memory recording controller used by the unit tests.
@@ -178,6 +231,64 @@ pub mod testing {
                 forward_id: forward_id.to_owned(),
             });
             Ok(())
+        }
+        async fn session_close(&self, session_id: &str) -> crate::Result<()> {
+            self.calls.lock().push(ControllerCall::SessionClose {
+                session_id: session_id.to_owned(),
+            });
+            Ok(())
+        }
+        async fn session_drain(
+            &self,
+            profile: &str,
+            grace_seconds: u64,
+        ) -> crate::Result<serde_json::Value> {
+            self.calls.lock().push(ControllerCall::SessionDrain {
+                profile: profile.to_owned(),
+                grace_seconds,
+            });
+            Ok(serde_json::json!({
+                "drained": 0u32,
+                "force_closed": 0u32,
+                "already_closed": 0u32
+            }))
+        }
+        async fn stats_subscribe(
+            &self,
+            interval_ms: u64,
+            tx: tokio::sync::mpsc::Sender<serde_json::Value>,
+        ) -> crate::Result<()> {
+            self.calls
+                .lock()
+                .push(ControllerCall::StatsSubscribe { interval_ms });
+            // Emit a couple of synthetic ticks so tests can observe.
+            tokio::spawn(async move {
+                for i in 0..3 {
+                    if tx
+                        .send(serde_json::json!({"tick": i, "interval_ms": interval_ms}))
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                }
+            });
+            Ok(())
+        }
+        async fn run_benchmark(
+            &self,
+            args: serde_json::Value,
+        ) -> crate::Result<serde_json::Value> {
+            self.calls
+                .lock()
+                .push(ControllerCall::RunBenchmark { args: args.clone() });
+            Ok(serde_json::json!({
+                "ok": true,
+                "args": args,
+                "iterations_completed": 0,
+                "iterations_attempted": 0
+            }))
         }
     }
 }
