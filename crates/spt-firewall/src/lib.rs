@@ -188,6 +188,24 @@ pub trait FirewallPlanner: Send + Sync {
             "real remove requires the per-OS planner".to_string(),
         ))
     }
+
+    /// Query the currently-applied set of spt-managed rules from the live
+    /// firewall (e.g. by parsing `nft list ruleset`, `pfctl -s rules -a com.spt`,
+    /// or `netsh advfirewall firewall show rule name="spt:*"`).
+    ///
+    /// Returns the list of rule IDs (the suffix after `tag_prefix`) currently
+    /// installed and tagged as ours. Never shells out from unit tests.
+    ///
+    /// The default implementation returns `UnsupportedPlatform` so existing
+    /// per-OS planners that have not yet implemented live querying continue to
+    /// compile without modification. CLI consumers are expected to surface
+    /// this as a graceful "no permission / not implemented" message rather
+    /// than panicking.
+    fn query_active_rules(&self) -> Result<Vec<String>> {
+        Err(Error::UnsupportedPlatform(
+            "live firewall rule query is not implemented for this platform".to_string(),
+        ))
+    }
 }
 
 /// Pick the planner appropriate to the current platform.
