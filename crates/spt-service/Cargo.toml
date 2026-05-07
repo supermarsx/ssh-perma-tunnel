@@ -17,6 +17,11 @@ spt-core = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+async-trait = { workspace = true }
+tokio = { workspace = true }
+parking_lot = { workspace = true }
+chrono = { workspace = true }
+csv = "1.3"
 
 [target.'cfg(windows)'.dependencies]
 windows-service = { workspace = true }
@@ -25,3 +30,4 @@ windows-service = { workspace = true }
 insta = { workspace = true }
 tempfile = { workspace = true }
 serde_json = { workspace = true }
+tokio = { workspace = true }

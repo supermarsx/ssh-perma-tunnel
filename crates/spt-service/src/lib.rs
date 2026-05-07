@@ -2,7 +2,7 @@
 //! Scheduler) for spt.
 //!
 //! Each backend is split into a **render** path (pure, returns a `String`,
-//! always available cross-platform for golden tests) and an **install / *
+//! always available cross-platform for golden tests) and an **install /
 //! uninstall / status / start / stop / restart / reload** path (real OS
 //! action, may shell out, may require admin). Tests only ever drive the
 //! render path; the live paths are gated and run only on the matching OS
@@ -22,12 +22,15 @@ use spt_core::error::{Error, Result};
 
 pub mod launchd;
 pub mod openrc;
-pub mod sysv;
+pub mod runner;
 pub mod systemd_system;
 pub mod systemd_user;
+pub mod sysv;
 pub mod task_scheduler;
 pub mod template;
 pub mod windows_scm;
+
+pub use runner::{CommandRunner, MockRunner, RunOutput, TokioRunner};
 
 /// Whether a service runs at the system or per-user scope.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -121,70 +124,152 @@ impl Default for ServiceSpec {
     }
 }
 
-/// Live status of an installed service.
+/// Coarse service lifecycle state, normalised across backends.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum ServiceStatus {
+pub enum ServiceState {
     /// Service is running.
     Running,
     /// Service is registered but not running.
     Stopped,
+    /// Service exited with failure (last known state).
+    Failed,
     /// Service is not installed at all.
     NotInstalled,
-    /// Backend cannot determine status (treat as opaque).
+    /// Backend cannot determine state (treat as opaque).
     Unknown,
+}
+
+/// Live status of an installed service.
+///
+/// Fields beyond `state` are best-effort: each backend fills what its
+/// underlying CLI exposes and leaves the rest `None`. See
+/// [`ServiceCapabilities`] for which backend advertises which field.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ServiceStatus {
+    /// Coarse lifecycle state.
+    pub state: ServiceState,
+    /// Process ID of the running service, if known.
+    pub pid: Option<u32>,
+    /// Last observed exit code (Stopped / Failed states).
+    pub exit_code: Option<i32>,
+    /// Timestamp at which the service entered its current state.
+    pub since: Option<chrono::DateTime<chrono::Utc>>,
+    /// Number of automatic restarts the supervisor has performed.
+    pub restart_count: Option<u32>,
+}
+
+impl ServiceStatus {
+    /// Construct a status with only the coarse state filled in.
+    #[must_use]
+    pub fn new(state: ServiceState) -> Self {
+        Self {
+            state,
+            pid: None,
+            exit_code: None,
+            since: None,
+            restart_count: None,
+        }
+    }
+}
+
+impl Default for ServiceStatus {
+    fn default() -> Self {
+        Self::new(ServiceState::Unknown)
+    }
+}
+
+/// Static description of the operations a backend supports natively.
+///
+/// The CLI uses this to preflight: e.g. `spt service reload` on Task
+/// Scheduler short-circuits to a typed `UnsupportedPlatform` error
+/// rather than blindly invoking a shell-out that will fail.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ServiceCapabilities {
+    /// Backend can install services on this OS.
+    pub supports_install: bool,
+    /// Backend can uninstall services.
+    pub supports_uninstall: bool,
+    /// Backend can report live status.
+    pub supports_status: bool,
+    /// Backend supports start + stop primitives.
+    pub supports_start_stop: bool,
+    /// Backend supports an explicit restart primitive (vs. stop+start).
+    pub supports_restart: bool,
+    /// Backend supports a reload primitive (SIGHUP-equivalent).
+    pub supports_reload: bool,
+    /// Backend can run services at user scope (per-user agent / `--user`).
+    pub supports_user_scope: bool,
+    /// Status reports include a PID.
+    pub supports_status_pid: bool,
+    /// Status reports include an "active since" timestamp.
+    pub supports_status_uptime: bool,
+    /// Status reports include a restart counter.
+    pub supports_restart_counter: bool,
 }
 
 /// Service manager trait. `&self` everywhere so a `Box<dyn ServiceManager>`
 /// dispatcher works in `spt-bin`.
+///
+/// Lifecycle methods are async because most backends shell out to a
+/// canonical OS CLI (`systemctl`, `launchctl`, `schtasks`, ...) via
+/// [`crate::CommandRunner`].
+///
+/// **No default impls.** Each backend explicitly implements every method.
+/// Where the underlying OS lacks the operation, the impl returns
+/// [`Error::UnsupportedPlatform`] via [`unsupported`].
+#[async_trait::async_trait]
 pub trait ServiceManager: Send + Sync {
-    /// Render the on-disk service definition (unit, plist, init script,
-    /// `.bat` for Task Scheduler, etc.) for `spec`. Pure: must not touch
-    /// the filesystem.
-    fn render(&self, spec: &ServiceSpec) -> Result<String>;
+    /// Stable backend identifier (e.g. `"systemd-system"`,
+    /// `"launchd-agent"`). Used in error messages and capability tables.
+    fn name(&self) -> &'static str;
 
-    /// Install (write definition + register with the OS). Default
-    /// implementation refuses to act so unit tests never write into
-    /// system locations.
-    fn install(&self, _spec: &ServiceSpec) -> Result<()> {
-        Err(Error::ServiceManagerFailed(
-            "install not implemented for this backend in this build".to_string(),
-        ))
-    }
+    /// What this backend can do natively. The CLI uses this to preflight
+    /// operations and avoid blindly invoking unsupported paths.
+    fn capabilities(&self) -> ServiceCapabilities;
 
-    /// Uninstall (deregister + remove on-disk definition).
-    fn uninstall(&self, _name: &str) -> Result<()> {
-        Err(Error::ServiceManagerFailed(
-            "uninstall not implemented for this backend".to_string(),
-        ))
-    }
+    /// Install (write definition + register with the OS).
+    async fn install(&self, spec: &ServiceSpec) -> Result<()>;
+
+    /// Uninstall (deregister + remove on-disk definition). Idempotent:
+    /// uninstalling a service that is not installed returns `Ok(())`.
+    async fn uninstall(&self, name: &str) -> Result<()>;
 
     /// Query live status.
-    fn status(&self, _name: &str) -> Result<ServiceStatus> {
-        Ok(ServiceStatus::Unknown)
-    }
+    async fn status(&self, name: &str) -> Result<ServiceStatus>;
 
     /// Start the service.
-    fn start(&self, _name: &str) -> Result<()> {
-        Err(Error::ServiceManagerFailed("start not implemented".into()))
-    }
+    async fn start(&self, name: &str) -> Result<()>;
+
     /// Stop the service.
-    fn stop(&self, _name: &str) -> Result<()> {
-        Err(Error::ServiceManagerFailed("stop not implemented".into()))
-    }
-    /// Restart the service.
-    fn restart(&self, _name: &str) -> Result<()> {
-        Err(Error::ServiceManagerFailed(
-            "restart not implemented".into(),
-        ))
-    }
+    async fn stop(&self, name: &str) -> Result<()>;
+
+    /// Restart the service. Backends without a native restart primitive
+    /// implement this as `stop()` followed by `start()`.
+    async fn restart(&self, name: &str) -> Result<()>;
+
     /// Reload the service (SIGHUP / `systemctl reload`). Returns
-    /// `UnsupportedPlatform` on backends without a reload primitive.
-    fn reload(&self, _name: &str) -> Result<()> {
-        Err(Error::UnsupportedPlatform(
-            "reload is not supported on this backend".into(),
-        ))
+    /// [`Error::UnsupportedPlatform`] on backends without a reload
+    /// primitive.
+    async fn reload(&self, name: &str) -> Result<()>;
+
+    /// Render the on-disk unit/script/plist for `spec`, if this backend
+    /// has a file-based representation. Backends that register services
+    /// through a Win32 API (Windows SCM, Task Scheduler) return `None`.
+    fn render_unit(&self, _spec: &ServiceSpec) -> Option<String> {
+        None
     }
+}
+
+/// Construct a typed [`Error::UnsupportedPlatform`] tagged with the
+/// backend name and the method that is unsupported.
+///
+/// Backends should call this for OS limitations (e.g. Task Scheduler has
+/// no reload concept) instead of stuffing the same string into the
+/// generic [`Error::ServiceManagerFailed`] variant.
+#[must_use]
+pub fn unsupported(backend: &'static str, method: &'static str) -> Error {
+    Error::UnsupportedPlatform(format!("{method} is not supported on backend '{backend}'"))
 }
 
 /// Pick the recommended `ServiceManager` for the running OS.
@@ -261,20 +346,24 @@ mod tests {
     }
 
     #[test]
-    fn default_manager_default_install_refuses() {
-        struct Mgr;
-        impl ServiceManager for Mgr {
-            fn render(&self, _: &ServiceSpec) -> Result<String> {
-                Ok(String::new())
-            }
+    fn unsupported_helper_formats_message() {
+        let err = unsupported("task-scheduler", "reload");
+        let msg = format!("{err}");
+        assert!(msg.contains("reload"));
+        assert!(msg.contains("task-scheduler"));
+        match err {
+            Error::UnsupportedPlatform(_) => {}
+            other => panic!("expected UnsupportedPlatform, got {other:?}"),
         }
-        let m = Mgr;
-        assert!(m.install(&ServiceSpec::default()).is_err());
-        assert!(m.uninstall("x").is_err());
-        assert!(m.start("x").is_err());
-        assert!(m.stop("x").is_err());
-        assert!(m.restart("x").is_err());
-        assert!(m.reload("x").is_err());
-        assert_eq!(m.status("x").unwrap(), ServiceStatus::Unknown);
+    }
+
+    #[test]
+    fn service_status_defaults_unknown() {
+        let s = ServiceStatus::default();
+        assert_eq!(s.state, ServiceState::Unknown);
+        assert!(s.pid.is_none());
+        assert!(s.exit_code.is_none());
+        assert!(s.since.is_none());
+        assert!(s.restart_count.is_none());
     }
 }
