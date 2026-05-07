@@ -1,0 +1,12 @@
+# Operator: replace this placeholder with the project's real minisign
+# public key. Generate the keypair once with:
+#
+#   minisign -G -p packaging/minisign.pub -s ~/.minisign/spt.key
+#
+# Commit packaging/minisign.pub. Keep ~/.minisign/spt.key OFF this repo;
+# provision it to CI as the MINISIGN_SECRET_KEY secret (the secret-key
+# file's full contents, not its path). Optional MINISIGN_PASSWORD secret
+# unlocks an encrypted secret key in CI.
+#
+# Until that is done, scripts/sign/minisign-all.sh logs a warn and skips,
+# so CI keeps producing unsigned artifacts plus checksums.

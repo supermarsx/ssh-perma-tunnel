@@ -1,0 +1,25 @@
+# Cross.toml — pinned cross-rs Docker images for the four Linux release targets.
+#
+# Used by `scripts/build/build-target.sh` whenever the host triple does not
+# match the requested target. Pinned tag keeps build reproducible across CI runs.
+# See: https://github.com/cross-rs/cross
+
+[build.env]
+# Forward variables that the build scripts rely on for reproducibility.
+passthrough = [
+    "SOURCE_DATE_EPOCH",
+    "CARGO_INCREMENTAL",
+    "RUSTFLAGS",
+]
+
+[target.x86_64-unknown-linux-gnu]
+image = "ghcr.io/cross-rs/x86_64-unknown-linux-gnu:0.2.5"
+
+[target.x86_64-unknown-linux-musl]
+image = "ghcr.io/cross-rs/x86_64-unknown-linux-musl:0.2.5"
+
+[target.aarch64-unknown-linux-gnu]
+image = "ghcr.io/cross-rs/aarch64-unknown-linux-gnu:0.2.5"
+
+[target.aarch64-unknown-linux-musl]
+image = "ghcr.io/cross-rs/aarch64-unknown-linux-musl:0.2.5"
