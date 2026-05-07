@@ -36,6 +36,9 @@ pub mod reference;
 pub mod resolver;
 pub mod vault;
 
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
+
 pub use backend::{BackendDoctor, BackendKind, BackendStatus, SecretBackend, SecretBytes};
 pub use doctor::SecretsDoctor;
 pub use env::EnvBackend;

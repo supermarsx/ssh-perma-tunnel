@@ -22,6 +22,9 @@ pub mod paths;
 pub mod spool;
 pub mod status;
 
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
+
 pub use atomic::{write_atomic, write_atomic_string};
 pub use clock::{Clock, SystemClock};
 pub use dir::resolve_state_dir;

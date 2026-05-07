@@ -4010,6 +4010,7 @@ dependencies = [
  "clap",
  "clap_complete",
  "insta",
+ "spt-core",
 ]
 
 [[package]]
@@ -4039,6 +4040,8 @@ dependencies = [
  "humantime",
  "humantime-serde",
  "once_cell",
+ "rand 0.8.6",
+ "rand_chacha 0.3.1",
  "regex",
  "serde",
  "serde_json",
@@ -4125,6 +4128,7 @@ version = "0.1.0"
 dependencies = [
  "insta",
  "ipnet",
+ "parking_lot",
  "serde",
  "serde_json",
  "spt-core",
@@ -4165,6 +4169,7 @@ dependencies = [
  "atomicwrites",
  "base64",
  "rand 0.8.6",
+ "rand_chacha 0.3.1",
  "secrecy",
  "serde",
  "sha2",
@@ -4257,8 +4262,14 @@ name = "spt-remote-config"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "axum",
  "hex",
+ "hyper",
+ "hyper-util",
+ "rcgen",
  "reqwest",
+ "rustls",
+ "rustls-pemfile",
  "serde",
  "serde_json",
  "sha2",
@@ -4268,6 +4279,8 @@ dependencies = [
  "tempfile",
  "thiserror 1.0.69",
  "tokio",
+ "tokio-rustls",
+ "tower 0.5.3",
  "tracing",
  "url",
 ]
@@ -4502,6 +4515,7 @@ dependencies = [
 name = "spt-winevent"
 version = "0.1.0"
 dependencies = [
+ "parking_lot",
  "serde",
  "serde_json",
  "spt-core",

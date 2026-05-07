@@ -12,6 +12,9 @@ description = "Core types, error/exit codes, and parsers for spt."
 [lints]
 workspace = true
 
+[features]
+testing = ["dep:rand", "dep:rand_chacha"]
+
 [dependencies]
 serde = { workspace = true }
 thiserror = { workspace = true }
@@ -21,6 +24,10 @@ humantime-serde = { workspace = true }
 bytesize = { workspace = true }
 regex = { workspace = true }
 once_cell = { workspace = true }
+rand = { workspace = true, optional = true }
+rand_chacha = { workspace = true, optional = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }
+rand = { workspace = true }
+rand_chacha = { workspace = true }

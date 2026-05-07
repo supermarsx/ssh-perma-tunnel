@@ -25,6 +25,9 @@ pub mod path;
 pub mod redaction;
 pub mod size;
 
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
+
 pub use address::BindAddr;
 pub use error::{Error, Result};
 pub use exit_code::ExitCode;

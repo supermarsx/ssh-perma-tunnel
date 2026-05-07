@@ -21,6 +21,9 @@ pub mod privileged;
 pub mod sockopts;
 pub mod uds;
 
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
+
 pub use bind::{AutoPrefer, BindMode, Family, resolve_bind};
 pub use cidr::CidrAcl;
 pub use interfaces::{Interface, list as list_interfaces};

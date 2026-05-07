@@ -9,6 +9,9 @@ homepage.workspace = true
 authors.workspace = true
 description = "TOML configuration schema, validation, and rendering for spt."
 
+[features]
+testing = []
+
 [dependencies]
 spt-core = { workspace = true }
 serde = { workspace = true }

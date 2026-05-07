@@ -12,6 +12,9 @@ description = "Address parsing, interface enumeration, and bind policy for spt."
 [lints]
 workspace = true
 
+[features]
+testing = []
+
 [dependencies]
 spt-core = { workspace = true }
 tokio = { workspace = true }

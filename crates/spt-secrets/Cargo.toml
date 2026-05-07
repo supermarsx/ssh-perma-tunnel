@@ -12,6 +12,9 @@ description = "Secret resolver, vault, and OS keychain integration for spt."
 [lints]
 workspace = true
 
+[features]
+testing = []
+
 [dependencies]
 spt-core = { workspace = true }
 secrecy = { workspace = true }

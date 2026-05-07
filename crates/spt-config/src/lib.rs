@@ -33,6 +33,9 @@ pub mod render;
 pub mod schema;
 pub mod validate;
 
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
+
 pub use diagnostic::{Diagnostic, Diagnostics as ValidationDiagnostics, Severity};
 pub use diff::{diff, Change, ChangeKind};
 pub use fingerprint::fingerprint;
