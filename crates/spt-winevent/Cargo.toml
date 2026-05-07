@@ -17,6 +17,10 @@ spt-core = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+parking_lot = { workspace = true }
+
+[features]
+testing = []
 
 [target.'cfg(windows)'.dependencies]
 # Workspace `windows` feature set already includes Win32_System_EventLog +

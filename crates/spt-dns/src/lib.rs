@@ -30,6 +30,9 @@ pub mod split_horizon;
 pub mod srv;
 pub mod zone;
 
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
+
 pub use error::{DnsError, Result};
 pub use health::{ForwardHealth, HealthSource, NoHealth};
 pub use hosts::{HostsApplyReport, HostsEntry, HostsManager, HOSTS_BEGIN_MARKER, HOSTS_END_MARKER};

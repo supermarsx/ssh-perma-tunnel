@@ -26,6 +26,9 @@ mod imp;
 #[cfg(not(windows))]
 mod stub;
 
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
+
 /// Severity for `report_event`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]

@@ -30,6 +30,9 @@ pub mod task_scheduler;
 pub mod template;
 pub mod windows_scm;
 
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
+
 pub use runner::{CommandRunner, MockRunner, RunOutput, TokioRunner};
 
 /// Whether a service runs at the system or per-user scope.

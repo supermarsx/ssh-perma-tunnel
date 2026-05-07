@@ -28,6 +28,9 @@ pub mod linux;
 pub mod macos;
 pub mod windows;
 
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
+
 /// Rule direction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]

@@ -23,6 +23,9 @@ parking_lot = { workspace = true }
 chrono = { workspace = true }
 csv = "1.3"
 
+[features]
+testing = []
+
 [target.'cfg(windows)'.dependencies]
 windows-service = { workspace = true }
 

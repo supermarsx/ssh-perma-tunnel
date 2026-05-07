@@ -23,6 +23,9 @@ thiserror = { workspace = true }
 serde = { workspace = true }
 parking_lot = { workspace = true }
 
+[features]
+testing = []
+
 [dev-dependencies]
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["full", "test-util", "macros"] }

@@ -18,8 +18,13 @@ serde = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 ipnet = { workspace = true }
+parking_lot = { workspace = true, optional = true }
+
+[features]
+testing = ["dep:parking_lot"]
 
 [dev-dependencies]
 insta = { workspace = true }
 tempfile = { workspace = true }
 serde_json = { workspace = true }
+parking_lot = { workspace = true }
