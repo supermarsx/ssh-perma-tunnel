@@ -9,9 +9,13 @@ homepage.workspace = true
 authors.workspace = true
 description = "Clap-derived command-line interface for spt."
 
+[features]
+testing = []
+
 [dependencies]
 clap = { workspace = true }
 clap_complete = { workspace = true }
+spt-core = { workspace = true }
 
 [dev-dependencies]
 insta = { workspace = true }

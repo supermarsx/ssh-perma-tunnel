@@ -49,6 +49,9 @@ pub mod pages;
 pub mod save;
 pub mod widgets;
 
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
+
 use std::io;
 use std::path::Path;
 

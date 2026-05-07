@@ -86,9 +86,9 @@ impl Controller for NoopController {
 /// Convenience alias for the boxed controller used by the server.
 pub type DynController = Arc<dyn Controller>;
 
-#[cfg(test)]
-pub(crate) mod testing {
-    //! Test-only fixtures.
+#[cfg(any(test, feature = "testing"))]
+pub mod testing {
+    //! Test-only fixtures (in-memory recording controller).
 
     use super::{Controller, Forward};
     use async_trait::async_trait;
@@ -127,10 +127,14 @@ pub(crate) mod testing {
     }
 
     impl RecordingController {
+        /// Build an empty recording controller.
+        #[must_use]
         pub fn new() -> Self {
             Self::default()
         }
 
+        /// Snapshot of every captured call in arrival order.
+        #[must_use]
         pub fn snapshot(&self) -> Vec<ControllerCall> {
             self.calls.lock().clone()
         }

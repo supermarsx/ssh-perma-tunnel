@@ -30,6 +30,9 @@
 //! through [`ConfigSource`] and [`StateSource`] adapters that the binary wires
 //! to `spt-config`/`spt-state` public APIs.
 
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
+
 pub mod audit;
 pub mod controller;
 pub mod error;

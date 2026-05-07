@@ -9,6 +9,9 @@ homepage.workspace = true
 authors.workspace = true
 description = "Model Context Protocol server implementation for spt."
 
+[features]
+testing = []
+
 [lints]
 workspace = true
 

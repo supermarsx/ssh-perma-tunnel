@@ -9,6 +9,9 @@ homepage.workspace = true
 authors.workspace = true
 description = "Terminal UI profile configurator for spt."
 
+[features]
+testing = []
+
 [lints]
 workspace = true
 

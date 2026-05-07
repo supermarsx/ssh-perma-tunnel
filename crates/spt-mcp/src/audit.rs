@@ -55,8 +55,8 @@ impl McpAuditSink for NoopAuditSink {
 /// Convenience boxed alias used by the server.
 pub type DynAuditSink = Arc<dyn McpAuditSink>;
 
-#[cfg(test)]
-pub(crate) mod test_support {
+#[cfg(any(test, feature = "testing"))]
+pub mod test_support {
     use super::{AuditEvent, McpAuditSink};
     use async_trait::async_trait;
     use parking_lot::Mutex;
@@ -69,10 +69,14 @@ pub(crate) mod test_support {
     }
 
     impl MockAuditSink {
+        /// Build an empty sink.
+        #[must_use]
         pub fn new() -> Self {
             Self::default()
         }
 
+        /// Snapshot of recorded events in arrival order.
+        #[must_use]
         pub fn snapshot(&self) -> Vec<AuditEvent> {
             self.events.lock().clone()
         }

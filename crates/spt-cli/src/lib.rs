@@ -15,6 +15,9 @@ use clap::{ArgAction, Args, Parser, Subcommand, ValueEnum};
 
 pub mod groups;
 
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
+
 /// Root `spt` command.
 #[derive(Parser, Debug)]
 #[command(
