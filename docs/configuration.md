@@ -144,6 +144,11 @@ The repo ships several examples under [`/examples/`](../examples/):
 - `dns-split-horizon.toml` — split-horizon DNS resolver.
 - `mcp.toml`         — MCP server with read-only policy.
 - `ssh3.toml`        — experimental SSH3 backend.
+- `zero-trust-https.toml` — internal HTTPS via vault-resolved pubkey + pin.
+- `ha-failover.toml` — two endpoints with priority/weight.
+- `multi-profile-fleet.toml` — five-bastion fleet, per-profile crypto.
+- `observability-otel.toml` — OTLP + Prometheus + remote syslog-TLS.
+- `headless-ci.toml` — env-only secrets for CI/CD pipelines.
 
 ## See also
 

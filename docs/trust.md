@@ -6,18 +6,20 @@ before sending any secret bytes.
 ## SSH2 host-key
 
     [profiles.trust]
-    mode = "known_hosts"           # known_hosts | sha256_pin | both
-    known_hosts = "/etc/spt/known_hosts"
+    mode = "known_hosts"           # known_hosts | pinned
+    known_hosts_file = "/etc/spt/known_hosts"
     strict = true                  # fail closed on unknown host
+    accept_new = false             # never auto-accept (no TOFU)
 
 ## SHA-256 pin
 
     [profiles.trust]
-    mode = "sha256_pin"
-    host_key_pins = ["SHA256:abc123..."]
+    mode = "pinned"
+    pin_sha256 = ["SHA256:abc123..."]
 
-`mode = "both"` requires the host to satisfy both `known_hosts` AND a pin.
-Trust failures map to `TrustFailed` (exit code 6).
+A profile may set both `known_hosts_file` and `pin_sha256`; the validator
+requires at least one source of trust material. Trust failures map to
+`TrustFailed` (exit code 6).
 
 ## TLS (SSH3, remote-config, HTTPS sinks)
 

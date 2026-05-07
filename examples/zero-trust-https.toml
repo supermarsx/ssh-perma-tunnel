@@ -1,0 +1,94 @@
+# Zero-trust developer access to an internal HTTPS service.
+#
+# Scenario: a developer on a laptop needs read access to an internal admin UI
+# behind a corporate bastion. Trust material is pinned (no TOFU); the SSH
+# private-key passphrase is resolved through the local vault. The local
+# loopback bind keeps the tunnel out of any other host on the LAN.
+#
+# When to use: zero-trust laptop access; demo / dev workflows where the
+# developer wants strong host pinning and a single-shot tunnel.
+# Doc: ../docs/auth.md, ../docs/trust.md, ../docs/secrets.md
+#
+# Validate: spt config validate --config examples/zero-trust-https.toml
+
+version = 1
+
+[runtime]
+state_dir = "~/.local/state/ssh-perma-tunnel"
+shutdown_grace = "10s"
+
+[secrets]
+backend = "vault"
+vault_file = "~/.local/share/ssh-perma-tunnel/vault.spt"
+encrypt_at_rest = true
+memory_protection = "strict"
+
+[logging]
+level = "info"
+format = "compact"
+destinations = ["stderr"]
+redact = ["secrets", "auth"]
+
+[[profiles]]
+name = "internal-admin"
+description = "Internal admin UI via the corp bastion."
+enabled = true
+protocol = "ssh2"
+host = "bastion.corp.example.com"
+port = 22
+user = "developer"
+connect_timeout = "8s"
+startup = "lazy"
+failure_policy = "fail_profile"
+
+[profiles.connection]
+auth_timeout = "8s"
+handshake_timeout = "8s"
+tcp_nodelay = true
+socket_keepalive = true
+
+[profiles.crypto]
+policy = "modern"
+allow_deprecated = false
+warn_on_deprecated = true
+
+[profiles.auth]
+method = "public_key"
+identity_file = "~/.ssh/id_ed25519"
+# The private key is encrypted at rest; the passphrase comes from the local
+# vault, never inline plaintext.
+passphrase = "secret://ssh/internal-admin/passphrase"
+
+[profiles.trust]
+# Strict pinning — both known_hosts AND a SHA-256 pin must succeed.
+mode = "known_hosts"
+known_hosts_file = "~/.ssh/known_hosts"
+strict = true
+accept_new = false
+pin_sha256 = [
+    "SHA256:0000000000000000000000000000000000000000000000",
+]
+
+[profiles.keepalive]
+interval = "30s"
+timeout = "10s"
+max_missed = 3
+
+[profiles.reconnect]
+initial_delay = "2s"
+max_delay = "1m"
+jitter = "25%"
+reset_after = "5m"
+max_attempts = 0
+
+[[profiles.forwards]]
+name = "admin-https"
+type = "local"
+transport = "tcp"
+bind = "127.0.0.1:18443"
+target = "admin.internal.corp:443"
+target_resolve = "remote"
+sni_name = "admin.internal.corp"
+required = true
+idle_timeout = "5m"
+max_connections = 16

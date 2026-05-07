@@ -1,0 +1,109 @@
+# Headless CI/CD pipeline tunnel.
+#
+# Scenario: a CI runner needs short-lived access to an internal artifact
+# registry. Secrets come exclusively from environment variables (no keychain,
+# no vault). DNS, firewall, and MCP are all disabled — the pipeline mints,
+# uses, and tears down the tunnel inside a single job. A Prometheus exporter
+# lets the runner publish per-job metrics if scraped.
+#
+# When to use: GitHub Actions / GitLab CI / Jenkins runners where the
+# environment is ephemeral and secrets are injected via env vars.
+# Doc: ../docs/secrets.md (env backend), ../docs/observability.md
+#
+# Validate: spt config validate --config examples/headless-ci.toml
+# Required env vars at runtime:
+#   SPT_SECRET_SSH__CI_PASSPHRASE   (private-key passphrase)
+#   SSH_AUTH_SOCK                    (only if you want method = "agent")
+
+version = 1
+
+[runtime]
+state_dir = "/tmp/spt-ci"
+shutdown_grace = "5s"
+file_lock = false                 # CI ephemeral; don't fight stale locks
+
+[runtime.threads]
+model = "multi_thread"
+orchestrator_threads = 1
+service_threads = 1
+blocking_worker_threads = 2
+
+[secrets]
+# Env-only — refuse to fall back to keychain or vault inside CI.
+backend = "env"
+memory_protection = "best_effort"
+
+[logging]
+level = "info"
+format = "json"
+destinations = ["stderr"]
+redact = ["secrets", "auth"]
+
+# Prometheus exporter so the runner can publish per-job metrics.
+[observability.metrics]
+enabled = true
+format = "prometheus"
+state_file = "/tmp/spt-ci/metrics.prom"
+
+# Hard-disable everything that would require local OS state.
+[dns]
+enabled = false
+mode = "disabled"
+
+[firewall]
+enabled = false
+
+[mcp]
+enabled = false
+
+[[profiles]]
+name = "ci-artifact"
+description = "Short-lived pipeline tunnel to the internal artifact registry."
+enabled = true
+protocol = "ssh2"
+host = "edge.ci.example.com"
+port = 22
+user = "ci-runner"
+connect_timeout = "10s"
+startup = "eager"
+failure_policy = "fail_process"   # pipeline should fail loud, not retry forever
+
+[profiles.connection]
+auth_timeout = "10s"
+handshake_timeout = "10s"
+tcp_nodelay = true
+
+[profiles.auth]
+method = "public_key"
+# In CI, the key file is dropped by the runner; the passphrase is in env.
+identity_file = "/run/spt/id_ed25519"
+passphrase = "secret://ssh/ci_passphrase"
+
+[profiles.trust]
+mode = "pinned"
+strict = true
+pin_sha256 = ["SHA256:0000000000000000000000000000000000000000000000"]
+
+[profiles.keepalive]
+interval = "20s"
+timeout = "5s"
+max_missed = 2
+
+[profiles.reconnect]
+# CI jobs are short — one fast retry then give up.
+initial_delay = "1s"
+max_delay = "5s"
+jitter = "10%"
+max_attempts = 3
+retry_auth_failures = false
+
+[[profiles.forwards]]
+name = "registry"
+type = "local"
+transport = "tcp"
+bind = "127.0.0.1:15000"
+target = "registry.internal.ci:5000"
+target_resolve = "remote"
+required = true
+idle_timeout = "2m"
+max_connections = 8

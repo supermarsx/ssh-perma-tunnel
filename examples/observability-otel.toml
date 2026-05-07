@@ -1,0 +1,141 @@
+# Full observability stack: OTLP logs, Prometheus metrics, syslog-TLS, MCP-notify.
+#
+# Scenario: a production deployment where logs ship to an OTLP collector,
+# metrics are scraped by Prometheus, security events fan out to a remote
+# syslog server, and an event binding routes profile.degraded notifications
+# through MCP for an on-call workflow.
+#
+# When to use: any environment that already operates an OpenTelemetry
+# collector and Prometheus, and wants spt to participate.
+# Doc: ../docs/observability.md, ../docs/events.md, ../docs/mcp.md
+#
+# Validate: spt config validate --config examples/observability-otel.toml
+
+version = 1
+
+[runtime]
+state_dir = "/var/lib/spt"
+required_profiles = ["edge"]
+shutdown_grace = "20s"
+
+[secrets]
+backend = "auto"
+keychain_namespace = "spt"
+
+# -- Logging ---------------------------------------------------------------
+[logging]
+level = "info"
+format = "json"
+destinations = ["file"]
+file = "/var/log/spt/spt.jsonl"
+rotate = "daily"
+max_files = 30
+compress_rotated = true
+redact = ["secrets", "auth"]
+
+[[logging.remote]]
+name = "otel-collector"
+type = "otlp"
+endpoint = "https://otel.example.com:4318/v1/logs"
+ca_file = "/etc/ssl/certs/internal-ca.pem"
+auth = "secret://otlp/edge/bearer"
+batch_size = 256
+timeout = "5s"
+required = false
+
+[[logging.remote]]
+name = "siem"
+type = "syslog_tls"
+endpoint = "siem.example.com:6514"
+ca_file = "/etc/ssl/certs/internal-ca.pem"
+auth = "secret://syslog/edge/token"
+required = true             # block log fan-out if SIEM is unreachable
+
+# -- Metrics ---------------------------------------------------------------
+[observability.metrics]
+enabled = true
+format = "prometheus"
+state_file = "/var/lib/spt/metrics.prom"
+
+# -- Events ----------------------------------------------------------------
+[[events.sinks]]
+name = "oncall-mcp"
+type = "mcp_notify"
+
+[[events.sinks]]
+name = "ops-webhook"
+type = "webhook_post"
+url = "https://hooks.example.com/spt"
+method = "POST"
+content_type = "application/json"
+auth = "secret://webhook/ops/token"
+timeout = "5s"
+
+[[events.bindings]]
+name = "degraded-to-oncall"
+on = ["profile.degraded", "profile.failed"]
+actions = ["oncall-mcp", "ops-webhook"]
+min_level = "warn"
+throttle = "5m"
+
+# -- MCP ------------------------------------------------------------------
+[mcp]
+enabled = true
+default_mode = "read_only"
+stdio = true
+listen = ""
+allow_secret_reveal = false
+allow_write_tools = []
+audit_events = true
+
+# -- Profile --------------------------------------------------------------
+[[profiles]]
+name = "edge"
+enabled = true
+protocol = "ssh2"
+host = "edge.example.com"
+port = 22
+user = "tunnel"
+failure_policy = "retry"
+
+[profiles.crypto]
+policy = "modern"
+
+[profiles.auth]
+method = "public_key"
+identity_file = "/etc/spt/id_ed25519"
+passphrase = "secret://ssh/edge/passphrase"
+
+[profiles.trust]
+mode = "known_hosts"
+known_hosts_file = "/etc/spt/known_hosts"
+strict = true
+
+[profiles.keepalive]
+interval = "30s"
+timeout = "10s"
+max_missed = 3
+
+[profiles.reconnect]
+initial_delay = "1s"
+max_delay = "5m"
+jitter = "20%"
+reset_after = "10m"
+
+[profiles.instability]
+enabled = true
+window = "10m"
+max_disconnects = 5
+action = "emit_event"
+
+[[profiles.forwards]]
+name = "api"
+type = "local"
+transport = "tcp"
+bind = "127.0.0.1:18080"
+target = "api.internal:8080"
+target_resolve = "remote"
+required = true
+max_connections = 256
+max_bytes_per_second_in = "10MiB"
+max_bytes_per_second_out = "10MiB"

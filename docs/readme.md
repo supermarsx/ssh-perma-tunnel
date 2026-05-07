@@ -27,5 +27,11 @@ Index of user-facing documentation for `spt` (SSH Permanent Tunnel).
 - [Security](security.md) — threat model, redaction, secret handling
 - [Troubleshooting](troubleshooting.md) — common issues and exit codes
 
+## Migration guides
+
+- [Migration guides](migration/index.md) — move existing tunnel setups
+  onto `spt` from autossh, sshuttle, OpenSSH `~/.ssh/config`,
+  systemd-resolved, or corkscrew.
+
 For implementation status of individual subcommands, see
 [CLI Reference](cli-reference.md).

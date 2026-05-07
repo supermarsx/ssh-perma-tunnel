@@ -1,0 +1,106 @@
+# HA failover with two endpoints and a manual override.
+#
+# Scenario: a primary bastion in one region with a DR bastion in another.
+# The supervisor runs TCP-connect health checks; after fail_after consecutive
+# failures, traffic moves to the DR. After restore_after of stable
+# reachability on the primary, failback is allowed. Manual override is
+# available via `spt tunnel failover <profile> --to <endpoint>`.
+#
+# When to use: any production tunnel where SLA depends on multi-region
+# reachability of the bastion fleet.
+# Doc: ../docs/profiles.md (Failover section)
+#
+# Validate: spt config validate --config examples/ha-failover.toml
+
+version = 1
+
+[runtime]
+state_dir = "/var/lib/spt"
+required_profiles = ["edge-ha"]
+shutdown_grace = "20s"
+profile_start_parallelism = 2
+
+[secrets]
+backend = "auto"
+keychain_namespace = "spt"
+
+[logging]
+level = "info"
+format = "json"
+destinations = ["file"]
+file = "/var/log/spt/spt.jsonl"
+rotate = "daily"
+max_files = 30
+redact = ["secrets", "auth"]
+
+[[profiles]]
+name = "edge-ha"
+description = "Active/standby edge tunnel with two endpoints."
+enabled = true
+protocol = "ssh2"
+# `host` / `port` here act as a fallback when no endpoints are usable.
+host = "edge-primary.example.com"
+port = 22
+user = "tunnel"
+network_change_reconnect = true
+failure_policy = "retry"
+
+[profiles.auth]
+method = "public_key"
+identity_file = "/etc/spt/id_ed25519"
+passphrase = "secret://ssh/edge-ha/passphrase"
+
+[profiles.trust]
+mode = "known_hosts"
+known_hosts_file = "/etc/spt/known_hosts"
+strict = true
+
+[profiles.keepalive]
+interval = "20s"
+timeout = "5s"
+max_missed = 3
+
+[profiles.reconnect]
+initial_delay = "1s"
+max_delay = "2m"
+jitter = "30%"
+reset_after = "5m"
+
+[profiles.instability]
+enabled = true
+window = "10m"
+max_disconnects = 4
+max_keepalive_misses = 2
+action = "failover"
+min_successful_uptime = "3m"
+
+[profiles.failover]
+mode = "priority"             # priority | weighted | manual
+health_check = "ssh_handshake"
+fail_after = 3
+restore_after = "2m"
+
+[[profiles.endpoints]]
+name = "primary"
+host = "edge-primary.example.com"
+port = 22
+priority = 0
+weight = 100
+
+[[profiles.endpoints]]
+name = "dr"
+host = "edge-dr.example.com"
+port = 22
+priority = 10
+weight = 50
+
+[[profiles.forwards]]
+name = "db"
+type = "local"
+transport = "tcp"
+bind = "127.0.0.1:5432"
+target = "db.internal:5432"
+target_resolve = "remote"
+required = true
+idle_timeout = "10m"
+max_connections = 128

@@ -15,32 +15,36 @@ multiplexed over it.
     user = "tunnel"
 
     [profiles.auth]
-    method = "pubkey"
-    private_key = "/etc/spt/id_ed25519"
+    method = "public_key"
+    identity_file = "/etc/spt/id_ed25519"
 
     [profiles.trust]
     mode = "known_hosts"
-    known_hosts = "/etc/spt/known_hosts"
+    known_hosts_file = "/etc/spt/known_hosts"
     strict = true
 
     [profiles.keepalive]
     interval = "30s"
     timeout = "10s"
-    max_misses = 3
+    max_missed = 3
 
     [profiles.reconnect]
-    initial_backoff = "1s"
-    max_backoff = "5m"
-    jitter = 0.5
+    initial_delay = "1s"
+    max_delay = "5m"
+    jitter = "20%"
     reset_after = "10m"
 
     [profiles.instability]
+    enabled = true
     window = "10m"
-    disconnect_threshold = 5
+    max_disconnects = 5
+    action = "mark_degraded"
 
     [profiles.failover]
     mode = "priority"          # priority | weighted | manual
-    cooldown = "2m"
+    health_check = "tcp_connect"
+    fail_after = 3
+    restore_after = "2m"
 
     [[profiles.endpoints]]
     name = "primary"
@@ -87,8 +91,9 @@ Crossing `disconnect_threshold` flips the profile to `Degraded` and emits an
 
 Endpoints have priority and weight. The selector picks the highest-priority
 healthy endpoint (lowest numeric priority); `weighted` mode randomly distributes
-between endpoints with equal priority by `weight`. A failed endpoint enters
-`cooldown` for the configured period before being reconsidered. `manual` mode
+between endpoints with equal priority by `weight`. A failed endpoint is marked
+unhealthy after `fail_after` consecutive health-check failures and is
+re-evaluated for failback after the `restore_after` window. `manual` mode
 disables automatic selection — operators trigger transitions via
 `spt tunnel failover <profile> --to <endpoint>`.
 

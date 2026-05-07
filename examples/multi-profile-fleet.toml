@@ -1,0 +1,221 @@
+# Five-bastion fleet in a single config.
+#
+# Scenario: a small ops team manages a handful of bastions across regions and
+# tiers (prod, staging, dev). Each profile has its own crypto policy — prod
+# stays on `modern`, legacy bastions can use `interop`. DNS records auto-track
+# profile state so dependent tools see NXDOMAIN while a tunnel is down.
+#
+# When to use: fleet-style operator workflows where one supervisor manages
+# many independent tunnels and you want a single config to reload.
+# Doc: ../docs/profiles.md, ../docs/dns.md
+#
+# Validate: spt config validate --config examples/multi-profile-fleet.toml
+
+version = 1
+
+[runtime]
+state_dir = "/var/lib/spt"
+required_profiles = ["prod-eu", "prod-us"]
+shutdown_grace = "30s"
+profile_start_parallelism = 3
+
+[runtime.reload]
+mode = "signal"
+require_valid_config = true
+restart_changed_profiles = true
+
+[secrets]
+backend = "auto"
+keychain_namespace = "spt-fleet"
+encrypt_at_rest = true
+
+[logging]
+level = "info"
+format = "json"
+destinations = ["file"]
+file = "/var/log/spt/fleet.jsonl"
+rotate = "daily"
+max_files = 30
+redact = ["secrets", "auth"]
+
+[dns]
+enabled = true
+mode = "transparent_forwarder"
+bind = "127.0.0.1:5353"
+zone = "fleet.spt.local"
+ttl = "30s"
+auto_records = true
+upstream = ["1.1.1.1:53", "9.9.9.9:53"]
+
+# --- Production EU --------------------------------------------------------
+[[profiles]]
+name = "prod-eu"
+description = "Production EU bastion."
+enabled = true
+protocol = "ssh2"
+host = "edge-eu.example.com"
+port = 22
+user = "tunnel"
+tags = ["prod", "eu"]
+failure_policy = "retry"
+
+[profiles.crypto]
+policy = "modern"
+allow_deprecated = false
+
+[profiles.auth]
+method = "public_key"
+identity_file = "/etc/spt/keys/prod"
+passphrase = "secret://ssh/prod/passphrase"
+
+[profiles.trust]
+mode = "known_hosts"
+known_hosts_file = "/etc/spt/known_hosts.prod"
+strict = true
+
+[[profiles.forwards]]
+name = "db"
+type = "local"
+transport = "tcp"
+bind = "127.0.0.1:15432"
+target = "pg.internal.eu:5432"
+target_resolve = "remote"
+dns_names = ["db-eu.fleet.spt.local"]
+required = true
+
+# --- Production US --------------------------------------------------------
+[[profiles]]
+name = "prod-us"
+description = "Production US bastion."
+enabled = true
+protocol = "ssh2"
+host = "edge-us.example.com"
+port = 22
+user = "tunnel"
+tags = ["prod", "us"]
+failure_policy = "retry"
+
+[profiles.crypto]
+policy = "modern"
+
+[profiles.auth]
+method = "public_key"
+identity_file = "/etc/spt/keys/prod"
+passphrase = "secret://ssh/prod/passphrase"
+
+[profiles.trust]
+mode = "known_hosts"
+known_hosts_file = "/etc/spt/known_hosts.prod"
+strict = true
+
+[[profiles.forwards]]
+name = "db"
+type = "local"
+transport = "tcp"
+bind = "127.0.0.1:25432"
+target = "pg.internal.us:5432"
+target_resolve = "remote"
+dns_names = ["db-us.fleet.spt.local"]
+required = true
+
+# --- Staging --------------------------------------------------------------
+[[profiles]]
+name = "staging"
+description = "Staging bastion."
+enabled = true
+protocol = "ssh2"
+host = "edge-stg.example.com"
+port = 22
+user = "tunnel"
+tags = ["staging"]
+startup = "lazy"
+
+[profiles.crypto]
+policy = "modern"
+
+[profiles.auth]
+method = "agent"
+
+[profiles.trust]
+mode = "known_hosts"
+known_hosts_file = "/etc/spt/known_hosts.stg"
+strict = true
+
+[[profiles.forwards]]
+name = "redis"
+type = "local"
+transport = "tcp"
+bind = "127.0.0.1:16379"
+target = "redis.internal.stg:6379"
+target_resolve = "remote"
+dns_names = ["redis-stg.fleet.spt.local"]
+
+# --- Dev ------------------------------------------------------------------
+[[profiles]]
+name = "dev"
+description = "Developer sandbox bastion."
+enabled = true
+protocol = "ssh2"
+host = "edge-dev.example.com"
+port = 22
+user = "developer"
+tags = ["dev"]
+startup = "lazy"
+
+[profiles.crypto]
+# Dev still talks to a legacy switch; allow interop ciphers.
+policy = "interop"
+allow_deprecated = false
+warn_on_deprecated = true
+
+[profiles.auth]
+method = "agent"
+
+[profiles.trust]
+mode = "known_hosts"
+known_hosts_file = "~/.ssh/known_hosts"
+strict = true
+
+[[profiles.forwards]]
+name = "kafka"
+type = "local"
+transport = "tcp"
+bind = "127.0.0.1:19092"
+target = "kafka.internal.dev:9092"
+target_resolve = "remote"
+dns_names = ["kafka-dev.fleet.spt.local"]
+
+# --- Legacy DC ------------------------------------------------------------
+[[profiles]]
+name = "legacy-dc"
+description = "Old colocation bastion (RSA host key, AES-CTR only)."
+enabled = false                  # not started by default
+protocol = "ssh2"
+host = "old-bastion.colo.example.net"
+port = 22
+user = "ops"
+tags = ["legacy"]
+
+[profiles.crypto]
+policy = "interop"
+allow_deprecated = true
+warn_on_deprecated = true
+
+[profiles.auth]
+method = "public_key"
+identity_file = "/etc/spt/keys/legacy"
+passphrase = "secret://ssh/legacy/passphrase"
+
+[profiles.trust]
+mode = "pinned"
+pin_sha256 = ["SHA256:0000000000000000000000000000000000000000000000"]
+strict = true
+
+[[profiles.forwards]]
+name = "snmp-poll"
+type = "local"
+transport = "tcp"
+bind = "127.0.0.1:11161"
+target = "core-switch.colo:161"
+target_resolve = "remote"
+required = false
