@@ -1,0 +1,86 @@
+name: spt
+base: core22
+version: '<VERSION>'
+summary: Permanent SSH/SSH3 tunnels with reconnect and service integration
+description: |
+  spt establishes and maintains permanent SSH tunnels — local and reverse
+  port forwards that survive network drops, host restarts, service
+  restarts, DNS changes, and normal operational drift.
+
+  Features:
+    - SSH2 transport via libssh2 and an experimental SSH3 transport over
+      QUIC + HTTP/3.
+    - Local and remote TCP forwards everywhere; UDP forwards over SSH3.
+    - A built-in transparent DNS resolver with split-horizon and SRV
+      synthesis.
+    - An encrypted secret vault (AES-256-GCM + Argon2id).
+    - Service integration, structured observability, an embedded MCP
+      server, and a TUI profile configurator.
+
+  spt is client-only: bring your own SSH/SSH3 server.
+license: MIT
+contact: https://github.com/Mariana/ssh-perma-tunnel/issues
+issues: https://github.com/Mariana/ssh-perma-tunnel/issues
+source-code: https://github.com/Mariana/ssh-perma-tunnel
+website: https://github.com/Mariana/ssh-perma-tunnel
+
+grade: stable
+confinement: strict
+
+# spt is a network client; default user data lives under $SNAP_USER_COMMON.
+environment:
+  SPT_CONFIG_DIR: $SNAP_USER_COMMON/spt
+  SPT_STATE_DIR: $SNAP_USER_COMMON/spt/state
+
+architectures:
+  - build-on: amd64
+  - build-on: arm64
+
+parts:
+  spt:
+    plugin: rust
+    rust-channel: '1.83'
+    source: .
+    source-type: local
+    build-packages:
+      - libssl-dev
+      - pkg-config
+      - clang
+    stage-packages:
+      - libssl3
+    override-build: |
+      craftctl default
+      # Stage man pages and license alongside the binary.
+      install -Dm644 "${CRAFT_PART_SRC}/license.md"  "${CRAFT_PART_INSTALL}/usr/share/licenses/spt/LICENSE"
+      if [ -d "${CRAFT_PART_SRC}/packaging/man" ]; then
+        for page in "${CRAFT_PART_SRC}"/packaging/man/spt*.1; do
+          [ -f "$page" ] || continue
+          install -Dm644 "$page" "${CRAFT_PART_INSTALL}/usr/share/man/man1/$(basename "$page")"
+        done
+      fi
+
+apps:
+  spt:
+    command: bin/spt
+    plugs:
+      - network
+      - network-bind
+      - network-observe
+      - home
+      - removable-media
+      - ssh-keys
+      - password-manager-service
+
+  spt-daemon:
+    command: bin/spt service run
+    daemon: simple
+    install-mode: disable
+    restart-condition: on-failure
+    restart-delay: 5s
+    plugs:
+      - network
+      - network-bind
+      - network-observe
+      - home
+      - ssh-keys
+      - password-manager-service

@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  AppStream metainfo for spt. The `<release>` block below is rewritten by
+  `scripts/release/update-packaging.sh` on every tagged release so that
+  Flathub picks up the new version.
+-->
+<component type="console-application">
+  <id>io.spt.spt</id>
+  <name>spt</name>
+  <summary>Permanent SSH/SSH3 tunnels with reconnect and service integration</summary>
+
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+
+  <description>
+    <p>
+      spt establishes and maintains permanent SSH tunnels — local and reverse
+      port forwards that survive network drops, host restarts, service
+      restarts, DNS changes, and normal operational drift.
+    </p>
+    <p>
+      Highlights:
+    </p>
+    <ul>
+      <li>SSH2 transport via libssh2 and an experimental SSH3 transport over QUIC + HTTP/3.</li>
+      <li>Local and remote TCP forwards; UDP forwards over SSH3.</li>
+      <li>Built-in transparent DNS resolver with split-horizon and SRV synthesis.</li>
+      <li>Encrypted secret vault (AES-256-GCM + Argon2id) and OS keychain integration.</li>
+      <li>Service integration, structured observability, embedded MCP server, TUI configurator.</li>
+    </ul>
+    <p>
+      spt is client-only: it connects to existing SSH/SSH3 servers and
+      maintains forwards through them.
+    </p>
+  </description>
+
+  <url type="homepage">https://github.com/Mariana/ssh-perma-tunnel</url>
+  <url type="bugtracker">https://github.com/Mariana/ssh-perma-tunnel/issues</url>
+  <url type="vcs-browser">https://github.com/Mariana/ssh-perma-tunnel</url>
+
+  <developer_name>Mariana</developer_name>
+
+  <provides>
+    <binary>spt</binary>
+  </provides>
+
+  <categories>
+    <category>Network</category>
+    <category>System</category>
+    <category>ConsoleOnly</category>
+  </categories>
+
+  <content_rating type="oars-1.1" />
+
+  <releases>
+    <release version="@VERSION@" date="@RELEASE_DATE@">
+      <description>
+        <p>See CHANGELOG.md for details.</p>
+      </description>
+    </release>
+  </releases>
+</component>

@@ -1,0 +1,64 @@
+# Windows Package Manager (winget) singleton manifest for spt.
+#
+# NOTE: For submission to microsoft/winget-pkgs the canonical layout is a
+# multi-file manifest (.installer.yaml + .locale.en-US.yaml + .yaml).
+# This singleton is fine for `winget install --manifest` from a local path
+# and for sanity-checking; `scripts/release/update-packaging.sh` is
+# responsible for splitting it into the multi-file form before opening the
+# winget-pkgs PR.
+#
+# Placeholders substituted on release:
+#   <VERSION>            — e.g. 0.1.0
+#   <SHA256_WIN_AMD64>   — sha256 of spt-<VERSION>-x86_64-pc-windows-msvc.msi
+#   <SHA256_WIN_ARM64>   — sha256 of spt-<VERSION>-aarch64-pc-windows-msvc.msi
+#   <RELEASE_DATE>       — YYYY-MM-DD
+PackageIdentifier: Mariana.spt
+PackageVersion: <VERSION>
+PackageLocale: en-US
+Publisher: Mariana
+PublisherUrl: https://github.com/Mariana
+PublisherSupportUrl: https://github.com/Mariana/ssh-perma-tunnel/issues
+PackageName: spt
+PackageUrl: https://github.com/Mariana/ssh-perma-tunnel
+License: MIT
+LicenseUrl: https://github.com/Mariana/ssh-perma-tunnel/blob/main/license.md
+Copyright: Copyright (c) 2026 Mariana
+ShortDescription: Permanent SSH/SSH3 tunnels with reconnect and service integration
+Description: |-
+  spt establishes and maintains permanent SSH tunnels — local and reverse
+  port forwards that survive network drops, host restarts, service
+  restarts, DNS changes, and normal operational drift.
+Moniker: spt
+Tags:
+  - ssh
+  - ssh3
+  - tunnel
+  - port-forward
+  - networking
+  - rust
+ReleaseDate: <RELEASE_DATE>
+ReleaseNotesUrl: https://github.com/Mariana/ssh-perma-tunnel/releases/tag/v<VERSION>
+InstallerType: wix
+Installers:
+  - Architecture: x64
+    InstallerType: wix
+    InstallerUrl: https://github.com/Mariana/ssh-perma-tunnel/releases/download/v<VERSION>/spt-<VERSION>-x86_64-pc-windows-msvc.msi
+    InstallerSha256: <SHA256_WIN_AMD64>
+    Scope: machine
+    InstallModes:
+      - interactive
+      - silent
+      - silentWithProgress
+    UpgradeBehavior: install
+  - Architecture: arm64
+    InstallerType: wix
+    InstallerUrl: https://github.com/Mariana/ssh-perma-tunnel/releases/download/v<VERSION>/spt-<VERSION>-aarch64-pc-windows-msvc.msi
+    InstallerSha256: <SHA256_WIN_ARM64>
+    Scope: machine
+    InstallModes:
+      - interactive
+      - silent
+      - silentWithProgress
+    UpgradeBehavior: install
+ManifestType: singleton
+ManifestVersion: 1.6.0

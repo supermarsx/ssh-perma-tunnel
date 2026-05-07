@@ -1,0 +1,60 @@
+# Maintainer: Mariana <noreply@example.com>
+#
+# Pre-built binary AUR package. Downloads release tarballs from GitHub.
+#
+# Placeholders substituted by `scripts/release/update-packaging.sh`:
+#   <VERSION>             — release version, e.g. 0.1.0
+#   <SHA256_LINUX_AMD64>  — sha256 of spt-<VERSION>-x86_64-unknown-linux-gnu.tar.gz
+#   <SHA256_LINUX_ARM64>  — sha256 of spt-<VERSION>-aarch64-unknown-linux-gnu.tar.gz
+pkgname=spt-bin
+_relname=spt
+pkgver=<VERSION>
+pkgrel=1
+pkgdesc="Permanent SSH/SSH3 tunnels — local/remote port forwards that survive drops (pre-built)"
+arch=('x86_64' 'aarch64')
+url="https://github.com/Mariana/ssh-perma-tunnel"
+license=('MIT')
+depends=('gcc-libs' 'openssl')
+optdepends=(
+    'systemd: service integration via packaging/systemd/spt.service'
+)
+provides=('spt')
+conflicts=('spt' 'spt-git')
+
+source_x86_64=("${_relname}-${pkgver}-x86_64.tar.gz::https://github.com/Mariana/ssh-perma-tunnel/releases/download/v${pkgver}/spt-${pkgver}-x86_64-unknown-linux-gnu.tar.gz")
+source_aarch64=("${_relname}-${pkgver}-aarch64.tar.gz::https://github.com/Mariana/ssh-perma-tunnel/releases/download/v${pkgver}/spt-${pkgver}-aarch64-unknown-linux-gnu.tar.gz")
+sha256sums_x86_64=('<SHA256_LINUX_AMD64>')
+sha256sums_aarch64=('<SHA256_LINUX_ARM64>')
+
+package() {
+    # Tarballs extract to spt-<version>-<target>/ with bin/, share/man/, etc.
+    local _root
+    _root="$(find . -maxdepth 1 -type d -name 'spt-*' | head -n1)"
+    cd "$_root"
+
+    install -Dm755 "spt"                          "$pkgdir/usr/bin/spt"
+
+    if [ -f "license.md" ]; then
+        install -Dm644 "license.md"               "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+    elif [ -f "LICENSE" ]; then
+        install -Dm644 "LICENSE"                  "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+    fi
+
+    if [ -f "systemd/spt.service" ]; then
+        install -Dm644 "systemd/spt.service"      "$pkgdir/usr/lib/systemd/system/spt.service"
+    fi
+
+    if [ -d "share/man/man1" ]; then
+        for page in share/man/man1/spt*.1; do
+            [ -f "$page" ] || continue
+            install -Dm644 "$page" "$pkgdir/usr/share/man/man1/$(basename "$page")"
+        done
+    fi
+
+    install -dm755 "$pkgdir/usr/share/bash-completion/completions"
+    install -dm755 "$pkgdir/usr/share/zsh/site-functions"
+    install -dm755 "$pkgdir/usr/share/fish/vendor_completions.d"
+    ./spt completion generate bash > "$pkgdir/usr/share/bash-completion/completions/spt"     || true
+    ./spt completion generate zsh  > "$pkgdir/usr/share/zsh/site-functions/_spt"             || true
+    ./spt completion generate fish > "$pkgdir/usr/share/fish/vendor_completions.d/spt.fish"  || true
+}

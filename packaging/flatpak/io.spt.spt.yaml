@@ -1,0 +1,50 @@
+# Flatpak manifest for spt. Builds from a tagged GitHub release tarball.
+#
+# Placeholders substituted by `scripts/release/update-packaging.sh`:
+#   <VERSION>         — release version, e.g. 0.1.0
+#   <SHA256_SRC_TAR>  — sha256 of v<VERSION>.tar.gz from GitHub
+#
+# Build with:  flatpak-builder build-dir packaging/flatpak/io.spt.spt.yaml
+app-id: io.spt.spt
+runtime: org.freedesktop.Platform
+runtime-version: '23.08'
+sdk: org.freedesktop.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+
+command: spt
+
+finish-args:
+  # spt is a network client and supervisor.
+  - --share=network
+  # Read user config (~/.config/spt) and home-relative key paths.
+  - --filesystem=home
+  # Talk to ssh-agent and the host keychain (best-effort; user can revoke).
+  - --socket=session-bus
+  - --talk-name=org.freedesktop.secrets
+
+build-options:
+  append-path: /usr/lib/sdk/rust-stable/bin
+  env:
+    CARGO_HOME: /run/build/spt/cargo
+
+modules:
+  - name: spt
+    buildsystem: simple
+    sources:
+      - type: archive
+        url: https://github.com/Mariana/ssh-perma-tunnel/archive/refs/tags/v<VERSION>.tar.gz
+        sha256: <SHA256_SRC_TAR>
+        dest-filename: spt-source.tar.gz
+    build-commands:
+      - cargo --offline build --release --bin spt || cargo build --release --bin spt
+      - install -Dm755 target/release/spt /app/bin/spt
+      - install -Dm644 license.md /app/share/licenses/spt/LICENSE
+      - |
+        if [ -d packaging/man ]; then
+          for page in packaging/man/spt*.1; do
+            [ -f "$page" ] || continue
+            install -Dm644 "$page" "/app/share/man/man1/$(basename "$page")"
+          done
+        fi
+      - install -Dm644 packaging/flatpak/io.spt.spt.metainfo.xml /app/share/metainfo/io.spt.spt.metainfo.xml
