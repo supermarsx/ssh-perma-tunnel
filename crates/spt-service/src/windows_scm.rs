@@ -352,6 +352,24 @@ mod windows_impl {
             .map_err(|e| Error::ServiceManagerFailed(format!("open_service({name}): {e}")))
     }
 
+    /// Render the `launch_arguments` array we hand to SCM.
+    ///
+    /// Prepends `--scm-dispatch` (idempotent) so the spt-bin entry point can
+    /// detect SCM-driven invocation before clap parses `Cli`. Cross-platform
+    /// `ServiceSpec` consumers (systemd / launchd / sysv / openrc render
+    /// snapshots) do **not** use this helper; they keep `spec.args` verbatim.
+    ///
+    /// Pure / sync so it's unit-testable without round-tripping SCM.
+    pub(super) fn scm_launch_arguments(spec_args: &[String]) -> Vec<OsString> {
+        const SCM_DISPATCH_FLAG: &str = "--scm-dispatch";
+        let mut out: Vec<OsString> = Vec::with_capacity(spec_args.len() + 1);
+        if !spec_args.iter().any(|a| a == SCM_DISPATCH_FLAG) {
+            out.push(OsString::from(SCM_DISPATCH_FLAG));
+        }
+        out.extend(spec_args.iter().map(OsString::from));
+        out
+    }
+
     pub(super) fn install(spec: &ServiceSpec) -> Result<()> {
         let scm = open_scm(ServiceManagerAccess::CREATE_SERVICE)?;
         let info = ServiceInfo {
@@ -361,7 +379,7 @@ mod windows_impl {
             start_type: ServiceStartType::AutoStart,
             error_control: ServiceErrorControl::Normal,
             executable_path: spec.exec_path.clone(),
-            launch_arguments: spec.args.iter().map(OsString::from).collect(),
+            launch_arguments: scm_launch_arguments(&spec.args),
             dependencies: vec![],
             account_name: None,
             account_password: None,
@@ -660,6 +678,40 @@ mod windows_impl {
         #[test]
         fn map_state_stopped_is_stopped() {
             assert_eq!(map_state(WinServiceState::Stopped), ServiceState::Stopped);
+        }
+
+        #[test]
+        fn scm_launch_arguments_prepends_scm_dispatch_flag() {
+            let args = vec![
+                "tunnel".to_string(),
+                "run".to_string(),
+                "--foreground".to_string(),
+                "--config".to_string(),
+                "/etc/spt/spt.toml".to_string(),
+            ];
+            let rendered = scm_launch_arguments(&args);
+            assert_eq!(rendered.first().and_then(|s| s.to_str()), Some("--scm-dispatch"));
+            assert_eq!(rendered.len(), args.len() + 1);
+            // Original args preserved in order.
+            for (i, a) in args.iter().enumerate() {
+                assert_eq!(rendered[i + 1].to_str(), Some(a.as_str()));
+            }
+        }
+
+        #[test]
+        fn scm_launch_arguments_is_idempotent() {
+            let args = vec![
+                "--scm-dispatch".to_string(),
+                "tunnel".to_string(),
+                "run".to_string(),
+            ];
+            let rendered = scm_launch_arguments(&args);
+            assert_eq!(rendered.len(), args.len(), "should not duplicate --scm-dispatch");
+            let count = rendered
+                .iter()
+                .filter(|a| a.to_str() == Some("--scm-dispatch"))
+                .count();
+            assert_eq!(count, 1);
         }
 
         #[test]
