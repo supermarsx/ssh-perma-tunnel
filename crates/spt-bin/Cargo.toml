@@ -48,6 +48,8 @@ spt-tui = { workspace = true }
 spt-diagnostics = { workspace = true }
 spt-benchmark = { workspace = true }
 spt-remote-config = { workspace = true }
+spt-snmp = { workspace = true, features = ["testing"] }
+spt-winevent = { workspace = true }
 
 # Async + std
 tokio = { workspace = true }
@@ -72,6 +74,7 @@ anyhow = { workspace = true }
 thiserror = { workspace = true }
 
 # Misc
+atomicwrites = { workspace = true }
 base64 = { workspace = true }
 hex = { workspace = true }
 chrono = { workspace = true }
@@ -80,6 +83,10 @@ url = { workspace = true }
 secrecy = { workspace = true }
 ssh-key = { workspace = true }
 tempfile = { workspace = true }
+
+# DNS client for `spt dns query` against the running resolver.
+hickory-resolver = { workspace = true }
+hickory-proto = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 nix = { workspace = true }
@@ -101,6 +108,12 @@ clap = { workspace = true }
 clap_complete = { workspace = true }
 # `testing` feature exposes MockTunnelProtocol for the lifecycle integration test.
 spt-forward = { workspace = true, features = ["testing"] }
+# `testing` feature exposes deterministic_keypair / fixtures for cli/key_ops tests.
+spt-key = { workspace = true, features = ["testing"] }
+# `testing` feature exposes StatusSnapshotBuilder/TempStateDir for cli/*_ops tests.
+spt-state = { workspace = true, features = ["testing"] }
+# `testing` feature exposes FakeZone/LocalhostResolver for cli/dns_ops tests.
+spt-dns = { workspace = true, features = ["testing"] }
 
 [lints]
 workspace = true

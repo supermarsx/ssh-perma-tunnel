@@ -30,11 +30,11 @@ pub enum KeySub {
     /// Print a public key (optionally to a file).
     Public(KeyPublic),
     /// Change the passphrase on a private key.
-    ChangePassphrase(KeyPath),
+    ChangePassphrase(KeyChangePassphrase),
     /// Sign an OpenSSH certificate.
     SignCert(KeySignCert),
     /// Verify an OpenSSH certificate.
-    VerifyCert(KeyPath),
+    VerifyCert(KeyVerifyCert),
     /// Install a public key on a remote host.
     InstallPublic(KeyInstallPublic),
 }
@@ -104,6 +104,36 @@ pub struct KeyPath {
     pub path: PathBuf,
 }
 
+/// `spt key change-passphrase`.
+#[derive(Args, Debug)]
+pub struct KeyChangePassphrase {
+    /// Private key path.
+    pub path: PathBuf,
+    /// Read the new passphrase from a value source
+    /// (`stdin`, `file:<path>`, or `env:<NAME>`).
+    #[arg(long, value_name = "SOURCE")]
+    pub new_passphrase_from: Option<String>,
+}
+
+/// `spt key verify-cert`.
+#[derive(Args, Debug)]
+pub struct KeyVerifyCert {
+    /// Certificate path.
+    pub path: PathBuf,
+    /// File containing trusted CA public keys (one per line).
+    #[arg(long, value_name = "PATH")]
+    pub trusted_cas: PathBuf,
+}
+
+/// Certificate type selector for `spt key sign-cert`.
+#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
+pub enum CertTypeFlag {
+    /// User certificate.
+    User,
+    /// Host certificate.
+    Host,
+}
+
 /// `spt key sign-cert`.
 #[derive(Args, Debug)]
 pub struct KeySignCert {
@@ -113,20 +143,35 @@ pub struct KeySignCert {
     /// Public key to sign.
     #[arg(long, value_name = "PATH")]
     pub public_key: PathBuf,
-    /// Principal name to embed.
-    #[arg(long, value_name = "NAME")]
-    pub principal: String,
+    /// One or more principal names (repeat or comma-separated).
+    #[arg(long = "principal", value_name = "NAME", value_delimiter = ',', num_args = 1..)]
+    pub principals: Vec<String>,
+    /// Certificate validity duration (e.g. `1d`, `52w`).
+    #[arg(long, value_name = "DURATION")]
+    pub validity: Option<String>,
+    /// Serial number to embed.
+    #[arg(long, value_name = "N")]
+    pub serial: Option<u64>,
+    /// Certificate type (user/host).
+    #[arg(long, value_enum, value_name = "TYPE")]
+    pub cert_type: Option<CertTypeFlag>,
+    /// Free-form key id to embed in the certificate.
+    #[arg(long, value_name = "TEXT")]
+    pub key_id: Option<String>,
     /// Output certificate path.
     #[arg(long, value_name = "PATH")]
-    pub out: PathBuf,
+    pub out: Option<PathBuf>,
 }
 
 /// `spt key install-public`.
 #[derive(Args, Debug)]
 pub struct KeyInstallPublic {
     /// Owning profile.
-    #[arg(long)]
-    pub profile: String,
+    #[arg(long, group = "key_install_dest")]
+    pub profile: Option<String>,
+    /// Override target as `user@host[:port]`.
+    #[arg(long, value_name = "USER@HOST", group = "key_install_dest")]
+    pub target: Option<String>,
     /// Public key path.
     #[arg(long, value_name = "PATH")]
     pub key: PathBuf,

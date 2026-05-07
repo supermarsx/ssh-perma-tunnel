@@ -119,6 +119,9 @@ pub struct ForwardTest {
     /// Probe with a DNS resolution.
     #[arg(long, value_name = "NAME")]
     pub dns_name: Option<String>,
+    /// Timeout for the connect probe (e.g. `10s`).
+    #[arg(long, value_name = "DURATION")]
+    pub timeout: Option<String>,
 }
 
 /// `spt forward throttle`.

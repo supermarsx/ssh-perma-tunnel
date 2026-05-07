@@ -69,6 +69,13 @@ pub struct SecretStoreInit {
     /// Preferred backend.
     #[arg(long, value_enum, value_name = "BACKEND")]
     pub backend: Option<SecretBackend>,
+    /// Vault file location (overrides default `<state_dir>/vault.spt`).
+    #[arg(long, value_name = "PATH")]
+    pub vault_path: Option<PathBuf>,
+    /// Read the vault passphrase from a value source
+    /// (`stdin`, `file:<path>`, `env:<NAME>`).
+    #[arg(long, value_name = "SOURCE")]
+    pub passphrase_from: Option<String>,
 }
 
 /// `spt secret set`.
@@ -100,6 +107,15 @@ pub struct SecretGet {
 /// `spt secret list`.
 #[derive(Args, Debug)]
 pub struct SecretList {
+    /// Restrict to a single namespace.
+    #[arg(long, value_name = "NS")]
+    pub namespace: Option<String>,
+    /// Vault file location.
+    #[arg(long, value_name = "PATH")]
+    pub vault_path: Option<PathBuf>,
+    /// Read the vault passphrase from a value source.
+    #[arg(long, value_name = "SOURCE")]
+    pub passphrase_from: Option<String>,
     /// JSON output.
     #[arg(long)]
     pub json: bool,
@@ -108,6 +124,16 @@ pub struct SecretList {
 /// `spt secret rotate|remove <name>`.
 #[derive(Args, Debug)]
 pub struct SecretName {
-    /// Secret name.
+    /// Secret name (`namespace/name` or `secret://...`).
     pub name: String,
+    /// New value source for `rotate`
+    /// (`stdin`, `file:<path>`, `env:<NAME>`).
+    #[arg(long, value_name = "SOURCE")]
+    pub new_value_from: Option<String>,
+    /// Vault file location.
+    #[arg(long, value_name = "PATH")]
+    pub vault_path: Option<PathBuf>,
+    /// Read the vault passphrase from a value source.
+    #[arg(long, value_name = "SOURCE")]
+    pub passphrase_from: Option<String>,
 }

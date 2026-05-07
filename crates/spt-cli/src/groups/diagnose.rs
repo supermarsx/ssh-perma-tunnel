@@ -89,8 +89,12 @@ pub struct DiagnoseNetwork {
 /// `spt diagnose auth|trust <profile>`.
 #[derive(Args, Debug)]
 pub struct DiagnoseProfile {
-    /// Profile name.
+    /// Profile name (omit or pass empty for "all profiles").
+    #[arg(default_value = "")]
     pub profile: String,
+    /// Run a live connect probe (forward-compatible; structural-only today).
+    #[arg(long)]
+    pub probe: bool,
     /// JSON output.
     #[arg(long)]
     pub json: bool,

@@ -41,7 +41,30 @@ use crate::stub_err;
 
 /// Top-level dispatcher.
 pub async fn dispatch(cli: Cli) -> Result<()> {
-    let global = cli.global.clone();
+    // `--config-dir <DIR>` loads `<DIR>/*.toml` in lex order via
+    // `spt_config::load_dir`, merging into a single Config. The merged
+    // config is materialised to a tempfile and substituted for
+    // `global.config` so every downstream dispatcher (which reads a
+    // single config path) transparently picks up the merged view.
+    let global = if let Some(dir) = cli.global.config_dir.clone() {
+        let (cfg, _w) = spt_config::load_dir(&dir, false)?;
+        let body = spt_config::render(&cfg, RedactionMode::None);
+        let tmp = std::env::temp_dir().join(format!(
+            "spt-merged-{}.toml",
+            std::process::id()
+        ));
+        std::fs::write(&tmp, body).map_err(|e| {
+            Error::InvalidConfig(format!(
+                "write merged config-dir to `{}`: {e}",
+                tmp.display()
+            ))
+        })?;
+        let mut g = cli.global.clone();
+        g.config = Some(tmp);
+        g
+    } else {
+        cli.global.clone()
+    };
     match cli.command {
         Command::Config(c) => config_dispatch(&global, c).await,
         Command::Profile(c) => profile_dispatch(&global, c).await,
@@ -72,13 +95,13 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
 async fn config_dispatch(global: &GlobalOpts, c: groups::config::ConfigCmd) -> Result<()> {
     use groups::config::ConfigSub;
     match c.command {
-        ConfigSub::Init(args) => config_init(global, args),
+        ConfigSub::Init(args) => config_init(global, args).await,
         ConfigSub::Validate(args) => config_validate(global, args.strict),
-        ConfigSub::Doctor(_) => Err(stub_err("config doctor", "M3")),
+        ConfigSub::Doctor(args) => crate::cli::config_ops::doctor(global, args).await,
         ConfigSub::Render(args) => config_render(global, args),
         ConfigSub::Diff(args) => config_diff(args),
         ConfigSub::Migrate(args) => config_migrate(global, args),
-        ConfigSub::Reload(_) => Err(stub_err("config reload", "M3")),
+        ConfigSub::Reload(args) => crate::cli::config_ops::reload(global, args).await,
         ConfigSub::Pull(args) => config_pull(global, args).await,
         ConfigSub::Trust(args) => config_trust(global, args),
     }
@@ -150,7 +173,7 @@ fn config_diff(args: groups::config::ConfigDiff) -> Result<()> {
     Ok(())
 }
 
-fn config_init(global: &GlobalOpts, args: groups::config::ConfigInit) -> Result<()> {
+async fn config_init(global: &GlobalOpts, args: groups::config::ConfigInit) -> Result<()> {
     let path = args
         .path
         .clone()
@@ -158,15 +181,19 @@ fn config_init(global: &GlobalOpts, args: groups::config::ConfigInit) -> Result<
         .ok_or_else(|| {
             Error::InvalidArgs("provide --path or set --config / $SPT_CONFIG".into())
         })?;
+    // `--example observability` writes the canned multi-sink template
+    // shipped at `examples/observability.toml`.
+    if matches!(args.example, Some(groups::config::ConfigExample::Observability)) {
+        crate::cli::config_ops::init_observability_example(&path).await?;
+        println!("wrote {}", path.display());
+        return Ok(());
+    }
     if path.exists() {
         return Err(Error::InvalidArgs(format!(
             "refusing to overwrite existing file at `{}`",
             path.display()
         )));
     }
-    // The example dialect doesn't change the rendered TOML body in M0; we
-    // emit a default Config so `config validate` round-trips it. Deeper
-    // template seeding (jump host, ssh3, etc.) is M2 work.
     let _ = args.example;
     let mut cfg = spt_config::schema::Config::default();
     cfg.version = 1;
@@ -285,11 +312,11 @@ async fn profile_dispatch(global: &GlobalOpts, c: groups::profile::ProfileCmd) -
         ProfileSub::Show(args) => profile_show(global, args),
         ProfileSub::Add(args) => profile_add(global, args),
         ProfileSub::Configure(args) => profile_configure(global, args),
-        ProfileSub::Set(_) => Err(stub_err("profile set", "M2")),
-        ProfileSub::Enable(_) => Err(stub_err("profile enable", "M2")),
-        ProfileSub::Disable(_) => Err(stub_err("profile disable", "M2")),
+        ProfileSub::Set(args) => crate::cli::profile_ops::set(global, args).await,
+        ProfileSub::Enable(args) => crate::cli::profile_ops::enable(global, args).await,
+        ProfileSub::Disable(args) => crate::cli::profile_ops::disable(global, args).await,
         ProfileSub::Remove(args) => profile_remove(global, args),
-        ProfileSub::Test(_) => Err(stub_err("profile test", "M3")),
+        ProfileSub::Test(args) => crate::cli::profile_ops::test(global, args).await,
     }
 }
 
@@ -415,11 +442,11 @@ async fn forward_dispatch(global: &GlobalOpts, c: groups::forward::ForwardCmd) -
     use groups::forward::ForwardSub;
     match c.command {
         ForwardSub::List(args) => forward_list(global, args),
-        ForwardSub::Show(_) => Err(stub_err("forward show", "M2")),
+        ForwardSub::Show(args) => crate::cli::forward_ops::show(global, args).await,
         ForwardSub::Add(args) => forward_add(global, args),
-        ForwardSub::Explain(_) => Err(stub_err("forward explain", "M3")),
-        ForwardSub::Test(_) => Err(stub_err("forward test", "M3")),
-        ForwardSub::Throttle(_) => Err(stub_err("forward throttle", "M4")),
+        ForwardSub::Explain(args) => crate::cli::forward_ops::explain(global, args).await,
+        ForwardSub::Test(args) => crate::cli::forward_ops::test(global, args).await,
+        ForwardSub::Throttle(args) => crate::cli::forward_ops::throttle(global, args).await,
         ForwardSub::Remove(args) => forward_remove(global, args),
     }
 }
@@ -539,11 +566,37 @@ async fn tunnel_dispatch(global: &GlobalOpts, c: groups::tunnel::TunnelCmd) -> R
     match c.command {
         TunnelSub::Run(args) => tunnel_run(global, args).await,
         TunnelSub::Status(_) => tunnel_status(global),
-        TunnelSub::Stats(_) => Err(stub_err("tunnel stats", "M4")),
-        TunnelSub::Sessions(_) => Err(stub_err("tunnel sessions", "M4")),
+        TunnelSub::Stats(args) => {
+            crate::cli::tunnel_ops::stats(
+                global,
+                crate::cli::tunnel_ops::TunnelStatsArgs {
+                    profile: args.profile,
+                    forward: args.forward,
+                    json: args.json,
+                },
+            )
+            .await
+        }
+        TunnelSub::Sessions(args) => {
+            crate::cli::tunnel_ops::sessions(
+                global,
+                crate::cli::tunnel_ops::TunnelSessionsArgs {
+                    profile: args.profile,
+                    forward: args.forward,
+                    json: args.json,
+                },
+            )
+            .await
+        }
         TunnelSub::Stop(_) => tunnel_stop(global).await,
         TunnelSub::Reload(_) => tunnel_reload(global).await,
-        TunnelSub::Health(_) => Err(stub_err("tunnel health", "M3")),
+        TunnelSub::Health(args) => {
+            crate::cli::tunnel_ops::health(
+                global,
+                crate::cli::tunnel_ops::TunnelHealthArgs { json: args.json },
+            )
+            .await
+        }
         TunnelSub::Failover(args) => tunnel_failover(global, args).await,
     }
 }
@@ -1045,16 +1098,72 @@ fn service_name_from_path(p: &Path) -> String {
 // key
 // ============================================================================
 
-async fn key_dispatch(_global: &GlobalOpts, c: groups::key::KeyCmd) -> Result<()> {
-    use groups::key::KeySub;
+async fn key_dispatch(global: &GlobalOpts, c: groups::key::KeyCmd) -> Result<()> {
+    use groups::key::{CertTypeFlag, KeySub};
     match c.command {
         KeySub::Generate(args) => key_generate(args),
         KeySub::Inspect(args) => key_inspect(args),
-        KeySub::Public(_) => Err(stub_err("key public", "M0+")),
-        KeySub::ChangePassphrase(_) => Err(stub_err("key change-passphrase", "M1")),
-        KeySub::SignCert(_) => Err(stub_err("key sign-cert", "M1")),
-        KeySub::VerifyCert(_) => Err(stub_err("key verify-cert", "M1")),
-        KeySub::InstallPublic(_) => Err(stub_err("key install-public", "M3")),
+        KeySub::Public(args) => {
+            crate::cli::key_ops::public(
+                global,
+                crate::cli::key_ops::KeyPublicArgs {
+                    key: args.path,
+                    out: args.out,
+                },
+            )
+            .await
+        }
+        KeySub::ChangePassphrase(args) => {
+            crate::cli::key_ops::change_passphrase(
+                global,
+                crate::cli::key_ops::KeyChangePassphraseArgs {
+                    key: args.path,
+                    new_passphrase_from: args.new_passphrase_from,
+                },
+            )
+            .await
+        }
+        KeySub::SignCert(args) => {
+            let cert_type = args.cert_type.map(|t| match t {
+                CertTypeFlag::User => crate::cli::key_ops::CertTypeArg::User,
+                CertTypeFlag::Host => crate::cli::key_ops::CertTypeArg::Host,
+            });
+            crate::cli::key_ops::sign_cert(
+                global,
+                crate::cli::key_ops::KeySignCertArgs {
+                    ca: args.ca_key,
+                    subject: args.public_key,
+                    principals: args.principals,
+                    validity: args.validity,
+                    serial: args.serial,
+                    cert_type,
+                    key_id: args.key_id,
+                    out: args.out,
+                },
+            )
+            .await
+        }
+        KeySub::VerifyCert(args) => {
+            crate::cli::key_ops::verify_cert(
+                global,
+                crate::cli::key_ops::KeyVerifyCertArgs {
+                    cert: args.path,
+                    trusted_cas: args.trusted_cas,
+                },
+            )
+            .await
+        }
+        KeySub::InstallPublic(args) => {
+            crate::cli::key_ops::install_public(
+                global,
+                crate::cli::key_ops::KeyInstallPublicArgs {
+                    key: args.key,
+                    target: args.target,
+                    profile: args.profile,
+                },
+            )
+            .await
+        }
     }
 }
 
@@ -1136,13 +1245,46 @@ fn prompt_passphrase(prompt: &str) -> Result<String> {
 // ============================================================================
 
 async fn secret_dispatch(global: &GlobalOpts, c: groups::secret::SecretCmd) -> Result<()> {
-    use groups::secret::SecretSub;
+    use groups::secret::{SecretStoreSub, SecretSub};
     match c.command {
-        SecretSub::Store(_) => Err(stub_err("secret store", "M1")),
+        SecretSub::Store(s) => match s.command {
+            SecretStoreSub::Init(args) => {
+                crate::cli::secret_ops::store_init(
+                    global,
+                    crate::cli::secret_ops::SecretStoreInitArgs {
+                        vault_path: args.vault_path,
+                        passphrase_from: args.passphrase_from,
+                    },
+                )
+                .await
+            }
+        },
         SecretSub::Set(args) => secret_set(global, args),
         SecretSub::Get(args) => secret_get(global, args),
-        SecretSub::List(args) => secret_list(global, args),
-        SecretSub::Rotate(_) => Err(stub_err("secret rotate", "M1")),
+        SecretSub::List(args) => {
+            let _ = args.json;
+            crate::cli::secret_ops::list(
+                global,
+                crate::cli::secret_ops::SecretListArgs {
+                    namespace: args.namespace,
+                    vault_path: args.vault_path,
+                    passphrase_from: args.passphrase_from,
+                },
+            )
+            .await
+        }
+        SecretSub::Rotate(args) => {
+            crate::cli::secret_ops::rotate(
+                global,
+                crate::cli::secret_ops::SecretRotateArgs {
+                    reference: args.name,
+                    new_value_from: args.new_value_from,
+                    vault_path: args.vault_path,
+                    passphrase_from: args.passphrase_from,
+                },
+            )
+            .await
+        }
         SecretSub::Remove(args) => secret_remove(global, args),
         SecretSub::Doctor => secret_doctor(global),
     }
@@ -1200,10 +1342,6 @@ fn secret_get(_global: &GlobalOpts, args: groups::secret::SecretGet) -> Result<(
 fn bytes_len_hint(b: &spt_secrets::SecretBytes) -> usize {
     use secrecy::ExposeSecret;
     b.expose_secret().len()
-}
-
-fn secret_list(_global: &GlobalOpts, _args: groups::secret::SecretList) -> Result<()> {
-    Err(stub_err("secret list (vault enumeration)", "M1"))
 }
 
 fn secret_remove(_global: &GlobalOpts, args: groups::secret::SecretName) -> Result<()> {
@@ -1400,18 +1538,13 @@ fn auth_test(global: &GlobalOpts, args: groups::auth::AuthProfile) -> Result<()>
 async fn dns_dispatch(global: &GlobalOpts, c: groups::dns::DnsCmd) -> Result<()> {
     use groups::dns::DnsSub;
     match c.command {
-        DnsSub::Serve(_) => Err(stub_err("dns serve", "M2")),
-        DnsSub::Status(_) => dns_status(global),
-        DnsSub::Query(_) => Err(stub_err("dns query", "M2")),
-        DnsSub::Upstream(_) => Err(stub_err("dns upstream", "M2")),
-        DnsSub::Record(_) => Err(stub_err("dns record", "M2")),
+        DnsSub::Serve(args) => crate::cli::dns_ops::serve(global, args.into()).await,
+        DnsSub::Status(args) => crate::cli::dns_ops::status(global, args.into()).await,
+        DnsSub::Query(args) => crate::cli::dns_ops::query(global, args.into()).await,
+        DnsSub::Upstream(args) => crate::cli::dns_ops::upstream(global, args.into()).await,
+        DnsSub::Record(args) => crate::cli::dns_ops::record(global, args.into()).await,
         DnsSub::Hosts(args) => dns_hosts(global, args),
     }
-}
-
-fn dns_status(_global: &GlobalOpts) -> Result<()> {
-    println!("(dns status: not implemented in M0; tracked in M2)");
-    Ok(())
 }
 
 fn dns_hosts(global: &GlobalOpts, h: groups::dns::DnsHosts) -> Result<()> {
@@ -1467,15 +1600,35 @@ fn dns_hosts(global: &GlobalOpts, h: groups::dns::DnsHosts) -> Result<()> {
 // firewall
 // ============================================================================
 
-async fn firewall_dispatch(_global: &GlobalOpts, c: groups::firewall::FirewallCmd) -> Result<()> {
+async fn firewall_dispatch(global: &GlobalOpts, c: groups::firewall::FirewallCmd) -> Result<()> {
     use groups::firewall::FirewallSub;
     match c.command {
         FirewallSub::Plan(_) => firewall_plan_render(false),
         FirewallSub::Apply(args) => firewall_apply(args, false),
         FirewallSub::Remove(args) => firewall_apply(args, true),
-        FirewallSub::Status(_) => Err(stub_err("firewall status", "M3")),
+        FirewallSub::Status(args) => {
+            crate::cli::firewall_ops::status(
+                global,
+                crate::cli::firewall_ops::FirewallStatusArgs { json: args.json },
+            )
+            .await
+        }
         FirewallSub::Interfaces(_) => firewall_interfaces(),
-        FirewallSub::BindPreview(_) => Err(stub_err("firewall bind-preview", "M3")),
+        FirewallSub::BindPreview(args) => {
+            let (profile, forward) = match args.forward.split_once('/') {
+                Some((p, f)) => (Some(p.to_string()), Some(f.to_string())),
+                None => (Some(args.forward.clone()), None),
+            };
+            crate::cli::firewall_ops::bind_preview(
+                global,
+                crate::cli::firewall_ops::FirewallBindPreviewArgs {
+                    profile,
+                    forward,
+                    json: args.json,
+                },
+            )
+            .await
+        }
     }
 }
 
@@ -1524,11 +1677,40 @@ fn firewall_interfaces() -> Result<()> {
 // ============================================================================
 
 async fn log_dispatch(global: &GlobalOpts, c: groups::log::LogCmd) -> Result<()> {
-    use groups::log::LogSub;
+    use groups::log::{LogExportFormat as CliLogFormat, LogSub};
     match c.command {
         LogSub::Tail(args) => log_tail(global, args),
-        LogSub::Test(_) => Err(stub_err("log test", "M3")),
-        LogSub::Export(_) => Err(stub_err("log export", "M3")),
+        LogSub::Test(args) => {
+            crate::cli::log_ops::test(
+                global,
+                crate::cli::log_ops::LogTestArgs {
+                    sink: args.sink,
+                    json: false,
+                },
+            )
+            .await
+        }
+        LogSub::Export(args) => {
+            let format = match args.format {
+                CliLogFormat::Jsonl => crate::cli::log_ops::LogExportFormat::Jsonl,
+                CliLogFormat::Csv => {
+                    return Err(Error::InvalidArgs(
+                        "log export --format csv is not supported; use jsonl"
+                            .into(),
+                    ));
+                }
+            };
+            crate::cli::log_ops::export(
+                global,
+                crate::cli::log_ops::LogExportArgs {
+                    since: Some(args.since),
+                    until: None,
+                    to: None,
+                    format,
+                },
+            )
+            .await
+        }
     }
 }
 
@@ -1556,11 +1738,40 @@ fn log_tail(global: &GlobalOpts, _args: groups::log::LogTail) -> Result<()> {
 // ============================================================================
 
 async fn observe_dispatch(global: &GlobalOpts, c: groups::observe::ObserveCmd) -> Result<()> {
-    use groups::observe::ObserveSub;
+    use groups::observe::{ObserveSnmpSub, ObserveSub, ObserveWinEventSub};
     match c.command {
         ObserveSub::Metrics(args) => observe_metrics(global, args),
-        ObserveSub::Snmp(_) => Err(stub_err("observe snmp", "M3")),
-        ObserveSub::WindowsEvent(_) => Err(stub_err("observe windows-event", "M3")),
+        ObserveSub::Snmp(snmp) => match snmp.command {
+            ObserveSnmpSub::Serve(_) => {
+                // `snmp serve` is integrated into `tunnel run` via the
+                // observability stack; surface a hint pointing at that path
+                // rather than spinning a duplicate agent.
+                Err(Error::InvalidArgs(
+                    "`spt observe snmp serve` is integrated into `spt tunnel run`; \
+                     enable `[observability.snmp]` in config and start the supervisor"
+                        .into(),
+                ))
+            }
+            ObserveSnmpSub::TestTrap(_t) => {
+                crate::cli::observe_ops::snmp(
+                    global,
+                    crate::cli::observe_ops::ObserveSnmpArgs::default(),
+                )
+                .await
+            }
+        },
+        ObserveSub::WindowsEvent(we) => match we.command {
+            ObserveWinEventSub::InstallSource(s) | ObserveWinEventSub::Test(s) => {
+                crate::cli::observe_ops::windows_event(
+                    global,
+                    crate::cli::observe_ops::ObserveWindowsEventArgs {
+                        message: None,
+                        source: s.source,
+                    },
+                )
+                .await
+            }
+        },
     }
 }
 
@@ -1592,7 +1803,17 @@ async fn event_dispatch(global: &GlobalOpts, c: groups::event::EventCmd) -> Resu
             EventSinkSub::Test(args) => event_sink_test(global, args).await,
         },
         EventSub::Test(args) => event_test(global, args).await,
-        EventSub::Replay(_) => Err(stub_err("event replay", "M3")),
+        EventSub::Replay(args) => {
+            crate::cli::event_ops::replay(
+                global,
+                crate::cli::event_ops::EventReplayArgs {
+                    event_id: args.binding.clone(),
+                    sink: None,
+                    json: false,
+                },
+            )
+            .await
+        }
     }
 }
 
@@ -2044,10 +2265,19 @@ async fn diagnose_dispatch(global: &GlobalOpts, c: groups::diagnose::DiagnoseCmd
         DiagnoseSub::Network(args) => diagnose_one(global, "network", args.json).await,
         DiagnoseSub::Dns(args) => diagnose_one(global, "dns", args.json).await,
         DiagnoseSub::Bind(args) => diagnose_one(global, "bind", args.json).await,
-        DiagnoseSub::Port(args) => diagnose_port(args).await,
-        DiagnoseSub::Auth(_) => Err(stub_err("diagnose auth", "M3")),
-        DiagnoseSub::Trust(_) => Err(stub_err("diagnose trust", "M3")),
-        DiagnoseSub::Observability(_) => Err(stub_err("diagnose observability", "M3")),
+        DiagnoseSub::Port(args) => diagnose_port(global, args).await,
+        DiagnoseSub::Auth(args) => {
+            let probe = args.probe;
+            let mut a: crate::cli::diag_ops::DiagnoseAuthArgs = args.into();
+            a.probe = probe;
+            crate::cli::diag_ops::auth(global, a).await
+        }
+        DiagnoseSub::Trust(args) => {
+            crate::cli::diag_ops::trust(global, args.into()).await
+        }
+        DiagnoseSub::Observability(args) => {
+            crate::cli::diag_ops::observability(global, args.into()).await
+        }
     }
 }
 
@@ -2121,9 +2351,10 @@ async fn diagnose_one(global: &GlobalOpts, group: &str, json: bool) -> Result<()
     Ok(())
 }
 
-async fn diagnose_port(args: groups::diagnose::DiagnosePort) -> Result<()> {
+async fn diagnose_port(global: &GlobalOpts, args: groups::diagnose::DiagnosePort) -> Result<()> {
     if args.udp {
-        return Err(stub_err("diagnose port --udp", "M3"));
+        // Delegate to the spt-diagnostics UDP autodetect chain via diag_ops.
+        return crate::cli::diag_ops::port(global, args.into()).await;
     }
     let target = format!("{}:{}", args.host, args.port);
     let connect_result = tokio::net::TcpStream::connect(&target).await;
@@ -2343,7 +2574,7 @@ async fn benchmark_dispatch(global: &GlobalOpts, c: groups::benchmark::Benchmark
             )
             .await
         }
-        BenchmarkSub::Report(rep) => benchmark_report(rep),
+        BenchmarkSub::Report(rep) => benchmark_report(global, rep).await,
     }
 }
 
@@ -2586,7 +2817,10 @@ async fn benchmark_run(
     Ok(())
 }
 
-fn benchmark_report(rep: groups::benchmark::BenchmarkReport) -> Result<()> {
+async fn benchmark_report(
+    global: &GlobalOpts,
+    rep: groups::benchmark::BenchmarkReport,
+) -> Result<()> {
     use groups::benchmark::BenchmarkReportSub;
     match rep.command {
         BenchmarkReportSub::Compare(args) => {
@@ -2598,7 +2832,9 @@ fn benchmark_report(rep: groups::benchmark::BenchmarkReport) -> Result<()> {
             println!("{s}");
             Ok(())
         }
-        BenchmarkReportSub::Export(_) => Err(stub_err("benchmark report export", "M6")),
+        BenchmarkReportSub::Export(args) => {
+            crate::cli::bench_ops::report_export(global, args.into()).await
+        }
     }
 }
 

@@ -221,6 +221,9 @@ pub enum BenchmarkReportFormat {
 /// `spt benchmark report export`.
 #[derive(Args, Debug)]
 pub struct BenchmarkReportExport {
+    /// Run id (basename of `<state_dir>/benchmarks/<run-id>.json`).
+    #[arg(value_name = "RUN-ID")]
+    pub run_id: String,
     /// Output format.
     #[arg(long, value_enum)]
     pub format: BenchmarkReportFormat,

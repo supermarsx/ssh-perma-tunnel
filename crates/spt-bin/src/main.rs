@@ -12,6 +12,7 @@
 #![allow(dead_code)]
 
 mod benchmark_bridge;
+mod cli;
 mod cli_dispatch;
 mod controller;
 mod mcp_client;
