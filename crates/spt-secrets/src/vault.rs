@@ -348,6 +348,33 @@ impl VaultBackend {
     fn write(&self, file: &VaultFile) -> Result<()> {
         write_vault(&self.vault_path, file)
     }
+
+    /// Enumerate stored secret references, optionally filtered to a single
+    /// namespace.
+    ///
+    /// Decryption is **not** performed — only the on-disk record keys are
+    /// inspected, so this method never materialises plaintext. A `None`
+    /// `namespace` returns every entry in the vault; a `Some(ns)` filter
+    /// only matches records whose namespace equals `ns` exactly.
+    ///
+    /// Order is undefined but stable for a given vault state (`BTreeMap`
+    /// iteration order on the encoded `"<ns>/<name>"` keys).
+    pub fn list_refs(&self, namespace: Option<&str>) -> Result<Vec<SecretRef>> {
+        let file = self.read()?;
+        let mut out = Vec::with_capacity(file.records.len());
+        for k in file.records.keys() {
+            let (ns, name) = split_key(k)?;
+            if let Some(want) = namespace {
+                if ns != want {
+                    continue;
+                }
+            }
+            if let Ok(r) = SecretRef::new(ns.to_owned(), name.to_owned()) {
+                out.push(r);
+            }
+        }
+        Ok(out)
+    }
 }
 
 fn key_for(r: &SecretRef) -> String {
@@ -739,6 +766,34 @@ mod tests {
         let v2 = VaultBackend::open_with_passphrase(dir.path(), b"WRONG").unwrap();
         let err = v2.get(&r).unwrap_err();
         assert!(matches!(err, Error::SecretCryptoFailed(_)));
+    }
+
+    #[test]
+    fn list_refs_filters_by_namespace() {
+        install_mock_keyring();
+        let dir = tempdir().unwrap();
+        let kc = KeychainBackend::with_service("spt-test-vault-list-refs");
+        let v = VaultBackend::init_with_keychain(dir.path(), &kc).unwrap();
+        let r1 = SecretRef::new("alpha", "one").unwrap();
+        let r2 = SecretRef::new("alpha", "two").unwrap();
+        let r3 = SecretRef::new("beta", "three").unwrap();
+        v.set(&r1, b"x").unwrap();
+        v.set(&r2, b"y").unwrap();
+        v.set(&r3, b"z").unwrap();
+
+        let mut all = v.list_refs(None).unwrap();
+        all.sort_by_key(ToString::to_string);
+        assert_eq!(all, vec![r1.clone(), r2.clone(), r3.clone()]);
+
+        let mut alpha = v.list_refs(Some("alpha")).unwrap();
+        alpha.sort_by_key(ToString::to_string);
+        assert_eq!(alpha, vec![r1.clone(), r2.clone()]);
+
+        let beta = v.list_refs(Some("beta")).unwrap();
+        assert_eq!(beta, vec![r3.clone()]);
+
+        let none = v.list_refs(Some("gamma")).unwrap();
+        assert!(none.is_empty());
     }
 
     #[test]
