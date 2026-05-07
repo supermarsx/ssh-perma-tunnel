@@ -804,12 +804,12 @@ async fn tunnel_reload(global: &GlobalOpts) -> Result<()> {
 async fn service_dispatch(_global: &GlobalOpts, c: groups::service::ServiceCmd) -> Result<()> {
     use groups::service::ServiceSub;
     match c.command {
-        ServiceSub::Install(args) => service_install(args),
-        ServiceSub::Uninstall(args) => service_uninstall(args),
-        ServiceSub::Start(args) => service_lifecycle(args, ServiceAction::Start),
-        ServiceSub::Stop(args) => service_lifecycle(args, ServiceAction::Stop),
-        ServiceSub::Restart(args) => service_lifecycle(args, ServiceAction::Restart),
-        ServiceSub::Status(args) => service_status(args),
+        ServiceSub::Install(args) => service_install(args).await,
+        ServiceSub::Uninstall(args) => service_uninstall(args).await,
+        ServiceSub::Start(args) => service_lifecycle(args, ServiceAction::Start).await,
+        ServiceSub::Stop(args) => service_lifecycle(args, ServiceAction::Stop).await,
+        ServiceSub::Restart(args) => service_lifecycle(args, ServiceAction::Restart).await,
+        ServiceSub::Status(args) => service_status(args).await,
         ServiceSub::Render(args) => service_render(args),
     }
 }
@@ -820,42 +820,51 @@ enum ServiceAction {
     Restart,
 }
 
-fn service_install(args: groups::service::ServiceArgs) -> Result<()> {
+async fn service_install(args: groups::service::ServiceArgs) -> Result<()> {
     let mgr = spt_service::new_default_manager()?;
     let spec = service_spec_from_args(&args.config, &args.scope)?;
-    mgr.install(&spec)?;
+    mgr.install(&spec).await?;
     println!("installed service `{}`", spec.name);
     Ok(())
 }
 
-fn service_uninstall(args: groups::service::ServiceArgs) -> Result<()> {
+async fn service_uninstall(args: groups::service::ServiceArgs) -> Result<()> {
     let mgr = spt_service::new_default_manager()?;
     let name = service_name(&args.scope, &args.config);
-    mgr.uninstall(&name)?;
+    mgr.uninstall(&name).await?;
     println!("uninstalled service `{name}`");
     Ok(())
 }
 
-fn service_lifecycle(args: groups::service::ServiceArgs, action: ServiceAction) -> Result<()> {
+async fn service_lifecycle(
+    args: groups::service::ServiceArgs,
+    action: ServiceAction,
+) -> Result<()> {
     let mgr = spt_service::new_default_manager()?;
     let name = service_name(&args.scope, &args.config);
     match action {
-        ServiceAction::Start => mgr.start(&name)?,
-        ServiceAction::Stop => mgr.stop(&name)?,
-        ServiceAction::Restart => mgr.restart(&name)?,
+        ServiceAction::Start => mgr.start(&name).await?,
+        ServiceAction::Stop => mgr.stop(&name).await?,
+        ServiceAction::Restart => mgr.restart(&name).await?,
     }
     Ok(())
 }
 
-fn service_status(args: groups::service::ServiceStatus) -> Result<()> {
+async fn service_status(args: groups::service::ServiceStatus) -> Result<()> {
     let mgr = spt_service::new_default_manager()?;
     let name = service_name(&args.scope, &args.config);
-    let st = mgr.status(&name)?;
+    let st = mgr.status(&name).await?;
     if args.json {
-        let v = serde_json::json!({"name": name, "status": format!("{st:?}").to_lowercase()});
+        let v = serde_json::json!({
+            "name": name,
+            "state": format!("{:?}", st.state).to_lowercase(),
+            "pid": st.pid,
+            "exit_code": st.exit_code,
+            "restart_count": st.restart_count,
+        });
         println!("{v}");
     } else {
-        println!("{name}: {st:?}");
+        println!("{name}: {:?}", st.state);
     }
     Ok(())
 }
@@ -863,8 +872,15 @@ fn service_status(args: groups::service::ServiceStatus) -> Result<()> {
 fn service_render(args: groups::service::ServiceRender) -> Result<()> {
     let mgr = spt_service::new_default_manager()?;
     let spec = service_spec_from_args(&args.config, &args.scope)?;
-    let s = mgr.render(&spec)?;
-    print!("{s}");
+    match mgr.render_unit(&spec) {
+        Some(s) => print!("{s}"),
+        None => {
+            return Err(Error::UnsupportedPlatform(format!(
+                "backend `{}` has no file-based unit to render",
+                mgr.name()
+            )))
+        }
+    }
     Ok(())
 }
 
