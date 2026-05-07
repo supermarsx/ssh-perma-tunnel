@@ -3953,6 +3953,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "atomicwrites",
  "base64",
  "chrono",
  "clap",
@@ -3960,6 +3961,8 @@ dependencies = [
  "clap_mangen",
  "futures",
  "hex",
+ "hickory-proto",
+ "hickory-resolver",
  "miette",
  "nix",
  "parking_lot",
@@ -3987,6 +3990,7 @@ dependencies = [
  "spt-remote-config",
  "spt-secrets",
  "spt-service",
+ "spt-snmp",
  "spt-ssh2",
  "spt-ssh3",
  "spt-state",
@@ -3994,6 +3998,7 @@ dependencies = [
  "spt-supervisor",
  "spt-trust",
  "spt-tui",
+ "spt-winevent",
  "ssh-key",
  "tempfile",
  "thiserror 1.0.69",
@@ -4056,6 +4061,7 @@ name = "spt-diagnostics"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "base64",
  "chrono",
  "flate2",
  "hex",
@@ -4063,6 +4069,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "spt-auth",
  "spt-config",
  "spt-core",
  "spt-firewall",
@@ -4070,12 +4077,14 @@ dependencies = [
  "spt-service",
  "spt-ssh2",
  "spt-state",
+ "spt-trust",
  "ssh2",
  "tar",
  "tempfile",
  "thiserror 1.0.69",
  "tokio",
  "tracing",
+ "url",
 ]
 
 [[package]]

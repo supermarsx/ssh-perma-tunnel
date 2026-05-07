@@ -1,0 +1,167 @@
+# Observability stack: OTLP logs + metrics, Prometheus state file, remote
+# syslog over TLS, remote HTTPS-JSONL events, MCP-notify + email on
+# profile.degraded.
+#
+# Shipped by `spt config init --example observability`. Kept in sync with
+# docs/observability.md (which it cross-references) and validates clean
+# under `spt config validate --strict`.
+#
+# Scope:
+#   * `[[logging.remote]]` — OTLP logs, syslog_tls, https_jsonl.
+#   * `[observability.metrics]` — Prometheus exporter to a state file.
+#   * `[[events.sinks]]` — email + mcp_notify + webhook_post.
+#   * `[[events.bindings]]` — fires on `profile.degraded` / `profile.failed`.
+#   * `[[profiles]]` — one local TCP forward to demonstrate the wiring.
+#
+# Doc: ../docs/observability.md, ../docs/events.md, ../docs/mcp.md
+
+version = 1
+
+[runtime]
+state_dir = "/var/lib/spt"
+required_profiles = ["edge"]
+shutdown_grace = "20s"
+
+[secrets]
+backend = "auto"
+keychain_namespace = "spt"
+
+# -- Logging ---------------------------------------------------------------
+[logging]
+level = "info"
+format = "json"
+destinations = ["file"]
+file = "/var/log/spt/spt.jsonl"
+rotate = "daily"
+max_files = 30
+compress_rotated = true
+redact = ["secrets", "auth"]
+
+[[logging.remote]]
+name = "otel-logs"
+type = "otlp"
+endpoint = "https://otel.example.com:4318/v1/logs"
+ca_file = "/etc/ssl/certs/internal-ca.pem"
+auth = "secret://otlp/edge/bearer"
+batch_size = 256
+timeout = "5s"
+required = false
+
+[[logging.remote]]
+name = "siem-syslog"
+type = "syslog_tls"
+endpoint = "siem.example.com:6514"
+ca_file = "/etc/ssl/certs/internal-ca.pem"
+auth = "secret://syslog/edge/token"
+required = true
+
+[[logging.remote]]
+name = "events-jsonl"
+type = "https_jsonl"
+endpoint = "https://events.example.com/v1/spt"
+ca_file = "/etc/ssl/certs/internal-ca.pem"
+auth = "secret://https/events/token"
+batch_size = 128
+timeout = "5s"
+required = false
+
+# -- Metrics ---------------------------------------------------------------
+[observability.metrics]
+enabled = true
+format = "prometheus"
+state_file = "/var/lib/spt/metrics.prom"
+
+# OTLP metrics ride the same export as `[[logging.remote]] type = "otlp"`
+# above (the OTLP collector receives both signals over the same endpoint).
+
+# -- Events ---------------------------------------------------------------
+[[events.sinks]]
+name = "oncall-mcp"
+type = "mcp_notify"
+
+[[events.sinks]]
+name = "oncall-email"
+type = "email"
+smtp = "smtp://smtp.example.com:587"
+from = "spt@example.com"
+to = ["oncall@example.com"]
+auth = "secret://smtp/relay/token"
+timeout = "10s"
+
+[[events.sinks]]
+name = "ops-webhook"
+type = "webhook_post"
+url = "https://hooks.example.com/spt"
+method = "POST"
+content_type = "application/json"
+auth = "secret://webhook/ops/token"
+timeout = "5s"
+
+[[events.bindings]]
+name = "degraded-to-oncall"
+on = ["profile.degraded", "profile.failed"]
+actions = ["oncall-mcp", "oncall-email", "ops-webhook"]
+min_level = "warn"
+throttle = "5m"
+
+# -- MCP ------------------------------------------------------------------
+[mcp]
+enabled = true
+default_mode = "read_only"
+stdio = true
+listen = "127.0.0.1:7878"
+allow_secret_reveal = false
+allow_write_tools = []
+audit_events = true
+
+# -- Profile --------------------------------------------------------------
+[[profiles]]
+name = "edge"
+enabled = true
+protocol = "ssh2"
+host = "edge.example.com"
+port = 22
+user = "tunnel"
+failure_policy = "retry"
+
+[profiles.crypto]
+policy = "modern"
+
+[profiles.auth]
+method = "public_key"
+identity_file = "/etc/spt/id_ed25519"
+passphrase = "secret://ssh/edge/passphrase"
+
+[profiles.trust]
+mode = "known_hosts"
+known_hosts_file = "/etc/spt/known_hosts"
+strict = true
+
+[profiles.keepalive]
+interval = "30s"
+timeout = "10s"
+max_missed = 3
+
+[profiles.reconnect]
+initial_delay = "1s"
+max_delay = "5m"
+jitter = "20%"
+reset_after = "10m"
+
+[profiles.instability]
+enabled = true
+window = "10m"
+max_disconnects = 5
+action = "emit_event"
+
+[[profiles.forwards]]
+name = "api"
+type = "local"
+transport = "tcp"
+bind = "127.0.0.1:18080"
+target = "api.internal:8080"
+target_resolve = "remote"
+required = true
+max_connections = 256
+max_bytes_per_second_in = "10MiB"
+max_bytes_per_second_out = "10MiB"

@@ -3,6 +3,14 @@
 //! `load_str` is the primary entry point. It deserializes through
 //! [`serde_ignored`] so unknown keys are surfaced as warnings. In strict mode
 //! those warnings are promoted to a hard parse error.
+//!
+//! [`load_dir`] supports the `--config-dir` CLI flag (spec §7.1): all
+//! `*.toml` files under the directory are loaded in lexical (filename) order
+//! and merged into a single [`Config`]. The first file in lex order is the
+//! "base"; every other file MAY only contribute additional `[[profiles]]`
+//! entries and MUST NOT redefine any of the singleton top-level tables
+//! (`runtime`, `logging`, `secrets`, `dns`, `firewall`, `observability`,
+//! `events`, `mcp`, `diagnostics`, `benchmark`). Conflicts are rejected.
 
 use std::path::Path;
 
@@ -50,6 +58,127 @@ pub fn load_str(raw: &str, strict: bool) -> Result<(Config, Warnings)> {
     }
 
     Ok((config, warnings))
+}
+
+/// Load every `*.toml` file in `dir` (in lexical filename order) and merge
+/// them into a single [`Config`].
+///
+/// **Merge semantics**:
+///
+/// - The first `.toml` file (lex order) is the "base". Its top-level tables
+///   (`runtime`, `logging`, `secrets`, `dns`, `firewall`, `observability`,
+///   `events`, `mcp`, `diagnostics`, `benchmark`) plus its `version` and
+///   any `[[profiles]]` entries form the seed [`Config`].
+/// - Every subsequent file may **only** contribute additional `[[profiles]]`
+///   entries. If a non-base file sets any of the singleton top-level tables,
+///   [`load_dir`] returns [`Error::InvalidConfig`].
+/// - `version` must match across all files.
+/// - Profile names must remain unique across the merged set (validation runs
+///   downstream via [`crate::validate::validate`]; this loader emits a
+///   `Error::InvalidConfig` with the conflicting name to fail fast).
+///
+/// Returns the merged config plus the union of unknown-key warnings from
+/// every file (each warning is annotated with the originating filename for
+/// human-readable diagnostics). An empty directory or one containing no
+/// `*.toml` files is rejected with [`Error::InvalidConfig`].
+pub fn load_dir(dir: &Path, strict: bool) -> Result<(Config, Warnings)> {
+    if !dir.exists() {
+        return Err(Error::InvalidConfig(format!(
+            "config dir `{}` does not exist",
+            dir.display()
+        )));
+    }
+    if !dir.is_dir() {
+        return Err(Error::InvalidConfig(format!(
+            "config dir `{}` is not a directory",
+            dir.display()
+        )));
+    }
+    let read = std::fs::read_dir(dir).map_err(|e| {
+        Error::InvalidConfig(format!("read_dir `{}`: {e}", dir.display()))
+    })?;
+    let mut files: Vec<std::path::PathBuf> = Vec::new();
+    for entry in read {
+        let entry = entry.map_err(|e| {
+            Error::InvalidConfig(format!("read_dir entry under `{}`: {e}", dir.display()))
+        })?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        if path.extension().and_then(|s| s.to_str()) == Some("toml") {
+            files.push(path);
+        }
+    }
+    if files.is_empty() {
+        return Err(Error::InvalidConfig(format!(
+            "no `*.toml` files in config dir `{}`",
+            dir.display()
+        )));
+    }
+    files.sort();
+
+    let mut warnings: Warnings = Vec::new();
+    let mut iter = files.into_iter();
+    let first = iter.next().expect("non-empty checked above");
+    let first_name = display_name(&first);
+    let (mut merged, w) = load(&first, strict)?;
+    warnings.extend(w.into_iter().map(|p| format!("{first_name}: {p}")));
+
+    for path in iter {
+        let name = display_name(&path);
+        let (overlay, w) = load(&path, strict)?;
+        warnings.extend(w.into_iter().map(|p| format!("{name}: {p}")));
+
+        if overlay.version != merged.version {
+            return Err(Error::InvalidConfig(format!(
+                "{name}: version `{}` does not match base `{}`",
+                overlay.version, merged.version
+            )));
+        }
+        reject_singleton_overrides(&overlay, &name)?;
+
+        // Append profiles, rejecting duplicate names early so the operator
+        // sees the offending file rather than a generic validation diagnostic.
+        for p in overlay.profiles {
+            if merged.profiles.iter().any(|existing| existing.name == p.name) {
+                return Err(Error::InvalidConfig(format!(
+                    "{name}: duplicate profile name `{}` (already defined in an earlier file)",
+                    p.name
+                )));
+            }
+            merged.profiles.push(p);
+        }
+    }
+    Ok((merged, warnings))
+}
+
+fn display_name(path: &Path) -> String {
+    path.file_name()
+        .and_then(|s| s.to_str())
+        .map_or_else(|| path.display().to_string(), ToOwned::to_owned)
+}
+
+fn reject_singleton_overrides(overlay: &Config, file: &str) -> Result<()> {
+    let conflicts: &[(&str, bool)] = &[
+        ("runtime", overlay.runtime.is_some()),
+        ("logging", overlay.logging.is_some()),
+        ("secrets", overlay.secrets.is_some()),
+        ("dns", overlay.dns.is_some()),
+        ("firewall", overlay.firewall.is_some()),
+        ("observability", overlay.observability.is_some()),
+        ("events", overlay.events.is_some()),
+        ("mcp", overlay.mcp.is_some()),
+        ("diagnostics", overlay.diagnostics.is_some()),
+        ("benchmark", overlay.benchmark.is_some()),
+    ];
+    if let Some((name, _)) = conflicts.iter().find(|(_, set)| *set) {
+        return Err(Error::InvalidConfig(format!(
+            "{file}: only the first file in `--config-dir` may define top-level table \
+             `[{name}]`; later files may only contribute `[[profiles]]`"
+        )));
+    }
+    Ok(())
 }
 
 /// Build [`Diagnostics`] entries for warnings from [`load_str`].
@@ -119,5 +248,171 @@ mod tests {
     fn warnings_to_diagnostics_works() {
         let d = warnings_to_diagnostics(&["a.b".to_owned()]);
         assert_eq!(d.warnings.len(), 1);
+    }
+
+    // ---------------- load_dir tests --------------------------------------
+
+    use super::load_dir;
+    use std::fs;
+
+    fn write_toml(dir: &std::path::Path, name: &str, body: &str) {
+        fs::write(dir.join(name), body).unwrap();
+    }
+
+    #[test]
+    fn load_dir_merges_profiles_in_lex_order() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_toml(
+            tmp.path(),
+            "01-base.toml",
+            r#"
+                version = 1
+                [runtime]
+                state_dir = "/var/lib/spt"
+                [[profiles]]
+                name = "p1"
+                protocol = "ssh2"
+                host = "h1.example.com"
+            "#,
+        );
+        write_toml(
+            tmp.path(),
+            "02-overlay.toml",
+            r#"
+                version = 1
+                [[profiles]]
+                name = "p2"
+                protocol = "ssh2"
+                host = "h2.example.com"
+                [[profiles]]
+                name = "p3"
+                protocol = "ssh2"
+                host = "h3.example.com"
+            "#,
+        );
+        write_toml(
+            tmp.path(),
+            "99-z.toml",
+            r#"
+                version = 1
+                [[profiles]]
+                name = "z"
+                protocol = "ssh2"
+                host = "z.example.com"
+            "#,
+        );
+        // A non-toml file should be ignored.
+        fs::write(tmp.path().join("README.md"), "ignore me").unwrap();
+
+        let (cfg, w) = load_dir(tmp.path(), false).unwrap();
+        assert!(w.is_empty(), "no warnings expected, got: {w:?}");
+        assert_eq!(cfg.version, 1);
+        // p1 from base, p2+p3 from overlay, z from 99-z, in lex order.
+        let names: Vec<_> = cfg.profiles.iter().map(|p| p.name.clone()).collect();
+        assert_eq!(names, vec!["p1", "p2", "p3", "z"]);
+        // Runtime came from the first file.
+        assert_eq!(
+            cfg.runtime.as_ref().and_then(|r| r.state_dir.as_deref()),
+            Some("/var/lib/spt")
+        );
+    }
+
+    #[test]
+    fn load_dir_rejects_singleton_override_in_overlay() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_toml(
+            tmp.path(),
+            "01-base.toml",
+            r#"
+                version = 1
+                [runtime]
+                state_dir = "/var/lib/spt"
+                [[profiles]]
+                name = "p1"
+                protocol = "ssh2"
+                host = "h1.example.com"
+            "#,
+        );
+        write_toml(
+            tmp.path(),
+            "02-bad.toml",
+            r#"
+                version = 1
+                [runtime]
+                state_dir = "/tmp/other"
+            "#,
+        );
+        let err = load_dir(tmp.path(), false).unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("02-bad.toml"), "got: {msg}");
+        assert!(msg.contains("[runtime]"), "got: {msg}");
+    }
+
+    #[test]
+    fn load_dir_empty_directory_errors() {
+        let tmp = tempfile::tempdir().unwrap();
+        let err = load_dir(tmp.path(), false).unwrap_err();
+        assert!(format!("{err}").contains("no `*.toml`"));
+    }
+
+    #[test]
+    fn load_dir_missing_directory_errors() {
+        let path = std::path::Path::new("/definitely/does/not/exist/spt-cfg-xyz");
+        let err = load_dir(path, false).unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("does not exist") || msg.contains("not a directory"));
+    }
+
+    #[test]
+    fn load_dir_rejects_duplicate_profile_names_across_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_toml(
+            tmp.path(),
+            "01-base.toml",
+            r#"
+                version = 1
+                [[profiles]]
+                name = "shared"
+                protocol = "ssh2"
+                host = "h1.example.com"
+            "#,
+        );
+        write_toml(
+            tmp.path(),
+            "02-overlay.toml",
+            r#"
+                version = 1
+                [[profiles]]
+                name = "shared"
+                protocol = "ssh2"
+                host = "h2.example.com"
+            "#,
+        );
+        let err = load_dir(tmp.path(), false).unwrap_err();
+        assert!(format!("{err}").contains("duplicate profile name"));
+    }
+
+    #[test]
+    fn load_dir_rejects_version_mismatch() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_toml(
+            tmp.path(),
+            "01-base.toml",
+            r#"
+                version = 1
+                [[profiles]]
+                name = "p1"
+                protocol = "ssh2"
+                host = "h1"
+            "#,
+        );
+        // Use literal raw string for the second body so escaped quotes parse.
+        fs::write(
+            tmp.path().join("02-mismatch.toml"),
+            "version = 2\n",
+        )
+        .unwrap();
+        let err = load_dir(tmp.path(), false).unwrap_err();
+        assert!(format!("{err}").contains("does not match base"));
     }
 }

@@ -39,7 +39,7 @@ pub mod testing;
 pub use diagnostic::{Diagnostic, Diagnostics as ValidationDiagnostics, Severity};
 pub use diff::{diff, Change, ChangeKind};
 pub use fingerprint::fingerprint;
-pub use load::{load, load_str, Warnings};
+pub use load::{load, load_dir, load_str, Warnings};
 pub use migrate::migrate;
 pub use render::render;
 pub use schema::*;
