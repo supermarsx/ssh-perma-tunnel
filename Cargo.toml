@@ -210,7 +210,7 @@ crossterm = "0.28"
 
 # Networking helpers
 ipnet = { version = "2", features = ["serde"] }
-if-addrs = "0.13"
+if-addrs = "0.15"
 
 # Concurrency
 dashmap = "6"
