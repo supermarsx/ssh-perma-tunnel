@@ -28,6 +28,7 @@ pub mod fingerprint;
 pub mod load;
 pub mod migrate;
 pub mod mutate;
+pub mod policy;
 pub mod remote;
 pub mod render;
 pub mod schema;
@@ -41,6 +42,10 @@ pub use diff::{diff, Change, ChangeKind};
 pub use fingerprint::fingerprint;
 pub use load::{load, load_dir, load_str, Warnings};
 pub use migrate::migrate;
+pub use policy::{
+    ApplyMode, Binding, BindingKind, OverlayReport, PolicyBundle, PolicyOverlay, PolicyValue,
+    BINDINGS,
+};
 pub use render::render;
 pub use schema::*;
 pub use validate::validate;

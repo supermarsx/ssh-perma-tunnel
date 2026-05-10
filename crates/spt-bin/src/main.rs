@@ -18,6 +18,7 @@ mod controller;
 mod mcp_client;
 mod mcp_listen;
 mod mcp_server;
+mod policy;
 mod profile_factory;
 mod runtime;
 mod scm_dispatch;

@@ -93,6 +93,17 @@ nix = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
 windows-service = { workspace = true }
+# Used by `policy::registry` to read GPO values from
+# HKLM/HKCU\Software\Policies\spt. Mirrors the feature set used by
+# spt-winevent (which also pulls in Win32_System_Registry locally).
+windows = { version = "0.58", features = [
+    "Win32_System_EventLog",
+    "Win32_System_Registry",
+    "Win32_System_Threading",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Foundation",
+] }
 
 [dev-dependencies]
 tempfile = { workspace = true }
