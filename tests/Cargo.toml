@@ -21,7 +21,36 @@ path = "support/mod.rs"
 name = "reload_diff"
 path = "e2e/reload_diff.rs"
 
+[[test]]
+name = "ssh2_local_forward"
+path = "e2e/ssh2_local_forward.rs"
+
+[[test]]
+name = "ssh2_remote_forward"
+path = "e2e/ssh2_remote_forward.rs"
+
+[[test]]
+name = "ssh2_reconnect"
+path = "e2e/ssh2_reconnect.rs"
+
+[[test]]
+name = "ssh2_multi_forward"
+path = "e2e/ssh2_multi_forward.rs"
+
+[[test]]
+name = "ssh2_keepalive"
+path = "e2e/ssh2_keepalive.rs"
+
+# `dependencies` (NOT dev-dependencies) so the lib in `support/mod.rs` —
+# which re-exports the SharedLogProtocol used by every ssh2_*.rs test —
+# can compile against them. Tests link both the lib and the dev-deps below.
 [dependencies]
+spt-auth = { workspace = true }
+spt-core = { workspace = true }
+spt-forward = { workspace = true, features = ["testing"] }
+spt-protocol = { workspace = true }
+async-trait = { workspace = true }
+parking_lot = { workspace = true }
 
 [dev-dependencies]
 # Only the dependencies actually exercised by the shipped tests are listed.
@@ -34,4 +63,7 @@ spt-config = { workspace = true, features = ["testing"] }
 spt-supervisor = { workspace = true, features = ["testing"] }
 spt-protocol = { workspace = true }
 spt-auth = { workspace = true }
+spt-core = { workspace = true }
+spt-forward = { workspace = true, features = ["testing"] }
 tokio = { workspace = true, features = ["full"] }
+parking_lot = { workspace = true }
