@@ -1,0 +1,111 @@
+name: Bench regression (advisory)
+
+# Non-blocking: a regression posts a warning comment but never fails the PR.
+# Runs on PRs that touch benched crates; baseline is a fresh `main` build.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "crates/spt-core/**"
+      - "crates/spt-config/**"
+      - "crates/spt-protocol/**"
+      - "crates/spt-snmp/**"
+      - "crates/spt-forward/**"
+      - "scripts/bench-compare.py"
+      - ".github/workflows/bench-regression.yml"
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: bench-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  bench:
+    name: criterion compare
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.draft == false
+    timeout-minutes: 45
+    env:
+      BENCH_CRATES: spt-core spt-config spt-protocol spt-snmp spt-forward
+    steps:
+      - name: Checkout PR HEAD
+        uses: actions/checkout@v4
+        with:
+          path: pr
+
+      - name: Checkout baseline (main)
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          path: base
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            pr
+            base
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Run baseline benches
+        working-directory: base
+        env:
+          # Pin a unified target dir so criterion output lands in one tree.
+          CARGO_TARGET_DIR: ${{ github.workspace }}/base-target
+        run: |
+          set -e
+          for c in $BENCH_CRATES; do
+            cargo bench -p "$c" --bench '*' -- --warm-up-time 1 \
+              --measurement-time 3 --sample-size 20 || true
+          done
+
+      - name: Run candidate benches
+        working-directory: pr
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/pr-target
+        run: |
+          set -e
+          for c in $BENCH_CRATES; do
+            cargo bench -p "$c" --bench '*' -- --warm-up-time 1 \
+              --measurement-time 3 --sample-size 20 || true
+          done
+
+      - name: Compare
+        id: compare
+        continue-on-error: true
+        run: |
+          python pr/scripts/bench-compare.py \
+            "$GITHUB_WORKSPACE/base-target/criterion" \
+            "$GITHUB_WORKSPACE/pr-target/criterion" \
+            --threshold 0.10 | tee bench-report.txt
+          echo "exit=$?" >> "$GITHUB_OUTPUT"
+
+      - name: Comment on PR
+        if: always()
+        continue-on-error: true
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            let body = '### Criterion bench comparison\n\n';
+            try {
+              const txt = fs.readFileSync('bench-report.txt', 'utf8');
+              body += '```\n' + txt.slice(0, 60000) + '\n```\n';
+            } catch (e) {
+              body += '_(no bench report produced — see workflow logs)_\n';
+            }
+            body += '\n_This check is advisory; it never blocks the PR._';
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body,
+            });

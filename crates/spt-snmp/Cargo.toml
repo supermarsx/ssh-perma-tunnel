@@ -42,3 +42,8 @@ tokio = { workspace = true, features = ["full", "test-util", "macros"] }
 proptest = { workspace = true }
 tempfile = { workspace = true }
 hex = { workspace = true }
+criterion = { workspace = true }
+
+[[bench]]
+name = "usm"
+harness = false

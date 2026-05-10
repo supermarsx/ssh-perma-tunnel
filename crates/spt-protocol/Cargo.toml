@@ -26,3 +26,9 @@ tokio = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }
+criterion = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
+
+[[bench]]
+name = "forward_state"
+harness = false
