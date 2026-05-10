@@ -1,0 +1,388 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  spt.admx — Group Policy administrative template for ssh-perma-tunnel (spt).
+
+  Schema reference: Microsoft PolicyDefinitions schema (revision="1.0", schemaVersion="1.0").
+  Validate manually with:
+      Test-Xml -Path .\spt.admx -SchemaPath "$env:SystemRoot\schemas\GroupPolicy\PolicyDefinitions.xsd"
+  (Or open in `gpedit.msc` after install-policy.ps1 — gpedit will refuse to load
+  malformed templates.)
+
+  Registry root: HKLM\Software\Policies\spt   (machine policies)
+                 HKCU\Software\Policies\spt   (user policies, where applicable)
+  Per-section subkey: <Section>\<ValueName>
+-->
+<policyDefinitions revision="1.0" schemaVersion="1.0"
+                   xmlns:xsd="http://www.w3.org/2001/XMLSchema"
+                   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                   xmlns="http://schemas.microsoft.com/GroupPolicy/2006/07/PolicyDefinitions">
+
+  <policyNamespaces>
+    <target prefix="spt" namespace="SshPermaTunnel.Policies.Spt" />
+    <using prefix="windows" namespace="Microsoft.Policies.Windows" />
+  </policyNamespaces>
+
+  <resources minRequiredRevision="1.0" />
+
+  <supportedOn>
+    <definitions>
+      <definition name="SUPPORTED_Spt_1_0" displayName="$(string.SUPPORTED_Spt_1_0)" />
+    </definitions>
+  </supportedOn>
+
+  <categories>
+    <category name="Spt" displayName="$(string.Cat_Spt)"
+              explainText="$(string.Cat_Spt_Help)" />
+    <category name="General" displayName="$(string.Cat_General)"
+              explainText="$(string.Cat_General_Help)">
+      <parentCategory ref="Spt" />
+    </category>
+    <category name="Network" displayName="$(string.Cat_Network)"
+              explainText="$(string.Cat_Network_Help)">
+      <parentCategory ref="Spt" />
+    </category>
+    <category name="Crypto" displayName="$(string.Cat_Crypto)"
+              explainText="$(string.Cat_Crypto_Help)">
+      <parentCategory ref="Spt" />
+    </category>
+    <category name="Observability" displayName="$(string.Cat_Observability)"
+              explainText="$(string.Cat_Observability_Help)">
+      <parentCategory ref="Spt" />
+    </category>
+    <category name="Security" displayName="$(string.Cat_Security)"
+              explainText="$(string.Cat_Security_Help)">
+      <parentCategory ref="Spt" />
+    </category>
+  </categories>
+
+  <policies>
+
+    <!-- =========================================================== -->
+    <!-- General                                                     -->
+    <!-- =========================================================== -->
+
+    <policy name="StateDir_Machine" class="Machine"
+            displayName="$(string.Pol_StateDir)"
+            explainText="$(string.Pol_StateDir_Help)"
+            key="Software\Policies\spt\General"
+            valueName="StateDir"
+            presentation="$(presentation.Pres_StateDir)">
+      <parentCategory ref="General" />
+      <supportedOn ref="spt:SUPPORTED_Spt_1_0" />
+      <elements>
+        <text id="StateDir" valueName="StateDir" required="true" maxLength="32767" />
+      </elements>
+    </policy>
+
+    <policy name="StateDir_User" class="User"
+            displayName="$(string.Pol_StateDir)"
+            explainText="$(string.Pol_StateDir_Help)"
+            key="Software\Policies\spt\General"
+            valueName="StateDir"
+            presentation="$(presentation.Pres_StateDir)">
+      <parentCategory ref="General" />
+      <supportedOn ref="spt:SUPPORTED_Spt_1_0" />
+      <elements>
+        <text id="StateDir" valueName="StateDir" required="true" maxLength="32767" />
+      </elements>
+    </policy>
+
+    <policy name="DefaultConfigPath_Machine" class="Machine"
+            displayName="$(string.Pol_DefaultConfigPath)"
+            explainText="$(string.Pol_DefaultConfigPath_Help)"
+            key="Software\Policies\spt\General"
+            valueName="DefaultConfigPath"
+            presentation="$(presentation.Pres_DefaultConfigPath)">
+      <parentCategory ref="General" />
+      <supportedOn ref="spt:SUPPORTED_Spt_1_0" />
+      <elements>
+        <text id="DefaultConfigPath" valueName="DefaultConfigPath" required="true" maxLength="32767" />
+      </elements>
+    </policy>
+
+    <policy name="DefaultConfigPath_User" class="User"
+            displayName="$(string.Pol_DefaultConfigPath)"
+            explainText="$(string.Pol_DefaultConfigPath_Help)"
+            key="Software\Policies\spt\General"
+            valueName="DefaultConfigPath"
+            presentation="$(presentation.Pres_DefaultConfigPath)">
+      <parentCategory ref="General" />
+      <supportedOn ref="spt:SUPPORTED_Spt_1_0" />
+      <elements>
+        <text id="DefaultConfigPath" valueName="DefaultConfigPath" required="true" maxLength="32767" />
+      </elements>
+    </policy>
+
+    <policy name="ServiceAutoStart" class="Machine"
+            displayName="$(string.Pol_ServiceAutoStart)"
+            explainText="$(string.Pol_ServiceAutoStart_Help)"
+            key="Software\Policies\spt\General"
+            valueName="ServiceAutoStart">
+      <parentCategory ref="General" />
+      <supportedOn ref="spt:SUPPORTED_Spt_1_0" />
+      <enabledValue><decimal value="1" /></enabledValue>
+      <disabledValue><decimal value="0" /></disabledValue>
+    </policy>
+
+    <!-- =========================================================== -->
+    <!-- Network                                                     -->
+    <!-- =========================================================== -->
+
+    <policy name="RemoteConfigUrlPin_Machine" class="Machine"
+            displayName="$(string.Pol_RemoteConfigUrlPin)"
+            explainText="$(string.Pol_RemoteConfigUrlPin_Help)"
+            key="Software\Policies\spt\Network"
+            valueName="RemoteConfigUrlPin"
+            presentation="$(presentation.Pres_RemoteConfigUrlPin)">
+      <parentCategory ref="Network" />
+      <supportedOn ref="spt:SUPPORTED_Spt_1_0" />
+      <elements>
+        <text id="RemoteConfigUrlPin" valueName="RemoteConfigUrlPin" required="true" maxLength="32767" />
+      </elements>
+    </policy>
+
+    <policy name="RemoteConfigFingerprintSha256_Machine" class="Machine"
+            displayName="$(string.Pol_RemoteConfigFingerprintSha256)"
+            explainText="$(string.Pol_RemoteConfigFingerprintSha256_Help)"
+            key="Software\Policies\spt\Network"
+            valueName="RemoteConfigFingerprintSha256"
+            presentation="$(presentation.Pres_RemoteConfigFingerprintSha256)">
+      <parentCategory ref="Network" />
+      <supportedOn ref="spt:SUPPORTED_Spt_1_0" />
+      <elements>
+        <text id="RemoteConfigFingerprintSha256" valueName="RemoteConfigFingerprintSha256" required="true" maxLength="128" />
+      </elements>
+    </policy>
+
+    <policy name="McpEnabled" class="Machine"
+            displayName="$(string.Pol_McpEnabled)"
+            explainText="$(string.Pol_McpEnabled_Help)"
+            key="Software\Policies\spt\Network"
+            valueName="McpEnabled">
+      <parentCategory ref="Network" />
+      <supportedOn ref="spt:SUPPORTED_Spt_1_0" />
+      <enabledValue><decimal value="1" /></enabledValue>
+      <disabledValue><decimal value="0" /></disabledValue>
+    </policy>
+
+    <policy name="McpListen_Machine" class="Machine"
+            displayName="$(string.Pol_McpListen)"
+            explainText="$(string.Pol_McpListen_Help)"
+            key="Software\Policies\spt\Network"
+            valueName="McpListen"
+            presentation="$(presentation.Pres_McpListen)">
+      <parentCategory ref="Network" />
+      <supportedOn ref="spt:SUPPORTED_Spt_1_0" />
+      <elements>
+        <text id="McpListen" valueName="McpListen" required="true" maxLength="2048" />
+      </elements>
+    </policy>
+
+    <policy name="BindRestrictions_Machine" class="Machine"
+            displayName="$(string.Pol_BindRestrictions)"
+            explainText="$(string.Pol_BindRestrictions_Help)"
+            key="Software\Policies\spt\Network"
+            presentation="$(presentation.Pres_BindRestrictions)">
+      <parentCategory ref="Network" />
+      <supportedOn ref="spt:SUPPORTED_Spt_1_0" />
+      <elements>
+        <multiText id="BindRestrictions" valueName="BindRestrictions" required="true" />
+      </elements>
+    </policy>
+
+    <!-- =========================================================== -->
+    <!-- Crypto                                                      -->
+    <!-- =========================================================== -->
+
+    <policy name="AllowSsh2" class="Machine"
+            displayName="$(string.Pol_AllowSsh2)"
+            explainText="$(string.Pol_AllowSsh2_Help)"
+            key="Software\Policies\spt\Crypto"
+            valueName="AllowSsh2">
+      <parentCategory ref="Crypto" />
+      <supportedOn ref="spt:SUPPORTED_Spt_1_0" />
+      <enabledValue><decimal value="1" /></enabledValue>
+      <disabledValue><decimal value="0" /></disabledValue>
+    </policy>
+
+    <policy name="AllowSsh3" class="Machine"
+            displayName="$(string.Pol_AllowSsh3)"
+            explainText="$(string.Pol_AllowSsh3_Help)"
+            key="Software\Policies\spt\Crypto"
+            valueName="AllowSsh3">
+      <parentCategory ref="Crypto" />
+      <supportedOn ref="spt:SUPPORTED_Spt_1_0" />
+      <enabledValue><decimal value="1" /></enabledValue>
+      <disabledValue><decimal value="0" /></disabledValue>
+    </policy>
+
+    <policy name="AllowedKexAlgorithms_Machine" class="Machine"
+            displayName="$(string.Pol_AllowedKexAlgorithms)"
+            explainText="$(string.Pol_AllowedKexAlgorithms_Help)"
+            key="Software\Policies\spt\Crypto"
+            presentation="$(presentation.Pres_AllowedKexAlgorithms)">
+      <parentCategory ref="Crypto" />
+      <supportedOn ref="spt:SUPPORTED_Spt_1_0" />
+      <elements>
+        <multiText id="AllowedKexAlgorithms" valueName="AllowedKexAlgorithms" required="true" />
+      </elements>
+    </policy>
+
+    <policy name="AllowedCiphers_Machine" class="Machine"
+            displayName="$(string.Pol_AllowedCiphers)"
+            explainText="$(string.Pol_AllowedCiphers_Help)"
+            key="Software\Policies\spt\Crypto"
+            presentation="$(presentation.Pres_AllowedCiphers)">
+      <parentCategory ref="Crypto" />
+      <supportedOn ref="spt:SUPPORTED_Spt_1_0" />
+      <elements>
+        <multiText id="AllowedCiphers" valueName="AllowedCiphers" required="true" />
+      </elements>
+    </policy>
+
+    <policy name="AllowedMacs_Machine" class="Machine"
+            displayName="$(string.Pol_AllowedMacs)"
+            explainText="$(string.Pol_AllowedMacs_Help)"
+            key="Software\Policies\spt\Crypto"
+            presentation="$(presentation.Pres_AllowedMacs)">
+      <parentCategory ref="Crypto" />
+      <supportedOn ref="spt:SUPPORTED_Spt_1_0" />
+      <elements>
+        <multiText id="AllowedMacs" valueName="AllowedMacs" required="true" />
+      </elements>
+    </policy>
+
+    <policy name="AllowedHostKeyTypes_Machine" class="Machine"
+            displayName="$(string.Pol_AllowedHostKeyTypes)"
+            explainText="$(string.Pol_AllowedHostKeyTypes_Help)"
+            key="Software\Policies\spt\Crypto"
+            presentation="$(presentation.Pres_AllowedHostKeyTypes)">
+      <parentCategory ref="Crypto" />
+      <supportedOn ref="spt:SUPPORTED_Spt_1_0" />
+      <elements>
+        <multiText id="AllowedHostKeyTypes" valueName="AllowedHostKeyTypes" required="true" />
+      </elements>
+    </policy>
+
+    <!-- =========================================================== -->
+    <!-- Observability                                               -->
+    <!-- =========================================================== -->
+
+    <policy name="LogLevel_Machine" class="Machine"
+            displayName="$(string.Pol_LogLevel)"
+            explainText="$(string.Pol_LogLevel_Help)"
+            key="Software\Policies\spt\Observability"
+            presentation="$(presentation.Pres_LogLevel)">
+      <parentCategory ref="Observability" />
+      <supportedOn ref="spt:SUPPORTED_Spt_1_0" />
+      <elements>
+        <enum id="LogLevel" valueName="LogLevel" required="true">
+          <item displayName="$(string.LogLevel_Trace)"><value><string>trace</string></value></item>
+          <item displayName="$(string.LogLevel_Debug)"><value><string>debug</string></value></item>
+          <item displayName="$(string.LogLevel_Info)"><value><string>info</string></value></item>
+          <item displayName="$(string.LogLevel_Warn)"><value><string>warn</string></value></item>
+          <item displayName="$(string.LogLevel_Error)"><value><string>error</string></value></item>
+        </enum>
+      </elements>
+    </policy>
+
+    <policy name="LogLevel_User" class="User"
+            displayName="$(string.Pol_LogLevel)"
+            explainText="$(string.Pol_LogLevel_Help)"
+            key="Software\Policies\spt\Observability"
+            presentation="$(presentation.Pres_LogLevel)">
+      <parentCategory ref="Observability" />
+      <supportedOn ref="spt:SUPPORTED_Spt_1_0" />
+      <elements>
+        <enum id="LogLevel" valueName="LogLevel" required="true">
+          <item displayName="$(string.LogLevel_Trace)"><value><string>trace</string></value></item>
+          <item displayName="$(string.LogLevel_Debug)"><value><string>debug</string></value></item>
+          <item displayName="$(string.LogLevel_Info)"><value><string>info</string></value></item>
+          <item displayName="$(string.LogLevel_Warn)"><value><string>warn</string></value></item>
+          <item displayName="$(string.LogLevel_Error)"><value><string>error</string></value></item>
+        </enum>
+      </elements>
+    </policy>
+
+    <policy name="LogDestinations_Machine" class="Machine"
+            displayName="$(string.Pol_LogDestinations)"
+            explainText="$(string.Pol_LogDestinations_Help)"
+            key="Software\Policies\spt\Observability"
+            presentation="$(presentation.Pres_LogDestinations)">
+      <parentCategory ref="Observability" />
+      <supportedOn ref="spt:SUPPORTED_Spt_1_0" />
+      <elements>
+        <multiText id="LogDestinations" valueName="LogDestinations" required="true" />
+      </elements>
+    </policy>
+
+    <policy name="TelemetryOptOut_Machine" class="Machine"
+            displayName="$(string.Pol_TelemetryOptOut)"
+            explainText="$(string.Pol_TelemetryOptOut_Help)"
+            key="Software\Policies\spt\Observability"
+            valueName="TelemetryOptOut">
+      <parentCategory ref="Observability" />
+      <supportedOn ref="spt:SUPPORTED_Spt_1_0" />
+      <enabledValue><decimal value="1" /></enabledValue>
+      <disabledValue><decimal value="0" /></disabledValue>
+    </policy>
+
+    <policy name="TelemetryOptOut_User" class="User"
+            displayName="$(string.Pol_TelemetryOptOut)"
+            explainText="$(string.Pol_TelemetryOptOut_Help)"
+            key="Software\Policies\spt\Observability"
+            valueName="TelemetryOptOut">
+      <parentCategory ref="Observability" />
+      <supportedOn ref="spt:SUPPORTED_Spt_1_0" />
+      <enabledValue><decimal value="1" /></enabledValue>
+      <disabledValue><decimal value="0" /></disabledValue>
+    </policy>
+
+    <!-- =========================================================== -->
+    <!-- Security                                                    -->
+    <!-- =========================================================== -->
+
+    <policy name="AllowedFirewallActions_Machine" class="Machine"
+            displayName="$(string.Pol_AllowedFirewallActions)"
+            explainText="$(string.Pol_AllowedFirewallActions_Help)"
+            key="Software\Policies\spt\Security"
+            presentation="$(presentation.Pres_AllowedFirewallActions)">
+      <parentCategory ref="Security" />
+      <supportedOn ref="spt:SUPPORTED_Spt_1_0" />
+      <elements>
+        <multiText id="AllowedFirewallActions" valueName="AllowedFirewallActions" required="true" />
+      </elements>
+    </policy>
+
+    <policy name="SecretBackend_Machine" class="Machine"
+            displayName="$(string.Pol_SecretBackend)"
+            explainText="$(string.Pol_SecretBackend_Help)"
+            key="Software\Policies\spt\Security"
+            presentation="$(presentation.Pres_SecretBackend)">
+      <parentCategory ref="Security" />
+      <supportedOn ref="spt:SUPPORTED_Spt_1_0" />
+      <elements>
+        <enum id="SecretBackend" valueName="SecretBackend" required="true">
+          <item displayName="$(string.SecretBackend_Keyring)"><value><string>keyring</string></value></item>
+          <item displayName="$(string.SecretBackend_File)"><value><string>file</string></value></item>
+        </enum>
+      </elements>
+    </policy>
+
+    <policy name="SecretBackend_User" class="User"
+            displayName="$(string.Pol_SecretBackend)"
+            explainText="$(string.Pol_SecretBackend_Help)"
+            key="Software\Policies\spt\Security"
+            presentation="$(presentation.Pres_SecretBackend)">
+      <parentCategory ref="Security" />
+      <supportedOn ref="spt:SUPPORTED_Spt_1_0" />
+      <elements>
+        <enum id="SecretBackend" valueName="SecretBackend" required="true">
+          <item displayName="$(string.SecretBackend_Keyring)"><value><string>keyring</string></value></item>
+          <item displayName="$(string.SecretBackend_File)"><value><string>file</string></value></item>
+        </enum>
+      </elements>
+    </policy>
+
+  </policies>
+</policyDefinitions>

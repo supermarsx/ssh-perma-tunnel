@@ -1,0 +1,121 @@
+<?xml version="1.0" encoding="utf-8"?>
+<policyDefinitionResources revision="1.0" schemaVersion="1.0"
+                           xmlns:xsd="http://www.w3.org/2001/XMLSchema"
+                           xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                           xmlns="http://schemas.microsoft.com/GroupPolicy/2006/07/PolicyDefinitions">
+  <displayName>Plantilla de directiva ssh-perma-tunnel (spt)</displayName>
+  <description>Plantilla administrativa de directiva de grupo para el agente ssh-perma-tunnel.</description>
+  <resources>
+    <stringTable>
+      <string id="SUPPORTED_Spt_1_0">spt 1.0 o posterior</string>
+
+      <string id="Cat_Spt">spt — Túnel SSH permanente</string>
+      <string id="Cat_Spt_Help">Directivas para el agente ssh-perma-tunnel (spt).</string>
+      <string id="Cat_General">General</string>
+      <string id="Cat_General_Help">Configuración general del agente (directorio de estado, configuración predeterminada, inicio del servicio).</string>
+      <string id="Cat_Network">Red</string>
+      <string id="Cat_Network_Help">Puntos de red, plano de control MCP, anclaje de configuración remota, restricciones de enlace.</string>
+      <string id="Cat_Crypto">Criptografía</string>
+      <string id="Cat_Crypto_Help">Versiones SSH permitidas y listas de algoritmos criptográficos permitidos.</string>
+      <string id="Cat_Observability">Observabilidad</string>
+      <string id="Cat_Observability_Help">Registro, métricas y exclusión de telemetría.</string>
+      <string id="Cat_Security">Seguridad</string>
+      <string id="Cat_Security_Help">Backends de secretos y listas de acciones de firewall permitidas.</string>
+
+      <string id="Pol_StateDir">Directorio de estado</string>
+      <string id="Pol_StateDir_Help">Ruta absoluta al directorio de estado de spt. Anula el valor predeterminado por usuario o por equipo. Ejemplo: C:\ProgramData\spt\state</string>
+      <string id="Pol_DefaultConfigPath">Ruta del archivo de configuración predeterminado</string>
+      <string id="Pol_DefaultConfigPath_Help">Ruta absoluta al archivo de configuración de spt usado cuando no se especifica --config.</string>
+      <string id="Pol_ServiceAutoStart">Iniciar automáticamente el servicio spt</string>
+      <string id="Pol_ServiceAutoStart_Help">Cuando está habilitada, el servicio spt de Windows se configura para iniciarse automáticamente al arrancar.</string>
+
+      <string id="Pol_RemoteConfigUrlPin">Anclaje de URL de configuración remota</string>
+      <string id="Pol_RemoteConfigUrlPin_Help">Si se establece, el agente solo descargará configuración remota desde esta URL exacta. Obligatoria en entornos administrados que usan configuración remota.</string>
+      <string id="Pol_RemoteConfigFingerprintSha256">Huella TLS de configuración remota (SHA-256, hex)</string>
+      <string id="Pol_RemoteConfigFingerprintSha256_Help">Huella SHA-256 (hex en minúsculas, sin separadores) del certificado TLS de hoja que debe servir la URL de configuración remota.</string>
+      <string id="Pol_McpEnabled">Habilitar plano de control MCP</string>
+      <string id="Pol_McpEnabled_Help">Cuando está habilitado, el agente expone su punto MCP (Management Control Protocol).</string>
+      <string id="Pol_McpListen">Dirección de escucha MCP</string>
+      <string id="Pol_McpListen_Help">Dirección de escucha del punto MCP, p. ej. 127.0.0.1:7843 o npipe:\\.\pipe\spt para canalizaciones con nombre de Windows.</string>
+      <string id="Pol_BindRestrictions">Restricciones de enlace (CIDR)</string>
+      <string id="Pol_BindRestrictions_Help">Un CIDR por línea. Los sockets de escucha locales creados por túneles solo deben ser accesibles desde estas redes (típicamente 127.0.0.0/8, ::1/128).</string>
+
+      <string id="Pol_AllowSsh2">Permitir protocolo SSH versión 2</string>
+      <string id="Pol_AllowSsh2_Help">Permite al agente negociar transportes SSH-2.</string>
+      <string id="Pol_AllowSsh3">Permitir protocolo SSH versión 3 (QUIC/HTTP3)</string>
+      <string id="Pol_AllowSsh3_Help">Permite al agente negociar transportes SSH-3 (sobre QUIC).</string>
+      <string id="Pol_AllowedKexAlgorithms">Algoritmos de intercambio de claves permitidos</string>
+      <string id="Pol_AllowedKexAlgorithms_Help">Un nombre de algoritmo por línea. Limita los algoritmos KEX ofrecidos/aceptados.</string>
+      <string id="Pol_AllowedCiphers">Cifrados permitidos</string>
+      <string id="Pol_AllowedCiphers_Help">Un nombre de cifrado por línea. Limita los cifrados simétricos ofrecidos/aceptados.</string>
+      <string id="Pol_AllowedMacs">Algoritmos MAC permitidos</string>
+      <string id="Pol_AllowedMacs_Help">Un nombre MAC por línea. Limita los algoritmos de código de autenticación de mensajes ofrecidos/aceptados.</string>
+      <string id="Pol_AllowedHostKeyTypes">Tipos de clave de host permitidos</string>
+      <string id="Pol_AllowedHostKeyTypes_Help">Un tipo de clave de host por línea (p. ej. ssh-ed25519, rsa-sha2-512).</string>
+
+      <string id="Pol_LogLevel">Nivel de registro</string>
+      <string id="Pol_LogLevel_Help">Severidad mínima de los eventos registrados.</string>
+      <string id="LogLevel_Trace">trace</string>
+      <string id="LogLevel_Debug">debug</string>
+      <string id="LogLevel_Info">info</string>
+      <string id="LogLevel_Warn">warn</string>
+      <string id="LogLevel_Error">error</string>
+      <string id="Pol_LogDestinations">Destinos de registro</string>
+      <string id="Pol_LogDestinations_Help">Un destino por línea. Ejemplos: stderr, eventlog, file:C:\ProgramData\spt\logs\spt.log, syslog:udp://10.0.0.1:514</string>
+      <string id="Pol_TelemetryOptOut">Excluir telemetría</string>
+      <string id="Pol_TelemetryOptOut_Help">Cuando está habilitado, el agente desactiva toda la telemetría saliente.</string>
+
+      <string id="Pol_AllowedFirewallActions">Acciones de firewall permitidas</string>
+      <string id="Pol_AllowedFirewallActions_Help">Una acción por línea (p. ej. open-listen, open-outbound, none). Restringe qué cambios de firewall puede realizar el agente.</string>
+      <string id="Pol_SecretBackend">Backend de secretos</string>
+      <string id="Pol_SecretBackend_Help">Selecciona dónde almacena y recupera los secretos el agente.</string>
+      <string id="SecretBackend_Keyring">Administrador de credenciales de Windows (keyring)</string>
+      <string id="SecretBackend_File">Archivo cifrado (file)</string>
+    </stringTable>
+
+    <presentationTable>
+      <presentation id="Pres_StateDir">
+        <textBox refId="StateDir"><label>Directorio de estado:</label></textBox>
+      </presentation>
+      <presentation id="Pres_DefaultConfigPath">
+        <textBox refId="DefaultConfigPath"><label>Ruta del archivo de configuración:</label></textBox>
+      </presentation>
+      <presentation id="Pres_RemoteConfigUrlPin">
+        <textBox refId="RemoteConfigUrlPin"><label>URL:</label></textBox>
+      </presentation>
+      <presentation id="Pres_RemoteConfigFingerprintSha256">
+        <textBox refId="RemoteConfigFingerprintSha256"><label>SHA-256 (hex):</label></textBox>
+      </presentation>
+      <presentation id="Pres_McpListen">
+        <textBox refId="McpListen"><label>Escuchar en:</label></textBox>
+      </presentation>
+      <presentation id="Pres_BindRestrictions">
+        <multiTextBox refId="BindRestrictions">CIDRs (uno por línea):</multiTextBox>
+      </presentation>
+      <presentation id="Pres_AllowedKexAlgorithms">
+        <multiTextBox refId="AllowedKexAlgorithms">Algoritmos KEX (uno por línea):</multiTextBox>
+      </presentation>
+      <presentation id="Pres_AllowedCiphers">
+        <multiTextBox refId="AllowedCiphers">Cifrados (uno por línea):</multiTextBox>
+      </presentation>
+      <presentation id="Pres_AllowedMacs">
+        <multiTextBox refId="AllowedMacs">MACs (uno por línea):</multiTextBox>
+      </presentation>
+      <presentation id="Pres_AllowedHostKeyTypes">
+        <multiTextBox refId="AllowedHostKeyTypes">Tipos de clave de host (uno por línea):</multiTextBox>
+      </presentation>
+      <presentation id="Pres_LogLevel">
+        <dropdownList refId="LogLevel" defaultItem="2">Nivel mínimo de registro:</dropdownList>
+      </presentation>
+      <presentation id="Pres_LogDestinations">
+        <multiTextBox refId="LogDestinations">Destinos (uno por línea):</multiTextBox>
+      </presentation>
+      <presentation id="Pres_AllowedFirewallActions">
+        <multiTextBox refId="AllowedFirewallActions">Acciones permitidas (una por línea):</multiTextBox>
+      </presentation>
+      <presentation id="Pres_SecretBackend">
+        <dropdownList refId="SecretBackend" defaultItem="0">Backend:</dropdownList>
+      </presentation>
+    </presentationTable>
+  </resources>
+</policyDefinitionResources>
