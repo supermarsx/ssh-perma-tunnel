@@ -125,8 +125,11 @@ async fn run_orchestrator_under_scm(
     config_path: &std::path::Path,
     handles: std::sync::Arc<spt_service::windows_scm::ScmHandles>,
 ) -> Result<()> {
-    let (cfg, _w) = spt_config::load(config_path, false)
+    let (mut cfg, _w) = spt_config::load(config_path, false)
         .map_err(|e| Error::InvalidConfig(format!("load: {e}")))?;
+    // Apply Group Policy registry overlay before runtime startup
+    // (HKLM-enforced settings dominate config-file values in the SCM path).
+    let _overlay_report = crate::policy::overlay::apply(&mut cfg);
     let state_dir = resolve_scm_state_dir(explicit_state_dir, &cfg)?;
     let _lock = spt_state::StateLock::acquire(&state_dir)?;
 

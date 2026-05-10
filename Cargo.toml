@@ -30,11 +30,18 @@ members = [
     "crates/spt-cli",
     "crates/spt-remote-config",
     "tests",
+    "tests/conformance",
+    "tests/stress",
 ]
 default-members = ["crates/spt-bin"]
 # The fuzz crate is its own decoupled workspace (cargo-fuzz convention) so it
 # can be built with nightly without affecting the main MSRV-1.83 contract.
-exclude = ["fuzz"]
+# tests/property and tests/openssh-interop are intentionally NOT members:
+# each ships its own [workspace] table + Cargo.lock to pin MSRV-1.83-clean
+# versions of `arbitrary`/`tempfile` independent of the root resolver
+# (per t2-e7 and t2-e2 executor logs). They are exercised standalone via
+# `cargo test --manifest-path tests/<name>/Cargo.toml`.
+exclude = ["fuzz", "tests/property", "tests/openssh-interop"]
 
 [workspace.package]
 version = "0.1.0"
