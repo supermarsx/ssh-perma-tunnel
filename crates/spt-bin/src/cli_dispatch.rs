@@ -3,7 +3,8 @@
 //!
 //! For commands that do real work in M0/M8 the body is implemented here.
 //! Commands that depend on subsystems not yet wired (per the executor brief)
-//! return [`crate::stub_err`] with a milestone reference rather than panicking.
+//! historically returned a structured stub error; as of t2-e5 every previously
+//! stubbed command has a real implementation.
 
 // Several group-dispatch functions are `async` for symmetry — they call into
 // other async dispatchers as the wiring grows in later milestones. Suppress
@@ -36,8 +37,6 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use spt_cli::{groups, Cli, Command, GlobalOpts};
 use spt_core::{Error, RedactionMode, Result};
-
-use crate::stub_err;
 
 /// Top-level dispatcher.
 pub async fn dispatch(cli: Cli) -> Result<()> {
@@ -311,7 +310,7 @@ async fn profile_dispatch(global: &GlobalOpts, c: groups::profile::ProfileCmd) -
         ProfileSub::List(_) => profile_list(global),
         ProfileSub::Show(args) => profile_show(global, args),
         ProfileSub::Add(args) => profile_add(global, args),
-        ProfileSub::Configure(args) => profile_configure(global, args),
+        ProfileSub::Configure(args) => profile_configure(global, args).await,
         ProfileSub::Set(args) => crate::cli::profile_ops::set(global, args).await,
         ProfileSub::Enable(args) => crate::cli::profile_ops::enable(global, args).await,
         ProfileSub::Disable(args) => crate::cli::profile_ops::disable(global, args).await,
@@ -426,9 +425,14 @@ fn profile_remove(global: &GlobalOpts, args: groups::profile::ProfileName) -> Re
     Ok(())
 }
 
-fn profile_configure(global: &GlobalOpts, args: groups::profile::ProfileConfigure) -> Result<()> {
-    if args.no_tui {
-        return Err(stub_err("profile configure --no-tui", "M2"));
+async fn profile_configure(
+    global: &GlobalOpts,
+    args: groups::profile::ProfileConfigure,
+) -> Result<()> {
+    // Non-interactive when `--no-tui`, or whenever the user supplied edits
+    // directly via `--field`/`--from` (which only make sense outside the TUI).
+    if args.no_tui || !args.fields.is_empty() || args.from.is_some() {
+        return crate::cli::profile_ops::configure_non_interactive(global, args).await;
     }
     let path = require_config_path(global)?;
     spt_tui::run(&path, args.name.as_deref())
@@ -626,8 +630,12 @@ async fn tunnel_run(global: &GlobalOpts, args: groups::tunnel::TunnelRun) -> Res
     // until shutdown. SIGHUP triggers a config re-load + reconciliation via
     // `Orchestrator::apply` against a fresh `ReloadPlan`.
     let path = require_config_path(global)?;
-    let (cfg, _w) = spt_config::load(&path, false)
+    let (mut cfg, _w) = spt_config::load(&path, false)
         .map_err(|e| Error::InvalidConfig(format!("load: {e}")))?;
+    // Apply Group Policy registry overlay (Windows; no-op stub elsewhere)
+    // before validation/runtime so any HKLM-enforced bindings take effect
+    // for the long-running tunnel process. See `crates/spt-bin/src/policy/`.
+    let _overlay_report = crate::policy::overlay::apply(&mut cfg);
     let state_dir = resolve_state_dir(global, &cfg)?;
     let _lock = spt_state::StateLock::acquire(&state_dir)?;
 
@@ -925,7 +933,7 @@ async fn tunnel_stop(global: &GlobalOpts) -> Result<()> {
     #[cfg(windows)]
     {
         let _ = pid;
-        Err(stub_err("tunnel stop (Windows)", "M9"))
+        crate::cli::tunnel_ops::stop_windows_standalone(global).await
     }
 }
 
@@ -950,7 +958,7 @@ async fn tunnel_reload(global: &GlobalOpts) -> Result<()> {
     #[cfg(windows)]
     {
         let _ = pid;
-        Err(stub_err("tunnel reload (Windows)", "M9"))
+        crate::cli::tunnel_ops::reload_windows_standalone(global).await
     }
 }
 

@@ -25,10 +25,17 @@ use std::path::{Path, PathBuf};
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use serde::Serialize;
 
+use serde_json::json;
 use spt_cli::groups::tunnel::{TunnelHealth, TunnelSessions, TunnelStats};
 use spt_cli::GlobalOpts;
 use spt_core::{Error, Result};
 use spt_state::status::{LastError, ProfileStatus, StatusSnapshot};
+
+/// Default grace period after `TerminateProcess` before `WaitForSingleObject`
+/// returns and we call it a hung process. Mirrors the systemd `TimeoutStopSec`
+/// default in `packaging/systemd/spt.service` (90s).
+#[cfg(windows)]
+const STOP_GRACE: std::time::Duration = std::time::Duration::from_secs(90);
 
 // ---------------------------------------------------------------------------
 // Public entry points
@@ -92,6 +99,159 @@ pub async fn health(global: &GlobalOpts, args: TunnelHealthArgs) -> Result<()> {
         // here — these aren't error categories, they're a `health` contract.
         // The output has already been written above.
         std::process::exit(code);
+    }
+}
+
+/// `spt tunnel stop` — Windows standalone path.
+///
+/// Used when no MCP loopback is reachable (the supervisor is running outside
+/// a service host with the MCP listener disabled). We read the recorded PID
+/// from `<state_dir>/spt.pid` and signal it via the Win32
+/// `OpenProcess` + `TerminateProcess` pair, then wait up to [`STOP_GRACE`]
+/// for the process to exit before reporting a timeout.
+///
+/// On non-Windows targets this is a no-op that returns
+/// [`Error::UnsupportedPlatform`] so callers can compile-share the dispatch
+/// table without `#[cfg]` gymnastics at the call site.
+#[cfg(not(windows))]
+pub async fn stop_windows_standalone(_global: &GlobalOpts) -> Result<()> {
+    Err(Error::UnsupportedPlatform(
+        "tunnel stop standalone (Windows path) is unavailable on this OS \
+         — use SIGTERM via the existing Unix dispatcher"
+            .into(),
+    ))
+}
+
+#[cfg(windows)]
+pub async fn stop_windows_standalone(global: &GlobalOpts) -> Result<()> {
+    let state_dir = resolve_state_dir(global)?;
+    let pid = read_lock_pid(&state_dir)?;
+    windows_impl::terminate_with_grace(pid, STOP_GRACE)?;
+    println!("ok: terminated pid {pid} (Windows standalone)");
+    Ok(())
+}
+
+/// `spt tunnel reload` — Windows standalone path.
+///
+/// Tries to dial the MCP loopback (`<state_dir>/mcp-listen.json`) and invoke
+/// `tunnel_reload`. There is no Windows named-pipe MCP transport in tree; if
+/// the TCP loopback isn't listening we surface a clear error pointing at
+/// `spt service reload`, which signals the running Windows service via the
+/// Service Control Manager.
+#[cfg(not(windows))]
+pub async fn reload_windows_standalone(_global: &GlobalOpts) -> Result<()> {
+    Err(Error::UnsupportedPlatform(
+        "tunnel reload standalone (Windows path) is unavailable on this OS \
+         — use SIGHUP via the existing Unix dispatcher"
+            .into(),
+    ))
+}
+
+#[cfg(windows)]
+pub async fn reload_windows_standalone(global: &GlobalOpts) -> Result<()> {
+    // Confirm there's a recorded supervisor first so the error story is
+    // "no supervisor" vs. "supervisor running but MCP off".
+    let state_dir = resolve_state_dir(global)?;
+    let pid = read_lock_pid(&state_dir)?;
+
+    match crate::mcp_client::McpClient::connect_from_state_dir(&state_dir).await {
+        Ok(mut client) => {
+            client.initialize().await.map_err(|e| {
+                Error::ReloadFailed(format!("mcp initialize: {e}"))
+            })?;
+            client
+                .call_tool("tunnel_reload", json!({}))
+                .await
+                .map_err(|e| Error::ReloadFailed(format!("tunnel_reload: {e}")))?;
+            println!("ok: reload requested via MCP loopback (pid {pid})");
+            Ok(())
+        }
+        Err(e) => Err(Error::ReloadFailed(format!(
+            "supervisor pid {pid} is running but the MCP loopback is not \
+             reachable ({e}). Windows standalone reload requires either an \
+             enabled `[mcp].listen` in the config (and `spt tunnel run` \
+             restarted to pick it up) or running spt as a Windows service \
+             and using `spt service reload`."
+        ))),
+    }
+}
+
+#[cfg(windows)]
+fn read_lock_pid(state_dir: &std::path::Path) -> Result<u32> {
+    let pid_path = spt_state::paths::pid_path(state_dir);
+    let raw = std::fs::read_to_string(&pid_path).map_err(|e| {
+        Error::RuntimeFailure(format!(
+            "read pid `{}`: {e} — is `spt tunnel run` running?",
+            pid_path.display()
+        ))
+    })?;
+    raw.trim().parse::<u32>().map_err(|e| {
+        Error::RuntimeFailure(format!("invalid pid `{}`: {e}", raw.trim()))
+    })
+}
+
+#[cfg(windows)]
+mod windows_impl {
+    use std::time::Duration;
+
+    use spt_core::{Error, Result};
+    use windows::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT};
+    use windows::Win32::System::Threading::{
+        OpenProcess, TerminateProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE,
+        PROCESS_TERMINATE,
+    };
+
+    /// Open the process, terminate it, wait up to `grace`, then close the
+    /// handle. Returns `RuntimeFailure` for any Win32 error.
+    pub(super) fn terminate_with_grace(pid: u32, grace: Duration) -> Result<()> {
+        // Safety: `OpenProcess` returns a HANDLE we own and free via
+        // `CloseHandle` in the `finish` closure below. `TerminateProcess` and
+        // `WaitForSingleObject` only read from `handle`. No aliasing.
+        let handle: HANDLE = unsafe {
+            OpenProcess(PROCESS_TERMINATE | PROCESS_SYNCHRONIZE, false, pid)
+        }
+        .map_err(|e| {
+            Error::RuntimeFailure(format!("OpenProcess({pid}): {e}"))
+        })?;
+
+        if handle.is_invalid() {
+            return Err(Error::RuntimeFailure(format!(
+                "OpenProcess({pid}) returned invalid handle"
+            )));
+        }
+
+        let result = (|| -> Result<()> {
+            // SAFETY: handle is valid (checked above). Exit code 1 mirrors the
+            // service stop convention used by `windows-service`.
+            unsafe { TerminateProcess(handle, 1) }
+                .map_err(|e| {
+                    Error::RuntimeFailure(format!("TerminateProcess({pid}): {e}"))
+                })?;
+            // Truncate to u32 milliseconds; clamp to avoid overflow.
+            let ms = u32::try_from(grace.as_millis()).unwrap_or(u32::MAX);
+            // SAFETY: handle is valid; WaitForSingleObject is a read.
+            let wait = unsafe { WaitForSingleObject(handle, ms) };
+            if wait == WAIT_OBJECT_0 {
+                Ok(())
+            } else if wait == WAIT_TIMEOUT {
+                Err(Error::RuntimeFailure(format!(
+                    "process {pid} did not exit within {}ms after TerminateProcess",
+                    ms
+                )))
+            } else {
+                Err(Error::RuntimeFailure(format!(
+                    "WaitForSingleObject returned 0x{:x}",
+                    wait.0
+                )))
+            }
+        })();
+
+        // SAFETY: handle came from a successful OpenProcess and has not been
+        // closed elsewhere. CloseHandle is safe to call once with an owned
+        // handle. Errors here are non-fatal — they don't change the outcome
+        // of the caller-visible operation.
+        let _ = unsafe { CloseHandle(handle) };
+        result
     }
 }
 
@@ -916,5 +1076,114 @@ mod tests {
         let r = try_read_status(d.as_path()).unwrap().unwrap();
         assert_eq!(r.pid, 4242);
         assert_eq!(r.version, "v-test");
+    }
+
+    // -- Windows-standalone stop / reload -------------------------------
+
+    fn make_global_with_state_dir(dir: std::path::PathBuf) -> GlobalOpts {
+        use spt_cli::{ColorMode, LogLevel, OutputFormat as OF};
+        GlobalOpts {
+            config: None,
+            config_dir: None,
+            config_url: None,
+            config_fingerprint: None,
+            state_dir: Some(dir),
+            profile: None,
+            output: OF::Human,
+            json: false,
+            log_level: LogLevel::Info,
+            color: ColorMode::Never,
+            quiet: true,
+            verbose: 0,
+            no_color: false,
+            dry_run: false,
+        }
+    }
+
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn stop_windows_standalone_returns_unsupported_on_unix() {
+        let d = spt_state::testing::TempStateDir::new();
+        let g = make_global_with_state_dir(d.as_path().to_path_buf());
+        let err = stop_windows_standalone(&g).await.unwrap_err();
+        assert!(matches!(err, Error::UnsupportedPlatform(_)));
+    }
+
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn reload_windows_standalone_returns_unsupported_on_unix() {
+        let d = spt_state::testing::TempStateDir::new();
+        let g = make_global_with_state_dir(d.as_path().to_path_buf());
+        let err = reload_windows_standalone(&g).await.unwrap_err();
+        assert!(matches!(err, Error::UnsupportedPlatform(_)));
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn stop_windows_standalone_errors_when_pid_file_missing() {
+        let d = spt_state::testing::TempStateDir::new();
+        let g = make_global_with_state_dir(d.as_path().to_path_buf());
+        let err = stop_windows_standalone(&g).await.unwrap_err();
+        assert!(matches!(err, Error::RuntimeFailure(_)));
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn stop_windows_standalone_errors_when_pid_unparseable() {
+        let d = spt_state::testing::TempStateDir::new();
+        let pid_path = spt_state::paths::pid_path(d.as_path());
+        std::fs::write(&pid_path, "not-a-pid").unwrap();
+        let g = make_global_with_state_dir(d.as_path().to_path_buf());
+        let err = stop_windows_standalone(&g).await.unwrap_err();
+        assert!(matches!(err, Error::RuntimeFailure(_)));
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn stop_windows_standalone_terminates_a_real_child_process() {
+        // Spawn a tiny long-lived child so we can verify the Win32 termination
+        // path end-to-end. `cmd /c pause` blocks indefinitely on stdin.
+        let mut child = std::process::Command::new("cmd.exe")
+            .args(["/c", "pause"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn cmd /c pause");
+        let pid = child.id();
+
+        let d = spt_state::testing::TempStateDir::new();
+        let pid_path = spt_state::paths::pid_path(d.as_path());
+        std::fs::write(&pid_path, pid.to_string()).unwrap();
+        let g = make_global_with_state_dir(d.as_path().to_path_buf());
+
+        stop_windows_standalone(&g)
+            .await
+            .expect("stop_windows_standalone should terminate the child");
+
+        // Wait succeeds quickly because the process is already dead.
+        let status = child.wait().expect("child wait");
+        assert!(!status.success(), "expected non-zero exit after terminate");
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn reload_windows_standalone_errors_when_mcp_loopback_unavailable() {
+        // Pid file present, but no `mcp-listen.json` sidecar — MCP dial fails
+        // and we surface the standalone-mode hint pointing at `service reload`.
+        let d = spt_state::testing::TempStateDir::new();
+        let pid_path = spt_state::paths::pid_path(d.as_path());
+        std::fs::write(&pid_path, std::process::id().to_string()).unwrap();
+        let g = make_global_with_state_dir(d.as_path().to_path_buf());
+        let err = reload_windows_standalone(&g).await.unwrap_err();
+        match err {
+            Error::ReloadFailed(msg) => {
+                assert!(
+                    msg.contains("service reload") || msg.contains("[mcp].listen"),
+                    "expected hint, got: {msg}"
+                );
+            }
+            other => panic!("expected ReloadFailed, got {other:?}"),
+        }
     }
 }

@@ -1,5 +1,7 @@
 //! `spt profile` — manage tunnel profiles.
 
+use std::path::PathBuf;
+
 use clap::{Args, Subcommand, ValueEnum};
 
 const EXAMPLES: &str = "EXAMPLES:
@@ -100,6 +102,16 @@ pub struct ProfileConfigure {
     /// Seed from a built-in template.
     #[arg(long, value_name = "NAME")]
     pub from_template: Option<String>,
+    /// One or more `KEY=VALUE` field overrides applied non-interactively.
+    /// Implies `--no-tui` semantics for `--field` updates. Repeatable.
+    #[arg(long = "field", value_name = "KEY=VALUE")]
+    pub fields: Vec<String>,
+    /// Apply a TOML patch from `<file.toml>` to the profile (non-interactive).
+    /// The file may contain a single `[profile]` table or a bare key/value
+    /// document; both shapes are merged into the addressed `[[profiles]]`
+    /// entry.
+    #[arg(long = "from", value_name = "PATH")]
+    pub from: Option<PathBuf>,
 }
 
 /// `spt profile set`.

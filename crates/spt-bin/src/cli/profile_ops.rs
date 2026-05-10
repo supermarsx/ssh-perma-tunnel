@@ -95,6 +95,108 @@ pub async fn set(global: &GlobalOpts, args: profile::ProfileSet) -> Result<()> {
     Ok(())
 }
 
+/// `spt profile configure --no-tui [--field K=V ...] [--from FILE]`.
+///
+/// Non-interactive profile editor. Two input modes (composable):
+///
+/// * `--field key=value` repeated: dotted-path overrides, identical to
+///   `profile set` but without requiring a positional name argument.
+/// * `--from FILE`: TOML file whose top-level keys (or single `[profile]`
+///   table) are merged into the addressed profile.
+///
+/// Validates the post-edit document and refuses to write if the edit
+/// introduces *new* validation errors over the on-disk baseline. On success
+/// the previous file content is copied to `<config>.bak` (overwritten each
+/// time) and the new content is atomically written via `atomicwrites`.
+pub async fn configure_non_interactive(
+    global: &GlobalOpts,
+    args: profile::ProfileConfigure,
+) -> Result<()> {
+    let path = require_config_path(global)?;
+    let raw = std::fs::read_to_string(&path).map_err(|e| {
+        Error::InvalidConfig(format!("read `{}`: {e}", path.display()))
+    })?;
+
+    let baseline = baseline_error_count(&raw);
+    let mut doc = Document::parse(&raw)?;
+
+    // The profile must be addressable. We accept either an explicit `--name`
+    // or a single existing profile in the config (so `spt profile configure
+    // --no-tui --field host=…` works in single-profile setups without extra
+    // ceremony).
+    let name = resolve_profile_name(&mut doc, args.name.as_deref())?;
+
+    let mut applied = Vec::<String>::new();
+
+    if let Some(file) = args.from.as_ref() {
+        let body = std::fs::read_to_string(file).map_err(|e| {
+            Error::InvalidArgs(format!("read `{}`: {e}", file.display()))
+        })?;
+        let n = apply_toml_patch(&mut doc, &name, &body)?;
+        applied.push(format!("--from `{}` ({n} fields)", file.display()));
+    }
+
+    for ov in &args.fields {
+        let (field, val) = parse_override(ov)?;
+        write_field(&mut doc, &name, field, val)?;
+        applied.push(format!("{field}={val}"));
+    }
+
+    if applied.is_empty() {
+        return Err(Error::InvalidArgs(
+            "no edits supplied: pass `--field KEY=VALUE` and/or `--from FILE` \
+             (or omit `--no-tui` to launch the interactive editor)"
+                .into(),
+        ));
+    }
+
+    // Reject if the new document fails validation harder than the baseline.
+    let rendered = doc.to_string();
+    let (cfg, _w) = spt_config::load_str(&rendered, false).map_err(|e| {
+        Error::InvalidConfig(format!("post-edit parse failed: {e}"))
+    })?;
+    let diags = spt_config::validate(&cfg);
+    if diags.errors.len() > baseline {
+        let first = diags
+            .errors
+            .first()
+            .map_or_else(|| "validation failed".to_owned(), |e| e.to_string());
+        return Err(Error::InvalidConfig(format!(
+            "edit rejected: post-edit config fails validation: {first}"
+        )));
+    }
+
+    // Validation passed — write the backup *before* atomic-replacing the
+    // primary so a crash mid-write leaves a recoverable copy. The backup is
+    // a snapshot of the pre-edit on-disk content (`raw`).
+    let bak = backup_path(&path);
+    std::fs::write(&bak, &raw).map_err(|e| {
+        Error::InvalidConfig(format!(
+            "write backup `{}`: {e}",
+            bak.display()
+        ))
+    })?;
+    doc.write_atomic(&path)?;
+
+    if use_json(global) {
+        let v = json!({
+            "ok": true,
+            "profile": name,
+            "applied": applied,
+            "backup": bak.display().to_string(),
+        });
+        println!("{v}");
+    } else {
+        println!(
+            "ok: profile `{name}` configured ({n} edit{s}); backup at `{bak}`",
+            n = applied.len(),
+            s = if applied.len() == 1 { "" } else { "s" },
+            bak = bak.display(),
+        );
+    }
+    Ok(())
+}
+
 /// `spt profile enable <name>`.
 pub async fn enable(global: &GlobalOpts, args: profile::ProfileName) -> Result<()> {
     toggle_enabled(global, &args.name, true).await
@@ -620,6 +722,118 @@ fn value_for(s: &str) -> Item {
 }
 
 // ---------------------------------------------------------------------------
+// Non-interactive `configure` helpers
+// ---------------------------------------------------------------------------
+
+fn backup_path(p: &std::path::Path) -> PathBuf {
+    let mut name = p
+        .file_name()
+        .map(|s| s.to_owned())
+        .unwrap_or_else(|| std::ffi::OsString::from("config.toml"));
+    name.push(".bak");
+    p.with_file_name(name)
+}
+
+fn resolve_profile_name(doc: &mut Document, requested: Option<&str>) -> Result<String> {
+    if let Some(n) = requested {
+        return Ok(n.to_owned());
+    }
+    let arr = match doc.document_mut().get("profiles") {
+        Some(Item::ArrayOfTables(a)) => a,
+        _ => {
+            return Err(Error::InvalidArgs(
+                "no profiles in config and `--name` not supplied".into(),
+            ))
+        }
+    };
+    if arr.len() == 1 {
+        if let Some(n) = arr.get(0).and_then(|t| t.get("name")).and_then(|v| v.as_str()) {
+            return Ok(n.to_owned());
+        }
+    }
+    Err(Error::InvalidArgs(format!(
+        "config has {} profiles; pass `--name <PROFILE>` to select one",
+        arr.len()
+    )))
+}
+
+/// Apply a TOML patch document to `profile`. Accepts either:
+///
+/// * a top-level `[profile]` table (its keys overwrite profile fields), or
+/// * a bare key/value document (top-level keys overwrite profile fields).
+///
+/// Sub-tables and arrays-of-tables are deep-merged via dotted-path writes
+/// onto the leaf scalars. Returns the count of leaf assignments applied.
+fn apply_toml_patch(doc: &mut Document, profile: &str, body: &str) -> Result<usize> {
+    use toml_edit::DocumentMut;
+    let patch: DocumentMut = body
+        .parse()
+        .map_err(|e| Error::InvalidArgs(format!("parse `--from` toml: {e}")))?;
+
+    // Unwrap a leading `[profile]` if present.
+    let root: &toml_edit::Table = match patch.as_table().get("profile") {
+        Some(Item::Table(t)) => t,
+        _ => patch.as_table(),
+    };
+
+    let mut count = 0usize;
+    walk_patch_leaves(root, "", profile, doc, &mut count)?;
+    if count == 0 {
+        return Err(Error::InvalidArgs(
+            "`--from` TOML patch contained no scalar assignments".into(),
+        ));
+    }
+    Ok(count)
+}
+
+fn walk_patch_leaves(
+    tbl: &toml_edit::Table,
+    prefix: &str,
+    profile: &str,
+    doc: &mut Document,
+    count: &mut usize,
+) -> Result<()> {
+    for (k, item) in tbl {
+        let path = if prefix.is_empty() {
+            k.to_owned()
+        } else {
+            format!("{prefix}.{k}")
+        };
+        match item {
+            Item::Value(v) => {
+                let s = value_to_assignment_str(v);
+                write_field(doc, profile, &path, &s)?;
+                *count += 1;
+            }
+            Item::Table(sub) => {
+                walk_patch_leaves(sub, &path, profile, doc, count)?;
+            }
+            Item::ArrayOfTables(arr) => {
+                for (i, t) in arr.iter().enumerate() {
+                    let inner_prefix = format!("{path}.{i}");
+                    walk_patch_leaves(t, &inner_prefix, profile, doc, count)?;
+                }
+            }
+            Item::None => {}
+        }
+    }
+    Ok(())
+}
+
+/// Render a `Value` back to the `KEY=VALUE` payload understood by
+/// [`write_field`] / [`value_for`]. Preserves native scalar typing.
+fn value_to_assignment_str(v: &Value) -> String {
+    match v {
+        Value::String(s) => s.value().clone(),
+        Value::Integer(i) => i.value().to_string(),
+        Value::Float(f) => f.value().to_string(),
+        Value::Boolean(b) => b.value().to_string(),
+        // Datetimes and arrays render via toml_edit's display impl, trimmed.
+        other => other.to_string().trim().to_owned(),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -826,5 +1040,143 @@ connect_timeout = "5s"
     #[test]
     fn parse_override_rejects_missing_equals() {
         assert!(parse_override("noequals").is_err());
+    }
+
+    // ---- configure_non_interactive ----------------------------------------
+
+    fn configure_args(
+        name: Option<&str>,
+        fields: &[&str],
+        from: Option<&Path>,
+    ) -> profile::ProfileConfigure {
+        profile::ProfileConfigure {
+            name: name.map(ToOwned::to_owned),
+            tui: false,
+            no_tui: true,
+            from_template: None,
+            fields: fields.iter().map(|s| (*s).to_owned()).collect(),
+            from: from.map(Path::to_path_buf),
+        }
+    }
+
+    #[tokio::test]
+    async fn configure_non_interactive_applies_field_overrides() {
+        let (_d, path) = write_tmp(RAW);
+        let g = global_with_path(&path);
+        let args = configure_args(Some("p"), &["port=2345", "host=new.example"], None);
+        configure_non_interactive(&g, args).await.unwrap();
+
+        let new_raw = std::fs::read_to_string(&path).unwrap();
+        let (cfg, _) = spt_config::load_str(&new_raw, false).unwrap();
+        assert_eq!(cfg.profiles[0].port, Some(2345));
+        assert_eq!(cfg.profiles[0].host.as_deref(), Some("new.example"));
+
+        // Backup file written and contains the *pre-edit* content.
+        let bak = backup_path(&path);
+        let bak_raw = std::fs::read_to_string(&bak).unwrap();
+        assert!(bak_raw.contains("port = 22"));
+        assert!(bak_raw.contains("example.com"));
+    }
+
+    #[tokio::test]
+    async fn configure_non_interactive_applies_from_file_patch() {
+        let (d, path) = write_tmp(RAW);
+        let patch_path = d.path().join("patch.toml");
+        std::fs::write(
+            &patch_path,
+            r#"port = 4242
+[connection]
+connect_timeout = "9s"
+"#,
+        )
+        .unwrap();
+
+        let g = global_with_path(&path);
+        let args = configure_args(Some("p"), &[], Some(&patch_path));
+        configure_non_interactive(&g, args).await.unwrap();
+
+        let new_raw = std::fs::read_to_string(&path).unwrap();
+        let (cfg, _) = spt_config::load_str(&new_raw, false).unwrap();
+        assert_eq!(cfg.profiles[0].port, Some(4242));
+        assert_eq!(
+            cfg.profiles[0]
+                .connection
+                .as_ref()
+                .and_then(|c| c.connect_timeout.clone())
+                .as_deref(),
+            Some("9s"),
+        );
+    }
+
+    #[tokio::test]
+    async fn configure_non_interactive_accepts_profile_table_wrapper() {
+        let (d, path) = write_tmp(RAW);
+        let patch_path = d.path().join("patch.toml");
+        std::fs::write(
+            &patch_path,
+            r#"[profile]
+port = 7777
+user = "bob"
+"#,
+        )
+        .unwrap();
+
+        let g = global_with_path(&path);
+        let args = configure_args(Some("p"), &[], Some(&patch_path));
+        configure_non_interactive(&g, args).await.unwrap();
+
+        let (cfg, _) = spt_config::load(&path, false).unwrap();
+        assert_eq!(cfg.profiles[0].port, Some(7777));
+        assert_eq!(cfg.profiles[0].user.as_deref(), Some("bob"));
+    }
+
+    #[tokio::test]
+    async fn configure_non_interactive_requires_some_edit() {
+        let (_d, path) = write_tmp(RAW);
+        let g = global_with_path(&path);
+        let args = configure_args(Some("p"), &[], None);
+        let err = configure_non_interactive(&g, args).await.unwrap_err();
+        assert!(matches!(err, Error::InvalidArgs(_)));
+    }
+
+    #[tokio::test]
+    async fn configure_non_interactive_validation_failure_does_not_write() {
+        let (_d, path) = write_tmp(RAW);
+        let original = std::fs::read_to_string(&path).unwrap();
+        let g = global_with_path(&path);
+        let args = configure_args(Some("p"), &["protocol=carrier-pigeon"], None);
+        let err = configure_non_interactive(&g, args).await.unwrap_err();
+        assert!(matches!(err, Error::InvalidConfig(_)));
+
+        // Primary untouched, no backup created (we abort before backup).
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(after, original);
+        assert!(!backup_path(&path).exists());
+    }
+
+    #[tokio::test]
+    async fn configure_non_interactive_infers_single_profile_name() {
+        let (_d, path) = write_tmp(RAW);
+        let g = global_with_path(&path);
+        let args = configure_args(None, &["port=2345"], None);
+        configure_non_interactive(&g, args).await.unwrap();
+        let (cfg, _) = spt_config::load(&path, false).unwrap();
+        assert_eq!(cfg.profiles[0].port, Some(2345));
+    }
+
+    #[tokio::test]
+    async fn configure_non_interactive_rejects_missing_from_file() {
+        let (_d, path) = write_tmp(RAW);
+        let bogus = path.with_file_name("does-not-exist.toml");
+        let g = global_with_path(&path);
+        let args = configure_args(Some("p"), &[], Some(&bogus));
+        let err = configure_non_interactive(&g, args).await.unwrap_err();
+        assert!(matches!(err, Error::InvalidArgs(_)));
+    }
+
+    #[test]
+    fn backup_path_appends_bak_suffix() {
+        let p = Path::new("/etc/spt/spt.toml");
+        assert_eq!(backup_path(p), Path::new("/etc/spt/spt.toml.bak"));
     }
 }
