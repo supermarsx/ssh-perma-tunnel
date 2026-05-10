@@ -1,0 +1,113 @@
+# Server-impl conformance fixture stack for spt.
+#
+# Three SSH server implementations are stood up side-by-side on distinct host
+# ports so the matrix harness in `tests/matrix.rs` can iterate
+# (server, forward_kind, auth_method) cells against each.
+#
+# All three servers are seeded with the **same** test user (`spt`) and the
+# **same** authorised public key (mounted from `./fixtures/spt_test_ed25519.pub`)
+# so a single client-side keypair drives every cell. A password
+# (`spt:conformance`) is also configured for the password-auth column of the
+# matrix.
+#
+# Host keys are seeded from `./fixtures/host_keys/` to keep the
+# known_hosts file the spt client uses deterministic across `docker compose
+# up` cycles. (Without seeding, every fresh container would generate new
+# host keys and the spt strict-host-key-checking would fail on rerun.)
+#
+# Bring up: `docker compose -f tests/conformance/docker-compose.yml up -d`
+# Tear down: `docker compose -f tests/conformance/docker-compose.yml down -v`
+#
+# Port allocations (host-side):
+#   2231 → openssh        (OpenSSH server, reference impl)
+#   2232 → dropbear       (small-footprint SSH server; some builds lack
+#                          remote-forward — see EXPECTED_FAIL in matrix.rs)
+#   2233 → libssh-server  (libssh's server-mode example image)
+#
+# These are deliberately above 2222 so they don't collide with common dev
+# fixtures (vagrant, etc.).
+
+version: "3.8"
+
+services:
+  openssh:
+    image: linuxserver/openssh-server:latest
+    container_name: spt-conformance-openssh
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Etc/UTC
+      - PASSWORD_ACCESS=true
+      - USER_NAME=spt
+      - USER_PASSWORD=conformance
+      - SUDO_ACCESS=false
+      - PUBLIC_KEY_FILE=/config/keys/spt_test_ed25519.pub
+      # Enable both local and remote port forwarding for the matrix.
+      - DOCKER_MODS=linuxserver/mods:openssh-server-ssh-tunnel
+    ports:
+      - "2231:2222"
+    volumes:
+      - ./fixtures/spt_test_ed25519.pub:/config/keys/spt_test_ed25519.pub:ro
+      - ./fixtures/host_keys/openssh:/config/ssh_host_keys:ro
+      - ./fixtures/sshd_config.d/openssh.conf:/config/sshd/sshd_config.d/conformance.conf:ro
+    healthcheck:
+      test: ["CMD", "nc", "-z", "127.0.0.1", "2222"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  dropbear:
+    # Lightweight Dropbear image. Build flags vary across distributions; the
+    # matrix harness treats `(dropbear, RemoteForward, *)` as expected-fail
+    # for the busybox-style builds that omit `-R`.
+    image: ghcr.io/jirutka/alpine-dropbear:latest
+    container_name: spt-conformance-dropbear
+    command:
+      - "-F"             # foreground
+      - "-E"             # log to stderr
+      - "-p"
+      - "2222"
+      - "-r"
+      - "/etc/dropbear/dropbear_ed25519_host_key"
+      - "-r"
+      - "/etc/dropbear/dropbear_rsa_host_key"
+      # `-a` enables local→remote port forwarding ("any" interface accept).
+      # Some builds lack `-a` entirely; the harness records the resulting
+      # cell as EXPECTED_FAIL rather than test-failure.
+      - "-a"
+    ports:
+      - "2232:2222"
+    volumes:
+      - ./fixtures/host_keys/dropbear:/etc/dropbear:ro
+      - ./fixtures/spt_test_ed25519.pub:/home/spt/.ssh/authorized_keys:ro
+    healthcheck:
+      test: ["CMD", "nc", "-z", "127.0.0.1", "2222"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  libssh-server:
+    # The libssh project's `ssh_server_fork.c` example, packaged. Used to
+    # cover the "third major implementation" axis of the conformance
+    # matrix — historically libssh has had subtle differences from OpenSSH
+    # in channel-window accounting and global-request handling.
+    image: ghcr.io/libssh/ssh-server-example:latest
+    container_name: spt-conformance-libssh
+    environment:
+      - SSH_USER=spt
+      - SSH_PASSWORD=conformance
+      - SSH_AUTHORIZED_KEY_FILE=/etc/ssh/spt_test_ed25519.pub
+      - SSH_HOST_KEY_DIR=/etc/ssh/host_keys
+    ports:
+      - "2233:2222"
+    volumes:
+      - ./fixtures/spt_test_ed25519.pub:/etc/ssh/spt_test_ed25519.pub:ro
+      - ./fixtures/host_keys/libssh:/etc/ssh/host_keys:ro
+    healthcheck:
+      test: ["CMD", "nc", "-z", "127.0.0.1", "2222"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+# No named networks: the harness reaches every server via the host-mapped
+# port on 127.0.0.1, exactly as a real spt deployment would.

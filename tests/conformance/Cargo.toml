@@ -1,0 +1,36 @@
+[package]
+name = "spt-conformance-tests"
+version = "0.0.0"
+edition = "2021"
+rust-version = "1.83"
+publish = false
+license = "MIT"
+description = "Server-impl conformance matrix for spt: dropbear/openssh/libssh-server x forward-kind x auth-method."
+
+# `[lints]` deliberately not inherited from workspace: this crate is
+# intentionally relaxed (matrix harness uses many string concatenations,
+# wide error contexts, etc.) and `pedantic` would add noise without
+# catching anything that matters for an `#[ignore]`'d, env-gated harness.
+
+# An empty lib so cargo treats this as a real package; the matrix harness
+# lives under `tests/matrix.rs` (cargo-conventional integration-test layout).
+[lib]
+path = "src/lib.rs"
+
+[[test]]
+name = "matrix"
+path = "tests/matrix.rs"
+
+# Inherit from the workspace so we share Cargo.lock pins (MSRV 1.83 needs
+# this — fresh resolution would pull crates with the `edition2024` feature
+# requirement). t2-wire registers `tests/conformance` in the root
+# `workspace.members` array; until then `cargo check -p
+# spt-conformance-tests` fails with "package not found", which is expected
+# and identical to the situation faced by the other Phase-A standalone
+# crates (t2-e7 tests/property, t2-e8 tests/stress).
+[dependencies]
+
+[dev-dependencies]
+# Per workspace rule: NO assert_cmd. Drive the binary via tokio::process::Command.
+tokio = { workspace = true, features = ["full"] }
+tempfile = { workspace = true }
