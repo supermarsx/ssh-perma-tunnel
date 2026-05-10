@@ -17,6 +17,50 @@
 //! After the CONNECT 200 the bidi stream of that request is the SSH3 control
 //! channel. Wiring the per-forward channel framing on top is delegated to
 //! `session.rs` / `forward.rs` (see partial-real status notes there).
+//!
+//! # Why `:protocol = ssh3` ships as the `X-Ssh3-Protocol` header
+//!
+//! RFC 9220 (Extended CONNECT over HTTP/3) defines the `:protocol`
+//! pseudo-header as the wire mechanism for upgrading a CONNECT into a
+//! protocol-specific bidi stream. The `francoismichel/ssh3` Go reference
+//! server expects `:protocol = ssh3` exactly — no other identifier matches.
+//!
+//! The `h3` crate at the version we are pinned to (`=0.0.8`) exposes
+//! Extended CONNECT support via a *closed* `h3::ext::Protocol` enum whose
+//! only variants are `WEB_TRANSPORT` and `CONNECT_UDP`. There is no public
+//! constructor for an arbitrary `:protocol` string and no way to attach the
+//! pseudo-header to an outbound `Request` via `http::Request::extensions_mut`
+//! that h3 0.0.8 will honor. The work to make `Protocol` an open type
+//! (string-backed) was tracked in the upstream tracking issue for
+//! arbitrary-protocol Extended CONNECT support
+//! (`hyperium/h3#218` and the follow-on `#374`); the fix landed only after
+//! the 0.0.8 cut. We are explicitly forbidden by t2's quality bar from
+//! bumping past `=0.0.8` because doing so cascades a `quinn` major-version
+//! change that breaks our MSRV-1.83 floor.
+//!
+//! As a wire-compat workaround, `build_connect_request` mirrors the
+//! `:protocol` value into a normal HTTP request header named
+//! **`X-Ssh3-Protocol`** (verbatim string `ssh3`). The
+//! `francoismichel/ssh3` reference server can be patched to honor this
+//! header in addition to the pseudo-header, and the spt↔spt path needs no
+//! patch (the responder reads the same custom header). The `:method`,
+//! `:authority`, and `:path` pseudo-headers are still sent normally per
+//! RFC 9220.
+//!
+//! Two paths forward:
+//!
+//! * Upstream `h3` graduates `Protocol` to a string-backed open type (or
+//!   exposes a constructor for arbitrary tokens). We then drop the custom
+//!   header and emit the pseudo-header natively. Tracked as
+//!   `TODO(spec-clarify)` in this crate's README.
+//! * We move to raw HTTP/3 framing (bypassing `h3` entirely for the
+//!   bootstrap request) and write the pseudo-header field by hand.
+//!
+//! Until then, `X-Ssh3-Protocol: ssh3` is the wire contract. The two unit
+//! tests `x_ssh3_protocol_header_is_byte_exact_value` and
+//! `x_ssh3_protocol_header_name_is_byte_exact` below pin both the header
+//! name and value byte-for-byte so that a careless rename can never silently
+//! break interop.
 
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs};
 use std::sync::Arc;
@@ -372,6 +416,57 @@ mod tests {
             "ssh3"
         );
         std::env::remove_var("SPT_TEST_TRANSPORT_TOK");
+    }
+
+    #[test]
+    fn x_ssh3_protocol_header_is_byte_exact_value() {
+        // Pin the header VALUE to the exact bytes `ssh3` (no quoting, no
+        // whitespace, lowercase). The francoismichel/ssh3 reference does a
+        // literal string compare against the `:protocol` pseudo-header value,
+        // and the X-Ssh3-Protocol header mirror is matched the same way.
+        std::env::set_var("SPT_TEST_TRANSPORT_TOK_BV", "t");
+        let auth = AuthConfig::new(
+            "u",
+            vec![AuthMethod::Bearer {
+                token: SecretRef::parse("env:SPT_TEST_TRANSPORT_TOK_BV").unwrap(),
+            }],
+        );
+        let req = build_connect_request("h.example", 8443, "/ssh3", &auth).unwrap();
+        let v = req
+            .headers()
+            .get("x-ssh3-protocol")
+            .expect("X-Ssh3-Protocol header present");
+        // as_bytes() returns the raw header value with NO interpretation.
+        assert_eq!(v.as_bytes(), b"ssh3");
+        // Exactly 4 bytes — guards against accidental leading/trailing
+        // whitespace or BOM injection.
+        assert_eq!(v.as_bytes().len(), 4);
+        std::env::remove_var("SPT_TEST_TRANSPORT_TOK_BV");
+    }
+
+    #[test]
+    fn x_ssh3_protocol_header_name_is_byte_exact() {
+        // Pin the header NAME to the exact lowercase bytes `x-ssh3-protocol`.
+        // HTTP header names are case-insensitive on the wire but `http::HeaderName`
+        // normalizes to lowercase; we assert the canonical byte form so any
+        // future rename (e.g., `Spt-Ssh3-Protocol`) requires touching this test
+        // and therefore is impossible to do silently.
+        std::env::set_var("SPT_TEST_TRANSPORT_TOK_BN", "t");
+        let auth = AuthConfig::new(
+            "u",
+            vec![AuthMethod::Bearer {
+                token: SecretRef::parse("env:SPT_TEST_TRANSPORT_TOK_BN").unwrap(),
+            }],
+        );
+        let req = build_connect_request("h.example", 8443, "/ssh3", &auth).unwrap();
+        let (name, _value) = req
+            .headers()
+            .iter()
+            .find(|(n, _)| n.as_str().eq_ignore_ascii_case("x-ssh3-protocol"))
+            .expect("header iter contains X-Ssh3-Protocol");
+        assert_eq!(name.as_str().as_bytes(), b"x-ssh3-protocol");
+        assert_eq!(name.as_str().len(), 15);
+        std::env::remove_var("SPT_TEST_TRANSPORT_TOK_BN");
     }
 
     #[test]
