@@ -1,0 +1,74 @@
+# NOTE: this crate is intentionally NOT registered in the root workspace
+# `members` list — that wire-up is owned by the t2-wire executor (Phase C).
+# The dependencies below use explicit `path = "..."` / version pins (rather
+# than `{ workspace = true }`) so the crate also builds standalone via
+# `cargo build --manifest-path tests/stress/Cargo.toml` if needed for local
+# verification — once t2-wire adds it to root `members`, the entries can be
+# converted to `{ workspace = true }`.
+[lints]
+workspace = true
+
+[package]
+name = "stress"
+version = "0.0.0"
+edition = "2021"
+rust-version = "1.83"
+publish = false
+license = "MIT"
+description = "Stress, soak, and fd/handle leak tests for spt. All tests are #[ignore]'d by default; run via `cargo test -p stress -- --ignored --test-threads 1`."
+
+# When this crate is wired into the root workspace by t2-wire, the workspace
+# lints (clippy::pedantic etc.) will apply automatically through inheritance.
+# Until then we rely on rustc/clippy defaults — adding `[lints] workspace = true`
+# now would error out when this crate is built outside the parent workspace.
+
+# An empty library — the actual tests live under `tests/`. Shared helpers live
+# in `src/lib.rs` so the three integration tests can pull in resource probes
+# without duplication.
+[lib]
+path = "src/lib.rs"
+
+[[test]]
+name = "burst_10k"
+path = "tests/burst_10k.rs"
+
+[[test]]
+name = "soak_24h"
+path = "tests/soak_24h.rs"
+
+[[test]]
+name = "fd_leak"
+path = "tests/fd_leak.rs"
+
+[dependencies]
+# Versions pinned to what the parent workspace already resolves in
+# `Cargo.lock`. No new transitive crates; no `cargo update` required when
+# t2-wire later folds this crate into the root workspace and converts these
+# entries to `{ workspace = true }`.
+#
+# These live in `[dependencies]` (not `[dev-dependencies]`) because the helpers
+# in `src/lib.rs` (echo server, RNG, probes) reference them. The integration
+# tests pull additional crates from `[dev-dependencies]` below.
+tokio = { version = "1.40", features = ["full"] }
+rand = "0.8"
+rand_chacha = "0.3"
+
+[target.'cfg(windows)'.dependencies]
+# Adding features to an already-locked crate version does not bump the lock.
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_System_Threading",
+    "Win32_System_ProcessStatus",
+] }
+
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.29", features = ["fs", "signal", "user", "mman", "resource"] }
+
+[dev-dependencies]
+spt-ssh2 = { path = "../../crates/spt-ssh2", features = ["testing"] }
+spt-protocol = { path = "../../crates/spt-protocol" }
+spt-core = { path = "../../crates/spt-core" }
+russh = "0.46"
+russh-keys = "0.46"
+async-ssh2-lite = { version = "0.5", default-features = false, features = ["tokio"] }
+ssh2 = { version = "0.9", default-features = false }
