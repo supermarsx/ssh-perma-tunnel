@@ -1,0 +1,61 @@
+[package]
+name = "spt-property-tests"
+version = "0.0.0"
+edition = "2021"
+rust-version = "1.83"
+publish = false
+license = "MIT"
+description = "Property-based invariant tests for spt (no proptest, MSRV 1.83)."
+
+# Empty workspace block: this crate is decoupled from the main one (the root
+# workspace already lists `tests/` but NOT `tests/property/`). This mirrors
+# the `fuzz/` escape hatch and lets the crate keep its own Cargo.lock so
+# arbitrary's resolved version stays MSRV-1.83 regardless of upstream churn.
+[workspace]
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+arbitrary = { version = "1", features = ["derive"] }
+
+# Internal — exercised by the property tests.
+spt-core = { path = "../../crates/spt-core", features = ["testing"] }
+spt-config = { path = "../../crates/spt-config", features = ["testing"] }
+spt-protocol = { path = "../../crates/spt-protocol" }
+spt-ssh3 = { path = "../../crates/spt-ssh3" }
+spt-snmp = { path = "../../crates/spt-snmp" }
+spt-events = { path = "../../crates/spt-events" }
+
+# Direct deps used in test bodies.
+bytes = "1"
+serde_json = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
+
+[[test]]
+name = "config_roundtrip"
+path = "tests/config_roundtrip.rs"
+
+[[test]]
+name = "redaction_idempotent"
+path = "tests/redaction_idempotent.rs"
+
+[[test]]
+name = "ssh3_frame_roundtrip"
+path = "tests/ssh3_frame_roundtrip.rs"
+
+[[test]]
+name = "ber_roundtrip"
+path = "tests/ber_roundtrip.rs"
+
+[[test]]
+name = "duration_size"
+path = "tests/duration_size.rs"
+
+[[test]]
+name = "address"
+path = "tests/address.rs"
+
+[[test]]
+name = "event_template"
+path = "tests/event_template.rs"
