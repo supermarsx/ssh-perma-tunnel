@@ -69,6 +69,21 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $InformationPreference = 'Continue'
 
+# Locales shipped alongside spt.admx. Auto-discovery (below) installs every
+# subdirectory matching ^[a-z]{2}(-[A-Z]{2})?$ that contains spt.adml, so this
+# list is documentation rather than a gate; it is also used to warn the
+# operator if any expected locale ADML is missing from the source tree.
+$script:ExpectedLocales = @(
+    'en-US',  # Source of truth (English)
+    'es-ES',  # Spanish (Spain)
+    'pt-PT',  # Portuguese (Portugal)
+    'de-DE',  # German (Germany)
+    'fr-FR',  # French (France)
+    'it-IT',  # Italian (Italy)
+    'ja-JP',  # Japanese (Japan)
+    'zh-CN'   # Chinese (Simplified)
+)
+
 function Write-Action {
     [CmdletBinding()]
     param(
@@ -163,6 +178,7 @@ function Invoke-Install {
         return
     }
 
+    $foundLocales = @()
     foreach ($localeDir in $localeDirs) {
         $admlSource = Join-Path -Path $localeDir.FullName -ChildPath 'spt.adml'
         if (-not (Test-Path -LiteralPath $admlSource -PathType Leaf)) {
@@ -171,6 +187,13 @@ function Invoke-Install {
         }
         $admlDest = Join-Path -Path (Join-Path -Path $policyRoot -ChildPath $localeDir.Name) -ChildPath 'spt.adml'
         Copy-PolicyFile -Source $admlSource -Destination $admlDest
+        $foundLocales += $localeDir.Name
+    }
+
+    foreach ($expected in $script:ExpectedLocales) {
+        if ($foundLocales -notcontains $expected) {
+            Write-Warning "Expected locale '$expected' not present in $script:SourceDir; ADML for it was not installed."
+        }
     }
 }
 

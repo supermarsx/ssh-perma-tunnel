@@ -11,7 +11,33 @@ files into the local PolicyDefinitions store (or a domain Central Store).
 | `spt.admx` | Policy schema: categories, policies, registry value mappings. |
 | `en-US/spt.adml` | English display strings + presentation. |
 | `es-ES/spt.adml` | Spanish display strings + presentation. |
+| `pt-PT/spt.adml` | Portuguese (Portugal) display strings + presentation. |
+| `de-DE/spt.adml` | German display strings + presentation. |
+| `fr-FR/spt.adml` | French display strings + presentation. |
+| `it-IT/spt.adml` | Italian display strings + presentation. |
+| `ja-JP/spt.adml` | Japanese display strings + presentation. |
+| `zh-CN/spt.adml` | Chinese (Simplified) display strings + presentation. |
 | `install-policy.ps1` | Idempotent installer (`-DryRun` and `-CentralStore` supported). |
+
+### Locale coverage
+
+| Locale | File | Status |
+|--------|------|--------|
+| en-US | `en-US/spt.adml` | Source of truth |
+| es-ES | `es-ES/spt.adml` | Translated |
+| pt-PT | `pt-PT/spt.adml` | Translated |
+| de-DE | `de-DE/spt.adml` | Translated |
+| fr-FR | `fr-FR/spt.adml` | Translated |
+| it-IT | `it-IT/spt.adml` | Translated |
+| ja-JP | `ja-JP/spt.adml` | Translated |
+| zh-CN | `zh-CN/spt.adml` | Translated |
+
+Translations are best-effort. The technical accuracy of policy semantics is
+guaranteed only by the en-US source — translated strings describe the same
+behaviour but are not normative. PRs that improve phrasing for any locale (more
+idiomatic Windows terminology, regionally preferred wording, typo fixes) are
+welcome; please keep `<string id="...">` and `<presentation id="...">` keys
+in 1:1 correspondence with `en-US/spt.adml`.
 
 ## Installation
 
@@ -29,6 +55,12 @@ This copies:
 - `spt.admx` -> `%SystemRoot%\PolicyDefinitions\spt.admx`
 - `en-US\spt.adml` -> `%SystemRoot%\PolicyDefinitions\en-US\spt.adml`
 - `es-ES\spt.adml` -> `%SystemRoot%\PolicyDefinitions\es-ES\spt.adml`
+- `pt-PT\spt.adml` -> `%SystemRoot%\PolicyDefinitions\pt-PT\spt.adml`
+- `de-DE\spt.adml` -> `%SystemRoot%\PolicyDefinitions\de-DE\spt.adml`
+- `fr-FR\spt.adml` -> `%SystemRoot%\PolicyDefinitions\fr-FR\spt.adml`
+- `it-IT\spt.adml` -> `%SystemRoot%\PolicyDefinitions\it-IT\spt.adml`
+- `ja-JP\spt.adml` -> `%SystemRoot%\PolicyDefinitions\ja-JP\spt.adml`
+- `zh-CN\spt.adml` -> `%SystemRoot%\PolicyDefinitions\zh-CN\spt.adml`
 
 ### Domain Central Store (recommended for AD-joined fleets)
 
@@ -165,8 +197,10 @@ If you modify the script, re-run that command and resolve any new findings.
 
 ```powershell
 Remove-Item "$env:SystemRoot\PolicyDefinitions\spt.admx" -Force
-Remove-Item "$env:SystemRoot\PolicyDefinitions\en-US\spt.adml" -Force
-Remove-Item "$env:SystemRoot\PolicyDefinitions\es-ES\spt.adml" -Force
+foreach ($loc in 'en-US','es-ES','pt-PT','de-DE','fr-FR','it-IT','ja-JP','zh-CN') {
+    $path = "$env:SystemRoot\PolicyDefinitions\$loc\spt.adml"
+    if (Test-Path $path) { Remove-Item $path -Force }
+}
 ```
 
 This removes the editor surface only; previously written registry values

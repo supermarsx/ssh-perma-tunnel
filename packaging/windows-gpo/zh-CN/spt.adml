@@ -1,0 +1,121 @@
+<?xml version="1.0" encoding="utf-8"?>
+<policyDefinitionResources revision="1.0" schemaVersion="1.0"
+                           xmlns:xsd="http://www.w3.org/2001/XMLSchema"
+                           xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                           xmlns="http://schemas.microsoft.com/GroupPolicy/2006/07/PolicyDefinitions">
+  <displayName>ssh-perma-tunnel (spt) 策略模板</displayName>
+  <description>用于 ssh-perma-tunnel 代理的组策略管理模板。</description>
+  <resources>
+    <stringTable>
+      <string id="SUPPORTED_Spt_1_0">spt 1.0 或更高版本</string>
+
+      <string id="Cat_Spt">spt — SSH 永久隧道</string>
+      <string id="Cat_Spt_Help">用于 ssh-perma-tunnel (spt) 代理的策略。</string>
+      <string id="Cat_General">常规</string>
+      <string id="Cat_General_Help">代理的常规设置（状态目录、默认配置、服务启动）。</string>
+      <string id="Cat_Network">网络</string>
+      <string id="Cat_Network_Help">网络终结点、MCP 控制平面、远程配置固定、绑定限制。</string>
+      <string id="Cat_Crypto">加密</string>
+      <string id="Cat_Crypto_Help">允许的 SSH 版本和加密算法允许列表。</string>
+      <string id="Cat_Observability">可观测性</string>
+      <string id="Cat_Observability_Help">日志记录、指标和遥测退出。</string>
+      <string id="Cat_Security">安全</string>
+      <string id="Cat_Security_Help">机密后端和主机防火墙操作允许列表。</string>
+
+      <string id="Pol_StateDir">状态目录</string>
+      <string id="Pol_StateDir_Help">spt 状态目录的绝对路径。覆盖每用户/每计算机的默认值。示例：C:\ProgramData\spt\state</string>
+      <string id="Pol_DefaultConfigPath">默认配置文件路径</string>
+      <string id="Pol_DefaultConfigPath_Help">未指定 --config 标志时使用的 spt 配置文件的绝对路径。</string>
+      <string id="Pol_ServiceAutoStart">自动启动 spt 服务</string>
+      <string id="Pol_ServiceAutoStart_Help">启用后，spt Windows 服务将配置为在引导时自动启动。</string>
+
+      <string id="Pol_RemoteConfigUrlPin">远程配置 URL 固定</string>
+      <string id="Pol_RemoteConfigUrlPin_Help">如果设置，代理只会从此精确 URL 获取远程配置。在使用远程配置的托管环境中是必需的。</string>
+      <string id="Pol_RemoteConfigFingerprintSha256">远程配置 TLS 指纹 (SHA-256, hex)</string>
+      <string id="Pol_RemoteConfigFingerprintSha256_Help">提供远程配置 URL 的 TLS 叶证书的 SHA-256 指纹（小写十六进制，无分隔符）。固定连接。</string>
+      <string id="Pol_McpEnabled">启用 MCP 控制平面</string>
+      <string id="Pol_McpEnabled_Help">启用后，代理将公开其 MCP（管理控制协议）终结点。</string>
+      <string id="Pol_McpListen">MCP 侦听地址</string>
+      <string id="Pol_McpListen_Help">MCP 终结点的侦听地址，例如 127.0.0.1:7843 或 unix:/var/run/spt.sock（在 Windows 上，命名管道可通过 npipe:\\.\pipe\spt 接受正斜杠）。</string>
+      <string id="Pol_BindRestrictions">绑定限制 (CIDR)</string>
+      <string id="Pol_BindRestrictions_Help">每行一个 CIDR。隧道创建的本地侦听套接字必须只能从这些网络访问（通常为 127.0.0.0/8、::1/128）。</string>
+
+      <string id="Pol_AllowSsh2">允许 SSH 协议版本 2</string>
+      <string id="Pol_AllowSsh2_Help">允许代理协商 SSH-2 传输。</string>
+      <string id="Pol_AllowSsh3">允许 SSH 协议版本 3 (QUIC/HTTP3)</string>
+      <string id="Pol_AllowSsh3_Help">允许代理协商 SSH-3（基于 QUIC）传输。</string>
+      <string id="Pol_AllowedKexAlgorithms">允许的密钥交换算法</string>
+      <string id="Pol_AllowedKexAlgorithms_Help">每行一个算法名称。限制提供/接受的 KEX 算法。</string>
+      <string id="Pol_AllowedCiphers">允许的密码</string>
+      <string id="Pol_AllowedCiphers_Help">每行一个密码名称。限制提供/接受的对称密码。</string>
+      <string id="Pol_AllowedMacs">允许的 MAC 算法</string>
+      <string id="Pol_AllowedMacs_Help">每行一个 MAC 名称。限制提供/接受的消息认证码算法。</string>
+      <string id="Pol_AllowedHostKeyTypes">允许的主机密钥类型</string>
+      <string id="Pol_AllowedHostKeyTypes_Help">每行一种主机密钥类型（例如 ssh-ed25519、rsa-sha2-512）。</string>
+
+      <string id="Pol_LogLevel">日志级别</string>
+      <string id="Pol_LogLevel_Help">记录事件的最低严重性。</string>
+      <string id="LogLevel_Trace">trace</string>
+      <string id="LogLevel_Debug">debug</string>
+      <string id="LogLevel_Info">info</string>
+      <string id="LogLevel_Warn">warn</string>
+      <string id="LogLevel_Error">error</string>
+      <string id="Pol_LogDestinations">日志目标</string>
+      <string id="Pol_LogDestinations_Help">每行一个目标。示例：stderr、eventlog、file:C:\ProgramData\spt\logs\spt.log、syslog:udp://10.0.0.1:514</string>
+      <string id="Pol_TelemetryOptOut">退出遥测</string>
+      <string id="Pol_TelemetryOptOut_Help">启用后，代理将禁用所有出站遥测。</string>
+
+      <string id="Pol_AllowedFirewallActions">允许的防火墙操作</string>
+      <string id="Pol_AllowedFirewallActions_Help">每行一个操作（例如 open-listen、open-outbound、none）。限制代理可以执行的防火墙更改。</string>
+      <string id="Pol_SecretBackend">机密后端</string>
+      <string id="Pol_SecretBackend_Help">选择代理存储和检索机密的位置。</string>
+      <string id="SecretBackend_Keyring">Windows 凭据管理器 (keyring)</string>
+      <string id="SecretBackend_File">加密文件 (file)</string>
+    </stringTable>
+
+    <presentationTable>
+      <presentation id="Pres_StateDir">
+        <textBox refId="StateDir"><label>状态目录：</label></textBox>
+      </presentation>
+      <presentation id="Pres_DefaultConfigPath">
+        <textBox refId="DefaultConfigPath"><label>配置文件路径：</label></textBox>
+      </presentation>
+      <presentation id="Pres_RemoteConfigUrlPin">
+        <textBox refId="RemoteConfigUrlPin"><label>URL：</label></textBox>
+      </presentation>
+      <presentation id="Pres_RemoteConfigFingerprintSha256">
+        <textBox refId="RemoteConfigFingerprintSha256"><label>SHA-256 (hex)：</label></textBox>
+      </presentation>
+      <presentation id="Pres_McpListen">
+        <textBox refId="McpListen"><label>侦听：</label></textBox>
+      </presentation>
+      <presentation id="Pres_BindRestrictions">
+        <multiTextBox refId="BindRestrictions">CIDR（每行一个）：</multiTextBox>
+      </presentation>
+      <presentation id="Pres_AllowedKexAlgorithms">
+        <multiTextBox refId="AllowedKexAlgorithms">KEX 算法（每行一个）：</multiTextBox>
+      </presentation>
+      <presentation id="Pres_AllowedCiphers">
+        <multiTextBox refId="AllowedCiphers">密码（每行一个）：</multiTextBox>
+      </presentation>
+      <presentation id="Pres_AllowedMacs">
+        <multiTextBox refId="AllowedMacs">MAC（每行一个）：</multiTextBox>
+      </presentation>
+      <presentation id="Pres_AllowedHostKeyTypes">
+        <multiTextBox refId="AllowedHostKeyTypes">主机密钥类型（每行一个）：</multiTextBox>
+      </presentation>
+      <presentation id="Pres_LogLevel">
+        <dropdownList refId="LogLevel" defaultItem="2">最低日志级别：</dropdownList>
+      </presentation>
+      <presentation id="Pres_LogDestinations">
+        <multiTextBox refId="LogDestinations">目标（每行一个）：</multiTextBox>
+      </presentation>
+      <presentation id="Pres_AllowedFirewallActions">
+        <multiTextBox refId="AllowedFirewallActions">允许的操作（每行一个）：</multiTextBox>
+      </presentation>
+      <presentation id="Pres_SecretBackend">
+        <dropdownList refId="SecretBackend" defaultItem="0">后端：</dropdownList>
+      </presentation>
+    </presentationTable>
+  </resources>
+</policyDefinitionResources>
