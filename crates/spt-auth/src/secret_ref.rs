@@ -38,9 +38,7 @@ pub enum SecretRef {
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum SecretRefError {
     /// The input did not begin with one of the supported scheme prefixes.
-    #[error(
-        "secret reference must start with `secret://`, `env:`, or `file:///`; got `{0}`"
-    )]
+    #[error("secret reference must start with `secret://`, `env:`, or `file:///`; got `{0}`")]
     UnknownScheme(String),
     /// `secret://` form did not have a `/` separating namespace from name.
     #[error("secret://<ns>/<name>: missing `/` between namespace and name in `{0}`")]
@@ -197,7 +195,10 @@ mod tests {
     fn rejects_empty_components() {
         assert!(matches!(
             SecretRef::parse("secret:///name"),
-            Err(SecretRefError::Empty { field: "namespace", .. })
+            Err(SecretRefError::Empty {
+                field: "namespace",
+                ..
+            })
         ));
         assert!(matches!(
             SecretRef::parse("secret://ns/"),
@@ -219,11 +220,7 @@ mod tests {
 
     #[test]
     fn roundtrip_display() {
-        for s in [
-            "secret://ns/name",
-            "env:FOO",
-            "file:///abs/path",
-        ] {
+        for s in ["secret://ns/name", "env:FOO", "file:///abs/path"] {
             let r = SecretRef::parse(s).unwrap();
             assert_eq!(r.to_string(), s);
         }

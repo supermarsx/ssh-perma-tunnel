@@ -19,9 +19,7 @@ use std::path::{Path, PathBuf};
 use spt_core::{Error, Result};
 use tracing::warn;
 
-use crate::backend::{
-    secret_bytes, BackendDoctor, BackendKind, SecretBackend, SecretBytes,
-};
+use crate::backend::{secret_bytes, BackendDoctor, BackendKind, SecretBackend, SecretBytes};
 use crate::reference::SecretRef;
 
 /// File-backed secret backend rooted at a directory.

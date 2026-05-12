@@ -5,9 +5,7 @@
 
 use spt_core::{Error, Result};
 
-use crate::backend::{
-    secret_bytes, BackendDoctor, BackendKind, SecretBackend, SecretBytes,
-};
+use crate::backend::{secret_bytes, BackendDoctor, BackendKind, SecretBackend, SecretBytes};
 use crate::reference::SecretRef;
 
 /// Process-environment backend.

@@ -23,9 +23,7 @@ use keyring::Entry;
 use spt_core::{Error, Result};
 use tracing::warn;
 
-use crate::backend::{
-    secret_bytes, BackendDoctor, BackendKind, SecretBackend, SecretBytes,
-};
+use crate::backend::{secret_bytes, BackendDoctor, BackendKind, SecretBackend, SecretBytes};
 use crate::reference::SecretRef;
 
 /// Service name registered with the OS keychain.
@@ -78,11 +76,9 @@ impl KeychainBackend {
     /// Internal accessor for [`crate::vault`] — fetch the vault master key
     /// from the configured service.
     pub(crate) fn master_entry(&self) -> Result<Entry> {
-        Entry::new(&self.service, VAULT_MASTER_ACCOUNT).map_err(|e| {
-            Error::SecretUnavailable {
-                reference: format!("keychain://{}/{VAULT_MASTER_ACCOUNT}", self.service),
-                reason: format!("keyring entry init: {e}"),
-            }
+        Entry::new(&self.service, VAULT_MASTER_ACCOUNT).map_err(|e| Error::SecretUnavailable {
+            reference: format!("keychain://{}/{VAULT_MASTER_ACCOUNT}", self.service),
+            reason: format!("keyring entry init: {e}"),
         })
     }
 }

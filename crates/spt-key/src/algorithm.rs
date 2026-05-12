@@ -64,7 +64,10 @@ mod tests {
 
     #[test]
     fn parse() {
-        assert_eq!(KeyAlgorithm::parse("ed25519").unwrap(), KeyAlgorithm::Ed25519);
+        assert_eq!(
+            KeyAlgorithm::parse("ed25519").unwrap(),
+            KeyAlgorithm::Ed25519
+        );
         assert_eq!(
             KeyAlgorithm::parse("rsa-4096").unwrap(),
             KeyAlgorithm::Rsa4096

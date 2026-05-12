@@ -25,10 +25,10 @@
 use std::io::{self, BufRead, Read, Write};
 use std::path::{Path, PathBuf};
 
+use secrecy::zeroize::Zeroizing;
 use spt_cli::{GlobalOpts, OutputFormat};
 use spt_core::{Error, Result};
 use spt_secrets::{KeychainBackend, SecretBackend, SecretRef, VaultBackend};
-use secrecy::zeroize::Zeroizing;
 
 /// Default sub-directory under `<state_dir>` that holds `vault.spt`.
 const DEFAULT_VAULT_SUBDIR: &str = "secrets";
@@ -192,11 +192,7 @@ pub async fn rotate(global: &GlobalOpts, args: SecretRotateArgs) -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&v).unwrap());
         }
         OutputFormat::Yaml => {
-            println!(
-                "rotated: true\nref: secret://{}/{}",
-                r.ns(),
-                r.name()
-            );
+            println!("rotated: true\nref: secret://{}/{}", r.ns(), r.name());
         }
         OutputFormat::Human => {
             if !global.quiet {
@@ -281,9 +277,7 @@ fn open_vault(dir: &Path, passphrase_from: Option<&str>) -> Result<VaultBackend>
     match VaultBackend::open_with_keychain(dir, &kc) {
         Ok(v) => Ok(v),
         Err(e) => {
-            eprintln!(
-                "warning: keychain unavailable ({e}); prompting for passphrase fallback"
-            );
+            eprintln!("warning: keychain unavailable ({e}); prompting for passphrase fallback");
             let pp = prompt_passphrase_no_echo("vault passphrase: ")?;
             VaultBackend::open_with_passphrase(dir, pp.as_slice())
         }
@@ -294,9 +288,9 @@ fn open_vault(dir: &Path, passphrase_from: Option<&str>) -> Result<VaultBackend>
 /// for ergonomic CLI use.
 fn parse_secret_ref(s: &str) -> Result<SecretRef> {
     let stripped = s.strip_prefix("secret://").unwrap_or(s);
-    let (ns, name) = stripped.split_once('/').ok_or_else(|| {
-        Error::InvalidArgs(format!("expected `secret://ns/name`, got `{s}`"))
-    })?;
+    let (ns, name) = stripped
+        .split_once('/')
+        .ok_or_else(|| Error::InvalidArgs(format!("expected `secret://ns/name`, got `{s}`")))?;
     SecretRef::new(ns.to_owned(), name.to_owned())
         .map_err(|e| Error::InvalidArgs(format!("bad secret ref `{s}`: {e}")))
 }
@@ -474,9 +468,12 @@ mod tests {
         // Pre-populate the vault directly through the backend.
         let dir = state.path().join(DEFAULT_VAULT_SUBDIR);
         let v = VaultBackend::open_with_passphrase(&dir, b"correct horse").unwrap();
-        v.set(&SecretRef::new("alpha", "one").unwrap(), b"x").unwrap();
-        v.set(&SecretRef::new("alpha", "two").unwrap(), b"y").unwrap();
-        v.set(&SecretRef::new("beta", "three").unwrap(), b"z").unwrap();
+        v.set(&SecretRef::new("alpha", "one").unwrap(), b"x")
+            .unwrap();
+        v.set(&SecretRef::new("alpha", "two").unwrap(), b"y")
+            .unwrap();
+        v.set(&SecretRef::new("beta", "three").unwrap(), b"z")
+            .unwrap();
 
         list(
             &global,

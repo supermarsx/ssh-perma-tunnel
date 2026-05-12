@@ -51,7 +51,9 @@ pub fn save_encrypted(kp: &KeyPair, path: &Path, passphrase: Option<&str>) -> Re
         use std::io::Write;
         f.write_all(encoded.as_bytes())
     })
-    .map_err(|e| Error::RuntimeFailure(format!("atomic write of `{}` failed: {e}", path.display())))?;
+    .map_err(|e| {
+        Error::RuntimeFailure(format!("atomic write of `{}` failed: {e}", path.display()))
+    })?;
 
     #[cfg(unix)]
     {

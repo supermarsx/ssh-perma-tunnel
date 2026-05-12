@@ -33,9 +33,7 @@ use spt_core::{Error, Result};
 use std::collections::BTreeMap;
 use zeroize::Zeroizing;
 
-use crate::backend::{
-    secret_bytes, BackendDoctor, BackendKind, SecretBackend, SecretBytes,
-};
+use crate::backend::{secret_bytes, BackendDoctor, BackendKind, SecretBackend, SecretBytes};
 use crate::keychain::KeychainBackend;
 use crate::reference::SecretRef;
 
@@ -165,10 +163,9 @@ impl VaultBackend {
                 dir.display()
             )));
         }
-        fs::create_dir_all(dir).map_err(|e| Error::SecretCryptoFailed(format!(
-            "create vault dir `{}`: {e}",
-            dir.display()
-        )))?;
+        fs::create_dir_all(dir).map_err(|e| {
+            Error::SecretCryptoFailed(format!("create vault dir `{}`: {e}", dir.display()))
+        })?;
 
         // Generate fresh master key.
         let mut key_bytes = Zeroizing::new([0u8; KEY_LEN]);
@@ -191,7 +188,12 @@ impl VaultBackend {
         };
 
         // Write empty vault + meta.
-        write_vault(&vault_path, &VaultFile { records: BTreeMap::new() })?;
+        write_vault(
+            &vault_path,
+            &VaultFile {
+                records: BTreeMap::new(),
+            },
+        )?;
         write_meta(&meta_path, &meta)?;
 
         Ok(Self {
@@ -251,10 +253,9 @@ impl VaultBackend {
                 dir.display()
             )));
         }
-        fs::create_dir_all(dir).map_err(|e| Error::SecretCryptoFailed(format!(
-            "create vault dir `{}`: {e}",
-            dir.display()
-        )))?;
+        fs::create_dir_all(dir).map_err(|e| {
+            Error::SecretCryptoFailed(format!("create vault dir `{}`: {e}", dir.display()))
+        })?;
         let mut salt = [0u8; SALT_LEN];
         rand::thread_rng().fill_bytes(&mut salt);
         let meta = VaultMeta {
@@ -264,7 +265,12 @@ impl VaultBackend {
             initialized: true,
         };
         let key = derive_key(passphrase, &meta)?;
-        write_vault(&vault_path, &VaultFile { records: BTreeMap::new() })?;
+        write_vault(
+            &vault_path,
+            &VaultFile {
+                records: BTreeMap::new(),
+            },
+        )?;
         write_meta(&meta_path, &meta)?;
         Ok(Self {
             vault_path,
@@ -331,7 +337,12 @@ impl VaultBackend {
         }
 
         // Persist new vault file and master key.
-        write_vault(&self.vault_path, &VaultFile { records: new_records })?;
+        write_vault(
+            &self.vault_path,
+            &VaultFile {
+                records: new_records,
+            },
+        )?;
         let entry = keychain.master_entry()?;
         entry
             .set_secret(new_key.as_ref())
@@ -401,14 +412,10 @@ fn read_vault(path: &Path) -> Result<VaultFile> {
             records: BTreeMap::new(),
         });
     }
-    let bytes = fs::read(path).map_err(|e| Error::SecretCryptoFailed(format!(
-        "read vault `{}`: {e}",
-        path.display()
-    )))?;
-    serde_json::from_slice(&bytes).map_err(|e| Error::SecretCryptoFailed(format!(
-        "parse vault `{}`: {e}",
-        path.display()
-    )))
+    let bytes = fs::read(path)
+        .map_err(|e| Error::SecretCryptoFailed(format!("read vault `{}`: {e}", path.display())))?;
+    serde_json::from_slice(&bytes)
+        .map_err(|e| Error::SecretCryptoFailed(format!("parse vault `{}`: {e}", path.display())))
 }
 
 fn write_vault(path: &Path, file: &VaultFile) -> Result<()> {
@@ -426,14 +433,10 @@ fn write_vault(path: &Path, file: &VaultFile) -> Result<()> {
 }
 
 fn read_meta(path: &Path) -> Result<VaultMeta> {
-    let s = fs::read_to_string(path).map_err(|e| Error::SecretCryptoFailed(format!(
-        "read meta `{}`: {e}",
-        path.display()
-    )))?;
-    toml::from_str(&s).map_err(|e| Error::SecretCryptoFailed(format!(
-        "parse meta `{}`: {e}",
-        path.display()
-    )))
+    let s = fs::read_to_string(path)
+        .map_err(|e| Error::SecretCryptoFailed(format!("read meta `{}`: {e}", path.display())))?;
+    toml::from_str(&s)
+        .map_err(|e| Error::SecretCryptoFailed(format!("parse meta `{}`: {e}", path.display())))
 }
 
 fn write_meta(path: &Path, meta: &VaultMeta) -> Result<()> {
@@ -577,8 +580,7 @@ mod tests {
     use tempfile::tempdir;
 
     use keyring::credential::{
-        Credential, CredentialApi, CredentialBuilder, CredentialBuilderApi,
-        CredentialPersistence,
+        Credential, CredentialApi, CredentialBuilder, CredentialBuilderApi, CredentialPersistence,
     };
     use std::collections::HashMap;
     use std::sync::{Mutex, OnceLock};
@@ -623,7 +625,9 @@ mod tests {
         }
         fn delete_credential(&self) -> keyring::Result<()> {
             let mut g = shared_store().lock().unwrap();
-            if g.remove(&(self.service.clone(), self.user.clone())).is_some() {
+            if g.remove(&(self.service.clone(), self.user.clone()))
+                .is_some()
+            {
                 Ok(())
             } else {
                 Err(keyring::Error::NoEntry)

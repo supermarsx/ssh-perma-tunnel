@@ -37,8 +37,7 @@ pub fn deterministic_keypair(seed: u64, alg: KeyAlgorithm) -> Result<KeyPair> {
     let private = match alg {
         KeyAlgorithm::Rsa3072 | KeyAlgorithm::Rsa4096 => {
             let bits = alg.rsa_bits().unwrap_or(3072);
-            let rsa =
-                ssh_key::private::RsaKeypair::random(&mut rng, bits).map_err(map_err)?;
+            let rsa = ssh_key::private::RsaKeypair::random(&mut rng, bits).map_err(map_err)?;
             let kd = ssh_key::private::KeypairData::from(rsa);
             PrivateKey::new(kd, "spt-test").map_err(map_err)?
         }
@@ -113,8 +112,8 @@ pub mod fixtures {
 /// # Ok(()) }
 /// ```
 pub fn temp_key_file(kp: &KeyPair, passphrase: Option<&str>) -> Result<(TempDir, PathBuf)> {
-    let dir = tempfile::tempdir()
-        .map_err(|e| Error::RuntimeFailure(format!("create tempdir: {e}")))?;
+    let dir =
+        tempfile::tempdir().map_err(|e| Error::RuntimeFailure(format!("create tempdir: {e}")))?;
     let path = dir.path().join("id_test");
     save_encrypted(kp, &path, passphrase)?;
     Ok((dir, path))
@@ -129,21 +128,30 @@ mod tests {
     fn ed25519_seed_42_is_stable() {
         let a = deterministic_keypair(42, KeyAlgorithm::Ed25519).unwrap();
         let b = deterministic_keypair(42, KeyAlgorithm::Ed25519).unwrap();
-        assert_eq!(fingerprint_sha256(a.public_ref()), fingerprint_sha256(b.public_ref()));
+        assert_eq!(
+            fingerprint_sha256(a.public_ref()),
+            fingerprint_sha256(b.public_ref())
+        );
     }
 
     #[test]
     fn different_seeds_differ() {
         let a = deterministic_keypair(1, KeyAlgorithm::Ed25519).unwrap();
         let b = deterministic_keypair(2, KeyAlgorithm::Ed25519).unwrap();
-        assert_ne!(fingerprint_sha256(a.public_ref()), fingerprint_sha256(b.public_ref()));
+        assert_ne!(
+            fingerprint_sha256(a.public_ref()),
+            fingerprint_sha256(b.public_ref())
+        );
     }
 
     #[test]
     fn p256_deterministic() {
         let a = fixtures::p256_kp().unwrap();
         let b = fixtures::p256_kp().unwrap();
-        assert_eq!(fingerprint_sha256(a.public_ref()), fingerprint_sha256(b.public_ref()));
+        assert_eq!(
+            fingerprint_sha256(a.public_ref()),
+            fingerprint_sha256(b.public_ref())
+        );
     }
 
     #[test]

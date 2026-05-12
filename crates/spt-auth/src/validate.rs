@@ -1,7 +1,7 @@
 //! Per-method shape validation for [`AuthMethod`].
 //!
 //! Validation here is **structural**: file paths are checked for existence and
-//! basic readability, secret references are checked by [`SecretRef::parse`],
+//! basic readability, secret references are checked by `SecretRef::parse`,
 //! and URLs/usernames are checked for non-empty + valid scheme. Mode/ownership
 //! checks for secret files and live keychain queries belong in `spt-secrets`.
 

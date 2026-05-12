@@ -6,8 +6,7 @@
 //! `Err` short-circuits the chain — backend errors must surface, not be
 //! masked by a later hit, so that misconfiguration is loud.
 //!
-//! Default chain (constructible with [`Resolver::default_chain`]):
-//! `keychain → vault → env → file`.
+//! Default chain used by the binary: `keychain -> vault -> env -> file`.
 
 use std::sync::Arc;
 

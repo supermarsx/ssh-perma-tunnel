@@ -280,26 +280,29 @@ impl OidcDeviceFlowClient {
 
     /// Run RFC 8414 / OIDC discovery and cache the result.
     pub async fn discover(&self) -> CoreResult<DiscoveryDocument> {
-        let doc = self
-            .discovery
-            .get_or_try_init(|| async {
-                let url = self.discovery_url()?;
-                debug!(target: "spt_auth::oidc", %url, "fetching discovery document");
-                let resp = self.http.get(url.clone()).send().await.map_err(|e| {
-                    OidcError::Discovery(format!("GET {url} failed: {e}"))
-                })?;
-                if !resp.status().is_success() {
-                    return Err(OidcError::Discovery(format!(
-                        "GET {url} returned {}",
-                        resp.status()
-                    )));
-                }
-                let doc: DiscoveryDocument = resp.json().await.map_err(|e| {
-                    OidcError::Discovery(format!("decode body from {url}: {e}"))
-                })?;
-                Ok(doc)
-            })
-            .await?;
+        let doc =
+            self.discovery
+                .get_or_try_init(|| async {
+                    let url = self.discovery_url()?;
+                    debug!(target: "spt_auth::oidc", %url, "fetching discovery document");
+                    let resp = self
+                        .http
+                        .get(url.clone())
+                        .send()
+                        .await
+                        .map_err(|e| OidcError::Discovery(format!("GET {url} failed: {e}")))?;
+                    if !resp.status().is_success() {
+                        return Err(OidcError::Discovery(format!(
+                            "GET {url} returned {}",
+                            resp.status()
+                        )));
+                    }
+                    let doc: DiscoveryDocument = resp.json().await.map_err(|e| {
+                        OidcError::Discovery(format!("decode body from {url}: {e}"))
+                    })?;
+                    Ok(doc)
+                })
+                .await?;
         Ok(doc.clone())
     }
 
@@ -317,10 +320,7 @@ impl OidcDeviceFlowClient {
     }
 
     /// Request a device code (RFC 8628 §3.1).
-    pub async fn request_device_code(
-        &self,
-        scope: Option<&str>,
-    ) -> CoreResult<DeviceCodeResponse> {
+    pub async fn request_device_code(&self, scope: Option<&str>) -> CoreResult<DeviceCodeResponse> {
         let disc = self.discover().await?;
         let mut form: HashMap<&str, String> = HashMap::new();
         form.insert("client_id", self.client_id.clone());
@@ -343,14 +343,15 @@ impl OidcDeviceFlowClient {
             .await
             .map_err(|e| OidcError::Transport(format!("device_authorization body: {e}")))?;
         if !status.is_success() {
-            return Err(parse_oauth_error(&disc.device_authorization_endpoint, status, &body).into());
+            return Err(
+                parse_oauth_error(&disc.device_authorization_endpoint, status, &body).into(),
+            );
         }
-        let dc: DeviceCodeResponse = serde_json::from_str(&body).map_err(|e| {
-            OidcError::MalformedResponse {
+        let dc: DeviceCodeResponse =
+            serde_json::from_str(&body).map_err(|e| OidcError::MalformedResponse {
                 endpoint: disc.device_authorization_endpoint.clone(),
                 reason: e.to_string(),
-            }
-        })?;
+            })?;
         Ok(dc)
     }
 
@@ -441,13 +442,12 @@ impl OidcDeviceFlowClient {
             .await
             .map_err(|e| PollError::Transport(format!("read body: {e}")))?;
         if status.is_success() {
-            let wire: WireTokenResponse =
-                serde_json::from_str(&body).map_err(|e| {
-                    PollError::Terminal(OidcError::MalformedResponse {
-                        endpoint: endpoint.to_owned(),
-                        reason: e.to_string(),
-                    })
-                })?;
+            let wire: WireTokenResponse = serde_json::from_str(&body).map_err(|e| {
+                PollError::Terminal(OidcError::MalformedResponse {
+                    endpoint: endpoint.to_owned(),
+                    reason: e.to_string(),
+                })
+            })?;
             return Ok(wire.into());
         }
 
@@ -479,11 +479,7 @@ impl OidcDeviceFlowClient {
     /// High-level entrypoint: discover, request a device code, invoke
     /// `on_user_code` with the response so the caller can render it, then poll
     /// to completion.
-    pub async fn login<F>(
-        &self,
-        scope: Option<&str>,
-        on_user_code: F,
-    ) -> CoreResult<TokenResponse>
+    pub async fn login<F>(&self, scope: Option<&str>, on_user_code: F) -> CoreResult<TokenResponse>
     where
         F: FnOnce(&DeviceCodeResponse),
     {
@@ -617,10 +613,10 @@ pub fn store_token(
 mod tests {
     use super::*;
     use axum::extract::State;
-    use secrecy::ExposeSecret;
     use axum::http::StatusCode as AxumStatus;
     use axum::routing::{get, post};
     use axum::{Form, Json, Router};
+    use secrecy::ExposeSecret;
     use std::collections::HashMap as StdHashMap;
     use std::net::SocketAddr;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -783,10 +779,7 @@ mod tests {
             .unwrap();
         assert_eq!(tok.token_type, "Bearer");
         assert_eq!(tok.expires_in, Some(3600));
-        assert_eq!(
-            tok.access_token.expose_secret().as_slice(),
-            b"the-access"
-        );
+        assert_eq!(tok.access_token.expose_secret().as_slice(), b"the-access");
         assert_eq!(state.token_calls.load(Ordering::SeqCst), 2);
     }
 
@@ -939,9 +932,7 @@ mod tests {
             .with_state(state.clone());
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        state
-            .port
-            .store(addr.port() as usize, Ordering::SeqCst);
+        state.port.store(addr.port() as usize, Ordering::SeqCst);
         tokio::spawn(async move {
             axum::serve(listener, app).await.unwrap();
         });
@@ -960,10 +951,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(counter.load(Ordering::SeqCst), 1);
-        assert_eq!(
-            observed.lock().unwrap().as_deref(),
-            Some("FAST-CODE")
-        );
+        assert_eq!(observed.lock().unwrap().as_deref(), Some("FAST-CODE"));
         assert_eq!(tok.access_token.expose_secret().as_slice(), b"X");
     }
 
@@ -1023,10 +1011,7 @@ mod tests {
         fn kind(&self) -> spt_secrets::backend::BackendKind {
             spt_secrets::backend::BackendKind::Vault
         }
-        fn get(
-            &self,
-            r: &SecretsRef,
-        ) -> CoreResult<Option<spt_secrets::backend::SecretBytes>> {
+        fn get(&self, r: &SecretsRef) -> CoreResult<Option<spt_secrets::backend::SecretBytes>> {
             Ok(self
                 .store
                 .lock()

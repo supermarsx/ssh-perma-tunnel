@@ -11,8 +11,8 @@ const SCHEME: &str = "secret://";
 /// A typed `secret://<ns>/<name>` reference.
 ///
 /// Both `ns` and `name` are restricted to ASCII alphanumerics plus `_`, `-`,
-/// and `.`. Empty segments are rejected. Round-trips through [`Display`] /
-/// [`FromStr`] without modification.
+/// and `.`. Empty segments are rejected. Round-trips through
+/// [`std::fmt::Display`] / [`std::str::FromStr`] without modification.
 #[derive(Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct SecretRef {
@@ -160,7 +160,10 @@ mod tests {
             ("https://a/b", ReferenceError::MissingScheme),
             ("secret://only", ReferenceError::InvalidPath),
             ("secret://ns/name/extra", ReferenceError::InvalidPath),
-            ("secret:///name", ReferenceError::InvalidNamespace(String::new())),
+            (
+                "secret:///name",
+                ReferenceError::InvalidNamespace(String::new()),
+            ),
             ("secret://ns/", ReferenceError::InvalidName(String::new())),
             (
                 "secret://b@d/name",
@@ -170,10 +173,7 @@ mod tests {
                 "secret://ns/n a m e",
                 ReferenceError::InvalidName("n a m e".into()),
             ),
-            (
-                "secret://ns/na/me",
-                ReferenceError::InvalidPath,
-            ),
+            ("secret://ns/na/me", ReferenceError::InvalidPath),
             (
                 "secret://ñs/name",
                 ReferenceError::InvalidNamespace("ñs".into()),

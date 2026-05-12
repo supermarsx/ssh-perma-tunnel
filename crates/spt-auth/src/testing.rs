@@ -196,10 +196,7 @@ mod mock_server {
         pub async fn start() -> Self {
             let state = Arc::new(State_::default());
             let app = Router::new()
-                .route(
-                    "/.well-known/openid-configuration",
-                    get(discovery_handler),
-                )
+                .route("/.well-known/openid-configuration", get(discovery_handler))
                 .route("/device", post(device_handler))
                 .route("/token", post(token_handler))
                 .with_state(state.clone());
@@ -267,11 +264,7 @@ mod mock_server {
         /// Configure a fixed token response returned when no scripted poll
         /// step matches a poll. Both fields are optional in the response body.
         #[must_use]
-        pub fn with_token_response(
-            self,
-            access: &str,
-            refresh: Option<&str>,
-        ) -> Self {
+        pub fn with_token_response(self, access: &str, refresh: Option<&str>) -> Self {
             let mut body = serde_json::json!({
                 "access_token": access,
                 "token_type": "Bearer",
@@ -375,7 +368,10 @@ mod mock_server {
             return (StatusCode::OK, Json(body));
         }
         if let Some((status, body)) = s.polls.lock().unwrap().pop_front() {
-            return (StatusCode::from_u16(status).unwrap_or(StatusCode::OK), Json(body));
+            return (
+                StatusCode::from_u16(status).unwrap_or(StatusCode::OK),
+                Json(body),
+            );
         }
         let body = s.token_default.lock().unwrap().clone().unwrap_or_else(|| {
             serde_json::json!({
@@ -423,18 +419,18 @@ mod tests {
                 })),
             ]);
 
-        let client = OidcDeviceFlowClient::new(
-            server.issuer_url(),
-            "test-client".to_owned(),
-            None,
-        )
-        .unwrap();
+        let client =
+            OidcDeviceFlowClient::new(server.issuer_url(), "test-client".to_owned(), None).unwrap();
 
         let dc = client.request_device_code(Some("openid")).await.unwrap();
         assert_eq!(dc.user_code, "USER-CODE");
 
         let tok = client
-            .poll_for_token(&dc.device_code, Duration::from_millis(20), Duration::from_secs(10))
+            .poll_for_token(
+                &dc.device_code,
+                Duration::from_millis(20),
+                Duration::from_secs(10),
+            )
             .await
             .unwrap();
         assert_eq!(tok.access_token.expose_secret().as_slice(), b"the-token");
@@ -449,12 +445,8 @@ mod tests {
         let server = MockOidcServer::start()
             .await
             .with_token_response("default-tok", None);
-        let client = OidcDeviceFlowClient::new(
-            server.issuer_url(),
-            "client-id".to_owned(),
-            None,
-        )
-        .unwrap();
+        let client =
+            OidcDeviceFlowClient::new(server.issuer_url(), "client-id".to_owned(), None).unwrap();
         let tok = client.login(None, |_| {}).await.unwrap();
         assert_eq!(tok.access_token.expose_secret().as_slice(), b"default-tok");
         server.shutdown().await;

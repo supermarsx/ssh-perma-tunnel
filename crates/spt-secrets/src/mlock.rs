@@ -47,7 +47,9 @@ fn do_mlock(buf: &[u8]) -> Result<bool> {
     let ptr = buf.as_ptr() as *const c_void;
     // SAFETY: we hold a borrow of `buf` for the duration of this call, so
     // the pointer and length describe a valid readable region.
-    let res = unsafe { nix::sys::mman::mlock(std::ptr::NonNull::new(ptr.cast_mut()).unwrap(), buf.len()) };
+    let res = unsafe {
+        nix::sys::mman::mlock(std::ptr::NonNull::new(ptr.cast_mut()).unwrap(), buf.len())
+    };
     match res {
         Ok(()) => Ok(true),
         Err(e) => {
@@ -63,7 +65,9 @@ fn do_munlock(buf: &[u8]) -> Result<bool> {
     use std::ffi::c_void;
     let ptr = buf.as_ptr() as *const c_void;
     // SAFETY: same reasoning as `do_mlock`.
-    let res = unsafe { nix::sys::mman::munlock(std::ptr::NonNull::new(ptr.cast_mut()).unwrap(), buf.len()) };
+    let res = unsafe {
+        nix::sys::mman::munlock(std::ptr::NonNull::new(ptr.cast_mut()).unwrap(), buf.len())
+    };
     match res {
         Ok(()) => Ok(true),
         Err(e) => {
@@ -78,7 +82,12 @@ fn do_munlock(buf: &[u8]) -> Result<bool> {
 fn do_mlock(buf: &[u8]) -> Result<bool> {
     use windows::Win32::System::Memory::VirtualLock;
     // SAFETY: `buf` is a valid readable region for its full length.
-    let r = unsafe { VirtualLock(buf.as_ptr().cast::<core::ffi::c_void>().cast_mut(), buf.len()) };
+    let r = unsafe {
+        VirtualLock(
+            buf.as_ptr().cast::<core::ffi::c_void>().cast_mut(),
+            buf.len(),
+        )
+    };
     match r {
         Ok(()) => Ok(true),
         Err(e) => {
@@ -93,7 +102,12 @@ fn do_mlock(buf: &[u8]) -> Result<bool> {
 fn do_munlock(buf: &[u8]) -> Result<bool> {
     use windows::Win32::System::Memory::VirtualUnlock;
     // SAFETY: `buf` is a valid readable region for its full length.
-    let r = unsafe { VirtualUnlock(buf.as_ptr().cast::<core::ffi::c_void>().cast_mut(), buf.len()) };
+    let r = unsafe {
+        VirtualUnlock(
+            buf.as_ptr().cast::<core::ffi::c_void>().cast_mut(),
+            buf.len(),
+        )
+    };
     match r {
         Ok(()) => Ok(true),
         Err(e) => {

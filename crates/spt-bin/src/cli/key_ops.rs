@@ -57,8 +57,8 @@ pub struct KeySignCertArgs {
     pub subject: PathBuf,
     /// Allowed principals (`valid_principals`). Must be non-empty.
     pub principals: Vec<String>,
-    /// Validity duration (parsed via [`spt_core::parse_duration`]). Defaults
-    /// to 24 hours when `None`.
+    /// Validity duration (parsed via [`spt_core::duration::parse_duration`]).
+    /// Defaults to 24 hours when `None`.
     pub validity: Option<String>,
     /// Optional serial number.
     pub serial: Option<u64>,
@@ -144,10 +144,7 @@ pub async fn public(_global: &GlobalOpts, args: KeyPublicArgs) -> Result<()> {
 /// 3. Atomic write via `spt_key::change_passphrase` (creates `<key>.bak`).
 /// 4. Round-trip verify by re-loading the new file with the new passphrase.
 #[allow(clippy::needless_pass_by_value)]
-pub async fn change_passphrase(
-    _global: &GlobalOpts,
-    args: KeyChangePassphraseArgs,
-) -> Result<()> {
+pub async fn change_passphrase(_global: &GlobalOpts, args: KeyChangePassphraseArgs) -> Result<()> {
     if !args.key.exists() {
         return Err(Error::InvalidArgs(format!(
             "key file `{}` not found",
@@ -267,7 +264,9 @@ fn derive_cert_path(subject: &Path) -> PathBuf {
         .file_stem()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| "subject".to_string());
-    let parent = subject.parent().map_or_else(PathBuf::new, Path::to_path_buf);
+    let parent = subject
+        .parent()
+        .map_or_else(PathBuf::new, Path::to_path_buf);
     parent.join(format!("{stem}-cert.pub"))
 }
 
@@ -278,9 +277,8 @@ fn derive_cert_path(subject: &Path) -> PathBuf {
 /// Verify an OpenSSH certificate against a pinned CA list.
 #[allow(clippy::needless_pass_by_value)]
 pub async fn verify_cert(_global: &GlobalOpts, args: KeyVerifyCertArgs) -> Result<()> {
-    let cert_str = fs::read_to_string(&args.cert).map_err(|e| {
-        Error::InvalidArgs(format!("read `{}`: {e}", args.cert.display()))
-    })?;
+    let cert_str = fs::read_to_string(&args.cert)
+        .map_err(|e| Error::InvalidArgs(format!("read `{}`: {e}", args.cert.display())))?;
     let cert = Certificate::from_openssh(&cert_str)
         .map_err(|e| Error::InvalidConfig(format!("parse certificate: {e}")))?;
 
@@ -313,9 +311,8 @@ pub async fn verify_cert(_global: &GlobalOpts, args: KeyVerifyCertArgs) -> Resul
 }
 
 fn load_trusted_cas(path: &Path) -> Result<Vec<PublicKey>> {
-    let text = fs::read_to_string(path).map_err(|e| {
-        Error::InvalidArgs(format!("read trusted-cas `{}`: {e}", path.display()))
-    })?;
+    let text = fs::read_to_string(path)
+        .map_err(|e| Error::InvalidArgs(format!("read trusted-cas `{}`: {e}", path.display())))?;
     let mut out = Vec::new();
     for (i, line) in text.lines().enumerate() {
         let line = line.trim();
@@ -345,16 +342,12 @@ fn load_trusted_cas(path: &Path) -> Result<Vec<PublicKey>> {
 /// by `spt-ssh2`'s integration suite). The function returns a structured
 /// error when neither `--target` nor `--profile` is given.
 #[allow(clippy::needless_pass_by_value)]
-pub async fn install_public(
-    _global: &GlobalOpts,
-    args: KeyInstallPublicArgs,
-) -> Result<()> {
+pub async fn install_public(_global: &GlobalOpts, args: KeyInstallPublicArgs) -> Result<()> {
     let public_line = read_public_key_line(&args.key)?;
 
     if args.profile.is_none() && args.target.is_none() {
         return Err(Error::InvalidArgs(
-            "install-public: either --profile or --target <user@host[:port]> is required"
-                .into(),
+            "install-public: either --profile or --target <user@host[:port]> is required".into(),
         ));
     }
 
@@ -385,9 +378,9 @@ struct UserHostPort {
 }
 
 fn parse_user_host_port(s: &str) -> Result<UserHostPort> {
-    let (user, rest) = s
-        .split_once('@')
-        .ok_or_else(|| Error::InvalidArgs(format!("--target must be `user@host[:port]`, got `{s}`")))?;
+    let (user, rest) = s.split_once('@').ok_or_else(|| {
+        Error::InvalidArgs(format!("--target must be `user@host[:port]`, got `{s}`"))
+    })?;
     if user.is_empty() {
         return Err(Error::InvalidArgs(format!("--target user empty in `{s}`")));
     }
@@ -440,9 +433,8 @@ fn render_public_line(kp: &KeyPair) -> Result<String> {
 }
 
 fn read_public_key_file(path: &Path) -> Result<PublicKey> {
-    let text = fs::read_to_string(path).map_err(|e| {
-        Error::InvalidArgs(format!("read public key `{}`: {e}", path.display()))
-    })?;
+    let text = fs::read_to_string(path)
+        .map_err(|e| Error::InvalidArgs(format!("read public key `{}`: {e}", path.display())))?;
     let line = text
         .lines()
         .find(|l| !l.trim().is_empty() && !l.trim_start().starts_with('#'))
@@ -454,9 +446,8 @@ fn read_public_key_file(path: &Path) -> Result<PublicKey> {
 }
 
 fn read_public_key_line(path: &Path) -> Result<String> {
-    let text = fs::read_to_string(path).map_err(|e| {
-        Error::InvalidArgs(format!("read `{}`: {e}", path.display()))
-    })?;
+    let text = fs::read_to_string(path)
+        .map_err(|e| Error::InvalidArgs(format!("read `{}`: {e}", path.display())))?;
     let line = text
         .lines()
         .find(|l| !l.trim().is_empty() && !l.trim_start().starts_with('#'))
@@ -514,7 +505,10 @@ fn resolve_secret_ref_to_string(reference: &str) -> Result<String> {
             reason: e.to_string(),
         }),
         SecretRef::File(p) => fs::read_to_string(&p)
-            .map(|s| s.trim_end_matches(|c: char| c == '\n' || c == '\r').to_string())
+            .map(|s| {
+                s.trim_end_matches(|c: char| c == '\n' || c == '\r')
+                    .to_string()
+            })
             .map_err(|e| Error::SecretUnavailable {
                 reference: format!("file://{p}"),
                 reason: e.to_string(),

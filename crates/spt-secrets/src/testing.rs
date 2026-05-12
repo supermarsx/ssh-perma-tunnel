@@ -18,9 +18,7 @@ use secrecy::ExposeSecret;
 use spt_core::{Error, Result};
 use zeroize::Zeroizing;
 
-use crate::backend::{
-    secret_bytes, BackendDoctor, BackendKind, SecretBackend, SecretBytes,
-};
+use crate::backend::{secret_bytes, BackendDoctor, BackendKind, SecretBackend, SecretBytes};
 use crate::reference::SecretRef;
 
 // ---------------------------------------------------------------------------
@@ -134,7 +132,13 @@ impl SecretBackend for MemoryBackend {
     }
 
     fn get(&self, r: &SecretRef) -> Result<Option<SecretBytes>> {
-        Ok(self.entries.lock().unwrap().get(r).cloned().map(secret_bytes))
+        Ok(self
+            .entries
+            .lock()
+            .unwrap()
+            .get(r)
+            .cloned()
+            .map(secret_bytes))
     }
 
     fn set(&self, r: &SecretRef, value: &[u8]) -> Result<()> {
@@ -284,13 +288,9 @@ impl AlwaysFailBackend {
                 reference: r.map(SecretRef::to_string).unwrap_or_default(),
                 reason: self.reason.clone(),
             },
-            AlwaysFailKind::SecretCryptoFailed => {
-                Error::SecretCryptoFailed(self.reason.clone())
-            }
+            AlwaysFailKind::SecretCryptoFailed => Error::SecretCryptoFailed(self.reason.clone()),
             AlwaysFailKind::PermissionDenied => Error::PermissionDenied(self.reason.clone()),
-            AlwaysFailKind::UnsupportedPlatform => {
-                Error::UnsupportedPlatform(self.reason.clone())
-            }
+            AlwaysFailKind::UnsupportedPlatform => Error::UnsupportedPlatform(self.reason.clone()),
         }
     }
 }
@@ -418,8 +418,7 @@ impl SecretBackend for RecordingResolver {
 
 mod keymock {
     use keyring::credential::{
-        Credential, CredentialApi, CredentialBuilder, CredentialBuilderApi,
-        CredentialPersistence,
+        Credential, CredentialApi, CredentialBuilder, CredentialBuilderApi, CredentialPersistence,
     };
     use std::collections::HashMap;
     use std::sync::{Mutex, OnceLock};
@@ -462,7 +461,9 @@ mod keymock {
         }
         fn delete_credential(&self) -> keyring::Result<()> {
             let mut g = shared_store().lock().unwrap();
-            if g.remove(&(self.service.clone(), self.user.clone())).is_some() {
+            if g.remove(&(self.service.clone(), self.user.clone()))
+                .is_some()
+            {
                 Ok(())
             } else {
                 Err(keyring::Error::NoEntry)

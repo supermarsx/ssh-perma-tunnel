@@ -14,20 +14,19 @@ use std::sync::Arc;
 
 use spt_config::schema::Secrets as SecretsConfig;
 use spt_core::{Error, Result};
-use spt_secrets::{
-    EnvBackend, FileBackend, KeychainBackend, Resolver, SecretBackend, SecretRef,
-};
+use spt_secrets::{EnvBackend, FileBackend, KeychainBackend, Resolver, SecretBackend, SecretRef};
 
 /// Build a [`Resolver`] from the `[secrets]` config table.
 ///
 /// Backend priority order (per spec §14.6): keychain → vault → env → file.
 /// The `state_dir` is used to locate the default vault file when no explicit
 /// `vault_file` is configured.
-pub fn build_resolver(cfg: Option<&SecretsConfig>, state_dir: &std::path::Path) -> Result<Resolver> {
+pub fn build_resolver(
+    cfg: Option<&SecretsConfig>,
+    state_dir: &std::path::Path,
+) -> Result<Resolver> {
     let mut backends: Vec<Arc<dyn SecretBackend>> = Vec::new();
-    let backend_kind = cfg
-        .and_then(|s| s.backend.as_deref())
-        .unwrap_or("auto");
+    let backend_kind = cfg.and_then(|s| s.backend.as_deref()).unwrap_or("auto");
 
     let want_keychain = matches!(backend_kind, "auto" | "keychain");
     let want_env = matches!(backend_kind, "auto" | "env");
