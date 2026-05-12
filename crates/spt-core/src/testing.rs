@@ -21,8 +21,10 @@ use crate::redaction::RedactionMode;
 
 /// Pre-built canonical fixtures.
 pub mod fixtures {
-    use super::{BindAddr, ConnectionId, Error, ForwardId, IpAddr, Ipv4Addr, Ipv6Addr, PathBuf,
-        ProfileId, SessionId, SocketAddr};
+    use super::{
+        BindAddr, ConnectionId, Error, ForwardId, IpAddr, Ipv4Addr, Ipv6Addr, PathBuf, ProfileId,
+        SessionId, SocketAddr,
+    };
 
     /// One representative instance of each [`Error`] variant.
     ///
@@ -315,14 +317,26 @@ pub mod redaction {
 
         let mut out = Vec::with_capacity(standard.len() + strict.len() + none_cases.len());
         for (input, expect) in standard {
-            out.push(((*input).to_string(), RedactionMode::Standard, (*expect).to_string()));
+            out.push((
+                (*input).to_string(),
+                RedactionMode::Standard,
+                (*expect).to_string(),
+            ));
         }
         for (input, expect) in strict {
-            out.push(((*input).to_string(), RedactionMode::Strict, (*expect).to_string()));
+            out.push((
+                (*input).to_string(),
+                RedactionMode::Strict,
+                (*expect).to_string(),
+            ));
         }
         for input in none_cases {
             // `None` is passthrough; the input is its own "expected substring".
-            out.push(((*input).to_string(), RedactionMode::None, (*input).to_string()));
+            out.push((
+                (*input).to_string(),
+                RedactionMode::None,
+                (*input).to_string(),
+            ));
         }
         out
     }

@@ -65,11 +65,7 @@ backend = "vault"
         "advisory must not override existing config"
     );
     assert_eq!(
-        cfg.secrets
-            .as_ref()
-            .unwrap()
-            .memory_protection
-            .as_deref(),
+        cfg.secrets.as_ref().unwrap().memory_protection.as_deref(),
         Some("strict"),
         "advisory must fill unset field"
     );

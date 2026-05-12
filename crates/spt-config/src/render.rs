@@ -2,7 +2,7 @@
 //!
 //! Renders are deterministic (stable key ordering, no extra whitespace) and
 //! redact secret-bearing fields according to the requested
-//! [`RedactionMode`](spt_core::RedactionMode).
+//! [`RedactionMode`].
 //!
 //! Determinism is provided by `toml::to_string_pretty` plus `Serialize` order
 //! of the schema fields. We re-deserialize the rendered output via

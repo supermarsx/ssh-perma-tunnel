@@ -12,7 +12,12 @@ use spt_core::RedactionMode;
 
 fn examples_dir() -> PathBuf {
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
-    manifest.parent().unwrap().parent().unwrap().join("examples")
+    manifest
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("examples")
 }
 
 const EXPECTED: &[&str] = &[

@@ -83,11 +83,9 @@ pub fn load_cached(state_dir: &Path) -> Result<Option<CachedEntry>> {
     if !body_path.exists() {
         return Ok(None);
     }
-    let body = std::fs::read(&body_path).map_err(|e| {
-        spt_core::Error::StateLockFailed {
-            path: body_path.clone(),
-            reason: format!("read cache: {e}"),
-        }
+    let body = std::fs::read(&body_path).map_err(|e| spt_core::Error::StateLockFailed {
+        path: body_path.clone(),
+        reason: format!("read cache: {e}"),
     })?;
     let sidecar_path = fingerprint_sidecar_path(state_dir);
     let (etag, recorded_sha256) = if sidecar_path.exists() {

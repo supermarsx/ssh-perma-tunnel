@@ -68,12 +68,27 @@ impl RuntimeThreadsConfig {
         };
         let Some(t) = t else { return default };
         Self {
-            orchestrator: t.orchestrator_threads.map(|n| n as usize).unwrap_or(default.orchestrator),
-            service: t.service_threads.map(|n| n as usize).unwrap_or(default.service),
-            logging: t.logging_threads.map(|n| n as usize).unwrap_or(default.logging),
+            orchestrator: t
+                .orchestrator_threads
+                .map(|n| n as usize)
+                .unwrap_or(default.orchestrator),
+            service: t
+                .service_threads
+                .map(|n| n as usize)
+                .unwrap_or(default.service),
+            logging: t
+                .logging_threads
+                .map(|n| n as usize)
+                .unwrap_or(default.logging),
             dns: t.dns_threads.map(|n| n as usize).unwrap_or(default.dns),
-            observability: t.observability_threads.map(|n| n as usize).unwrap_or(default.observability),
-            blocking: t.blocking_worker_threads.map(|n| n as usize).unwrap_or(default.blocking),
+            observability: t
+                .observability_threads
+                .map(|n| n as usize)
+                .unwrap_or(default.observability),
+            blocking: t
+                .blocking_worker_threads
+                .map(|n| n as usize)
+                .unwrap_or(default.blocking),
         }
     }
 }

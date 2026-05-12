@@ -1,4 +1,4 @@
-//! Diagnostic types used by [`crate::validate`] and [`crate::load`].
+//! Diagnostic types used by [`crate::validate()`] and [`crate::load()`].
 //!
 //! We deliberately avoid the `miette::Diagnostic` derive on every variant in
 //! the schema (it would require cargo features in dev contexts) and instead

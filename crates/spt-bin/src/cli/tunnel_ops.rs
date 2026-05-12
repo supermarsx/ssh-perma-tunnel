@@ -156,9 +156,10 @@ pub async fn reload_windows_standalone(global: &GlobalOpts) -> Result<()> {
 
     match crate::mcp_client::McpClient::connect_from_state_dir(&state_dir).await {
         Ok(mut client) => {
-            client.initialize().await.map_err(|e| {
-                Error::ReloadFailed(format!("mcp initialize: {e}"))
-            })?;
+            client
+                .initialize()
+                .await
+                .map_err(|e| Error::ReloadFailed(format!("mcp initialize: {e}")))?;
             client
                 .call_tool("tunnel_reload", json!({}))
                 .await
@@ -185,9 +186,9 @@ fn read_lock_pid(state_dir: &std::path::Path) -> Result<u32> {
             pid_path.display()
         ))
     })?;
-    raw.trim().parse::<u32>().map_err(|e| {
-        Error::RuntimeFailure(format!("invalid pid `{}`: {e}", raw.trim()))
-    })
+    raw.trim()
+        .parse::<u32>()
+        .map_err(|e| Error::RuntimeFailure(format!("invalid pid `{}`: {e}", raw.trim())))
 }
 
 #[cfg(windows)]
@@ -197,8 +198,7 @@ mod windows_impl {
     use spt_core::{Error, Result};
     use windows::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT};
     use windows::Win32::System::Threading::{
-        OpenProcess, TerminateProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE,
-        PROCESS_TERMINATE,
+        OpenProcess, TerminateProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
     };
 
     /// Open the process, terminate it, wait up to `grace`, then close the
@@ -207,12 +207,9 @@ mod windows_impl {
         // Safety: `OpenProcess` returns a HANDLE we own and free via
         // `CloseHandle` in the `finish` closure below. `TerminateProcess` and
         // `WaitForSingleObject` only read from `handle`. No aliasing.
-        let handle: HANDLE = unsafe {
-            OpenProcess(PROCESS_TERMINATE | PROCESS_SYNCHRONIZE, false, pid)
-        }
-        .map_err(|e| {
-            Error::RuntimeFailure(format!("OpenProcess({pid}): {e}"))
-        })?;
+        let handle: HANDLE =
+            unsafe { OpenProcess(PROCESS_TERMINATE | PROCESS_SYNCHRONIZE, false, pid) }
+                .map_err(|e| Error::RuntimeFailure(format!("OpenProcess({pid}): {e}")))?;
 
         if handle.is_invalid() {
             return Err(Error::RuntimeFailure(format!(
@@ -224,9 +221,7 @@ mod windows_impl {
             // SAFETY: handle is valid (checked above). Exit code 1 mirrors the
             // service stop convention used by `windows-service`.
             unsafe { TerminateProcess(handle, 1) }
-                .map_err(|e| {
-                    Error::RuntimeFailure(format!("TerminateProcess({pid}): {e}"))
-                })?;
+                .map_err(|e| Error::RuntimeFailure(format!("TerminateProcess({pid}): {e}")))?;
             // Truncate to u32 milliseconds; clamp to avoid overflow.
             let ms = u32::try_from(grace.as_millis()).unwrap_or(u32::MAX);
             // SAFETY: handle is valid; WaitForSingleObject is a read.
@@ -329,9 +324,8 @@ fn try_read_status(state_dir: &Path) -> Result<Option<StatusSnapshot>> {
     let path = spt_state::paths::status_path(state_dir);
     match std::fs::read(&path) {
         Ok(bytes) => {
-            let s: StatusSnapshot = serde_json::from_slice(&bytes).map_err(|e| {
-                Error::RuntimeFailure(format!("parse `{}`: {e}", path.display()))
-            })?;
+            let s: StatusSnapshot = serde_json::from_slice(&bytes)
+                .map_err(|e| Error::RuntimeFailure(format!("parse `{}`: {e}", path.display())))?;
             Ok(Some(s))
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -400,9 +394,10 @@ fn render_stats_human(snap: &StatusSnapshot, now: DateTime<Utc>) -> String {
         .unwrap_or(0)
         .max(7);
     for p in &snap.profiles {
-        let uptime = snap
-            .started_at
-            .map_or_else(|| "-".to_string(), |t| fmt_uptime(now.signed_duration_since(t)));
+        let uptime = snap.started_at.map_or_else(
+            || "-".to_string(),
+            |t| fmt_uptime(now.signed_duration_since(t)),
+        );
         // Aggregate per-profile bytes from forwards.
         let (rx, tx) = snap
             .forwards
@@ -451,9 +446,10 @@ fn render_sessions_human(snap: &StatusSnapshot, now: DateTime<Utc>) -> String {
         return out;
     }
     for s in &snap.sessions {
-        let since = s
-            .started_at
-            .map_or_else(|| "-".to_string(), |t| fmt_uptime(now.signed_duration_since(t)));
+        let since = s.started_at.map_or_else(
+            || "-".to_string(),
+            |t| fmt_uptime(now.signed_duration_since(t)),
+        );
         let bytes = format!(
             "{} / {}",
             spt_core::size::format_size(s.bytes_in),
@@ -493,10 +489,7 @@ fn render_health_human(report: &HealthReport, now: DateTime<Utc>) -> String {
             "  {:<width$}  {:<13} uptime {}    last error: {}\n",
             format!("{}:", p.id),
             p.state,
-            p.uptime
-                .as_ref()
-                .cloned()
-                .unwrap_or_else(|| "-".into()),
+            p.uptime.as_ref().cloned().unwrap_or_else(|| "-".into()),
             last,
             width = name_w + 1,
         ));
@@ -505,13 +498,8 @@ fn render_health_human(report: &HealthReport, now: DateTime<Utc>) -> String {
     if !report.recent_events.is_empty() {
         out.push_str("\n  Recent events (last 10m):\n");
         for ev in &report.recent_events {
-            let when = ev
-                .at
-                .map_or_else(|| "-".to_string(), |t| fmt_clock(t));
-            out.push_str(&format!(
-                "    - {}  {}  {}\n",
-                when, ev.scope, ev.message
-            ));
+            let when = ev.at.map_or_else(|| "-".to_string(), |t| fmt_clock(t));
+            out.push_str(&format!("    - {}  {}  {}\n", when, ev.scope, ev.message));
         }
     }
 
@@ -958,7 +946,11 @@ mod tests {
         let snap = green_snapshot();
         let s = render_stats_human(&snap, ts());
         assert!(s.contains("tunnel: 2 profiles"));
-        assert!(s.contains("5 forwards").not_or(true) || s.contains("1 forwards") || s.contains("forwards"));
+        assert!(
+            s.contains("5 forwards").not_or(true)
+                || s.contains("1 forwards")
+                || s.contains("forwards")
+        );
         assert!(s.contains("bastion-prod"));
         assert!(s.contains("forwards:"));
         assert!(s.contains("127.0.0.1:8080"));
@@ -1043,8 +1035,7 @@ mod tests {
     fn fmt_uptime_formats_days_hours_minutes() {
         assert!(fmt_uptime(ChronoDuration::seconds(45)).contains('s'));
         assert!(fmt_uptime(ChronoDuration::seconds(125)).contains('m'));
-        assert!(fmt_uptime(ChronoDuration::seconds(2 * 3600 + 5 * 60))
-            .contains('h'));
+        assert!(fmt_uptime(ChronoDuration::seconds(2 * 3600 + 5 * 60)).contains('h'));
         let s = fmt_uptime(ChronoDuration::seconds(4 * 86_400 + 12 * 3600));
         assert!(s.contains("4d"));
         assert!(s.contains("12h"));

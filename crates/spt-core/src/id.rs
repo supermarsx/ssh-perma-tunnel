@@ -3,10 +3,10 @@
 //! Every identifier wraps a [`String`] (so the wire/log format is exactly the
 //! string the user or runtime chose) and exposes:
 //!
-//! * [`Display`] / [`FromStr`] for round-trip text conversion,
+//! * [`std::fmt::Display`] / [`std::str::FromStr`] for round-trip text conversion,
 //! * `serde::Serialize` / `serde::Deserialize` derived as `transparent` so the
 //!   on-disk representation is just the string,
-//! * [`Self::new_v4`] for the variants that are normally generated at runtime
+//! * `new_v4` constructors for the variants that are normally generated at runtime
 //!   (sessions, connections, runs, events).
 
 use std::fmt;

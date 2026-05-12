@@ -3,7 +3,7 @@
 //! The thin CLI dispatcher in `cli_dispatch.rs` (Phase B) delegates to these
 //! functions. Each handler:
 //!
-//! * loads the on-disk config via [`spt_config::load`] and locates the named
+//! * loads the on-disk config via [`spt_config::load()`] and locates the named
 //!   profile + forward,
 //! * derives a [`ForwardView`] — the structured shape used both as the JSON /
 //!   YAML payload and as the input to the human + narrative renderers,
@@ -53,7 +53,7 @@ use spt_net::bind::BindMode;
 pub type ForwardShowArgs = groups::forward::ForwardShow;
 /// Args for [`explain`]. Same shape as the generic `<profile>/<forward>` ref.
 pub type ForwardExplainArgs = groups::forward::ForwardRef;
-/// Args for [`test`].
+/// Args for [`test()`].
 pub type ForwardTestArgs = groups::forward::ForwardTest;
 /// Args for [`throttle`].
 pub type ForwardThrottleArgs = groups::forward::ForwardThrottle;
@@ -93,10 +93,7 @@ fn find_forward<'a>(profile: &'a Profile, fwd: &str) -> Result<&'a Forward> {
         .iter()
         .find(|f| f.name == fwd)
         .ok_or_else(|| {
-            Error::InvalidArgs(format!(
-                "no forward `{fwd}` in profile `{}`",
-                profile.name
-            ))
+            Error::InvalidArgs(format!("no forward `{fwd}` in profile `{}`", profile.name))
         })
 }
 
@@ -279,18 +276,9 @@ fn build_view(profile: &Profile, fwd: &Forward) -> ForwardView {
 
     let health = ForwardHealth {
         required: fwd.required.unwrap_or(false),
-        instability_action: profile
-            .instability
-            .as_ref()
-            .and_then(|i| i.action.clone()),
-        instability_window: profile
-            .instability
-            .as_ref()
-            .and_then(|i| i.window.clone()),
-        max_disconnects: profile
-            .instability
-            .as_ref()
-            .and_then(|i| i.max_disconnects),
+        instability_action: profile.instability.as_ref().and_then(|i| i.action.clone()),
+        instability_window: profile.instability.as_ref().and_then(|i| i.window.clone()),
+        max_disconnects: profile.instability.as_ref().and_then(|i| i.max_disconnects),
     };
 
     ForwardView {
@@ -485,7 +473,10 @@ fn print_human(v: &ForwardView) {
         out.push_str(&format!("  max_packets_per_second  : {n}\n"));
     }
     out.push_str("acl:\n");
-    out.push_str(&format!("  bind_mode               : {}\n", v.acl.bind_mode));
+    out.push_str(&format!(
+        "  bind_mode               : {}\n",
+        v.acl.bind_mode
+    ));
     if !v.acl.allow_cidrs.is_empty() {
         out.push_str(&format!(
             "  allow_cidrs             : {}\n",
@@ -610,9 +601,7 @@ fn render_narrative(v: &ForwardView, profile: &Profile) -> String {
         ));
     }
     if let Some(sni) = &v.sni_name {
-        out.push_str(&format!(
-            "  - TLS clients should set SNI = `{sni}`.\n"
-        ));
+        out.push_str(&format!("  - TLS clients should set SNI = `{sni}`.\n"));
     }
 
     // Limits / throttle.
@@ -662,9 +651,7 @@ fn render_narrative(v: &ForwardView, profile: &Profile) -> String {
         } else {
             v.acl.deny_cidrs.join(", ")
         };
-        out.push_str(&format!(
-            "  - ACL: allow {allow}; deny {deny}.\n"
-        ));
+        out.push_str(&format!("  - ACL: allow {allow}; deny {deny}.\n"));
     }
 
     // Idle.
@@ -701,10 +688,12 @@ fn render_narrative(v: &ForwardView, profile: &Profile) -> String {
 
     // What happens when the session is down.
     let _ = profile; // session-down narrative is profile-direction agnostic
-    out.push_str("\n  When the parent session is down: the listener stays open and\n  \
+    out.push_str(
+        "\n  When the parent session is down: the listener stays open and\n  \
                  accepts new connections; each accepted connection blocks for up to\n  \
                  the configured channel-open timeout waiting for the session to\n  \
-                 recover, then returns RST/ICMP-unreachable if still unavailable.\n");
+                 recover, then returns RST/ICMP-unreachable if still unavailable.\n",
+    );
 
     // Operator notes.
     out.push_str("\n  Operator notes:\n");
@@ -721,7 +710,7 @@ fn render_narrative(v: &ForwardView, profile: &Profile) -> String {
 // `forward test`
 // ---------------------------------------------------------------------------
 
-/// Result of a [`test`] run.
+/// Result of a [`test()`] run.
 #[derive(Debug, Clone, Serialize)]
 pub struct TestReport {
     /// Resolved listen addr (if any) the probe targeted.
@@ -929,15 +918,11 @@ pub async fn throttle(global: &GlobalOpts, args: ForwardThrottleArgs) -> Result<
     let forwards = prof
         .get_mut("forwards")
         .and_then(|i| i.as_array_of_tables_mut())
-        .ok_or_else(|| {
-            Error::InvalidArgs(format!("profile `{pn}` has no [[forwards]]"))
-        })?;
+        .ok_or_else(|| Error::InvalidArgs(format!("profile `{pn}` has no [[forwards]]")))?;
     let entry = forwards
         .iter_mut()
         .find(|t| t.get("name").and_then(|v| v.as_str()) == Some(fn_))
-        .ok_or_else(|| {
-            Error::InvalidArgs(format!("no forward `{fn_}` in profile `{pn}`"))
-        })?;
+        .ok_or_else(|| Error::InvalidArgs(format!("no forward `{fn_}` in profile `{pn}`")))?;
 
     if let Some(v) = &args.r#in {
         entry["max_bytes_per_second_in"] = toml_edit::value(v.clone());

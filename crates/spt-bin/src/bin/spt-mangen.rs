@@ -52,7 +52,9 @@ fn render_recursive(
         Some(p) => format!("{p}-{}", cmd.get_name()),
     };
 
-    let man = Man::new(cmd.clone()).title(name.to_uppercase()).section("1");
+    let man = Man::new(cmd.clone())
+        .title(name.to_uppercase())
+        .section("1");
     let mut buf: Vec<u8> = Vec::new();
     man.render(&mut buf)?;
     let path = out_dir.join(format!("{name}.1"));

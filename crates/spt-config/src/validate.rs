@@ -26,7 +26,7 @@
 use spt_core::{address::BindAddr, duration::parse_duration, size::parse_size};
 
 use crate::diagnostic::{Diagnostic, Diagnostics};
-use crate::schema::{Config, Forward, Profile};
+use crate::schema::{Auth, Config, Forward, Profile};
 
 /// Validate a [`Config`]. Always returns a [`Diagnostics`] bundle — the caller
 /// decides whether `errors.is_empty()` is success.
@@ -91,11 +91,7 @@ fn check_runtime(d: &mut Diagnostics, c: &Config) {
         }
     }
 
-    check_duration_field(
-        d,
-        rt.shutdown_grace.as_deref(),
-        "runtime.shutdown_grace",
-    );
+    check_duration_field(d, rt.shutdown_grace.as_deref(), "runtime.shutdown_grace");
 
     if let Some(threads) = rt.threads.as_ref() {
         if let Some(model) = threads.model.as_deref() {
@@ -109,11 +105,7 @@ fn check_runtime(d: &mut Diagnostics, c: &Config) {
                 );
             }
         }
-        check_duration_field(
-            d,
-            threads.idle_tick.as_deref(),
-            "runtime.threads.idle_tick",
-        );
+        check_duration_field(d, threads.idle_tick.as_deref(), "runtime.threads.idle_tick");
     }
 
     if let Some(reload) = rt.reload.as_ref() {
@@ -166,8 +158,11 @@ fn check_dns(d: &mut Diagnostics, c: &Config) {
             "disabled" | "transparent_forwarder" | "synthetic_only" | "hosts_file"
         ) {
             d.push(
-                Diagnostic::error("dns_mode_invalid", format!("`{mode}` is not a valid dns.mode"))
-                    .at("dns.mode"),
+                Diagnostic::error(
+                    "dns_mode_invalid",
+                    format!("`{mode}` is not a valid dns.mode"),
+                )
+                .at("dns.mode"),
             );
         }
     }
@@ -186,8 +181,12 @@ fn check_dns(d: &mut Diagnostics, c: &Config) {
 }
 
 fn check_firewall(d: &mut Diagnostics, c: &Config) {
-    let Some(fw) = c.firewall.as_ref() else { return };
-    let Some(plat) = fw.platform.as_ref() else { return };
+    let Some(fw) = c.firewall.as_ref() else {
+        return;
+    };
+    let Some(plat) = fw.platform.as_ref() else {
+        return;
+    };
 
     let here = std::env::consts::OS;
     let mismatch = |key: &str, val: &Option<String>, expected: &[&str]| -> Option<Diagnostic> {
@@ -291,7 +290,10 @@ fn check_profile(d: &mut Diagnostics, i: usize, p: &Profile) {
                 d.push(
                     Diagnostic::error(
                         "ssh2_missing_host",
-                        format!("ssh2 profile `{}` requires `host` or at least one endpoint", p.name),
+                        format!(
+                            "ssh2 profile `{}` requires `host` or at least one endpoint",
+                            p.name
+                        ),
                     )
                     .at(format!("{prefix}.host")),
                 );
@@ -359,14 +361,44 @@ fn check_profile(d: &mut Diagnostics, i: usize, p: &Profile) {
 
     // Auth.
     if let Some(auth) = p.auth.as_ref() {
-        for (label, val) in [
-            ("passphrase", &auth.passphrase),
-            ("password", &auth.password),
-            ("token", &auth.token),
-        ] {
-            if let Some(s) = val.as_deref() {
-                check_secret_ref_shape(d, s, format!("{prefix}.auth.{label}"));
+        check_auth(d, auth, &format!("{prefix}.auth"));
+    }
+
+    for (j, hop) in p.hops.iter().enumerate() {
+        let hop_prefix = format!("{prefix}.hops[{j}]");
+        if hop.host.is_empty() {
+            d.push(
+                Diagnostic::error(
+                    "hop_missing_host",
+                    format!("hop `{}` has empty host", hop.name),
+                )
+                .at(format!("{hop_prefix}.host")),
+            );
+        }
+        if let Some(protocol) = (!hop.protocol.is_empty()).then_some(hop.protocol.as_str()) {
+            if !matches!(protocol, "ssh2" | "ssh3") {
+                d.push(
+                    Diagnostic::error(
+                        "hop_protocol_invalid",
+                        format!("hop `{}` has unknown protocol `{protocol}`", hop.name),
+                    )
+                    .at(format!("{hop_prefix}.protocol")),
+                );
             }
+        }
+        if let Some(resolve) = hop.target_resolve.as_deref() {
+            if !matches!(resolve, "local" | "remote" | "previous-hop") {
+                d.push(
+                    Diagnostic::error(
+                        "hop_target_resolve_invalid",
+                        format!("hop `{}` has unknown target_resolve `{resolve}`", hop.name),
+                    )
+                    .at(format!("{hop_prefix}.target_resolve")),
+                );
+            }
+        }
+        if let Some(auth) = hop.auth.as_ref() {
+            check_auth(d, auth, &format!("{hop_prefix}.auth"));
         }
     }
 
@@ -406,13 +438,45 @@ fn check_profile(d: &mut Diagnostics, i: usize, p: &Profile) {
 
     // Reconnect / keepalive duration parses.
     if let Some(r) = p.reconnect.as_ref() {
-        check_duration_field(d, r.initial_delay.as_deref(), format!("{prefix}.reconnect.initial_delay"));
-        check_duration_field(d, r.max_delay.as_deref(), format!("{prefix}.reconnect.max_delay"));
-        check_duration_field(d, r.reset_after.as_deref(), format!("{prefix}.reconnect.reset_after"));
+        check_duration_field(
+            d,
+            r.initial_delay.as_deref(),
+            format!("{prefix}.reconnect.initial_delay"),
+        );
+        check_duration_field(
+            d,
+            r.max_delay.as_deref(),
+            format!("{prefix}.reconnect.max_delay"),
+        );
+        check_duration_field(
+            d,
+            r.reset_after.as_deref(),
+            format!("{prefix}.reconnect.reset_after"),
+        );
     }
     if let Some(k) = p.keepalive.as_ref() {
-        check_duration_field(d, k.interval.as_deref(), format!("{prefix}.keepalive.interval"));
-        check_duration_field(d, k.timeout.as_deref(), format!("{prefix}.keepalive.timeout"));
+        check_duration_field(
+            d,
+            k.interval.as_deref(),
+            format!("{prefix}.keepalive.interval"),
+        );
+        check_duration_field(
+            d,
+            k.timeout.as_deref(),
+            format!("{prefix}.keepalive.timeout"),
+        );
+    }
+}
+
+fn check_auth(d: &mut Diagnostics, auth: &Auth, prefix: &str) {
+    for (label, val) in [
+        ("passphrase", &auth.passphrase),
+        ("password", &auth.password),
+        ("token", &auth.token),
+    ] {
+        if let Some(s) = val.as_deref() {
+            check_secret_ref_shape(d, s, format!("{prefix}.{label}"));
+        }
     }
 }
 
@@ -537,11 +601,7 @@ fn check_forward(d: &mut Diagnostics, protocol: &str, f: &Forward, i: usize, j: 
     if let Some(mode) = f.bind_mode.as_deref() {
         if !matches!(
             mode,
-            "loopback"
-                | "specific_ip"
-                | "specific_interface"
-                | "all_interfaces"
-                | "auto_interface"
+            "loopback" | "specific_ip" | "specific_interface" | "all_interfaces" | "auto_interface"
         ) {
             d.push(
                 Diagnostic::error(
@@ -575,7 +635,11 @@ fn check_forward(d: &mut Diagnostics, protocol: &str, f: &Forward, i: usize, j: 
         f.max_bytes_per_second_out.as_deref(),
         format!("{prefix}.max_bytes_per_second_out"),
     );
-    check_duration_field(d, f.idle_timeout.as_deref(), format!("{prefix}.idle_timeout"));
+    check_duration_field(
+        d,
+        f.idle_timeout.as_deref(),
+        format!("{prefix}.idle_timeout"),
+    );
     check_duration_field(
         d,
         f.udp_idle_timeout.as_deref(),
@@ -629,9 +693,7 @@ fn check_size_field<P: Into<String>>(d: &mut Diagnostics, val: Option<&str>, pat
     if let Some(s) = val {
         if !s.is_empty() {
             if let Err(e) = parse_size(s) {
-                d.push(
-                    Diagnostic::error("size_invalid", format!("`{s}`: {e}")).at(path.into()),
-                );
+                d.push(Diagnostic::error("size_invalid", format!("`{s}`: {e}")).at(path.into()));
             }
         }
     }
@@ -672,10 +734,7 @@ mod tests {
         let (c, _) = load_str(raw, false).unwrap();
         let d = validate(&c);
         assert!(!d.is_ok());
-        assert!(d
-            .errors
-            .iter()
-            .any(|e| e.code == "duplicate_profile_id"));
+        assert!(d.errors.iter().any(|e| e.code == "duplicate_profile_id"));
     }
 
     #[test]

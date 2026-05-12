@@ -106,8 +106,7 @@ async fn scm_main(handles: std::sync::Arc<spt_service::windows_scm::ScmHandles>)
 
     let path = config.ok_or_else(|| {
         Error::InvalidArgs(
-            "no config path supplied to --scm-dispatch (set $SPT_CONFIG or pass --config)"
-                .into(),
+            "no config path supplied to --scm-dispatch (set $SPT_CONFIG or pass --config)".into(),
         )
     })?;
 
@@ -320,14 +319,12 @@ fn resolve_scm_state_dir(
     explicit: Option<&std::path::Path>,
     cfg: &spt_config::schema::Config,
 ) -> Result<PathBuf> {
-    let chosen: Option<PathBuf> = explicit
-        .map(std::path::Path::to_path_buf)
-        .or_else(|| {
-            cfg.runtime
-                .as_ref()
-                .and_then(|r| r.state_dir.clone())
-                .map(PathBuf::from)
-        });
+    let chosen: Option<PathBuf> = explicit.map(std::path::Path::to_path_buf).or_else(|| {
+        cfg.runtime
+            .as_ref()
+            .and_then(|r| r.state_dir.clone())
+            .map(PathBuf::from)
+    });
     spt_state::resolve_state_dir(chosen.as_deref())
 }
 

@@ -49,9 +49,8 @@ const DEFAULT_TEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// `spt profile set <name> KEY=VALUE [KEY=VALUE …]`.
 pub async fn set(global: &GlobalOpts, args: profile::ProfileSet) -> Result<()> {
     let path = require_config_path(global)?;
-    let raw = std::fs::read_to_string(&path).map_err(|e| {
-        Error::InvalidConfig(format!("read `{}`: {e}", path.display()))
-    })?;
+    let raw = std::fs::read_to_string(&path)
+        .map_err(|e| Error::InvalidConfig(format!("read `{}`: {e}", path.display())))?;
 
     // Parse + validate the *current* state once. We compare new validation
     // diagnostics against this baseline so an edit that's neutral against
@@ -75,9 +74,8 @@ pub async fn set(global: &GlobalOpts, args: profile::ProfileSet) -> Result<()> {
     // Validate the post-edit document. Reject if it introduces *new* errors;
     // do not write to disk in that case.
     let rendered = doc.to_string();
-    let (cfg, _warnings) = spt_config::load_str(&rendered, false).map_err(|e| {
-        Error::InvalidConfig(format!("post-edit parse failed: {e}"))
-    })?;
+    let (cfg, _warnings) = spt_config::load_str(&rendered, false)
+        .map_err(|e| Error::InvalidConfig(format!("post-edit parse failed: {e}")))?;
     let diags = spt_config::validate(&cfg);
     if diags.errors.len() > baseline_errors {
         let first = diags
@@ -113,9 +111,8 @@ pub async fn configure_non_interactive(
     args: profile::ProfileConfigure,
 ) -> Result<()> {
     let path = require_config_path(global)?;
-    let raw = std::fs::read_to_string(&path).map_err(|e| {
-        Error::InvalidConfig(format!("read `{}`: {e}", path.display()))
-    })?;
+    let raw = std::fs::read_to_string(&path)
+        .map_err(|e| Error::InvalidConfig(format!("read `{}`: {e}", path.display())))?;
 
     let baseline = baseline_error_count(&raw);
     let mut doc = Document::parse(&raw)?;
@@ -129,9 +126,8 @@ pub async fn configure_non_interactive(
     let mut applied = Vec::<String>::new();
 
     if let Some(file) = args.from.as_ref() {
-        let body = std::fs::read_to_string(file).map_err(|e| {
-            Error::InvalidArgs(format!("read `{}`: {e}", file.display()))
-        })?;
+        let body = std::fs::read_to_string(file)
+            .map_err(|e| Error::InvalidArgs(format!("read `{}`: {e}", file.display())))?;
         let n = apply_toml_patch(&mut doc, &name, &body)?;
         applied.push(format!("--from `{}` ({n} fields)", file.display()));
     }
@@ -152,9 +148,8 @@ pub async fn configure_non_interactive(
 
     // Reject if the new document fails validation harder than the baseline.
     let rendered = doc.to_string();
-    let (cfg, _w) = spt_config::load_str(&rendered, false).map_err(|e| {
-        Error::InvalidConfig(format!("post-edit parse failed: {e}"))
-    })?;
+    let (cfg, _w) = spt_config::load_str(&rendered, false)
+        .map_err(|e| Error::InvalidConfig(format!("post-edit parse failed: {e}")))?;
     let diags = spt_config::validate(&cfg);
     if diags.errors.len() > baseline {
         let first = diags
@@ -170,12 +165,8 @@ pub async fn configure_non_interactive(
     // primary so a crash mid-write leaves a recoverable copy. The backup is
     // a snapshot of the pre-edit on-disk content (`raw`).
     let bak = backup_path(&path);
-    std::fs::write(&bak, &raw).map_err(|e| {
-        Error::InvalidConfig(format!(
-            "write backup `{}`: {e}",
-            bak.display()
-        ))
-    })?;
+    std::fs::write(&bak, &raw)
+        .map_err(|e| Error::InvalidConfig(format!("write backup `{}`: {e}", bak.display())))?;
     doc.write_atomic(&path)?;
 
     if use_json(global) {
@@ -211,8 +202,8 @@ pub async fn disable(global: &GlobalOpts, args: profile::ProfileName) -> Result<
 /// `connect()` per endpoint in priority order, and report timing.
 pub async fn test(global: &GlobalOpts, args: profile::ProfileTest) -> Result<()> {
     let path = require_config_path(global)?;
-    let (cfg, _w) = spt_config::load(&path, false)
-        .map_err(|e| Error::InvalidConfig(format!("load: {e}")))?;
+    let (cfg, _w) =
+        spt_config::load(&path, false).map_err(|e| Error::InvalidConfig(format!("load: {e}")))?;
     let prof = cfg
         .profiles
         .iter()
@@ -220,8 +211,7 @@ pub async fn test(global: &GlobalOpts, args: profile::ProfileTest) -> Result<()>
         .ok_or_else(|| Error::InvalidArgs(format!("no profile named `{}`", args.name)))?;
 
     let state_dir = spt_state::resolve_state_dir(global.state_dir.as_deref())?;
-    let resolver =
-        crate::secrets_bridge::build_resolver(cfg.secrets.as_ref(), &state_dir)?;
+    let resolver = crate::secrets_bridge::build_resolver(cfg.secrets.as_ref(), &state_dir)?;
     let bundle = crate::profile_factory::build(prof, &resolver)?;
 
     if bundle.endpoints.is_empty() {
@@ -274,9 +264,7 @@ enum EndpointStatus {
 
 fn parse_override(ov: &str) -> Result<(&str, &str)> {
     let (k, v) = ov.split_once('=').ok_or_else(|| {
-        Error::InvalidArgs(format!(
-            "invalid override `{ov}` (expected `KEY=VALUE`)"
-        ))
+        Error::InvalidArgs(format!("invalid override `{ov}` (expected `KEY=VALUE`)"))
     })?;
     let key = k.trim();
     let val = v.trim();
@@ -297,9 +285,8 @@ fn baseline_error_count(raw: &str) -> usize {
 
 async fn toggle_enabled(global: &GlobalOpts, name: &str, on: bool) -> Result<()> {
     let path = require_config_path(global)?;
-    let raw = std::fs::read_to_string(&path).map_err(|e| {
-        Error::InvalidConfig(format!("read `{}`: {e}", path.display()))
-    })?;
+    let raw = std::fs::read_to_string(&path)
+        .map_err(|e| Error::InvalidConfig(format!("read `{}`: {e}", path.display())))?;
     let baseline = baseline_error_count(&raw);
 
     let mut doc = Document::parse(&raw)?;
@@ -314,9 +301,7 @@ async fn toggle_enabled(global: &GlobalOpts, name: &str, on: bool) -> Result<()>
             .errors
             .first()
             .map_or_else(|| "validation failed".to_owned(), |e| e.to_string());
-        return Err(Error::InvalidConfig(format!(
-            "edit rejected: {first}"
-        )));
+        return Err(Error::InvalidConfig(format!("edit rejected: {first}")));
     }
 
     doc.write_atomic(&path)?;
@@ -350,8 +335,8 @@ async fn toggle_enabled(global: &GlobalOpts, name: &str, on: bool) -> Result<()>
 
 /// Fire `tunnel_reload` against the running supervisor.
 async fn try_mcp_reload(global: &GlobalOpts) -> std::result::Result<(), String> {
-    let state_dir = spt_state::resolve_state_dir(global.state_dir.as_deref())
-        .map_err(|e| e.to_string())?;
+    let state_dir =
+        spt_state::resolve_state_dir(global.state_dir.as_deref()).map_err(|e| e.to_string())?;
     let mut client = crate::mcp_client::McpClient::connect_from_state_dir(&state_dir)
         .await
         .map_err(|e| e.to_string())?;
@@ -401,10 +386,7 @@ async fn test_one_endpoint(
             id,
             host: endpoint.host.clone(),
             port: endpoint.port,
-            status: EndpointStatus::Failed(format!(
-                "timeout after {}ms",
-                timeout.as_millis()
-            )),
+            status: EndpointStatus::Failed(format!("timeout after {}ms", timeout.as_millis())),
             latency_ms: elapsed,
         },
     }
@@ -424,8 +406,7 @@ fn profile_connect_timeout(p: &spt_config::schema::Profile) -> Option<Duration> 
 // ---------------------------------------------------------------------------
 
 fn use_json(global: &GlobalOpts) -> bool {
-    global.json
-        || matches!(global.output, OutputFormat::Json | OutputFormat::Jsonl)
+    global.json || matches!(global.output, OutputFormat::Json | OutputFormat::Jsonl)
 }
 
 fn emit_set_report(global: &GlobalOpts, profile: &str, changes: &[ChangeRecord]) {
@@ -523,20 +504,17 @@ fn emit_test_report(global: &GlobalOpts, profile: &str, results: &[EndpointResul
 
 fn require_config_path(global: &GlobalOpts) -> Result<PathBuf> {
     global.config.clone().ok_or_else(|| {
-        Error::InvalidArgs(
-            "no config path supplied (pass --config or set $SPT_CONFIG)".into(),
-        )
+        Error::InvalidArgs("no config path supplied (pass --config or set $SPT_CONFIG)".into())
     })
 }
 
 /// Resolve `profile` into a mutable reference to its `[[profiles]]` table.
-fn profile_table_mut<'a>(
-    doc: &'a mut Document,
-    name: &str,
-) -> Result<&'a mut toml_edit::Table> {
-    let arr = match doc.document_mut().entry("profiles").or_insert_with(|| {
-        Item::ArrayOfTables(toml_edit::ArrayOfTables::new())
-    }) {
+fn profile_table_mut<'a>(doc: &'a mut Document, name: &str) -> Result<&'a mut toml_edit::Table> {
+    let arr = match doc
+        .document_mut()
+        .entry("profiles")
+        .or_insert_with(|| Item::ArrayOfTables(toml_edit::ArrayOfTables::new()))
+    {
         Item::ArrayOfTables(arr) => arr,
         _ => {
             return Err(Error::InvalidConfig(
@@ -550,9 +528,8 @@ fn profile_table_mut<'a>(
             .and_then(|v| v.as_str())
             == Some(name)
     });
-    let idx = idx.ok_or_else(|| {
-        Error::InvalidConfig(format!("profile `{name}` does not exist"))
-    })?;
+    let idx =
+        idx.ok_or_else(|| Error::InvalidConfig(format!("profile `{name}` does not exist")))?;
     Ok(arr.get_mut(idx).expect("index in range"))
 }
 
@@ -608,36 +585,20 @@ fn item_to_display(item: &Item) -> String {
 /// Walk the dotted path and overwrite the leaf with `val`. Numeric path
 /// segments index into arrays-of-tables; string segments descend into
 /// regular tables.
-fn write_field(
-    doc: &mut Document,
-    profile: &str,
-    field: &str,
-    val: &str,
-) -> Result<()> {
+fn write_field(doc: &mut Document, profile: &str, field: &str, val: &str) -> Result<()> {
     let prof_tbl = profile_table_mut(doc, profile)?;
     write_field_in_table(prof_tbl, field, val)
 }
 
-fn write_field_in_table(
-    tbl: &mut toml_edit::Table,
-    field: &str,
-    val: &str,
-) -> Result<()> {
+fn write_field_in_table(tbl: &mut toml_edit::Table, field: &str, val: &str) -> Result<()> {
     let segs: Vec<&str> = field.split('.').collect();
     if segs.is_empty() || segs.iter().any(|s| s.is_empty()) {
-        return Err(Error::InvalidArgs(format!(
-            "invalid field path `{field}`"
-        )));
+        return Err(Error::InvalidArgs(format!("invalid field path `{field}`")));
     }
     write_path(tbl, &segs, val, field)
 }
 
-fn write_path(
-    tbl: &mut toml_edit::Table,
-    segs: &[&str],
-    val: &str,
-    full_path: &str,
-) -> Result<()> {
+fn write_path(tbl: &mut toml_edit::Table, segs: &[&str], val: &str, full_path: &str) -> Result<()> {
     if segs.len() == 1 {
         let leaf = segs[0];
         if leaf.parse::<usize>().is_ok() {
@@ -663,16 +624,14 @@ fn write_path(
 
     // Look ahead to decide whether `head` should be an array-of-tables or a
     // plain subtable.
-    let next_is_index = rest
-        .first()
-        .is_some_and(|s| s.parse::<usize>().is_ok());
+    let next_is_index = rest.first().is_some_and(|s| s.parse::<usize>().is_ok());
 
     if next_is_index {
         let arr_idx: usize = rest[0].parse().expect("checked above");
         let inner_rest = &rest[1..];
-        let entry = tbl.entry(head).or_insert_with(|| {
-            Item::ArrayOfTables(toml_edit::ArrayOfTables::new())
-        });
+        let entry = tbl
+            .entry(head)
+            .or_insert_with(|| Item::ArrayOfTables(toml_edit::ArrayOfTables::new()));
         let arr = entry.as_array_of_tables_mut().ok_or_else(|| {
             Error::InvalidConfig(format!(
                 "field path `{full_path}`: `{head}` exists but is not an array of tables"
@@ -747,7 +706,11 @@ fn resolve_profile_name(doc: &mut Document, requested: Option<&str>) -> Result<S
         }
     };
     if arr.len() == 1 {
-        if let Some(n) = arr.get(0).and_then(|t| t.get("name")).and_then(|v| v.as_str()) {
+        if let Some(n) = arr
+            .get(0)
+            .and_then(|t| t.get("name"))
+            .and_then(|v| v.as_str())
+        {
             return Ok(n.to_owned());
         }
     }

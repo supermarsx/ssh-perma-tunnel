@@ -46,13 +46,12 @@ impl Document {
 
         let af = AtomicFile::new(path, AllowOverwrite);
         let rendered = self.inner.to_string();
-        af.write(|f| f.write_all(rendered.as_bytes()))
-            .map_err(|e| {
-                let io = match e {
-                    atomicwrites::Error::Internal(io) | atomicwrites::Error::User(io) => io,
-                };
-                Error::InvalidConfig(format!("atomic write `{}`: {io}", path.display()))
-            })
+        af.write(|f| f.write_all(rendered.as_bytes())).map_err(|e| {
+            let io = match e {
+                atomicwrites::Error::Internal(io) | atomicwrites::Error::User(io) => io,
+            };
+            Error::InvalidConfig(format!("atomic write `{}`: {io}", path.display()))
+        })
     }
 
     // ---- Profile-level mutators -------------------------------------------
@@ -85,9 +84,9 @@ impl Document {
 
     /// Set a top-level profile field to a string value.
     pub fn set_profile_field(&mut self, profile: &str, field: &str, val: &str) -> Result<()> {
-        let idx = self.find_profile_index(profile).ok_or_else(|| {
-            Error::InvalidConfig(format!("profile `{profile}` does not exist"))
-        })?;
+        let idx = self
+            .find_profile_index(profile)
+            .ok_or_else(|| Error::InvalidConfig(format!("profile `{profile}` does not exist")))?;
         let arr = self.profiles_array_mut();
         let tbl = arr
             .get_mut(idx)
@@ -108,9 +107,9 @@ impl Document {
         bind: &str,
         target: &str,
     ) -> Result<()> {
-        let idx = self.find_profile_index(profile).ok_or_else(|| {
-            Error::InvalidConfig(format!("profile `{profile}` does not exist"))
-        })?;
+        let idx = self
+            .find_profile_index(profile)
+            .ok_or_else(|| Error::InvalidConfig(format!("profile `{profile}` does not exist")))?;
         let arr = self.profiles_array_mut();
         let prof_tbl = arr
             .get_mut(idx)
@@ -131,9 +130,10 @@ impl Document {
             }
         }
 
-        let forwards: &mut ArrayOfTables = match prof_tbl.entry("forwards").or_insert_with(|| {
-            Item::ArrayOfTables(ArrayOfTables::new())
-        }) {
+        let forwards: &mut ArrayOfTables = match prof_tbl
+            .entry("forwards")
+            .or_insert_with(|| Item::ArrayOfTables(ArrayOfTables::new()))
+        {
             Item::ArrayOfTables(arr) => arr,
             _ => {
                 return Err(Error::InvalidConfig(
@@ -154,9 +154,9 @@ impl Document {
 
     /// Remove a forward. Returns `Ok(true)` if removed.
     pub fn remove_forward(&mut self, profile: &str, forward: &str) -> Result<bool> {
-        let idx = self.find_profile_index(profile).ok_or_else(|| {
-            Error::InvalidConfig(format!("profile `{profile}` does not exist"))
-        })?;
+        let idx = self
+            .find_profile_index(profile)
+            .ok_or_else(|| Error::InvalidConfig(format!("profile `{profile}` does not exist")))?;
         let arr = self.profiles_array_mut();
         let prof_tbl = arr
             .get_mut(idx)
@@ -260,7 +260,9 @@ host = "h"
             .unwrap();
         let out = doc.to_string();
         assert!(out.contains(r#"name = "f1""#));
-        assert!(doc.add_forward("p", "f1", "local", "tcp", "x", "y").is_err());
+        assert!(doc
+            .add_forward("p", "f1", "local", "tcp", "x", "y")
+            .is_err());
         assert!(doc.remove_forward("p", "f1").unwrap());
         assert!(!doc.remove_forward("p", "f1").unwrap());
     }

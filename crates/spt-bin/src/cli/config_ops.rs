@@ -44,22 +44,17 @@ use crate::mcp_client::McpClient;
 /// Embedded contents of `examples/observability.toml`.
 ///
 /// Produced by `spt config init --example observability`.
-const OBSERVABILITY_EXAMPLE: &str =
-    include_str!("../../../../examples/observability.toml");
+const OBSERVABILITY_EXAMPLE: &str = include_str!("../../../../examples/observability.toml");
 
 /// `spt config doctor`.
 ///
 /// Loads + validates the config, runs config-only diagnostic checks, and
 /// emits a [`DiagnosticReport`] in the requested `--output` format.
 /// Returns [`Error::DiagnosticFailed`] iff any check has `Status::Fail`.
-pub async fn doctor(
-    global: &GlobalOpts,
-    args: groups::config::ConfigDoctor,
-) -> Result<()> {
+pub async fn doctor(global: &GlobalOpts, args: groups::config::ConfigDoctor) -> Result<()> {
     let path = require_config_path(global)?;
-    let (cfg, warnings) = spt_config::load(&path, false).map_err(|e| {
-        Error::InvalidConfig(format!("load `{}`: {e}", path.display()))
-    })?;
+    let (cfg, warnings) = spt_config::load(&path, false)
+        .map_err(|e| Error::InvalidConfig(format!("load `{}`: {e}", path.display())))?;
     let report = run_config_doctor(&cfg, &warnings, &path, &args).await;
     emit_report(&report, output_format(global))?;
 
@@ -82,10 +77,7 @@ pub async fn doctor(
 /// transport. Honors `--wait` by simply returning the synchronous
 /// `tunnel_reload` tool result — the tool already invokes
 /// `Controller::reload()` to completion before responding.
-pub async fn reload(
-    global: &GlobalOpts,
-    args: groups::config::ConfigReload,
-) -> Result<()> {
+pub async fn reload(global: &GlobalOpts, args: groups::config::ConfigReload) -> Result<()> {
     // Pre-check: if [mcp].listen is empty or absent in the on-disk config,
     // the running supervisor has no loopback listener and we can't talk to
     // it. Surface the precise hint from the brief.
@@ -151,14 +143,12 @@ pub async fn init_observability_example(target_path: &Path) -> Result<()> {
     }
     if let Some(parent) = target_path.parent() {
         if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent).map_err(|e| {
-                Error::InvalidConfig(format!("mkdir `{}`: {e}", parent.display()))
-            })?;
+            std::fs::create_dir_all(parent)
+                .map_err(|e| Error::InvalidConfig(format!("mkdir `{}`: {e}", parent.display())))?;
         }
     }
-    std::fs::write(target_path, OBSERVABILITY_EXAMPLE).map_err(|e| {
-        Error::InvalidConfig(format!("write `{}`: {e}", target_path.display()))
-    })?;
+    std::fs::write(target_path, OBSERVABILITY_EXAMPLE)
+        .map_err(|e| Error::InvalidConfig(format!("write `{}`: {e}", target_path.display())))?;
     Ok(())
 }
 
@@ -168,9 +158,7 @@ pub async fn init_observability_example(target_path: &Path) -> Result<()> {
 
 fn require_config_path(global: &GlobalOpts) -> Result<PathBuf> {
     global.config.clone().ok_or_else(|| {
-        Error::InvalidArgs(
-            "no config path supplied (pass --config or set $SPT_CONFIG)".into(),
-        )
+        Error::InvalidArgs("no config path supplied (pass --config or set $SPT_CONFIG)".into())
     })
 }
 
@@ -211,12 +199,8 @@ async fn run_config_doctor(
     let diag = spt_config::validate(cfg);
     if diag.errors.is_empty() {
         checks.push(
-            Check::new(
-                "config.schema",
-                Severity::Critical,
-                Status::Pass,
-            )
-            .with_evidence(format!("validated `{}`", path.display())),
+            Check::new("config.schema", Severity::Critical, Status::Pass)
+                .with_evidence(format!("validated `{}`", path.display())),
         );
     } else {
         let mut c = Check::new("config.schema", Severity::Critical, Status::Fail);
@@ -245,12 +229,8 @@ async fn run_config_doctor(
             Status::Pass,
         ));
     } else {
-        let mut c = Check::new(
-            "config.unknown_keys",
-            Severity::Low,
-            Status::Warn,
-        )
-        .with_remediation("rerun with `--strict` to reject unknown keys, or remove them");
+        let mut c = Check::new("config.unknown_keys", Severity::Low, Status::Warn)
+            .with_remediation("rerun with `--strict` to reject unknown keys, or remove them");
         for w in warnings {
             c = c.with_evidence(format!("unknown key: {w}"));
         }
@@ -310,13 +290,13 @@ async fn run_config_doctor(
                 ));
             } else {
                 checks.push(
-                    Check::new(
-                        "config.logging.file.set",
-                        Severity::Medium,
-                        Status::Fail,
-                    )
-                    .with_evidence("`logging.destinations` includes `file` but `logging.file` is unset")
-                    .with_remediation("set `logging.file = \"...\"` or remove `file` from `destinations`"),
+                    Check::new("config.logging.file.set", Severity::Medium, Status::Fail)
+                        .with_evidence(
+                            "`logging.destinations` includes `file` but `logging.file` is unset",
+                        )
+                        .with_remediation(
+                            "set `logging.file = \"...\"` or remove `file` from `destinations`",
+                        ),
                 );
             }
         }
@@ -532,7 +512,10 @@ mod tests {
         .unwrap();
         let g = opts(Some(p));
         let r = doctor(&g, doctor_args()).await;
-        assert!(matches!(r, Err(Error::DiagnosticFailed { .. })), "got {r:?}");
+        assert!(
+            matches!(r, Err(Error::DiagnosticFailed { .. })),
+            "got {r:?}"
+        );
     }
 
     #[tokio::test]
@@ -554,7 +537,14 @@ mod tests {
         // Point state_dir at an empty dir so even the connect path can't
         // succeed by accident.
         g.state_dir = Some(tmp.path().to_path_buf());
-        let r = reload(&g, groups::config::ConfigReload { mode: None, wait: false }).await;
+        let r = reload(
+            &g,
+            groups::config::ConfigReload {
+                mode: None,
+                wait: false,
+            },
+        )
+        .await;
         match r {
             Err(Error::ReloadFailed(msg)) => {
                 assert!(
@@ -579,7 +569,11 @@ mod tests {
         // Has the expected shape: at least one profile + remote logging
         // sinks + an mcp listen address.
         assert!(!cfg.profiles.is_empty());
-        assert!(cfg.logging.as_ref().map(|l| !l.remote.is_empty()).unwrap_or(false));
+        assert!(cfg
+            .logging
+            .as_ref()
+            .map(|l| !l.remote.is_empty())
+            .unwrap_or(false));
         assert!(cfg
             .mcp
             .as_ref()

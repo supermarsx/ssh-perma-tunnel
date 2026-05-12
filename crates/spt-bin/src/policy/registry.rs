@@ -52,16 +52,20 @@ mod imp {
     use windows::core::PCWSTR;
     use windows::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_NO_MORE_ITEMS, ERROR_SUCCESS};
     use windows::Win32::System::Registry::{
-        RegCloseKey, RegEnumKeyExW, RegOpenKeyExW, RegQueryValueExW, HKEY,
-        HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ, REG_DWORD, REG_EXPAND_SZ, REG_MULTI_SZ,
-        REG_QWORD, REG_SZ, REG_VALUE_TYPE,
+        RegCloseKey, RegEnumKeyExW, RegOpenKeyExW, RegQueryValueExW, HKEY, HKEY_CURRENT_USER,
+        HKEY_LOCAL_MACHINE, KEY_READ, REG_DWORD, REG_EXPAND_SZ, REG_MULTI_SZ, REG_QWORD, REG_SZ,
+        REG_VALUE_TYPE,
     };
 
     use super::{Error, PolicyBundle, PolicyValue, ENFORCED_VALUE, POLICY_ROOT};
 
     pub(super) fn load() -> Result<PolicyBundle, Error> {
         let mut bundle = PolicyBundle::empty();
-        load_hive(HKEY_LOCAL_MACHINE, &mut bundle.machine, Some(&mut bundle.enforced))?;
+        load_hive(
+            HKEY_LOCAL_MACHINE,
+            &mut bundle.machine,
+            Some(&mut bundle.enforced),
+        )?;
         load_hive(HKEY_CURRENT_USER, &mut bundle.user, None)?;
         Ok(bundle)
     }
@@ -130,9 +134,7 @@ mod imp {
     fn open_subkey(hive: HKEY, path: &str) -> Result<HKEY, u32> {
         let path_w = wide(path);
         let mut h = HKEY::default();
-        let rc = unsafe {
-            RegOpenKeyExW(hive, PCWSTR(path_w.as_ptr()), 0, KEY_READ, &mut h)
-        };
+        let rc = unsafe { RegOpenKeyExW(hive, PCWSTR(path_w.as_ptr()), 0, KEY_READ, &mut h) };
         if rc == ERROR_SUCCESS {
             Ok(h)
         } else {
@@ -375,9 +377,8 @@ mod imp {
         fn set_dword(h: HKEY, name: &str, v: u32) {
             let name_w = wide(name);
             let bytes = v.to_le_bytes();
-            let rc = unsafe {
-                RegSetValueExW(h, PCWSTR(name_w.as_ptr()), 0, REG_DWORD, Some(&bytes))
-            };
+            let rc =
+                unsafe { RegSetValueExW(h, PCWSTR(name_w.as_ptr()), 0, REG_DWORD, Some(&bytes)) };
             assert_eq!(rc, ERROR_SUCCESS);
         }
 
@@ -391,13 +392,7 @@ mod imp {
                 )
             };
             let rc = unsafe {
-                RegSetValueExW(
-                    h,
-                    PCWSTR(name_w.as_ptr()),
-                    0,
-                    super::REG_SZ,
-                    Some(bytes),
-                )
+                RegSetValueExW(h, PCWSTR(name_w.as_ptr()), 0, super::REG_SZ, Some(bytes))
             };
             assert_eq!(rc, ERROR_SUCCESS);
         }
@@ -477,8 +472,7 @@ mod imp {
         struct Cleanup<'a>(&'a str);
         impl Drop for Cleanup<'_> {
             fn drop(&mut self) {
-                let path_w: Vec<u16> =
-                    self.0.encode_utf16().chain(std::iter::once(0)).collect();
+                let path_w: Vec<u16> = self.0.encode_utf16().chain(std::iter::once(0)).collect();
                 unsafe {
                     let _ = windows::Win32::System::Registry::RegDeleteTreeW(
                         HKEY_CURRENT_USER,
@@ -513,8 +507,7 @@ mod imp {
             }
 
             // Open the synthetic root and run the same load logic.
-            let root_h = open_subkey(HKEY_CURRENT_USER, &root)
-                .expect("open synthetic root");
+            let root_h = open_subkey(HKEY_CURRENT_USER, &root).expect("open synthetic root");
             let sections = enum_subkeys(root_h).unwrap();
             assert_eq!(sections, vec!["Logging".to_string()]);
             let sec_h = open_subkey_handle(root_h, "Logging").unwrap();
@@ -532,10 +525,7 @@ mod imp {
                 let _ = RegCloseKey(root_h);
             }
 
-            assert_eq!(
-                got.get("Level"),
-                Some(&PolicyValue::String("debug".into()))
-            );
+            assert_eq!(got.get("Level"), Some(&PolicyValue::String("debug".into())));
             assert_eq!(got.get("MaxFiles"), Some(&PolicyValue::Integer(7)));
             assert_eq!(
                 got.get("AllowedDestinations"),

@@ -86,10 +86,7 @@ fn diff_profiles(a: &Config, b: &Config, out: &mut Vec<Change>) {
     }
     for name in &b_names {
         if !a_names.contains(name) {
-            out.push(Change::new(
-                ChangeKind::Added,
-                format!("profiles[{name}]"),
-            ));
+            out.push(Change::new(ChangeKind::Added, format!("profiles[{name}]")));
         }
     }
     for ap in &a.profiles {
@@ -239,6 +236,8 @@ mod tests {
         let mut b = a.clone();
         b.profiles[0].forwards.clear();
         let changes = diff(&a, &b);
-        assert!(changes.iter().any(|c| c.kind == ChangeKind::Removed && c.path.contains("forwards[f]")));
+        assert!(changes
+            .iter()
+            .any(|c| c.kind == ChangeKind::Removed && c.path.contains("forwards[f]")));
     }
 }

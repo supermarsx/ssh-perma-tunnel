@@ -102,8 +102,8 @@ pub async fn fetch<F: HttpFetcher + ?Sized>(
         return Err(RemoteConfigError::InvalidSpec(check));
     }
     let cap = spec.max_size_bytes.unwrap_or(DEFAULT_MAX_BYTES);
-    let cached: Option<CachedEntry> = load_cached(state_dir)
-        .map_err(|e| RemoteConfigError::CacheIo(e.to_string()))?;
+    let cached: Option<CachedEntry> =
+        load_cached(state_dir).map_err(|e| RemoteConfigError::CacheIo(e.to_string()))?;
 
     let if_none_match = cached.as_ref().and_then(|c| c.etag.as_deref());
 
@@ -163,10 +163,7 @@ pub async fn fetch<F: HttpFetcher + ?Sized>(
     }
 }
 
-fn verify_cache_against_pin(
-    cached: &CachedEntry,
-    pin: &str,
-) -> Result<(), RemoteConfigError> {
+fn verify_cache_against_pin(cached: &CachedEntry, pin: &str) -> Result<(), RemoteConfigError> {
     let actual = hex_sha256(&cached.body);
     if ct_eq(&actual, &pin.to_ascii_lowercase()) {
         Ok(())
@@ -281,7 +278,12 @@ mod tests {
         assert_eq!(res.outcome, FetchOutcome::NotModified);
         assert_eq!(res.body, body);
         assert_eq!(
-            f.seen_if_none_match.lock().unwrap().last().unwrap().as_deref(),
+            f.seen_if_none_match
+                .lock()
+                .unwrap()
+                .last()
+                .unwrap()
+                .as_deref(),
             Some("\"v1\"")
         );
     }

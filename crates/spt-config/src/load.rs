@@ -94,9 +94,8 @@ pub fn load_dir(dir: &Path, strict: bool) -> Result<(Config, Warnings)> {
             dir.display()
         )));
     }
-    let read = std::fs::read_dir(dir).map_err(|e| {
-        Error::InvalidConfig(format!("read_dir `{}`: {e}", dir.display()))
-    })?;
+    let read = std::fs::read_dir(dir)
+        .map_err(|e| Error::InvalidConfig(format!("read_dir `{}`: {e}", dir.display())))?;
     let mut files: Vec<std::path::PathBuf> = Vec::new();
     for entry in read {
         let entry = entry.map_err(|e| {
@@ -141,7 +140,11 @@ pub fn load_dir(dir: &Path, strict: bool) -> Result<(Config, Warnings)> {
         // Append profiles, rejecting duplicate names early so the operator
         // sees the offending file rather than a generic validation diagnostic.
         for p in overlay.profiles {
-            if merged.profiles.iter().any(|existing| existing.name == p.name) {
+            if merged
+                .profiles
+                .iter()
+                .any(|existing| existing.name == p.name)
+            {
                 return Err(Error::InvalidConfig(format!(
                     "{name}: duplicate profile name `{}` (already defined in an earlier file)",
                     p.name
@@ -189,9 +192,7 @@ fn reject_singleton_overrides(overlay: &Config, file: &str) -> Result<()> {
 pub fn warnings_to_diagnostics(warnings: &[String]) -> Diagnostics {
     let mut out = Diagnostics::new();
     for path in warnings {
-        out.push(
-            Diagnostic::warning("unknown_key", format!("unknown TOML key `{path}`")).at(path),
-        );
+        out.push(Diagnostic::warning("unknown_key", format!("unknown TOML key `{path}`")).at(path));
     }
     out
 }
@@ -236,6 +237,40 @@ mod tests {
         ";
         let err = load_str(raw, true).unwrap_err();
         assert!(format!("{err}").contains("mystery_field"));
+    }
+
+    #[test]
+    fn hop_auth_and_trust_are_known_tables() {
+        let raw = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "final"
+
+            [[profiles.hops]]
+            name = "jump"
+            protocol = "ssh2"
+            host = "jump"
+            port = 22
+            user = "alice"
+
+            [profiles.hops.auth]
+            method = "public_key"
+            identity_file = "~/.ssh/id_ed25519"
+
+            [profiles.hops.trust]
+            mode = "known_hosts"
+            strict = false
+        "#;
+        let (c, warnings) = load_str(raw, true).unwrap();
+        assert!(warnings.is_empty());
+        let hop = &c.profiles[0].hops[0];
+        assert_eq!(hop.auth.as_ref().unwrap().method, "public_key");
+        assert_eq!(
+            hop.trust.as_ref().unwrap().mode.as_deref(),
+            Some("known_hosts")
+        );
     }
 
     #[test]
@@ -407,11 +442,7 @@ mod tests {
             "#,
         );
         // Use literal raw string for the second body so escaped quotes parse.
-        fs::write(
-            tmp.path().join("02-mismatch.toml"),
-            "version = 2\n",
-        )
-        .unwrap();
+        fs::write(tmp.path().join("02-mismatch.toml"), "version = 2\n").unwrap();
         let err = load_dir(tmp.path(), false).unwrap_err();
         assert!(format!("{err}").contains("does not match base"));
     }

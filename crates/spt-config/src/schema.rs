@@ -14,12 +14,12 @@
 //!   TOML stays minimal and `load → render → load` is the identity on
 //!   round-trips.
 //! * **Durations and sizes are stored as strings** (`String`) and parsed
-//!   on-demand by validators in [`crate::validate`]. This avoids materializing
+//!   on-demand by validators in [`crate::validate()`]. This avoids materializing
 //!   defaults into `Some(default_duration)` during deserialize, which would
 //!   inflate canonical output. The `spt-core::duration` and `spt-core::size`
 //!   helpers do the actual parsing.
 //! * **No `toml::Spanned<T>`** in the schema. When span-level diagnostics are
-//!   needed, [`crate::validate`] re-parses the raw source through `toml_edit`.
+//!   needed, [`crate::validate()`] re-parses the raw source through `toml_edit`.
 
 use serde::{Deserialize, Serialize};
 
@@ -1110,6 +1110,12 @@ pub struct Hop {
     /// Remote user on this hop. §8.2.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub user: Option<String>,
+    /// Hop-local `[profiles.hops.auth]`. Falls back to profile auth when unset. §8.2.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth: Option<Auth>,
+    /// Hop-local `[profiles.hops.trust]`. Falls back to profile trust when unset. §8.2.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trust: Option<Trust>,
     /// Where to resolve names: `local|remote|previous-hop`. §8.2.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target_resolve: Option<String>,

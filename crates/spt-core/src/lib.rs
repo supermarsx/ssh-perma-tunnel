@@ -10,7 +10,7 @@
 //! * Strongly-typed [identifier newtypes][id] for sessions, connections,
 //!   profiles, forwards, runs, and events.
 //! * Spec-style parsers for [duration] (`"5m"`, `"1h30m"`),
-//!   [size][size] (`"20MiB"`, `"1.5GB"`), and [bind addresses][address].
+//!   [size] (`"20MiB"`, `"1.5GB"`), and [bind addresses][address].
 //! * [Path expansion][path] for `~`, `${VAR}`, `%VAR%`.
 //! * [Redaction][redaction] primitives used before any log/event/MCP sink.
 

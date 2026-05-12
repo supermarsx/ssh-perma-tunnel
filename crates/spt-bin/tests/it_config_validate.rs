@@ -5,7 +5,12 @@ use std::path::PathBuf;
 
 fn examples_dir() -> PathBuf {
     let crate_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    crate_dir.parent().unwrap().parent().unwrap().join("examples")
+    crate_dir
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("examples")
 }
 
 #[test]

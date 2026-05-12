@@ -762,9 +762,7 @@ mod tests {
             .endpoint("h", 22)
             .user("alice")
             .auth_agent()
-            .add_forward(
-                ForwardBuilder::local_tcp("svc", "127.0.0.1:1234", "h:80").build(),
-            )
+            .add_forward(ForwardBuilder::local_tcp("svc", "127.0.0.1:1234", "h:80").build())
             .build();
         let c = ConfigBuilder::new().add_profile(p).build();
         assert_validates(&c);
@@ -776,9 +774,7 @@ mod tests {
             .protocol("ssh3")
             .ssh3_endpoint("https://h:443/ssh3?user={username}")
             .auth_bearer_token("secret://ns/tok")
-            .add_forward(
-                ForwardBuilder::local_udp("dns", "127.0.0.1:1053", "dns:53").build(),
-            )
+            .add_forward(ForwardBuilder::local_udp("dns", "127.0.0.1:1053", "dns:53").build())
             .build();
         let c = ConfigBuilder::new().add_profile(p).build();
         assert_validates(&c);

@@ -203,7 +203,9 @@ async fn serve_handler(
     // 304 short-circuit when If-None-Match matches the stored ETag.
     if let (Some(my_etag), Some(req_etag)) = (
         want_etag.as_ref(),
-        headers.get(header::IF_NONE_MATCH).and_then(|v| v.to_str().ok()),
+        headers
+            .get(header::IF_NONE_MATCH)
+            .and_then(|v| v.to_str().ok()),
     ) {
         if my_etag == req_etag {
             return (StatusCode::NOT_MODIFIED, HeaderMap::new(), Vec::new()).into_response();
@@ -391,10 +393,7 @@ mod tests {
 
     #[tokio::test]
     async fn axum_server_honours_if_none_match() {
-        let server = AxumHttpsServer::builder()
-            .with_etag("\"v1\"")
-            .start()
-            .await;
+        let server = AxumHttpsServer::builder().with_etag("\"v1\"").start().await;
         let client = reqwest::Client::builder()
             .danger_accept_invalid_certs(true)
             .https_only(true)

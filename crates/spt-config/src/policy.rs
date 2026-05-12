@@ -235,7 +235,12 @@ pub static BINDINGS: &[Binding] = &[
         name: "Backend",
         kind: BindingKind::String,
         apply: apply_secrets_backend,
-        is_unset: |c| c.secrets.as_ref().and_then(|s| s.backend.as_ref()).is_none(),
+        is_unset: |c| {
+            c.secrets
+                .as_ref()
+                .and_then(|s| s.backend.as_ref())
+                .is_none()
+        },
     },
     Binding {
         section: "Secrets",
@@ -710,7 +715,10 @@ fn type_matches(kind: BindingKind, v: &PolicyValue) -> bool {
     matches!(
         (kind, v),
         (BindingKind::String, PolicyValue::String(_))
-            | (BindingKind::Bool, PolicyValue::Bool(_) | PolicyValue::Integer(_))
+            | (
+                BindingKind::Bool,
+                PolicyValue::Bool(_) | PolicyValue::Integer(_)
+            )
             | (BindingKind::U32, PolicyValue::Integer(_))
             | (BindingKind::Allowlist, PolicyValue::MultiString(_))
     )
@@ -742,10 +750,8 @@ mod tests {
     fn advisory_machine_fills_unset_field() {
         let mut cfg = Config::default();
         let mut b = PolicyBundle::empty();
-        b.machine.insert(
-            key("Logging", "Level"),
-            PolicyValue::String("debug".into()),
-        );
+        b.machine
+            .insert(key("Logging", "Level"), PolicyValue::String("debug".into()));
         let r = PolicyOverlay::apply(&mut cfg, &b);
         assert_eq!(
             cfg.logging.as_ref().unwrap().level.as_deref(),
@@ -763,15 +769,10 @@ mod tests {
             ..Default::default()
         });
         let mut b = PolicyBundle::empty();
-        b.machine.insert(
-            key("Logging", "Level"),
-            PolicyValue::String("debug".into()),
-        );
+        b.machine
+            .insert(key("Logging", "Level"), PolicyValue::String("debug".into()));
         let r = PolicyOverlay::apply(&mut cfg, &b);
-        assert_eq!(
-            cfg.logging.as_ref().unwrap().level.as_deref(),
-            Some("info")
-        );
+        assert_eq!(cfg.logging.as_ref().unwrap().level.as_deref(), Some("info"));
         assert!(r.applied.is_empty());
     }
 
@@ -810,10 +811,7 @@ mod tests {
         b.enforced.insert(k); // ignored — not in machine map
         let r = PolicyOverlay::apply(&mut cfg, &b);
         // existing config wins
-        assert_eq!(
-            cfg.logging.as_ref().unwrap().level.as_deref(),
-            Some("info")
-        );
+        assert_eq!(cfg.logging.as_ref().unwrap().level.as_deref(), Some("info"));
         assert!(r.locked.is_empty());
         assert!(r.applied.is_empty());
     }
@@ -894,10 +892,8 @@ mod tests {
     fn dword_zero_one_round_trip_to_bool() {
         let mut cfg = Config::default();
         let mut b = PolicyBundle::empty();
-        b.machine.insert(
-            key("Firewall", "ApplyRules"),
-            PolicyValue::Integer(1),
-        );
+        b.machine
+            .insert(key("Firewall", "ApplyRules"), PolicyValue::Integer(1));
         PolicyOverlay::apply(&mut cfg, &b);
         assert_eq!(cfg.firewall.as_ref().unwrap().apply_rules, Some(true));
     }

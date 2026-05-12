@@ -11,7 +11,7 @@
 //! the body fingerprint is the integrity guarantee per spec §14.3.
 //!
 //! # Layout
-//! - [`fetch`] — async fetch entrypoint built on top of an injectable
+//! - [`fetch()`] — async fetch entrypoint built on top of an injectable
 //!   [`HttpFetcher`] so tests can plug in a fake.
 //! - [`cache`] — read/write the atomic cache file + sidecar `.sha256`.
 //! - [`http`] — the [`HttpFetcher`] trait + reqwest implementation.

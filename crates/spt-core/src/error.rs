@@ -10,7 +10,7 @@ use thiserror::Error;
 
 use crate::exit_code::ExitCode;
 
-/// Convenience [`Result`] alias bound to [`Error`].
+/// Convenience [`Result`] alias bound to [`enum@Error`].
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// Top-level error type for the spt workspace.

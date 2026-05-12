@@ -5,14 +5,14 @@
 //! `serde` types and exposes the I/O-light operations the rest of the workspace
 //! needs:
 //!
-//! * [`load`] — parse a config file from disk, collecting unknown-key warnings.
-//! * [`validate`] — semantic validation producing a [`Diagnostics`] bundle with
+//! * [`load()`] — parse a config file from disk, collecting unknown-key warnings.
+//! * [`validate()`] — semantic validation producing a [`Diagnostics`] bundle with
 //!   `miette`-friendly messages.
-//! * [`render`] — render a config back to TOML with optional secret redaction.
-//! * [`diff`] — field-level diff used by the reload reconciler.
-//! * [`migrate`] — version-to-version migration framework.
+//! * [`render()`] — render a config back to TOML with optional secret redaction.
+//! * [`diff()`] — field-level diff used by the reload reconciler.
+//! * [`migrate()`] — version-to-version migration framework.
 //! * [`mutate`] — `toml_edit`-based mutators preserving comments/formatting.
-//! * [`fingerprint`] — SHA-256 of the canonical-rendered config for status
+//! * [`fingerprint()`] — SHA-256 of the canonical-rendered config for status
 //!   snapshots.
 //!
 //! The crate is "almost pure" — the only filesystem I/O is reading and writing
