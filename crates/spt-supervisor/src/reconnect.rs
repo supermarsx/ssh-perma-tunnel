@@ -97,7 +97,9 @@ fn ceiling_for_attempt(initial: Duration, max: Duration, n: u32) -> Option<Durat
         return Some(Duration::ZERO);
     }
     let factor: u64 = 1_u64.checked_shl(n.min(31))?;
-    let ceiling_ms = initial_ms.saturating_mul(factor).min(max_ms.max(initial_ms));
+    let ceiling_ms = initial_ms
+        .saturating_mul(factor)
+        .min(max_ms.max(initial_ms));
     Some(Duration::from_millis(ceiling_ms))
 }
 
@@ -112,19 +114,15 @@ fn sample_jitter<R: Rng + ?Sized>(ceiling: Duration, rng: &mut R) -> Duration {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rand::SeedableRng;
     use rand::rngs::StdRng;
+    use rand::SeedableRng;
 
     #[test]
     fn ceiling_doubles_until_cap() {
         let init = Duration::from_secs(1);
         let max = Duration::from_secs(60);
         let cs: Vec<u64> = (0..10)
-            .map(|n| {
-                ceiling_for_attempt(init, max, n)
-                    .unwrap()
-                    .as_secs()
-            })
+            .map(|n| ceiling_for_attempt(init, max, n).unwrap().as_secs())
             .collect();
         // 1, 2, 4, 8, 16, 32, then capped at 60.
         assert_eq!(cs[0], 1);
@@ -143,12 +141,8 @@ mod tests {
         });
         for n in 0..20 {
             let d = b.next_delay(&mut rng);
-            let cap = ceiling_for_attempt(
-                Duration::from_secs(1),
-                Duration::from_secs(8),
-                n,
-            )
-            .unwrap();
+            let cap =
+                ceiling_for_attempt(Duration::from_secs(1), Duration::from_secs(8), n).unwrap();
             assert!(d <= cap, "attempt {n}: {d:?} > ceiling {cap:?}");
         }
     }

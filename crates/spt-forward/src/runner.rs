@@ -11,8 +11,8 @@ use std::time::Duration;
 use spt_config::schema::Forward;
 use spt_core::{BindAddr, Error, Result};
 use spt_protocol::{
-    ForwardDirection, ForwardHandle, ForwardState, LocalForwardSpec, RemoteForwardSpec,
-    TargetAddr, TunnelSession, UdpForwardSpec,
+    ForwardDirection, ForwardHandle, ForwardState, LocalForwardSpec, RemoteForwardSpec, TargetAddr,
+    TunnelSession, UdpForwardSpec,
 };
 use thiserror::Error;
 use tokio::sync::watch;
@@ -72,28 +72,23 @@ impl ForwardRunner {
             .bind
             .as_deref()
             .or(cfg.listen.as_deref())
-            .ok_or_else(|| {
-                ForwardRunnerError::Malformed {
-                    name: name.clone(),
-                    reason: "missing `bind`/`listen`".into(),
-                }
+            .ok_or_else(|| ForwardRunnerError::Malformed {
+                name: name.clone(),
+                reason: "missing `bind`/`listen`".into(),
             })?;
         let target_str = cfg
             .target
             .as_deref()
             .or(cfg.connect.as_deref())
-            .ok_or_else(|| {
-                ForwardRunnerError::Malformed {
-                    name: name.clone(),
-                    reason: "missing `target`/`connect`".into(),
-                }
+            .ok_or_else(|| ForwardRunnerError::Malformed {
+                name: name.clone(),
+                reason: "missing `target`/`connect`".into(),
             })?;
 
-        let listen = BindAddr::parse(listen_str)
-            .map_err(|e| ForwardRunnerError::Malformed {
-                name: name.clone(),
-                reason: format!("invalid listen `{listen_str}`: {e}"),
-            })?;
+        let listen = BindAddr::parse(listen_str).map_err(|e| ForwardRunnerError::Malformed {
+            name: name.clone(),
+            reason: format!("invalid listen `{listen_str}`: {e}"),
+        })?;
         let target = parse_target(target_str).map_err(|e| ForwardRunnerError::Malformed {
             name: name.clone(),
             reason: format!("invalid target `{target_str}`: {e}"),
@@ -187,7 +182,9 @@ fn parse_direction(s: &str) -> Result<ForwardDirection> {
     match s {
         "local" => Ok(ForwardDirection::Local),
         "remote" => Ok(ForwardDirection::Remote),
-        other => Err(Error::InvalidConfig(format!("unknown forward type `{other}`"))),
+        other => Err(Error::InvalidConfig(format!(
+            "unknown forward type `{other}`"
+        ))),
     }
 }
 

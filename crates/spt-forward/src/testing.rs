@@ -1,4 +1,4 @@
-//! Test fixtures for [`spt_forward`] consumers.
+//! Test fixtures for `spt-forward` consumers.
 //!
 //! Behind `#[cfg(any(test, feature = "testing"))]` so other crates' tests
 //! (notably `spt-supervisor`) can reuse them without copy-paste.
@@ -151,7 +151,12 @@ impl MockTunnelSession {
             _state_tx: state_tx,
             _close_rx_task: task,
         });
-        ForwardHandle::new(ProtocolForwardId::new(), name.to_owned(), state_rx, close_tx)
+        ForwardHandle::new(
+            ProtocolForwardId::new(),
+            name.to_owned(),
+            state_rx,
+            close_tx,
+        )
     }
 }
 

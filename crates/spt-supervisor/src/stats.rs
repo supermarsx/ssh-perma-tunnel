@@ -63,12 +63,12 @@ impl StatsTick {
             total_conns_open += row.conns_open;
             total_bytes_in += row.bytes_in;
             total_bytes_out += row.bytes_out;
-            let entry = by_profile.entry(row.profile.clone()).or_insert_with(|| {
-                ProfileStats {
+            let entry = by_profile
+                .entry(row.profile.clone())
+                .or_insert_with(|| ProfileStats {
                     profile: row.profile.clone(),
                     ..Default::default()
-                }
-            });
+                });
             entry.sessions += 1;
             entry.conns_open += row.conns_open;
             entry.bytes_in += row.bytes_in;
@@ -108,12 +108,7 @@ impl Default for StatsTickConfig {
 
 /// Compute throughput EWMA between two ticks. `prev` and `cur` are total byte
 /// counts; `dt` is the interval between samples. Returns the new EWMA value.
-pub fn update_throughput_ewma(
-    state: &Ewma,
-    prev_bytes: u64,
-    cur_bytes: u64,
-    dt: Duration,
-) -> f64 {
+pub fn update_throughput_ewma(state: &Ewma, prev_bytes: u64, cur_bytes: u64, dt: Duration) -> f64 {
     let dt_secs = dt.as_secs_f64().max(1e-3);
     let delta = cur_bytes.saturating_sub(prev_bytes) as f64;
     let bps = delta / dt_secs;

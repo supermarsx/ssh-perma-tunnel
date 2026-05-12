@@ -351,9 +351,14 @@ mod tests {
     #[tokio::test]
     async fn wait_for_state_unknown_profile_errors() {
         let orch = OrchestratorBuilder::new().build();
-        let err = wait_for_state(&orch, "ghost", ProfileStateName::Active, Duration::from_millis(50))
-            .await
-            .unwrap_err();
+        let err = wait_for_state(
+            &orch,
+            "ghost",
+            ProfileStateName::Active,
+            Duration::from_millis(50),
+        )
+        .await
+        .unwrap_err();
         assert!(matches!(err, Error::RuntimeFailure(_)));
     }
 

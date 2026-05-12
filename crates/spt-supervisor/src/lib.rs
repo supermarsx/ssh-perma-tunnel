@@ -55,5 +55,7 @@ pub use reconnect::{Backoff, BackoffConfig};
 pub use reconnect_trigger::{LiveReconnectTrigger, ReconnectTrigger};
 pub use reload::{ReloadAction, ReloadPlan};
 pub use session::{SessionRegistry, SessionRow, SessionState};
-pub use state_machine::{ForwardEvent, ProfileEvent as SmEvent, ProfileStateMachine, ProfileStateName};
+pub use state_machine::{
+    ForwardEvent, ProfileEvent as SmEvent, ProfileStateMachine, ProfileStateName,
+};
 pub use stats::{ProfileStats, StatsTick, StatsTickConfig};

@@ -18,13 +18,14 @@
 use std::sync::Arc;
 
 use spt_auth::{AuthConfig, AuthMethod, SecretRef as AuthSecretRef};
-use spt_config::schema::{Auth as AuthCfg, Profile};
+use spt_config::schema::{Auth as AuthCfg, Crypto as CryptoCfg, Profile, Trust as TrustCfg};
 use spt_core::{Error, Result};
 use spt_protocol::{Endpoint, TunnelProtocol};
 use spt_secrets::Resolver;
-use spt_ssh2::Ssh2Protocol;
+use spt_ssh2::{CryptoPolicy, Ssh2Protocol, TrustPolicy};
 use spt_ssh3::{Ssh3Config, Ssh3Protocol};
-use spt_supervisor::ProfileSupervisorConfig;
+use spt_supervisor::{BackoffConfig, FailoverMode, ProfileSupervisorConfig};
+use spt_trust::{KnownHosts, Sha256HostPin};
 
 /// All the bits needed to start one profile.
 pub struct ProfileBundle {
@@ -40,8 +41,11 @@ pub struct ProfileBundle {
 
 /// Build a [`ProfileBundle`] for one profile.
 pub fn build(profile: &Profile, resolver: &Resolver) -> Result<ProfileBundle> {
+    let auth = build_auth_config(profile)?;
+    let endpoints = build_endpoints(profile);
+
     let protocol: Arc<dyn TunnelProtocol> = match profile.protocol.as_str() {
-        "ssh2" => Arc::new(build_ssh2(resolver)),
+        "ssh2" => Arc::new(build_ssh2(profile, resolver, &endpoints)?),
         "ssh3" => Arc::new(build_ssh3(profile)),
         other => {
             return Err(Error::InvalidConfig(format!(
@@ -51,26 +55,44 @@ pub fn build(profile: &Profile, resolver: &Resolver) -> Result<ProfileBundle> {
         }
     };
 
-    let auth = build_auth_config(profile)?;
-    let endpoints = build_endpoints(profile);
-
     Ok(ProfileBundle {
         protocol,
         auth,
         endpoints,
-        supervisor_cfg: ProfileSupervisorConfig::default(),
+        supervisor_cfg: build_supervisor_config(profile)?,
     })
 }
 
-fn build_ssh2(resolver: &Resolver) -> Ssh2Protocol {
-    // Pull the resolver's backend chain into the protocol so the auth flow
-    // can resolve `secret://` references at connect time. M0 ships with
-    // permissive trust + default crypto; spec-rich wiring is M3.
-    let mut builder = Ssh2Protocol::builder();
+fn build_ssh2(
+    profile: &Profile,
+    resolver: &Resolver,
+    endpoints: &[Endpoint],
+) -> Result<Ssh2Protocol> {
+    // Pull the resolver's backend chain into the protocol so the auth flow can
+    // resolve `secret://` references at connect time.
+    let final_hosts = endpoints
+        .iter()
+        .map(|endpoint| (endpoint.host.clone(), endpoint.port))
+        .collect::<Vec<_>>();
+    let mut builder = Ssh2Protocol::builder()
+        .crypto(build_crypto_policy(profile.crypto.as_ref()))
+        .trust(build_trust_policy(profile.trust.as_ref(), &final_hosts)?);
     for b in resolver.backend_arcs() {
         builder = builder.backend(Arc::clone(b));
     }
-    builder.build()
+    for hop in &profile.hops {
+        let hop_auth = build_auth_config_parts(
+            hop.user.as_deref().or(profile.user.as_deref()),
+            hop.auth.as_ref().or(profile.auth.as_ref()),
+            "hops.auth",
+        )?;
+        let hop_trust = build_trust_policy(
+            hop.trust.as_ref().or(profile.trust.as_ref()),
+            &[(hop.host.clone(), hop.port)],
+        )?;
+        builder = builder.hop_with_auth_trust(&hop.host, hop.port, hop_auth, hop_trust);
+    }
+    Ok(builder.build())
 }
 
 fn build_ssh3(profile: &Profile) -> Ssh3Protocol {
@@ -83,18 +105,118 @@ fn build_ssh3(profile: &Profile) -> Ssh3Protocol {
     Ssh3Protocol::new(cfg)
 }
 
-fn build_auth_config(profile: &Profile) -> Result<AuthConfig> {
-    let username = profile.user.clone().unwrap_or_default();
-    let methods = profile
-        .auth
+fn build_supervisor_config(profile: &Profile) -> Result<ProfileSupervisorConfig> {
+    let mut cfg = ProfileSupervisorConfig::default();
+
+    if let Some(reconnect) = profile.reconnect.as_ref() {
+        cfg.backoff = build_backoff_config(&profile.name, reconnect)?;
+    }
+
+    if let Some(mode) = profile
+        .failover
         .as_ref()
-        .map(translate_auth)
-        .transpose()?
-        .unwrap_or_default();
-    Ok(AuthConfig::new(username, methods))
+        .and_then(|failover| failover.mode.as_deref())
+    {
+        cfg.failover_mode = match mode {
+            "priority" => FailoverMode::Priority,
+            "weighted" => FailoverMode::Weighted,
+            "manual" => FailoverMode::Manual,
+            other => {
+                return Err(Error::InvalidConfig(format!(
+                    "profile `{}`: unknown failover.mode `{other}`",
+                    profile.name
+                )));
+            }
+        };
+    }
+
+    Ok(cfg)
 }
 
-fn translate_auth(a: &AuthCfg) -> Result<Vec<AuthMethod>> {
+fn build_backoff_config(
+    profile_name: &str,
+    reconnect: &spt_config::schema::Reconnect,
+) -> Result<BackoffConfig> {
+    let mut cfg = BackoffConfig::default();
+    if let Some(raw) = reconnect.initial_delay.as_deref() {
+        cfg.initial_delay = parse_profile_duration(profile_name, "reconnect.initial_delay", raw)?;
+    }
+    if let Some(raw) = reconnect.max_delay.as_deref() {
+        cfg.max_delay = parse_profile_duration(profile_name, "reconnect.max_delay", raw)?;
+    }
+    if let Some(raw) = reconnect.reset_after.as_deref() {
+        cfg.reset_after = parse_profile_duration(profile_name, "reconnect.reset_after", raw)?;
+    }
+    if let Some(raw) = reconnect.jitter.as_deref() {
+        cfg.jitter = parse_jitter_ratio(profile_name, raw)?;
+    }
+    if let Some(max_attempts) = reconnect.max_attempts {
+        cfg.max_attempts = max_attempts;
+    }
+    Ok(cfg)
+}
+
+fn parse_profile_duration(
+    profile_name: &str,
+    field: &str,
+    raw: &str,
+) -> Result<std::time::Duration> {
+    spt_core::duration::parse_duration(raw)
+        .map_err(|e| Error::InvalidConfig(format!("profile `{profile_name}`: {field}: {e}")))
+}
+
+fn parse_jitter_ratio(profile_name: &str, raw: &str) -> Result<f32> {
+    let trimmed = raw.trim();
+    let ratio = if let Some(percent) = trimmed.strip_suffix('%') {
+        percent.trim().parse::<f32>().map(|value| value / 100.0)
+    } else {
+        trimmed.parse::<f32>()
+    }
+    .map_err(|e| {
+        Error::InvalidConfig(format!(
+            "profile `{profile_name}`: reconnect.jitter `{trimmed}` is invalid: {e}"
+        ))
+    })?;
+
+    if (0.0..=1.0).contains(&ratio) {
+        Ok(ratio)
+    } else {
+        Err(Error::InvalidConfig(format!(
+            "profile `{profile_name}`: reconnect.jitter `{trimmed}` must be between 0% and 100%"
+        )))
+    }
+}
+
+fn build_crypto_policy(crypto: Option<&CryptoCfg>) -> CryptoPolicy {
+    let Some(crypto) = crypto else {
+        return CryptoPolicy::default();
+    };
+    CryptoPolicy {
+        ciphers: crypto.ciphers.clone().unwrap_or_default(),
+        kex: crypto.kex_algorithms.clone().unwrap_or_default(),
+        macs: crypto.macs.clone().unwrap_or_default(),
+        host_keys: crypto.host_key_algorithms.clone().unwrap_or_default(),
+        compression: crypto.compression.clone().unwrap_or_default(),
+    }
+}
+
+fn build_auth_config(profile: &Profile) -> Result<AuthConfig> {
+    build_auth_config_parts(profile.user.as_deref(), profile.auth.as_ref(), "auth")
+}
+
+fn build_auth_config_parts(
+    username: Option<&str>,
+    auth: Option<&AuthCfg>,
+    context: &str,
+) -> Result<AuthConfig> {
+    let methods = auth
+        .map(|auth| translate_auth(auth, context))
+        .transpose()?
+        .unwrap_or_default();
+    Ok(AuthConfig::new(username.unwrap_or_default(), methods))
+}
+
+fn translate_auth(a: &AuthCfg, context: &str) -> Result<Vec<AuthMethod>> {
     // `Auth` in the schema is a permissive accumulator of fields; we
     // translate the *first* declared method only in M0 and let unset
     // configs round-trip as an empty method list (the supervisor will
@@ -102,7 +224,7 @@ fn translate_auth(a: &AuthCfg) -> Result<Vec<AuthMethod>> {
     let mut out = Vec::new();
     if let Some(p) = &a.password {
         let secret = AuthSecretRef::parse(p).map_err(|e| {
-            Error::InvalidConfig(format!("auth.password: invalid secret reference: {e}"))
+            Error::InvalidConfig(format!("{context}.password: invalid secret reference: {e}"))
         })?;
         out.push(AuthMethod::Password { secret });
     }
@@ -112,7 +234,7 @@ fn translate_auth(a: &AuthCfg) -> Result<Vec<AuthMethod>> {
             .as_ref()
             .map(|p| AuthSecretRef::parse(p))
             .transpose()
-            .map_err(|e| Error::InvalidConfig(format!("auth.passphrase: {e}")))?;
+            .map_err(|e| Error::InvalidConfig(format!("{context}.passphrase: {e}")))?;
         out.push(AuthMethod::PublicKey {
             identity_file: std::path::PathBuf::from(key),
             passphrase,
@@ -122,6 +244,33 @@ fn translate_auth(a: &AuthCfg) -> Result<Vec<AuthMethod>> {
         out.push(AuthMethod::Agent { socket: None });
     }
     Ok(out)
+}
+
+fn build_trust_policy(trust: Option<&TrustCfg>, hosts: &[(String, u16)]) -> Result<TrustPolicy> {
+    let Some(trust) = trust else {
+        return Ok(TrustPolicy::default());
+    };
+    let known_hosts = trust
+        .known_hosts_file
+        .as_ref()
+        .map(|path| KnownHosts::load(std::path::Path::new(path)))
+        .transpose()?;
+
+    let sha256_pins = trust.pin_sha256.as_ref().map(|pins| {
+        let mut pin_map = Sha256HostPin::new();
+        for (host, port) in hosts {
+            for pin in pins {
+                pin_map.insert(host, *port, pin.clone());
+            }
+        }
+        pin_map
+    });
+
+    Ok(TrustPolicy {
+        known_hosts,
+        sha256_pins,
+        strict: trust.strict.unwrap_or(false),
+    })
 }
 
 fn build_endpoints(profile: &Profile) -> Vec<Endpoint> {
@@ -213,5 +362,61 @@ mod tests {
         let (c, _) = load_str(cfg, false).unwrap();
         let bundle = build(&c.profiles[0], &empty_resolver()).unwrap();
         assert!(bundle.endpoints.is_empty());
+    }
+
+    #[test]
+    fn reconnect_and_failover_feed_supervisor_config() {
+        let cfg = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            user = "u"
+
+            [profiles.reconnect]
+            initial_delay = "250ms"
+            max_delay = "2s"
+            reset_after = "5s"
+            jitter = "25%"
+            max_attempts = 7
+
+            [profiles.failover]
+            mode = "weighted"
+        "#;
+        let (c, _) = load_str(cfg, false).unwrap();
+        let bundle = build(&c.profiles[0], &empty_resolver()).unwrap();
+        assert_eq!(
+            bundle.supervisor_cfg.backoff.initial_delay,
+            std::time::Duration::from_millis(250)
+        );
+        assert_eq!(
+            bundle.supervisor_cfg.backoff.max_delay,
+            std::time::Duration::from_secs(2)
+        );
+        assert_eq!(
+            bundle.supervisor_cfg.backoff.reset_after,
+            std::time::Duration::from_secs(5)
+        );
+        assert!((bundle.supervisor_cfg.backoff.jitter - 0.25).abs() < f32::EPSILON);
+        assert_eq!(bundle.supervisor_cfg.backoff.max_attempts, 7);
+        assert_eq!(bundle.supervisor_cfg.failover_mode, FailoverMode::Weighted);
+    }
+
+    #[test]
+    fn crypto_table_maps_to_ssh2_policy() {
+        let policy = build_crypto_policy(Some(&CryptoCfg {
+            ciphers: Some(vec!["aes256-ctr".into()]),
+            kex_algorithms: Some(vec!["diffie-hellman-group14-sha256".into()]),
+            macs: Some(vec!["hmac-sha2-256".into()]),
+            host_key_algorithms: Some(vec!["rsa-sha2-256".into()]),
+            compression: Some(vec!["none".into()]),
+            ..Default::default()
+        }));
+        assert_eq!(policy.ciphers, vec!["aes256-ctr"]);
+        assert_eq!(policy.kex, vec!["diffie-hellman-group14-sha256"]);
+        assert_eq!(policy.macs, vec!["hmac-sha2-256"]);
+        assert_eq!(policy.host_keys, vec!["rsa-sha2-256"]);
+        assert_eq!(policy.compression, vec!["none"]);
     }
 }

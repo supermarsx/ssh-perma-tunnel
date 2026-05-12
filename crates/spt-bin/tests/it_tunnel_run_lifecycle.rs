@@ -59,8 +59,7 @@ async fn orchestrator_start_then_shutdown_writes_status_and_exits_clean() {
         .update(|s| {
             s.pid = std::process::id();
             s.version = "test".into();
-            s.config_fingerprint_sha256 =
-                spt_config::fingerprint::fingerprint_hex(&cfg);
+            s.config_fingerprint_sha256 = spt_config::fingerprint::fingerprint_hex(&cfg);
             s.profiles = cfg
                 .profiles
                 .iter()
@@ -118,7 +117,10 @@ async fn orchestrator_start_then_shutdown_writes_status_and_exits_clean() {
 
     // 6. Clean shutdown — this is the "SIGTERM → exit 0" equivalent.
     orchestrator.shutdown().await;
-    assert!(orchestrator.is_empty(), "all profiles stopped after shutdown");
+    assert!(
+        orchestrator.is_empty(),
+        "all profiles stopped after shutdown"
+    );
 
     // The state lock drops cleanly at end of scope.
     drop(lock);

@@ -33,10 +33,10 @@
 #![allow(clippy::redundant_closure_for_method_calls)]
 #![allow(clippy::assigning_clones)]
 
-use std::io::Write;
-use std::path::{Path, PathBuf};
 use spt_cli::{groups, Cli, Command, GlobalOpts};
 use spt_core::{Error, RedactionMode, Result};
+use std::io::Write;
+use std::path::{Path, PathBuf};
 
 /// Top-level dispatcher.
 pub async fn dispatch(cli: Cli) -> Result<()> {
@@ -48,10 +48,7 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
     let global = if let Some(dir) = cli.global.config_dir.clone() {
         let (cfg, _w) = spt_config::load_dir(&dir, false)?;
         let body = spt_config::render(&cfg, RedactionMode::None);
-        let tmp = std::env::temp_dir().join(format!(
-            "spt-merged-{}.toml",
-            std::process::id()
-        ));
+        let tmp = std::env::temp_dir().join(format!("spt-merged-{}.toml", std::process::id()));
         std::fs::write(&tmp, body).map_err(|e| {
             Error::InvalidConfig(format!(
                 "write merged config-dir to `{}`: {e}",
@@ -177,12 +174,13 @@ async fn config_init(global: &GlobalOpts, args: groups::config::ConfigInit) -> R
         .path
         .clone()
         .or_else(|| global.config.clone())
-        .ok_or_else(|| {
-            Error::InvalidArgs("provide --path or set --config / $SPT_CONFIG".into())
-        })?;
+        .ok_or_else(|| Error::InvalidArgs("provide --path or set --config / $SPT_CONFIG".into()))?;
     // `--example observability` writes the canned multi-sink template
     // shipped at `examples/observability.toml`.
-    if matches!(args.example, Some(groups::config::ConfigExample::Observability)) {
+    if matches!(
+        args.example,
+        Some(groups::config::ConfigExample::Observability)
+    ) {
         crate::cli::config_ops::init_observability_example(&path).await?;
         println!("wrote {}", path.display());
         return Ok(());
@@ -217,8 +215,8 @@ fn config_migrate(global: &GlobalOpts, args: groups::config::ConfigMigrate) -> R
     let path = require_config_path(global)?;
     let raw = std::fs::read_to_string(&path)
         .map_err(|e| Error::InvalidConfig(format!("read `{}`: {e}", path.display())))?;
-    let migrated = spt_config::migrate(&raw)
-        .map_err(|e| Error::InvalidConfig(format!("migrate: {e}")))?;
+    let migrated =
+        spt_config::migrate(&raw).map_err(|e| Error::InvalidConfig(format!("migrate: {e}")))?;
     let _ = (args.from_version, args.to_version);
     spt_state::write_atomic_string(&path, &migrated)
         .map_err(|e| Error::InvalidConfig(format!("write `{}`: {e}", path.display())))?;
@@ -227,7 +225,7 @@ fn config_migrate(global: &GlobalOpts, args: groups::config::ConfigMigrate) -> R
 }
 
 async fn config_pull(global: &GlobalOpts, args: groups::config::ConfigPull) -> Result<()> {
-    use spt_remote_config::{ReqwestFetcher, RemoteConfigSpec};
+    use spt_remote_config::{RemoteConfigSpec, ReqwestFetcher};
     let fingerprint = args.fingerprint.clone().ok_or_else(|| {
         Error::InvalidArgs(
             "--fingerprint <SHA256> is required (remote-config pull is pin-only per spec §14.3)"
@@ -240,8 +238,8 @@ async fn config_pull(global: &GlobalOpts, args: groups::config::ConfigPull) -> R
         ..Default::default()
     };
     let state_dir = resolve_state_dir_for_read(global).unwrap_or_else(|_| std::env::temp_dir());
-    let fetcher = ReqwestFetcher::new()
-        .map_err(|e| Error::InvalidConfig(format!("reqwest fetcher: {e}")))?;
+    let fetcher =
+        ReqwestFetcher::new().map_err(|e| Error::InvalidConfig(format!("reqwest fetcher: {e}")))?;
     let result = spt_remote_config::fetch(&spec, &state_dir, &fetcher)
         .await
         .map_err(|e| Error::InvalidConfig(format!("remote-config fetch: {e}")))?;
@@ -271,9 +269,9 @@ fn config_trust(global: &GlobalOpts, args: groups::config::ConfigTrust) -> Resul
                 .as_table_mut()
                 .entry("runtime")
                 .or_insert_with(|| toml_edit::Item::Table(toml_edit::Table::new()));
-            let runtime_tbl = runtime.as_table_mut().ok_or_else(|| {
-                Error::InvalidConfig("[runtime] is not a table".into())
-            })?;
+            let runtime_tbl = runtime
+                .as_table_mut()
+                .ok_or_else(|| Error::InvalidConfig("[runtime] is not a table".into()))?;
             let rc = runtime_tbl
                 .entry("remote_config")
                 .or_insert_with(|| toml_edit::Item::Table(toml_edit::Table::new()));
@@ -321,8 +319,8 @@ async fn profile_dispatch(global: &GlobalOpts, c: groups::profile::ProfileCmd) -
 
 fn profile_list(global: &GlobalOpts) -> Result<()> {
     let path = require_config_path(global)?;
-    let (cfg, _) = spt_config::load(&path, false)
-        .map_err(|e| Error::InvalidConfig(format!("load: {e}")))?;
+    let (cfg, _) =
+        spt_config::load(&path, false).map_err(|e| Error::InvalidConfig(format!("load: {e}")))?;
     if cfg.profiles.is_empty() {
         println!("(no profiles)");
     } else {
@@ -341,8 +339,8 @@ fn profile_list(global: &GlobalOpts) -> Result<()> {
 
 fn profile_show(global: &GlobalOpts, args: groups::profile::ProfileShow) -> Result<()> {
     let path = require_config_path(global)?;
-    let (cfg, _) = spt_config::load(&path, false)
-        .map_err(|e| Error::InvalidConfig(format!("load: {e}")))?;
+    let (cfg, _) =
+        spt_config::load(&path, false).map_err(|e| Error::InvalidConfig(format!("load: {e}")))?;
     let p = cfg
         .profiles
         .iter()
@@ -371,9 +369,9 @@ fn profile_add(global: &GlobalOpts, args: groups::profile::ProfileAdd) -> Result
     let path = require_config_path(global)?;
     let raw = std::fs::read_to_string(&path)
         .map_err(|e| Error::InvalidConfig(format!("read `{}`: {e}", path.display())))?;
-    let mut doc = raw.parse::<toml_edit::DocumentMut>().map_err(|e| {
-        Error::InvalidConfig(format!("toml_edit parse `{}`: {e}", path.display()))
-    })?;
+    let mut doc = raw
+        .parse::<toml_edit::DocumentMut>()
+        .map_err(|e| Error::InvalidConfig(format!("toml_edit parse `{}`: {e}", path.display())))?;
     let proto_str = match args.protocol {
         Protocol::Ssh2 => "ssh2",
         Protocol::Ssh3 => "ssh3",
@@ -457,8 +455,8 @@ async fn forward_dispatch(global: &GlobalOpts, c: groups::forward::ForwardCmd) -
 
 fn forward_list(global: &GlobalOpts, args: groups::forward::ForwardList) -> Result<()> {
     let path = require_config_path(global)?;
-    let (cfg, _) = spt_config::load(&path, false)
-        .map_err(|e| Error::InvalidConfig(format!("load: {e}")))?;
+    let (cfg, _) =
+        spt_config::load(&path, false).map_err(|e| Error::InvalidConfig(format!("load: {e}")))?;
     for p in &cfg.profiles {
         if let Some(filter) = &args.profile {
             if &p.name != filter {
@@ -487,8 +485,8 @@ fn forward_add(global: &GlobalOpts, args: groups::forward::ForwardAdd) -> Result
     };
     let transport = if fa.udp { "udp" } else { "tcp" };
     let path = require_config_path(global)?;
-    let raw = std::fs::read_to_string(&path)
-        .map_err(|e| Error::InvalidConfig(format!("read: {e}")))?;
+    let raw =
+        std::fs::read_to_string(&path).map_err(|e| Error::InvalidConfig(format!("read: {e}")))?;
     let mut doc = raw
         .parse::<toml_edit::DocumentMut>()
         .map_err(|e| Error::InvalidConfig(format!("toml: {e}")))?;
@@ -506,11 +504,7 @@ fn forward_add(global: &GlobalOpts, args: groups::forward::ForwardAdd) -> Result
         .or_insert_with(|| toml_edit::Item::ArrayOfTables(toml_edit::ArrayOfTables::new()));
     if let toml_edit::Item::ArrayOfTables(a) = arr {
         let mut t = toml_edit::Table::new();
-        let name = format!(
-            "{}-{}",
-            direction,
-            a.len() + 1,
-        );
+        let name = format!("{}-{}", direction, a.len() + 1,);
         t["name"] = toml_edit::value(name.clone());
         t["type"] = toml_edit::value(direction);
         t["transport"] = toml_edit::value(transport);
@@ -527,8 +521,8 @@ fn forward_add(global: &GlobalOpts, args: groups::forward::ForwardAdd) -> Result
 fn forward_remove(global: &GlobalOpts, args: groups::forward::ForwardRef) -> Result<()> {
     let (profile_name, fwd_name) = parse_forward_ref(&args.reference)?;
     let path = require_config_path(global)?;
-    let raw = std::fs::read_to_string(&path)
-        .map_err(|e| Error::InvalidConfig(format!("read: {e}")))?;
+    let raw =
+        std::fs::read_to_string(&path).map_err(|e| Error::InvalidConfig(format!("read: {e}")))?;
     let mut doc = raw
         .parse::<toml_edit::DocumentMut>()
         .map_err(|e| Error::InvalidConfig(format!("toml: {e}")))?;
@@ -605,10 +599,7 @@ async fn tunnel_dispatch(global: &GlobalOpts, c: groups::tunnel::TunnelCmd) -> R
     }
 }
 
-async fn tunnel_failover(
-    global: &GlobalOpts,
-    args: groups::tunnel::TunnelFailover,
-) -> Result<()> {
+async fn tunnel_failover(global: &GlobalOpts, args: groups::tunnel::TunnelFailover) -> Result<()> {
     let state_dir = resolve_state_dir_for_read(global)?;
     let mut client = crate::mcp_client::McpClient::connect_from_state_dir(&state_dir).await?;
     client.initialize().await?;
@@ -630,14 +621,21 @@ async fn tunnel_run(global: &GlobalOpts, args: groups::tunnel::TunnelRun) -> Res
     // until shutdown. SIGHUP triggers a config re-load + reconciliation via
     // `Orchestrator::apply` against a fresh `ReloadPlan`.
     let path = require_config_path(global)?;
-    let (mut cfg, _w) = spt_config::load(&path, false)
-        .map_err(|e| Error::InvalidConfig(format!("load: {e}")))?;
+    let (mut cfg, _w) =
+        spt_config::load(&path, false).map_err(|e| Error::InvalidConfig(format!("load: {e}")))?;
     // Apply Group Policy registry overlay (Windows; no-op stub elsewhere)
     // before validation/runtime so any HKLM-enforced bindings take effect
     // for the long-running tunnel process. See `crates/spt-bin/src/policy/`.
     let _overlay_report = crate::policy::overlay::apply(&mut cfg);
     let state_dir = resolve_state_dir(global, &cfg)?;
     let _lock = spt_state::StateLock::acquire(&state_dir)?;
+    let selected_profile_names = cfg
+        .profiles
+        .iter()
+        .filter(|p| p.enabled != Some(false))
+        .filter(|p| args.profiles.is_empty() || args.profiles.iter().any(|name| name == &p.name))
+        .map(|p| p.name.clone())
+        .collect::<Vec<_>>();
 
     let writer_cfg = spt_state::StatusWriterConfig::default();
     let writer = spt_state::StatusWriter::new(state_dir.clone(), writer_cfg);
@@ -650,6 +648,7 @@ async fn tunnel_run(global: &GlobalOpts, args: groups::tunnel::TunnelRun) -> Res
             s.profiles = cfg
                 .profiles
                 .iter()
+                .filter(|p| selected_profile_names.iter().any(|name| name == &p.name))
                 .map(|p| spt_state::status::ProfileStatus {
                     id: p.name.clone(),
                     state: "starting".into(),
@@ -666,9 +665,18 @@ async fn tunnel_run(global: &GlobalOpts, args: groups::tunnel::TunnelRun) -> Res
 
     // Construct the orchestrator and start every enabled profile.
     let orchestrator = std::sync::Arc::new(spt_supervisor::Orchestrator::new());
+    let mut started_profiles = Vec::new();
+    let mut startup_errors = Vec::new();
     for profile in &cfg.profiles {
         if profile.enabled == Some(false) {
             tracing::info!(profile = %profile.name, "profile disabled — skipping");
+            continue;
+        }
+        if !selected_profile_names
+            .iter()
+            .any(|name| name == &profile.name)
+        {
+            tracing::info!(profile = %profile.name, "profile filtered — skipping");
             continue;
         }
         match crate::profile_factory::build(profile, &resolver) {
@@ -686,9 +694,11 @@ async fn tunnel_run(global: &GlobalOpts, args: groups::tunnel::TunnelRun) -> Res
                     bundle.endpoints,
                     bundle.supervisor_cfg,
                 );
+                started_profiles.push(profile.name.clone());
             }
             Err(e) => {
                 tracing::error!(profile = %profile.name, error = %e, "failed to build profile");
+                startup_errors.push(format!("{}: {e}", profile.name));
                 writer
                     .update(|s| {
                         if let Some(p) = s.profiles.iter_mut().find(|p| p.id == profile.name) {
@@ -722,13 +732,29 @@ async fn tunnel_run(global: &GlobalOpts, args: groups::tunnel::TunnelRun) -> Res
     let signal_rx = crate::signals::spawn();
 
     if args.once {
-        // `--once`: bring everything up, then immediately tear down. Used in
-        // CI / smoke tests to confirm a config can drive the orchestrator
-        // through the start/stop lifecycle without blocking on a signal.
+        // `--once`: wait until every selected profile reaches startup readiness
+        // or exhausts its startup attempts, then tear down and return that
+        // outcome to the caller.
+        let once_result = if startup_errors.is_empty() {
+            wait_for_once_startup(
+                &orchestrator,
+                &started_profiles,
+                std::time::Duration::from_secs(30),
+            )
+            .await
+        } else {
+            Err(Error::RuntimeFailure(format!(
+                "profile startup failed: {}",
+                startup_errors.join("; ")
+            )))
+        };
         orchestrator.shutdown().await;
+        if let Some(h) = mcp_handle {
+            h.shutdown(&state_dir).await;
+        }
         writer.flush().await?;
         writer_handle.stop().await;
-        return Ok(());
+        return once_result;
     }
 
     let mut sig = signal_rx;
@@ -741,13 +767,8 @@ async fn tunnel_run(global: &GlobalOpts, args: groups::tunnel::TunnelRun) -> Res
             Some(crate::signals::Signal::Shutdown) => break,
             Some(crate::signals::Signal::Reload) => {
                 tracing::info!("reload requested (SIGHUP) — re-reading config");
-                match reload_orchestrator(
-                    &cfg_path_for_reload,
-                    &resolver,
-                    &orchestrator,
-                    &cfg,
-                )
-                .await
+                match reload_orchestrator(&cfg_path_for_reload, &resolver, &orchestrator, &cfg)
+                    .await
                 {
                     Ok(new_cfg) => {
                         // Refresh the snapshot fingerprint to mirror live state.
@@ -775,6 +796,101 @@ async fn tunnel_run(global: &GlobalOpts, args: groups::tunnel::TunnelRun) -> Res
     Ok(())
 }
 
+async fn wait_for_once_startup(
+    orchestrator: &std::sync::Arc<spt_supervisor::Orchestrator>,
+    profiles: &[String],
+    deadline: std::time::Duration,
+) -> Result<()> {
+    let mut waiters = Vec::with_capacity(profiles.len());
+    for name in profiles {
+        let sup = orchestrator.profile_handle(name).ok_or_else(|| {
+            Error::RuntimeFailure(format!(
+                "profile `{name}` was selected for startup but no supervisor was registered"
+            ))
+        })?;
+        waiters.push(wait_for_profile_startup(name.clone(), sup));
+    }
+
+    tokio::time::timeout(deadline, futures::future::try_join_all(waiters))
+        .await
+        .map_err(|_| {
+            Error::RuntimeFailure(format!(
+                "tunnel run --once timed out after {} waiting for startup",
+                spt_core::duration::format_duration(deadline)
+            ))
+        })??;
+    Ok(())
+}
+
+async fn wait_for_profile_startup(
+    name: String,
+    sup: std::sync::Arc<spt_supervisor::ProfileSupervisor>,
+) -> Result<()> {
+    let mut state_rx = sup.watch_state();
+    let mut events_rx = sup.take_events();
+
+    loop {
+        match *state_rx.borrow() {
+            spt_supervisor::ProfileStateName::Active
+            | spt_supervisor::ProfileStateName::Degraded => {
+                return Ok(());
+            }
+            spt_supervisor::ProfileStateName::Stopped
+            | spt_supervisor::ProfileStateName::Disabled => {
+                return Err(Error::RuntimeFailure(format!(
+                    "profile `{name}` stopped before startup completed"
+                )));
+            }
+            _ => {}
+        }
+
+        tokio::select! {
+            changed = state_rx.changed() => {
+                if changed.is_err() {
+                    return Err(Error::RuntimeFailure(format!(
+                        "profile `{name}` stopped before reporting startup status"
+                    )));
+                }
+            }
+            event = async {
+                match events_rx.as_mut() {
+                    Some(rx) => rx.recv().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                match event {
+                    Some(spt_supervisor::ProfileEvent::BackoffExhausted { profile }) => {
+                        return Err(Error::RuntimeFailure(format!(
+                            "profile `{profile}` exhausted reconnect attempts during startup"
+                        )));
+                    }
+                    Some(spt_supervisor::ProfileEvent::StateChanged {
+                        to:
+                            spt_supervisor::ProfileStateName::Active
+                            | spt_supervisor::ProfileStateName::Degraded,
+                        ..
+                    }) => {
+                        return Ok(());
+                    }
+                    Some(spt_supervisor::ProfileEvent::StateChanged {
+                        to:
+                            spt_supervisor::ProfileStateName::Stopped
+                            | spt_supervisor::ProfileStateName::Disabled,
+                        profile,
+                        ..
+                    }) => {
+                        return Err(Error::RuntimeFailure(format!(
+                            "profile `{profile}` stopped before startup completed"
+                        )));
+                    }
+                    Some(_) => {}
+                    None => events_rx = None,
+                }
+            }
+        }
+    }
+}
+
 /// Handle for a spawned MCP loopback control surface.
 struct McpLoopbackHandle {
     task: tokio::task::JoinHandle<()>,
@@ -790,7 +906,7 @@ impl McpLoopbackHandle {
     }
 }
 
-/// Spawn the loopback MCP server backed by an [`OrchestratorController`] when
+/// Spawn the loopback MCP server backed by an [`crate::controller::OrchestratorController`] when
 /// `[mcp].listen` is set. Writes the `<state_dir>/mcp-listen.json` sidecar so
 /// CLI subcommands can discover the listener.
 async fn maybe_spawn_mcp_loopback(
@@ -809,9 +925,9 @@ async fn maybe_spawn_mcp_loopback(
     let Some(listen) = mcp.listen.clone() else {
         return Ok(None);
     };
-    let transport = spt_mcp::LoopbackTransport::bind(&listen).await.map_err(|e| {
-        Error::McpFailed(format!("loopback bind `{listen}`: {e}"))
-    })?;
+    let transport = spt_mcp::LoopbackTransport::bind(&listen)
+        .await
+        .map_err(|e| Error::McpFailed(format!("loopback bind `{listen}`: {e}")))?;
     let bound = transport
         .local_addr()
         .map_err(|e| Error::McpFailed(format!("local_addr: {e}")))?;
@@ -852,7 +968,7 @@ async fn maybe_spawn_mcp_loopback(
     Ok(Some(McpLoopbackHandle { task }))
 }
 
-/// Re-read the config from disk and apply a [`ReloadPlan`] against the
+/// Re-read the config from disk and apply a [`spt_supervisor::ReloadPlan`] against the
 /// orchestrator. Returns the freshly loaded config on success.
 async fn reload_orchestrator(
     path: &Path,
@@ -898,12 +1014,10 @@ fn tunnel_status(global: &GlobalOpts) -> Result<()> {
             print!("{s}");
             Ok(())
         }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            Err(Error::RuntimeFailure(format!(
-                "no status snapshot at `{}` — is `spt tunnel run` running?",
-                path.display()
-            )))
-        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(Error::RuntimeFailure(format!(
+            "no status snapshot at `{}` — is `spt tunnel run` running?",
+            path.display()
+        ))),
         Err(e) => Err(Error::RuntimeFailure(format!("read status: {e}"))),
     }
 }
@@ -914,9 +1028,8 @@ async fn tunnel_stop(global: &GlobalOpts) -> Result<()> {
     // service path; manual stop is tracked in M9.
     let state_dir = resolve_state_dir_for_read(global)?;
     let pid_path = spt_state::paths::pid_path(&state_dir);
-    let pid_str = std::fs::read_to_string(&pid_path).map_err(|e| {
-        Error::RuntimeFailure(format!("read `{}`: {e}", pid_path.display()))
-    })?;
+    let pid_str = std::fs::read_to_string(&pid_path)
+        .map_err(|e| Error::RuntimeFailure(format!("read `{}`: {e}", pid_path.display())))?;
     let pid: i32 = pid_str
         .trim()
         .parse()
@@ -1053,8 +1166,8 @@ fn service_spec_from_args(
     config: &Path,
     scope: &groups::service::ServiceScope,
 ) -> Result<spt_service::ServiceSpec> {
-    let exe = std::env::current_exe()
-        .map_err(|e| Error::RuntimeFailure(format!("current_exe: {e}")))?;
+    let exe =
+        std::env::current_exe().map_err(|e| Error::RuntimeFailure(format!("current_exe: {e}")))?;
     let name = scope
         .name
         .clone()
@@ -1245,7 +1358,9 @@ fn prompt_passphrase(prompt: &str) -> Result<String> {
         .lock()
         .read_line(&mut buf)
         .map_err(|e| Error::RuntimeFailure(format!("read passphrase: {e}")))?;
-    Ok(buf.trim_end_matches(|c: char| c == '\n' || c == '\r').to_string())
+    Ok(buf
+        .trim_end_matches(|c: char| c == '\n' || c == '\r')
+        .to_string())
 }
 
 // ============================================================================
@@ -1302,11 +1417,10 @@ fn secret_set(_global: &GlobalOpts, args: groups::secret::SecretSet) -> Result<(
     let value = if args.prompt {
         prompt_passphrase(&format!("value for `{}`: ", args.name))?
     } else if let Some(env) = args.from_env {
-        std::env::var(&env)
-            .map_err(|e| Error::SecretUnavailable {
-                reference: format!("env:{env}"),
-                reason: e.to_string(),
-            })?
+        std::env::var(&env).map_err(|e| Error::SecretUnavailable {
+            reference: format!("env:{env}"),
+            reason: e.to_string(),
+        })?
     } else if let Some(file) = args.from_file {
         std::fs::read_to_string(&file)
             .map_err(|e| Error::SecretUnavailable {
@@ -1337,10 +1451,11 @@ fn secret_get(_global: &GlobalOpts, args: groups::secret::SecretGet) -> Result<(
         reason: "not found in keychain".into(),
     })?;
     if args.reveal {
-        eprintln!(
-            "warning: --reveal exposes plaintext secret material to your terminal."
+        eprintln!("warning: --reveal exposes plaintext secret material to your terminal.");
+        println!(
+            "(secret loaded, {} bytes — full reveal tracked in M1)",
+            bytes_len_hint(&bytes)
         );
-        println!("(secret loaded, {} bytes — full reveal tracked in M1)", bytes_len_hint(&bytes));
     } else {
         println!("[REDACTED]");
     }
@@ -1379,9 +1494,9 @@ fn secret_doctor(global: &GlobalOpts) -> Result<()> {
 }
 
 fn parse_ns_name(s: &str) -> Result<spt_secrets::SecretRef> {
-    let (ns, name) = s.split_once('/').ok_or_else(|| {
-        Error::InvalidArgs(format!("expected `<ns>/<name>`, got `{s}`"))
-    })?;
+    let (ns, name) = s
+        .split_once('/')
+        .ok_or_else(|| Error::InvalidArgs(format!("expected `<ns>/<name>`, got `{s}`")))?;
     spt_secrets::SecretRef::new(ns.to_string(), name.to_string())
         .map_err(|e| Error::InvalidArgs(format!("bad secret name: {e}")))
 }
@@ -1399,10 +1514,7 @@ async fn auth_dispatch(global: &GlobalOpts, c: groups::auth::AuthCmd) -> Result<
 }
 
 /// `spt auth ssh3-login` — RFC 8628 OIDC device-flow.
-async fn auth_ssh3_login(
-    global: &GlobalOpts,
-    args: groups::auth::AuthSsh3Login,
-) -> Result<()> {
+async fn auth_ssh3_login(global: &GlobalOpts, args: groups::auth::AuthSsh3Login) -> Result<()> {
     use spt_auth::oidc_device_flow::{store_token, OidcDeviceFlowClient};
     use url::Url;
 
@@ -1451,12 +1563,9 @@ async fn auth_ssh3_login(
             cfg.as_ref().and_then(|c| c.secrets.as_ref()),
             &state_dir,
         )?;
-        let backend = resolver
-            .backends()
-            .next()
-            .ok_or_else(|| Error::RuntimeFailure(
-                "no secret backend configured — cannot --save-as".into(),
-            ))?;
+        let backend = resolver.backends().next().ok_or_else(|| {
+            Error::RuntimeFailure("no secret backend configured — cannot --save-as".into())
+        })?;
         store_token(&token, backend, &parsed.0, &parsed.1)
             .map_err(|e| Error::AuthFailed(format!("store_token: {e}")))?;
         if json_out {
@@ -1478,9 +1587,9 @@ fn parse_secret_url(s: &str) -> Result<(String, String)> {
     let body = s
         .strip_prefix("secret://")
         .ok_or_else(|| Error::InvalidArgs(format!("expected `secret://ns/name`, got `{s}`")))?;
-    let (ns, name) = body.split_once('/').ok_or_else(|| {
-        Error::InvalidArgs(format!("expected `secret://ns/name`, got `{s}`"))
-    })?;
+    let (ns, name) = body
+        .split_once('/')
+        .ok_or_else(|| Error::InvalidArgs(format!("expected `secret://ns/name`, got `{s}`")))?;
     if ns.is_empty() || name.is_empty() {
         return Err(Error::InvalidArgs(format!("bad secret ref `{s}`")));
     }
@@ -1497,17 +1606,14 @@ fn parse_secret_url(s: &str) -> Result<(String, String)> {
 /// success/failure structurally.
 fn auth_test(global: &GlobalOpts, args: groups::auth::AuthProfile) -> Result<()> {
     let path = require_config_path(global)?;
-    let (cfg, _) = spt_config::load(&path, false)
-        .map_err(|e| Error::InvalidConfig(format!("load: {e}")))?;
+    let (cfg, _) =
+        spt_config::load(&path, false).map_err(|e| Error::InvalidConfig(format!("load: {e}")))?;
     let profile = cfg
         .profiles
         .iter()
         .find(|p| p.name == args.profile)
         .ok_or_else(|| Error::InvalidArgs(format!("no profile `{}`", args.profile)))?;
-    let bundle = crate::profile_factory::build(
-        profile,
-        &spt_secrets::Resolver::new(vec![]),
-    );
+    let bundle = crate::profile_factory::build(profile, &spt_secrets::Resolver::new(vec![]));
     match bundle {
         Ok(b) => {
             let v = serde_json::json!({
@@ -1520,7 +1626,8 @@ fn auth_test(global: &GlobalOpts, args: groups::auth::AuthProfile) -> Result<()>
             });
             println!(
                 "{}",
-                serde_json::to_string_pretty(&v).map_err(|e| Error::RuntimeFailure(e.to_string()))?
+                serde_json::to_string_pretty(&v)
+                    .map_err(|e| Error::RuntimeFailure(e.to_string()))?
             );
             Ok(())
         }
@@ -1532,7 +1639,8 @@ fn auth_test(global: &GlobalOpts, args: groups::auth::AuthProfile) -> Result<()>
             });
             println!(
                 "{}",
-                serde_json::to_string_pretty(&v).map_err(|e| Error::RuntimeFailure(e.to_string()))?
+                serde_json::to_string_pretty(&v)
+                    .map_err(|e| Error::RuntimeFailure(e.to_string()))?
             );
             Err(e)
         }
@@ -1578,8 +1686,9 @@ fn dns_hosts(global: &GlobalOpts, h: groups::dns::DnsHosts) -> Result<()> {
         DnsHostsSub::Render(args) => {
             let s = mgr.render();
             if let Some(out) = args.out {
-                std::fs::write(&out, s)
-                    .map_err(|e| Error::RuntimeFailure(format!("write `{}`: {e}", out.display())))?;
+                std::fs::write(&out, s).map_err(|e| {
+                    Error::RuntimeFailure(format!("write `{}`: {e}", out.display()))
+                })?;
             } else {
                 print!("{s}");
             }
@@ -1589,7 +1698,10 @@ fn dns_hosts(global: &GlobalOpts, h: groups::dns::DnsHosts) -> Result<()> {
             let report = mgr
                 .apply(args.path.as_deref(), false)
                 .map_err(|e| Error::DnsFailed(format!("hosts apply: {e}")))?;
-            println!("apply: changed={} backed_up={}", report.changed, report.backed_up);
+            println!(
+                "apply: changed={} backed_up={}",
+                report.changed, report.backed_up
+            );
             Ok(())
         }
         DnsHostsSub::Restore(_args) => {
@@ -1703,8 +1815,7 @@ async fn log_dispatch(global: &GlobalOpts, c: groups::log::LogCmd) -> Result<()>
                 CliLogFormat::Jsonl => crate::cli::log_ops::LogExportFormat::Jsonl,
                 CliLogFormat::Csv => {
                     return Err(Error::InvalidArgs(
-                        "log export --format csv is not supported; use jsonl"
-                            .into(),
+                        "log export --format csv is not supported; use jsonl".into(),
                     ));
                 }
             };
@@ -1746,9 +1857,12 @@ fn log_tail(global: &GlobalOpts, _args: groups::log::LogTail) -> Result<()> {
 // ============================================================================
 
 async fn observe_dispatch(global: &GlobalOpts, c: groups::observe::ObserveCmd) -> Result<()> {
-    use groups::observe::{ObserveSnmpSub, ObserveSub, ObserveWinEventSub};
+    #[cfg(feature = "snmp")]
+    use groups::observe::ObserveSnmpSub;
+    use groups::observe::{ObserveSub, ObserveWinEventSub};
     match c.command {
         ObserveSub::Metrics(args) => observe_metrics(global, args),
+        #[cfg(feature = "snmp")]
         ObserveSub::Snmp(snmp) => match snmp.command {
             ObserveSnmpSub::Serve(_) => {
                 // `snmp serve` is integrated into `tunnel run` via the
@@ -1830,8 +1944,8 @@ async fn event_dispatch(global: &GlobalOpts, c: groups::event::EventCmd) -> Resu
 /// per-sink.
 async fn event_test(global: &GlobalOpts, args: groups::event::EventTest) -> Result<()> {
     let path = require_config_path(global)?;
-    let (cfg, _) = spt_config::load(&path, false)
-        .map_err(|e| Error::InvalidConfig(format!("load: {e}")))?;
+    let (cfg, _) =
+        spt_config::load(&path, false).map_err(|e| Error::InvalidConfig(format!("load: {e}")))?;
     let events = cfg
         .events
         .as_ref()
@@ -1847,7 +1961,9 @@ async fn event_test(global: &GlobalOpts, args: groups::event::EventTest) -> Resu
         let sink_cfg = events.sinks.iter().find(|s| s.name == *action);
         let outcome = match sink_cfg {
             Some(sc) => fire_synthetic_through_sink(sc).await,
-            None => Err(format!("sink `{action}` referenced by binding but not configured")),
+            None => Err(format!(
+                "sink `{action}` referenced by binding but not configured"
+            )),
         };
         results.push(serde_json::json!({
             "sink": action,
@@ -1865,13 +1981,10 @@ async fn event_test(global: &GlobalOpts, args: groups::event::EventTest) -> Resu
 
 /// `spt event sink test <name>` — fire a synthetic event through a single
 /// sink configuration.
-async fn event_sink_test(
-    global: &GlobalOpts,
-    args: groups::event::EventSinkTest,
-) -> Result<()> {
+async fn event_sink_test(global: &GlobalOpts, args: groups::event::EventSinkTest) -> Result<()> {
     let path = require_config_path(global)?;
-    let (cfg, _) = spt_config::load(&path, false)
-        .map_err(|e| Error::InvalidConfig(format!("load: {e}")))?;
+    let (cfg, _) =
+        spt_config::load(&path, false).map_err(|e| Error::InvalidConfig(format!("load: {e}")))?;
     let sink_cfg = cfg
         .events
         .as_ref()
@@ -1903,7 +2016,10 @@ async fn event_sink_test(
 async fn fire_synthetic_through_sink(
     sc: &spt_config::schema::EventSink,
 ) -> std::result::Result<(), String> {
-    use spt_events::{event::{EventBuilder, EventKind, Severity}, Sink};
+    use spt_events::{
+        event::{EventBuilder, EventKind, Severity},
+        Sink,
+    };
     use std::sync::Arc;
 
     let evt = Arc::new(
@@ -1944,7 +2060,10 @@ async fn fire_synthetic_through_sink(
                 )
                 .map_err(|e| format!("webpush: transport: {e}"))?,
             );
-            let body = sc.body_template.clone().unwrap_or_else(|| "{{message}}".into());
+            let body = sc
+                .body_template
+                .clone()
+                .unwrap_or_else(|| "{{message}}".into());
             let sink = WebPushSink::new(sc.name.clone(), body, subs, vapid, transport);
             sink.deliver(evt).await.map_err(|e| e.to_string())
         }
@@ -1956,8 +2075,8 @@ async fn fire_synthetic_through_sink(
 
 fn event_list(global: &GlobalOpts, json: bool) -> Result<()> {
     let path = require_config_path(global)?;
-    let (cfg, _) = spt_config::load(&path, false)
-        .map_err(|e| Error::InvalidConfig(format!("load: {e}")))?;
+    let (cfg, _) =
+        spt_config::load(&path, false).map_err(|e| Error::InvalidConfig(format!("load: {e}")))?;
     let bindings = cfg
         .events
         .as_ref()
@@ -1979,8 +2098,8 @@ fn event_list(global: &GlobalOpts, json: bool) -> Result<()> {
 
 fn event_sink_list(global: &GlobalOpts, json: bool) -> Result<()> {
     let path = require_config_path(global)?;
-    let (cfg, _) = spt_config::load(&path, false)
-        .map_err(|e| Error::InvalidConfig(format!("load: {e}")))?;
+    let (cfg, _) =
+        spt_config::load(&path, false).map_err(|e| Error::InvalidConfig(format!("load: {e}")))?;
     let sinks = cfg
         .events
         .as_ref()
@@ -2021,10 +2140,7 @@ async fn stats_dispatch(global: &GlobalOpts, c: groups::stats::StatsCmd) -> Resu
     }
 }
 
-async fn stats_live_dispatch(
-    global: &GlobalOpts,
-    args: groups::stats::StatsLive,
-) -> Result<()> {
+async fn stats_live_dispatch(global: &GlobalOpts, args: groups::stats::StatsLive) -> Result<()> {
     use futures::StreamExt;
     let state_dir = resolve_state_dir_for_read(global)?;
     let mut client = crate::mcp_client::McpClient::connect_from_state_dir(&state_dir).await?;
@@ -2102,8 +2218,8 @@ fn stats_metrics_dump(global: &GlobalOpts) -> Result<()> {
 
 fn stats_export(global: &GlobalOpts, args: groups::stats::StatsExport) -> Result<()> {
     let state_dir = resolve_state_dir_for_read(global)?;
-    let snap = std::fs::read_to_string(spt_state::paths::status_path(&state_dir))
-        .unwrap_or_default();
+    let snap =
+        std::fs::read_to_string(spt_state::paths::status_path(&state_dir)).unwrap_or_default();
     let body = match args.format {
         groups::stats::StatsExportFormat::Json | groups::stats::StatsExportFormat::Jsonl => snap,
         groups::stats::StatsExportFormat::Csv => {
@@ -2280,9 +2396,7 @@ async fn diagnose_dispatch(global: &GlobalOpts, c: groups::diagnose::DiagnoseCmd
             a.probe = probe;
             crate::cli::diag_ops::auth(global, a).await
         }
-        DiagnoseSub::Trust(args) => {
-            crate::cli::diag_ops::trust(global, args.into()).await
-        }
+        DiagnoseSub::Trust(args) => crate::cli::diag_ops::trust(global, args.into()).await,
         DiagnoseSub::Observability(args) => {
             crate::cli::diag_ops::observability(global, args.into()).await
         }
@@ -2586,14 +2700,11 @@ async fn benchmark_dispatch(global: &GlobalOpts, c: groups::benchmark::Benchmark
     }
 }
 
-async fn benchmark_run(
-    global: &GlobalOpts,
-    args: groups::benchmark::BenchmarkRun,
-) -> Result<()> {
+async fn benchmark_run(global: &GlobalOpts, args: groups::benchmark::BenchmarkRun) -> Result<()> {
     use spt_benchmark::{
-        check_safety, write_report, BenchContext, BenchEnv, BenchmarkDriver, DnsClient,
-        DnsDriver, LatencyDriver, LimitsDriver, LimitsExpectations, ReconnectDriver,
-        ReconnectTrigger, ReportFormat, ThroughputDriver, UdpDriver,
+        check_safety, write_report, BenchContext, BenchEnv, BenchmarkDriver, DnsClient, DnsDriver,
+        LatencyDriver, LimitsDriver, LimitsExpectations, ReconnectDriver, ReconnectTrigger,
+        ReportFormat, ThroughputDriver, UdpDriver,
     };
     use std::sync::Arc;
     use std::time::Duration;
@@ -2625,8 +2736,7 @@ async fn benchmark_run(
     // forward)` into the same driver suite this function exposes.
     if !is_dns && args.target.profile.is_some() {
         let state_dir = resolve_state_dir_for_read(global)?;
-        let mut client =
-            crate::mcp_client::McpClient::connect_from_state_dir(&state_dir).await?;
+        let mut client = crate::mcp_client::McpClient::connect_from_state_dir(&state_dir).await?;
         client.initialize().await?;
         let mut payload = serde_json::json!({
             "driver": args.driver,
@@ -2651,8 +2761,14 @@ async fn benchmark_run(
                     .map_err(|e| Error::RuntimeFailure(e.to_string()))?
             );
         } else {
-            let iter_ok = v.get("iterations_completed").and_then(|x| x.as_u64()).unwrap_or(0);
-            let iter_attempt = v.get("iterations_attempted").and_then(|x| x.as_u64()).unwrap_or(0);
+            let iter_ok = v
+                .get("iterations_completed")
+                .and_then(|x| x.as_u64())
+                .unwrap_or(0);
+            let iter_attempt = v
+                .get("iterations_attempted")
+                .and_then(|x| x.as_u64())
+                .unwrap_or(0);
             let dur = v.get("duration_ms").and_then(|x| x.as_u64()).unwrap_or(0);
             let errors = v
                 .get("errors")
@@ -2758,7 +2874,10 @@ async fn benchmark_run(
                     Ok(vec!["127.0.0.1".into()])
                 }
             }
-            Box::new(DnsDriver::new(Arc::new(LocalDns), vec!["example.com".into()]))
+            Box::new(DnsDriver::new(
+                Arc::new(LocalDns),
+                vec!["example.com".into()],
+            ))
         }
         "limits" => Box::new(LimitsDriver::new(
             Box::new(|| {
@@ -2791,9 +2910,18 @@ async fn benchmark_run(
 
     // Write reports to <state_dir>/benchmarks/<run-id>.{json,md}.
     let state_dir = resolve_state_dir_for_read(global).unwrap_or_else(|_| std::env::temp_dir());
-    let run_id = format!("{}-{}", args.driver, chrono::Utc::now().format("%Y%m%dT%H%M%S"));
+    let run_id = format!(
+        "{}-{}",
+        args.driver,
+        chrono::Utc::now().format("%Y%m%dT%H%M%S")
+    );
     let json_path = write_report(&state_dir, &run_id, &[result.clone()], ReportFormat::Json)?;
-    let md_path = write_report(&state_dir, &run_id, &[result.clone()], ReportFormat::Markdown)?;
+    let md_path = write_report(
+        &state_dir,
+        &run_id,
+        &[result.clone()],
+        ReportFormat::Markdown,
+    )?;
 
     if args.json {
         let summary = serde_json::json!({
@@ -2924,8 +3052,7 @@ fn mcp_policy(global: &GlobalOpts, args: groups::mcp::McpPolicy) -> Result<()> {
                 })?;
                 match k {
                     "allow_write_tools" => {
-                        let arr: toml_edit::Array =
-                            v.split(',').map(|x| x.trim()).collect();
+                        let arr: toml_edit::Array = v.split(',').map(|x| x.trim()).collect();
                         mcp_tbl["allow_write_tools"] = toml_edit::value(arr);
                     }
                     "enabled" => {
@@ -3014,26 +3141,18 @@ fn completion_dispatch(_global: &GlobalOpts, c: groups::completion::CompletionCm
 // ============================================================================
 
 fn require_config_path(global: &GlobalOpts) -> Result<PathBuf> {
-    global
-        .config
-        .clone()
-        .ok_or_else(|| {
-            Error::InvalidArgs(
-                "no config path supplied (pass --config or set $SPT_CONFIG)".into(),
-            )
-        })
+    global.config.clone().ok_or_else(|| {
+        Error::InvalidArgs("no config path supplied (pass --config or set $SPT_CONFIG)".into())
+    })
 }
 
 fn resolve_state_dir(global: &GlobalOpts, cfg: &spt_config::schema::Config) -> Result<PathBuf> {
-    let explicit = global
-        .state_dir
-        .clone()
-        .or_else(|| {
-            cfg.runtime
-                .as_ref()
-                .and_then(|r| r.state_dir.clone())
-                .map(PathBuf::from)
-        });
+    let explicit = global.state_dir.clone().or_else(|| {
+        cfg.runtime
+            .as_ref()
+            .and_then(|r| r.state_dir.clone())
+            .map(PathBuf::from)
+    });
     spt_state::resolve_state_dir(explicit.as_deref())
 }
 

@@ -147,14 +147,15 @@ impl Orchestrator {
     /// resolves auth, endpoints, and config per profile name.
     pub async fn apply<F>(&self, plan: &ReloadPlan, mut provider: F)
     where
-        F: FnMut(&str)
-            -> Option<(
-                Profile,
-                Arc<dyn TunnelProtocol>,
-                AuthConfig,
-                Vec<Endpoint>,
-                ProfileSupervisorConfig,
-            )>,
+        F: FnMut(
+            &str,
+        ) -> Option<(
+            Profile,
+            Arc<dyn TunnelProtocol>,
+            AuthConfig,
+            Vec<Endpoint>,
+            ProfileSupervisorConfig,
+        )>,
     {
         for action in &plan.actions {
             match action {
@@ -255,9 +256,7 @@ impl Orchestrator {
                 let ewma = Ewma::new(Duration::from_secs_f64(half_life.max(0.5)));
                 let mut prev_total: u64 = 0;
                 let mut ticker = tokio::time::interval(interval);
-                ticker.set_missed_tick_behavior(
-                    tokio::time::MissedTickBehavior::Delay,
-                );
+                ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
                 ticker.tick().await; // first tick is immediate
                 loop {
                     ticker.tick().await;
@@ -294,9 +293,7 @@ impl Orchestrator {
     /// `profile`. Used by tests and integrators that wire a backend-specific
     /// adapter into the orchestrator.
     pub fn set_live_connector(&self, profile: &str, conn: Arc<dyn LiveConnector>) {
-        self.live_overrides
-            .lock()
-            .insert(profile.to_owned(), conn);
+        self.live_overrides.lock().insert(profile.to_owned(), conn);
     }
 
     /// Return a connector that opens fresh streams over the live tunnel

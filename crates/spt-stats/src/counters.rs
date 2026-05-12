@@ -47,7 +47,7 @@ impl RollingCounter {
         Self::with_clock(window, buckets, Arc::new(SystemClock))
     }
 
-    /// As [`new`], with an injected clock.
+    /// As [`Self::new`], with an injected clock.
     ///
     /// # Panics
     /// Panics if `buckets == 0` or `window` is zero.

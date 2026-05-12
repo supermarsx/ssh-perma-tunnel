@@ -156,8 +156,10 @@ impl EndpointSelector {
         }
         // Pick the lowest priority cohort.
         let min_pri = healthy.iter().map(|e| e.ep.priority).min().unwrap();
-        let cohort: Vec<&EndpointEntry> =
-            healthy.into_iter().filter(|e| e.ep.priority == min_pri).collect();
+        let cohort: Vec<&EndpointEntry> = healthy
+            .into_iter()
+            .filter(|e| e.ep.priority == min_pri)
+            .collect();
 
         match self.mode {
             FailoverMode::Priority => Ok(&cohort[0].ep),
@@ -221,8 +223,8 @@ impl EndpointSelector {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rand::SeedableRng;
     use rand::rngs::StdRng;
+    use rand::SeedableRng;
 
     fn ep(host: &str, port: u16, pri: u32, weight: u32) -> Endpoint {
         Endpoint {
@@ -309,11 +311,8 @@ mod tests {
     #[tokio::test]
     async fn record_success_clears_cooldown() {
         let mut rng = StdRng::seed_from_u64(0);
-        let mut s = EndpointSelector::new(
-            FailoverMode::Priority,
-            vec![ep("a", 22, 0, 1)],
-        )
-        .with_fail_after(1);
+        let mut s = EndpointSelector::new(FailoverMode::Priority, vec![ep("a", 22, 0, 1)])
+            .with_fail_after(1);
         let now = Instant::now();
         s.record_failure("a", 22, now);
         assert!(s.pick(&mut rng, now).is_err());

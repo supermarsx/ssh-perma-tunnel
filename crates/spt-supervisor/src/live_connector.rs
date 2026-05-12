@@ -8,8 +8,8 @@
 //!
 //! A backend-specific implementation builds an adapter over its
 //! [`spt_protocol::TunnelSession`]. Tests use the in-memory adapters in
-//! [`crate::live_connector::testing`] (gated on the `testing` feature of
-//! `spt-forward`) which return loopback duplex pairs.
+//! the `testing` module (gated on the `testing` feature of `spt-forward`)
+//! which return loopback duplex pairs.
 
 use std::pin::Pin;
 use std::sync::Arc;

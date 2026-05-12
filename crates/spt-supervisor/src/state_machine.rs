@@ -185,7 +185,9 @@ impl ProfileStateMachine {
 
         let next = match (self.state, event) {
             (s, E::Disable) if !s.is_terminal() => Some(S::Disabled),
-            (s, E::Stop) if !matches!(s, S::Stopping | S::Stopped | S::Disabled) => Some(S::Stopping),
+            (s, E::Stop) if !matches!(s, S::Stopping | S::Stopped | S::Disabled) => {
+                Some(S::Stopping)
+            }
             (S::Stopping, E::Stopped) => Some(S::Stopped),
 
             (S::Idle, E::Start) => Some(S::Resolving),
@@ -235,11 +237,26 @@ mod tests {
     #[test]
     fn happy_path_to_active() {
         let mut sm = ProfileStateMachine::new();
-        assert_eq!(sm.step(ProfileEvent::Start).unwrap(), ProfileStateName::Resolving);
-        assert_eq!(sm.step(ProfileEvent::ResolveOk).unwrap(), ProfileStateName::Connecting);
-        assert_eq!(sm.step(ProfileEvent::ConnectOk).unwrap(), ProfileStateName::Authenticating);
-        assert_eq!(sm.step(ProfileEvent::AuthOk).unwrap(), ProfileStateName::EstablishingForwards);
-        assert_eq!(sm.step(ProfileEvent::ForwardsUp).unwrap(), ProfileStateName::Active);
+        assert_eq!(
+            sm.step(ProfileEvent::Start).unwrap(),
+            ProfileStateName::Resolving
+        );
+        assert_eq!(
+            sm.step(ProfileEvent::ResolveOk).unwrap(),
+            ProfileStateName::Connecting
+        );
+        assert_eq!(
+            sm.step(ProfileEvent::ConnectOk).unwrap(),
+            ProfileStateName::Authenticating
+        );
+        assert_eq!(
+            sm.step(ProfileEvent::AuthOk).unwrap(),
+            ProfileStateName::EstablishingForwards
+        );
+        assert_eq!(
+            sm.step(ProfileEvent::ForwardsUp).unwrap(),
+            ProfileStateName::Active
+        );
     }
 
     #[test]
@@ -248,7 +265,10 @@ mod tests {
         sm.step(ProfileEvent::Start).unwrap();
         sm.step(ProfileEvent::ResolveOk).unwrap();
         sm.step(ProfileEvent::ConnectOk).unwrap();
-        assert_eq!(sm.step(ProfileEvent::AuthFail).unwrap(), ProfileStateName::Reconnecting);
+        assert_eq!(
+            sm.step(ProfileEvent::AuthFail).unwrap(),
+            ProfileStateName::Reconnecting
+        );
     }
 
     #[test]
@@ -259,7 +279,10 @@ mod tests {
         sm.step(ProfileEvent::ConnectOk).unwrap();
         sm.step(ProfileEvent::AuthOk).unwrap();
         sm.step(ProfileEvent::ForwardsUp).unwrap();
-        assert_eq!(sm.step(ProfileEvent::SessionLost).unwrap(), ProfileStateName::Reconnecting);
+        assert_eq!(
+            sm.step(ProfileEvent::SessionLost).unwrap(),
+            ProfileStateName::Reconnecting
+        );
     }
 
     #[test]
@@ -270,8 +293,14 @@ mod tests {
         sm.step(ProfileEvent::ConnectOk).unwrap();
         sm.step(ProfileEvent::AuthOk).unwrap();
         sm.step(ProfileEvent::ForwardsUp).unwrap();
-        assert_eq!(sm.step(ProfileEvent::InstabilityHit).unwrap(), ProfileStateName::Unstable);
-        assert_eq!(sm.step(ProfileEvent::InstabilityClear).unwrap(), ProfileStateName::Active);
+        assert_eq!(
+            sm.step(ProfileEvent::InstabilityHit).unwrap(),
+            ProfileStateName::Unstable
+        );
+        assert_eq!(
+            sm.step(ProfileEvent::InstabilityClear).unwrap(),
+            ProfileStateName::Active
+        );
     }
 
     #[test]
@@ -281,8 +310,14 @@ mod tests {
         sm.step(ProfileEvent::ResolveOk).unwrap();
         sm.step(ProfileEvent::ConnectFail).unwrap();
         assert_eq!(sm.state(), ProfileStateName::Reconnecting);
-        assert_eq!(sm.step(ProfileEvent::FailoverPick).unwrap(), ProfileStateName::FailingOver);
-        assert_eq!(sm.step(ProfileEvent::EndpointReady).unwrap(), ProfileStateName::Resolving);
+        assert_eq!(
+            sm.step(ProfileEvent::FailoverPick).unwrap(),
+            ProfileStateName::FailingOver
+        );
+        assert_eq!(
+            sm.step(ProfileEvent::EndpointReady).unwrap(),
+            ProfileStateName::Resolving
+        );
     }
 
     #[test]
@@ -301,8 +336,14 @@ mod tests {
         ] {
             let mut sm = ProfileStateMachine::new();
             sm.state = start;
-            assert_eq!(sm.step(ProfileEvent::Stop).unwrap(), ProfileStateName::Stopping);
-            assert_eq!(sm.step(ProfileEvent::Stopped).unwrap(), ProfileStateName::Stopped);
+            assert_eq!(
+                sm.step(ProfileEvent::Stop).unwrap(),
+                ProfileStateName::Stopping
+            );
+            assert_eq!(
+                sm.step(ProfileEvent::Stopped).unwrap(),
+                ProfileStateName::Stopped
+            );
             assert!(sm.state().is_terminal());
         }
     }
@@ -312,7 +353,10 @@ mod tests {
         let mut sm = ProfileStateMachine::new();
         sm.step(ProfileEvent::Start).unwrap();
         sm.step(ProfileEvent::ResolveOk).unwrap();
-        assert_eq!(sm.step(ProfileEvent::Disable).unwrap(), ProfileStateName::Disabled);
+        assert_eq!(
+            sm.step(ProfileEvent::Disable).unwrap(),
+            ProfileStateName::Disabled
+        );
         assert!(sm.step(ProfileEvent::Start).is_err());
     }
 

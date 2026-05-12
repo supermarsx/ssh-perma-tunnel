@@ -57,11 +57,7 @@ where
     })
 }
 
-async fn copy_one<R, W>(
-    src: &mut R,
-    dst: &mut W,
-    bucket: TokenBucket,
-) -> std::io::Result<u64>
+async fn copy_one<R, W>(src: &mut R, dst: &mut W, bucket: TokenBucket) -> std::io::Result<u64>
 where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,

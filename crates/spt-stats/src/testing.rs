@@ -177,10 +177,7 @@ mod tests {
     fn populated_counter_drops_old_ticks() {
         let c = populated_counter(
             Duration::from_secs(5),
-            &[
-                (Duration::ZERO, 7),
-                (Duration::from_secs(10), 3),
-            ],
+            &[(Duration::ZERO, 7), (Duration::from_secs(10), 3)],
         );
         // The first tick fell off the 5s window; only the second remains.
         assert_eq!(c.sum_over_window(), 3);
@@ -193,7 +190,10 @@ mod tests {
         let s = t.snapshot();
         assert_eq!(s.len(), 5);
         // Order is unspecified; check by id collection.
-        let mut ids: Vec<_> = s.iter().map(|e| e.session_id.as_str().to_string()).collect();
+        let mut ids: Vec<_> = s
+            .iter()
+            .map(|e| e.session_id.as_str().to_string())
+            .collect();
         ids.sort();
         assert_eq!(ids, vec!["s0", "s1", "s2", "s3", "s4"]);
     }

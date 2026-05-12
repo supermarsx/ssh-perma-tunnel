@@ -47,7 +47,10 @@ async fn controller_failover_unknown_profile_errors() {
         .await
         .expect_err("failover on missing profile should error");
     let msg = err.to_string();
-    assert!(msg.contains("ghost"), "expected error to mention profile, got: {msg}");
+    assert!(
+        msg.contains("ghost"),
+        "expected error to mention profile, got: {msg}"
+    );
 }
 
 #[tokio::test]
@@ -66,7 +69,10 @@ async fn orchestrator_failover_pinned_endpoint_round_trip() {
     // Wait for the profile's first session to come up.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
     while orch.session_list().is_empty() {
-        assert!(tokio::time::Instant::now() < deadline, "session never came up");
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "session never came up"
+        );
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
 

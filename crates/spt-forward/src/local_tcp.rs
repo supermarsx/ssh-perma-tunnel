@@ -42,7 +42,7 @@ impl AcceptLoop {
         }
     }
 
-    /// Attach a shutdown signal — when the receiver fires, [`run`] exits at
+    /// Attach a shutdown signal — when the receiver fires, [`Self::run`] exits at
     /// the next accept boundary.
     #[must_use]
     pub fn with_shutdown(mut self, rx: oneshot::Receiver<()>) -> Self {

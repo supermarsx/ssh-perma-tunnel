@@ -127,7 +127,8 @@ mod tests {
     #[test]
     fn instability_recovers_after_window() {
         let clock = Arc::new(TestClock::at_now());
-        let d = ThresholdInstability::with_clock(Duration::from_secs(10), 10, 1, 100, clock.clone());
+        let d =
+            ThresholdInstability::with_clock(Duration::from_secs(10), 10, 1, 100, clock.clone());
         d.record_reconnect();
         d.record_reconnect();
         assert!(matches!(d.evaluate(), InstabilityVerdict::Unstable { .. }));

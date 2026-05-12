@@ -509,12 +509,7 @@ impl ProfileTask {
         Ok(())
     }
 
-    fn publish_session(
-        &self,
-        id: &SessionId,
-        endpoint: &Endpoint,
-        session: &dyn TunnelSession,
-    ) {
+    fn publish_session(&self, id: &SessionId, endpoint: &Endpoint, session: &dyn TunnelSession) {
         let info = session.session_info();
         let row = SessionRow {
             id: id.clone(),
@@ -729,14 +724,7 @@ mod tests {
         cfg.backoff.initial_delay = Duration::from_millis(1);
         cfg.backoff.max_delay = Duration::from_millis(2);
         cfg.backoff.max_attempts = 3;
-        let sup = ProfileSupervisor::spawn(
-            "p",
-            proto,
-            auth(),
-            vec![endpoint("a")],
-            vec![],
-            cfg,
-        );
+        let sup = ProfileSupervisor::spawn("p", proto, auth(), vec![endpoint("a")], vec![], cfg);
         let mut events = sup.take_events().unwrap();
 
         let mut got_exhausted = false;

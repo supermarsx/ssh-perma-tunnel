@@ -176,10 +176,7 @@ mod tests {
             ..Default::default()
         });
         let plan = ReloadPlan::compute(&a, &b);
-        assert_eq!(
-            plan.actions,
-            vec![ReloadAction::StartProfile("q".into())]
-        );
+        assert_eq!(plan.actions, vec![ReloadAction::StartProfile("q".into())]);
     }
 
     #[test]
@@ -197,10 +194,7 @@ mod tests {
         let mut b = a.clone();
         b.profiles[0].host = Some("h2".into());
         let plan = ReloadPlan::compute(&a, &b);
-        assert_eq!(
-            plan.actions,
-            vec![ReloadAction::RestartProfile("p".into())]
-        );
+        assert_eq!(plan.actions, vec![ReloadAction::RestartProfile("p".into())]);
     }
 
     #[test]
