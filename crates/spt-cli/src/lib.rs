@@ -161,7 +161,11 @@ pub enum Command {
     Firewall(groups::firewall::FirewallCmd),
     /// Log tailing, sink testing, and export.
     Log(groups::log::LogCmd),
-    /// Metrics, SNMP, and Windows Event Log helpers.
+    #[cfg_attr(
+        feature = "snmp",
+        doc = "Metrics, SNMP, and Windows Event Log helpers."
+    )]
+    #[cfg_attr(not(feature = "snmp"), doc = "Metrics and Windows Event Log helpers.")]
     Observe(groups::observe::ObserveCmd),
     /// Event bindings and sinks.
     Event(groups::event::EventCmd),
@@ -207,8 +211,16 @@ mod tests {
     #[test]
     fn parses_profile_add() {
         Cli::try_parse_from([
-            "spt", "profile", "add", "edge", "--protocol", "ssh2", "--host", "a.example",
-            "--user", "ubuntu",
+            "spt",
+            "profile",
+            "add",
+            "edge",
+            "--protocol",
+            "ssh2",
+            "--host",
+            "a.example",
+            "--user",
+            "ubuntu",
         ])
         .unwrap();
     }
@@ -247,7 +259,13 @@ mod tests {
     #[test]
     fn parses_key_generate_ed25519() {
         Cli::try_parse_from([
-            "spt", "key", "generate", "--type", "ed25519", "--out", "id_ed25519",
+            "spt",
+            "key",
+            "generate",
+            "--type",
+            "ed25519",
+            "--out",
+            "id_ed25519",
         ])
         .unwrap();
     }
@@ -265,7 +283,15 @@ mod tests {
     #[test]
     fn parses_dns_record_add() {
         Cli::try_parse_from([
-            "spt", "dns", "record", "add", "svc.local", "--addr", "10.0.0.1", "--ttl", "5m",
+            "spt",
+            "dns",
+            "record",
+            "add",
+            "svc.local",
+            "--addr",
+            "10.0.0.1",
+            "--ttl",
+            "5m",
         ])
         .unwrap();
     }
@@ -285,10 +311,30 @@ mod tests {
         Cli::try_parse_from(["spt", "observe", "metrics", "--format", "prometheus"]).unwrap();
     }
 
+    #[cfg(feature = "snmp")]
+    #[test]
+    fn parses_observe_snmp_when_feature_enabled() {
+        Cli::try_parse_from(["spt", "observe", "snmp", "test-trap", "--sink", "ops"]).unwrap();
+    }
+
+    #[cfg(not(feature = "snmp"))]
+    #[test]
+    fn rejects_observe_snmp_without_feature() {
+        assert!(
+            Cli::try_parse_from(["spt", "observe", "snmp", "test-trap", "--sink", "ops"]).is_err()
+        );
+    }
+
     #[test]
     fn parses_event_replay() {
         Cli::try_parse_from([
-            "spt", "event", "replay", "--since", "10m", "--binding", "ops",
+            "spt",
+            "event",
+            "replay",
+            "--since",
+            "10m",
+            "--binding",
+            "ops",
         ])
         .unwrap();
     }
@@ -342,8 +388,7 @@ mod tests {
 
     #[test]
     fn parses_mcp_serve() {
-        Cli::try_parse_from(["spt", "mcp", "serve", "--stdio", "--read-only", "--enable"])
-            .unwrap();
+        Cli::try_parse_from(["spt", "mcp", "serve", "--stdio", "--read-only", "--enable"]).unwrap();
     }
 
     #[test]

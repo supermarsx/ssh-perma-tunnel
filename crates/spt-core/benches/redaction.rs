@@ -34,16 +34,12 @@ fn bench_redact(c: &mut Criterion) {
     for &size in SIZES {
         let payload = build_payload(size);
         group.throughput(Throughput::Bytes(size as u64));
-        group.bench_with_input(
-            BenchmarkId::new("standard", size),
-            &payload,
-            |b, p| {
-                b.iter(|| {
-                    let out = redact(black_box(p.as_str()), RedactionMode::Standard);
-                    black_box(out);
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("standard", size), &payload, |b, p| {
+            b.iter(|| {
+                let out = redact(black_box(p.as_str()), RedactionMode::Standard);
+                black_box(out);
+            });
+        });
         group.bench_with_input(BenchmarkId::new("strict", size), &payload, |b, p| {
             b.iter(|| {
                 let out = redact(black_box(p.as_str()), RedactionMode::Strict);

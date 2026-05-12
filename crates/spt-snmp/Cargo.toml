@@ -14,6 +14,7 @@ categories = ["network-programming", "asynchronous"]
 
 [features]
 default = []
+bench = []
 # Public test helpers in `spt_snmp::testing`.
 testing = []
 
@@ -47,3 +48,4 @@ criterion = { workspace = true }
 [[bench]]
 name = "usm"
 harness = false
+required-features = ["bench"]

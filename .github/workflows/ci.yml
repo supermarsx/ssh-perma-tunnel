@@ -39,6 +39,24 @@ jobs:
       - name: test
         run: cargo test --workspace --all-targets
 
+  feature-gates:
+    name: feature gates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: feature-gates
+      - name: default binary excludes SNMP
+        run: cargo check -p spt-bin --no-default-features --locked
+      - name: SNMP command is absent by default
+        run: cargo test -p spt-cli --no-default-features --locked rejects_observe_snmp_without_feature
+      - name: SNMP feature builds
+        run: cargo check -p spt-bin --no-default-features --features snmp --locked
+      - name: SNMP command parses when enabled
+        run: cargo test -p spt-cli --no-default-features --features snmp --locked parses_observe_snmp_when_feature_enabled
+
   deny:
     name: cargo-deny
     runs-on: ubuntu-latest

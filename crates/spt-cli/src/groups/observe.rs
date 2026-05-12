@@ -1,11 +1,18 @@
-//! `spt observe` — metrics, SNMP, Windows Event Log.
+//! `spt observe` — metrics and Windows Event Log.
 
 use clap::{Args, Subcommand, ValueEnum};
 
+#[cfg(feature = "snmp")]
 const EXAMPLES: &str = "EXAMPLES:
   spt observe metrics --format prometheus
   spt observe snmp serve --foreground
   spt observe snmp test-trap --sink ops
+  spt observe windows-event install-source --source SshPermaTunnel
+  spt observe windows-event test --source SshPermaTunnel";
+
+#[cfg(not(feature = "snmp"))]
+const EXAMPLES: &str = "EXAMPLES:
+  spt observe metrics --format prometheus
   spt observe windows-event install-source --source SshPermaTunnel
   spt observe windows-event test --source SshPermaTunnel";
 
@@ -24,6 +31,7 @@ pub enum ObserveSub {
     /// Print metrics.
     Metrics(ObserveMetrics),
     /// SNMP agent and traps.
+    #[cfg(feature = "snmp")]
     Snmp(ObserveSnmp),
     /// Windows Event Log integration.
     WindowsEvent(ObserveWinEvent),
@@ -45,6 +53,7 @@ pub struct ObserveMetrics {
 }
 
 /// `spt observe snmp`.
+#[cfg(feature = "snmp")]
 #[derive(Args, Debug)]
 pub struct ObserveSnmp {
     /// SNMP subcommand.
@@ -53,6 +62,7 @@ pub struct ObserveSnmp {
 }
 
 /// Subcommands of `spt observe snmp`.
+#[cfg(feature = "snmp")]
 #[derive(Subcommand, Debug)]
 pub enum ObserveSnmpSub {
     /// Run the SNMP agent.
@@ -62,6 +72,7 @@ pub enum ObserveSnmpSub {
 }
 
 /// `spt observe snmp serve`.
+#[cfg(feature = "snmp")]
 #[derive(Args, Debug)]
 pub struct ObserveSnmpServe {
     /// Run in the foreground.
@@ -70,6 +81,7 @@ pub struct ObserveSnmpServe {
 }
 
 /// `spt observe snmp test-trap`.
+#[cfg(feature = "snmp")]
 #[derive(Args, Debug)]
 pub struct ObserveSnmpTestTrap {
     /// Sink name.

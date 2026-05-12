@@ -18,7 +18,7 @@ Commands:
   dns         Built-in DNS resolver and hosts-file management
   firewall    Inspect and manage OS firewall / packet-filter rules
   log         Log tailing, sink testing, and export
-  observe     Metrics, SNMP, and Windows Event Log helpers
+  observe     Metrics and Windows Event Log helpers
   event       Event bindings and sinks
   stats       Statistics summaries and live counters
   session     Inspect and manage active sessions

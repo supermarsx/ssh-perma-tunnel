@@ -61,8 +61,7 @@ fn bench_authenticate(c: &mut Criterion) {
         let kul = localize_key(*alg, &ku, &ENGINE_ID);
         group.bench_with_input(BenchmarkId::from_parameter(name), alg, |b, &alg| {
             b.iter(|| {
-                let tag = auth_digest(alg, black_box(&kul), black_box(&msg))
-                    .expect("digest");
+                let tag = auth_digest(alg, black_box(&kul), black_box(&msg)).expect("digest");
                 black_box(tag);
             });
         });

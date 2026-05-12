@@ -9,6 +9,10 @@
 //! * `bidir/copy_unthrottled`  — `copy_bidirectional_throttled` between two
 //!   `tokio::io::duplex` pipes with `TokenBucket::unlimited()` on both sides;
 //!   measures the raw copy-loop throughput excluding scheduler/syscall noise.
+//!
+//! Run explicitly with:
+//!
+//! `cargo bench -p spt-forward --features bench --bench token_bucket`
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
 use spt_forward::{bidir::copy_bidirectional_throttled, limits::TokenBucket};

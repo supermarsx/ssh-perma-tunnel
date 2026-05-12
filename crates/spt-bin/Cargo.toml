@@ -1,5 +1,8 @@
 [package]
 name = "spt-bin"
+# Release artifacts are built as OS packages/installers from the workspace.
+# This aggregate binary depends on internal crates that are not registry deps.
+publish = false
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -48,7 +51,7 @@ spt-tui = { workspace = true }
 spt-diagnostics = { workspace = true }
 spt-benchmark = { workspace = true }
 spt-remote-config = { workspace = true }
-spt-snmp = { workspace = true, features = ["testing"] }
+spt-snmp = { workspace = true, features = ["testing"], optional = true }
 spt-winevent = { workspace = true }
 
 # Async + std
@@ -125,6 +128,11 @@ spt-key = { workspace = true, features = ["testing"] }
 spt-state = { workspace = true, features = ["testing"] }
 # `testing` feature exposes FakeZone/LocalhostResolver for cli/dns_ops tests.
 spt-dns = { workspace = true, features = ["testing"] }
+
+[features]
+default = []
+snmp = ["dep:spt-snmp", "spt-cli/snmp"]
+ssh2-vendored-openssl = ["spt-ssh2/vendored-openssl"]
 
 [lints]
 workspace = true

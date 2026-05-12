@@ -12,8 +12,14 @@ use spt_config::{load::load_str, validate::validate};
 
 const FIXTURES: &[(&str, &str)] = &[
     ("minimal", include_str!("../../../examples/minimal.toml")),
-    ("smtp_relay", include_str!("../../../examples/smtp-relay.toml")),
-    ("jump_host", include_str!("../../../examples/jump-host.toml")),
+    (
+        "smtp_relay",
+        include_str!("../../../examples/smtp-relay.toml"),
+    ),
+    (
+        "jump_host",
+        include_str!("../../../examples/jump-host.toml"),
+    ),
     ("reverse", include_str!("../../../examples/reverse.toml")),
     ("ssh3", include_str!("../../../examples/ssh3.toml")),
     (

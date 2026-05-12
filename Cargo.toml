@@ -121,7 +121,7 @@ tracing-journald = "0.3"
 opentelemetry = "0.24"
 opentelemetry-otlp = { version = "0.17", default-features = false, features = ["grpc-tonic", "trace", "metrics", "logs"] }
 opentelemetry_sdk = { version = "0.24", features = ["rt-tokio", "trace", "metrics", "logs"] }
-prometheus = "0.13"
+prometheus = "0.14"
 
 # Filesystem / paths
 directories = "5"

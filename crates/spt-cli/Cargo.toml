@@ -10,6 +10,8 @@ authors.workspace = true
 description = "Clap-derived command-line interface for spt."
 
 [features]
+default = []
+snmp = []
 testing = []
 
 [dependencies]

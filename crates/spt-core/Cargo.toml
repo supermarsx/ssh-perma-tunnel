@@ -13,6 +13,7 @@ description = "Core types, error/exit codes, and parsers for spt."
 workspace = true
 
 [features]
+bench = []
 testing = ["dep:rand", "dep:rand_chacha"]
 
 [dependencies]
@@ -36,3 +37,4 @@ criterion = { workspace = true }
 [[bench]]
 name = "redaction"
 harness = false
+required-features = ["bench"]

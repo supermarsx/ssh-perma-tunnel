@@ -13,6 +13,7 @@ description = "Tunnel protocol traits shared by SSH2 and SSH3 backends."
 workspace = true
 
 [features]
+bench = []
 testing = []
 
 [dependencies]
@@ -32,3 +33,4 @@ tokio = { workspace = true, features = ["full"] }
 [[bench]]
 name = "forward_state"
 harness = false
+required-features = ["bench"]

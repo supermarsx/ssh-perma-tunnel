@@ -10,6 +10,7 @@ authors.workspace = true
 description = "TOML configuration schema, validation, and rendering for spt."
 
 [features]
+bench = []
 testing = []
 
 [dependencies]
@@ -33,6 +34,7 @@ criterion = { workspace = true }
 [[bench]]
 name = "parse"
 harness = false
+required-features = ["bench"]
 
 [lints]
 workspace = true
