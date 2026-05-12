@@ -169,9 +169,7 @@ impl KnownHosts {
         let path = path
             .map(Path::to_path_buf)
             .or_else(|| self.path.clone())
-            .ok_or_else(|| {
-                Error::InvalidArgs("KnownHosts::save: no destination path".into())
-            })?;
+            .ok_or_else(|| Error::InvalidArgs("KnownHosts::save: no destination path".into()))?;
         let text = self.render();
         let af = AtomicFile::new(&path, OverwriteBehavior::AllowOverwrite);
         af.write(|f| {
@@ -203,12 +201,11 @@ fn parse_line(line: &str, lineno: usize) -> Result<Entry> {
             Error::InvalidConfig(format!("known_hosts line {lineno}: missing host field"))
         })?
         .to_owned();
-    let key_blob = parts.next().ok_or_else(|| {
-        Error::InvalidConfig(format!("known_hosts line {lineno}: missing key"))
-    })?;
-    let key = PublicKey::from_openssh(key_blob.trim()).map_err(|e| {
-        Error::InvalidConfig(format!("known_hosts line {lineno}: parse key: {e}"))
-    })?;
+    let key_blob = parts
+        .next()
+        .ok_or_else(|| Error::InvalidConfig(format!("known_hosts line {lineno}: missing key")))?;
+    let key = PublicKey::from_openssh(key_blob.trim())
+        .map_err(|e| Error::InvalidConfig(format!("known_hosts line {lineno}: parse key: {e}")))?;
     Ok(Entry {
         marker,
         host_field,
@@ -404,8 +401,7 @@ mod tests {
     }
 
     #[test]
-    fn save_and_load(
-    ) {
+    fn save_and_load() {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("kh");
         let key = one_key();

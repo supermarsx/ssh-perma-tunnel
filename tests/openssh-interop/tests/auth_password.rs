@@ -1,7 +1,7 @@
 //! Password authentication against the ED25519-host container, which
 //! advertises `PASSWORD_ACCESS=true` and `USER_PASSWORD=interop-pw`.
 //!
-//! Uses the `secret://env/...` indirection: the literal password lives
+//! Uses the env secrets backend: the literal password lives
 //! in `SPT_SECRET_SSH__INTEROP_PW` so it never appears in the rendered
 //! config nor in `ps`/`/proc/<pid>/cmdline`.
 
@@ -61,7 +61,7 @@ startup = "eager"
 
 [profiles.auth]
 method = "password"
-password = "secret://env/ssh/interop_pw"
+password = "secret://ssh/interop_pw"
 
 [profiles.trust]
 mode = "known_hosts"

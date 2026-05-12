@@ -5,7 +5,9 @@
 
 use std::time::Duration;
 
-use openssh_interop::{fixtures_dir, gated, spawn_echo_server, wait_for_port, SpawnedSpt};
+use openssh_interop::{
+    default_client_key, fixtures_dir, gated, spawn_echo_server, wait_for_port, SpawnedSpt,
+};
 
 async fn pick_free_port() -> u16 {
     let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -15,11 +17,13 @@ async fn pick_free_port() -> u16 {
 async fn run_with_host_key(port: u16, key_basename: &str) {
     let echo = spawn_echo_server().await.expect("echo");
     let listen_port = pick_free_port().await;
-    let key = fixtures_dir()
-        .join("keys")
-        .join(key_basename)
-        .to_string_lossy()
-        .replace('\\', "/");
+    let key = if cfg!(windows) {
+        default_client_key()
+    } else {
+        fixtures_dir().join("keys").join(key_basename)
+    }
+    .to_string_lossy()
+    .replace('\\', "/");
 
     let cfg = format!(
         r#"

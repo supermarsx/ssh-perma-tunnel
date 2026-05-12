@@ -14,6 +14,10 @@ workspace = true
 
 [features]
 default = []
+# Uses libssh2's vendored OpenSSL backend. This enables ED25519 host-key
+# interop on Windows, but stays opt-in so default Windows builds can use
+# WinCNG without requiring a native Perl/OpenSSL toolchain.
+vendored-openssl = ["async-ssh2-lite/vendored-openssl", "ssh2/vendored-openssl"]
 # Exposes the `testing` module: MockSsh2Session, RusshTestServer, fake_session().
 # Pulls in russh + russh-keys as optional non-dev deps so external test crates
 # can reuse the harness without re-vendoring it.
@@ -33,6 +37,8 @@ async-trait = { workspace = true }
 async-ssh2-lite = { workspace = true }
 ssh2 = { workspace = true }
 ssh-key = { workspace = true }
+ed25519-dalek = { version = "2", default-features = false, features = ["pem", "pkcs8"] }
+rsa = { version = "0.9", default-features = false, features = ["pem", "std"] }
 secrecy = { workspace = true }
 zeroize = { workspace = true }
 tracing = { workspace = true }
@@ -52,3 +58,7 @@ russh-keys = { workspace = true }
 tempfile = { workspace = true }
 rand = { workspace = true }
 async-trait = { workspace = true }
+
+[[test]]
+name = "russh_basic"
+required-features = ["testing"]

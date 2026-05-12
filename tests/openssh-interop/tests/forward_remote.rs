@@ -22,7 +22,7 @@
 use std::process::Stdio;
 use std::time::Duration;
 
-use openssh_interop::{fixtures_dir, gated, spawn_echo_server, SpawnedSpt};
+use openssh_interop::{default_client_key, gated, spawn_echo_server, SpawnedSpt};
 use tokio::process::Command;
 use tokio::time::sleep;
 
@@ -34,13 +34,9 @@ async fn remote_forward_one_mib_roundtrip() {
     }
 
     let echo = spawn_echo_server().await.expect("echo");
-    let host_gw = std::env::var("SPT_HOST_GATEWAY").unwrap_or_else(|_| "172.17.0.1".to_string());
     let remote_port = 18_000_u16; // arbitrary, container-internal only.
 
-    let key = fixtures_dir()
-        .join("keys/test_ed25519")
-        .to_string_lossy()
-        .replace('\\', "/");
+    let key = default_client_key().to_string_lossy().replace('\\', "/");
 
     let cfg = format!(
         r#"
@@ -97,7 +93,7 @@ name = "rev"
 type = "remote"
 transport = "tcp"
 bind = "0.0.0.0:{remote_port}"
-target = "{host_gw}:{ep}"
+target = "127.0.0.1:{ep}"
 target_resolve = "local"
 required = true
 "#,
@@ -121,9 +117,7 @@ required = true
             "spt-interop-sshd-ed25519",
             "sh",
             "-c",
-            &format!(
-                "head -c $((1024*1024)) /dev/zero | nc -w 5 127.0.0.1 {remote_port} | wc -c"
-            ),
+            &format!("head -c $((1024*1024)) /dev/zero | nc -w 5 127.0.0.1 {remote_port} | wc -c"),
         ])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

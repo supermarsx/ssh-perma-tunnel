@@ -31,6 +31,7 @@ pub async fn open_chained_session<S>(
     outer: Arc<Mutex<AsyncSession<S>>>,
     host: &str,
     port: u16,
+    config: SessionConfiguration,
 ) -> Result<AsyncSession<TcpStream>>
 where
     S: AsyncSessionStream + Send + Sync + 'static,
@@ -46,12 +47,11 @@ where
     let lis = TcpListener::bind("127.0.0.1:0")
         .await
         .map_err(|e| Error::RuntimeFailure(format!("bind multi-hop loopback: {e}")))?;
-    let local_addr = lis.local_addr().map_err(|e| {
-        Error::RuntimeFailure(format!("local_addr on multi-hop loopback: {e}"))
-    })?;
+    let local_addr = lis
+        .local_addr()
+        .map_err(|e| Error::RuntimeFailure(format!("local_addr on multi-hop loopback: {e}")))?;
 
-    let (accept_res, connect_res) =
-        tokio::join!(lis.accept(), TcpStream::connect(local_addr));
+    let (accept_res, connect_res) = tokio::join!(lis.accept(), TcpStream::connect(local_addr));
     let (server_side, _peer) =
         accept_res.map_err(|e| Error::RuntimeFailure(format!("accept multi-hop: {e}")))?;
     let client_side =
@@ -61,7 +61,7 @@ where
     tokio::spawn(pump(server_side, channel));
 
     // libssh2's session reads/writes from the OS socket = `client_side`.
-    let session = AsyncSession::new(client_side, SessionConfiguration::default())
+    let session = AsyncSession::new(client_side, config)
         .map_err(|e| from_async_ssh("AsyncSession::new (multi-hop)", e))?;
     Ok(session)
 }
@@ -73,10 +73,15 @@ where
     let (mut sr, mut sw) = sock.split();
     let mut a = vec![0u8; 32 * 1024];
     let mut b = vec![0u8; 32 * 1024];
-    loop {
+    let mut sock_done = false;
+    let mut channel_done = false;
+    while !sock_done || !channel_done {
         tokio::select! {
-            n = sr.read(&mut a) => match n {
-                Ok(0) => break,
+            n = sr.read(&mut a), if !sock_done => match n {
+                Ok(0) => {
+                    sock_done = true;
+                    let _ = channel.send_eof().await;
+                }
                 Ok(n) => {
                     if let Err(e) = channel.write_all(&a[..n]).await {
                         warn!(target: "spt_ssh2::multi_hop", "channel write: {e}"); break;
@@ -84,8 +89,11 @@ where
                 }
                 Err(e) => { warn!(target: "spt_ssh2::multi_hop", "sock read: {e}"); break; }
             },
-            n = channel.read(&mut b) => match n {
-                Ok(0) => break,
+            n = channel.read(&mut b), if !channel_done => match n {
+                Ok(0) => {
+                    channel_done = true;
+                    let _ = sw.shutdown().await;
+                }
                 Ok(n) => {
                     if let Err(e) = sw.write_all(&b[..n]).await {
                         warn!(target: "spt_ssh2::multi_hop", "sock write: {e}"); break;
@@ -95,6 +103,5 @@ where
             }
         }
     }
-    let _ = channel.send_eof().await;
     let _ = channel.close().await;
 }

@@ -131,8 +131,8 @@ fn parse_env() -> Option<InteropEnv> {
         "1" | "true" | "yes"
     );
     let ca_file = env::var("SPT_SSH3_TEST_CA_FILE").ok().map(PathBuf::from);
-    let echo_target = env::var("SPT_SSH3_TEST_ECHO_TARGET")
-        .unwrap_or_else(|_| "127.0.0.1:7".to_string());
+    let echo_target =
+        env::var("SPT_SSH3_TEST_ECHO_TARGET").unwrap_or_else(|_| "127.0.0.1:7".to_string());
     let echo_target: SocketAddr = match echo_target.parse() {
         Ok(v) => v,
         Err(e) => {

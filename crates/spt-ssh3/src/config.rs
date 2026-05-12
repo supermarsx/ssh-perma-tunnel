@@ -2,7 +2,7 @@
 //!
 //! These mirror the `[profiles.ssh3]` and `[profiles.tls]` sub-tables of the
 //! TOML schema (spec §9.10 / §9.13). They are the surface a profile validator
-//! constructs and hands to [`crate::Ssh3Protocol::connect`]. The types are
+//! constructs and hands to [`spt_protocol::TunnelProtocol::connect`]. The types are
 //! deliberately serde-friendly so `spt-config` can deserialize them directly.
 
 use std::path::PathBuf;

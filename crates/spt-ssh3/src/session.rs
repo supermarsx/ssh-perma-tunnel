@@ -228,10 +228,8 @@ impl TunnelSession for Ssh3Session {
         }
         // Send an application-level AppPing on the control stream. Best-effort
         // — if the write fails we surface that as a runtime failure.
-        let frame = crate::frame::Ssh3Frame::new(
-            crate::frame::Ssh3FrameKind::AppPing,
-            bytes::Bytes::new(),
-        );
+        let frame =
+            crate::frame::Ssh3Frame::new(crate::frame::Ssh3FrameKind::AppPing, bytes::Bytes::new());
         let mut g = self.control_send.lock().await;
         frame.write_async(&mut *g).await?;
         Ok(())

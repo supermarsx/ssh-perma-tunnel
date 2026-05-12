@@ -17,6 +17,23 @@
 
 use crate::config::{Ssh3Config, Ssh3TlsConfig};
 
+#[cfg(feature = "testing")]
+use std::{
+    net::{Ipv4Addr, SocketAddr},
+    sync::Arc,
+    time::Duration,
+};
+
+#[cfg(feature = "testing")]
+use spt_protocol::SessionInfo;
+
+#[cfg(feature = "testing")]
+use crate::{
+    frame::Ssh3Settings,
+    session::Ssh3Session,
+    transport::{accept_control_stream, open_control_stream},
+};
+
 /// Fixtures: pre-built canonical configurations for tests.
 pub mod fixtures {
     use super::{Ssh3Config, Ssh3TlsConfig};

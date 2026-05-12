@@ -81,7 +81,9 @@ impl TunnelProtocol for SharedLogProtocol {
         _auth: &AuthConfig,
     ) -> Result<Box<dyn TunnelSession>> {
         if *self.connect_fails.lock() {
-            return Err(spt_core::Error::NetworkUnreachable("shared-log-mock".into()));
+            return Err(spt_core::Error::NetworkUnreachable(
+                "shared-log-mock".into(),
+            ));
         }
         *self.connect_count.lock() += 1;
         let inner: Box<dyn TunnelSession> = Box::new(MockTunnelSession::new());

@@ -12,6 +12,7 @@
 //!
 //! Both helpers live behind `#[cfg(any(test, feature = "testing"))]`.
 
+#[cfg(feature = "testing")]
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -319,11 +320,8 @@ impl RusshTestServer {
         let key = if self.use_ed25519_host_key {
             russh_keys::key::KeyPair::generate_ed25519()
         } else {
-            russh_keys::key::KeyPair::generate_rsa(
-                2048,
-                russh_keys::key::SignatureHash::SHA2_256,
-            )
-            .expect("rsa-2048 keygen")
+            russh_keys::key::KeyPair::generate_rsa(2048, russh_keys::key::SignatureHash::SHA2_256)
+                .expect("rsa-2048 keygen")
         };
         russh::server::Config {
             inactivity_timeout: Some(std::time::Duration::from_secs(60)),

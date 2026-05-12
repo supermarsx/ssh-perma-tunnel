@@ -109,10 +109,7 @@ fn bind_host_port(addr: &BindAddr) -> Result<(String, u16)> {
 
 /// Open a channel-open exchange on a fresh bidi stream and return the
 /// resulting send/recv halves on success.
-async fn open_channel(
-    conn: &Connection,
-    target: &TargetAddr,
-) -> Result<(SendStream, RecvStream)> {
+async fn open_channel(conn: &Connection, target: &TargetAddr) -> Result<(SendStream, RecvStream)> {
     let (mut send, mut recv) = conn
         .open_bi()
         .await
@@ -129,7 +126,9 @@ async fn open_channel(
 
     let resp = tokio::time::timeout(OPEN_TIMEOUT, Ssh3Frame::read_async(&mut recv))
         .await
-        .map_err(|_| Error::RuntimeFailure("ssh3 channel-open: timeout waiting for response".into()))??;
+        .map_err(|_| {
+            Error::RuntimeFailure("ssh3 channel-open: timeout waiting for response".into())
+        })??;
     if resp.kind != Ssh3FrameKind::ForwardOpenResponse {
         return Err(Error::RuntimeFailure(format!(
             "ssh3 channel-open: expected ForwardOpenResponse, got {:?}",
@@ -147,10 +146,7 @@ async fn open_channel(
 }
 
 /// Open a TCP local forward.
-pub async fn open_local(
-    conn: Connection,
-    spec: &LocalForwardSpec,
-) -> Result<ForwardHandle> {
+pub async fn open_local(conn: Connection, spec: &LocalForwardSpec) -> Result<ForwardHandle> {
     let bind = bind_addr_string(&spec.listen)?;
     let listener = TcpListener::bind(&bind)
         .await
@@ -434,14 +430,7 @@ pub async fn open_udp(
         ));
     }
     if spec.direction == ForwardDirection::Remote {
-        return open_remote_udp(
-            conn,
-            state,
-            control_send,
-            next_flow_id,
-            spec,
-        )
-        .await;
+        return open_remote_udp(conn, state, control_send, next_flow_id, spec).await;
     }
     if conn.max_datagram_size().is_none() {
         return Err(Error::UnsupportedPlatform(
@@ -450,10 +439,12 @@ pub async fn open_udp(
     }
 
     let bind = bind_addr_string(&spec.listen)?;
-    let socket = UdpSocket::bind(&bind).await.map_err(|e| Error::LocalBindFailed {
-        address: bind.clone(),
-        reason: e.to_string(),
-    })?;
+    let socket = UdpSocket::bind(&bind)
+        .await
+        .map_err(|e| Error::LocalBindFailed {
+            address: bind.clone(),
+            reason: e.to_string(),
+        })?;
 
     let flow_id = next_flow_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let assoc = Ssh3Frame::new(
@@ -920,8 +911,7 @@ async fn server_remote_udp_loop(
 ) {
     let socket = Arc::new(socket);
     // Track the most recent external source so replies can be delivered.
-    let last_peer: Arc<AsyncMutex<Option<std::net::SocketAddr>>> =
-        Arc::new(AsyncMutex::new(None));
+    let last_peer: Arc<AsyncMutex<Option<std::net::SocketAddr>>> = Arc::new(AsyncMutex::new(None));
 
     // Register an inbound channel so the session-level datagram dispatch
     // can deliver replies (if the client sends back via the same flow_id).

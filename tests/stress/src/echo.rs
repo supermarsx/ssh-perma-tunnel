@@ -6,7 +6,7 @@ use std::io;
 use std::net::SocketAddr;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpListener;
+use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
@@ -23,6 +23,21 @@ impl EchoServer {
     /// Bind on `127.0.0.1:0` and start accepting echo connections in the
     /// current Tokio runtime.
     pub async fn start() -> io::Result<Self> {
+        Self::start_with(ConnectionMode::Persistent).await
+    }
+
+    /// Bind on `127.0.0.1:0` and start an echo server that closes each
+    /// connection after one echoed read.
+    ///
+    /// This is useful for long-running connection-churn soaks because the
+    /// server performs the active close. Clients can observe EOF before
+    /// dropping their sockets, which reduces client-side ephemeral port
+    /// reuse pressure on Windows.
+    pub async fn start_one_shot() -> io::Result<Self> {
+        Self::start_with(ConnectionMode::CloseAfterFirstWrite).await
+    }
+
+    async fn start_with(mode: ConnectionMode) -> io::Result<Self> {
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let addr = listener.local_addr()?;
         let (tx, mut rx) = oneshot::channel::<()>();
@@ -33,17 +48,7 @@ impl EchoServer {
                     incoming = listener.accept() => {
                         let Ok((mut sock, _)) = incoming else { break; };
                         tokio::spawn(async move {
-                            let mut buf = [0u8; 4096];
-                            loop {
-                                match sock.read(&mut buf).await {
-                                    Ok(0) | Err(_) => break,
-                                    Ok(n) => {
-                                        if sock.write_all(&buf[..n]).await.is_err() {
-                                            break;
-                                        }
-                                    }
-                                }
-                            }
+                            serve_connection(&mut sock, mode).await;
                         });
                     }
                 }
@@ -63,6 +68,29 @@ impl EchoServer {
         }
         if let Some(t) = self.task.take() {
             let _ = t.await;
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum ConnectionMode {
+    Persistent,
+    CloseAfterFirstWrite,
+}
+
+async fn serve_connection(sock: &mut TcpStream, mode: ConnectionMode) {
+    let mut buf = [0u8; 4096];
+    loop {
+        match sock.read(&mut buf).await {
+            Ok(0) | Err(_) => break,
+            Ok(n) => {
+                if sock.write_all(&buf[..n]).await.is_err() {
+                    break;
+                }
+                if matches!(mode, ConnectionMode::CloseAfterFirstWrite) {
+                    break;
+                }
+            }
         }
     }
 }

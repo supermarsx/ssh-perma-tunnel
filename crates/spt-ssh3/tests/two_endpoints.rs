@@ -228,7 +228,10 @@ async fn local_tcp_forward_random_payload_round_trip() {
     });
     let acceptor = tokio::spawn(async move {
         serve_local_tcp_acceptor(server_conn, move |_| {
-            Some(TargetAddr::new(echo_addr.ip().to_string(), echo_addr.port()))
+            Some(TargetAddr::new(
+                echo_addr.ip().to_string(),
+                echo_addr.port(),
+            ))
         })
         .await;
     });
@@ -387,9 +390,7 @@ async fn udp_forward_unsupported_when_peer_lacks_capability() {
 
 #[tokio::test]
 async fn remote_forward_round_trip() {
-    use spt_ssh3::frame::{
-        ChannelOpenPayload, ForwardOpenResponse, Ssh3Frame, Ssh3FrameKind,
-    };
+    use spt_ssh3::frame::{ChannelOpenPayload, ForwardOpenResponse, Ssh3Frame, Ssh3FrameKind};
     let (client_conn, server_conn) = connected_pair().await;
 
     // Drive control-stream handshake; retain the server's halves so we can

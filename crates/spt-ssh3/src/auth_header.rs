@@ -5,7 +5,8 @@
 //! session: `Authorization: Bearer <token>` (preferred) or `Basic <b64>`. The
 //! OIDC device flow (`AuthMethod::OidcDeviceFlow`) is performed out-of-band by
 //! `spt-bin` glue, which deposits the resulting access token into a `Bearer`
-//! method's [`SecretRef`] before calling [`crate::Ssh3Protocol::connect`].
+//! method's [`SecretRef`] before calling
+//! [`spt_protocol::TunnelProtocol::connect`].
 
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine as _;

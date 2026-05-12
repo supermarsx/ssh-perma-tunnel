@@ -112,19 +112,23 @@ impl Ssh3Frame {
     {
         use tokio::io::AsyncReadExt;
         let mut header = [0u8; 5];
-        r.read_exact(&mut header).await.map_err(|e| {
-            Error::RuntimeFailure(format!("ssh3 frame: read header: {e}"))
+        r.read_exact(&mut header)
+            .await
+            .map_err(|e| Error::RuntimeFailure(format!("ssh3 frame: read header: {e}")))?;
+        let kind = Ssh3FrameKind::from_u8(header[0]).ok_or_else(|| {
+            Error::InvalidConfig(format!("ssh3 frame: unknown kind 0x{:02x}", header[0]))
         })?;
-        let kind = Ssh3FrameKind::from_u8(header[0])
-            .ok_or_else(|| Error::InvalidConfig(format!("ssh3 frame: unknown kind 0x{:02x}", header[0])))?;
         let len = u32::from_be_bytes([header[1], header[2], header[3], header[4]]) as usize;
         let mut payload = vec![0u8; len];
         if len > 0 {
-            r.read_exact(&mut payload).await.map_err(|e| {
-                Error::RuntimeFailure(format!("ssh3 frame: read payload: {e}"))
-            })?;
+            r.read_exact(&mut payload)
+                .await
+                .map_err(|e| Error::RuntimeFailure(format!("ssh3 frame: read payload: {e}")))?;
         }
-        Ok(Self { kind, payload: Bytes::from(payload) })
+        Ok(Self {
+            kind,
+            payload: Bytes::from(payload),
+        })
     }
 
     /// Write this frame to an `AsyncWrite` sink.
@@ -134,9 +138,9 @@ impl Ssh3Frame {
     {
         use tokio::io::AsyncWriteExt;
         let buf = self.encode();
-        w.write_all(&buf).await.map_err(|e| {
-            Error::RuntimeFailure(format!("ssh3 frame: write: {e}"))
-        })?;
+        w.write_all(&buf)
+            .await
+            .map_err(|e| Error::RuntimeFailure(format!("ssh3 frame: write: {e}")))?;
         Ok(())
     }
 
@@ -160,9 +164,7 @@ impl Ssh3Frame {
     /// Decode one frame from `buf`. Advances `buf` past the consumed bytes.
     pub fn decode(buf: &mut Bytes) -> Result<Self> {
         if buf.remaining() < 5 {
-            return Err(Error::InvalidConfig(
-                "ssh3 frame: short header".to_string(),
-            ));
+            return Err(Error::InvalidConfig("ssh3 frame: short header".to_string()));
         }
         let kind_raw = buf.get_u8();
         let kind = Ssh3FrameKind::from_u8(kind_raw).ok_or_else(|| {
@@ -181,7 +183,7 @@ impl Ssh3Frame {
 
 /// Capability map exchanged in the very first `Settings` frame on the control
 /// stream. The supervisor compares its required-cap set against `peer` in
-/// [`crate::Ssh3Protocol::connect`]; missing required capabilities cause a
+/// [`spt_protocol::TunnelProtocol::connect`]; missing required capabilities cause a
 /// hard fail (`UnsupportedPlatform`).
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Ssh3Settings {
@@ -272,9 +274,7 @@ impl ChannelOpenPayload {
         }
         let hlen = payload.get_u16() as usize;
         if payload.remaining() < hlen + 2 {
-            return Err(Error::InvalidConfig(
-                "ssh3 channel-open: truncated".into(),
-            ));
+            return Err(Error::InvalidConfig("ssh3 channel-open: truncated".into()));
         }
         let host_bytes = payload.copy_to_bytes(hlen);
         let host = std::str::from_utf8(&host_bytes)

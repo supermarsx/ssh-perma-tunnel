@@ -18,6 +18,8 @@
 
 #![allow(clippy::cast_possible_truncation)]
 
+use std::io;
+use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
 use stress::echo::EchoServer;
@@ -40,6 +42,13 @@ const SOAK_DURATION: Duration = Duration::from_secs(24 * 60 * 60);
 const MIN_SOAK_FOR_ASSERTIONS: Duration = Duration::from_secs(60 * 60);
 /// Steady-state target rate (connections per second).
 const TARGET_CONN_PER_SEC: u32 = 100;
+/// Number of one-shot echo listeners to rotate through. This keeps the same
+/// aggregate 100 conn/s target while avoiding a single hot loopback 4-tuple
+/// on Windows during long runs.
+const ECHO_ENDPOINTS: usize = 16;
+/// Transient Windows `AddrInUse` can occur when the OS picks a recently used
+/// local endpoint. Retry against the next listener before failing the tick.
+const ADDR_IN_USE_RETRY_DELAY: Duration = Duration::from_millis(10);
 /// Permitted growth above the rolling minimum hourly RSS sample. 32 MiB
 /// tolerates page-cache jitter without permitting a true leak.
 const RSS_GROWTH_LIMIT_BYTES: u64 = 32 * 1024 * 1024;
@@ -63,7 +72,8 @@ async fn soak_steady_state_no_growth() {
         .await
         .expect("russh start");
     let ssh_addr = ssh.addr;
-    let echo = EchoServer::start().await.expect("echo start");
+    let echo_servers = start_echo_servers().await;
+    let echo_addrs: Vec<SocketAddr> = echo_servers.iter().map(|server| server.addr).collect();
 
     let baseline = Snapshot::capture().expect("baseline snapshot");
     let mut hourly_rss: Vec<u64> = vec![baseline.rss_bytes];
@@ -73,18 +83,16 @@ async fn soak_steady_state_no_growth() {
     // 100 conn/s → one connection every 10ms.
     let interval = Duration::from_millis(1000 / u64::from(TARGET_CONN_PER_SEC));
     let mut tick = tokio::time::interval(interval);
+    let mut echo_cursor = 0usize;
 
     while started.elapsed() < target_duration {
         tick.tick().await;
 
         // Steady-state work: a single TCP echo round trip.
-        let res = tokio::time::timeout(Duration::from_secs(2), async {
-            let mut sock = TcpStream::connect(echo.addr).await?;
-            sock.write_all(b"ping").await?;
-            let mut buf = [0u8; 4];
-            sock.read_exact(&mut buf).await?;
-            std::io::Result::Ok(buf)
-        })
+        let res = tokio::time::timeout(
+            Duration::from_secs(2),
+            echo_round_trip(&echo_addrs, &mut echo_cursor),
+        )
         .await
         .expect("steady-state echo did not time out")
         .expect("steady-state echo succeeded");
@@ -131,6 +139,57 @@ async fn soak_steady_state_no_growth() {
         );
     }
 
-    drop(echo);
+    drop(echo_servers);
     ssh.shutdown().await;
+}
+
+async fn start_echo_servers() -> Vec<EchoServer> {
+    let mut servers = Vec::with_capacity(ECHO_ENDPOINTS);
+    for i in 0..ECHO_ENDPOINTS {
+        servers.push(
+            EchoServer::start_one_shot()
+                .await
+                .unwrap_or_else(|err| panic!("echo server {i} start: {err}")),
+        );
+    }
+    servers
+}
+
+async fn echo_round_trip(addrs: &[SocketAddr], cursor: &mut usize) -> io::Result<[u8; 4]> {
+    for attempt in 0..ECHO_ENDPOINTS {
+        let addr = addrs[*cursor % addrs.len()];
+        *cursor = cursor.wrapping_add(1);
+
+        match single_echo_round_trip(addr).await {
+            Ok(buf) => return Ok(buf),
+            Err(err) if err.kind() == io::ErrorKind::AddrInUse => {
+                if attempt + 1 == ECHO_ENDPOINTS {
+                    return Err(err);
+                }
+                tokio::time::sleep(ADDR_IN_USE_RETRY_DELAY).await;
+            }
+            Err(err) => return Err(err),
+        }
+    }
+
+    unreachable!("ECHO_ENDPOINTS is non-zero");
+}
+
+async fn single_echo_round_trip(addr: SocketAddr) -> io::Result<[u8; 4]> {
+    let mut sock = TcpStream::connect(addr).await?;
+    sock.write_all(b"ping").await?;
+
+    let mut buf = [0u8; 4];
+    sock.read_exact(&mut buf).await?;
+
+    let mut eof = [0u8; 1];
+    let bytes = sock.read(&mut eof).await?;
+    if bytes == 0 {
+        Ok(buf)
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "one-shot echo server returned trailing data",
+        ))
+    }
 }

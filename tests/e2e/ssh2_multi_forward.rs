@@ -51,9 +51,14 @@ async fn three_concurrent_forwards_all_open() {
         )
         .build();
 
-    wait_for_state(&orch, "multi", ProfileStateName::Active, Duration::from_secs(3))
-        .await
-        .expect("multi reaches active");
+    wait_for_state(
+        &orch,
+        "multi",
+        ProfileStateName::Active,
+        Duration::from_secs(3),
+    )
+    .await
+    .expect("multi reaches active");
 
     // Wait for all three forwards to be opened.
     let mut seen: HashSet<String> = HashSet::new();
@@ -90,7 +95,10 @@ async fn three_concurrent_forwards_all_open() {
                 _ => false,
             })
             .count();
-        assert_eq!(n, 1, "forward `{fname}` must be opened exactly once; got {n}");
+        assert_eq!(
+            n, 1,
+            "forward `{fname}` must be opened exactly once; got {n}"
+        );
     }
 
     orch.shutdown().await;

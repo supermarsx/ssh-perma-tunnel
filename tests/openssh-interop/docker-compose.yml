@@ -33,12 +33,14 @@ services:
       - USER_PASSWORD=interop-pw
       - USER_NAME=interop
       - LOG_STDOUT=true
+      - SPT_HOST_KEY_BASENAME=ssh_host_ed25519_key
     volumes:
       - ./fixtures:/fixtures:ro
-      - ./fixtures/host_keys/ssh_host_ed25519_key:/config/ssh_host_keys/ssh_host_ed25519_key:ro
-      - ./fixtures/host_keys/ssh_host_ed25519_key.pub:/config/ssh_host_keys/ssh_host_ed25519_key.pub:ro
+      - ./fixtures/custom-cont-init.d/10-copy-host-keys.sh:/custom-cont-init.d/10-copy-host-keys.sh:ro
     ports:
       - "127.0.0.1:2222:2222"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     # The image's healthcheck is "is sshd accepting on 2222". We rely on
     # the Rust harness to poll-connect rather than embedding one here.
     networks:
@@ -59,12 +61,14 @@ services:
       - PASSWORD_ACCESS=false
       - USER_NAME=interop
       - LOG_STDOUT=true
+      - SPT_HOST_KEY_BASENAME=ssh_host_rsa_key
     volumes:
       - ./fixtures:/fixtures:ro
-      - ./fixtures/host_keys/ssh_host_rsa_key:/config/ssh_host_keys/ssh_host_rsa_key:ro
-      - ./fixtures/host_keys/ssh_host_rsa_key.pub:/config/ssh_host_keys/ssh_host_rsa_key.pub:ro
+      - ./fixtures/custom-cont-init.d/10-copy-host-keys.sh:/custom-cont-init.d/10-copy-host-keys.sh:ro
     ports:
       - "127.0.0.1:2223:2222"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
       interop:
         aliases:

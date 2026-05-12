@@ -123,7 +123,10 @@ mod tests {
     #[test]
     fn ciphers_split_into_cs_and_sc() {
         let p = CryptoPolicy {
-            ciphers: vec!["aes256-gcm@openssh.com".into(), "chacha20-poly1305@openssh.com".into()],
+            ciphers: vec![
+                "aes256-gcm@openssh.com".into(),
+                "chacha20-poly1305@openssh.com".into(),
+            ],
             ..Default::default()
         };
         let prefs = p.to_method_prefs();
@@ -139,7 +142,10 @@ mod tests {
     #[test]
     fn kex_and_macs_and_hostkeys_render() {
         let p = CryptoPolicy {
-            kex: vec!["curve25519-sha256".into(), "diffie-hellman-group14-sha256".into()],
+            kex: vec![
+                "curve25519-sha256".into(),
+                "diffie-hellman-group14-sha256".into(),
+            ],
             macs: vec!["hmac-sha2-256-etm@openssh.com".into()],
             host_keys: vec!["ssh-ed25519".into(), "rsa-sha2-512".into()],
             ..Default::default()

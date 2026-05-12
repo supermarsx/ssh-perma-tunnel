@@ -14,7 +14,8 @@
 use std::time::Duration;
 
 use openssh_interop::{
-    fixtures_dir, gated, roundtrip, spawn_echo_server, wait_for_port, SpawnedSpt,
+    default_client_key, gated, host_gateway, roundtrip, spawn_echo_server, wait_for_port,
+    SpawnedSpt,
 };
 use tokio::time::sleep;
 
@@ -27,10 +28,8 @@ async fn keepalive_interval_keeps_session_alive_across_idle_window() {
 
     let echo = spawn_echo_server().await.expect("echo");
     let listen_port = pick_free_port().await;
-    let key = fixtures_dir()
-        .join("keys/test_ed25519")
-        .to_string_lossy()
-        .replace('\\', "/");
+    let host_gw = host_gateway();
+    let key = default_client_key().to_string_lossy().replace('\\', "/");
 
     let cfg = format!(
         r#"
@@ -92,8 +91,8 @@ name = "echo"
 type = "local"
 transport = "tcp"
 bind = "127.0.0.1:{listen_port}"
-target = "127.0.0.1:{ep}"
-target_resolve = "local"
+target = "{host_gw}:{ep}"
+target_resolve = "remote"
 required = true
 "#,
         ep = echo.port(),
@@ -107,7 +106,9 @@ required = true
         .expect("forward bind");
 
     // Initial roundtrip to prove the session is up.
-    roundtrip(listen_addr, b"ping").await.expect("initial roundtrip");
+    roundtrip(listen_addr, b"ping")
+        .await
+        .expect("initial roundtrip");
 
     // Hold idle through ~6 keepalive intervals.
     sleep(Duration::from_secs(6)).await;

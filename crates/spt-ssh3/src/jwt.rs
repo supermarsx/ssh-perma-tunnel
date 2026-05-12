@@ -283,10 +283,7 @@ mod tests {
             "https://h.invalid:7443/ssh3"
         );
         // Inserts the leading slash if missing.
-        assert_eq!(
-            canonical_audience("h", 1, "x"),
-            "https://h:1/x"
-        );
+        assert_eq!(canonical_audience("h", 1, "x"), "https://h:1/x");
     }
 
     #[test]

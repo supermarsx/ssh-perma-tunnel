@@ -7,6 +7,9 @@ use std::io::Write as _;
 
 use async_ssh2_lite::session_stream::AsyncSessionStream;
 use async_ssh2_lite::AsyncSession;
+use ed25519_dalek::pkcs8::EncodePrivateKey as EncodeEd25519PrivateKey;
+use rsa::pkcs1::{EncodeRsaPrivateKey, LineEnding as Pkcs1LineEnding};
+use rsa::pkcs8::LineEnding as Pkcs8LineEnding;
 use secrecy::ExposeSecret;
 use spt_auth::secret_ref::SecretRef as AuthSecretRef;
 use spt_auth::{AuthConfig, AuthMethod};
@@ -102,12 +105,12 @@ where
                 .await
                 .map_err(|e| from_async_ssh("userauth_keyboard_interactive", e))
         }
-        AuthMethod::Bearer { .. } | AuthMethod::Basic { .. } | AuthMethod::OidcDeviceFlow { .. } => {
-            Err(Error::InvalidConfig(format!(
-                "auth method `{}` is SSH3-only; not supported by SSH2 backend",
-                method_name(method)
-            )))
-        }
+        AuthMethod::Bearer { .. }
+        | AuthMethod::Basic { .. }
+        | AuthMethod::OidcDeviceFlow { .. } => Err(Error::InvalidConfig(format!(
+            "auth method `{}` is SSH3-only; not supported by SSH2 backend",
+            method_name(method)
+        ))),
     }
 }
 
@@ -126,49 +129,69 @@ where
 {
     // The on-disk key is the canonical form here; both the in-memory and the
     // file-based libssh2 entry points read the same OpenSSH PEM bytes.
-    let key_bytes = std::fs::read_to_string(privkey_path).map_err(|e| {
+    let original_key_bytes = std::fs::read_to_string(privkey_path).map_err(|e| {
         Error::KeyFailure(format!(
             "read private key `{}`: {e}",
             privkey_path.display()
         ))
     })?;
-    let pub_bytes = if let Some(p) = cert_path {
-        Some(std::fs::read_to_string(p).map_err(|e| {
-            Error::KeyFailure(format!("read cert/pubkey `{}`: {e}", p.display()))
-        })?)
-    } else {
-        None
-    };
+    let key_bytes = normalize_private_key_for_libssh2(&original_key_bytes)?;
+    let pub_bytes = public_key_material(privkey_path, cert_path)?;
 
-    // libssh2 `userauth_pubkey_memory` is only compiled in async-ssh2-lite
-    // when one of `unix`, `vendored-openssl`, or `openssl-on-win32` is on.
-    // The workspace builds without vendored-openssl on Windows (libssh2 uses
-    // WinCNG, which lacks the in-memory entry point), so on Windows we skip
-    // straight to the tempfile fallback below.
-    #[cfg(unix)]
+    // The memory API is available on Unix and when the optional vendored
+    // OpenSSL backend is enabled on Windows. Otherwise, fall back to file auth.
+    #[cfg(any(unix, feature = "vendored-openssl"))]
+    match session
+        .userauth_pubkey_memory(username, pub_bytes.as_deref(), &key_bytes, passphrase)
+        .await
     {
-        match session
-            .userauth_pubkey_memory(
-                username,
-                pub_bytes.as_deref(),
-                &key_bytes,
-                passphrase,
-            )
-            .await
-        {
-            Ok(()) => return Ok(()),
-            Err(e) => {
-                debug!(target: "spt_ssh2::auth", "pubkey_memory failed, falling back to file: {e}");
-            }
+        Ok(()) => return Ok(()),
+        Err(e) => {
+            debug!(target: "spt_ssh2::auth", "pubkey_memory failed, falling back to file: {e}");
         }
     }
 
     // Tempfile fallback (Windows non-vendored builds, or pubkey_memory unavail).
+    let res = try_pubkey_file_with_material(
+        session,
+        username,
+        &key_bytes,
+        pub_bytes.as_deref(),
+        passphrase,
+    )
+    .await;
+    if res.is_err() && original_key_bytes != key_bytes {
+        debug!(
+            target: "spt_ssh2::auth",
+            "normalized pubkey_file failed, retrying with original OpenSSH key material"
+        );
+        return try_pubkey_file_with_material(
+            session,
+            username,
+            &original_key_bytes,
+            pub_bytes.as_deref(),
+            passphrase,
+        )
+        .await;
+    }
+    res
+}
+
+async fn try_pubkey_file_with_material<S>(
+    session: &AsyncSession<S>,
+    username: &str,
+    private_key: &str,
+    pubkey: Option<&str>,
+    passphrase: Option<&str>,
+) -> Result<()>
+where
+    S: AsyncSessionStream + Send + Sync + 'static,
+{
     let mut priv_tmp = NamedTempFile::new()
         .map_err(|e| Error::KeyFailure(format!("create temp key file: {e}")))?;
     set_tempfile_mode(priv_tmp.path())?;
     priv_tmp
-        .write_all(key_bytes.as_bytes())
+        .write_all(private_key.as_bytes())
         .map_err(|e| Error::KeyFailure(format!("write temp key: {e}")))?;
     priv_tmp
         .flush()
@@ -176,7 +199,7 @@ where
     let priv_path = priv_tmp.path().to_path_buf();
 
     let pub_tmp_holder;
-    let pub_path_opt = if let Some(pb) = pub_bytes {
+    let pub_path_opt = if let Some(pb) = pubkey {
         let mut pub_tmp = NamedTempFile::new()
             .map_err(|e| Error::KeyFailure(format!("create temp pubkey file: {e}")))?;
         set_tempfile_mode(pub_tmp.path())?;
@@ -195,12 +218,7 @@ where
     };
 
     let res = session
-        .userauth_pubkey_file(
-            username,
-            pub_path_opt.as_deref(),
-            &priv_path,
-            passphrase,
-        )
+        .userauth_pubkey_file(username, pub_path_opt.as_deref(), &priv_path, passphrase)
         .await
         .map_err(|e| from_async_ssh("userauth_pubkey_file", e));
 
@@ -221,6 +239,72 @@ fn set_tempfile_mode(p: &std::path::Path) -> Result<()> {
 fn set_tempfile_mode(_p: &std::path::Path) -> Result<()> {
     // Windows: NamedTempFile already creates with restrictive ACL inheritance.
     Ok(())
+}
+
+fn public_key_material(
+    privkey_path: &std::path::Path,
+    cert_path: Option<&std::path::Path>,
+) -> Result<Option<String>> {
+    let discovered;
+    let path = if let Some(path) = cert_path {
+        Some(path)
+    } else {
+        discovered = discover_public_key_path(privkey_path);
+        discovered.as_deref()
+    };
+    let Some(path) = path else { return Ok(None) };
+    std::fs::read_to_string(path)
+        .map(Some)
+        .map_err(|e| Error::KeyFailure(format!("read cert/pubkey `{}`: {e}", path.display())))
+}
+
+fn discover_public_key_path(privkey_path: &std::path::Path) -> Option<std::path::PathBuf> {
+    let mut path = privkey_path.as_os_str().to_os_string();
+    path.push(".pub");
+    let path = std::path::PathBuf::from(path);
+    path.exists().then_some(path)
+}
+
+fn normalize_private_key_for_libssh2(key_bytes: &str) -> Result<String> {
+    if !key_bytes.contains("BEGIN OPENSSH PRIVATE KEY") {
+        return Ok(key_bytes.to_owned());
+    }
+
+    let key = ssh_key::PrivateKey::from_openssh(key_bytes.as_bytes())
+        .map_err(|e| Error::KeyFailure(format!("parse OpenSSH private key for libssh2: {e}")))?;
+
+    match key.key_data() {
+        ssh_key::private::KeypairData::Rsa(keypair) => {
+            let key = rsa::RsaPrivateKey::from_components(
+                mpint_to_biguint(&keypair.public.n),
+                mpint_to_biguint(&keypair.public.e),
+                mpint_to_biguint(&keypair.private.d),
+                vec![
+                    mpint_to_biguint(&keypair.private.p),
+                    mpint_to_biguint(&keypair.private.q),
+                ],
+            )
+            .map_err(|e| Error::KeyFailure(format!("convert OpenSSH RSA key: {e}")))?;
+            key.to_pkcs1_pem(Pkcs1LineEnding::LF)
+                .map(|pem| pem.to_string())
+                .map_err(|e| Error::KeyFailure(format!("encode RSA key as PEM: {e}")))
+        }
+        ssh_key::private::KeypairData::Ed25519(keypair) => {
+            let key = ed25519_dalek::SigningKey::from_bytes(keypair.private.as_ref());
+            key.to_pkcs8_pem(Pkcs8LineEnding::LF)
+                .map(|pem| pem.to_string())
+                .map_err(|e| Error::KeyFailure(format!("encode ED25519 key as PKCS#8 PEM: {e}")))
+        }
+        _ => Ok(key_bytes.to_owned()),
+    }
+}
+
+fn mpint_to_biguint(value: &ssh_key::Mpint) -> rsa::BigUint {
+    rsa::BigUint::from_bytes_be(
+        value
+            .as_positive_bytes()
+            .unwrap_or_else(|| value.as_bytes()),
+    )
 }
 
 /// Resolve a passphrase reference into an owned `String`. Returns `Ok(None)`
@@ -247,19 +331,15 @@ fn resolve_passphrase(
 /// Tries each backend in order — the first to return `Ok(Some(_))` wins.
 /// `env:` and `file://` references are short-circuited locally because spt-auth's
 /// `SecretRef` already carries those variants.
-pub fn resolve_secret(
-    backends: &[&dyn SecretBackend],
-    r: &AuthSecretRef,
-) -> Result<SecretBytes> {
+pub fn resolve_secret(backends: &[&dyn SecretBackend], r: &AuthSecretRef) -> Result<SecretBytes> {
     use spt_secrets::backend::secret_bytes;
     match r {
         AuthSecretRef::Vault { namespace, name } => {
-            let secrets_ref = SecretsSecretRef::new(namespace, name).map_err(|e| {
-                Error::SecretUnavailable {
+            let secrets_ref =
+                SecretsSecretRef::new(namespace, name).map_err(|e| Error::SecretUnavailable {
                     reference: format!("secret://{namespace}/{name}"),
                     reason: format!("invalid reference: {e}"),
-                }
-            })?;
+                })?;
             for b in backends {
                 match b.get(&secrets_ref)? {
                     Some(v) => return Ok(v),
@@ -298,5 +378,36 @@ fn method_name(m: &AuthMethod) -> &'static str {
         AuthMethod::Bearer { .. } => "bearer",
         AuthMethod::Basic { .. } => "basic",
         AuthMethod::OidcDeviceFlow { .. } => "oidc_device_flow",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ssh_key::{Algorithm, LineEnding, PrivateKey};
+
+    use super::*;
+
+    #[test]
+    fn normalizes_openssh_ed25519_private_key_to_pkcs8_pem() {
+        let mut rng = ssh_key::rand_core::OsRng;
+        let key = PrivateKey::random(&mut rng, Algorithm::Ed25519).unwrap();
+        let openssh = key.to_openssh(LineEnding::LF).unwrap();
+
+        let normalized = normalize_private_key_for_libssh2(&openssh).unwrap();
+
+        assert!(normalized.starts_with("-----BEGIN PRIVATE KEY-----"));
+        assert!(normalized.ends_with("-----END PRIVATE KEY-----\n"));
+    }
+
+    #[test]
+    fn normalizes_openssh_rsa_private_key_to_pkcs1_pem() {
+        let mut rng = ssh_key::rand_core::OsRng;
+        let key = PrivateKey::random(&mut rng, Algorithm::Rsa { hash: None }).unwrap();
+        let openssh = key.to_openssh(LineEnding::LF).unwrap();
+
+        let normalized = normalize_private_key_for_libssh2(&openssh).unwrap();
+
+        assert!(normalized.starts_with("-----BEGIN RSA PRIVATE KEY-----"));
+        assert!(normalized.ends_with("-----END RSA PRIVATE KEY-----\n"));
     }
 }

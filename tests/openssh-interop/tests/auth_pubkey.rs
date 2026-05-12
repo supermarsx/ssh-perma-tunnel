@@ -10,7 +10,7 @@
 
 use std::time::Duration;
 
-use openssh_interop::{fixtures_dir, gated, spawn_echo_server, wait_for_port, SpawnedSpt};
+use openssh_interop::{default_client_key, gated, spawn_echo_server, wait_for_port, SpawnedSpt};
 
 #[tokio::test]
 #[ignore]
@@ -23,10 +23,7 @@ async fn pubkey_ed25519_local_forward_handshake() {
     let echo = spawn_echo_server().await.expect("echo server");
     let listen_port = pick_free_port().await;
 
-    let key = fixtures_dir()
-        .join("keys/test_ed25519")
-        .to_string_lossy()
-        .replace('\\', "/");
+    let key = default_client_key().to_string_lossy().replace('\\', "/");
 
     let cfg = format!(
         r#"

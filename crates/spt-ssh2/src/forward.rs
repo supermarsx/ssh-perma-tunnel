@@ -46,10 +46,12 @@ where
     S: AsyncSessionStream + Send + Sync + 'static,
 {
     let bind = bind_addr_string(&spec.listen)?;
-    let listener = TcpListener::bind(&bind).await.map_err(|e| Error::LocalBindFailed {
-        address: bind.clone(),
-        reason: e.to_string(),
-    })?;
+    let listener = TcpListener::bind(&bind)
+        .await
+        .map_err(|e| Error::LocalBindFailed {
+            address: bind.clone(),
+            reason: e.to_string(),
+        })?;
 
     let (state_tx, state_rx) = watch::channel(ForwardState::Listening);
     let (close_tx, close_rx) = oneshot::channel();
@@ -59,7 +61,13 @@ where
     let max = spec.max_connections;
 
     tokio::spawn(local_loop(
-        listener, session, target, state_tx, close_rx, max, name.clone(),
+        listener,
+        session,
+        target,
+        state_tx,
+        close_rx,
+        max,
+        name.clone(),
     ));
 
     Ok(ForwardHandle::new(id, name, state_rx, close_tx))
@@ -137,11 +145,16 @@ where
     let mut buf_in = vec![0u8; 32 * 1024];
     let mut buf_out = vec![0u8; 32 * 1024];
 
-    loop {
+    let mut sock_done = false;
+    let mut channel_done = false;
+    while !sock_done || !channel_done {
         tokio::select! {
-            n = sock_r.read(&mut buf_in) => {
+            n = sock_r.read(&mut buf_in), if !sock_done => {
                 match n {
-                    Ok(0) => break,
+                    Ok(0) => {
+                        sock_done = true;
+                        let _ = channel.send_eof().await;
+                    }
                     Ok(n) => {
                         channel.write_all(&buf_in[..n]).await.map_err(|e| {
                             Error::RuntimeFailure(format!("channel write: {e}"))
@@ -150,9 +163,12 @@ where
                     Err(e) => return Err(Error::RuntimeFailure(format!("sock read: {e}"))),
                 }
             }
-            n = channel.read(&mut buf_out) => {
+            n = channel.read(&mut buf_out), if !channel_done => {
                 match n {
-                    Ok(0) => break,
+                    Ok(0) => {
+                        channel_done = true;
+                        let _ = sock_w.shutdown().await;
+                    }
                     Ok(n) => {
                         sock_w.write_all(&buf_out[..n]).await.map_err(|e| {
                             Error::RuntimeFailure(format!("sock write: {e}"))
@@ -163,7 +179,6 @@ where
             }
         }
     }
-    let _ = channel.send_eof().await;
     let _ = channel.close().await;
     Ok(())
 }
@@ -209,7 +224,11 @@ where
     let target = spec.target.clone();
 
     tokio::spawn(remote_loop(
-        listener, target, state_tx, close_rx, name.clone(),
+        listener,
+        target,
+        state_tx,
+        close_rx,
+        name.clone(),
     ));
 
     Ok(ForwardHandle::new(id, name, state_rx, close_tx))
@@ -257,30 +276,39 @@ where
 {
     let mut sock = TcpStream::connect((target.host.as_str(), target.port))
         .await
-        .map_err(|e| Error::NetworkUnreachable(format!(
-            "dial remote-forward target {}:{}: {e}",
-            target.host, target.port
-        )))?;
+        .map_err(|e| {
+            Error::NetworkUnreachable(format!(
+                "dial remote-forward target {}:{}: {e}",
+                target.host, target.port
+            ))
+        })?;
     let (mut sr, mut sw) = sock.split();
     let mut bi = vec![0u8; 32 * 1024];
     let mut bo = vec![0u8; 32 * 1024];
-    loop {
+    let mut channel_done = false;
+    let mut sock_done = false;
+    while !channel_done || !sock_done {
         tokio::select! {
-            n = channel.read(&mut bi) => match n {
-                Ok(0) => break,
+            n = channel.read(&mut bi), if !channel_done => match n {
+                Ok(0) => {
+                    channel_done = true;
+                    let _ = sw.shutdown().await;
+                }
                 Ok(n) => sw.write_all(&bi[..n]).await
                     .map_err(|e| Error::RuntimeFailure(format!("sock write: {e}")))?,
                 Err(e) => return Err(Error::RuntimeFailure(format!("channel read: {e}"))),
             },
-            n = sr.read(&mut bo) => match n {
-                Ok(0) => break,
+            n = sr.read(&mut bo), if !sock_done => match n {
+                Ok(0) => {
+                    sock_done = true;
+                    let _ = channel.send_eof().await;
+                }
                 Ok(n) => channel.write_all(&bo[..n]).await
                     .map_err(|e| Error::RuntimeFailure(format!("channel write: {e}")))?,
                 Err(e) => return Err(Error::RuntimeFailure(format!("sock read: {e}"))),
             }
         }
     }
-    let _ = channel.send_eof().await;
     let _ = channel.close().await;
     Ok(())
 }

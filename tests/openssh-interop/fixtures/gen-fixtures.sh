@@ -14,10 +14,12 @@ cd "$(dirname "$0")"
 mkdir -p keys host_keys
 
 # Wipe any pre-existing material so ssh-keygen doesn't prompt for overwrite.
-rm -f keys/test_ed25519 keys/test_ed25519.pub
-rm -f keys/test_rsa keys/test_rsa.pub
-rm -f host_keys/ssh_host_ed25519_key host_keys/ssh_host_ed25519_key.pub
-rm -f host_keys/ssh_host_rsa_key host_keys/ssh_host_rsa_key.pub
+# Docker creates missing file bind-mount sources as directories, so this must
+# tolerate directory placeholders from an interrupted interop setup.
+rm -rf keys/test_ed25519 keys/test_ed25519.pub
+rm -rf keys/test_rsa keys/test_rsa.pub
+rm -rf host_keys/ssh_host_ed25519_key host_keys/ssh_host_ed25519_key.pub
+rm -rf host_keys/ssh_host_rsa_key host_keys/ssh_host_rsa_key.pub
 
 # Client keys.
 ssh-keygen -t ed25519 -N "" -C "spt-interop-test-ed25519" -f keys/test_ed25519
@@ -27,13 +29,18 @@ ssh-keygen -t rsa -b 3072 -N "" -C "spt-interop-test-rsa" -f keys/test_rsa
 ssh-keygen -t ed25519 -N "" -C "spt-interop-host-ed25519" -f host_keys/ssh_host_ed25519_key
 ssh-keygen -t rsa -b 3072 -N "" -C "spt-interop-host-rsa" -f host_keys/ssh_host_rsa_key
 
-# Permissions matter for sshd host keys (must be 0600, root-readable inside
-# the container). The linuxserver image runs as PUID 1000; the read-only
-# bind mount carries the host-side mode through.
-chmod 600 keys/test_ed25519 keys/test_rsa
-chmod 600 host_keys/ssh_host_ed25519_key host_keys/ssh_host_rsa_key
-chmod 644 keys/test_ed25519.pub keys/test_rsa.pub
-chmod 644 host_keys/ssh_host_ed25519_key.pub host_keys/ssh_host_rsa_key.pub
+# Keep local fixtures tidy on POSIX filesystems. On Windows mounts these chmod
+# calls can fail; container host keys are copied and chmodded at startup.
+chmod_or_warn() {
+    if ! chmod "$@"; then
+        echo "warning: chmod $* failed; continuing" >&2
+    fi
+}
+
+chmod_or_warn 600 keys/test_ed25519 keys/test_rsa
+chmod_or_warn 600 host_keys/ssh_host_ed25519_key host_keys/ssh_host_rsa_key
+chmod_or_warn 644 keys/test_ed25519.pub keys/test_rsa.pub
+chmod_or_warn 644 host_keys/ssh_host_ed25519_key.pub host_keys/ssh_host_rsa_key.pub
 
 echo "fixtures generated:"
 ls -la keys host_keys

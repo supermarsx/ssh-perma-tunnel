@@ -8,8 +8,9 @@
 //!   adapter — no `spawn_blocking`-only design.
 //! * Public-key (memory + file fallback), agent, password, keyboard-interactive
 //!   and OpenSSH-certificate auth, tried in `AuthConfig.methods` order.
-//! * Host-key verification via `spt-trust`'s [`KnownHosts`] and/or
-//!   [`Sha256HostPin`] (whichever the profile selects, both supported).
+//! * Host-key verification via `spt-trust`'s [`spt_trust::KnownHosts`] and/or
+//!   [`spt_trust::Sha256HostPin`] (whichever the profile selects, both
+//!   supported).
 //! * Local TCP forwards (`direct-tcpip`), remote TCP forwards
 //!   (`tcpip-forward` + `forwarded-tcpip`), multi-hop chains via per-hop
 //!   `direct-tcpip` channels promoted to the next session's transport.

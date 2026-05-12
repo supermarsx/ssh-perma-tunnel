@@ -13,8 +13,8 @@
 use std::time::Duration;
 
 use openssh_interop::{
-    fingerprint_sha256, fixtures_dir, gated, run_once, spawn_echo_server, wait_for_port,
-    SpawnedSpt,
+    default_client_key, fingerprint_sha256, fixtures_dir, gated, run_once, spawn_echo_server,
+    wait_for_port, SpawnedSpt,
 };
 
 async fn pick_free_port() -> u16 {
@@ -23,6 +23,7 @@ async fn pick_free_port() -> u16 {
 }
 
 fn cfg(listen_port: u16, echo_port: u16, pin: &str, key: &str) -> String {
+    let host_key_algorithms = pinned_host_key_algorithms();
     format!(
         r#"
 version = 1
@@ -62,6 +63,9 @@ startup = "eager"
 method = "public_key"
 identity_file = "{key}"
 
+[profiles.crypto]
+host_key_algorithms = {host_key_algorithms}
+
 [profiles.trust]
 mode = "pinned"
 strict = true
@@ -86,6 +90,22 @@ required = true
     )
 }
 
+fn pinned_host_key_algorithms() -> &'static str {
+    if cfg!(windows) {
+        r#"["rsa-sha2-512", "rsa-sha2-256", "ssh-rsa"]"#
+    } else {
+        r#"["ssh-ed25519"]"#
+    }
+}
+
+fn pinned_host_key_fixture() -> &'static str {
+    if cfg!(windows) {
+        "host_keys/ssh_host_rsa_key.pub"
+    } else {
+        "host_keys/ssh_host_ed25519_key.pub"
+    }
+}
+
 #[tokio::test]
 #[ignore]
 async fn pin_correct_fingerprint_accepted() {
@@ -95,11 +115,8 @@ async fn pin_correct_fingerprint_accepted() {
 
     let echo = spawn_echo_server().await.expect("echo");
     let listen_port = pick_free_port().await;
-    let key = fixtures_dir()
-        .join("keys/test_ed25519")
-        .to_string_lossy()
-        .replace('\\', "/");
-    let pin = fingerprint_sha256(&fixtures_dir().join("host_keys/ssh_host_ed25519_key.pub"))
+    let key = default_client_key().to_string_lossy().replace('\\', "/");
+    let pin = fingerprint_sha256(&fixtures_dir().join(pinned_host_key_fixture()))
         .await
         .expect("read fingerprint");
 
@@ -127,10 +144,7 @@ async fn pin_wrong_fingerprint_rejected() {
     // can inspect the exit code + stderr.
     let echo = spawn_echo_server().await.expect("echo");
     let listen_port = pick_free_port().await;
-    let key = fixtures_dir()
-        .join("keys/test_ed25519")
-        .to_string_lossy()
-        .replace('\\', "/");
+    let key = default_client_key().to_string_lossy().replace('\\', "/");
     // Valid SHA256 shape, deliberately wrong content.
     let bad_pin = "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 

@@ -20,8 +20,8 @@ use async_ssh2_lite::{AsyncSession, SessionConfiguration};
 use async_trait::async_trait;
 use spt_auth::AuthConfig;
 use spt_core::{Error, Result};
-use spt_protocol::{Endpoint, ProtocolCapabilities, TunnelProtocol, TunnelSession};
 use spt_protocol::session::SessionInfo;
+use spt_protocol::{Endpoint, ProtocolCapabilities, TunnelProtocol, TunnelSession};
 use spt_secrets::SecretBackend;
 use ssh2::MethodType;
 use tokio::net::TcpStream;
@@ -38,6 +38,14 @@ use crate::session::Ssh2Session;
 /// Re-export of [`crate::hostkey::TrustVerifier`] for the public API.
 pub type TrustPolicy = TrustVerifier;
 
+#[derive(Clone)]
+struct HopConfig {
+    host: String,
+    port: u16,
+    auth: Option<AuthConfig>,
+    trust: Option<TrustPolicy>,
+}
+
 /// SSH2 transport adapter.
 pub struct Ssh2Protocol {
     crypto: CryptoPolicy,
@@ -45,7 +53,7 @@ pub struct Ssh2Protocol {
     /// Optional intermediate hops `(host, port)` traversed before reaching
     /// `endpoint`. Each is reached via a `direct-tcpip` channel through the
     /// previous session.
-    hops: Vec<(String, u16)>,
+    hops: Vec<HopConfig>,
     /// Secret-backend chain owned by this protocol — the auth flow consults
     /// these to resolve `secret://`/`env:`/`file://` references.
     backends: Vec<Arc<dyn SecretBackend>>,
@@ -58,7 +66,7 @@ pub struct Ssh2Protocol {
 pub struct Ssh2ProtocolBuilder {
     crypto: CryptoPolicy,
     trust: TrustPolicy,
-    hops: Vec<(String, u16)>,
+    hops: Vec<HopConfig>,
     backends: Vec<Arc<dyn SecretBackend>>,
     config: SessionConfiguration,
 }
@@ -99,7 +107,30 @@ impl Ssh2ProtocolBuilder {
     /// Add a hop traversed before reaching the final endpoint.
     #[must_use]
     pub fn hop(mut self, host: impl Into<String>, port: u16) -> Self {
-        self.hops.push((host.into(), port));
+        self.hops.push(HopConfig {
+            host: host.into(),
+            port,
+            auth: None,
+            trust: None,
+        });
+        self
+    }
+
+    /// Add a hop with explicit hop-local auth and trust policy.
+    #[must_use]
+    pub fn hop_with_auth_trust(
+        mut self,
+        host: impl Into<String>,
+        port: u16,
+        auth: AuthConfig,
+        trust: TrustPolicy,
+    ) -> Self {
+        self.hops.push(HopConfig {
+            host: host.into(),
+            port,
+            auth: Some(auth),
+            trust: Some(trust),
+        });
         self
     }
 
@@ -146,7 +177,10 @@ impl Ssh2Protocol {
     }
 
     fn backend_refs(&self) -> Vec<&dyn SecretBackend> {
-        self.backends.iter().map(std::convert::AsRef::as_ref).collect()
+        self.backends
+            .iter()
+            .map(std::convert::AsRef::as_ref)
+            .collect()
     }
 }
 
@@ -182,25 +216,49 @@ impl TunnelProtocol for Ssh2Protocol {
         // Multi-hop chain: hop[0] is reached over a plain TCP socket;
         // each subsequent hop tunnels through the previous session.
         let first = &self.hops[0];
-        let socket = open_tcp(&first.0, first.1).await?;
+        let socket = open_tcp(&first.host, first.port).await?;
         let session = AsyncSession::new(socket, self.config.clone())
             .map_err(|e| from_async_ssh("AsyncSession::new", e))?;
         // For intermediate hops we still apply policy + handshake + auth +
         // host-key verification as a single uniform flow.
-        let session = self.handshake_and_verify(session, &first.0, first.1).await?;
-        auth::run(&session, auth_cfg, &self.backend_refs()).await?;
+        let session = self
+            .handshake_and_verify(session, &first.host, first.port, first.trust.as_ref())
+            .await?;
+        auth::run(
+            &session,
+            first.auth.as_ref().unwrap_or(auth_cfg),
+            &self.backend_refs(),
+        )
+        .await?;
 
         let mut current = Arc::new(parking_lot::Mutex::new(session));
         for hop in self.hops.iter().skip(1) {
-            let next = crate::multi_hop::open_chained_session(current.clone(), &hop.0, hop.1)
+            let next = crate::multi_hop::open_chained_session(
+                current.clone(),
+                &hop.host,
+                hop.port,
+                self.config.clone(),
+            )
+            .await?;
+            let next = self
+                .handshake_and_verify(next, &hop.host, hop.port, hop.trust.as_ref())
                 .await?;
-            let next = self.handshake_and_verify(next, &hop.0, hop.1).await?;
-            auth::run(&next, auth_cfg, &self.backend_refs()).await?;
+            auth::run(
+                &next,
+                hop.auth.as_ref().unwrap_or(auth_cfg),
+                &self.backend_refs(),
+            )
+            .await?;
             current = Arc::new(parking_lot::Mutex::new(next));
         }
         // Final leg to the endpoint.
-        let final_session =
-            crate::multi_hop::open_chained_session(current, &endpoint.host, endpoint.port).await?;
+        let final_session = crate::multi_hop::open_chained_session(
+            current,
+            &endpoint.host,
+            endpoint.port,
+            self.config.clone(),
+        )
+        .await?;
         let info = self
             .finish_session(final_session, &endpoint.host, endpoint.port, auth_cfg)
             .await?;
@@ -222,6 +280,7 @@ impl Ssh2Protocol {
         mut session: AsyncSession<S>,
         host: &str,
         port: u16,
+        trust: Option<&TrustPolicy>,
     ) -> Result<AsyncSession<S>>
     where
         S: async_ssh2_lite::session_stream::AsyncSessionStream + Send + Sync + 'static,
@@ -239,7 +298,7 @@ impl Ssh2Protocol {
             .host_key()
             .ok_or_else(|| Error::TrustFailed("peer did not present a host key".into()))?;
         let pubkey = rebuild_public_key(blob, ty)?;
-        self.trust.verify(host, port, &pubkey)?;
+        trust.unwrap_or(&self.trust).verify(host, port, &pubkey)?;
         Ok(session)
     }
 
@@ -284,11 +343,7 @@ impl Ssh2Protocol {
     }
 }
 
-async fn apply_method_pref<S>(
-    session: &AsyncSession<S>,
-    m: MethodType,
-    prefs: &str,
-) -> Result<()>
+async fn apply_method_pref<S>(session: &AsyncSession<S>, m: MethodType, prefs: &str) -> Result<()>
 where
     S: async_ssh2_lite::session_stream::AsyncSessionStream + Send + Sync + 'static,
 {

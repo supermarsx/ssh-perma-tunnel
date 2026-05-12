@@ -63,10 +63,7 @@ async fn reconnect_on_connect_failure_then_recovery() {
         .await
         .expect("first active");
     let after_first = proto.connect_count();
-    assert!(
-        after_first >= 1,
-        "expected >=1 connect; got {after_first}"
-    );
+    assert!(after_first >= 1, "expected >=1 connect; got {after_first}");
 
     // Step 2: flip the protocol into failure mode and tear down the live
     // session so the supervisor reconnects. Because the supervisor's reconnect

@@ -49,7 +49,7 @@ jobs:
       # Build the spt binary that the tests will subprocess. Use --locked
       # so we honour the workspace lockfile (MSRV-1.83 contract).
       - name: Build spt binary
-        run: cargo build -p spt-bin --release --locked
+        run: cargo build -p spt-bin --release --locked --features ssh2-vendored-openssl
 
       # Generate fresh fixture keypairs (deterministic per-run, never
       # committed). ssh-keygen is preinstalled on ubuntu-latest.

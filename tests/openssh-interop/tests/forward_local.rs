@@ -19,7 +19,8 @@
 use std::time::Duration;
 
 use openssh_interop::{
-    fixtures_dir, gated, roundtrip, spawn_echo_server, wait_for_port, SpawnedSpt,
+    default_client_key, gated, host_gateway, roundtrip, spawn_echo_server, wait_for_port,
+    SpawnedSpt,
 };
 
 #[tokio::test]
@@ -33,10 +34,7 @@ async fn local_forward_one_mib_roundtrip() {
     let listen_port = pick_free_port().await;
     let host_gw = host_gateway();
 
-    let key = fixtures_dir()
-        .join("keys/test_ed25519")
-        .to_string_lossy()
-        .replace('\\', "/");
+    let key = default_client_key().to_string_lossy().replace('\\', "/");
 
     let cfg = format!(
         r#"
@@ -126,16 +124,6 @@ fn make_payload(len: usize, seed: u8) -> Vec<u8> {
         v.push(x);
     }
     v
-}
-
-fn host_gateway() -> String {
-    if let Ok(v) = std::env::var("SPT_HOST_GATEWAY") {
-        return v;
-    }
-    // Linux docker bridge default; Docker Desktop also supports
-    // `host.docker.internal` but linuxserver/openssh-server runs on plain
-    // bridge, where `host.docker.internal` only works if added to compose.
-    "172.17.0.1".to_string()
 }
 
 async fn pick_free_port() -> u16 {

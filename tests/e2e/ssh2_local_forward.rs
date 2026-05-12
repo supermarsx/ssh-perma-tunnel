@@ -32,9 +32,7 @@ fn profile_with_local_forward(name: &str, fname: &str) -> Profile {
     ProfileBuilder::new(name)
         .endpoint("127.0.0.1", 22)
         .user("alice")
-        .add_forward(
-            ForwardBuilder::local_tcp(fname, "127.0.0.1:0", "127.0.0.1:9").build(),
-        )
+        .add_forward(ForwardBuilder::local_tcp(fname, "127.0.0.1:0", "127.0.0.1:9").build())
         .build()
 }
 

@@ -169,12 +169,20 @@ fn matrix() -> Vec<Cell> {
     for s in servers {
         for f in forwards {
             for a in auths {
-                cells.push(Cell { server: s, forward: f, auth: a });
+                cells.push(Cell {
+                    server: s,
+                    forward: f,
+                    auth: a,
+                });
             }
         }
     }
     // Sanity: brief mandates ~20 cells. 3×4×2 = 24.
-    assert!(cells.len() >= 18 && cells.len() <= 30, "matrix size: {}", cells.len());
+    assert!(
+        cells.len() >= 18 && cells.len() <= 30,
+        "matrix size: {}",
+        cells.len()
+    );
     cells
 }
 
@@ -237,7 +245,10 @@ fn spt_binary() -> PathBuf {
 }
 
 fn output_csv() -> PathBuf {
-    workspace_root().join("target").join("conformance").join("conformance-matrix.csv")
+    workspace_root()
+        .join("target")
+        .join("conformance")
+        .join("conformance-matrix.csv")
 }
 
 // ---------------------------------------------------------------------------
@@ -324,7 +335,9 @@ fn write_cell_config(path: &Path, cell: Cell) -> std::io::Result<()> {
             "auth.method = \"publickey\"\nauth.identity_file = \"{}\"\n",
             key_path.display().to_string().replace('\\', "/"),
         ),
-        Auth::Password => "auth.method = \"password\"\nauth.password_env = \"SPT_TEST_PASSWORD\"\n".to_string(),
+        Auth::Password => {
+            "auth.method = \"password\"\nauth.password_env = \"SPT_TEST_PASSWORD\"\n".to_string()
+        }
     };
 
     let forward_block = match cell.forward {
@@ -425,7 +438,12 @@ async fn matrix_full() {
                 Status::Fail
             }
         };
-        rows.push(Row { cell, status, elapsed_ms, detail });
+        rows.push(Row {
+            cell,
+            status,
+            elapsed_ms,
+            detail,
+        });
     }
 
     write_csv(&rows).expect("write conformance CSV");
@@ -459,16 +477,23 @@ async fn matrix_full() {
 #[ignore = "conformance: structural-only sanity, run with --ignored"]
 async fn matrix_shape() {
     let cells = matrix();
-    assert!(cells.len() >= 18, "matrix is unexpectedly small: {}", cells.len());
+    assert!(
+        cells.len() >= 18,
+        "matrix is unexpectedly small: {}",
+        cells.len()
+    );
     // Every expected-fail entry must be present in the matrix.
     for (s, f, a) in EXPECTED_FAIL {
         assert!(
-            cells.iter().any(|c| c.server == *s && c.forward == *f && c.auth == *a),
+            cells
+                .iter()
+                .any(|c| c.server == *s && c.forward == *f && c.auth == *a),
             "EXPECTED_FAIL references cell that is not in the matrix: ({:?},{:?},{:?})",
-            s, f, a,
+            s,
+            f,
+            a,
         );
     }
     // Make a no-op async use of the runtime to keep tokio happy.
     tokio::time::sleep(Duration::from_millis(1)).await;
 }
-

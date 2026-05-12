@@ -14,7 +14,9 @@ use std::sync::Arc;
 
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
-use rustls::{ClientConfig, DigitallySignedStruct, Error as TlsError, RootCertStore, SignatureScheme};
+use rustls::{
+    ClientConfig, DigitallySignedStruct, Error as TlsError, RootCertStore, SignatureScheme,
+};
 use spt_core::{Error, Result};
 use spt_trust::TlsPin;
 
@@ -55,7 +57,11 @@ pub fn build_client_config(tls: &Ssh3TlsConfig) -> Result<ClientConfig> {
     let mut cfg = if tls.allow_self_signed || !tls.pin.spki_sha256.is_empty() {
         // Install our custom verifier — wraps webpki on the chain side (or
         // accepts any chain when allow_self_signed) and enforces the pin set.
-        let verifier = Arc::new(SptVerifier::new(roots, tls.pin.clone(), tls.allow_self_signed));
+        let verifier = Arc::new(SptVerifier::new(
+            roots,
+            tls.pin.clone(),
+            tls.allow_self_signed,
+        ));
         ClientConfig::builder()
             .dangerous()
             .with_custom_certificate_verifier(verifier)
@@ -114,7 +120,13 @@ impl ServerCertVerifier for SptVerifier {
     ) -> std::result::Result<ServerCertVerified, TlsError> {
         if !self.allow_self_signed {
             if let Some(inner) = &self.inner {
-                inner.verify_server_cert(end_entity, intermediates, server_name, ocsp_response, now)?;
+                inner.verify_server_cert(
+                    end_entity,
+                    intermediates,
+                    server_name,
+                    ocsp_response,
+                    now,
+                )?;
             } else {
                 return Err(TlsError::General(
                     "spt-ssh3: webpki verifier unavailable".into(),
@@ -191,10 +203,7 @@ mod tests {
             ..Ssh3TlsConfig::default()
         };
         let cfg = build_client_config(&tls).unwrap();
-        assert_eq!(
-            cfg.alpn_protocols,
-            vec![b"h3".to_vec(), b"ssh3".to_vec()]
-        );
+        assert_eq!(cfg.alpn_protocols, vec![b"h3".to_vec(), b"ssh3".to_vec()]);
     }
 
     #[test]
@@ -209,19 +218,10 @@ mod tests {
         };
         let verifier = SptVerifier::new(RootCertStore::empty(), pin, true);
         let server_name = ServerName::try_from("pin-mismatch.test").unwrap();
-        let res = verifier.verify_server_cert(
-            &der,
-            &[],
-            &server_name,
-            &[],
-            UnixTime::now(),
-        );
+        let res = verifier.verify_server_cert(&der, &[], &server_name, &[], UnixTime::now());
         let err = res.unwrap_err();
         let s = format!("{err}");
-        assert!(
-            s.contains("SPKI pin"),
-            "expected SPKI pin error, got: {s}"
-        );
+        assert!(s.contains("SPKI pin"), "expected SPKI pin error, got: {s}");
     }
 
     #[test]

@@ -1,7 +1,7 @@
 //! Host-key verification wiring.
 //!
-//! libssh2 surfaces the peer's host key as raw bytes plus a "key type" hint
-//! (`HostKeyType`). We rebuild an `ssh_key::PublicKey` from those bytes and
+//! libssh2 surfaces the peer's host key as an SSH public-key blob plus a
+//! "key type" hint (`HostKeyType`). We rebuild an `ssh_key::PublicKey` and
 //! delegate to the verifier configured by the profile (`KnownHosts` and/or
 //! `Sha256HostPin`).
 
@@ -10,7 +10,7 @@ use spt_trust::known_hosts::KnownHostsResult;
 use spt_trust::{KnownHosts, Sha256HostPin};
 use ssh2::HostKeyType;
 use ssh_key::public::{Ed25519PublicKey, KeyData, RsaPublicKey};
-use ssh_key::{Algorithm, EcdsaCurve, Mpint, PublicKey};
+use ssh_key::{EcdsaCurve, Mpint, PublicKey};
 
 /// Trust verification policy carried by a profile.
 #[derive(Debug, Clone, Default)]
@@ -38,12 +38,7 @@ pub enum HostKeyOutcome {
 impl TrustVerifier {
     /// Verify the presented key against every configured source. Errors out
     /// on the first source that returns `Mismatch` or `Revoked`.
-    pub fn verify(
-        &self,
-        host: &str,
-        port: u16,
-        key: &PublicKey,
-    ) -> Result<HostKeyOutcome> {
+    pub fn verify(&self, host: &str, port: u16, key: &PublicKey) -> Result<HostKeyOutcome> {
         let mut any_found = false;
         if let Some(kh) = &self.known_hosts {
             match kh.verify(host, port, key) {
@@ -90,9 +85,15 @@ impl TrustVerifier {
 
 /// Convert libssh2's `(blob, host_key_type)` tuple into an `ssh_key::PublicKey`.
 ///
-/// libssh2 returns the key's wire-format `mpint` blob (RSA/DSA/ECDSA) or the
-/// raw 32-byte ed25519 public key. We reconstruct the typed key.
+/// `libssh2_session_hostkey()` returns the RFC4253 public-key blob (algorithm
+/// string plus key data). Older libssh2 integrations have been observed to
+/// expose just the algorithm-specific payload, so we keep a typed fallback for
+/// those raw payloads.
 pub fn rebuild_public_key(blob: &[u8], ty: HostKeyType) -> Result<PublicKey> {
+    if let Ok(key) = PublicKey::from_bytes(blob) {
+        return Ok(key);
+    }
+
     let key_data = match ty {
         HostKeyType::Rsa => {
             // libssh2 RSA host key blob: ssh string `e` || ssh string `n`.
@@ -121,8 +122,7 @@ pub fn rebuild_public_key(blob: &[u8], ty: HostKeyType) -> Result<PublicKey> {
                 _ => EcdsaCurve::NistP521,
             };
             // libssh2 returns the raw uncompressed EC point (leading 0x04).
-            let pk = ssh_key::public::EcdsaPublicKey::from_sec1_bytes(blob)
-                .map_err(map_err)?;
+            let pk = ssh_key::public::EcdsaPublicKey::from_sec1_bytes(blob).map_err(map_err)?;
             KeyData::Ecdsa(pk)
         }
         HostKeyType::Dss => {
@@ -136,13 +136,6 @@ pub fn rebuild_public_key(blob: &[u8], ty: HostKeyType) -> Result<PublicKey> {
             ));
         }
     };
-    let alg = match &key_data {
-        KeyData::Rsa(_) => Algorithm::Rsa { hash: None },
-        KeyData::Ed25519(_) => Algorithm::Ed25519,
-        KeyData::Ecdsa(k) => Algorithm::Ecdsa { curve: k.curve() },
-        _ => unreachable!(),
-    };
-    let _ = alg;
     Ok(PublicKey::new(key_data, ""))
 }
 
@@ -245,16 +238,27 @@ mod tests {
     }
 
     #[test]
-    fn rebuild_ed25519_roundtrip() {
+    fn rebuild_ed25519_full_blob_roundtrip() {
         use ssh_key::HashAlg;
         let key = fresh_pub();
-        // Extract raw 32-byte ed25519 pub bytes
+        let blob = key.to_bytes().unwrap();
+        let rebuilt = rebuild_public_key(&blob, HostKeyType::Ed25519).unwrap();
+        // Compare via fingerprint
+        assert_eq!(
+            rebuilt.fingerprint(HashAlg::Sha256).to_string(),
+            key.fingerprint(HashAlg::Sha256).to_string()
+        );
+    }
+
+    #[test]
+    fn rebuild_ed25519_raw_payload_fallback() {
+        use ssh_key::HashAlg;
+        let key = fresh_pub();
         let bytes = match key.key_data() {
             KeyData::Ed25519(b) => b.0,
             _ => unreachable!(),
         };
         let rebuilt = rebuild_public_key(&bytes, HostKeyType::Ed25519).unwrap();
-        // Compare via fingerprint
         assert_eq!(
             rebuilt.fingerprint(HashAlg::Sha256).to_string(),
             key.fingerprint(HashAlg::Sha256).to_string()

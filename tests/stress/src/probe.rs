@@ -86,9 +86,7 @@ fn open_handle_count() -> io::Result<u64> {
 
 #[cfg(target_os = "windows")]
 fn rss_bytes() -> io::Result<u64> {
-    use windows::Win32::System::ProcessStatus::{
-        K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS,
-    };
+    use windows::Win32::System::ProcessStatus::{K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
     use windows::Win32::System::Threading::GetCurrentProcess;
     let mut pmc = PROCESS_MEMORY_COUNTERS::default();
     let cb = u32::try_from(std::mem::size_of::<PROCESS_MEMORY_COUNTERS>())

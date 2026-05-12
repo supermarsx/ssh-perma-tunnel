@@ -57,7 +57,10 @@ pub fn spt_bin() -> Result<PathBuf> {
         if path.exists() {
             return Ok(path);
         }
-        bail!("SPT_BIN set to `{}` but the file does not exist", path.display());
+        bail!(
+            "SPT_BIN set to `{}` but the file does not exist",
+            path.display()
+        );
     }
 
     let exe = if cfg!(windows) { "spt.exe" } else { "spt" };
@@ -90,6 +93,26 @@ pub fn fixtures_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures")
 }
 
+/// Client key fixture that works with the default SSH2 backend on this OS.
+///
+/// Windows libssh2/WinCNG builds do not expose in-memory ED25519 key auth
+/// through the Rust wrapper, so default Windows interop uses the RSA fixture.
+/// Unix/OpenSSL builds keep the ED25519 coverage.
+#[must_use]
+pub fn default_client_key() -> PathBuf {
+    fixtures_dir().join("keys").join(if cfg!(windows) {
+        "test_rsa"
+    } else {
+        "test_ed25519"
+    })
+}
+
+/// Host address reachable from inside the OpenSSH interop containers.
+#[must_use]
+pub fn host_gateway() -> String {
+    std::env::var("SPT_HOST_GATEWAY").unwrap_or_else(|_| "host.docker.internal".to_string())
+}
+
 /// Read a host-key public file and compute the SHA256 fingerprint in the
 /// `SHA256:base64nopadding` form that `spt`'s pinning logic expects.
 ///
@@ -106,9 +129,7 @@ pub async fn fingerprint_sha256(pubkey_path: &Path) -> Result<String> {
         .arg(pubkey_path)
         .output()
         .await
-        .with_context(|| {
-            format!("ssh-keygen -lf {}", pubkey_path.display())
-        })?;
+        .with_context(|| format!("ssh-keygen -lf {}", pubkey_path.display()))?;
     if !output.status.success() {
         bail!(
             "ssh-keygen -lf {} failed: stdout={} stderr={}",
@@ -209,7 +230,10 @@ pub async fn roundtrip(addr: SocketAddr, payload: &[u8]) -> Result<()> {
         );
     }
     if received != payload {
-        bail!("roundtrip payload mismatch (lengths matched at {})", payload.len());
+        bail!(
+            "roundtrip payload mismatch (lengths matched at {})",
+            payload.len()
+        );
     }
     Ok(())
 }
@@ -313,9 +337,10 @@ pub async fn run_once(config_path: Option<&Path>, args: &[&str]) -> Result<RunOu
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let out = cmd.output().await.with_context(|| {
-        format!("run {} {}", bin.display(), args.join(" "))
-    })?;
+    let out = cmd
+        .output()
+        .await
+        .with_context(|| format!("run {} {}", bin.display(), args.join(" ")))?;
     Ok(RunOutput {
         status: out.status.code(),
         stdout: String::from_utf8_lossy(&out.stdout).into_owned(),

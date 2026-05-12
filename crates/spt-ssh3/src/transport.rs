@@ -178,10 +178,8 @@ pub fn build_connect_request(
     // pseudo-headers per RFC 9220. A future h3 release with arbitrary
     // protocol-string support — or our own raw HTTP/3 framing — is the
     // correct fix. Tracked as TODO(spec-clarify) in the README.
-    req.headers_mut().insert(
-        "x-ssh3-protocol",
-        HeaderValue::from_static("ssh3"),
-    );
+    req.headers_mut()
+        .insert("x-ssh3-protocol", HeaderValue::from_static("ssh3"));
     Ok(req)
 }
 
@@ -206,10 +204,9 @@ pub async fn bootstrap(
 
     // h3-quinn driver
     let h3_conn = h3_quinn::Connection::new(connection.clone());
-    let (mut driver, mut send_request) =
-        h3::client::new(h3_conn).await.map_err(|e| {
-            Error::RuntimeFailure(format!("ssh3: h3 client init: {e}"))
-        })?;
+    let (mut driver, mut send_request) = h3::client::new(h3_conn)
+        .await
+        .map_err(|e| Error::RuntimeFailure(format!("ssh3: h3 client init: {e}")))?;
 
     // Drive the connection in the background. When CONNECT completes we keep
     // the driver alive on the spawned task; the connection lives as long as
@@ -281,7 +278,8 @@ fn default_local_settings() -> crate::frame::Ssh3Settings {
     }
 }
 
-/// Open the SSH3 control bidi stream and exchange [`Ssh3FrameKind::Settings`]
+/// Open the SSH3 control bidi stream and exchange
+/// [`crate::frame::Ssh3FrameKind::Settings`]
 /// frames with the peer.
 ///
 /// **spt↔spt convention**: the client (whichever side calls `open_bi`) is the
@@ -290,7 +288,11 @@ fn default_local_settings() -> crate::frame::Ssh3Settings {
 pub async fn open_control_stream(
     connection: &quinn::Connection,
     local: crate::frame::Ssh3Settings,
-) -> Result<(quinn::SendStream, quinn::RecvStream, crate::frame::Ssh3Settings)> {
+) -> Result<(
+    quinn::SendStream,
+    quinn::RecvStream,
+    crate::frame::Ssh3Settings,
+)> {
     use crate::frame::{Ssh3Frame, Ssh3FrameKind};
     let (mut send, mut recv) = connection
         .open_bi()
@@ -305,7 +307,9 @@ pub async fn open_control_stream(
         Ssh3Frame::read_async(&mut recv),
     )
     .await
-    .map_err(|_| Error::RuntimeFailure("ssh3 control: timeout waiting for peer settings".into()))??;
+    .map_err(|_| {
+        Error::RuntimeFailure("ssh3 control: timeout waiting for peer settings".into())
+    })??;
     if frame.kind != Ssh3FrameKind::Settings {
         return Err(Error::RuntimeFailure(format!(
             "ssh3 control: expected Settings, got {:?}",
@@ -322,7 +326,11 @@ pub async fn open_control_stream(
 pub async fn accept_control_stream(
     connection: &quinn::Connection,
     local: crate::frame::Ssh3Settings,
-) -> Result<(quinn::SendStream, quinn::RecvStream, crate::frame::Ssh3Settings)> {
+) -> Result<(
+    quinn::SendStream,
+    quinn::RecvStream,
+    crate::frame::Ssh3Settings,
+)> {
     use crate::frame::{Ssh3Frame, Ssh3FrameKind};
     let (mut send, mut recv) = connection
         .accept_bi()
@@ -333,7 +341,9 @@ pub async fn accept_control_stream(
         Ssh3Frame::read_async(&mut recv),
     )
     .await
-    .map_err(|_| Error::RuntimeFailure("ssh3 control: timeout waiting for client settings".into()))??;
+    .map_err(|_| {
+        Error::RuntimeFailure("ssh3 control: timeout waiting for client settings".into())
+    })??;
     if frame.kind != Ssh3FrameKind::Settings {
         return Err(Error::RuntimeFailure(format!(
             "ssh3 control: expected Settings, got {:?}",
@@ -373,18 +383,12 @@ fn map_connection_error(e: quinn::ConnectionError) -> Error {
             Error::RuntimeFailure(format!("ssh3 app-closed: {c}"))
         }
         ConnectionError::Reset => Error::RuntimeFailure("ssh3 connection reset".into()),
-        ConnectionError::TimedOut => {
-            Error::RuntimeFailure("ssh3 connection timed out".into())
-        }
+        ConnectionError::TimedOut => Error::RuntimeFailure("ssh3 connection timed out".into()),
         ConnectionError::VersionMismatch => {
             Error::RuntimeFailure("ssh3 QUIC version mismatch".into())
         }
-        ConnectionError::LocallyClosed => {
-            Error::RuntimeFailure("ssh3 locally closed".into())
-        }
-        ConnectionError::CidsExhausted => {
-            Error::RuntimeFailure("ssh3 CIDs exhausted".into())
-        }
+        ConnectionError::LocallyClosed => Error::RuntimeFailure("ssh3 locally closed".into()),
+        ConnectionError::CidsExhausted => Error::RuntimeFailure("ssh3 CIDs exhausted".into()),
     }
 }
 
@@ -411,10 +415,7 @@ mod tests {
         let auth_h = req.headers().get(http::header::AUTHORIZATION).unwrap();
         assert_eq!(auth_h, "Bearer tok-xyz");
         // SSH3 protocol marker (carried as a custom header — see GAP note).
-        assert_eq!(
-            req.headers().get("x-ssh3-protocol").unwrap(),
-            "ssh3"
-        );
+        assert_eq!(req.headers().get("x-ssh3-protocol").unwrap(), "ssh3");
         std::env::remove_var("SPT_TEST_TRANSPORT_TOK");
     }
 
