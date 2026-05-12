@@ -212,7 +212,7 @@ caps = "0.5"
 socket2 = { version = "0.5", features = ["all"] }
 
 # TUI
-ratatui = "0.28"
+ratatui = "0.30"
 crossterm = "0.28"
 
 # Networking helpers
