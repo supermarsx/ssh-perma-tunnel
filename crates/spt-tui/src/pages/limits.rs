@@ -24,7 +24,9 @@ impl LimitsPage {
                 "Maximum active forwarded connections",
                 |p| p.limits.as_ref().and_then(|l| l.max_active_connections),
                 |p, v| {
-                    p.limits.get_or_insert_with(Default::default).max_active_connections = v;
+                    p.limits
+                        .get_or_insert_with(Default::default)
+                        .max_active_connections = v;
                 },
             ),
             opt_u32(
@@ -36,7 +38,9 @@ impl LimitsPage {
                         .and_then(|l| l.max_new_connections_per_second)
                 },
                 |p, v| {
-                    p.limits.get_or_insert_with(Default::default).max_new_connections_per_second = v;
+                    p.limits
+                        .get_or_insert_with(Default::default)
+                        .max_new_connections_per_second = v;
                 },
             ),
             opt_text(
@@ -48,7 +52,9 @@ impl LimitsPage {
                         .and_then(|l| l.max_bytes_per_second_in.clone())
                 },
                 |p, v| {
-                    p.limits.get_or_insert_with(Default::default).max_bytes_per_second_in = v;
+                    p.limits
+                        .get_or_insert_with(Default::default)
+                        .max_bytes_per_second_in = v;
                 },
             ),
             opt_text(
@@ -60,20 +66,20 @@ impl LimitsPage {
                         .and_then(|l| l.max_bytes_per_second_out.clone())
                 },
                 |p, v| {
-                    p.limits.get_or_insert_with(Default::default).max_bytes_per_second_out = v;
+                    p.limits
+                        .get_or_insert_with(Default::default)
+                        .max_bytes_per_second_out = v;
                 },
             ),
             opt_choice(
                 "limits.throttle_algorithm",
                 "Throttle algorithm",
                 ALGORITHMS,
-                |p| {
-                    p.limits
-                        .as_ref()
-                        .and_then(|l| l.throttle_algorithm.clone())
-                },
+                |p| p.limits.as_ref().and_then(|l| l.throttle_algorithm.clone()),
                 |p, v| {
-                    p.limits.get_or_insert_with(Default::default).throttle_algorithm = v;
+                    p.limits
+                        .get_or_insert_with(Default::default)
+                        .throttle_algorithm = v;
                 },
             ),
             opt_text(
@@ -85,7 +91,9 @@ impl LimitsPage {
                         .and_then(|l| l.max_connection_lifetime.clone())
                 },
                 |p, v| {
-                    p.limits.get_or_insert_with(Default::default).max_connection_lifetime = v;
+                    p.limits
+                        .get_or_insert_with(Default::default)
+                        .max_connection_lifetime = v;
                 },
             ),
         ];

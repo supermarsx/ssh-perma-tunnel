@@ -36,7 +36,7 @@ pub struct Model {
 
 impl Model {
     /// Load a config file from disk into a [`Model`]. The file is parsed both
-    /// semantically (via [`spt_config::load`]) and structurally (via
+    /// semantically (via [`spt_config::load()`]) and structurally (via
     /// [`Document::read`]).
     pub fn load(path: &Path) -> Result<Self> {
         let raw = std::fs::read_to_string(path)

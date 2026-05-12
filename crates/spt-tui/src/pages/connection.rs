@@ -75,31 +75,56 @@ impl ConnectionPage {
             opt_text(
                 "connection.connect_timeout",
                 "TCP connect timeout (e.g. `15s`)",
-                |p| p.connection.as_ref().and_then(|c| c.connect_timeout.clone()),
-                |p, v| p.connection.get_or_insert_with(Default::default).connect_timeout = v,
+                |p| {
+                    p.connection
+                        .as_ref()
+                        .and_then(|c| c.connect_timeout.clone())
+                },
+                |p, v| {
+                    p.connection
+                        .get_or_insert_with(Default::default)
+                        .connect_timeout = v;
+                },
             ),
             opt_text(
                 "connection.handshake_timeout",
                 "Protocol handshake timeout (e.g. `30s`)",
-                |p| p.connection.as_ref().and_then(|c| c.handshake_timeout.clone()),
-                |p, v| p.connection.get_or_insert_with(Default::default).handshake_timeout = v,
+                |p| {
+                    p.connection
+                        .as_ref()
+                        .and_then(|c| c.handshake_timeout.clone())
+                },
+                |p, v| {
+                    p.connection
+                        .get_or_insert_with(Default::default)
+                        .handshake_timeout = v;
+                },
             ),
             opt_text(
                 "connection.auth_timeout",
                 "Auth round-trip timeout",
                 |p| p.connection.as_ref().and_then(|c| c.auth_timeout.clone()),
-                |p, v| p.connection.get_or_insert_with(Default::default).auth_timeout = v,
+                |p, v| {
+                    p.connection
+                        .get_or_insert_with(Default::default)
+                        .auth_timeout = v;
+                },
             ),
             opt_u32(
                 "connection.keepalive_retries",
                 "Socket-level keepalive retries before drop",
                 |p| p.connection.as_ref().and_then(|c| c.keepalive_retries),
-                |p, v| p.connection.get_or_insert_with(Default::default).keepalive_retries = v,
+                |p, v| {
+                    p.connection
+                        .get_or_insert_with(Default::default)
+                        .keepalive_retries = v;
+                },
             ),
             // Endpoints summary (read-only here).
             crate::pages::field::FieldDef {
                 label: "endpoints (count)",
-                help: "Number of [[profiles.endpoints]] entries — edit via the Forwards page sub-list",
+                help:
+                    "Number of [[profiles.endpoints]] entries — edit via the Forwards page sub-list",
                 get: Box::new(|p: &Profile| {
                     crate::pages::FieldValue::Text(p.endpoints.len().to_string())
                 }),

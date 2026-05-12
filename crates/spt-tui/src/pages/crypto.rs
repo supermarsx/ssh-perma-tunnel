@@ -59,13 +59,21 @@ impl CryptoPage {
                 "crypto.allow_deprecated",
                 "Permit deprecated algorithms in negotiation",
                 |p| p.crypto.as_ref().and_then(|c| c.allow_deprecated),
-                |p, v| p.crypto.get_or_insert_with(Default::default).allow_deprecated = v,
+                |p, v| {
+                    p.crypto
+                        .get_or_insert_with(Default::default)
+                        .allow_deprecated = v;
+                },
             ),
             opt_bool(
                 "crypto.warn_on_deprecated",
                 "Warn when a deprecated algorithm is used",
                 |p| p.crypto.as_ref().and_then(|c| c.warn_on_deprecated),
-                |p, v| p.crypto.get_or_insert_with(Default::default).warn_on_deprecated = v,
+                |p, v| {
+                    p.crypto
+                        .get_or_insert_with(Default::default)
+                        .warn_on_deprecated = v;
+                },
             ),
             opt_multi(
                 "crypto.ciphers",
@@ -123,8 +131,9 @@ impl CryptoPage {
                         .unwrap_or_default()
                 },
                 |p, v| {
-                    p.crypto.get_or_insert_with(Default::default).host_key_algorithms =
-                        if v.is_empty() { None } else { Some(v) };
+                    p.crypto
+                        .get_or_insert_with(Default::default)
+                        .host_key_algorithms = if v.is_empty() { None } else { Some(v) };
                 },
             ),
             opt_multi(

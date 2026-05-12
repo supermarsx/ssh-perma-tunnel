@@ -38,7 +38,10 @@ impl BasicsPage {
                         if s.is_empty() {
                             return Some("profile id cannot be empty".into());
                         }
-                        if !s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+                        if !s
+                            .chars()
+                            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+                        {
                             return Some("profile id may only contain [a-zA-Z0-9_-]".into());
                         }
                     }

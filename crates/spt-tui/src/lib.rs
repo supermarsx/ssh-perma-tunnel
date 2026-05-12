@@ -76,7 +76,10 @@ pub fn run(config_path: &Path, profile_id: Option<&str>) -> Result<()> {
     let mut model = Model::load(config_path)?;
     if let Some(id) = profile_id {
         model.select_profile_by_name(id).ok_or_else(|| {
-            Error::InvalidArgs(format!("profile `{id}` not found in `{}`", config_path.display()))
+            Error::InvalidArgs(format!(
+                "profile `{id}` not found in `{}`",
+                config_path.display()
+            ))
         })?;
     } else if model.profiles().is_empty() {
         // Seed an empty profile so the wizard has something to edit.

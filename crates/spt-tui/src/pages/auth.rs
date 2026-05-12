@@ -85,7 +85,11 @@ impl AuthPage {
                 "auth.keyboard_interactive",
                 "Allow SSH2 keyboard-interactive fallback",
                 |p| p.auth.as_ref().and_then(|a| a.keyboard_interactive),
-                |p, v| p.auth.get_or_insert_with(Default::default).keyboard_interactive = v,
+                |p, v| {
+                    p.auth
+                        .get_or_insert_with(Default::default)
+                        .keyboard_interactive = v;
+                },
             ),
             opt_text(
                 "auth.oidc_issuer",

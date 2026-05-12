@@ -143,7 +143,10 @@ impl FieldList {
                 field.list_state = StringList::from_vec(vs);
                 field.list_state.text.focused = true;
             }
-            if let FieldValue::Text(ref s) | FieldValue::Numeric(ref s) | FieldValue::SecretRef(ref s) = cur {
+            if let FieldValue::Text(ref s)
+            | FieldValue::Numeric(ref s)
+            | FieldValue::SecretRef(ref s) = cur
+            {
                 field.text.cursor = s.chars().count();
                 field.text.focused = true;
                 field.numeric.text = field.text.clone();

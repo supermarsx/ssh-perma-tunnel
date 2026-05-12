@@ -16,7 +16,9 @@ use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wid
 use spt_config::schema::{Forward, Profile};
 
 use crate::model::Model;
-use crate::pages::field::{opt_bool, opt_choice, opt_text, opt_u32, FieldDef, FieldList, FieldValue};
+use crate::pages::field::{
+    opt_bool, opt_choice, opt_text, opt_u32, FieldDef, FieldList, FieldValue,
+};
 use crate::pages::Page;
 
 const KIND: &[&str] = &["local", "remote"];
@@ -77,7 +79,12 @@ fn forward_fields(idx: usize) -> Vec<FieldDef> {
             label: "name",
             help: "Forward identifier (unique within profile)",
             get: Box::new(move |p: &Profile| {
-                FieldValue::Text(p.forwards.get(i).map(|f| f.name.clone()).unwrap_or_default())
+                FieldValue::Text(
+                    p.forwards
+                        .get(i)
+                        .map(|f| f.name.clone())
+                        .unwrap_or_default(),
+                )
             }),
             set: Box::new(move |p, v| {
                 if let FieldValue::Text(s) = v {
@@ -92,7 +99,11 @@ fn forward_fields(idx: usize) -> Vec<FieldDef> {
             label: "type",
             help: "`local` (listen here) or `remote` (listen on peer)",
             get: Box::new(move |p: &Profile| FieldValue::Choice {
-                value: p.forwards.get(i).map(|f| f.kind.clone()).unwrap_or_default(),
+                value: p
+                    .forwards
+                    .get(i)
+                    .map(|f| f.kind.clone())
+                    .unwrap_or_default(),
                 options: KIND,
             }),
             set: Box::new(move |p, v| {
@@ -230,9 +241,12 @@ impl Page for ForwardsPage {
                 ))
             })
             .collect();
-        self.list_state.select(Some(self.selected.min(items.len().saturating_sub(1))));
+        self.list_state
+            .select(Some(self.selected.min(items.len().saturating_sub(1))));
 
-        let style = Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD);
+        let style = Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD);
         let block = Block::default()
             .borders(Borders::ALL)
             .title("Forwards (a=add, d=del, Enter=edit)");
@@ -250,8 +264,14 @@ impl Page for ForwardsPage {
                 Line::from(format!("name:           {}", f.name)),
                 Line::from(format!("type:           {}", f.kind)),
                 Line::from(format!("transport:      {}", f.transport)),
-                Line::from(format!("bind:           {}", f.bind.clone().unwrap_or_default())),
-                Line::from(format!("target:         {}", f.target.clone().unwrap_or_default())),
+                Line::from(format!(
+                    "bind:           {}",
+                    f.bind.clone().unwrap_or_default()
+                )),
+                Line::from(format!(
+                    "target:         {}",
+                    f.target.clone().unwrap_or_default()
+                )),
                 Line::from(format!(
                     "bind_mode:      {}",
                     f.bind_mode.clone().unwrap_or_default()
@@ -321,9 +341,7 @@ impl Page for ForwardsPage {
                 let n = model.profile().forwards.len();
                 if self.selected < n {
                     model.profile_mut().forwards.remove(self.selected);
-                    if self.selected >= model.profile().forwards.len()
-                        && self.selected > 0
-                    {
+                    if self.selected >= model.profile().forwards.len() && self.selected > 0 {
                         self.selected -= 1;
                     }
                     return true;

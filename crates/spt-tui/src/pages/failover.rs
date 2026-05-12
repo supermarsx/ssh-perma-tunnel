@@ -39,7 +39,11 @@ impl FailoverPage {
                 "reconnect.initial_delay",
                 "First retry delay (e.g. `1s`)",
                 |p| p.reconnect.as_ref().and_then(|r| r.initial_delay.clone()),
-                |p, v| p.reconnect.get_or_insert_with(Default::default).initial_delay = v,
+                |p, v| {
+                    p.reconnect
+                        .get_or_insert_with(Default::default)
+                        .initial_delay = v;
+                },
             ),
             opt_text(
                 "reconnect.max_delay",
@@ -63,13 +67,21 @@ impl FailoverPage {
                 "reconnect.max_attempts",
                 "Maximum retries (`0` = unlimited)",
                 |p| p.reconnect.as_ref().and_then(|r| r.max_attempts),
-                |p, v| p.reconnect.get_or_insert_with(Default::default).max_attempts = v,
+                |p, v| {
+                    p.reconnect
+                        .get_or_insert_with(Default::default)
+                        .max_attempts = v;
+                },
             ),
             opt_bool(
                 "reconnect.retry_auth_failures",
                 "Retry on authentication failure",
                 |p| p.reconnect.as_ref().and_then(|r| r.retry_auth_failures),
-                |p, v| p.reconnect.get_or_insert_with(Default::default).retry_auth_failures = v,
+                |p, v| {
+                    p.reconnect
+                        .get_or_insert_with(Default::default)
+                        .retry_auth_failures = v;
+                },
             ),
             opt_bool(
                 "instability.enabled",
@@ -87,7 +99,11 @@ impl FailoverPage {
                 "instability.max_disconnects",
                 "Max disconnects within window",
                 |p| p.instability.as_ref().and_then(|i| i.max_disconnects),
-                |p, v| p.instability.get_or_insert_with(Default::default).max_disconnects = v,
+                |p, v| {
+                    p.instability
+                        .get_or_insert_with(Default::default)
+                        .max_disconnects = v;
+                },
             ),
             opt_choice(
                 "instability.action",
@@ -120,7 +136,11 @@ impl FailoverPage {
                 "failover.restore_after",
                 "Restore window before failback",
                 |p| p.failover.as_ref().and_then(|f| f.restore_after.clone()),
-                |p, v| p.failover.get_or_insert_with(Default::default).restore_after = v,
+                |p, v| {
+                    p.failover
+                        .get_or_insert_with(Default::default)
+                        .restore_after = v;
+                },
             ),
         ];
         Self {

@@ -1,6 +1,6 @@
 //! Atomic, comment-preserving save path.
 //!
-//! [`save`] takes the edited [`Profile`](spt_config::schema::Profile) from a
+//! [`save`] takes the edited [`Profile`] from a
 //! [`Model`], serializes it through `toml_edit`'s serde adapter, and replaces
 //! the matching `[[profiles]]` entry in the round-trip document. Bytes
 //! *outside* that profile (header comments, other profiles, other top-level

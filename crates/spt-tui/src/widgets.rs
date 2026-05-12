@@ -11,7 +11,7 @@
 //! * [`Select`] — single-choice from a fixed list.
 //! * [`MultiSelect`] — many-of-N choices.
 //! * [`StringList`] — comma-separated list editor.
-//! * [`FilePicker`] — alias for [`TextInput`] with a path hint.
+//! * `FilePicker` — alias for [`TextInput`] with a path hint.
 //!
 //! Widgets do not own their model — the page passes a `&mut String` (or
 //! similar) when handling input. This keeps state ownership simple and lets
@@ -91,7 +91,9 @@ impl TextInput {
     /// `value` is the current contents.
     pub fn render(&self, area: Rect, buf: &mut Buffer, label: &str, value: &str) {
         let style = if self.focused {
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD)
         } else {
             Style::default()
         };
@@ -156,7 +158,9 @@ impl Toggle {
     /// Render at `area`.
     pub fn render(&self, area: Rect, buf: &mut Buffer, label: &str, value: bool) {
         let style = if self.focused {
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD)
         } else {
             Style::default()
         };
@@ -207,9 +211,18 @@ impl Select {
     }
 
     /// Render at `area`.
-    pub fn render(&self, area: Rect, buf: &mut Buffer, label: &str, options: &[&str], current: &str) {
+    pub fn render(
+        &self,
+        area: Rect,
+        buf: &mut Buffer,
+        label: &str,
+        options: &[&str],
+        current: &str,
+    ) {
         let style = if self.focused {
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD)
         } else {
             Style::default()
         };
@@ -286,7 +299,9 @@ impl MultiSelect {
         selected: &[String],
     ) {
         let style = if self.focused {
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD)
         } else {
             Style::default()
         };

@@ -126,11 +126,10 @@ impl App {
             .collect();
         let tabs = Tabs::new(titles)
             .select(self.current.index())
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title(format!("spt profile configure — {}", self.model.profile().name)),
-            )
+            .block(Block::default().borders(Borders::ALL).title(format!(
+                "spt profile configure — {}",
+                self.model.profile().name
+            )))
             .highlight_style(
                 Style::default()
                     .fg(Color::Yellow)
@@ -187,7 +186,8 @@ impl App {
             KeyCode::Char('q') => {
                 if self.model.is_dirty() && !self.confirm_quit {
                     self.confirm_quit = true;
-                    self.status = "unsaved changes — press q again to discard, Ctrl-S to save".into();
+                    self.status =
+                        "unsaved changes — press q again to discard, Ctrl-S to save".into();
                     return AppEvent::Continue;
                 }
                 return AppEvent::Quit;
@@ -269,7 +269,12 @@ fn render_help(area: Rect, buf: &mut Buffer) {
     let h = 16u16.min(area.height.saturating_sub(2));
     let x = area.x + (area.width.saturating_sub(w)) / 2;
     let y = area.y + (area.height.saturating_sub(h)) / 2;
-    let rect = Rect { x, y, width: w, height: h };
+    let rect = Rect {
+        x,
+        y,
+        width: w,
+        height: h,
+    };
     let block = Block::default().borders(Borders::ALL).title("? help");
     Paragraph::new(lines).block(block).render(rect, buf);
 }

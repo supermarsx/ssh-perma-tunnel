@@ -9,7 +9,7 @@ use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, Paragraph, Widget};
 
 use crate::model::Model;
-use crate::pages::field::{FieldList, opt_list};
+use crate::pages::field::{opt_list, FieldList};
 use crate::pages::Page;
 
 /// DNS names registered by this profile's forwards.
@@ -57,12 +57,7 @@ impl Page for DnsPage {
             .map(|d| {
                 d.records
                     .iter()
-                    .map(|r| {
-                        Line::from(format!(
-                            "{:<32} {:<5} {}",
-                            r.name, r.kind, r.value
-                        ))
-                    })
+                    .map(|r| Line::from(format!("{:<32} {:<5} {}", r.name, r.kind, r.value)))
                     .collect()
             })
             .unwrap_or_default();

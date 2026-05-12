@@ -30,7 +30,11 @@ impl TrustPage {
                 "trust.known_hosts_file",
                 "Path to OpenSSH known_hosts file",
                 |p| p.trust.as_ref().and_then(|t| t.known_hosts_file.clone()),
-                |p, v| p.trust.get_or_insert_with(Default::default).known_hosts_file = v,
+                |p, v| {
+                    p.trust
+                        .get_or_insert_with(Default::default)
+                        .known_hosts_file = v;
+                },
             ),
             opt_bool(
                 "trust.strict",
