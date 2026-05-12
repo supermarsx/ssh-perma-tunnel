@@ -1,9 +1,8 @@
-//! `spt observe {snmp, windows-event}` operations.
+//! `spt observe {windows-event}` operations.
 //!
-//! `snmp` walks an SNMPv3 USM (sha256/aes128) subtree against the running
-//! spt's loopback SNMP agent and prints OID → value pairs. Authentication
-//! material is sourced from the secret vault via `--auth-key-from`/
-//! `--priv-key-from` (a `secret://ns/name` reference).
+//! With the `snmp` feature, this module also exposes `spt observe snmp`.
+//! That command walks an SNMPv3 USM (sha256/aes128) subtree against the
+//! running spt's loopback SNMP agent and prints OID → value pairs.
 //!
 //! `windows-event` writes one synthetic Event Log entry on Windows; on
 //! non-Windows hosts it surfaces `UnsupportedPlatform` cleanly.
@@ -11,14 +10,13 @@
 #![allow(clippy::needless_pass_by_value)]
 #![allow(clippy::missing_errors_doc)]
 
-use std::net::SocketAddr;
-use std::str::FromStr;
-
+#[cfg(feature = "snmp")]
 use serde_json::json;
 use spt_cli::GlobalOpts;
 use spt_core::{Error, Result};
 
 /// Args for [`snmp`].
+#[cfg(feature = "snmp")]
 #[derive(Debug, Clone)]
 pub struct ObserveSnmpArgs {
     /// Subtree root to walk. Defaults to the project enterprise prefix
@@ -38,6 +36,7 @@ pub struct ObserveSnmpArgs {
     pub json: bool,
 }
 
+#[cfg(feature = "snmp")]
 impl Default for ObserveSnmpArgs {
     fn default() -> Self {
         Self {
@@ -65,18 +64,24 @@ pub struct ObserveWindowsEventArgs {
 // Public entry points
 // ---------------------------------------------------------------------------
 
+#[cfg(feature = "snmp")]
 const DEFAULT_ENTERPRISE_OID: &str = "1.3.6.1.4.1.99999.0";
+#[cfg(feature = "snmp")]
 const DEFAULT_USER: &str = "spt-monitor";
+#[cfg(feature = "snmp")]
 const DEFAULT_TARGET: &str = "127.0.0.1:10161";
 
 /// `spt observe snmp` — walk the project enterprise OID subtree against the
 /// running loopback agent.
+#[cfg(feature = "snmp")]
 pub async fn snmp(global: &GlobalOpts, args: ObserveSnmpArgs) -> Result<()> {
+    use std::net::SocketAddr;
+
     use spt_snmp::testing::TestSnmpClient;
-    use spt_snmp::value::{VarBind, Value as SnmpValue};
+    use spt_snmp::value::{Value as SnmpValue, VarBind};
     use spt_snmp::{
-        AuthProtocol, ObjectIdentifier, Pdu, PduKind, PrivProtocol, SecretBytes,
-        SecurityLevel, UsmUser,
+        AuthProtocol, ObjectIdentifier, Pdu, PduKind, PrivProtocol, SecretBytes, SecurityLevel,
+        UsmUser,
     };
 
     let target_str = args
@@ -84,14 +89,11 @@ pub async fn snmp(global: &GlobalOpts, args: ObserveSnmpArgs) -> Result<()> {
         .clone()
         .or_else(|| config_snmp_bind(global).ok().flatten())
         .unwrap_or_else(|| DEFAULT_TARGET.to_string());
-    let target: SocketAddr = target_str.parse().map_err(|e| {
-        Error::InvalidArgs(format!("snmp target `{target_str}`: {e}"))
-    })?;
+    let target: SocketAddr = target_str
+        .parse()
+        .map_err(|e| Error::InvalidArgs(format!("snmp target `{target_str}`: {e}")))?;
 
-    let oid_str = args
-        .query
-        .as_deref()
-        .unwrap_or(DEFAULT_ENTERPRISE_OID);
+    let oid_str = args.query.as_deref().unwrap_or(DEFAULT_ENTERPRISE_OID);
     let root_oid: ObjectIdentifier = oid_str
         .parse()
         .map_err(|e: spt_snmp::Error| Error::InvalidArgs(format!("oid `{oid_str}`: {e}")))?;
@@ -167,8 +169,7 @@ pub async fn snmp(global: &GlobalOpts, args: ObserveSnmpArgs) -> Result<()> {
         });
         println!(
             "{}",
-            serde_json::to_string_pretty(&v)
-                .map_err(|e| Error::RuntimeFailure(e.to_string()))?
+            serde_json::to_string_pretty(&v).map_err(|e| Error::RuntimeFailure(e.to_string()))?
         );
     } else {
         println!("# target: {target_str}  user: {user_name}");
@@ -201,9 +202,7 @@ pub async fn windows_event(global: &GlobalOpts, args: ObserveWindowsEventArgs) -
         // is what Event Viewer keys on. Future work can hook the bookmark
         // API to surface the actual event record id.
         spt_winevent::report_event(&source, spt_winevent::Level::Info, 1000, &message)?;
-        println!(
-            "ok: emitted synthetic event (source=`{source}`, level=info, id=1000)"
-        );
+        println!("ok: emitted synthetic event (source=`{source}`, level=info, id=1000)");
         Ok(())
     }
     #[cfg(not(windows))]
@@ -219,12 +218,13 @@ pub async fn windows_event(global: &GlobalOpts, args: ObserveWindowsEventArgs) -
 // Helpers
 // ---------------------------------------------------------------------------
 
+#[cfg(feature = "snmp")]
 fn config_snmp_bind(global: &GlobalOpts) -> Result<Option<String>> {
     let Some(path) = global.config.clone() else {
         return Ok(None);
     };
-    let (cfg, _w) = spt_config::load(&path, false)
-        .map_err(|e| Error::InvalidConfig(format!("load: {e}")))?;
+    let (cfg, _w) =
+        spt_config::load(&path, false).map_err(|e| Error::InvalidConfig(format!("load: {e}")))?;
     Ok(cfg
         .observability
         .as_ref()
@@ -236,8 +236,8 @@ fn config_winevent_source(global: &GlobalOpts) -> Result<Option<String>> {
     let Some(path) = global.config.clone() else {
         return Ok(None);
     };
-    let (cfg, _w) = spt_config::load(&path, false)
-        .map_err(|e| Error::InvalidConfig(format!("load: {e}")))?;
+    let (cfg, _w) =
+        spt_config::load(&path, false).map_err(|e| Error::InvalidConfig(format!("load: {e}")))?;
     Ok(cfg
         .observability
         .as_ref()
@@ -249,11 +249,10 @@ fn config_winevent_source(global: &GlobalOpts) -> Result<Option<String>> {
 /// fall back to a deterministic test-only passphrase so the command works
 /// against the default `LocalhostAgent` fixture during smoke testing — this
 /// is documented in the help text.
-fn resolve_secret(
-    global: &GlobalOpts,
-    r: Option<&str>,
-    label: &str,
-) -> Result<String> {
+#[cfg(feature = "snmp")]
+fn resolve_secret(global: &GlobalOpts, r: Option<&str>, label: &str) -> Result<String> {
+    use std::str::FromStr;
+
     use spt_secrets::SecretRef;
     let Some(r) = r else {
         // Fallback: a deterministic passphrase used by spt_snmp::testing
@@ -278,9 +277,8 @@ fn resolve_secret(
         cfg.as_ref().and_then(|c| c.secrets.as_ref()),
         &state_dir,
     )?;
-    let sr = SecretRef::from_str(r).map_err(|e| {
-        Error::InvalidArgs(format!("secret ref `{r}`: {e}"))
-    })?;
+    let sr =
+        SecretRef::from_str(r).map_err(|e| Error::InvalidArgs(format!("secret ref `{r}`: {e}")))?;
     let bytes = resolver.resolve(&sr)?;
     use secrecy::ExposeSecret;
     String::from_utf8(bytes.expose_secret().to_vec()).map_err(|e| {
@@ -318,6 +316,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "snmp")]
     #[tokio::test(flavor = "current_thread")]
     async fn snmp_round_trips_against_localhost_agent() {
         use spt_snmp::testing::{fixtures, LocalhostAgent};
@@ -347,6 +346,7 @@ mod tests {
         agent.shutdown().await;
     }
 
+    #[cfg(feature = "snmp")]
     #[tokio::test(flavor = "current_thread")]
     async fn snmp_errors_on_unparseable_target() {
         let g = opts();

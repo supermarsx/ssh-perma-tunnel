@@ -2,7 +2,7 @@
 //!
 //! A [`Binding`] declares which events should be dispatched to which sinks.
 //! Bindings are evaluated against an [`Event`] via
-//! [`Binding::matches`]. The match expression supports:
+//! [`BindingMatch::matches`]. The match expression supports:
 //!
 //! * `kinds` — an array of `Event.kind` patterns (`*` wildcard suffix);
 //! * `min_severity` — minimum severity threshold;
@@ -167,11 +167,7 @@ pub struct Dedupe {
 impl Default for Dedupe {
     fn default() -> Self {
         Self {
-            key_fields: vec![
-                "kind".into(),
-                "profile_id".into(),
-                "forward_id".into(),
-            ],
+            key_fields: vec!["kind".into(), "profile_id".into(), "forward_id".into()],
             interval: Duration::from_secs(60),
         }
     }

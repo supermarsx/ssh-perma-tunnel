@@ -93,8 +93,8 @@ impl StandardMetrics {
         let up = IntGauge::new("spt_up", "1 if spt is running").map_err(|e| map_prom_err(&e))?;
         let build_info =
             Gauge::new("spt_build_info", "Build info (always 1)").map_err(|e| map_prom_err(&e))?;
-        let events_total =
-            IntCounter::new("spt_events_total", "Total events emitted").map_err(|e| map_prom_err(&e))?;
+        let events_total = IntCounter::new("spt_events_total", "Total events emitted")
+            .map_err(|e| map_prom_err(&e))?;
 
         r.register(Box::new(profile_state.clone()))
             .map_err(|e| map_prom_err(&e))?;
@@ -106,7 +106,8 @@ impl StandardMetrics {
             .map_err(|e| map_prom_err(&e))?;
         r.register(Box::new(reconnects.clone()))
             .map_err(|e| map_prom_err(&e))?;
-        r.register(Box::new(up.clone())).map_err(|e| map_prom_err(&e))?;
+        r.register(Box::new(up.clone()))
+            .map_err(|e| map_prom_err(&e))?;
         r.register(Box::new(build_info.clone()))
             .map_err(|e| map_prom_err(&e))?;
         r.register(Box::new(events_total.clone()))
@@ -223,11 +224,7 @@ impl MetricsExporter {
     }
 }
 
-async fn run(
-    me: MetricsExporter,
-    cfg: MetricsExporterConfig,
-    mut shutdown: oneshot::Receiver<()>,
-) {
+async fn run(me: MetricsExporter, cfg: MetricsExporterConfig, mut shutdown: oneshot::Receiver<()>) {
     let mut iv = tokio::time::interval(cfg.interval);
     iv.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     // Skip the immediate first tick.

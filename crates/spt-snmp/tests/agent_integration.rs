@@ -27,10 +27,8 @@ use spt_snmp::usm::{
     auth_digest, decrypt, derive_keys, encrypt, AuthProtocol, PrivProtocol, SecretBytes,
     SecurityLevel, UsmUser,
 };
-use spt_snmp::value::{VarBind, Value};
-use spt_snmp::{
-    AgentBuilder, ConstScalar, Handler, ObjectIdentifier, TableHandler, TrapSender,
-};
+use spt_snmp::value::{Value, VarBind};
+use spt_snmp::{AgentBuilder, ConstScalar, Handler, ObjectIdentifier, TableHandler, TrapSender};
 use tokio::net::UdpSocket;
 use tokio::time::timeout;
 
@@ -236,8 +234,7 @@ impl Client {
                 let received = resp.security.auth_params.clone();
                 resp.security.auth_params = vec![0u8; auth_proto.digest_len()];
                 let serialized = resp.to_bytes().unwrap();
-                let computed =
-                    auth_digest(*auth_proto, &self.auth_kul, &serialized).unwrap();
+                let computed = auth_digest(*auth_proto, &self.auth_kul, &serialized).unwrap();
                 assert_eq!(received, computed, "response auth digest mismatch");
                 resp.security.auth_params = received;
 
@@ -365,10 +362,22 @@ async fn get_bulk_walk() {
     let agent = AgentBuilder::new()
         .bind("127.0.0.1:0".parse().unwrap())
         .add_user(user.clone())
-        .add_scalar(oid("1.3.6.1.4.1.99999.1.0"), ConstScalar::new(Value::Integer(1)))
-        .add_scalar(oid("1.3.6.1.4.1.99999.2.0"), ConstScalar::new(Value::Integer(2)))
-        .add_scalar(oid("1.3.6.1.4.1.99999.3.0"), ConstScalar::new(Value::Integer(3)))
-        .add_scalar(oid("1.3.6.1.4.1.99999.4.0"), ConstScalar::new(Value::Integer(4)))
+        .add_scalar(
+            oid("1.3.6.1.4.1.99999.1.0"),
+            ConstScalar::new(Value::Integer(1)),
+        )
+        .add_scalar(
+            oid("1.3.6.1.4.1.99999.2.0"),
+            ConstScalar::new(Value::Integer(2)),
+        )
+        .add_scalar(
+            oid("1.3.6.1.4.1.99999.3.0"),
+            ConstScalar::new(Value::Integer(3)),
+        )
+        .add_scalar(
+            oid("1.3.6.1.4.1.99999.4.0"),
+            ConstScalar::new(Value::Integer(4)),
+        )
         .run()
         .await
         .unwrap();

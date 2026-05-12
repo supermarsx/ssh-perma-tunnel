@@ -19,7 +19,7 @@ use crate::pdu::{Pdu, PduKind};
 use crate::usm::{
     auth_digest, derive_keys, encrypt, AuthProtocol, PrivProtocol, SecurityLevel, UsmUser,
 };
-use crate::value::{VarBind, Value};
+use crate::value::{Value, VarBind};
 
 /// SNMPv2 standard `sysUpTime.0` OID.
 pub const SYS_UPTIME_OID: &str = "1.3.6.1.2.1.1.3.0";
@@ -114,8 +114,8 @@ impl TrapSender {
     ) -> Result<()> {
         let mut bindings = Vec::with_capacity(2 + extra_varbinds.len());
         // sysUpTime in hundredths of seconds.
-        let uptime = u32::try_from(u64::from(self.clock.time()).saturating_mul(100))
-            .unwrap_or(u32::MAX);
+        let uptime =
+            u32::try_from(u64::from(self.clock.time()).saturating_mul(100)).unwrap_or(u32::MAX);
         bindings.push(VarBind::new(
             SYS_UPTIME_OID.parse()?,
             Value::TimeTicks(uptime),
@@ -207,7 +207,13 @@ impl TrapSender {
                     &salt,
                     &mut body,
                 )?;
-                self.assemble_auth(body, user_name, msg_id, *auth_proto, Some((*priv_proto, salt)))
+                self.assemble_auth(
+                    body,
+                    user_name,
+                    msg_id,
+                    *auth_proto,
+                    Some((*priv_proto, salt)),
+                )
             }
         }
     }

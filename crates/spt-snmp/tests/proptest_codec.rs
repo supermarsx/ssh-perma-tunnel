@@ -3,7 +3,7 @@
 use proptest::prelude::*;
 use spt_snmp::ber::{decode_oid, encode_oid, Decoder, Encoder};
 use spt_snmp::oid::ObjectIdentifier;
-use spt_snmp::value::{VarBind, Value};
+use spt_snmp::value::{Value, VarBind};
 
 proptest! {
     #[test]

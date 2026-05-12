@@ -165,7 +165,7 @@ mod tests {
         assert_eq!(b.len(), 9);
         assert_eq!(b[0] & 0x80, 0x80);
         assert_eq!(b[4], 5); // format byte
-        // PEN encoded in low 31 bits of bytes 0..4.
+                             // PEN encoded in low 31 bits of bytes 0..4.
         let pen_bytes = [b[0] & 0x7F, b[1], b[2], b[3]];
         let pen = u32::from_be_bytes(pen_bytes);
         assert_eq!(pen, 99_999);
@@ -176,9 +176,13 @@ mod tests {
         let clock = EngineClock::new(1);
         assert!(clock.check_time_window(1, clock.time()).is_ok());
         // Within 150s — pass
-        assert!(clock.check_time_window(1, clock.time().saturating_add(10)).is_ok());
+        assert!(clock
+            .check_time_window(1, clock.time().saturating_add(10))
+            .is_ok());
         // Out of window — fail
-        assert!(clock.check_time_window(1, clock.time().saturating_add(200)).is_err());
+        assert!(clock
+            .check_time_window(1, clock.time().saturating_add(200))
+            .is_err());
         // Wrong boots — fail
         assert!(clock.check_time_window(2, clock.time()).is_err());
     }

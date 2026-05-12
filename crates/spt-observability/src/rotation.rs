@@ -60,19 +60,24 @@ struct State {
 
 impl RotatingFileAppender {
     /// Create or open an appender at `dir/prefix` with `policy`.
-    pub fn new(dir: impl Into<PathBuf>, prefix: impl Into<String>, policy: SizeRotationPolicy) -> io::Result<Self> {
+    pub fn new(
+        dir: impl Into<PathBuf>,
+        prefix: impl Into<String>,
+        policy: SizeRotationPolicy,
+    ) -> io::Result<Self> {
         let dir = dir.into();
         let prefix = prefix.into();
         fs::create_dir_all(&dir)?;
         let path = dir.join(&prefix);
-        let file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)?;
+        let file = OpenOptions::new().create(true).append(true).open(&path)?;
         let cur_size = file.metadata()?.len();
         let cur_day = day_key(Local::now());
         Ok(Self {
-            state: Mutex::new(State { file, cur_size, cur_day }),
+            state: Mutex::new(State {
+                file,
+                cur_size,
+                cur_day,
+            }),
             dir,
             prefix,
             policy,
@@ -94,7 +99,9 @@ impl RotatingFileAppender {
             }
             counter = counter.checked_add(1).unwrap_or(u32::MAX);
             if counter == u32::MAX {
-                break self.dir.join(format!("{}.{}-{}", self.prefix, stamp, "max"));
+                break self
+                    .dir
+                    .join(format!("{}.{}-{}", self.prefix, stamp, "max"));
             }
         };
         let active = self.dir.join(&self.prefix);
@@ -123,10 +130,7 @@ impl RotatingFileAppender {
         }
 
         // Reopen a fresh active file.
-        let new_file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(active)?;
+        let new_file = OpenOptions::new().create(true).append(true).open(active)?;
         st.file = new_file;
         st.cur_size = 0;
         st.cur_day = day_key(now);
@@ -139,7 +143,9 @@ impl RotatingFileAppender {
     }
 
     fn prune(&self) {
-        let Ok(rd) = fs::read_dir(&self.dir) else { return };
+        let Ok(rd) = fs::read_dir(&self.dir) else {
+            return;
+        };
         let prefix_dot = format!("{}.", self.prefix);
         let mut entries: Vec<(PathBuf, std::time::SystemTime)> = rd
             .filter_map(std::result::Result::ok)
@@ -226,8 +232,7 @@ mod tests {
             daily: false,
             max_files: 5,
         };
-        let mut app =
-            RotatingFileAppender::new(tmp.path(), "spt.log", policy).unwrap();
+        let mut app = RotatingFileAppender::new(tmp.path(), "spt.log", policy).unwrap();
         // Write ~250KiB in 1KiB chunks → expect 2 rotated files + active
         // (cap=100KiB triggers rotation on byte 102_401).
         let chunk = vec![b'x'; 1024];
@@ -241,7 +246,10 @@ mod tests {
             .map(|e| e.file_name().to_string_lossy().into_owned())
             .filter(|n| n.starts_with("spt.log"))
             .collect();
-        assert!(entries.len() >= 3, "expected at least active+2 rotations, got {entries:?}");
+        assert!(
+            entries.len() >= 3,
+            "expected at least active+2 rotations, got {entries:?}"
+        );
     }
 
     #[test]
@@ -252,8 +260,7 @@ mod tests {
             daily: false,
             max_files: 2,
         };
-        let mut app =
-            RotatingFileAppender::new(tmp.path(), "x.log", policy).unwrap();
+        let mut app = RotatingFileAppender::new(tmp.path(), "x.log", policy).unwrap();
         let chunk = vec![b'x'; 512];
         // 10 writes * 512B = 5KiB → at least 4 rotations triggered; pruned to 2.
         for _ in 0..10 {
@@ -266,7 +273,10 @@ mod tests {
             .map(|e| e.file_name().to_string_lossy().into_owned())
             .filter(|n| n.starts_with("x.log."))
             .collect();
-        assert!(rotated.len() <= 2, "expected pruned to <=2, got {rotated:?}");
+        assert!(
+            rotated.len() <= 2,
+            "expected pruned to <=2, got {rotated:?}"
+        );
     }
 
     #[test]
@@ -277,8 +287,7 @@ mod tests {
             daily: false,
             max_files: 5,
         };
-        let mut app =
-            RotatingFileAppender::new(tmp.path(), "y.log", policy).unwrap();
+        let mut app = RotatingFileAppender::new(tmp.path(), "y.log", policy).unwrap();
         app.write_all(b"hello world\n").unwrap();
         app.flush().unwrap();
         let rotated: Vec<_> = fs::read_dir(tmp.path())

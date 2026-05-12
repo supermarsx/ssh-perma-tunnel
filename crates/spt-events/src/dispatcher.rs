@@ -8,7 +8,7 @@
 //!
 //! On each event it walks the bindings; for each binding whose `match`
 //! passes (and dedupe doesn't suppress), it dispatches to every named sink.
-//! Failures classified as [`SinkError::Transient`] write the JSON-encoded
+//! Failures classified as `SinkError::Transient` write the JSON-encoded
 //! event to a per-sink [`spt_state::DiskSpool`]; a separate retry task
 //! drains spools when a sink starts succeeding again.
 //!
@@ -74,9 +74,8 @@ impl Dispatcher {
         std::fs::create_dir_all(&cfg.spool_root)?;
         for name in sinks.keys() {
             let dir = cfg.spool_root.join(name);
-            let spool = DiskSpool::open(dir, cfg.spool.clone()).map_err(|e| {
-                std::io::Error::other(format!("open spool for {name}: {e}"))
-            })?;
+            let spool = DiskSpool::open(dir, cfg.spool.clone())
+                .map_err(|e| std::io::Error::other(format!("open spool for {name}: {e}")))?;
             spools.insert(name.clone(), Arc::new(Mutex::new(spool)));
         }
 
@@ -216,9 +215,7 @@ impl DispatcherInner {
 
     /// Spool size for a sink (helper for tests).
     pub fn spool_len(&self, sink_name: &str) -> usize {
-        self.spools
-            .get(sink_name)
-            .map_or(0, |s| s.lock().len())
+        self.spools.get(sink_name).map_or(0, |s| s.lock().len())
     }
 
     /// Test helper: borrow the bindings.
@@ -388,8 +385,10 @@ mod tests {
         });
         let d = build_for_test(vec![b], sinks, cfg).unwrap();
 
-        d.dispatch(Arc::new(Event::builder("k", Severity::Info).build())).await;
-        d.dispatch(Arc::new(Event::builder("k", Severity::Info).build())).await;
+        d.dispatch(Arc::new(Event::builder("k", Severity::Info).build()))
+            .await;
+        d.dispatch(Arc::new(Event::builder("k", Severity::Info).build()))
+            .await;
         assert_eq!(t.requests().len(), 1, "second event should be deduped");
     }
 }

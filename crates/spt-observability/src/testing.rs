@@ -96,7 +96,8 @@ impl Visit for StringVisitor {
         if field.name() == "message" {
             value.clone_into(&mut self.message);
         } else {
-            self.fields.insert(field.name().to_owned(), value.to_owned());
+            self.fields
+                .insert(field.name().to_owned(), value.to_owned());
         }
     }
 
@@ -195,26 +196,26 @@ pub fn fake_metrics_registry() -> Registry {
 pub fn snapshot_metrics(reg: &Registry) -> Vec<(String, f64)> {
     let mut out = Vec::new();
     for mf in reg.gather() {
-        let name = mf.get_name();
-        for m in mf.get_metric() {
-            let label_suffix = if m.get_label().is_empty() {
+        let name = mf.name();
+        for m in &mf.metric {
+            let label_suffix = if m.label.is_empty() {
                 String::new()
             } else {
                 let parts: Vec<String> = m
-                    .get_label()
+                    .label
                     .iter()
-                    .map(|l| format!("{}={}", l.get_name(), l.get_value()))
+                    .map(|l| format!("{}={}", l.name(), l.value()))
                     .collect();
                 format!("{{{}}}", parts.join(","))
             };
             let key = format!("{name}{label_suffix}");
             // Cover the four scalar metric shapes Prometheus exposes.
-            if m.has_counter() {
-                out.push((key, m.get_counter().get_value()));
-            } else if m.has_gauge() {
-                out.push((key, m.get_gauge().get_value()));
-            } else if m.has_untyped() {
-                out.push((key, m.get_untyped().get_value()));
+            if let Some(counter) = m.counter.as_ref() {
+                out.push((key, counter.value()));
+            } else if let Some(gauge) = m.gauge.as_ref() {
+                out.push((key, gauge.value()));
+            } else if let Some(untyped) = m.untyped.as_ref() {
+                out.push((key, untyped.value()));
             }
             // Histograms / summaries deliberately skipped.
         }
@@ -282,8 +283,12 @@ mod tests {
         let mut s = snapshot_metrics(&r);
         s.sort_by(|a, b| a.0.cmp(&b.0));
         assert_eq!(s.len(), 2);
-        assert!(s.iter().any(|(k, v)| k == "n_calls" && (*v - 3.0).abs() < 1e-9));
-        assert!(s.iter().any(|(k, v)| k == "temp" && (*v - 21.5).abs() < 1e-9));
+        assert!(s
+            .iter()
+            .any(|(k, v)| k == "n_calls" && (*v - 3.0).abs() < 1e-9));
+        assert!(s
+            .iter()
+            .any(|(k, v)| k == "temp" && (*v - 21.5).abs() < 1e-9));
     }
 
     #[test]

@@ -171,6 +171,9 @@ mod tests {
                 }
             }
         }
-        assert!(found, "expected emitted event to land in the EventRing file");
+        assert!(
+            found,
+            "expected emitted event to land in the EventRing file"
+        );
     }
 }

@@ -338,14 +338,15 @@ impl TestSnmpClient {
         let resp_level = SecurityLevel::from_flags(resp.global.msg_flags).expect("level");
         match resp_level {
             SecurityLevel::NoAuthNoPriv => match &resp.data {
-                MessageData::Plain(b) => {
-                    ScopedPdu::from_bytes(b).expect("parse scoped").pdu
-                }
+                MessageData::Plain(b) => ScopedPdu::from_bytes(b).expect("parse scoped").pdu,
                 MessageData::Encrypted(_) => panic!("expected plaintext response"),
             },
             SecurityLevel::AuthNoPriv | SecurityLevel::AuthPriv => {
-                let (auth_proto, _) =
-                    self.user.auth.as_ref().expect("auth_proto on auth response");
+                let (auth_proto, _) = self
+                    .user
+                    .auth
+                    .as_ref()
+                    .expect("auth_proto on auth response");
                 let received = resp.security.auth_params.clone();
                 resp.security.auth_params = vec![0u8; auth_proto.digest_len()];
                 let serialized = resp.to_bytes().expect("re-encode for auth");
@@ -355,8 +356,7 @@ impl TestSnmpClient {
                 resp.security.auth_params = received;
 
                 if resp_level == SecurityLevel::AuthPriv {
-                    let (priv_proto, _) =
-                        self.user.priv_.as_ref().expect("priv_proto on authPriv");
+                    let (priv_proto, _) = self.user.priv_.as_ref().expect("priv_proto on authPriv");
                     let mut salt = [0u8; 8];
                     salt.copy_from_slice(&resp.security.priv_params);
                     let mut buf = match resp.data {
@@ -391,11 +391,7 @@ impl TestSnmpClient {
     /// # Panics
     /// Panics if the response contains zero variable-bindings (which would
     /// indicate a malformed reply from the agent).
-    pub async fn get(
-        &mut self,
-        oid: crate::ObjectIdentifier,
-        level: SecurityLevel,
-    ) -> VarBind {
+    pub async fn get(&mut self, oid: crate::ObjectIdentifier, level: SecurityLevel) -> VarBind {
         let req = Pdu {
             kind: PduKind::GetRequest,
             request_id: self.alloc_id(),

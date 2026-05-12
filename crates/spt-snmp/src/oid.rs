@@ -30,7 +30,9 @@ pub struct ObjectIdentifier {
 impl ObjectIdentifier {
     /// Constructs an OID from any iterable of `u32` arcs.
     pub fn new<I: IntoIterator<Item = u32>>(arcs: I) -> Self {
-        Self { arcs: arcs.into_iter().collect() }
+        Self {
+            arcs: arcs.into_iter().collect(),
+        }
     }
 
     /// Returns the OID's sub-arcs as a slice.
@@ -98,9 +100,9 @@ impl FromStr for ObjectIdentifier {
         let s = s.trim_start_matches('.');
         let mut arcs = Vec::new();
         for part in s.split('.') {
-            let v: u32 = part.parse().map_err(|_| {
-                Error::Ber(format!("invalid OID arc {part:?}"))
-            })?;
+            let v: u32 = part
+                .parse()
+                .map_err(|_| Error::Ber(format!("invalid OID arc {part:?}")))?;
             arcs.push(v);
         }
         if arcs.len() < 2 {

@@ -88,7 +88,12 @@ impl Value {
             Tag::NO_SUCH_OBJECT => Self::NoSuchObject,
             Tag::NO_SUCH_INSTANCE => Self::NoSuchInstance,
             Tag::END_OF_MIB => Self::EndOfMibView,
-            t => return Err(Error::Ber(format!("unknown varbind value tag 0x{:02x}", t.0))),
+            t => {
+                return Err(Error::Ber(format!(
+                    "unknown varbind value tag 0x{:02x}",
+                    t.0
+                )))
+            }
         })
     }
 }
@@ -157,7 +162,10 @@ impl VarBind {
     /// Convenience for `(name, NULL)` — used in GetRequest / GetNextRequest.
     #[must_use]
     pub fn null(name: ObjectIdentifier) -> Self {
-        Self { name, value: Value::Null }
+        Self {
+            name,
+            value: Value::Null,
+        }
     }
 
     pub(crate) fn encode(&self, enc: &mut Encoder) -> Result<()> {

@@ -213,8 +213,7 @@ fn build_remote_layer(
             let mut cfg = SyslogTlsConfig::new(host, port, spool_dir);
             cfg.timeout = sink.timeout;
             cfg.redact = redact;
-            let (layer, handle) =
-                syslog_tls::spawn_writer(cfg).map_err(|e| e.to_string())?;
+            let (layer, handle) = syslog_tls::spawn_writer(cfg).map_err(|e| e.to_string())?;
             Ok(RemoteBuild::Syslog {
                 layer: Box::new(layer),
                 handle,
@@ -235,8 +234,7 @@ fn build_remote_layer(
                 Some(t) => HttpsAuth::Bearer(t.to_string()),
                 None => HttpsAuth::None,
             };
-            let (layer, handle) =
-                https_jsonl::spawn(cfg).map_err(|e| e.to_string())?;
+            let (layer, handle) = https_jsonl::spawn(cfg).map_err(|e| e.to_string())?;
             Ok(RemoteBuild::Https {
                 layer: Box::new(layer),
                 handle,
@@ -257,9 +255,7 @@ fn parse_host_port(endpoint: &str, default_port: u16) -> Result<(String, u16), S
         .split_once("://")
         .map_or(endpoint, |(_, rest)| rest);
     if let Some((h, p)) = s.rsplit_once(':') {
-        let port = p
-            .parse::<u16>()
-            .map_err(|e| format!("port `{p}`: {e}"))?;
+        let port = p.parse::<u16>().map_err(|e| format!("port `{p}`: {e}"))?;
         Ok((h.to_string(), port))
     } else {
         Ok((s.to_string(), default_port))
@@ -304,9 +300,10 @@ fn build_journald_layer() -> Option<Box<dyn Layer<Registry> + Send + Sync>> {
 }
 
 fn split_file(path: &Path) -> (std::path::PathBuf, String) {
-    let parent = path
-        .parent()
-        .map_or_else(|| std::path::PathBuf::from("."), std::path::Path::to_path_buf);
+    let parent = path.parent().map_or_else(
+        || std::path::PathBuf::from("."),
+        std::path::Path::to_path_buf,
+    );
     let prefix = path
         .file_name()
         .and_then(|n| n.to_str())
@@ -318,11 +315,7 @@ fn split_file(path: &Path) -> (std::path::PathBuf, String) {
 /// Build the file writer for the chosen rotation policy. For Size or compound
 /// policies we use [`RotatingFileAppender`]; for plain time-based we keep
 /// `tracing-appender`'s `RollingFileAppender` (battle-tested).
-fn make_writer(
-    f: &FileSink,
-    dir: &Path,
-    prefix: &str,
-) -> io::Result<Box<dyn Write + Send>> {
+fn make_writer(f: &FileSink, dir: &Path, prefix: &str) -> io::Result<Box<dyn Write + Send>> {
     match f.rotate {
         RotationPolicy::Hourly => Ok(Box::new(RollingFileAppender::new(
             Rotation::HOURLY,

@@ -20,9 +20,9 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use tokio::net::UdpSocket;
-use tokio::sync::{Mutex, oneshot};
+use tokio::sync::{oneshot, Mutex};
 
-use crate::engine::{EngineClock, EngineId, generate_engine_id};
+use crate::engine::{generate_engine_id, EngineClock, EngineId};
 use crate::error::{Error, Result, UsmError};
 use crate::message::{
     GlobalData, Message, MessageData, ScopedPdu, SecurityParameters, FLAG_AUTH, FLAG_PRIV,
@@ -35,7 +35,7 @@ use crate::usm::{
     auth_digest, decrypt, derive_keys, digests_match, encrypt, AuthProtocol, PrivProtocol,
     SecurityLevel, UsmCounters, UsmUser,
 };
-use crate::value::{VarBind, Value};
+use crate::value::{Value, VarBind};
 
 /// Default SNMP enterprise PEN (placeholder until IANA registration).
 pub const DEFAULT_ENTERPRISE_PEN: u32 = 99_999;
@@ -244,7 +244,8 @@ impl Agent {
             }
         };
 
-        let level = SecurityLevel::from_flags(msg.global.msg_flags).unwrap_or(SecurityLevel::NoAuthNoPriv);
+        let level =
+            SecurityLevel::from_flags(msg.global.msg_flags).unwrap_or(SecurityLevel::NoAuthNoPriv);
 
         // Engine-ID discovery: empty engine id from the peer means "tell me
         // who you are". We answer with a Report-PDU carrying our engine id
@@ -252,9 +253,7 @@ impl Agent {
         // and §4 — Engine ID Discovery).
         if msg.security.engine_id.is_empty() {
             self.bump_counter(UsmError::UnknownEngineId).await;
-            let scoped = self
-                .build_report(&msg, UsmError::UnknownEngineId)
-                .await?;
+            let scoped = self.build_report(&msg, UsmError::UnknownEngineId).await?;
             let reply = self
                 .build_response_message(&msg, scoped, SecurityLevel::NoAuthNoPriv, None)
                 .await?;
@@ -313,7 +312,11 @@ impl Agent {
 
     /// Verifies the inbound message's USM parameters and decrypts the
     /// scoped-PDU if `authPriv`. Returns the parsed scoped-PDU on success.
-    async fn usm_verify(self: &Arc<Self>, msg: &mut Message, level: SecurityLevel) -> Result<ScopedPdu> {
+    async fn usm_verify(
+        self: &Arc<Self>,
+        msg: &mut Message,
+        level: SecurityLevel,
+    ) -> Result<ScopedPdu> {
         let user_name = String::from_utf8_lossy(&msg.security.user_name).to_string();
 
         // noAuthNoPriv with empty user_name is allowed for engine discovery
@@ -437,7 +440,10 @@ impl Agent {
                 Ok(None) => Value::NoSuchObject,
                 Err(_) => Value::NoSuchObject,
             };
-            bindings.push(VarBind { name: vb.name.clone(), value });
+            bindings.push(VarBind {
+                name: vb.name.clone(),
+                value,
+            });
         }
         Pdu {
             kind: PduKind::Response,
@@ -452,8 +458,14 @@ impl Agent {
         let mut bindings = Vec::with_capacity(req.variable_bindings.len());
         for vb in &req.variable_bindings {
             let resp = match self.registry.next(&vb.name).await {
-                Ok(Some((oid, v))) => VarBind { name: oid, value: v },
-                _ => VarBind { name: vb.name.clone(), value: Value::EndOfMibView },
+                Ok(Some((oid, v))) => VarBind {
+                    name: oid,
+                    value: v,
+                },
+                _ => VarBind {
+                    name: vb.name.clone(),
+                    value: Value::EndOfMibView,
+                },
             };
             bindings.push(resp);
         }
@@ -478,8 +490,14 @@ impl Agent {
         // Non-repeating part.
         for vb in req.variable_bindings.iter().take(n) {
             match self.registry.next(&vb.name).await {
-                Ok(Some((oid, v))) => bindings.push(VarBind { name: oid, value: v }),
-                _ => bindings.push(VarBind { name: vb.name.clone(), value: Value::EndOfMibView }),
+                Ok(Some((oid, v))) => bindings.push(VarBind {
+                    name: oid,
+                    value: v,
+                }),
+                _ => bindings.push(VarBind {
+                    name: vb.name.clone(),
+                    value: Value::EndOfMibView,
+                }),
             }
         }
 
@@ -497,7 +515,10 @@ impl Agent {
                     match self.registry.next(cur).await {
                         Ok(Some((oid, v))) => {
                             *cur = oid.clone();
-                            bindings.push(VarBind { name: oid, value: v });
+                            bindings.push(VarBind {
+                                name: oid,
+                                value: v,
+                            });
                             all_end = false;
                         }
                         _ => {
@@ -573,10 +594,7 @@ impl Agent {
             request_id: extract_request_id(msg).unwrap_or(0),
             error_status: 0,
             error_index: 0,
-            variable_bindings: vec![VarBind::new(
-                oid.parse()?,
-                Value::Counter32(value),
-            )],
+            variable_bindings: vec![VarBind::new(oid.parse()?, Value::Counter32(value))],
         };
         Ok(ScopedPdu {
             context_engine_id: self.engine_id.as_bytes().to_vec(),

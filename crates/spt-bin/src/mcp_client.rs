@@ -16,11 +16,11 @@ use std::pin::Pin;
 
 use futures::stream::Stream;
 use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use spt_core::{Error, Result};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::net::TcpStream;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
+use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 
 use crate::mcp_listen;
@@ -57,9 +57,9 @@ impl McpClient {
     /// Connect to a loopback MCP listener at `addr`. No auth — caller may set
     /// a token via [`Self::with_token`] before [`Self::initialize`].
     pub async fn connect(addr: SocketAddr) -> Result<Self> {
-        let stream = TcpStream::connect(addr).await.map_err(|e| {
-            Error::RuntimeFailure(format!("connect {addr}: {e}"))
-        })?;
+        let stream = TcpStream::connect(addr)
+            .await
+            .map_err(|e| Error::RuntimeFailure(format!("connect {addr}: {e}")))?;
         let (r, w) = stream.into_split();
         Ok(Self {
             reader: BufReader::new(r),
@@ -80,9 +80,9 @@ impl McpClient {
                  in your config and restart `spt tunnel run`"
             ))
         })?;
-        let addr: SocketAddr = format!("{}:{}", s.host, s.port).parse().map_err(|e| {
-            Error::RuntimeFailure(format!("parse mcp-listen sidecar addr: {e}"))
-        })?;
+        let addr: SocketAddr = format!("{}:{}", s.host, s.port)
+            .parse()
+            .map_err(|e| Error::RuntimeFailure(format!("parse mcp-listen sidecar addr: {e}")))?;
         let mut c = Self::connect(addr).await?;
         c.token = Some(s.token);
         Ok(c)
@@ -105,9 +105,8 @@ impl McpClient {
             params["token"] = Value::String(t.clone());
         }
         let resp = self.rpc("initialize", params).await?;
-        let parsed: InitializeResponse = serde_json::from_value(resp).map_err(|e| {
-            Error::RuntimeFailure(format!("parse initialize response: {e}"))
-        })?;
+        let parsed: InitializeResponse = serde_json::from_value(resp)
+            .map_err(|e| Error::RuntimeFailure(format!("parse initialize response: {e}")))?;
         Ok(parsed)
     }
 
@@ -257,7 +256,9 @@ impl McpClient {
                     .unwrap_or("unknown error");
                 return Err(Error::RuntimeFailure(format!(
                     "rpc error: {msg} ({})",
-                    err.get("code").and_then(serde_json::Value::as_i64).unwrap_or(0)
+                    err.get("code")
+                        .and_then(serde_json::Value::as_i64)
+                        .unwrap_or(0)
                 )));
             }
             let result = v.get("result").cloned().unwrap_or(Value::Null);

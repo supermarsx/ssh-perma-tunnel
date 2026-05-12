@@ -65,16 +65,12 @@ pub trait Controller: Send + Sync + 'static {
 
     /// Drain all forwards of `profile` with the given grace, return a JSON
     /// summary (`{"drained": N, "force_closed": N, "already_closed": N}`).
-    async fn session_drain(
-        &self,
-        profile: &str,
-        grace_seconds: u64,
-    ) -> crate::Result<Value> {
+    async fn session_drain(&self, profile: &str, grace_seconds: u64) -> crate::Result<Value> {
         let _ = (profile, grace_seconds);
         Err(crate::Error::NotImplemented("Controller::session_drain"))
     }
 
-    /// Spawn a background task that pushes [`StatsTick`]-shaped JSON values
+    /// Spawn a background task that pushes `StatsTick`-shaped JSON values
     /// onto the supplied channel until the receiver drops. Returns once the
     /// task has been spawned. Implementations should respect the requested
     /// `interval_ms` (or treat 0 as "use default").
@@ -276,10 +272,7 @@ pub mod testing {
             });
             Ok(())
         }
-        async fn run_benchmark(
-            &self,
-            args: serde_json::Value,
-        ) -> crate::Result<serde_json::Value> {
+        async fn run_benchmark(&self, args: serde_json::Value) -> crate::Result<serde_json::Value> {
             self.calls
                 .lock()
                 .push(ControllerCall::RunBenchmark { args: args.clone() });

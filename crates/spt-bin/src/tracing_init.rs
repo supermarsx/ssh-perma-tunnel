@@ -16,7 +16,11 @@ pub fn init_minimal(global: &GlobalOpts) -> Option<TracingGuard> {
     let level = crate::log_level_directive(global.log_level, global.verbose);
     let cfg = LoggingConfig {
         level,
-        format: if global.json { LogFormat::Json } else { LogFormat::Compact },
+        format: if global.json {
+            LogFormat::Json
+        } else {
+            LogFormat::Compact
+        },
         no_color: global.no_color || matches!(global.color, spt_cli::ColorMode::Never),
         destinations: vec![Destination::Stderr],
         file: None,

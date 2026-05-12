@@ -39,12 +39,7 @@ pub struct ProcessRunner;
 
 #[async_trait]
 impl CommandRunner for ProcessRunner {
-    async fn run(
-        &self,
-        program: &Path,
-        args: &[String],
-        to: Duration,
-    ) -> Result<(), SinkError> {
+    async fn run(&self, program: &Path, args: &[String], to: Duration) -> Result<(), SinkError> {
         let mut cmd = Command::new(program);
         cmd.args(args);
         cmd.kill_on_drop(true);
@@ -134,12 +129,7 @@ impl RecordingRunner {
 
 #[async_trait]
 impl CommandRunner for RecordingRunner {
-    async fn run(
-        &self,
-        program: &Path,
-        args: &[String],
-        _to: Duration,
-    ) -> Result<(), SinkError> {
+    async fn run(&self, program: &Path, args: &[String], _to: Duration) -> Result<(), SinkError> {
         if let Some(err) = self.fail_with.lock().take() {
             return Err(err);
         }
@@ -161,7 +151,12 @@ mod tests {
         let sink = CommandSink::new(
             "notify",
             PathBuf::from("/usr/local/bin/notify"),
-            vec!["--kind".into(), "{{kind}}".into(), "--msg".into(), "{{message}}".into()],
+            vec![
+                "--kind".into(),
+                "{{kind}}".into(),
+                "--msg".into(),
+                "{{message}}".into(),
+            ],
             Duration::from_secs(5),
             r.clone(),
         );

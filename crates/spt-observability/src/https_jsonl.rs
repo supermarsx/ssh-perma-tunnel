@@ -108,7 +108,9 @@ impl HttpsJsonlHandle {
 
 /// Spawn the writer task.
 #[allow(clippy::needless_pass_by_value)]
-pub fn spawn(cfg: HttpsJsonlConfig) -> Result<(HttpsJsonlLayer, HttpsJsonlHandle), HttpsJsonlError> {
+pub fn spawn(
+    cfg: HttpsJsonlConfig,
+) -> Result<(HttpsJsonlLayer, HttpsJsonlHandle), HttpsJsonlError> {
     let spool = DiskSpool::open(cfg.spool_dir.clone(), cfg.spool.clone())?;
     let mut headers = HeaderMap::new();
     headers.insert(
@@ -211,11 +213,7 @@ async fn flush(
     }
 }
 
-async fn drain_spool(
-    client: &Client,
-    cfg: &HttpsJsonlConfig,
-    spool: &Arc<Mutex<DiskSpool>>,
-) {
+async fn drain_spool(client: &Client, cfg: &HttpsJsonlConfig, spool: &Arc<Mutex<DiskSpool>>) {
     loop {
         let entry = {
             let mut s = spool.lock().await;
@@ -233,12 +231,7 @@ async fn drain_spool(
 }
 
 async fn post(client: &Client, url: &str, body: &[u8]) -> bool {
-    match client
-        .post(url)
-        .body(body.to_vec())
-        .send()
-        .await
-    {
+    match client.post(url).body(body.to_vec()).send().await {
         Ok(resp) => resp.status().is_success(),
         Err(_) => false,
     }
@@ -309,14 +302,17 @@ impl Visit for JsonVisitor {
         if f.name() == "message" {
             self.message = Some(v.to_string());
         } else {
-            self.fields.push((f.name().to_string(), Value::String(v.to_string())));
+            self.fields
+                .push((f.name().to_string(), Value::String(v.to_string())));
         }
     }
     fn record_i64(&mut self, f: &Field, v: i64) {
-        self.fields.push((f.name().to_string(), Value::Number(v.into())));
+        self.fields
+            .push((f.name().to_string(), Value::Number(v.into())));
     }
     fn record_u64(&mut self, f: &Field, v: u64) {
-        self.fields.push((f.name().to_string(), Value::Number(v.into())));
+        self.fields
+            .push((f.name().to_string(), Value::Number(v.into())));
     }
     fn record_bool(&mut self, f: &Field, v: bool) {
         self.fields.push((f.name().to_string(), Value::Bool(v)));

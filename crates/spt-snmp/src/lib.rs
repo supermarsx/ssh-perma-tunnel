@@ -75,14 +75,14 @@
 pub mod agent;
 pub mod ber;
 
-#[cfg(any(test, feature = "testing"))]
-pub mod testing;
 pub mod engine;
 pub mod error;
 pub mod message;
 pub mod mib;
 pub mod oid;
 pub mod pdu;
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
 pub mod trap;
 pub mod usm;
 pub mod value;
@@ -94,7 +94,5 @@ pub use mib::{ConstScalar, Handler, MibRegistry, TableHandler};
 pub use oid::ObjectIdentifier;
 pub use pdu::{ErrorStatus, Pdu, PduKind};
 pub use trap::TrapSender;
-pub use usm::{
-    AuthProtocol, PrivProtocol, SecretBytes, SecurityLevel, UsmCounters, UsmUser,
-};
-pub use value::{VarBind, Value};
+pub use usm::{AuthProtocol, PrivProtocol, SecretBytes, SecurityLevel, UsmCounters, UsmUser};
+pub use value::{Value, VarBind};

@@ -54,11 +54,7 @@ impl spt_mcp::Controller for LiveController {
     async fn reload(&self) -> spt_mcp::Result<()> {
         Ok(())
     }
-    async fn failover(
-        &self,
-        profile: &str,
-        endpoint: Option<&str>,
-    ) -> spt_mcp::Result<()> {
+    async fn failover(&self, profile: &str, endpoint: Option<&str>) -> spt_mcp::Result<()> {
         self.orch
             .failover(profile, endpoint)
             .await
@@ -71,18 +67,10 @@ impl spt_mcp::Controller for LiveController {
         self.orch.stop_profile(profile).await;
         Ok(())
     }
-    async fn forward_add(
-        &self,
-        _profile: &str,
-        _forward: &Forward,
-    ) -> spt_mcp::Result<()> {
+    async fn forward_add(&self, _profile: &str, _forward: &Forward) -> spt_mcp::Result<()> {
         Ok(())
     }
-    async fn forward_remove(
-        &self,
-        _profile: &str,
-        _forward_id: &str,
-    ) -> spt_mcp::Result<()> {
+    async fn forward_remove(&self, _profile: &str, _forward_id: &str) -> spt_mcp::Result<()> {
         Ok(())
     }
     async fn session_close(&self, session_id: &str) -> spt_mcp::Result<()> {
@@ -176,9 +164,7 @@ async fn spawn_live_bridge(
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
 
-    let controller: Arc<dyn spt_mcp::Controller> = Arc::new(LiveController {
-        orch: orch.clone(),
-    });
+    let controller: Arc<dyn spt_mcp::Controller> = Arc::new(LiveController { orch: orch.clone() });
     let policy = spt_mcp::McpPolicy {
         enabled: true,
         listen: "127.0.0.1:0".into(),
@@ -219,8 +205,8 @@ async fn spawn_live_bridge(
 // `mcp_client::McpClient` shape but with no module-path tricks. -------------
 
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::net::TcpStream;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
+use tokio::net::TcpStream;
 
 struct TestClient {
     reader: BufReader<OwnedReadHalf>,
@@ -314,7 +300,6 @@ impl TestClient {
         }
         Ok(r)
     }
-
 }
 
 #[tokio::test]
@@ -376,10 +361,7 @@ async fn stats_live_emits_at_least_one_tick() {
     // any tokio runtime quirks around moving owned TCP halves between tasks
     // that surfaced on current_thread runtimes.
     let _ = client
-        .call_tool(
-            "stats_subscribe",
-            serde_json::json!({"interval_ms": 50}),
-        )
+        .call_tool("stats_subscribe", serde_json::json!({"interval_ms": 50}))
         .await
         .expect("ok");
     let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
@@ -398,14 +380,9 @@ async fn stats_live_emits_at_least_one_tick() {
                     Ok(v) => v,
                     Err(_) => continue,
                 };
-                if v.get("method").and_then(|m| m.as_str())
-                    == Some("notifications/stats/tick")
-                {
+                if v.get("method").and_then(|m| m.as_str()) == Some("notifications/stats/tick") {
                     let params = v.get("params").cloned().unwrap_or_default();
-                    assert!(
-                        params.get("total_sessions").is_some(),
-                        "tick: {params}"
-                    );
+                    assert!(params.get("total_sessions").is_some(), "tick: {params}");
                     got_tick = true;
                     break;
                 }

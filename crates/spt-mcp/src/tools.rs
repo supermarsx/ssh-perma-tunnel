@@ -108,9 +108,15 @@ macro_rules! tool {
         pub struct $struct;
         #[async_trait::async_trait]
         impl ToolHandler for $struct {
-            fn name(&self) -> &'static str { $name }
+            fn name(&self) -> &'static str {
+                $name
+            }
             fn descriptor(&self) -> ToolDescriptor {
-                ToolDescriptor { name: $name.to_owned(), description: $desc.to_owned(), input_schema: empty_schema() }
+                ToolDescriptor {
+                    name: $name.to_owned(),
+                    description: $desc.to_owned(),
+                    input_schema: empty_schema(),
+                }
             }
             async fn call(&self, ctx: &ToolContext, _args: Value) -> crate::Result<Value> {
                 ctx.config.$method().await
@@ -121,9 +127,15 @@ macro_rules! tool {
         pub struct $struct;
         #[async_trait::async_trait]
         impl ToolHandler for $struct {
-            fn name(&self) -> &'static str { $name }
+            fn name(&self) -> &'static str {
+                $name
+            }
             fn descriptor(&self) -> ToolDescriptor {
-                ToolDescriptor { name: $name.to_owned(), description: $desc.to_owned(), input_schema: empty_schema() }
+                ToolDescriptor {
+                    name: $name.to_owned(),
+                    description: $desc.to_owned(),
+                    input_schema: empty_schema(),
+                }
             }
             async fn call(&self, ctx: &ToolContext, _args: Value) -> crate::Result<Value> {
                 ctx.state.$method().await
@@ -134,27 +146,135 @@ macro_rules! tool {
 
 // --- read-only tools ---------------------------------------------------------
 
-tool!(read_cfg, ConfigValidate,  "config_validate",  "Validate the loaded config.",                     effective);
-tool!(read_cfg, ConfigDoctor,    "config_doctor",    "Run the config doctor and report findings.",      effective);
-tool!(read_cfg, ConfigRender,    "config_render",    "Render the canonical (redacted) config.",         redacted);
-tool!(read_cfg, ProfileList,     "profile_list",     "List configured profiles.",                       profiles);
-tool!(read_cfg, ForwardList,     "forward_list",     "List configured forwards.",                       forwards);
+tool!(
+    read_cfg,
+    ConfigValidate,
+    "config_validate",
+    "Validate the loaded config.",
+    effective
+);
+tool!(
+    read_cfg,
+    ConfigDoctor,
+    "config_doctor",
+    "Run the config doctor and report findings.",
+    effective
+);
+tool!(
+    read_cfg,
+    ConfigRender,
+    "config_render",
+    "Render the canonical (redacted) config.",
+    redacted
+);
+tool!(
+    read_cfg,
+    ProfileList,
+    "profile_list",
+    "List configured profiles.",
+    profiles
+);
+tool!(
+    read_cfg,
+    ForwardList,
+    "forward_list",
+    "List configured forwards.",
+    forwards
+);
 
 // `profile_show` and `forward_explain` take a name; they still surface the
 // full list and let the client filter for now (read-only adapter is enough).
-tool!(read_cfg, ProfileShow,     "profile_show",     "Show one profile (filter client-side).",          profiles);
-tool!(read_cfg, ForwardExplain,  "forward_explain",  "Explain one forward (filter client-side).",       forwards);
-tool!(read_state, TunnelStatus,  "tunnel_status",    "Return the runtime status snapshot.",             status);
-tool!(read_state, StatsSummary,  "stats_summary",    "Return the global + per-profile stats summary.",  stats_summary);
-tool!(read_state, StatsExport,   "stats_export",     "Export the latest stats blob.",                   stats_summary);
-tool!(read_state, SessionList,   "session_list",     "List currently open sessions.",                   sessions_current);
-tool!(read_state, SessionShow,   "session_show",     "Show one session (filter client-side).",          sessions_current);
-tool!(read_state, LogTail,       "log_tail",         "Tail recent structured logs (redacted).",         logs_recent);
-tool!(read_state, ObserveMetrics,"observe_metrics",  "Return the latest Prometheus metrics body.",      metrics);
-tool!(read_cfg, ServiceRender,   "service_render",   "Render the platform service definition.",         service_definition);
-tool!(read_cfg, KeyInspect,      "key_inspect",      "Inspect configured key references.",              effective);
-tool!(read_cfg, SecretList,      "secret_list",      "List secret refs (never values).",                effective);
-tool!(read_cfg, DnsQuery,        "dns_query",        "Inspect the configured DNS records.",             dns_records);
+tool!(
+    read_cfg,
+    ProfileShow,
+    "profile_show",
+    "Show one profile (filter client-side).",
+    profiles
+);
+tool!(
+    read_cfg,
+    ForwardExplain,
+    "forward_explain",
+    "Explain one forward (filter client-side).",
+    forwards
+);
+tool!(
+    read_state,
+    TunnelStatus,
+    "tunnel_status",
+    "Return the runtime status snapshot.",
+    status
+);
+tool!(
+    read_state,
+    StatsSummary,
+    "stats_summary",
+    "Return the global + per-profile stats summary.",
+    stats_summary
+);
+tool!(
+    read_state,
+    StatsExport,
+    "stats_export",
+    "Export the latest stats blob.",
+    stats_summary
+);
+tool!(
+    read_state,
+    SessionList,
+    "session_list",
+    "List currently open sessions.",
+    sessions_current
+);
+tool!(
+    read_state,
+    SessionShow,
+    "session_show",
+    "Show one session (filter client-side).",
+    sessions_current
+);
+tool!(
+    read_state,
+    LogTail,
+    "log_tail",
+    "Tail recent structured logs (redacted).",
+    logs_recent
+);
+tool!(
+    read_state,
+    ObserveMetrics,
+    "observe_metrics",
+    "Return the latest Prometheus metrics body.",
+    metrics
+);
+tool!(
+    read_cfg,
+    ServiceRender,
+    "service_render",
+    "Render the platform service definition.",
+    service_definition
+);
+tool!(
+    read_cfg,
+    KeyInspect,
+    "key_inspect",
+    "Inspect configured key references.",
+    effective
+);
+tool!(
+    read_cfg,
+    SecretList,
+    "secret_list",
+    "List secret refs (never values).",
+    effective
+);
+tool!(
+    read_cfg,
+    DnsQuery,
+    "dns_query",
+    "Inspect the configured DNS records.",
+    dns_records
+);
 
 // --- mutating tools ----------------------------------------------------------
 
@@ -216,9 +336,8 @@ impl ToolHandler for ForwardAdd {
         let forward_value = args.get("forward").cloned().ok_or_else(|| {
             crate::Error::InvalidParams("missing object field 'forward'".to_owned())
         })?;
-        let forward: Forward = serde_json::from_value(forward_value).map_err(|e| {
-            crate::Error::InvalidParams(format!("invalid 'forward' object: {e}"))
-        })?;
+        let forward: Forward = serde_json::from_value(forward_value)
+            .map_err(|e| crate::Error::InvalidParams(format!("invalid 'forward' object: {e}")))?;
         ctx.controller.forward_add(profile, &forward).await?;
         let name = forward.name.clone();
         Ok(json!({"applied": true, "profile": profile, "forward": name}))
@@ -325,9 +444,15 @@ macro_rules! planned_tool {
         pub struct $struct;
         #[async_trait::async_trait]
         impl ToolHandler for $struct {
-            fn name(&self) -> &'static str { $name }
+            fn name(&self) -> &'static str {
+                $name
+            }
             fn descriptor(&self) -> ToolDescriptor {
-                ToolDescriptor { name: $name.to_owned(), description: $desc.to_owned(), input_schema: $schema }
+                ToolDescriptor {
+                    name: $name.to_owned(),
+                    description: $desc.to_owned(),
+                    input_schema: $schema,
+                }
             }
             async fn call(&self, _ctx: &ToolContext, args: Value) -> crate::Result<Value> {
                 planned(args).await
@@ -336,9 +461,24 @@ macro_rules! planned_tool {
     };
 }
 
-planned_tool!(DiagnoseRun,           "diagnose_run",           "Run the diagnostic check framework.",  empty_schema());
-planned_tool!(DiagnoseBundle,        "diagnose_bundle",        "Build a redacted diagnostics bundle.", empty_schema());
-planned_tool!(BenchmarkReportExport, "benchmark_report_export","Export a benchmark report.",           empty_schema());
+planned_tool!(
+    DiagnoseRun,
+    "diagnose_run",
+    "Run the diagnostic check framework.",
+    empty_schema()
+);
+planned_tool!(
+    DiagnoseBundle,
+    "diagnose_bundle",
+    "Build a redacted diagnostics bundle.",
+    empty_schema()
+);
+planned_tool!(
+    BenchmarkReportExport,
+    "benchmark_report_export",
+    "Export a benchmark report.",
+    empty_schema()
+);
 
 /// `benchmark_run`: drive a benchmark driver against the live tunnel.
 pub struct BenchmarkRun;
@@ -390,9 +530,10 @@ impl ToolHandler for SessionClose {
         }
     }
     async fn call(&self, ctx: &ToolContext, args: Value) -> crate::Result<Value> {
-        let id = args.get("id").and_then(Value::as_str).ok_or_else(|| {
-            crate::Error::InvalidParams("missing string field 'id'".to_owned())
-        })?;
+        let id = args
+            .get("id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| crate::Error::InvalidParams("missing string field 'id'".to_owned()))?;
         ctx.controller.session_close(id).await?;
         Ok(json!({"applied": true, "id": id}))
     }
@@ -427,10 +568,7 @@ impl ToolHandler for SessionDrain {
             .get("grace_seconds")
             .and_then(Value::as_u64)
             .unwrap_or(5);
-        let report = ctx
-            .controller
-            .session_drain(profile, grace_seconds)
-            .await?;
+        let report = ctx.controller.session_drain(profile, grace_seconds).await?;
         Ok(json!({"applied": true, "profile": profile, "report": report}))
     }
 }
@@ -462,10 +600,7 @@ impl ToolHandler for StatsSubscribe {
         }
     }
     async fn call(&self, ctx: &ToolContext, args: Value) -> crate::Result<Value> {
-        let interval_ms = args
-            .get("interval_ms")
-            .and_then(Value::as_u64)
-            .unwrap_or(0);
+        let interval_ms = args.get("interval_ms").and_then(Value::as_u64).unwrap_or(0);
         // Streaming dispatch: we install a per-connection mpsc::Sender by
         // having the server set `ctx.notification_sender` before dispatch.
         // If a sender is present we hand it to the controller; if not we
@@ -484,10 +619,30 @@ impl ToolHandler for StatsSubscribe {
         }))
     }
 }
-planned_tool!(DnsRecordAdd,          "dns_record_add",         "Add a DNS record.",                    empty_schema());
-planned_tool!(DnsRecordRemove,       "dns_record_remove",      "Remove a DNS record.",                 empty_schema());
-planned_tool!(EventTest,             "event_test",             "Send a test event to bindings.",       empty_schema());
-planned_tool!(SecretSetRef,          "secret_set_ref",         "Bind a secret reference (no values).", empty_schema());
+planned_tool!(
+    DnsRecordAdd,
+    "dns_record_add",
+    "Add a DNS record.",
+    empty_schema()
+);
+planned_tool!(
+    DnsRecordRemove,
+    "dns_record_remove",
+    "Remove a DNS record.",
+    empty_schema()
+);
+planned_tool!(
+    EventTest,
+    "event_test",
+    "Send a test event to bindings.",
+    empty_schema()
+);
+planned_tool!(
+    SecretSetRef,
+    "secret_set_ref",
+    "Bind a secret reference (no values).",
+    empty_schema()
+);
 
 /// Registry of all 31 tool handlers, keyed by name.
 pub struct ToolRegistry {

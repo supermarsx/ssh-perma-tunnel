@@ -210,7 +210,10 @@ pub struct TestServerHarness {
 pub fn make_test_server() -> TestServerHarness {
     let policy = McpPolicy {
         enabled: true,
-        allow_write_tools: crate::policy::WRITE_TOOLS.iter().map(|s| (*s).to_owned()).collect(),
+        allow_write_tools: crate::policy::WRITE_TOOLS
+            .iter()
+            .map(|s| (*s).to_owned())
+            .collect(),
         ..Default::default()
     };
     let audit = MockAuditSink::new();

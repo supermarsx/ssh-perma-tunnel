@@ -198,9 +198,7 @@ async fn run_writer(
                 tracing::debug!(error=%e, "syslog-tls connect failed; backing off");
                 // Even when disconnected, drain the channel into the spool so
                 // we don't lose pending events while we wait.
-                if let Ok(buf) =
-                    tokio::time::timeout(cfg.reconnect_backoff, rx.recv()).await
-                {
+                if let Ok(buf) = tokio::time::timeout(cfg.reconnect_backoff, rx.recv()).await {
                     match buf {
                         Some(buf) => {
                             spool.lock().await.push(&buf).ok();
@@ -250,10 +248,9 @@ async fn connect(
     connector: &TlsConnector,
     cfg: &SyslogTlsConfig,
 ) -> io::Result<tokio_rustls::client::TlsStream<TcpStream>> {
-    let addrs: Vec<SocketAddr> =
-        tokio::net::lookup_host((cfg.host.as_str(), cfg.port))
-            .await?
-            .collect();
+    let addrs: Vec<SocketAddr> = tokio::net::lookup_host((cfg.host.as_str(), cfg.port))
+        .await?
+        .collect();
     let Some(addr) = addrs.into_iter().next() else {
         return Err(io::Error::new(io::ErrorKind::NotFound, "no addrs resolved"));
     };
@@ -355,7 +352,10 @@ fn escape_sd_value(v: &str) -> String {
 }
 
 fn sanitize_token(s: &str, max: usize) -> String {
-    let s: String = s.chars().filter(|c| !c.is_whitespace() && *c != '<' && *c != '>').collect();
+    let s: String = s
+        .chars()
+        .filter(|c| !c.is_whitespace() && *c != '<' && *c != '>')
+        .collect();
     if s.is_empty() {
         return "-".to_string();
     }
@@ -446,9 +446,8 @@ mod tests {
         let _ = rustls::crypto::ring::default_provider().install_default();
 
         // 1. Self-signed cert covering the loopback IP we'll dial.
-        let cert =
-            rcgen::generate_simple_self_signed(vec!["127.0.0.1".into(), "localhost".into()])
-                .unwrap();
+        let cert = rcgen::generate_simple_self_signed(vec!["127.0.0.1".into(), "localhost".into()])
+            .unwrap();
         let der = CertificateDer::from(cert.cert.der().to_vec());
         let key = PrivateKeyDer::try_from(cert.key_pair.serialize_der()).unwrap();
 

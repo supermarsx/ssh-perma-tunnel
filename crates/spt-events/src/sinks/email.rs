@@ -134,17 +134,13 @@ pub mod smtp {
             let email = b
                 .body(msg.body)
                 .map_err(|e| SinkError::Permanent(format!("body: {e}")))?;
-            self.inner
-                .send(email)
-                .await
-                .map(|_| ())
-                .map_err(|e| {
-                    if e.is_permanent() {
-                        SinkError::Permanent(format!("smtp: {e}"))
-                    } else {
-                        SinkError::Transient(format!("smtp: {e}"))
-                    }
-                })
+            self.inner.send(email).await.map(|_| ()).map_err(|e| {
+                if e.is_permanent() {
+                    SinkError::Permanent(format!("smtp: {e}"))
+                } else {
+                    SinkError::Transient(format!("smtp: {e}"))
+                }
+            })
         }
     }
 }

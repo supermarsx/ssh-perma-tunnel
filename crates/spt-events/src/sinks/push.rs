@@ -271,27 +271,24 @@ impl WebPushSink {
         sub: &Subscription,
         plaintext: &[u8],
     ) -> Result<HttpRequest, SinkError> {
-        let endpoint_uri: http::Uri = sub
-            .endpoint
-            .parse()
-            .map_err(|e: http::uri::InvalidUri| {
+        let endpoint_uri: http::Uri =
+            sub.endpoint.parse().map_err(|e: http::uri::InvalidUri| {
                 SinkError::Config(WebPushConfigError::Endpoint(e.to_string()).to_string())
             })?;
 
-        let p256dh_bytes = Base64UrlUnpadded::decode_vec(&sub.p256dh_key)
-            .map_err(|e| SinkError::Config(WebPushConfigError::P256dh(e.to_string()).to_string()))?;
-        let ua_public = PublicKey::from_sec1_bytes(&p256dh_bytes)
-            .map_err(|e| SinkError::Config(WebPushConfigError::P256dh(e.to_string()).to_string()))?;
+        let p256dh_bytes = Base64UrlUnpadded::decode_vec(&sub.p256dh_key).map_err(|e| {
+            SinkError::Config(WebPushConfigError::P256dh(e.to_string()).to_string())
+        })?;
+        let ua_public = PublicKey::from_sec1_bytes(&p256dh_bytes).map_err(|e| {
+            SinkError::Config(WebPushConfigError::P256dh(e.to_string()).to_string())
+        })?;
 
         let auth_bytes = Base64UrlUnpadded::decode_vec(&sub.auth_secret)
             .map_err(|e| SinkError::Config(WebPushConfigError::Auth(e.to_string()).to_string()))?;
         if auth_bytes.len() != 16 {
             return Err(SinkError::Config(
-                WebPushConfigError::Auth(format!(
-                    "expected 16 bytes, got {}",
-                    auth_bytes.len()
-                ))
-                .to_string(),
+                WebPushConfigError::Auth(format!("expected 16 bytes, got {}", auth_bytes.len()))
+                    .to_string(),
             ));
         }
         let ua_auth = Auth::clone_from_slice(&auth_bytes);
@@ -442,9 +439,7 @@ mod tests {
     /// upstream crate without us pulling in a `rand`-version that would
     /// disagree with `p256`'s own.
     mod rand_compat {
-        use web_push_native::p256::elliptic_curve::rand_core::{
-            CryptoRng, OsRng, RngCore,
-        };
+        use web_push_native::p256::elliptic_curve::rand_core::{CryptoRng, OsRng, RngCore};
         pub struct RngAdapter;
         impl CryptoRng for RngAdapter {}
         impl RngCore for RngAdapter {
@@ -510,8 +505,8 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn webpush_invalid_vapid_key_is_config_error() {
-        let err = VapidIdentity::from_base64url("!!!not-base64!!!", "mailto:x@y.example")
-            .unwrap_err();
+        let err =
+            VapidIdentity::from_base64url("!!!not-base64!!!", "mailto:x@y.example").unwrap_err();
         assert!(matches!(err, WebPushConfigError::VapidKey(_)));
     }
 
@@ -611,13 +606,7 @@ mod tests {
         let t = Arc::new(RecordingTransport::new());
         t.fail_once(SinkError::Transient("net".into()));
         let (sub, _sk, _auth) = fresh_subscription();
-        let sink = WebPushSink::new(
-            "mobile",
-            r#"{"k":"{{kind}}"}"#,
-            vec![sub],
-            fresh_vapid(),
-            t,
-        );
+        let sink = WebPushSink::new("mobile", r#"{"k":"{{kind}}"}"#, vec![sub], fresh_vapid(), t);
         let ev = Event::builder("k", Severity::Info).build();
         let err = sink.deliver(Arc::new(ev)).await.unwrap_err();
         assert!(err.is_retryable(), "got {err:?}");

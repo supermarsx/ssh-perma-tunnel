@@ -70,9 +70,7 @@ mod tests {
     async fn deliver_passes_event_in_params() {
         let r = Arc::new(Rec(parking_lot::Mutex::new(Vec::new())));
         let sink = McpNotifySink::new("mcp", r.clone());
-        let ev = Event::builder("k", Severity::Info)
-            .message("hello")
-            .build();
+        let ev = Event::builder("k", Severity::Info).message("hello").build();
         sink.deliver(Arc::new(ev)).await.unwrap();
         let v = r.0.lock().clone();
         assert_eq!(v.len(), 1);

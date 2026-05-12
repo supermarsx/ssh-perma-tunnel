@@ -38,7 +38,7 @@ impl Default for LogExportFormat {
     }
 }
 
-/// Args for [`test`].
+/// Args for [`test()`].
 #[derive(Debug, Clone, Default)]
 pub struct LogTestArgs {
     /// Sink name (must match `[[events.sinks]].name` or
@@ -70,33 +70,34 @@ pub struct LogExportArgs {
 /// the named sink and report success/failure with elapsed time.
 pub async fn test(global: &GlobalOpts, args: LogTestArgs) -> Result<()> {
     let path = require_config_path(global)?;
-    let (cfg, _w) = spt_config::load(&path, false)
-        .map_err(|e| Error::InvalidConfig(format!("load: {e}")))?;
+    let (cfg, _w) =
+        spt_config::load(&path, false).map_err(|e| Error::InvalidConfig(format!("load: {e}")))?;
 
     // Search [[events.sinks]] first, then fall back to [[logging.remote]] —
     // both surfaces define a "named remote target" semantically.
     let started = Instant::now();
-    let outcome: std::result::Result<&'static str, String> =
-        if let Some(sink) = cfg
-            .events
-            .as_ref()
-            .and_then(|e| e.sinks.iter().find(|s| s.name == args.sink))
-        {
-            fire_synthetic_event_sink(sink).await.map(|_| "events.sinks")
-        } else if let Some(remote) = cfg
-            .logging
-            .as_ref()
-            .and_then(|l| l.remote.iter().find(|r| r.name == args.sink))
-        {
-            fire_synthetic_remote_log(remote)
-                .await
-                .map(|_| "logging.remote")
-        } else {
-            return Err(Error::InvalidArgs(format!(
-                "no sink named `{}` found in `[[events.sinks]]` or `[[logging.remote]]`",
-                args.sink
-            )));
-        };
+    let outcome: std::result::Result<&'static str, String> = if let Some(sink) = cfg
+        .events
+        .as_ref()
+        .and_then(|e| e.sinks.iter().find(|s| s.name == args.sink))
+    {
+        fire_synthetic_event_sink(sink)
+            .await
+            .map(|_| "events.sinks")
+    } else if let Some(remote) = cfg
+        .logging
+        .as_ref()
+        .and_then(|l| l.remote.iter().find(|r| r.name == args.sink))
+    {
+        fire_synthetic_remote_log(remote)
+            .await
+            .map(|_| "logging.remote")
+    } else {
+        return Err(Error::InvalidArgs(format!(
+            "no sink named `{}` found in `[[events.sinks]]` or `[[logging.remote]]`",
+            args.sink
+        )));
+    };
     let elapsed_ms = started.elapsed().as_millis();
 
     let (ok, surface, err) = match outcome {
@@ -114,8 +115,7 @@ pub async fn test(global: &GlobalOpts, args: LogTestArgs) -> Result<()> {
         });
         println!(
             "{}",
-            serde_json::to_string_pretty(&v)
-                .map_err(|e| Error::RuntimeFailure(e.to_string()))?
+            serde_json::to_string_pretty(&v).map_err(|e| Error::RuntimeFailure(e.to_string()))?
         );
     } else if ok {
         println!("ok: sink `{}` ({}) in {}ms", args.sink, surface, elapsed_ms);
@@ -162,9 +162,10 @@ pub async fn export(global: &GlobalOpts, args: LogExportArgs) -> Result<()> {
                     })?;
                 }
             }
-            Box::new(File::create(p).map_err(|e| {
-                Error::RuntimeFailure(format!("create `{}`: {e}", p.display()))
-            })?)
+            Box::new(
+                File::create(p)
+                    .map_err(|e| Error::RuntimeFailure(format!("create `{}`: {e}", p.display())))?,
+            )
         }
         None => Box::new(std::io::stdout().lock()),
     };
@@ -245,9 +246,7 @@ pub async fn export(global: &GlobalOpts, args: LogExportArgs) -> Result<()> {
 
 fn require_config_path(global: &GlobalOpts) -> Result<PathBuf> {
     global.config.clone().ok_or_else(|| {
-        Error::InvalidArgs(
-            "no config path supplied (pass --config or set $SPT_CONFIG)".into(),
-        )
+        Error::InvalidArgs("no config path supplied (pass --config or set $SPT_CONFIG)".into())
     })
 }
 
@@ -269,11 +268,7 @@ fn list_event_files(edir: &Path) -> Result<Vec<PathBuf>> {
     Ok(out)
 }
 
-fn time_in_window(
-    v: &Value,
-    since: Option<&DateTime<Utc>>,
-    until: Option<&DateTime<Utc>>,
-) -> bool {
+fn time_in_window(v: &Value, since: Option<&DateTime<Utc>>, until: Option<&DateTime<Utc>>) -> bool {
     if since.is_none() && until.is_none() {
         return true;
     }
@@ -302,9 +297,8 @@ fn parse_time_bound(s: &str, now: DateTime<Utc>) -> Result<DateTime<Utc>> {
         return Ok(ts.with_timezone(&Utc));
     }
     if let Ok(d) = spt_core::duration::parse_duration(s) {
-        let dur = chrono::Duration::from_std(d).map_err(|e| {
-            Error::InvalidArgs(format!("duration `{s}` out of range: {e}"))
-        })?;
+        let dur = chrono::Duration::from_std(d)
+            .map_err(|e| Error::InvalidArgs(format!("duration `{s}` out of range: {e}")))?;
         return Ok(now - dur);
     }
     Err(Error::InvalidArgs(format!(
@@ -411,10 +405,7 @@ fn default_port_for_kind(kind: &str) -> u16 {
     }
 }
 
-fn parse_endpoint(
-    endpoint: &str,
-    default_port: u16,
-) -> std::result::Result<(String, u16), String> {
+fn parse_endpoint(endpoint: &str, default_port: u16) -> std::result::Result<(String, u16), String> {
     // Strip an optional URL scheme.
     let s = endpoint
         .split_once("://")
@@ -422,9 +413,7 @@ fn parse_endpoint(
     // Strip any path / query suffix.
     let s = s.split(['/', '?']).next().unwrap_or(s);
     if let Some((h, p)) = s.rsplit_once(':') {
-        let port: u16 = p
-            .parse()
-            .map_err(|e| format!("invalid port `{p}`: {e}"))?;
+        let port: u16 = p.parse().map_err(|e| format!("invalid port `{p}`: {e}"))?;
         Ok((h.to_string(), port))
     } else if default_port != 0 {
         Ok((s.to_string(), default_port))
@@ -477,10 +466,9 @@ mod tests {
 
     #[test]
     fn time_in_window_filters_correctly() {
-        let v: Value = serde_json::from_str(
-            r#"{"ts":"2026-05-05T12:00:00Z","kind":"k","severity":"info"}"#,
-        )
-        .unwrap();
+        let v: Value =
+            serde_json::from_str(r#"{"ts":"2026-05-05T12:00:00Z","kind":"k","severity":"info"}"#)
+                .unwrap();
         let early = Utc.with_ymd_and_hms(2026, 5, 5, 11, 0, 0).unwrap();
         let late = Utc.with_ymd_and_hms(2026, 5, 5, 13, 0, 0).unwrap();
         assert!(time_in_window(&v, Some(&early), Some(&late)));

@@ -116,7 +116,9 @@ impl From<&[u8]> for SecretBytes {
 
 impl From<&str> for SecretBytes {
     fn from(s: &str) -> Self {
-        Self { bytes: s.as_bytes().to_vec() }
+        Self {
+            bytes: s.as_bytes().to_vec(),
+        }
     }
 }
 
@@ -136,13 +138,21 @@ impl UsmUser {
     /// `noAuthNoPriv` user.
     #[must_use]
     pub fn no_auth(name: impl Into<String>) -> Self {
-        Self { name: name.into(), auth: None, priv_: None }
+        Self {
+            name: name.into(),
+            auth: None,
+            priv_: None,
+        }
     }
 
     /// `authNoPriv` user.
     #[must_use]
     pub fn auth_only(name: impl Into<String>, auth: AuthProtocol, password: SecretBytes) -> Self {
-        Self { name: name.into(), auth: Some((auth, password)), priv_: None }
+        Self {
+            name: name.into(),
+            auth: Some((auth, password)),
+            priv_: None,
+        }
     }
 
     /// `authPriv` user.
@@ -427,8 +437,8 @@ pub fn digests_match(a: &[u8], b: &[u8]) -> bool {
 // Privacy: AES-128/256-CFB128 (RFC 3826) and DES-CBC.
 // ---------------------------------------------------------------------------
 
-use aes::{Aes128, Aes256};
 use aes::cipher::{AsyncStreamCipher, KeyIvInit};
+use aes::{Aes128, Aes256};
 type Aes128CfbEnc = cfb_mode::Encryptor<Aes128>;
 type Aes128CfbDec = cfb_mode::Decryptor<Aes128>;
 type Aes256CfbEnc = cfb_mode::Encryptor<Aes256>;
@@ -532,9 +542,13 @@ mod tests {
         let pwd = b"maplesyrup";
         let engine_id = hex::decode("000000000000000000000002").unwrap();
         let ku = password_to_key(AuthProtocol::HmacSha1, pwd);
-        let expected_ku = hex::decode("9fb5cc03814901497b3793528939ff788d5d791452" /* placeholder */).unwrap_or_default();
+        let expected_ku = hex::decode(
+            "9fb5cc03814901497b3793528939ff788d5d791452", /* placeholder */
+        )
+        .unwrap_or_default();
         // The literal RFC value:
-        let expected_ku = hex::decode("9fb5cc0381497b37935289398d5d79145211ff788d").unwrap_or(expected_ku);
+        let expected_ku =
+            hex::decode("9fb5cc0381497b37935289398d5d79145211ff788d").unwrap_or(expected_ku);
         // We assert localization, which is what matters end-to-end.
         let _ = expected_ku;
         let kul = localize_key(AuthProtocol::HmacSha1, &ku, &engine_id);
@@ -599,14 +613,33 @@ mod tests {
     fn auth_digest_lengths() {
         let kul = vec![1u8; 32];
         let m = b"the message";
-        assert_eq!(auth_digest(AuthProtocol::HmacMd5, &kul[..16], m).unwrap().len(), 12);
-        assert_eq!(auth_digest(AuthProtocol::HmacSha1, &kul[..20], m).unwrap().len(), 12);
-        assert_eq!(auth_digest(AuthProtocol::HmacSha256, &kul, m).unwrap().len(), 24);
+        assert_eq!(
+            auth_digest(AuthProtocol::HmacMd5, &kul[..16], m)
+                .unwrap()
+                .len(),
+            12
+        );
+        assert_eq!(
+            auth_digest(AuthProtocol::HmacSha1, &kul[..20], m)
+                .unwrap()
+                .len(),
+            12
+        );
+        assert_eq!(
+            auth_digest(AuthProtocol::HmacSha256, &kul, m)
+                .unwrap()
+                .len(),
+            24
+        );
     }
 
     #[test]
     fn security_level_flag_roundtrip() {
-        for lvl in [SecurityLevel::NoAuthNoPriv, SecurityLevel::AuthNoPriv, SecurityLevel::AuthPriv] {
+        for lvl in [
+            SecurityLevel::NoAuthNoPriv,
+            SecurityLevel::AuthNoPriv,
+            SecurityLevel::AuthPriv,
+        ] {
             let bits = lvl.flags_bits();
             let back = SecurityLevel::from_flags(bits).unwrap();
             assert_eq!(lvl, back);

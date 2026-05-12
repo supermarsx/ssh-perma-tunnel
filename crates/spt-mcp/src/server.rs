@@ -205,9 +205,10 @@ impl McpServerInner {
 
     async fn call_tool(&self, params: Option<Value>) -> crate::Result<Value> {
         let params = params.unwrap_or(Value::Null);
-        let name = params.get("name").and_then(Value::as_str).ok_or_else(|| {
-            crate::Error::InvalidParams("missing string field 'name'".to_owned())
-        })?;
+        let name = params
+            .get("name")
+            .and_then(Value::as_str)
+            .ok_or_else(|| crate::Error::InvalidParams("missing string field 'name'".to_owned()))?;
         let arguments = params
             .get("arguments")
             .cloned()
@@ -279,9 +280,10 @@ impl McpServerInner {
         notify: Option<tokio::sync::mpsc::Sender<Value>>,
     ) -> crate::Result<Value> {
         let params = params.unwrap_or(Value::Null);
-        let name = params.get("name").and_then(Value::as_str).ok_or_else(|| {
-            crate::Error::InvalidParams("missing string field 'name'".to_owned())
-        })?;
+        let name = params
+            .get("name")
+            .and_then(Value::as_str)
+            .ok_or_else(|| crate::Error::InvalidParams("missing string field 'name'".to_owned()))?;
         let arguments = params
             .get("arguments")
             .cloned()

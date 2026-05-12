@@ -485,10 +485,15 @@ fn decode_uint(bytes: &[u8]) -> Result<u64> {
 /// Encodes an OID's sub-arcs using base-128 with high-bit continuation.
 pub fn encode_oid(arcs: &[u32]) -> Result<Vec<u8>> {
     if arcs.len() < 2 {
-        return Err(Error::BerEncode("OID must have at least 2 sub-identifiers".into()));
+        return Err(Error::BerEncode(
+            "OID must have at least 2 sub-identifiers".into(),
+        ));
     }
     if arcs[0] > 2 {
-        return Err(Error::BerEncode(format!("OID first arc must be 0..=2, got {}", arcs[0])));
+        return Err(Error::BerEncode(format!(
+            "OID first arc must be 0..=2, got {}",
+            arcs[0]
+        )));
     }
     if arcs[0] < 2 && arcs[1] >= 40 {
         return Err(Error::BerEncode(format!(
@@ -569,7 +574,19 @@ mod tests {
 
     #[test]
     fn integer_roundtrip_edges() {
-        for v in [0i64, 1, -1, 127, 128, -128, -129, 32767, -32768, i64::MAX, i64::MIN] {
+        for v in [
+            0i64,
+            1,
+            -1,
+            127,
+            128,
+            -128,
+            -129,
+            32767,
+            -32768,
+            i64::MAX,
+            i64::MIN,
+        ] {
             let mut e = Encoder::new();
             e.write_i64(v);
             let bytes = e.finish();

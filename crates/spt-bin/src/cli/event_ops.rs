@@ -41,20 +41,21 @@ pub struct EventReplayArgs {
 /// `spt event replay <event-id> [--sink <name>]`.
 pub async fn replay(global: &GlobalOpts, args: EventReplayArgs) -> Result<()> {
     let path = require_config_path(global)?;
-    let (cfg, _w) = spt_config::load(&path, false)
-        .map_err(|e| Error::InvalidConfig(format!("load: {e}")))?;
+    let (cfg, _w) =
+        spt_config::load(&path, false).map_err(|e| Error::InvalidConfig(format!("load: {e}")))?;
     let state_dir = spt_state::resolve_state_dir(global.state_dir.as_deref())?;
 
     // Locate the event by walking the daily JSONL files. The id is stored as
     // a top-level `id` key on each record (placed there by
     // `Event::to_state_event` before serialisation).
     let edir = spt_state::paths::events_dir(&state_dir);
-    let raw = find_event(&edir, &args.event_id)?
-        .ok_or_else(|| Error::InvalidArgs(format!(
+    let raw = find_event(&edir, &args.event_id)?.ok_or_else(|| {
+        Error::InvalidArgs(format!(
             "no event with id `{}` in `{}`",
             args.event_id,
             edir.display()
-        )))?;
+        ))
+    })?;
     let evt = reconstruct_event(&raw)?;
 
     // Choose the sink set: explicit `--sink`, or every sink referenced by a
@@ -82,9 +83,7 @@ pub async fn replay(global: &GlobalOpts, args: EventReplayArgs) -> Result<()> {
     } else {
         let mut names: Vec<&str> = bindings
             .iter()
-            .filter(|b| {
-                b.on.iter().any(|pat| kind_matches_pattern(&evt.kind, pat))
-            })
+            .filter(|b| b.on.iter().any(|pat| kind_matches_pattern(&evt.kind, pat)))
             .flat_map(|b| b.actions.iter().map(String::as_str))
             .collect();
         names.sort();
@@ -114,8 +113,7 @@ pub async fn replay(global: &GlobalOpts, args: EventReplayArgs) -> Result<()> {
         });
         println!(
             "{}",
-            serde_json::to_string_pretty(&v)
-                .map_err(|e| Error::RuntimeFailure(e.to_string()))?
+            serde_json::to_string_pretty(&v).map_err(|e| Error::RuntimeFailure(e.to_string()))?
         );
     } else if results.is_empty() {
         println!(
@@ -147,9 +145,7 @@ pub async fn replay(global: &GlobalOpts, args: EventReplayArgs) -> Result<()> {
 
 fn require_config_path(global: &GlobalOpts) -> Result<PathBuf> {
     global.config.clone().ok_or_else(|| {
-        Error::InvalidArgs(
-            "no config path supplied (pass --config or set $SPT_CONFIG)".into(),
-        )
+        Error::InvalidArgs("no config path supplied (pass --config or set $SPT_CONFIG)".into())
     })
 }
 
@@ -382,7 +378,9 @@ mod tests {
         std::fs::write(&cfg, "version = 1\n").unwrap();
         write_event_ring(
             tmp.path(),
-            &[r#"{"id":"evt-1","ts":"2026-05-05T12:00:00Z","kind":"profile.connected","severity":"info","message":"hi"}"#],
+            &[
+                r#"{"id":"evt-1","ts":"2026-05-05T12:00:00Z","kind":"profile.connected","severity":"info","message":"hi"}"#,
+            ],
         );
         let g = opts(cfg, tmp.path().to_path_buf());
         let args = EventReplayArgs {
@@ -424,9 +422,6 @@ mod tests {
         assert_eq!(e.id.as_str(), "abc");
         assert_eq!(e.kind.as_str(), "k");
         assert_eq!(e.message, "hi");
-        assert_eq!(
-            e.fields.get("custom"),
-            Some(&serde_json::Value::from(1))
-        );
+        assert_eq!(e.fields.get("custom"), Some(&serde_json::Value::from(1)));
     }
 }

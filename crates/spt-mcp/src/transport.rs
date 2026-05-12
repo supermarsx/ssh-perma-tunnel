@@ -118,11 +118,7 @@ where
 }
 
 /// Write a JSON-RPC notification (server→client, no `id`).
-pub async fn write_notification<W>(
-    writer: &mut W,
-    method: &str,
-    params: Value,
-) -> crate::Result<()>
+pub async fn write_notification<W>(writer: &mut W, method: &str, params: Value) -> crate::Result<()>
 where
     W: AsyncWrite + Unpin,
 {

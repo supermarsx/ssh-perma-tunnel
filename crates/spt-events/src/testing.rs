@@ -245,7 +245,10 @@ impl std::fmt::Debug for FlakyTransport {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("FlakyTransport")
             .field("attempts", &self.attempts())
-            .field("fails_remaining", &self.fails_remaining.load(Ordering::SeqCst))
+            .field(
+                "fails_remaining",
+                &self.fails_remaining.load(Ordering::SeqCst),
+            )
             .finish_non_exhaustive()
     }
 }

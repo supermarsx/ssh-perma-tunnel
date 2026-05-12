@@ -66,7 +66,10 @@ pub trait TableHandler: Send + Sync + 'static {
     /// Given an OID strictly greater than `after` (or the first OID in the
     /// table when `after` is `None`), returns it together with its value.
     /// Returns `None` once the walk reaches the end of the table.
-    async fn next(&self, after: Option<&ObjectIdentifier>) -> Result<Option<(ObjectIdentifier, Value)>>;
+    async fn next(
+        &self,
+        after: Option<&ObjectIdentifier>,
+    ) -> Result<Option<(ObjectIdentifier, Value)>>;
 
     /// Performs an exact-instance Get. Default: walk to find a match.
     async fn get(&self, oid: &ObjectIdentifier) -> Result<Option<Value>> {
@@ -163,7 +166,10 @@ impl MibRegistry {
 
     /// Looks up the table prefix that *contains* `oid`, if any.
     #[must_use]
-    pub fn table_for(&self, oid: &ObjectIdentifier) -> Option<(ObjectIdentifier, Arc<dyn TableHandler>)> {
+    pub fn table_for(
+        &self,
+        oid: &ObjectIdentifier,
+    ) -> Option<(ObjectIdentifier, Arc<dyn TableHandler>)> {
         for (prefix, handler) in &self.tables {
             if oid.starts_with(prefix) {
                 return Some((prefix.clone(), handler.clone()));
@@ -185,7 +191,10 @@ impl MibRegistry {
 
     /// Computes the lexicographic successor of `after` for a GetNext / GetBulk
     /// walk. Returns `None` if `after` is at or beyond the last managed OID.
-    pub async fn next(&self, after: &ObjectIdentifier) -> Result<Option<(ObjectIdentifier, Value)>> {
+    pub async fn next(
+        &self,
+        after: &ObjectIdentifier,
+    ) -> Result<Option<(ObjectIdentifier, Value)>> {
         // Strict-greater scalar successor.
         let scalar_next = self
             .scalars
@@ -199,17 +208,16 @@ impl MibRegistry {
             // Skip tables whose entire range is below `after`.
             // (We pass `after` directly; tables are responsible for returning
             //  an OID strictly greater than `after`.)
-            let cursor: Option<&ObjectIdentifier> =
-                if after.starts_with(prefix) || prefix > after {
-                    if prefix > after {
-                        // We want anything from this table — pass `None`.
-                        None
-                    } else {
-                        Some(after)
-                    }
+            let cursor: Option<&ObjectIdentifier> = if after.starts_with(prefix) || prefix > after {
+                if prefix > after {
+                    // We want anything from this table — pass `None`.
+                    None
                 } else {
-                    continue;
-                };
+                    Some(after)
+                }
+            } else {
+                continue;
+            };
             if let Some((oid, v)) = table.next(cursor).await? {
                 if oid > *after {
                     match &best {
@@ -228,7 +236,11 @@ impl MibRegistry {
         };
         Ok(match (scalar_resolved, best) {
             (Some((so, sv)), Some((to, tv))) => {
-                if so <= to { Some((so, sv)) } else { Some((to, tv)) }
+                if so <= to {
+                    Some((so, sv))
+                } else {
+                    Some((to, tv))
+                }
             }
             (Some(s), None) => Some(s),
             (None, Some(t)) => Some(t),
@@ -248,7 +260,10 @@ mod tests {
     #[tokio::test]
     async fn scalar_get() {
         let mut reg = MibRegistry::new();
-        reg.add_scalar(oid("1.3.6.1.4.1.99999.1.0"), ConstScalar::new(Value::Integer(7)));
+        reg.add_scalar(
+            oid("1.3.6.1.4.1.99999.1.0"),
+            ConstScalar::new(Value::Integer(7)),
+        );
         let v = reg.get(&oid("1.3.6.1.4.1.99999.1.0")).await.unwrap();
         assert_eq!(v, Some(Value::Integer(7)));
         let v = reg.get(&oid("1.3.6.1.4.1.99999.2.0")).await.unwrap();
@@ -258,11 +273,24 @@ mod tests {
     #[tokio::test]
     async fn lexicographic_next_scalars() {
         let mut reg = MibRegistry::new();
-        reg.add_scalar(oid("1.3.6.1.4.1.99999.1.0"), ConstScalar::new(Value::Integer(1)));
-        reg.add_scalar(oid("1.3.6.1.4.1.99999.2.0"), ConstScalar::new(Value::Integer(2)));
-        reg.add_scalar(oid("1.3.6.1.4.1.99999.3.0"), ConstScalar::new(Value::Integer(3)));
+        reg.add_scalar(
+            oid("1.3.6.1.4.1.99999.1.0"),
+            ConstScalar::new(Value::Integer(1)),
+        );
+        reg.add_scalar(
+            oid("1.3.6.1.4.1.99999.2.0"),
+            ConstScalar::new(Value::Integer(2)),
+        );
+        reg.add_scalar(
+            oid("1.3.6.1.4.1.99999.3.0"),
+            ConstScalar::new(Value::Integer(3)),
+        );
 
-        let n = reg.next(&oid("1.3.6.1.4.1.99999.1.0")).await.unwrap().unwrap();
+        let n = reg
+            .next(&oid("1.3.6.1.4.1.99999.1.0"))
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(n.0, oid("1.3.6.1.4.1.99999.2.0"));
 
         let n = reg.next(&oid("1.3.6.1.4.1.99999.3.0")).await.unwrap();

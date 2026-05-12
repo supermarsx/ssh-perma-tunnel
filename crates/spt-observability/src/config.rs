@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use spt_core::RedactionMode;
 
-/// Configuration for [`crate::init`].
+/// Configuration for [`crate::init()`].
 #[derive(Debug, Clone)]
 pub struct LoggingConfig {
     /// Log filter directive (`"info"`, `"info,spt_ssh2=debug"`, etc).
@@ -45,7 +45,7 @@ impl Default for LoggingConfig {
     }
 }
 
-/// Log destinations supported by [`crate::init`].
+/// Log destinations supported by [`crate::init()`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Destination {
     /// Standard error.

@@ -174,7 +174,11 @@ impl ScopedPdu {
         let context_engine_id = s.read_octet_string()?.to_vec();
         let context_name = s.read_octet_string()?.to_vec();
         let pdu = Pdu::decode(&mut s)?;
-        Ok(Self { context_engine_id, context_name, pdu })
+        Ok(Self {
+            context_engine_id,
+            context_name,
+            pdu,
+        })
     }
 }
 
@@ -237,8 +241,8 @@ impl Message {
         }
 
         let mut g = outer.read_sequence()?;
-        let msg_id = i32::try_from(g.read_i64()?)
-            .map_err(|_| Error::Message("msgID overflow".into()))?;
+        let msg_id =
+            i32::try_from(g.read_i64()?).map_err(|_| Error::Message("msgID overflow".into()))?;
         let msg_max_size = i32::try_from(g.read_i64()?)
             .map_err(|_| Error::Message("msgMaxSize overflow".into()))?;
         let flags_bytes = g.read_octet_string()?;
@@ -297,7 +301,7 @@ mod tests {
     use super::*;
     use crate::oid::ObjectIdentifier;
     use crate::pdu::PduKind;
-    use crate::value::{VarBind, Value};
+    use crate::value::{Value, VarBind};
 
     fn sample_message() -> Message {
         let pdu = Pdu {
