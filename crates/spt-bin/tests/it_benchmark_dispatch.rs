@@ -56,18 +56,16 @@ fn benchmark_dns_synthetic_writes_report() {
         .flatten()
         .collect();
     assert!(
-        entries.iter().any(|e| e
-            .file_name()
-            .to_string_lossy()
-            .ends_with(".json")),
+        entries
+            .iter()
+            .any(|e| e.file_name().to_string_lossy().ends_with(".json")),
         "no json report in {}",
         bench_dir.display()
     );
     assert!(
-        entries.iter().any(|e| e
-            .file_name()
-            .to_string_lossy()
-            .ends_with(".md")),
+        entries
+            .iter()
+            .any(|e| e.file_name().to_string_lossy().ends_with(".md")),
         "no md report in {}",
         bench_dir.display()
     );

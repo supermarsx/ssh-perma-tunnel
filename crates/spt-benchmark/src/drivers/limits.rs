@@ -78,7 +78,10 @@ impl LimitsDriver {
     /// `expectations`.
     #[must_use]
     pub fn new(connector: Connector, expectations: LimitsExpectations) -> Self {
-        Self { connector, expectations }
+        Self {
+            connector,
+            expectations,
+        }
     }
 }
 
@@ -129,9 +132,7 @@ impl BenchmarkDriver for LimitsDriver {
         let mut achieved_bps: f64 = 0.0;
         let mut throttle_ok = true;
         let mut throttles_applied: Vec<String> = Vec::new();
-        if self.expectations.expected_rate_bps > 0
-            && start.elapsed() < ctx.max_duration
-        {
+        if self.expectations.expected_rate_bps > 0 && start.elapsed() < ctx.max_duration {
             let block = vec![0xA5u8; ctx.payload_size.max(1)];
             let total_target = (ctx.payload_size as u64).saturating_mul(ctx.iterations);
             match (self.connector)().await {
@@ -174,7 +175,10 @@ impl BenchmarkDriver for LimitsDriver {
             metrics: MetricSet {
                 throughput_bps: Some(achieved_bps),
                 extras: [
-                    ("expected_cap".into(), f64::from(self.expectations.expected_cap)),
+                    (
+                        "expected_cap".into(),
+                        f64::from(self.expectations.expected_cap),
+                    ),
                     ("observed_cap".into(), observed_cap as f64),
                     ("rejections".into(), rejections as f64),
                     (
@@ -183,10 +187,7 @@ impl BenchmarkDriver for LimitsDriver {
                     ),
                     ("achieved_rate_bps".into(), achieved_bps),
                     ("cap_ok".into(), if cap_ok { 1.0 } else { 0.0 }),
-                    (
-                        "throttle_ok".into(),
-                        if throttle_ok { 1.0 } else { 0.0 },
-                    ),
+                    ("throttle_ok".into(), if throttle_ok { 1.0 } else { 0.0 }),
                     ("pass".into(), if pass { 1.0 } else { 0.0 }),
                 ]
                 .into_iter()
@@ -218,12 +219,9 @@ mod tests {
             let gate = gate.clone();
             let bucket = bucket.clone();
             Box::pin(async move {
-                let permit = gate
-                    .try_acquire()
-                    .ok_or_else(|| std::io::Error::new(
-                        std::io::ErrorKind::WouldBlock,
-                        "connection cap exhausted",
-                    ))?;
+                let permit = gate.try_acquire().ok_or_else(|| {
+                    std::io::Error::new(std::io::ErrorKind::WouldBlock, "connection cap exhausted")
+                })?;
                 let (a, b) = tokio::io::duplex(64 * 1024);
                 // Spawn a sink that reads from b and consumes tokens — this
                 // makes the writer's flow-control reflect the bucket rate.
@@ -316,9 +314,7 @@ mod tests {
     fn safety_blocks_prod_without_flag() {
         let driver = LimitsDriver::new(
             Box::new(|| {
-                Box::pin(async {
-                    Err(std::io::Error::new(std::io::ErrorKind::Other, "x"))
-                })
+                Box::pin(async { Err(std::io::Error::new(std::io::ErrorKind::Other, "x")) })
             }),
             LimitsExpectations::default(),
         );

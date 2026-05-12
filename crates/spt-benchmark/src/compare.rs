@@ -55,8 +55,18 @@ pub fn compare_reports(baseline: &[BenchResult], candidate: &[BenchResult]) -> R
         let b = baseline.iter().find(|r| &r.driver == shared).unwrap();
         let c = candidate.iter().find(|r| &r.driver == shared).unwrap();
         let mut metrics = Vec::new();
-        push_opt(&mut metrics, "p50_ms", lat(b, |p| p.p50_ms), lat(c, |p| p.p50_ms));
-        push_opt(&mut metrics, "p99_ms", lat(b, |p| p.p99_ms), lat(c, |p| p.p99_ms));
+        push_opt(
+            &mut metrics,
+            "p50_ms",
+            lat(b, |p| p.p50_ms),
+            lat(c, |p| p.p50_ms),
+        );
+        push_opt(
+            &mut metrics,
+            "p99_ms",
+            lat(b, |p| p.p99_ms),
+            lat(c, |p| p.p99_ms),
+        );
         push_opt(
             &mut metrics,
             "throughput_bps",
@@ -79,10 +89,7 @@ pub fn compare_reports(baseline: &[BenchResult], candidate: &[BenchResult]) -> R
     out
 }
 
-fn lat<F: Fn(&crate::result::Percentiles) -> f64>(
-    r: &BenchResult,
-    f: F,
-) -> Option<f64> {
+fn lat<F: Fn(&crate::result::Percentiles) -> f64>(r: &BenchResult, f: F) -> Option<f64> {
     r.metrics.latency.as_ref().map(f)
 }
 

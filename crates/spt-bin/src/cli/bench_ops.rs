@@ -148,14 +148,16 @@ pub async fn run_live(global: &GlobalOpts, args: BenchmarkRunArgs) -> Result<()>
     let allow_prod = args.allow_production_impact && cfg_allow_prod;
 
     let state_dir = spt_state::resolve_state_dir(global.state_dir.as_deref())?;
-    let mut client = McpClient::connect_from_state_dir(&state_dir).await.map_err(|e| {
-        Error::RuntimeFailure(format!(
-            "{e}\n\
+    let mut client = McpClient::connect_from_state_dir(&state_dir)
+        .await
+        .map_err(|e| {
+            Error::RuntimeFailure(format!(
+                "{e}\n\
              hint: live benchmarks need the running supervisor's MCP loopback. \
              Set `[mcp].listen = \"127.0.0.1:<port>\"` in your config and \
              ensure `spt tunnel run` is active.",
-        ))
-    })?;
+            ))
+        })?;
     client.initialize().await?;
 
     let mut payload = serde_json::json!({
@@ -222,9 +224,8 @@ pub async fn report_export(global: &GlobalOpts, args: BenchmarkReportExportArgs)
             json_path.display()
         ))
     })?;
-    let results: Vec<BenchResult> = serde_json::from_str(&body).map_err(|e| {
-        Error::BenchmarkFailed(format!("parse `{}`: {e}", json_path.display()))
-    })?;
+    let results: Vec<BenchResult> = serde_json::from_str(&body)
+        .map_err(|e| Error::BenchmarkFailed(format!("parse `{}`: {e}", json_path.display())))?;
 
     let format = match args.format {
         BenchmarkReportFormat::Json => ReportFormat::Json,
@@ -240,9 +241,8 @@ pub async fn report_export(global: &GlobalOpts, args: BenchmarkReportExportArgs)
     let written = write_report(tmp.path(), &args.run_id, &results, format)?;
     if let Some(parent) = args.out.parent() {
         if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent).map_err(|e| {
-                Error::RuntimeFailure(format!("mkdir `{}`: {e}", parent.display()))
-            })?;
+            std::fs::create_dir_all(parent)
+                .map_err(|e| Error::RuntimeFailure(format!("mkdir `{}`: {e}", parent.display())))?;
         }
     }
     std::fs::copy(&written, &args.out).map_err(|e| {
@@ -323,10 +323,7 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert!(
-            err.to_string().contains("require --profile"),
-            "{err}"
-        );
+        assert!(err.to_string().contains("require --profile"), "{err}");
     }
 
     #[tokio::test]

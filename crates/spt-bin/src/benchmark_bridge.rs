@@ -9,9 +9,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use spt_benchmark::{
-    BenchContext, BenchEnv, BenchResult, BenchmarkDriver, DnsClient, DnsDriver, LatencyDriver,
-    LimitsDriver, LimitsExpectations, ReconnectDriver, ReconnectTrigger, ThroughputDriver,
-    UdpDriver, check_safety,
+    check_safety, BenchContext, BenchEnv, BenchResult, BenchmarkDriver, DnsClient, DnsDriver,
+    LatencyDriver, LimitsDriver, LimitsExpectations, ReconnectDriver, ReconnectTrigger,
+    ThroughputDriver, UdpDriver,
 };
 use spt_supervisor::LiveConnector;
 

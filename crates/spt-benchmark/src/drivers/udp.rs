@@ -5,8 +5,8 @@
 //! per-iteration receive timeout; jitter is the RFC 3550 inter-arrival
 //! jitter estimator over arrival times.
 //!
-//! The driver pulls a fresh [`UdpEndpoint`] from an injected
-//! [`UdpConnector`]. In tests, a small loopback echo task does the
+//! The driver pulls a fresh [`crate::UdpEndpoint`] from an injected
+//! [`crate::UdpConnector`]. In tests, a small loopback echo task does the
 //! reflection; production callers wire a real SSH3 datagram-forwarded
 //! socket pair.
 //!
@@ -138,12 +138,7 @@ impl BenchmarkDriver for UdpDriver {
                 tokio::time::sleep(self.interval).await;
                 continue;
             }
-            match timeout(
-                self.per_packet_timeout,
-                endpoint.socket.recv_from(&mut buf),
-            )
-            .await
-            {
+            match timeout(self.per_packet_timeout, endpoint.socket.recv_from(&mut buf)).await {
                 Ok(Ok((n, _peer))) => {
                     let elapsed = t0.elapsed();
                     if n >= 8 && buf[..8] == seq.to_be_bytes() {
@@ -237,7 +232,10 @@ mod tests {
                     }
                 });
                 let client = tokio::net::UdpSocket::bind("127.0.0.1:0").await?;
-                Ok(UdpEndpoint { socket: client, target })
+                Ok(UdpEndpoint {
+                    socket: client,
+                    target,
+                })
             })
         })
     }
@@ -292,8 +290,7 @@ mod tests {
 
     #[tokio::test]
     async fn udp_result_roundtrips_json() {
-        let driver = UdpDriver::new(echo_connector())
-            .with_interval(Duration::from_micros(100));
+        let driver = UdpDriver::new(echo_connector()).with_interval(Duration::from_micros(100));
         let res = driver.run(&ctx(5, true)).await;
         // f64 values produced by the driver may have tiny shortest-format
         // representation drift across one JSON round-trip; compare structurally

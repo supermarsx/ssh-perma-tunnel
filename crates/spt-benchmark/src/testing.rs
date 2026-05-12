@@ -104,7 +104,9 @@ impl MockConnector {
     /// echoed back on the same stream, byte-for-byte.
     #[must_use]
     pub fn echo() -> Self {
-        Self { buf_size: 64 * 1024 }
+        Self {
+            buf_size: 64 * 1024,
+        }
     }
 
     /// Override the per-direction in-memory duplex buffer size. Defaults to
@@ -178,7 +180,11 @@ impl RecordingDnsClient {
 impl DnsClient for RecordingDnsClient {
     async fn query(&self, name: &str) -> std::io::Result<Vec<String>> {
         self.calls.lock().unwrap().push(name.to_string());
-        Ok(self.response.iter().map(std::string::ToString::to_string).collect())
+        Ok(self
+            .response
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect())
     }
 }
 

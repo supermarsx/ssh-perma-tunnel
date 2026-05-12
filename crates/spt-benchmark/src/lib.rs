@@ -34,10 +34,10 @@ pub use driver::{
     BenchContext, BenchmarkDriver, Connector, DnsClient, ReconnectTrigger, UdpConnector,
     UdpEndpoint,
 };
+pub use drivers::limits::LimitsExpectations;
 pub use drivers::{
     DnsDriver, LatencyDriver, LimitsDriver, ReconnectDriver, ThroughputDriver, UdpDriver,
 };
-pub use drivers::limits::LimitsExpectations;
 pub use report::{write_report, ReportFormat};
 pub use result::{BenchEnv, BenchResult, MetricSet, Percentiles};
 pub use safety::{check_safety, SafetyError};

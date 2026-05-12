@@ -24,10 +24,7 @@ pub enum SafetyError {
 
 /// Validate that `driver` may be run given `allow_prod`. Returns `Ok(())` if
 /// the driver is `Synthetic`, or if the user opted in.
-pub fn check_safety(
-    driver: &dyn BenchmarkDriver,
-    allow_prod: bool,
-) -> Result<(), SafetyError> {
+pub fn check_safety(driver: &dyn BenchmarkDriver, allow_prod: bool) -> Result<(), SafetyError> {
     match driver.impact() {
         ImpactLevel::Synthetic => Ok(()),
         ImpactLevel::Production if allow_prod => Ok(()),
@@ -81,7 +78,10 @@ mod tests {
     #[test]
     fn production_requires_flag() {
         let err = check_safety(&Prod, false).unwrap_err();
-        assert!(matches!(err, SafetyError::ProductionImpactNotAllowed { .. }));
+        assert!(matches!(
+            err,
+            SafetyError::ProductionImpactNotAllowed { .. }
+        ));
         check_safety(&Prod, true).unwrap();
     }
 }

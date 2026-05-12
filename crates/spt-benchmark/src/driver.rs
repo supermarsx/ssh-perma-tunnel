@@ -8,8 +8,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use crate::result::BenchResult;
 
 /// A boxed bidirectional async stream produced by a [`Connector`].
-pub type BoxedStream =
-    Pin<Box<dyn AsyncStream + Send + Unpin>>;
+pub type BoxedStream = Pin<Box<dyn AsyncStream + Send + Unpin>>;
 
 /// Marker trait combining `AsyncRead + AsyncWrite`.
 pub trait AsyncStream: AsyncRead + AsyncWrite {}
@@ -19,9 +18,7 @@ impl<T: AsyncRead + AsyncWrite + ?Sized> AsyncStream for T {}
 /// the benchmark with a recorded error.
 pub type Connector = Box<
     dyn Fn() -> std::pin::Pin<
-            Box<
-                dyn std::future::Future<Output = std::io::Result<BoxedStream>> + Send,
-            >,
+            Box<dyn std::future::Future<Output = std::io::Result<BoxedStream>> + Send>,
         > + Send
         + Sync,
 >;

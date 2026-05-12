@@ -1,6 +1,6 @@
 //! Latency driver — measures round-trip time over a forward.
 //!
-//! Each iteration: dial via the [`Connector`], send a small payload, expect
+//! Each iteration: dial via the [`crate::Connector`], send a small payload, expect
 //! the same payload echoed back, record the elapsed time. The driver assumes
 //! the far end echoes (a typical loopback echo or a `tcp echo` test fixture).
 
