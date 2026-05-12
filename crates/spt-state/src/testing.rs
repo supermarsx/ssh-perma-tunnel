@@ -67,12 +67,17 @@ impl TempStateDir {
     pub fn new() -> Self {
         let dir = tempfile::tempdir().expect("create tempdir");
         let path = dir.path().to_path_buf();
-        for sub in ["events", "sessions", "benchmarks", "diagnostics", "dns", "hosts"] {
-            std::fs::create_dir_all(path.join(sub))
-                .unwrap_or_else(|e| panic!("create {sub}: {e}"));
+        for sub in [
+            "events",
+            "sessions",
+            "benchmarks",
+            "diagnostics",
+            "dns",
+            "hosts",
+        ] {
+            std::fs::create_dir_all(path.join(sub)).unwrap_or_else(|e| panic!("create {sub}: {e}"));
         }
-        std::fs::create_dir_all(path.join("remote-log-spool"))
-            .expect("create remote-log-spool");
+        std::fs::create_dir_all(path.join("remote-log-spool")).expect("create remote-log-spool");
         Self { _dir: dir, path }
     }
 
@@ -579,7 +584,14 @@ mod tests {
     #[test]
     fn temp_state_dir_creates_layout() {
         let d = TempStateDir::new();
-        for sub in ["events", "sessions", "benchmarks", "diagnostics", "dns", "hosts"] {
+        for sub in [
+            "events",
+            "sessions",
+            "benchmarks",
+            "diagnostics",
+            "dns",
+            "hosts",
+        ] {
             assert!(d.path.join(sub).is_dir(), "missing {sub}");
         }
         assert!(d.path.join("remote-log-spool").is_dir());
@@ -652,5 +664,4 @@ mod tests {
             assert!(!s.contains('\n'), "single-line jsonl invariant");
         }
     }
-
 }

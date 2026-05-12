@@ -1,30 +1,37 @@
 //! Integration tests for the split-horizon DNS server.
 //!
-//! Strategy: bind on `127.0.0.1:0` (ephemeral). Use `hickory-resolver` as a
-//! client to query against the bound address. For the forwarder path we run
-//! a tiny in-process upstream responder with `ServerFuture`.
+//! Strategy: bind on `127.0.0.1:0` (ephemeral). Use `hickory-resolver` over
+//! TCP as a client to query against the bound address. For the forwarder path
+//! we run a tiny in-process upstream responder with `ServerFuture`.
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use async_trait::async_trait;
 use hickory_proto::op::{Header, ResponseCode};
 use hickory_proto::rr::rdata::A as ARdata;
 use hickory_proto::rr::{Name, RData, Record as ProtoRecord, RecordType};
-use hickory_resolver::config::{NameServerConfigGroup, ResolverConfig, ResolverOpts};
+use hickory_resolver::config::{
+    NameServerConfig, NameServerConfigGroup, Protocol, ResolverConfig, ResolverOpts,
+};
 use hickory_resolver::TokioAsyncResolver;
 use hickory_server::authority::MessageResponseBuilder;
 use hickory_server::server::{Request, RequestHandler, ResponseHandler, ResponseInfo};
 use hickory_server::ServerFuture;
 use tokio::net::UdpSocket;
 
-use spt_dns::{
-    AnswerPolicy, DnsServerBuilder, ForwardHealth, HealthSource, ManagedZone, Record,
-};
+use spt_dns::{AnswerPolicy, DnsServerBuilder, ForwardHealth, HealthSource, ManagedZone, Record};
+
+static DNS_TEST_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+
+fn dns_test_lock() -> &'static tokio::sync::Mutex<()> {
+    DNS_TEST_LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+}
 
 fn loopback_resolver(addr: SocketAddr) -> TokioAsyncResolver {
-    let group = NameServerConfigGroup::from_ips_clear(&[addr.ip()], addr.port(), true);
+    let group = NameServerConfigGroup::from(vec![NameServerConfig::new(addr, Protocol::Tcp)]);
     let cfg = ResolverConfig::from_parts(None, vec![], group);
     let mut opts = ResolverOpts::default();
     opts.timeout = Duration::from_secs(2);
@@ -36,6 +43,8 @@ fn loopback_resolver(addr: SocketAddr) -> TokioAsyncResolver {
 
 #[tokio::test]
 async fn managed_a_record_answered() {
+    let _guard = dns_test_lock().lock().await;
+
     let mut zone = ManagedZone::new("tunnel.local.");
     zone.add(Record::a(
         "mail.tunnel.local.",
@@ -51,7 +60,7 @@ async fn managed_a_record_answered() {
         .await
         .expect("dns server starts");
 
-    let resolver = loopback_resolver(handle.udp_addr());
+    let resolver = loopback_resolver(handle.tcp_addr());
     let lookup = resolver
         .lookup_ip("mail.tunnel.local.")
         .await
@@ -75,7 +84,10 @@ async fn unmanaged_name_forwarded_to_upstream() {
         ) -> ResponseInfo {
             let q = request.query();
             if q.query_type() == RecordType::A
-                && q.name().to_string().to_ascii_lowercase().starts_with("upstream-only.")
+                && q.name()
+                    .to_string()
+                    .to_ascii_lowercase()
+                    .starts_with("upstream-only.")
             {
                 let qname = Name::from_utf8(q.name().to_string()).unwrap();
                 let mut rec = ProtoRecord::with(qname, RecordType::A, 30);
@@ -92,6 +104,8 @@ async fn unmanaged_name_forwarded_to_upstream() {
             response_handle.send_response(response).await.unwrap()
         }
     }
+
+    let _guard = dns_test_lock().lock().await;
 
     let upstream_socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
     let upstream_addr = upstream_socket.local_addr().unwrap();
@@ -117,7 +131,7 @@ async fn unmanaged_name_forwarded_to_upstream() {
         .await
         .expect("dns server starts");
 
-    let resolver = loopback_resolver(handle.udp_addr());
+    let resolver = loopback_resolver(handle.tcp_addr());
     let lookup = resolver
         .lookup_ip("upstream-only.example.")
         .await
@@ -146,6 +160,8 @@ async fn answer_when_healthy_filters_unhealthy() {
         }
     }
 
+    let _guard = dns_test_lock().lock().await;
+
     let flag = Arc::new(RwLock::new(false));
     let src = Arc::new(Toggle(flag.clone()));
 
@@ -168,7 +184,7 @@ async fn answer_when_healthy_filters_unhealthy() {
         .await
         .unwrap();
 
-    let resolver = loopback_resolver(handle.udp_addr());
+    let resolver = loopback_resolver(handle.tcp_addr());
 
     // Unhealthy → NXDOMAIN (we have no upstream, but managed zone owns the name).
     let r1 = resolver.lookup_ip("mail.tunnel.local.").await;
@@ -196,6 +212,8 @@ async fn answer_when_healthy_filters_unhealthy() {
 async fn srv_synthesis_record_resolves() {
     use spt_dns::srv::{synthesize_srv_records, SrvSource};
 
+    let _guard = dns_test_lock().lock().await;
+
     let mut zone = ManagedZone::new("tunnel.local.");
     let srvs = synthesize_srv_records(
         "tunnel.local.",
@@ -222,14 +240,19 @@ async fn srv_synthesis_record_resolves() {
         .await
         .unwrap();
 
-    let resolver = loopback_resolver(handle.udp_addr());
+    let resolver = loopback_resolver(handle.tcp_addr());
     let lookup = resolver
         .srv_lookup("_smtp._tcp.tunnel.local.")
         .await
         .expect("srv answer present");
     let mut found = false;
     for srv in lookup.iter() {
-        if srv.port() == 25 && srv.target().to_string().eq_ignore_ascii_case("mail.tunnel.local.") {
+        if srv.port() == 25
+            && srv
+                .target()
+                .to_string()
+                .eq_ignore_ascii_case("mail.tunnel.local.")
+        {
             found = true;
             break;
         }

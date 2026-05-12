@@ -1,6 +1,6 @@
 //! Service-manager status check.
 //!
-//! Calls [`ServiceManager::status`] for the configured service name and
+//! Calls [`spt_service::ServiceManager::status`] for the configured service name and
 //! reports installed / running / unknown. Read-only — never installs,
 //! starts, or stops anything.
 
@@ -27,55 +27,45 @@ impl Diagnostic for ServiceDiagnostic {
     async fn run(&self, ctx: &DiagnosticContext) -> Vec<Check> {
         let (Some(mgr), Some(name)) = (ctx.service_manager.as_ref(), ctx.service_name.as_ref())
         else {
-            return vec![Check::new(
-                "service.status",
-                Severity::Medium,
-                Status::Skipped,
-            )
-            .with_evidence("no ServiceManager or service name supplied")];
+            return vec![
+                Check::new("service.status", Severity::Medium, Status::Skipped)
+                    .with_evidence("no ServiceManager or service name supplied"),
+            ];
         };
         match mgr.status(name).await {
             Ok(s) => match s.state {
-                ServiceState::Running => vec![Check::new(
-                    "service.status",
-                    Severity::Info,
-                    Status::Pass,
-                )
-                .with_evidence(format!("service `{name}` is running"))],
-                ServiceState::Stopped => vec![Check::new(
-                    "service.status",
-                    Severity::Medium,
-                    Status::Warn,
-                )
-                .with_evidence(format!("service `{name}` is installed but stopped"))
-                .with_remediation(format!("`spt service start {name}`"))],
-                ServiceState::NotInstalled => vec![Check::new(
-                    "service.status",
-                    Severity::Medium,
-                    Status::Warn,
-                )
-                .with_evidence(format!("service `{name}` is not installed"))
-                .with_remediation(format!("`spt service install {name}`"))],
-                ServiceState::Failed => vec![Check::new(
-                    "service.status",
-                    Severity::High,
-                    Status::Fail,
-                )
-                .with_evidence(format!(
-                    "service `{name}` is in a failed state{}",
-                    s.exit_code
-                        .map(|c| format!(" (last exit {c})"))
-                        .unwrap_or_default()
-                ))
-                .with_remediation(format!("inspect logs and run `spt service restart {name}`"))],
-                ServiceState::Unknown => vec![Check::new(
-                    "service.status",
-                    Severity::Low,
-                    Status::Skipped,
-                )
-                .with_evidence(format!(
-                    "service manager could not determine status for `{name}`"
-                ))],
+                ServiceState::Running => {
+                    vec![Check::new("service.status", Severity::Info, Status::Pass)
+                        .with_evidence(format!("service `{name}` is running"))]
+                }
+                ServiceState::Stopped => {
+                    vec![Check::new("service.status", Severity::Medium, Status::Warn)
+                        .with_evidence(format!("service `{name}` is installed but stopped"))
+                        .with_remediation(format!("`spt service start {name}`"))]
+                }
+                ServiceState::NotInstalled => {
+                    vec![Check::new("service.status", Severity::Medium, Status::Warn)
+                        .with_evidence(format!("service `{name}` is not installed"))
+                        .with_remediation(format!("`spt service install {name}`"))]
+                }
+                ServiceState::Failed => {
+                    vec![Check::new("service.status", Severity::High, Status::Fail)
+                        .with_evidence(format!(
+                            "service `{name}` is in a failed state{}",
+                            s.exit_code
+                                .map(|c| format!(" (last exit {c})"))
+                                .unwrap_or_default()
+                        ))
+                        .with_remediation(format!(
+                            "inspect logs and run `spt service restart {name}`"
+                        ))]
+                }
+                ServiceState::Unknown => {
+                    vec![Check::new("service.status", Severity::Low, Status::Skipped)
+                        .with_evidence(format!(
+                            "service manager could not determine status for `{name}`"
+                        ))]
+                }
             },
             Err(e) => vec![Check::new("service.status", Severity::Low, Status::Skipped)
                 .with_evidence(format!("status query failed: {e}"))],
@@ -154,7 +144,9 @@ mod tests {
 
     #[tokio::test]
     async fn not_installed_warns() {
-        let r = ServiceDiagnostic.run(&ctx(ServiceState::NotInstalled)).await;
+        let r = ServiceDiagnostic
+            .run(&ctx(ServiceState::NotInstalled))
+            .await;
         assert_eq!(r[0].status, Status::Warn);
     }
 

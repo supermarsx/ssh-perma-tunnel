@@ -121,10 +121,9 @@ fn check_profile(profile: &Profile, out: &mut Vec<Check>) {
             } else {
                 match spt_trust::KnownHosts::load(&p) {
                     Ok(k) => {
-                        out.push(
-                            Check::new(id, Severity::High, Status::Pass)
-                                .with_evidence(format!("{} entries parsed from `{path}`", k.entries.len())),
-                        );
+                        out.push(Check::new(id, Severity::High, Status::Pass).with_evidence(
+                            format!("{} entries parsed from `{path}`", k.entries.len()),
+                        ));
                     }
                     Err(e) => {
                         out.push(
@@ -279,7 +278,9 @@ pin_sha256 = ["not-a-pin"]
         );
         let d = TrustDiagnostic::default().with_config(cfg);
         let r = d.run(&DiagnosticContext::default()).await;
-        assert!(r.iter().any(|c| c.id.contains(".pin_sha256[0]") && c.status == Status::Fail));
+        assert!(r
+            .iter()
+            .any(|c| c.id.contains(".pin_sha256[0]") && c.status == Status::Fail));
     }
 
     #[tokio::test]

@@ -21,7 +21,11 @@ mod platform {
             return true;
         }
         matches!(
-            caps::has_cap(None, caps::CapSet::Effective, caps::Capability::CAP_NET_BIND_SERVICE),
+            caps::has_cap(
+                None,
+                caps::CapSet::Effective,
+                caps::Capability::CAP_NET_BIND_SERVICE
+            ),
             Ok(true)
         )
     }

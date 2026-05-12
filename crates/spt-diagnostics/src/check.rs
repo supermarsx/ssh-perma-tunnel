@@ -93,13 +93,15 @@ mod tests {
         assert_eq!(c.severity, Severity::High);
         assert_eq!(c.status, Status::Fail);
         assert_eq!(c.evidence, vec!["could not resolve example.com"]);
-        assert_eq!(c.remediation.as_deref(), Some("check `runtime.dns.upstream`"));
+        assert_eq!(
+            c.remediation.as_deref(),
+            Some("check `runtime.dns.upstream`")
+        );
     }
 
     #[test]
     fn serde_roundtrip() {
-        let c = Check::new("os.kernel", Severity::Info, Status::Pass)
-            .with_evidence("Linux 6.1.0");
+        let c = Check::new("os.kernel", Severity::Info, Status::Pass).with_evidence("Linux 6.1.0");
         let s = serde_json::to_string(&c).unwrap();
         let back: Check = serde_json::from_str(&s).unwrap();
         assert_eq!(back, c);

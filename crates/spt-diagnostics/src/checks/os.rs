@@ -16,12 +16,10 @@ impl Diagnostic for OsDiagnostic {
         "os"
     }
     async fn run(&self, _ctx: &DiagnosticContext) -> Vec<Check> {
-        vec![
-            Check::new("os.family", Severity::Info, Status::Pass)
-                .with_evidence(format!("os = {}", std::env::consts::OS))
-                .with_evidence(format!("family = {}", std::env::consts::FAMILY))
-                .with_evidence(format!("arch = {}", std::env::consts::ARCH)),
-        ]
+        vec![Check::new("os.family", Severity::Info, Status::Pass)
+            .with_evidence(format!("os = {}", std::env::consts::OS))
+            .with_evidence(format!("family = {}", std::env::consts::FAMILY))
+            .with_evidence(format!("arch = {}", std::env::consts::ARCH))]
     }
 }
 

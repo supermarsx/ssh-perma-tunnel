@@ -99,11 +99,7 @@ impl DnsServerBuilder {
             None
         } else {
             let group = NameServerConfigGroup::from_ips_clear(
-                &self
-                    .upstream
-                    .iter()
-                    .map(SocketAddr::ip)
-                    .collect::<Vec<_>>(),
+                &self.upstream.iter().map(SocketAddr::ip).collect::<Vec<_>>(),
                 self.upstream[0].port(),
                 true,
             );

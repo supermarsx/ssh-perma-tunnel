@@ -10,9 +10,7 @@ use std::collections::HashSet;
 use parking_lot::Mutex;
 use spt_core::error::Result;
 
-use crate::{
-    Action, Direction, FirewallPlan, FirewallPlanner, Manager, Protocol, Rule,
-};
+use crate::{Action, Direction, FirewallPlan, FirewallPlanner, Manager, Protocol, Rule};
 
 /// One observed call against a [`RecordingPlanner`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -307,10 +305,18 @@ mod tests {
     #[test]
     fn fixtures_cover_directions_and_protocols() {
         let rules = fixtures::sample_rules();
-        assert!(rules.iter().any(|r| r.direction == Direction::In && r.protocol == Protocol::Tcp));
-        assert!(rules.iter().any(|r| r.direction == Direction::Out && r.protocol == Protocol::Tcp));
-        assert!(rules.iter().any(|r| r.direction == Direction::In && r.protocol == Protocol::Udp));
-        assert!(rules.iter().any(|r| r.direction == Direction::Out && r.protocol == Protocol::Udp));
+        assert!(rules
+            .iter()
+            .any(|r| r.direction == Direction::In && r.protocol == Protocol::Tcp));
+        assert!(rules
+            .iter()
+            .any(|r| r.direction == Direction::Out && r.protocol == Protocol::Tcp));
+        assert!(rules
+            .iter()
+            .any(|r| r.direction == Direction::In && r.protocol == Protocol::Udp));
+        assert!(rules
+            .iter()
+            .any(|r| r.direction == Direction::Out && r.protocol == Protocol::Udp));
         assert!(rules.iter().any(|r| r.action == Action::Allow));
         assert!(rules.iter().any(|r| r.action == Action::Deny));
     }

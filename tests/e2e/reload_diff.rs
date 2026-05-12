@@ -67,20 +67,22 @@ async fn reload_diff_adds_and_removes_profiles_through_the_full_pipeline() {
     let plan = ReloadPlan::compute(&old_cfg, &new_cfg);
 
     // Sanity: the plan must Stop(a), Start(c), and leave b alone.
-    let action_strs: Vec<String> =
-        plan.actions.iter().map(|a| format!("{a:?}")).collect();
+    let action_strs: Vec<String> = plan.actions.iter().map(|a| format!("{a:?}")).collect();
     assert!(
-        action_strs.iter().any(|s| s.contains("StopProfile") && s.contains("\"a\"")),
+        action_strs
+            .iter()
+            .any(|s| s.contains("StopProfile") && s.contains("\"a\"")),
         "expected StopProfile(a); got {action_strs:?}"
     );
     assert!(
-        action_strs.iter().any(|s| s.contains("StartProfile") && s.contains("\"c\"")),
+        action_strs
+            .iter()
+            .any(|s| s.contains("StartProfile") && s.contains("\"c\"")),
         "expected StartProfile(c); got {action_strs:?}"
     );
     assert!(
         !action_strs.iter().any(|s| {
-            s.contains("\"b\"")
-                && (s.contains("StopProfile") || s.contains("RestartProfile"))
+            s.contains("\"b\"") && (s.contains("StopProfile") || s.contains("RestartProfile"))
         }),
         "expected b to be untouched; got {action_strs:?}"
     );

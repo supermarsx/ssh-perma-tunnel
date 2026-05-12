@@ -200,7 +200,10 @@ pub async fn observability(global: &GlobalOpts, args: DiagnoseObservabilityArgs)
 pub async fn port(_global: &GlobalOpts, args: DiagnosePortArgs) -> Result<()> {
     let target_addr = format!("{}:{}", args.host, args.port);
     let mut output = serde_json::Map::new();
-    output.insert("target".into(), serde_json::Value::String(target_addr.clone()));
+    output.insert(
+        "target".into(),
+        serde_json::Value::String(target_addr.clone()),
+    );
 
     if args.udp {
         output.insert("transport".into(), serde_json::Value::String("udp".into()));
@@ -228,10 +231,7 @@ pub async fn port(_global: &GlobalOpts, args: DiagnosePortArgs) -> Result<()> {
                     "service".into(),
                     serde_json::Value::String(format!("{:?}", d.class).to_lowercase()),
                 );
-                output.insert(
-                    "evidence".into(),
-                    serde_json::Value::String(d.evidence),
-                );
+                output.insert("evidence".into(), serde_json::Value::String(d.evidence));
             }
             None => {
                 output.insert("reachable".into(), serde_json::Value::Bool(false));
@@ -256,10 +256,7 @@ pub async fn port(_global: &GlobalOpts, args: DiagnosePortArgs) -> Result<()> {
                             "service".into(),
                             serde_json::Value::String(format!("{:?}", d.class).to_lowercase()),
                         );
-                        output.insert(
-                            "evidence".into(),
-                            serde_json::Value::String(d.evidence),
-                        );
+                        output.insert("evidence".into(), serde_json::Value::String(d.evidence));
                     }
                 }
             }
@@ -282,8 +279,7 @@ fn build_context(global: &GlobalOpts) -> Result<DiagnosticContext> {
         .as_ref()
         .and_then(|p| spt_config::load(p, false).ok())
         .map(|(c, _)| c);
-    let state_dir: Option<PathBuf> =
-        spt_state::resolve_state_dir(global.state_dir.as_deref()).ok();
+    let state_dir: Option<PathBuf> = spt_state::resolve_state_dir(global.state_dir.as_deref()).ok();
     let mut ctx = DiagnosticContext::default();
     ctx.state_dir = state_dir;
     if let Some(c) = &cfg {
@@ -336,10 +332,7 @@ fn print_port(
             .map_err(|e| Error::RuntimeFailure(e.to_string()))?;
         println!("{s}");
     } else if output.get("reachable") == Some(&serde_json::Value::Bool(true)) {
-        let svc = output
-            .get("service")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
+        let svc = output.get("service").and_then(|v| v.as_str()).unwrap_or("");
         if svc.is_empty() {
             println!("{target}: reachable");
         } else {

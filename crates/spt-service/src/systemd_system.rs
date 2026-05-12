@@ -112,16 +112,12 @@ impl ServiceManager for SystemdSystemManager {
 
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| {
-                Error::ServiceManagerFailed(format!(
-                    "create unit root {}: {e}",
-                    parent.display()
-                ))
+                Error::ServiceManagerFailed(format!("create unit root {}: {e}", parent.display()))
             })?;
         }
 
-        std::fs::write(&path, unit).map_err(|e| {
-            Error::ServiceManagerFailed(format!("write {}: {e}", path.display()))
-        })?;
+        std::fs::write(&path, unit)
+            .map_err(|e| Error::ServiceManagerFailed(format!("write {}: {e}", path.display())))?;
 
         run_systemctl(self.runner.as_ref(), &["daemon-reload"]).await?;
         run_systemctl(self.runner.as_ref(), &["enable", &spec.name]).await?;
@@ -190,9 +186,7 @@ pub(crate) async fn run_systemctl_prefixed(
     let mut full: Vec<&str> = Vec::with_capacity(prefix.len() + args.len());
     full.extend_from_slice(prefix);
     full.extend_from_slice(args);
-    let out = runner
-        .run("systemctl", &full, DEFAULT_TIMEOUT)
-        .await?;
+    let out = runner.run("systemctl", &full, DEFAULT_TIMEOUT).await?;
     if out.ok() {
         Ok(())
     } else {
@@ -221,9 +215,7 @@ pub(crate) async fn show_status(
     full.extend_from_slice(prefix);
     full.extend_from_slice(&["show", "-p", PROPS, name]);
 
-    let out = runner
-        .run("systemctl", &full, DEFAULT_TIMEOUT)
-        .await?;
+    let out = runner.run("systemctl", &full, DEFAULT_TIMEOUT).await?;
 
     if !out.ok() {
         return Err(Error::ServiceManagerFailed(format!(
@@ -285,9 +277,8 @@ pub(crate) fn parse_show_output(stdout: &str) -> ServiceStatus {
         }
     };
 
-    let exit_code = exec_main_status.filter(|c| {
-        *c != 0 && matches!(state, ServiceState::Stopped | ServiceState::Failed)
-    });
+    let exit_code = exec_main_status
+        .filter(|c| *c != 0 && matches!(state, ServiceState::Stopped | ServiceState::Failed));
 
     let since = parse_systemd_timestamp(active_enter);
 
@@ -319,9 +310,7 @@ fn parse_systemd_timestamp(s: &str) -> Option<chrono::DateTime<chrono::Utc>> {
     // Drop a leading weekday abbreviation like "Mon ".
     let trimmed = s
         .split_once(' ')
-        .filter(|(head, _)| {
-            head.len() == 3 && head.chars().all(|c| c.is_ascii_alphabetic())
-        })
+        .filter(|(head, _)| head.len() == 3 && head.chars().all(|c| c.is_ascii_alphabetic()))
         .map_or(s, |(_, rest)| rest);
 
     // Drop a trailing timezone token if present (e.g. "UTC", "EDT").

@@ -114,7 +114,12 @@ impl RequestHandler for SplitHorizonHandler {
                         Ok(a) => a,
                         Err(e) => {
                             warn!(error = %e, "failed to build dns answers");
-                            return send_simple(&mut response_handle, request, ResponseCode::ServFail).await;
+                            return send_simple(
+                                &mut response_handle,
+                                request,
+                                ResponseCode::ServFail,
+                            )
+                            .await;
                         }
                     };
                     return send_answers(&mut response_handle, request, &answers).await;
@@ -192,41 +197,39 @@ fn build_answers(qname: &Name, records: &[&Record]) -> crate::Result<Vec<ProtoRe
         );
         let rdata = match rec.kind {
             RecordKind::A => {
-                let ip: Ipv4Addr = rec
-                    .value
-                    .parse()
-                    .map_err(|e: std::net::AddrParseError| crate::DnsError::InvalidValue {
+                let ip: Ipv4Addr = rec.value.parse().map_err(|e: std::net::AddrParseError| {
+                    crate::DnsError::InvalidValue {
                         kind: rec.kind,
                         value: rec.value.clone(),
                         reason: e.to_string(),
-                    })?;
+                    }
+                })?;
                 RData::A(ARdata(ip))
             }
             RecordKind::AAAA => {
-                let ip: Ipv6Addr = rec
-                    .value
-                    .parse()
-                    .map_err(|e: std::net::AddrParseError| crate::DnsError::InvalidValue {
+                let ip: Ipv6Addr = rec.value.parse().map_err(|e: std::net::AddrParseError| {
+                    crate::DnsError::InvalidValue {
                         kind: rec.kind,
                         value: rec.value.clone(),
                         reason: e.to_string(),
-                    })?;
+                    }
+                })?;
                 RData::AAAA(AAAARdata(ip))
             }
             RecordKind::SRV => {
                 let (p, w, port, target) =
-                    rec.srv_parts().ok_or_else(|| crate::DnsError::InvalidValue {
-                        kind: rec.kind,
-                        value: rec.value.clone(),
-                        reason: "malformed SRV value".into(),
-                    })?;
-                let target_name = Name::from_utf8(&target).map_err(|e| {
-                    crate::DnsError::InvalidValue {
+                    rec.srv_parts()
+                        .ok_or_else(|| crate::DnsError::InvalidValue {
+                            kind: rec.kind,
+                            value: rec.value.clone(),
+                            reason: "malformed SRV value".into(),
+                        })?;
+                let target_name =
+                    Name::from_utf8(&target).map_err(|e| crate::DnsError::InvalidValue {
                         kind: rec.kind,
                         value: rec.value.clone(),
                         reason: format!("invalid SRV target: {e}"),
-                    }
-                })?;
+                    })?;
                 RData::SRV(SRVRdata::new(p, w, port, target_name))
             }
             RecordKind::TXT => {

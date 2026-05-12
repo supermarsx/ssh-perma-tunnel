@@ -257,10 +257,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "expected true")]
     fn assert_cidr_match_panics_on_mismatch() {
-        let acl = CidrAcl::new(
-            vec!["10.0.0.0/8".parse::<IpNet>().unwrap()],
-            vec![],
-        );
+        let acl = CidrAcl::new(vec!["10.0.0.0/8".parse::<IpNet>().unwrap()], vec![]);
         assert_cidr_match(&acl, IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4)), true);
     }
 }

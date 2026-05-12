@@ -118,9 +118,7 @@ impl SysVManager {
                     ("chkconfig", "--version", DistroTool::RedHat),
                 ];
                 for (prog, arg, tool) in probes {
-                    if let Ok(out) =
-                        self.runner.run(prog, &[arg], DEFAULT_TIMEOUT).await
-                    {
+                    if let Ok(out) = self.runner.run(prog, &[arg], DEFAULT_TIMEOUT).await {
                         // Either zero exit or non-zero with a recognisable
                         // help/version banner counts as "tool is present".
                         // We're only confirming the binary exists.
@@ -165,34 +163,24 @@ impl ServiceManager for SysVManager {
 
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| {
-                Error::ServiceManagerFailed(format!(
-                    "create script root {}: {e}",
-                    parent.display()
-                ))
+                Error::ServiceManagerFailed(format!("create script root {}: {e}", parent.display()))
             })?;
         }
 
-        std::fs::write(&path, script).map_err(|e| {
-            Error::ServiceManagerFailed(format!("write {}: {e}", path.display()))
-        })?;
+        std::fs::write(&path, script)
+            .map_err(|e| Error::ServiceManagerFailed(format!("write {}: {e}", path.display())))?;
 
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             let mut perms = std::fs::metadata(&path)
                 .map_err(|e| {
-                    Error::ServiceManagerFailed(format!(
-                        "metadata {}: {e}",
-                        path.display()
-                    ))
+                    Error::ServiceManagerFailed(format!("metadata {}: {e}", path.display()))
                 })?
                 .permissions();
             perms.set_mode(0o755);
             std::fs::set_permissions(&path, perms).map_err(|e| {
-                Error::ServiceManagerFailed(format!(
-                    "chmod {}: {e}",
-                    path.display()
-                ))
+                Error::ServiceManagerFailed(format!("chmod {}: {e}", path.display()))
             })?;
         }
 
@@ -200,11 +188,7 @@ impl ServiceManager for SysVManager {
             DistroTool::Debian => {
                 let out = self
                     .runner
-                    .run(
-                        "update-rc.d",
-                        &[&spec.name, "defaults"],
-                        DEFAULT_TIMEOUT,
-                    )
+                    .run("update-rc.d", &[&spec.name, "defaults"], DEFAULT_TIMEOUT)
                     .await?;
                 if !out.ok() {
                     return Err(Error::ServiceManagerFailed(format!(
@@ -218,11 +202,7 @@ impl ServiceManager for SysVManager {
             DistroTool::RedHat => {
                 let out = self
                     .runner
-                    .run(
-                        "chkconfig",
-                        &["--add", &spec.name],
-                        DEFAULT_TIMEOUT,
-                    )
+                    .run("chkconfig", &["--add", &spec.name], DEFAULT_TIMEOUT)
                     .await?;
                 if !out.ok() {
                     return Err(Error::ServiceManagerFailed(format!(
@@ -249,11 +229,7 @@ impl ServiceManager for SysVManager {
             DistroTool::Debian => {
                 let _ = self
                     .runner
-                    .run(
-                        "update-rc.d",
-                        &[name, "remove"],
-                        DEFAULT_TIMEOUT,
-                    )
+                    .run("update-rc.d", &[name, "remove"], DEFAULT_TIMEOUT)
                     .await;
             }
             DistroTool::RedHat => {
@@ -286,8 +262,7 @@ impl ServiceManager for SysVManager {
 
         let stderr_lc = out.stderr.to_ascii_lowercase();
         if !out.ok()
-            && (stderr_lc.contains("unrecognized service")
-                || stderr_lc.contains("not found"))
+            && (stderr_lc.contains("unrecognized service") || stderr_lc.contains("not found"))
         {
             return Err(Error::ServiceManagerFailed(format!(
                 "service not found: {name}"
@@ -366,11 +341,7 @@ impl ServiceManager for SysVManager {
     }
 }
 
-async fn run_service(
-    runner: &dyn CommandRunner,
-    name: &str,
-    action: &str,
-) -> Result<()> {
+async fn run_service(runner: &dyn CommandRunner, name: &str, action: &str) -> Result<()> {
     let out = runner
         .run("service", &[name, action], DEFAULT_TIMEOUT)
         .await?;
@@ -491,8 +462,8 @@ mod tests {
         mock.push_output(ok_out(""));
         // registration: update-rc.d <name> defaults
         mock.push_output(ok_out(""));
-        let mgr = SysVManager::new_with_runner(mock.clone())
-            .with_script_root(tmp.path().to_path_buf());
+        let mgr =
+            SysVManager::new_with_runner(mock.clone()).with_script_root(tmp.path().to_path_buf());
 
         mgr.install(&sample_spec()).await.expect("install");
 
@@ -522,8 +493,8 @@ mod tests {
         // detection probe + best-effort remove
         mock.push_output(ok_out("")); // update-rc.d --help
         mock.push_output(err_out(1, "no such service")); // update-rc.d remove
-        let mgr = SysVManager::new_with_runner(mock.clone())
-            .with_script_root(tmp.path().to_path_buf());
+        let mgr =
+            SysVManager::new_with_runner(mock.clone()).with_script_root(tmp.path().to_path_buf());
         mgr.uninstall("ghost").await.expect("idempotent");
         mock.assert_called("update-rc.d", &["ghost", "remove"]);
     }
@@ -534,8 +505,8 @@ mod tests {
         let mock = Arc::new(MockRunner::new());
         mock.push_output(ok_out("")); // detection
         mock.push_output(ok_out("")); // remove
-        let mgr = SysVManager::new_with_runner(mock.clone())
-            .with_script_root(tmp.path().to_path_buf());
+        let mgr =
+            SysVManager::new_with_runner(mock.clone()).with_script_root(tmp.path().to_path_buf());
         let path = tmp.path().join("spt-relay");
         std::fs::write(&path, "#!/bin/sh\n").unwrap();
         mgr.uninstall("spt-relay").await.expect("uninstall");

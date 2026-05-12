@@ -6,14 +6,14 @@
 //! tasks, logon triggers).
 //!
 //! All shell-outs go through a [`CommandRunner`] so tests can inject a
-//! [`MockRunner`] and assert on exact argument lists. Production code uses
+//! `MockRunner` and assert on exact argument lists. Production code uses
 //! [`TokioRunner`] with a 30-second per-call timeout.
 //!
 //! Task Scheduler has no native "reload" concept — the closest equivalent
 //! is `schtasks /Change`, which means re-rendering the task definition
 //! (i.e. re-running `install`). That is intentionally **not** exposed
 //! through [`ServiceManager::reload`]; callers receive
-//! [`Error::UnsupportedPlatform`] and must redo `install` if they need to
+//! [`spt_core::Error::UnsupportedPlatform`] and must redo `install` if they need to
 //! mutate task fields.
 //!
 //! Reference: <https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/schtasks>
@@ -40,6 +40,12 @@ pub enum Trigger {
     AtStartup,
     /// Run when the current user logs on.
     AtLogon,
+}
+
+impl Default for Trigger {
+    fn default() -> Self {
+        Self::AtStartup
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -299,11 +305,8 @@ fn parse_status_csv(name: &str, csv_text: &str) -> Result<ServiceStatus> {
         .map_err(|e| Error::ServiceManagerFailed(format!("parse schtasks CSV headers: {e}")))?
         .clone();
 
-    let idx = |key: &str| -> Option<usize> {
-        headers
-            .iter()
-            .position(|h| h.eq_ignore_ascii_case(key))
-    };
+    let idx =
+        |key: &str| -> Option<usize> { headers.iter().position(|h| h.eq_ignore_ascii_case(key)) };
 
     let i_status = idx("Status");
     let i_taskname = idx("TaskName");
@@ -338,9 +341,7 @@ fn parse_status_csv(name: &str, csv_text: &str) -> Result<ServiceStatus> {
         ))
     })?;
 
-    let raw_status = i_status
-        .and_then(|i| row.get(i))
-        .map_or("", str::trim);
+    let raw_status = i_status.and_then(|i| row.get(i)).map_or("", str::trim);
 
     let state = match raw_status {
         s if s.eq_ignore_ascii_case("Running") => ServiceState::Running,
@@ -828,9 +829,7 @@ mod tests {
                 stderr: "ERROR: The task is not currently running.".into(),
             });
             let mgr = manager(&mock);
-            mgr.stop("spt-relay")
-                .await
-                .expect("not-running → Ok(())");
+            mgr.stop("spt-relay").await.expect("not-running → Ok(())");
         }
 
         #[tokio::test]
@@ -882,13 +881,19 @@ mod tests {
         #[test]
         fn parse_timestamp_handles_us_locale() {
             let dt = parse_schtasks_timestamp("5/4/2026 3:24:21 PM").expect("parse");
-            assert_eq!(dt.format("%Y-%m-%d %H:%M:%S").to_string(), "2026-05-04 15:24:21");
+            assert_eq!(
+                dt.format("%Y-%m-%d %H:%M:%S").to_string(),
+                "2026-05-04 15:24:21"
+            );
         }
 
         #[test]
         fn parse_timestamp_handles_iso() {
             let dt = parse_schtasks_timestamp("2026-05-04 15:24:21").expect("parse");
-            assert_eq!(dt.format("%Y-%m-%d %H:%M:%S").to_string(), "2026-05-04 15:24:21");
+            assert_eq!(
+                dt.format("%Y-%m-%d %H:%M:%S").to_string(),
+                "2026-05-04 15:24:21"
+            );
         }
 
         #[test]

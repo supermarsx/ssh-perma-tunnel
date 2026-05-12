@@ -25,24 +25,28 @@ impl Diagnostic for RuntimeDiagnostic {
     }
     async fn run(&self, ctx: &DiagnosticContext) -> Vec<Check> {
         let Some(dir) = ctx.state_dir.as_ref() else {
-            return vec![Check::new("runtime.snapshot", Severity::Info, Status::Skipped)
-                .with_evidence("no state_dir supplied via DiagnosticContext")];
+            return vec![
+                Check::new("runtime.snapshot", Severity::Info, Status::Skipped)
+                    .with_evidence("no state_dir supplied via DiagnosticContext"),
+            ];
         };
         let path = paths::status_path(dir);
         let bytes = match std::fs::read(&path) {
             Ok(b) => b,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                return vec![Check::new(
-                    "runtime.snapshot",
-                    Severity::Info,
-                    Status::Skipped,
-                )
-                .with_evidence(format!("no status snapshot at {}", path.display()))
-                .with_remediation("start the daemon (`spt service start`) to populate runtime state")];
+                return vec![
+                    Check::new("runtime.snapshot", Severity::Info, Status::Skipped)
+                        .with_evidence(format!("no status snapshot at {}", path.display()))
+                        .with_remediation(
+                            "start the daemon (`spt service start`) to populate runtime state",
+                        ),
+                ];
             }
             Err(e) => {
-                return vec![Check::new("runtime.snapshot", Severity::Medium, Status::Fail)
-                    .with_evidence(format!("read {}: {e}", path.display()))];
+                return vec![
+                    Check::new("runtime.snapshot", Severity::Medium, Status::Fail)
+                        .with_evidence(format!("read {}: {e}", path.display())),
+                ];
             }
         };
         let snap: StatusSnapshot = match serde_json::from_slice(&bytes) {
@@ -50,7 +54,9 @@ impl Diagnostic for RuntimeDiagnostic {
             Err(e) => {
                 return vec![Check::new("runtime.snapshot", Severity::High, Status::Fail)
                     .with_evidence(format!("parse status.json: {e}"))
-                    .with_remediation("the daemon may be writing an incompatible schema; restart it")];
+                    .with_remediation(
+                        "the daemon may be writing an incompatible schema; restart it",
+                    )];
             }
         };
 
@@ -102,8 +108,10 @@ impl Diagnostic for RuntimeDiagnostic {
                 .join(",")
         };
         out.push(
-            Check::new("runtime.profiles", Severity::Medium, chk_status)
-                .with_evidence(format!("profiles: {} total; states: {evidence}", snap.profiles.len())),
+            Check::new("runtime.profiles", Severity::Medium, chk_status).with_evidence(format!(
+                "profiles: {} total; states: {evidence}",
+                snap.profiles.len()
+            )),
         );
 
         // Recent error counts.
@@ -164,11 +172,7 @@ mod tests {
     }
 
     fn write_snapshot(dir: &std::path::Path, snap: &StatusSnapshot) {
-        std::fs::write(
-            paths::status_path(dir),
-            serde_json::to_vec(snap).unwrap(),
-        )
-        .unwrap();
+        std::fs::write(paths::status_path(dir), serde_json::to_vec(snap).unwrap()).unwrap();
     }
 
     #[tokio::test]
@@ -188,10 +192,18 @@ mod tests {
         write_snapshot(d.path(), &snap);
 
         let r = RuntimeDiagnostic.run(&mkctx(d.path())).await;
-        assert!(r.iter().any(|c| c.id == "runtime.snapshot" && c.status == Status::Pass));
-        assert!(r.iter().any(|c| c.id == "runtime.uptime" && c.status == Status::Pass));
-        assert!(r.iter().any(|c| c.id == "runtime.profiles" && c.status == Status::Pass));
-        assert!(r.iter().any(|c| c.id == "runtime.recent_errors" && c.status == Status::Pass));
+        assert!(r
+            .iter()
+            .any(|c| c.id == "runtime.snapshot" && c.status == Status::Pass));
+        assert!(r
+            .iter()
+            .any(|c| c.id == "runtime.uptime" && c.status == Status::Pass));
+        assert!(r
+            .iter()
+            .any(|c| c.id == "runtime.profiles" && c.status == Status::Pass));
+        assert!(r
+            .iter()
+            .any(|c| c.id == "runtime.recent_errors" && c.status == Status::Pass));
     }
 
     #[tokio::test]

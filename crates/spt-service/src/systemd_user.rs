@@ -15,8 +15,8 @@ use async_trait::async_trait;
 use spt_core::error::{Error, Result};
 
 use crate::{
-    systemd_system, CommandRunner, ServiceCapabilities, ServiceManager, ServiceSpec,
-    ServiceStatus, TokioRunner,
+    systemd_system, CommandRunner, ServiceCapabilities, ServiceManager, ServiceSpec, ServiceStatus,
+    TokioRunner,
 };
 
 /// Default per-call timeout for `systemctl --user` invocations.
@@ -121,13 +121,11 @@ impl ServiceManager for SystemdUserManager {
     async fn install(&self, spec: &ServiceSpec) -> Result<()> {
         let unit = systemd_system::render_unit(spec, true);
         let dir = self.resolve_unit_root()?;
-        std::fs::create_dir_all(&dir).map_err(|e| {
-            Error::ServiceManagerFailed(format!("mkdir {}: {e}", dir.display()))
-        })?;
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| Error::ServiceManagerFailed(format!("mkdir {}: {e}", dir.display())))?;
         let path = dir.join(format!("{}.service", spec.name));
-        std::fs::write(&path, unit).map_err(|e| {
-            Error::ServiceManagerFailed(format!("write {}: {e}", path.display()))
-        })?;
+        std::fs::write(&path, unit)
+            .map_err(|e| Error::ServiceManagerFailed(format!("write {}: {e}", path.display())))?;
 
         systemd_system::run_systemctl_prefixed(
             self.runner.as_ref(),
@@ -153,19 +151,11 @@ impl ServiceManager for SystemdUserManager {
     async fn uninstall(&self, name: &str) -> Result<()> {
         let _ = self
             .runner
-            .run(
-                "systemctl",
-                &["--user", "stop", name],
-                DEFAULT_TIMEOUT,
-            )
+            .run("systemctl", &["--user", "stop", name], DEFAULT_TIMEOUT)
             .await;
         let _ = self
             .runner
-            .run(
-                "systemctl",
-                &["--user", "disable", name],
-                DEFAULT_TIMEOUT,
-            )
+            .run("systemctl", &["--user", "disable", name], DEFAULT_TIMEOUT)
             .await;
 
         let path = self.unit_path(name)?;
@@ -182,11 +172,7 @@ impl ServiceManager for SystemdUserManager {
 
         let _ = self
             .runner
-            .run(
-                "systemctl",
-                &["--user", "daemon-reload"],
-                DEFAULT_TIMEOUT,
-            )
+            .run("systemctl", &["--user", "daemon-reload"], DEFAULT_TIMEOUT)
             .await;
         Ok(())
     }
@@ -196,21 +182,13 @@ impl ServiceManager for SystemdUserManager {
     }
 
     async fn start(&self, name: &str) -> Result<()> {
-        systemd_system::run_systemctl_prefixed(
-            self.runner.as_ref(),
-            &["--user"],
-            &["start", name],
-        )
-        .await
+        systemd_system::run_systemctl_prefixed(self.runner.as_ref(), &["--user"], &["start", name])
+            .await
     }
 
     async fn stop(&self, name: &str) -> Result<()> {
-        systemd_system::run_systemctl_prefixed(
-            self.runner.as_ref(),
-            &["--user"],
-            &["stop", name],
-        )
-        .await
+        systemd_system::run_systemctl_prefixed(self.runner.as_ref(), &["--user"], &["stop", name])
+            .await
     }
 
     async fn restart(&self, name: &str) -> Result<()> {

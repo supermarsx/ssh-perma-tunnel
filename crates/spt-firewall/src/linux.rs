@@ -160,10 +160,7 @@ fn render_iptables_rule(r: &Rule) -> String {
     if let Some(p) = r.dest_port {
         parts.push(format!("--dport {p}"));
     }
-    parts.push(format!(
-        "-m comment --comment \"{TAG_PREFIX}{}\"",
-        r.id
-    ));
+    parts.push(format!("-m comment --comment \"{TAG_PREFIX}{}\"", r.id));
     parts.push(format!("-j {target}"));
     parts.join(" ")
 }

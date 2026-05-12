@@ -1,6 +1,7 @@
 //! Firewall present-rule check.
 //!
-//! Plans the configured rules via the injected [`FirewallPlanner`] and
+//! Plans the configured rules via the injected [`spt_firewall::FirewallPlanner`]
+//! and
 //! best-effort verifies the OS-level rule table contains rules tagged with
 //! `spt:`. The check is **read-only** — never invokes `apply()` or modifies
 //! the firewall.
@@ -35,35 +36,32 @@ impl Diagnostic for FirewallDiagnostic {
     }
     async fn run(&self, ctx: &DiagnosticContext) -> Vec<Check> {
         let Some(planner) = ctx.firewall_planner.as_ref() else {
-            return vec![Check::new(
-                "firewall.planner",
-                Severity::Medium,
-                Status::Skipped,
-            )
-            .with_evidence("no FirewallPlanner supplied via DiagnosticContext")];
+            return vec![
+                Check::new("firewall.planner", Severity::Medium, Status::Skipped)
+                    .with_evidence("no FirewallPlanner supplied via DiagnosticContext"),
+            ];
         };
         if ctx.firewall_rules.is_empty() {
-            return vec![Check::new("firewall.rules", Severity::Info, Status::Skipped)
-                .with_evidence("no firewall rules configured for this profile")];
+            return vec![
+                Check::new("firewall.rules", Severity::Info, Status::Skipped)
+                    .with_evidence("no firewall rules configured for this profile"),
+            ];
         }
 
         let plan = planner.plan(&ctx.firewall_rules);
-        let mut out = vec![
-            Check::new("firewall.plan", Severity::Info, Status::Pass)
-                .with_evidence(format!(
-                    "planned {} rules under tag `{}` for {:?}",
-                    plan.rule_count, plan.tag_prefix, plan.manager,
-                )),
-        ];
+        let mut out = vec![Check::new("firewall.plan", Severity::Info, Status::Pass)
+            .with_evidence(format!(
+                "planned {} rules under tag `{}` for {:?}",
+                plan.rule_count, plan.tag_prefix, plan.manager,
+            ))];
 
         if self.probe_live_rules {
             out.push(query_live_rules(&plan));
         } else {
             out.push(
-                Check::new("firewall.live_rules", Severity::Info, Status::Skipped)
-                    .with_evidence(
-                        "live-rules probe disabled (set FirewallDiagnostic.probe_live_rules to enable)",
-                    ),
+                Check::new("firewall.live_rules", Severity::Info, Status::Skipped).with_evidence(
+                    "live-rules probe disabled (set FirewallDiagnostic.probe_live_rules to enable)",
+                ),
             );
         }
 
@@ -111,7 +109,9 @@ fn query_live_rules(plan: &FirewallPlan) -> Check {
                     "`{cmd}` exited {:?}; likely missing privileges",
                     o.status.code()
                 ))
-                .with_remediation("rerun `spt diagnose` as root / Administrator for live verification")
+                .with_remediation(
+                    "rerun `spt diagnose` as root / Administrator for live verification",
+                )
         }
         Err(e) => Check::new("firewall.live_rules", Severity::Low, Status::Skipped)
             .with_evidence(format!("could not invoke `{cmd}`: {e}")),
@@ -167,7 +167,9 @@ mod tests {
             ..Default::default()
         };
         let r = FirewallDiagnostic::default().run(&ctx).await;
-        assert!(r.iter().any(|c| c.id == "firewall.plan" && c.status == Status::Pass));
+        assert!(r
+            .iter()
+            .any(|c| c.id == "firewall.plan" && c.status == Status::Pass));
         assert!(r
             .iter()
             .any(|c| c.id == "firewall.live_rules" && c.status == Status::Skipped));

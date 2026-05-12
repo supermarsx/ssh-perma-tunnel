@@ -7,7 +7,7 @@
 //! 2. `ssh2.supported_algs.<kind>`   — list the algorithm support reported
 //!    by libssh2 across kex / hostkey / cipher / mac.
 //! 3. `ssh2.crypto_policy.<kind>`    — for each entry in the configured
-//!    [`CryptoPolicy`] allow-list, `Pass` if libssh2 reports support,
+//!    [`spt_ssh2::CryptoPolicy`] allow-list, `Pass` if libssh2 reports support,
 //!    `Fail` otherwise. Deprecated algorithms emit a `Warn`.
 //!
 //! `Status::Skipped` when the runtime can't construct a session (rare on
@@ -111,11 +111,15 @@ impl Diagnostic for Ssh2Diagnostic {
 
             for w in pol.deprecated_warnings() {
                 out.push(
-                    Check::new("ssh2.crypto_policy.deprecated", Severity::Medium, Status::Warn)
-                        .with_evidence(w)
-                        .with_remediation(
-                            "remove the deprecated algorithm from the profile's `[crypto]` allow-list",
-                        ),
+                    Check::new(
+                        "ssh2.crypto_policy.deprecated",
+                        Severity::Medium,
+                        Status::Warn,
+                    )
+                    .with_evidence(w)
+                    .with_remediation(
+                        "remove the deprecated algorithm from the profile's `[crypto]` allow-list",
+                    ),
                 );
             }
         } else {
@@ -129,7 +133,13 @@ impl Diagnostic for Ssh2Diagnostic {
     }
 }
 
-fn check_policy(out: &mut Vec<Check>, sess: &Session, kind: &str, policy: &[String], mt: MethodType) {
+fn check_policy(
+    out: &mut Vec<Check>,
+    sess: &Session,
+    kind: &str,
+    policy: &[String],
+    mt: MethodType,
+) {
     if policy.is_empty() {
         return;
     }
@@ -167,8 +177,9 @@ mod tests {
         let init = r.iter().find(|c| c.id == "ssh2.libssh2_init").unwrap();
         assert_eq!(init.status, Status::Pass, "{init:?}");
         // Skipped for crypto policy when no policy supplied.
-        assert!(r.iter().any(|c| c.id == "ssh2.crypto_policy"
-            && c.status == Status::Skipped));
+        assert!(r
+            .iter()
+            .any(|c| c.id == "ssh2.crypto_policy" && c.status == Status::Skipped));
     }
 
     fn ctx_with_policy(p: spt_ssh2::CryptoPolicy) -> DiagnosticContext {
@@ -185,8 +196,9 @@ mod tests {
             ..Default::default()
         });
         let r = Ssh2Diagnostic.run(&ctx).await;
-        assert!(r.iter().any(|c| c.id == "ssh2.crypto_policy.kex"
-            && c.status == Status::Fail));
+        assert!(r
+            .iter()
+            .any(|c| c.id == "ssh2.crypto_policy.kex" && c.status == Status::Fail));
     }
 
     #[tokio::test]
@@ -211,8 +223,8 @@ mod tests {
             ..Default::default()
         });
         let r = Ssh2Diagnostic.run(&ctx).await;
-        assert!(r.iter().any(
-            |c| c.id == "ssh2.crypto_policy.deprecated" && c.status == Status::Warn
-        ));
+        assert!(r
+            .iter()
+            .any(|c| c.id == "ssh2.crypto_policy.deprecated" && c.status == Status::Warn));
     }
 }

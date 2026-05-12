@@ -214,9 +214,8 @@ fn classify_mysql(bytes: &[u8]) -> Option<()> {
     if bytes.len() < 5 {
         return None;
     }
-    let payload_len = u32::from(bytes[0])
-        | (u32::from(bytes[1]) << 8)
-        | (u32::from(bytes[2]) << 16);
+    let payload_len =
+        u32::from(bytes[0]) | (u32::from(bytes[1]) << 8) | (u32::from(bytes[2]) << 16);
     if !(6..=4096).contains(&payload_len) {
         return None;
     }
@@ -379,7 +378,8 @@ impl Detector for MqttDetector {
 fn build_mqtt_connect(client_id: &[u8]) -> Vec<u8> {
     let mut variable_header = Vec::new();
     // Protocol name "MQTT" (length 4, big-endian), level 4, flags 0x02, keepalive 10.
-    variable_header.extend_from_slice(&[0x00, 0x04, b'M', b'Q', b'T', b'T', 0x04, 0x02, 0x00, 0x0a]);
+    variable_header
+        .extend_from_slice(&[0x00, 0x04, b'M', b'Q', b'T', b'T', 0x04, 0x02, 0x00, 0x0a]);
     let mut payload = Vec::new();
     payload.extend_from_slice(&(client_id.len() as u16).to_be_bytes());
     payload.extend_from_slice(client_id);
@@ -584,7 +584,11 @@ async fn udp_send_and_read(
     budget: Duration,
     buf: &mut [u8],
 ) -> Option<usize> {
-    let bind = if addr.is_ipv6() { "[::]:0" } else { "0.0.0.0:0" };
+    let bind = if addr.is_ipv6() {
+        "[::]:0"
+    } else {
+        "0.0.0.0:0"
+    };
     let sock = UdpSocket::bind(bind).await.ok()?;
     sock.connect(addr).await.ok()?;
     timeout(budget, sock.send(payload)).await.ok()?.ok()?;
@@ -681,7 +685,7 @@ impl UdpDetector for QuicUdpDetector {
         packet.push(8); // dcid len
         packet.extend_from_slice(&[0xde, 0xad, 0xbe, 0xef, 0xca, 0xfe, 0xba, 0xbe]); // dcid
         packet.push(0); // scid len
-        // Token length (varint = 0)
+                        // Token length (varint = 0)
         packet.push(0x00);
         // Length (varint = remaining packet length, well under 64): 0x00
         packet.push(0x00);
@@ -768,8 +772,14 @@ mod tests {
             classify_banner(b"* OK [CAPABILITY] IMAP\r\n"),
             Some(ServiceClass::Imap)
         );
-        assert_eq!(classify_banner(b"+OK POP3 ready\r\n"), Some(ServiceClass::Pop3));
-        assert_eq!(classify_banner(b"HTTP/1.1 200 OK\r\n"), Some(ServiceClass::Http));
+        assert_eq!(
+            classify_banner(b"+OK POP3 ready\r\n"),
+            Some(ServiceClass::Pop3)
+        );
+        assert_eq!(
+            classify_banner(b"HTTP/1.1 200 OK\r\n"),
+            Some(ServiceClass::Http)
+        );
         assert_eq!(classify_banner(b"random garbage"), None);
     }
 
@@ -1019,7 +1029,9 @@ mod tests {
     async fn udp_unbound_returns_nobanner() {
         // Use a port we did not bind. recvfrom will time out.
         let addr: SocketAddr = "127.0.0.1:1".parse().unwrap();
-        let det = autodetect_udp(addr, Duration::from_millis(400)).await.unwrap();
+        let det = autodetect_udp(addr, Duration::from_millis(400))
+            .await
+            .unwrap();
         assert_eq!(det.class, ServiceClass::NoBanner);
     }
 
@@ -1047,7 +1059,7 @@ mod tests {
     fn build_mqtt_connect_packet_shape() {
         let p = build_mqtt_connect(b"abc");
         assert_eq!(p[0], 0x10); // CONNECT
-        // Variable header begins with proto-name length 0x0004, "MQTT", 0x04 (level), 0x02 (flags).
+                                // Variable header begins with proto-name length 0x0004, "MQTT", 0x04 (level), 0x02 (flags).
         let body_start = 2;
         assert_eq!(&p[body_start..body_start + 6], b"\x00\x04MQTT");
     }

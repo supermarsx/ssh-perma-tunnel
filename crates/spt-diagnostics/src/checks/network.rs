@@ -38,8 +38,9 @@ impl Diagnostic for NetworkDiagnostic {
             Ok(addrs) => {
                 let n = addrs.count();
                 out.push(
-                    Check::new("network.dns_resolves", Severity::High, Status::Pass)
-                        .with_evidence(format!("`{}` resolved to {n} address(es)", self.probe_host)),
+                    Check::new("network.dns_resolves", Severity::High, Status::Pass).with_evidence(
+                        format!("`{}` resolved to {n} address(es)", self.probe_host),
+                    ),
                 );
             }
             Err(e) => {

@@ -398,10 +398,7 @@ mod tests {
             fixtures::sample_status_stopped().state,
             ServiceState::Stopped
         );
-        assert_eq!(
-            fixtures::sample_status_failed().state,
-            ServiceState::Failed
-        );
+        assert_eq!(fixtures::sample_status_failed().state, ServiceState::Failed);
         assert_eq!(
             fixtures::sample_status_not_installed().state,
             ServiceState::NotInstalled

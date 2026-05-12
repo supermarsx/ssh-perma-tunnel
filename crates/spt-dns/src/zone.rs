@@ -75,7 +75,7 @@ pub struct Record {
     /// Answer-policy gate.
     pub answer_policy: AnswerPolicy,
     /// Optional forward identifier — used by `AnswerWhenListening` /
-    /// `AnswerWhenHealthy` to query the [`HealthSource`].
+    /// `AnswerWhenHealthy` to query the [`crate::HealthSource`].
     ///
     /// Format: `"<profile>/<forward>"`.
     pub forward_id: Option<String>,
@@ -150,24 +150,26 @@ impl Record {
     /// Validate the record (used by [`ManagedZone::add`]).
     pub fn validate(&self) -> Result<()> {
         match self.kind {
-            RecordKind::A => self
-                .value
-                .parse::<Ipv4Addr>()
-                .map(|_| ())
-                .map_err(|e| DnsError::InvalidValue {
-                    kind: self.kind,
-                    value: self.value.clone(),
-                    reason: e.to_string(),
-                }),
-            RecordKind::AAAA => self
-                .value
-                .parse::<Ipv6Addr>()
-                .map(|_| ())
-                .map_err(|e| DnsError::InvalidValue {
-                    kind: self.kind,
-                    value: self.value.clone(),
-                    reason: e.to_string(),
-                }),
+            RecordKind::A => {
+                self.value
+                    .parse::<Ipv4Addr>()
+                    .map(|_| ())
+                    .map_err(|e| DnsError::InvalidValue {
+                        kind: self.kind,
+                        value: self.value.clone(),
+                        reason: e.to_string(),
+                    })
+            }
+            RecordKind::AAAA => {
+                self.value
+                    .parse::<Ipv6Addr>()
+                    .map(|_| ())
+                    .map_err(|e| DnsError::InvalidValue {
+                        kind: self.kind,
+                        value: self.value.clone(),
+                        reason: e.to_string(),
+                    })
+            }
             RecordKind::SRV => {
                 let parts: Vec<&str> = self.value.split_whitespace().collect();
                 if parts.len() != 4 {
@@ -273,7 +275,11 @@ mod tests {
 
     #[test]
     fn record_validate_a() {
-        let r = Record::a("foo.tunnel.", "10.0.0.1".parse().unwrap(), Duration::from_secs(60));
+        let r = Record::a(
+            "foo.tunnel.",
+            "10.0.0.1".parse().unwrap(),
+            Duration::from_secs(60),
+        );
         assert!(r.validate().is_ok());
     }
 
@@ -292,7 +298,14 @@ mod tests {
 
     #[test]
     fn srv_parts_roundtrip() {
-        let r = Record::srv("_smtp._tcp.tunnel.", 10, 20, 25, "mail.tunnel.", Duration::from_secs(60));
+        let r = Record::srv(
+            "_smtp._tcp.tunnel.",
+            10,
+            20,
+            25,
+            "mail.tunnel.",
+            Duration::from_secs(60),
+        );
         let (p, w, port, target) = r.srv_parts().unwrap();
         assert_eq!((p, w, port, target.as_str()), (10, 20, 25, "mail.tunnel."));
     }
@@ -308,8 +321,12 @@ mod tests {
     #[test]
     fn zone_lookup_case_insensitive() {
         let mut z = ManagedZone::new("tunnel.local.");
-        z.add(Record::a("Foo.tunnel.local.", "10.0.0.1".parse().unwrap(), Duration::from_secs(60)))
-            .unwrap();
+        z.add(Record::a(
+            "Foo.tunnel.local.",
+            "10.0.0.1".parse().unwrap(),
+            Duration::from_secs(60),
+        ))
+        .unwrap();
         assert_eq!(z.lookup("foo.tunnel.local", RecordKind::A).len(), 1);
         assert_eq!(z.lookup("FOO.TUNNEL.LOCAL.", RecordKind::A).len(), 1);
     }

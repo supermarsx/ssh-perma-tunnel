@@ -27,12 +27,10 @@ impl Diagnostic for SecretsDiagnostic {
     }
     async fn run(&self, ctx: &DiagnosticContext) -> Vec<Check> {
         let Some(resolver) = ctx.resolver.clone() else {
-            return vec![Check::new(
-                "secrets.resolver",
-                Severity::High,
-                Status::Skipped,
-            )
-            .with_evidence("no Resolver supplied via DiagnosticContext")];
+            return vec![
+                Check::new("secrets.resolver", Severity::High, Status::Skipped)
+                    .with_evidence("no Resolver supplied via DiagnosticContext"),
+            ];
         };
 
         let mut out = Vec::new();
@@ -87,8 +85,10 @@ fn round_trip_probe(resolver: &Arc<Resolver>) -> Vec<Check> {
     let r = match SecretRef::new("spt.diagnostics", format!("probe-{nonce}")) {
         Ok(r) => r,
         Err(e) => {
-            return vec![Check::new("secrets.round_trip", Severity::Low, Status::Skipped)
-                .with_evidence(format!("could not build probe ref: {e}"))];
+            return vec![
+                Check::new("secrets.round_trip", Severity::Low, Status::Skipped)
+                    .with_evidence(format!("could not build probe ref: {e}")),
+            ];
         }
     };
     let payload: &[u8] = b"spt-diagnostics-probe";
@@ -113,7 +113,9 @@ fn round_trip_probe(resolver: &Arc<Resolver>) -> Vec<Check> {
                     Severity::High,
                     status,
                 )
-                .with_evidence(format!("round-trip on `{label}`: get_match={read} removed={removed}"));
+                .with_evidence(format!(
+                    "round-trip on `{label}`: get_match={read} removed={removed}"
+                ));
                 if status == Status::Fail {
                     chk = chk.with_remediation("inspect backend permissions / quotas");
                 }
@@ -123,8 +125,11 @@ fn round_trip_probe(resolver: &Arc<Resolver>) -> Vec<Check> {
         }
     }
 
-    vec![Check::new("secrets.round_trip", Severity::Low, Status::Skipped)
-        .with_evidence("no backend accepted a write probe (all backends are read-only or unavailable)")]
+    vec![
+        Check::new("secrets.round_trip", Severity::Low, Status::Skipped).with_evidence(
+            "no backend accepted a write probe (all backends are read-only or unavailable)",
+        ),
+    ]
 }
 
 #[cfg(test)]
@@ -132,7 +137,9 @@ mod tests {
     use super::*;
     use spt_core::Result;
     use spt_secrets::backend::secret_bytes;
-    use spt_secrets::{BackendDoctor, BackendKind, BackendStatus, SecretBackend, SecretBytes, SecretRef};
+    use spt_secrets::{
+        BackendDoctor, BackendKind, BackendStatus, SecretBackend, SecretBytes, SecretRef,
+    };
     use std::sync::Mutex;
 
     struct Mem {
@@ -210,15 +217,19 @@ mod tests {
         let ctx = ctx_with(res, false);
         let r = SecretsDiagnostic.run(&ctx).await;
         // Verify per-backend mapping.
-        assert!(r.iter().any(|c| c.id == "secrets.backend.keychain"
-            && c.status == Status::Pass));
-        assert!(r.iter().any(|c| c.id == "secrets.backend.vault"
-            && c.status == Status::Warn));
-        assert!(r.iter().any(|c| c.id == "secrets.backend.env"
-            && c.status == Status::Skipped));
+        assert!(r
+            .iter()
+            .any(|c| c.id == "secrets.backend.keychain" && c.status == Status::Pass));
+        assert!(r
+            .iter()
+            .any(|c| c.id == "secrets.backend.vault" && c.status == Status::Warn));
+        assert!(r
+            .iter()
+            .any(|c| c.id == "secrets.backend.env" && c.status == Status::Skipped));
         // Round-trip skipped by default.
-        assert!(r.iter().any(|c| c.id == "secrets.round_trip"
-            && c.status == Status::Skipped));
+        assert!(r
+            .iter()
+            .any(|c| c.id == "secrets.round_trip" && c.status == Status::Skipped));
     }
 
     #[tokio::test]

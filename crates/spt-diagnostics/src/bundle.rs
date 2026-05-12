@@ -89,7 +89,13 @@ pub fn build_bundle(
         let mut tar = tar::Builder::new(gz);
 
         let now = Utc::now().to_rfc3339();
-        write_text(&mut tar, "manifest.txt", &format!("spt diagnostic bundle\nrun_id = {run_id}\ngenerated_at = {now}\n"), cfg, &mut budget)?;
+        write_text(
+            &mut tar,
+            "manifest.txt",
+            &format!("spt diagnostic bundle\nrun_id = {run_id}\ngenerated_at = {now}\n"),
+            cfg,
+            &mut budget,
+        )?;
 
         if let Some(s) = &inputs.version_info {
             write_text(&mut tar, "version.txt", s, cfg, &mut budget)?;
@@ -114,9 +120,8 @@ pub fn build_bundle(
             write_text(&mut tar, "report.json", &json, cfg, &mut budget)?;
         }
 
-        tar.finish().map_err(|e| spt_core::Error::DiagnosticBundleFailed(format!(
-            "tar finish: {e}"
-        )))?;
+        tar.finish()
+            .map_err(|e| spt_core::Error::DiagnosticBundleFailed(format!("tar finish: {e}")))?;
     }
 
     write_atomic(&archive, &buf)?;
@@ -223,10 +228,9 @@ mod tests {
     fn report_is_persisted_as_json() {
         let d = tempdir().unwrap();
         let mut report = DiagnosticReport::default();
-        report.checks.push(
-            Check::new("os.family", Severity::Info, Status::Pass)
-                .with_evidence("os = test"),
-        );
+        report
+            .checks
+            .push(Check::new("os.family", Severity::Info, Status::Pass).with_evidence("os = test"));
         let path = build_bundle(
             d.path(),
             "run-3",
@@ -268,7 +272,9 @@ mod tests {
             "ssh2.supported_algs.kex",
             "ssh2.crypto_policy.kex",
         ] {
-            report.checks.push(Check::new(id, Severity::Info, Status::Pass));
+            report
+                .checks
+                .push(Check::new(id, Severity::Info, Status::Pass));
         }
         let path = build_bundle(
             d.path(),
@@ -291,7 +297,10 @@ mod tests {
             "runtime.snapshot",
             "ssh2.libssh2_init",
         ] {
-            assert!(body.contains(&format!("\"{id}\"")), "missing {id} in bundle");
+            assert!(
+                body.contains(&format!("\"{id}\"")),
+                "missing {id} in bundle"
+            );
         }
     }
 

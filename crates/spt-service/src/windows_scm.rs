@@ -6,7 +6,7 @@
 //!    callers use to **install / uninstall / start / stop / restart / reload /
 //!    query** an spt service. On Windows it talks to SCM directly via the
 //!    `windows-service` crate; on every other target every method short-circuits
-//!    to [`Error::UnsupportedPlatform`] so cross-compilation still produces
+//!    to [`spt_core::Error::UnsupportedPlatform`] so cross-compilation still produces
 //!    the type.
 //!
 //! 2. [`run_as_service`] — the **service-main entry point** invoked from
@@ -62,7 +62,7 @@ const CAPABILITIES: ServiceCapabilities = ServiceCapabilities {
 ///
 /// Construct with [`WindowsScmManager::new`]; lifecycle methods proxy to
 /// the `windows-service` crate on Windows and to
-/// [`Error::UnsupportedPlatform`] on every other target.
+/// [`spt_core::Error::UnsupportedPlatform`] on every other target.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct WindowsScmManager;
 
@@ -318,8 +318,8 @@ mod windows_impl {
     use spt_core::error::{Error, Result};
     use windows_service::service::{
         Service, ServiceAccess, ServiceControl, ServiceControlAccept, ServiceErrorControl,
-        ServiceExitCode, ServiceInfo, ServiceStartType,
-        ServiceState as WinServiceState, ServiceStatus as WinServiceStatus, ServiceType,
+        ServiceExitCode, ServiceInfo, ServiceStartType, ServiceState as WinServiceState,
+        ServiceStatus as WinServiceStatus, ServiceType,
     };
     use windows_service::service_control_handler::{self, ServiceControlHandlerResult};
     use windows_service::service_dispatcher;
@@ -580,7 +580,10 @@ mod windows_impl {
         // Pull the entry closure out of the global slot. If it's missing
         // we're being driven by a second dispatcher invocation in this
         // process, which is a programmer error.
-        let entry: EntryFn = match ENTRY.get().and_then(|m| m.lock().ok().and_then(|mut g| g.take())) {
+        let entry: EntryFn = match ENTRY
+            .get()
+            .and_then(|m| m.lock().ok().and_then(|mut g| g.take()))
+        {
             Some(e) => e,
             None => {
                 let _ = status_handle.set_service_status(WinServiceStatus {
@@ -603,10 +606,9 @@ mod windows_impl {
         let worker = std::thread::Builder::new()
             .name(format!("{name}-worker"))
             .spawn(move || {
-                let result =
-                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
-                        entry(arguments, worker_handles);
-                    }));
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+                    entry(arguments, worker_handles);
+                }));
                 result.is_ok()
             })
             .map_err(|e| {
@@ -618,8 +620,9 @@ mod windows_impl {
         // Tell SCM we're up. From here on we accept Stop / Shutdown /
         // ParamChange. PARAM_CHANGE *must* be in `controls_accepted` or
         // SCM silently drops `ParamChange` requests sent from the outside.
-        let accepted =
-            ServiceControlAccept::STOP | ServiceControlAccept::SHUTDOWN | ServiceControlAccept::PARAM_CHANGE;
+        let accepted = ServiceControlAccept::STOP
+            | ServiceControlAccept::SHUTDOWN
+            | ServiceControlAccept::PARAM_CHANGE;
         status_handle.set_service_status(WinServiceStatus {
             service_type: SERVICE_TYPE,
             current_state: WinServiceState::Running,
@@ -690,7 +693,10 @@ mod windows_impl {
                 "/etc/spt/spt.toml".to_string(),
             ];
             let rendered = scm_launch_arguments(&args);
-            assert_eq!(rendered.first().and_then(|s| s.to_str()), Some("--scm-dispatch"));
+            assert_eq!(
+                rendered.first().and_then(|s| s.to_str()),
+                Some("--scm-dispatch")
+            );
             assert_eq!(rendered.len(), args.len() + 1);
             // Original args preserved in order.
             for (i, a) in args.iter().enumerate() {
@@ -706,7 +712,11 @@ mod windows_impl {
                 "run".to_string(),
             ];
             let rendered = scm_launch_arguments(&args);
-            assert_eq!(rendered.len(), args.len(), "should not duplicate --scm-dispatch");
+            assert_eq!(
+                rendered.len(),
+                args.len(),
+                "should not duplicate --scm-dispatch"
+            );
             let count = rendered
                 .iter()
                 .filter(|a| a.to_str() == Some("--scm-dispatch"))

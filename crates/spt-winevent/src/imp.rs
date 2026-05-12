@@ -27,11 +27,7 @@ fn err_from(code: WIN32_ERROR, ctx: &str) -> Error {
     Error::WindowsEventLogFailed(format!("{ctx}: win32 error {}", code.0))
 }
 
-pub(crate) fn register_source(
-    name: &str,
-    channel: &str,
-    message_dll: Option<&Path>,
-) -> Result<()> {
+pub(crate) fn register_source(name: &str, channel: &str, message_dll: Option<&Path>) -> Result<()> {
     let path = format!("{SUBKEY_PREFIX}\\{channel}\\{name}");
     let path_w = wide(&path);
     let mut hkey = HKEY::default();
@@ -64,9 +60,8 @@ pub(crate) fn register_source(
                 )
             };
             let name_w = wide("EventMessageFile");
-            let rc = unsafe {
-                RegSetValueExW(hkey, PCWSTR(name_w.as_ptr()), 0, REG_SZ, Some(bytes))
-            };
+            let rc =
+                unsafe { RegSetValueExW(hkey, PCWSTR(name_w.as_ptr()), 0, REG_SZ, Some(bytes)) };
             if rc != ERROR_SUCCESS {
                 return Err(err_from(rc, "RegSetValueExW(EventMessageFile)"));
             }

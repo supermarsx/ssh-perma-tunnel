@@ -17,27 +17,33 @@ impl Diagnostic for PermissionsDiagnostic {
     }
     async fn run(&self, ctx: &DiagnosticContext) -> Vec<Check> {
         let Some(state_dir) = ctx.state_dir.as_ref() else {
-            return vec![
-                Check::new("permissions.state_dir_writable", Severity::Medium, Status::Skipped)
-                    .with_evidence("no state directory configured")
-                    .with_remediation("set `runtime.state_dir`"),
-            ];
+            return vec![Check::new(
+                "permissions.state_dir_writable",
+                Severity::Medium,
+                Status::Skipped,
+            )
+            .with_evidence("no state directory configured")
+            .with_remediation("set `runtime.state_dir`")];
         };
 
         let probe = state_dir.join(".diagnose-write-probe");
         match std::fs::write(&probe, b"ok") {
             Ok(()) => {
                 let _ = std::fs::remove_file(&probe);
-                vec![
-                    Check::new("permissions.state_dir_writable", Severity::Medium, Status::Pass)
-                        .with_evidence(format!("wrote and removed {}", probe.display())),
-                ]
+                vec![Check::new(
+                    "permissions.state_dir_writable",
+                    Severity::Medium,
+                    Status::Pass,
+                )
+                .with_evidence(format!("wrote and removed {}", probe.display()))]
             }
-            Err(e) => vec![
-                Check::new("permissions.state_dir_writable", Severity::Critical, Status::Fail)
-                    .with_evidence(format!("write to {} failed: {e}", probe.display()))
-                    .with_remediation("ensure the runtime user owns the state directory"),
-            ],
+            Err(e) => vec![Check::new(
+                "permissions.state_dir_writable",
+                Severity::Critical,
+                Status::Fail,
+            )
+            .with_evidence(format!("write to {} failed: {e}", probe.display()))
+            .with_remediation("ensure the runtime user owns the state directory")],
         }
     }
 }
@@ -60,7 +66,9 @@ mod tests {
 
     #[tokio::test]
     async fn no_state_dir_skips() {
-        let r = PermissionsDiagnostic.run(&DiagnosticContext::default()).await;
+        let r = PermissionsDiagnostic
+            .run(&DiagnosticContext::default())
+            .await;
         assert_eq!(r[0].status, Status::Skipped);
     }
 

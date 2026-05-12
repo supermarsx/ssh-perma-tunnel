@@ -259,7 +259,7 @@ impl StatusWriter {
         self.spawn_with_clock(Arc::new(SystemClock))
     }
 
-    /// As [`spawn`], with an injectable clock for tests.
+    /// As [`Self::spawn`], with an injectable clock for tests.
     pub fn spawn_with_clock(self, clock: Arc<dyn Clock>) -> StatusWriterHandle {
         let (tx, mut rx) = oneshot::channel::<()>();
         let inner = self.inner.clone();

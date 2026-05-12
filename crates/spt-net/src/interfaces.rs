@@ -50,14 +50,16 @@ pub fn list() -> Result<Vec<Interface>> {
 
     let mut by_name: BTreeMap<String, Interface> = BTreeMap::new();
     for entry in raw {
-        let iface = by_name.entry(entry.name.clone()).or_insert_with(|| Interface {
-            name: entry.name.clone(),
-            ipv4: Vec::new(),
-            ipv6: Vec::new(),
-            is_loopback: false,
-            is_up: true,
-            mac: None,
-        });
+        let iface = by_name
+            .entry(entry.name.clone())
+            .or_insert_with(|| Interface {
+                name: entry.name.clone(),
+                ipv4: Vec::new(),
+                ipv6: Vec::new(),
+                is_loopback: false,
+                is_up: true,
+                mac: None,
+            });
         if entry.is_loopback() {
             iface.is_loopback = true;
         }
@@ -101,7 +103,10 @@ mod tests {
     #[test]
     fn loopback_has_loopback_address() {
         let ifaces = list().expect("enumerate interfaces");
-        let lo = ifaces.iter().find(|i| i.is_loopback).expect("loopback present");
+        let lo = ifaces
+            .iter()
+            .find(|i| i.is_loopback)
+            .expect("loopback present");
         let has_v4_loopback = lo.ipv4.iter().any(Ipv4Addr::is_loopback);
         let has_v6_loopback = lo.ipv6.iter().any(|ip| *ip == Ipv6Addr::LOCALHOST);
         assert!(

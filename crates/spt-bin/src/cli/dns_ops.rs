@@ -148,9 +148,7 @@ pub async fn status(global: &GlobalOpts, args: DnsStatusArgs) -> Result<()> {
     }
 
     if !active {
-        return Err(Error::RuntimeFailure(
-            "dns resolver not active".to_string(),
-        ));
+        return Err(Error::RuntimeFailure("dns resolver not active".to_string()));
     }
     Ok(())
 }
@@ -573,9 +571,7 @@ fn resolve_state_dir_for_read(global: &GlobalOpts) -> Result<PathBuf> {
 
 fn require_config_path(global: &GlobalOpts) -> Result<PathBuf> {
     global.config.clone().ok_or_else(|| {
-        Error::InvalidArgs(
-            "no config path supplied (pass --config or set $SPT_CONFIG)".into(),
-        )
+        Error::InvalidArgs("no config path supplied (pass --config or set $SPT_CONFIG)".into())
     })
 }
 
@@ -584,9 +580,7 @@ fn load_config_for(global: &GlobalOpts, override_path: Option<&Path>) -> Result<
         .map(Path::to_path_buf)
         .or_else(|| global.config.clone())
         .ok_or_else(|| {
-            Error::InvalidArgs(
-                "no config path supplied (pass --config or set $SPT_CONFIG)".into(),
-            )
+            Error::InvalidArgs("no config path supplied (pass --config or set $SPT_CONFIG)".into())
         })?;
     let (cfg, _warnings) = spt_config::load(&path, false)
         .map_err(|e| Error::InvalidConfig(format!("load `{}`: {e}", path.display())))?;
@@ -595,9 +589,8 @@ fn load_config_for(global: &GlobalOpts, override_path: Option<&Path>) -> Result<
 
 fn parse_bind(s: Option<&str>, fallback: &str) -> Result<SocketAddr> {
     let raw = s.unwrap_or(fallback);
-    raw.parse::<SocketAddr>().map_err(|e| {
-        Error::InvalidConfig(format!("invalid bind `{raw}`: {e}"))
-    })
+    raw.parse::<SocketAddr>()
+        .map_err(|e| Error::InvalidConfig(format!("invalid bind `{raw}`: {e}")))
 }
 
 fn parse_one_addr(s: &str) -> Result<SocketAddr> {
@@ -608,7 +601,9 @@ fn parse_one_addr(s: &str) -> Result<SocketAddr> {
     if let Ok(ip) = s.parse::<IpAddr>() {
         return Ok(SocketAddr::new(ip, 53));
     }
-    Err(Error::InvalidConfig(format!("invalid resolver address `{s}`")))
+    Err(Error::InvalidConfig(format!(
+        "invalid resolver address `{s}`"
+    )))
 }
 
 fn parse_upstream_list(items: &[String]) -> Result<Vec<SocketAddr>> {
@@ -711,10 +706,7 @@ fn set_upstream_in_doc(doc: &mut toml_edit::DocumentMut, values: &[String]) {
     tbl["upstream"] = value(arr);
 }
 
-fn add_record_in_doc(
-    doc: &mut toml_edit::DocumentMut,
-    add: &DnsRecordAddArgs,
-) -> Result<()> {
+fn add_record_in_doc(doc: &mut toml_edit::DocumentMut, add: &DnsRecordAddArgs) -> Result<()> {
     use toml_edit::{value, ArrayOfTables, Item, Table};
 
     let kind = guess_kind_from_value(&add.value).ok_or_else(|| {
@@ -944,10 +936,7 @@ zone = "tunnel.local."
     async fn serve_then_query_managed_record() {
         use spt_dns::testing::{FakeZone, LocalhostResolver};
         let zone = FakeZone::new("tunnel.local.")
-            .a(
-                "alpha.tunnel.local.",
-                "10.0.0.1".parse().unwrap(),
-            )
+            .a("alpha.tunnel.local.", "10.0.0.1".parse().unwrap())
             .build();
         let resolver = LocalhostResolver::start(vec![zone]).await.unwrap();
         let addr = resolver.udp_addr();

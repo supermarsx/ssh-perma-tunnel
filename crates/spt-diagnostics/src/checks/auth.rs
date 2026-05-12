@@ -105,11 +105,15 @@ fn check_profile(profile: &Profile, out: &mut Vec<Check>) {
 
     let Some(auth) = profile.auth.as_ref() else {
         out.push(
-            Check::new(format!("{id_prefix}.declared"), Severity::Low, Status::Skipped)
-                .with_evidence(format!(
-                    "profile `{}` declares no [profiles.auth]",
-                    profile.name
-                )),
+            Check::new(
+                format!("{id_prefix}.declared"),
+                Severity::Low,
+                Status::Skipped,
+            )
+            .with_evidence(format!(
+                "profile `{}` declares no [profiles.auth]",
+                profile.name
+            )),
         );
         return;
     };
@@ -134,12 +138,16 @@ fn check_profile(profile: &Profile, out: &mut Vec<Check>) {
 
     if methods.is_empty() {
         out.push(
-            Check::new(format!("{id_prefix}.declared"), Severity::Medium, Status::Warn)
-                .with_evidence(format!(
-                    "profile `{}` has [profiles.auth] but no method fields set",
-                    profile.name
-                ))
-                .with_remediation("set one of: identity_file, password, agent, token, …"),
+            Check::new(
+                format!("{id_prefix}.declared"),
+                Severity::Medium,
+                Status::Warn,
+            )
+            .with_evidence(format!(
+                "profile `{}` has [profiles.auth] but no method fields set",
+                profile.name
+            ))
+            .with_remediation("set one of: identity_file, password, agent, token, …"),
         );
         return;
     }
@@ -167,7 +175,12 @@ fn check_profile(profile: &Profile, out: &mut Vec<Check>) {
     // SSH3 bearer-only / SSH2 vs SSH3 method-fit guard.
     if profile.protocol == "ssh3" {
         for m in &methods {
-            if matches!(m, AuthMethod::Agent { .. } | AuthMethod::PublicKey { .. } | AuthMethod::KeyboardInteractive { .. }) {
+            if matches!(
+                m,
+                AuthMethod::Agent { .. }
+                    | AuthMethod::PublicKey { .. }
+                    | AuthMethod::KeyboardInteractive { .. }
+            ) {
                 out.push(
                     Check::new(
                         format!("{id_prefix}.protocol_fit"),
@@ -188,7 +201,12 @@ fn check_profile(profile: &Profile, out: &mut Vec<Check>) {
     }
     if profile.protocol == "ssh2" {
         for m in &methods {
-            if matches!(m, AuthMethod::Bearer { .. } | AuthMethod::OidcDeviceFlow { .. } | AuthMethod::Basic { .. }) {
+            if matches!(
+                m,
+                AuthMethod::Bearer { .. }
+                    | AuthMethod::OidcDeviceFlow { .. }
+                    | AuthMethod::Basic { .. }
+            ) {
                 out.push(
                     Check::new(
                         format!("{id_prefix}.protocol_fit"),

@@ -104,7 +104,11 @@ pub fn apply_v6_only(socket: &Socket, dual_stack_v6: bool) -> Result<()> {
 
 /// Create a Tokio [`TcpListener`] bound to `addr` with `opts` applied.
 pub fn bind_tcp(addr: SocketAddr, opts: &TcpOptions) -> Result<TcpListener> {
-    let domain = if addr.is_ipv4() { Domain::IPV4 } else { Domain::IPV6 };
+    let domain = if addr.is_ipv4() {
+        Domain::IPV4
+    } else {
+        Domain::IPV6
+    };
     let socket = Socket::new(domain, Type::STREAM, Some(Protocol::TCP))
         .map_err(|e| Error::RuntimeFailure(format!("create socket: {e}")))?;
 
@@ -120,10 +124,12 @@ pub fn bind_tcp(addr: SocketAddr, opts: &TcpOptions) -> Result<TcpListener> {
         apply_v6_only(&socket, opts.dual_stack_v6)?;
     }
 
-    socket.bind(&addr.into()).map_err(|e| Error::LocalBindFailed {
-        address: addr.to_string(),
-        reason: e.to_string(),
-    })?;
+    socket
+        .bind(&addr.into())
+        .map_err(|e| Error::LocalBindFailed {
+            address: addr.to_string(),
+            reason: e.to_string(),
+        })?;
     // Default backlog 1024; OS may clamp.
     socket.listen(1024).map_err(|e| Error::LocalBindFailed {
         address: addr.to_string(),
@@ -131,7 +137,8 @@ pub fn bind_tcp(addr: SocketAddr, opts: &TcpOptions) -> Result<TcpListener> {
     })?;
 
     let std_listener: std::net::TcpListener = socket.into();
-    TcpListener::from_std(std_listener).map_err(|e| Error::RuntimeFailure(format!("tokio listener: {e}")))
+    TcpListener::from_std(std_listener)
+        .map_err(|e| Error::RuntimeFailure(format!("tokio listener: {e}")))
 }
 
 #[cfg(test)]
@@ -142,7 +149,8 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn bind_tcp_to_ephemeral_loopback() {
         let opts = TcpOptions::production();
-        let listener = bind_tcp(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0), &opts).unwrap();
+        let listener =
+            bind_tcp(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0), &opts).unwrap();
         let local = listener.local_addr().unwrap();
         assert!(local.ip().is_loopback());
         assert!(local.port() != 0);
@@ -154,7 +162,8 @@ mod tests {
             nodelay: true,
             ..TcpOptions::default()
         };
-        let listener = bind_tcp(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0), &opts).unwrap();
+        let listener =
+            bind_tcp(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0), &opts).unwrap();
         // Use std fd to inspect with socket2 (nodelay is on the listener itself).
         let std = listener.into_std().unwrap();
         std.set_nonblocking(false).unwrap();

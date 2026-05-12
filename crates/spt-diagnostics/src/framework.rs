@@ -186,8 +186,12 @@ mod tests {
     #[tokio::test]
     async fn runner_aggregates_in_order() {
         let r = DiagnosticRunner::new()
-            .register(Always { status: Status::Pass })
-            .register(Always { status: Status::Fail });
+            .register(Always {
+                status: Status::Pass,
+            })
+            .register(Always {
+                status: Status::Fail,
+            });
         let rep = r.run(&DiagnosticContext::default()).await;
         assert_eq!(rep.checks.len(), 2);
         assert_eq!(rep.checks[0].status, Status::Pass);

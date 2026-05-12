@@ -121,26 +121,19 @@ impl ServiceManager for OpenRcManager {
         // load-bearing for tempdir-based tests).
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| {
-                Error::ServiceManagerFailed(format!(
-                    "create script root {}: {e}",
-                    parent.display()
-                ))
+                Error::ServiceManagerFailed(format!("create script root {}: {e}", parent.display()))
             })?;
         }
 
-        std::fs::write(&path, script).map_err(|e| {
-            Error::ServiceManagerFailed(format!("write {}: {e}", path.display()))
-        })?;
+        std::fs::write(&path, script)
+            .map_err(|e| Error::ServiceManagerFailed(format!("write {}: {e}", path.display())))?;
 
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             let mut perms = std::fs::metadata(&path)
                 .map_err(|e| {
-                    Error::ServiceManagerFailed(format!(
-                        "metadata {}: {e}",
-                        path.display()
-                    ))
+                    Error::ServiceManagerFailed(format!("metadata {}: {e}", path.display()))
                 })?
                 .permissions();
             perms.set_mode(0o755);
@@ -172,11 +165,7 @@ impl ServiceManager for OpenRcManager {
         // Best-effort deregistration; ignore exit status.
         let _ = self
             .runner
-            .run(
-                "rc-update",
-                &["del", name, "default"],
-                DEFAULT_TIMEOUT,
-            )
+            .run("rc-update", &["del", name, "default"], DEFAULT_TIMEOUT)
             .await;
 
         let path = self.script_path(name);
@@ -198,9 +187,7 @@ impl ServiceManager for OpenRcManager {
 
         if !out.ok() {
             let stderr_lc = out.stderr.to_ascii_lowercase();
-            if stderr_lc.contains("no such service")
-                || stderr_lc.contains("does not exist")
-            {
+            if stderr_lc.contains("no such service") || stderr_lc.contains("does not exist") {
                 return Err(Error::ServiceManagerFailed(format!(
                     "service not found: {name}"
                 )));
@@ -274,11 +261,7 @@ impl ServiceManager for OpenRcManager {
     }
 }
 
-async fn run_rc_service(
-    runner: &dyn CommandRunner,
-    name: &str,
-    action: &str,
-) -> Result<()> {
+async fn run_rc_service(runner: &dyn CommandRunner, name: &str, action: &str) -> Result<()> {
     let out = runner
         .run("rc-service", &[name, action], DEFAULT_TIMEOUT)
         .await?;
@@ -314,10 +297,7 @@ fn render_script(spec: &ServiceSpec) -> String {
     vars.insert("exec_path", spec.exec_path.display().to_string());
     vars.insert("args", args);
     vars.insert("user", spec.user.clone().unwrap_or_else(|| "root".into()));
-    vars.insert(
-        "group",
-        spec.group.clone().unwrap_or_else(|| "root".into()),
-    );
+    vars.insert("group", spec.group.clone().unwrap_or_else(|| "root".into()));
     vars.insert("working_dir", spec.working_dir.display().to_string());
     template::render(TEMPLATE, &vars)
 }
@@ -384,8 +364,8 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let mock = Arc::new(MockRunner::new());
         mock.push_output(ok_out(""));
-        let mgr = OpenRcManager::new_with_runner(mock.clone())
-            .with_script_root(tmp.path().to_path_buf());
+        let mgr =
+            OpenRcManager::new_with_runner(mock.clone()).with_script_root(tmp.path().to_path_buf());
 
         mgr.install(&sample_spec()).await.expect("install");
 
@@ -402,8 +382,8 @@ mod tests {
         let mock = Arc::new(MockRunner::new());
         // rc-update del best-effort; queue a failure to confirm it's ignored.
         mock.push_output(err_out(1, "no such service"));
-        let mgr = OpenRcManager::new_with_runner(mock.clone())
-            .with_script_root(tmp.path().to_path_buf());
+        let mgr =
+            OpenRcManager::new_with_runner(mock.clone()).with_script_root(tmp.path().to_path_buf());
         mgr.uninstall("ghost").await.expect("idempotent");
         mock.assert_called("rc-update", &["del", "ghost", "default"]);
     }
@@ -413,8 +393,8 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let mock = Arc::new(MockRunner::new());
         mock.push_output(ok_out(""));
-        let mgr = OpenRcManager::new_with_runner(mock.clone())
-            .with_script_root(tmp.path().to_path_buf());
+        let mgr =
+            OpenRcManager::new_with_runner(mock.clone()).with_script_root(tmp.path().to_path_buf());
         let path = tmp.path().join("spt-relay");
         std::fs::write(&path, "#!/bin/sh\n").unwrap();
         assert!(path.exists());
@@ -504,10 +484,7 @@ mod tests {
     #[tokio::test]
     async fn reload_unsupported_when_unrecognized_command() {
         let mock = Arc::new(MockRunner::new());
-        mock.push_output(err_out(
-            1,
-            "rc-service: unrecognized command `reload'",
-        ));
+        mock.push_output(err_out(1, "rc-service: unrecognized command `reload'"));
         let mgr = OpenRcManager::new_with_runner(mock);
         let err = mgr.reload("svc").await.expect_err("must error");
         match err {

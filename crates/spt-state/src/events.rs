@@ -90,7 +90,7 @@ impl EventRing {
         Self::spawn_with_clock(state_dir, cfg, Arc::new(SystemClock))
     }
 
-    /// As [`spawn`], with a test-controllable clock.
+    /// As [`Self::spawn`], with a test-controllable clock.
     pub fn spawn_with_clock(
         state_dir: PathBuf,
         cfg: EventRingConfig,

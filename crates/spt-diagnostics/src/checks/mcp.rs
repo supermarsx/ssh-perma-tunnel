@@ -57,15 +57,9 @@ impl Diagnostic for McpDiagnostic {
             Ok((resources, tools)) => {
                 let mut out = Vec::new();
                 out.push(
-                    Check::new(
-                        "mcp.handshake",
-                        Severity::Info,
-                        Status::Pass,
-                    )
-                    .with_evidence(format!(
-                        "stdio handshake against `{}` succeeded",
-                        bin.display()
-                    )),
+                    Check::new("mcp.handshake", Severity::Info, Status::Pass).with_evidence(
+                        format!("stdio handshake against `{}` succeeded", bin.display()),
+                    ),
                 );
                 out.push(check_count(
                     "mcp.resources_count",
@@ -77,19 +71,22 @@ impl Diagnostic for McpDiagnostic {
             }
             Err(e) => vec![Check::new("mcp.handshake", Severity::Medium, Status::Fail)
                 .with_evidence(format!("handshake failed: {e}"))
-                .with_remediation("verify the spt binary path and that the MCP server starts cleanly")],
+                .with_remediation(
+                    "verify the spt binary path and that the MCP server starts cleanly",
+                )],
         }
     }
 }
 
 fn check_count(id: &str, got: usize, want: usize) -> Check {
     if got == want {
-        Check::new(id, Severity::Info, Status::Pass)
-            .with_evidence(format!("count = {got}"))
+        Check::new(id, Severity::Info, Status::Pass).with_evidence(format!("count = {got}"))
     } else {
         Check::new(id, Severity::Medium, Status::Warn)
             .with_evidence(format!("expected {want}, got {got}"))
-            .with_remediation("update spec §13.4 expectation or investigate missing handler registration")
+            .with_remediation(
+                "update spec §13.4 expectation or investigate missing handler registration",
+            )
     }
 }
 

@@ -24,9 +24,9 @@ pub mod uds;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
 
-pub use bind::{AutoPrefer, BindMode, Family, resolve_bind};
+pub use bind::{resolve_bind, AutoPrefer, BindMode, Family};
 pub use cidr::CidrAcl;
-pub use interfaces::{Interface, list as list_interfaces};
+pub use interfaces::{list as list_interfaces, Interface};
 pub use privileged::can_bind_privileged_port;
-pub use sockopts::{TcpOptions, apply as apply_tcp_options, apply_v6_only, bind_tcp};
+pub use sockopts::{apply as apply_tcp_options, apply_v6_only, bind_tcp, TcpOptions};
 pub use uds::bind_unix;

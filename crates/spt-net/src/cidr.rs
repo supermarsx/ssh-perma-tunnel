@@ -66,7 +66,9 @@ fn v4_from_mapped(v6: Ipv6Addr) -> Option<std::net::Ipv4Addr> {
     let segments = v6.segments();
     if segments[0..5].iter().all(|s| *s == 0) && segments[5] == 0xffff {
         let octets = v6.octets();
-        Some(std::net::Ipv4Addr::new(octets[12], octets[13], octets[14], octets[15]))
+        Some(std::net::Ipv4Addr::new(
+            octets[12], octets[13], octets[14], octets[15],
+        ))
     } else {
         None
     }
@@ -97,10 +99,7 @@ mod tests {
 
     #[test]
     fn deny_wins_over_allow() {
-        let acl = CidrAcl::new(
-            vec![net("10.0.0.0/8")],
-            vec![net("10.1.0.0/16")],
-        );
+        let acl = CidrAcl::new(vec![net("10.0.0.0/8")], vec![net("10.1.0.0/16")]);
         assert!(acl.matches(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))));
         assert!(!acl.matches(IpAddr::V4(Ipv4Addr::new(10, 1, 2, 3))));
     }

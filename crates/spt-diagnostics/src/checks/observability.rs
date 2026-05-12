@@ -108,7 +108,9 @@ impl Diagnostic for ObservabilityDiagnostic {
             for s in &events.sinks {
                 let target = match s.kind.as_str() {
                     "email" => s.smtp.clone(),
-                    "http" | "webhook_post" | "push" => s.url.clone().or_else(|| s.endpoint.clone()),
+                    "http" | "webhook_post" | "push" => {
+                        s.url.clone().or_else(|| s.endpoint.clone())
+                    }
                     _ => None,
                 };
                 if let Some(t) = target {
@@ -225,8 +227,14 @@ async fn probe_udp(addr: &str) -> Result<(), String> {
         .await
         .map_err(|_| "dns resolution timeout".to_owned())?
         .map_err(|e| format!("dns: {e}"))?;
-    let target = addrs.next().ok_or_else(|| "no addresses resolved".to_owned())?;
-    let bind = if target.is_ipv6() { "[::]:0" } else { "0.0.0.0:0" };
+    let target = addrs
+        .next()
+        .ok_or_else(|| "no addresses resolved".to_owned())?;
+    let bind = if target.is_ipv6() {
+        "[::]:0"
+    } else {
+        "0.0.0.0:0"
+    };
     let _sock = UdpSocket::bind(bind)
         .await
         .map_err(|e| format!("bind: {e}"))?;

@@ -49,8 +49,7 @@ pub fn synthesize_srv_records(zone_suffix: &str, sources: &[SrvSource]) -> Vec<R
         .iter()
         .map(|s| {
             let owner = format!("_{}._{}.{}", s.service, s.transport, zone);
-            let mut rec =
-                Record::srv(owner, s.priority, s.weight, s.port, &s.target, s.ttl);
+            let mut rec = Record::srv(owner, s.priority, s.weight, s.port, &s.target, s.ttl);
             rec.answer_policy = s.answer_policy;
             rec.forward_id.clone_from(&s.forward_id);
             rec
@@ -81,7 +80,10 @@ mod tests {
         assert_eq!(recs[0].name, "_smtp._tcp.tunnel.local.");
         assert_eq!(recs[0].kind, RecordKind::SRV);
         let (p, w, port, target) = recs[0].srv_parts().unwrap();
-        assert_eq!((p, w, port, target.as_str()), (10, 5, 25, "mail.tunnel.local."));
+        assert_eq!(
+            (p, w, port, target.as_str()),
+            (10, 5, 25, "mail.tunnel.local.")
+        );
         assert_eq!(recs[0].forward_id.as_deref(), Some("svc/smtp"));
     }
 }

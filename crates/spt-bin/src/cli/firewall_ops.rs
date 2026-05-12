@@ -17,9 +17,7 @@ use serde_json::json;
 use spt_cli::GlobalOpts;
 use spt_config::schema::{Config, Forward, Profile};
 use spt_core::{Error, Result};
-use spt_firewall::{
-    new_planner, Action, Direction, FirewallPlanner, Protocol, Rule,
-};
+use spt_firewall::{new_planner, Action, Direction, FirewallPlanner, Protocol, Rule};
 
 /// Args for [`status`].
 ///
@@ -68,10 +66,7 @@ pub async fn status(_global: &GlobalOpts, args: FirewallStatusArgs) -> Result<()
 
 /// `spt firewall bind-preview` — render the rules that *would* be installed
 /// for the given (profile, forward) selection without applying.
-pub async fn bind_preview(
-    global: &GlobalOpts,
-    args: FirewallBindPreviewArgs,
-) -> Result<()> {
+pub async fn bind_preview(global: &GlobalOpts, args: FirewallBindPreviewArgs) -> Result<()> {
     let path = require_config_path(global)?;
     let (cfg, _w) = spt_config::load(&path, false)
         .map_err(|e| Error::InvalidConfig(format!("load `{}`: {e}", path.display())))?;
@@ -90,8 +85,7 @@ pub async fn bind_preview(
         });
         println!(
             "{}",
-            serde_json::to_string_pretty(&v)
-                .map_err(|e| Error::RuntimeFailure(e.to_string()))?
+            serde_json::to_string_pretty(&v).map_err(|e| Error::RuntimeFailure(e.to_string()))?
         );
     } else {
         println!("manager: {:?}", plan.manager);
@@ -121,8 +115,7 @@ fn emit_status(json: bool, rules: &[String], planner: &dyn FirewallPlanner) -> R
         });
         println!(
             "{}",
-            serde_json::to_string_pretty(&v)
-                .map_err(|e| Error::RuntimeFailure(e.to_string()))?
+            serde_json::to_string_pretty(&v).map_err(|e| Error::RuntimeFailure(e.to_string()))?
         );
     } else {
         println!("manager: {:?}", probe.manager);
@@ -236,9 +229,7 @@ fn parse_host_port(s: &str) -> Option<(String, u16)> {
 
 fn require_config_path(global: &GlobalOpts) -> Result<PathBuf> {
     global.config.clone().ok_or_else(|| {
-        Error::InvalidArgs(
-            "no config path supplied (pass --config or set $SPT_CONFIG)".into(),
-        )
+        Error::InvalidArgs("no config path supplied (pass --config or set $SPT_CONFIG)".into())
     })
 }
 

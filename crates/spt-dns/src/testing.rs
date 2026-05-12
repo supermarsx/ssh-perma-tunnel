@@ -253,11 +253,8 @@ mod tests {
         let port = resolver.port();
         assert!(port > 0);
 
-        let group = NameServerConfigGroup::from_ips_clear(
-            &["127.0.0.1".parse().unwrap()],
-            port,
-            true,
-        );
+        let group =
+            NameServerConfigGroup::from_ips_clear(&["127.0.0.1".parse().unwrap()], port, true);
         let cfg = ResolverConfig::from_parts(None, vec![], group);
         let mut opts = ResolverOpts::default();
         opts.timeout = Duration::from_secs(2);

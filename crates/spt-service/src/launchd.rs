@@ -27,8 +27,8 @@ use std::time::Duration;
 use spt_core::error::{Error, Result};
 
 use crate::{
-    template, unsupported, CommandRunner, Scope, ServiceCapabilities, ServiceManager,
-    ServiceSpec, ServiceState, ServiceStatus, TokioRunner,
+    template, unsupported, CommandRunner, Scope, ServiceCapabilities, ServiceManager, ServiceSpec,
+    ServiceState, ServiceStatus, TokioRunner,
 };
 
 const TEMPLATE: &str = include_str!("../../../packaging/launchd/spt.plist.tmpl");
@@ -431,7 +431,9 @@ fn parse_list_output(stdout: &str) -> ServiceStatus {
         .get("PID")
         .and_then(|v| v.parse::<u32>().ok())
         .filter(|p| *p > 0);
-    let exit = kvs.get("LastExitStatus").and_then(|v| v.parse::<i32>().ok());
+    let exit = kvs
+        .get("LastExitStatus")
+        .and_then(|v| v.parse::<i32>().ok());
     if let Some(pid) = pid {
         return ServiceStatus {
             state: ServiceState::Running,
@@ -893,10 +895,7 @@ mod tests {
         mock.push_output(ok(""));
         let mgr = mgr_with(Scope::System, &mock);
         mgr.reload("relay").await.unwrap();
-        mock.assert_called(
-            "launchctl",
-            &["kickstart", "-k", "system/io.spt.relay"],
-        );
+        mock.assert_called("launchctl", &["kickstart", "-k", "system/io.spt.relay"]);
     }
 
     #[tokio::test]
@@ -923,10 +922,7 @@ mod tests {
         mock.push_output(ok(""));
         let mgr = mgr_with(Scope::User, &mock).with_uid(501);
         mgr.kill_signal("relay", "SIGHUP").await.unwrap();
-        mock.assert_called(
-            "launchctl",
-            &["kill", "SIGHUP", "gui/501/io.spt.relay"],
-        );
+        mock.assert_called("launchctl", &["kill", "SIGHUP", "gui/501/io.spt.relay"]);
     }
 
     #[tokio::test]
@@ -935,9 +931,6 @@ mod tests {
         mock.push_output(ok(""));
         let mgr = mgr_with(Scope::System, &mock);
         mgr.kill_signal("relay", "SIGHUP").await.unwrap();
-        mock.assert_called(
-            "launchctl",
-            &["kill", "SIGHUP", "system/io.spt.relay"],
-        );
+        mock.assert_called("launchctl", &["kill", "SIGHUP", "system/io.spt.relay"]);
     }
 }

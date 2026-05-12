@@ -94,12 +94,11 @@ pub fn resolve_bind(mode: &BindMode, port: u16) -> Result<Vec<SocketAddr>> {
             SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), port),
         ],
         BindMode::SpecificInterface { name, family } => {
-            let iface = interfaces::find_by_name(&ifaces, name).ok_or_else(|| {
-                Error::LocalBindFailed {
+            let iface =
+                interfaces::find_by_name(&ifaces, name).ok_or_else(|| Error::LocalBindFailed {
                     address: name.clone(),
                     reason: format!("interface `{name}` not found"),
-                }
-            })?;
+                })?;
             let out = collect_for_family(iface, *family, port);
             if out.is_empty() {
                 return Err(Error::LocalBindFailed {
@@ -132,11 +131,7 @@ fn collect_for_family(iface: &Interface, family: Family, port: u16) -> Vec<Socke
     out
 }
 
-fn resolve_auto(
-    ifaces: &[Interface],
-    prefer: &AutoPrefer,
-    port: u16,
-) -> Result<Vec<SocketAddr>> {
+fn resolve_auto(ifaces: &[Interface], prefer: &AutoPrefer, port: u16) -> Result<Vec<SocketAddr>> {
     let mut out: Vec<SocketAddr> = Vec::new();
     match prefer {
         AutoPrefer::Name(names) => {
@@ -224,17 +219,25 @@ mod tests {
 
     #[test]
     fn specific_ip_passes_through() {
-        let addrs =
-            resolve_bind(&BindMode::SpecificIp(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))), 22)
-                .unwrap();
-        assert_eq!(addrs, vec![SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 22)]);
+        let addrs = resolve_bind(
+            &BindMode::SpecificIp(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))),
+            22,
+        )
+        .unwrap();
+        assert_eq!(
+            addrs,
+            vec![SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 22)]
+        );
     }
 
     #[test]
     fn specific_interface_filters_by_name() {
         // Find a real loopback interface name on the host and ensure it resolves.
         let ifaces = interfaces::list().unwrap();
-        let lo = ifaces.iter().find(|i| i.is_loopback).expect("loopback present");
+        let lo = ifaces
+            .iter()
+            .find(|i| i.is_loopback)
+            .expect("loopback present");
         let addrs = resolve_bind(
             &BindMode::SpecificInterface {
                 name: lo.name.clone(),
