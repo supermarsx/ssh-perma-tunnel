@@ -87,7 +87,7 @@ pub struct Ssh3TlsConfig {
 
     /// Allow self-signed certificates. Spec §9.13: this is ALSO gated by
     /// `acknowledge_experimental` — both must be `true` for `connect()` to
-    /// proceed in non-stub mode (when self-signed roots are encountered).
+    /// proceed when self-signed roots are encountered.
     #[serde(default)]
     pub allow_self_signed: bool,
 

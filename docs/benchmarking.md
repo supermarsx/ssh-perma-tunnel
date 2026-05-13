@@ -4,14 +4,20 @@
 
 ## Drivers
 
-| Driver       | Status (M0)                                                |
+| Driver       | Status                                                     |
 |--------------|------------------------------------------------------------|
-| `latency`    | implemented (loopback duplex; Connector-injectable)        |
-| `throughput` | implemented (loopback duplex; Connector-injectable)        |
-| `udp`        | stub — wired to live tunnels in M6                         |
-| `reconnect`  | stub — needs supervisor handle                             |
-| `dns`        | stub — needs DNS handle                                    |
-| `limits`     | stub — needs forward-handle                                |
+| `latency`    | implemented; synthetic connector or live tunnel TCP stream |
+| `throughput` | implemented; synthetic connector or live tunnel TCP stream |
+| `udp`        | implemented; synthetic loopback or `LiveConnector::open_udp` |
+| `reconnect`  | implemented; synthetic no-op or supervisor close/reconnect trigger |
+| `dns`        | implemented through the async `DnsClient` seam             |
+| `limits`     | implemented; probes the supplied connector for cap/throttle behavior |
+
+When a CLI benchmark includes `--profile`, the request is sent to the
+running supervisor through the MCP loopback and the server-side bridge wires
+the live connector and reconnect trigger into the driver suite. Without a
+profile, the CLI uses synthetic in-process connectors so reports and formats
+can still be exercised offline.
 
 ## Safety
 

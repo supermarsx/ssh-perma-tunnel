@@ -3,7 +3,8 @@
 //! This crate provides a JSON-RPC 2.0 MCP server with two transports:
 //!
 //! - `stdio` — line-delimited JSON-RPC over stdin/stdout (implemented).
-//! - `loopback` — TCP on `127.0.0.1` (placeholder; returns `Error::NotImplemented`).
+//! - `loopback` — TCP on a loopback address with token-gated initialize and
+//!   one task per client connection (implemented).
 //!
 //! The MCP server is **disabled by default**, **read-only by default**, and
 //! **never returns plaintext secrets**. Mutating tools require their name to
