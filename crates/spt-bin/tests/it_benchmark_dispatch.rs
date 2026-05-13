@@ -3,7 +3,8 @@
 //! end-to-end against synthetic in-process drivers and assert the
 //! expected report files appear under `<state_dir>/benchmarks/`.
 //!
-//! Live (`--profile <p>`) drivers correctly refuse with the M6 stub.
+//! Live (`--profile <p>`) drivers correctly fail fast when no running
+//! supervisor MCP loopback sidecar is available.
 
 use std::process::Command;
 

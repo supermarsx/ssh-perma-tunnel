@@ -283,11 +283,21 @@ impl Controller for OrchestratorController {
         let live = profile
             .as_deref()
             .map(|p| self.orchestrator.live_connector(p, forward.as_deref()));
+        let reconnect = profile
+            .as_deref()
+            .and_then(|p| self.orchestrator.profile_handle(p))
+            .map(crate::benchmark_bridge::reconnect_trigger_from_supervisor);
 
-        let result =
-            crate::run_live_benchmark(driver.as_str(), live, count, max_duration_secs, allow_prod)
-                .await
-                .map_err(|e| McpError::Internal(format!("benchmark: {e}")))?;
+        let result = crate::run_live_benchmark(
+            driver.as_str(),
+            live,
+            reconnect,
+            count,
+            max_duration_secs,
+            allow_prod,
+        )
+        .await
+        .map_err(|e| McpError::Internal(format!("benchmark: {e}")))?;
         serde_json::to_value(&result)
             .map_err(|e| McpError::Internal(format!("serialize bench: {e}")))
     }

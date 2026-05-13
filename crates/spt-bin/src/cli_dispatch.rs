@@ -2783,7 +2783,7 @@ async fn benchmark_run(global: &GlobalOpts, args: groups::benchmark::BenchmarkRu
         return Ok(());
     }
     eprintln!(
-        "spt: benchmark `{}` running in synthetic-loopback mode (no live tunnel — see M6)",
+        "spt: benchmark `{}` running in synthetic-loopback mode (no live tunnel profile selected)",
         args.driver
     );
 
