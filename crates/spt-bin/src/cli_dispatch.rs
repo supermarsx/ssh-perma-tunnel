@@ -627,7 +627,26 @@ async fn tunnel_run(global: &GlobalOpts, args: groups::tunnel::TunnelRun) -> Res
     // before validation/runtime so any HKLM-enforced bindings take effect
     // for the long-running tunnel process. See `crates/spt-bin/src/policy/`.
     let _overlay_report = crate::policy::overlay::apply(&mut cfg);
+    let diags = spt_config::validate(&cfg);
+    if !diags.errors.is_empty() {
+        let msg = diags
+            .errors
+            .iter()
+            .map(|d| format!("[{}] {}", d.code, d.message))
+            .collect::<Vec<_>>()
+            .join("; ");
+        return Err(Error::InvalidConfig(format!("validation failed: {msg}")));
+    }
     let state_dir = resolve_state_dir(global, &cfg)?;
+    let _trace_guard = crate::tracing_init::init_from_config(global, &cfg, &state_dir)?;
+    for warning in &diags.warnings {
+        tracing::warn!(
+            code = %warning.code,
+            path = warning.path.as_deref().unwrap_or(""),
+            "config warning: {}",
+            warning.message
+        );
+    }
     let _lock = spt_state::StateLock::acquire(&state_dir)?;
     let selected_profile_names = cfg
         .profiles
@@ -1749,6 +1768,34 @@ async fn firewall_dispatch(global: &GlobalOpts, c: groups::firewall::FirewallCmd
             )
             .await
         }
+        FirewallSub::Gateway(args) => {
+            use groups::firewall::FirewallGatewaySub;
+            match args.command {
+                FirewallGatewaySub::Show(show) => {
+                    crate::cli::firewall_ops::gateway_show(global, show).await
+                }
+                FirewallGatewaySub::Set(set) => {
+                    crate::cli::firewall_ops::gateway_set(global, set).await
+                }
+            }
+        }
+        FirewallSub::Policy(args) => {
+            use groups::firewall::FirewallPolicySub;
+            match args.command {
+                FirewallPolicySub::List(list) => {
+                    crate::cli::firewall_ops::policy_list(global, list).await
+                }
+                FirewallPolicySub::Show(show) => {
+                    crate::cli::firewall_ops::policy_show(global, show).await
+                }
+                FirewallPolicySub::Set(set) => {
+                    crate::cli::firewall_ops::policy_set(global, set).await
+                }
+                FirewallPolicySub::Unset(unset) => {
+                    crate::cli::firewall_ops::policy_unset(global, unset).await
+                }
+            }
+        }
     }
 }
 
@@ -1797,14 +1844,55 @@ fn firewall_interfaces() -> Result<()> {
 // ============================================================================
 
 async fn log_dispatch(global: &GlobalOpts, c: groups::log::LogCmd) -> Result<()> {
-    use groups::log::{LogExportFormat as CliLogFormat, LogSub};
+    use groups::log::{LogExportFormat as CliLogFormat, LogRemoteSub, LogSub};
     match c.command {
         LogSub::Tail(args) => log_tail(global, args),
+        LogSub::Remote(remote) => match remote.command {
+            LogRemoteSub::List(args) => {
+                crate::cli::log_ops::remote_list(
+                    global,
+                    crate::cli::log_ops::LogRemoteListArgs { json: args.json },
+                )
+                .await
+            }
+            LogRemoteSub::Test(args) => {
+                crate::cli::log_ops::test(
+                    global,
+                    crate::cli::log_ops::LogTestArgs {
+                        sink: args.sink,
+                        send_test_record: args.send_test_record,
+                        json: args.json,
+                    },
+                )
+                .await
+            }
+            LogRemoteSub::Status(args) => {
+                crate::cli::log_ops::remote_status(
+                    global,
+                    crate::cli::log_ops::LogRemoteStatusArgs {
+                        sink: args.sink,
+                        json: args.json,
+                    },
+                )
+                .await
+            }
+            LogRemoteSub::Drain(args) => {
+                crate::cli::log_ops::remote_drain(
+                    global,
+                    crate::cli::log_ops::LogRemoteDrainArgs {
+                        sink: args.sink,
+                        json: args.json,
+                    },
+                )
+                .await
+            }
+        },
         LogSub::Test(args) => {
             crate::cli::log_ops::test(
                 global,
                 crate::cli::log_ops::LogTestArgs {
                     sink: args.sink,
+                    send_test_record: false,
                     json: false,
                 },
             )

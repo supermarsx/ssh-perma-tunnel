@@ -1,96 +1,173 @@
 # CLI Reference
 
-`spt` is structured as a Docker-style command tree with 17 top-level groups.
-Run `spt --help` (or `spt <group> --help`) for the canonical, machine-generated
-listing. This guide covers the commands implemented today plus the milestone
-each not-yet-wired command lands in.
+`spt` is structured as a Docker-style command tree with 19 top-level groups.
+The canonical flag listing is generated from the Clap command tree and is
+available through:
 
-## Global flags
+- `spt --help`
+- `spt <group> --help`
+- `spt <group> <subcommand> --help`
+- the generated man pages under `packaging/man/`
 
-| Flag                  | Env             | Notes                                  |
-|-----------------------|-----------------|----------------------------------------|
-| `--config PATH`       | `SPT_CONFIG`    | Path to a single config file.          |
-| `--config-dir PATH`   |                 | Directory of `*.toml` configs (lex).   |
-| `--config-url URL`    | `SPT_CONFIG_URL`| HTTPS-only remote config.              |
-| `--config-fingerprint`|                 | SHA-256 pin for `--config-url`.        |
-| `--state-dir PATH`    | `SPT_STATE_DIR` | Override runtime state directory.      |
-| `--profile NAME`      |                 | Limit operations to one profile.       |
-| `--output FORMAT`     |                 | `human` (default), `json`, `jsonl`, `yaml`. |
-| `--json`              |                 | Alias for `--output json`.             |
-| `--log-level LEVEL`   |                 | `error|warn|info|debug|trace`.        |
-| `--color MODE`        | `NO_COLOR`      | `auto|always|never`.                   |
-| `--quiet` / `--verbose` |               | Reduce / increase output.              |
-| `--dry-run`           |                 | Plan, never mutate.                    |
+This page is the maintained operator index for the command surface, config
+surfaces, completion support, and exit-code contract.
 
-## Implemented in M0
+## Global Flags
 
-These are wired end-to-end by the binary:
+| Flag | Env | Notes |
+|------|-----|-------|
+| `--config PATH` | `SPT_CONFIG` | Path to a single config file. |
+| `--config-dir PATH` | | Directory of `*.toml` configs, loaded lexically. |
+| `--config-url URL` | `SPT_CONFIG_URL` | HTTPS remote config. |
+| `--config-fingerprint SHA256` | | SHA-256 pin for `--config-url`. |
+| `--state-dir PATH` | `SPT_STATE_DIR` | Override runtime state directory. |
+| `--profile NAME` | | Restrict operations to one profile where supported. |
+| `--output FORMAT` | | `human`, `json`, `jsonl`, or `yaml`. |
+| `--json` | | Convenience alias for `--output json`. |
+| `--log-level LEVEL` | | `error`, `warn`, `info`, `debug`, or `trace`. |
+| `--color MODE` | `NO_COLOR` | `auto`, `always`, or `never`. |
+| `--quiet`, `--verbose` | | Reduce or increase output. |
+| `--dry-run` | | Plan without mutating where supported. |
 
-- `spt config validate` — load, validate, and report.
-- `spt config render` — re-emit canonical TOML; `--redacted` to mask.
-- `spt config diff` — field-level diff between two configs.
-- `spt profile list / show / add / remove` — read/write the TOML.
-- `spt profile configure --tui` — interactive editor (ratatui).
-- `spt forward list / add / remove` — TOML mutation.
-- `spt tunnel run` — acquire state lock, write status snapshot, wait on signals.
-- `spt tunnel status` — print the latest snapshot from `<state_dir>/status.json`.
-- `spt tunnel stop / reload` — signal the running supervisor (Unix).
-- `spt service install / uninstall / start / stop / restart / status / render`.
-- `spt key generate / inspect` — Ed25519 / ECDSA-P256 / RSA via `ssh-key`.
-- `spt secret set / get / remove / doctor` — keychain-backed.
-- `spt dns hosts render / apply / restore` — managed-block hosts file.
-- `spt firewall plan / apply --dry-run / interfaces`.
-- `spt observe metrics` — read `<state_dir>/metrics.prom`.
-- `spt log tail` — last 200 lines of `<state_dir>/spt.log`.
-- `spt diagnose run / bundle` — structured checks + redacted bundle.
-- `spt benchmark report compare` — diff two saved benchmark JSONs.
-- `spt mcp serve --enable --stdio` — JSON-RPC MCP server.
-- `spt completion generate <shell>` — bash, zsh, fish, powershell, elvish.
+## Commands
 
-## Tracked in later milestones
+| Group | Command surface |
+|-------|-----------------|
+| `config` | `init`, `validate`, `doctor`, `render`, `diff`, `migrate`, `reload`, `pull`, `trust add-url` |
+| `profile` | `list`, `show`, `add`, `configure`, `set`, `enable`, `disable`, `remove`, `test` |
+| `forward` | `list`, `show`, `add local`, `add remote`, `explain`, `test`, `throttle`, `remove` |
+| `tunnel` | `run`, `status`, `stats`, `sessions`, `stop`, `reload`, `health`, `failover` |
+| `service` | `install`, `uninstall`, `start`, `stop`, `restart`, `status`, `render` |
+| `key` | `generate`, `inspect`, `public`, `change-passphrase`, `sign-cert`, `verify-cert`, `install-public` |
+| `secret` | `store init`, `set`, `get`, `list`, `rotate`, `remove`, `doctor` |
+| `auth` | `test`, `ssh3-login` |
+| `dns` | `serve`, `status`, `query`, `upstream set`, `record add`, `record remove`, `hosts render`, `hosts apply`, `hosts restore` |
+| `firewall` | `plan`, `apply`, `remove`, `status`, `interfaces`, `bind-preview`, `gateway show`, `gateway set`, `policy list`, `policy show`, `policy set`, `policy unset` |
+| `log` | `tail`, `test`, `export`, `remote list`, `remote test`, `remote status`, `remote drain` |
+| `observe` | `metrics`, `windows-event install-source`, `windows-event test`; SNMP subcommands are present only in `--features snmp` builds |
+| `event` | `list`, `test`, `replay`, `sink list`, `sink test` |
+| `stats` | `summary`, `live`, `connections`, `throughput`, `errors`, `export` |
+| `session` | `list`, `show`, `close`, `drain`, `top` |
+| `diagnose` | `run`, `network`, `auth`, `trust`, `dns`, `bind`, `port`, `service`, `secrets`, `observability`, `mcp`, `bundle` |
+| `benchmark` | `run`, `latency`, `throughput`, `udp`, `reconnect`, `dns`, `limits`, `report compare`, `report export` |
+| `mcp` | `serve`, `inspect`, `policy show`, `policy set` |
+| `completion` | `generate bash`, `generate zsh`, `generate fish`, `generate powershell`, `generate elvish` |
 
-A small set of subcommands return a structured "not yet implemented" error
-in M0:
+## Capability Notes
 
-| Command                          | Milestone |
-|----------------------------------|-----------|
-| `config init / migrate / pull`   | M0+ / M5 |
-| `config doctor`                  | M3       |
-| `config trust add-url`           | M5       |
-| `profile set / enable / disable` | M2       |
-| `profile test`                   | M3       |
-| `forward show / explain / test / throttle` | M2-M4 |
-| `tunnel stats / sessions / failover / health` | M3-M4 |
-| `auth test / ssh3-login`         | M1+      |
-| `secret store init / list / rotate` | M1     |
-| `dns serve / status / query / record / upstream` | M2 |
-| `firewall status / bind-preview` | M3       |
-| `log test / export`              | M3       |
-| `observe snmp / windows-event`   | M3       |
-| `event ...`                      | M3       |
-| `stats live / connections / throughput / errors / export` | M4 |
-| `session show / close / drain / top` | M4   |
-| `diagnose port / network / auth / trust / dns / bind / secrets / observability / mcp` | M5 |
-| `benchmark run / latency / throughput / udp / reconnect / dns / limits` | M6 |
-| `benchmark report export`        | M6       |
-| `mcp inspect / policy`           | M7+      |
+- SSH2 and SSH3 profiles are configured with TOML and managed with
+  `profile`, `forward`, `tunnel`, and `service` commands.
+- SSH3 remains experimental and requires `acknowledge_experimental = true`
+  on SSH3 profiles.
+- UDP forwarding is SSH3-only; SSH2 UDP forwards validate as unsupported.
+- Interface-specific binds use per-forward `bind_mode`, `bind_interface`,
+  `bind_interface_preference`, and `bind_ipv6`, plus global `[network]`
+  defaults.
+- Gateway, interface, offload, load-balancing, and failover settings live in
+  `[network]` and `[profiles.failover]`.
+- Windows GPO-style policy is surfaced through `spt firewall policy`; Windows
+  writes target `HKCU` or `HKLM\Software\Policies\spt`, while non-Windows
+  hosts return `UnsupportedPlatform` for policy writes.
+- Remote logging supports `syslog_udp`, `syslog_tcp`, `syslog_tls`,
+  `https_jsonl`, and `otlp` config kinds. The live writer implementation
+  covers the syslog transports and CLI testing/status/drain paths.
+- MCP is disabled by default; `spt mcp serve` requires `[mcp].enabled = true`
+  or `--enable`.
+- SNMP is disabled by default and build-gated. Default builds do not expose
+  `spt observe snmp`; `--features snmp` builds expose SNMP commands and
+  require a configured production `observability.snmp.enterprise_id`.
+- DNS resolver and hosts-file mutation are opt-in.
 
-## Exit codes
+## Config Surfaces
 
-The binary uses 38 stable exit codes from spec §7.4. The most common:
+The TOML schema documents and validates these operational surfaces:
 
-| Code | Name                  | Meaning                                |
-|------|-----------------------|----------------------------------------|
-| 0    | Success               | Successful completion.                 |
-| 1    | InvalidArgs           | Bad CLI arguments.                     |
-| 2    | InvalidConfig         | Config failed to load or validate.     |
-| 3    | RuntimeFailure        | Generic runtime failure (incl. stubs). |
-| 5    | AuthFailed            | Auth to a remote endpoint failed.      |
-| 6    | TrustFailed           | Host key / TLS pin verification failed.|
-| 16   | StateLockFailed       | Another spt process is running.        |
-| 17   | SecretUnavailable     | Secret is not resolvable.              |
-| 19   | KeyFailure            | Key generation / parse / mode check.   |
-| 20   | PermissionDenied      | OS-level permission denied.            |
-| 26   | McpFailed             | MCP server / policy failure.           |
+- `[runtime]`, `[runtime.threads]`, `[runtime.reload]`,
+  `[runtime.remote_config]`
+- `[logging]`, `[[logging.remote]]`
+- `[network]`, `[network.interface]`, `[network.gateway]`,
+  `[network.offload]`, `[network.load_balance]`
+- `[dns]`, managed records, hosts-file settings, resolver settings
+- `[firewall]`
+- `[observability.metrics]`, `[observability.snmp]`,
+  `[observability.windows_event]`
+- `[events]`, `[[events.bindings]]`, `[[events.sinks]]`
+- `[mcp]`
+- `[diagnostics]`
+- `[benchmark]`
+- `[[profiles]]`, `[profiles.auth]`, `[profiles.trust]`, `[profiles.tls]`,
+  `[profiles.crypto]`, `[profiles.keepalive]`, `[profiles.reconnect]`,
+  `[profiles.failover]`, unstable-connection detection, limits, forwards, DNS
+  names, bind/interface policy, observability tags, and diagnostics tags
 
-Full mapping: see `crates/spt-core/src/exit_code.rs`.
+See `docs/configuration.md` for the schema walkthrough and examples.
+
+## Shell Completions
+
+Completions are generated from the live command tree:
+
+```text
+spt completion generate bash
+spt completion generate zsh
+spt completion generate fish
+spt completion generate powershell
+spt completion generate elvish
+```
+
+The package manifests install or generate completions for the relevant shell
+paths, including bash, zsh, fish, PowerShell, and Homebrew's completion helper.
+
+## Man Pages
+
+Committed man pages live under `packaging/man/`:
+
+- `spt.1`
+- `spt-auth.1`
+- `spt-benchmark.1`
+- `spt-completion.1`
+- `spt-config.1`
+- `spt-diagnose.1`
+- `spt-dns.1`
+- `spt-event.1`
+- `spt-firewall.1`
+- `spt-forward.1`
+- `spt-key.1`
+- `spt-log.1`
+- `spt-mcp.1`
+- `spt-observe.1`
+- `spt-profile.1`
+- `spt-secret.1`
+- `spt-service.1`
+- `spt-session.1`
+- `spt-stats.1`
+- `spt-tunnel.1`
+
+Regenerate them after CLI changes with:
+
+```text
+cargo run -p spt-bin --bin spt-mangen -- --out packaging/man
+```
+
+## Exit Codes
+
+The binary uses stable process exit codes from `crates/spt-core/src/exit_code.rs`.
+The most common are:
+
+| Code | Name | Meaning |
+|------|------|---------|
+| 0 | `Success` | Successful completion. |
+| 1 | `InvalidArgs` | Bad CLI arguments. |
+| 2 | `InvalidConfig` | Config failed to load or validate. |
+| 3 | `RuntimeFailure` | Generic runtime failure. |
+| 5 | `AuthFailed` | Authentication failed. |
+| 6 | `TrustFailed` | Host key or TLS pin verification failed. |
+| 8 | `UnsupportedFeature` | Requested capability is not supported. |
+| 9 | `ServiceManagerFailed` | Native service manager operation failed. |
+| 16 | `StateLockFailed` | Another `spt` process owns the state lock. |
+| 17 | `SecretUnavailable` | Secret could not be resolved. |
+| 19 | `KeyFailure` | Key generation, parsing, or certificate failure. |
+| 20 | `PermissionDenied` | OS-level permission denied. |
+| 22 | `ConfigReloadRejected` | Reload was rejected. |
+| 23 | `Timeout` | Operation timed out. |
+| 24 | `OutOfMemory` | Memory allocation failure or configured memory cap. |
+| 26 | `McpFailed` | MCP server or policy failure. |

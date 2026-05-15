@@ -5,6 +5,8 @@ use clap::{Args, Subcommand, ValueEnum};
 const EXAMPLES: &str = "EXAMPLES:
   spt log tail --follow --profile edge --since 15m
   spt log test --sink remote-syslog
+  spt log remote list
+  spt log remote test --sink remote-syslog --send-test-record
   spt log export --format jsonl --since 24h
   spt log tail --since 1h --json
   spt log export --format csv --since 7d";
@@ -23,10 +25,77 @@ pub struct LogCmd {
 pub enum LogSub {
     /// Tail logs.
     Tail(LogTail),
+    /// Manage configured remote log sinks.
+    Remote(LogRemote),
     /// Probe a configured sink.
     Test(LogTest),
     /// Export logs to a structured format.
     Export(LogExport),
+}
+
+/// `spt log remote`.
+#[derive(Args, Debug)]
+pub struct LogRemote {
+    /// Subcommand.
+    #[command(subcommand)]
+    pub command: LogRemoteSub,
+}
+
+/// Remote-log subcommands.
+#[derive(Subcommand, Debug)]
+pub enum LogRemoteSub {
+    /// List configured remote log sinks.
+    List(LogRemoteList),
+    /// Probe a configured remote log sink.
+    Test(LogRemoteTest),
+    /// Show local delivery status for a remote log sink.
+    Status(LogRemoteStatus),
+    /// Drain a remote log sink's disk spool.
+    Drain(LogRemoteDrain),
+}
+
+/// `spt log remote list`.
+#[derive(Args, Debug)]
+pub struct LogRemoteList {
+    /// JSON output.
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// `spt log remote test`.
+#[derive(Args, Debug)]
+pub struct LogRemoteTest {
+    /// Sink name.
+    #[arg(long, value_name = "NAME")]
+    pub sink: String,
+    /// Send a real synthetic record instead of only probing reachability.
+    #[arg(long)]
+    pub send_test_record: bool,
+    /// JSON output.
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// `spt log remote status`.
+#[derive(Args, Debug)]
+pub struct LogRemoteStatus {
+    /// Sink name.
+    #[arg(long, value_name = "NAME")]
+    pub sink: String,
+    /// JSON output.
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// `spt log remote drain`.
+#[derive(Args, Debug)]
+pub struct LogRemoteDrain {
+    /// Sink name.
+    #[arg(long, value_name = "NAME")]
+    pub sink: String,
+    /// JSON output.
+    #[arg(long)]
+    pub json: bool,
 }
 
 /// `spt log tail`.

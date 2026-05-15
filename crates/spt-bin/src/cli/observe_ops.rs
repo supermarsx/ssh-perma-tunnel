@@ -19,8 +19,7 @@ use spt_core::{Error, Result};
 #[cfg(feature = "snmp")]
 #[derive(Debug, Clone)]
 pub struct ObserveSnmpArgs {
-    /// Subtree root to walk. Defaults to the project enterprise prefix
-    /// `1.3.6.1.4.1.99999.0`.
+    /// Subtree root to walk. Defaults to `[observability.snmp].enterprise_id`.
     pub query: Option<String>,
     /// USM user name. Defaults to `spt-monitor`.
     pub user: Option<String>,
@@ -65,8 +64,6 @@ pub struct ObserveWindowsEventArgs {
 // ---------------------------------------------------------------------------
 
 #[cfg(feature = "snmp")]
-const DEFAULT_ENTERPRISE_OID: &str = "1.3.6.1.4.1.99999.0";
-#[cfg(feature = "snmp")]
 const DEFAULT_USER: &str = "spt-monitor";
 #[cfg(feature = "snmp")]
 const DEFAULT_TARGET: &str = "127.0.0.1:10161";
@@ -93,7 +90,18 @@ pub async fn snmp(global: &GlobalOpts, args: ObserveSnmpArgs) -> Result<()> {
         .parse()
         .map_err(|e| Error::InvalidArgs(format!("snmp target `{target_str}`: {e}")))?;
 
-    let oid_str = args.query.as_deref().unwrap_or(DEFAULT_ENTERPRISE_OID);
+    let configured_oid = config_snmp_enterprise_oid(global).ok().flatten();
+    let oid_str = args
+        .query
+        .as_deref()
+        .or(configured_oid.as_deref())
+        .ok_or_else(|| {
+            Error::InvalidArgs(
+                "provide --query or set [observability.snmp].enterprise_id; \
+                 production SNMP cannot default to the RFC documentation PEN"
+                    .into(),
+            )
+        })?;
     let root_oid: ObjectIdentifier = oid_str
         .parse()
         .map_err(|e: spt_snmp::Error| Error::InvalidArgs(format!("oid `{oid_str}`: {e}")))?;
@@ -232,6 +240,21 @@ fn config_snmp_bind(global: &GlobalOpts) -> Result<Option<String>> {
         .and_then(|s| s.bind.clone()))
 }
 
+#[cfg(feature = "snmp")]
+fn config_snmp_enterprise_oid(global: &GlobalOpts) -> Result<Option<String>> {
+    let Some(path) = global.config.clone() else {
+        return Ok(None);
+    };
+    let (cfg, _w) =
+        spt_config::load(&path, false).map_err(|e| Error::InvalidConfig(format!("load: {e}")))?;
+    Ok(cfg
+        .observability
+        .as_ref()
+        .and_then(|o| o.snmp.as_ref())
+        .and_then(|s| s.enterprise_id)
+        .map(|pen| spt_snmp::enterprise_oid(pen).to_string()))
+}
+
 fn config_winevent_source(global: &GlobalOpts) -> Result<Option<String>> {
     let Some(path) = global.config.clone() else {
         return Ok(None);
@@ -324,7 +347,7 @@ mod tests {
         use spt_snmp::{ConstScalar, ObjectIdentifier};
 
         let user = fixtures::default_user();
-        let oid: ObjectIdentifier = "1.3.6.1.4.1.99999.0".parse().unwrap();
+        let oid: ObjectIdentifier = spt_snmp::DOCUMENTATION_ENTERPRISE_OID.parse().unwrap();
         let oid_for_register = oid.clone();
         let agent = LocalhostAgent::ephemeral_with(user, |b| {
             b.add_scalar(
@@ -338,6 +361,7 @@ mod tests {
         let g = opts();
         let args = ObserveSnmpArgs {
             target: Some(agent.addr().to_string()),
+            query: Some(spt_snmp::DOCUMENTATION_ENTERPRISE_OID.to_string()),
             user: Some("spt-test".to_string()),
             json: true,
             ..Default::default()

@@ -44,7 +44,26 @@ pub struct LogTestArgs {
     /// Sink name (must match `[[events.sinks]].name` or
     /// `[[logging.remote]].name`).
     pub sink: String,
+    /// Send a real synthetic record for remote log sinks.
+    pub send_test_record: bool,
     /// Emit JSON instead of plain text.
+    pub json: bool,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct LogRemoteListArgs {
+    pub json: bool,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct LogRemoteStatusArgs {
+    pub sink: String,
+    pub json: bool,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct LogRemoteDrainArgs {
+    pub sink: String,
     pub json: bool,
 }
 
@@ -89,9 +108,12 @@ pub async fn test(global: &GlobalOpts, args: LogTestArgs) -> Result<()> {
         .as_ref()
         .and_then(|l| l.remote.iter().find(|r| r.name == args.sink))
     {
-        fire_synthetic_remote_log(remote)
-            .await
-            .map(|_| "logging.remote")
+        let result = if args.send_test_record {
+            send_remote_test_record(remote).await
+        } else {
+            fire_synthetic_remote_log(remote).await
+        };
+        result.map(|_| "logging.remote")
     } else {
         return Err(Error::InvalidArgs(format!(
             "no sink named `{}` found in `[[events.sinks]]` or `[[logging.remote]]`",
@@ -132,6 +154,125 @@ pub async fn test(global: &GlobalOpts, args: LogTestArgs) -> Result<()> {
             "log test for `{}` failed",
             args.sink
         )));
+    }
+    Ok(())
+}
+
+/// `spt log remote list`.
+pub async fn remote_list(global: &GlobalOpts, args: LogRemoteListArgs) -> Result<()> {
+    let path = require_config_path(global)?;
+    let (cfg, _w) =
+        spt_config::load(&path, false).map_err(|e| Error::InvalidConfig(format!("load: {e}")))?;
+    let remotes = cfg.logging.map_or_else(Vec::new, |l| l.remote);
+    if args.json {
+        let rows = remotes
+            .iter()
+            .map(|r| {
+                json!({
+                    "name": r.name,
+                    "type": r.kind,
+                    "endpoint": r.endpoint,
+                    "required": r.required.unwrap_or(false),
+                })
+            })
+            .collect::<Vec<_>>();
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&rows)
+                .map_err(|e| Error::RuntimeFailure(e.to_string()))?
+        );
+        return Ok(());
+    }
+    if remotes.is_empty() {
+        println!("no remote log sinks configured");
+    } else {
+        for r in remotes {
+            println!(
+                "{}\t{}\t{}\trequired={}",
+                r.name,
+                r.kind,
+                r.endpoint.as_deref().unwrap_or("-"),
+                r.required.unwrap_or(false)
+            );
+        }
+    }
+    Ok(())
+}
+
+/// `spt log remote status --sink <name>`.
+pub async fn remote_status(global: &GlobalOpts, args: LogRemoteStatusArgs) -> Result<()> {
+    let path = require_config_path(global)?;
+    let (cfg, _w) =
+        spt_config::load(&path, false).map_err(|e| Error::InvalidConfig(format!("load: {e}")))?;
+    let remote = find_remote(&cfg, &args.sink)?;
+    let state_dir = spt_state::resolve_state_dir(global.state_dir.as_deref())?;
+    let spool_dir = remote_spool_dir(remote, &state_dir);
+    let (pending_files, pending_bytes) = spool_stats(&spool_dir)?;
+    if args.json {
+        let v = json!({
+            "sink": remote.name,
+            "type": remote.kind,
+            "endpoint": remote.endpoint,
+            "spool_dir": spool_dir,
+            "pending_files": pending_files,
+            "pending_bytes": pending_bytes,
+        });
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&v).map_err(|e| Error::RuntimeFailure(e.to_string()))?
+        );
+    } else {
+        println!(
+            "{}\t{}\tpending_files={}\tpending_bytes={}\tspool={}",
+            remote.name,
+            remote.kind,
+            pending_files,
+            pending_bytes,
+            spool_dir.display()
+        );
+    }
+    Ok(())
+}
+
+/// `spt log remote drain --sink <name>`.
+pub async fn remote_drain(global: &GlobalOpts, args: LogRemoteDrainArgs) -> Result<()> {
+    let path = require_config_path(global)?;
+    let (cfg, _w) =
+        spt_config::load(&path, false).map_err(|e| Error::InvalidConfig(format!("load: {e}")))?;
+    let remote = find_remote(&cfg, &args.sink)?;
+    let state_dir = spt_state::resolve_state_dir(global.state_dir.as_deref())?;
+    let spool_dir = remote_spool_dir(remote, &state_dir);
+    let mut drained = 0_u64;
+    let mut failed = None;
+    let mut spool = spt_state::DiskSpool::open(spool_dir, spt_state::SpoolConfig::default())?;
+    while let Some(entry) = spool.pop()? {
+        match send_remote_payload(remote, &entry.payload).await {
+            Ok(()) => drained += 1,
+            Err(e) => {
+                let _ = spool.push(&entry.payload);
+                failed = Some(e);
+                break;
+            }
+        }
+    }
+    if args.json {
+        let v = json!({
+            "sink": remote.name,
+            "drained": drained,
+            "error": failed,
+        });
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&v).map_err(|e| Error::RuntimeFailure(e.to_string()))?
+        );
+    } else if let Some(e) = failed {
+        println!("FAIL: drained {drained} record(s), then failed: {e}");
+        return Err(Error::RuntimeFailure(format!(
+            "remote log drain for `{}` failed",
+            remote.name
+        )));
+    } else {
+        println!("ok: drained {drained} record(s) from `{}`", remote.name);
     }
     Ok(())
 }
@@ -396,8 +537,211 @@ async fn fire_synthetic_remote_log(
     }
 }
 
+async fn send_remote_test_record(
+    remote: &spt_config::schema::LoggingRemote,
+) -> std::result::Result<(), String> {
+    let payload = format!(
+        "<134>1 {} {} spt {} - - synthetic remote log test",
+        Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+        std::env::var("COMPUTERNAME")
+            .or_else(|_| std::env::var("HOSTNAME"))
+            .unwrap_or_else(|_| "localhost".into()),
+        std::process::id()
+    )
+    .into_bytes();
+    send_remote_payload(remote, &payload).await
+}
+
+async fn send_remote_payload(
+    remote: &spt_config::schema::LoggingRemote,
+    payload: &[u8],
+) -> std::result::Result<(), String> {
+    let endpoint = remote
+        .endpoint
+        .as_deref()
+        .ok_or_else(|| format!("sink `{}` has no endpoint configured", remote.name))?;
+    match remote.kind.as_str() {
+        "syslog_udp" | "syslog-udp" => {
+            let (host, port) = parse_endpoint(endpoint, 514)?;
+            let mut cfg = spt_observability::syslog_udp::SyslogUdpConfig::new(host, port);
+            apply_udp_options(remote, &mut cfg)?;
+            spt_observability::syslog_udp::send_one(&cfg, payload.to_vec())
+                .await
+                .map_err(|e| e.to_string())
+        }
+        "syslog_tcp" | "syslog-tcp" => {
+            let (host, port) = parse_endpoint(endpoint, 514)?;
+            let tmp = std::env::temp_dir().join(format!("spt-log-test-{}", remote.name));
+            let mut cfg = spt_observability::syslog_tcp::SyslogTcpConfig::new(host, port, tmp);
+            apply_tcp_options(remote, &mut cfg)?;
+            spt_observability::syslog_tcp::send_one(&cfg, payload)
+                .await
+                .map_err(|e| e.to_string())
+        }
+        "syslog_tls" | "syslog-tls" => {
+            let (host, port) = parse_endpoint(endpoint, 6514)?;
+            let tmp = std::env::temp_dir().join(format!("spt-log-test-{}", remote.name));
+            let mut cfg = spt_observability::syslog_tls::SyslogTlsConfig::new(host, port, tmp);
+            apply_tls_options(remote, &mut cfg)?;
+            spt_observability::syslog_tls::send_one(&cfg, payload)
+                .await
+                .map_err(|e| e.to_string())
+        }
+        other => Err(format!(
+            "sink kind `{other}` does not support --send-test-record"
+        )),
+    }
+}
+
+fn apply_udp_options(
+    remote: &spt_config::schema::LoggingRemote,
+    cfg: &mut spt_observability::syslog_udp::SyslogUdpConfig,
+) -> std::result::Result<(), String> {
+    if let Some(facility) = remote.facility {
+        cfg.facility = facility;
+    }
+    if let Some(app_name) = remote.app_name.clone() {
+        cfg.app_name = app_name;
+    }
+    if let Some(hostname) = remote.hostname.clone() {
+        cfg.hostname = hostname;
+    }
+    if let Some(enterprise_id) = remote.enterprise_id {
+        cfg.enterprise_id = enterprise_id;
+    }
+    if let Some(timeout) = remote.timeout.as_deref() {
+        cfg.timeout = spt_core::duration::parse_duration(timeout).map_err(|e| e.to_string())?;
+    }
+    if let Some(queue) = remote.queue_max_records {
+        cfg.queue_max_records = queue as usize;
+    }
+    Ok(())
+}
+
+fn apply_tcp_options(
+    remote: &spt_config::schema::LoggingRemote,
+    cfg: &mut spt_observability::syslog_tcp::SyslogTcpConfig,
+) -> std::result::Result<(), String> {
+    if let Some(facility) = remote.facility {
+        cfg.facility = facility;
+    }
+    if let Some(app_name) = remote.app_name.clone() {
+        cfg.app_name = app_name;
+    }
+    if let Some(hostname) = remote.hostname.clone() {
+        cfg.hostname = hostname;
+    }
+    if let Some(enterprise_id) = remote.enterprise_id {
+        cfg.enterprise_id = enterprise_id;
+    }
+    if let Some(timeout) = remote.timeout.as_deref() {
+        cfg.timeout = spt_core::duration::parse_duration(timeout).map_err(|e| e.to_string())?;
+    }
+    if let Some(backoff) = remote.reconnect_backoff.as_deref() {
+        cfg.reconnect_backoff =
+            spt_core::duration::parse_duration(backoff).map_err(|e| e.to_string())?;
+    }
+    if let Some(max) = remote.spool_max_bytes.as_deref() {
+        cfg.spool.max_bytes = spt_core::size::parse_size(max).map_err(|e| e.to_string())?;
+    }
+    if let Some(queue) = remote.queue_max_records {
+        cfg.queue_max_records = queue as usize;
+        cfg.spool.max_files = queue as usize;
+    }
+    Ok(())
+}
+
+fn apply_tls_options(
+    remote: &spt_config::schema::LoggingRemote,
+    cfg: &mut spt_observability::syslog_tls::SyslogTlsConfig,
+) -> std::result::Result<(), String> {
+    apply_tcp_like_options_to_tls(remote, cfg)?;
+    cfg.server_name = remote.server_name.clone();
+    cfg.client_cert = remote.client_cert.as_ref().map(PathBuf::from);
+    cfg.client_key = remote.client_key.as_ref().map(PathBuf::from);
+    cfg.allow_invalid_certs = remote.allow_invalid_certs.unwrap_or(false);
+    if remote.ca_file.is_some() {
+        cfg.roots = Some(
+            spt_observability::syslog_tls::root_store_with_ca_file(
+                remote.ca_file.as_deref().map(Path::new),
+            )
+            .map_err(|e| e.to_string())?,
+        );
+    }
+    Ok(())
+}
+
+fn apply_tcp_like_options_to_tls(
+    remote: &spt_config::schema::LoggingRemote,
+    cfg: &mut spt_observability::syslog_tls::SyslogTlsConfig,
+) -> std::result::Result<(), String> {
+    if let Some(facility) = remote.facility {
+        cfg.facility = facility;
+    }
+    if let Some(app_name) = remote.app_name.clone() {
+        cfg.app_name = app_name;
+    }
+    if let Some(hostname) = remote.hostname.clone() {
+        cfg.hostname = hostname;
+    }
+    if let Some(enterprise_id) = remote.enterprise_id {
+        cfg.enterprise_id = enterprise_id;
+    }
+    if let Some(timeout) = remote.timeout.as_deref() {
+        cfg.timeout = spt_core::duration::parse_duration(timeout).map_err(|e| e.to_string())?;
+    }
+    if let Some(backoff) = remote.reconnect_backoff.as_deref() {
+        cfg.reconnect_backoff =
+            spt_core::duration::parse_duration(backoff).map_err(|e| e.to_string())?;
+    }
+    if let Some(max) = remote.spool_max_bytes.as_deref() {
+        cfg.spool.max_bytes = spt_core::size::parse_size(max).map_err(|e| e.to_string())?;
+    }
+    if let Some(queue) = remote.queue_max_records {
+        cfg.queue_max_records = queue as usize;
+        cfg.spool.max_files = queue as usize;
+    }
+    Ok(())
+}
+
+fn find_remote<'a>(
+    cfg: &'a spt_config::schema::Config,
+    name: &str,
+) -> Result<&'a spt_config::schema::LoggingRemote> {
+    cfg.logging
+        .as_ref()
+        .and_then(|l| l.remote.iter().find(|r| r.name == name))
+        .ok_or_else(|| Error::InvalidArgs(format!("no remote log sink named `{name}`")))
+}
+
+fn remote_spool_dir(remote: &spt_config::schema::LoggingRemote, state_dir: &Path) -> PathBuf {
+    remote.spool_dir.as_ref().map_or_else(
+        || state_dir.join("remote-log-spool").join(&remote.name),
+        PathBuf::from,
+    )
+}
+
+fn spool_stats(dir: &Path) -> Result<(usize, u64)> {
+    let rd = match std::fs::read_dir(dir) {
+        Ok(rd) => rd,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok((0, 0)),
+        Err(e) => return Err(Error::RuntimeFailure(format!("read spool: {e}"))),
+    };
+    let mut files = 0_usize;
+    let mut bytes = 0_u64;
+    for ent in rd.flatten() {
+        if ent.file_name().to_string_lossy().ends_with(".bin") {
+            files += 1;
+            bytes += ent.metadata().map(|m| m.len()).unwrap_or_default();
+        }
+    }
+    Ok((files, bytes))
+}
+
 fn default_port_for_kind(kind: &str) -> u16 {
     match kind {
+        "syslog_udp" | "syslog-udp" => 514,
+        "syslog_tcp" | "syslog-tcp" => 514,
         "syslog_tls" | "syslog-tls" => 6514,
         "https_jsonl" | "https-jsonl" => 443,
         "otlp" => 4317,
@@ -526,6 +870,7 @@ mod tests {
         let g = opts(Some(cfg), None);
         let args = LogTestArgs {
             sink: "missing-sink".to_string(),
+            send_test_record: false,
             json: false,
         };
         let err = test(&g, args).await.unwrap_err();
@@ -565,6 +910,7 @@ required = false
         let g = opts(Some(cfg), None);
         let args = LogTestArgs {
             sink: "remote-syslog".to_string(),
+            send_test_record: false,
             json: true,
         };
         test(&g, args).await.unwrap();
@@ -593,9 +939,88 @@ required = false
         let g = opts(Some(cfg), None);
         let args = LogTestArgs {
             sink: "remote-syslog".to_string(),
+            send_test_record: false,
             json: true,
         };
         let err = test(&g, args).await.unwrap_err();
         assert!(matches!(err, Error::RuntimeFailure(_)));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn remote_list_and_status_work_for_configured_sink() {
+        let tmp = tempdir().unwrap();
+        let cfg = tmp.path().join("c.toml");
+        let spool = tmp.path().join("spool");
+        std::fs::write(
+            &cfg,
+            format!(
+                r#"
+version = 1
+
+[logging]
+[[logging.remote]]
+name = "remote-udp"
+type = "syslog_udp"
+endpoint = "127.0.0.1"
+spool_dir = '{}'
+"#,
+                spool.display()
+            ),
+        )
+        .unwrap();
+        let g = opts(Some(cfg), Some(tmp.path().to_path_buf()));
+        remote_list(&g, LogRemoteListArgs { json: true })
+            .await
+            .unwrap();
+        remote_status(
+            &g,
+            LogRemoteStatusArgs {
+                sink: "remote-udp".into(),
+                json: true,
+            },
+        )
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_send_record_for_syslog_udp() {
+        let receiver = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let addr = receiver.local_addr().unwrap();
+        let tmp = tempdir().unwrap();
+        let cfg = tmp.path().join("c.toml");
+        std::fs::write(
+            &cfg,
+            format!(
+                r#"
+version = 1
+
+[logging]
+[[logging.remote]]
+name = "remote-udp"
+type = "syslog_udp"
+endpoint = "{addr}"
+"#
+            ),
+        )
+        .unwrap();
+        let g = opts(Some(cfg), None);
+        test(
+            &g,
+            LogTestArgs {
+                sink: "remote-udp".into(),
+                send_test_record: true,
+                json: true,
+            },
+        )
+        .await
+        .unwrap();
+        let mut buf = [0_u8; 1024];
+        let n = tokio::time::timeout(std::time::Duration::from_secs(1), receiver.recv(&mut buf))
+            .await
+            .unwrap()
+            .unwrap();
+        let got = std::str::from_utf8(&buf[..n]).unwrap();
+        assert!(got.contains("synthetic remote log test"), "{got}");
     }
 }

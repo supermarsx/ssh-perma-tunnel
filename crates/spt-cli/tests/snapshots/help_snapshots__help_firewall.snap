@@ -1,5 +1,6 @@
 ---
 source: crates/spt-cli/tests/help_snapshots.rs
+assertion_line: 38
 expression: out
 ---
 Inspect and manage OS firewall / packet-filter rules
@@ -13,6 +14,8 @@ Commands:
   status        Show current applied state
   interfaces    List interfaces / bind targets
   bind-preview  Preview the bind for a forward
+  gateway       Manage gateway/interface defaults in config
+  policy        Inspect and manage GPO-style policy values
   help          Print this message or the help of the given subcommand(s)
 
 Options:
@@ -99,4 +102,6 @@ EXAMPLES:
   spt firewall apply --system --dry-run
   spt firewall remove --user
   spt firewall bind-preview --forward edge/db
-  spt firewall interfaces --json
+  spt firewall gateway show --json
+  spt firewall policy list --json
+  spt firewall policy set Network.DefaultInterface Ethernet --scope user

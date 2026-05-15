@@ -244,6 +244,20 @@ mod tests {
     }
 
     #[test]
+    fn parses_log_remote_test() {
+        Cli::try_parse_from([
+            "spt",
+            "log",
+            "remote",
+            "test",
+            "--sink",
+            "syslog",
+            "--send-test-record",
+        ])
+        .unwrap();
+    }
+
+    #[test]
     fn parses_tunnel_run_foreground_once() {
         Cli::try_parse_from(["spt", "tunnel", "run", "--foreground", "--once"]).unwrap();
     }
