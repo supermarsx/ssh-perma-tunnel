@@ -33,7 +33,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install MSRV toolchain (1.83.0)
-        uses: dtolnay/rust-toolchain@1.83.0
+        uses: dtolnay/rust-toolchain@1.100.0
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -55,7 +55,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install MSRV toolchain (1.83.0) with clippy
-        uses: dtolnay/rust-toolchain@1.83.0
+        uses: dtolnay/rust-toolchain@1.100.0
         with:
           components: clippy
 
