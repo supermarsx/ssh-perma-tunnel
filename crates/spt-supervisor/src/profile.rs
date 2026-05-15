@@ -84,6 +84,10 @@ pub struct ProfileSupervisorConfig {
     pub backoff: BackoffConfig,
     /// Failover mode.
     pub failover_mode: FailoverMode,
+    /// Consecutive endpoint failures before cooldown.
+    pub failover_fail_after: u32,
+    /// Cooldown unit used before an endpoint is eligible again.
+    pub failover_cooldown: Duration,
     /// Instability detector parameters.
     pub instability: InstabilityWindow,
     /// Optional override for the runner.
@@ -100,6 +104,8 @@ impl Default for ProfileSupervisorConfig {
         Self {
             backoff: BackoffConfig::default(),
             failover_mode: FailoverMode::Priority,
+            failover_fail_after: 1,
+            failover_cooldown: Duration::from_secs(5),
             instability: InstabilityWindow::default(),
             runner_cfg: ForwardRunnerConfig::default(),
             rng_seed: None,
@@ -146,10 +152,11 @@ impl ProfileSupervisor {
         let (events_tx, events_rx) = mpsc::unbounded_channel();
         let (control_tx, control_rx) = mpsc::channel(16);
 
-        let selector = Arc::new(Mutex::new(EndpointSelector::new(
-            cfg.failover_mode,
-            endpoints,
-        )));
+        let selector = Arc::new(Mutex::new(
+            EndpointSelector::new(cfg.failover_mode, endpoints)
+                .with_fail_after(cfg.failover_fail_after)
+                .with_cooldown(cfg.failover_cooldown.as_secs()),
+        ));
         let current_session: Arc<Mutex<Option<SessionId>>> = Arc::new(Mutex::new(None));
         let registry = cfg.registry.clone();
         let task = ProfileTask {

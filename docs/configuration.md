@@ -23,8 +23,10 @@ Service installs default to:
     [secrets]                 # backend selection
     [dns]                     # built-in resolver, hosts file
     [firewall]                # planner platform + ruleset hooks
+    [network]                 # interface, gateway, offload, load balancing
     [observability.metrics]   # Prometheus exporter
-    [observability.snmp]      # SNMPv3 agent + traps
+    [observability.snmp]      # SNMPv3 agent + traps (feature-gated)
+    [observability.windows_event] # Windows Event Log integration
     [events]                  # bindings + sinks
     [mcp]                     # Model Context Protocol server
     [diagnostics]             # `spt diagnose` defaults
@@ -72,8 +74,12 @@ State directory, threading, reload mode. See spec §9.1, §17.2.
     max_files = 14
     redact = ["secrets", "auth"]
 
-Remote sinks are declared as `[[logging.remote]]` and may be `syslog_tls`,
-`https_jsonl`, or `otlp`.
+Remote sinks are declared as `[[logging.remote]]` and may be `syslog_udp`,
+`syslog_tcp`, `syslog_tls`, `https_jsonl`, or `otlp`. Syslog defaults are
+port `514` for UDP/TCP and `6514` for TLS. Reliable transports support
+`spool_dir`, `spool_max_bytes`, `queue_max_records`, `timeout`, and
+`reconnect_backoff`; TLS additionally supports `ca_file`, `server_name`,
+`client_cert`, `client_key`, and `allow_invalid_certs`.
 
 ## `[secrets]`
 
@@ -83,6 +89,18 @@ Remote sinks are declared as `[[logging.remote]]` and may be `syslog_tls`,
     keychain_namespace = "spt"
 
 See [Secrets](secrets.md) for the resolver-priority rules.
+
+## `[observability]`
+
+Metrics, SNMP, Windows Event Log, and OTLP/syslog details are covered in
+[Observability](observability.md). Production SNMP is build-gated and requires
+an operator-owned IANA Private Enterprise Number:
+
+    [observability.snmp]
+    enabled = true
+    version = "v3"
+    bind = "127.0.0.1:10161"
+    enterprise_id = 12345 # replace with your registered PEN
 
 ## `[dns]`
 
@@ -94,6 +112,42 @@ See [Secrets](secrets.md) for the resolver-priority rules.
 
 `[[dns.records]]` blocks declare A/AAAA/SRV/TXT records served from the
 managed zone.
+
+## `[network]`
+
+Use `[network]` for host-level routing policy that applies across profiles:
+interface selection, gateway checks, kernel/socket offload choices, and
+load-balancing defaults.
+
+    [network.interface]
+    default_interface = "eth0"
+    allowed_interfaces = ["eth0", "wg0"]
+    require_explicit_interface = true
+    allow_all_interfaces = false
+    bind_ipv6 = "auto" # auto | prefer | disable
+
+    [network.gateway]
+    default_gateway = "192.0.2.1"
+    interface = "eth0"
+    route_check_target = "198.51.100.10"
+    require_gateway_match = true
+    policy = "route_to_target" # disabled | default_route | interface_only | route_to_target
+
+    [network.offload]
+    tcp_nodelay = true
+    socket_keepalive = true
+    zerocopy = false
+    io_uring = false
+
+    [network.load_balance]
+    strategy = "weighted" # priority | weighted | round_robin | least_connections | manual
+    sticky_sessions = true
+    fail_after = 3
+    restore_after = "30s"
+
+`spt firewall gateway show|set` manages the interface/gateway fields without
+hand-editing TOML. `spt firewall policy list|show|set|unset` manages the
+corresponding GPO-style policy values under `Software\Policies\spt`.
 
 ## Profile basics
 

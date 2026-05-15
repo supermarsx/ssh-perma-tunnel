@@ -60,8 +60,12 @@ The systemd unit shipped under `/packaging/systemd/spt.service` sets:
 
 Releases are signed; verify before installing — see
 [Installation](installation.md). The Rust dependency tree is audited via
-`cargo deny` in CI; `cargo update` is forbidden in this repo (the pinned
-lockfile is part of reproducibility).
+`cargo deny` and `cargo audit` in CI; `cargo-audit` is installed on the stable
+toolchain so current RustSec advisory formats, including CVSS 4.0, are parsed
+even though the workspace itself keeps an MSRV of Rust 1.83. Reviewed advisory
+exceptions live in `deny.toml` and are mirrored in `.github/workflows/audit.yml`.
+`cargo update` is forbidden in this repo (the pinned lockfile is part of
+reproducibility).
 
 ## Reporting vulnerabilities
 

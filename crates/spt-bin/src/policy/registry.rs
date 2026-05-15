@@ -23,6 +23,15 @@ pub(crate) const POLICY_ROOT: &str = r"Software\Policies\spt";
 /// The sentinel value name that marks an enforced HKLM policy.
 pub(crate) const ENFORCED_VALUE: &str = "Enforced";
 
+/// Registry hive targeted by a policy write.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Scope {
+    /// `HKLM\Software\Policies\spt`.
+    Machine,
+    /// `HKCU\Software\Policies\spt`.
+    User,
+}
+
 /// Errors that can occur while reading the policy tree. They are intentionally
 /// low-fidelity: callers always recover by returning an empty bundle.
 #[derive(Debug, thiserror::Error)]
@@ -30,6 +39,12 @@ pub enum Error {
     /// Win32 returned a non-success status while opening or enumerating a key.
     #[error("registry I/O failed: {0}")]
     Io(String),
+    /// The operation is only supported on Windows.
+    #[error("policy registry is only supported on Windows: {0}")]
+    UnsupportedPlatform(String),
+    /// The requested mutation is not valid for the selected scope/value.
+    #[error("invalid policy registry operation: {0}")]
+    InvalidOperation(String),
 }
 
 /// Load the bundle from both HKLM and HKCU. On non-Windows targets returns
@@ -45,6 +60,44 @@ pub fn load() -> Result<PolicyBundle, Error> {
     }
 }
 
+/// Write one policy value to the registry. On non-Windows targets this returns
+/// [`Error::UnsupportedPlatform`].
+pub fn set(
+    scope: Scope,
+    section: &str,
+    name: &str,
+    value: &PolicyValue,
+    enforced: bool,
+) -> Result<(), Error> {
+    #[cfg(windows)]
+    {
+        imp::set(scope, section, name, value, enforced)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (scope, section, name, value, enforced);
+        Err(Error::UnsupportedPlatform(
+            "writing Software\\Policies\\spt requires Windows registry APIs".into(),
+        ))
+    }
+}
+
+/// Delete one policy value from the registry. On non-Windows targets this
+/// returns [`Error::UnsupportedPlatform`].
+pub fn delete(scope: Scope, section: &str, name: &str, clear_enforced: bool) -> Result<(), Error> {
+    #[cfg(windows)]
+    {
+        imp::delete(scope, section, name, clear_enforced)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (scope, section, name, clear_enforced);
+        Err(Error::UnsupportedPlatform(
+            "writing Software\\Policies\\spt requires Windows registry APIs".into(),
+        ))
+    }
+}
+
 #[cfg(windows)]
 mod imp {
     use std::collections::{BTreeSet, HashMap};
@@ -52,12 +105,13 @@ mod imp {
     use windows::core::PCWSTR;
     use windows::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_NO_MORE_ITEMS, ERROR_SUCCESS};
     use windows::Win32::System::Registry::{
-        RegCloseKey, RegEnumKeyExW, RegOpenKeyExW, RegQueryValueExW, HKEY, HKEY_CURRENT_USER,
-        HKEY_LOCAL_MACHINE, KEY_READ, REG_DWORD, REG_EXPAND_SZ, REG_MULTI_SZ, REG_QWORD, REG_SZ,
-        REG_VALUE_TYPE,
+        RegCloseKey, RegCreateKeyExW, RegDeleteValueW, RegEnumKeyExW, RegOpenKeyExW,
+        RegQueryValueExW, RegSetValueExW, HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ,
+        KEY_WRITE, REG_DWORD, REG_EXPAND_SZ, REG_MULTI_SZ, REG_OPTION_NON_VOLATILE, REG_QWORD,
+        REG_SZ, REG_VALUE_TYPE,
     };
 
-    use super::{Error, PolicyBundle, PolicyValue, ENFORCED_VALUE, POLICY_ROOT};
+    use super::{Error, PolicyBundle, PolicyValue, Scope, ENFORCED_VALUE, POLICY_ROOT};
 
     pub(super) fn load() -> Result<PolicyBundle, Error> {
         let mut bundle = PolicyBundle::empty();
@@ -90,9 +144,6 @@ mod imp {
                 continue;
             };
             let values = read_all_values(section_h);
-            unsafe {
-                let _ = RegCloseKey(section_h);
-            }
             for (name, value) in values {
                 if name.eq_ignore_ascii_case(ENFORCED_VALUE) {
                     continue; // sentinel handled separately
@@ -102,12 +153,12 @@ mod imp {
             }
             if let Some(ref mut e) = enforced {
                 if is_enforced_section(section_h) {
-                    // Section-level Enforced sentinel: treat *every* value in the
-                    // section as enforced. (Per-value enforcement is also supported
-                    // via a sibling `Enforced` value at the section root, which is
-                    // identical when there's a single value per section — the GPO
-                    // template emits one value per ADMX <policy>.)
-                    for (name, _) in read_all_values(section_h) {
+                    // Section-level Enforced sentinel: treat every value in the
+                    // section as enforced. The CLI surfaces this explicitly.
+                    for name in out
+                        .keys()
+                        .filter_map(|key| key.strip_prefix(&format!("{section}\\")))
+                    {
                         if name.eq_ignore_ascii_case(ENFORCED_VALUE) {
                             continue;
                         }
@@ -115,12 +166,165 @@ mod imp {
                     }
                 }
             }
+            unsafe {
+                let _ = RegCloseKey(section_h);
+            }
         }
 
         unsafe {
             let _ = RegCloseKey(root);
         }
         Ok(())
+    }
+
+    pub(super) fn set(
+        scope: Scope,
+        section: &str,
+        name: &str,
+        value: &PolicyValue,
+        enforced: bool,
+    ) -> Result<(), Error> {
+        if matches!(scope, Scope::User) && enforced {
+            return Err(Error::InvalidOperation(
+                "only machine policy can be marked enforced".into(),
+            ));
+        }
+        let h = create_policy_section(scope, section)?;
+        set_value(h, name, value)?;
+        if matches!(scope, Scope::Machine) && enforced {
+            set_dword(h, ENFORCED_VALUE, 1)?;
+        }
+        unsafe {
+            let _ = RegCloseKey(h);
+        }
+        Ok(())
+    }
+
+    pub(super) fn delete(
+        scope: Scope,
+        section: &str,
+        name: &str,
+        clear_enforced: bool,
+    ) -> Result<(), Error> {
+        let path = format!("{POLICY_ROOT}\\{section}");
+        let h = match open_subkey(scope_hkey(scope), &path) {
+            Ok(h) => h,
+            Err(e) if e == ERROR_FILE_NOT_FOUND.0 => return Ok(()),
+            Err(e) => return Err(Error::Io(format!("open {path}: win32 {e}"))),
+        };
+        delete_value(h, name)?;
+        if clear_enforced {
+            delete_value(h, ENFORCED_VALUE)?;
+        }
+        unsafe {
+            let _ = RegCloseKey(h);
+        }
+        Ok(())
+    }
+
+    fn scope_hkey(scope: Scope) -> HKEY {
+        match scope {
+            Scope::Machine => HKEY_LOCAL_MACHINE,
+            Scope::User => HKEY_CURRENT_USER,
+        }
+    }
+
+    fn create_policy_section(scope: Scope, section: &str) -> Result<HKEY, Error> {
+        let path = format!("{POLICY_ROOT}\\{section}");
+        let path_w = wide(&path);
+        let mut h = HKEY::default();
+        let rc = unsafe {
+            RegCreateKeyExW(
+                scope_hkey(scope),
+                PCWSTR(path_w.as_ptr()),
+                0,
+                PCWSTR::null(),
+                REG_OPTION_NON_VOLATILE,
+                KEY_WRITE,
+                None,
+                &mut h,
+                None,
+            )
+        };
+        if rc == ERROR_SUCCESS {
+            Ok(h)
+        } else {
+            Err(Error::Io(format!("create {path}: win32 {}", rc.0)))
+        }
+    }
+
+    fn set_value(h: HKEY, name: &str, value: &PolicyValue) -> Result<(), Error> {
+        match value {
+            PolicyValue::String(s) => set_sz(h, name, s),
+            PolicyValue::Bool(b) => set_dword(h, name, u32::from(*b)),
+            PolicyValue::Integer(i) => {
+                let n = u32::try_from(*i)
+                    .map_err(|_| Error::InvalidOperation(format!("{name} is outside u32")))?;
+                set_dword(h, name, n)
+            }
+            PolicyValue::MultiString(values) => set_multi_sz(h, name, values),
+        }
+    }
+
+    fn set_dword(h: HKEY, name: &str, value: u32) -> Result<(), Error> {
+        let name_w = wide(name);
+        let bytes = value.to_le_bytes();
+        let rc = unsafe { RegSetValueExW(h, PCWSTR(name_w.as_ptr()), 0, REG_DWORD, Some(&bytes)) };
+        if rc == ERROR_SUCCESS {
+            Ok(())
+        } else {
+            Err(Error::Io(format!("set {name}: win32 {}", rc.0)))
+        }
+    }
+
+    fn set_sz(h: HKEY, name: &str, value: &str) -> Result<(), Error> {
+        let name_w = wide(name);
+        let val_w = wide(value);
+        let bytes = unsafe {
+            std::slice::from_raw_parts(
+                val_w.as_ptr().cast::<u8>(),
+                val_w.len() * std::mem::size_of::<u16>(),
+            )
+        };
+        let rc = unsafe { RegSetValueExW(h, PCWSTR(name_w.as_ptr()), 0, REG_SZ, Some(bytes)) };
+        if rc == ERROR_SUCCESS {
+            Ok(())
+        } else {
+            Err(Error::Io(format!("set {name}: win32 {}", rc.0)))
+        }
+    }
+
+    fn set_multi_sz(h: HKEY, name: &str, values: &[String]) -> Result<(), Error> {
+        let name_w = wide(name);
+        let mut buf: Vec<u16> = Vec::new();
+        for value in values {
+            buf.extend(value.encode_utf16());
+            buf.push(0);
+        }
+        buf.push(0);
+        let bytes = unsafe {
+            std::slice::from_raw_parts(
+                buf.as_ptr().cast::<u8>(),
+                buf.len() * std::mem::size_of::<u16>(),
+            )
+        };
+        let rc =
+            unsafe { RegSetValueExW(h, PCWSTR(name_w.as_ptr()), 0, REG_MULTI_SZ, Some(bytes)) };
+        if rc == ERROR_SUCCESS {
+            Ok(())
+        } else {
+            Err(Error::Io(format!("set {name}: win32 {}", rc.0)))
+        }
+    }
+
+    fn delete_value(h: HKEY, name: &str) -> Result<(), Error> {
+        let name_w = wide(name);
+        let rc = unsafe { RegDeleteValueW(h, PCWSTR(name_w.as_ptr())) };
+        if rc == ERROR_SUCCESS || rc == ERROR_FILE_NOT_FOUND {
+            Ok(())
+        } else {
+            Err(Error::Io(format!("delete {name}: win32 {}", rc.0)))
+        }
     }
 
     fn is_enforced_section(h: HKEY) -> bool {

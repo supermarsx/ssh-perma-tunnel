@@ -43,8 +43,8 @@ pub use fingerprint::fingerprint;
 pub use load::{load, load_dir, load_str, Warnings};
 pub use migrate::migrate;
 pub use policy::{
-    ApplyMode, Binding, BindingKind, OverlayReport, PolicyBundle, PolicyOverlay, PolicyValue,
-    BINDINGS,
+    find_binding, ApplyMode, Binding, BindingKind, OverlayReport, PolicyBundle, PolicyOverlay,
+    PolicyValue, BINDINGS,
 };
 pub use render::render;
 pub use schema::*;

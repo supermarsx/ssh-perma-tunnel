@@ -36,12 +36,140 @@ pub fn validate(c: &Config) -> Diagnostics {
 
     check_version(&mut d, c);
     check_runtime(&mut d, c);
+    check_logging(&mut d, c);
     check_dns(&mut d, c);
     check_firewall(&mut d, c);
+    check_network(&mut d, c);
+    check_observability(&mut d, c);
     check_mcp(&mut d, c);
     check_profiles(&mut d, c);
 
     d
+}
+
+fn check_logging(d: &mut Diagnostics, c: &Config) {
+    let Some(logging) = c.logging.as_ref() else {
+        return;
+    };
+
+    let mut seen_names: Vec<&str> = Vec::with_capacity(logging.remote.len());
+    for (i, remote) in logging.remote.iter().enumerate() {
+        let prefix = format!("logging.remote[{i}]");
+        if seen_names.contains(&remote.name.as_str()) {
+            d.push(
+                Diagnostic::error(
+                    "duplicate_remote_log_sink",
+                    format!("remote log sink name `{}` is not unique", remote.name),
+                )
+                .at(format!("{prefix}.name")),
+            );
+        } else {
+            seen_names.push(&remote.name);
+        }
+
+        if !matches!(
+            remote.kind.as_str(),
+            "syslog_udp"
+                | "syslog-udp"
+                | "syslog_tcp"
+                | "syslog-tcp"
+                | "syslog_tls"
+                | "syslog-tls"
+                | "https_jsonl"
+                | "https-jsonl"
+                | "otlp"
+        ) {
+            d.push(
+                Diagnostic::error(
+                    "remote_log_kind_invalid",
+                    format!(
+                        "remote log sink `{}` has unknown type `{}`",
+                        remote.name, remote.kind
+                    ),
+                )
+                .at(format!("{prefix}.type")),
+            );
+        }
+
+        if remote.endpoint.as_deref().unwrap_or("").is_empty() {
+            d.push(
+                Diagnostic::error(
+                    "remote_log_missing_endpoint",
+                    format!("remote log sink `{}` requires `endpoint`", remote.name),
+                )
+                .at(format!("{prefix}.endpoint")),
+            );
+        }
+
+        if let Some(facility) = remote.facility {
+            if facility > 23 {
+                d.push(
+                    Diagnostic::error(
+                        "syslog_facility_invalid",
+                        format!("syslog facility `{facility}` is outside 0..23"),
+                    )
+                    .at(format!("{prefix}.facility")),
+                );
+            }
+        }
+
+        if matches!(remote.allow_invalid_certs, Some(true)) {
+            if matches!(remote.kind.as_str(), "syslog_tls" | "syslog-tls") {
+                d.push(
+                    Diagnostic::warning(
+                        "syslog_tls_invalid_certs_allowed",
+                        format!(
+                            "remote log sink `{}` disables TLS certificate verification",
+                            remote.name
+                        ),
+                    )
+                    .at(format!("{prefix}.allow_invalid_certs")),
+                );
+            } else {
+                d.push(
+                    Diagnostic::warning(
+                        "remote_log_tls_option_ignored",
+                        "allow_invalid_certs only applies to syslog_tls sinks",
+                    )
+                    .at(format!("{prefix}.allow_invalid_certs")),
+                );
+            }
+        }
+
+        if remote.client_cert.is_some() ^ remote.client_key.is_some() {
+            d.push(
+                Diagnostic::error(
+                    "syslog_tls_client_auth_incomplete",
+                    "client_cert and client_key must be configured together",
+                )
+                .at(format!("{prefix}.client_cert")),
+            );
+        }
+
+        if let Some(queue_max_records) = remote.queue_max_records {
+            if queue_max_records == 0 {
+                d.push(
+                    Diagnostic::error(
+                        "remote_log_queue_empty",
+                        "queue_max_records must be greater than zero",
+                    )
+                    .at(format!("{prefix}.queue_max_records")),
+                );
+            }
+        }
+
+        check_duration_field(d, remote.timeout.as_deref(), format!("{prefix}.timeout"));
+        check_duration_field(
+            d,
+            remote.reconnect_backoff.as_deref(),
+            format!("{prefix}.reconnect_backoff"),
+        );
+        check_size_field(
+            d,
+            remote.spool_max_bytes.as_deref(),
+            format!("{prefix}.spool_max_bytes"),
+        );
+    }
 }
 
 fn check_version(d: &mut Diagnostics, c: &Config) {
@@ -220,6 +348,188 @@ fn check_firewall(d: &mut Diagnostics, c: &Config) {
     }
     if let Some(diag) = mismatch("windows", &plat.windows, &["windows_firewall", "none"]) {
         d.push(diag);
+    }
+}
+
+fn check_network(d: &mut Diagnostics, c: &Config) {
+    let Some(network) = c.network.as_ref() else {
+        return;
+    };
+
+    if let Some(interface) = network.interface.as_ref() {
+        if let Some(mode) = interface.bind_ipv6.as_deref() {
+            if !matches!(mode, "auto" | "prefer" | "disable") {
+                d.push(
+                    Diagnostic::error(
+                        "network_bind_ipv6_invalid",
+                        format!("network.interface.bind_ipv6 `{mode}` is invalid"),
+                    )
+                    .at("network.interface.bind_ipv6"),
+                );
+            }
+        }
+
+        if let (Some(allowed), Some(denied)) = (
+            interface.allowed_interfaces.as_ref(),
+            interface.denied_interfaces.as_ref(),
+        ) {
+            for name in allowed {
+                if denied.iter().any(|denied_name| denied_name == name) {
+                    d.push(
+                        Diagnostic::error(
+                            "network_interface_policy_conflict",
+                            format!("interface `{name}` appears in both allowed and denied lists"),
+                        )
+                        .at("network.interface.allowed_interfaces"),
+                    );
+                }
+            }
+        }
+    }
+
+    if let Some(gateway) = network.gateway.as_ref() {
+        if let Some(policy) = gateway.policy.as_deref() {
+            if !matches!(
+                policy,
+                "disabled" | "default_route" | "interface_only" | "route_to_target"
+            ) {
+                d.push(
+                    Diagnostic::error(
+                        "network_gateway_policy_invalid",
+                        format!("network.gateway.policy `{policy}` is invalid"),
+                    )
+                    .at("network.gateway.policy"),
+                );
+            }
+        }
+        if matches!(gateway.require_gateway_match, Some(true))
+            && gateway.interface.as_deref().unwrap_or("").is_empty()
+        {
+            d.push(
+                Diagnostic::error(
+                    "network_gateway_interface_required",
+                    "network.gateway.require_gateway_match requires network.gateway.interface",
+                )
+                .at("network.gateway.interface"),
+            );
+        }
+    }
+
+    if let Some(load_balance) = network.load_balance.as_ref() {
+        if let Some(strategy) = load_balance.strategy.as_deref() {
+            if !matches!(
+                strategy,
+                "priority" | "weighted" | "round_robin" | "least_connections" | "manual"
+            ) {
+                d.push(
+                    Diagnostic::error(
+                        "network_load_balance_strategy_invalid",
+                        format!("network.load_balance.strategy `{strategy}` is invalid"),
+                    )
+                    .at("network.load_balance.strategy"),
+                );
+            }
+        }
+        if let Some(health_check) = load_balance.health_check.as_deref() {
+            if !matches!(
+                health_check,
+                "tcp_connect" | "ssh_handshake" | "ssh_auth_preflight" | "ssh3_endpoint"
+            ) {
+                d.push(
+                    Diagnostic::error(
+                        "network_load_balance_health_check_invalid",
+                        format!("network.load_balance.health_check `{health_check}` is invalid"),
+                    )
+                    .at("network.load_balance.health_check"),
+                );
+            }
+        }
+        if matches!(load_balance.fail_after, Some(0)) {
+            d.push(
+                Diagnostic::error(
+                    "network_load_balance_fail_after_zero",
+                    "network.load_balance.fail_after must be greater than zero",
+                )
+                .at("network.load_balance.fail_after"),
+            );
+        }
+        check_duration_field(
+            d,
+            load_balance.restore_after.as_deref(),
+            "network.load_balance.restore_after",
+        );
+        check_duration_field(
+            d,
+            load_balance.rebalance_interval.as_deref(),
+            "network.load_balance.rebalance_interval",
+        );
+    }
+}
+
+fn check_observability(d: &mut Diagnostics, c: &Config) {
+    let Some(obs) = c.observability.as_ref() else {
+        return;
+    };
+    let Some(snmp) = obs.snmp.as_ref() else {
+        return;
+    };
+    let snmp_enabled = snmp.enabled.unwrap_or(false);
+
+    if snmp_enabled && snmp.enterprise_id.is_none() {
+        d.push(
+            Diagnostic::error(
+                "snmp_enterprise_id_required",
+                "enabled SNMP requires observability.snmp.enterprise_id",
+            )
+            .at("observability.snmp.enterprise_id")
+            .with_help("set this to your registered IANA Private Enterprise Number"),
+        );
+    }
+
+    if matches!(snmp.enterprise_id, Some(0)) {
+        d.push(
+            Diagnostic::error(
+                "snmp_enterprise_id_invalid",
+                "observability.snmp.enterprise_id must be greater than zero",
+            )
+            .at("observability.snmp.enterprise_id"),
+        );
+    }
+    if matches!(snmp.enterprise_id, Some(99_999)) {
+        let diagnostic = if snmp_enabled {
+            Diagnostic::error(
+                "snmp_enterprise_id_placeholder",
+                "observability.snmp.enterprise_id uses the old placeholder PEN 99999",
+            )
+        } else {
+            Diagnostic::warning(
+                "snmp_enterprise_id_placeholder",
+                "observability.snmp.enterprise_id uses the old placeholder PEN 99999",
+            )
+        };
+        d.push(
+            diagnostic
+                .at("observability.snmp.enterprise_id")
+                .with_help("set this to your registered IANA Private Enterprise Number"),
+        );
+    }
+    if matches!(snmp.enterprise_id, Some(32_473)) {
+        let diagnostic = if snmp_enabled {
+            Diagnostic::error(
+                "snmp_enterprise_id_documentation",
+                "observability.snmp.enterprise_id uses RFC documentation PEN 32473",
+            )
+        } else {
+            Diagnostic::warning(
+                "snmp_enterprise_id_documentation",
+                "observability.snmp.enterprise_id uses RFC documentation PEN 32473",
+            )
+        };
+        d.push(
+            diagnostic
+                .at("observability.snmp.enterprise_id")
+                .with_help("use a registered production IANA Private Enterprise Number"),
+        );
     }
 }
 
@@ -466,6 +776,36 @@ fn check_profile(d: &mut Diagnostics, i: usize, p: &Profile) {
             format!("{prefix}.keepalive.timeout"),
         );
     }
+    if let Some(failover) = p.failover.as_ref() {
+        if let Some(mode) = failover.mode.as_deref() {
+            if !matches!(mode, "priority" | "weighted" | "manual") {
+                d.push(
+                    Diagnostic::error(
+                        "failover_mode_invalid",
+                        format!("profile `{}` has unknown failover.mode `{mode}`", p.name),
+                    )
+                    .at(format!("{prefix}.failover.mode")),
+                );
+            }
+        }
+        if matches!(failover.fail_after, Some(0)) {
+            d.push(
+                Diagnostic::error(
+                    "failover_fail_after_zero",
+                    format!(
+                        "profile `{}` failover.fail_after must be greater than zero",
+                        p.name
+                    ),
+                )
+                .at(format!("{prefix}.failover.fail_after")),
+            );
+        }
+        check_duration_field(
+            d,
+            failover.restore_after.as_deref(),
+            format!("{prefix}.failover.restore_after"),
+        );
+    }
 }
 
 fn check_auth(d: &mut Diagnostics, auth: &Auth, prefix: &str) {
@@ -609,6 +949,18 @@ fn check_forward(d: &mut Diagnostics, protocol: &str, f: &Forward, i: usize, j: 
                     format!("forward `{}` has unknown bind_mode `{mode}`", f.name),
                 )
                 .at(format!("{prefix}.bind_mode")),
+            );
+        }
+    }
+
+    if let Some(mode) = f.bind_ipv6.as_deref() {
+        if !matches!(mode, "auto" | "prefer" | "disable") {
+            d.push(
+                Diagnostic::error(
+                    "forward_bind_ipv6_invalid",
+                    format!("forward `{}` has unknown bind_ipv6 `{mode}`", f.name),
+                )
+                .at(format!("{prefix}.bind_ipv6")),
             );
         }
     }
@@ -882,5 +1234,169 @@ mod tests {
             .errors
             .iter()
             .any(|e| e.code == "mcp_secret_reveal_disallowed"));
+    }
+
+    #[test]
+    fn syslog_remote_kinds_validate() {
+        let raw = r#"
+            version = 1
+            [logging]
+            [[logging.remote]]
+            name = "udp"
+            type = "syslog_udp"
+            endpoint = "127.0.0.1"
+            facility = 16
+            [[logging.remote]]
+            name = "tcp"
+            type = "syslog_tcp"
+            endpoint = "127.0.0.1:514"
+            spool_max_bytes = "1MiB"
+            [[logging.remote]]
+            name = "tls"
+            type = "syslog_tls"
+            endpoint = "logs.example.com"
+            server_name = "logs.example.com"
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(d.errors.is_empty(), "errors: {:?}", d.errors);
+    }
+
+    #[test]
+    fn syslog_tls_invalid_certs_warns() {
+        let raw = r#"
+            version = 1
+            [logging]
+            [[logging.remote]]
+            name = "tls"
+            type = "syslog_tls"
+            endpoint = "logs.example.com"
+            allow_invalid_certs = true
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(d
+            .warnings
+            .iter()
+            .any(|w| w.code == "syslog_tls_invalid_certs_allowed"));
+    }
+
+    #[test]
+    fn duplicate_remote_log_sink_errors() {
+        let raw = r#"
+            version = 1
+            [logging]
+            [[logging.remote]]
+            name = "dup"
+            type = "syslog_udp"
+            endpoint = "127.0.0.1"
+            [[logging.remote]]
+            name = "dup"
+            type = "syslog_tcp"
+            endpoint = "127.0.0.1"
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(d
+            .errors
+            .iter()
+            .any(|e| e.code == "duplicate_remote_log_sink"));
+    }
+
+    #[test]
+    fn network_policy_validates_gateway_and_load_balance() {
+        let raw = r#"
+            version = 1
+            [network.interface]
+            default_interface = "eth0"
+            allowed_interfaces = ["eth0"]
+            bind_ipv6 = "auto"
+            [network.gateway]
+            interface = "eth0"
+            route_check_target = "198.51.100.10"
+            require_gateway_match = true
+            policy = "route_to_target"
+            [network.load_balance]
+            strategy = "weighted"
+            fail_after = 2
+            restore_after = "30s"
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(d.errors.is_empty(), "errors: {:?}", d.errors);
+    }
+
+    #[test]
+    fn snmp_enabled_requires_enterprise_id() {
+        let raw = r#"
+            version = 1
+            [observability.snmp]
+            enabled = true
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(d
+            .errors
+            .iter()
+            .any(|e| e.code == "snmp_enterprise_id_required"));
+    }
+
+    #[test]
+    fn snmp_placeholder_enterprise_errors_when_enabled() {
+        let raw = r#"
+            version = 1
+            [observability.snmp]
+            enabled = true
+            enterprise_id = 99999
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(d
+            .errors
+            .iter()
+            .any(|e| e.code == "snmp_enterprise_id_placeholder"));
+    }
+
+    #[test]
+    fn snmp_documentation_enterprise_warns_when_disabled() {
+        let raw = r#"
+            version = 1
+            [observability.snmp]
+            enterprise_id = 32473
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(d
+            .warnings
+            .iter()
+            .any(|w| w.code == "snmp_enterprise_id_documentation"));
     }
 }

@@ -142,6 +142,27 @@ pub struct Binding {
     pub is_unset: fn(&Config) -> bool,
 }
 
+impl Binding {
+    /// Canonical `Section\Name` registry key for this binding.
+    #[must_use]
+    pub fn key(self) -> String {
+        format!("{}\\{}", self.section, self.name)
+    }
+}
+
+impl BindingKind {
+    /// Stable string used by CLI/JSON surfaces.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::String => "string",
+            Self::Bool => "bool",
+            Self::U32 => "u32",
+            Self::Allowlist => "multi_string",
+        }
+    }
+}
+
 /// Whether a binding's `apply` should run as enforced (always overwrite) or
 /// advisory (only if `is_unset` was true).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -151,6 +172,14 @@ pub enum ApplyMode {
     Enforced,
     /// Only fill in if the field was not already set.
     Advisory,
+}
+
+/// Find a policy binding by section/name, case-insensitively.
+#[must_use]
+pub fn find_binding(section: &str, name: &str) -> Option<&'static Binding> {
+    BINDINGS.iter().find(|binding| {
+        binding.section.eq_ignore_ascii_case(section) && binding.name.eq_ignore_ascii_case(name)
+    })
 }
 
 /// Static binding table. Order is stable for deterministic reporting.
@@ -229,6 +258,18 @@ pub static BINDINGS: &[Binding] = &[
                 .is_none()
         },
     },
+    Binding {
+        section: "General",
+        name: "StateDir",
+        kind: BindingKind::String,
+        apply: apply_runtime_state_dir,
+        is_unset: |c| {
+            c.runtime
+                .as_ref()
+                .and_then(|r| r.state_dir.as_ref())
+                .is_none()
+        },
+    },
     // Secrets
     Binding {
         section: "Secrets",
@@ -251,6 +292,18 @@ pub static BINDINGS: &[Binding] = &[
             c.secrets
                 .as_ref()
                 .and_then(|s| s.memory_protection.as_ref())
+                .is_none()
+        },
+    },
+    Binding {
+        section: "Security",
+        name: "SecretBackend",
+        kind: BindingKind::String,
+        apply: apply_secrets_backend,
+        is_unset: |c| {
+            c.secrets
+                .as_ref()
+                .and_then(|s| s.backend.as_ref())
                 .is_none()
         },
     },
@@ -286,7 +339,265 @@ pub static BINDINGS: &[Binding] = &[
                 .is_none()
         },
     },
+    // Network / interface / gateway policy. These are intentionally broad so
+    // GPO and CLI-managed policy can constrain routing without editing each
+    // profile.
+    Binding {
+        section: "Network",
+        name: "DefaultInterface",
+        kind: BindingKind::String,
+        apply: apply_network_default_interface,
+        is_unset: |c| {
+            c.network
+                .as_ref()
+                .and_then(|n| n.interface.as_ref())
+                .and_then(|i| i.default_interface.as_ref())
+                .is_none()
+        },
+    },
+    Binding {
+        section: "Network",
+        name: "AllowedInterfaces",
+        kind: BindingKind::Allowlist,
+        apply: apply_network_allowed_interfaces,
+        is_unset: |c| {
+            c.network
+                .as_ref()
+                .and_then(|n| n.interface.as_ref())
+                .and_then(|i| i.allowed_interfaces.as_ref())
+                .is_none()
+        },
+    },
+    Binding {
+        section: "Network",
+        name: "RequireExplicitInterface",
+        kind: BindingKind::Bool,
+        apply: apply_network_require_explicit_interface,
+        is_unset: |c| {
+            c.network
+                .as_ref()
+                .and_then(|n| n.interface.as_ref())
+                .and_then(|i| i.require_explicit_interface)
+                .is_none()
+        },
+    },
+    Binding {
+        section: "Network",
+        name: "AllowAllInterfaces",
+        kind: BindingKind::Bool,
+        apply: apply_network_allow_all_interfaces,
+        is_unset: |c| {
+            c.network
+                .as_ref()
+                .and_then(|n| n.interface.as_ref())
+                .and_then(|i| i.allow_all_interfaces)
+                .is_none()
+        },
+    },
+    Binding {
+        section: "Network",
+        name: "BindIpv6",
+        kind: BindingKind::String,
+        apply: apply_network_bind_ipv6,
+        is_unset: |c| {
+            c.network
+                .as_ref()
+                .and_then(|n| n.interface.as_ref())
+                .and_then(|i| i.bind_ipv6.as_ref())
+                .is_none()
+        },
+    },
+    Binding {
+        section: "Network",
+        name: "DefaultGateway",
+        kind: BindingKind::String,
+        apply: apply_network_default_gateway,
+        is_unset: |c| {
+            c.network
+                .as_ref()
+                .and_then(|n| n.gateway.as_ref())
+                .and_then(|g| g.default_gateway.as_ref())
+                .is_none()
+        },
+    },
+    Binding {
+        section: "Network",
+        name: "GatewayInterface",
+        kind: BindingKind::String,
+        apply: apply_network_gateway_interface,
+        is_unset: |c| {
+            c.network
+                .as_ref()
+                .and_then(|n| n.gateway.as_ref())
+                .and_then(|g| g.interface.as_ref())
+                .is_none()
+        },
+    },
+    Binding {
+        section: "Network",
+        name: "RouteCheckTarget",
+        kind: BindingKind::String,
+        apply: apply_network_route_check_target,
+        is_unset: |c| {
+            c.network
+                .as_ref()
+                .and_then(|n| n.gateway.as_ref())
+                .and_then(|g| g.route_check_target.as_ref())
+                .is_none()
+        },
+    },
+    Binding {
+        section: "Network",
+        name: "RequireGatewayMatch",
+        kind: BindingKind::Bool,
+        apply: apply_network_require_gateway_match,
+        is_unset: |c| {
+            c.network
+                .as_ref()
+                .and_then(|n| n.gateway.as_ref())
+                .and_then(|g| g.require_gateway_match)
+                .is_none()
+        },
+    },
+    Binding {
+        section: "Network",
+        name: "GatewayPolicy",
+        kind: BindingKind::String,
+        apply: apply_network_gateway_policy,
+        is_unset: |c| {
+            c.network
+                .as_ref()
+                .and_then(|n| n.gateway.as_ref())
+                .and_then(|g| g.policy.as_ref())
+                .is_none()
+        },
+    },
+    Binding {
+        section: "Network",
+        name: "OffloadZeroCopy",
+        kind: BindingKind::Bool,
+        apply: apply_network_offload_zerocopy,
+        is_unset: |c| {
+            c.network
+                .as_ref()
+                .and_then(|n| n.offload.as_ref())
+                .and_then(|o| o.zerocopy)
+                .is_none()
+        },
+    },
+    Binding {
+        section: "Network",
+        name: "OffloadIoUring",
+        kind: BindingKind::Bool,
+        apply: apply_network_offload_io_uring,
+        is_unset: |c| {
+            c.network
+                .as_ref()
+                .and_then(|n| n.offload.as_ref())
+                .and_then(|o| o.io_uring)
+                .is_none()
+        },
+    },
+    Binding {
+        section: "Network",
+        name: "LoadBalanceStrategy",
+        kind: BindingKind::String,
+        apply: apply_network_load_balance_strategy,
+        is_unset: |c| {
+            c.network
+                .as_ref()
+                .and_then(|n| n.load_balance.as_ref())
+                .and_then(|lb| lb.strategy.as_ref())
+                .is_none()
+        },
+    },
+    Binding {
+        section: "Network",
+        name: "LoadBalanceFailAfter",
+        kind: BindingKind::U32,
+        apply: apply_network_load_balance_fail_after,
+        is_unset: |c| {
+            c.network
+                .as_ref()
+                .and_then(|n| n.load_balance.as_ref())
+                .and_then(|lb| lb.fail_after)
+                .is_none()
+        },
+    },
+    Binding {
+        section: "Network",
+        name: "LoadBalanceRestoreAfter",
+        kind: BindingKind::String,
+        apply: apply_network_load_balance_restore_after,
+        is_unset: |c| {
+            c.network
+                .as_ref()
+                .and_then(|n| n.load_balance.as_ref())
+                .and_then(|lb| lb.restore_after.as_ref())
+                .is_none()
+        },
+    },
+    // ADMX compatibility aliases from packaging/windows-gpo.
+    Binding {
+        section: "Network",
+        name: "RemoteConfigUrlPin",
+        kind: BindingKind::String,
+        apply: apply_remote_cfg_url,
+        is_unset: |c| {
+            c.runtime
+                .as_ref()
+                .and_then(|r| r.remote_config.as_ref())
+                .and_then(|r| r.url.as_ref())
+                .is_none()
+        },
+    },
+    Binding {
+        section: "Network",
+        name: "RemoteConfigFingerprintSha256",
+        kind: BindingKind::String,
+        apply: apply_remote_cfg_fingerprint,
+        is_unset: |c| {
+            c.runtime
+                .as_ref()
+                .and_then(|r| r.remote_config.as_ref())
+                .and_then(|r| r.fingerprint_sha256.as_ref())
+                .is_none()
+        },
+    },
+    Binding {
+        section: "Network",
+        name: "McpEnabled",
+        kind: BindingKind::Bool,
+        apply: apply_mcp_enabled,
+        is_unset: |c| c.mcp.as_ref().and_then(|m| m.enabled).is_none(),
+    },
+    Binding {
+        section: "Network",
+        name: "McpListen",
+        kind: BindingKind::String,
+        apply: apply_mcp_listen,
+        is_unset: |c| c.mcp.as_ref().and_then(|m| m.listen.as_ref()).is_none(),
+    },
     // Observability
+    Binding {
+        section: "Observability",
+        name: "LogLevel",
+        kind: BindingKind::String,
+        apply: apply_logging_level,
+        is_unset: |c| c.logging.as_ref().and_then(|l| l.level.as_ref()).is_none(),
+    },
+    Binding {
+        section: "Observability",
+        name: "LogDestinations",
+        kind: BindingKind::Allowlist,
+        apply: apply_logging_destinations,
+        is_unset: |c| {
+            c.logging
+                .as_ref()
+                .and_then(|l| l.destinations.as_ref())
+                .is_none()
+        },
+    },
     Binding {
         section: "Observability",
         name: "WindowsEvent_Enabled",
@@ -400,6 +711,34 @@ fn ensure_firewall(c: &mut Config) -> &mut crate::schema::Firewall {
     c.firewall.get_or_insert_with(Default::default)
 }
 
+fn ensure_network(c: &mut Config) -> &mut crate::schema::Network {
+    c.network.get_or_insert_with(Default::default)
+}
+
+fn ensure_network_interface(c: &mut Config) -> &mut crate::schema::NetworkInterface {
+    ensure_network(c)
+        .interface
+        .get_or_insert_with(Default::default)
+}
+
+fn ensure_network_gateway(c: &mut Config) -> &mut crate::schema::NetworkGateway {
+    ensure_network(c)
+        .gateway
+        .get_or_insert_with(Default::default)
+}
+
+fn ensure_network_offload(c: &mut Config) -> &mut crate::schema::NetworkOffload {
+    ensure_network(c)
+        .offload
+        .get_or_insert_with(Default::default)
+}
+
+fn ensure_network_load_balance(c: &mut Config) -> &mut crate::schema::NetworkLoadBalance {
+    ensure_network(c)
+        .load_balance
+        .get_or_insert_with(Default::default)
+}
+
 fn ensure_obs(c: &mut Config) -> &mut crate::schema::Observability {
     c.observability.get_or_insert_with(Default::default)
 }
@@ -412,6 +751,10 @@ fn ensure_winevent(c: &mut Config) -> &mut crate::schema::ObservabilityWindowsEv
 
 fn ensure_metrics(c: &mut Config) -> &mut crate::schema::ObservabilityMetrics {
     ensure_obs(c).metrics.get_or_insert_with(Default::default)
+}
+
+fn ensure_mcp(c: &mut Config) -> &mut crate::schema::Mcp {
+    c.mcp.get_or_insert_with(Default::default)
 }
 
 // String/bool/u32 setters share a tiny helper closure pattern:
@@ -503,6 +846,14 @@ fn apply_runtime_require_valid_config(c: &mut Config, v: &PolicyValue, _m: Apply
     changed
 }
 
+fn apply_runtime_state_dir(c: &mut Config, v: &PolicyValue, _m: ApplyMode) -> bool {
+    let Some(s) = as_string(v) else { return false };
+    let r = ensure_runtime(c);
+    let changed = r.state_dir.as_deref() != Some(s.as_str());
+    r.state_dir = Some(s);
+    changed
+}
+
 // Secrets
 
 fn apply_secrets_backend(c: &mut Config, v: &PolicyValue, _m: ApplyMode) -> bool {
@@ -544,6 +895,142 @@ fn apply_firewall_bind_policy(c: &mut Config, v: &PolicyValue, _m: ApplyMode) ->
     let f = ensure_firewall(c);
     let changed = f.bind_policy.as_deref() != Some(s.as_str());
     f.bind_policy = Some(s);
+    changed
+}
+
+// Network
+
+fn apply_network_default_interface(c: &mut Config, v: &PolicyValue, _m: ApplyMode) -> bool {
+    let Some(s) = as_string(v) else { return false };
+    let i = ensure_network_interface(c);
+    let changed = i.default_interface.as_deref() != Some(s.as_str());
+    i.default_interface = Some(s);
+    changed
+}
+
+fn apply_network_allowed_interfaces(c: &mut Config, v: &PolicyValue, mode: ApplyMode) -> bool {
+    let Some(policy_list) = as_multi(v) else {
+        return false;
+    };
+    let i = ensure_network_interface(c);
+    let new = match (mode, i.allowed_interfaces.as_ref()) {
+        (ApplyMode::Enforced, Some(existing)) => intersect(existing, policy_list),
+        _ => policy_list.to_vec(),
+    };
+    let changed = i.allowed_interfaces.as_deref() != Some(new.as_slice());
+    i.allowed_interfaces = Some(new);
+    changed
+}
+
+fn apply_network_require_explicit_interface(
+    c: &mut Config,
+    v: &PolicyValue,
+    _m: ApplyMode,
+) -> bool {
+    let Some(b) = as_bool(v) else { return false };
+    let i = ensure_network_interface(c);
+    let changed = i.require_explicit_interface != Some(b);
+    i.require_explicit_interface = Some(b);
+    changed
+}
+
+fn apply_network_allow_all_interfaces(c: &mut Config, v: &PolicyValue, _m: ApplyMode) -> bool {
+    let Some(b) = as_bool(v) else { return false };
+    let i = ensure_network_interface(c);
+    let changed = i.allow_all_interfaces != Some(b);
+    i.allow_all_interfaces = Some(b);
+    changed
+}
+
+fn apply_network_bind_ipv6(c: &mut Config, v: &PolicyValue, _m: ApplyMode) -> bool {
+    let Some(s) = as_string(v) else { return false };
+    let i = ensure_network_interface(c);
+    let changed = i.bind_ipv6.as_deref() != Some(s.as_str());
+    i.bind_ipv6 = Some(s);
+    changed
+}
+
+fn apply_network_default_gateway(c: &mut Config, v: &PolicyValue, _m: ApplyMode) -> bool {
+    let Some(s) = as_string(v) else { return false };
+    let g = ensure_network_gateway(c);
+    let changed = g.default_gateway.as_deref() != Some(s.as_str());
+    g.default_gateway = Some(s);
+    changed
+}
+
+fn apply_network_gateway_interface(c: &mut Config, v: &PolicyValue, _m: ApplyMode) -> bool {
+    let Some(s) = as_string(v) else { return false };
+    let g = ensure_network_gateway(c);
+    let changed = g.interface.as_deref() != Some(s.as_str());
+    g.interface = Some(s);
+    changed
+}
+
+fn apply_network_route_check_target(c: &mut Config, v: &PolicyValue, _m: ApplyMode) -> bool {
+    let Some(s) = as_string(v) else { return false };
+    let g = ensure_network_gateway(c);
+    let changed = g.route_check_target.as_deref() != Some(s.as_str());
+    g.route_check_target = Some(s);
+    changed
+}
+
+fn apply_network_require_gateway_match(c: &mut Config, v: &PolicyValue, _m: ApplyMode) -> bool {
+    let Some(b) = as_bool(v) else { return false };
+    let g = ensure_network_gateway(c);
+    let changed = g.require_gateway_match != Some(b);
+    g.require_gateway_match = Some(b);
+    changed
+}
+
+fn apply_network_gateway_policy(c: &mut Config, v: &PolicyValue, _m: ApplyMode) -> bool {
+    let Some(s) = as_string(v) else { return false };
+    let g = ensure_network_gateway(c);
+    let changed = g.policy.as_deref() != Some(s.as_str());
+    g.policy = Some(s);
+    changed
+}
+
+fn apply_network_offload_zerocopy(c: &mut Config, v: &PolicyValue, _m: ApplyMode) -> bool {
+    let Some(b) = as_bool(v) else { return false };
+    let o = ensure_network_offload(c);
+    let changed = o.zerocopy != Some(b);
+    o.zerocopy = Some(b);
+    changed
+}
+
+fn apply_network_offload_io_uring(c: &mut Config, v: &PolicyValue, _m: ApplyMode) -> bool {
+    let Some(b) = as_bool(v) else { return false };
+    let o = ensure_network_offload(c);
+    let changed = o.io_uring != Some(b);
+    o.io_uring = Some(b);
+    changed
+}
+
+fn apply_network_load_balance_strategy(c: &mut Config, v: &PolicyValue, _m: ApplyMode) -> bool {
+    let Some(s) = as_string(v) else { return false };
+    let lb = ensure_network_load_balance(c);
+    let changed = lb.strategy.as_deref() != Some(s.as_str());
+    lb.strategy = Some(s);
+    changed
+}
+
+fn apply_network_load_balance_fail_after(c: &mut Config, v: &PolicyValue, _m: ApplyMode) -> bool {
+    let Some(n) = as_u32(v) else { return false };
+    let lb = ensure_network_load_balance(c);
+    let changed = lb.fail_after != Some(n);
+    lb.fail_after = Some(n);
+    changed
+}
+
+fn apply_network_load_balance_restore_after(
+    c: &mut Config,
+    v: &PolicyValue,
+    _m: ApplyMode,
+) -> bool {
+    let Some(s) = as_string(v) else { return false };
+    let lb = ensure_network_load_balance(c);
+    let changed = lb.restore_after.as_deref() != Some(s.as_str());
+    lb.restore_after = Some(s);
     changed
 }
 
@@ -591,11 +1078,37 @@ fn apply_remote_cfg_url(c: &mut Config, v: &PolicyValue, _m: ApplyMode) -> bool 
     changed
 }
 
+fn apply_remote_cfg_fingerprint(c: &mut Config, v: &PolicyValue, _m: ApplyMode) -> bool {
+    let Some(s) = as_string(v) else { return false };
+    let r = ensure_runtime_remote(c);
+    let changed = r.fingerprint_sha256.as_deref() != Some(s.as_str());
+    r.fingerprint_sha256 = Some(s);
+    changed
+}
+
 fn apply_remote_cfg_cached(c: &mut Config, v: &PolicyValue, _m: ApplyMode) -> bool {
     let Some(b) = as_bool(v) else { return false };
     let r = ensure_runtime_remote(c);
     let changed = r.allow_cached_on_failure != Some(b);
     r.allow_cached_on_failure = Some(b);
+    changed
+}
+
+// MCP
+
+fn apply_mcp_enabled(c: &mut Config, v: &PolicyValue, _m: ApplyMode) -> bool {
+    let Some(b) = as_bool(v) else { return false };
+    let m = ensure_mcp(c);
+    let changed = m.enabled != Some(b);
+    m.enabled = Some(b);
+    changed
+}
+
+fn apply_mcp_listen(c: &mut Config, v: &PolicyValue, _m: ApplyMode) -> bool {
+    let Some(s) = as_string(v) else { return false };
+    let m = ensure_mcp(c);
+    let changed = m.listen.as_deref() != Some(s.as_str());
+    m.listen = Some(s);
     changed
 }
 
@@ -944,6 +1457,89 @@ mod tests {
                 .url
                 .as_deref(),
             Some("https://example/spt.toml")
+        );
+    }
+
+    #[test]
+    fn network_policy_creates_gateway_and_interface_tables() {
+        let mut cfg = Config::default();
+        let mut b = PolicyBundle::empty();
+        b.machine.insert(
+            key("Network", "DefaultInterface"),
+            PolicyValue::String("eth0".into()),
+        );
+        b.machine.insert(
+            key("Network", "DefaultGateway"),
+            PolicyValue::String("192.0.2.1".into()),
+        );
+        b.machine.insert(
+            key("Network", "RequireGatewayMatch"),
+            PolicyValue::Bool(true),
+        );
+        b.machine.insert(
+            key("Network", "LoadBalanceStrategy"),
+            PolicyValue::String("weighted".into()),
+        );
+        let r = PolicyOverlay::apply(&mut cfg, &b);
+        assert_eq!(r.applied.len(), 4);
+        let network = cfg.network.as_ref().unwrap();
+        assert_eq!(
+            network
+                .interface
+                .as_ref()
+                .unwrap()
+                .default_interface
+                .as_deref(),
+            Some("eth0")
+        );
+        assert_eq!(
+            network.gateway.as_ref().unwrap().default_gateway.as_deref(),
+            Some("192.0.2.1")
+        );
+        assert_eq!(
+            network.load_balance.as_ref().unwrap().strategy.as_deref(),
+            Some("weighted")
+        );
+    }
+
+    #[test]
+    fn admx_aliases_map_to_runtime_mcp_and_logging() {
+        let mut cfg = Config::default();
+        let mut b = PolicyBundle::empty();
+        b.machine.insert(
+            key("Network", "RemoteConfigUrlPin"),
+            PolicyValue::String("https://config.example/spt.toml".into()),
+        );
+        b.machine
+            .insert(key("Network", "McpEnabled"), PolicyValue::Bool(true));
+        b.machine.insert(
+            key("Observability", "LogLevel"),
+            PolicyValue::String("debug".into()),
+        );
+        b.machine.insert(
+            key("Security", "SecretBackend"),
+            PolicyValue::String("keychain".into()),
+        );
+        PolicyOverlay::apply(&mut cfg, &b);
+        assert_eq!(
+            cfg.runtime
+                .as_ref()
+                .unwrap()
+                .remote_config
+                .as_ref()
+                .unwrap()
+                .url
+                .as_deref(),
+            Some("https://config.example/spt.toml")
+        );
+        assert_eq!(cfg.mcp.as_ref().unwrap().enabled, Some(true));
+        assert_eq!(
+            cfg.logging.as_ref().unwrap().level.as_deref(),
+            Some("debug")
+        );
+        assert_eq!(
+            cfg.secrets.as_ref().unwrap().backend.as_deref(),
+            Some("keychain")
         );
     }
 }

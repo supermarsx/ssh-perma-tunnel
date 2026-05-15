@@ -55,6 +55,10 @@ pub struct Config {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub firewall: Option<Firewall>,
 
+    /// `[network]` table. Interface, gateway, offload, and load-balance policy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network: Option<Network>,
+
     /// `[observability]` group. Spec §9.6.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub observability: Option<Observability>,
@@ -234,21 +238,57 @@ pub struct Logging {
 pub struct LoggingRemote {
     /// Sink name (unique). §9.2.
     pub name: String,
-    /// Sink type: `syslog_tls|https_jsonl|otlp`. §9.2.
+    /// Sink type: `syslog_udp|syslog_tcp|syslog_tls|https_jsonl|otlp`. §9.2.
     #[serde(rename = "type")]
     pub kind: String,
     /// Endpoint host:port or URL. §9.2.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub endpoint: Option<String>,
+    /// Syslog facility (0..23). §13.7.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub facility: Option<u8>,
+    /// Syslog APP-NAME. §13.7.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_name: Option<String>,
+    /// Syslog HOSTNAME. §13.7.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hostname: Option<String>,
+    /// Syslog structured data enterprise ID. §13.7.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enterprise_id: Option<u32>,
     /// CA bundle file for TLS validation. §9.2.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ca_file: Option<String>,
+    /// TLS SNI / verification name override. §13.7.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_name: Option<String>,
+    /// TLS client certificate chain. §13.7.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_cert: Option<String>,
+    /// TLS client private key. §13.7.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_key: Option<String>,
+    /// Disable TLS certificate verification. §13.7.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow_invalid_certs: Option<bool>,
     /// Auth secret reference. §9.2.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth: Option<String>,
     /// Per-batch timeout. §9.2.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout: Option<String>,
+    /// Reconnect backoff for reliable transports. §13.7.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reconnect_backoff: Option<String>,
+    /// Disk spool directory for reliable transports. §13.7.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spool_dir: Option<String>,
+    /// Disk spool byte limit. §13.7.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spool_max_bytes: Option<String>,
+    /// In-memory queue record limit. §13.7.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queue_max_records: Option<u32>,
     /// Records per batch. §9.2.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub batch_size: Option<u32>,
@@ -389,6 +429,128 @@ pub struct FirewallPlatform {
 }
 
 // ---------------------------------------------------------------------------
+// [network]
+// ---------------------------------------------------------------------------
+
+/// `[network]` table. Host network policy used by bind, gateway and
+/// load-balancing decisions.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Network {
+    /// `[network.interface]` policy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interface: Option<NetworkInterface>,
+    /// `[network.gateway]` policy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gateway: Option<NetworkGateway>,
+    /// `[network.offload]` socket/kernel offload policy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offload: Option<NetworkOffload>,
+    /// `[network.load_balance]` endpoint load-balancing defaults.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub load_balance: Option<NetworkLoadBalance>,
+}
+
+/// `[network.interface]`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct NetworkInterface {
+    /// Default interface name used by auto-interface bind decisions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_interface: Option<String>,
+    /// Interface allow-list. Enforced policies intersect with local config.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allowed_interfaces: Option<Vec<String>>,
+    /// Interface deny-list. Operators use this to reject known-bad adapters.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub denied_interfaces: Option<Vec<String>>,
+    /// Require every non-loopback forward to set `bind_interface` or
+    /// `bind_interface_preference`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub require_explicit_interface: Option<bool>,
+    /// Permit wildcard binds (`0.0.0.0`/`::`) when also acknowledged by
+    /// per-forward `expose = true`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow_all_interfaces: Option<bool>,
+    /// Default IPv6 bind behavior: `auto|prefer|disable`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bind_ipv6: Option<String>,
+}
+
+/// `[network.gateway]`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct NetworkGateway {
+    /// Default gateway address or route alias.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_gateway: Option<String>,
+    /// Interface expected to own the selected gateway.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interface: Option<String>,
+    /// Target host/IP used to check route selection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route_check_target: Option<String>,
+    /// Require the chosen route to match `interface` before starting.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub require_gateway_match: Option<bool>,
+    /// Gateway policy: `disabled|default_route|interface_only|route_to_target`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy: Option<String>,
+}
+
+/// `[network.offload]`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct NetworkOffload {
+    /// Set `TCP_NODELAY` on TCP sockets.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tcp_nodelay: Option<bool>,
+    /// Enable socket keepalive where supported.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub socket_keepalive: Option<bool>,
+    /// Request TCP Fast Open where supported.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tcp_fast_open: Option<bool>,
+    /// Reuse listener ports where the platform supports safe reuse.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reuse_port: Option<bool>,
+    /// Permit io_uring-backed filesystem/network operations on Linux.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub io_uring: Option<bool>,
+    /// Permit zero-copy send paths where available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub zerocopy: Option<bool>,
+    /// Permit sendfile-style transfer paths where available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sendfile: Option<bool>,
+    /// Require/allow NIC checksum offload.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checksum_offload: Option<bool>,
+    /// Require/allow large-send/TSO offload.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub large_send_offload: Option<bool>,
+}
+
+/// `[network.load_balance]`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct NetworkLoadBalance {
+    /// Strategy: `priority|weighted|round_robin|least_connections|manual`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub strategy: Option<String>,
+    /// Keep a client/session pinned to its selected endpoint while healthy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sticky_sessions: Option<bool>,
+    /// Health check style: `tcp_connect|ssh_handshake|ssh_auth_preflight|ssh3_endpoint`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub health_check: Option<String>,
+    /// Consecutive failures before an endpoint leaves rotation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fail_after: Option<u32>,
+    /// Delay before an endpoint is eligible for restore/failback.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restore_after: Option<String>,
+    /// Rebalance interval for strategies that actively redistribute sessions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rebalance_interval: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
 // [observability] — spec §9.6
 // ---------------------------------------------------------------------------
 
@@ -435,6 +597,9 @@ pub struct ObservabilitySnmp {
     /// SNMP engine ID (hex). §9.6.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub engine_id: Option<String>,
+    /// IANA Private Enterprise Number used for the spt enterprise subtree.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enterprise_id: Option<u32>,
     /// Trap sink names. §9.6.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trap_sinks: Option<Vec<String>>,
