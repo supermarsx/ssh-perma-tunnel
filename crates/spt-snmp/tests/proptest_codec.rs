@@ -48,14 +48,14 @@ proptest! {
     #[test]
     fn varbind_roundtrip_strings(s in proptest::collection::vec(any::<u8>(), 0..256)) {
         let vb = VarBind::new(
-            ObjectIdentifier::new([1u32, 3, 6, 1, 4, 1, 99_999, 1, 0]),
+            ObjectIdentifier::new([1u32, 3, 6, 1, 4, 1, 32_473, 1, 0]),
             Value::OctetString(s.clone()),
         );
         let mut e = Encoder::new();
         let mut inner = Encoder::new();
         // Re-implement via crate's internal hooks: VarBind has private encode,
         // but we exercise it indirectly through the codec test surface.
-        inner.write_oid(&[1, 3, 6, 1, 4, 1, 99_999, 1, 0]).unwrap();
+        inner.write_oid(&[1, 3, 6, 1, 4, 1, 32_473, 1, 0]).unwrap();
         let mut val = Encoder::new();
         val.write_octet_string(&s);
         inner.write_raw(val.as_slice());
@@ -66,7 +66,7 @@ proptest! {
         let mut seq = d.read_sequence().unwrap();
         let oid = seq.read_oid().unwrap();
         let body = seq.read_octet_string().unwrap();
-        prop_assert_eq!(oid, vec![1u32, 3, 6, 1, 4, 1, 99_999, 1, 0]);
+        prop_assert_eq!(oid, vec![1u32, 3, 6, 1, 4, 1, 32_473, 1, 0]);
         prop_assert_eq!(body, s.as_slice());
         let _ = vb;
     }

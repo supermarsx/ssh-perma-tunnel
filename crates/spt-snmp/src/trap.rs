@@ -45,7 +45,7 @@ pub const SNMP_TRAP_OID_OID: &str = "1.3.6.1.6.3.1.1.4.1.0";
 /// let sender = TrapSender::new("127.0.0.1:162".parse().unwrap(), user).await?;
 /// sender
 ///     .send(
-///         "1.3.6.1.4.1.99999.0.1".parse::<ObjectIdentifier>()?,
+///         "1.3.6.1.4.1.32473.0.1".parse::<ObjectIdentifier>()?,
 ///         vec![],
 ///     )
 ///     .await?;
@@ -73,10 +73,10 @@ impl std::fmt::Debug for TrapSender {
 }
 
 impl TrapSender {
-    /// Builds a trap sender that auto-generates an engine id (placeholder
-    /// PEN). Use [`TrapSender::with_engine_id`] to override.
+    /// Builds a trap sender that auto-generates an engine id using the default
+    /// spt enterprise PEN. Use [`TrapSender::with_engine_id`] to override.
     pub async fn new(dest: SocketAddr, user: UsmUser) -> Result<Self> {
-        let engine_id = generate_engine_id(crate::agent::DEFAULT_ENTERPRISE_PEN);
+        let engine_id = generate_engine_id(crate::agent::DOCUMENTATION_ENTERPRISE_PEN);
         Self::with_engine_id(dest, user, engine_id).await
     }
 

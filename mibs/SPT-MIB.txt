@@ -3,9 +3,9 @@ SPT-MIB DEFINITIONS ::= BEGIN
 -- ===========================================================================
 -- spt — SSH permanent tunnel — Project enterprise MIB.
 --
--- The OID prefix `1.3.6.1.4.1.99999` is a placeholder.
--- TODO: register an IANA Private Enterprise Number (https://pen.iana.org/)
--- and replace `99999` with the assigned number before publishing.
+-- This checked-in MIB uses the RFC documentation PEN 32473 as a template.
+-- Production deployments must publish the MIB under the registered IANA
+-- Private Enterprise Number configured with `[observability.snmp].enterprise_id`.
 -- ===========================================================================
 
 IMPORTS
@@ -30,7 +30,7 @@ spt MODULE-IDENTITY
          rate-limit exhaustion, DNS failure, and remote logging failure."
     REVISION    "202605050000Z"
     DESCRIPTION "Initial revision."
-    ::= { enterprises 99999 }    -- placeholder PEN
+    ::= { enterprises 32473 } -- replace with your registered production PEN
 
 -- ---------------------------------------------------------------------------
 -- Sub-tree layout.

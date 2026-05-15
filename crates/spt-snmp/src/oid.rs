@@ -10,6 +10,29 @@ use core::str::FromStr;
 
 use crate::error::{Error, Result};
 
+/// IANA enterprise OID prefix.
+pub const ENTERPRISES_PREFIX: [u32; 6] = [1, 3, 6, 1, 4, 1];
+
+/// RFC documentation enterprise subtree as a dotted OID string.
+///
+/// This is for tests and examples only. Production deployments must use
+/// [`enterprise_oid`] with their registered IANA Private Enterprise Number.
+pub const DOCUMENTATION_ENTERPRISE_OID: &str = "1.3.6.1.4.1.32473";
+
+/// Builds `1.3.6.1.4.1.<pen>` for the supplied enterprise number.
+#[must_use]
+pub fn enterprise_oid(pen: u32) -> ObjectIdentifier {
+    let mut arcs = ENTERPRISES_PREFIX.to_vec();
+    arcs.push(pen);
+    ObjectIdentifier::new(arcs)
+}
+
+/// Builds the RFC documentation enterprise subtree.
+#[must_use]
+pub fn documentation_enterprise_oid() -> ObjectIdentifier {
+    enterprise_oid(crate::agent::DOCUMENTATION_ENTERPRISE_PEN)
+}
+
 /// An ASN.1 OBJECT IDENTIFIER. Internally a `Vec<u32>` of sub-arcs.
 ///
 /// # Examples

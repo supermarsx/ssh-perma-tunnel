@@ -28,12 +28,19 @@ use spt_snmp::usm::{
     SecurityLevel, UsmUser,
 };
 use spt_snmp::value::{Value, VarBind};
-use spt_snmp::{AgentBuilder, ConstScalar, Handler, ObjectIdentifier, TableHandler, TrapSender};
+use spt_snmp::{
+    AgentBuilder, ConstScalar, Handler, ObjectIdentifier, TableHandler, TrapSender,
+    DOCUMENTATION_ENTERPRISE_PEN,
+};
 use tokio::net::UdpSocket;
 use tokio::time::timeout;
 
 fn oid(s: &str) -> ObjectIdentifier {
     s.parse().unwrap()
+}
+
+fn agent_builder() -> AgentBuilder {
+    AgentBuilder::new().enterprise_pen(DOCUMENTATION_ENTERPRISE_PEN)
 }
 
 /// Builds a `Get` request (authPriv) and returns the encoded datagram bytes
@@ -278,15 +285,15 @@ async fn auth_priv_get_end_to_end() {
         SecretBytes::from("priv-pass-very-long-string"),
     );
 
-    let agent = AgentBuilder::new()
+    let agent = agent_builder()
         .bind("127.0.0.1:0".parse().unwrap())
         .add_user(user.clone())
         .add_scalar(
-            oid("1.3.6.1.4.1.99999.1.1.0"),
+            oid("1.3.6.1.4.1.32473.1.1.0"),
             ConstScalar::new(Value::OctetString(b"spt-test-agent".to_vec())),
         )
         .add_scalar(
-            oid("1.3.6.1.4.1.99999.1.2.0"),
+            oid("1.3.6.1.4.1.32473.1.2.0"),
             ConstScalar::new(Value::Integer(42)),
         )
         .run()
@@ -301,7 +308,7 @@ async fn auth_priv_get_end_to_end() {
         request_id: 100,
         error_status: 0,
         error_index: 0,
-        variable_bindings: vec![VarBind::null(oid("1.3.6.1.4.1.99999.1.1.0"))],
+        variable_bindings: vec![VarBind::null(oid("1.3.6.1.4.1.32473.1.1.0"))],
     };
     let resp = client.request(req, SecurityLevel::AuthPriv).await;
     assert_eq!(resp.kind, PduKind::Response);
@@ -321,11 +328,11 @@ async fn auth_only_get_end_to_end() {
         AuthProtocol::HmacSha1,
         SecretBytes::from("very-secret-password"),
     );
-    let agent = AgentBuilder::new()
+    let agent = agent_builder()
         .bind("127.0.0.1:0".parse().unwrap())
         .add_user(user.clone())
         .add_scalar(
-            oid("1.3.6.1.4.1.99999.1.1.0"),
+            oid("1.3.6.1.4.1.32473.1.1.0"),
             ConstScalar::new(Value::Integer(7)),
         )
         .run()
@@ -341,7 +348,7 @@ async fn auth_only_get_end_to_end() {
                 request_id: 1,
                 error_status: 0,
                 error_index: 0,
-                variable_bindings: vec![VarBind::null(oid("1.3.6.1.4.1.99999.1.1.0"))],
+                variable_bindings: vec![VarBind::null(oid("1.3.6.1.4.1.32473.1.1.0"))],
             },
             SecurityLevel::AuthNoPriv,
         )
@@ -359,23 +366,23 @@ async fn get_bulk_walk() {
         PrivProtocol::Aes128,
         SecretBytes::from("priv-pass-very-long-string"),
     );
-    let agent = AgentBuilder::new()
+    let agent = agent_builder()
         .bind("127.0.0.1:0".parse().unwrap())
         .add_user(user.clone())
         .add_scalar(
-            oid("1.3.6.1.4.1.99999.1.0"),
+            oid("1.3.6.1.4.1.32473.1.0"),
             ConstScalar::new(Value::Integer(1)),
         )
         .add_scalar(
-            oid("1.3.6.1.4.1.99999.2.0"),
+            oid("1.3.6.1.4.1.32473.2.0"),
             ConstScalar::new(Value::Integer(2)),
         )
         .add_scalar(
-            oid("1.3.6.1.4.1.99999.3.0"),
+            oid("1.3.6.1.4.1.32473.3.0"),
             ConstScalar::new(Value::Integer(3)),
         )
         .add_scalar(
-            oid("1.3.6.1.4.1.99999.4.0"),
+            oid("1.3.6.1.4.1.32473.4.0"),
             ConstScalar::new(Value::Integer(4)),
         )
         .run()
@@ -384,13 +391,13 @@ async fn get_bulk_walk() {
 
     let mut client = Client::new(agent.local_addr(), user).await;
     client.discover().await;
-    // GetBulk: 0 non-repeaters, 10 max-repetitions, starting at .99999.
+    // GetBulk: 0 non-repeaters, 10 max-repetitions, starting at .32473.
     let req = Pdu {
         kind: PduKind::GetBulkRequest,
         request_id: 1,
         error_status: 0,
         error_index: 10,
-        variable_bindings: vec![VarBind::null(oid("1.3.6.1.4.1.99999"))],
+        variable_bindings: vec![VarBind::null(oid("1.3.6.1.4.1.32473"))],
     };
     let resp = client.request(req, SecurityLevel::AuthPriv).await;
     // Expect the four scalars in order, then EndOfMibView.
@@ -399,8 +406,8 @@ async fn get_bulk_walk() {
         .iter()
         .map(|vb| vb.name.to_string())
         .collect();
-    assert!(names.contains(&"1.3.6.1.4.1.99999.1.0".to_string()));
-    assert!(names.contains(&"1.3.6.1.4.1.99999.4.0".to_string()));
+    assert!(names.contains(&"1.3.6.1.4.1.32473.1.0".to_string()));
+    assert!(names.contains(&"1.3.6.1.4.1.32473.4.0".to_string()));
     let last = resp.variable_bindings.iter().last().unwrap();
     assert_eq!(last.value, Value::EndOfMibView);
     agent.shutdown().await.unwrap();
@@ -415,7 +422,7 @@ async fn time_window_rejects_stale_message() {
         AuthProtocol::HmacSha256,
         SecretBytes::from("password-must-be-at-least-eight-bytes"),
     );
-    let agent = AgentBuilder::new()
+    let agent = agent_builder()
         .bind("127.0.0.1:0".parse().unwrap())
         .add_user(user.clone())
         .run()
@@ -434,7 +441,7 @@ async fn time_window_rejects_stale_message() {
                 request_id: 1,
                 error_status: 0,
                 error_index: 0,
-                variable_bindings: vec![VarBind::null(oid("1.3.6.1.4.1.99999.0"))],
+                variable_bindings: vec![VarBind::null(oid("1.3.6.1.4.1.32473.0"))],
             },
             SecurityLevel::AuthNoPriv,
         )
@@ -468,9 +475,9 @@ async fn trap_send_and_receive() {
 
     sender
         .send(
-            oid("1.3.6.1.4.1.99999.0.1"),
+            oid("1.3.6.1.4.1.32473.0.1"),
             vec![VarBind::new(
-                oid("1.3.6.1.4.1.99999.5.1.0"),
+                oid("1.3.6.1.4.1.32473.5.1.0"),
                 Value::OctetString(b"profile=demo".to_vec()),
             )],
         )
@@ -523,9 +530,9 @@ async fn trap_send_and_receive() {
         Value::Oid(o) => o.clone(),
         _ => panic!("expected snmpTrapOID Value::Oid"),
     };
-    assert_eq!(trap_oid, oid("1.3.6.1.4.1.99999.0.1"));
+    assert_eq!(trap_oid, oid("1.3.6.1.4.1.32473.0.1"));
     let extra = &scoped.pdu.variable_bindings[2];
-    assert_eq!(extra.name, oid("1.3.6.1.4.1.99999.5.1.0"));
+    assert_eq!(extra.name, oid("1.3.6.1.4.1.32473.5.1.0"));
     assert_eq!(extra.value, Value::OctetString(b"profile=demo".to_vec()));
 }
 
@@ -539,8 +546,8 @@ impl TableHandler for TwoRowTable {
         after: Option<&ObjectIdentifier>,
     ) -> spt_snmp::Result<Option<(ObjectIdentifier, Value)>> {
         let entries = [
-            (oid("1.3.6.1.4.1.99999.7.1.1.1.1"), Value::Integer(10)),
-            (oid("1.3.6.1.4.1.99999.7.1.1.1.2"), Value::Integer(20)),
+            (oid("1.3.6.1.4.1.32473.7.1.1.1.1"), Value::Integer(10)),
+            (oid("1.3.6.1.4.1.32473.7.1.1.1.2"), Value::Integer(20)),
         ];
         for (k, v) in &entries {
             if let Some(a) = after {
@@ -557,23 +564,23 @@ impl TableHandler for TwoRowTable {
 #[tokio::test]
 async fn table_walk_via_get_next() {
     let user = UsmUser::no_auth("public");
-    let agent = AgentBuilder::new()
+    let agent = agent_builder()
         .bind("127.0.0.1:0".parse().unwrap())
         .add_user(user.clone())
-        .add_table(oid("1.3.6.1.4.1.99999.7"), TwoRowTable)
+        .add_table(oid("1.3.6.1.4.1.32473.7"), TwoRowTable)
         .run()
         .await
         .unwrap();
 
     let mut client = Client::new(agent.local_addr(), user).await;
     client.discover().await;
-    // Walk twice from .99999.7 → first row, then second.
+    // Walk twice from .32473.7 → first row, then second.
     let req1 = Pdu {
         kind: PduKind::GetNextRequest,
         request_id: 1,
         error_status: 0,
         error_index: 0,
-        variable_bindings: vec![VarBind::null(oid("1.3.6.1.4.1.99999.7"))],
+        variable_bindings: vec![VarBind::null(oid("1.3.6.1.4.1.32473.7"))],
     };
     let r1 = client.request(req1, SecurityLevel::NoAuthNoPriv).await;
     assert_eq!(r1.variable_bindings[0].value, Value::Integer(10));

@@ -6,10 +6,12 @@
 //! [`ForwardHandle`] is owned by the runner so the supervisor can observe
 //! state and request shutdown.
 
+use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 
 use spt_config::schema::Forward;
 use spt_core::{BindAddr, Error, Result};
+use spt_net::bind::{resolve_bind, AutoPrefer, BindMode, Family};
 use spt_protocol::{
     ForwardDirection, ForwardHandle, ForwardState, LocalForwardSpec, RemoteForwardSpec, TargetAddr,
     TunnelSession, UdpForwardSpec,
@@ -85,10 +87,7 @@ impl ForwardRunner {
                 reason: "missing `target`/`connect`".into(),
             })?;
 
-        let listen = BindAddr::parse(listen_str).map_err(|e| ForwardRunnerError::Malformed {
-            name: name.clone(),
-            reason: format!("invalid listen `{listen_str}`: {e}"),
-        })?;
+        let listen = resolve_listen(cfg, listen_str)?;
         let target = parse_target(target_str).map_err(|e| ForwardRunnerError::Malformed {
             name: name.clone(),
             reason: format!("invalid target `{target_str}`: {e}"),
@@ -188,6 +187,167 @@ fn parse_direction(s: &str) -> Result<ForwardDirection> {
     }
 }
 
+fn resolve_listen(
+    cfg: &Forward,
+    listen_str: &str,
+) -> std::result::Result<BindAddr, ForwardRunnerError> {
+    let parsed = BindAddr::parse(listen_str).map_err(|e| ForwardRunnerError::Malformed {
+        name: cfg.name.clone(),
+        reason: format!("invalid listen `{listen_str}`: {e}"),
+    })?;
+
+    if cfg.bind_mode.is_none() {
+        return Ok(parsed);
+    }
+
+    let (host, port) = listen_host_port(&parsed).ok_or_else(|| ForwardRunnerError::Malformed {
+        name: cfg.name.clone(),
+        reason: "bind_mode cannot be used with unix socket listeners".into(),
+    })?;
+    let original_family = listen_family(&parsed);
+    let mode = bind_mode_from_forward(cfg, &host)?;
+    let addrs = resolve_bind(&mode, port).map_err(|e| ForwardRunnerError::Malformed {
+        name: cfg.name.clone(),
+        reason: format!(
+            "bind_mode `{}` could not resolve a bind address: {e}",
+            cfg.bind_mode.as_deref().unwrap_or("unknown")
+        ),
+    })?;
+    let selected =
+        select_bind_addr(addrs, cfg.bind_ipv6.as_deref(), original_family).ok_or_else(|| {
+            ForwardRunnerError::Malformed {
+                name: cfg.name.clone(),
+                reason: format!(
+                    "bind_mode `{}` produced no address compatible with bind_ipv6 `{}`",
+                    cfg.bind_mode.as_deref().unwrap_or("unknown"),
+                    cfg.bind_ipv6.as_deref().unwrap_or("auto")
+                ),
+            }
+        })?;
+    Ok(BindAddr::Tcp(selected))
+}
+
+fn listen_host_port(addr: &BindAddr) -> Option<(String, u16)> {
+    match addr {
+        BindAddr::Tcp(sock) => Some((sock.ip().to_string(), sock.port())),
+        BindAddr::TcpHostPort { host, port } => Some((host.clone(), *port)),
+        BindAddr::Unix(_) => None,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ListenFamily {
+    Ipv4,
+    Ipv6,
+    Unknown,
+}
+
+fn listen_family(addr: &BindAddr) -> ListenFamily {
+    match addr {
+        BindAddr::Tcp(sock) if sock.is_ipv4() => ListenFamily::Ipv4,
+        BindAddr::Tcp(sock) if sock.is_ipv6() => ListenFamily::Ipv6,
+        BindAddr::TcpHostPort { host, .. } => match host.parse::<IpAddr>() {
+            Ok(IpAddr::V4(_)) => ListenFamily::Ipv4,
+            Ok(IpAddr::V6(_)) => ListenFamily::Ipv6,
+            Err(_) => ListenFamily::Unknown,
+        },
+        _ => ListenFamily::Unknown,
+    }
+}
+
+fn bind_mode_from_forward(
+    cfg: &Forward,
+    host: &str,
+) -> std::result::Result<BindMode, ForwardRunnerError> {
+    let family = family_from_forward(cfg);
+    match cfg.bind_mode.as_deref() {
+        Some("loopback") => Ok(BindMode::Loopback),
+        Some("specific_ip") => {
+            let ip = host
+                .parse::<IpAddr>()
+                .map_err(|e| ForwardRunnerError::Malformed {
+                    name: cfg.name.clone(),
+                    reason: format!(
+                        "bind_mode specific_ip requires numeric bind host `{host}`: {e}"
+                    ),
+                })?;
+            if matches!(family, Family::Ipv4) && ip.is_ipv6() {
+                return Err(ForwardRunnerError::Malformed {
+                    name: cfg.name.clone(),
+                    reason:
+                        "bind_mode specific_ip cannot use an IPv6 host when bind_ipv6 is disabled"
+                            .into(),
+                });
+            }
+            Ok(BindMode::SpecificIp(ip))
+        }
+        Some("specific_interface") => {
+            let name = cfg
+                .bind_interface
+                .clone()
+                .ok_or_else(|| ForwardRunnerError::Malformed {
+                    name: cfg.name.clone(),
+                    reason: "bind_mode specific_interface requires bind_interface".into(),
+                })?;
+            Ok(BindMode::SpecificInterface { name, family })
+        }
+        Some("all_interfaces") => Ok(BindMode::AllInterfaces),
+        Some("auto_interface") => Ok(BindMode::AutoInterface {
+            prefer: auto_prefer_from_forward(cfg, family),
+        }),
+        Some(other) => Err(ForwardRunnerError::Malformed {
+            name: cfg.name.clone(),
+            reason: format!("unknown bind_mode `{other}`"),
+        }),
+        None => unreachable!("caller only asks for bind mode resolution when bind_mode is set"),
+    }
+}
+
+fn auto_prefer_from_forward(cfg: &Forward, family: Family) -> AutoPrefer {
+    if let Some(preferences) = cfg.bind_interface_preference.clone() {
+        if !preferences.is_empty() {
+            return AutoPrefer::Name(preferences);
+        }
+    }
+    if let Some(name) = cfg.bind_interface.clone() {
+        if !name.is_empty() {
+            return AutoPrefer::Name(vec![name]);
+        }
+    }
+    if !matches!(family, Family::Both) {
+        return AutoPrefer::Family(family);
+    }
+    AutoPrefer::PlatformDefault
+}
+
+fn family_from_forward(cfg: &Forward) -> Family {
+    match cfg.bind_ipv6.as_deref() {
+        Some("disable") => Family::Ipv4,
+        _ => Family::Both,
+    }
+}
+
+fn select_bind_addr(
+    addrs: Vec<SocketAddr>,
+    bind_ipv6: Option<&str>,
+    original_family: ListenFamily,
+) -> Option<SocketAddr> {
+    match bind_ipv6 {
+        Some("disable") => addrs.into_iter().find(SocketAddr::is_ipv4),
+        Some("prefer") => addrs
+            .iter()
+            .copied()
+            .find(SocketAddr::is_ipv6)
+            .or_else(|| addrs.into_iter().next()),
+        _ if matches!(original_family, ListenFamily::Ipv6) => addrs
+            .iter()
+            .copied()
+            .find(SocketAddr::is_ipv6)
+            .or_else(|| addrs.into_iter().next()),
+        _ => addrs.into_iter().next(),
+    }
+}
+
 /// Parse a target string into [`TargetAddr`]. Accepts `host:port` or
 /// `[v6]:port`.
 fn parse_target(s: &str) -> Result<TargetAddr> {
@@ -205,6 +365,7 @@ fn parse_target(s: &str) -> Result<TargetAddr> {
 mod tests {
     use super::*;
     use crate::testing::MockTunnelSession;
+    use spt_protocol::{LocalForwardSpec, RemoteForwardSpec, SessionInfo, UdpForwardSpec};
 
     fn fwd(kind: &str, transport: &str, bind: &str, target: &str) -> Forward {
         Forward {
@@ -217,6 +378,51 @@ mod tests {
         }
     }
 
+    #[derive(Debug)]
+    struct CapturingSession {
+        inner: MockTunnelSession,
+        last_listen: Option<BindAddr>,
+    }
+
+    impl CapturingSession {
+        fn new() -> Self {
+            Self {
+                inner: MockTunnelSession::new(),
+                last_listen: None,
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl TunnelSession for CapturingSession {
+        async fn open_local_forward(&mut self, spec: &LocalForwardSpec) -> Result<ForwardHandle> {
+            self.last_listen = Some(spec.listen.clone());
+            self.inner.open_local_forward(spec).await
+        }
+
+        async fn open_remote_forward(&mut self, spec: &RemoteForwardSpec) -> Result<ForwardHandle> {
+            self.last_listen = Some(spec.listen.clone());
+            self.inner.open_remote_forward(spec).await
+        }
+
+        async fn open_udp_forward(&mut self, spec: &UdpForwardSpec) -> Result<ForwardHandle> {
+            self.last_listen = Some(spec.listen.clone());
+            self.inner.open_udp_forward(spec).await
+        }
+
+        async fn keepalive(&mut self) -> Result<()> {
+            self.inner.keepalive().await
+        }
+
+        async fn close(self: Box<Self>) -> Result<()> {
+            Ok(())
+        }
+
+        fn session_info(&self) -> SessionInfo {
+            self.inner.session_info()
+        }
+    }
+
     #[tokio::test]
     async fn start_local_tcp_returns_handle_in_active_state() {
         let mut session = MockTunnelSession::new();
@@ -226,6 +432,40 @@ mod tests {
             .unwrap();
         assert_eq!(runner.state(), ForwardState::Active);
         runner.stop().await;
+    }
+
+    #[tokio::test]
+    async fn start_resolves_specific_interface_bind_mode() {
+        let ifaces = spt_net::interfaces::list().unwrap();
+        let loopback = ifaces
+            .iter()
+            .find(|iface| iface.is_loopback)
+            .expect("loopback interface present");
+        let mut session = CapturingSession::new();
+        let mut cfg = fwd("local", "tcp", "127.0.0.1:0", "203.0.113.1:22");
+        cfg.bind_mode = Some("specific_interface".into());
+        cfg.bind_interface = Some(loopback.name.clone());
+
+        let runner = ForwardRunner::start(&cfg, &mut session, &ForwardRunnerConfig::default())
+            .await
+            .unwrap();
+        let listen = session.last_listen.clone().expect("listen captured");
+        match listen {
+            BindAddr::Tcp(sock) => assert!(sock.ip().is_loopback(), "got {sock}"),
+            other => panic!("expected tcp listen address, got {other:?}"),
+        }
+        runner.stop().await;
+    }
+
+    #[test]
+    fn specific_interface_requires_interface_name() {
+        let mut cfg = fwd("local", "tcp", "127.0.0.1:0", "203.0.113.1:22");
+        cfg.bind_mode = Some("specific_interface".into());
+
+        let err = resolve_listen(&cfg, "127.0.0.1:0").unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("specific_interface requires bind_interface"));
     }
 
     #[tokio::test]

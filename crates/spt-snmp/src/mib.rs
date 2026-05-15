@@ -102,7 +102,7 @@ pub trait TableHandler: Send + Sync + 'static {
 /// // ... configure scalars ...
 /// # let _ = ConstScalar::new(Value::Integer(42));
 /// # let _ = reg;
-/// # let _: ObjectIdentifier = "1.3.6.1.4.1.99999.1".parse().unwrap();
+/// # let _: ObjectIdentifier = "1.3.6.1.4.1.32473.1".parse().unwrap();
 /// ```
 #[derive(Debug, Clone)]
 pub struct ConstScalar {
@@ -261,12 +261,12 @@ mod tests {
     async fn scalar_get() {
         let mut reg = MibRegistry::new();
         reg.add_scalar(
-            oid("1.3.6.1.4.1.99999.1.0"),
+            oid("1.3.6.1.4.1.32473.1.0"),
             ConstScalar::new(Value::Integer(7)),
         );
-        let v = reg.get(&oid("1.3.6.1.4.1.99999.1.0")).await.unwrap();
+        let v = reg.get(&oid("1.3.6.1.4.1.32473.1.0")).await.unwrap();
         assert_eq!(v, Some(Value::Integer(7)));
-        let v = reg.get(&oid("1.3.6.1.4.1.99999.2.0")).await.unwrap();
+        let v = reg.get(&oid("1.3.6.1.4.1.32473.2.0")).await.unwrap();
         assert_eq!(v, None);
     }
 
@@ -274,30 +274,30 @@ mod tests {
     async fn lexicographic_next_scalars() {
         let mut reg = MibRegistry::new();
         reg.add_scalar(
-            oid("1.3.6.1.4.1.99999.1.0"),
+            oid("1.3.6.1.4.1.32473.1.0"),
             ConstScalar::new(Value::Integer(1)),
         );
         reg.add_scalar(
-            oid("1.3.6.1.4.1.99999.2.0"),
+            oid("1.3.6.1.4.1.32473.2.0"),
             ConstScalar::new(Value::Integer(2)),
         );
         reg.add_scalar(
-            oid("1.3.6.1.4.1.99999.3.0"),
+            oid("1.3.6.1.4.1.32473.3.0"),
             ConstScalar::new(Value::Integer(3)),
         );
 
         let n = reg
-            .next(&oid("1.3.6.1.4.1.99999.1.0"))
+            .next(&oid("1.3.6.1.4.1.32473.1.0"))
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(n.0, oid("1.3.6.1.4.1.99999.2.0"));
+        assert_eq!(n.0, oid("1.3.6.1.4.1.32473.2.0"));
 
-        let n = reg.next(&oid("1.3.6.1.4.1.99999.3.0")).await.unwrap();
+        let n = reg.next(&oid("1.3.6.1.4.1.32473.3.0")).await.unwrap();
         assert!(n.is_none());
 
         // First in the tree
-        let n = reg.next(&oid("1.3.6.1.4.1.99998")).await.unwrap().unwrap();
-        assert_eq!(n.0, oid("1.3.6.1.4.1.99999.1.0"));
+        let n = reg.next(&oid("1.3.6.1.4.1.32472")).await.unwrap().unwrap();
+        assert_eq!(n.0, oid("1.3.6.1.4.1.32473.1.0"));
     }
 }

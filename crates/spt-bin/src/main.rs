@@ -31,7 +31,7 @@ pub(crate) use benchmark_bridge::run_live_benchmark;
 use std::path::PathBuf;
 use std::process::ExitCode as ProcExitCode;
 
-use spt_cli::{Cli, ColorMode, GlobalOpts, LogLevel};
+use spt_cli::{groups, Cli, ColorMode, Command, GlobalOpts, LogLevel};
 use spt_core::{Error, ExitCode, Result};
 
 fn main() -> ProcExitCode {
@@ -56,7 +56,11 @@ fn main() -> ProcExitCode {
     // a minimal stderr subscriber up-front and let long-running commands
     // (`tunnel run`, `service run`, `mcp serve`) re-init through the proper
     // pipeline once they own the config.
-    let _trace_guard = tracing_init::init_minimal(&cli.global);
+    let _trace_guard = if defers_tracing_to_config(&cli) {
+        None
+    } else {
+        tracing_init::init_minimal(&cli.global)
+    };
 
     // Build a runtime sized to the threads section if config is loadable;
     // otherwise default. Most commands are short-lived so a small mt runtime
@@ -89,6 +93,15 @@ fn map_exit(r: Result<()>) -> ProcExitCode {
             ProcExitCode::from(e.exit_code().as_i32() as u8)
         }
     }
+}
+
+fn defers_tracing_to_config(cli: &Cli) -> bool {
+    matches!(
+        &cli.command,
+        Command::Tunnel(groups::tunnel::TunnelCmd {
+            command: groups::tunnel::TunnelSub::Run(_),
+        })
+    )
 }
 
 /// Resolve the config path with the documented precedence:

@@ -50,7 +50,7 @@ pub const TIME_WINDOW_SECS: u32 = 150;
 /// # Examples
 /// ```
 /// use spt_snmp::generate_engine_id;
-/// let id = generate_engine_id(99_999);
+/// let id = generate_engine_id(32_473);
 /// assert_eq!(id.as_bytes().len(), 9);
 /// // Top bit of first byte is set per RFC 3411.
 /// assert_eq!(id.as_bytes()[0] & 0x80, 0x80);
@@ -160,7 +160,7 @@ mod tests {
 
     #[test]
     fn structured_engine_id_format() {
-        let id = generate_engine_id(99_999);
+        let id = generate_engine_id(32_473);
         let b = id.as_bytes();
         assert_eq!(b.len(), 9);
         assert_eq!(b[0] & 0x80, 0x80);
@@ -168,7 +168,7 @@ mod tests {
                              // PEN encoded in low 31 bits of bytes 0..4.
         let pen_bytes = [b[0] & 0x7F, b[1], b[2], b[3]];
         let pen = u32::from_be_bytes(pen_bytes);
-        assert_eq!(pen, 99_999);
+        assert_eq!(pen, 32_473);
     }
 
     #[test]

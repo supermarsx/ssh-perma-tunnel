@@ -112,22 +112,33 @@ fn build_supervisor_config(profile: &Profile) -> Result<ProfileSupervisorConfig>
         cfg.backoff = build_backoff_config(&profile.name, reconnect)?;
     }
 
-    if let Some(mode) = profile
-        .failover
-        .as_ref()
-        .and_then(|failover| failover.mode.as_deref())
-    {
-        cfg.failover_mode = match mode {
-            "priority" => FailoverMode::Priority,
-            "weighted" => FailoverMode::Weighted,
-            "manual" => FailoverMode::Manual,
-            other => {
+    if let Some(failover) = profile.failover.as_ref() {
+        if let Some(mode) = failover.mode.as_deref() {
+            cfg.failover_mode = match mode {
+                "priority" => FailoverMode::Priority,
+                "weighted" => FailoverMode::Weighted,
+                "manual" => FailoverMode::Manual,
+                other => {
+                    return Err(Error::InvalidConfig(format!(
+                        "profile `{}`: unknown failover.mode `{other}`",
+                        profile.name
+                    )));
+                }
+            };
+        }
+        if let Some(fail_after) = failover.fail_after {
+            if fail_after == 0 {
                 return Err(Error::InvalidConfig(format!(
-                    "profile `{}`: unknown failover.mode `{other}`",
+                    "profile `{}`: failover.fail_after must be greater than zero",
                     profile.name
                 )));
             }
-        };
+            cfg.failover_fail_after = fail_after;
+        }
+        if let Some(raw) = failover.restore_after.as_deref() {
+            cfg.failover_cooldown =
+                parse_profile_duration(&profile.name, "failover.restore_after", raw)?;
+        }
     }
 
     Ok(cfg)
@@ -383,6 +394,8 @@ mod tests {
 
             [profiles.failover]
             mode = "weighted"
+            fail_after = 3
+            restore_after = "30s"
         "#;
         let (c, _) = load_str(cfg, false).unwrap();
         let bundle = build(&c.profiles[0], &empty_resolver()).unwrap();
@@ -401,6 +414,11 @@ mod tests {
         assert!((bundle.supervisor_cfg.backoff.jitter - 0.25).abs() < f32::EPSILON);
         assert_eq!(bundle.supervisor_cfg.backoff.max_attempts, 7);
         assert_eq!(bundle.supervisor_cfg.failover_mode, FailoverMode::Weighted);
+        assert_eq!(bundle.supervisor_cfg.failover_fail_after, 3);
+        assert_eq!(
+            bundle.supervisor_cfg.failover_cooldown,
+            std::time::Duration::from_secs(30)
+        );
     }
 
     #[test]

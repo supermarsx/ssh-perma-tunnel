@@ -51,9 +51,10 @@ let user = UsmUser::auth_priv(
 
 let agent = AgentBuilder::new()
     .bind("0.0.0.0:161".parse::<SocketAddr>().unwrap())
+    .enterprise_pen(12345) // Use your registered IANA PEN.
     .add_user(user)
     .add_scalar(
-        "1.3.6.1.4.1.99999.1.1.0".parse::<ObjectIdentifier>()?,
+        "1.3.6.1.4.1.12345.1.1.0".parse::<ObjectIdentifier>()?,
         ConstScalar::new(Value::OctetString(b"hello".to_vec())),
     )
     .run()
@@ -96,9 +97,10 @@ violation, and unsupported security level.
 ## MIB
 
 The companion enterprise MIB lives at
-[`mibs/SPT-MIB.txt`](../../mibs/SPT-MIB.txt). It uses the placeholder OID
-`1.3.6.1.4.1.99999`; replace this with your registered IANA Private Enterprise
-Number before publishing the MIB.
+[`mibs/SPT-MIB.txt`](../../mibs/SPT-MIB.txt). The checked-in MIB uses the RFC
+documentation PEN `32473` as a template only. Production deployments must set
+`[observability.snmp].enterprise_id` to their registered IANA Private
+Enterprise Number and publish the MIB under that subtree.
 
 ## Relationship to `net-snmp`
 
@@ -107,7 +109,7 @@ This crate is interoperable with `net-snmp` clients (`snmpget`, `snmpwalk`,
 
 ```text
 snmpwalk -v3 -l authPriv -u monitor -a SHA-256 -A "auth-pass-very-long" \
-         -x AES -X "priv-pass-very-long" 127.0.0.1 1.3.6.1.4.1.99999
+         -x AES -X "priv-pass-very-long" 127.0.0.1 1.3.6.1.4.1.12345
 ```
 
 ## License

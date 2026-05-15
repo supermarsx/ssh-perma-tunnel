@@ -10,7 +10,7 @@ use std::time::Duration;
 use tokio::net::UdpSocket;
 use tokio::time::timeout;
 
-use crate::agent::{AgentBuilder, AgentHandle};
+use crate::agent::{AgentBuilder, AgentHandle, DOCUMENTATION_ENTERPRISE_PEN};
 use crate::error::Result;
 use crate::message::{
     GlobalData, Message, MessageData, ScopedPdu, SecurityParameters, FLAG_AUTH, FLAG_PRIV,
@@ -55,7 +55,12 @@ impl LocalhostAgent {
     /// starting the agent fails.
     pub async fn ephemeral(user: UsmUser) -> Result<Self> {
         let bind: SocketAddr = "127.0.0.1:0".parse().expect("static parse");
-        let handle = AgentBuilder::new().bind(bind).add_user(user).run().await?;
+        let handle = AgentBuilder::new()
+            .bind(bind)
+            .enterprise_pen(DOCUMENTATION_ENTERPRISE_PEN)
+            .add_user(user)
+            .run()
+            .await?;
         let addr = handle.local_addr();
         Ok(Self { handle, addr })
     }
@@ -71,7 +76,10 @@ impl LocalhostAgent {
         F: FnOnce(AgentBuilder) -> AgentBuilder,
     {
         let bind: SocketAddr = "127.0.0.1:0".parse().expect("static parse");
-        let builder = AgentBuilder::new().bind(bind).add_user(user);
+        let builder = AgentBuilder::new()
+            .bind(bind)
+            .enterprise_pen(DOCUMENTATION_ENTERPRISE_PEN)
+            .add_user(user);
         let builder = configure(builder);
         let handle = builder.run().await?;
         let addr = handle.local_addr();
@@ -516,7 +524,7 @@ mod tests {
     #[tokio::test]
     async fn localhost_agent_round_trip_authpriv_get() {
         let user = fixtures::default_user();
-        let oid: crate::ObjectIdentifier = "1.3.6.1.4.1.99999.1.1.0".parse().unwrap();
+        let oid: crate::ObjectIdentifier = "1.3.6.1.4.1.32473.1.1.0".parse().unwrap();
         let oid_for_register = oid.clone();
         let agent = LocalhostAgent::ephemeral_with(user.clone(), |b| {
             b.add_scalar(

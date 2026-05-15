@@ -34,9 +34,10 @@
 //!
 //! let agent = AgentBuilder::new()
 //!     .bind("127.0.0.1:0".parse::<SocketAddr>().unwrap())
+//!     .enterprise_pen(12345) // Use your registered IANA PEN.
 //!     .add_user(user)
 //!     .add_scalar(
-//!         ObjectIdentifier::new([1u32, 3, 6, 1, 4, 1, 99_999, 1, 1, 0]),
+//!         ObjectIdentifier::new([1u32, 3, 6, 1, 4, 1, 12_345, 1, 1, 0]),
 //!         spt_snmp::ConstScalar::new(Value::OctetString(b"hello".to_vec())),
 //!     )
 //!     .run()
@@ -87,11 +88,13 @@ pub mod trap;
 pub mod usm;
 pub mod value;
 
-pub use agent::{Agent, AgentBuilder, AgentHandle};
+pub use agent::{Agent, AgentBuilder, AgentHandle, DOCUMENTATION_ENTERPRISE_PEN};
 pub use engine::{generate_engine_id, EngineClock, EngineId};
 pub use error::{Error, Result, UsmError};
 pub use mib::{ConstScalar, Handler, MibRegistry, TableHandler};
-pub use oid::ObjectIdentifier;
+pub use oid::{
+    documentation_enterprise_oid, enterprise_oid, ObjectIdentifier, DOCUMENTATION_ENTERPRISE_OID,
+};
 pub use pdu::{ErrorStatus, Pdu, PduKind};
 pub use trap::TrapSender;
 pub use usm::{AuthProtocol, PrivProtocol, SecretBytes, SecurityLevel, UsmCounters, UsmUser};

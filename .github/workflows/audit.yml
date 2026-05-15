@@ -23,12 +23,25 @@ jobs:
   cargo-audit:
     name: cargo-audit (RustSec advisories)
     runs-on: ubuntu-latest
+    env:
+      CARGO_AUDIT_VERSION: "0.22.1"
+      # Keep this list in sync with deny.toml [advisories].ignore. These
+      # advisories are reviewed exceptions, not blanket suppressions.
+      CARGO_AUDIT_IGNORES: >-
+        --ignore RUSTSEC-2023-0071
+        --ignore RUSTSEC-2024-0436
+        --ignore RUSTSEC-2025-0134
+        --ignore RUSTSEC-2026-0002
+        --ignore RUSTSEC-2026-0009
+        --ignore RUSTSEC-2026-0119
+        --ignore RUSTSEC-2026-0141
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - uses: rustsec/audit-check@v2
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --version "$CARGO_AUDIT_VERSION" --locked
+      - name: Audit Cargo.lock
+        run: cargo audit --deny warnings $CARGO_AUDIT_IGNORES
 
   cargo-deny:
     name: cargo-deny (scheduled re-run)

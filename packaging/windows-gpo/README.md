@@ -70,6 +70,22 @@ This copies:
 
 After deployment, refresh policy on a target host with `gpupdate /force`.
 
+### CLI management
+
+The same registry-backed policy surface can be inspected and managed from
+`spt`:
+
+```powershell
+spt firewall policy list --json
+spt firewall policy show --config C:\ProgramData\spt\spt.toml --json
+spt firewall policy set Network.DefaultInterface Ethernet --scope user
+spt firewall policy set Network.AllowedInterfaces Ethernet,Wintun --scope machine --enforced
+spt firewall policy unset Network.DefaultInterface --scope user
+```
+
+`--scope machine` writes `HKLM` and requires elevation. `--enforced` sets the
+section-level `Enforced` sentinel used by the runtime overlay.
+
 ### Editing policies
 
 After install, open `gpedit.msc` (local) or the Group Policy Management Editor
@@ -130,6 +146,21 @@ HKCU\Software\Policies\spt\Security
 | Network       | `McpEnabled`                     | REG_DWORD (0/1)   | |
 | Network       | `McpListen`                      | REG_SZ            | e.g. `127.0.0.1:7843` |
 | Network       | `BindRestrictions`               | REG_MULTI_SZ      | one CIDR per line |
+| Network       | `DefaultInterface`               | REG_SZ            | default bind interface |
+| Network       | `AllowedInterfaces`              | REG_MULTI_SZ      | interface allow-list |
+| Network       | `RequireExplicitInterface`       | REG_DWORD (0/1)   | require per-forward interface |
+| Network       | `AllowAllInterfaces`             | REG_DWORD (0/1)   | permit wildcard binds |
+| Network       | `BindIpv6`                       | REG_SZ            | auto/prefer/disable |
+| Network       | `DefaultGateway`                 | REG_SZ            | default gateway address/alias |
+| Network       | `GatewayInterface`               | REG_SZ            | expected gateway interface |
+| Network       | `RouteCheckTarget`               | REG_SZ            | route probe target |
+| Network       | `RequireGatewayMatch`            | REG_DWORD (0/1)   | enforce gateway/interface match |
+| Network       | `GatewayPolicy`                  | REG_SZ            | disabled/default_route/interface_only/route_to_target |
+| Network       | `OffloadZeroCopy`                | REG_DWORD (0/1)   | zero-copy policy |
+| Network       | `OffloadIoUring`                 | REG_DWORD (0/1)   | Linux io_uring policy |
+| Network       | `LoadBalanceStrategy`            | REG_SZ            | priority/weighted/round_robin/least_connections/manual |
+| Network       | `LoadBalanceFailAfter`           | REG_DWORD         | consecutive failures |
+| Network       | `LoadBalanceRestoreAfter`        | REG_SZ            | duration, e.g. 30s |
 | Crypto        | `AllowSsh2`                      | REG_DWORD (0/1)   | |
 | Crypto        | `AllowSsh3`                      | REG_DWORD (0/1)   | |
 | Crypto        | `AllowedKexAlgorithms`           | REG_MULTI_SZ      | |

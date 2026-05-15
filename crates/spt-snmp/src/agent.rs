@@ -37,8 +37,11 @@ use crate::usm::{
 };
 use crate::value::{Value, VarBind};
 
-/// Default SNMP enterprise PEN (placeholder until IANA registration).
-pub const DEFAULT_ENTERPRISE_PEN: u32 = 99_999;
+/// RFC documentation PEN from RFC 5612 / RFC 9371 examples.
+///
+/// This is useful for tests and examples only. Production SNMP deployments
+/// must configure a registered IANA Private Enterprise Number.
+pub const DOCUMENTATION_ENTERPRISE_PEN: u32 = 32_473;
 
 /// Maximum UDP datagram we will accept (matches `msgMaxSize` default).
 pub const MAX_DATAGRAM: usize = 65_507;
@@ -48,6 +51,7 @@ pub const MAX_DATAGRAM: usize = 65_507;
 pub struct AgentBuilder {
     bind_addr: Option<SocketAddr>,
     engine_id: Option<EngineId>,
+    enterprise_pen: Option<u32>,
     users: Vec<UsmUser>,
     registry: MibRegistry,
 }
@@ -57,6 +61,7 @@ impl std::fmt::Debug for AgentBuilder {
         f.debug_struct("AgentBuilder")
             .field("bind_addr", &self.bind_addr)
             .field("engine_id", &self.engine_id)
+            .field("enterprise_pen", &self.enterprise_pen)
             .field("users", &self.users.len())
             .field("registry", &self.registry)
             .finish()
@@ -77,8 +82,17 @@ impl AgentBuilder {
         self
     }
 
-    /// Overrides the engine id. If unset, a random RFC-3411 §5.1 format-5 id
-    /// is generated using the placeholder enterprise PEN.
+    /// Sets the registered IANA Private Enterprise Number used when generating
+    /// a random RFC-3411 §5.1 format-5 engine id.
+    #[must_use]
+    pub fn enterprise_pen(mut self, pen: u32) -> Self {
+        self.enterprise_pen = Some(pen);
+        self
+    }
+
+    /// Overrides the engine id. If unset, [`AgentBuilder::enterprise_pen`]
+    /// must be set so a production engine id can be generated from a registered
+    /// enterprise number.
     #[must_use]
     pub fn engine_id(mut self, id: EngineId) -> Self {
         self.engine_id = Some(id);
@@ -117,9 +131,24 @@ impl AgentBuilder {
         let bind = self.bind_addr.ok_or_else(|| {
             Error::Config("AgentBuilder::bind() must be called before run()".into())
         })?;
-        let engine_id = self
-            .engine_id
-            .unwrap_or_else(|| generate_engine_id(DEFAULT_ENTERPRISE_PEN));
+        let engine_id = match self.engine_id {
+            Some(id) => id,
+            None => {
+                let pen = self.enterprise_pen.ok_or_else(|| {
+                    Error::Config(
+                        "AgentBuilder::enterprise_pen() or engine_id() must be set before run(); \
+                         production SNMP requires a registered IANA Private Enterprise Number"
+                            .into(),
+                    )
+                })?;
+                if pen == 0 {
+                    return Err(Error::Config(
+                        "SNMP enterprise PEN must be greater than zero".into(),
+                    ));
+                }
+                generate_engine_id(pen)
+            }
+        };
         let socket = UdpSocket::bind(bind).await?;
         let local_addr = socket.local_addr()?;
 

@@ -634,7 +634,7 @@ mod tests {
 
     #[test]
     fn oid_large_arc() {
-        let arcs = vec![1u32, 3, 6, 1, 4, 1, 99_999, 1];
+        let arcs = vec![1u32, 3, 6, 1, 4, 1, 32_473, 1];
         let body = encode_oid(&arcs).unwrap();
         let back = decode_oid(&body).unwrap();
         assert_eq!(back, arcs);
