@@ -21,7 +21,9 @@ use crate::config::{
 use crate::https_jsonl::{self, HttpsAuth, HttpsJsonlConfig, HttpsJsonlHandle};
 use crate::redaction::RedactingMakeWriter;
 use crate::rotation::{RotatingFileAppender, SizeRotationPolicy};
+use crate::syslog_tcp::{self, SyslogTcpConfig, SyslogTcpHandle};
 use crate::syslog_tls::{self, SyslogTlsConfig, SyslogTlsHandle};
+use crate::syslog_udp::{self, SyslogUdpConfig, SyslogUdpHandle};
 
 /// Error from [`init`].
 #[derive(Debug, Error)]
@@ -56,6 +58,10 @@ pub enum InitError {
 pub struct TracingGuard {
     /// Worker for the rotating file appender.
     pub(crate) _file_guard: Option<WorkerGuard>,
+    /// Active syslog-UDP writers.
+    pub(crate) _syslog_udp: Vec<SyslogUdpHandle>,
+    /// Active syslog-TCP writers.
+    pub(crate) _syslog_tcp: Vec<SyslogTcpHandle>,
     /// Active syslog-TLS writers; dropping closes their channels and joins
     /// their tasks via tokio's `JoinHandle` drop semantics. We keep them in
     /// a Vec so a single config can declare multiple syslog targets.
@@ -118,12 +124,22 @@ fn init_inner(config: &LoggingConfig, test: bool) -> Result<TracingGuard, InitEr
     // is currently active — otherwise `tokio::spawn` panics. We probe for a
     // handle and skip on absence (same-process tests without a runtime can
     // still call `init` for the local layers).
+    let mut syslog_udp_handles: Vec<SyslogUdpHandle> = Vec::new();
+    let mut syslog_tcp_handles: Vec<SyslogTcpHandle> = Vec::new();
     let mut syslog_handles: Vec<SyslogTlsHandle> = Vec::new();
     let mut https_handles: Vec<HttpsJsonlHandle> = Vec::new();
     if !config.remote.is_empty() && tokio::runtime::Handle::try_current().is_ok() {
         for sink in &config.remote {
             match build_remote_layer(sink, config.redact) {
-                Ok(RemoteBuild::Syslog { layer, handle }) => {
+                Ok(RemoteBuild::SyslogUdp { layer, handle }) => {
+                    layers.push(layer);
+                    syslog_udp_handles.push(handle);
+                }
+                Ok(RemoteBuild::SyslogTcp { layer, handle }) => {
+                    layers.push(layer);
+                    syslog_tcp_handles.push(handle);
+                }
+                Ok(RemoteBuild::SyslogTls { layer, handle }) => {
                     layers.push(layer);
                     syslog_handles.push(handle);
                 }
@@ -173,6 +189,8 @@ fn init_inner(config: &LoggingConfig, test: bool) -> Result<TracingGuard, InitEr
 
     Ok(TracingGuard {
         _file_guard: file_guard,
+        _syslog_udp: syslog_udp_handles,
+        _syslog_tcp: syslog_tcp_handles,
         _syslog: syslog_handles,
         _https: https_handles,
     })
@@ -181,6 +199,8 @@ fn init_inner(config: &LoggingConfig, test: bool) -> Result<TracingGuard, InitEr
 /// Kind enum → display string used in `InitError::RemoteSink`.
 fn remote_kind_str(k: RemoteSinkKind) -> &'static str {
     match k {
+        RemoteSinkKind::SyslogUdp => "syslog_udp",
+        RemoteSinkKind::SyslogTcp => "syslog_tcp",
         RemoteSinkKind::SyslogTls => "syslog-tls",
         RemoteSinkKind::HttpsJsonl => "https-jsonl",
         RemoteSinkKind::Otlp => "otlp",
@@ -189,7 +209,15 @@ fn remote_kind_str(k: RemoteSinkKind) -> &'static str {
 
 /// Outcome of remote-sink construction.
 enum RemoteBuild {
-    Syslog {
+    SyslogUdp {
+        layer: Box<dyn Layer<Registry> + Send + Sync>,
+        handle: SyslogUdpHandle,
+    },
+    SyslogTcp {
+        layer: Box<dyn Layer<Registry> + Send + Sync>,
+        handle: SyslogTcpHandle,
+    },
+    SyslogTls {
         layer: Box<dyn Layer<Registry> + Send + Sync>,
         handle: SyslogTlsHandle,
     },
@@ -206,15 +234,39 @@ fn build_remote_layer(
     sink: &RemoteSink,
     redact: spt_core::RedactionMode,
 ) -> Result<RemoteBuild, String> {
-    let spool_dir = std::env::temp_dir().join(format!("spt-remote-{}", sink.name));
+    let spool_dir = sink
+        .spool_dir
+        .clone()
+        .unwrap_or_else(|| std::env::temp_dir().join(format!("spt-remote-{}", sink.name)));
     match sink.kind {
+        RemoteSinkKind::SyslogUdp => {
+            let (host, port) = parse_host_port(&sink.endpoint, 514)?;
+            let mut cfg = SyslogUdpConfig::new(host, port);
+            apply_syslog_common_udp(sink, redact, &mut cfg);
+            let (layer, handle) = syslog_udp::spawn_writer(cfg).map_err(|e| e.to_string())?;
+            Ok(RemoteBuild::SyslogUdp {
+                layer: Box::new(layer),
+                handle,
+            })
+        }
+        RemoteSinkKind::SyslogTcp => {
+            let (host, port) = parse_host_port(&sink.endpoint, 514)?;
+            let mut cfg = SyslogTcpConfig::new(host, port, spool_dir);
+            apply_syslog_common_tcp(sink, redact, &mut cfg);
+            let (layer, handle) = syslog_tcp::spawn_writer(cfg).map_err(|e| e.to_string())?;
+            Ok(RemoteBuild::SyslogTcp {
+                layer: Box::new(layer),
+                handle,
+            })
+        }
         RemoteSinkKind::SyslogTls => {
             let (host, port) = parse_host_port(&sink.endpoint, 6514)?;
             let mut cfg = SyslogTlsConfig::new(host, port, spool_dir);
+            apply_syslog_common_tls(sink, redact, &mut cfg)?;
             cfg.timeout = sink.timeout;
             cfg.redact = redact;
             let (layer, handle) = syslog_tls::spawn_writer(cfg).map_err(|e| e.to_string())?;
-            Ok(RemoteBuild::Syslog {
+            Ok(RemoteBuild::SyslogTls {
                 layer: Box::new(layer),
                 handle,
             })
@@ -246,6 +298,93 @@ fn build_remote_layer(
             Ok(RemoteBuild::Skipped)
         }
     }
+}
+
+fn apply_syslog_common_udp(
+    sink: &RemoteSink,
+    redact: spt_core::RedactionMode,
+    cfg: &mut SyslogUdpConfig,
+) {
+    if let Some(facility) = sink.facility {
+        cfg.facility = facility;
+    }
+    if let Some(app_name) = sink.app_name.clone() {
+        cfg.app_name = app_name;
+    }
+    if let Some(hostname) = sink.hostname.clone() {
+        cfg.hostname = hostname;
+    }
+    if let Some(enterprise_id) = sink.enterprise_id {
+        cfg.enterprise_id = enterprise_id;
+    }
+    cfg.timeout = sink.timeout;
+    cfg.queue_max_records = sink.queue_max_records;
+    cfg.redact = redact;
+}
+
+fn apply_syslog_common_tcp(
+    sink: &RemoteSink,
+    redact: spt_core::RedactionMode,
+    cfg: &mut SyslogTcpConfig,
+) {
+    if let Some(facility) = sink.facility {
+        cfg.facility = facility;
+    }
+    if let Some(app_name) = sink.app_name.clone() {
+        cfg.app_name = app_name;
+    }
+    if let Some(hostname) = sink.hostname.clone() {
+        cfg.hostname = hostname;
+    }
+    if let Some(enterprise_id) = sink.enterprise_id {
+        cfg.enterprise_id = enterprise_id;
+    }
+    cfg.timeout = sink.timeout;
+    cfg.reconnect_backoff = sink.reconnect_backoff;
+    cfg.queue_max_records = sink.queue_max_records;
+    if let Some(max_bytes) = sink.spool_max_bytes {
+        cfg.spool.max_bytes = max_bytes;
+    }
+    cfg.spool.max_files = sink.queue_max_records;
+    cfg.redact = redact;
+}
+
+fn apply_syslog_common_tls(
+    sink: &RemoteSink,
+    redact: spt_core::RedactionMode,
+    cfg: &mut SyslogTlsConfig,
+) -> Result<(), String> {
+    if let Some(facility) = sink.facility {
+        cfg.facility = facility;
+    }
+    if let Some(app_name) = sink.app_name.clone() {
+        cfg.app_name = app_name;
+    }
+    if let Some(hostname) = sink.hostname.clone() {
+        cfg.hostname = hostname;
+    }
+    if let Some(enterprise_id) = sink.enterprise_id {
+        cfg.enterprise_id = enterprise_id;
+    }
+    cfg.timeout = sink.timeout;
+    cfg.reconnect_backoff = sink.reconnect_backoff;
+    cfg.queue_max_records = sink.queue_max_records;
+    if let Some(max_bytes) = sink.spool_max_bytes {
+        cfg.spool.max_bytes = max_bytes;
+    }
+    cfg.spool.max_files = sink.queue_max_records;
+    cfg.server_name.clone_from(&sink.server_name);
+    cfg.client_cert.clone_from(&sink.client_cert);
+    cfg.client_key.clone_from(&sink.client_key);
+    cfg.allow_invalid_certs = sink.allow_invalid_certs;
+    cfg.redact = redact;
+    if sink.ca_file.is_some() {
+        cfg.roots = Some(
+            syslog_tls::root_store_with_ca_file(sink.ca_file.as_deref())
+                .map_err(|e| e.to_string())?,
+        );
+    }
+    Ok(())
 }
 
 fn parse_host_port(endpoint: &str, default_port: u16) -> Result<(String, u16), String> {
@@ -397,9 +536,21 @@ mod tests {
                 name: "test-https".into(),
                 kind: RemoteSinkKind::HttpsJsonl,
                 endpoint: "https://127.0.0.1:1/logs".into(),
+                facility: None,
+                app_name: None,
+                hostname: None,
+                enterprise_id: None,
                 ca_file: None,
+                server_name: None,
+                client_cert: None,
+                client_key: None,
+                allow_invalid_certs: false,
                 auth: Some("Bearer xyz".into()),
                 timeout: Duration::from_millis(100),
+                reconnect_backoff: Duration::from_millis(100),
+                spool_dir: None,
+                spool_max_bytes: None,
+                queue_max_records: 100,
                 batch_size: 10,
                 required: false,
             }],
@@ -423,9 +574,21 @@ mod tests {
                 name: "bad".into(),
                 kind: RemoteSinkKind::SyslogTls,
                 endpoint: "host:notaport".into(),
+                facility: None,
+                app_name: None,
+                hostname: None,
+                enterprise_id: None,
                 ca_file: None,
+                server_name: None,
+                client_cert: None,
+                client_key: None,
+                allow_invalid_certs: false,
                 auth: None,
                 timeout: Duration::from_millis(100),
+                reconnect_backoff: Duration::from_millis(100),
+                spool_dir: None,
+                spool_max_bytes: None,
+                queue_max_records: 100,
                 batch_size: 1,
                 required: true,
             }],

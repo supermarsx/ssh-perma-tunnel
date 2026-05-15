@@ -22,32 +22,33 @@
 //! ## Reliability
 //!
 //! Layers are synchronous; the `on_event` hook serialises the record and
-//! pushes it via an unbounded `mpsc` to a tokio task that owns the TLS
+//! pushes it via a bounded `mpsc` to a tokio task that owns the TLS
 //! connection. The task keeps a `DiskSpool` for back-pressure and retry on
 //! transient transport failure. On reconnect the task drains the spool
 //! before serving live traffic.
 
 use std::io;
+use std::io::BufReader;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use chrono::{SecondsFormat, Utc};
-use rustls::pki_types::ServerName;
+use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
+use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime};
 use rustls::ClientConfig;
 use rustls::RootCertStore;
-use spt_core::{redact, RedactionMode};
+use rustls::{DigitallySignedStruct, SignatureScheme};
+use spt_core::RedactionMode;
 use spt_state::{DiskSpool, SpoolConfig};
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, Mutex};
 use tokio_rustls::TlsConnector;
-use tracing::field::{Field, Visit};
-use tracing::{Event, Subscriber};
-use tracing_subscriber::layer::Context;
-use tracing_subscriber::registry::LookupSpan;
-use tracing_subscriber::Layer;
+
+use crate::syslog_common::{
+    hostname_or, SyslogCounters, SyslogLayer, SyslogRenderConfig, DEFAULT_ENTERPRISE_ID,
+};
 
 /// Configuration for [`RemoteSyslogTlsLayer`].
 #[derive(Debug, Clone)]
@@ -62,8 +63,18 @@ pub struct SyslogTlsConfig {
     pub hostname: String,
     /// Facility (0..23). Default = 16 (local0).
     pub facility: u8,
+    /// Structured-data enterprise ID.
+    pub enterprise_id: u32,
     /// Optional pre-built rustls roots; if `None`, `webpki-roots` are used.
     pub roots: Option<RootCertStore>,
+    /// SNI / verification name override. Defaults to `host`.
+    pub server_name: Option<String>,
+    /// Optional client certificate chain for mutual TLS.
+    pub client_cert: Option<PathBuf>,
+    /// Optional client private key for mutual TLS.
+    pub client_key: Option<PathBuf>,
+    /// Disable TLS certificate verification. Dangerous; never the default.
+    pub allow_invalid_certs: bool,
     /// Disk spool directory for retry queue.
     pub spool_dir: PathBuf,
     /// Spool capacity.
@@ -72,6 +83,8 @@ pub struct SyslogTlsConfig {
     pub timeout: Duration,
     /// Reconnect backoff between failed attempts.
     pub reconnect_backoff: Duration,
+    /// Bounded in-memory queue length.
+    pub queue_max_records: usize,
     /// Redaction mode applied before the message hits the wire.
     pub redact: RedactionMode,
 }
@@ -86,42 +99,39 @@ impl SyslogTlsConfig {
             app_name: "spt".into(),
             hostname,
             facility: 16,
+            enterprise_id: DEFAULT_ENTERPRISE_ID,
             roots: None,
+            server_name: None,
+            client_cert: None,
+            client_key: None,
+            allow_invalid_certs: false,
             spool_dir,
             spool: SpoolConfig::default(),
             timeout: Duration::from_secs(5),
             reconnect_backoff: Duration::from_millis(500),
+            queue_max_records: 1024,
             redact: RedactionMode::Standard,
         }
     }
 }
 
-fn hostname_or(default: &str) -> String {
-    std::env::var("HOSTNAME")
-        .or_else(|_| std::env::var("COMPUTERNAME"))
-        .unwrap_or_else(|_| default.into())
-}
-
 /// Tracing layer; spawn the writer task with [`spawn_writer`] then attach
 /// this layer to a subscriber.
-pub struct RemoteSyslogTlsLayer {
-    tx: mpsc::UnboundedSender<Vec<u8>>,
-    cfg: Arc<LayerCfg>,
-}
-
-struct LayerCfg {
-    app_name: String,
-    hostname: String,
-    facility: u8,
-    redact: RedactionMode,
-}
+pub type RemoteSyslogTlsLayer = SyslogLayer;
 
 /// Handle to a syslog-TLS background task.
 pub struct SyslogTlsHandle {
     /// Join handle for the writer task.
     pub join: tokio::task::JoinHandle<()>,
     /// Sender; drop to signal shutdown.
-    pub tx: mpsc::UnboundedSender<Vec<u8>>,
+    pub tx: mpsc::Sender<Vec<u8>>,
+    counters: Arc<SyslogCounters>,
+}
+
+impl SyslogTlsHandle {
+    pub fn counters(&self) -> Arc<SyslogCounters> {
+        Arc::clone(&self.counters)
+    }
 }
 
 /// Errors during [`spawn_writer`].
@@ -133,13 +143,133 @@ pub enum SyslogTlsError {
     /// Rustls config build error.
     #[error("rustls: {0}")]
     Rustls(String),
+    /// Invalid queue length.
+    #[error("queue_max_records must be greater than zero")]
+    EmptyQueue,
 }
 
-/// Build a default `webpki-roots` root store.
+/// Build a default root store from platform roots plus `webpki-roots`.
 fn default_roots() -> RootCertStore {
     let mut roots = RootCertStore::empty();
+    match rustls_native_certs::load_native_certs() {
+        Ok(certs) => {
+            for cert in certs {
+                let _ = roots.add(cert);
+            }
+        }
+        Err(e) => {
+            tracing::debug!(error = %e, "loading native root certificates failed; using webpki roots");
+        }
+    }
     roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
     roots
+}
+
+/// Build a root store from system/webpki roots plus an optional PEM CA bundle.
+pub fn root_store_with_ca_file(ca_file: Option<&std::path::Path>) -> io::Result<RootCertStore> {
+    let mut roots = default_roots();
+    if let Some(path) = ca_file {
+        for cert in load_cert_chain(path)? {
+            roots.add(cert).map_err(|e| {
+                io::Error::new(io::ErrorKind::InvalidData, format!("invalid CA cert: {e}"))
+            })?;
+        }
+    }
+    Ok(roots)
+}
+
+fn build_client_config(cfg: &SyslogTlsConfig) -> Result<ClientConfig, SyslogTlsError> {
+    let wants_client_cert = if cfg.allow_invalid_certs {
+        tracing::warn!(
+            sink_host = %cfg.host,
+            "syslog_tls allow_invalid_certs=true; TLS certificate verification is disabled"
+        );
+        ClientConfig::builder()
+            .dangerous()
+            .with_custom_certificate_verifier(Arc::new(NoCertificateVerification))
+    } else {
+        let roots = cfg.roots.clone().unwrap_or_else(default_roots);
+        ClientConfig::builder().with_root_certificates(roots)
+    };
+
+    match (&cfg.client_cert, &cfg.client_key) {
+        (Some(cert), Some(key)) => {
+            let certs = load_cert_chain(cert).map_err(|e| {
+                SyslogTlsError::Rustls(format!("client_cert `{}`: {e}", cert.display()))
+            })?;
+            let key = load_private_key(key).map_err(|e| {
+                SyslogTlsError::Rustls(format!("client_key `{}`: {e}", key.display()))
+            })?;
+            wants_client_cert
+                .with_client_auth_cert(certs, key)
+                .map_err(|e| SyslogTlsError::Rustls(e.to_string()))
+        }
+        (None, None) => Ok(wants_client_cert.with_no_client_auth()),
+        _ => Err(SyslogTlsError::Rustls(
+            "client_cert and client_key must be configured together".into(),
+        )),
+    }
+}
+
+fn load_cert_chain(path: &std::path::Path) -> io::Result<Vec<CertificateDer<'static>>> {
+    let file = std::fs::File::open(path)?;
+    let mut reader = BufReader::new(file);
+    rustls_pemfile::certs(&mut reader).collect()
+}
+
+fn load_private_key(path: &std::path::Path) -> io::Result<PrivateKeyDer<'static>> {
+    let file = std::fs::File::open(path)?;
+    let mut reader = BufReader::new(file);
+    rustls_pemfile::private_key(&mut reader)?
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "no private key found"))
+}
+
+#[derive(Debug)]
+struct NoCertificateVerification;
+
+impl ServerCertVerifier for NoCertificateVerification {
+    fn verify_server_cert(
+        &self,
+        _end_entity: &CertificateDer<'_>,
+        _intermediates: &[CertificateDer<'_>],
+        _server_name: &ServerName<'_>,
+        _ocsp_response: &[u8],
+        _now: UnixTime,
+    ) -> Result<ServerCertVerified, rustls::Error> {
+        Ok(ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        _message: &[u8],
+        _cert: &CertificateDer<'_>,
+        _dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        Ok(HandshakeSignatureValid::assertion())
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        _message: &[u8],
+        _cert: &CertificateDer<'_>,
+        _dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        Ok(HandshakeSignatureValid::assertion())
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        vec![
+            SignatureScheme::ECDSA_NISTP256_SHA256,
+            SignatureScheme::ECDSA_NISTP384_SHA384,
+            SignatureScheme::ED25519,
+            SignatureScheme::RSA_PSS_SHA256,
+            SignatureScheme::RSA_PSS_SHA384,
+            SignatureScheme::RSA_PSS_SHA512,
+            SignatureScheme::RSA_PKCS1_SHA256,
+            SignatureScheme::RSA_PKCS1_SHA384,
+            SignatureScheme::RSA_PKCS1_SHA512,
+        ]
+    }
 }
 
 /// Spawn the background writer task. Returns the layer to register and a
@@ -148,22 +278,25 @@ fn default_roots() -> RootCertStore {
 pub fn spawn_writer(
     cfg: SyslogTlsConfig,
 ) -> Result<(RemoteSyslogTlsLayer, SyslogTlsHandle), SyslogTlsError> {
+    if cfg.queue_max_records == 0 {
+        return Err(SyslogTlsError::EmptyQueue);
+    }
     let spool = DiskSpool::open(cfg.spool_dir.clone(), cfg.spool.clone())?;
-    let (tx, rx) = mpsc::unbounded_channel::<Vec<u8>>();
-    let layer_cfg = Arc::new(LayerCfg {
+    let counters = Arc::new(SyslogCounters::default());
+    let (tx, rx) = mpsc::channel::<Vec<u8>>(cfg.queue_max_records);
+    let render_cfg = SyslogRenderConfig {
         app_name: cfg.app_name.clone(),
         hostname: cfg.hostname.clone(),
         facility: cfg.facility,
+        enterprise_id: cfg.enterprise_id,
         redact: cfg.redact,
-    });
-    let layer = RemoteSyslogTlsLayer {
-        tx: tx.clone(),
-        cfg: Arc::clone(&layer_cfg),
     };
+    let layer = SyslogLayer::new(tx.clone(), render_cfg, Arc::clone(&counters), None);
 
     let writer_tx = tx.clone();
+    let writer_counters = Arc::clone(&counters);
     let join = tokio::spawn(async move {
-        if let Err(e) = run_writer(cfg, rx, spool).await {
+        if let Err(e) = run_writer(cfg, rx, spool, writer_counters).await {
             tracing::warn!(error=%e, "syslog-tls writer exited");
         }
     });
@@ -172,19 +305,31 @@ pub fn spawn_writer(
         SyslogTlsHandle {
             join,
             tx: writer_tx,
+            counters,
         },
     ))
 }
 
+/// Send one already-rendered RFC 5424 record over TLS with RFC 5425 framing.
+pub async fn send_one(cfg: &SyslogTlsConfig, payload: &[u8]) -> io::Result<()> {
+    let client_cfg = build_client_config(cfg).map_err(|e| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("build syslog_tls client config: {e}"),
+        )
+    })?;
+    let connector = TlsConnector::from(Arc::new(client_cfg));
+    let mut stream = connect(&connector, cfg).await?;
+    write_frame(&mut stream, payload, cfg.timeout).await
+}
+
 async fn run_writer(
     cfg: SyslogTlsConfig,
-    mut rx: mpsc::UnboundedReceiver<Vec<u8>>,
+    mut rx: mpsc::Receiver<Vec<u8>>,
     spool: DiskSpool,
+    counters: Arc<SyslogCounters>,
 ) -> Result<(), SyslogTlsError> {
-    let roots = cfg.roots.clone().unwrap_or_else(default_roots);
-    let client_cfg = ClientConfig::builder()
-        .with_root_certificates(roots)
-        .with_no_client_auth();
+    let client_cfg = build_client_config(&cfg)?;
     let connector = TlsConnector::from(Arc::new(client_cfg));
     let spool = Arc::new(Mutex::new(spool));
 
@@ -201,7 +346,9 @@ async fn run_writer(
                 if let Ok(buf) = tokio::time::timeout(cfg.reconnect_backoff, rx.recv()).await {
                     match buf {
                         Some(buf) => {
-                            spool.lock().await.push(&buf).ok();
+                            if spool.lock().await.push(&buf).is_ok() {
+                                counters.inc_spooled();
+                            }
                         }
                         None => break 'outer,
                     }
@@ -219,8 +366,11 @@ async fn run_writer(
             };
             let Some(entry) = entry else { break };
             if let Err(e) = write_frame(&mut stream, &entry.payload, cfg.timeout).await {
+                counters.inc_send_error();
                 tracing::debug!(error=%e, "spool drain write failed; re-queueing");
-                spool.lock().await.push(&entry.payload).ok();
+                if spool.lock().await.push(&entry.payload).is_ok() {
+                    counters.inc_spooled();
+                }
                 tokio::time::sleep(cfg.reconnect_backoff).await;
                 continue 'outer;
             }
@@ -232,8 +382,11 @@ async fn run_writer(
                 msg = rx.recv() => {
                     let Some(buf) = msg else { break 'outer };
                     if let Err(e) = write_frame(&mut stream, &buf, cfg.timeout).await {
+                        counters.inc_send_error();
                         tracing::debug!(error=%e, "live write failed; spooling");
-                        spool.lock().await.push(&buf).ok();
+                        if spool.lock().await.push(&buf).is_ok() {
+                            counters.inc_spooled();
+                        }
                         tokio::time::sleep(cfg.reconnect_backoff).await;
                         continue 'outer;
                     }
@@ -257,7 +410,8 @@ async fn connect(
     let tcp = tokio::time::timeout(cfg.timeout, TcpStream::connect(addr))
         .await
         .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "tcp connect timeout"))??;
-    let server_name = ServerName::try_from(cfg.host.clone())
+    let name = cfg.server_name.as_ref().unwrap_or(&cfg.host).clone();
+    let server_name = ServerName::try_from(name)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e.to_string()))?;
     let tls = connector.connect(server_name, tcp).await?;
     Ok(tls)
@@ -280,139 +434,19 @@ async fn write_frame<W: AsyncWriteExt + Unpin>(
         .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "syslog write timeout"))?
 }
 
-impl<S> Layer<S> for RemoteSyslogTlsLayer
-where
-    S: Subscriber + for<'a> LookupSpan<'a>,
-{
-    fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
-        let payload = render_record(event, &self.cfg);
-        let _ = self.tx.send(payload);
-    }
-}
-
-fn severity_code(level: tracing::Level) -> u8 {
-    match level {
-        tracing::Level::ERROR => 3,
-        tracing::Level::WARN => 4,
-        tracing::Level::INFO => 6,
-        tracing::Level::DEBUG | tracing::Level::TRACE => 7,
-    }
-}
-
-fn render_record(event: &Event<'_>, cfg: &LayerCfg) -> Vec<u8> {
-    let meta = event.metadata();
-    let pri = u16::from(cfg.facility) * 8 + u16::from(severity_code(*meta.level()));
-    let ts = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
-
-    let mut fields = FieldVisitor::default();
-    event.record(&mut fields);
-    let msg = fields.message.unwrap_or_else(|| meta.target().to_string());
-    let msg_red = redact(&msg, cfg.redact);
-
-    let sd = if fields.kvs.is_empty() {
-        "-".to_string()
-    } else {
-        let mut s = String::from("[spt@32473");
-        for (k, v) in &fields.kvs {
-            s.push(' ');
-            s.push_str(k);
-            s.push_str("=\"");
-            s.push_str(&escape_sd_value(&redact(v, cfg.redact)));
-            s.push('"');
-        }
-        s.push(']');
-        s
-    };
-
-    let line = format!(
-        "<{}>1 {} {} {} {} - {} {}",
-        pri,
-        ts,
-        sanitize_token(&cfg.hostname, 255),
-        sanitize_token(&cfg.app_name, 48),
-        std::process::id(),
-        sd,
-        msg_red,
-    );
-    line.into_bytes()
-}
-
-fn escape_sd_value(v: &str) -> String {
-    let mut out = String::with_capacity(v.len());
-    for c in v.chars() {
-        match c {
-            '"' | '\\' | ']' => {
-                out.push('\\');
-                out.push(c);
-            }
-            _ => out.push(c),
-        }
-    }
-    out
-}
-
-fn sanitize_token(s: &str, max: usize) -> String {
-    let s: String = s
-        .chars()
-        .filter(|c| !c.is_whitespace() && *c != '<' && *c != '>')
-        .collect();
-    if s.is_empty() {
-        return "-".to_string();
-    }
-    if s.len() > max {
-        s.chars().take(max).collect()
-    } else {
-        s
-    }
-}
-
-#[derive(Default)]
-struct FieldVisitor {
-    message: Option<String>,
-    kvs: Vec<(String, String)>,
-}
-
-impl Visit for FieldVisitor {
-    fn record_str(&mut self, field: &Field, value: &str) {
-        if field.name() == "message" {
-            self.message = Some(value.to_string());
-        } else {
-            self.kvs.push((field.name().to_string(), value.to_string()));
-        }
-    }
-
-    fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
-        let v = format!("{value:?}");
-        if field.name() == "message" {
-            self.message = Some(v);
-        } else {
-            self.kvs.push((field.name().to_string(), v));
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn render_record_has_pri_and_msg() {
-        let cfg = LayerCfg {
-            app_name: "spt".into(),
-            hostname: "host".into(),
-            facility: 16,
-            redact: RedactionMode::Standard,
-        };
-        // Synthesise a minimal event by calling render_record's helpers
-        // directly.  The `Event` fixture API is private; this test focuses on
-        // formatting helpers.
+    fn tls_defaults_are_bounded() {
+        let cfg = SyslogTlsConfig::new("localhost", 6514, PathBuf::from("spool"));
         let msg = "hello world";
-        let pri = u16::from(cfg.facility) * 8 + u16::from(severity_code(tracing::Level::INFO));
+        let pri = u16::from(cfg.facility) * 8
+            + u16::from(crate::syslog_common::severity_code(tracing::Level::INFO));
         assert_eq!(pri, 16 * 8 + 6);
-        assert_eq!(escape_sd_value("a]b\"c"), "a\\]b\\\"c");
-        assert_eq!(sanitize_token("a b", 10), "ab");
-        assert_eq!(sanitize_token("", 10), "-");
-        assert!(redact(msg, cfg.redact).contains("hello"));
+        assert_eq!(cfg.queue_max_records, 1024);
+        assert!(spt_core::redact(msg, cfg.redact).contains("hello"));
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -518,17 +552,23 @@ mod tests {
             app_name: "spt".into(),
             hostname: "host".into(),
             facility: 16,
+            enterprise_id: crate::syslog_common::DEFAULT_ENTERPRISE_ID,
             roots: Some(roots),
+            server_name: None,
+            client_cert: None,
+            client_key: None,
+            allow_invalid_certs: false,
             spool_dir: tmp.path().to_path_buf(),
             spool: SpoolConfig::default(),
             timeout: Duration::from_secs(2),
             reconnect_backoff: Duration::from_millis(50),
+            queue_max_records: 16,
             redact: RedactionMode::Standard,
         };
         let (layer, handle) = spawn_writer(cfg).unwrap();
         // Inject one rendered RFC-5424 record.
         let record = b"<134>1 2024-01-01T00:00:00.000Z host spt 1 - - hello world".to_vec();
-        layer.tx.send(record.clone()).unwrap();
+        layer.try_send_raw(record.clone()).unwrap();
 
         // 5. Wait for the server to read.
         let received = tokio::time::timeout(Duration::from_secs(3), rx)
@@ -568,17 +608,23 @@ mod tests {
             app_name: "spt".into(),
             hostname: "host".into(),
             facility: 16,
+            enterprise_id: crate::syslog_common::DEFAULT_ENTERPRISE_ID,
             roots: Some(RootCertStore::empty()),
+            server_name: None,
+            client_cert: None,
+            client_key: None,
+            allow_invalid_certs: false,
             spool_dir: tmp.path().to_path_buf(),
             spool: SpoolConfig::default(),
             timeout: Duration::from_millis(50),
             reconnect_backoff: Duration::from_millis(20),
+            queue_max_records: 16,
             redact: RedactionMode::Standard,
         };
         let (layer, handle) = spawn_writer(cfg).unwrap();
-        // Send a few records by directly pushing through the layer's tx.
+        // Send a few records by directly pushing through the bounded layer.
         for _ in 0..3 {
-            let _ = layer.tx.send(b"<134>1 - - spt - - - hi".to_vec());
+            let _ = layer.try_send_raw(b"<134>1 - - spt - - - hi".to_vec());
         }
         // Give the writer a moment to fail-and-spool.
         tokio::time::sleep(Duration::from_millis(200)).await;

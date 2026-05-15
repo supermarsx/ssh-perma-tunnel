@@ -21,7 +21,10 @@ pub mod init;
 pub mod metrics;
 pub mod redaction;
 pub mod rotation;
+pub mod syslog_common;
+pub mod syslog_tcp;
 pub mod syslog_tls;
+pub mod syslog_udp;
 
 #[cfg(feature = "otlp")]
 pub mod otlp;

@@ -1,4 +1,5 @@
-# Full observability stack: OTLP logs, Prometheus metrics, syslog-TLS, MCP-notify.
+# Full observability stack: OTLP logs, Prometheus metrics, syslog UDP/TCP/TLS,
+# MCP-notify.
 #
 # Scenario: a production deployment where logs ship to an OTLP collector,
 # metrics are scraped by Prometheus, security events fan out to a remote
@@ -48,7 +49,11 @@ name = "siem"
 type = "syslog_tls"
 endpoint = "siem.example.com:6514"
 ca_file = "/etc/ssl/certs/internal-ca.pem"
-auth = "secret://syslog/edge/token"
+server_name = "siem.example.com"
+facility = 16
+spool_dir = "/var/lib/spt/spool/siem"
+spool_max_bytes = "64MiB"
+queue_max_records = 10000
 required = true             # block log fan-out if SIEM is unreachable
 
 # -- Metrics ---------------------------------------------------------------

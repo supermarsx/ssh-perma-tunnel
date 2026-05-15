@@ -12,8 +12,10 @@ ignore = [
     { id = "RUSTSEC-2023-0071", reason = "rsa has no patched release; retained for SSH RSA key support and transitive consumers until an upstream fix is available." },
     { id = "RUSTSEC-2024-0436", reason = "paste is pulled by the MSRV-compatible ratatui release; paste has no patched release." },
     { id = "RUSTSEC-2025-0134", reason = "rustls-pemfile has no patched release; migrating to rustls-pki-types PemObject requires code changes outside dependency policy." },
+    { id = "RUSTSEC-2026-0002", reason = "lru is transitive through ratatui 0.28.x; spt does not call lru::IterMut directly, and ratatui releases that move past this dependency require an MSRV bump." },
     { id = "RUSTSEC-2026-0009", reason = "time is fixed in 0.3.47, but that release requires Cargo edition2024 and is not parseable by Rust/Cargo 1.83." },
     { id = "RUSTSEC-2026-0119", reason = "hickory-proto is fixed in Hickory 0.26.1, but Hickory 0.26 requires Rust 1.88 and exceeds the workspace MSRV." },
+    { id = "RUSTSEC-2026-0141", reason = "lettre 0.11.19 is retained for MSRV 1.83; spt enables the rustls backend, not the affected Boring TLS backend. Upgrade when MSRV can move to Rust 1.85+." },
 ]
 
 [licenses]

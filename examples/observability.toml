@@ -1,5 +1,5 @@
 # Observability stack: OTLP logs + metrics, Prometheus state file, remote
-# syslog over TLS, remote HTTPS-JSONL events, MCP-notify + email on
+# syslog over UDP/TCP/TLS, remote HTTPS-JSONL events, MCP-notify + email on
 # profile.degraded.
 #
 # Shipped by `spt config init --example observability`. Kept in sync with
@@ -7,7 +7,7 @@
 # under `spt config validate --strict`.
 #
 # Scope:
-#   * `[[logging.remote]]` — OTLP logs, syslog_tls, https_jsonl.
+#   * `[[logging.remote]]` — OTLP logs, syslog_udp, syslog_tcp, syslog_tls, https_jsonl.
 #   * `[observability.metrics]` — Prometheus exporter to a state file.
 #   * `[[events.sinks]]` — email + mcp_notify + webhook_post.
 #   * `[[events.bindings]]` — fires on `profile.degraded` / `profile.failed`.
@@ -52,8 +52,30 @@ name = "siem-syslog"
 type = "syslog_tls"
 endpoint = "siem.example.com:6514"
 ca_file = "/etc/ssl/certs/internal-ca.pem"
-auth = "secret://syslog/edge/token"
+server_name = "siem.example.com"
+facility = 16
+app_name = "spt"
+spool_dir = "/var/lib/spt/spool/syslog-tls"
+spool_max_bytes = "64MiB"
+queue_max_records = 10000
+reconnect_backoff = "1s"
 required = true
+
+[[logging.remote]]
+name = "branch-syslog-udp"
+type = "syslog_udp"
+endpoint = "192.0.2.10"
+facility = 16
+required = false
+
+[[logging.remote]]
+name = "branch-syslog-tcp"
+type = "syslog_tcp"
+endpoint = "192.0.2.11:514"
+spool_dir = "/var/lib/spt/spool/syslog-tcp"
+spool_max_bytes = "32MiB"
+queue_max_records = 5000
+required = false
 
 [[logging.remote]]
 name = "events-jsonl"

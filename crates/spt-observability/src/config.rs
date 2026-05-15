@@ -105,9 +105,21 @@ pub struct RemoteSink {
     pub name: String,
     pub kind: RemoteSinkKind,
     pub endpoint: String,
+    pub facility: Option<u8>,
+    pub app_name: Option<String>,
+    pub hostname: Option<String>,
+    pub enterprise_id: Option<u32>,
     pub ca_file: Option<PathBuf>,
+    pub server_name: Option<String>,
+    pub client_cert: Option<PathBuf>,
+    pub client_key: Option<PathBuf>,
+    pub allow_invalid_certs: bool,
     pub auth: Option<String>,
     pub timeout: Duration,
+    pub reconnect_backoff: Duration,
+    pub spool_dir: Option<PathBuf>,
+    pub spool_max_bytes: Option<u64>,
+    pub queue_max_records: usize,
     pub batch_size: u32,
     pub required: bool,
 }
@@ -115,6 +127,10 @@ pub struct RemoteSink {
 /// Kinds of remote log sink.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RemoteSinkKind {
+    /// RFC-5424 payloads over UDP.
+    SyslogUdp,
+    /// RFC-6587 octet-counted RFC-5424 over TCP.
+    SyslogTcp,
     /// RFC-5424 over TLS-on-TCP.
     SyslogTls,
     /// HTTPS POST of newline-delimited JSON.
