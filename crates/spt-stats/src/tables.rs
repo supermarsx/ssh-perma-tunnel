@@ -228,6 +228,14 @@ mod tests {
     }
 
     #[test]
+    fn connection_for_forward_returns_empty_when_no_match() {
+        let t = ConnectionTable::new();
+        t.insert(mkconn("c1", "f1"));
+        let v = t.for_forward(&ForwardId::new("missing").unwrap());
+        assert!(v.is_empty());
+    }
+
+    #[test]
     fn connection_for_forward_filters() {
         let t = ConnectionTable::new();
         t.insert(mkconn("c1", "f1"));
@@ -235,5 +243,116 @@ mod tests {
         t.insert(mkconn("c3", "f2"));
         let f1 = t.for_forward(&ForwardId::new("f1").unwrap());
         assert_eq!(f1.len(), 2);
+    }
+
+    #[test]
+    fn session_get_returns_none_for_missing() {
+        let t = SessionTable::new();
+        let id = SessionId::new("missing").unwrap();
+        assert!(t.get(&id).is_none());
+        assert!(t.remove(&id).is_none());
+    }
+
+    #[test]
+    fn session_snapshot_collects_all_rows() {
+        let t = SessionTable::new();
+        t.insert(mksess("s1", 10));
+        t.insert(mksess("s2", 20));
+        t.insert(mksess("s3", 30));
+        let snap = t.snapshot();
+        assert_eq!(snap.len(), 3);
+        let mut ids: Vec<String> = snap.iter().map(|e| e.session_id.to_string()).collect();
+        ids.sort();
+        assert_eq!(ids, vec!["s1", "s2", "s3"]);
+    }
+
+    #[test]
+    fn session_evict_idle_returns_zero_when_no_idle() {
+        let t = SessionTable::new();
+        t.insert(mksess("s1", 100));
+        t.insert(mksess("s2", 200));
+        let n = t.evict_idle(dt(50));
+        assert_eq!(n, 0);
+        assert_eq!(t.len(), 2);
+    }
+
+    #[test]
+    fn session_update_noop_when_missing() {
+        let t = SessionTable::new();
+        t.update(&SessionId::new("nope").unwrap(), |e| e.bytes_in = 99);
+        assert!(t.is_empty());
+    }
+
+    #[test]
+    fn session_table_clone_shares_state() {
+        let t1 = SessionTable::new();
+        let t2 = t1.clone();
+        t1.insert(mksess("s1", 10));
+        assert_eq!(t2.len(), 1);
+        assert!(t2.get(&SessionId::new("s1").unwrap()).is_some());
+    }
+
+    #[test]
+    fn session_insert_replaces_existing() {
+        let t = SessionTable::new();
+        t.insert(mksess("s1", 10));
+        let mut newer = mksess("s1", 999);
+        newer.bytes_in = 555;
+        t.insert(newer);
+        assert_eq!(t.len(), 1);
+        let row = t.get(&SessionId::new("s1").unwrap()).unwrap();
+        assert_eq!(row.bytes_in, 555);
+        assert_eq!(row.last_activity, dt(999));
+    }
+
+    #[test]
+    fn connection_insert_lookup_remove() {
+        let t = ConnectionTable::new();
+        assert!(t.is_empty());
+        t.insert(mkconn("c1", "f1"));
+        assert_eq!(t.len(), 1);
+        let row = t.get(&ConnectionId::new("c1").unwrap()).unwrap();
+        assert_eq!(row.forward_id, ForwardId::new("f1").unwrap());
+        let removed = t.remove(&ConnectionId::new("c1").unwrap()).unwrap();
+        assert_eq!(removed.connection_id, ConnectionId::new("c1").unwrap());
+        assert!(t.is_empty());
+        assert!(t.remove(&ConnectionId::new("c1").unwrap()).is_none());
+    }
+
+    #[test]
+    fn connection_snapshot_and_update() {
+        let t = ConnectionTable::new();
+        t.insert(mkconn("c1", "f1"));
+        t.insert(mkconn("c2", "f1"));
+        let snap = t.snapshot();
+        assert_eq!(snap.len(), 2);
+        t.update(&ConnectionId::new("c1").unwrap(), |c| c.bytes_out = 1024);
+        let row = t.get(&ConnectionId::new("c1").unwrap()).unwrap();
+        assert_eq!(row.bytes_out, 1024);
+        t.update(&ConnectionId::new("nope").unwrap(), |c| c.bytes_in = 7);
+        assert!(t.get(&ConnectionId::new("nope").unwrap()).is_none());
+    }
+
+    #[test]
+    fn connection_table_clone_shares_state() {
+        let t1 = ConnectionTable::new();
+        let t2 = t1.clone();
+        t1.insert(mkconn("c1", "f1"));
+        assert_eq!(t2.len(), 1);
+    }
+
+    #[test]
+    fn entries_round_trip_through_json() {
+        let s = mksess("s1", 42);
+        let raw = serde_json::to_string(&s).unwrap();
+        let back: SessionEntry = serde_json::from_str(&raw).unwrap();
+        assert_eq!(back.session_id, s.session_id);
+        assert_eq!(back.last_activity, s.last_activity);
+
+        let c = mkconn("c1", "f1");
+        let raw = serde_json::to_string(&c).unwrap();
+        let back: ConnectionEntry = serde_json::from_str(&raw).unwrap();
+        assert_eq!(back.connection_id, c.connection_id);
+        assert_eq!(back.forward_id, c.forward_id);
     }
 }

@@ -342,4 +342,74 @@ mod tests {
         let mgr = SystemdUserManager::new();
         let _ = mgr.status("nonexistent-spt-test").await;
     }
+
+    /// Lock guarding tests that mutate the process-wide HOME var.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn lock_env() -> std::sync::MutexGuard<'static, ()> {
+        ENV_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    #[test]
+    fn resolve_unit_root_falls_back_to_home() {
+        let _guard = lock_env();
+        let tmp = tempfile::tempdir().unwrap();
+        let prev = std::env::var_os("HOME");
+        std::env::set_var("HOME", tmp.path());
+        // Construct without `with_unit_root` so the resolver uses HOME.
+        let mgr = SystemdUserManager::new();
+        let p = mgr.unit_path("svc").expect("path");
+        match prev {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
+        let s = p.display().to_string().replace('\\', "/");
+        assert!(s.contains("/.config/systemd/user/svc.service"), "got: {s}");
+    }
+
+    #[test]
+    fn resolve_unit_root_errors_when_home_unset() {
+        let _guard = lock_env();
+        let prev = std::env::var_os("HOME");
+        std::env::remove_var("HOME");
+        let mgr = SystemdUserManager::new();
+        let res = mgr.unit_path("svc");
+        match prev {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
+        let err = res.unwrap_err();
+        assert!(format!("{err}").contains("HOME not set"));
+    }
+
+    #[test]
+    fn render_unit_returns_some() {
+        let r = SystemdUserManager::new().render_unit(&sample_spec());
+        assert!(r.is_some());
+        // User-scope unit drops User=/Group=.
+        assert!(!r.unwrap().contains("User=spt"));
+    }
+
+    #[test]
+    fn default_constructs() {
+        let m = SystemdUserManager::default();
+        assert_eq!(m.name(), "systemd-user");
+    }
+
+    #[tokio::test]
+    async fn uninstall_removes_existing_unit() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mock = Arc::new(MockRunner::new());
+        // stop, disable, daemon-reload — all best-effort
+        mock.push_output(ok_out(""));
+        mock.push_output(ok_out(""));
+        mock.push_output(ok_out(""));
+        let mgr = SystemdUserManager::new_with_runner(mock)
+            .with_unit_root(tmp.path().to_path_buf());
+        let path = tmp.path().join("spt-relay.service");
+        std::fs::write(&path, "[Unit]\n").unwrap();
+        assert!(path.exists());
+        mgr.uninstall("spt-relay").await.expect("uninstall");
+        assert!(!path.exists());
+    }
 }

@@ -176,4 +176,66 @@ mod tests {
             "expected emitted event to land in the EventRing file"
         );
     }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn emit_arc_avoids_extra_clone() {
+        let bus = EventBus::new(&EventBusConfig::default());
+        let mut rx = bus.subscribe();
+        let arc = Arc::new(Event::builder("k", Severity::Info).build());
+        let n = bus.emit_arc(arc.clone());
+        assert_eq!(n, 1);
+        let got = rx.recv().await.unwrap();
+        assert_eq!(got.kind.as_str(), "k");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn receiver_count_tracks_subscribers() {
+        let bus = EventBus::new(&EventBusConfig::default());
+        assert_eq!(bus.receiver_count(), 0);
+        let rx_a = bus.subscribe();
+        let _rx_b = bus.subscribe();
+        assert_eq!(bus.receiver_count(), 2);
+        drop(rx_a);
+        assert_eq!(bus.receiver_count(), 1);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn default_bus_has_documented_capacity() {
+        let cfg = EventBusConfig::default();
+        assert_eq!(cfg.capacity, 1024);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn default_constructor_constructs() {
+        let bus = EventBus::default();
+        assert_eq!(bus.receiver_count(), 0);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn debug_impl_reports_receiver_count() {
+        let bus = EventBus::new(&EventBusConfig::default());
+        let _r = bus.subscribe();
+        let s = format!("{bus:?}");
+        assert!(s.contains("EventBus"));
+        assert!(s.contains("receivers"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn clone_shares_underlying_channel() {
+        let bus = EventBus::new(&EventBusConfig::default());
+        let bus2 = bus.clone();
+        let mut rx = bus.subscribe();
+        // Emit from the clone — receiver of the original should still see it.
+        bus2.emit(Event::builder("k", Severity::Info).build());
+        let got = rx.recv().await.unwrap();
+        assert_eq!(got.kind.as_str(), "k");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn event_bus_config_is_clonable_and_debuggable() {
+        let cfg = EventBusConfig { capacity: 32 };
+        let _c = cfg.clone();
+        let s = format!("{cfg:?}");
+        assert!(s.contains("EventBusConfig"));
+    }
 }

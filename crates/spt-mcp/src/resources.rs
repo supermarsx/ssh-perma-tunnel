@@ -228,4 +228,62 @@ mod tests {
         };
         assert_eq!(uris.len(), dedup_len);
     }
+
+    #[test]
+    fn registry_is_not_empty_and_default_equals_new() {
+        let r = ResourceRegistry::new();
+        assert!(!r.is_empty());
+        let d = ResourceRegistry::default();
+        assert_eq!(r.len(), d.len());
+    }
+
+    #[test]
+    fn registry_get_known_uri_returns_handler() {
+        let r = ResourceRegistry::new();
+        let h = r.get("spt://status").expect("status handler");
+        assert_eq!(h.uri(), "spt://status");
+        let d = h.descriptor();
+        assert_eq!(d.uri, "spt://status");
+        assert_eq!(d.mime_type, "application/json");
+        assert!(!d.name.is_empty());
+        assert!(!d.description.is_empty());
+    }
+
+    #[test]
+    fn registry_get_unknown_uri_is_none() {
+        let r = ResourceRegistry::new();
+        assert!(r.get("spt://does-not-exist").is_none());
+    }
+
+    #[tokio::test]
+    async fn handler_read_uses_correct_source() {
+        use crate::sources::{DynConfigSource, DynStateSource, NoopSources};
+        let cfg: DynConfigSource = Arc::new(NoopSources);
+        let state: DynStateSource = Arc::new(NoopSources);
+        let r = ResourceRegistry::new();
+        let v = r
+            .get("spt://status")
+            .unwrap()
+            .read(&cfg, &state)
+            .await
+            .expect("read");
+        assert!(v["profiles"].is_array());
+
+        let v = r
+            .get("spt://profiles")
+            .unwrap()
+            .read(&cfg, &state)
+            .await
+            .expect("read");
+        assert!(v.is_array());
+    }
+
+    #[test]
+    fn list_descriptors_are_sorted_by_uri() {
+        let r = ResourceRegistry::new();
+        let uris: Vec<String> = r.list().into_iter().map(|d| d.uri).collect();
+        let mut sorted = uris.clone();
+        sorted.sort();
+        assert_eq!(uris, sorted, "BTreeMap iteration is sorted");
+    }
 }

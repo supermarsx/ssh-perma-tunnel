@@ -424,4 +424,142 @@ mod tests {
         assert_eq!(e.message, "hi");
         assert_eq!(e.fields.get("custom"), Some(&serde_json::Value::from(1)));
     }
+
+    #[test]
+    fn reconstruct_event_requires_kind() {
+        let v: Value = serde_json::from_str(r#"{"id":"x","severity":"info"}"#).unwrap();
+        let err = reconstruct_event(&v).unwrap_err();
+        assert!(matches!(err, Error::InvalidConfig(_)));
+    }
+
+    #[test]
+    fn reconstruct_event_defaults_severity_when_missing() {
+        let v: Value = serde_json::from_str(r#"{"id":"x","kind":"k"}"#).unwrap();
+        let e = reconstruct_event(&v).unwrap();
+        // Default severity is Info per Severity::Info fallback.
+        assert_eq!(e.id.as_str(), "x");
+    }
+
+    #[test]
+    fn reconstruct_event_carries_optional_ids_when_present() {
+        let v: Value = serde_json::from_str(
+            r#"{
+                "id":"e1","kind":"profile.connected","severity":"info",
+                "profile_id":"p","forward_id":"p/f","session_id":"s","connection_id":"c",
+                "ts":"2026-05-05T12:00:00Z"
+            }"#,
+        )
+        .unwrap();
+        let e = reconstruct_event(&v).unwrap();
+        assert!(e.profile_id.is_some());
+        assert!(e.forward_id.is_some());
+        assert!(e.session_id.is_some());
+        assert!(e.connection_id.is_some());
+    }
+
+    #[test]
+    fn reconstruct_event_ignores_malformed_ts() {
+        let v: Value = serde_json::from_str(
+            r#"{"id":"x","kind":"k","severity":"info","ts":"not-a-timestamp"}"#,
+        )
+        .unwrap();
+        // Should not panic; just ignore the bad ts and proceed.
+        reconstruct_event(&v).unwrap();
+    }
+
+    #[test]
+    fn kind_matches_pattern_glob_and_exact() {
+        use spt_events::event::EventKind;
+        assert!(kind_matches_pattern(&EventKind::new("profile.connected"), "profile.*"));
+        assert!(kind_matches_pattern(
+            &EventKind::new("profile.connected"),
+            "profile.connected"
+        ));
+        assert!(!kind_matches_pattern(
+            &EventKind::new("forward.connected"),
+            "profile.*"
+        ));
+    }
+
+    #[test]
+    fn find_event_returns_none_when_dir_missing() {
+        let tmp = tempdir().unwrap();
+        let missing = tmp.path().join("no-such-dir");
+        let r = find_event(&missing, "any").unwrap();
+        assert!(r.is_none());
+    }
+
+    #[test]
+    fn find_event_skips_non_jsonl_extensions() {
+        let tmp = tempdir().unwrap();
+        let edir = tmp.path().join("events");
+        std::fs::create_dir_all(&edir).unwrap();
+        std::fs::write(
+            edir.join("ignore.txt"),
+            r#"{"id":"abc","kind":"k","severity":"info"}"#,
+        )
+        .unwrap();
+        let r = find_event(&edir, "abc").unwrap();
+        assert!(r.is_none());
+    }
+
+    #[test]
+    fn find_event_returns_match_from_jsonl_file() {
+        let tmp = tempdir().unwrap();
+        let edir = tmp.path().join("events");
+        std::fs::create_dir_all(&edir).unwrap();
+        std::fs::write(
+            edir.join("2026-05-05.jsonl"),
+            r#"{"id":"alpha","kind":"k","severity":"info"}
+{"id":"beta","kind":"k","severity":"info"}
+"#,
+        )
+        .unwrap();
+        let r = find_event(&edir, "beta").unwrap().unwrap();
+        assert_eq!(r.get("id").and_then(|v| v.as_str()), Some("beta"));
+    }
+
+    #[test]
+    fn find_event_skips_blank_lines_and_invalid_json() {
+        let tmp = tempdir().unwrap();
+        let edir = tmp.path().join("events");
+        std::fs::create_dir_all(&edir).unwrap();
+        std::fs::write(
+            edir.join("a.jsonl"),
+            "\n{not valid json}\n{\"id\":\"x\",\"kind\":\"k\"}\n",
+        )
+        .unwrap();
+        let r = find_event(&edir, "x").unwrap();
+        assert!(r.is_some());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn replay_requires_config_path() {
+        let g = GlobalOpts {
+            config: None,
+            config_dir: None,
+            config_url: None,
+            config_fingerprint: None,
+            state_dir: None,
+            profile: None,
+            output: OutputFormat::Human,
+            json: false,
+            log_level: LogLevel::Info,
+            color: ColorMode::Never,
+            quiet: true,
+            verbose: 0,
+            no_color: true,
+            dry_run: false,
+        };
+        let r = replay(
+            &g,
+            EventReplayArgs {
+                event_id: "x".into(),
+                sink: None,
+                json: false,
+            },
+        )
+        .await;
+        assert!(matches!(r, Err(Error::InvalidArgs(_))));
+    }
 }

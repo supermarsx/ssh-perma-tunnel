@@ -124,4 +124,51 @@ mod tests {
         let p = default_state_dir().unwrap();
         assert!(p.ends_with("spt") || p.components().any(|c| c.as_os_str() == "spt"));
     }
+
+    #[test]
+    fn explicit_dir_creates_intermediate_directories() {
+        let tmp = tempdir().unwrap();
+        let deep = tmp
+            .path()
+            .join("level1")
+            .join("level2")
+            .join("level3")
+            .join("state");
+        assert!(!deep.exists());
+        let r = resolve_state_dir(Some(&deep)).unwrap();
+        assert_eq!(r, deep);
+        assert!(deep.is_dir());
+    }
+
+    #[test]
+    fn none_input_uses_default_path_containing_spt() {
+        let def = default_state_dir().unwrap();
+        let s = def.to_string_lossy();
+        assert!(s.contains("spt"), "default path missing 'spt' segment: {s}");
+    }
+
+    #[test]
+    fn idempotent_when_called_twice() {
+        let tmp = tempdir().unwrap();
+        let target = tmp.path().join("twice");
+        let a = resolve_state_dir(Some(&target)).unwrap();
+        let b = resolve_state_dir(Some(&target)).unwrap();
+        assert_eq!(a, b);
+        assert!(target.is_dir());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn existing_unix_dir_with_wrong_mode_is_tightened() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempdir().unwrap();
+        let target = tmp.path().join("loose");
+        std::fs::create_dir_all(&target).unwrap();
+        let mut perms = std::fs::metadata(&target).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&target, perms).unwrap();
+        let _ = resolve_state_dir(Some(&target)).unwrap();
+        let m = std::fs::metadata(&target).unwrap().permissions().mode() & 0o777;
+        assert_eq!(m, 0o700);
+    }
 }

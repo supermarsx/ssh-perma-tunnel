@@ -99,4 +99,49 @@ mod tests {
             .unwrap()
             .contains("profile.failed"));
     }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn provider_hint_is_exposed() {
+        let t = Arc::new(RecordingTransport::new());
+        let sink = SmsSink::new(
+            "oncall",
+            "vonage",
+            "https://x/y",
+            "Body={{kind}}",
+            HttpAuth::None,
+            t,
+        );
+        assert_eq!(sink.provider(), "vonage");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn name_kind_are_stable() {
+        let t = Arc::new(RecordingTransport::new());
+        let sink = SmsSink::new("oncall", "twilio", "https://x", "b", HttpAuth::None, t);
+        assert_eq!(sink.name(), "oncall");
+        assert_eq!(sink.kind(), "sms");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn content_type_is_form_urlencoded() {
+        let t = Arc::new(RecordingTransport::new());
+        let sink = SmsSink::new("a", "p", "https://x", "k={{kind}}", HttpAuth::None, t.clone());
+        sink.deliver(Arc::new(Event::builder("k", Severity::Info).build()))
+            .await
+            .unwrap();
+        let req = &t.requests()[0];
+        assert_eq!(req.content_type, "application/x-www-form-urlencoded");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn transient_transport_failure_propagates() {
+        let t = Arc::new(RecordingTransport::new());
+        t.fail_once(SinkError::Transient("rate-limited".into()));
+        let sink = SmsSink::new("a", "p", "https://x", "b", HttpAuth::None, t);
+        let err = sink
+            .deliver(Arc::new(Event::builder("k", Severity::Info).build()))
+            .await
+            .unwrap_err();
+        assert!(err.is_retryable());
+    }
 }

@@ -222,6 +222,7 @@ fn needs_rotate(p: &SizeRotationPolicy, st: &State, incoming: u64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::TimeZone;
     use tempfile::tempdir;
 
     #[test]
@@ -297,5 +298,181 @@ mod tests {
             .filter(|n| n.starts_with("y.log."))
             .collect();
         assert!(rotated.is_empty(), "no rotations expected, got {rotated:?}");
+    }
+
+    #[test]
+    fn default_policy_is_daily_seven_retained() {
+        let d = SizeRotationPolicy::default();
+        assert_eq!(d.max_size_bytes, None);
+        assert!(d.daily);
+        assert_eq!(d.max_files, 7);
+    }
+
+    #[test]
+    fn policy_derives_debug_clone_eq() {
+        let a = SizeRotationPolicy {
+            max_size_bytes: Some(1024),
+            daily: false,
+            max_files: 3,
+        };
+        let b = a;
+        let c = a;
+        assert_eq!(a, b);
+        assert_eq!(b, c);
+        let dbg = format!("{a:?}");
+        assert!(dbg.contains("SizeRotationPolicy"));
+    }
+
+    #[test]
+    fn day_key_is_monotonic_within_year() {
+        let a = chrono::Local
+            .with_ymd_and_hms(2026, 1, 1, 0, 0, 0)
+            .single()
+            .unwrap();
+        let b = chrono::Local
+            .with_ymd_and_hms(2026, 6, 15, 0, 0, 0)
+            .single()
+            .unwrap();
+        assert!(day_key(a) < day_key(b));
+    }
+
+    #[test]
+    fn needs_rotate_size_cap_zero_means_disabled() {
+        let tmp = tempdir().unwrap();
+        let policy = SizeRotationPolicy {
+            max_size_bytes: Some(0),
+            daily: false,
+            max_files: 0,
+        };
+        let mut app = RotatingFileAppender::new(tmp.path(), "z.log", policy).unwrap();
+        app.write_all(b"hello\n").unwrap();
+        app.flush().unwrap();
+        let rotated: Vec<_> = fs::read_dir(tmp.path())
+            .unwrap()
+            .filter_map(std::result::Result::ok)
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.starts_with("z.log."))
+            .collect();
+        assert!(rotated.is_empty(), "cap=0 should disable size rotation");
+    }
+
+    #[test]
+    fn max_files_zero_means_unlimited() {
+        let tmp = tempdir().unwrap();
+        let policy = SizeRotationPolicy {
+            max_size_bytes: Some(256),
+            daily: false,
+            max_files: 0,
+        };
+        let mut app = RotatingFileAppender::new(tmp.path(), "u.log", policy).unwrap();
+        let chunk = vec![b'u'; 256];
+        for _ in 0..6 {
+            app.write_all(&chunk).unwrap();
+        }
+        app.flush().unwrap();
+        let rotated: Vec<_> = fs::read_dir(tmp.path())
+            .unwrap()
+            .filter_map(std::result::Result::ok)
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.starts_with("u.log."))
+            .collect();
+        assert!(
+            rotated.len() >= 3,
+            "expected unbounded retention, got {rotated:?}"
+        );
+    }
+
+    #[test]
+    fn shared_ref_write_path() {
+        let tmp = tempdir().unwrap();
+        let policy = SizeRotationPolicy {
+            max_size_bytes: Some(64),
+            daily: false,
+            max_files: 5,
+        };
+        let app = RotatingFileAppender::new(tmp.path(), "s.log", policy).unwrap();
+        let mut r: &RotatingFileAppender = &app;
+        let big = vec![b'a'; 200];
+        r.write_all(&big).unwrap();
+        r.flush().unwrap();
+        let rotated: Vec<_> = fs::read_dir(tmp.path())
+            .unwrap()
+            .filter_map(std::result::Result::ok)
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.starts_with("s.log."))
+            .collect();
+        assert!(
+            !rotated.is_empty(),
+            "expected rotation through &-write path, got {rotated:?}"
+        );
+    }
+
+    #[test]
+    fn opens_existing_file_and_tracks_size() {
+        let tmp = tempdir().unwrap();
+        std::fs::write(tmp.path().join("k.log"), b"preexisting").unwrap();
+        let policy = SizeRotationPolicy {
+            max_size_bytes: Some(100),
+            daily: false,
+            max_files: 3,
+        };
+        let mut app = RotatingFileAppender::new(tmp.path(), "k.log", policy).unwrap();
+        app.write_all(&[b'b'; 200]).unwrap();
+        app.flush().unwrap();
+        let rotated: Vec<_> = fs::read_dir(tmp.path())
+            .unwrap()
+            .filter_map(std::result::Result::ok)
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.starts_with("k.log."))
+            .collect();
+        assert!(!rotated.is_empty(), "existing file should rotate");
+    }
+
+    #[test]
+    fn rotated_filenames_use_date_stamp_pattern() {
+        let tmp = tempdir().unwrap();
+        let policy = SizeRotationPolicy {
+            max_size_bytes: Some(64),
+            daily: false,
+            max_files: 5,
+        };
+        let mut app = RotatingFileAppender::new(tmp.path(), "p.log", policy).unwrap();
+        app.write_all(&[b'.'; 100]).unwrap();
+        app.flush().unwrap();
+        let mut rotated: Vec<_> = fs::read_dir(tmp.path())
+            .unwrap()
+            .filter_map(std::result::Result::ok)
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n != "p.log" && n.starts_with("p.log."))
+            .collect();
+        rotated.sort();
+        assert!(!rotated.is_empty(), "expected at least one rotated file");
+        for name in &rotated {
+            let suffix = name.trim_start_matches("p.log.");
+            let parts: Vec<&str> = suffix.split('-').collect();
+            assert_eq!(
+                parts.len(),
+                4,
+                "expected 4 dash-segments in {name:?}, got {parts:?}"
+            );
+            assert_eq!(parts[3].len(), 3, "expected 3-digit counter in {name:?}");
+        }
+    }
+
+    #[test]
+    fn prune_ignores_unrelated_files() {
+        let tmp = tempdir().unwrap();
+        std::fs::write(tmp.path().join("README"), b"hello").unwrap();
+        let policy = SizeRotationPolicy {
+            max_size_bytes: Some(64),
+            daily: false,
+            max_files: 1,
+        };
+        let mut app = RotatingFileAppender::new(tmp.path(), "w.log", policy).unwrap();
+        for _ in 0..6 {
+            app.write_all(&[b'w'; 100]).unwrap();
+        }
+        app.flush().unwrap();
+        assert!(tmp.path().join("README").exists());
     }
 }

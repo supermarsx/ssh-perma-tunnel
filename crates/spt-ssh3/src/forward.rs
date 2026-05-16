@@ -1003,4 +1003,79 @@ mod tests {
         assert_eq!(h, "::1");
         assert_eq!(p, 8888);
     }
+
+    #[test]
+    fn bind_addr_string_socketaddr_v4() {
+        let s = bind_addr_string(&BindAddr::Tcp(
+            "127.0.0.1:9090".parse().unwrap(),
+        ))
+        .unwrap();
+        assert_eq!(s, "127.0.0.1:9090");
+    }
+
+    #[test]
+    fn bind_addr_string_socketaddr_v6() {
+        let s = bind_addr_string(&BindAddr::Tcp(
+            "[::1]:9091".parse().unwrap(),
+        ))
+        .unwrap();
+        assert!(s.contains("[::1]"));
+        assert!(s.ends_with(":9091"));
+    }
+
+    #[test]
+    fn bind_host_port_socketaddr_v4() {
+        let (h, p) =
+            bind_host_port(&BindAddr::Tcp("10.0.0.1:7000".parse().unwrap())).unwrap();
+        assert_eq!(h, "10.0.0.1");
+        assert_eq!(p, 7000);
+    }
+
+    #[test]
+    fn bind_host_port_unix_unsupported() {
+        let err =
+            bind_host_port(&BindAddr::Unix(std::path::PathBuf::from("/tmp/y"))).unwrap_err();
+        assert!(matches!(err, Error::UnsupportedPlatform(_)));
+    }
+
+    #[test]
+    fn session_state_default_is_empty() {
+        let s = SessionState::default();
+        assert_eq!(s.udp_flows.len(), 0);
+        assert_eq!(s.remote_forwards.len(), 0);
+    }
+
+    #[test]
+    fn session_state_debug_includes_field_names() {
+        let s = SessionState::default();
+        let dbg = format!("{s:?}");
+        assert!(dbg.contains("udp_flows"));
+        assert!(dbg.contains("remote_forwards"));
+    }
+
+    #[test]
+    fn dispatch_inbound_bidi_rejection_payload_round_trips() {
+        // Mirror the rejection-response shape dispatch_inbound_bidi sends
+        // when no matching remote forward is registered.
+        let open = ChannelOpenPayload {
+            host: "unknown.invalid".into(),
+            port: 5555,
+        };
+        let de = ChannelOpenPayload::decode(open.encode()).unwrap();
+        assert_eq!(de.host, "unknown.invalid");
+        assert_eq!(de.port, 5555);
+
+        let resp = ForwardOpenResponse {
+            ok: false,
+            reason: "no remote forward registered for that bind".into(),
+        };
+        let de = ForwardOpenResponse::decode(resp.encode()).unwrap();
+        assert!(!de.ok);
+        assert!(de.reason.contains("no remote forward registered"));
+    }
+
+    #[test]
+    fn open_timeout_constant_is_15s() {
+        assert_eq!(OPEN_TIMEOUT.as_secs(), 15);
+    }
 }

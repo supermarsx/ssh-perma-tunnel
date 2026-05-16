@@ -383,4 +383,163 @@ mod tests {
         assert_eq!(args.driver, "latency");
         assert_eq!(args.count, Some(10));
     }
+
+    #[test]
+    fn args_from_run_target_passes_forward_and_flags() {
+        let target = BenchmarkRunTarget {
+            profile: Some("p".into()),
+            forward: Some("ff".into()),
+        };
+        let args = BenchmarkRunArgs::from_driver(
+            "throughput",
+            target,
+            None,
+            Some("1s".into()),
+            true,
+            true,
+        );
+        assert_eq!(args.forward.as_deref(), Some("ff"));
+        assert_eq!(args.duration.as_deref(), Some("1s"));
+        assert!(args.allow_production_impact);
+        assert!(args.json);
+        assert_eq!(args.count, None);
+    }
+
+    #[test]
+    fn args_from_benchmark_run_round_trip() {
+        let v = BenchmarkRun {
+            driver: "udp".into(),
+            target: BenchmarkRunTarget {
+                profile: Some("pp".into()),
+                forward: None,
+            },
+            duration: Some("2s".into()),
+            connections: None,
+            count: Some(5),
+            unsafe_allow_production_impact: true,
+            json: true,
+        };
+        let args: BenchmarkRunArgs = v.into();
+        assert_eq!(args.driver, "udp");
+        assert_eq!(args.profile.as_deref(), Some("pp"));
+        assert_eq!(args.forward, None);
+        assert_eq!(args.duration.as_deref(), Some("2s"));
+        assert_eq!(args.count, Some(5));
+        assert!(args.allow_production_impact);
+        assert!(args.json);
+    }
+
+    #[test]
+    fn report_export_args_from_clap_struct() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("out.csv");
+        let raw = BenchmarkReportExport {
+            run_id: "abc".into(),
+            format: BenchmarkReportFormat::Csv,
+            out: out.clone(),
+        };
+        let args: BenchmarkReportExportArgs = raw.into();
+        assert_eq!(args.run_id, "abc");
+        assert!(matches!(args.format, BenchmarkReportFormat::Csv));
+        assert_eq!(args.out, out);
+    }
+
+    #[tokio::test]
+    async fn report_export_empty_run_id_errors_before_io() {
+        let dir = tempfile::tempdir().unwrap();
+        let g = global_with_state_dir(dir.path().to_path_buf());
+        let err = report_export(
+            &g,
+            BenchmarkReportExportArgs {
+                run_id: String::new(),
+                format: BenchmarkReportFormat::Json,
+                out: dir.path().join("out.json"),
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, Error::InvalidArgs(_)), "{err}");
+    }
+
+    #[tokio::test]
+    async fn report_export_malformed_json_errors_as_benchmark_failed() {
+        let dir = tempfile::tempdir().unwrap();
+        let runs = dir.path().join("benchmarks");
+        std::fs::create_dir_all(&runs).unwrap();
+        let run_id = "bad-json";
+        let json_path = runs.join(format!("{run_id}.json"));
+        std::fs::write(&json_path, b"{not json}").unwrap();
+        let g = global_with_state_dir(dir.path().to_path_buf());
+        let err = report_export(
+            &g,
+            BenchmarkReportExportArgs {
+                run_id: run_id.into(),
+                format: BenchmarkReportFormat::Json,
+                out: dir.path().join("out.json"),
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, Error::BenchmarkFailed(_)), "{err}");
+    }
+
+    #[tokio::test]
+    async fn report_export_csv_jsonl_and_json_all_render() {
+        let dir = tempfile::tempdir().unwrap();
+        let runs = dir.path().join("benchmarks");
+        std::fs::create_dir_all(&runs).unwrap();
+        let run_id = "multi";
+        let json_path = runs.join(format!("{run_id}.json"));
+        std::fs::write(
+            &json_path,
+            serde_json::to_string(&[sample_bench()]).unwrap(),
+        )
+        .unwrap();
+        let g = global_with_state_dir(dir.path().to_path_buf());
+        for (fmt, name) in [
+            (BenchmarkReportFormat::Csv, "out.csv"),
+            (BenchmarkReportFormat::Jsonl, "out.jsonl"),
+            (BenchmarkReportFormat::Json, "out.json"),
+        ] {
+            let out = dir.path().join(name);
+            report_export(
+                &g,
+                BenchmarkReportExportArgs {
+                    run_id: run_id.into(),
+                    format: fmt,
+                    out: out.clone(),
+                },
+            )
+            .await
+            .unwrap();
+            assert!(out.exists(), "{name} not written");
+            assert!(std::fs::metadata(&out).unwrap().len() > 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn report_export_creates_parent_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let runs = dir.path().join("benchmarks");
+        std::fs::create_dir_all(&runs).unwrap();
+        let run_id = "nested";
+        std::fs::write(
+            runs.join(format!("{run_id}.json")),
+            serde_json::to_string(&[sample_bench()]).unwrap(),
+        )
+        .unwrap();
+        let nested_out = dir.path().join("a/b/c/out.md");
+        let g = global_with_state_dir(dir.path().to_path_buf());
+        report_export(
+            &g,
+            BenchmarkReportExportArgs {
+                run_id: run_id.into(),
+                format: BenchmarkReportFormat::Markdown,
+                out: nested_out.clone(),
+            },
+        )
+        .await
+        .unwrap();
+        assert!(nested_out.exists());
+    }
 }

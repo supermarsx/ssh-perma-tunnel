@@ -150,4 +150,19 @@ mod tests {
             try_munlock(&buf).expect("munlock pairs with mlock");
         }
     }
+
+    #[test]
+    fn small_buffer_round_trip() {
+        let buf = vec![0u8; 1];
+        let locked = try_mlock(&buf).expect("mlock returns Ok");
+        if locked {
+            try_munlock(&buf).expect("munlock pairs with mlock");
+        }
+    }
+
+    #[test]
+    fn munlock_unlocked_buffer_is_ok_or_false() {
+        let buf = vec![0u8; 4096];
+        let _ = try_munlock(&buf).expect("munlock returns Ok");
+    }
 }

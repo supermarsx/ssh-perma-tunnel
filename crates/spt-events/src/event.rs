@@ -353,4 +353,109 @@ mod tests {
         assert_eq!(e.lookup_field("foo"), Some(Value::from("bar")));
         assert!(e.lookup_field("missing").is_none());
     }
+
+    #[test]
+    fn severity_display_matches_as_str() {
+        for s in [
+            Severity::Trace,
+            Severity::Debug,
+            Severity::Info,
+            Severity::Warn,
+            Severity::Error,
+            Severity::Critical,
+        ] {
+            assert_eq!(format!("{s}"), s.as_str());
+        }
+    }
+
+    #[test]
+    fn severity_parses_alias_forms() {
+        assert_eq!(Severity::parse("WARNING"), Some(Severity::Warn));
+        assert_eq!(Severity::parse("Crit"), Some(Severity::Critical));
+        assert_eq!(Severity::parse("FATAL"), Some(Severity::Critical));
+    }
+
+    #[test]
+    fn kind_display_matches_as_str() {
+        let k = EventKind::new("forward.connection_opened");
+        assert_eq!(format!("{k}"), k.as_str());
+    }
+
+    #[test]
+    fn kind_from_str_impl() {
+        let k: EventKind = "x.y".into();
+        assert_eq!(k.as_str(), "x.y");
+    }
+
+    #[test]
+    fn lookup_field_handles_all_id_columns() {
+        let prof = ProfileId::new("p").unwrap();
+        let fwd = ForwardId::new("f").unwrap();
+        let sess = SessionId::new("s1").unwrap();
+        let conn = ConnectionId::new("c1").unwrap();
+        let e = Event::builder("k", Severity::Info)
+            .profile(prof)
+            .forward(fwd)
+            .session(sess)
+            .connection(conn)
+            .message("hi")
+            .build();
+        assert!(e.lookup_field("profile_id").is_some());
+        assert!(e.lookup_field("forward_id").is_some());
+        assert!(e.lookup_field("session_id").is_some());
+        assert!(e.lookup_field("connection_id").is_some());
+        assert_eq!(e.lookup_field("message"), Some(Value::from("hi")));
+        assert!(e.lookup_field("ts").is_some());
+        assert!(e.lookup_field("id").is_some());
+        assert_eq!(e.lookup_field("severity"), Some(Value::from("info")));
+    }
+
+    #[test]
+    fn lookup_field_returns_none_for_unset_optional_ids() {
+        let e = Event::builder("k", Severity::Info).build();
+        assert!(e.lookup_field("profile_id").is_none());
+        assert!(e.lookup_field("forward_id").is_none());
+        assert!(e.lookup_field("session_id").is_none());
+        assert!(e.lookup_field("connection_id").is_none());
+    }
+
+    #[test]
+    fn event_serde_round_trip_through_json() {
+        let p = ProfileId::new("p").unwrap();
+        let e = Event::builder("k", Severity::Warn)
+            .profile(p)
+            .field("n", 7)
+            .message("hi")
+            .build();
+        let s = serde_json::to_string(&e).unwrap();
+        let back: Event = serde_json::from_str(&s).unwrap();
+        assert_eq!(back.kind, e.kind);
+        assert_eq!(back.severity, e.severity);
+        assert_eq!(back.profile_id, e.profile_id);
+        assert_eq!(back.message, e.message);
+        assert_eq!(back.fields.get("n"), e.fields.get("n"));
+    }
+
+    #[test]
+    fn to_state_event_carries_message_and_session_connection_ids() {
+        let s_id = SessionId::new("s").unwrap();
+        let c_id = ConnectionId::new("c").unwrap();
+        let e = Event::builder("k", Severity::Info)
+            .session(s_id)
+            .connection(c_id)
+            .message("hello")
+            .build();
+        let s = e.to_state_event();
+        let obj = s.extra.as_object().unwrap();
+        assert!(obj.contains_key("session_id"));
+        assert!(obj.contains_key("connection_id"));
+        assert_eq!(obj.get("message").unwrap().as_str().unwrap(), "hello");
+    }
+
+    #[test]
+    fn matches_pattern_handles_empty_pattern() {
+        let k = EventKind::new("anything");
+        // Empty pattern with `*` suffix renders as "" → starts_with("") is true.
+        assert!(k.matches_pattern("*"));
+    }
 }

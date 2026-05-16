@@ -821,4 +821,186 @@ mod tests {
             }]
         );
     }
+
+    #[test]
+    fn server_capabilities_default_values() {
+        let c = ServerCapabilities::default();
+        assert_eq!(c.name, "spt-mcp");
+        assert_eq!(c.protocol_version, "2024-11-05");
+        assert!(!c.version.is_empty());
+    }
+
+    #[tokio::test]
+    async fn dispatch_returns_response_with_echoed_id() {
+        let s = server_with(McpPolicy::default(), MockAuditSink::new());
+        let req = Request {
+            jsonrpc: "2.0".to_owned(),
+            id: Some(Id::Num(42)),
+            method: "ping".to_owned(),
+            params: None,
+        };
+        let resp = s.inner.dispatch(req).await;
+        assert!(matches!(resp.id, Id::Num(42)));
+        assert!(resp.error.is_none());
+        assert_eq!(resp.result.unwrap()["pong"], true);
+    }
+
+    #[tokio::test]
+    async fn dispatch_missing_id_becomes_null() {
+        let s = server_with(McpPolicy::default(), MockAuditSink::new());
+        let req = Request {
+            jsonrpc: "2.0".to_owned(),
+            id: None,
+            method: "ping".to_owned(),
+            params: None,
+        };
+        let resp = s.inner.dispatch(req).await;
+        assert!(matches!(resp.id, Id::Null));
+    }
+
+    #[tokio::test]
+    async fn dispatch_error_propagates_rpc_code() {
+        let s = server_with(McpPolicy::default(), MockAuditSink::new());
+        let req = Request {
+            jsonrpc: "2.0".to_owned(),
+            id: Some(Id::Num(1)),
+            method: "nope/method".to_owned(),
+            params: None,
+        };
+        let resp = s.inner.dispatch(req).await;
+        let err = resp.error.expect("error");
+        assert_eq!(err.code, -32601);
+    }
+
+    #[tokio::test]
+    async fn read_resource_missing_uri_errors() {
+        let s = server_with(McpPolicy::default(), MockAuditSink::new());
+        let err = s.inner.read_resource(None).await.unwrap_err();
+        assert!(matches!(err, crate::Error::InvalidParams(_)));
+    }
+
+    #[tokio::test]
+    async fn call_tool_missing_name_errors() {
+        let policy = McpPolicy {
+            enabled: true,
+            ..Default::default()
+        };
+        let s = server_with(policy, MockAuditSink::new());
+        let err = s.inner.call_tool(Some(json!({}))).await.unwrap_err();
+        assert!(matches!(err, crate::Error::InvalidParams(_)));
+    }
+
+    #[tokio::test]
+    async fn auth_token_default_none() {
+        let s = server_with(McpPolicy::default(), MockAuditSink::new());
+        assert!(s.inner.auth_token().is_none());
+    }
+
+    #[tokio::test]
+    async fn with_auth_token_is_required_for_non_initialize() {
+        let s = server_with(McpPolicy::default(), MockAuditSink::new())
+            .with_auth_token("hunter2");
+        assert_eq!(s.inner.auth_token(), Some("hunter2"));
+        let err = s
+            .inner
+            .verify_init_token(None)
+            .unwrap_err();
+        assert!(matches!(err, crate::Error::PolicyDenied(_)));
+        let err = s
+            .inner
+            .verify_init_token(Some(&json!({"token": "wrong"})))
+            .unwrap_err();
+        assert!(matches!(err, crate::Error::PolicyDenied(_)));
+        s.inner
+            .verify_init_token(Some(&json!({"token": "hunter2"})))
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn with_capabilities_overrides_advertised_fields() {
+        let s = server_with(McpPolicy::default(), MockAuditSink::new()).with_capabilities(
+            ServerCapabilities {
+                name: "alt".to_owned(),
+                version: "9.9.9".to_owned(),
+                protocol_version: "1999-01-01".to_owned(),
+            },
+        );
+        assert_eq!(s.capabilities().name, "alt");
+        assert_eq!(s.capabilities().version, "9.9.9");
+        assert_eq!(s.inner.capabilities().protocol_version, "1999-01-01");
+    }
+
+    #[tokio::test]
+    async fn new_noop_constructs_disabled_server() {
+        let s = McpServer::new_noop(McpPolicy::default());
+        let v = s
+            .inner
+            .read_resource(Some(json!({"uri": "spt://status"})))
+            .await
+            .expect("ok");
+        assert!(v["contents"].is_array());
+    }
+
+    #[tokio::test]
+    async fn inner_returns_arc_clone() {
+        let s = McpServer::new_noop(McpPolicy::default());
+        let a = s.inner();
+        let b = s.inner();
+        assert!(Arc::ptr_eq(&a, &b));
+    }
+
+    #[tokio::test]
+    async fn note_does_not_panic() {
+        let s = server_with(McpPolicy::default(), MockAuditSink::new());
+        let req = Request {
+            jsonrpc: "2.0".to_owned(),
+            id: None,
+            method: "tick".to_owned(),
+            params: None,
+        };
+        s.inner.note(&req);
+    }
+
+    #[tokio::test]
+    async fn run_kind_loopback_errors_without_bind() {
+        let s = McpServer::new_noop(McpPolicy::default());
+        let err = s
+            .run_kind(crate::transport::TransportKind::Loopback)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, crate::Error::InvalidParams(_)));
+    }
+
+    #[tokio::test]
+    async fn call_tool_with_notify_records_audit_event() {
+        let policy = McpPolicy {
+            enabled: true,
+            ..Default::default()
+        };
+        let audit = MockAuditSink::new();
+        let s = server_with(policy, audit.clone());
+        let _ = s
+            .inner
+            .call_tool_with_notify(
+                Some(json!({
+                    "name": "tunnel_status",
+                    "arguments": {},
+                    "clientId": "claude-cli"
+                })),
+                None,
+            )
+            .await
+            .expect("ok");
+        let ev = audit.snapshot();
+        assert_eq!(ev.len(), 1);
+        assert!(ev[0].ok);
+        assert_eq!(ev[0].client_id.as_deref(), Some("claude-cli"));
+        assert!(ev[0].error.is_none());
+    }
+
+    #[tokio::test]
+    async fn capabilities_getter_matches_inner() {
+        let s = server_with(McpPolicy::default(), MockAuditSink::new());
+        assert_eq!(s.capabilities().name, s.inner.capabilities().name);
+    }
 }

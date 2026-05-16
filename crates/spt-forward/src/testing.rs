@@ -434,4 +434,191 @@ mod tests {
         h.close().await;
         assert_no_pending_handles(&[]);
     }
+
+    // ---- Extended testing-fixture coverage ----
+
+    fn remote_spec(name: &str) -> RemoteForwardSpec {
+        RemoteForwardSpec {
+            name: name.to_owned(),
+            listen: BindAddr::Tcp("127.0.0.1:0".parse().unwrap()),
+            target: TargetAddr::new("h", 1),
+            max_connections: None,
+        }
+    }
+
+    fn udp_spec(name: &str) -> UdpForwardSpec {
+        UdpForwardSpec {
+            name: name.to_owned(),
+            direction: spt_protocol::ForwardDirection::Local,
+            listen: BindAddr::Tcp("127.0.0.1:0".parse().unwrap()),
+            target: TargetAddr::new("h", 1),
+            idle_timeout_secs: 30,
+            max_flows: None,
+        }
+    }
+
+    fn endpoint() -> spt_protocol::Endpoint {
+        spt_protocol::Endpoint::new("example.com", 22)
+    }
+
+    fn auth() -> spt_auth::AuthConfig {
+        spt_auth::AuthConfig::new("alice", Vec::new())
+    }
+
+    #[tokio::test]
+    async fn protocol_connect_increments_count() {
+        let proto = MockTunnelProtocol::new();
+        assert_eq!(proto.connect_count(), 0);
+        let _s1 = proto.connect(&endpoint(), &auth()).await.unwrap();
+        let _s2 = proto.connect(&endpoint(), &auth()).await.unwrap();
+        assert_eq!(proto.connect_count(), 2);
+    }
+
+    #[tokio::test]
+    async fn protocol_connect_fail_mode() {
+        let proto = MockTunnelProtocol::new();
+        proto.set_connect_fails(true);
+        let r = proto.connect(&endpoint(), &auth()).await;
+        assert!(r.is_err());
+        assert_eq!(proto.connect_count(), 0);
+        proto.set_connect_fails(false);
+        let _ = proto.connect(&endpoint(), &auth()).await.unwrap();
+        assert_eq!(proto.connect_count(), 1);
+    }
+
+    #[test]
+    fn protocol_metadata() {
+        let proto = MockTunnelProtocol::new();
+        assert_eq!(proto.name(), "mock");
+        let caps = proto.capabilities();
+        assert!(caps.local_udp);
+        assert!(caps.local_tcp);
+    }
+
+    #[test]
+    fn protocol_default_is_new() {
+        let a = MockTunnelProtocol::new();
+        let b = MockTunnelProtocol::default();
+        assert_eq!(a.connect_count(), b.connect_count());
+    }
+
+    #[test]
+    fn session_default_is_new() {
+        let a = MockTunnelSession::new();
+        let b = MockTunnelSession::default();
+        assert_eq!(a.keepalive_count(), b.keepalive_count());
+    }
+
+    #[tokio::test]
+    async fn session_keepalive_count_increments() {
+        let mut s = MockTunnelSession::new();
+        assert_eq!(s.keepalive_count(), 0);
+        s.keepalive().await.unwrap();
+        s.keepalive().await.unwrap();
+        assert_eq!(s.keepalive_count(), 2);
+    }
+
+    #[tokio::test]
+    async fn session_info_round_trip() {
+        let s = MockTunnelSession::new();
+        let info = s.session_info();
+        assert_eq!(info.backend, "mock");
+        assert_eq!(info.peer_version.as_deref(), Some("mock-0"));
+    }
+
+    #[tokio::test]
+    async fn session_close_returns_ok() {
+        let s: Box<dyn TunnelSession> = Box::new(MockTunnelSession::new());
+        s.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn session_opens_remote_and_udp() {
+        let mut s = MockTunnelSession::new();
+        let r = s.open_remote_forward(&remote_spec("r")).await.unwrap();
+        let u = s.open_udp_forward(&udp_spec("u")).await.unwrap();
+        assert_eq!(r.name(), "r");
+        assert_eq!(u.name(), "u");
+        assert_eq!(r.state(), ForwardState::Active);
+        assert_eq!(u.state(), ForwardState::Active);
+        r.close().await;
+        u.close().await;
+    }
+
+    #[tokio::test]
+    async fn recording_session_logs_all_methods() {
+        let inner: Box<dyn TunnelSession> = Box::new(MockTunnelSession::new());
+        let mut rec = RecordingTunnelSession::new(inner);
+        let _l = rec.open_local_forward(&local_spec("L")).await.unwrap();
+        let _r = rec.open_remote_forward(&remote_spec("R")).await.unwrap();
+        let _u = rec.open_udp_forward(&udp_spec("U")).await.unwrap();
+        rec.keepalive().await.unwrap();
+        let pre_close = rec.calls();
+        assert_eq!(pre_close.len(), 4);
+        assert_eq!(pre_close[0], SessionCall::OpenLocal("L".into()));
+        assert_eq!(pre_close[1], SessionCall::OpenRemote("R".into()));
+        assert_eq!(pre_close[2], SessionCall::OpenUdp("U".into()));
+        assert_eq!(pre_close[3], SessionCall::Keepalive);
+
+        let handle = rec.log_handle();
+        Box::new(rec).close().await.unwrap();
+        let final_log = handle.lock().clone();
+        assert!(final_log.contains(&SessionCall::Close));
+    }
+
+    #[test]
+    fn recording_session_info_delegates() {
+        let inner: Box<dyn TunnelSession> = Box::new(MockTunnelSession::new());
+        let rec = RecordingTunnelSession::new(inner);
+        let info = rec.session_info();
+        assert_eq!(info.backend, "mock");
+    }
+
+    #[test]
+    fn recording_session_debug_includes_calls() {
+        let inner: Box<dyn TunnelSession> = Box::new(MockTunnelSession::new());
+        let rec = RecordingTunnelSession::new(inner);
+        let dbg = format!("{rec:?}");
+        assert!(dbg.contains("RecordingTunnelSession"));
+        assert!(dbg.contains("calls"));
+    }
+
+    #[test]
+    fn udp_endpoint_new_and_pending() {
+        let ep = MockUdpEndpoint::new();
+        assert_eq!(ep.pending(), 0);
+        assert!(ep.recv().is_none());
+    }
+
+    #[test]
+    fn udp_endpoint_clone_shares_state() {
+        let ep1 = MockUdpEndpoint::new();
+        let ep2 = ep1.clone();
+        ep1.send(b"data".to_vec());
+        // The clone is shallow over Arc<Mutex<..>>; ep1.outbox is shared with
+        // ep2.outbox. Reading from inbox on either side still yields None
+        // (standalone endpoint has unwired queues).
+        assert!(ep1.recv().is_none());
+        assert!(ep2.recv().is_none());
+    }
+
+    #[test]
+    #[should_panic(expected = "non-terminal")]
+    fn assert_no_pending_handles_panics_on_active() {
+        let (state_tx, state_rx) = watch::channel(ForwardState::Active);
+        let (close_tx, _close_rx) = oneshot::channel::<()>();
+        let h = ForwardHandle::new(ProtocolForwardId::new(), "stuck", state_rx, close_tx);
+        let _keep = state_tx;
+        assert_no_pending_handles(&[h]);
+    }
+
+    #[tokio::test]
+    async fn assert_no_pending_handles_passes_when_stopped() {
+        let (state_tx, state_rx) = watch::channel(ForwardState::Active);
+        let (close_tx, _close_rx) = oneshot::channel::<()>();
+        let h = ForwardHandle::new(ProtocolForwardId::new(), "ok", state_rx, close_tx);
+        state_tx.send(ForwardState::Stopped).unwrap();
+        tokio::task::yield_now().await;
+        assert_no_pending_handles(&[h]);
+    }
 }

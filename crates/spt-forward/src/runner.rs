@@ -506,4 +506,332 @@ mod tests {
         let r = ForwardRunner::start(&cfg, &mut session, &ForwardRunnerConfig::default()).await;
         assert!(matches!(r, Err(Error::InvalidConfig(_))));
     }
+
+    // ---- Extended runner state / bind_mode / target coverage ----
+
+    #[test]
+    fn runner_error_into_error() {
+        let malformed = ForwardRunnerError::Malformed {
+            name: "f".into(),
+            reason: "r".into(),
+        };
+        let unsupported = ForwardRunnerError::UnsupportedCapability {
+            name: "f".into(),
+            cap: "udp",
+        };
+        let m_err: Error = malformed.into();
+        let u_err: Error = unsupported.into();
+        assert!(matches!(m_err, Error::InvalidConfig(_)));
+        assert!(matches!(u_err, Error::InvalidConfig(_)));
+        let u2 = ForwardRunnerError::UnsupportedCapability {
+            name: "fwd".into(),
+            cap: "udp",
+        };
+        assert!(u2.to_string().contains("udp"));
+        let m2 = ForwardRunnerError::Malformed {
+            name: "fwd".into(),
+            reason: "why".into(),
+        };
+        assert!(m2.to_string().contains("why"));
+    }
+
+    #[tokio::test]
+    async fn runner_name_accessor() {
+        let mut session = MockTunnelSession::new();
+        let mut cfg = fwd("local", "tcp", "127.0.0.1:0", "1.2.3.4:5");
+        cfg.name = "named-fwd".into();
+        let runner = ForwardRunner::start(&cfg, &mut session, &ForwardRunnerConfig::default())
+            .await
+            .unwrap();
+        assert_eq!(runner.name(), "named-fwd");
+        runner.stop().await;
+    }
+
+    #[tokio::test]
+    async fn runner_state_transitions_to_stopped() {
+        let mut session = MockTunnelSession::new();
+        let cfg = fwd("local", "tcp", "127.0.0.1:0", "1.2.3.4:5");
+        let runner = ForwardRunner::start(&cfg, &mut session, &ForwardRunnerConfig::default())
+            .await
+            .unwrap();
+        let mut watch = runner.watch_state();
+        assert_eq!(*watch.borrow(), ForwardState::Active);
+        runner.stop().await;
+        let final_state = if watch.borrow().is_terminal() {
+            *watch.borrow()
+        } else {
+            watch.changed().await.unwrap();
+            *watch.borrow()
+        };
+        assert!(final_state.is_terminal(), "got {final_state:?}");
+    }
+
+    #[tokio::test]
+    async fn bind_mode_loopback_resolves() {
+        let mut session = CapturingSession::new();
+        let mut cfg = fwd("local", "tcp", "127.0.0.1:0", "1.2.3.4:5");
+        cfg.bind_mode = Some("loopback".into());
+        let runner = ForwardRunner::start(&cfg, &mut session, &ForwardRunnerConfig::default())
+            .await
+            .unwrap();
+        match session.last_listen.clone().unwrap() {
+            BindAddr::Tcp(sock) => assert!(sock.ip().is_loopback(), "got {sock}"),
+            other => panic!("expected TCP listen, got {other:?}"),
+        }
+        runner.stop().await;
+    }
+
+    #[tokio::test]
+    async fn bind_mode_specific_ip_resolves() {
+        let mut session = CapturingSession::new();
+        let mut cfg = fwd("local", "tcp", "127.0.0.1:0", "1.2.3.4:5");
+        cfg.bind_mode = Some("specific_ip".into());
+        let runner = ForwardRunner::start(&cfg, &mut session, &ForwardRunnerConfig::default())
+            .await
+            .unwrap();
+        match session.last_listen.clone().unwrap() {
+            BindAddr::Tcp(sock) => assert_eq!(sock.ip().to_string(), "127.0.0.1"),
+            other => panic!("expected TCP listen, got {other:?}"),
+        }
+        runner.stop().await;
+    }
+
+    #[test]
+    fn bind_mode_specific_ip_requires_numeric() {
+        let mut cfg = fwd("local", "tcp", "example.com:443", "1.2.3.4:5");
+        cfg.bind_mode = Some("specific_ip".into());
+        let err = resolve_listen(&cfg, "example.com:443").unwrap_err();
+        assert!(
+            err.to_string().contains("specific_ip requires numeric"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn bind_mode_specific_ip_v6_rejected_when_disabled() {
+        let mut cfg = fwd("local", "tcp", "[::1]:0", "1.2.3.4:5");
+        cfg.bind_mode = Some("specific_ip".into());
+        cfg.bind_ipv6 = Some("disable".into());
+        let err = resolve_listen(&cfg, "[::1]:0").unwrap_err();
+        assert!(err.to_string().contains("IPv6"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn bind_mode_all_interfaces() {
+        let mut session = CapturingSession::new();
+        let mut cfg = fwd("local", "tcp", "127.0.0.1:0", "1.2.3.4:5");
+        cfg.bind_mode = Some("all_interfaces".into());
+        let runner = ForwardRunner::start(&cfg, &mut session, &ForwardRunnerConfig::default())
+            .await
+            .unwrap();
+        match session.last_listen.clone().unwrap() {
+            BindAddr::Tcp(sock) => {
+                assert!(sock.ip().is_unspecified(), "got {sock}");
+            }
+            other => panic!("expected TCP listen, got {other:?}"),
+        }
+        runner.stop().await;
+    }
+
+    #[tokio::test]
+    async fn bind_mode_auto_interface() {
+        let mut session = CapturingSession::new();
+        let mut cfg = fwd("local", "tcp", "127.0.0.1:0", "1.2.3.4:5");
+        cfg.bind_mode = Some("auto_interface".into());
+        let _ = ForwardRunner::start(&cfg, &mut session, &ForwardRunnerConfig::default()).await;
+    }
+
+    #[test]
+    fn bind_mode_unknown_value_rejected() {
+        let mut cfg = fwd("local", "tcp", "127.0.0.1:0", "1.2.3.4:5");
+        cfg.bind_mode = Some("totally-wrong".into());
+        let err = resolve_listen(&cfg, "127.0.0.1:0").unwrap_err();
+        assert!(err.to_string().contains("unknown bind_mode"), "{err}");
+    }
+
+    #[test]
+    fn bind_mode_with_unix_listener_rejected() {
+        let mut cfg = fwd("local", "tcp", "unix:///tmp/x.sock", "1.2.3.4:5");
+        cfg.bind = Some("unix:///tmp/x.sock".into());
+        cfg.bind_mode = Some("loopback".into());
+        let err = resolve_listen(&cfg, "unix:///tmp/x.sock").unwrap_err();
+        assert!(err.to_string().contains("unix socket"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn invalid_listen_string() {
+        let mut session = MockTunnelSession::new();
+        let cfg = fwd("local", "tcp", "not-a-valid-addr", "1.2.3.4:5");
+        let r = ForwardRunner::start(&cfg, &mut session, &ForwardRunnerConfig::default()).await;
+        assert!(matches!(r, Err(Error::InvalidConfig(_))));
+    }
+
+    #[tokio::test]
+    async fn invalid_target_string() {
+        let mut session = MockTunnelSession::new();
+        let cfg = fwd("local", "tcp", "127.0.0.1:0", "not-a-valid-addr");
+        let r = ForwardRunner::start(&cfg, &mut session, &ForwardRunnerConfig::default()).await;
+        assert!(matches!(r, Err(Error::InvalidConfig(_))));
+    }
+
+    #[tokio::test]
+    async fn unix_target_rejected() {
+        let mut session = MockTunnelSession::new();
+        let cfg = fwd("local", "tcp", "127.0.0.1:0", "unix:///tmp/x.sock");
+        let r = ForwardRunner::start(&cfg, &mut session, &ForwardRunnerConfig::default()).await;
+        assert!(matches!(r, Err(Error::InvalidConfig(_))));
+    }
+
+    #[tokio::test]
+    async fn unknown_kind_rejected() {
+        let mut session = MockTunnelSession::new();
+        let cfg = fwd("sideways", "tcp", "127.0.0.1:0", "1.2.3.4:5");
+        let r = ForwardRunner::start(&cfg, &mut session, &ForwardRunnerConfig::default()).await;
+        assert!(matches!(r, Err(Error::InvalidConfig(_))));
+    }
+
+    #[tokio::test]
+    async fn listen_connect_aliases_used() {
+        let mut session = MockTunnelSession::new();
+        let mut cfg = fwd("local", "tcp", "127.0.0.1:0", "1.2.3.4:5");
+        cfg.bind = None;
+        cfg.target = None;
+        cfg.listen = Some("127.0.0.1:0".into());
+        cfg.connect = Some("1.2.3.4:5".into());
+        let runner = ForwardRunner::start(&cfg, &mut session, &ForwardRunnerConfig::default())
+            .await
+            .unwrap();
+        runner.stop().await;
+    }
+
+    #[tokio::test]
+    async fn malformed_missing_target() {
+        let mut session = MockTunnelSession::new();
+        let mut cfg = fwd("local", "tcp", "127.0.0.1:0", "1.2.3.4:5");
+        cfg.target = None;
+        cfg.connect = None;
+        let r = ForwardRunner::start(&cfg, &mut session, &ForwardRunnerConfig::default()).await;
+        assert!(matches!(r, Err(Error::InvalidConfig(_))));
+    }
+
+    #[tokio::test]
+    async fn udp_bad_idle_timeout() {
+        let mut session = MockTunnelSession::new();
+        let mut cfg = fwd("local", "udp", "127.0.0.1:0", "1.2.3.4:5");
+        cfg.udp_idle_timeout = Some("yesterday".into());
+        let r = ForwardRunner::start(&cfg, &mut session, &ForwardRunnerConfig::default()).await;
+        assert!(matches!(r, Err(Error::InvalidConfig(_))));
+    }
+
+    #[tokio::test]
+    async fn udp_uses_runner_default_idle() {
+        let mut session = MockTunnelSession::new();
+        let cfg = fwd("local", "udp", "127.0.0.1:0", "1.2.3.4:5");
+        let runner_cfg = ForwardRunnerConfig {
+            default_udp_idle: Some(Duration::from_secs(123)),
+        };
+        let runner = ForwardRunner::start(&cfg, &mut session, &runner_cfg)
+            .await
+            .unwrap();
+        runner.stop().await;
+    }
+
+    #[tokio::test]
+    async fn udp_remote_direction() {
+        let mut session = MockTunnelSession::new();
+        let cfg = fwd("remote", "udp", "127.0.0.1:0", "1.2.3.4:5");
+        let runner = ForwardRunner::start(&cfg, &mut session, &ForwardRunnerConfig::default())
+            .await
+            .unwrap();
+        runner.stop().await;
+    }
+
+    #[test]
+    fn parse_target_host_port() {
+        let t = parse_target("example.com:443").unwrap();
+        assert_eq!(t.host, "example.com");
+        assert_eq!(t.port, 443);
+    }
+
+    #[test]
+    fn parse_target_v6() {
+        let t = parse_target("[::1]:9000").unwrap();
+        assert_eq!(t.port, 9000);
+        assert!(t.host.contains(':'));
+    }
+
+    #[test]
+    fn parse_target_rejects_unix() {
+        let r = parse_target("unix:///tmp/foo.sock");
+        assert!(matches!(r, Err(Error::InvalidConfig(_))));
+    }
+
+    #[test]
+    fn parse_direction_variants() {
+        assert!(matches!(
+            parse_direction("local"),
+            Ok(ForwardDirection::Local)
+        ));
+        assert!(matches!(
+            parse_direction("remote"),
+            Ok(ForwardDirection::Remote)
+        ));
+        assert!(matches!(
+            parse_direction("nowhere"),
+            Err(Error::InvalidConfig(_))
+        ));
+    }
+
+    #[test]
+    fn specific_interface_missing_name() {
+        let mut cfg = fwd("local", "tcp", "127.0.0.1:0", "1.2.3.4:5");
+        cfg.bind_mode = Some("specific_interface".into());
+        cfg.bind_interface = None;
+        let err = resolve_listen(&cfg, "127.0.0.1:0").unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("specific_interface requires bind_interface"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn select_bind_addr_prefer_v6() {
+        let v4: SocketAddr = "127.0.0.1:8080".parse().unwrap();
+        let v6: SocketAddr = "[::1]:8080".parse().unwrap();
+        let pick = select_bind_addr(vec![v4, v6], Some("prefer"), ListenFamily::Unknown);
+        assert_eq!(pick, Some(v6));
+    }
+
+    #[test]
+    fn select_bind_addr_disable_v6() {
+        let v4: SocketAddr = "127.0.0.1:8080".parse().unwrap();
+        let v6: SocketAddr = "[::1]:8080".parse().unwrap();
+        let pick = select_bind_addr(vec![v4, v6], Some("disable"), ListenFamily::Unknown);
+        assert_eq!(pick, Some(v4));
+    }
+
+    #[test]
+    fn select_bind_addr_respects_original_family_v6() {
+        let v4: SocketAddr = "127.0.0.1:8080".parse().unwrap();
+        let v6: SocketAddr = "[::1]:8080".parse().unwrap();
+        let pick = select_bind_addr(vec![v4, v6], None, ListenFamily::Ipv6);
+        assert_eq!(pick, Some(v6));
+    }
+
+    #[test]
+    fn select_bind_addr_default_to_first() {
+        let v4: SocketAddr = "127.0.0.1:8080".parse().unwrap();
+        let v6: SocketAddr = "[::1]:8080".parse().unwrap();
+        let pick = select_bind_addr(vec![v4, v6], None, ListenFamily::Ipv4);
+        assert_eq!(pick, Some(v4));
+    }
+
+    #[test]
+    fn select_bind_addr_empty_list() {
+        assert_eq!(
+            select_bind_addr(vec![], Some("prefer"), ListenFamily::Unknown),
+            None
+        );
+    }
 }

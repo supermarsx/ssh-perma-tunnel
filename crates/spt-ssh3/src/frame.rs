@@ -573,4 +573,246 @@ mod tests {
         let de = Ssh3Frame::read_async(&mut cursor).await.unwrap();
         assert_eq!(de, f);
     }
+
+    #[test]
+    fn frame_decode_short_header_fails() {
+        let mut buf = Bytes::from_static(&[0x04, 0, 0, 0]);
+        let err = Ssh3Frame::decode(&mut buf).unwrap_err();
+        assert!(matches!(err, Error::InvalidConfig(_)));
+    }
+
+    #[test]
+    fn frame_kind_from_u8_covers_all_variants() {
+        for (raw, want) in [
+            (0x01u8, Ssh3FrameKind::Settings),
+            (0x02, Ssh3FrameKind::DirectTcpRequest),
+            (0x03, Ssh3FrameKind::ForwardOpenResponse),
+            (0x04, Ssh3FrameKind::Data),
+            (0x05, Ssh3FrameKind::Close),
+            (0x06, Ssh3FrameKind::UdpAssociate),
+            (0x07, Ssh3FrameKind::AppPing),
+            (0x08, Ssh3FrameKind::RemoteUdpForwardRequest),
+        ] {
+            assert_eq!(Ssh3FrameKind::from_u8(raw), Some(want));
+        }
+        assert_eq!(Ssh3FrameKind::from_u8(0x00), None);
+        assert_eq!(Ssh3FrameKind::from_u8(0x09), None);
+        assert_eq!(Ssh3FrameKind::from_u8(0xFF), None);
+    }
+
+    #[test]
+    fn channel_open_decode_short_header() {
+        let err = ChannelOpenPayload::decode(Bytes::from_static(&[0x00])).unwrap_err();
+        assert!(matches!(err, Error::InvalidConfig(_)));
+    }
+
+    #[test]
+    fn channel_open_decode_truncated_host() {
+        let mut p = Vec::new();
+        p.extend_from_slice(&10u16.to_be_bytes());
+        p.extend_from_slice(b"short");
+        let err = ChannelOpenPayload::decode(Bytes::from(p)).unwrap_err();
+        assert!(matches!(err, Error::InvalidConfig(_)));
+    }
+
+    #[test]
+    fn channel_open_decode_bad_utf8() {
+        let mut p = Vec::new();
+        p.extend_from_slice(&3u16.to_be_bytes());
+        p.extend_from_slice(&[0xff, 0xfe, 0xfd]);
+        p.extend_from_slice(&80u16.to_be_bytes());
+        let err = ChannelOpenPayload::decode(Bytes::from(p)).unwrap_err();
+        assert!(matches!(err, Error::InvalidConfig(_)));
+    }
+
+    #[test]
+    fn forward_open_response_decode_short() {
+        let err = ForwardOpenResponse::decode(Bytes::from_static(&[0x01, 0x00])).unwrap_err();
+        assert!(matches!(err, Error::InvalidConfig(_)));
+    }
+
+    #[test]
+    fn forward_open_response_decode_truncated_reason() {
+        let mut p = Vec::new();
+        p.push(0x00);
+        p.extend_from_slice(&20u16.to_be_bytes());
+        p.extend_from_slice(b"abc");
+        let err = ForwardOpenResponse::decode(Bytes::from(p)).unwrap_err();
+        assert!(matches!(err, Error::InvalidConfig(_)));
+    }
+
+    #[test]
+    fn forward_open_response_decode_bad_utf8() {
+        let mut p = Vec::new();
+        p.push(0x01);
+        p.extend_from_slice(&3u16.to_be_bytes());
+        p.extend_from_slice(&[0xff, 0xfe, 0xfd]);
+        let err = ForwardOpenResponse::decode(Bytes::from(p)).unwrap_err();
+        assert!(matches!(err, Error::InvalidConfig(_)));
+    }
+
+    #[test]
+    fn udp_associate_decode_short() {
+        let err = UdpAssociatePayload::decode(Bytes::from_static(&[0u8; 5])).unwrap_err();
+        assert!(matches!(err, Error::InvalidConfig(_)));
+    }
+
+    #[test]
+    fn udp_associate_decode_truncated_host() {
+        let mut p = Vec::new();
+        p.extend_from_slice(&1u32.to_be_bytes());
+        p.extend_from_slice(&8u16.to_be_bytes());
+        p.extend_from_slice(b"ab");
+        let err = UdpAssociatePayload::decode(Bytes::from(p)).unwrap_err();
+        assert!(matches!(err, Error::InvalidConfig(_)));
+    }
+
+    #[test]
+    fn udp_associate_decode_bad_utf8() {
+        let mut p = Vec::new();
+        p.extend_from_slice(&7u32.to_be_bytes());
+        p.extend_from_slice(&3u16.to_be_bytes());
+        p.extend_from_slice(&[0xff, 0xfe, 0xfd]);
+        p.extend_from_slice(&53u16.to_be_bytes());
+        let err = UdpAssociatePayload::decode(Bytes::from(p)).unwrap_err();
+        assert!(matches!(err, Error::InvalidConfig(_)));
+    }
+
+    #[test]
+    fn settings_decode_short_header() {
+        let err = Ssh3Settings::decode_payload(Bytes::from_static(&[0u8; 6])).unwrap_err();
+        assert!(matches!(err, Error::InvalidConfig(_)));
+    }
+
+    #[test]
+    fn settings_decode_truncated_version() {
+        let mut p = Vec::new();
+        p.push(0x0f);
+        p.extend_from_slice(&0u32.to_be_bytes());
+        p.extend_from_slice(&10u16.to_be_bytes());
+        p.extend_from_slice(b"abc");
+        let err = Ssh3Settings::decode_payload(Bytes::from(p)).unwrap_err();
+        assert!(matches!(err, Error::InvalidConfig(_)));
+    }
+
+    #[test]
+    fn settings_decode_bad_utf8_version() {
+        let mut p = Vec::new();
+        p.push(0x00);
+        p.extend_from_slice(&0u32.to_be_bytes());
+        p.extend_from_slice(&3u16.to_be_bytes());
+        p.extend_from_slice(&[0xff, 0xfe, 0xfd]);
+        let err = Ssh3Settings::decode_payload(Bytes::from(p)).unwrap_err();
+        assert!(matches!(err, Error::InvalidConfig(_)));
+    }
+
+    #[test]
+    fn settings_encode_flag_combinations() {
+        let s = Ssh3Settings::default();
+        assert_eq!(s.encode_payload()[0], 0);
+        let s = Ssh3Settings {
+            direct_tcp: true,
+            ..Default::default()
+        };
+        assert_eq!(s.encode_payload()[0], SETTINGS_FLAG_DIRECT_TCP);
+        let s = Ssh3Settings {
+            direct_tcp: true,
+            remote_tcp: true,
+            udp_datagrams: true,
+            agent_forwarding: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            s.encode_payload()[0],
+            SETTINGS_FLAG_DIRECT_TCP
+                | SETTINGS_FLAG_REMOTE_TCP
+                | SETTINGS_FLAG_UDP
+                | SETTINGS_FLAG_AGENT
+        );
+    }
+
+    #[test]
+    fn settings_satisfies_reports_all_missing() {
+        let peer = Ssh3Settings::default();
+        let req = Ssh3Settings {
+            direct_tcp: true,
+            remote_tcp: true,
+            udp_datagrams: true,
+            agent_forwarding: true,
+            ..Default::default()
+        };
+        let err = peer.satisfies(&req).unwrap_err();
+        match err {
+            Error::UnsupportedPlatform(msg) => {
+                assert!(msg.contains("direct_tcp"));
+                assert!(msg.contains("remote_tcp"));
+                assert!(msg.contains("udp_datagrams"));
+                assert!(msg.contains("agent_forwarding"));
+            }
+            _ => panic!("wrong error variant"),
+        }
+    }
+
+    #[test]
+    fn settings_satisfies_empty_required_always_ok() {
+        let peer = Ssh3Settings::default();
+        peer.satisfies(&Ssh3Settings::default()).unwrap();
+    }
+
+    #[test]
+    fn settings_round_trip_without_version_or_max() {
+        let s = Ssh3Settings {
+            direct_tcp: true,
+            version: None,
+            max_forwards: None,
+            ..Default::default()
+        };
+        let de = Ssh3Settings::decode_payload(s.encode_payload()).unwrap();
+        assert_eq!(de.version, None);
+        assert_eq!(de.max_forwards, None);
+        assert!(de.direct_tcp);
+    }
+
+    #[tokio::test]
+    async fn frame_read_async_unknown_kind_errors() {
+        let buf = vec![0xFEu8, 0, 0, 0, 0];
+        let mut cursor = std::io::Cursor::new(buf);
+        let err = Ssh3Frame::read_async(&mut cursor).await.unwrap_err();
+        assert!(matches!(err, Error::InvalidConfig(_)));
+    }
+
+    #[tokio::test]
+    async fn frame_read_async_eof_on_header_is_runtime_failure() {
+        let buf: Vec<u8> = vec![];
+        let mut cursor = std::io::Cursor::new(buf);
+        let err = Ssh3Frame::read_async(&mut cursor).await.unwrap_err();
+        assert!(matches!(err, Error::RuntimeFailure(_)));
+    }
+
+    #[tokio::test]
+    async fn frame_read_async_truncated_payload_is_runtime_failure() {
+        let buf = vec![0x04u8, 0, 0, 0, 5, b'a', b'b'];
+        let mut cursor = std::io::Cursor::new(buf);
+        let err = Ssh3Frame::read_async(&mut cursor).await.unwrap_err();
+        assert!(matches!(err, Error::RuntimeFailure(_)));
+    }
+
+    #[tokio::test]
+    async fn frame_async_zero_length_payload_roundtrips() {
+        let f = Ssh3Frame::new(Ssh3FrameKind::AppPing, Bytes::new());
+        let mut buf: Vec<u8> = Vec::new();
+        f.write_async(&mut buf).await.unwrap();
+        let mut cursor = std::io::Cursor::new(buf);
+        let de = Ssh3Frame::read_async(&mut cursor).await.unwrap();
+        assert_eq!(de.kind, Ssh3FrameKind::AppPing);
+        assert!(de.payload.is_empty());
+    }
+
+    #[test]
+    fn ssh3_stream_kind_serde_round_trip() {
+        let s = serde_json::to_string(&Ssh3StreamKind::DirectTcp).unwrap();
+        assert_eq!(s, "\"direct_tcp\"");
+        let back: Ssh3StreamKind = serde_json::from_str("\"udp_association\"").unwrap();
+        assert_eq!(back, Ssh3StreamKind::UdpAssociation);
+    }
 }

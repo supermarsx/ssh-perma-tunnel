@@ -451,4 +451,96 @@ mod tests {
         assert_eq!(tok.access_token.expose_secret().as_slice(), b"default-tok");
         server.shutdown().await;
     }
+
+    #[test]
+    fn password_builder_smoke() {
+        let secret = SecretRef::parse("env:PW").unwrap();
+        let cfg = auth_config_password("u", secret);
+        assert_eq!(cfg.username, "u");
+        assert_eq!(cfg.methods.len(), 1);
+        match &cfg.methods[0] {
+            AuthMethod::Password { .. } => {}
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn oidc_builder_smoke() {
+        let issuer = Url::parse("https://login.example.com").unwrap();
+        let cfg = auth_config_oidc_device("u", issuer.clone(), "cli");
+        assert_eq!(cfg.username, "u");
+        match &cfg.methods[0] {
+            AuthMethod::OidcDeviceFlow {
+                client_id, issuer: i, ..
+            } => {
+                assert_eq!(client_id, "cli");
+                assert_eq!(i, &issuer);
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn mock_poll_step_render_values() {
+        let cases: &[MockPollStep] = &[
+            MockPollStep::AuthorizationPending,
+            MockPollStep::SlowDown,
+            MockPollStep::AccessDenied,
+            MockPollStep::ExpiredToken,
+        ];
+        for c in cases {
+            let dbg = format!("{c:?}");
+            assert!(!dbg.is_empty());
+            // Each variant clones cleanly.
+            let _ = c.clone();
+        }
+    }
+
+    #[tokio::test]
+    async fn mock_server_addr_and_counters_track_calls() {
+        let server = MockOidcServer::start().await;
+        assert_eq!(server.device_call_count(), 0);
+        assert_eq!(server.token_call_count(), 0);
+        let url = server.issuer_url();
+        assert!(url.as_str().starts_with("http://127.0.0.1:"));
+        let dbg = format!("{server:?}");
+        assert!(dbg.contains("MockOidcServer"));
+        server.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn mock_server_emits_access_denied_terminal() {
+        use crate::oidc_device_flow::OidcDeviceFlowClient;
+        let server = MockOidcServer::start()
+            .await
+            .with_device_code("dc-x", "U", "https://example.com/d", 1, 30)
+            .with_polling_sequence(vec![MockPollStep::AccessDenied]);
+        let client =
+            OidcDeviceFlowClient::new(server.issuer_url(), "cli".to_owned(), None).unwrap();
+        let dc = client.request_device_code(None).await.unwrap();
+        let err = client
+            .poll_for_token(
+                &dc.device_code,
+                std::time::Duration::from_millis(20),
+                std::time::Duration::from_secs(10),
+            )
+            .await
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("denied"), "got: {msg}");
+        server.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn mock_server_discovery_doc_uses_assigned_port() {
+        use crate::oidc_device_flow::OidcDeviceFlowClient;
+        let server = MockOidcServer::start().await;
+        let client =
+            OidcDeviceFlowClient::new(server.issuer_url(), "client".to_owned(), None).unwrap();
+        let doc = client.discover().await.unwrap();
+        assert!(doc.issuer.starts_with("http://127.0.0.1:"));
+        assert!(doc.token_endpoint.ends_with("/token"));
+        assert!(doc.device_authorization_endpoint.ends_with("/device"));
+        server.shutdown().await;
+    }
 }

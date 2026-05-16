@@ -285,4 +285,36 @@ mod tests {
         let down = FakeHealthSource(false).forward_health("x/y").await;
         assert!(!down.healthy && !down.listening);
     }
+
+    #[test]
+    fn fake_zone_ttl_setter_applies_to_subsequent_records() {
+        let custom = Duration::from_secs(7);
+        let z = FakeZone::new("tunnel.local.")
+            .ttl(custom)
+            .a("a.tunnel.local.", "10.0.0.1".parse().unwrap())
+            .build();
+        assert_eq!(z.records[0].ttl, custom);
+    }
+
+    #[test]
+    fn loopback_zone_fixture_contents() {
+        let z = fixtures::loopback_zone();
+        assert_eq!(z.suffix, "tunnel.local.");
+        assert!(z.records.iter().any(|r| r.kind == RecordKind::A));
+        assert!(z.records.iter().any(|r| r.kind == RecordKind::TXT));
+    }
+
+    #[tokio::test]
+    async fn localhost_resolver_with_health_starts() {
+        let zone = fixtures::loopback_zone();
+        let r = LocalhostResolver::start_with_health(
+            vec![zone],
+            Arc::new(FakeHealthSource(true)),
+        )
+        .await
+        .unwrap();
+        assert!(r.port() > 0);
+        assert_eq!(r.udp_addr().ip(), r.tcp_addr().ip());
+        r.shutdown().await;
+    }
 }

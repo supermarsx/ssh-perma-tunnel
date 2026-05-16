@@ -67,11 +67,84 @@ pub fn auth_ref_to_resolver_ref(auth: &spt_auth::SecretRef) -> Result<SecretRef>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use spt_config::schema::Secrets as SecretsConfig;
 
     #[test]
     fn build_resolver_with_no_config_returns_some_backends() {
         let tmp = tempfile::tempdir().unwrap();
         let r = build_resolver(None, tmp.path()).expect("build");
         assert!(r.backends().count() >= 2);
+    }
+
+    #[test]
+    fn build_resolver_keychain_only_skips_env_backend() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = SecretsConfig {
+            backend: Some("keychain".into()),
+            ..Default::default()
+        };
+        let r = build_resolver(Some(&cfg), tmp.path()).expect("build");
+        // keychain + file fallback = 2 backends, no env.
+        let count = r.backends().count();
+        assert!(count >= 2, "keychain backend expected, got {count}");
+    }
+
+    #[test]
+    fn build_resolver_env_only_skips_keychain() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = SecretsConfig {
+            backend: Some("env".into()),
+            ..Default::default()
+        };
+        let r = build_resolver(Some(&cfg), tmp.path()).expect("build");
+        // env + file fallback = 2 backends, no keychain.
+        let count = r.backends().count();
+        assert!(count >= 2);
+    }
+
+    #[test]
+    fn build_resolver_unknown_backend_only_uses_file_fallback() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = SecretsConfig {
+            backend: Some("magic".into()),
+            ..Default::default()
+        };
+        let r = build_resolver(Some(&cfg), tmp.path()).expect("build");
+        // Unknown backend = only file fallback registered.
+        assert_eq!(r.backends().count(), 1);
+    }
+
+    #[test]
+    fn build_resolver_uses_custom_keychain_namespace() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = SecretsConfig {
+            backend: Some("keychain".into()),
+            keychain_namespace: Some("my-org".into()),
+            ..Default::default()
+        };
+        let r = build_resolver(Some(&cfg), tmp.path()).expect("build");
+        assert!(r.backends().count() >= 1);
+    }
+
+    #[test]
+    fn auth_ref_to_resolver_ref_for_secret_grammar() {
+        let auth = spt_auth::SecretRef::parse("secret://ns/name").unwrap();
+        let resolved = auth_ref_to_resolver_ref(&auth).unwrap();
+        assert_eq!(resolved.ns(), "ns");
+        assert_eq!(resolved.name(), "name");
+    }
+
+    #[test]
+    fn auth_ref_to_resolver_ref_rejects_env_form() {
+        let auth = spt_auth::SecretRef::parse("env:FOO").unwrap();
+        let err = auth_ref_to_resolver_ref(&auth).unwrap_err();
+        assert!(matches!(err, Error::SecretUnavailable { .. }));
+    }
+
+    #[test]
+    fn auth_ref_to_resolver_ref_rejects_file_form() {
+        let auth = spt_auth::SecretRef::parse("file:///tmp/x").unwrap();
+        let err = auth_ref_to_resolver_ref(&auth).unwrap_err();
+        assert!(matches!(err, Error::SecretUnavailable { .. }));
     }
 }

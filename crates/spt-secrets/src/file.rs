@@ -279,4 +279,77 @@ mod tests {
         fs::set_permissions(&p, fs::Permissions::from_mode(0o400)).unwrap();
         assert!(b.get(&r).is_ok());
     }
+
+    #[test]
+    fn list_returns_empty_when_root_missing() {
+        let dir = tempdir().unwrap();
+        let nonexistent = dir.path().join("does-not-exist");
+        let b = FileBackend::new(&nonexistent);
+        let list = b.list().unwrap();
+        assert!(list.is_empty());
+    }
+
+    #[test]
+    fn list_skips_non_directory_entries_at_root() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("loose.txt"), b"x").unwrap();
+        let b = FileBackend::new(dir.path());
+        assert!(b.list().unwrap().is_empty());
+    }
+
+    #[test]
+    fn list_skips_non_file_entries_inside_namespace() {
+        let dir = tempdir().unwrap();
+        let ns_dir = dir.path().join("ns");
+        fs::create_dir_all(&ns_dir).unwrap();
+        fs::create_dir_all(ns_dir.join("subdir")).unwrap();
+        let b = FileBackend::new(dir.path());
+        assert!(b.list().unwrap().is_empty());
+    }
+
+    #[test]
+    fn set_overwrites_existing() {
+        let dir = tempdir().unwrap();
+        let b = FileBackend::new(dir.path());
+        let r = SecretRef::new("ns", "name").unwrap();
+        b.set(&r, b"first").unwrap();
+        b.set(&r, b"second").unwrap();
+        let got = b.get(&r).unwrap().unwrap();
+        assert_eq!(got.expose_secret().as_slice(), b"second");
+    }
+
+    #[test]
+    fn doctor_ok_when_root_exists() {
+        let dir = tempdir().unwrap();
+        let b = FileBackend::new(dir.path());
+        let d = b.doctor();
+        assert!(matches!(d.status, crate::BackendStatus::Ok));
+        assert_eq!(d.kind, crate::BackendKind::File);
+    }
+
+    #[test]
+    fn doctor_degraded_when_root_missing() {
+        let dir = tempdir().unwrap();
+        let b = FileBackend::new(dir.path().join("missing"));
+        let d = b.doctor();
+        assert!(matches!(d.status, crate::BackendStatus::Degraded));
+        assert!(d.remediation.is_some());
+    }
+
+    #[test]
+    fn kind_reports_file() {
+        let b = FileBackend::new("/tmp/x");
+        assert_eq!(b.kind(), crate::BackendKind::File);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_get_returns_when_file_present() {
+        let dir = tempdir().unwrap();
+        let b = FileBackend::new(dir.path());
+        let r = SecretRef::new("ns", "name").unwrap();
+        b.set(&r, b"payload").unwrap();
+        let got = b.get(&r).unwrap().unwrap();
+        assert_eq!(got.expose_secret().as_slice(), b"payload");
+    }
 }

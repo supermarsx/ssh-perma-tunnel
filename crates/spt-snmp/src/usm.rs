@@ -657,4 +657,195 @@ mod tests {
         assert_eq!(c.wrong_digests, 2);
         assert_eq!(c.not_in_time_windows, 1);
     }
+
+    #[test]
+    fn counters_record_all_variants() {
+        let mut c = UsmCounters::default();
+        c.record(&UsmError::UnsupportedSecLevel);
+        c.record(&UsmError::NotInTimeWindow);
+        c.record(&UsmError::UnknownUserName);
+        c.record(&UsmError::UnknownEngineId);
+        c.record(&UsmError::WrongDigest);
+        c.record(&UsmError::DecryptionError);
+        assert_eq!(c.unsupported_sec_levels, 1);
+        assert_eq!(c.not_in_time_windows, 1);
+        assert_eq!(c.unknown_user_names, 1);
+        assert_eq!(c.unknown_engine_ids, 1);
+        assert_eq!(c.wrong_digests, 1);
+        assert_eq!(c.decryption_errors, 1);
+    }
+
+    #[test]
+    fn secret_bytes_construction_and_debug_redacts() {
+        let s = SecretBytes::new(vec![0xAA; 7]);
+        assert_eq!(s.as_bytes().len(), 7);
+        let dbg = format!("{s:?}");
+        assert!(dbg.contains("redacted"));
+        assert!(!dbg.contains("aa"));
+        let from_str: SecretBytes = "p".into();
+        assert_eq!(from_str.as_bytes(), b"p");
+        let from_slice: SecretBytes = (&[1u8, 2, 3][..]).into();
+        assert_eq!(from_slice.as_bytes(), &[1, 2, 3]);
+        let cl = from_slice.clone();
+        assert_eq!(cl.as_bytes(), from_slice.as_bytes());
+    }
+
+    #[test]
+    fn auth_protocol_lengths() {
+        assert_eq!(AuthProtocol::HmacMd5.key_len(), 16);
+        assert_eq!(AuthProtocol::HmacSha1.key_len(), 20);
+        assert_eq!(AuthProtocol::HmacSha256.key_len(), 32);
+        assert_eq!(AuthProtocol::HmacMd5.digest_len(), 12);
+        assert_eq!(AuthProtocol::HmacSha1.digest_len(), 12);
+        assert_eq!(AuthProtocol::HmacSha256.digest_len(), 24);
+    }
+
+    #[test]
+    fn priv_protocol_key_lens() {
+        assert_eq!(PrivProtocol::Aes128.key_len(), 16);
+        assert_eq!(PrivProtocol::Aes256.key_len(), 32);
+        assert_eq!(PrivProtocol::Des.key_len(), 16);
+    }
+
+    #[test]
+    fn usm_user_constructors_and_security_level() {
+        let no_auth = UsmUser::no_auth("none");
+        assert_eq!(no_auth.security_level(), SecurityLevel::NoAuthNoPriv);
+
+        let auth_only = UsmUser::auth_only(
+            "auth",
+            AuthProtocol::HmacSha256,
+            SecretBytes::from("the-quick-brown-fox-jumped-over"),
+        );
+        assert_eq!(auth_only.security_level(), SecurityLevel::AuthNoPriv);
+
+        let auth_priv = UsmUser::auth_priv(
+            "ap",
+            AuthProtocol::HmacSha256,
+            SecretBytes::from("the-quick-brown-fox-jumped-over"),
+            PrivProtocol::Aes128,
+            SecretBytes::from("the-quick-brown-fox-jumped-over"),
+        );
+        assert_eq!(auth_priv.security_level(), SecurityLevel::AuthPriv);
+    }
+
+    #[test]
+    fn security_level_flag_bits_disjoint() {
+        assert_eq!(SecurityLevel::NoAuthNoPriv.flags_bits(), 0);
+        assert_eq!(SecurityLevel::AuthNoPriv.flags_bits(), 0b01);
+        assert_eq!(SecurityLevel::AuthPriv.flags_bits(), 0b11);
+        assert!(SecurityLevel::NoAuthNoPriv < SecurityLevel::AuthNoPriv);
+        assert!(SecurityLevel::AuthNoPriv < SecurityLevel::AuthPriv);
+    }
+
+    #[test]
+    fn digests_match_constant_time() {
+        let a = [1u8, 2, 3, 4];
+        let b = [1u8, 2, 3, 4];
+        let c = [1u8, 2, 3, 5];
+        let d = [1u8, 2, 3];
+        assert!(digests_match(&a, &b));
+        assert!(!digests_match(&a, &c));
+        assert!(!digests_match(&a, &d));
+    }
+
+    #[test]
+    fn encrypt_aes128_key_too_short_errors() {
+        let key = [0u8; 8];
+        let mut buf = vec![0u8; 16];
+        let r = encrypt(PrivProtocol::Aes128, &key, 1, 1, &[0u8; 8], &mut buf);
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn encrypt_aes256_key_too_short_errors() {
+        let key = [0u8; 16];
+        let mut buf = vec![0u8; 16];
+        let r = encrypt(PrivProtocol::Aes256, &key, 1, 1, &[0u8; 8], &mut buf);
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn encrypt_des_unsupported() {
+        let key = [0u8; 16];
+        let mut buf = vec![0u8; 16];
+        let r = encrypt(PrivProtocol::Des, &key, 0, 0, &[0u8; 8], &mut buf);
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn decrypt_aes_key_too_short_errors() {
+        let mut buf = vec![0u8; 16];
+        assert!(decrypt(PrivProtocol::Aes128, &[0u8; 8], 0, 0, &[0u8; 8], &mut buf).is_err());
+        assert!(decrypt(PrivProtocol::Aes256, &[0u8; 16], 0, 0, &[0u8; 8], &mut buf).is_err());
+        assert!(decrypt(PrivProtocol::Des, &[0u8; 16], 0, 0, &[0u8; 8], &mut buf).is_err());
+    }
+
+    #[test]
+    fn aes_iv_layout() {
+        let iv = aes_iv(0x0102_0304, 0x0506_0708, &[0xA, 0xB, 0xC, 0xD, 0xE, 0xF, 0x10, 0x11]);
+        assert_eq!(
+            iv,
+            [
+                0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0xA, 0xB, 0xC, 0xD, 0xE, 0xF, 0x10,
+                0x11
+            ]
+        );
+    }
+
+    #[test]
+    fn derive_keys_no_auth_returns_empty() {
+        let u = UsmUser::no_auth("none");
+        let (a, p) = derive_keys(&u, &[1, 2, 3]);
+        assert!(a.is_empty());
+        assert!(p.is_empty());
+    }
+
+    #[test]
+    fn derive_keys_auth_only_priv_is_empty() {
+        let u = UsmUser::auth_only(
+            "u",
+            AuthProtocol::HmacSha1,
+            SecretBytes::from("the-quick-brown-fox-jumped"),
+        );
+        let (a, p) = derive_keys(&u, &[1, 2, 3, 4]);
+        assert_eq!(a.len(), 20);
+        assert!(p.is_empty());
+    }
+
+    #[test]
+    fn derive_keys_aes256_extends_via_reeder() {
+        let u = UsmUser::auth_priv(
+            "u",
+            AuthProtocol::HmacSha1,
+            SecretBytes::from("the-quick-brown-fox-jumped"),
+            PrivProtocol::Aes256,
+            SecretBytes::from("the-quick-brown-fox-jumped"),
+        );
+        let (a, p) = derive_keys(&u, &[0x80, 0, 0, 0, 1, 2, 3]);
+        assert_eq!(a.len(), 20);
+        assert_eq!(p.len(), 32);
+    }
+
+    #[test]
+    fn derive_keys_aes128_truncates_sha256() {
+        let u = UsmUser::auth_priv(
+            "u",
+            AuthProtocol::HmacSha256,
+            SecretBytes::from("the-quick-brown-fox-jumped"),
+            PrivProtocol::Aes128,
+            SecretBytes::from("the-quick-brown-fox-jumped"),
+        );
+        let (a, p) = derive_keys(&u, &[0x80, 0, 0, 0, 1, 2, 3]);
+        assert_eq!(a.len(), 32);
+        assert_eq!(p.len(), 16);
+    }
+
+    #[test]
+    fn password_to_key_empty_password_is_stable() {
+        let a = password_to_key(AuthProtocol::HmacSha1, b"");
+        let b = password_to_key(AuthProtocol::HmacSha1, b"");
+        assert_eq!(a, b);
+        assert_eq!(a.len(), 20);
+    }
 }

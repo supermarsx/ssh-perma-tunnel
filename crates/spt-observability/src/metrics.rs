@@ -298,4 +298,115 @@ mod tests {
         handle.shutdown().await;
         assert!(path.is_file());
     }
+
+    #[test]
+    fn config_default_uses_metrics_prom_and_15s() {
+        let d = MetricsExporterConfig::default();
+        assert_eq!(d.state_file, PathBuf::from("metrics.prom"));
+        assert_eq!(d.interval, Duration::from_secs(15));
+        let cloned = d.clone();
+        assert_eq!(cloned.state_file, d.state_file);
+        let dbg = format!("{d:?}");
+        assert!(dbg.contains("MetricsExporterConfig"));
+    }
+
+    #[test]
+    fn accessors_expose_registry_and_standard() {
+        let me = MetricsExporter::new().unwrap();
+        let r = me.registry();
+        assert!(!r.gather().is_empty());
+        let _s = me.standard();
+        let me2 = me.clone();
+        let _r2 = me2.registry();
+    }
+
+    #[test]
+    fn standard_metrics_include_all_handles() {
+        let me = MetricsExporter::new().unwrap();
+        let s = me.standard();
+        s.profile_state.with_label_values(&["p"]).set(3);
+        s.forward_active.with_label_values(&["f"]).set(2);
+        s.bytes_in.with_label_values(&["f"]).inc_by(10);
+        s.bytes_out.with_label_values(&["f"]).inc_by(20);
+        s.reconnects.with_label_values(&["p"]).inc_by(1);
+        s.events_total.inc_by(5);
+        s.up.set(1);
+        s.build_info.set(1.0);
+        let body = String::from_utf8(me.render().unwrap()).unwrap();
+        assert!(body.contains("spt_profile_state"));
+        assert!(body.contains("spt_forward_connections_active"));
+        assert!(body.contains("spt_bytes_in_total"));
+        assert!(body.contains("spt_bytes_out_total"));
+        assert!(body.contains("spt_reconnects_total"));
+        assert!(body.contains("spt_events_total"));
+        assert!(body.contains("spt_up"));
+        assert!(body.contains("spt_build_info"));
+    }
+
+    #[test]
+    fn duplicate_registration_returns_runtime_failure() {
+        let r = Registry::new();
+        StandardMetrics::register(&r).expect("first registration");
+        let msg = match StandardMetrics::register(&r) {
+            Ok(_) => panic!("second registration on same registry should fail"),
+            Err(e) => format!("{e}"),
+        };
+        assert!(
+            msg.contains("prometheus"),
+            "expected prometheus-prefixed message, got {msg:?}"
+        );
+    }
+
+    #[test]
+    fn render_to_file_overwrites_existing() {
+        let tmp = tempdir().unwrap();
+        let path = tmp.path().join("metrics.prom");
+        let me = MetricsExporter::new().unwrap();
+        me.render_to_file(&path).unwrap();
+        let first = std::fs::read_to_string(&path).unwrap();
+        me.standard().events_total.inc_by(42);
+        me.render_to_file(&path).unwrap();
+        let second = std::fs::read_to_string(&path).unwrap();
+        assert_ne!(first, second);
+        assert!(second.contains("42"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn handle_drop_stops_writer_without_blocking() {
+        let tmp = tempdir().unwrap();
+        let path = tmp.path().join("metrics.prom");
+        let me = MetricsExporter::new().unwrap();
+        let handle = me.spawn(MetricsExporterConfig {
+            state_file: path.clone(),
+            interval: Duration::from_millis(10),
+        });
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        drop(handle);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(tmp.path().is_dir());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn shutdown_flushes_on_close_without_intermediate_tick() {
+        let tmp = tempdir().unwrap();
+        let path = tmp.path().join("metrics.prom");
+        let me = MetricsExporter::new().unwrap();
+        me.standard().bytes_in.with_label_values(&["x"]).inc_by(7);
+        let handle = me.spawn(MetricsExporterConfig {
+            state_file: path.clone(),
+            interval: Duration::from_secs(3600),
+        });
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        handle.shutdown().await;
+        let body = std::fs::read_to_string(&path).unwrap();
+        assert!(body.contains("spt_bytes_in_total"));
+    }
+
+    #[test]
+    fn render_text_is_valid_prom_format() {
+        let me = MetricsExporter::new().unwrap();
+        let body = String::from_utf8(me.render().unwrap()).unwrap();
+        assert!(body.contains("# HELP "));
+        assert!(body.contains("# TYPE "));
+    }
 }

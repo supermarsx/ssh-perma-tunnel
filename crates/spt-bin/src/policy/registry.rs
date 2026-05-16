@@ -98,6 +98,63 @@ pub fn delete(scope: Scope, section: &str, name: &str, clear_enforced: bool) -> 
     }
 }
 
+#[cfg(test)]
+mod platform_tests {
+    use super::*;
+
+    #[test]
+    fn scope_variants_compare_equal_only_to_themselves() {
+        assert_eq!(Scope::Machine, Scope::Machine);
+        assert_eq!(Scope::User, Scope::User);
+        assert_ne!(Scope::Machine, Scope::User);
+    }
+
+    #[test]
+    fn error_display_shapes() {
+        let io = Error::Io("oops".into());
+        assert!(io.to_string().contains("registry I/O failed"));
+        let plat = Error::UnsupportedPlatform("non-win".into());
+        assert!(plat.to_string().contains("only supported on Windows"));
+        let inv = Error::InvalidOperation("user cannot enforce".into());
+        assert!(inv.to_string().contains("invalid policy registry operation"));
+    }
+
+    #[test]
+    fn load_does_not_error_on_clean_environment() {
+        // On non-Windows: returns empty bundle. On Windows test hosts that have
+        // never had any policy keys written, returns empty bundle too. Either
+        // way, the function should not error.
+        let _bundle = load().expect("load policy bundle");
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn set_on_non_windows_returns_unsupported() {
+        let err = set(
+            Scope::Machine,
+            "Section",
+            "Name",
+            &PolicyValue::String("v".into()),
+            false,
+        )
+        .unwrap_err();
+        assert!(matches!(err, Error::UnsupportedPlatform(_)));
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn delete_on_non_windows_returns_unsupported() {
+        let err = delete(Scope::User, "Section", "Name", false).unwrap_err();
+        assert!(matches!(err, Error::UnsupportedPlatform(_)));
+    }
+
+    #[test]
+    fn policy_root_constant_uses_software_policies_spt() {
+        assert_eq!(POLICY_ROOT, r"Software\Policies\spt");
+        assert_eq!(ENFORCED_VALUE, "Enforced");
+    }
+}
+
 #[cfg(windows)]
 mod imp {
     use std::collections::{BTreeSet, HashMap};

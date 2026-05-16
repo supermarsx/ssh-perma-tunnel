@@ -460,4 +460,85 @@ mod tests {
         assert_eq!(bs[0].sinks.len(), 2);
         assert_eq!(bs[0].r#match.kinds, vec!["profile.failed".to_owned()]);
     }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn capturing_sink_helpers_report_state() {
+        let sink = CapturingSink::new("c");
+        assert!(sink.is_empty());
+        assert_eq!(sink.len(), 0);
+        sink.deliver(Arc::new(Event::builder("k", Severity::Info).build()))
+            .await
+            .unwrap();
+        assert!(!sink.is_empty());
+        assert_eq!(sink.len(), 1);
+        // Sink trait functions surface name + kind.
+        assert_eq!(sink.name(), "c");
+        assert_eq!(sink.kind(), "capturing");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn always_fail_sink_preserves_each_variant() {
+        for err in [
+            SinkError::Transient("t".into()),
+            SinkError::Permanent("p".into()),
+            SinkError::Config("c".into()),
+        ] {
+            let sink = AlwaysFailSink::new("x", err.clone_into_for_test());
+            let e = sink
+                .deliver(Arc::new(Event::builder("k", Severity::Info).build()))
+                .await
+                .unwrap_err();
+            assert_eq!(
+                std::mem::discriminant(&e),
+                std::mem::discriminant(&err.clone_into_for_test())
+            );
+            assert_eq!(sink.name(), "x");
+            assert_eq!(sink.kind(), "always_fail");
+        }
+    }
+
+    // Local helper because SinkError isn't `Clone` upstream.
+    trait CloneForTest {
+        fn clone_into_for_test(&self) -> SinkError;
+    }
+    impl CloneForTest for SinkError {
+        fn clone_into_for_test(&self) -> SinkError {
+            match self {
+                SinkError::Transient(s) => SinkError::Transient(s.clone()),
+                SinkError::Permanent(s) => SinkError::Permanent(s.clone()),
+                SinkError::Config(s) => SinkError::Config(s.clone()),
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn flaky_transport_zero_failures_succeeds_immediately() {
+        let t = FlakyTransport::new(0);
+        assert!(t.send(req()).await.is_ok());
+        assert_eq!(t.attempts(), 1);
+        assert_eq!(t.requests().len(), 1);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn debug_impls_render_useful_fields() {
+        let cap = CapturingSink::new("c");
+        let s = format!("{cap:?}");
+        assert!(s.contains("CapturingSink"));
+
+        let af = AlwaysFailSink::new("c", SinkError::Permanent("p".into()));
+        let s = format!("{af:?}");
+        assert!(s.contains("AlwaysFailSink"));
+
+        let ft = FlakyTransport::new(3);
+        let s = format!("{ft:?}");
+        assert!(s.contains("FlakyTransport"));
+    }
+
+    #[test]
+    fn fixtures_sample_returns_at_least_one_critical_event() {
+        let evs = fixtures::sample_event_kinds();
+        assert!(evs
+            .iter()
+            .any(|e| e.severity == Severity::Critical));
+    }
 }

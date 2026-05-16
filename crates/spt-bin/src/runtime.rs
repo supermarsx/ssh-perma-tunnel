@@ -116,4 +116,80 @@ mod tests {
         let rt = build_default_runtime().unwrap();
         rt.block_on(async { 1 + 1 });
     }
+
+    #[test]
+    fn runtime_threads_total_workers_sums_all_pools() {
+        let c = RuntimeThreadsConfig {
+            orchestrator: 1,
+            service: 2,
+            logging: 3,
+            dns: 4,
+            observability: 5,
+            blocking: 99,
+        };
+        assert_eq!(c.total_workers(), 1 + 2 + 3 + 4 + 5);
+    }
+
+    #[test]
+    fn runtime_threads_from_schema_uses_explicit_overrides() {
+        let t = RuntimeThreads {
+            orchestrator_threads: Some(7),
+            service_threads: Some(8),
+            logging_threads: Some(9),
+            dns_threads: Some(10),
+            observability_threads: Some(11),
+            blocking_worker_threads: Some(12),
+            ..Default::default()
+        };
+        let c = RuntimeThreadsConfig::from_schema(Some(&t));
+        assert_eq!(c.orchestrator, 7);
+        assert_eq!(c.service, 8);
+        assert_eq!(c.logging, 9);
+        assert_eq!(c.dns, 10);
+        assert_eq!(c.observability, 11);
+        assert_eq!(c.blocking, 12);
+        assert_eq!(c.total_workers(), 7 + 8 + 9 + 10 + 11);
+    }
+
+    #[test]
+    fn runtime_threads_from_schema_fills_missing_fields_with_defaults() {
+        let t = RuntimeThreads {
+            orchestrator_threads: Some(42),
+            ..Default::default()
+        };
+        let c = RuntimeThreadsConfig::from_schema(Some(&t));
+        assert_eq!(c.orchestrator, 42);
+        // Other fields fall back to defaults.
+        assert!(c.service >= 2);
+        assert_eq!(c.blocking, 32);
+    }
+
+    #[test]
+    fn build_runtime_with_explicit_config_succeeds() {
+        let cfg = RuntimeThreadsConfig {
+            orchestrator: 1,
+            service: 1,
+            logging: 1,
+            dns: 1,
+            observability: 1,
+            blocking: 8,
+        };
+        let rt = build_runtime(&cfg).unwrap();
+        rt.block_on(async { 42 });
+    }
+
+    #[test]
+    fn build_runtime_clamps_workers_to_at_least_one() {
+        let cfg = RuntimeThreadsConfig {
+            orchestrator: 0,
+            service: 0,
+            logging: 0,
+            dns: 0,
+            observability: 0,
+            blocking: 1,
+        };
+        // total_workers() returns 0; build_runtime clamps via max(1).
+        let rt = build_runtime(&cfg).unwrap();
+        rt.block_on(async { 1 + 1 });
+    }
 }

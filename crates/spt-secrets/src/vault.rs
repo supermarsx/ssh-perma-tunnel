@@ -809,4 +809,206 @@ mod tests {
         let err = VaultBackend::init_with_keychain(dir.path(), &kc).unwrap_err();
         assert!(matches!(err, Error::SecretCryptoFailed(_)));
     }
+
+    #[test]
+    fn double_init_passphrase_rejected() {
+        let dir = tempdir().unwrap();
+        VaultBackend::init_with_passphrase(dir.path(), b"pw").unwrap();
+        let err = VaultBackend::init_with_passphrase(dir.path(), b"pw").unwrap_err();
+        assert!(matches!(err, Error::SecretCryptoFailed(_)));
+    }
+
+    #[test]
+    fn open_with_missing_meta_errors() {
+        let dir = tempdir().unwrap();
+        let err = VaultBackend::open_with_passphrase(dir.path(), b"pw").unwrap_err();
+        assert!(matches!(err, Error::SecretCryptoFailed(_)));
+    }
+
+    #[test]
+    fn malformed_meta_toml_errors() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path()).unwrap();
+        let mp = VaultBackend::meta_path(dir.path());
+        fs::write(&mp, b"= not toml =").unwrap();
+        let err = VaultBackend::open_with_passphrase(dir.path(), b"pw").unwrap_err();
+        assert!(matches!(err, Error::SecretCryptoFailed(_)));
+    }
+
+    #[test]
+    fn malformed_vault_json_errors() {
+        let dir = tempdir().unwrap();
+        let v = VaultBackend::init_with_passphrase(dir.path(), b"pw").unwrap();
+        fs::write(&v.vault_path, b"not json").unwrap();
+        let r = SecretRef::new("ns", "n").unwrap();
+        let err = v.get(&r).unwrap_err();
+        assert!(matches!(err, Error::SecretCryptoFailed(_)));
+    }
+
+    #[test]
+    fn missing_vault_file_yields_empty_records() {
+        let dir = tempdir().unwrap();
+        let v = VaultBackend::init_with_passphrase(dir.path(), b"pw").unwrap();
+        fs::remove_file(&v.vault_path).unwrap();
+        assert!(v.list().unwrap().is_empty());
+        assert!(v.list_refs(None).unwrap().is_empty());
+    }
+
+    #[test]
+    fn record_with_invalid_nonce_hex_errors() {
+        let dir = tempdir().unwrap();
+        let v = VaultBackend::init_with_passphrase(dir.path(), b"pw").unwrap();
+        let r = SecretRef::new("ns", "n").unwrap();
+        v.set(&r, b"x").unwrap();
+        let mut file = v.read().unwrap();
+        let rec = file.records.get_mut(&key_for(&r)).unwrap();
+        rec.nonce = "zzz".to_owned();
+        v.write(&file).unwrap();
+        let err = v.get(&r).unwrap_err();
+        assert!(matches!(err, Error::SecretCryptoFailed(_)));
+    }
+
+    #[test]
+    fn record_with_invalid_ciphertext_hex_errors() {
+        let dir = tempdir().unwrap();
+        let v = VaultBackend::init_with_passphrase(dir.path(), b"pw").unwrap();
+        let r = SecretRef::new("ns", "n").unwrap();
+        v.set(&r, b"x").unwrap();
+        let mut file = v.read().unwrap();
+        let rec = file.records.get_mut(&key_for(&r)).unwrap();
+        rec.ciphertext = "not hex".to_owned();
+        v.write(&file).unwrap();
+        let err = v.get(&r).unwrap_err();
+        assert!(matches!(err, Error::SecretCryptoFailed(_)));
+    }
+
+    #[test]
+    fn record_with_invalid_key_format_errors_on_list() {
+        let dir = tempdir().unwrap();
+        let v = VaultBackend::init_with_passphrase(dir.path(), b"pw").unwrap();
+        let mut file = v.read().unwrap();
+        file.records.insert(
+            "no-slash".to_owned(),
+            Record {
+                nonce: hex::encode([0u8; NONCE_LEN]),
+                ciphertext: hex::encode([0u8; 16]),
+            },
+        );
+        v.write(&file).unwrap();
+        let err = v.list().unwrap_err();
+        assert!(matches!(err, Error::SecretCryptoFailed(_)));
+    }
+
+    #[test]
+    fn doctor_reports_degraded_when_vault_file_missing() {
+        let dir = tempdir().unwrap();
+        let v = VaultBackend::init_with_passphrase(dir.path(), b"pw").unwrap();
+        fs::remove_file(&v.vault_path).unwrap();
+        let d = v.doctor();
+        assert!(matches!(d.status, crate::BackendStatus::Degraded));
+        assert!(d.message.contains("is missing"));
+        assert!(d.remediation.is_some());
+    }
+
+    #[test]
+    fn doctor_reports_degraded_for_old_version() {
+        let dir = tempdir().unwrap();
+        let mut v = VaultBackend::init_with_passphrase(dir.path(), b"pw").unwrap();
+        v.meta.version = 0;
+        let d = v.doctor();
+        assert!(matches!(d.status, crate::BackendStatus::Degraded));
+        assert!(d.message.contains("older"));
+    }
+
+    #[test]
+    fn doctor_reports_ok_for_initialized_vault() {
+        let dir = tempdir().unwrap();
+        let v = VaultBackend::init_with_passphrase(dir.path(), b"pw").unwrap();
+        let d = v.doctor();
+        assert!(matches!(d.status, crate::BackendStatus::Ok));
+        assert_eq!(d.kind, BackendKind::Vault);
+        assert!(d.message.contains("vault open at"));
+    }
+
+    #[test]
+    fn debug_redacts_master_key() {
+        let dir = tempdir().unwrap();
+        let v = VaultBackend::init_with_passphrase(dir.path(), b"pw").unwrap();
+        let s = format!("{v:?}");
+        assert!(s.contains("VaultBackend"));
+        assert!(s.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn argon2_params_default_matches_owasp_baseline() {
+        let p = Argon2Params::default();
+        assert_eq!(p.memory_kib, 64 * 1024);
+        assert_eq!(p.time_cost, 3);
+        assert_eq!(p.parallelism, 4);
+    }
+
+    #[test]
+    fn invalid_argon2_params_in_meta_rejected() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path()).unwrap();
+        let meta = VaultMeta {
+            version: FORMAT_VERSION,
+            argon2: Argon2Params {
+                memory_kib: 8,
+                time_cost: 0,
+                parallelism: 1,
+            },
+            salt_hex: hex::encode([0u8; SALT_LEN]),
+            initialized: true,
+        };
+        write_meta(&VaultBackend::meta_path(dir.path()), &meta).unwrap();
+        write_vault(
+            &VaultBackend::vault_path(dir.path()),
+            &VaultFile {
+                records: BTreeMap::new(),
+            },
+        )
+        .unwrap();
+        let err = VaultBackend::open_with_passphrase(dir.path(), b"pw").unwrap_err();
+        assert!(matches!(err, Error::SecretCryptoFailed(_)));
+    }
+
+    #[test]
+    fn invalid_salt_hex_in_meta_rejected() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path()).unwrap();
+        let meta = VaultMeta {
+            version: FORMAT_VERSION,
+            argon2: Argon2Params::default(),
+            salt_hex: "not hex".to_owned(),
+            initialized: true,
+        };
+        write_meta(&VaultBackend::meta_path(dir.path()), &meta).unwrap();
+        write_vault(
+            &VaultBackend::vault_path(dir.path()),
+            &VaultFile {
+                records: BTreeMap::new(),
+            },
+        )
+        .unwrap();
+        let err = VaultBackend::open_with_passphrase(dir.path(), b"pw").unwrap_err();
+        assert!(matches!(err, Error::SecretCryptoFailed(_)));
+    }
+
+    #[test]
+    fn list_refs_skips_records_with_invalid_segment_chars() {
+        let dir = tempdir().unwrap();
+        let v = VaultBackend::init_with_passphrase(dir.path(), b"pw").unwrap();
+        let mut file = v.read().unwrap();
+        file.records.insert(
+            "ns/has space".to_owned(),
+            Record {
+                nonce: hex::encode([0u8; NONCE_LEN]),
+                ciphertext: hex::encode([0u8; 16]),
+            },
+        );
+        v.write(&file).unwrap();
+        let refs = v.list_refs(None).unwrap();
+        assert!(refs.is_empty());
+    }
 }

@@ -485,4 +485,161 @@ mod tests {
         assert!(h.to_str().unwrap().starts_with("Basic "));
         std::env::remove_var("SPT_TEST_TRANSPORT_PWD");
     }
+
+    #[test]
+    fn build_connect_request_pins_spt_user_agent() {
+        std::env::set_var("SPT_TEST_TRANSPORT_UA", "tok");
+        let auth = AuthConfig::new(
+            "u",
+            vec![AuthMethod::Bearer {
+                token: SecretRef::parse("env:SPT_TEST_TRANSPORT_UA").unwrap(),
+            }],
+        );
+        let req = build_connect_request("h", 8443, "/ssh3", &auth).unwrap();
+        let ua = req
+            .headers()
+            .get(http::header::USER_AGENT)
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(ua.starts_with("spt/"));
+        std::env::remove_var("SPT_TEST_TRANSPORT_UA");
+    }
+
+    #[test]
+    fn build_connect_request_publickey_path_produces_bearer_jwt() {
+        use spt_key::algorithm::KeyAlgorithm;
+        use spt_key::io as key_io;
+        let kp = key_io::generate(KeyAlgorithm::Ed25519).unwrap();
+        let path = std::env::temp_dir().join(format!(
+            "spt-ssh3-transport-pk-{}-{}.pem",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        key_io::save_encrypted(&kp, &path, None).unwrap();
+        let auth = AuthConfig::new(
+            "alice",
+            vec![AuthMethod::PublicKey {
+                identity_file: path.clone(),
+                passphrase: None,
+            }],
+        );
+        let req = build_connect_request("h.example", 7443, "/ssh3", &auth).unwrap();
+        let auth_h = req
+            .headers()
+            .get(http::header::AUTHORIZATION)
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(auth_h.starts_with("Bearer "));
+        let jwt = &auth_h["Bearer ".len()..];
+        assert_eq!(jwt.matches('.').count(), 2);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn build_connect_request_rejects_bad_url_path() {
+        std::env::set_var("SPT_TEST_TRANSPORT_BAD", "t");
+        let auth = AuthConfig::new(
+            "u",
+            vec![AuthMethod::Bearer {
+                token: SecretRef::parse("env:SPT_TEST_TRANSPORT_BAD").unwrap(),
+            }],
+        );
+        let err = build_connect_request("h", 443, "/bad path", &auth).unwrap_err();
+        assert!(matches!(err, Error::InvalidConfig(_)));
+        std::env::remove_var("SPT_TEST_TRANSPORT_BAD");
+    }
+
+    #[test]
+    fn resolve_addr_loopback_succeeds() {
+        let addr = resolve_addr("127.0.0.1", 7443).unwrap();
+        assert_eq!(addr.port(), 7443);
+        assert!(addr.ip().is_loopback());
+    }
+
+    #[test]
+    fn resolve_addr_unresolvable_errors() {
+        let err = resolve_addr("nope.invalid.example.invalid", 1).unwrap_err();
+        assert!(matches!(err, Error::DnsFailed(_)));
+    }
+
+    #[test]
+    fn map_connection_error_reset_is_runtime() {
+        let e = map_connection_error(quinn::ConnectionError::Reset);
+        assert!(matches!(e, Error::RuntimeFailure(_)));
+    }
+
+    #[test]
+    fn map_connection_error_timed_out_is_runtime() {
+        let e = map_connection_error(quinn::ConnectionError::TimedOut);
+        assert!(matches!(e, Error::RuntimeFailure(_)));
+    }
+
+    #[test]
+    fn map_connection_error_version_mismatch_is_runtime() {
+        let e = map_connection_error(quinn::ConnectionError::VersionMismatch);
+        assert!(matches!(e, Error::RuntimeFailure(_)));
+    }
+
+    #[test]
+    fn map_connection_error_locally_closed_is_runtime() {
+        let e = map_connection_error(quinn::ConnectionError::LocallyClosed);
+        assert!(matches!(e, Error::RuntimeFailure(_)));
+    }
+
+    #[test]
+    fn map_connection_error_cids_exhausted_is_runtime() {
+        let e = map_connection_error(quinn::ConnectionError::CidsExhausted);
+        assert!(matches!(e, Error::RuntimeFailure(_)));
+    }
+
+    #[test]
+    fn default_local_settings_advertises_expected_caps() {
+        let s = default_local_settings();
+        assert!(s.direct_tcp);
+        assert!(s.remote_tcp);
+        assert!(s.udp_datagrams);
+        assert!(!s.agent_forwarding);
+        assert_eq!(s.max_forwards, Some(64));
+        assert!(s.version.as_deref().unwrap().starts_with("spt-ssh3/"));
+    }
+
+    #[tokio::test]
+    async fn build_quinn_endpoint_constructs_for_v4_remote() {
+        let cfg = crate::config::Ssh3Config {
+            acknowledge_experimental: true,
+            tls: crate::config::Ssh3TlsConfig {
+                allow_self_signed: true,
+                ..Default::default()
+            },
+            keepalive_secs: 25,
+            ..Default::default()
+        };
+        let remote: SocketAddr = "127.0.0.1:7443".parse().unwrap();
+        let ep = build_quinn_endpoint(remote, &cfg).unwrap();
+        let local = ep.local_addr().unwrap();
+        assert!(local.is_ipv4());
+    }
+
+    #[tokio::test]
+    async fn build_quinn_endpoint_constructs_for_v6_remote() {
+        let cfg = crate::config::Ssh3Config {
+            acknowledge_experimental: true,
+            tls: crate::config::Ssh3TlsConfig {
+                allow_self_signed: true,
+                ..Default::default()
+            },
+            keepalive_secs: 0,
+            ..Default::default()
+        };
+        let remote: SocketAddr = "[::1]:7443".parse().unwrap();
+        if let Ok(ep) = build_quinn_endpoint(remote, &cfg) {
+            let local = ep.local_addr().unwrap();
+            assert!(local.is_ipv6());
+        }
+    }
 }

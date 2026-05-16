@@ -128,3 +128,155 @@ pub async fn query_resolver(
 fn map_resolve_error(e: &hickory_resolver::error::ResolveError) -> DnsError {
     DnsError::Upstream(e.to_string())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::testing::{FakeZone, LocalhostResolver};
+
+    fn rt() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+    }
+
+    #[test]
+    fn query_resolver_a_record() {
+        rt().block_on(async {
+            let zone = FakeZone::new("tunnel.local.")
+                .a("a.tunnel.local.", "10.0.0.1".parse().unwrap())
+                .build();
+            let resolver = LocalhostResolver::start(vec![zone]).await.unwrap();
+            let addr = resolver.udp_addr();
+            let answers = query_resolver(addr, "a.tunnel.local.", RecordKind::A)
+                .await
+                .unwrap();
+            assert_eq!(answers.len(), 1);
+            assert_eq!(answers[0].kind, RecordKind::A);
+            assert_eq!(answers[0].value, "10.0.0.1");
+            assert!(answers[0].ttl >= Duration::from_secs(1));
+            resolver.shutdown().await;
+        });
+    }
+
+    #[test]
+    fn query_resolver_aaaa_record() {
+        rt().block_on(async {
+            let zone = FakeZone::new("tunnel.local.")
+                .aaaa("v6.tunnel.local.", "fd00::1".parse().unwrap())
+                .build();
+            let resolver = LocalhostResolver::start(vec![zone]).await.unwrap();
+            let addr = resolver.udp_addr();
+            let answers = query_resolver(addr, "v6.tunnel.local.", RecordKind::AAAA)
+                .await
+                .unwrap();
+            assert_eq!(answers.len(), 1);
+            assert_eq!(answers[0].kind, RecordKind::AAAA);
+            assert!(answers[0].value.contains("fd00"));
+            resolver.shutdown().await;
+        });
+    }
+
+    #[test]
+    fn query_resolver_srv_record() {
+        rt().block_on(async {
+            let zone = FakeZone::new("tunnel.local.")
+                .srv("_smtp._tcp.tunnel.local.", "mail.tunnel.local.", 25, 10, 5)
+                .build();
+            let resolver = LocalhostResolver::start(vec![zone]).await.unwrap();
+            let addr = resolver.udp_addr();
+            let answers = query_resolver(addr, "_smtp._tcp.tunnel.local.", RecordKind::SRV)
+                .await
+                .unwrap();
+            assert_eq!(answers.len(), 1);
+            assert_eq!(answers[0].kind, RecordKind::SRV);
+            assert!(answers[0].value.starts_with("10 5 25 "));
+            assert!(answers[0].value.contains("mail.tunnel.local"));
+            resolver.shutdown().await;
+        });
+    }
+
+    #[test]
+    fn query_resolver_txt_record() {
+        rt().block_on(async {
+            let zone = FakeZone::new("tunnel.local.")
+                .txt("info.tunnel.local.", "spt-test-value")
+                .build();
+            let resolver = LocalhostResolver::start(vec![zone]).await.unwrap();
+            let addr = resolver.udp_addr();
+            let answers = query_resolver(addr, "info.tunnel.local.", RecordKind::TXT)
+                .await
+                .unwrap();
+            assert_eq!(answers.len(), 1);
+            assert_eq!(answers[0].kind, RecordKind::TXT);
+            assert_eq!(answers[0].value, "spt-test-value");
+            resolver.shutdown().await;
+        });
+    }
+
+    #[test]
+    fn query_resolver_missing_name_returns_empty_not_error() {
+        rt().block_on(async {
+            let zone = FakeZone::new("tunnel.local.")
+                .a("a.tunnel.local.", "10.0.0.1".parse().unwrap())
+                .build();
+            let resolver = LocalhostResolver::start(vec![zone]).await.unwrap();
+            let addr = resolver.udp_addr();
+            let answers = query_resolver(addr, "ghost.tunnel.local.", RecordKind::A)
+                .await
+                .unwrap();
+            assert!(answers.is_empty());
+            resolver.shutdown().await;
+        });
+    }
+
+    #[test]
+    fn query_resolver_unreachable_port_does_not_panic() {
+        rt().block_on(async {
+            let addr: SocketAddr = "127.0.0.1:1".parse().unwrap();
+            let res = query_resolver(addr, "example.com.", RecordKind::A).await;
+            match res {
+                Ok(v) => assert!(v.is_empty(), "expected empty answer set on unreachable"),
+                Err(DnsError::Upstream(_)) => {}
+                Err(other) => panic!("unexpected error variant: {other:?}"),
+            }
+        });
+    }
+
+    #[test]
+    fn map_resolve_error_produces_upstream_variant() {
+        rt().block_on(async {
+            use hickory_resolver::config::{NameServerConfigGroup, ResolverConfig, ResolverOpts};
+            use hickory_resolver::TokioAsyncResolver;
+            let group =
+                NameServerConfigGroup::from_ips_clear(&["127.0.0.1".parse().unwrap()], 1, true);
+            let cfg = ResolverConfig::from_parts(None, vec![], group);
+            let mut opts = ResolverOpts::default();
+            opts.timeout = Duration::from_millis(50);
+            opts.attempts = 1;
+            opts.use_hosts_file = false;
+            let resolver = TokioAsyncResolver::tokio(cfg, opts);
+            if let Err(e) = resolver
+                .lookup("example.invalid.", hickory_proto::rr::RecordType::A)
+                .await
+            {
+                let mapped = map_resolve_error(&e);
+                assert!(matches!(mapped, DnsError::Upstream(_)));
+                let _ = format!("{mapped}");
+            }
+        });
+    }
+
+    #[test]
+    fn dns_answer_equality_and_debug() {
+        let a = DnsAnswer {
+            kind: RecordKind::A,
+            value: "1.2.3.4".into(),
+            ttl: Duration::from_secs(60),
+        };
+        let b = a.clone();
+        assert_eq!(a, b);
+        let _ = format!("{a:?}");
+    }
+}

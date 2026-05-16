@@ -296,4 +296,47 @@ mod tests {
         assert_eq!(drops.load(Ordering::SeqCst), 2);
         assert_eq!(waits.load(Ordering::SeqCst), 3);
     }
+
+    #[tokio::test]
+    async fn unknown_driver_returns_string_error() {
+        let err = run_live_benchmark("flux-capacitor", None, None, 1, 2, false)
+            .await
+            .unwrap_err();
+        assert!(err.contains("unknown driver"), "{err}");
+        assert!(err.contains("latency"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn synthetic_latency_against_loopback_echo() {
+        // No live connector; the synthetic tcp_connector is used.
+        let result = run_live_benchmark("latency", None, None, 3, 2, true)
+            .await
+            .unwrap();
+        assert_eq!(result.driver, "latency");
+    }
+
+    #[tokio::test]
+    async fn synthetic_dns_driver_returns_results() {
+        let result = run_live_benchmark("dns", None, None, 2, 2, true)
+            .await
+            .unwrap();
+        assert_eq!(result.driver, "dns");
+    }
+
+    #[tokio::test]
+    async fn synthetic_udp_driver_round_trips() {
+        let result = run_live_benchmark("udp", None, None, 2, 2, true)
+            .await
+            .unwrap();
+        assert_eq!(result.driver, "udp");
+    }
+
+    #[tokio::test]
+    async fn reconnect_with_no_trigger_uses_noop() {
+        // No reconnect trigger supplied → falls back to the in-file Noop impl.
+        let result = run_live_benchmark("reconnect", None, None, 1, 2, true)
+            .await
+            .unwrap();
+        assert_eq!(result.driver, "reconnect");
+    }
 }

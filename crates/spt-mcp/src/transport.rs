@@ -379,4 +379,176 @@ mod tests {
         let addr = t.local_addr().expect("local_addr");
         assert!(addr.ip().is_loopback());
     }
+
+    #[test]
+    fn transport_kind_round_trips_stdio() {
+        let json = serde_json::json!({"transport": "stdio"});
+        let cfg: TransportConfig = serde_json::from_value(json).unwrap();
+        assert!(matches!(cfg.transport, TransportKind::Stdio));
+    }
+
+    #[test]
+    fn transport_kind_round_trips_canonical_loopback() {
+        let json = serde_json::json!({"transport": "loopback"});
+        let cfg: TransportConfig = serde_json::from_value(json).unwrap();
+        assert!(matches!(cfg.transport, TransportKind::Loopback));
+    }
+
+    #[test]
+    fn loopback_config_default_127_7777() {
+        let lc = LoopbackConfig::default();
+        assert_eq!(lc.bind, "127.0.0.1:7777");
+    }
+
+    #[test]
+    fn transport_config_default_is_stdio_with_default_loopback() {
+        let cfg = TransportConfig::default();
+        assert!(matches!(cfg.transport, TransportKind::Stdio));
+        assert_eq!(cfg.loopback_tcp.bind, "127.0.0.1:7777");
+    }
+
+    #[test]
+    fn transport_kind_eq_and_copy() {
+        let a = TransportKind::Loopback;
+        let b = a;
+        assert_eq!(a, b);
+        assert_ne!(TransportKind::Stdio, TransportKind::Loopback);
+    }
+
+    #[tokio::test]
+    async fn read_request_returns_none_on_eof() {
+        let cursor = std::io::Cursor::new(Vec::<u8>::new());
+        let mut reader = tokio::io::BufReader::new(cursor);
+        let req = read_request(&mut reader).await.unwrap();
+        assert!(req.is_none());
+    }
+
+    #[tokio::test]
+    async fn read_request_empty_line_returns_blank_request() {
+        let cursor = std::io::Cursor::new(b"\n".to_vec());
+        let mut reader = tokio::io::BufReader::new(cursor);
+        let req = read_request(&mut reader).await.unwrap().unwrap();
+        assert!(req.method.is_empty());
+        assert!(req.id.is_none());
+    }
+
+    #[tokio::test]
+    async fn read_request_parses_one_frame() {
+        let cursor = std::io::Cursor::new(
+            br#"{"jsonrpc":"2.0","id":1,"method":"ping"}
+"#
+            .to_vec(),
+        );
+        let mut reader = tokio::io::BufReader::new(cursor);
+        let req = read_request(&mut reader).await.unwrap().unwrap();
+        assert_eq!(req.method, "ping");
+        assert!(req.id.is_some());
+    }
+
+    #[tokio::test]
+    async fn read_request_invalid_json_errors() {
+        let cursor = std::io::Cursor::new(b"{not json\n".to_vec());
+        let mut reader = tokio::io::BufReader::new(cursor);
+        let err = read_request(&mut reader).await.unwrap_err();
+        assert!(matches!(err, crate::Error::Json(_)));
+    }
+
+    #[tokio::test]
+    async fn write_response_emits_line_then_newline() {
+        let resp = Response::ok(crate::protocol::Id::Num(7), serde_json::json!({"ok": true}));
+        let mut buf = Vec::<u8>::new();
+        write_response(&mut buf, &resp).await.unwrap();
+        let s = String::from_utf8(buf).unwrap();
+        assert!(s.ends_with('\n'));
+        let parsed: Response = serde_json::from_str(s.trim()).unwrap();
+        assert!(matches!(parsed.id, crate::protocol::Id::Num(7)));
+        assert!(parsed.result.is_some());
+    }
+
+    #[tokio::test]
+    async fn write_notification_has_no_id_field() {
+        let mut buf = Vec::<u8>::new();
+        write_notification(&mut buf, "x/y", serde_json::json!({"tick": 1}))
+            .await
+            .unwrap();
+        let s = String::from_utf8(buf).unwrap();
+        let v: serde_json::Value = serde_json::from_str(s.trim()).unwrap();
+        assert_eq!(v["jsonrpc"], "2.0");
+        assert_eq!(v["method"], "x/y");
+        assert_eq!(v["params"]["tick"], 1);
+        assert!(v.get("id").is_none());
+    }
+
+    #[tokio::test]
+    async fn loopback_bind_invalid_address_errors() {
+        let res = loopback::LoopbackTransport::bind("not::an::addr").await;
+        assert!(matches!(res, Err(crate::Error::InvalidParams(_))));
+    }
+
+    #[tokio::test]
+    async fn loopback_bind_v6_loopback_ok() {
+        let res = loopback::LoopbackTransport::bind("[::1]:0").await;
+        match res {
+            Ok(t) => assert!(t.local_addr().unwrap().ip().is_loopback()),
+            Err(crate::Error::Io(_)) => {}
+            Err(other) => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn run_connection_closes_cleanly_on_eof() {
+        use crate::audit::NoopAuditSink;
+        use crate::controller::NoopController;
+        use crate::policy::{McpPolicy, Policy};
+        use crate::server::McpServer;
+        use crate::sources::NoopSources;
+        let sources = Arc::new(NoopSources);
+        let server = McpServer::new(
+            Policy::new(McpPolicy {
+                enabled: true,
+                ..Default::default()
+            }),
+            Arc::new(NoopAuditSink),
+            Arc::new(NoopController),
+            sources.clone() as crate::sources::DynConfigSource,
+            sources as crate::sources::DynStateSource,
+        );
+        let inner = server.inner();
+
+        let cursor = std::io::Cursor::new(Vec::<u8>::new());
+        let mut reader = tokio::io::BufReader::new(cursor);
+        let mut writer: Vec<u8> = Vec::new();
+        run_connection(inner, &mut reader, &mut writer).await.unwrap();
+        assert!(writer.is_empty());
+    }
+
+    #[tokio::test]
+    async fn run_connection_handles_notification_frames() {
+        use crate::audit::NoopAuditSink;
+        use crate::controller::NoopController;
+        use crate::policy::{McpPolicy, Policy};
+        use crate::server::McpServer;
+        use crate::sources::NoopSources;
+        let sources = Arc::new(NoopSources);
+        let server = McpServer::new(
+            Policy::new(McpPolicy {
+                enabled: true,
+                ..Default::default()
+            }),
+            Arc::new(NoopAuditSink),
+            Arc::new(NoopController),
+            sources.clone() as crate::sources::DynConfigSource,
+            sources as crate::sources::DynStateSource,
+        );
+        let inner = server.inner();
+
+        let body = br#"{"jsonrpc":"2.0","method":"some/notif"}
+"#
+        .to_vec();
+        let cursor = std::io::Cursor::new(body);
+        let mut reader = tokio::io::BufReader::new(cursor);
+        let mut writer: Vec<u8> = Vec::new();
+        run_connection(inner, &mut reader, &mut writer).await.unwrap();
+        assert!(writer.is_empty(), "notifications must not be replied to");
+    }
 }

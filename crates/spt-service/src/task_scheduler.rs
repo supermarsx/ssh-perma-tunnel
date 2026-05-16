@@ -563,6 +563,53 @@ mod tests {
         insta::assert_snapshot!("task_scheduler_cmd", out);
     }
 
+    #[test]
+    fn trigger_default_is_at_startup() {
+        let t = Trigger::default();
+        assert_eq!(t, Trigger::AtStartup);
+    }
+
+    #[test]
+    fn render_onlogon_when_trigger_is_atlogon() {
+        let mgr = TaskSchedulerManager::new().with_trigger(Trigger::AtLogon);
+        let out = mgr.render(&sample_spec());
+        assert!(out.contains("/SC ONLOGON"), "got: {out}");
+        assert!(!out.contains("/SC ONSTART"));
+    }
+
+    #[test]
+    fn render_quotes_args_containing_spaces() {
+        let mut spec = sample_spec();
+        spec.args = vec!["service".into(), "run".into(), "with space".into()];
+        let out = TaskSchedulerManager::new().render(&spec);
+        assert!(out.contains("\"with space\""), "got: {out}");
+    }
+
+    #[test]
+    fn render_includes_user_when_set() {
+        let mut spec = sample_spec();
+        spec.user = Some("DESKTOP\\admin".into());
+        let out = TaskSchedulerManager::new().render(&spec);
+        // /RU <user> must appear.
+        assert!(out.contains("/RU"), "got: {out}");
+        assert!(out.contains("DESKTOP\\admin"));
+    }
+
+    #[test]
+    fn render_drops_user_when_absent() {
+        let mut spec = sample_spec();
+        spec.user = None;
+        let out = TaskSchedulerManager::new().render(&spec);
+        assert!(!out.contains("/RU"));
+    }
+
+    #[test]
+    fn render_always_includes_force_flag() {
+        let out = TaskSchedulerManager::new().render(&sample_spec());
+        // /F appears as a standalone arg.
+        assert!(out.split_whitespace().any(|a| a == "/F"));
+    }
+
     // --- Lifecycle tests (Windows-shaped, but driven via MockRunner) --------
 
     #[cfg(target_os = "windows")]

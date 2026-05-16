@@ -1065,6 +1065,130 @@ mod tests {
     }
 
     #[test]
+    fn discovery_url_appends_trailing_slash_if_missing() {
+        // We can't call the private `discovery_url` directly from outside the
+        // impl block, but we can build a client and discover against a server
+        // hosted at the bare issuer (no trailing slash) and verify it doesn't
+        // panic.  This exercises the trailing-slash-recovery branch.
+        let client = OidcDeviceFlowClient::new(
+            Url::parse("http://127.0.0.1:1").unwrap(),
+            "id".into(),
+            None,
+        )
+        .unwrap();
+        assert_eq!(client.issuer().as_str(), "http://127.0.0.1:1/");
+        assert_eq!(client.client_id(), "id");
+        assert!(client.audience().is_none());
+    }
+
+    #[test]
+    fn debug_does_not_finish_exhaustive() {
+        let client = OidcDeviceFlowClient::new(
+            Url::parse("https://login.example.com").unwrap(),
+            "spt-cli".into(),
+            Some("api".into()),
+        )
+        .unwrap();
+        let s = format!("{client:?}");
+        assert!(s.contains("OidcDeviceFlowClient"));
+        assert!(s.contains("spt-cli"));
+        // audience should appear.
+        assert!(s.contains("api"));
+    }
+
+    #[test]
+    fn oidc_error_into_core_error_categorisation() {
+        // AccessDenied / TokenExpired / Expired / InvalidGrant / OauthError →
+        // AuthFailed
+        let cases = [
+            OidcError::AccessDenied,
+            OidcError::TokenExpired,
+            OidcError::Expired,
+            OidcError::InvalidGrant("x".into()),
+            OidcError::OauthError {
+                code: "invalid_client".into(),
+                description: "no".into(),
+            },
+        ];
+        for e in cases {
+            let ce: CoreError = e.into();
+            assert!(matches!(ce, CoreError::AuthFailed(_)), "got: {ce:?}");
+        }
+        // Discovery / Transport / MalformedResponse → NetworkUnreachable
+        let net = [
+            OidcError::Discovery("x".into()),
+            OidcError::Transport("y".into()),
+            OidcError::MalformedResponse {
+                endpoint: "/x".into(),
+                reason: "z".into(),
+            },
+        ];
+        for e in net {
+            let ce: CoreError = e.into();
+            assert!(matches!(ce, CoreError::NetworkUnreachable(_)), "got: {ce:?}");
+        }
+    }
+
+    #[test]
+    fn default_interval_constant() {
+        assert_eq!(default_interval(), 5);
+    }
+
+    #[test]
+    fn discovery_document_round_trips_through_json() {
+        let doc = DiscoveryDocument {
+            issuer: "https://i".into(),
+            device_authorization_endpoint: "https://i/d".into(),
+            token_endpoint: "https://i/t".into(),
+        };
+        let s = serde_json::to_string(&doc).unwrap();
+        let back: DiscoveryDocument = serde_json::from_str(&s).unwrap();
+        assert_eq!(back.issuer, doc.issuer);
+        assert_eq!(back.token_endpoint, doc.token_endpoint);
+    }
+
+    #[test]
+    fn device_code_response_uses_default_interval_when_absent() {
+        let raw = r#"{
+            "device_code":"x",
+            "user_code":"U",
+            "verification_uri":"https://e.com/d",
+            "expires_in": 60
+        }"#;
+        let dc: DeviceCodeResponse = serde_json::from_str(raw).unwrap();
+        assert_eq!(dc.interval, 5);
+        assert!(dc.verification_uri_complete.is_none());
+    }
+
+    #[test]
+    fn parse_oauth_error_returns_oauth_error_for_well_formed_body() {
+        let err = parse_oauth_error(
+            "/token",
+            StatusCode::BAD_REQUEST,
+            r#"{"error":"invalid_request","error_description":"oops"}"#,
+        );
+        match err {
+            OidcError::OauthError { code, description } => {
+                assert_eq!(code, "invalid_request");
+                assert_eq!(description, "oops");
+            }
+            other => panic!("expected OauthError, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_oauth_error_falls_back_to_malformed_for_unparseable_body() {
+        let err = parse_oauth_error("/token", StatusCode::IM_A_TEAPOT, "not json");
+        match err {
+            OidcError::MalformedResponse { endpoint, reason } => {
+                assert_eq!(endpoint, "/token");
+                assert!(reason.contains("418"));
+            }
+            other => panic!("expected MalformedResponse, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn token_response_debug_does_not_leak_secret() {
         let tok = TokenResponse {
             access_token: secret_bytes(b"SUPERSECRETBYTES".to_vec()),

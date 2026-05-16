@@ -225,4 +225,109 @@ mod tests {
             assert_eq!(r.to_string(), s);
         }
     }
+
+    #[test]
+    fn parse_trims_whitespace() {
+        assert_eq!(
+            SecretRef::parse("  env:VAR  ").unwrap(),
+            SecretRef::Env("VAR".into())
+        );
+    }
+
+    #[test]
+    fn fromstr_and_tryfrom_agree() {
+        use std::str::FromStr;
+        let a = SecretRef::from_str("env:X").unwrap();
+        let b = SecretRef::try_from(String::from("env:X")).unwrap();
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn into_string_via_display() {
+        let r = SecretRef::Env("Y".into());
+        let s: String = r.clone().into();
+        assert_eq!(s, "env:Y");
+        assert_eq!(s, r.to_string());
+    }
+
+    #[test]
+    fn serde_round_trip_each_variant() {
+        for raw in [
+            "\"secret://ns/name\"",
+            "\"env:NAME\"",
+            "\"file:///etc/spt/x\"",
+        ] {
+            let r: SecretRef = serde_json::from_str(raw).unwrap();
+            let s = serde_json::to_string(&r).unwrap();
+            assert_eq!(s, raw);
+        }
+    }
+
+    #[test]
+    fn serde_rejects_unknown_scheme() {
+        let res: Result<SecretRef, _> = serde_json::from_str("\"bogus\"");
+        assert!(res.is_err());
+    }
+
+    #[test]
+    fn file_uri_without_leading_slash_normalises_to_root() {
+        // `file://x/y` (no third slash) is treated as host-relative; we keep it
+        // and re-prefix a single `/` on the way out so it serialises as
+        // `file:///x/y`.
+        let r = SecretRef::parse("file://etc/spt/x").unwrap();
+        match &r {
+            SecretRef::File(p) => assert!(p.starts_with('/')),
+            _ => panic!("wrong variant"),
+        }
+        assert_eq!(r.to_string(), "file:///etc/spt/x");
+    }
+
+    #[test]
+    fn empty_file_uri_rejected() {
+        assert!(matches!(
+            SecretRef::parse("file:///"),
+            Err(SecretRefError::BadFileUri(_))
+        ));
+        assert!(matches!(
+            SecretRef::parse("file://"),
+            Err(SecretRefError::BadFileUri(_))
+        ));
+    }
+
+    #[test]
+    fn error_messages_include_offending_input() {
+        let e = SecretRef::parse("plain").unwrap_err();
+        let s = e.to_string();
+        assert!(s.contains("plain"), "{s}");
+        let e = SecretRef::parse("secret://just").unwrap_err();
+        let s = e.to_string();
+        assert!(s.contains("just"), "{s}");
+        // Empty-component error contains the field label.
+        let e = SecretRef::parse("secret://ns/").unwrap_err();
+        let s = e.to_string();
+        assert!(s.contains("name"), "{s}");
+    }
+
+    #[test]
+    fn debug_and_clone_for_secret_ref() {
+        let r = SecretRef::Vault {
+            namespace: "ns".into(),
+            name: "n".into(),
+        };
+        let dbg = format!("{r:?}");
+        assert!(dbg.contains("Vault"));
+        let r2 = r.clone();
+        assert_eq!(r, r2);
+    }
+
+    #[test]
+    fn hash_is_deterministic_per_variant() {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut h1 = DefaultHasher::new();
+        let mut h2 = DefaultHasher::new();
+        SecretRef::Env("X".into()).hash(&mut h1);
+        SecretRef::Env("X".into()).hash(&mut h2);
+        assert_eq!(h1.finish(), h2.finish());
+    }
 }

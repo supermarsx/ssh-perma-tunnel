@@ -399,4 +399,132 @@ mod tests {
                 .into(),
         ))
     }
+
+    #[test]
+    fn jws_alg_for_ed25519_returns_eddsa() {
+        let kp = fresh_ed25519();
+        assert_eq!(jws_alg_for(&kp).unwrap(), "EdDSA");
+    }
+
+    #[test]
+    fn jws_alg_for_ecdsa_p256_returns_es256() {
+        let kp = key_io::generate(KeyAlgorithm::EcdsaP256).unwrap();
+        assert_eq!(jws_alg_for(&kp).unwrap(), "ES256");
+    }
+
+    #[test]
+    fn canonical_audience_keeps_path_with_query() {
+        assert_eq!(
+            canonical_audience("h.example", 8443, "/ssh3?foo=bar"),
+            "https://h.example:8443/ssh3?foo=bar"
+        );
+    }
+
+    #[test]
+    fn canonical_audience_empty_path_inserts_slash() {
+        assert_eq!(canonical_audience("h", 443, ""), "https://h:443/");
+    }
+
+    #[test]
+    fn canonical_audience_ipv6_unbracketed() {
+        // Pin the existing behaviour: no IPv6 bracketing.
+        assert_eq!(
+            canonical_audience("::1", 443, "/ssh3"),
+            "https://::1:443/ssh3"
+        );
+    }
+
+    #[test]
+    fn fresh_jti_is_unique_and_22_chars() {
+        let a = fresh_jti();
+        let b = fresh_jti();
+        assert_ne!(a, b);
+        // base64url-nopad of 16 bytes is exactly 22 chars, no padding.
+        assert_eq!(a.len(), 22);
+        assert!(!a.contains('='));
+    }
+
+    #[test]
+    fn extract_ecdsa_rs_truncated_length_header_fails() {
+        let buf = [0u8, 0, 0];
+        let err = extract_ecdsa_rs(&buf, 32).unwrap_err();
+        assert!(matches!(err, Error::InvalidConfig(_)));
+    }
+
+    #[test]
+    fn extract_ecdsa_rs_truncated_body_fails() {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&8u32.to_be_bytes());
+        buf.extend_from_slice(&[0x01, 0x02]);
+        let err = extract_ecdsa_rs(&buf, 32).unwrap_err();
+        assert!(matches!(err, Error::InvalidConfig(_)));
+    }
+
+    #[test]
+    fn extract_ecdsa_rs_oversized_scalar_fails() {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&64u32.to_be_bytes());
+        buf.extend_from_slice(&[0xAA; 64]);
+        buf.extend_from_slice(&1u32.to_be_bytes());
+        buf.push(0x01);
+        let err = extract_ecdsa_rs(&buf, 32).unwrap_err();
+        assert!(matches!(err, Error::InvalidConfig(_)));
+    }
+
+    #[test]
+    fn extract_ecdsa_rs_truncated_s_fails() {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&1u32.to_be_bytes());
+        buf.push(0x01);
+        buf.extend_from_slice(&8u32.to_be_bytes());
+        buf.extend_from_slice(&[0x02, 0x03]);
+        let err = extract_ecdsa_rs(&buf, 32).unwrap_err();
+        assert!(matches!(err, Error::InvalidConfig(_)));
+    }
+
+    #[test]
+    fn build_jwt_has_three_dotted_parts() {
+        let kp = fresh_ed25519();
+        let claims = fresh_claims(&kp, "u", "h", 1, "/x", 30);
+        let jwt = build_jwt(&kp, &claims).unwrap();
+        assert_eq!(jwt.matches('.').count(), 2);
+        for part in jwt.split('.') {
+            assert!(!part.is_empty());
+            assert!(!part.contains('='));
+            assert!(!part.contains('+'));
+            assert!(!part.contains('/'));
+        }
+    }
+
+    #[test]
+    fn jws_signature_bytes_ed25519_length_is_64() {
+        let kp = fresh_ed25519();
+        let sig: Signature = kp.private().try_sign(b"hello").unwrap();
+        let raw = jws_signature_bytes(&sig).unwrap();
+        assert_eq!(raw.len(), 64);
+    }
+
+    #[test]
+    fn default_jwt_lifetime_constant_is_30s() {
+        assert_eq!(DEFAULT_JWT_LIFETIME_SECS, 30);
+    }
+
+    #[test]
+    fn claims_serialize_with_wire_field_names() {
+        let kp = fresh_ed25519();
+        let claims = Ssh3JwtClaims {
+            sub: "u".into(),
+            aud: "https://h:1/x".into(),
+            iat: 100,
+            exp: 200,
+            jti: "abc".into(),
+            ssh3_pubkey_fingerprint: fingerprint_sha256(kp.public_ref()),
+        };
+        let json = serde_json::to_string(&claims).unwrap();
+        assert!(json.contains("\"ssh3-pubkey-fingerprint\""));
+        assert!(json.contains("\"sub\":\"u\""));
+        assert!(json.contains("\"iat\":100"));
+        assert!(json.contains("\"exp\":200"));
+        assert!(!json.contains("\"ssh3_pubkey_fingerprint\""));
+    }
 }

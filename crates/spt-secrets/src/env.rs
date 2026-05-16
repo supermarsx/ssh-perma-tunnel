@@ -133,4 +133,36 @@ mod tests {
         let b = EnvBackend::new();
         assert!(matches!(b.doctor().status, crate::BackendStatus::Ok));
     }
+
+    #[test]
+    fn list_is_always_empty() {
+        let b = EnvBackend::new();
+        assert!(b.list().unwrap().is_empty());
+    }
+
+    #[test]
+    fn kind_is_env() {
+        let b = EnvBackend::new();
+        assert_eq!(b.kind(), crate::BackendKind::Env);
+    }
+
+    #[test]
+    fn set_returns_unsupported_platform_error() {
+        let r = SecretRef::new("ns", "n").unwrap();
+        let b = EnvBackend::new();
+        match b.set(&r, b"v").unwrap_err() {
+            Error::UnsupportedPlatform(msg) => assert!(msg.contains("read-only")),
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn remove_returns_unsupported_platform_error() {
+        let r = SecretRef::new("ns", "n").unwrap();
+        let b = EnvBackend::new();
+        match b.remove(&r).unwrap_err() {
+            Error::UnsupportedPlatform(msg) => assert!(msg.contains("read-only")),
+            other => panic!("unexpected {other:?}"),
+        }
+    }
 }

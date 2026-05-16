@@ -277,4 +277,141 @@ mod tests {
         let err = sink.deliver(Arc::new(ev)).await.unwrap_err();
         assert!(err.is_retryable());
     }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn permanent_error_is_not_retryable() {
+        let t = Arc::new(RecordingTransport::new());
+        t.fail_once(SinkError::Permanent("bad-request".into()));
+        let sink = HttpSink::new(
+            "x",
+            "POST",
+            "https://x/",
+            "{}",
+            "application/json",
+            HttpAuth::None,
+            t.clone(),
+        );
+        let err = sink
+            .deliver(Arc::new(Event::builder("k", Severity::Info).build()))
+            .await
+            .unwrap_err();
+        assert!(!err.is_retryable());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn name_kind_are_stable() {
+        let sink = HttpSink::new(
+            "alerts",
+            "POST",
+            "https://x/",
+            "{}",
+            "application/json",
+            HttpAuth::None,
+            Arc::new(RecordingTransport::new()),
+        );
+        assert_eq!(sink.name(), "alerts");
+        assert_eq!(sink.kind(), "http");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn http_auth_default_is_none() {
+        assert!(matches!(HttpAuth::default(), HttpAuth::None));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn http_auth_basic_round_trips() {
+        let a = HttpAuth::Basic("dXNlcjpwYXNz".into());
+        let b = HttpAuth::Basic("dXNlcjpwYXNz".into());
+        assert_eq!(a, b);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn http_auth_round_trips_through_serde_json() {
+        for auth in [
+            HttpAuth::None,
+            HttpAuth::Bearer("xyz".into()),
+            HttpAuth::Basic("ZA==".into()),
+        ] {
+            let s = serde_json::to_string(&auth).unwrap();
+            let back: HttpAuth = serde_json::from_str(&s).unwrap();
+            assert_eq!(auth, back);
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn basic_auth_propagates_to_request() {
+        let t = Arc::new(RecordingTransport::new());
+        let sink = HttpSink::new(
+            "x",
+            "POST",
+            "https://x/",
+            "{}",
+            "application/json",
+            HttpAuth::Basic("ZA==".into()),
+            t.clone(),
+        );
+        sink.deliver(Arc::new(Event::builder("k", Severity::Info).build()))
+            .await
+            .unwrap();
+        let req = &t.requests()[0];
+        assert_eq!(req.auth, HttpAuth::Basic("ZA==".into()));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn content_type_is_propagated() {
+        let t = Arc::new(RecordingTransport::new());
+        let sink = HttpSink::new(
+            "x",
+            "PUT",
+            "https://x/",
+            "x=1",
+            "application/x-www-form-urlencoded",
+            HttpAuth::None,
+            t.clone(),
+        );
+        sink.deliver(Arc::new(Event::builder("k", Severity::Info).build()))
+            .await
+            .unwrap();
+        let req = &t.requests()[0];
+        assert_eq!(req.method, "PUT");
+        assert_eq!(req.content_type, "application/x-www-form-urlencoded");
+        assert_eq!(req.body, b"x=1");
+        assert!(req.extra_headers.is_empty());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn recording_transport_default_constructs() {
+        let t: RecordingTransport = RecordingTransport::default();
+        assert!(t.requests().is_empty());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn http_request_is_cloneable() {
+        let r = HttpRequest {
+            method: "POST".into(),
+            url: "https://x/".into(),
+            content_type: "application/json".into(),
+            body: b"{}".to_vec(),
+            auth: HttpAuth::Bearer("t".into()),
+            extra_headers: vec![("X-Trace".into(), "1".into())],
+        };
+        let r2 = r.clone();
+        assert_eq!(r2.url, r.url);
+        assert_eq!(r2.body, r.body);
+        assert_eq!(r2.extra_headers, r.extra_headers);
+    }
+
+    #[cfg(feature = "transports")]
+    #[tokio::test(flavor = "current_thread")]
+    async fn reqwest_transport_new_succeeds() {
+        let t = reqwest_transport::ReqwestTransport::new(std::time::Duration::from_secs(1));
+        assert!(t.is_ok());
+    }
+
+    #[cfg(feature = "transports")]
+    #[tokio::test(flavor = "current_thread")]
+    async fn reqwest_transport_from_client_constructs() {
+        let client = reqwest::Client::new();
+        let _ = reqwest_transport::ReqwestTransport::from_client(client);
+    }
 }

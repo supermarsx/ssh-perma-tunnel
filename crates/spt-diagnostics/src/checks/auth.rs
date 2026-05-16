@@ -389,6 +389,141 @@ token = "env:T"
     }
 
     #[tokio::test]
+    async fn protocol_fit_flags_pubkey_on_ssh3() {
+        let cfg = cfg_str(
+            r#"
+version = 1
+acknowledge_experimental = "ssh3"
+[[profiles]]
+name = "p"
+protocol = "ssh3"
+host = "h"
+[profiles.auth]
+method = "publickey"
+agent = true
+"#,
+        );
+        let d = AuthDiagnostic::default().with_config(cfg);
+        let r = d.run(&DiagnosticContext::default()).await;
+        assert!(
+            r.iter()
+                .any(|c| c.id.ends_with(".protocol_fit") && c.status == Status::Fail),
+            "{r:#?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn skipped_when_profile_has_no_auth_block() {
+        let cfg = cfg_str(
+            r#"
+version = 1
+[[profiles]]
+name = "p"
+protocol = "ssh2"
+host = "h"
+"#,
+        );
+        let d = AuthDiagnostic::default().with_config(cfg);
+        let r = d.run(&DiagnosticContext::default()).await;
+        let dec = r.iter().find(|c| c.id.ends_with(".declared")).unwrap();
+        assert_eq!(dec.status, Status::Skipped);
+    }
+
+    #[tokio::test]
+    async fn no_matching_profiles_emits_dedicated_skip() {
+        let cfg = cfg_str(
+            r#"
+version = 1
+[[profiles]]
+name = "a"
+protocol = "ssh2"
+host = "h"
+[profiles.auth]
+method = "agent"
+agent = true
+"#,
+        );
+        let d = AuthDiagnostic::for_profile("does-not-exist").with_config(cfg);
+        let r = d.run(&DiagnosticContext::default()).await;
+        assert!(r.iter().any(|c| c.id == "auth.profiles" && c.status == Status::Skipped));
+    }
+
+    #[tokio::test]
+    async fn translate_failure_surfaces_as_translate_check() {
+        let cfg = cfg_str(
+            r#"
+version = 1
+[[profiles]]
+name = "p"
+protocol = "ssh2"
+host = "h"
+[profiles.auth]
+method = "password"
+password = "raw-text-not-a-ref"
+"#,
+        );
+        let d = AuthDiagnostic::default().with_config(cfg);
+        let r = d.run(&DiagnosticContext::default()).await;
+        assert!(
+            r.iter()
+                .any(|c| c.id.ends_with(".translate") && c.status == Status::Fail),
+            "{r:#?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn oidc_method_passes_validation_on_ssh3() {
+        let cfg = cfg_str(
+            r#"
+version = 1
+acknowledge_experimental = "ssh3"
+[[profiles]]
+name = "p"
+protocol = "ssh3"
+host = "h"
+[profiles.auth]
+method = "oidc_device_flow"
+oidc_issuer = "https://login.example.com"
+oidc_client_id = "id"
+"#,
+        );
+        let d = AuthDiagnostic::default().with_config(cfg);
+        let r = d.run(&DiagnosticContext::default()).await;
+        assert!(
+            r.iter().any(|c| c.id.ends_with(".oidc_device_flow") && c.status == Status::Pass),
+            "{r:#?}"
+        );
+    }
+
+    #[test]
+    fn group_label_is_auth() {
+        assert_eq!(AuthDiagnostic::default().group(), "auth");
+    }
+
+    #[tokio::test]
+    async fn reads_config_from_diagnostic_context_when_no_inline_config() {
+        let body = r#"
+version = 1
+[[profiles]]
+name = "p"
+protocol = "ssh2"
+host = "h"
+[profiles.auth]
+method = "agent"
+agent = true
+"#;
+        let ctx = DiagnosticContext {
+            effective_config: Some(body.into()),
+            ..Default::default()
+        };
+        let d = AuthDiagnostic::default();
+        let r = d.run(&ctx).await;
+        // Should not be the "no config loaded" skip.
+        assert!(!r.iter().any(|c| c.id == "auth.config"));
+        assert!(r.iter().any(|c| c.id.starts_with("auth.p.")));
+    }
+
+    #[tokio::test]
     async fn filter_restricts_to_single_profile() {
         let cfg = cfg_str(
             r#"

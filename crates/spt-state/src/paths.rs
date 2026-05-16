@@ -143,4 +143,68 @@ mod tests {
             Path::new("/var/state/remote-log-spool/https")
         );
     }
+
+    #[test]
+    fn rooted_relative_paths() {
+        let d = Path::new("relative");
+        assert_eq!(lock_path(d), Path::new("relative/spt.lock"));
+        assert_eq!(pid_path(d), Path::new("relative/spt.pid"));
+        assert_eq!(status_path(d), Path::new("relative/status.json"));
+    }
+
+    #[test]
+    fn remote_config_cache_paths() {
+        let d = Path::new("/x");
+        assert_eq!(
+            remote_config_cache_path(d),
+            Path::new("/x/remote-config-cache.toml")
+        );
+        assert_eq!(
+            remote_config_cache_sha_path(d),
+            Path::new("/x/remote-config-cache.toml.sha256")
+        );
+    }
+
+    #[test]
+    fn aux_dir_paths() {
+        let d = Path::new("/v");
+        assert_eq!(benchmarks_dir(d), Path::new("/v/benchmarks"));
+        assert_eq!(diagnostics_dir(d), Path::new("/v/diagnostics"));
+        assert_eq!(hosts_backup_dir(d), Path::new("/v/hosts"));
+    }
+
+    #[test]
+    fn spool_dir_handles_special_sink_names() {
+        let d = Path::new("/var");
+        assert_eq!(
+            spool_dir(d, "syslog-tls"),
+            Path::new("/var/remote-log-spool/syslog-tls")
+        );
+    }
+
+    #[test]
+    fn status_ring_path_distinct_per_timestamp() {
+        let d = Path::new("/v");
+        let a = status_ring_path(d, "20260101T000000Z");
+        let b = status_ring_path(d, "20260101T000001Z");
+        assert_ne!(a, b);
+        assert_ne!(a, status_path(d));
+    }
+
+    #[test]
+    fn events_paths_compose_correctly() {
+        let d = Path::new("/srv/spt");
+        let dir = events_dir(d);
+        let file = events_file(d, "2099-12-31");
+        assert!(file.starts_with(&dir));
+        assert_eq!(file.file_name().unwrap(), "2099-12-31.jsonl");
+    }
+
+    #[test]
+    fn session_path_in_sessions_subdir() {
+        let d = Path::new("/srv");
+        let p = session_path(d, "abc-123");
+        assert!(p.starts_with(d.join("sessions")));
+        assert_eq!(p.file_name().unwrap(), "abc-123.json");
+    }
 }

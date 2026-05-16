@@ -174,6 +174,72 @@ mod tests {
     }
 
     #[test]
+    fn from_tag_round_trip_all_kinds() {
+        for kind in [
+            PduKind::GetRequest,
+            PduKind::GetNextRequest,
+            PduKind::Response,
+            PduKind::SetRequest,
+            PduKind::GetBulkRequest,
+            PduKind::InformRequest,
+            PduKind::SnmpV2Trap,
+            PduKind::Report,
+        ] {
+            let tag = kind.tag();
+            let back = PduKind::from_tag(tag).unwrap();
+            assert_eq!(back, kind);
+        }
+    }
+
+    #[test]
+    fn from_tag_unknown_errors() {
+        assert!(PduKind::from_tag(Tag(0xA4)).is_err());
+        assert!(PduKind::from_tag(Tag(0x00)).is_err());
+    }
+
+    #[test]
+    fn error_status_repr_matches_rfc() {
+        assert_eq!(ErrorStatus::NoError as i32, 0);
+        assert_eq!(ErrorStatus::TooBig as i32, 1);
+        assert_eq!(ErrorStatus::NotWritable as i32, 17);
+        assert_eq!(ErrorStatus::InconsistentName as i32, 18);
+    }
+
+    #[test]
+    fn get_bulk_roundtrip() {
+        let pdu = Pdu {
+            kind: PduKind::GetBulkRequest,
+            request_id: 7,
+            error_status: 0,
+            error_index: 10,
+            variable_bindings: vec![VarBind::null(ObjectIdentifier::new([
+                1u32, 3, 6, 1, 4, 1, 32_473,
+            ]))],
+        };
+        let mut e = Encoder::new();
+        pdu.encode(&mut e).unwrap();
+        let mut d = Decoder::new(e.as_slice());
+        let back = Pdu::decode(&mut d).unwrap();
+        assert_eq!(pdu, back);
+    }
+
+    #[test]
+    fn report_roundtrip() {
+        let pdu = Pdu {
+            kind: PduKind::Report,
+            request_id: 1,
+            error_status: 0,
+            error_index: 0,
+            variable_bindings: vec![],
+        };
+        let mut e = Encoder::new();
+        pdu.encode(&mut e).unwrap();
+        let mut d = Decoder::new(e.as_slice());
+        let back = Pdu::decode(&mut d).unwrap();
+        assert_eq!(pdu, back);
+    }
+
+    #[test]
     fn response_with_value() {
         let pdu = Pdu {
             kind: PduKind::Response,

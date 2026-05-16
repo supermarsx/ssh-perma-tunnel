@@ -602,6 +602,160 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn push_sink_basic_auth_rides_in_extra_headers() {
+        let t = Arc::new(RecordingTransport::new());
+        let sink = PushSink::new(
+            "x",
+            "https://push.example.com/send",
+            "{}",
+            HttpAuth::Basic("YWJj".into()),
+            t.clone(),
+        );
+        sink.deliver(Arc::new(Event::builder("k", Severity::Info).build()))
+            .await
+            .unwrap();
+        let r = t.requests();
+        assert!(r[0]
+            .extra_headers
+            .iter()
+            .any(|(n, v)| n.eq_ignore_ascii_case("authorization") && v == "Basic YWJj"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn push_sink_no_auth_yields_no_authorization_header() {
+        let t = Arc::new(RecordingTransport::new());
+        let sink = PushSink::new(
+            "x",
+            "https://push.example.com/send",
+            "{}",
+            HttpAuth::None,
+            t.clone(),
+        );
+        sink.deliver(Arc::new(Event::builder("k", Severity::Info).build()))
+            .await
+            .unwrap();
+        let r = t.requests();
+        assert!(!r[0]
+            .extra_headers
+            .iter()
+            .any(|(n, _)| n.eq_ignore_ascii_case("authorization")));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn push_sink_name_kind_stable() {
+        let t = Arc::new(RecordingTransport::new());
+        let sink = PushSink::new("alerts", "https://x", "{}", HttpAuth::None, t);
+        assert_eq!(sink.name(), "alerts");
+        assert_eq!(sink.kind(), "push");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn webpush_sink_name_kind_stable() {
+        let t = Arc::new(RecordingTransport::new());
+        let sink = WebPushSink::new("alerts", "{}", Vec::new(), fresh_vapid(), t);
+        assert_eq!(sink.name(), "alerts");
+        assert_eq!(sink.kind(), "webpush");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn webpush_endpoint_invalid_uri_is_config_error() {
+        let t = Arc::new(RecordingTransport::new());
+        let bad = Subscription {
+            // Spaces and control chars trip http::Uri parsing.
+            endpoint: "::not a uri::".into(),
+            p256dh_key: Base64UrlUnpadded::encode_string(&[0u8; 65]),
+            auth_secret: Base64UrlUnpadded::encode_string(&[0u8; 16]),
+        };
+        let sink = WebPushSink::new(
+            "mobile",
+            r#"{"k":"{{kind}}"}"#,
+            vec![bad],
+            fresh_vapid(),
+            t.clone(),
+        );
+        let err = sink
+            .deliver(Arc::new(Event::builder("k", Severity::Info).build()))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, SinkError::Config(_)));
+        assert!(t.requests().is_empty());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn webpush_short_auth_secret_is_config_error() {
+        let t = Arc::new(RecordingTransport::new());
+        let (mut sub, _, _) = fresh_subscription();
+        // 8 bytes instead of 16.
+        sub.auth_secret = Base64UrlUnpadded::encode_string(&[0u8; 8]);
+        let sink = WebPushSink::new("mobile", "{}", vec![sub], fresh_vapid(), t.clone());
+        let err = sink
+            .deliver(Arc::new(Event::builder("k", Severity::Info).build()))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, SinkError::Config(_)));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn webpush_with_ttl_overrides_default() {
+        let t = Arc::new(RecordingTransport::new());
+        let (sub, _, _) = fresh_subscription();
+        let sink = WebPushSink::new("mobile", "{}", vec![sub], fresh_vapid(), t.clone())
+            .with_ttl(Duration::from_secs(60));
+        sink.deliver(Arc::new(Event::builder("k", Severity::Info).build()))
+            .await
+            .unwrap();
+        let r = t.requests();
+        let ttl = r[0]
+            .extra_headers
+            .iter()
+            .find(|(n, _)| n.eq_ignore_ascii_case("ttl"))
+            .map(|(_, v)| v.as_str())
+            .unwrap();
+        assert_eq!(ttl, "60");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn webpush_default_urgency_is_normal() {
+        let t = Arc::new(RecordingTransport::new());
+        let (sub, _, _) = fresh_subscription();
+        let sink = WebPushSink::new("mobile", "{}", vec![sub], fresh_vapid(), t.clone());
+        sink.deliver(Arc::new(Event::builder("k", Severity::Info).build()))
+            .await
+            .unwrap();
+        let r = t.requests();
+        let u = r[0]
+            .extra_headers
+            .iter()
+            .find(|(n, _)| n.eq_ignore_ascii_case("urgency"))
+            .map(|(_, v)| v.as_str())
+            .unwrap();
+        assert_eq!(u, "normal");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn urgency_variants_are_distinct_strings() {
+        assert_eq!(Urgency::VeryLow.as_str(), "very-low");
+        assert_eq!(Urgency::Low.as_str(), "low");
+        assert_eq!(Urgency::Normal.as_str(), "normal");
+        assert_eq!(Urgency::High.as_str(), "high");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn webpush_config_error_conversion_into_sink_error() {
+        let cfg_err: SinkError = WebPushConfigError::VapidKey("oops".into()).into();
+        assert!(matches!(cfg_err, SinkError::Config(_)));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn vapid_identity_debug_redacts_keypair() {
+        let v = fresh_vapid();
+        let s = format!("{v:?}");
+        assert!(s.contains("redacted"));
+        // Subject text should remain visible.
+        assert!(s.contains("mailto:"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn webpush_transient_transport_failure_propagates_as_retryable() {
         let t = Arc::new(RecordingTransport::new());
         t.fail_once(SinkError::Transient("net".into()));

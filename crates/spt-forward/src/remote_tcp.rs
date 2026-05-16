@@ -71,4 +71,135 @@ mod tests {
         let r = connect_target(&target, Some(Duration::from_millis(100))).await;
         assert!(matches!(r, Err(Error::UnsupportedPlatform(_))));
     }
+
+    // ---- Timeout / connect-refused / IPv6 / DNS coverage ----
+
+    /// Connecting to a closed loopback port via [`BindAddr::Tcp`] must surface
+    /// a `NetworkUnreachable` error (connection refused branch, not timeout).
+    #[tokio::test]
+    async fn refuses_closed_tcp_socket() {
+        let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = l.local_addr().unwrap().port();
+        drop(l);
+        let target = BindAddr::parse(&format!("127.0.0.1:{port}")).unwrap();
+        let r = connect_target(&target, Some(Duration::from_secs(2))).await;
+        match r {
+            Err(Error::NetworkUnreachable(msg)) => {
+                assert!(msg.contains("connect"), "msg={msg}");
+            }
+            other => panic!("expected NetworkUnreachable, got {other:?}"),
+        }
+    }
+
+    /// Same as above but via the [`BindAddr::TcpHostPort`] branch.
+    #[tokio::test]
+    async fn refuses_closed_tcphostport() {
+        let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = l.local_addr().unwrap().port();
+        drop(l);
+        let target = BindAddr::TcpHostPort {
+            host: "127.0.0.1".into(),
+            port,
+        };
+        let r = connect_target(&target, Some(Duration::from_secs(2))).await;
+        assert!(matches!(r, Err(Error::NetworkUnreachable(_))));
+    }
+
+    /// TEST-NET-1 (192.0.2.0/24, RFC 5737) is documented as unrouteable.
+    #[tokio::test]
+    async fn connect_timeout_tcp() {
+        let target = BindAddr::Tcp("192.0.2.1:65000".parse().unwrap());
+        let r = connect_target(&target, Some(Duration::from_millis(50))).await;
+        assert!(matches!(r, Err(Error::NetworkUnreachable(_))));
+    }
+
+    /// TcpHostPort timeout/unrouteable path.
+    #[tokio::test]
+    async fn connect_timeout_tcphostport() {
+        let target = BindAddr::TcpHostPort {
+            host: "192.0.2.2".into(),
+            port: 65001,
+        };
+        let r = connect_target(&target, Some(Duration::from_millis(50))).await;
+        assert!(matches!(r, Err(Error::NetworkUnreachable(_))));
+    }
+
+    /// DNS resolution failure: ".invalid" TLD is reserved (RFC 6761).
+    #[tokio::test]
+    async fn dns_failure_returns_network_unreachable() {
+        let target = BindAddr::TcpHostPort {
+            host: "no-such-host.invalid".into(),
+            port: 22,
+        };
+        let r = connect_target(&target, Some(Duration::from_secs(2))).await;
+        match r {
+            Err(Error::NetworkUnreachable(msg)) => {
+                assert!(msg.contains("no-such-host.invalid"));
+            }
+            other => panic!("expected NetworkUnreachable, got {other:?}"),
+        }
+    }
+
+    /// IPv6 loopback via [`BindAddr::Tcp`].
+    #[tokio::test]
+    async fn ipv6_loopback_tcp() {
+        let bind = match TcpListener::bind("[::1]:0").await {
+            Ok(l) => l,
+            Err(_) => return,
+        };
+        let port = bind.local_addr().unwrap().port();
+        let _accept = tokio::spawn(async move {
+            let _ = bind.accept().await;
+        });
+        let target = BindAddr::Tcp(format!("[::1]:{port}").parse().unwrap());
+        let s = connect_target(&target, Some(Duration::from_secs(2)))
+            .await
+            .unwrap();
+        drop(s);
+    }
+
+    /// IPv6 loopback via [`BindAddr::TcpHostPort`].
+    #[tokio::test]
+    async fn ipv6_loopback_tcphostport() {
+        let bind = match TcpListener::bind("[::1]:0").await {
+            Ok(l) => l,
+            Err(_) => return,
+        };
+        let port = bind.local_addr().unwrap().port();
+        let _accept = tokio::spawn(async move {
+            let _ = bind.accept().await;
+        });
+        let target = BindAddr::TcpHostPort {
+            host: "::1".into(),
+            port,
+        };
+        let s = connect_target(&target, Some(Duration::from_secs(2)))
+            .await
+            .unwrap();
+        drop(s);
+    }
+
+    /// `None` timeout exercises the default-30s branch with a live listener.
+    #[tokio::test]
+    async fn default_timeout_when_none() {
+        let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = l.local_addr().unwrap().port();
+        let _accept = tokio::spawn(async move {
+            let _ = l.accept().await;
+        });
+        let target = BindAddr::TcpHostPort {
+            host: "127.0.0.1".into(),
+            port,
+        };
+        let s = connect_target(&target, None).await.unwrap();
+        drop(s);
+    }
+
+    /// Unix targets are always rejected, regardless of timeout argument.
+    #[tokio::test]
+    async fn unix_target_rejects_even_with_none_timeout() {
+        let target = BindAddr::Unix("/tmp/never.sock".into());
+        let r = connect_target(&target, None).await;
+        assert!(matches!(r, Err(Error::UnsupportedPlatform(_))));
+    }
 }

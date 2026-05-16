@@ -149,6 +149,7 @@ pub mod smtp {
 #[derive(Default)]
 pub struct RecordingEmailTransport {
     pub sent: parking_lot::Mutex<Vec<EmailMessage>>,
+    pub fail_with: parking_lot::Mutex<Option<SinkError>>,
 }
 
 impl RecordingEmailTransport {
@@ -158,11 +159,18 @@ impl RecordingEmailTransport {
     pub fn messages(&self) -> Vec<EmailMessage> {
         self.sent.lock().clone()
     }
+    /// Inject a one-shot failure for the next call.
+    pub fn fail_once(&self, err: SinkError) {
+        *self.fail_with.lock() = Some(err);
+    }
 }
 
 #[async_trait]
 impl EmailTransport for RecordingEmailTransport {
     async fn send(&self, msg: EmailMessage) -> Result<(), SinkError> {
+        if let Some(err) = self.fail_with.lock().take() {
+            return Err(err);
+        }
         self.sent.lock().push(msg);
         Ok(())
     }
@@ -194,5 +202,111 @@ mod tests {
         assert!(m[0].body.contains("connection refused"));
         assert_eq!(m[0].from, "spt@example.com");
         assert_eq!(m[0].to, vec!["sre@example.com".to_string()]);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn name_and_kind_are_stable() {
+        let t = Arc::new(RecordingEmailTransport::new());
+        let sink = EmailSink::new("ops", "from@x", vec!["to@x".into()], "s", "b", t);
+        assert_eq!(sink.name(), "ops");
+        assert_eq!(sink.kind(), "email");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn transport_failure_propagates_as_transient() {
+        let t = Arc::new(RecordingEmailTransport::new());
+        t.fail_once(SinkError::Transient("upstream MX 421".into()));
+        let sink = EmailSink::new(
+            "ops",
+            "from@x",
+            vec!["to@x".into()],
+            "{{kind}}",
+            "{{message}}",
+            t,
+        );
+        let ev = Event::builder("k", Severity::Info).build();
+        let err = sink.deliver(Arc::new(ev)).await.unwrap_err();
+        assert!(err.is_retryable());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn transport_failure_propagates_as_permanent() {
+        let t = Arc::new(RecordingEmailTransport::new());
+        t.fail_once(SinkError::Permanent("bad address".into()));
+        let sink = EmailSink::new("ops", "from@x", vec!["to@x".into()], "s", "b", t);
+        let err = sink
+            .deliver(Arc::new(Event::builder("k", Severity::Info).build()))
+            .await
+            .unwrap_err();
+        assert!(!err.is_retryable());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn multiple_recipients_are_preserved() {
+        let t = Arc::new(RecordingEmailTransport::new());
+        let sink = EmailSink::new(
+            "ops",
+            "from@x",
+            vec!["a@x".into(), "b@x".into(), "c@x".into()],
+            "S",
+            "B",
+            t.clone(),
+        );
+        sink.deliver(Arc::new(Event::builder("k", Severity::Info).build()))
+            .await
+            .unwrap();
+        let m = t.messages();
+        assert_eq!(m[0].to.len(), 3);
+        assert_eq!(m[0].to[2], "c@x");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn missing_template_fields_are_kept_as_placeholders() {
+        let t = Arc::new(RecordingEmailTransport::new());
+        let sink = EmailSink::new(
+            "ops",
+            "from@x",
+            vec!["to@x".into()],
+            "subj {{nope}}",
+            "body {{also_missing}}",
+            t.clone(),
+        );
+        sink.deliver(Arc::new(Event::builder("k", Severity::Info).build()))
+            .await
+            .unwrap();
+        let m = t.messages();
+        assert!(m[0].subject.contains("{{nope}}"));
+        assert!(m[0].body.contains("{{also_missing}}"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn email_message_is_cloneable_for_telemetry() {
+        let msg = EmailMessage {
+            from: "a".into(),
+            to: vec!["b".into()],
+            subject: "s".into(),
+            body: "b".into(),
+        };
+        let msg2 = msg.clone();
+        assert_eq!(msg2.from, msg.from);
+        assert_eq!(msg2.subject, msg.subject);
+    }
+
+    #[cfg(feature = "transports")]
+    #[tokio::test(flavor = "current_thread")]
+    async fn smtp_transport_build_returns_smtp_transport() {
+        let r = smtp::SmtpTransport::build("smtp.example.com", 587, None);
+        assert!(r.is_ok());
+    }
+
+    #[cfg(feature = "transports")]
+    #[tokio::test(flavor = "current_thread")]
+    async fn smtp_transport_build_with_credentials_succeeds() {
+        let r = smtp::SmtpTransport::build(
+            "smtp.example.com",
+            587,
+            Some(("user".into(), "pass".into())),
+        );
+        assert!(r.is_ok());
     }
 }

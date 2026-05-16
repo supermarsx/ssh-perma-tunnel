@@ -298,4 +298,70 @@ mod tests {
         let err = McpClient::connect_from_state_dir(tmp.path()).await;
         assert!(err.is_err(), "expected error when sidecar absent");
     }
+
+    #[tokio::test]
+    async fn connect_to_unreachable_addr_errors() {
+        // Bind a TCP listener, get its addr, then drop the listener so the
+        // socket is closed before we connect.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+        // On some kernels this returns "connection refused" immediately; on
+        // others it may block. Allow either Err or transiently-Ok.
+        let r = McpClient::connect(addr).await;
+        match r {
+            // Accept race-condition success, or expected RuntimeFailure.
+            Ok(_) | Err(Error::RuntimeFailure(_)) => {}
+            Err(other) => panic!("unexpected error type: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn initialize_response_deserialises_required_fields() {
+        let body = r#"{
+            "protocolVersion": "2024-11-05",
+            "serverInfo": {"name": "spt-mcp", "version": "0.1.0"}
+        }"#;
+        let resp: InitializeResponse = serde_json::from_str(body).unwrap();
+        assert_eq!(resp.protocol_version, "2024-11-05");
+        assert_eq!(resp.server_info.name, "spt-mcp");
+        assert_eq!(resp.server_info.version, "0.1.0");
+    }
+
+    #[test]
+    fn initialize_response_rejects_missing_fields() {
+        let body = r#"{"protocolVersion": "x"}"#;
+        let r: std::result::Result<InitializeResponse, _> = serde_json::from_str(body);
+        assert!(r.is_err());
+    }
+
+    #[tokio::test]
+    async fn with_token_attaches_token_for_initialize_payload() {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        // Spin up an echo server that records the inbound initialize JSON.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let captured: std::sync::Arc<tokio::sync::Mutex<Option<String>>> =
+            std::sync::Arc::new(tokio::sync::Mutex::new(None));
+        let captured_c = captured.clone();
+        let server = tokio::spawn(async move {
+            let (mut s, _) = listener.accept().await.unwrap();
+            let (r, mut w) = s.split();
+            let mut br = BufReader::new(r);
+            let mut line = String::new();
+            br.read_line(&mut line).await.unwrap();
+            *captured_c.lock().await = Some(line.clone());
+            // Send a minimal response.
+            let resp = r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2024-11-05","serverInfo":{"name":"spt-mcp","version":"0.0.0"}}}"#;
+            w.write_all(resp.as_bytes()).await.unwrap();
+            w.write_all(b"\n").await.unwrap();
+            w.flush().await.unwrap();
+        });
+
+        let mut client = McpClient::connect(addr).await.unwrap().with_token("hunter2");
+        let _ = client.initialize().await.unwrap();
+        let _ = server.await;
+        let body = captured.lock().await.clone().unwrap();
+        assert!(body.contains("hunter2"), "expected token in payload: {body}");
+    }
 }

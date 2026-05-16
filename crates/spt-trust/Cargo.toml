@@ -35,3 +35,6 @@ subtle = { workspace = true }
 [dev-dependencies]
 tempfile = { workspace = true }
 spt-key = { workspace = true, features = ["testing"] }
+# Already in workspace Cargo.lock via spt-observability/spt-remote-config; reused
+# here in tests to mint self-signed certs for `TlsPin::verify` coverage.
+rcgen = { version = "0.13", default-features = false, features = ["aws_lc_rs", "pem"] }

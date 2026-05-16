@@ -305,6 +305,117 @@ mod tests {
     }
 
     #[test]
+    fn bundle_config_defaults_are_strict_and_16mb() {
+        let c = BundleConfig::default();
+        assert!(matches!(c.redaction, RedactionMode::Strict));
+        assert_eq!(c.max_total_bytes, 16 * 1024 * 1024);
+    }
+
+    #[test]
+    fn empty_inputs_still_produces_manifest_only_archive() {
+        let d = tempdir().unwrap();
+        let p = build_bundle(
+            d.path(),
+            "empty-run",
+            &BundleInputs::default(),
+            &BundleConfig::default(),
+        )
+        .unwrap();
+        let entries = read_archive_entries(&p);
+        let names: Vec<&str> = entries.iter().map(|(n, _)| n.as_str()).collect();
+        assert!(names.contains(&"manifest.txt"));
+        // No other text entries because every Option is None.
+        assert_eq!(entries.len(), 1);
+    }
+
+    #[test]
+    fn all_inputs_round_trip_filenames() {
+        let d = tempdir().unwrap();
+        let inputs = BundleInputs {
+            effective_config: Some("k=v".into()),
+            status_snapshot: Some("{}".into()),
+            recent_events: Some("{\"x\":1}".into()),
+            recent_logs: Some("log line".into()),
+            stats_summary: Some("metric=1".into()),
+            report: Some(DiagnosticReport::default()),
+            version_info: Some("v1".into()),
+        };
+        let p = build_bundle(d.path(), "all", &inputs, &BundleConfig::default()).unwrap();
+        let entries = read_archive_entries(&p);
+        let names: Vec<&str> = entries.iter().map(|(n, _)| n.as_str()).collect();
+        for expected in [
+            "manifest.txt",
+            "version.txt",
+            "effective-config.toml",
+            "status.json",
+            "events.jsonl",
+            "logs.txt",
+            "stats.txt",
+            "report.json",
+        ] {
+            assert!(
+                names.contains(&expected),
+                "missing {expected} in {names:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn manifest_contains_run_id() {
+        let d = tempdir().unwrap();
+        let p = build_bundle(
+            d.path(),
+            "abc-run-id-123",
+            &BundleInputs::default(),
+            &BundleConfig::default(),
+        )
+        .unwrap();
+        let entries = read_archive_entries(&p);
+        let (_, body) = entries.iter().find(|(n, _)| n == "manifest.txt").unwrap();
+        let body = std::str::from_utf8(body).unwrap();
+        assert!(body.contains("abc-run-id-123"), "body: {body}");
+        assert!(body.contains("generated_at"));
+    }
+
+    #[test]
+    fn archive_path_includes_run_id_dir() {
+        let d = tempdir().unwrap();
+        let p = build_bundle(
+            d.path(),
+            "the-run",
+            &BundleInputs::default(),
+            &BundleConfig::default(),
+        )
+        .unwrap();
+        assert!(p.ends_with("bundle.tar.gz"));
+        let parent = p.parent().unwrap();
+        assert_eq!(parent.file_name().unwrap(), "the-run");
+        assert_eq!(parent.parent().unwrap().file_name().unwrap(), "diagnostics");
+    }
+
+    #[test]
+    fn budget_exactly_zero_truncates_immediately() {
+        let d = tempdir().unwrap();
+        let cfg = BundleConfig {
+            redaction: RedactionMode::None,
+            max_total_bytes: 0,
+        };
+        let p = build_bundle(
+            d.path(),
+            "zero-budget",
+            &BundleInputs {
+                recent_logs: Some("x".repeat(1000)),
+                ..Default::default()
+            },
+            &cfg,
+        )
+        .unwrap();
+        // Bundle must still exist and be readable even with a zero budget.
+        assert!(p.exists());
+        let _ = read_archive_entries(&p);
+    }
+
+    #[test]
     fn budget_truncates() {
         let d = tempdir().unwrap();
         let big = "x".repeat(10_000);

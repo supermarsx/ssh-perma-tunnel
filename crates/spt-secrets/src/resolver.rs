@@ -213,4 +213,75 @@ mod tests {
         let err = res.resolve(&r).unwrap_err();
         assert!(matches!(err, Error::SecretUnavailable { .. }));
     }
+
+    #[test]
+    fn try_resolve_propagates_backend_error() {
+        let bad = Arc::new(Mock::fail(BackendKind::Keychain));
+        let res = Resolver::new(vec![bad]);
+        let r = SecretRef::new("ns", "n").unwrap();
+        let err = res.try_resolve(&r).unwrap_err();
+        assert!(matches!(err, Error::SecretUnavailable { .. }));
+    }
+
+    #[test]
+    fn try_resolve_returns_hit_value() {
+        let m = Arc::new(Mock::new(BackendKind::File));
+        let r = SecretRef::new("ns", "n").unwrap();
+        m.put(&r, b"hit");
+        let res = Resolver::new(vec![m]);
+        let got = res.try_resolve(&r).unwrap().unwrap();
+        assert_eq!(got.expose_secret().as_slice(), b"hit");
+    }
+
+    #[test]
+    fn push_appends_to_chain() {
+        let mut res: Resolver = Resolver::new(vec![]);
+        res.push(Arc::new(Mock::new(BackendKind::Env)));
+        res.push(Arc::new(Mock::new(BackendKind::Vault)));
+        let kinds: Vec<BackendKind> = res.backends().map(SecretBackend::kind).collect();
+        assert_eq!(kinds, vec![BackendKind::Env, BackendKind::Vault]);
+    }
+
+    #[test]
+    fn backend_arcs_returns_chain() {
+        let a: Arc<dyn SecretBackend> = Arc::new(Mock::new(BackendKind::Keychain));
+        let b: Arc<dyn SecretBackend> = Arc::new(Mock::new(BackendKind::Vault));
+        let res = Resolver::new(vec![a, b]);
+        let arcs = res.backend_arcs();
+        assert_eq!(arcs.len(), 2);
+        assert_eq!(arcs[0].kind(), BackendKind::Keychain);
+        assert_eq!(arcs[1].kind(), BackendKind::Vault);
+    }
+
+    #[test]
+    fn missing_reason_includes_full_chain_description() {
+        let res = Resolver::new(vec![
+            Arc::new(Mock::new(BackendKind::Keychain)),
+            Arc::new(Mock::new(BackendKind::Vault)),
+            Arc::new(Mock::new(BackendKind::Env)),
+            Arc::new(Mock::new(BackendKind::File)),
+        ]);
+        let r = SecretRef::new("ns", "absent").unwrap();
+        let err = res.resolve(&r).unwrap_err();
+        let reason = match err {
+            Error::SecretUnavailable { reason, .. } => reason,
+            other => panic!("unexpected {other:?}"),
+        };
+        assert!(reason.contains("keychain"));
+        assert!(reason.contains("vault"));
+        assert!(reason.contains("env"));
+        assert!(reason.contains("file"));
+        assert!(reason.contains("→"));
+    }
+
+    #[test]
+    fn empty_resolver_misses() {
+        let res = Resolver::new(vec![]);
+        let r = SecretRef::new("ns", "n").unwrap();
+        assert!(res.try_resolve(&r).unwrap().is_none());
+        assert!(matches!(
+            res.resolve(&r).unwrap_err(),
+            Error::SecretUnavailable { .. }
+        ));
+    }
 }

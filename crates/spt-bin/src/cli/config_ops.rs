@@ -589,4 +589,192 @@ mod tests {
         let r = init_observability_example(&out).await;
         assert!(matches!(r, Err(Error::InvalidArgs(_))));
     }
+
+    #[tokio::test]
+    async fn init_observability_creates_parent_dirs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let out = tmp.path().join("nested/deep/o.toml");
+        init_observability_example(&out).await.unwrap();
+        assert!(out.exists());
+    }
+
+    #[test]
+    fn require_config_path_returns_error_when_unset() {
+        let g = opts(None);
+        let err = require_config_path(&g).unwrap_err();
+        assert!(matches!(err, Error::InvalidArgs(_)));
+    }
+
+    #[test]
+    fn require_config_path_returns_path_when_set() {
+        let g = opts(Some(PathBuf::from("/tmp/c.toml")));
+        let p = require_config_path(&g).unwrap();
+        assert_eq!(p, PathBuf::from("/tmp/c.toml"));
+    }
+
+    #[test]
+    fn output_format_honors_legacy_json_flag() {
+        let mut g = opts(None);
+        g.json = true;
+        g.output = OutputFormat::Yaml;
+        assert!(matches!(output_format(&g), OutputFormat::Json));
+    }
+
+    #[test]
+    fn output_format_falls_back_to_global_output() {
+        let mut g = opts(None);
+        g.json = false;
+        g.output = OutputFormat::Yaml;
+        assert!(matches!(output_format(&g), OutputFormat::Yaml));
+    }
+
+    #[test]
+    fn mcp_listen_configured_handles_missing_blank_and_present() {
+        let mut cfg = Config::default();
+        assert!(!mcp_listen_configured(&cfg));
+
+        cfg.mcp = Some(spt_config::schema::Mcp {
+            listen: Some(String::new()),
+            ..Default::default()
+        });
+        assert!(!mcp_listen_configured(&cfg));
+
+        cfg.mcp = Some(spt_config::schema::Mcp {
+            listen: Some("   ".into()),
+            ..Default::default()
+        });
+        assert!(!mcp_listen_configured(&cfg));
+
+        cfg.mcp = Some(spt_config::schema::Mcp {
+            listen: Some("127.0.0.1:7878".into()),
+            ..Default::default()
+        });
+        assert!(mcp_listen_configured(&cfg));
+    }
+
+    #[test]
+    fn precondition_no_mcp_carries_actionable_hint() {
+        let e = precondition_no_mcp();
+        assert!(matches!(e, Error::ReloadFailed(_)));
+        let msg = e.to_string();
+        assert!(msg.contains("[mcp].listen"), "got `{msg}`");
+        assert!(msg.contains("SIGHUP") || msg.contains("ParamChange"));
+    }
+
+    #[test]
+    fn check_mcp_listen_recognizes_loopback() {
+        let c = check_mcp_listen("127.0.0.1:7878");
+        assert_eq!(c.status, Status::Pass);
+        let c6 = check_mcp_listen("[::1]:7878");
+        assert_eq!(c6.status, Status::Pass);
+    }
+
+    #[test]
+    fn check_mcp_listen_warns_on_non_loopback() {
+        let c = check_mcp_listen("0.0.0.0:7878");
+        assert_eq!(c.status, Status::Warn);
+        let c2 = check_mcp_listen("10.0.0.1:7878");
+        assert_eq!(c2.status, Status::Warn);
+    }
+
+    #[test]
+    fn check_mcp_listen_fails_on_garbage() {
+        let c = check_mcp_listen("not a socket addr");
+        assert_eq!(c.status, Status::Fail);
+        let c2 = check_mcp_listen("127.0.0.1");
+        assert_eq!(c2.status, Status::Fail);
+    }
+
+    #[test]
+    fn check_path_writable_existing_temp_dir_passes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let c = check_path_writable("p.exists", tmp.path(), "no remedy");
+        assert_eq!(c.status, Status::Pass);
+    }
+
+    #[test]
+    fn check_path_writable_missing_path_warns() {
+        let tmp = tempfile::tempdir().unwrap();
+        let missing = tmp.path().join("does/not/exist");
+        let c = check_path_writable("p.missing", &missing, "create me");
+        assert_eq!(c.status, Status::Warn);
+    }
+
+    #[tokio::test]
+    async fn doctor_fails_when_config_path_missing() {
+        let r = doctor(&opts(None), doctor_args()).await;
+        assert!(matches!(r, Err(Error::InvalidArgs(_))));
+    }
+
+    #[tokio::test]
+    async fn doctor_reports_mcp_listen_warning_on_non_loopback_bind() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("c.toml");
+        std::fs::write(
+            &p,
+            r#"
+                version = 1
+                [[profiles]]
+                name = "p"
+                protocol = "ssh2"
+                host = "h"
+                [mcp]
+                listen = "10.0.0.5:7878"
+                expose = true
+            "#,
+        )
+        .unwrap();
+        // doctor should still return Ok (warnings are not failures).
+        doctor(&opts(Some(p)), doctor_args()).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn run_config_doctor_directly_against_minimal_config() {
+        let cfg = Config::default();
+        let warns: Vec<String> = Vec::new();
+        let path = std::path::PathBuf::from("/tmp/syn.toml");
+        let report = run_config_doctor(&cfg, &warns, &path, &doctor_args()).await;
+        assert!(!report.checks.is_empty());
+        // Profile count check is always present.
+        assert!(report
+            .checks
+            .iter()
+            .any(|c| c.id == "config.profiles.count"));
+    }
+
+    #[tokio::test]
+    async fn run_config_doctor_reports_unknown_keys_when_present() {
+        let cfg = Config::default();
+        let warns = vec!["foo".to_string(), "bar".into()];
+        let path = std::path::PathBuf::from("/tmp/syn.toml");
+        let report = run_config_doctor(&cfg, &warns, &path, &doctor_args()).await;
+        let uk = report
+            .checks
+            .iter()
+            .find(|c| c.id == "config.unknown_keys")
+            .unwrap();
+        assert_eq!(uk.status, Status::Warn);
+    }
+
+    #[tokio::test]
+    async fn run_config_doctor_skipped_markers_for_toolset_flags() {
+        let cfg = Config::default();
+        let warns: Vec<String> = Vec::new();
+        let path = std::path::PathBuf::from("/tmp/syn.toml");
+        let args = groups::config::ConfigDoctor {
+            network: true,
+            service: true,
+            secrets: false,
+            dns: false,
+            observability: true,
+        };
+        let report = run_config_doctor(&cfg, &warns, &path, &args).await;
+        for group in ["network", "service", "observability"] {
+            let id = format!("config.doctor.{group}");
+            assert!(
+                report.checks.iter().any(|c| c.id == id),
+                "missing skipped marker for {group}"
+            );
+        }
+    }
 }

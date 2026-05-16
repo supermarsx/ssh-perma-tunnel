@@ -186,4 +186,89 @@ mod tests {
         assert!("1".parse::<ObjectIdentifier>().is_err());
         assert!("".parse::<ObjectIdentifier>().is_err());
     }
+
+    #[test]
+    fn rejects_invalid_arc() {
+        assert!("1.x.3".parse::<ObjectIdentifier>().is_err());
+        assert!("1.-2".parse::<ObjectIdentifier>().is_err());
+        assert!("1.3..5".parse::<ObjectIdentifier>().is_err());
+    }
+
+    #[test]
+    fn leading_dot_is_tolerated() {
+        let a: ObjectIdentifier = ".1.3.6".parse().unwrap();
+        assert_eq!(a.arcs(), &[1, 3, 6]);
+    }
+
+    #[test]
+    fn push_and_with_suffix() {
+        let mut a: ObjectIdentifier = "1.3.6.1".parse().unwrap();
+        let b = a.with_suffix(99);
+        a.push(99);
+        assert_eq!(a, b);
+        assert_eq!(a.arcs().last(), Some(&99));
+        assert_eq!(a.len(), 5);
+    }
+
+    #[test]
+    fn is_empty_and_len() {
+        let empty = ObjectIdentifier::new(Vec::<u32>::new());
+        assert!(empty.is_empty());
+        assert_eq!(empty.len(), 0);
+        let two = ObjectIdentifier::new([1u32, 3]);
+        assert!(!two.is_empty());
+        assert_eq!(two.len(), 2);
+    }
+
+    #[test]
+    fn starts_with_prefix_and_self() {
+        let parent: ObjectIdentifier = "1.3.6.1".parse().unwrap();
+        let child: ObjectIdentifier = "1.3.6.1.4.1".parse().unwrap();
+        assert!(child.starts_with(&parent));
+        assert!(parent.starts_with(&parent));
+        assert!(!parent.starts_with(&child));
+        let unrelated: ObjectIdentifier = "1.4".parse().unwrap();
+        assert!(!child.starts_with(&unrelated));
+    }
+
+    #[test]
+    fn display_and_debug() {
+        let oid: ObjectIdentifier = "1.3.6.1.4.1.32473".parse().unwrap();
+        assert_eq!(format!("{oid}"), "1.3.6.1.4.1.32473");
+        let dbg = format!("{oid:?}");
+        assert!(dbg.starts_with("OID("));
+        assert!(dbg.contains("1.3.6.1.4.1.32473"));
+    }
+
+    #[test]
+    fn from_vec_and_array() {
+        let from_vec = ObjectIdentifier::from(vec![1u32, 3, 6]);
+        let from_arr: ObjectIdentifier = ObjectIdentifier::from([1u32, 3, 6]);
+        assert_eq!(from_vec, from_arr);
+    }
+
+    #[test]
+    fn enterprise_oid_helpers() {
+        let e = enterprise_oid(99);
+        assert_eq!(e.arcs(), &[1, 3, 6, 1, 4, 1, 99]);
+        let doc = documentation_enterprise_oid();
+        assert!(doc.starts_with(&enterprise_oid(crate::agent::DOCUMENTATION_ENTERPRISE_PEN)));
+    }
+
+    #[test]
+    fn partial_cmp_matches_cmp() {
+        let a: ObjectIdentifier = "1.3.6.1".parse().unwrap();
+        let b: ObjectIdentifier = "1.3.6.2".parse().unwrap();
+        assert_eq!(a.partial_cmp(&b), Some(core::cmp::Ordering::Less));
+        assert_eq!(b.partial_cmp(&a), Some(core::cmp::Ordering::Greater));
+        assert_eq!(a.partial_cmp(&a.clone()), Some(core::cmp::Ordering::Equal));
+    }
+
+    #[test]
+    fn hash_eq_consistency() {
+        use std::collections::HashSet;
+        let mut s = HashSet::new();
+        s.insert(ObjectIdentifier::new([1u32, 3, 6]));
+        assert!(s.contains(&ObjectIdentifier::from(vec![1u32, 3, 6])));
+    }
 }

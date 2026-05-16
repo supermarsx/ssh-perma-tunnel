@@ -317,4 +317,158 @@ mod tests {
         std::thread::sleep(Duration::from_millis(20));
         assert!(!s.should_suppress(&d, &e));
     }
+
+    #[test]
+    fn sink_ref_round_trips_through_string() {
+        let r = SinkRef::new("alerts");
+        assert_eq!(r.as_str(), "alerts");
+        let s = serde_json::to_string(&r).unwrap();
+        let back: SinkRef = serde_json::from_str(&s).unwrap();
+        assert_eq!(back, r);
+    }
+
+    #[test]
+    fn forward_filter_excludes_when_id_missing() {
+        let f_id = ForwardId::new("f1").unwrap();
+        let m = BindingMatch {
+            forward_filter: vec![f_id.clone()],
+            ..Default::default()
+        };
+        let e_with = Event::builder("k", Severity::Info).forward(f_id).build();
+        let e_without = Event::builder("k", Severity::Info).build();
+        assert!(m.matches(&e_with));
+        assert!(!m.matches(&e_without));
+    }
+
+    #[test]
+    fn empty_kinds_matches_anything() {
+        let m = BindingMatch::default();
+        assert!(m.matches(&ev("anything", Severity::Info)));
+        assert!(m.matches(&ev("totally.different", Severity::Critical)));
+    }
+
+    #[test]
+    fn exprfilter_eq_matches_string_and_neq_on_missing_field() {
+        let e = Event::builder("k", Severity::Info)
+            .field("present", "yes")
+            .build();
+        let eq_present = ExprFilter {
+            field: "present".into(),
+            op: ExprOp::Eq,
+            value: Value::String("yes".into()),
+        };
+        assert!(eq_present.matches(&e));
+        // Missing field with `Neq` -> true; with `Eq` -> false.
+        let neq_missing = ExprFilter {
+            field: "absent".into(),
+            op: ExprOp::Neq,
+            value: Value::String("anything".into()),
+        };
+        assert!(neq_missing.matches(&e));
+        let eq_missing = ExprFilter {
+            field: "absent".into(),
+            op: ExprOp::Eq,
+            value: Value::String("anything".into()),
+        };
+        assert!(!eq_missing.matches(&e));
+    }
+
+    #[test]
+    fn exprfilter_contains_only_for_strings() {
+        let e = Event::builder("k", Severity::Info)
+            .field("text", "hello world")
+            .field("count", 42)
+            .build();
+        let contains_word = ExprFilter {
+            field: "text".into(),
+            op: ExprOp::Contains,
+            value: Value::String("world".into()),
+        };
+        assert!(contains_word.matches(&e));
+        // `contains` against a non-string left side returns false.
+        let contains_on_number = ExprFilter {
+            field: "count".into(),
+            op: ExprOp::Contains,
+            value: Value::String("42".into()),
+        };
+        assert!(!contains_on_number.matches(&e));
+    }
+
+    #[test]
+    fn json_loose_eq_string_vs_number_works_both_directions() {
+        let e = Event::builder("k", Severity::Info)
+            .field("count", 5)
+            .build();
+        let lhs_num_rhs_str = ExprFilter {
+            field: "count".into(),
+            op: ExprOp::Eq,
+            value: Value::String("5".into()),
+        };
+        assert!(lhs_num_rhs_str.matches(&e));
+    }
+
+    #[test]
+    fn dedupe_default_uses_documented_fields() {
+        let d = Dedupe::default();
+        assert_eq!(d.key_fields, vec!["kind", "profile_id", "forward_id"]);
+        assert_eq!(d.interval, Duration::from_secs(60));
+    }
+
+    #[test]
+    fn dedupe_key_substitutes_placeholder_for_missing_fields() {
+        let d = Dedupe::default();
+        let e = Event::builder("k", Severity::Info).build();
+        let key = d.key_for(&e);
+        // No profile/forward → "∅" placeholder appears twice.
+        assert!(key.contains("∅"));
+        assert!(key.starts_with("k|"));
+    }
+
+    #[test]
+    fn binding_default_is_empty() {
+        let b = Binding::default();
+        assert!(b.name.is_empty());
+        assert!(b.sinks.is_empty());
+        assert!(b.dedupe.is_none());
+    }
+
+    #[test]
+    fn binding_serde_round_trip_through_json() {
+        let mut b = Binding {
+            name: "ops".into(),
+            r#match: BindingMatch {
+                kinds: vec!["forward.*".into()],
+                min_severity: Some(Severity::Warn),
+                ..Default::default()
+            },
+            sinks: vec![SinkRef::new("alerts")],
+            dedupe: Some(Dedupe::default()),
+        };
+        let s = serde_json::to_string(&b).unwrap();
+        let back: Binding = serde_json::from_str(&s).unwrap();
+        assert_eq!(back.name, "ops");
+        assert_eq!(back.sinks.len(), 1);
+        // Tweak then re-serialize to exercise both paths.
+        b.dedupe = None;
+        let s2 = serde_json::to_string(&b).unwrap();
+        let back2: Binding = serde_json::from_str(&s2).unwrap();
+        assert!(back2.dedupe.is_none());
+    }
+
+    #[test]
+    fn dedupe_state_garbage_collects_stale_keys() {
+        let d = Dedupe {
+            key_fields: vec!["kind".into()],
+            interval: Duration::from_millis(10),
+        };
+        let s = DedupeState::new();
+        let e_a = Event::builder("a", Severity::Info).build();
+        let e_b = Event::builder("b", Severity::Info).build();
+        assert!(!s.should_suppress(&d, &e_a));
+        std::thread::sleep(Duration::from_millis(20));
+        // Inserting `b` should also clear the stale `a` entry.
+        assert!(!s.should_suppress(&d, &e_b));
+        // `a` should now be considered fresh again.
+        assert!(!s.should_suppress(&d, &e_a));
+    }
 }

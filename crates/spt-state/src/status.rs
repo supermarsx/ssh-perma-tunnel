@@ -419,6 +419,143 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn writer_set_replaces_snapshot() {
+        let tmp = tempdir().unwrap();
+        let writer = StatusWriter::new(tmp.path().to_path_buf(), StatusWriterConfig::default());
+        let snap = StatusSnapshot {
+            pid: 9001,
+            version: "v9".into(),
+            ..Default::default()
+        };
+        writer.set(snap).await;
+        let read = writer.read().await;
+        assert_eq!(read.pid, 9001);
+        assert_eq!(read.version, "v9");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn ring_size_zero_skips_ring_writes() {
+        let tmp = tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
+        let writer = StatusWriter::new(
+            dir.clone(),
+            StatusWriterConfig {
+                interval: Duration::from_secs(60),
+                ring_size: 0,
+            },
+        );
+        writer.update(|s| s.pid = 1).await;
+        writer.flush().await.unwrap();
+        assert!(paths::status_path(&dir).is_file());
+        let ring: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(std::result::Result::ok)
+            .filter(|e| {
+                let n = e.file_name().to_string_lossy().into_owned();
+                let is_json = std::path::Path::new(&n)
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("json"));
+                n.starts_with("status.") && is_json && n != "status.json"
+            })
+            .collect();
+        assert!(ring.is_empty(), "unexpected ring files: {ring:?}");
+    }
+
+    #[test]
+    fn config_default_values() {
+        let c = StatusWriterConfig::default();
+        assert_eq!(c.interval, Duration::from_secs(5));
+        assert_eq!(c.ring_size, 12);
+    }
+
+    #[test]
+    fn snapshot_round_trip_through_json() {
+        let mut s = StatusSnapshot {
+            pid: 7,
+            version: "v".into(),
+            config_fingerprint_sha256: "abc".into(),
+            ..Default::default()
+        };
+        s.profiles.push(ProfileStatus {
+            id: "p".into(),
+            state: "Running".into(),
+            ..Default::default()
+        });
+        s.forwards.push(ForwardStatus {
+            id: "f".into(),
+            profile: "p".into(),
+            state: "Connected".into(),
+            direction: "local".into(),
+            transport: "tcp".into(),
+            ..Default::default()
+        });
+        s.sessions.push(SessionStatus {
+            id: "s".into(),
+            ..Default::default()
+        });
+        s.connections.push(ConnectionStatus {
+            id: "c".into(),
+            ..Default::default()
+        });
+        s.dns_records.push(DnsRecordStatus {
+            name: "a".into(),
+            kind: "A".into(),
+            value: "127.0.0.1".into(),
+            healthy: true,
+        });
+        s.failover_state.per_profile.push(FailoverProfileEntry {
+            profile: "p".into(),
+            current_endpoint: Some("e:22".into()),
+            remaining_targets: 2,
+            cooldown_until: None,
+        });
+        s.last_errors.push(LastError {
+            scope: "session".into(),
+            category: "Auth".into(),
+            message: "no".into(),
+            at: None,
+        });
+        s.counters.bytes_in = 99;
+
+        let raw = serde_json::to_string(&s).unwrap();
+        let back: StatusSnapshot = serde_json::from_str(&raw).unwrap();
+        assert_eq!(back.pid, 7);
+        assert_eq!(back.profiles.len(), 1);
+        assert_eq!(back.forwards.len(), 1);
+        assert_eq!(back.sessions.len(), 1);
+        assert_eq!(back.connections.len(), 1);
+        assert_eq!(back.dns_records.len(), 1);
+        assert_eq!(back.failover_state.per_profile.len(), 1);
+        assert_eq!(back.last_errors.len(), 1);
+        assert_eq!(back.counters.bytes_in, 99);
+    }
+
+    #[test]
+    fn snapshot_deserialises_with_defaults_for_missing_fields() {
+        let s: StatusSnapshot = serde_json::from_str("{}").unwrap();
+        assert_eq!(s.pid, 0);
+        assert!(s.version.is_empty());
+        assert!(s.profiles.is_empty());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn handle_drop_signals_shutdown() {
+        let tmp = tempdir().unwrap();
+        let writer = StatusWriter::new(
+            tmp.path().to_path_buf(),
+            StatusWriterConfig {
+                interval: Duration::from_millis(20),
+                ring_size: 1,
+            },
+        );
+        writer.update(|s| s.pid = 1).await;
+        {
+            let _h = writer.clone().spawn();
+        }
+        tokio::time::sleep(Duration::from_millis(60)).await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn ring_is_pruned_to_size() {
         let tmp = tempdir().unwrap();
         let dir = tmp.path().to_path_buf();

@@ -78,4 +78,48 @@ mod tests {
     fn aggregate_empty_is_unavailable() {
         assert!(matches!(aggregate(&[]), BackendStatus::Unavailable));
     }
+
+    #[test]
+    fn from_resolver_polls_every_backend_in_order() {
+        use crate::testing::{AlwaysFailBackend, MemoryBackend};
+        use std::sync::Arc;
+        let r = Resolver::new(vec![
+            Arc::new(MemoryBackend::new().with_kind(BackendKind::Keychain)) as _,
+            Arc::new(AlwaysFailBackend::unsupported("haiku")) as _,
+            Arc::new(MemoryBackend::new().with_kind(BackendKind::Env)) as _,
+        ]);
+        let d = SecretsDoctor::from_resolver(&r);
+        assert_eq!(d.backends.len(), 3);
+        // Mixed Ok + Unavailable => Degraded.
+        assert!(matches!(d.status, BackendStatus::Degraded));
+    }
+
+    #[test]
+    fn from_resolver_all_ok() {
+        use crate::testing::MemoryBackend;
+        use std::sync::Arc;
+        let r = Resolver::new(vec![Arc::new(MemoryBackend::new()) as _]);
+        let d = SecretsDoctor::from_resolver(&r);
+        assert!(matches!(d.status, BackendStatus::Ok));
+    }
+
+    #[test]
+    fn from_resolver_empty_is_unavailable() {
+        let r = Resolver::new(vec![]);
+        let d = SecretsDoctor::from_resolver(&r);
+        assert!(d.backends.is_empty());
+        assert!(matches!(d.status, BackendStatus::Unavailable));
+    }
+
+    #[test]
+    fn doctor_serde_round_trip() {
+        let d = SecretsDoctor {
+            backends: vec![BackendDoctor::ok(BackendKind::Env, "ok")],
+            status: BackendStatus::Ok,
+        };
+        let j = serde_json::to_string(&d).unwrap();
+        let back: SecretsDoctor = serde_json::from_str(&j).unwrap();
+        assert!(matches!(back.status, BackendStatus::Ok));
+        assert_eq!(back.backends.len(), 1);
+    }
 }

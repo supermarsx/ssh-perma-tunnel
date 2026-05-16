@@ -215,4 +215,127 @@ mod tests {
         })
         .unwrap();
     }
+
+    #[test]
+    fn password_passes_without_inspecting_secret() {
+        validate(&AuthMethod::Password {
+            secret: SecretRef::Env("PW".into()),
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn public_key_rejects_directory_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let m = AuthMethod::PublicKey {
+            identity_file: tmp.path().to_path_buf(),
+            passphrase: None,
+        };
+        let err = validate(&m).unwrap_err();
+        let s = err.to_string();
+        assert!(s.contains("not a regular file"), "{s}");
+    }
+
+    #[test]
+    fn agent_with_empty_socket_path_rejected() {
+        let m = AuthMethod::Agent {
+            socket: Some(std::path::PathBuf::from("")),
+        };
+        let err = validate(&m).unwrap_err();
+        let s = err.to_string();
+        assert!(s.contains("agent.socket"), "{s}");
+    }
+
+    #[test]
+    fn agent_with_non_empty_socket_passes_without_existence_check() {
+        // Validation is shape-only — socket path is not required to exist.
+        let m = AuthMethod::Agent {
+            socket: Some(std::path::PathBuf::from("/never/created/spt-agent.sock")),
+        };
+        validate(&m).unwrap();
+    }
+
+    #[test]
+    fn kbi_rejects_entry_with_empty_pattern() {
+        let m = AuthMethod::KeyboardInteractive {
+            responder: vec![KbiAnswer {
+                pattern: String::new(),
+                response: SecretRef::Env("X".into()),
+                echo: false,
+            }],
+        };
+        let err = validate(&m).unwrap_err();
+        let s = err.to_string();
+        assert!(s.contains("responder[0]"), "{s}");
+        assert!(s.contains("pattern"), "{s}");
+    }
+
+    #[test]
+    fn certificate_passes_when_both_files_exist() {
+        let cert = touch();
+        let key = touch();
+        validate(&AuthMethod::Certificate {
+            cert: cert.path().to_path_buf(),
+            key: key.path().to_path_buf(),
+            passphrase: None,
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn certificate_missing_cert_fails_with_cert_field() {
+        let key = touch();
+        let m = AuthMethod::Certificate {
+            cert: "/no/such/cert".into(),
+            key: key.path().to_path_buf(),
+            passphrase: None,
+        };
+        let err = validate(&m).unwrap_err();
+        let s = err.to_string();
+        assert!(s.contains("certificate.cert"), "{s}");
+    }
+
+    #[test]
+    fn basic_passes_with_username() {
+        validate(&AuthMethod::Basic {
+            username: "alice".into(),
+            password: SecretRef::Env("PW".into()),
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn oidc_rejects_missing_client_id() {
+        let m = AuthMethod::OidcDeviceFlow {
+            issuer: Url::parse("https://login.example.com").unwrap(),
+            client_id: String::new(),
+            audience: None,
+        };
+        let err = validate(&m).unwrap_err();
+        let s = err.to_string();
+        assert!(s.contains("oidc.client_id"), "{s}");
+    }
+
+    #[test]
+    fn oidc_data_url_rejected_for_missing_host() {
+        // A scheme other than https is rejected first.
+        let m = AuthMethod::OidcDeviceFlow {
+            issuer: Url::parse("ftp://login.example.com").unwrap(),
+            client_id: "id".into(),
+            audience: None,
+        };
+        let err = validate(&m).unwrap_err();
+        let s = err.to_string();
+        assert!(s.contains("https"), "{s}");
+    }
+
+    #[test]
+    fn public_key_with_passphrase_ok() {
+        let f = touch();
+        let m = AuthMethod::PublicKey {
+            identity_file: f.path().to_path_buf(),
+            passphrase: Some(SecretRef::Env("PASS".into())),
+        };
+        validate(&m).unwrap();
+    }
 }

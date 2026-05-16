@@ -135,4 +135,54 @@ mod tests {
         clock.advance(Duration::from_secs(11));
         assert!(matches!(d.evaluate(), InstabilityVerdict::Stable));
     }
+
+    #[test]
+    fn errors_alone_can_trip_threshold() {
+        let clock = Arc::new(TestClock::at_now());
+        let d = ThresholdInstability::with_clock(Duration::from_secs(60), 6, 100, 2, clock);
+        d.record_error();
+        d.record_error();
+        assert!(matches!(d.evaluate(), InstabilityVerdict::Stable));
+        d.record_error();
+        match d.evaluate() {
+            InstabilityVerdict::Unstable { reconnects, errors } => {
+                assert_eq!(reconnects, 0);
+                assert_eq!(errors, 3);
+            }
+            InstabilityVerdict::Stable => panic!("expected Unstable, got Stable"),
+        }
+    }
+
+    #[test]
+    fn either_metric_can_flip_state_independently() {
+        let clock = Arc::new(TestClock::at_now());
+        let d = ThresholdInstability::with_clock(Duration::from_secs(30), 6, 0, 0, clock);
+        d.record_reconnect();
+        let verdict = d.evaluate();
+        assert!(matches!(
+            verdict,
+            InstabilityVerdict::Unstable { reconnects: 1, .. }
+        ));
+    }
+
+    #[test]
+    fn new_uses_system_clock() {
+        let d = ThresholdInstability::new(Duration::from_secs(5), 5, 10, 10);
+        assert!(matches!(d.evaluate(), InstabilityVerdict::Stable));
+        d.record_reconnect();
+        assert!(matches!(d.evaluate(), InstabilityVerdict::Stable));
+    }
+
+    #[test]
+    fn verdict_is_copy_eq_and_debug() {
+        let v = InstabilityVerdict::Unstable {
+            reconnects: 1,
+            errors: 2,
+        };
+        let v2 = v;
+        assert_eq!(v, v2);
+        let s = format!("{v:?}");
+        assert!(s.contains("Unstable"));
+        assert_ne!(InstabilityVerdict::Stable, v);
+    }
 }

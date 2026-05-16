@@ -190,4 +190,178 @@ mod tests {
         let err = build_authorization_header(&cfg).unwrap_err();
         assert!(matches!(err, Error::InvalidConfig(_)));
     }
+
+    #[test]
+    fn env_var_missing_errors_invalid_config() {
+        std::env::remove_var("SPT_TEST_BEARER_MISSING_XYZ");
+        let cfg = AuthConfig::new(
+            "u",
+            vec![AuthMethod::Bearer {
+                token: SecretRef::parse("env:SPT_TEST_BEARER_MISSING_XYZ").unwrap(),
+            }],
+        );
+        let err = build_authorization_header(&cfg).unwrap_err();
+        match err {
+            Error::InvalidConfig(msg) => {
+                assert!(msg.contains("SPT_TEST_BEARER_MISSING_XYZ"));
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn resolve_secret_file_trims_trailing_crlf() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!(
+            "spt-ssh3-test-secret-{}-{}.txt",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::write(&path, b"value-on-disk\r\n\n").unwrap();
+        let got = resolve_secret(&SecretRef::File(path.to_string_lossy().into())).unwrap();
+        assert_eq!(got, "value-on-disk");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn resolve_secret_file_missing_errors() {
+        let bogus = SecretRef::File(
+            "F:/this/path/should/not/exist/spt-ssh3-missing-secret-xyz.txt".into(),
+        );
+        let err = resolve_secret(&bogus).unwrap_err();
+        assert!(matches!(err, Error::InvalidConfig(_)));
+    }
+
+    #[test]
+    fn resolve_secret_env_ok() {
+        std::env::set_var("SPT_TEST_RESOLVE_ENV", "envval");
+        let got = resolve_secret(&SecretRef::parse("env:SPT_TEST_RESOLVE_ENV").unwrap()).unwrap();
+        assert_eq!(got, "envval");
+        std::env::remove_var("SPT_TEST_RESOLVE_ENV");
+    }
+
+    #[test]
+    fn resolve_secret_vault_message_mentions_secret_scheme() {
+        let r = SecretRef::parse("secret://ns/name").unwrap();
+        let err = resolve_secret(&r).unwrap_err();
+        match err {
+            Error::InvalidConfig(msg) => assert!(msg.contains("secret://")),
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn bearer_wins_when_listed_after_basic() {
+        std::env::set_var("SPT_TEST_ORDER_TOK", "ord-tok");
+        std::env::set_var("SPT_TEST_ORDER_PWD", "ord-pwd");
+        let cfg = AuthConfig::new(
+            "u",
+            vec![
+                AuthMethod::Basic {
+                    username: "u".into(),
+                    password: SecretRef::parse("env:SPT_TEST_ORDER_PWD").unwrap(),
+                },
+                AuthMethod::Bearer {
+                    token: SecretRef::parse("env:SPT_TEST_ORDER_TOK").unwrap(),
+                },
+            ],
+        );
+        let h = build_authorization_header(&cfg).unwrap();
+        assert_eq!(h, "Bearer ord-tok");
+        std::env::remove_var("SPT_TEST_ORDER_TOK");
+        std::env::remove_var("SPT_TEST_ORDER_PWD");
+    }
+
+    #[test]
+    fn basic_with_empty_password() {
+        std::env::set_var("SPT_TEST_BASIC_EMPTY", "");
+        let cfg = AuthConfig::new(
+            "u",
+            vec![AuthMethod::Basic {
+                username: "alice".into(),
+                password: SecretRef::parse("env:SPT_TEST_BASIC_EMPTY").unwrap(),
+            }],
+        );
+        let h = build_authorization_header(&cfg).unwrap();
+        // base64("alice:") = "YWxpY2U6"
+        assert_eq!(h, "Basic YWxpY2U6");
+        std::env::remove_var("SPT_TEST_BASIC_EMPTY");
+    }
+
+    #[test]
+    fn basic_with_special_chars_in_password() {
+        std::env::set_var("SPT_TEST_BASIC_SPECIAL", "p@ss:w/ord");
+        let cfg = AuthConfig::new(
+            "u",
+            vec![AuthMethod::Basic {
+                username: "alice".into(),
+                password: SecretRef::parse("env:SPT_TEST_BASIC_SPECIAL").unwrap(),
+            }],
+        );
+        let h = build_authorization_header(&cfg).unwrap();
+        assert!(h.starts_with("Basic "));
+        let b64 = &h["Basic ".len()..];
+        let raw = B64.decode(b64).unwrap();
+        assert_eq!(raw, b"alice:p@ss:w/ord");
+        std::env::remove_var("SPT_TEST_BASIC_SPECIAL");
+    }
+
+    #[test]
+    fn publickey_simple_entrypoint_builds_jwt() {
+        use spt_key::algorithm::KeyAlgorithm;
+        use spt_key::io as key_io;
+        let kp = key_io::generate(KeyAlgorithm::Ed25519).unwrap();
+        let tmp = std::env::temp_dir().join(format!(
+            "spt-ssh3-test-key-{}-{}.pem",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        key_io::save_encrypted(&kp, &tmp, None).unwrap();
+        let cfg = AuthConfig::new(
+            "alice",
+            vec![AuthMethod::PublicKey {
+                identity_file: tmp.clone(),
+                passphrase: None,
+            }],
+        );
+        let h = build_authorization_header_for(&cfg, "host.example", 7443, "/ssh3").unwrap();
+        assert!(h.starts_with("Bearer "));
+        let jwt = &h["Bearer ".len()..];
+        assert_eq!(jwt.matches('.').count(), 2);
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn publickey_missing_identity_file_errors() {
+        let cfg = AuthConfig::new(
+            "alice",
+            vec![AuthMethod::PublicKey {
+                identity_file: std::path::PathBuf::from(
+                    "F:/this/path/should/not/exist/spt-ssh3-missing-key-xyz.pem",
+                ),
+                passphrase: None,
+            }],
+        );
+        let err = build_authorization_header_for(&cfg, "h", 1, "/").unwrap_err();
+        assert!(matches!(
+            err,
+            Error::RuntimeFailure(_) | Error::InvalidConfig(_)
+        ));
+    }
+
+    #[test]
+    fn agent_method_falls_through_to_auth_error() {
+        let cfg = AuthConfig::new("u", vec![AuthMethod::Agent { socket: None }]);
+        let err = build_authorization_header(&cfg).unwrap_err();
+        match err {
+            Error::AuthFailed(msg) => assert!(msg.contains("ssh3 requires")),
+            _ => panic!("wrong variant"),
+        }
+    }
 }

@@ -398,4 +398,99 @@ host = "h2"
         // orchestrator.
         ctl.profile_stop("ghost").await.unwrap();
     }
+
+    #[tokio::test]
+    async fn profile_start_unknown_profile_errors_as_invalid_params() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ctl = fixture(tmp.path());
+        let err = ctl.profile_start("ghost-profile").await.unwrap_err();
+        assert!(matches!(err, McpError::InvalidParams(_)));
+    }
+
+    #[tokio::test]
+    async fn session_close_with_malformed_id_errors_as_invalid_params() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ctl = fixture(tmp.path());
+        let err = ctl.session_close("not-a-session-id-format").await;
+        // Either a parse error or supervisor-not-found; both are InvalidParams.
+        match err {
+            Err(McpError::InvalidParams(_)) => {}
+            other => panic!("expected InvalidParams, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn run_benchmark_missing_driver_errors() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ctl = fixture(tmp.path());
+        let err = ctl
+            .run_benchmark(serde_json::json!({}))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, McpError::InvalidParams(_)));
+    }
+
+    #[tokio::test]
+    async fn run_benchmark_unknown_driver_returns_internal() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ctl = fixture(tmp.path());
+        let err = ctl
+            .run_benchmark(serde_json::json!({"driver": "ghost"}))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, McpError::Internal(_)));
+    }
+
+    #[tokio::test]
+    async fn reload_with_invalid_config_returns_invalid_params() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ctl = fixture(tmp.path());
+        // Overwrite with a config that fails validation (no profiles + bad version).
+        std::fs::write(tmp.path().join("config.toml"), "version = 999\n").unwrap();
+        let err = ctl.reload().await.unwrap_err();
+        assert!(matches!(err, McpError::InvalidParams(_)));
+    }
+
+    #[tokio::test]
+    async fn last_config_handle_observes_post_reload_state() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ctl = fixture(tmp.path());
+        let h = ctl.last_config();
+        let before = h.lock().clone();
+        assert_eq!(before.profiles[0].name, "p");
+
+        std::fs::write(
+            tmp.path().join("config.toml"),
+            r#"
+version = 1
+[[profiles]]
+name = "after-reload"
+protocol = "ssh2"
+host = "h"
+"#,
+        )
+        .unwrap();
+        ctl.reload().await.unwrap();
+        let after = h.lock().clone();
+        assert_eq!(after.profiles[0].name, "after-reload");
+    }
+
+    #[tokio::test]
+    async fn forward_remove_after_add_round_trips() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ctl = fixture(tmp.path());
+        let f = Forward {
+            name: "rrt".into(),
+            kind: "local".into(),
+            transport: "tcp".into(),
+            bind: Some("127.0.0.1:5433".into()),
+            target: Some("db.local:5432".into()),
+            ..Default::default()
+        };
+        ctl.forward_add("p", &f).await.unwrap();
+        // forward_id format is "<profile>/<forward>" but remove takes just the name.
+        ctl.forward_remove("p", "rrt").await.unwrap();
+        let cached = ctl.last_config.lock().clone();
+        assert!(cached.profiles[0].forwards.is_empty());
+    }
 }

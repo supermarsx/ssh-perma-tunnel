@@ -414,4 +414,221 @@ mod tests {
             KnownHostsResult::Match
         );
     }
+
+    #[test]
+    fn cert_authority_marker_skipped_for_host_key_verification() {
+        let key = one_key();
+        let text = format!("@cert-authority example.com {}", key.to_openssh().unwrap());
+        let kh = KnownHosts::parse(&text).unwrap();
+        // Direct host-key verification skips CA markers — NotFound is expected.
+        let r = kh.verify("example.com", 22, &key);
+        assert_eq!(r, KnownHostsResult::NotFound);
+    }
+
+    #[test]
+    fn revoked_marker_only_blocks_matching_key() {
+        let revoked_key = one_key();
+        let other_key = one_key();
+        let text = format!("@revoked example.com {}", revoked_key.to_openssh().unwrap());
+        let kh = KnownHosts::parse(&text).unwrap();
+        // A different key isn't blocked by the @revoked entry, so NotFound.
+        assert_eq!(
+            kh.verify("example.com", 22, &other_key),
+            KnownHostsResult::NotFound
+        );
+    }
+
+    #[test]
+    fn glob_wildcard_star_matches_any_run() {
+        let key = one_key();
+        let text = entry_text("*.example.com", &key);
+        let kh = KnownHosts::parse(&text).unwrap();
+        assert_eq!(
+            kh.verify("a.example.com", 22, &key),
+            KnownHostsResult::Match
+        );
+        assert_eq!(
+            kh.verify("deep.sub.example.com", 22, &key),
+            KnownHostsResult::Match
+        );
+        // Doesn't match the apex (no leading dot in the glob).
+        assert_eq!(
+            kh.verify("example.com", 22, &key),
+            KnownHostsResult::NotFound
+        );
+    }
+
+    #[test]
+    fn glob_question_mark_matches_single_char() {
+        let key = one_key();
+        let text = entry_text("h?st", &key);
+        let kh = KnownHosts::parse(&text).unwrap();
+        assert_eq!(kh.verify("host", 22, &key), KnownHostsResult::Match);
+        assert_eq!(kh.verify("hist", 22, &key), KnownHostsResult::Match);
+        assert_eq!(kh.verify("hooost", 22, &key), KnownHostsResult::NotFound);
+    }
+
+    #[test]
+    fn negated_pattern_alone_filters_match() {
+        // `!secret.example.com` alone: the negated literal_match returns true
+        // for everything *except* secret.example.com, so a host other than
+        // `secret` matches the field. Exercises the negation path explicitly.
+        let key = one_key();
+        let text = format!("!secret.example.com {}", key.to_openssh().unwrap());
+        let kh = KnownHosts::parse(&text).unwrap();
+        // The negation excludes the exact host:
+        assert_eq!(
+            kh.verify("secret.example.com", 22, &key),
+            KnownHostsResult::NotFound
+        );
+        // ... but matches anything else.
+        assert_eq!(
+            kh.verify("other.example.com", 22, &key),
+            KnownHostsResult::Match
+        );
+    }
+
+    #[test]
+    fn hashed_host_nonstandard_port_match() {
+        let key = one_key();
+        let mut kh = KnownHosts::default();
+        kh.add("h.example", 2222, key.clone(), true);
+        assert!(kh.entries[0].host_field.starts_with("|1|"));
+        assert_eq!(
+            kh.verify("h.example", 2222, &key),
+            KnownHostsResult::Match
+        );
+        // Different port doesn't match.
+        assert_eq!(
+            kh.verify("h.example", 22, &key),
+            KnownHostsResult::NotFound
+        );
+    }
+
+    #[test]
+    fn parse_line_missing_key_errors() {
+        let r = KnownHosts::parse("example.com\n");
+        let err = r.unwrap_err();
+        match err {
+            spt_core::Error::InvalidConfig(msg) => {
+                assert!(msg.contains("missing key"), "got: {msg}");
+            }
+            other => panic!("expected InvalidConfig, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_line_bad_key_errors() {
+        let r = KnownHosts::parse("example.com ssh-ed25519 NOT-BASE64-AT-ALL\n");
+        let err = r.unwrap_err();
+        match err {
+            spt_core::Error::InvalidConfig(msg) => {
+                assert!(msg.contains("parse key") || msg.contains("known_hosts line"));
+            }
+            other => panic!("expected InvalidConfig, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn save_without_path_errors() {
+        let kh = KnownHosts::default();
+        let r = kh.save(None);
+        match r {
+            Err(spt_core::Error::InvalidArgs(msg)) => assert!(msg.contains("no destination")),
+            other => panic!("expected InvalidArgs, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn save_uses_recorded_path_if_loaded() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("kh");
+        let key = one_key();
+        std::fs::write(&p, entry_text("example.com", &key) + "\n").unwrap();
+        let kh = KnownHosts::load(&p).unwrap();
+        assert!(kh.path.is_some());
+        // Save without explicit dest must use the loaded path.
+        kh.save(None).unwrap();
+    }
+
+    #[test]
+    fn render_includes_marker_and_round_trips_via_save() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("kh");
+        let key = one_key();
+        let entry = Entry {
+            marker: Some(Marker::CertAuthority),
+            host_field: "ca.example.com".into(),
+            key: key.clone(),
+        };
+        let kh = KnownHosts {
+            path: None,
+            entries: vec![entry],
+        };
+        let rendered = kh.render();
+        assert!(rendered.starts_with("@cert-authority "));
+        // Save + reload preserves the marker.
+        kh.save(Some(&p)).unwrap();
+        let loaded = KnownHosts::load(&p).unwrap();
+        assert_eq!(loaded.entries[0].marker, Some(Marker::CertAuthority));
+    }
+
+    #[test]
+    fn render_revoked_marker() {
+        let key = one_key();
+        let kh = KnownHosts {
+            path: None,
+            entries: vec![Entry {
+                marker: Some(Marker::Revoked),
+                host_field: "bad.example".into(),
+                key,
+            }],
+        };
+        let rendered = kh.render();
+        assert!(rendered.starts_with("@revoked "));
+    }
+
+    #[test]
+    fn add_unhashed_uses_bracket_form_for_nonstandard_port() {
+        let key = one_key();
+        let mut kh = KnownHosts::default();
+        kh.add("h.example", 2222, key, false);
+        assert_eq!(kh.entries[0].host_field, "[h.example]:2222");
+    }
+
+    #[test]
+    fn load_returns_runtime_failure_when_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("does-not-exist");
+        let err = KnownHosts::load(&p).unwrap_err();
+        match err {
+            spt_core::Error::RuntimeFailure(msg) => {
+                assert!(msg.contains("read known_hosts"));
+            }
+            other => panic!("expected RuntimeFailure, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn hashed_host_with_corrupt_salt_or_hash_does_not_match() {
+        let key = one_key();
+        // Manually craft a malformed hashed-host entry.
+        let text = format!("|1|not-base64!|alsonotb64! {}", key.to_openssh().unwrap());
+        let kh = KnownHosts::parse(&text).unwrap();
+        assert_eq!(
+            kh.verify("example.com", 22, &key),
+            KnownHostsResult::NotFound
+        );
+    }
+
+    #[test]
+    fn hashed_host_missing_separator_does_not_match() {
+        let key = one_key();
+        let text = format!("|1|onlysalt {}", key.to_openssh().unwrap());
+        let kh = KnownHosts::parse(&text).unwrap();
+        assert_eq!(
+            kh.verify("example.com", 22, &key),
+            KnownHostsResult::NotFound
+        );
+    }
 }

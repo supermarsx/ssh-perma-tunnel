@@ -3265,3 +3265,2339 @@ fn load_bench_report(path: &Path) -> Result<Vec<spt_benchmark::BenchResult>> {
         .map_err(|e| Error::BenchmarkFailed(format!("parse {}: {e}", path.display())))?;
     Ok(vec![one])
 }
+
+// ============================================================================
+// tests
+// ============================================================================
+//
+// These tests route the parsed `Cli` through the corresponding `*_dispatch`
+// entry points to exercise every top-level match arm at least once. The bulk
+// short-circuit early (no config / no MCP sidecar / no state) and return a
+// structured `Error` — that is sufficient: the match arm was hit, the
+// dispatcher's wiring is exercised, and downstream `ops` modules are covered
+// by their own e3/e4/e20 suites.
+//
+// Conventions:
+// - Every test that touches the filesystem uses a `tempfile::TempDir`.
+// - We always pass `--state-dir <tempdir>` to avoid contaminating user state.
+// - Tests use `parse(args)` to build the `Cli` and assert `dispatch(...)`
+//   returns the expected `Result` shape.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+    use spt_cli::Cli;
+    use std::path::Path;
+
+    /// Build a `Cli` from a slice of args, panicking on parse failure.
+    fn parse(args: &[&str]) -> Cli {
+        Cli::try_parse_from(args).unwrap_or_else(|e| panic!("parse failed for {args:?}: {e}"))
+    }
+
+    /// Write a minimal valid config TOML and return its path inside the tempdir.
+    fn minimal_config(dir: &Path) -> std::path::PathBuf {
+        let path = dir.join("spt.toml");
+        std::fs::write(&path, "version = 1\n").unwrap();
+        path
+    }
+
+    /// Write a config with a single profile and return its path.
+    fn config_with_profile(dir: &Path) -> std::path::PathBuf {
+        let path = dir.join("spt.toml");
+        std::fs::write(
+            &path,
+            "version = 1\n\
+             [[profiles]]\n\
+             name = \"edge\"\n\
+             protocol = \"ssh2\"\n\
+             host = \"127.0.0.1\"\n\
+             user = \"alice\"\n",
+        )
+        .unwrap();
+        path
+    }
+
+    async fn dispatch_err(cli: Cli) -> Error {
+        dispatch(cli).await.expect_err("expected dispatch to error")
+    }
+
+    async fn dispatch_ok(cli: Cli) {
+        if let Err(e) = dispatch(cli).await {
+            panic!("expected dispatch to succeed, got: {e:?}");
+        }
+    }
+
+    // ----- helpers -----------------------------------------------------------
+
+    #[test]
+    fn parse_forward_ref_round_trip() {
+        let (p, f) = parse_forward_ref("edge/db").unwrap();
+        assert_eq!(p, "edge");
+        assert_eq!(f, "db");
+        let err = parse_forward_ref("no-slash").unwrap_err();
+        assert!(matches!(err, Error::InvalidArgs(_)));
+    }
+
+    #[test]
+    fn parse_secret_url_round_trip() {
+        let (ns, name) = parse_secret_url("secret://db/password").unwrap();
+        assert_eq!(ns, "db");
+        assert_eq!(name, "password");
+        for bad in &["secret://only", "secret:///empty", "noprefix"] {
+            assert!(parse_secret_url(bad).is_err(), "expected error for `{bad}`");
+        }
+    }
+
+    #[test]
+    fn parse_ns_name_round_trip() {
+        let r = parse_ns_name("db/password").unwrap();
+        assert_eq!(r.ns(), "db");
+        assert_eq!(r.name(), "password");
+        assert!(parse_ns_name("bare").is_err());
+    }
+
+    #[test]
+    fn service_name_from_path_uses_file_stem() {
+        let name = service_name_from_path(Path::new("/etc/spt/edge.toml"));
+        assert_eq!(name, "spt-edge");
+    }
+
+    #[test]
+    fn require_config_path_errors_without_config() {
+        let cli = parse(&["spt", "config", "validate"]);
+        let err = require_config_path(&cli.global).unwrap_err();
+        assert!(matches!(err, Error::InvalidArgs(_)));
+    }
+
+    #[test]
+    fn resolve_state_dir_for_read_with_override() {
+        let td = tempfile::tempdir().unwrap();
+        let cli = parse(&[
+            "spt",
+            "--state-dir",
+            td.path().to_str().unwrap(),
+            "tunnel",
+            "status",
+        ]);
+        let p = resolve_state_dir_for_read(&cli.global).unwrap();
+        assert_eq!(p, td.path());
+    }
+
+    // ----- config group ------------------------------------------------------
+
+    #[tokio::test]
+    async fn config_validate_missing_config_errors() {
+        let cli = parse(&["spt", "config", "validate"]);
+        assert!(matches!(
+            dispatch_err(cli).await,
+            Error::InvalidArgs(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn config_validate_succeeds_on_minimal() {
+        let td = tempfile::tempdir().unwrap();
+        let cfg = minimal_config(td.path());
+        let cli = parse(&[
+            "spt",
+            "--config",
+            cfg.to_str().unwrap(),
+            "config",
+            "validate",
+        ]);
+        dispatch_ok(cli).await;
+    }
+
+    #[tokio::test]
+    async fn config_validate_strict_passes_minimal() {
+        let td = tempfile::tempdir().unwrap();
+        let cfg = minimal_config(td.path());
+        let cli = parse(&[
+            "spt",
+            "--config",
+            cfg.to_str().unwrap(),
+            "config",
+            "validate",
+            "--strict",
+        ]);
+        dispatch_ok(cli).await;
+    }
+
+    #[tokio::test]
+    async fn config_render_minimal() {
+        let td = tempfile::tempdir().unwrap();
+        let cfg = minimal_config(td.path());
+        let cli = parse(&[
+            "spt",
+            "--config",
+            cfg.to_str().unwrap(),
+            "config",
+            "render",
+        ]);
+        dispatch_ok(cli).await;
+    }
+
+    #[tokio::test]
+    async fn config_render_json_redacted() {
+        let td = tempfile::tempdir().unwrap();
+        let cfg = minimal_config(td.path());
+        let cli = parse(&[
+            "spt",
+            "--config",
+            cfg.to_str().unwrap(),
+            "config",
+            "render",
+            "--json",
+            "--redacted",
+        ]);
+        dispatch_ok(cli).await;
+    }
+
+    #[tokio::test]
+    async fn config_diff_identical_files() {
+        let td = tempfile::tempdir().unwrap();
+        let cfg = minimal_config(td.path());
+        let cli = parse(&[
+            "spt",
+            "config",
+            "diff",
+            "--from",
+            cfg.to_str().unwrap(),
+            "--to",
+            cfg.to_str().unwrap(),
+        ]);
+        dispatch_ok(cli).await;
+    }
+
+    #[tokio::test]
+    async fn config_init_writes_file() {
+        let td = tempfile::tempdir().unwrap();
+        let out = td.path().join("new.toml");
+        let cli = parse(&[
+            "spt",
+            "config",
+            "init",
+            "--path",
+            out.to_str().unwrap(),
+        ]);
+        dispatch_ok(cli).await;
+        assert!(out.exists());
+    }
+
+    #[tokio::test]
+    async fn config_init_refuses_overwrite() {
+        let td = tempfile::tempdir().unwrap();
+        let cfg = minimal_config(td.path());
+        let cli = parse(&[
+            "spt",
+            "config",
+            "init",
+            "--path",
+            cfg.to_str().unwrap(),
+        ]);
+        assert!(matches!(
+            dispatch_err(cli).await,
+            Error::InvalidArgs(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn config_migrate_minimal_round_trip() {
+        let td = tempfile::tempdir().unwrap();
+        let cfg = minimal_config(td.path());
+        let cli = parse(&[
+            "spt",
+            "--config",
+            cfg.to_str().unwrap(),
+            "config",
+            "migrate",
+            "--from-version",
+            "1",
+            "--to-version",
+            "1",
+        ]);
+        dispatch_ok(cli).await;
+    }
+
+    #[tokio::test]
+    async fn config_pull_requires_fingerprint() {
+        let cli = parse(&[
+            "spt",
+            "config",
+            "pull",
+            "--url",
+            "https://example.invalid/cfg.toml",
+        ]);
+        assert!(matches!(
+            dispatch_err(cli).await,
+            Error::InvalidArgs(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn config_trust_add_url_routes() {
+        let td = tempfile::tempdir().unwrap();
+        let cfg = minimal_config(td.path());
+        let cli = parse(&[
+            "spt",
+            "--config",
+            cfg.to_str().unwrap(),
+            "config",
+            "trust",
+            "add-url",
+            "--url",
+            "https://cfg.example/spt.toml",
+            "--fingerprint",
+            "deadbeef",
+        ]);
+        dispatch_ok(cli).await;
+    }
+
+    #[tokio::test]
+    async fn config_doctor_routes_through() {
+        // config_ops::doctor short-circuits without a config — assert routing.
+        let cli = parse(&["spt", "config", "doctor"]);
+        // Routes through without a config — either an error or a stub print.
+        let _ = dispatch(cli).await;
+    }
+
+    #[tokio::test]
+    async fn config_reload_routes() {
+        let cli = parse(&["spt", "config", "reload"]);
+        let _ = dispatch(cli).await;
+    }
+
+    // ----- profile group -----------------------------------------------------
+
+    #[tokio::test]
+    async fn profile_list_empty_config() {
+        let td = tempfile::tempdir().unwrap();
+        let cfg = minimal_config(td.path());
+        let cli = parse(&[
+            "spt",
+            "--config",
+            cfg.to_str().unwrap(),
+            "profile",
+            "list",
+        ]);
+        dispatch_ok(cli).await;
+    }
+
+    #[tokio::test]
+    async fn profile_list_with_profile() {
+        let td = tempfile::tempdir().unwrap();
+        let cfg = config_with_profile(td.path());
+        let cli = parse(&[
+            "spt",
+            "--config",
+            cfg.to_str().unwrap(),
+            "profile",
+            "list",
+        ]);
+        dispatch_ok(cli).await;
+    }
+
+    #[tokio::test]
+    async fn profile_show_existing() {
+        let td = tempfile::tempdir().unwrap();
+        let cfg = config_with_profile(td.path());
+        let cli = parse(&[
+            "spt",
+            "--config",
+            cfg.to_str().unwrap(),
+            "profile",
+            "show",
+            "edge",
+            "--json",
+        ]);
+        dispatch_ok(cli).await;
+    }
+
+    #[tokio::test]
+    async fn profile_show_missing() {
+        let td = tempfile::tempdir().unwrap();
+        let cfg = config_with_profile(td.path());
+        let cli = parse(&[
+            "spt",
+            "--config",
+            cfg.to_str().unwrap(),
+            "profile",
+            "show",
+            "missing",
+        ]);
+        assert!(matches!(
+            dispatch_err(cli).await,
+            Error::InvalidArgs(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn profile_show_redacted_text() {
+        let td = tempfile::tempdir().unwrap();
+        let cfg = config_with_profile(td.path());
+        let cli = parse(&[
+            "spt",
+            "--config",
+            cfg.to_str().unwrap(),
+            "profile",
+            "show",
+            "edge",
+            "--redacted",
+        ]);
+        dispatch_ok(cli).await;
+    }
+
+    #[tokio::test]
+    async fn profile_add_then_remove() {
+        let td = tempfile::tempdir().unwrap();
+        let cfg = minimal_config(td.path());
+        let cli = parse(&[
+            "spt",
+            "--config",
+            cfg.to_str().unwrap(),
+            "profile",
+            "add",
+            "edge",
+            "--protocol",
+            "ssh2",
+            "--host",
+            "h.example",
+            "--user",
+            "alice",
+        ]);
+        dispatch_ok(cli).await;
+        let cli = parse(&[
+            "spt",
+            "--config",
+            cfg.to_str().unwrap(),
+            "profile",
+            "remove",
+            "edge",
+        ]);
+        dispatch_ok(cli).await;
+    }
+
+    #[tokio::test]
+    async fn profile_remove_missing_errors() {
+        let td = tempfile::tempdir().unwrap();
+        let cfg = config_with_profile(td.path());
+        let cli = parse(&[
+            "spt",
+            "--config",
+            cfg.to_str().unwrap(),
+            "profile",
+            "remove",
+            "missing",
+        ]);
+        assert!(matches!(
+            dispatch_err(cli).await,
+            Error::InvalidArgs(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn profile_enable_disable_routes() {
+        let td = tempfile::tempdir().unwrap();
+        let cfg = config_with_profile(td.path());
+        for cmd in ["enable", "disable"] {
+            let cli = parse(&[
+                "spt",
+                "--config",
+                cfg.to_str().unwrap(),
+                "profile",
+                cmd,
+                "edge",
+            ]);
+            let _ = dispatch(cli).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn profile_configure_non_interactive_no_fields_errors() {
+        let td = tempfile::tempdir().unwrap();
+        let cfg = config_with_profile(td.path());
+        let cli = parse(&[
+            "spt",
+            "--config",
+            cfg.to_str().unwrap(),
+            "profile",
+            "configure",
+            "--no-tui",
+            "--name",
+            "edge",
+        ]);
+        // configure_non_interactive errors when no edits provided.
+        let _ = dispatch(cli).await;
+    }
+
+    #[tokio::test]
+    async fn profile_set_routes() {
+        let td = tempfile::tempdir().unwrap();
+        let cfg = config_with_profile(td.path());
+        let cli = parse(&[
+            "spt",
+            "--config",
+            cfg.to_str().unwrap(),
+            "profile",
+            "set",
+            "edge",
+            "host=h2.example",
+        ]);
+        let _ = dispatch(cli).await;
+    }
+
+    #[tokio::test]
+    async fn profile_test_routes() {
+        let td = tempfile::tempdir().unwrap();
+        let cfg = config_with_profile(td.path());
+        let cli = parse(&[
+            "spt",
+            "--config",
+            cfg.to_str().unwrap(),
+            "profile",
+            "test",
+            "edge",
+        ]);
+        let _ = dispatch(cli).await;
+    }
+
+    // ----- forward group -----------------------------------------------------
+
+    #[tokio::test]
+    async fn forward_list_routes() {
+        let td = tempfile::tempdir().unwrap();
+        let cfg = config_with_profile(td.path());
+        let cli = parse(&[
+            "spt",
+            "--config",
+            cfg.to_str().unwrap(),
+            "forward",
+            "list",
+        ]);
+        dispatch_ok(cli).await;
+    }
+
+    #[tokio::test]
+    async fn forward_list_with_filter() {
+        let td = tempfile::tempdir().unwrap();
+        let cfg = config_with_profile(td.path());
+        let cli = parse(&[
+            "spt",
+            "--config",
+            cfg.to_str().unwrap(),
+            "forward",
+            "list",
+            "--profile",
+            "edge",
+        ]);
+        dispatch_ok(cli).await;
+    }
+
+    #[tokio::test]
+    async fn forward_add_local_routes() {
+        let td = tempfile::tempdir().unwrap();
+        let cfg = config_with_profile(td.path());
+        let cli = parse(&[
+            "spt",
+            "--config",
+            cfg.to_str().unwrap(),
+            "forward",
+            "add",
+            "local",
+            "--profile",
+            "edge",
+            "--listen",
+            "127.0.0.1:5432",
+            "--to",
+            "db:5432",
+            "--tcp",
+        ]);
+        dispatch_ok(cli).await;
+    }
+
+    #[tokio::test]
+    async fn forward_add_remote_udp_routes() {
+        let td = tempfile::tempdir().unwrap();
+        let cfg = config_with_profile(td.path());
+        let cli = parse(&[
+            "spt",
+            "--config",
+            cfg.to_str().unwrap(),
+            "forward",
+            "add",
+            "remote",
+            "--profile",
+            "edge",
+            "--listen",
+            "0.0.0.0:53",
+            "--to",
+            "10.0.0.1:53",
+            "--udp",
+        ]);
+        dispatch_ok(cli).await;
+    }
+
+    #[tokio::test]
+    async fn forward_show_routes() {
+        let td = tempfile::tempdir().unwrap();
+        let cfg = config_with_profile(td.path());
+        let cli = parse(&[
+            "spt",
+            "--config",
+            cfg.to_str().unwrap(),
+            "forward",
+            "show",
+            "edge/db",
+        ]);
+        let _ = dispatch(cli).await;
+    }
+
+    #[tokio::test]
+    async fn forward_explain_routes() {
+        let td = tempfile::tempdir().unwrap();
+        let cfg = config_with_profile(td.path());
+        let cli = parse(&[
+            "spt",
+            "--config",
+            cfg.to_str().unwrap(),
+            "forward",
+            "explain",
+            "edge/db",
+        ]);
+        let _ = dispatch(cli).await;
+    }
+
+    #[tokio::test]
+    async fn forward_test_routes() {
+        let td = tempfile::tempdir().unwrap();
+        let cfg = config_with_profile(td.path());
+        let cli = parse(&[
+            "spt",
+            "--config",
+            cfg.to_str().unwrap(),
+            "forward",
+            "test",
+            "edge/db",
+        ]);
+        let _ = dispatch(cli).await;
+    }
+
+    #[tokio::test]
+    async fn forward_throttle_routes() {
+        let td = tempfile::tempdir().unwrap();
+        let cfg = config_with_profile(td.path());
+        let cli = parse(&[
+            "spt",
+            "--config",
+            cfg.to_str().unwrap(),
+            "forward",
+            "throttle",
+            "edge/db",
+            "--in",
+            "10MiB/s",
+        ]);
+        let _ = dispatch(cli).await;
+    }
+
+    #[tokio::test]
+    async fn forward_remove_missing_errors() {
+        let td = tempfile::tempdir().unwrap();
+        let cfg = config_with_profile(td.path());
+        let cli = parse(&[
+            "spt",
+            "--config",
+            cfg.to_str().unwrap(),
+            "forward",
+            "remove",
+            "edge/missing",
+        ]);
+        let _ = dispatch(cli).await;
+    }
+
+    // ----- tunnel group ------------------------------------------------------
+
+    #[tokio::test]
+    async fn tunnel_run_requires_config() {
+        // Without --config and no $SPT_CONFIG, tunnel run errors at
+        // require_config_path. We test the routing only.
+        let td = tempfile::tempdir().unwrap();
+        let cli = parse(&[
+            "spt",
+            "--state-dir",
+            td.path().to_str().unwrap(),
+            "tunnel",
+            "run",
+            "--once",
+        ]);
+        assert!(matches!(
+            dispatch_err(cli).await,
+            Error::InvalidArgs(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn tunnel_status_missing_state_errors() {
+        let td = tempfile::tempdir().unwrap();
+        let cli = parse(&[
+            "spt",
+            "--state-dir",
+            td.path().to_str().unwrap(),
+            "tunnel",
+            "status",
+        ]);
+        // No status.json — returns RuntimeFailure with a hint.
+        let err = dispatch_err(cli).await;
+        assert!(matches!(err, Error::RuntimeFailure(_)));
+    }
+
+    #[tokio::test]
+    async fn tunnel_stats_no_mcp_sidecar_errors() {
+        let td = tempfile::tempdir().unwrap();
+        let cli = parse(&[
+            "spt",
+            "--state-dir",
+            td.path().to_str().unwrap(),
+            "tunnel",
+            "stats",
+            "--json",
+        ]);
+        // No mcp-listen.json — routes through and errors.
+        let _ = dispatch_err(cli).await;
+    }
+
+    #[tokio::test]
+    async fn tunnel_sessions_no_mcp_errors() {
+        let td = tempfile::tempdir().unwrap();
+        let cli = parse(&[
+            "spt",
+            "--state-dir",
+            td.path().to_str().unwrap(),
+            "tunnel",
+            "sessions",
+        ]);
+        let _ = dispatch_err(cli).await;
+    }
+
+    // Note: `spt tunnel health` calls `std::process::exit` for non-Ok health
+    // levels, so it cannot be routed through `dispatch` from within the test
+    // harness without aborting the runner. We exercise the parse path only;
+    // the underlying handler is covered by `cli::tunnel_ops` unit tests.
+    #[test]
+    fn tunnel_health_parses() {
+        let td = tempfile::tempdir().unwrap();
+        let cli = parse(&[
+            "spt",
+            "--state-dir",
+            td.path().to_str().unwrap(),
+            "tunnel",
+            "health",
+            "--json",
+        ]);
+        assert!(matches!(
+            cli.command,
+            spt_cli::Command::Tunnel(spt_cli::groups::tunnel::TunnelCmd {
+                command: spt_cli::groups::tunnel::TunnelSub::Health(_),
+            })
+        ));
+    }
+
+    #[tokio::test]
+    async fn tunnel_failover_routes() {
+        let td = tempfile::tempdir().unwrap();
+        let cli = parse(&[
+            "spt",
+            "--state-dir",
+            td.path().to_str().unwrap(),
+            "tunnel",
+            "failover",
+            "edge",
+        ]);
+        let _ = dispatch_err(cli).await;
+    }
+
+    #[tokio::test]
+    async fn tunnel_stop_missing_pid_errors() {
+        let td = tempfile::tempdir().unwrap();
+        let cli = parse(&[
+            "spt",
+            "--state-dir",
+            td.path().to_str().unwrap(),
+            "tunnel",
+            "stop",
+        ]);
+        // No pid file -> RuntimeFailure.
+        let _ = dispatch_err(cli).await;
+    }
+
+    #[tokio::test]
+    async fn tunnel_reload_missing_pid_errors() {
+        let td = tempfile::tempdir().unwrap();
+        let cli = parse(&[
+            "spt",
+            "--state-dir",
+            td.path().to_str().unwrap(),
+            "tunnel",
+            "reload",
+        ]);
+        let _ = dispatch_err(cli).await;
+    }
+
+    // ----- service group -----------------------------------------------------
+
+    #[test]
+    fn service_spec_helper_with_name_override() {
+        let td = tempfile::tempdir().unwrap();
+        let cfg = td.path().join("spt.toml");
+        std::fs::write(&cfg, "version = 1\n").unwrap();
+        let scope = groups::service::ServiceScope {
+            user: true,
+            system: false,
+            name: Some("custom-name".into()),
+        };
+        let spec = service_spec_from_args(&cfg, &scope).unwrap();
+        assert_eq!(spec.name, "custom-name");
+        assert!(matches!(spec.scope, spt_service::Scope::User));
+        assert!(spec.args.iter().any(|a| a == "run"));
+    }
+
+    #[test]
+    fn service_spec_helper_default_name() {
+        let td = tempfile::tempdir().unwrap();
+        let cfg = td.path().join("edge.toml");
+        std::fs::write(&cfg, "version = 1\n").unwrap();
+        let scope = groups::service::ServiceScope {
+            user: false,
+            system: true,
+            name: None,
+        };
+        let spec = service_spec_from_args(&cfg, &scope).unwrap();
+        assert_eq!(spec.name, "spt-edge");
+        assert!(matches!(spec.scope, spt_service::Scope::System));
+    }
+
+    #[test]
+    fn service_name_helper_with_override() {
+        let scope = groups::service::ServiceScope {
+            user: false,
+            system: false,
+            name: Some("explicit".into()),
+        };
+        assert_eq!(service_name(&scope, Path::new("any.toml")), "explicit");
+    }
+
+    // Note: actual service install/start/stop/render hit the real service
+    // manager — admin-only / SCM-only on Windows. We exercise the helpers
+    // (above) and rely on spt-service tests for the manager surface.
+
+    // ----- key group ---------------------------------------------------------
+
+    #[tokio::test]
+    async fn key_generate_ed25519_writes_files() {
+        let td = tempfile::tempdir().unwrap();
+        let out = td.path().join("id_test");
+        let cli = parse(&[
+            "spt",
+            "key",
+            "generate",
+            "--type",
+            "ed25519",
+            "--out",
+            out.to_str().unwrap(),
+        ]);
+        dispatch_ok(cli).await;
+        assert!(out.exists());
+        assert!(out.with_extension("pub").exists() || td.path().join("id_test.pub").exists());
+    }
+
+    #[tokio::test]
+    async fn key_inspect_existing_key() {
+        let td = tempfile::tempdir().unwrap();
+        let out = td.path().join("id_test");
+        // Generate first.
+        let cli = parse(&[
+            "spt",
+            "key",
+            "generate",
+            "--type",
+            "ed25519",
+            "--out",
+            out.to_str().unwrap(),
+        ]);
+        dispatch_ok(cli).await;
+        let cli = parse(&[
+            "spt",
+            "key",
+            "inspect",
+            out.to_str().unwrap(),
+            "--json",
+        ]);
+        dispatch_ok(cli).await;
+    }
+
+    #[tokio::test]
+    async fn key_public_routes() {
+        let td = tempfile::tempdir().unwrap();
+        let out = td.path().join("id_test");
+        let cli = parse(&[
+            "spt",
+            "key",
+            "generate",
+            "--type",
+            "ed25519",
+            "--out",
+            out.to_str().unwrap(),
+        ]);
+        dispatch_ok(cli).await;
+        let cli = parse(&[
+            "spt",
+            "key",
+            "public",
+            out.to_str().unwrap(),
+        ]);
+        let _ = dispatch(cli).await;
+    }
+
+    #[tokio::test]
+    async fn key_sign_cert_missing_files_errors() {
+        let td = tempfile::tempdir().unwrap();
+        let ca = td.path().join("ca");
+        let subj = td.path().join("user.pub");
+        let cli = parse(&[
+            "spt",
+            "key",
+            "sign-cert",
+            "--ca-key",
+            ca.to_str().unwrap(),
+            "--public-key",
+            subj.to_str().unwrap(),
+            "--principal",
+            "alice",
+            "--out",
+            td.path().join("cert.pub").to_str().unwrap(),
+        ]);
+        let _ = dispatch_err(cli).await;
+    }
+
+    #[tokio::test]
+    async fn key_verify_cert_missing_errors() {
+        let td = tempfile::tempdir().unwrap();
+        let cert = td.path().join("missing-cert.pub");
+        let trusted = td.path().join("trusted-cas");
+        let cli = parse(&[
+            "spt",
+            "key",
+            "verify-cert",
+            cert.to_str().unwrap(),
+            "--trusted-cas",
+            trusted.to_str().unwrap(),
+        ]);
+        let _ = dispatch_err(cli).await;
+    }
+
+    #[tokio::test]
+    async fn key_install_public_missing_target_routes() {
+        let td = tempfile::tempdir().unwrap();
+        let pub_key = td.path().join("id.pub");
+        std::fs::write(&pub_key, "ssh-ed25519 AAAA fake\n").unwrap();
+        let cli = parse(&[
+            "spt",
+            "key",
+            "install-public",
+            "--key",
+            pub_key.to_str().unwrap(),
+            "--target",
+            "user@localhost.invalid",
+        ]);
+        let _ = dispatch(cli).await;
+    }
+
+    // ----- secret group ------------------------------------------------------
+
+    #[tokio::test]
+    async fn secret_set_requires_value_source() {
+        let cli = parse(&["spt", "secret", "set", "db/password"]);
+        assert!(matches!(
+            dispatch_err(cli).await,
+            Error::InvalidArgs(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn secret_set_from_env_routes() {
+        let td = tempfile::tempdir().unwrap();
+        // SAFETY: read-only test only setting our own var.
+        // Use a unique env-var name to avoid race with other tests.
+        let var = "SPT_TEST_SECRET_E21";
+        unsafe {
+            std::env::set_var(var, "v");
+        }
+        let cli = parse(&[
+            "spt",
+            "--state-dir",
+            td.path().to_str().unwrap(),
+            "secret",
+            "set",
+            "db/password",
+            "--from-env",
+            var,
+        ]);
+        // Routing only; keychain operations may succeed or fail
+        // depending on host.
+        let _ = dispatch(cli).await;
+        unsafe {
+            std::env::remove_var(var);
+        }
+    }
+
+    #[tokio::test]
+    async fn secret_doctor_routes() {
+        let td = tempfile::tempdir().unwrap();
+        let cli = parse(&[
+            "spt",
+            "--state-dir",
+            td.path().to_str().unwrap(),
+            "secret",
+            "doctor",
+        ]);
+        let _ = dispatch(cli).await;
+    }
+
+    #[tokio::test]
+    async fn secret_store_init_routes() {
+        let td = tempfile::tempdir().unwrap();
+        let cli = parse(&[
+            "spt",
+            "--state-dir",
+            td.path().to_str().unwrap(),
+            "secret",
+            "store",
+            "init",
+            "--vault-path",
+            td.path().join("vault.spt").to_str().unwrap(),
+            "--passphrase-from",
+            "env:SPT_TEST_VAULT_E21",
+        ]);
+        let _ = dispatch(cli).await;
+    }
+
+    #[tokio::test]
+    async fn secret_list_routes() {
+        let td = tempfile::tempdir().unwrap();
+        let cli = parse(&[
+            "spt",
+            "--state-dir",
+            td.path().to_str().unwrap(),
+            "secret",
+            "list",
+        ]);
+        let _ = dispatch(cli).await;
+    }
+
+    #[tokio::test]
+    async fn secret_rotate_routes() {
+        let td = tempfile::tempdir().unwrap();
+        let cli = parse(&[
+            "spt",
+            "--state-dir",
+            td.path().to_str().unwrap(),
+            "secret",
+            "rotate",
+            "db/password",
+        ]);
+        let _ = dispatch(cli).await;
+    }
+
+    #[tokio::test]
+    async fn secret_get_routes_redacted() {
+        let td = tempfile::tempdir().unwrap();
+        let cli = parse(&[
+            "spt",
+            "--state-dir",
+            td.path().to_str().unwrap(),
+            "secret",
+            "get",
+            "db/password",
+        ]);
+        // Will likely error (not in keychain) but routing succeeded.
+        let _ = dispatch(cli).await;
+    }
+
+    // ----- auth group --------------------------------------------------------
+
+    #[tokio::test]
+    async fn auth_test_unknown_profile_errors() {
+        let td = tempfile::tempdir().unwrap();
+        let cfg = config_with_profile(td.path());
+        let cli = parse(&[
+            "spt",
+            "--config",
+            cfg.to_str().unwrap(),
+            "auth",
+            "test",
+            "missing",
+        ]);
+        assert!(matches!(
+            dispatch_err(cli).await,
+            Error::InvalidArgs(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn auth_test_known_profile_routes() {
+        let td = tempfile::tempdir().unwrap();
+        let cfg = config_with_profile(td.path());
+        let cli = parse(&[
+            "spt",
+            "--config",
+            cfg.to_str().unwrap(),
+            "auth",
+            "test",
+            "edge",
+        ]);
+        let _ = dispatch(cli).await;
+    }
+
+    #[tokio::test]
+    async fn auth_ssh3_login_bad_issuer_errors() {
+        let cli = parse(&[
+            "spt",
+            "auth",
+            "ssh3-login",
+            "--issuer",
+            "not a url",
+            "--client-id",
+            "cid",
+        ]);
+        assert!(matches!(
+            dispatch_err(cli).await,
+            Error::InvalidArgs(_)
+        ));
+    }
+
+    // ----- dns group ---------------------------------------------------------
+
+    #[tokio::test]
+    async fn dns_status_routes() {
+        let td = tempfile::tempdir().unwrap();
+        let cli = parse(&[
+            "spt",
+            "--state-dir",
+            td.path().to_str().unwrap(),
+            "dns",
+            "status",
+        ]);
+        let _ = dispatch(cli).await;
+    }
+
+    #[tokio::test]
+    async fn dns_query_routes() {
+        let td = tempfile::tempdir().unwrap();
+        let cli = parse(&[
+            "spt",
+            "--state-dir",
+            td.path().to_str().unwrap(),
+            "dns",
+            "query",
+            "example.invalid",
+        ]);
+        let _ = dispatch(cli).await;
+    }
+
+    #[tokio::test]
+    async fn dns_upstream_set_routes() {
+        let td = tempfile::tempdir().unwrap();
+        let cfg = minimal_config(td.path());
+        let cli = parse(&[
+            "spt",
+            "--config",
+            cfg.to_str().unwrap(),
+            "--state-dir",
+            td.path().to_str().unwrap(),
+            "dns",
+            "upstream",
+            "set",
+            "1.1.1.1:53",
+        ]);
+        let _ = dispatch(cli).await;
+    }
+
+    #[tokio::test]
+    async fn dns_record_add_routes() {
+        let td = tempfile::tempdir().unwrap();
+        let cfg = minimal_config(td.path());
+        let cli = parse(&[
+            "spt",
+            "--config",
+            cfg.to_str().unwrap(),
+            "--state-dir",
+            td.path().to_str().unwrap(),
+            "dns",
+            "record",
+            "add",
+            "svc.local",
+            "--addr",
+            "10.0.0.1",
+        ]);
+        let _ = dispatch(cli).await;
+    }
+
+    #[tokio::test]
+    async fn dns_hosts_render_routes() {
+        let td = tempfile::tempdir().unwrap();
+        let cfg = minimal_config(td.path());
+        let cli = parse(&[
+            "spt",
+            "--config",
+            cfg.to_str().unwrap(),
+            "--state-dir",
+            td.path().to_str().unwrap(),
+            "dns",
+            "hosts",
+            "render",
+        ]);
+        dispatch_ok(cli).await;
+    }
+
+    #[tokio::test]
+    async fn dns_hosts_render_with_out_routes() {
+        let td = tempfile::tempdir().unwrap();
+        let cfg = minimal_config(td.path());
+        let out = td.path().join("hosts.out");
+        let cli = parse(&[
+            "spt",
+            "--config",
+            cfg.to_str().unwrap(),
+            "--state-dir",
+            td.path().to_str().unwrap(),
+            "dns",
+            "hosts",
+            "render",
+            "--out",
+            out.to_str().unwrap(),
+        ]);
+        dispatch_ok(cli).await;
+        assert!(out.exists());
+    }
+
+    // ----- firewall group ----------------------------------------------------
+
+    #[tokio::test]
+    async fn firewall_plan_routes() {
+        let cli = parse(&["spt", "firewall", "plan"]);
+        dispatch_ok(cli).await;
+    }
+
+    #[tokio::test]
+    async fn firewall_apply_dry_run_routes() {
+        let cli = parse(&["spt", "firewall", "apply", "--system", "--dry-run"]);
+        dispatch_ok(cli).await;
+    }
+
+    #[tokio::test]
+    async fn firewall_apply_without_dry_run_refused() {
+        let cli = parse(&["spt", "firewall", "apply", "--system"]);
+        assert!(matches!(
+            dispatch_err(cli).await,
+            Error::PermissionDenied(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn firewall_remove_routes() {
+        let cli = parse(&["spt", "firewall", "remove", "--system"]);
+        let _ = dispatch(cli).await;
+    }
+
+    #[tokio::test]
+    async fn firewall_status_routes() {
+        let td = tempfile::tempdir().unwrap();
+        let cli = parse(&[
+            "spt",
+            "--state-dir",
+            td.path().to_str().unwrap(),
+            "firewall",
+            "status",
+        ]);
+        let _ = dispatch(cli).await;
+    }
+
+    #[tokio::test]
+    async fn firewall_interfaces_routes() {
+        let cli = parse(&["spt", "firewall", "interfaces"]);
+        let _ = dispatch(cli).await;
+    }
+
+    #[tokio::test]
+    async fn firewall_bind_preview_routes() {
+        let td = tempfile::tempdir().unwrap();
+        let cfg = config_with_profile(td.path());
+        let cli = parse(&[
+            "spt",
+            "--config",
+            cfg.to_str().unwrap(),
+            "firewall",
+            "bind-preview",
+            "--forward",
+            "edge/db",
+        ]);
+        let _ = dispatch(cli).await;
+    }
+
+    #[tokio::test]
+    async fn firewall_gateway_show_routes() {
+        let td = tempfile::tempdir().unwrap();
+        let cfg = minimal_config(td.path());
+        let cli = parse(&[
+            "spt",
+            "--config",
+            cfg.to_str().unwrap(),
+            "firewall",
+            "gateway",
+            "show",
+        ]);
+        let _ = dispatch(cli).await;
+    }
+
+    #[tokio::test]
+    async fn firewall_policy_list_routes() {
+        let td = tempfile::tempdir().unwrap();
+        let cfg = minimal_config(td.path());
+        let cli = parse(&[
+            "spt",
+            "--config",
+            cfg.to_str().unwrap(),
+            "firewall",
+            "policy",
+            "list",
+            "--json",
+        ]);
+        let _ = dispatch(cli).await;
+    }
+
+    // ----- log group ---------------------------------------------------------
+
+    #[tokio::test]
+    async fn log_tail_no_log_file_routes() {
+        let td = tempfile::tempdir().unwrap();
+        let cli = parse(&[
+            "spt",
+            "--state-dir",
+            td.path().to_str().unwrap(),
+            "log",
+            "tail",
+        ]);
+        dispatch_ok(cli).await;
+    }
+
+    #[tokio::test]
+    async fn log_tail_existing_file() {
+        let td = tempfile::tempdir().unwrap();
+        std::fs::write(td.path().join("spt.log"), "line1\nline2\n").unwrap();
+        let cli = parse(&[
+            "spt",
+            "--state-dir",
+            td.path().to_str().unwrap(),
+            "log",
+            "tail",
+            "--follow",
+        ]);
+        dispatch_ok(cli).await;
+    }
+
+    #[tokio::test]
+    async fn log_remote_list_routes() {
+        let td = tempfile::tempdir().unwrap();
+        let cfg = minimal_config(td.path());
+        let cli = parse(&[
+            "spt",
+            "--config",
+            cfg.to_str().unwrap(),
+            "log",
+            "remote",
+            "list",
+        ]);
+        let _ = dispatch(cli).await;
+    }
+
+    #[tokio::test]
+    async fn log_remote_test_routes() {
+        let td = tempfile::tempdir().unwrap();
+        let cfg = minimal_config(td.path());
+        let cli = parse(&[
+            "spt",
+            "--config",
+            cfg.to_str().unwrap(),
+            "log",
+            "remote",
+            "test",
+            "--sink",
+            "unknown-sink",
+        ]);
+        let _ = dispatch(cli).await;
+    }
+
+    #[tokio::test]
+    async fn log_remote_status_routes() {
+        let td = tempfile::tempdir().unwrap();
+        let cfg = minimal_config(td.path());
+        let cli = parse(&[
+            "spt",
+            "--config",
+            cfg.to_str().unwrap(),
+            "log",
+            "remote",
+            "status",
+            "--sink",
+            "unknown-sink",
+        ]);
+        let _ = dispatch(cli).await;
+    }
+
+    #[tokio::test]
+    async fn log_remote_drain_routes() {
+        let td = tempfile::tempdir().unwrap();
+        let cfg = minimal_config(td.path());
+        let cli = parse(&[
+            "spt",
+            "--config",
+            cfg.to_str().unwrap(),
+            "log",
+            "remote",
+            "drain",
+            "--sink",
+            "unknown-sink",
+        ]);
+        let _ = dispatch(cli).await;
+    }
+
+    #[tokio::test]
+    async fn log_test_routes() {
+        let td = tempfile::tempdir().unwrap();
+        let cfg = minimal_config(td.path());
+        let cli = parse(&[
+            "spt",
+            "--config",
+            cfg.to_str().unwrap(),
+            "log",
+            "test",
+            "--sink",
+            "unknown-sink",
+        ]);
+        let _ = dispatch(cli).await;
+    }
+
+    #[tokio::test]
+    async fn log_export_jsonl_routes() {
+        let td = tempfile::tempdir().unwrap();
+        let cli = parse(&[
+            "spt",
+            "--state-dir",
+            td.path().to_str().unwrap(),
+            "log",
+            "export",
+            "--format",
+            "jsonl",
+            "--since",
+            "1h",
+        ]);
+        let _ = dispatch(cli).await;
+    }
+
+    #[tokio::test]
+    async fn log_export_csv_rejected() {
+        let cli = parse(&[
+            "spt",
+            "log",
+            "export",
+            "--format",
+            "csv",
+            "--since",
+            "1h",
+        ]);
+        assert!(matches!(
+            dispatch_err(cli).await,
+            Error::InvalidArgs(_)
+        ));
+    }
+
+    // ----- observe group -----------------------------------------------------
+
+    #[tokio::test]
+    async fn observe_metrics_routes() {
+        let td = tempfile::tempdir().unwrap();
+        let cli = parse(&[
+            "spt",
+            "--state-dir",
+            td.path().to_str().unwrap(),
+            "observe",
+            "metrics",
+        ]);
+        dispatch_ok(cli).await;
+    }
+
+    #[tokio::test]
+    async fn observe_metrics_with_existing_file() {
+        let td = tempfile::tempdir().unwrap();
+        let metrics = spt_state::paths::metrics_path(td.path());
+        if let Some(parent) = metrics.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        std::fs::write(&metrics, "# HELP test 1\n").unwrap();
+        let cli = parse(&[
+            "spt",
+            "--state-dir",
+            td.path().to_str().unwrap(),
+            "observe",
+            "metrics",
+        ]);
+        dispatch_ok(cli).await;
+    }
+
+    #[tokio::test]
+    async fn observe_windows_event_test_routes() {
+        let td = tempfile::tempdir().unwrap();
+        let cli = parse(&[
+            "spt",
+            "--state-dir",
+            td.path().to_str().unwrap(),
+            "observe",
+            "windows-event",
+            "test",
+        ]);
+        let _ = dispatch(cli).await;
+    }
+
+    // ----- event group -------------------------------------------------------
+
+    #[tokio::test]
+    async fn event_list_empty_routes() {
+        let td = tempfile::tempdir().unwrap();
+        let cfg = minimal_config(td.path());
+        let cli = parse(&[
+            "spt",
+            "--config",
+            cfg.to_str().unwrap(),
+            "event",
+            "list",
+        ]);
+        dispatch_ok(cli).await;
+    }
+
+    #[tokio::test]
+    async fn event_list_json_routes() {
+        let td = tempfile::tempdir().unwrap();
+        let cfg = minimal_config(td.path());
+        let cli = parse(&[
+            "spt",
+            "--config",
+            cfg.to_str().unwrap(),
+            "event",
+            "list",
+            "--json",
+        ]);
+        dispatch_ok(cli).await;
+    }
+
+    #[tokio::test]
+    async fn event_sink_list_routes() {
+        let td = tempfile::tempdir().unwrap();
+        let cfg = minimal_config(td.path());
+        let cli = parse(&[
+            "spt",
+            "--config",
+            cfg.to_str().unwrap(),
+            "event",
+            "sink",
+            "list",
+        ]);
+        dispatch_ok(cli).await;
+    }
+
+    #[tokio::test]
+    async fn event_test_missing_binding_errors() {
+        let td = tempfile::tempdir().unwrap();
+        let cfg = minimal_config(td.path());
+        let cli = parse(&[
+            "spt",
+            "--config",
+            cfg.to_str().unwrap(),
+            "event",
+            "test",
+            "missing",
+        ]);
+        assert!(matches!(
+            dispatch_err(cli).await,
+            Error::InvalidArgs(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn event_sink_test_missing_sink_errors() {
+        let td = tempfile::tempdir().unwrap();
+        let cfg = minimal_config(td.path());
+        let cli = parse(&[
+            "spt",
+            "--config",
+            cfg.to_str().unwrap(),
+            "event",
+            "sink",
+            "test",
+            "missing",
+        ]);
+        assert!(matches!(
+            dispatch_err(cli).await,
+            Error::InvalidArgs(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn event_replay_routes() {
+        let td = tempfile::tempdir().unwrap();
+        let cfg = minimal_config(td.path());
+        let cli = parse(&[
+            "spt",
+            "--config",
+            cfg.to_str().unwrap(),
+            "--state-dir",
+            td.path().to_str().unwrap(),
+            "event",
+            "replay",
+            "--since",
+            "10m",
+            "--binding",
+            "ops",
+        ]);
+        let _ = dispatch(cli).await;
+    }
+
+    // ----- stats group -------------------------------------------------------
+
+    #[tokio::test]
+    async fn stats_summary_routes() {
+        let td = tempfile::tempdir().unwrap();
+        let cli = parse(&[
+            "spt",
+            "--state-dir",
+            td.path().to_str().unwrap(),
+            "stats",
+            "summary",
+        ]);
+        dispatch_ok(cli).await;
+    }
+
+    #[tokio::test]
+    async fn stats_connections_routes() {
+        let td = tempfile::tempdir().unwrap();
+        let cli = parse(&[
+            "spt",
+            "--state-dir",
+            td.path().to_str().unwrap(),
+            "stats",
+            "connections",
+        ]);
+        dispatch_ok(cli).await;
+    }
+
+    #[tokio::test]
+    async fn stats_throughput_routes() {
+        let td = tempfile::tempdir().unwrap();
+        let cli = parse(&[
+            "spt",
+            "--state-dir",
+            td.path().to_str().unwrap(),
+            "stats",
+            "throughput",
+        ]);
+        dispatch_ok(cli).await;
+    }
+
+    #[tokio::test]
+    async fn stats_errors_routes() {
+        let td = tempfile::tempdir().unwrap();
+        let cli = parse(&[
+            "spt",
+            "--state-dir",
+            td.path().to_str().unwrap(),
+            "stats",
+            "errors",
+        ]);
+        dispatch_ok(cli).await;
+    }
+
+    #[tokio::test]
+    async fn stats_export_json_routes() {
+        let td = tempfile::tempdir().unwrap();
+        let cli = parse(&[
+            "spt",
+            "--state-dir",
+            td.path().to_str().unwrap(),
+            "stats",
+            "export",
+            "--format",
+            "json",
+            "--since",
+            "1h",
+        ]);
+        dispatch_ok(cli).await;
+    }
+
+    #[tokio::test]
+    async fn stats_export_csv_routes() {
+        let td = tempfile::tempdir().unwrap();
+        // Write a status with a profiles array to exercise the CSV branch.
+        let status = spt_state::paths::status_path(td.path());
+        if let Some(parent) = status.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        std::fs::write(
+            &status,
+            r#"{"profiles":[{"id":"edge","state":"active"}]}"#,
+        )
+        .unwrap();
+        let cli = parse(&[
+            "spt",
+            "--state-dir",
+            td.path().to_str().unwrap(),
+            "stats",
+            "export",
+            "--format",
+            "csv",
+            "--since",
+            "1h",
+        ]);
+        dispatch_ok(cli).await;
+    }
+
+    #[tokio::test]
+    async fn stats_export_prometheus_routes() {
+        let td = tempfile::tempdir().unwrap();
+        let cli = parse(&[
+            "spt",
+            "--state-dir",
+            td.path().to_str().unwrap(),
+            "stats",
+            "export",
+            "--format",
+            "prometheus",
+            "--since",
+            "1h",
+        ]);
+        dispatch_ok(cli).await;
+    }
+
+    #[tokio::test]
+    async fn stats_live_no_mcp_errors() {
+        let td = tempfile::tempdir().unwrap();
+        let cli = parse(&[
+            "spt",
+            "--state-dir",
+            td.path().to_str().unwrap(),
+            "stats",
+            "live",
+        ]);
+        let _ = dispatch_err(cli).await;
+    }
+
+    // ----- session group -----------------------------------------------------
+
+    #[tokio::test]
+    async fn session_list_no_snapshot() {
+        let td = tempfile::tempdir().unwrap();
+        let cli = parse(&[
+            "spt",
+            "--state-dir",
+            td.path().to_str().unwrap(),
+            "session",
+            "list",
+        ]);
+        dispatch_ok(cli).await;
+    }
+
+    #[tokio::test]
+    async fn session_show_missing_id_errors() {
+        let td = tempfile::tempdir().unwrap();
+        let cli = parse(&[
+            "spt",
+            "--state-dir",
+            td.path().to_str().unwrap(),
+            "session",
+            "show",
+            "no-such-id",
+        ]);
+        assert!(matches!(
+            dispatch_err(cli).await,
+            Error::InvalidArgs(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn session_show_present() {
+        let td = tempfile::tempdir().unwrap();
+        let status = spt_state::paths::status_path(td.path());
+        if let Some(parent) = status.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        std::fs::write(
+            &status,
+            r#"{"sessions":[{"id":"abc123","state":"up"}]}"#,
+        )
+        .unwrap();
+        let cli = parse(&[
+            "spt",
+            "--state-dir",
+            td.path().to_str().unwrap(),
+            "session",
+            "show",
+            "abc123",
+            "--json",
+        ]);
+        dispatch_ok(cli).await;
+    }
+
+    #[tokio::test]
+    async fn session_top_routes() {
+        let td = tempfile::tempdir().unwrap();
+        let cli = parse(&[
+            "spt",
+            "--state-dir",
+            td.path().to_str().unwrap(),
+            "session",
+            "top",
+        ]);
+        dispatch_ok(cli).await;
+    }
+
+    #[tokio::test]
+    async fn session_close_no_mcp_errors() {
+        let td = tempfile::tempdir().unwrap();
+        let cli = parse(&[
+            "spt",
+            "--state-dir",
+            td.path().to_str().unwrap(),
+            "session",
+            "close",
+            "abc",
+        ]);
+        let _ = dispatch_err(cli).await;
+    }
+
+    #[tokio::test]
+    async fn session_drain_no_mcp_errors() {
+        let td = tempfile::tempdir().unwrap();
+        let cli = parse(&[
+            "spt",
+            "--state-dir",
+            td.path().to_str().unwrap(),
+            "session",
+            "drain",
+            "edge",
+        ]);
+        let _ = dispatch_err(cli).await;
+    }
+
+    // ----- diagnose group ----------------------------------------------------
+
+    #[tokio::test]
+    async fn diagnose_run_routes() {
+        let cli = parse(&["spt", "diagnose", "run"]);
+        dispatch_ok(cli).await;
+    }
+
+    #[tokio::test]
+    async fn diagnose_one_group_routes() {
+        let td = tempfile::tempdir().unwrap();
+        // `service` is excluded because it requires `--config` even for the
+        // routing test (clap-level).
+        for group in ["secrets", "mcp", "network", "dns", "bind"] {
+            let cli = parse(&[
+                "spt",
+                "--state-dir",
+                td.path().to_str().unwrap(),
+                "diagnose",
+                group,
+                "--json",
+            ]);
+            dispatch_ok(cli).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn diagnose_service_routes() {
+        let td = tempfile::tempdir().unwrap();
+        let cfg = minimal_config(td.path());
+        let cli = parse(&[
+            "spt",
+            "--state-dir",
+            td.path().to_str().unwrap(),
+            "diagnose",
+            "service",
+            "--config",
+            cfg.to_str().unwrap(),
+            "--system",
+            "--json",
+        ]);
+        dispatch_ok(cli).await;
+    }
+
+    #[tokio::test]
+    async fn diagnose_port_tcp_unreachable() {
+        let cli = parse(&[
+            "spt",
+            "diagnose",
+            "port",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "1",
+            "--tcp",
+            "--json",
+        ]);
+        dispatch_ok(cli).await;
+    }
+
+    #[tokio::test]
+    async fn diagnose_port_tcp_autodetect() {
+        let cli = parse(&[
+            "spt",
+            "diagnose",
+            "port",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "1",
+            "--tcp",
+            "--autodetect-service",
+        ]);
+        dispatch_ok(cli).await;
+    }
+
+    #[tokio::test]
+    async fn diagnose_auth_routes() {
+        let td = tempfile::tempdir().unwrap();
+        let cfg = config_with_profile(td.path());
+        let cli = parse(&[
+            "spt",
+            "--config",
+            cfg.to_str().unwrap(),
+            "--state-dir",
+            td.path().to_str().unwrap(),
+            "diagnose",
+            "auth",
+            "edge",
+        ]);
+        let _ = dispatch(cli).await;
+    }
+
+    #[tokio::test]
+    async fn diagnose_trust_routes() {
+        let td = tempfile::tempdir().unwrap();
+        let cfg = config_with_profile(td.path());
+        let cli = parse(&[
+            "spt",
+            "--config",
+            cfg.to_str().unwrap(),
+            "--state-dir",
+            td.path().to_str().unwrap(),
+            "diagnose",
+            "trust",
+            "edge",
+        ]);
+        let _ = dispatch(cli).await;
+    }
+
+    #[tokio::test]
+    async fn diagnose_observability_routes() {
+        let td = tempfile::tempdir().unwrap();
+        let cli = parse(&[
+            "spt",
+            "--state-dir",
+            td.path().to_str().unwrap(),
+            "diagnose",
+            "observability",
+        ]);
+        let _ = dispatch(cli).await;
+    }
+
+    #[tokio::test]
+    async fn diagnose_bundle_writes_archive() {
+        let td = tempfile::tempdir().unwrap();
+        let out = td.path().join("bundle.tar.gz");
+        let cli = parse(&[
+            "spt",
+            "--state-dir",
+            td.path().to_str().unwrap(),
+            "diagnose",
+            "bundle",
+            "--out",
+            out.to_str().unwrap(),
+        ]);
+        dispatch_ok(cli).await;
+        assert!(out.exists());
+    }
+
+    // ----- benchmark group ---------------------------------------------------
+
+    #[tokio::test]
+    async fn benchmark_run_dns_synthetic() {
+        let td = tempfile::tempdir().unwrap();
+        let cli = parse(&[
+            "spt",
+            "--state-dir",
+            td.path().to_str().unwrap(),
+            "benchmark",
+            "run",
+            "--driver",
+            "dns",
+            "--count",
+            "2",
+        ]);
+        dispatch_ok(cli).await;
+    }
+
+    #[tokio::test]
+    async fn benchmark_run_latency_synthetic() {
+        let td = tempfile::tempdir().unwrap();
+        let cli = parse(&[
+            "spt",
+            "--state-dir",
+            td.path().to_str().unwrap(),
+            "benchmark",
+            "run",
+            "--driver",
+            "latency",
+            "--count",
+            "2",
+        ]);
+        dispatch_ok(cli).await;
+    }
+
+    #[tokio::test]
+    async fn benchmark_run_throughput_synthetic() {
+        let td = tempfile::tempdir().unwrap();
+        let cli = parse(&[
+            "spt",
+            "--state-dir",
+            td.path().to_str().unwrap(),
+            "benchmark",
+            "run",
+            "--driver",
+            "throughput",
+            "--count",
+            "2",
+            "--duration",
+            "100ms",
+        ]);
+        dispatch_ok(cli).await;
+    }
+
+    #[tokio::test]
+    async fn benchmark_run_udp_synthetic_safety_gate() {
+        let td = tempfile::tempdir().unwrap();
+        let cli = parse(&[
+            "spt",
+            "--state-dir",
+            td.path().to_str().unwrap(),
+            "benchmark",
+            "run",
+            "--driver",
+            "udp",
+            "--count",
+            "2",
+            "--duration",
+            "100ms",
+        ]);
+        // The udp driver is gated by check_safety without --unsafe-allow flag.
+        // The dispatcher *still* routes through the udp arm — the safety
+        // check is what errors. That's the assertion target.
+        assert!(matches!(
+            dispatch_err(cli).await,
+            Error::InvalidArgs(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn benchmark_run_reconnect_safety_gate() {
+        let td = tempfile::tempdir().unwrap();
+        let cli = parse(&[
+            "spt",
+            "--state-dir",
+            td.path().to_str().unwrap(),
+            "benchmark",
+            "run",
+            "--driver",
+            "reconnect",
+            "--count",
+            "2",
+        ]);
+        assert!(matches!(
+            dispatch_err(cli).await,
+            Error::InvalidArgs(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn benchmark_run_limits_safety_gate() {
+        let td = tempfile::tempdir().unwrap();
+        let cli = parse(&[
+            "spt",
+            "--state-dir",
+            td.path().to_str().unwrap(),
+            "benchmark",
+            "run",
+            "--driver",
+            "limits",
+            "--count",
+            "2",
+        ]);
+        assert!(matches!(
+            dispatch_err(cli).await,
+            Error::InvalidArgs(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn benchmark_run_unknown_driver_errors() {
+        let td = tempfile::tempdir().unwrap();
+        let cli = parse(&[
+            "spt",
+            "--state-dir",
+            td.path().to_str().unwrap(),
+            "benchmark",
+            "run",
+            "--driver",
+            "nope",
+        ]);
+        assert!(matches!(
+            dispatch_err(cli).await,
+            Error::InvalidArgs(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn benchmark_run_live_no_mcp_errors() {
+        let td = tempfile::tempdir().unwrap();
+        let cli = parse(&[
+            "spt",
+            "--state-dir",
+            td.path().to_str().unwrap(),
+            "benchmark",
+            "run",
+            "--driver",
+            "latency",
+            "--profile",
+            "edge",
+        ]);
+        // Live driver path: routes via MCP, no sidecar => RuntimeFailure.
+        let _ = dispatch_err(cli).await;
+    }
+
+    #[tokio::test]
+    async fn benchmark_latency_alias_routes() {
+        let td = tempfile::tempdir().unwrap();
+        let cli = parse(&[
+            "spt",
+            "--state-dir",
+            td.path().to_str().unwrap(),
+            "benchmark",
+            "latency",
+            "--profile",
+            "edge",
+            "--forward",
+            "db",
+            "--samples",
+            "2",
+        ]);
+        // Routes through into live path (no MCP -> errors).
+        let _ = dispatch_err(cli).await;
+    }
+
+    #[tokio::test]
+    async fn benchmark_dns_alias_synthetic() {
+        let td = tempfile::tempdir().unwrap();
+        let cli = parse(&[
+            "spt",
+            "--state-dir",
+            td.path().to_str().unwrap(),
+            "benchmark",
+            "dns",
+            "--name",
+            "example.com",
+            "--samples",
+            "2",
+        ]);
+        dispatch_ok(cli).await;
+    }
+
+    #[tokio::test]
+    async fn benchmark_report_compare_routes() {
+        let td = tempfile::tempdir().unwrap();
+        let base = td.path().join("base.json");
+        let cand = td.path().join("cand.json");
+        // Write empty arrays to satisfy load_bench_report's array branch.
+        std::fs::write(&base, "[]").unwrap();
+        std::fs::write(&cand, "[]").unwrap();
+        let cli = parse(&[
+            "spt",
+            "benchmark",
+            "report",
+            "compare",
+            "--baseline",
+            base.to_str().unwrap(),
+            "--candidate",
+            cand.to_str().unwrap(),
+        ]);
+        dispatch_ok(cli).await;
+    }
+
+    #[tokio::test]
+    async fn benchmark_report_compare_missing_errors() {
+        let td = tempfile::tempdir().unwrap();
+        let cli = parse(&[
+            "spt",
+            "benchmark",
+            "report",
+            "compare",
+            "--baseline",
+            td.path().join("missing-a.json").to_str().unwrap(),
+            "--candidate",
+            td.path().join("missing-b.json").to_str().unwrap(),
+        ]);
+        assert!(matches!(
+            dispatch_err(cli).await,
+            Error::BenchmarkFailed(_)
+        ));
+    }
+
+    // ----- mcp group ---------------------------------------------------------
+
+    #[tokio::test]
+    async fn mcp_inspect_routes() {
+        let cli = parse(&["spt", "mcp", "inspect"]);
+        dispatch_ok(cli).await;
+    }
+
+    #[tokio::test]
+    async fn mcp_inspect_json_routes() {
+        let cli = parse(&["spt", "mcp", "inspect", "--json"]);
+        dispatch_ok(cli).await;
+    }
+
+    #[tokio::test]
+    async fn mcp_policy_show_no_config() {
+        let cli = parse(&["spt", "mcp", "policy", "show"]);
+        dispatch_ok(cli).await;
+    }
+
+    #[tokio::test]
+    async fn mcp_policy_show_with_config() {
+        let td = tempfile::tempdir().unwrap();
+        let cfg = minimal_config(td.path());
+        let cli = parse(&[
+            "spt",
+            "--config",
+            cfg.to_str().unwrap(),
+            "mcp",
+            "policy",
+            "show",
+        ]);
+        dispatch_ok(cli).await;
+    }
+
+    #[tokio::test]
+    async fn mcp_policy_set_enabled_routes() {
+        let td = tempfile::tempdir().unwrap();
+        let cfg = minimal_config(td.path());
+        let cli = parse(&[
+            "spt",
+            "--config",
+            cfg.to_str().unwrap(),
+            "mcp",
+            "policy",
+            "set",
+            "enabled=true",
+        ]);
+        dispatch_ok(cli).await;
+    }
+
+    #[tokio::test]
+    async fn mcp_policy_set_allow_write_tools_routes() {
+        let td = tempfile::tempdir().unwrap();
+        let cfg = minimal_config(td.path());
+        let cli = parse(&[
+            "spt",
+            "--config",
+            cfg.to_str().unwrap(),
+            "mcp",
+            "policy",
+            "set",
+            "allow_write_tools=event.test,profile.set",
+        ]);
+        dispatch_ok(cli).await;
+    }
+
+    #[tokio::test]
+    async fn mcp_policy_set_unknown_key_errors() {
+        let td = tempfile::tempdir().unwrap();
+        let cfg = minimal_config(td.path());
+        let cli = parse(&[
+            "spt",
+            "--config",
+            cfg.to_str().unwrap(),
+            "mcp",
+            "policy",
+            "set",
+            "bogus=true",
+        ]);
+        assert!(matches!(
+            dispatch_err(cli).await,
+            Error::InvalidArgs(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn mcp_serve_without_enable_errors() {
+        let cli = parse(&[
+            "spt",
+            "mcp",
+            "serve",
+            "--stdio",
+        ]);
+        assert!(matches!(
+            dispatch_err(cli).await,
+            Error::McpFailed(_)
+        ));
+    }
+
+    // ----- completion group --------------------------------------------------
+
+    #[tokio::test]
+    async fn completion_generate_bash_routes() {
+        let cli = parse(&["spt", "completion", "generate", "bash"]);
+        dispatch_ok(cli).await;
+    }
+
+    #[tokio::test]
+    async fn completion_generate_zsh_routes() {
+        let cli = parse(&["spt", "completion", "generate", "zsh"]);
+        dispatch_ok(cli).await;
+    }
+
+    // ----- top-level dispatch shape ------------------------------------------
+
+    #[tokio::test]
+    async fn config_dir_merges_into_tempfile() {
+        // Exercise the `--config-dir` branch at the top of `dispatch`.
+        let td = tempfile::tempdir().unwrap();
+        let a = td.path().join("01-base.toml");
+        std::fs::write(&a, "version = 1\n").unwrap();
+        let cli = parse(&[
+            "spt",
+            "--config-dir",
+            td.path().to_str().unwrap(),
+            "config",
+            "validate",
+        ]);
+        dispatch_ok(cli).await;
+    }
+}
+

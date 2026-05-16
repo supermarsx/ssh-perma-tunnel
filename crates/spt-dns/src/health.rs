@@ -71,3 +71,77 @@ impl HealthSource for AlwaysHealthy {
         ForwardHealth::up()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn forward_health_default_is_all_down() {
+        let h = ForwardHealth::default();
+        assert!(!h.listening);
+        assert!(!h.healthy);
+        assert_eq!(h, ForwardHealth::down());
+    }
+
+    #[test]
+    fn forward_health_up_and_down_constructors() {
+        let up = ForwardHealth::up();
+        assert!(up.listening);
+        assert!(up.healthy);
+
+        let down = ForwardHealth::down();
+        assert!(!down.listening);
+        assert!(!down.healthy);
+
+        // Equality + Copy + Clone (derives) exercised.
+        let copy = up;
+        let cloned = up;
+        assert_eq!(copy, cloned);
+        assert_ne!(up, down);
+    }
+
+    #[test]
+    fn forward_health_debug_renders() {
+        // Just confirm Debug is wired (catches accidental removal of the derive).
+        let s = format!("{:?}", ForwardHealth::up());
+        assert!(s.contains("listening"));
+        assert!(s.contains("healthy"));
+    }
+
+    #[test]
+    fn no_health_returns_down_for_any_id() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let src = NoHealth;
+            assert_eq!(src.forward_health("").await, ForwardHealth::down());
+            assert_eq!(src.forward_health("p/f").await, ForwardHealth::down());
+            assert_eq!(
+                src.forward_health("any/garbage-id").await,
+                ForwardHealth::down()
+            );
+        });
+    }
+
+    #[test]
+    fn always_healthy_returns_up_for_any_id() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let src = AlwaysHealthy;
+            assert_eq!(src.forward_health("p/f").await, ForwardHealth::up());
+            assert_eq!(src.forward_health("").await, ForwardHealth::up());
+        });
+    }
+
+    #[test]
+    fn no_health_is_send_sync_and_usable_as_trait_object() {
+        // The HealthSource trait demands Send + Sync + 'static — confirm Arc<dyn _>
+        // composes cleanly so the wiring in server.rs is not silently broken.
+        let _: std::sync::Arc<dyn HealthSource> = std::sync::Arc::new(NoHealth);
+        let _: std::sync::Arc<dyn HealthSource> = std::sync::Arc::new(AlwaysHealthy);
+    }
+}

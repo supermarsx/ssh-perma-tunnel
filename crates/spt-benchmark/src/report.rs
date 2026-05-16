@@ -182,4 +182,155 @@ mod tests {
             }
         }
     }
+
+    fn sample_with_errors_and_throttles() -> BenchResult {
+        BenchResult {
+            driver: "stress".into(),
+            duration_ms: 200,
+            iterations_completed: 3,
+            iterations_attempted: 5,
+            payload_size: 32,
+            errors: vec!["timeout".into(), "reset".into()],
+            metrics: MetricSet {
+                latency: Some(Percentiles {
+                    p50_ms: 1.5,
+                    p90_ms: 4.0,
+                    p99_ms: 9.0,
+                    p999_ms: 12.0,
+                    max_ms: 15.0,
+                    ..Default::default()
+                }),
+                throughput_bps: Some(1_234_567.0),
+                ..Default::default()
+            },
+            throttles_applied: vec!["per-conn".into()],
+            env: BenchEnv {
+                os: "linux".into(),
+                arch: "x86_64".into(),
+                spt_version: "0.1.0".into(),
+                ..Default::default()
+            },
+            started_at: "2026-05-05T12:00:00Z".into(),
+        }
+    }
+
+    #[test]
+    fn csv_contains_error_messages_joined_by_semicolon() {
+        let d = tempdir().unwrap();
+        let p = write_report(
+            d.path(),
+            "csv-err",
+            &[sample_with_errors_and_throttles()],
+            ReportFormat::Csv,
+        )
+        .unwrap();
+        let body = std::fs::read_to_string(&p).unwrap();
+        assert!(body.contains("timeout; reset"), "got:\n{body}");
+        assert!(body.contains("1.500"), "expected p50 3dp, got:\n{body}");
+    }
+
+    #[test]
+    fn markdown_summarises_error_count() {
+        let d = tempdir().unwrap();
+        let p = write_report(
+            d.path(),
+            "md-err",
+            &[sample_with_errors_and_throttles()],
+            ReportFormat::Markdown,
+        )
+        .unwrap();
+        let body = std::fs::read_to_string(&p).unwrap();
+        assert!(body.contains("2 error(s)"), "got:\n{body}");
+        assert!(body.contains("| stress |"));
+    }
+
+    #[test]
+    fn markdown_no_errors_renders_blank_cell() {
+        let d = tempdir().unwrap();
+        let p = write_report(d.path(), "md-clean", &[sample()], ReportFormat::Markdown).unwrap();
+        let body = std::fs::read_to_string(&p).unwrap();
+        assert!(!body.contains("error(s)"));
+        assert!(body.contains("| latency |"));
+    }
+
+    #[test]
+    fn jsonl_one_object_per_line() {
+        let d = tempdir().unwrap();
+        let mut a = sample();
+        a.driver = "first".into();
+        let mut b = sample();
+        b.driver = "second".into();
+        let p = write_report(d.path(), "jsonl-multi", &[a, b], ReportFormat::Jsonl).unwrap();
+        let body = std::fs::read_to_string(&p).unwrap();
+        let lines: Vec<_> = body.lines().collect();
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].contains("\"driver\":\"first\""));
+        assert!(lines[1].contains("\"driver\":\"second\""));
+        for line in &lines {
+            let _: serde_json::Value = serde_json::from_str(line).unwrap();
+        }
+    }
+
+    #[test]
+    fn empty_results_handles_each_format_gracefully() {
+        let d = tempdir().unwrap();
+        for f in [
+            ReportFormat::Json,
+            ReportFormat::Jsonl,
+            ReportFormat::Csv,
+            ReportFormat::Markdown,
+        ] {
+            let p = write_report(d.path(), &format!("empty-{f:?}"), &[], f).unwrap();
+            assert!(p.exists());
+            let body = std::fs::read_to_string(&p).unwrap();
+            match f {
+                ReportFormat::Json => assert_eq!(body.trim(), "[]"),
+                ReportFormat::Jsonl => assert!(body.is_empty(), "got {body:?}"),
+                ReportFormat::Csv => assert!(body.starts_with("driver,duration_ms")),
+                ReportFormat::Markdown => assert!(body.contains("| driver |")),
+            }
+        }
+    }
+
+    #[test]
+    fn report_format_serde_round_trip() {
+        for (f, want) in [
+            (ReportFormat::Json, "\"json\""),
+            (ReportFormat::Jsonl, "\"jsonl\""),
+            (ReportFormat::Csv, "\"csv\""),
+            (ReportFormat::Markdown, "\"markdown\""),
+        ] {
+            let s = serde_json::to_string(&f).unwrap();
+            assert_eq!(s, want);
+            let back: ReportFormat = serde_json::from_str(&s).unwrap();
+            assert_eq!(back, f);
+        }
+    }
+
+    #[test]
+    fn write_report_creates_benchmarks_subdir() {
+        let d = tempdir().unwrap();
+        let p = write_report(d.path(), "auto-dir", &[sample()], ReportFormat::Json).unwrap();
+        assert!(p.starts_with(d.path()));
+        assert!(p.parent().unwrap().ends_with("benchmarks"));
+        assert_eq!(
+            std::path::Path::new(p.file_name().unwrap())
+                .extension()
+                .and_then(|e| e.to_str()),
+            Some("json")
+        );
+    }
+
+    #[test]
+    fn metrics_without_latency_renders_zero_percentiles() {
+        let mut r = sample();
+        r.metrics.latency = None;
+        let d = tempdir().unwrap();
+        let csv = write_report(d.path(), "no-lat", &[r.clone()], ReportFormat::Csv).unwrap();
+        let body = std::fs::read_to_string(&csv).unwrap();
+        assert!(body.contains(",0.000,"), "got:\n{body}");
+        let md = write_report(d.path(), "no-lat-md", &[r], ReportFormat::Markdown).unwrap();
+        let body = std::fs::read_to_string(&md).unwrap();
+        assert!(body.contains("0.000"));
+    }
 }

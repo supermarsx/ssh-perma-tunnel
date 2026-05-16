@@ -437,4 +437,148 @@ mod tests {
         assert_eq!(policy.host_keys, vec!["rsa-sha2-256"]);
         assert_eq!(policy.compression, vec!["none"]);
     }
+
+    #[test]
+    fn unknown_protocol_returns_invalid_config_error() {
+        let cfg = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh4"
+            host = "h"
+        "#;
+        let (c, _) = load_str(cfg, false).unwrap();
+        match build(&c.profiles[0], &empty_resolver()) {
+            Err(Error::InvalidConfig(_)) => {}
+            Ok(_) => panic!("expected InvalidConfig error"),
+            Err(other) => panic!("expected InvalidConfig, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn explicit_endpoints_table_overrides_top_level_host() {
+        let cfg = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "top.example"
+            port = 22
+            [[profiles.endpoints]]
+            name = "primary"
+            host = "ep1.example"
+            port = 2222
+            priority = 5
+            weight = 3
+            [[profiles.endpoints]]
+            name = "backup"
+            host = "ep2.example"
+            port = 22
+        "#;
+        let (c, _) = load_str(cfg, false).unwrap();
+        let bundle = build(&c.profiles[0], &empty_resolver()).unwrap();
+        assert_eq!(bundle.endpoints.len(), 2);
+        assert_eq!(bundle.endpoints[0].host, "ep1.example");
+        assert_eq!(bundle.endpoints[0].port, 2222);
+        assert_eq!(bundle.endpoints[0].priority, 5);
+        assert_eq!(bundle.endpoints[0].weight, 3);
+        // Endpoint with no priority/weight defaults to 0/1.
+        assert_eq!(bundle.endpoints[1].priority, 0);
+        assert_eq!(bundle.endpoints[1].weight, 1);
+    }
+
+    #[test]
+    fn build_crypto_policy_none_returns_default() {
+        let policy = build_crypto_policy(None);
+        assert!(policy.ciphers.is_empty());
+        assert!(policy.kex.is_empty());
+        assert!(policy.macs.is_empty());
+    }
+
+    #[test]
+    fn default_port_for_protocol_matches_ssh2_and_ssh3() {
+        assert_eq!(default_port_for("ssh2"), 22);
+        assert_eq!(default_port_for("ssh3"), 443);
+        assert_eq!(default_port_for("anything-else"), 22);
+    }
+
+    #[test]
+    fn unknown_failover_mode_errors() {
+        let cfg = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            [profiles.failover]
+            mode = "round-robin"
+        "#;
+        let (c, _) = load_str(cfg, false).unwrap();
+        match build(&c.profiles[0], &empty_resolver()) {
+            Err(Error::InvalidConfig(_)) => {}
+            Ok(_) => panic!("expected InvalidConfig error"),
+            Err(other) => panic!("expected InvalidConfig, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn fail_after_zero_errors() {
+        let cfg = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            [profiles.failover]
+            mode = "priority"
+            fail_after = 0
+        "#;
+        let (c, _) = load_str(cfg, false).unwrap();
+        match build(&c.profiles[0], &empty_resolver()) {
+            Err(Error::InvalidConfig(_)) => {}
+            Ok(_) => panic!("expected InvalidConfig error"),
+            Err(other) => panic!("expected InvalidConfig, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn jitter_rejects_out_of_range() {
+        let err = parse_jitter_ratio("p", "150%").unwrap_err();
+        assert!(matches!(err, Error::InvalidConfig(_)));
+        let err = parse_jitter_ratio("p", "-0.1").unwrap_err();
+        assert!(matches!(err, Error::InvalidConfig(_)));
+    }
+
+    #[test]
+    fn jitter_accepts_percent_and_decimal() {
+        assert!((parse_jitter_ratio("p", "0%").unwrap() - 0.0).abs() < f32::EPSILON);
+        assert!((parse_jitter_ratio("p", "100%").unwrap() - 1.0).abs() < f32::EPSILON);
+        assert!((parse_jitter_ratio("p", "0.5").unwrap() - 0.5).abs() < f32::EPSILON);
+        assert!((parse_jitter_ratio("p", "  25 %  ").unwrap() - 0.25).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn jitter_rejects_unparseable_string() {
+        let err = parse_jitter_ratio("p", "not-a-number").unwrap_err();
+        assert!(matches!(err, Error::InvalidConfig(_)));
+    }
+
+    #[test]
+    fn parse_profile_duration_propagates_invalid() {
+        let err = parse_profile_duration("p", "reconnect.initial_delay", "not-a-duration")
+            .unwrap_err();
+        assert!(matches!(err, Error::InvalidConfig(_)));
+    }
+
+    #[test]
+    fn parse_profile_duration_round_trips_basic_units() {
+        assert_eq!(
+            parse_profile_duration("p", "field", "500ms").unwrap(),
+            std::time::Duration::from_millis(500)
+        );
+        assert_eq!(
+            parse_profile_duration("p", "field", "2s").unwrap(),
+            std::time::Duration::from_secs(2)
+        );
+    }
 }

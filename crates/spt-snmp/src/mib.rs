@@ -300,4 +300,160 @@ mod tests {
         let n = reg.next(&oid("1.3.6.1.4.1.32472")).await.unwrap().unwrap();
         assert_eq!(n.0, oid("1.3.6.1.4.1.32473.1.0"));
     }
+
+    #[test]
+    fn set_outcome_to_error_status() {
+        assert_eq!(SetOutcome::Ok.to_error_status(), ErrorStatus::NoError);
+        assert_eq!(
+            SetOutcome::NotWritable.to_error_status(),
+            ErrorStatus::NotWritable
+        );
+        assert_eq!(
+            SetOutcome::WrongValue.to_error_status(),
+            ErrorStatus::WrongValue
+        );
+        assert_eq!(SetOutcome::GenErr.to_error_status(), ErrorStatus::GenErr);
+    }
+
+    #[tokio::test]
+    async fn const_scalar_handler_get() {
+        let s = ConstScalar::new(Value::Integer(99));
+        assert_eq!(s.get().await.unwrap(), Value::Integer(99));
+    }
+
+    #[tokio::test]
+    async fn handler_default_set_is_not_writable() {
+        let s = ConstScalar::new(Value::Integer(0));
+        assert_eq!(s.set(Value::Integer(1)).await, SetOutcome::NotWritable);
+    }
+
+    #[derive(Clone)]
+    struct DemoTable {
+        rows: Vec<(ObjectIdentifier, Value)>,
+    }
+
+    #[async_trait::async_trait]
+    impl TableHandler for DemoTable {
+        async fn next(
+            &self,
+            after: Option<&ObjectIdentifier>,
+        ) -> Result<Option<(ObjectIdentifier, Value)>> {
+            for (k, v) in &self.rows {
+                if let Some(a) = after {
+                    if k <= a {
+                        continue;
+                    }
+                }
+                return Ok(Some((k.clone(), v.clone())));
+            }
+            Ok(None)
+        }
+    }
+
+    #[tokio::test]
+    async fn table_handler_default_get_walks() {
+        let t = DemoTable {
+            rows: vec![
+                (oid("1.3.6.1.4.1.99.1"), Value::Integer(1)),
+                (oid("1.3.6.1.4.1.99.2"), Value::Integer(2)),
+                (oid("1.3.6.1.4.1.99.3"), Value::Integer(3)),
+            ],
+        };
+        assert_eq!(
+            t.get(&oid("1.3.6.1.4.1.99.2")).await.unwrap(),
+            Some(Value::Integer(2))
+        );
+        assert_eq!(t.get(&oid("1.3.6.1.4.1.99.2.5")).await.unwrap(), None);
+        assert_eq!(t.get(&oid("1.3.6.1.4.1.99.99")).await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn registry_table_dispatch() {
+        let mut reg = MibRegistry::new();
+        let table = DemoTable {
+            rows: vec![
+                (oid("1.3.6.1.4.1.99.1.1"), Value::Integer(11)),
+                (oid("1.3.6.1.4.1.99.1.2"), Value::Integer(22)),
+            ],
+        };
+        reg.add_table(oid("1.3.6.1.4.1.99"), table);
+
+        assert_eq!(
+            reg.get(&oid("1.3.6.1.4.1.99.1.1")).await.unwrap(),
+            Some(Value::Integer(11))
+        );
+
+        let n = reg
+            .next(&oid("1.3.6.1.4.1.99"))
+            .await
+            .unwrap()
+            .expect("table successor");
+        assert_eq!(n.0, oid("1.3.6.1.4.1.99.1.1"));
+
+        let n = reg
+            .next(&oid("1.3.6.1.4.1.99.1.1"))
+            .await
+            .unwrap()
+            .expect("second row");
+        assert_eq!(n.0, oid("1.3.6.1.4.1.99.1.2"));
+
+        let n = reg.next(&oid("1.3.6.1.4.1.99.9.9")).await.unwrap();
+        assert!(n.is_none());
+    }
+
+    #[tokio::test]
+    async fn table_for_finds_owning_prefix() {
+        let mut reg = MibRegistry::new();
+        let table = DemoTable {
+            rows: vec![(oid("1.3.6.1.4.1.99.1"), Value::Integer(1))],
+        };
+        reg.add_table(oid("1.3.6.1.4.1.99"), table);
+        let hit = reg.table_for(&oid("1.3.6.1.4.1.99.1.2"));
+        assert!(hit.is_some());
+        assert_eq!(hit.unwrap().0, oid("1.3.6.1.4.1.99"));
+        let miss = reg.table_for(&oid("1.3.6.1.4.1.100"));
+        assert!(miss.is_none());
+    }
+
+    #[tokio::test]
+    async fn registry_mixes_scalar_and_table_picking_smallest() {
+        let mut reg = MibRegistry::new();
+        reg.add_scalar(
+            oid("1.3.6.1.4.1.99.5.0"),
+            ConstScalar::new(Value::Integer(50)),
+        );
+        let table = DemoTable {
+            rows: vec![(oid("1.3.6.1.4.1.99.3.1"), Value::Integer(31))],
+        };
+        reg.add_table(oid("1.3.6.1.4.1.99"), table);
+        let n = reg.next(&oid("1.3.6.1.4.1.99")).await.unwrap().unwrap();
+        assert_eq!(n.0, oid("1.3.6.1.4.1.99.3.1"));
+        let n = reg.next(&oid("1.3.6.1.4.1.99.3.1")).await.unwrap().unwrap();
+        assert_eq!(n.0, oid("1.3.6.1.4.1.99.5.0"));
+    }
+
+    #[test]
+    fn debug_impls_redact_internals() {
+        let mut reg = MibRegistry::new();
+        reg.add_scalar(
+            oid("1.3.6.1.4.1.99.1.0"),
+            ConstScalar::new(Value::Integer(1)),
+        );
+        let dbg = format!("{reg:?}");
+        assert!(dbg.contains("scalar_count"));
+        assert!(dbg.contains("table_count"));
+    }
+
+    #[test]
+    fn scalar_lookup_clones_arc() {
+        let mut reg = MibRegistry::new();
+        reg.add_scalar(
+            oid("1.3.6.1.4.1.99.1.0"),
+            ConstScalar::new(Value::Integer(7)),
+        );
+        let arc = reg.scalar(&oid("1.3.6.1.4.1.99.1.0"));
+        assert!(arc.is_some());
+        let miss = reg.scalar(&oid("1.3.6.1.4.1.99.2.0"));
+        assert!(miss.is_none());
+    }
 }

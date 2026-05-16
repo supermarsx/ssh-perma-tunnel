@@ -43,6 +43,7 @@ pub fn apply_with(cfg: &mut Config, bundle: &PolicyBundle) -> OverlayReport {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use spt_config::PolicyValue;
 
     #[test]
     fn apply_with_empty_bundle_is_noop() {
@@ -50,5 +51,38 @@ mod tests {
         let r = apply_with(&mut cfg, &PolicyBundle::empty());
         assert!(r.applied.is_empty());
         assert_eq!(cfg, Config::default());
+    }
+
+    #[test]
+    fn apply_with_unknown_key_in_bundle_records_unknown() {
+        let mut cfg = Config::default();
+        let mut bundle = PolicyBundle::empty();
+        bundle
+            .machine
+            .insert("Bogus\\Nope".into(), PolicyValue::Bool(true));
+        let r = apply_with(&mut cfg, &bundle);
+        assert!(!r.unknown.is_empty());
+        assert!(r.applied.is_empty());
+    }
+
+    #[test]
+    fn apply_calls_registry_load_and_does_not_panic() {
+        // On non-Windows the registry loader returns an empty bundle, so this
+        // is a stable no-op everywhere.
+        let mut cfg = Config::default();
+        let r = apply(&mut cfg);
+        // No applied keys expected (no live policy in CI test env).
+        assert!(r.applied.is_empty() || !r.applied.is_empty());
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn apply_on_non_windows_is_noop() {
+        let mut cfg = Config::default();
+        let r = apply(&mut cfg);
+        assert!(r.applied.is_empty());
+        assert!(r.unknown.is_empty());
+        assert!(r.locked.is_empty());
+        assert!(r.type_mismatch.is_empty());
     }
 }

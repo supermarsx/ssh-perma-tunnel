@@ -148,4 +148,138 @@ mod tests {
         let err = pin.verify(&cert).unwrap_err();
         assert!(matches!(err, Error::InvalidConfig(_)));
     }
+
+    /// Build a self-signed cert and compute its SPKI SHA-256.
+    fn gen_cert_and_pin() -> (Vec<u8>, [u8; 32]) {
+        use x509_parser::prelude::*;
+        let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+        let der = cert.cert.der().to_vec();
+        let (_, parsed) = X509Certificate::from_der(&der).unwrap();
+        let mut h = Sha256::new();
+        h.update(parsed.tbs_certificate.subject_pki.raw);
+        let pin: [u8; 32] = h.finalize().into();
+        (der, pin)
+    }
+
+    #[test]
+    fn verify_accepts_matching_pin_real_cert() {
+        let (der, pin) = gen_cert_and_pin();
+        let pinset = TlsPin {
+            spki_sha256: vec![pin],
+        };
+        let cert = CertificateDer::from(der);
+        pinset.verify(&cert).unwrap();
+    }
+
+    #[test]
+    fn verify_rejects_when_cert_does_not_match_any_pin() {
+        let (der, _real_pin) = gen_cert_and_pin();
+        let pinset = TlsPin {
+            spki_sha256: vec![[0xAB; 32]],
+        };
+        let cert = CertificateDer::from(der);
+        let err = pinset.verify(&cert).unwrap_err();
+        match err {
+            Error::TrustFailed(msg) => {
+                assert!(msg.contains("TLS SPKI pin mismatch"));
+                assert!(msg.contains("SHA256:"));
+            }
+            other => panic!("expected TrustFailed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn verify_accepts_pin_in_a_set_of_many() {
+        let (der, pin) = gen_cert_and_pin();
+        let pinset = TlsPin {
+            spki_sha256: vec![[0u8; 32], [0xFF; 32], pin, [0x55; 32]],
+        };
+        let cert = CertificateDer::from(der);
+        pinset.verify(&cert).unwrap();
+    }
+
+    #[test]
+    fn from_strings_parses_mixed_forms() {
+        // Mix hex, base64 (padded), base64 (no pad), and SHA256: prefixed.
+        use base64::engine::general_purpose::{STANDARD, STANDARD_NO_PAD};
+        use base64::Engine;
+        let zeros_hex = "0".repeat(64);
+        let zeros_b64 = STANDARD.encode([0u8; 32]);
+        let zeros_b64nopad = STANDARD_NO_PAD.encode([0u8; 32]);
+        let prefixed = format!("SHA256:{zeros_b64nopad}");
+        let pin = TlsPin::from_strings([
+            zeros_hex.as_str(),
+            zeros_b64.as_str(),
+            zeros_b64nopad.as_str(),
+            prefixed.as_str(),
+        ])
+        .unwrap();
+        assert_eq!(pin.spki_sha256.len(), 4);
+        for p in &pin.spki_sha256 {
+            assert_eq!(p, &[0u8; 32]);
+        }
+    }
+
+    #[test]
+    fn from_strings_rejects_wrong_length() {
+        // 24 zero bytes → 32 base64 chars without padding → not 32-byte digest.
+        let short = base64::engine::general_purpose::STANDARD_NO_PAD.encode([0u8; 24]);
+        let err = TlsPin::from_strings([short.as_str()]).unwrap_err();
+        match err {
+            Error::InvalidConfig(msg) => assert!(msg.contains("32 bytes")),
+            other => panic!("expected InvalidConfig, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_pin_string_rejects_bad_hex() {
+        // Exactly 64 chars, but contains a non-hex character → falls through
+        // to the base64 path and either decodes wrong-length or fails to decode.
+        // We pick a 64-char string of `Z` which is valid base64 but not hex.
+        let bad = "Z".repeat(64);
+        let err = parse_pin_string(&bad).unwrap_err();
+        assert!(matches!(err, Error::InvalidConfig(_)));
+    }
+
+    #[test]
+    fn parse_pin_string_rejects_padded_base64_garbage() {
+        // base64 with `=` padding so we hit the STANDARD path; garbage chars.
+        let bad = "!!!!====";
+        let err = parse_pin_string(bad).unwrap_err();
+        assert!(matches!(err, Error::InvalidConfig(_)));
+    }
+
+    #[test]
+    fn parse_pin_string_rejects_nopad_base64_garbage() {
+        // No `=` → STANDARD_NO_PAD path; deliberately invalid chars.
+        let bad = "%%%%";
+        let err = parse_pin_string(bad).unwrap_err();
+        assert!(matches!(err, Error::InvalidConfig(_)));
+    }
+
+    #[test]
+    fn parse_pin_string_strips_sha256_prefix() {
+        // SHA256: + hex shouldn't trip the parser even when the digest is hex.
+        let p = parse_pin_string(&format!("SHA256:{}", "0".repeat(64))).unwrap();
+        assert_eq!(p, [0u8; 32]);
+    }
+
+    #[test]
+    fn hex_decode_32_rejects_nonhex_byte() {
+        // 64 chars but a non-hex char in the middle.
+        let mut buf = vec![b'0'; 64];
+        buf[10] = b'Z';
+        let s = String::from_utf8(buf).unwrap();
+        let err = hex_decode_32(&s).unwrap_err();
+        assert!(matches!(err, Error::InvalidConfig(_)));
+    }
+
+    #[test]
+    fn from_strings_empty_iterator_yields_empty_pin() {
+        let pin = TlsPin::from_strings(std::iter::empty::<&str>()).unwrap();
+        assert!(pin.spki_sha256.is_empty());
+        // ... and that empty pin set rejects on verify.
+        let cert = CertificateDer::from(vec![0u8]);
+        assert!(pin.verify(&cert).is_err());
+    }
 }

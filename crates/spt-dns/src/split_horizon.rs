@@ -286,3 +286,237 @@ async fn send_simple<R: ResponseHandler>(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::testing::{FakeHealthSource, FakeZone, LocalhostResolver};
+    use crate::zone::Record;
+    use hickory_resolver::config::{NameServerConfigGroup, ResolverConfig, ResolverOpts};
+    use hickory_resolver::error::ResolveErrorKind;
+    use hickory_resolver::TokioAsyncResolver;
+    use std::time::Duration as StdDuration;
+
+    fn rt() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+    }
+
+    fn client_for(port: u16) -> TokioAsyncResolver {
+        let group =
+            NameServerConfigGroup::from_ips_clear(&["127.0.0.1".parse().unwrap()], port, true);
+        let cfg = ResolverConfig::from_parts(None, vec![], group);
+        let mut opts = ResolverOpts::default();
+        opts.timeout = StdDuration::from_secs(2);
+        opts.attempts = 1;
+        opts.use_hosts_file = false;
+        TokioAsyncResolver::tokio(cfg, opts)
+    }
+
+    #[test]
+    fn unmanaged_name_without_upstream_returns_refused() {
+        rt().block_on(async {
+            // No upstream + no zone match → REFUSED.
+            let resolver = LocalhostResolver::start(vec![]).await.unwrap();
+            let port = resolver.port();
+            let client = client_for(port);
+            // Hickory's behavior here varies: it may surface REFUSED as a
+            // resolver error, or it may collapse to NoRecordsFound. We accept
+            // either as long as no records came back.
+            if let Ok(lookup) = client.lookup("nothing.example.", RecordType::A).await {
+                assert_eq!(lookup.records().len(), 0);
+            }
+            resolver.shutdown().await;
+        });
+    }
+
+    #[test]
+    fn managed_zone_unsupported_qtype_returns_no_records_found() {
+        rt().block_on(async {
+            let zone = FakeZone::new("tunnel.local.")
+                .a("a.tunnel.local.", "10.0.0.1".parse().unwrap())
+                .build();
+            let resolver = LocalhostResolver::start(vec![zone]).await.unwrap();
+            let port = resolver.port();
+            let client = client_for(port);
+            // MX is not in our supported set; handler returns NoError-empty.
+            let res = client.lookup("a.tunnel.local.", RecordType::MX).await;
+            match res {
+                Ok(lookup) => assert_eq!(lookup.records().len(), 0),
+                Err(e) => assert!(matches!(e.kind(), ResolveErrorKind::NoRecordsFound { .. })),
+            }
+            resolver.shutdown().await;
+        });
+    }
+
+    #[test]
+    fn answer_when_healthy_filters_with_no_health() {
+        rt().block_on(async {
+            let zone = FakeZone::new("tunnel.local.")
+                .build();
+            // Add a record with AnswerWhenHealthy + forward_id, so NoHealth filters it out.
+            let mut zone = zone;
+            zone.records.push(
+                Record::a(
+                    "gated.tunnel.local.",
+                    "10.0.0.1".parse().unwrap(),
+                    StdDuration::from_secs(60),
+                )
+                .with_policy(AnswerPolicy::AnswerWhenHealthy, Some("p/f".into())),
+            );
+            // NoHealth is the default → record filtered → NXDOMAIN.
+            let resolver = LocalhostResolver::start(vec![zone]).await.unwrap();
+            let port = resolver.port();
+            let client = client_for(port);
+            let err = client
+                .lookup("gated.tunnel.local.", RecordType::A)
+                .await
+                .expect_err("must fail because NoHealth filters the record");
+            assert!(matches!(err.kind(), ResolveErrorKind::NoRecordsFound { .. }));
+            resolver.shutdown().await;
+        });
+    }
+
+    #[test]
+    fn answer_when_healthy_passes_with_fake_health_up() {
+        rt().block_on(async {
+            let mut zone = FakeZone::new("tunnel.local.").build();
+            zone.records.push(
+                Record::a(
+                    "gated.tunnel.local.",
+                    "10.1.2.3".parse().unwrap(),
+                    StdDuration::from_secs(60),
+                )
+                .with_policy(AnswerPolicy::AnswerWhenHealthy, Some("p/f".into())),
+            );
+            let resolver = LocalhostResolver::start_with_health(
+                vec![zone],
+                std::sync::Arc::new(FakeHealthSource(true)),
+            )
+            .await
+            .unwrap();
+            let port = resolver.port();
+            let client = client_for(port);
+            let lookup = client
+                .lookup("gated.tunnel.local.", RecordType::A)
+                .await
+                .expect("query resolves");
+            let any_match = lookup.records().iter().any(|r| {
+                matches!(r.data(), Some(hickory_proto::rr::RData::A(a)) if a.0 == std::net::Ipv4Addr::new(10,1,2,3))
+            });
+            assert!(any_match);
+            resolver.shutdown().await;
+        });
+    }
+
+    #[test]
+    fn answer_when_listening_with_no_forward_id_always_passes() {
+        rt().block_on(async {
+            let mut zone = FakeZone::new("tunnel.local.").build();
+            // forward_id = None → policy is treated as pass.
+            zone.records.push(
+                Record::a(
+                    "nogate.tunnel.local.",
+                    "10.9.9.9".parse().unwrap(),
+                    StdDuration::from_secs(60),
+                )
+                .with_policy(AnswerPolicy::AnswerWhenListening, None),
+            );
+            let resolver = LocalhostResolver::start(vec![zone]).await.unwrap();
+            let port = resolver.port();
+            let client = client_for(port);
+            let lookup = client
+                .lookup("nogate.tunnel.local.", RecordType::A)
+                .await
+                .expect("query resolves");
+            assert_eq!(lookup.records().len(), 1);
+            resolver.shutdown().await;
+        });
+    }
+
+    #[test]
+    fn srv_record_renders_in_handler_response() {
+        rt().block_on(async {
+            let zone = FakeZone::new("tunnel.local.")
+                .srv("_svc._tcp.tunnel.local.", "target.tunnel.local.", 25, 10, 5)
+                .build();
+            let resolver = LocalhostResolver::start(vec![zone]).await.unwrap();
+            let port = resolver.port();
+            let client = client_for(port);
+            let lookup = client
+                .lookup("_svc._tcp.tunnel.local.", RecordType::SRV)
+                .await
+                .expect("query resolves");
+            let mut found = false;
+            for rec in lookup.records() {
+                if let Some(hickory_proto::rr::RData::SRV(s)) = rec.data() {
+                    assert_eq!(s.priority(), 10);
+                    assert_eq!(s.weight(), 5);
+                    assert_eq!(s.port(), 25);
+                    found = true;
+                }
+            }
+            assert!(found, "expected SRV answer");
+            resolver.shutdown().await;
+        });
+    }
+
+    #[test]
+    fn aaaa_record_renders_in_handler_response() {
+        rt().block_on(async {
+            let zone = FakeZone::new("tunnel.local.")
+                .aaaa("v6.tunnel.local.", "fd00::abcd".parse().unwrap())
+                .build();
+            let resolver = LocalhostResolver::start(vec![zone]).await.unwrap();
+            let port = resolver.port();
+            let client = client_for(port);
+            let lookup = client
+                .lookup("v6.tunnel.local.", RecordType::AAAA)
+                .await
+                .expect("query resolves");
+            let mut found = false;
+            for rec in lookup.records() {
+                if let Some(hickory_proto::rr::RData::AAAA(a)) = rec.data() {
+                    assert_eq!(a.0, "fd00::abcd".parse::<std::net::Ipv6Addr>().unwrap());
+                    found = true;
+                }
+            }
+            assert!(found);
+            resolver.shutdown().await;
+        });
+    }
+
+    #[test]
+    fn txt_long_string_splits_into_chunks() {
+        rt().block_on(async {
+            // 300 bytes exercises the >255 chunking path while staying within
+            // a single UDP response (no Windows TCP fallback permission quirk).
+            let big = "x".repeat(300);
+            let zone = FakeZone::new("tunnel.local.")
+                .txt("t.tunnel.local.", &big)
+                .build();
+            let resolver = LocalhostResolver::start(vec![zone]).await.unwrap();
+            let port = resolver.port();
+            let client = client_for(port);
+            let lookup = client
+                .lookup("t.tunnel.local.", RecordType::TXT)
+                .await
+                .expect("query resolves");
+            let mut chunk_count = 0usize;
+            let mut total = 0usize;
+            for rec in lookup.records() {
+                if let Some(hickory_proto::rr::RData::TXT(t)) = rec.data() {
+                    for chunk in t.iter() {
+                        chunk_count += 1;
+                        total += chunk.len();
+                    }
+                }
+            }
+            assert_eq!(total, big.len());
+            assert!(chunk_count >= 2, "expected at least 2 chunks, got {chunk_count}");
+            resolver.shutdown().await;
+        });
+    }
+}

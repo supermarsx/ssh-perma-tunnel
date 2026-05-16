@@ -164,4 +164,58 @@ mod tests {
             other => panic!("unexpected error: {other:?}"),
         }
     }
+
+    #[test]
+    fn lock_paths_are_under_dir() {
+        let tmp = tempdir().unwrap();
+        let dir = tmp.path();
+        let lock = StateLock::acquire(dir).unwrap();
+        assert!(lock.lock_path().starts_with(dir));
+        assert!(lock.pid_path().starts_with(dir));
+        assert_eq!(lock.lock_path().file_name().unwrap(), "spt.lock");
+        assert_eq!(lock.pid_path().file_name().unwrap(), "spt.pid");
+    }
+
+    #[test]
+    fn drop_releases_lock_and_removes_pid_file() {
+        let tmp = tempdir().unwrap();
+        let dir = tmp.path();
+        let lock = StateLock::acquire(dir).unwrap();
+        let pid_path = lock.pid_path().to_path_buf();
+        assert!(pid_path.exists());
+        drop(lock);
+        assert!(!pid_path.exists());
+        // Lock released — a fresh acquire on the same dir must succeed.
+        let l2 = StateLock::acquire(dir).unwrap();
+        drop(l2);
+    }
+
+    #[test]
+    fn is_contention_error_classifies_kinds() {
+        let e_block = io::Error::from(io::ErrorKind::WouldBlock);
+        assert!(is_contention_error(&e_block));
+        let e_perm = io::Error::from(io::ErrorKind::PermissionDenied);
+        assert!(is_contention_error(&e_perm));
+        let e_not_found = io::Error::from(io::ErrorKind::NotFound);
+        assert!(!is_contention_error(&e_not_found));
+    }
+
+    #[test]
+    fn is_contention_error_recognises_raw_os_codes() {
+        for code in [11, 32, 33, 35] {
+            let e = io::Error::from_raw_os_error(code);
+            assert!(
+                is_contention_error(&e),
+                "expected contention for raw os error {code}"
+            );
+        }
+    }
+
+    #[test]
+    fn lock_is_debug() {
+        let tmp = tempdir().unwrap();
+        let lock = StateLock::acquire(tmp.path()).unwrap();
+        let s = format!("{lock:?}");
+        assert!(s.contains("StateLock"));
+    }
 }

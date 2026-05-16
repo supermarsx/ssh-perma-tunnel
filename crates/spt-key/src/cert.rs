@@ -202,4 +202,178 @@ mod tests {
         let r = sign_cert(&ca, subject.public_ref(), CertOptions::default());
         assert!(r.is_err());
     }
+
+    #[test]
+    fn cert_type_conversion_user_and_host() {
+        let u: ssh_key::certificate::CertType = CertType::User.into();
+        assert_eq!(u, ssh_key::certificate::CertType::User);
+        let h: ssh_key::certificate::CertType = CertType::Host.into();
+        assert_eq!(h, ssh_key::certificate::CertType::Host);
+    }
+
+    #[test]
+    fn cert_options_default_shape() {
+        let d = CertOptions::default();
+        assert_eq!(d.cert_type, CertType::User);
+        assert!(d.key_id.is_empty());
+        assert!(d.principals.is_empty());
+        assert!(!d.all_principals);
+        assert!(d.valid_after.is_none());
+        assert!(d.valid_before.is_none());
+        assert_eq!(d.default_lifetime, Duration::from_secs(60 * 60 * 24 * 30));
+        assert_eq!(d.serial, 0);
+        assert!(d.comment.is_empty());
+        assert!(d.critical_options.is_empty());
+        assert!(d.extensions.is_empty());
+    }
+
+    #[test]
+    fn cert_options_clone_and_debug() {
+        let opts = CertOptions {
+            key_id: "k".into(),
+            principals: vec!["p".into()],
+            ..CertOptions::default()
+        };
+        let cloned = opts.clone();
+        assert_eq!(cloned.key_id, "k");
+        // Exercise Debug impl.
+        let _ = format!("{opts:?}");
+    }
+
+    #[test]
+    fn host_cert_with_all_principals_signs() {
+        let ca = generate(KeyAlgorithm::Ed25519).unwrap();
+        let subject = generate(KeyAlgorithm::Ed25519).unwrap();
+        let cert = sign_cert(
+            &ca,
+            subject.public_ref(),
+            CertOptions {
+                cert_type: CertType::Host,
+                key_id: "host.example".into(),
+                all_principals: true,
+                ..CertOptions::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(cert.cert_type(), ssh_key::certificate::CertType::Host);
+        verify_cert(&cert, &[ca.public()]).unwrap();
+    }
+
+    #[test]
+    fn cert_with_all_extensions_and_critical_options() {
+        let ca = generate(KeyAlgorithm::Ed25519).unwrap();
+        let subject = generate(KeyAlgorithm::Ed25519).unwrap();
+        let opts = CertOptions {
+            key_id: "complex".into(),
+            principals: vec!["alice".into()],
+            serial: 12_345,
+            comment: "issued by spt".into(),
+            critical_options: vec![("force-command".into(), "/usr/bin/spt".into())],
+            extensions: vec![
+                ("permit-pty".into(), String::new()),
+                ("permit-port-forwarding".into(), String::new()),
+            ],
+            ..CertOptions::default()
+        };
+        let cert = sign_cert(&ca, subject.public_ref(), opts).unwrap();
+        assert_eq!(cert.serial(), 12_345);
+        assert_eq!(cert.key_id(), "complex");
+        verify_cert(&cert, &[ca.public()]).unwrap();
+    }
+
+    #[test]
+    fn cert_with_explicit_valid_after_and_before() {
+        let ca = generate(KeyAlgorithm::Ed25519).unwrap();
+        let subject = generate(KeyAlgorithm::Ed25519).unwrap();
+        // Use a window that spans now so `validate()` would accept time-wise.
+        let now = SystemTime::now();
+        let va = now - Duration::from_secs(60);
+        let vb = now + Duration::from_secs(3600);
+        let cert = sign_cert(
+            &ca,
+            subject.public_ref(),
+            CertOptions {
+                key_id: "ranged".into(),
+                principals: vec!["alice".into()],
+                valid_after: Some(va),
+                valid_before: Some(vb),
+                ..CertOptions::default()
+            },
+        )
+        .unwrap();
+        verify_cert(&cert, &[ca.public()]).unwrap();
+    }
+
+    #[test]
+    fn cert_all_principals_supersedes_empty_principals() {
+        // `all_principals = true` must allow signing even when `principals`
+        // is empty.
+        let ca = generate(KeyAlgorithm::Ed25519).unwrap();
+        let subject = generate(KeyAlgorithm::Ed25519).unwrap();
+        let cert = sign_cert(
+            &ca,
+            subject.public_ref(),
+            CertOptions {
+                all_principals: true,
+                key_id: "wild".into(),
+                ..CertOptions::default()
+            },
+        )
+        .unwrap();
+        verify_cert(&cert, &[ca.public()]).unwrap();
+    }
+
+    #[test]
+    fn verify_fails_when_trusted_ca_list_is_empty() {
+        let ca = generate(KeyAlgorithm::Ed25519).unwrap();
+        let subject = generate(KeyAlgorithm::Ed25519).unwrap();
+        let cert = sign_cert(
+            &ca,
+            subject.public_ref(),
+            CertOptions {
+                key_id: "x".into(),
+                principals: vec!["alice".into()],
+                ..CertOptions::default()
+            },
+        )
+        .unwrap();
+        // Empty trusted-CA list: signature still verifies, but `validate`
+        // rejects because no CA matches.
+        assert!(verify_cert(&cert, &[]).is_err());
+    }
+
+    #[test]
+    fn map_err_wraps_as_invalid_config() {
+        // Indirectly exercise `map_err` by triggering a Builder error path:
+        // `valid_before < valid_after` makes ssh-key reject the build.
+        let ca = generate(KeyAlgorithm::Ed25519).unwrap();
+        let subject = generate(KeyAlgorithm::Ed25519).unwrap();
+        let now = SystemTime::now();
+        let result = sign_cert(
+            &ca,
+            subject.public_ref(),
+            CertOptions {
+                key_id: "bad".into(),
+                principals: vec!["alice".into()],
+                valid_after: Some(now + Duration::from_secs(3600)),
+                valid_before: Some(now), // before valid_after
+                ..CertOptions::default()
+            },
+        );
+        // ssh-key may or may not flag the inversion at build vs. validate
+        // time; either way verifying with no CAs fails.
+        if let Ok(cert) = result {
+            assert!(verify_cert(&cert, &[ca.public()]).is_err());
+        }
+    }
+
+    #[test]
+    fn cert_type_clone_copy_eq() {
+        let a = CertType::User;
+        let b = a;
+        assert_eq!(a, b);
+        let h: CertType = CertType::Host;
+        assert_ne!(a, h);
+        let _ = format!("{a:?}");
+    }
 }

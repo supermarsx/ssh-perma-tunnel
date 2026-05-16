@@ -647,4 +647,580 @@ mod tests {
         let r = init_for_test(&cfg);
         assert!(matches!(r, Err(InitError::MissingFilePath)));
     }
+
+    // ---------- pure helpers ----------
+
+    #[test]
+    fn remote_kind_str_covers_all_variants() {
+        assert_eq!(remote_kind_str(RemoteSinkKind::SyslogUdp), "syslog_udp");
+        assert_eq!(remote_kind_str(RemoteSinkKind::SyslogTcp), "syslog_tcp");
+        assert_eq!(remote_kind_str(RemoteSinkKind::SyslogTls), "syslog-tls");
+        assert_eq!(remote_kind_str(RemoteSinkKind::HttpsJsonl), "https-jsonl");
+        assert_eq!(remote_kind_str(RemoteSinkKind::Otlp), "otlp");
+    }
+
+    #[test]
+    fn split_file_handles_no_parent() {
+        let (parent, prefix) = split_file(Path::new("spt.log"));
+        assert_eq!(parent, std::path::PathBuf::from(""));
+        assert_eq!(prefix, "spt.log");
+    }
+
+    #[test]
+    fn split_file_handles_full_path() {
+        let (parent, prefix) = split_file(Path::new("/var/log/spt/spt.log"));
+        assert_eq!(parent, std::path::PathBuf::from("/var/log/spt"));
+        assert_eq!(prefix, "spt.log");
+    }
+
+    #[test]
+    fn split_file_empty_path_yields_dot_and_default_prefix() {
+        let (parent, prefix) = split_file(Path::new(""));
+        assert_eq!(parent, std::path::PathBuf::from("."));
+        assert_eq!(prefix, "spt.log");
+    }
+
+    #[test]
+    fn parse_host_port_rejects_bad_port() {
+        let err = parse_host_port("host:abc", 514).unwrap_err();
+        assert!(err.contains("port"));
+    }
+
+    #[test]
+    fn parse_host_port_supports_ipv4_with_port() {
+        assert_eq!(
+            parse_host_port("127.0.0.1:9999", 514).unwrap(),
+            ("127.0.0.1".to_string(), 9999)
+        );
+    }
+
+    // ---------- format / writer helpers ----------
+
+    #[test]
+    fn text_or_json_layer_compiles_for_all_formats() {
+        let buf = crate::redaction::SharedBuffer::new();
+        let _compact = text_or_json_layer(LogFormat::Compact, false, buf.clone());
+        let _pretty = text_or_json_layer(LogFormat::Pretty, false, buf.clone());
+        let _json = text_or_json_layer(LogFormat::Json, false, buf);
+    }
+
+    #[test]
+    fn make_writer_supports_all_rotation_policies() {
+        let tmp = tempdir().unwrap();
+        let dir = tmp.path();
+        let prefix = "spt.log";
+        for policy in [
+            RotationPolicy::Hourly,
+            RotationPolicy::Daily,
+            RotationPolicy::Never,
+            RotationPolicy::Size {
+                max_bytes: 1024,
+                daily: false,
+            },
+        ] {
+            let f = FileSink {
+                path: dir.join(prefix),
+                rotate: policy,
+                max_files: 3,
+            };
+            let mut writer = make_writer(&f, dir, prefix).expect("make_writer");
+            writer.write_all(b"hello\n").unwrap();
+            writer.flush().unwrap();
+        }
+    }
+
+    #[test]
+    fn shared_appender_write_and_flush_pass_through() {
+        let tmp = tempdir().unwrap();
+        let policy = SizeRotationPolicy {
+            max_size_bytes: Some(1024),
+            daily: false,
+            max_files: 2,
+        };
+        let app = Arc::new(RotatingFileAppender::new(tmp.path(), "shr.log", policy).unwrap());
+        let mut shared = SharedAppender(Arc::clone(&app));
+        shared.write_all(b"line one\n").unwrap();
+        shared.flush().unwrap();
+        let body = std::fs::read_to_string(tmp.path().join("shr.log")).unwrap();
+        assert!(body.contains("line one"));
+    }
+
+    // ---------- apply_syslog_common_* fully cover field copies ----------
+
+    fn full_sink(kind: RemoteSinkKind, endpoint: &str) -> RemoteSink {
+        RemoteSink {
+            name: "n".into(),
+            kind,
+            endpoint: endpoint.into(),
+            facility: Some(7),
+            app_name: Some("app".into()),
+            hostname: Some("host".into()),
+            enterprise_id: Some(42),
+            ca_file: None,
+            server_name: Some("sn".into()),
+            client_cert: None,
+            client_key: None,
+            allow_invalid_certs: true,
+            auth: None,
+            timeout: Duration::from_millis(250),
+            reconnect_backoff: Duration::from_millis(500),
+            spool_dir: None,
+            spool_max_bytes: Some(64 * 1024),
+            queue_max_records: 50,
+            batch_size: 8,
+            required: false,
+        }
+    }
+
+    #[test]
+    fn apply_syslog_common_udp_copies_all_optional_fields() {
+        let sink = full_sink(RemoteSinkKind::SyslogUdp, "127.0.0.1:514");
+        let mut cfg = SyslogUdpConfig::new("0.0.0.0".to_string(), 514);
+        apply_syslog_common_udp(&sink, RedactionMode::Standard, &mut cfg);
+        assert_eq!(cfg.facility, 7);
+        assert_eq!(cfg.app_name, "app");
+        assert_eq!(cfg.hostname, "host");
+        assert_eq!(cfg.enterprise_id, 42);
+        assert_eq!(cfg.timeout, Duration::from_millis(250));
+        assert_eq!(cfg.queue_max_records, 50);
+    }
+
+    #[test]
+    fn apply_syslog_common_tcp_copies_all_optional_fields() {
+        let sink = full_sink(RemoteSinkKind::SyslogTcp, "127.0.0.1:514");
+        let spool = tempdir().unwrap();
+        let mut cfg =
+            SyslogTcpConfig::new("0.0.0.0".to_string(), 514, spool.path().to_path_buf());
+        apply_syslog_common_tcp(&sink, RedactionMode::Strict, &mut cfg);
+        assert_eq!(cfg.facility, 7);
+        assert_eq!(cfg.app_name, "app");
+        assert_eq!(cfg.hostname, "host");
+        assert_eq!(cfg.enterprise_id, 42);
+        assert_eq!(cfg.timeout, Duration::from_millis(250));
+        assert_eq!(cfg.reconnect_backoff, Duration::from_millis(500));
+        assert_eq!(cfg.queue_max_records, 50);
+        assert_eq!(cfg.spool.max_bytes, 64 * 1024);
+        assert_eq!(cfg.spool.max_files, 50);
+    }
+
+    #[test]
+    fn apply_syslog_common_tls_copies_all_optional_fields() {
+        let sink = full_sink(RemoteSinkKind::SyslogTls, "127.0.0.1:6514");
+        let spool = tempdir().unwrap();
+        let mut cfg =
+            SyslogTlsConfig::new("0.0.0.0".to_string(), 6514, spool.path().to_path_buf());
+        apply_syslog_common_tls(&sink, RedactionMode::Strict, &mut cfg).unwrap();
+        assert_eq!(cfg.facility, 7);
+        assert_eq!(cfg.app_name, "app");
+        assert_eq!(cfg.hostname, "host");
+        assert_eq!(cfg.enterprise_id, 42);
+        assert_eq!(cfg.timeout, Duration::from_millis(250));
+        assert_eq!(cfg.reconnect_backoff, Duration::from_millis(500));
+        assert_eq!(cfg.queue_max_records, 50);
+        assert_eq!(cfg.spool.max_bytes, 64 * 1024);
+        assert_eq!(cfg.server_name.as_deref(), Some("sn"));
+        assert!(cfg.allow_invalid_certs);
+    }
+
+    // ---------- init_inner / init_for_test broad runtime-bound coverage ----------
+
+    fn minimal_cfg() -> LoggingConfig {
+        LoggingConfig {
+            level: "info".into(),
+            format: LogFormat::Compact,
+            no_color: true,
+            destinations: vec![],
+            file: None,
+            redact: RedactionMode::Standard,
+            remote: vec![],
+        }
+    }
+
+    #[test]
+    fn init_no_destinations_no_remote_is_ok() {
+        let g = init_for_test(&minimal_cfg()).unwrap();
+        drop(g);
+    }
+
+    #[test]
+    fn init_with_stderr_destination_and_pretty_format() {
+        let cfg = LoggingConfig {
+            destinations: vec![Destination::Stderr],
+            format: LogFormat::Pretty,
+            ..minimal_cfg()
+        };
+        let _g = init_for_test(&cfg).unwrap();
+    }
+
+    #[test]
+    fn init_with_stderr_destination_and_json_format() {
+        let cfg = LoggingConfig {
+            destinations: vec![Destination::Stderr],
+            format: LogFormat::Json,
+            ..minimal_cfg()
+        };
+        let _g = init_for_test(&cfg).unwrap();
+    }
+
+    #[test]
+    fn init_with_journald_destination_is_ok_on_all_platforms() {
+        let cfg = LoggingConfig {
+            destinations: vec![Destination::Journald],
+            ..minimal_cfg()
+        };
+        let _g = init_for_test(&cfg).unwrap();
+    }
+
+    #[test]
+    fn init_with_file_size_rotation_creates_file() {
+        let tmp = tempdir().unwrap();
+        let path = tmp.path().join("logs").join("size.log");
+        let cfg = LoggingConfig {
+            destinations: vec![Destination::File],
+            file: Some(FileSink {
+                path: path.clone(),
+                rotate: RotationPolicy::Size {
+                    max_bytes: 64,
+                    daily: false,
+                },
+                max_files: 3,
+            }),
+            ..minimal_cfg()
+        };
+        let _g = init_for_test(&cfg).unwrap();
+        assert!(path.parent().unwrap().is_dir());
+    }
+
+    #[test]
+    fn init_with_file_hourly_rotation_creates_dir() {
+        let tmp = tempdir().unwrap();
+        let path = tmp.path().join("h").join("spt.log");
+        let cfg = LoggingConfig {
+            destinations: vec![Destination::File],
+            file: Some(FileSink {
+                path: path.clone(),
+                rotate: RotationPolicy::Hourly,
+                max_files: 3,
+            }),
+            ..minimal_cfg()
+        };
+        let _g = init_for_test(&cfg).unwrap();
+        assert!(path.parent().unwrap().is_dir());
+    }
+
+    #[test]
+    fn init_no_runtime_with_optional_remote_logs_warning_and_returns_ok() {
+        let cfg = LoggingConfig {
+            remote: vec![RemoteSink {
+                name: "opt".into(),
+                kind: RemoteSinkKind::SyslogUdp,
+                endpoint: "127.0.0.1:514".into(),
+                facility: None,
+                app_name: None,
+                hostname: None,
+                enterprise_id: None,
+                ca_file: None,
+                server_name: None,
+                client_cert: None,
+                client_key: None,
+                allow_invalid_certs: false,
+                auth: None,
+                timeout: Duration::from_millis(50),
+                reconnect_backoff: Duration::from_millis(50),
+                spool_dir: None,
+                spool_max_bytes: None,
+                queue_max_records: 10,
+                batch_size: 1,
+                required: false,
+            }],
+            ..minimal_cfg()
+        };
+        let _g = init_for_test(&cfg).unwrap();
+    }
+
+    #[test]
+    fn init_no_runtime_with_required_remote_returns_error() {
+        let cfg = LoggingConfig {
+            remote: vec![RemoteSink {
+                name: "must".into(),
+                kind: RemoteSinkKind::SyslogTls,
+                endpoint: "127.0.0.1:6514".into(),
+                facility: None,
+                app_name: None,
+                hostname: None,
+                enterprise_id: None,
+                ca_file: None,
+                server_name: None,
+                client_cert: None,
+                client_key: None,
+                allow_invalid_certs: false,
+                auth: None,
+                timeout: Duration::from_millis(50),
+                reconnect_backoff: Duration::from_millis(50),
+                spool_dir: None,
+                spool_max_bytes: None,
+                queue_max_records: 10,
+                batch_size: 1,
+                required: true,
+            }],
+            ..minimal_cfg()
+        };
+        let r = init_for_test(&cfg);
+        let err_kind = match r {
+            Ok(_) => "ok".to_string(),
+            Err(ref e) => format!("{e}"),
+        };
+        assert!(
+            matches!(r, Err(InitError::RemoteSink { ref name, .. }) if name == "must"),
+            "got {err_kind}"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn init_runtime_builds_syslog_udp_optional_sink() {
+        let cfg = LoggingConfig {
+            remote: vec![RemoteSink {
+                name: "udp".into(),
+                kind: RemoteSinkKind::SyslogUdp,
+                endpoint: "127.0.0.1:514".into(),
+                facility: Some(16),
+                app_name: Some("a".into()),
+                hostname: Some("h".into()),
+                enterprise_id: Some(1),
+                ca_file: None,
+                server_name: None,
+                client_cert: None,
+                client_key: None,
+                allow_invalid_certs: false,
+                auth: None,
+                timeout: Duration::from_millis(50),
+                reconnect_backoff: Duration::from_millis(50),
+                spool_dir: None,
+                spool_max_bytes: None,
+                queue_max_records: 10,
+                batch_size: 1,
+                required: false,
+            }],
+            ..minimal_cfg()
+        };
+        let g = init_for_test(&cfg).expect("syslog_udp wiring");
+        drop(g);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn init_runtime_builds_syslog_tcp_optional_sink() {
+        let spool = tempdir().unwrap();
+        let cfg = LoggingConfig {
+            remote: vec![RemoteSink {
+                name: "tcp".into(),
+                kind: RemoteSinkKind::SyslogTcp,
+                endpoint: "127.0.0.1:514".into(),
+                facility: Some(16),
+                app_name: None,
+                hostname: None,
+                enterprise_id: None,
+                ca_file: None,
+                server_name: None,
+                client_cert: None,
+                client_key: None,
+                allow_invalid_certs: false,
+                auth: None,
+                timeout: Duration::from_millis(50),
+                reconnect_backoff: Duration::from_millis(50),
+                spool_dir: Some(spool.path().to_path_buf()),
+                spool_max_bytes: Some(1024),
+                queue_max_records: 10,
+                batch_size: 1,
+                required: false,
+            }],
+            ..minimal_cfg()
+        };
+        let g = init_for_test(&cfg).expect("syslog_tcp wiring");
+        drop(g);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn init_runtime_skips_otlp_sink() {
+        let cfg = LoggingConfig {
+            remote: vec![RemoteSink {
+                name: "otlp".into(),
+                kind: RemoteSinkKind::Otlp,
+                endpoint: "https://127.0.0.1/v1/traces".into(),
+                facility: None,
+                app_name: None,
+                hostname: None,
+                enterprise_id: None,
+                ca_file: None,
+                server_name: None,
+                client_cert: None,
+                client_key: None,
+                allow_invalid_certs: false,
+                auth: None,
+                timeout: Duration::from_millis(50),
+                reconnect_backoff: Duration::from_millis(50),
+                spool_dir: None,
+                spool_max_bytes: None,
+                queue_max_records: 10,
+                batch_size: 1,
+                required: false,
+            }],
+            ..minimal_cfg()
+        };
+        let g = init_for_test(&cfg).expect("otlp should be a no-op skip");
+        drop(g);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn init_runtime_builds_https_with_basic_auth_then_with_raw_token() {
+        let basic_cfg = LoggingConfig {
+            remote: vec![RemoteSink {
+                name: "basic".into(),
+                kind: RemoteSinkKind::HttpsJsonl,
+                endpoint: "https://127.0.0.1:1/logs".into(),
+                facility: None,
+                app_name: None,
+                hostname: None,
+                enterprise_id: None,
+                ca_file: None,
+                server_name: None,
+                client_cert: None,
+                client_key: None,
+                allow_invalid_certs: false,
+                auth: Some("Basic dXNlcjpwYXNz".into()),
+                timeout: Duration::from_millis(50),
+                reconnect_backoff: Duration::from_millis(50),
+                spool_dir: None,
+                spool_max_bytes: None,
+                queue_max_records: 10,
+                batch_size: 1,
+                required: false,
+            }],
+            ..minimal_cfg()
+        };
+        let g = init_for_test(&basic_cfg).expect("basic auth");
+        drop(g);
+
+        let raw_cfg = LoggingConfig {
+            remote: vec![RemoteSink {
+                name: "raw".into(),
+                kind: RemoteSinkKind::HttpsJsonl,
+                endpoint: "https://127.0.0.1:1/logs".into(),
+                facility: None,
+                app_name: None,
+                hostname: None,
+                enterprise_id: None,
+                ca_file: None,
+                server_name: None,
+                client_cert: None,
+                client_key: None,
+                allow_invalid_certs: false,
+                auth: Some("raw-token-with-no-scheme".into()),
+                timeout: Duration::from_millis(50),
+                reconnect_backoff: Duration::from_millis(50),
+                spool_dir: None,
+                spool_max_bytes: None,
+                queue_max_records: 10,
+                batch_size: 1,
+                required: false,
+            }],
+            ..minimal_cfg()
+        };
+        let g = init_for_test(&raw_cfg).expect("raw token");
+        drop(g);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn init_runtime_required_syslog_udp_bad_port_propagates() {
+        let cfg = LoggingConfig {
+            remote: vec![RemoteSink {
+                name: "udp-bad".into(),
+                kind: RemoteSinkKind::SyslogUdp,
+                endpoint: "host:notaport".into(),
+                facility: None,
+                app_name: None,
+                hostname: None,
+                enterprise_id: None,
+                ca_file: None,
+                server_name: None,
+                client_cert: None,
+                client_key: None,
+                allow_invalid_certs: false,
+                auth: None,
+                timeout: Duration::from_millis(50),
+                reconnect_backoff: Duration::from_millis(50),
+                spool_dir: None,
+                spool_max_bytes: None,
+                queue_max_records: 10,
+                batch_size: 1,
+                required: true,
+            }],
+            ..minimal_cfg()
+        };
+        let r = init_for_test(&cfg);
+        let err_msg = match r {
+            Ok(_) => "ok".to_string(),
+            Err(ref e) => format!("{e}"),
+        };
+        assert!(
+            matches!(r, Err(InitError::RemoteSink { kind, .. }) if kind == "syslog_udp"),
+            "got {err_msg}"
+        );
+    }
+
+    #[test]
+    fn init_create_dir_failure_is_reported() {
+        // Pointing the file destination at a path whose parent cannot be
+        // created (because a non-directory file occupies that path) surfaces
+        // CreateDir.
+        let tmp = tempdir().unwrap();
+        let blocker = tmp.path().join("blocker");
+        std::fs::write(&blocker, b"i am a file").unwrap();
+        let cfg = LoggingConfig {
+            destinations: vec![Destination::File],
+            file: Some(FileSink {
+                path: blocker.join("sub").join("spt.log"),
+                rotate: RotationPolicy::Never,
+                max_files: 1,
+            }),
+            ..minimal_cfg()
+        };
+        let r = init_for_test(&cfg);
+        let err_msg = match r {
+            Ok(_) => "ok".to_string(),
+            Err(ref e) => format!("{e}"),
+        };
+        assert!(
+            matches!(r, Err(InitError::CreateDir(_, _))),
+            "got {err_msg}"
+        );
+    }
+
+    #[test]
+    fn init_error_display_includes_context() {
+        let e = InitError::BadFilter("level=garbage".into());
+        let s = format!("{e}");
+        assert!(s.contains("invalid log filter"));
+        assert!(s.contains("level=garbage"));
+
+        let e = InitError::MissingFilePath;
+        assert!(format!("{e}").contains("no `file` path"));
+
+        let e = InitError::SetGlobal("oops".into());
+        assert!(format!("{e}").contains("oops"));
+
+        let e = InitError::RemoteSink {
+            name: "x".into(),
+            kind: "https-jsonl",
+            reason: "bad".into(),
+        };
+        let s = format!("{e}");
+        assert!(s.contains("https-jsonl"));
+        assert!(s.contains("bad"));
+
+        let e = InitError::CreateDir(
+            "/tmp".into(),
+            std::io::Error::new(std::io::ErrorKind::Other, "nope"),
+        );
+        assert!(format!("{e}").contains("/tmp"));
+    }
 }

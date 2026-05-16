@@ -117,4 +117,57 @@ mod tests {
         assert_eq!(a.bytes, 0);
         assert_eq!(a.conns, 0);
     }
+
+    #[test]
+    fn fresh_window_is_zero() {
+        let clock = Arc::new(TestClock::at_now());
+        let w = SlidingWindow::with_clock(Duration::from_secs(60), 6, clock);
+        let a = w.aggregates();
+        assert_eq!(a.bytes, 0);
+        assert_eq!(a.conns, 0);
+        assert_eq!(a.errors, 0);
+        assert_eq!(a, WindowAggregates::default());
+    }
+
+    #[test]
+    fn counter_borrows_expose_query_path() {
+        let clock = Arc::new(TestClock::at_now());
+        let w = SlidingWindow::with_clock(Duration::from_secs(60), 6, clock);
+        w.add_bytes(7);
+        w.record_conn();
+        w.record_conn();
+        w.record_error();
+        assert_eq!(w.bytes_counter().sum_over_window(), 7);
+        assert_eq!(w.conns_counter().sum_over_window(), 2);
+        assert_eq!(w.errors_counter().sum_over_window(), 1);
+    }
+
+    #[test]
+    fn window_clone_shares_underlying_counters() {
+        let clock = Arc::new(TestClock::at_now());
+        let w = SlidingWindow::with_clock(Duration::from_secs(60), 6, clock);
+        let w2 = w.clone();
+        w.add_bytes(50);
+        assert_eq!(w2.aggregates().bytes, 50);
+    }
+
+    #[test]
+    fn window_aggregates_debug_and_equal() {
+        let a = WindowAggregates {
+            bytes: 1,
+            conns: 2,
+            errors: 3,
+        };
+        let b = a;
+        assert_eq!(a, b);
+        let s = format!("{a:?}");
+        assert!(s.contains("WindowAggregates"));
+    }
+
+    #[test]
+    fn system_clock_constructor_smoke() {
+        let w = SlidingWindow::new(Duration::from_secs(60), 6);
+        w.add_bytes(123);
+        assert_eq!(w.aggregates().bytes, 123);
+    }
 }

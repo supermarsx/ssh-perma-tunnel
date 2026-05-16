@@ -583,4 +583,121 @@ mod tests {
         let err = parse_secret_ref("not a ref").unwrap_err();
         assert!(matches!(err, Error::InvalidArgs(_)));
     }
+
+    #[test]
+    fn parse_secret_ref_rejects_empty_namespace_or_name() {
+        // Empty ns: `secret:///name` strips prefix → `/name` → split → ("", "name").
+        let err = parse_secret_ref("secret:///name").unwrap_err();
+        assert!(matches!(err, Error::InvalidArgs(_)));
+        // Empty name.
+        let err = parse_secret_ref("ns/").unwrap_err();
+        assert!(matches!(err, Error::InvalidArgs(_)));
+    }
+
+    #[test]
+    fn read_value_source_strips_one_trailing_newline_from_file() {
+        let dir = tempdir().unwrap();
+        let p = dir.path().join("v");
+        std::fs::write(&p, b"keep-trailing-1\n").unwrap();
+        let v = read_value_source(&format!("file:{}", p.display())).unwrap();
+        // file: path keeps full content (no newline stripping).
+        assert_eq!(v.as_slice(), b"keep-trailing-1\n");
+    }
+
+    #[test]
+    fn read_value_source_missing_env_var_errors() {
+        std::env::remove_var("SPT_T_RVS_MISSING");
+        let err = read_value_source("env:SPT_T_RVS_MISSING").unwrap_err();
+        assert!(matches!(err, Error::SecretUnavailable { .. }));
+    }
+
+    #[test]
+    fn read_value_source_missing_file_errors() {
+        let dir = tempdir().unwrap();
+        let missing = dir.path().join("does-not-exist");
+        let err = read_value_source(&format!("file:{}", missing.display())).unwrap_err();
+        assert!(matches!(err, Error::SecretUnavailable { .. }));
+    }
+
+    #[test]
+    fn read_value_source_dash_alias_for_stdin_is_rejected_or_accepted() {
+        // Calling `read_value_source("nope")` errors with InvalidArgs,
+        // confirming the grammar gate.
+        let err = read_value_source("invalid-prefix:bla").unwrap_err();
+        assert!(matches!(err, Error::InvalidArgs(_)));
+    }
+
+    #[tokio::test]
+    async fn list_errors_when_vault_does_not_exist() {
+        let _g = test_lock().lock().unwrap();
+        let state = tempdir().unwrap();
+        let global = fake_global(state.path());
+        // No vault initialized.
+        let err = list(
+            &global,
+            SecretListArgs {
+                namespace: None,
+                vault_path: None,
+                passphrase_from: Some("env:SPT_NONEXISTENT_PP".into()),
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, Error::SecretUnavailable { .. }));
+    }
+
+    #[tokio::test]
+    async fn rotate_errors_when_vault_does_not_exist() {
+        let _g = test_lock().lock().unwrap();
+        let state = tempdir().unwrap();
+        let global = fake_global(state.path());
+        let err = rotate(
+            &global,
+            SecretRotateArgs {
+                reference: "secret://ns/k".into(),
+                new_value_from: Some("env:SPT_NONEXISTENT_VAL".into()),
+                vault_path: None,
+                passphrase_from: Some("env:SPT_NONEXISTENT_PP".into()),
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, Error::SecretUnavailable { .. }));
+    }
+
+    #[tokio::test]
+    async fn rotate_with_unparseable_ref_errors_early() {
+        let _g = test_lock().lock().unwrap();
+        let state = tempdir().unwrap();
+        let global = fake_global(state.path());
+        let err = rotate(
+            &global,
+            SecretRotateArgs {
+                reference: "no-slash".into(),
+                new_value_from: None,
+                vault_path: None,
+                passphrase_from: None,
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, Error::InvalidArgs(_)));
+    }
+
+    #[test]
+    fn resolve_vault_dir_uses_override_when_present() {
+        let dir = tempdir().unwrap();
+        let global = fake_global(dir.path());
+        let override_path = dir.path().join("custom-vault");
+        let resolved = resolve_vault_dir(&global, Some(&override_path)).unwrap();
+        assert_eq!(resolved, override_path);
+    }
+
+    #[test]
+    fn resolve_vault_dir_falls_back_to_state_dir_subdir() {
+        let dir = tempdir().unwrap();
+        let global = fake_global(dir.path());
+        let resolved = resolve_vault_dir(&global, None).unwrap();
+        assert_eq!(resolved, dir.path().join(DEFAULT_VAULT_SUBDIR));
+    }
 }

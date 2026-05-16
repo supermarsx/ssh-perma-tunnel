@@ -330,4 +330,178 @@ mod tests {
         assert_eq!(z.lookup("foo.tunnel.local", RecordKind::A).len(), 1);
         assert_eq!(z.lookup("FOO.TUNNEL.LOCAL.", RecordKind::A).len(), 1);
     }
+
+    #[test]
+    fn record_validate_aaaa_good_and_bad() {
+        let good = Record::aaaa("v6.tunnel.", "fd00::1".parse().unwrap(), Duration::from_secs(60));
+        assert!(good.validate().is_ok());
+        let bad = Record {
+            name: "v6.tunnel.".into(),
+            kind: RecordKind::AAAA,
+            value: "not-an-ipv6".into(),
+            ttl: Duration::from_secs(60),
+            answer_policy: AnswerPolicy::AlwaysAnswer,
+            forward_id: None,
+        };
+        let err = bad.validate().unwrap_err();
+        assert!(matches!(err, DnsError::InvalidValue { kind: RecordKind::AAAA, .. }));
+    }
+
+    #[test]
+    fn record_validate_srv_wrong_arity() {
+        let r = Record {
+            name: "_svc.".into(),
+            kind: RecordKind::SRV,
+            value: "10 20 25".into(), // missing target
+            ttl: Duration::from_secs(60),
+            answer_policy: AnswerPolicy::AlwaysAnswer,
+            forward_id: None,
+        };
+        let err = r.validate().unwrap_err();
+        match err {
+            DnsError::InvalidValue { reason, .. } => assert!(reason.contains("priority weight port target")),
+            other => panic!("unexpected err: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn record_validate_srv_bad_port() {
+        let r = Record {
+            name: "_svc.".into(),
+            kind: RecordKind::SRV,
+            value: "10 20 not-a-port mail.".into(),
+            ttl: Duration::from_secs(60),
+            answer_policy: AnswerPolicy::AlwaysAnswer,
+            forward_id: None,
+        };
+        let err = r.validate().unwrap_err();
+        match err {
+            DnsError::InvalidValue { reason, .. } => assert!(reason.contains("invalid port")),
+            other => panic!("unexpected err: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn record_validate_srv_bad_priority() {
+        let r = Record {
+            name: "_svc.".into(),
+            kind: RecordKind::SRV,
+            value: "abc 20 25 mail.".into(),
+            ttl: Duration::from_secs(60),
+            answer_policy: AnswerPolicy::AlwaysAnswer,
+            forward_id: None,
+        };
+        let err = r.validate().unwrap_err();
+        match err {
+            DnsError::InvalidValue { reason, .. } => assert!(reason.contains("invalid priority")),
+            other => panic!("unexpected err: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn record_txt_validate_always_ok() {
+        let r = Record::txt("t.tunnel.", "any contents", Duration::from_secs(60));
+        assert!(r.validate().is_ok());
+    }
+
+    #[test]
+    fn record_srv_constructor_yields_valid_value() {
+        let r = Record::srv("_svc.tunnel.", 1, 2, 3, "target.tunnel.", Duration::from_secs(30));
+        assert!(r.validate().is_ok());
+        assert_eq!(r.kind, RecordKind::SRV);
+    }
+
+    #[test]
+    fn srv_parts_none_for_non_srv() {
+        let r = Record::a(
+            "a.tunnel.",
+            "1.2.3.4".parse().unwrap(),
+            Duration::from_secs(60),
+        );
+        assert!(r.srv_parts().is_none());
+    }
+
+    #[test]
+    fn srv_parts_none_for_malformed_srv() {
+        let r = Record {
+            name: "x.".into(),
+            kind: RecordKind::SRV,
+            value: "garbage".into(), // wrong arity
+            ttl: Duration::from_secs(60),
+            answer_policy: AnswerPolicy::AlwaysAnswer,
+            forward_id: None,
+        };
+        assert!(r.srv_parts().is_none());
+    }
+
+    #[test]
+    fn srv_parts_none_for_unparseable_numbers() {
+        let r = Record {
+            name: "x.".into(),
+            kind: RecordKind::SRV,
+            value: "abc def ghi jkl".into(),
+            ttl: Duration::from_secs(60),
+            answer_policy: AnswerPolicy::AlwaysAnswer,
+            forward_id: None,
+        };
+        assert!(r.srv_parts().is_none());
+    }
+
+    #[test]
+    fn with_policy_threads_through() {
+        let r = Record::a(
+            "a.tunnel.",
+            "1.2.3.4".parse().unwrap(),
+            Duration::from_secs(60),
+        )
+        .with_policy(AnswerPolicy::AnswerWhenListening, Some("p/f".into()));
+        assert_eq!(r.answer_policy, AnswerPolicy::AnswerWhenListening);
+        assert_eq!(r.forward_id.as_deref(), Some("p/f"));
+    }
+
+    #[test]
+    fn record_kind_to_record_type() {
+        use hickory_proto::rr::RecordType;
+        assert_eq!(RecordKind::A.to_record_type(), RecordType::A);
+        assert_eq!(RecordKind::AAAA.to_record_type(), RecordType::AAAA);
+        assert_eq!(RecordKind::SRV.to_record_type(), RecordType::SRV);
+        assert_eq!(RecordKind::TXT.to_record_type(), RecordType::TXT);
+    }
+
+    #[test]
+    fn answer_policy_default_is_always_answer() {
+        assert_eq!(AnswerPolicy::default(), AnswerPolicy::AlwaysAnswer);
+    }
+
+    #[test]
+    fn normalize_name_lowercases_and_appends_dot() {
+        assert_eq!(normalize_name("EXAMPLE.com"), "example.com.");
+        assert_eq!(normalize_name("example.com."), "example.com.");
+        assert_eq!(normalize_name("  spaced.example  "), "spaced.example.");
+    }
+
+    #[test]
+    fn managed_zone_add_rejects_invalid_record() {
+        let mut z = ManagedZone::new("tunnel.local.");
+        let bad = Record {
+            name: "bad.tunnel.local.".into(),
+            kind: RecordKind::A,
+            value: "not-an-ip".into(),
+            ttl: Duration::from_secs(60),
+            answer_policy: AnswerPolicy::AlwaysAnswer,
+            forward_id: None,
+        };
+        assert!(z.add(bad).is_err());
+        assert!(z.records.is_empty());
+    }
+
+    #[test]
+    fn managed_zone_contains_name_dot_insensitive() {
+        let z = ManagedZone::new("tunnel.local"); // no trailing dot
+        assert!(z.contains_name("foo.tunnel.local"));
+        assert!(z.contains_name("foo.tunnel.local."));
+        assert!(z.contains_name("tunnel.local"));
+        // suffix-only must not match a subdomain that ends similarly:
+        assert!(!z.contains_name("nottunnel.local"));
+    }
 }

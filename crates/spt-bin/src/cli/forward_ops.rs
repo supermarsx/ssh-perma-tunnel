@@ -1202,4 +1202,162 @@ sni_name = "web.example.local"
         let err = explain(&global, args).await.unwrap_err();
         assert!(format!("{err}").contains("ghost"));
     }
+
+    #[test]
+    fn parse_forward_ref_accepts_slash_form() {
+        let (p, f) = parse_forward_ref("alpha/beta").unwrap();
+        assert_eq!(p, "alpha");
+        assert_eq!(f, "beta");
+    }
+
+    #[test]
+    fn parse_forward_ref_rejects_missing_separator() {
+        let err = parse_forward_ref("no-slash").unwrap_err();
+        assert!(matches!(err, Error::InvalidArgs(_)));
+    }
+
+    #[test]
+    fn output_format_honors_legacy_json_flag() {
+        let mut g = global_with(std::path::Path::new("/tmp/c.toml"));
+        g.json = true;
+        g.output = OutputFormat::Yaml;
+        assert!(matches!(output_format(&g), OutputFormat::Json));
+    }
+
+    #[test]
+    fn require_config_path_errors_when_unset() {
+        let g = GlobalOpts {
+            config: None,
+            ..global_with(std::path::Path::new("/tmp/c.toml"))
+        };
+        let err = require_config_path(&g).unwrap_err();
+        assert!(matches!(err, Error::InvalidArgs(_)));
+    }
+
+    #[test]
+    fn resolve_bind_view_literal_socket_addr_round_trips() {
+        let fwd = Forward {
+            name: "f".into(),
+            kind: "local".into(),
+            transport: "tcp".into(),
+            bind: Some("127.0.0.1:9000".into()),
+            ..Default::default()
+        };
+        let r = resolve_bind_view("127.0.0.1:9000", &fwd);
+        assert_eq!(r.canonical, "127.0.0.1:9000");
+        assert_eq!(r.resolved.len(), 1);
+        assert!(r.error.is_none());
+    }
+
+    #[test]
+    fn resolve_bind_view_loopback_mode_resolves() {
+        let fwd = Forward {
+            name: "f".into(),
+            kind: "local".into(),
+            transport: "tcp".into(),
+            bind_mode: Some("loopback".into()),
+            bind: Some("loopback:0".into()),
+            ..Default::default()
+        };
+        let r = resolve_bind_view("loopback:0", &fwd);
+        // resolve_bind on loopback should succeed.
+        assert_eq!(r.canonical, "loopback:0");
+        assert!(!r.resolved.is_empty() || r.error.is_some());
+    }
+
+    #[test]
+    fn resolve_bind_view_specific_ip_falls_through_to_canonical_only() {
+        let fwd = Forward {
+            name: "f".into(),
+            kind: "local".into(),
+            transport: "tcp".into(),
+            bind_mode: Some("specific_ip".into()),
+            bind_interface: None,
+            bind: Some("not-a-literal:1234".into()),
+            ..Default::default()
+        };
+        let r = resolve_bind_view("not-a-literal:1234", &fwd);
+        assert_eq!(r.canonical, "not-a-literal:1234");
+        // specific_ip with no interface info falls through to no-resolve.
+        assert!(r.resolved.is_empty());
+    }
+
+    #[test]
+    fn build_view_falls_back_to_listen_when_bind_unset() {
+        let mut profile = Profile {
+            name: "p".into(),
+            protocol: "ssh2".into(),
+            ..Default::default()
+        };
+        let fwd = Forward {
+            name: "f".into(),
+            kind: "local".into(),
+            transport: "tcp".into(),
+            bind: None,
+            listen: Some("127.0.0.1:5555".into()),
+            target: None,
+            connect: Some("backend:5555".into()),
+            ..Default::default()
+        };
+        profile.forwards.push(fwd.clone());
+        let v = build_view(&profile, &fwd);
+        assert_eq!(v.bind.canonical, "127.0.0.1:5555");
+        assert_eq!(v.target, "backend:5555");
+    }
+
+    #[test]
+    fn build_view_defaults_bind_mode_loopback_and_target_resolve_auto() {
+        let profile = Profile {
+            name: "p".into(),
+            protocol: "ssh2".into(),
+            ..Default::default()
+        };
+        let fwd = Forward {
+            name: "f".into(),
+            kind: "local".into(),
+            transport: "tcp".into(),
+            bind: Some("?".into()),
+            target: Some("?".into()),
+            ..Default::default()
+        };
+        let v = build_view(&profile, &fwd);
+        assert_eq!(v.acl.bind_mode, "loopback");
+        assert_eq!(v.target_resolve, "auto");
+        assert!(!v.expose);
+    }
+
+    #[tokio::test]
+    async fn show_with_malformed_reference_errors() {
+        let (_d, path) = write_fixture();
+        let global = global_with(&path);
+        let args = ForwardShow {
+            reference: "no-slash".into(),
+            friendly: false,
+            json: false,
+        };
+        let err = show(&global, args).await.unwrap_err();
+        assert!(matches!(err, Error::InvalidArgs(_)));
+    }
+
+    #[tokio::test]
+    async fn explain_narrative_handles_auto_interface() {
+        let mut profile = Profile {
+            name: "p".into(),
+            protocol: "ssh2".into(),
+            ..Default::default()
+        };
+        let fwd = Forward {
+            name: "f".into(),
+            kind: "local".into(),
+            transport: "tcp".into(),
+            bind: Some("auto:0".into()),
+            target: Some("t:1".into()),
+            bind_mode: Some("auto_interface".into()),
+            ..Default::default()
+        };
+        profile.forwards.push(fwd.clone());
+        let v = build_view(&profile, &fwd);
+        let n = render_narrative(&v, &profile);
+        assert!(n.contains("auto-selected interface"));
+    }
 }

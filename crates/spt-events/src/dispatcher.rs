@@ -391,4 +391,225 @@ mod tests {
             .await;
         assert_eq!(t.requests().len(), 1, "second event should be deduped");
     }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn permanent_failure_path_logs_no_spool() {
+        let tmp = tempdir().unwrap();
+        let cfg = DispatcherConfig {
+            spool_root: tmp.path().into(),
+            ..DispatcherConfig::default()
+        };
+        let t = Arc::new(RecordingTransport::new());
+        t.fail_once(SinkError::Permanent("4xx".into()));
+        let http = Arc::new(HttpSink::new(
+            "alerts",
+            "POST",
+            "https://x",
+            "{}",
+            "application/json",
+            HttpAuth::None,
+            t.clone(),
+        )) as Arc<dyn Sink>;
+        let mut sinks: HashMap<String, Arc<dyn Sink>> = HashMap::new();
+        sinks.insert("alerts".into(), http);
+        let bindings = vec![make_binding(vec!["k"], vec!["alerts"])];
+        let d = build_for_test(bindings, sinks, cfg).unwrap();
+        d.dispatch(Arc::new(Event::builder("k", Severity::Info).build()))
+            .await;
+        assert_eq!(d.spool_len("alerts"), 0);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn drain_spool_unknown_sink_returns_quickly() {
+        let tmp = tempdir().unwrap();
+        let cfg = DispatcherConfig {
+            spool_root: tmp.path().into(),
+            ..DispatcherConfig::default()
+        };
+        let d = build_for_test(Vec::new(), HashMap::new(), cfg).unwrap();
+        d.drain_spool("nope").await;
+        assert_eq!(d.spool_len("nope"), 0);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn drain_spool_re_spools_on_repeated_transient() {
+        let tmp = tempdir().unwrap();
+        let cfg = DispatcherConfig {
+            spool_root: tmp.path().into(),
+            ..DispatcherConfig::default()
+        };
+        let t = Arc::new(RecordingTransport::new());
+        t.fail_once(SinkError::Transient("net".into()));
+        let http = Arc::new(HttpSink::new(
+            "alerts",
+            "POST",
+            "https://x",
+            "{}",
+            "application/json",
+            HttpAuth::None,
+            t.clone(),
+        )) as Arc<dyn Sink>;
+        let mut sinks: HashMap<String, Arc<dyn Sink>> = HashMap::new();
+        sinks.insert("alerts".into(), http);
+        let bindings = vec![make_binding(vec!["k"], vec!["alerts"])];
+        let d = build_for_test(bindings, sinks, cfg).unwrap();
+        d.dispatch(Arc::new(Event::builder("k", Severity::Info).build()))
+            .await;
+        t.fail_once(SinkError::Transient("still down".into()));
+        d.drain_spool("alerts").await;
+        assert_eq!(d.spool_len("alerts"), 1);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn unknown_sink_in_binding_is_skipped() {
+        let tmp = tempdir().unwrap();
+        let cfg = DispatcherConfig {
+            spool_root: tmp.path().into(),
+            ..DispatcherConfig::default()
+        };
+        let mut sinks: HashMap<String, Arc<dyn Sink>> = HashMap::new();
+        sinks.insert(
+            "exists".into(),
+            Arc::new(HttpSink::new(
+                "exists",
+                "POST",
+                "https://x",
+                "{}",
+                "application/json",
+                HttpAuth::None,
+                Arc::new(RecordingTransport::new()),
+            )) as Arc<dyn Sink>,
+        );
+        let bindings = vec![make_binding(vec!["k"], vec!["does-not-exist"])];
+        let d = build_for_test(bindings, sinks, cfg).unwrap();
+        d.dispatch(Arc::new(Event::builder("k", Severity::Info).build()))
+            .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn dispatcher_config_default_values() {
+        let c = DispatcherConfig::default();
+        assert_eq!(c.retry_interval, Duration::from_secs(30));
+        assert!(!c.strict_redaction);
+        assert!(c.spool.max_bytes > 0);
+        assert!(c.spool.max_files > 0);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn build_for_test_creates_spool_subdirs_per_sink() {
+        let tmp = tempdir().unwrap();
+        let cfg = DispatcherConfig {
+            spool_root: tmp.path().into(),
+            ..DispatcherConfig::default()
+        };
+        let mut sinks: HashMap<String, Arc<dyn Sink>> = HashMap::new();
+        sinks.insert(
+            "a".into(),
+            Arc::new(HttpSink::new(
+                "a",
+                "POST",
+                "https://x",
+                "{}",
+                "application/json",
+                HttpAuth::None,
+                Arc::new(RecordingTransport::new()),
+            )) as Arc<dyn Sink>,
+        );
+        sinks.insert(
+            "b".into(),
+            Arc::new(HttpSink::new(
+                "b",
+                "POST",
+                "https://x",
+                "{}",
+                "application/json",
+                HttpAuth::None,
+                Arc::new(RecordingTransport::new()),
+            )) as Arc<dyn Sink>,
+        );
+        let _ = build_for_test(Vec::new(), sinks, cfg).unwrap();
+        assert!(tmp.path().join("a").is_dir());
+        assert!(tmp.path().join("b").is_dir());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn dispatcher_bindings_accessor_returns_configured_bindings() {
+        let tmp = tempdir().unwrap();
+        let cfg = DispatcherConfig {
+            spool_root: tmp.path().into(),
+            ..DispatcherConfig::default()
+        };
+        let bindings = vec![
+            make_binding(vec!["a"], vec![]),
+            make_binding(vec!["b"], vec![]),
+        ];
+        let d = build_for_test(bindings, HashMap::new(), cfg).unwrap();
+        assert_eq!(d.bindings().len(), 2);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn spawn_forwards_emitted_events_to_sink() {
+        let tmp = tempdir().unwrap();
+        let cfg = DispatcherConfig {
+            spool_root: tmp.path().into(),
+            ..DispatcherConfig::default()
+        };
+        let bus = EventBus::new(&crate::bus::EventBusConfig::default());
+        let t = Arc::new(RecordingTransport::new());
+        let http = Arc::new(HttpSink::new(
+            "alerts",
+            "POST",
+            "https://x",
+            "{}",
+            "application/json",
+            HttpAuth::None,
+            t.clone(),
+        )) as Arc<dyn Sink>;
+        let mut sinks: HashMap<String, Arc<dyn Sink>> = HashMap::new();
+        sinks.insert("alerts".into(), http);
+
+        let bindings = vec![make_binding(vec!["k"], vec!["alerts"])];
+        let d = Dispatcher::spawn(&bus, bindings, sinks, cfg).unwrap();
+
+        bus.emit(Event::builder("k", Severity::Info).build());
+        for _ in 0..50 {
+            if !t.requests().is_empty() {
+                break;
+            }
+            tokio::task::yield_now().await;
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert_eq!(t.requests().len(), 1);
+        d.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn spawn_drop_triggers_shutdown_without_panic() {
+        let tmp = tempdir().unwrap();
+        let cfg = DispatcherConfig {
+            spool_root: tmp.path().into(),
+            ..DispatcherConfig::default()
+        };
+        let bus = EventBus::new(&crate::bus::EventBusConfig::default());
+        let sinks: HashMap<String, Arc<dyn Sink>> = HashMap::new();
+        let d = Dispatcher::spawn(&bus, Vec::new(), sinks, cfg).unwrap();
+        drop(d);
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    #[test]
+    fn open_spool_fails_when_root_is_a_file() {
+        let tmp = tempdir().unwrap();
+        let path = tmp.path().join("blocking");
+        std::fs::write(&path, b"blocked").unwrap();
+        let cfg = DispatcherConfig {
+            spool_root: path,
+            ..DispatcherConfig::default()
+        };
+        let err = match build_for_test(Vec::new(), HashMap::new(), cfg) {
+            Ok(_) => panic!("expected an IO error"),
+            Err(e) => e,
+        };
+        assert!(err.kind() != std::io::ErrorKind::NotFound);
+    }
 }

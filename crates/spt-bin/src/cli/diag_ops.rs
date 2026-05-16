@@ -449,4 +449,181 @@ agent = true
         .await
         .unwrap();
     }
+
+    #[test]
+    fn auth_args_from_diagnose_profile_empty_profile_maps_to_none() {
+        let p = DiagnoseProfile {
+            profile: String::new(),
+            probe: false,
+            json: true,
+        };
+        let a: DiagnoseAuthArgs = p.into();
+        assert!(a.profile.is_none());
+        assert!(a.json);
+        assert!(!a.probe);
+    }
+
+    #[test]
+    fn auth_args_from_diagnose_profile_keeps_non_empty_name() {
+        let p = DiagnoseProfile {
+            profile: "alpha".into(),
+            probe: false,
+            json: false,
+        };
+        let a: DiagnoseAuthArgs = p.into();
+        assert_eq!(a.profile.as_deref(), Some("alpha"));
+        assert!(!a.json);
+    }
+
+    #[test]
+    fn trust_args_from_diagnose_profile_empty_profile_maps_to_none() {
+        let p = DiagnoseProfile {
+            profile: String::new(),
+            probe: false,
+            json: false,
+        };
+        let a: DiagnoseTrustArgs = p.into();
+        assert!(a.profile.is_none());
+        assert!(!a.json);
+    }
+
+    #[test]
+    fn trust_args_from_diagnose_profile_keeps_name() {
+        let p = DiagnoseProfile {
+            profile: "beta".into(),
+            probe: false,
+            json: true,
+        };
+        let a: DiagnoseTrustArgs = p.into();
+        assert_eq!(a.profile.as_deref(), Some("beta"));
+        assert!(a.json);
+    }
+
+    #[test]
+    fn observability_args_from_diagnose() {
+        let p = DiagnoseObservability {
+            sink: Some("syslog-local".into()),
+            json: true,
+        };
+        let a: DiagnoseObservabilityArgs = p.into();
+        assert_eq!(a.sink.as_deref(), Some("syslog-local"));
+        assert!(a.json);
+    }
+
+    #[test]
+    fn port_args_from_diagnose_port_copies_every_field() {
+        let p = DiagnosePort {
+            host: "example.com".into(),
+            port: 443,
+            tcp: true,
+            udp: false,
+            autodetect_service: true,
+            json: true,
+        };
+        let a: DiagnosePortArgs = p.into();
+        assert_eq!(a.host, "example.com");
+        assert_eq!(a.port, 443);
+        assert!(a.tcp);
+        assert!(!a.udp);
+        assert!(a.autodetect_service);
+        assert!(a.json);
+    }
+
+    #[test]
+    fn fail_if_any_failures_passes_when_no_fails() {
+        let checks: Vec<Check> = Vec::new();
+        fail_if_any_failures(&checks).unwrap();
+
+        // A single pass-only check still succeeds.
+        let pass = Check::new("c.ok", spt_diagnostics::check::Severity::Info, Status::Pass);
+        fail_if_any_failures(&[pass]).unwrap();
+    }
+
+    #[test]
+    fn fail_if_any_failures_errors_when_any_fail() {
+        let bad = Check::new(
+            "c.bad",
+            spt_diagnostics::check::Severity::High,
+            Status::Fail,
+        );
+        let good = Check::new(
+            "c.ok",
+            spt_diagnostics::check::Severity::Info,
+            Status::Pass,
+        );
+        let err = fail_if_any_failures(&[good, bad]).unwrap_err();
+        assert!(matches!(err, Error::RuntimeFailure(_)));
+    }
+
+    #[tokio::test]
+    async fn build_context_with_no_config_returns_default_with_state_dir() {
+        let mut g = global(None);
+        let dir = tempfile::tempdir().unwrap();
+        g.state_dir = Some(dir.path().to_path_buf());
+        let ctx = build_context(&g).unwrap();
+        assert!(ctx.state_dir.is_some());
+        assert!(ctx.effective_config.is_none());
+        assert!(!ctx.mcp_enabled);
+    }
+
+    #[tokio::test]
+    async fn build_context_with_config_sets_effective_config_and_mcp_flag() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = tmp.path().join("c.toml");
+        std::fs::write(
+            &cfg,
+            "version = 1\n[mcp]\nenabled = true\nlisten = \"127.0.0.1:7878\"\n",
+        )
+        .unwrap();
+        let mut g = global(Some(cfg));
+        g.state_dir = Some(tmp.path().to_path_buf());
+        let ctx = build_context(&g).unwrap();
+        assert!(ctx.effective_config.is_some());
+        assert!(ctx.mcp_enabled);
+    }
+
+    #[tokio::test]
+    async fn observability_runs_without_config() {
+        observability(
+            &global(None),
+            DiagnoseObservabilityArgs {
+                sink: None,
+                json: true,
+            },
+        )
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn observability_filters_to_named_sink() {
+        observability(
+            &global(None),
+            DiagnoseObservabilityArgs {
+                sink: Some("ghost".into()),
+                json: true,
+            },
+        )
+        .await
+        .unwrap();
+    }
+
+    #[test]
+    fn render_checks_handles_empty_human_and_jsonl_paths() {
+        let checks: Vec<Check> = Vec::new();
+        render_checks(&checks, false).unwrap();
+        render_checks(&checks, true).unwrap();
+    }
+
+    #[test]
+    fn render_checks_renders_remediation_when_present() {
+        let c = Check::new(
+            "c.r",
+            spt_diagnostics::check::Severity::Medium,
+            Status::Warn,
+        )
+        .with_evidence("evidence here")
+        .with_remediation("remedy goes here");
+        render_checks(&[c], false).unwrap();
+    }
 }

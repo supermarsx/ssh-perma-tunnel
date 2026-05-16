@@ -700,4 +700,189 @@ mod tests {
         let mut d = Decoder::new(&[0x02, 0x05, 0x01]);
         assert!(d.read_i64().is_err());
     }
+
+    #[test]
+    fn encoder_len_is_empty_finish() {
+        let mut e = Encoder::new();
+        assert!(e.is_empty());
+        assert_eq!(e.len(), 0);
+        e.write_i64(1);
+        assert!(!e.is_empty());
+        assert!(!e.is_empty());
+        let bytes = e.finish();
+        assert_eq!(bytes.len(), 3);
+    }
+
+    #[test]
+    fn peek_tag_does_not_advance() {
+        let bytes = [0x02u8, 0x01, 0x07];
+        let d = Decoder::new(&bytes);
+        let t = d.peek_tag().unwrap();
+        assert_eq!(t, Tag::INTEGER);
+        assert_eq!(d.peek_tag().unwrap(), Tag::INTEGER);
+        assert_eq!(d.remaining(), 3);
+    }
+
+    #[test]
+    fn peek_tag_at_eof_errors() {
+        let d = Decoder::new(&[]);
+        assert!(d.peek_tag().is_err());
+    }
+
+    #[test]
+    fn read_expected_wrong_tag_errors() {
+        let bytes = [0x02u8, 0x01, 0x01];
+        let mut d = Decoder::new(&bytes);
+        assert!(d.read_expected(Tag::OCTET_STRING).is_err());
+    }
+
+    #[test]
+    fn read_constructed_roundtrip() {
+        let mut e = Encoder::new();
+        e.write_constructed(Tag::GET_REQUEST, |inner| {
+            inner.write_i64(99);
+        });
+        let bytes = e.finish();
+        let mut d = Decoder::new(&bytes);
+        let mut inner = d.read_constructed(Tag::GET_REQUEST).unwrap();
+        assert_eq!(inner.read_i64().unwrap(), 99);
+    }
+
+    #[test]
+    fn read_u32_rejects_negative() {
+        let mut e = Encoder::new();
+        e.write_i64(-1);
+        let bytes = e.finish();
+        let mut d = Decoder::new(&bytes);
+        assert!(d.read_u32().is_err());
+    }
+
+    #[test]
+    fn read_u32_accepts_zero_and_max() {
+        let mut e = Encoder::new();
+        e.write_u32(0);
+        e.write_u32(u32::MAX);
+        let bytes = e.finish();
+        let mut d = Decoder::new(&bytes);
+        assert_eq!(d.read_u32().unwrap(), 0);
+        assert_eq!(d.read_u32().unwrap(), u32::MAX);
+    }
+
+    #[test]
+    fn read_null_rejects_nonempty_body() {
+        let bytes = [0x05u8, 0x01, 0x00];
+        let mut d = Decoder::new(&bytes);
+        assert!(d.read_null().is_err());
+    }
+
+    #[test]
+    fn read_app_u32_rejects_huge() {
+        let bytes = [0x41u8, 0x05, 0x01, 0x00, 0x00, 0x00, 0x00];
+        let mut d = Decoder::new(&bytes);
+        assert!(d.read_app_u32(Tag::COUNTER32).is_err());
+    }
+
+    #[test]
+    fn write_raw_passes_through_bytes() {
+        let mut e = Encoder::new();
+        e.write_raw(&[0xDE, 0xAD, 0xBE, 0xEF]);
+        assert_eq!(e.as_slice(), &[0xDE, 0xAD, 0xBE, 0xEF]);
+        assert_eq!(e.finish(), vec![0xDE, 0xAD, 0xBE, 0xEF]);
+    }
+
+    #[test]
+    fn length_indefinite_form_rejected() {
+        let bytes = [0x04u8, 0x80, 0x00, 0x00];
+        let mut d = Decoder::new(&bytes);
+        assert!(d.read_tlv().is_err());
+    }
+
+    #[test]
+    fn length_long_form_too_many_bytes() {
+        let bytes = [0x04u8, 0x89, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        let mut d = Decoder::new(&bytes);
+        assert!(d.read_tlv().is_err());
+    }
+
+    #[test]
+    fn counter64_roundtrip_small_and_zero() {
+        let mut e = Encoder::new();
+        e.write_counter64(0);
+        e.write_counter64(1);
+        let bytes = e.finish();
+        let mut d = Decoder::new(&bytes);
+        assert_eq!(d.read_counter64().unwrap(), 0);
+        assert_eq!(d.read_counter64().unwrap(), 1);
+    }
+
+    #[test]
+    fn oid_decode_truncated_continuation() {
+        let bytes = [0x80u8];
+        assert!(decode_oid(&bytes).is_err());
+    }
+
+    #[test]
+    fn oid_decode_arc_overflow_u32() {
+        let bytes = [0xFFu8, 0xFF, 0xFF, 0xFF, 0xFF, 0x7F];
+        assert!(decode_oid(&bytes).is_err());
+    }
+
+    #[test]
+    fn integer_decode_overflow_9_bytes_positive() {
+        let bytes = [0x02u8, 0x09, 0x01, 0, 0, 0, 0, 0, 0, 0, 0];
+        let mut d = Decoder::new(&bytes);
+        assert!(d.read_i64().is_err());
+    }
+
+    #[test]
+    fn uint_decode_9_byte_padded_ok() {
+        let bytes = [
+            0x46u8, 0x09, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+        ];
+        let mut d = Decoder::new(&bytes);
+        assert_eq!(d.read_counter64().unwrap(), u64::MAX);
+    }
+
+    #[test]
+    fn uint_decode_9_byte_unpadded_errors() {
+        let bytes = [0x46u8, 0x09, 0x01, 0, 0, 0, 0, 0, 0, 0, 0];
+        let mut d = Decoder::new(&bytes);
+        assert!(d.read_counter64().is_err());
+    }
+
+    #[test]
+    fn decoder_remaining_and_is_empty() {
+        let bytes = [0x05u8, 0x00];
+        let mut d = Decoder::new(&bytes);
+        assert_eq!(d.remaining(), 2);
+        d.read_null().unwrap();
+        assert_eq!(d.remaining(), 0);
+        assert!(d.is_empty());
+    }
+
+    #[test]
+    fn integer_decode_empty_body_errors() {
+        let bytes = [0x02u8, 0x00];
+        let mut d = Decoder::new(&bytes);
+        assert!(d.read_i64().is_err());
+    }
+
+    #[test]
+    fn tag_constants_unique_pdu_tags() {
+        let tags = [
+            Tag::GET_REQUEST.0,
+            Tag::GET_NEXT_REQUEST.0,
+            Tag::RESPONSE.0,
+            Tag::SET_REQUEST.0,
+            Tag::GET_BULK_REQUEST.0,
+            Tag::INFORM_REQUEST.0,
+            Tag::SNMPV2_TRAP.0,
+            Tag::REPORT.0,
+        ];
+        for i in 0..tags.len() {
+            for j in (i + 1)..tags.len() {
+                assert_ne!(tags[i], tags[j]);
+            }
+        }
+    }
 }

@@ -263,3 +263,121 @@ impl TrapSender {
         msg.to_bytes()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::EngineId;
+    use crate::message::Message;
+    use crate::usm::SecretBytes;
+
+    fn local_dest() -> SocketAddr {
+        // Use the documentation/example "blackhole" IPv4 — we never actually
+        // send on this socket in these tests.
+        "127.0.0.1:0".parse().expect("static parse")
+    }
+
+    #[tokio::test]
+    async fn debug_redacts_credentials() {
+        let user = UsmUser::no_auth("alice");
+        let sender = TrapSender::new(local_dest(), user).await.unwrap();
+        let dbg = format!("{sender:?}");
+        assert!(dbg.contains("alice"));
+        assert!(dbg.contains("TrapSender"));
+        // The auth/priv KUL bytes must not surface in debug output.
+        assert!(!dbg.contains("auth_kul"));
+        assert!(!dbg.contains("priv_kul"));
+    }
+
+    #[tokio::test]
+    async fn explicit_engine_id_is_honored() {
+        let id = EngineId::new(vec![0x80, 0, 0, 0, 0x99, 0xAA, 0xBB]).unwrap();
+        let user = UsmUser::no_auth("u");
+        let s = TrapSender::with_engine_id(local_dest(), user, id.clone())
+            .await
+            .unwrap();
+        assert_eq!(s.engine_id.as_bytes(), id.as_bytes());
+    }
+
+    #[tokio::test]
+    async fn v6_destination_binds_v6_socket() {
+        let dest: SocketAddr = "[::1]:0".parse().unwrap();
+        let user = UsmUser::no_auth("u");
+        let sender = TrapSender::with_engine_id(
+            dest,
+            user,
+            EngineId::new(vec![0x80, 0, 0, 0, 1]).unwrap(),
+        )
+        .await
+        .unwrap();
+        assert!(sender.socket.local_addr().unwrap().is_ipv6());
+    }
+
+    #[tokio::test]
+    async fn assemble_no_auth_produces_parseable_message() {
+        let user = UsmUser::no_auth("alice");
+        let id = EngineId::new(vec![0x80, 0, 0, 0, 1]).unwrap();
+        let sender = TrapSender::with_engine_id(local_dest(), user, id)
+            .await
+            .unwrap();
+        let scoped = ScopedPdu {
+            context_engine_id: sender.engine_id.as_bytes().to_vec(),
+            context_name: vec![],
+            pdu: Pdu {
+                kind: PduKind::SnmpV2Trap,
+                request_id: 7,
+                error_status: 0,
+                error_index: 0,
+                variable_bindings: vec![],
+            },
+        };
+        let bytes = sender.assemble(scoped, 7).await.unwrap();
+        let back = Message::from_bytes(&bytes).unwrap();
+        // noAuthNoPriv → flags zero, plaintext data.
+        assert_eq!(back.global.msg_flags, 0);
+        match back.data {
+            MessageData::Plain(_) => {}
+            MessageData::Encrypted(_) => panic!("expected plaintext"),
+        }
+    }
+
+    #[tokio::test]
+    async fn assemble_auth_priv_marks_flags() {
+        let user = UsmUser::auth_priv(
+            "alice",
+            AuthProtocol::HmacSha256,
+            SecretBytes::from("the-quick-brown-fox-jumped-over"),
+            PrivProtocol::Aes128,
+            SecretBytes::from("the-quick-brown-fox-jumped-over"),
+        );
+        let id = EngineId::new(vec![0x80, 0, 0, 0, 1]).unwrap();
+        let sender = TrapSender::with_engine_id(local_dest(), user, id)
+            .await
+            .unwrap();
+        let scoped = ScopedPdu {
+            context_engine_id: sender.engine_id.as_bytes().to_vec(),
+            context_name: vec![],
+            pdu: Pdu {
+                kind: PduKind::SnmpV2Trap,
+                request_id: 11,
+                error_status: 0,
+                error_index: 0,
+                variable_bindings: vec![],
+            },
+        };
+        let bytes = sender.assemble(scoped, 11).await.unwrap();
+        let back = Message::from_bytes(&bytes).unwrap();
+        assert!(back.global.auth_bit());
+        assert!(back.global.priv_bit());
+        // priv params should be the 8-byte salt the sender chose.
+        assert_eq!(back.security.priv_params.len(), 8);
+    }
+
+    #[test]
+    fn standard_oid_constants_parse() {
+        let up: ObjectIdentifier = SYS_UPTIME_OID.parse().unwrap();
+        let trap: ObjectIdentifier = SNMP_TRAP_OID_OID.parse().unwrap();
+        assert_eq!(up.to_string(), "1.3.6.1.2.1.1.3.0");
+        assert_eq!(trap.to_string(), "1.3.6.1.6.3.1.1.4.1.0");
+    }
+}

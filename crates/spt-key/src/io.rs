@@ -190,4 +190,143 @@ mod tests {
         save_encrypted(&kp, &p, None).unwrap();
         load(&p, None).unwrap();
     }
+
+    #[test]
+    fn load_missing_file_is_runtime_failure() {
+        let dir = tempdir().unwrap();
+        let p = dir.path().join("nope");
+        let err = load(&p, None).unwrap_err();
+        // Path string is interpolated into the message.
+        let msg = format!("{err}");
+        assert!(msg.contains("nope") || msg.contains("read"));
+    }
+
+    #[test]
+    fn load_corrupt_pem_is_invalid_config() {
+        let dir = tempdir().unwrap();
+        let p = dir.path().join("junk");
+        fs::write(&p, b"this is not an ssh key").unwrap();
+        let err = load(&p, None).unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("ssh-key") || msg.to_lowercase().contains("invalid"));
+    }
+
+    #[test]
+    fn load_encrypted_without_passphrase_is_invalid_args() {
+        let kp = generate(KeyAlgorithm::Ed25519).unwrap();
+        let dir = tempdir().unwrap();
+        let p = dir.path().join("enc");
+        save_encrypted(&kp, &p, Some("pw")).unwrap();
+        let err = load(&p, None).unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("encrypted") || msg.contains("passphrase"));
+    }
+
+    #[test]
+    fn save_encrypted_with_empty_passphrase_is_unencrypted() {
+        // `passphrase: Some("")` falls through to the unencrypted branch.
+        let kp = generate(KeyAlgorithm::Ed25519).unwrap();
+        let dir = tempdir().unwrap();
+        let p = dir.path().join("empty_pass");
+        save_encrypted(&kp, &p, Some("")).unwrap();
+        // No passphrase needed to load.
+        let loaded = load(&p, None).unwrap();
+        assert_eq!(
+            fingerprint_sha256(loaded.public_ref()),
+            fingerprint_sha256(kp.public_ref())
+        );
+    }
+
+    #[test]
+    fn change_passphrase_strips_encryption_when_new_is_none() {
+        let kp = generate(KeyAlgorithm::Ed25519).unwrap();
+        let dir = tempdir().unwrap();
+        let p = dir.path().join("id_strip");
+        save_encrypted(&kp, &p, Some("old")).unwrap();
+        change_passphrase(&p, Some("old"), None).unwrap();
+        // Loadable with no passphrase now.
+        let loaded = load(&p, None).unwrap();
+        assert_eq!(
+            fingerprint_sha256(loaded.public_ref()),
+            fingerprint_sha256(kp.public_ref())
+        );
+    }
+
+    #[test]
+    fn change_passphrase_strips_encryption_when_new_is_empty() {
+        // `new = Some("")` should also strip — empty-pw branch matches `_`.
+        let kp = generate(KeyAlgorithm::Ed25519).unwrap();
+        let dir = tempdir().unwrap();
+        let p = dir.path().join("id_strip_empty");
+        save_encrypted(&kp, &p, Some("old")).unwrap();
+        change_passphrase(&p, Some("old"), Some("")).unwrap();
+        let loaded = load(&p, None).unwrap();
+        assert_eq!(
+            fingerprint_sha256(loaded.public_ref()),
+            fingerprint_sha256(kp.public_ref())
+        );
+    }
+
+    #[test]
+    fn change_passphrase_with_wrong_old_fails() {
+        let kp = generate(KeyAlgorithm::Ed25519).unwrap();
+        let dir = tempdir().unwrap();
+        let p = dir.path().join("id_wrong_old");
+        save_encrypted(&kp, &p, Some("old")).unwrap();
+        let err = change_passphrase(&p, Some("nope"), Some("new")).unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("passphrase") || msg.contains("auth"));
+    }
+
+    #[test]
+    fn change_passphrase_adds_encryption() {
+        // Start unencrypted, then add a passphrase.
+        let kp = generate(KeyAlgorithm::Ed25519).unwrap();
+        let dir = tempdir().unwrap();
+        let p = dir.path().join("id_plain_then_enc");
+        save_encrypted(&kp, &p, None).unwrap();
+        change_passphrase(&p, None, Some("new")).unwrap();
+        assert!(load(&p, None).is_err());
+        let loaded = load(&p, Some("new")).unwrap();
+        assert_eq!(
+            fingerprint_sha256(loaded.public_ref()),
+            fingerprint_sha256(kp.public_ref())
+        );
+    }
+
+    #[test]
+    fn with_extension_appended_appends_dot_ext() {
+        let p = std::path::PathBuf::from("/tmp/key");
+        let bak = with_extension_appended(&p, "bak");
+        assert_eq!(bak, std::path::PathBuf::from("/tmp/key.bak"));
+    }
+
+    #[test]
+    fn with_extension_appended_on_already_extended_path() {
+        // We APPEND — we don't replace — so foo.txt + bak => foo.txt.bak.
+        let p = std::path::PathBuf::from("foo.txt");
+        let out = with_extension_appended(&p, "bak");
+        assert_eq!(out, std::path::PathBuf::from("foo.txt.bak"));
+    }
+
+    #[test]
+    fn save_then_overwrite_preserves_load() {
+        // AtomicWrite OverwriteBehavior::AllowOverwrite: re-saving must
+        // succeed and the new key must be readable.
+        let dir = tempdir().unwrap();
+        let p = dir.path().join("id_over");
+        let kp1 = generate(KeyAlgorithm::Ed25519).unwrap();
+        save_encrypted(&kp1, &p, None).unwrap();
+        let kp2 = generate(KeyAlgorithm::Ed25519).unwrap();
+        save_encrypted(&kp2, &p, None).unwrap();
+        let loaded = load(&p, None).unwrap();
+        assert_eq!(
+            fingerprint_sha256(loaded.public_ref()),
+            fingerprint_sha256(kp2.public_ref())
+        );
+        assert_ne!(
+            fingerprint_sha256(loaded.public_ref()),
+            fingerprint_sha256(kp1.public_ref())
+        );
+    }
 }

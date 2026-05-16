@@ -84,4 +84,41 @@ mod tests {
         ));
         check_safety(&Prod, true).unwrap();
     }
+
+    #[test]
+    fn production_error_carries_driver_name() {
+        let err = check_safety(&Prod, false).unwrap_err();
+        match &err {
+            SafetyError::ProductionImpactNotAllowed { driver } => {
+                assert_eq!(driver, "prod");
+            }
+        }
+    }
+
+    #[test]
+    fn error_display_mentions_override_flag() {
+        let err = check_safety(&Prod, false).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("--unsafe-allow-production-impact"),
+            "expected override hint, got `{msg}`"
+        );
+        assert!(msg.contains("prod"), "expected driver name, got `{msg}`");
+    }
+
+    #[test]
+    fn error_is_clone_eq_and_debug() {
+        let err = check_safety(&Prod, false).unwrap_err();
+        let cloned = err.clone();
+        assert_eq!(err, cloned);
+        let dbg = format!("{err:?}");
+        assert!(dbg.contains("ProductionImpactNotAllowed"));
+    }
+
+    #[test]
+    fn safety_error_source_chain_is_none() {
+        use std::error::Error;
+        let err = check_safety(&Prod, false).unwrap_err();
+        assert!(err.source().is_none());
+    }
 }

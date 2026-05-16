@@ -410,4 +410,67 @@ mod tests {
         drop(client);
         let _ = task.await;
     }
+
+    #[test]
+    fn frame_eq_and_clone() {
+        let a = Frame::ClientToServer("hello".to_owned());
+        let b = a.clone();
+        assert_eq!(a, b);
+        let c = Frame::ServerToClient("hello".to_owned());
+        assert_ne!(a, c);
+    }
+
+    #[tokio::test]
+    async fn make_test_server_observed_records_both_directions() {
+        let h = make_test_server();
+        let server_task = tokio::spawn(h.server.run(h.transport));
+        let mut client = h.client;
+        let _ = handshake(&mut client).await.expect("init");
+        let frames = client.observed();
+        assert!(
+            frames
+                .iter()
+                .any(|f| matches!(f, Frame::ClientToServer(_))),
+            "no client->server frames"
+        );
+        assert!(
+            frames
+                .iter()
+                .any(|f| matches!(f, Frame::ServerToClient(_))),
+            "no server->client frames"
+        );
+        drop(client);
+        let _ = server_task.await;
+    }
+
+    #[test]
+    #[should_panic(expected = "not present")]
+    fn assert_tool_listed_panics_on_missing() {
+        let tools: Vec<crate::protocol::ToolDescriptor> = Vec::new();
+        assert_tool_listed(&tools, "no_such_tool");
+    }
+
+    #[test]
+    fn assert_tool_listed_ok_when_present() {
+        let tools = vec![crate::protocol::ToolDescriptor {
+            name: "x".to_owned(),
+            description: "y".to_owned(),
+            input_schema: serde_json::json!({}),
+        }];
+        assert_tool_listed(&tools, "x");
+    }
+
+    #[tokio::test]
+    async fn rpc_assigns_incrementing_ids() {
+        let h = make_test_server();
+        let server_task = tokio::spawn(h.server.run(h.transport));
+        let client = h.client;
+        let r1 = client.rpc("ping", serde_json::json!({})).await.unwrap();
+        let r2 = client.rpc("ping", serde_json::json!({})).await.unwrap();
+        assert!(r1.error.is_none());
+        assert!(r2.error.is_none());
+        assert_ne!(format!("{:?}", r1.id), format!("{:?}", r2.id));
+        drop(client);
+        let _ = server_task.await;
+    }
 }

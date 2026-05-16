@@ -745,6 +745,9 @@ impl ToolRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::controller::testing::{ControllerCall, RecordingController};
+    use crate::controller::NoopController;
+    use crate::sources::NoopSources;
 
     #[test]
     fn registry_contains_all_tools() {
@@ -762,5 +765,299 @@ mod tests {
         for name in ALL_TOOL_NAMES {
             assert!(r.get(name).is_some(), "missing tool: {name}");
         }
+    }
+
+    #[test]
+    fn registry_is_not_empty() {
+        let r = ToolRegistry::new();
+        assert!(!r.is_empty());
+        let names = r.names();
+        assert_eq!(names.len(), ALL_TOOL_NAMES.len());
+        let mut sorted = names.clone();
+        sorted.sort_unstable();
+        assert_eq!(names, sorted);
+    }
+
+    #[test]
+    fn registry_default_matches_new() {
+        let a = ToolRegistry::default();
+        let b = ToolRegistry::new();
+        assert_eq!(a.len(), b.len());
+    }
+
+    #[test]
+    fn registry_get_unknown_is_none() {
+        let r = ToolRegistry::new();
+        assert!(r.get("nope_definitely_not").is_none());
+    }
+
+    #[test]
+    fn empty_schema_is_object_with_no_properties() {
+        let v = empty_schema();
+        assert_eq!(v["type"], "object");
+        assert_eq!(v["additionalProperties"], false);
+        assert!(v["properties"].is_object());
+    }
+
+    #[test]
+    fn list_returns_descriptor_per_tool() {
+        let r = ToolRegistry::new();
+        let list = r.list();
+        assert_eq!(list.len(), ALL_TOOL_NAMES.len());
+        for d in list {
+            assert!(!d.name.is_empty());
+            assert!(!d.description.is_empty());
+        }
+    }
+
+    fn ctx_with(ctrl: Arc<dyn crate::controller::Controller>) -> ToolContext {
+        let sources = Arc::new(NoopSources);
+        ToolContext {
+            config: sources.clone() as DynConfigSource,
+            state: sources as DynStateSource,
+            controller: ctrl,
+            notification_sender: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn profile_set_returns_planned_envelope() {
+        let ctx = ctx_with(Arc::new(NoopController));
+        let v = ProfileSet
+            .call(&ctx, json!({"profile":"p","path":"a.b","value":42}))
+            .await
+            .expect("ok");
+        assert_eq!(v["applied"], false);
+        assert_eq!(v["planned"]["profile"], "p");
+    }
+
+    #[tokio::test]
+    async fn forward_add_missing_profile_errors_invalid_params() {
+        let ctx = ctx_with(Arc::new(NoopController));
+        let err = ForwardAdd
+            .call(&ctx, json!({"forward": {}}))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, crate::Error::InvalidParams(_)));
+    }
+
+    #[tokio::test]
+    async fn forward_add_missing_forward_errors() {
+        let ctx = ctx_with(Arc::new(NoopController));
+        let err = ForwardAdd
+            .call(&ctx, json!({"profile": "p"}))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, crate::Error::InvalidParams(_)));
+    }
+
+    #[tokio::test]
+    async fn forward_add_routes_to_controller() {
+        let ctrl = RecordingController::new();
+        let ctx = ctx_with(Arc::new(ctrl.clone()));
+        let v = ForwardAdd
+            .call(
+                &ctx,
+                json!({
+                    "profile": "alpha",
+                    "forward": {"name":"w","type":"local","transport":"tcp"}
+                }),
+            )
+            .await
+            .expect("ok");
+        assert_eq!(v["applied"], true);
+        assert_eq!(v["profile"], "alpha");
+        assert_eq!(ctrl.snapshot().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn forward_remove_missing_args_errors() {
+        let ctx = ctx_with(Arc::new(NoopController));
+        let err = ForwardRemove
+            .call(&ctx, json!({}))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, crate::Error::InvalidParams(_)));
+
+        let err = ForwardRemove
+            .call(&ctx, json!({"profile": "p"}))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, crate::Error::InvalidParams(_)));
+    }
+
+    #[tokio::test]
+    async fn forward_remove_happy() {
+        let ctrl = RecordingController::new();
+        let ctx = ctx_with(Arc::new(ctrl.clone()));
+        let v = ForwardRemove
+            .call(&ctx, json!({"profile":"p","forward_id":"web"}))
+            .await
+            .expect("ok");
+        assert_eq!(v["applied"], true);
+        assert_eq!(v["forward"], "web");
+        assert!(matches!(
+            &ctrl.snapshot()[0],
+            ControllerCall::ForwardRemove { profile, forward_id }
+                if profile == "p" && forward_id == "web"
+        ));
+    }
+
+    #[tokio::test]
+    async fn tunnel_reload_happy() {
+        let ctrl = RecordingController::new();
+        let ctx = ctx_with(Arc::new(ctrl.clone()));
+        let v = TunnelReload.call(&ctx, json!({})).await.expect("ok");
+        assert_eq!(v["applied"], true);
+        assert_eq!(ctrl.snapshot(), vec![ControllerCall::Reload]);
+    }
+
+    #[tokio::test]
+    async fn tunnel_failover_missing_profile_errors() {
+        let ctx = ctx_with(Arc::new(NoopController));
+        let err = TunnelFailover
+            .call(&ctx, json!({}))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, crate::Error::InvalidParams(_)));
+    }
+
+    #[tokio::test]
+    async fn tunnel_failover_no_endpoint() {
+        let ctrl = RecordingController::new();
+        let ctx = ctx_with(Arc::new(ctrl.clone()));
+        let v = TunnelFailover
+            .call(&ctx, json!({"profile":"alpha"}))
+            .await
+            .expect("ok");
+        assert_eq!(v["applied"], true);
+        assert!(v["endpoint"].is_null());
+        assert!(matches!(
+            &ctrl.snapshot()[0],
+            ControllerCall::Failover { profile, endpoint }
+                if profile == "alpha" && endpoint.is_none()
+        ));
+    }
+
+    #[tokio::test]
+    async fn session_close_routes_to_controller() {
+        let ctrl = RecordingController::new();
+        let ctx = ctx_with(Arc::new(ctrl.clone()));
+        let v = SessionClose
+            .call(&ctx, json!({"id":"s-1"}))
+            .await
+            .expect("ok");
+        assert_eq!(v["applied"], true);
+        assert_eq!(v["id"], "s-1");
+    }
+
+    #[tokio::test]
+    async fn session_close_missing_id_errors() {
+        let ctx = ctx_with(Arc::new(NoopController));
+        let err = SessionClose
+            .call(&ctx, json!({}))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, crate::Error::InvalidParams(_)));
+    }
+
+    #[tokio::test]
+    async fn session_drain_routes_with_default_grace() {
+        let ctrl = RecordingController::new();
+        let ctx = ctx_with(Arc::new(ctrl.clone()));
+        let v = SessionDrain
+            .call(&ctx, json!({"profile":"alpha"}))
+            .await
+            .expect("ok");
+        assert_eq!(v["applied"], true);
+        let call = &ctrl.snapshot()[0];
+        match call {
+            ControllerCall::SessionDrain { grace_seconds, .. } => {
+                assert_eq!(*grace_seconds, 5, "default grace");
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn session_drain_missing_profile_errors() {
+        let ctx = ctx_with(Arc::new(NoopController));
+        let err = SessionDrain
+            .call(&ctx, json!({}))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, crate::Error::InvalidParams(_)));
+    }
+
+    #[tokio::test]
+    async fn benchmark_run_routes_to_controller() {
+        let ctrl = RecordingController::new();
+        let ctx = ctx_with(Arc::new(ctrl.clone()));
+        let v = BenchmarkRun
+            .call(&ctx, json!({"driver":"latency"}))
+            .await
+            .expect("ok");
+        assert_eq!(v["ok"], true);
+    }
+
+    #[tokio::test]
+    async fn stats_subscribe_without_notify_errors() {
+        let ctrl = RecordingController::new();
+        let ctx = ctx_with(Arc::new(ctrl.clone()));
+        let err = StatsSubscribe
+            .call(&ctx, json!({}))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, crate::Error::InvalidParams(_)));
+    }
+
+    #[tokio::test]
+    async fn stats_subscribe_with_notify_routes_and_emits() {
+        let ctrl = RecordingController::new();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        let sources = Arc::new(NoopSources);
+        let ctx = ToolContext {
+            config: sources.clone() as DynConfigSource,
+            state: sources as DynStateSource,
+            controller: Arc::new(ctrl.clone()),
+            notification_sender: Some(tx),
+        };
+        let v = StatsSubscribe
+            .call(&ctx, json!({"interval_ms": 150}))
+            .await
+            .expect("ok");
+        assert_eq!(v["subscribed"], true);
+        assert_eq!(v["interval_ms"], 150);
+        let first = tokio::time::timeout(std::time::Duration::from_millis(500), rx.recv())
+            .await
+            .expect("tick");
+        assert!(first.is_some());
+    }
+
+    #[tokio::test]
+    async fn descriptor_schemas_are_valid_json() {
+        let r = ToolRegistry::new();
+        for d in r.list() {
+            assert!(d.input_schema.is_object(), "{}: schema not object", d.name);
+        }
+    }
+
+    #[tokio::test]
+    async fn planned_tool_envelope_shape() {
+        let ctx = ctx_with(Arc::new(NoopController));
+        let v = DnsRecordAdd
+            .call(&ctx, json!({"x":1}))
+            .await
+            .expect("ok");
+        assert_eq!(v["applied"], false);
+        assert_eq!(v["planned"]["x"], 1);
+    }
+
+    #[test]
+    fn tool_handler_names_are_static() {
+        assert_eq!(ConfigValidate.name(), "config_validate");
+        assert_eq!(ForwardAdd.name(), "forward_add");
+        assert_eq!(SessionDrain.name(), "session_drain");
+        assert_eq!(BenchmarkRun.name(), "benchmark_run");
     }
 }

@@ -161,4 +161,94 @@ mod tests {
         let r = ServiceDiagnostic.run(&ctx(ServiceState::Failed)).await;
         assert_eq!(r[0].status, Status::Fail);
     }
+
+    #[test]
+    fn group_label_is_service() {
+        assert_eq!(ServiceDiagnostic.group(), "service");
+    }
+
+    #[tokio::test]
+    async fn skipped_when_service_manager_missing_but_name_present() {
+        let ctx = DiagnosticContext {
+            service_manager: None,
+            service_name: Some("spt".into()),
+            ..Default::default()
+        };
+        let r = ServiceDiagnostic.run(&ctx).await;
+        assert_eq!(r[0].status, Status::Skipped);
+        let evidence = r[0].evidence.join("\n");
+        assert!(evidence.contains("no ServiceManager"), "got: {evidence}");
+    }
+
+    #[tokio::test]
+    async fn skipped_when_service_name_missing_but_manager_present() {
+        let ctx = DiagnosticContext {
+            service_manager: Some(Arc::new(FakeMgr(ServiceState::Running))),
+            service_name: None,
+            ..Default::default()
+        };
+        let r = ServiceDiagnostic.run(&ctx).await;
+        assert_eq!(r[0].status, Status::Skipped);
+    }
+
+    #[tokio::test]
+    async fn stopped_remediation_suggests_start() {
+        let r = ServiceDiagnostic.run(&ctx(ServiceState::Stopped)).await;
+        let rem = r[0].remediation.as_deref().unwrap_or("");
+        assert!(rem.contains("spt service start"), "rem: {rem}");
+    }
+
+    #[tokio::test]
+    async fn not_installed_remediation_suggests_install() {
+        let r = ServiceDiagnostic
+            .run(&ctx(ServiceState::NotInstalled))
+            .await;
+        let rem = r[0].remediation.as_deref().unwrap_or("");
+        assert!(rem.contains("spt service install"), "rem: {rem}");
+    }
+
+    #[tokio::test]
+    async fn status_query_error_surfaces_as_skipped() {
+        #[derive(Debug)]
+        struct ErroringMgr;
+        #[async_trait]
+        impl ServiceManager for ErroringMgr {
+            fn name(&self) -> &'static str {
+                "erroring"
+            }
+            fn capabilities(&self) -> ServiceCapabilities {
+                ServiceCapabilities::default()
+            }
+            async fn install(&self, _: &ServiceSpec) -> Result<()> {
+                Ok(())
+            }
+            async fn uninstall(&self, _: &str) -> Result<()> {
+                Ok(())
+            }
+            async fn status(&self, _: &str) -> Result<ServiceStatus> {
+                Err(spt_core::Error::RuntimeFailure("boom".into()))
+            }
+            async fn start(&self, _: &str) -> Result<()> {
+                Ok(())
+            }
+            async fn stop(&self, _: &str) -> Result<()> {
+                Ok(())
+            }
+            async fn restart(&self, _: &str) -> Result<()> {
+                Ok(())
+            }
+            async fn reload(&self, _: &str) -> Result<()> {
+                Ok(())
+            }
+        }
+        let ctx = DiagnosticContext {
+            service_manager: Some(Arc::new(ErroringMgr)),
+            service_name: Some("spt".into()),
+            ..Default::default()
+        };
+        let r = ServiceDiagnostic.run(&ctx).await;
+        assert_eq!(r[0].status, Status::Skipped);
+        let evidence = r[0].evidence.join("\n");
+        assert!(evidence.contains("status query failed"), "got: {evidence}");
+    }
 }

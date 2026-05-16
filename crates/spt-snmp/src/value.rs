@@ -220,6 +220,53 @@ mod tests {
     }
 
     #[test]
+    fn ip_address_wrong_length_errors() {
+        let bytes = [0x40u8, 0x03, 10, 0, 0];
+        let mut d = Decoder::new(&bytes);
+        assert!(Value::decode(&mut d).is_err());
+    }
+
+    #[test]
+    fn null_with_body_errors() {
+        let bytes = [0x05u8, 0x01, 0x00];
+        let mut d = Decoder::new(&bytes);
+        assert!(Value::decode(&mut d).is_err());
+    }
+
+    #[test]
+    fn unknown_tag_errors() {
+        let bytes = [0x7Fu8, 0x00];
+        let mut d = Decoder::new(&bytes);
+        assert!(Value::decode(&mut d).is_err());
+    }
+
+    #[test]
+    fn exception_markers_encode_with_zero_body() {
+        let mut e = Encoder::new();
+        Value::NoSuchObject.encode(&mut e).unwrap();
+        Value::NoSuchInstance.encode(&mut e).unwrap();
+        Value::EndOfMibView.encode(&mut e).unwrap();
+        let bytes = e.finish();
+        assert_eq!(bytes, vec![0x80, 0, 0x81, 0, 0x82, 0]);
+    }
+
+    #[test]
+    fn integer_zero_encodes_single_byte() {
+        let mut e = Encoder::new();
+        Value::Integer(0).encode(&mut e).unwrap();
+        let bytes = e.finish();
+        assert_eq!(bytes, vec![0x02, 0x01, 0x00]);
+    }
+
+    #[test]
+    fn varbind_null_helper() {
+        let oid = ObjectIdentifier::new([1u32, 3, 6, 1, 2]);
+        let vb = VarBind::null(oid.clone());
+        assert_eq!(vb.value, Value::Null);
+        assert_eq!(vb.name, oid);
+    }
+
+    #[test]
     fn varbind_roundtrip() {
         let vb = VarBind::new(
             ObjectIdentifier::new([1u32, 3, 6, 1, 2, 1, 1, 5, 0]),

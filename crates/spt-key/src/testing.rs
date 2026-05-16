@@ -165,4 +165,64 @@ mod tests {
             fingerprint_sha256(kp.public_ref())
         );
     }
+
+    #[test]
+    fn temp_key_file_with_passphrase_round_trip() {
+        let kp = fixtures::ed25519_kp().unwrap();
+        let (dir, path) = temp_key_file(&kp, Some("hunter2")).unwrap();
+        assert!(path.starts_with(dir.path()));
+        // Loading without the passphrase fails for the encrypted file.
+        assert!(crate::io::load(&path, None).is_err());
+        let loaded = crate::io::load(&path, Some("hunter2")).unwrap();
+        assert_eq!(
+            fingerprint_sha256(loaded.public_ref()),
+            fingerprint_sha256(kp.public_ref())
+        );
+    }
+
+    #[test]
+    fn ed25519_kp_fixture_classifies_correctly() {
+        let kp = fixtures::ed25519_kp().unwrap();
+        assert_eq!(kp.algorithm(), Some(KeyAlgorithm::Ed25519));
+    }
+
+    #[test]
+    fn p256_kp_fixture_classifies_correctly() {
+        let kp = fixtures::p256_kp().unwrap();
+        assert_eq!(kp.algorithm(), Some(KeyAlgorithm::EcdsaP256));
+    }
+
+    #[test]
+    fn deterministic_keypair_p256_is_stable() {
+        let a = deterministic_keypair(99, KeyAlgorithm::EcdsaP256).unwrap();
+        let b = deterministic_keypair(99, KeyAlgorithm::EcdsaP256).unwrap();
+        assert_eq!(
+            fingerprint_sha256(a.public_ref()),
+            fingerprint_sha256(b.public_ref())
+        );
+    }
+
+    #[test]
+    fn deterministic_keypair_p256_seeds_differ() {
+        let a = deterministic_keypair(1, KeyAlgorithm::EcdsaP256).unwrap();
+        let b = deterministic_keypair(2, KeyAlgorithm::EcdsaP256).unwrap();
+        assert_ne!(
+            fingerprint_sha256(a.public_ref()),
+            fingerprint_sha256(b.public_ref())
+        );
+    }
+
+    /// `deterministic_keypair` should be reproducible for RSA-3072 too — same
+    /// seed yields same fingerprint. Slow, gated.
+    #[test]
+    #[ignore = "RSA-3072 keygen is slow (~5s+)"]
+    fn deterministic_keypair_rsa3072_is_stable() {
+        let a = fixtures::rsa3072_kp().unwrap();
+        let b = fixtures::rsa3072_kp().unwrap();
+        assert_eq!(
+            fingerprint_sha256(a.public_ref()),
+            fingerprint_sha256(b.public_ref())
+        );
+        assert_eq!(a.algorithm(), Some(KeyAlgorithm::Rsa3072));
+    }
 }

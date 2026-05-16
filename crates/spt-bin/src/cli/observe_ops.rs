@@ -406,4 +406,101 @@ mod tests {
         // Allow either Ok or a permission/registry failure on locked-down CI.
         let _ = windows_event(&g, args).await;
     }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn config_winevent_source_returns_none_when_config_missing() {
+        let g = opts();
+        let v = config_winevent_source(&g).unwrap();
+        assert!(v.is_none());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn config_winevent_source_reads_value_from_config() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = tmp.path().join("c.toml");
+        std::fs::write(
+            &cfg,
+            r#"
+                version = 1
+                [observability.windows_event]
+                source = "my-source"
+            "#,
+        )
+        .unwrap();
+        let mut g = opts();
+        g.config = Some(cfg);
+        let v = config_winevent_source(&g).unwrap();
+        assert_eq!(v.as_deref(), Some("my-source"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn config_winevent_source_returns_none_when_section_absent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = tmp.path().join("c.toml");
+        std::fs::write(&cfg, "version = 1\n").unwrap();
+        let mut g = opts();
+        g.config = Some(cfg);
+        let v = config_winevent_source(&g).unwrap();
+        assert!(v.is_none());
+    }
+
+    #[cfg(feature = "snmp")]
+    #[test]
+    fn resolve_secret_falls_back_to_test_passphrase() {
+        let g = opts();
+        let auth = resolve_secret(&g, None, "auth").unwrap();
+        assert!(auth.contains("auth"));
+        let priv_ = resolve_secret(&g, None, "priv").unwrap();
+        assert!(priv_.contains("priv"));
+        let other = resolve_secret(&g, None, "other").unwrap();
+        assert!(other.contains("passphrase"));
+    }
+
+    #[cfg(feature = "snmp")]
+    #[test]
+    fn observe_snmp_args_default_is_all_none() {
+        let a = ObserveSnmpArgs::default();
+        assert!(a.query.is_none());
+        assert!(a.user.is_none());
+        assert!(a.auth_key_from.is_none());
+        assert!(a.priv_key_from.is_none());
+        assert!(a.target.is_none());
+        assert!(!a.json);
+    }
+
+    #[test]
+    fn observe_windows_event_args_default_is_all_none() {
+        let a = ObserveWindowsEventArgs::default();
+        assert!(a.message.is_none());
+        assert!(a.source.is_none());
+    }
+
+    #[cfg(feature = "snmp")]
+    #[tokio::test(flavor = "current_thread")]
+    async fn config_snmp_bind_returns_none_without_config() {
+        let g = opts();
+        let v = config_snmp_bind(&g).unwrap();
+        assert!(v.is_none());
+    }
+
+    #[cfg(feature = "snmp")]
+    #[tokio::test(flavor = "current_thread")]
+    async fn config_snmp_bind_reads_from_config_when_set() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = tmp.path().join("c.toml");
+        std::fs::write(
+            &cfg,
+            r#"
+                version = 1
+                [observability.snmp]
+                bind = "127.0.0.1:10161"
+                enterprise_id = 99999
+            "#,
+        )
+        .unwrap();
+        let mut g = opts();
+        g.config = Some(cfg);
+        let v = config_snmp_bind(&g).unwrap();
+        assert_eq!(v.as_deref(), Some("127.0.0.1:10161"));
+    }
 }

@@ -367,6 +367,71 @@ mod tests {
     }
 
     #[test]
+    fn global_data_flag_helpers() {
+        let g = GlobalData {
+            msg_id: 1,
+            msg_max_size: 484,
+            msg_flags: FLAG_AUTH | FLAG_PRIV | FLAG_REPORTABLE,
+            msg_security_model: SECURITY_MODEL_USM,
+        };
+        assert!(g.auth_bit());
+        assert!(g.priv_bit());
+        assert!(g.reportable_bit());
+        let z = GlobalData {
+            msg_flags: 0,
+            ..g
+        };
+        assert!(!z.auth_bit());
+        assert!(!z.priv_bit());
+        assert!(!z.reportable_bit());
+    }
+
+    #[test]
+    fn message_rejects_wrong_version() {
+        let m = sample_message();
+        let mut bytes = m.to_bytes().unwrap();
+        for i in 0..bytes.len() - 2 {
+            if bytes[i] == 0x02 && bytes[i + 1] == 0x01 && bytes[i + 2] == 0x03 {
+                bytes[i + 2] = 0x02;
+                break;
+            }
+        }
+        assert!(Message::from_bytes(&bytes).is_err());
+    }
+
+    #[test]
+    fn encrypted_data_roundtrip() {
+        let mut m = sample_message();
+        m.global.msg_flags = FLAG_AUTH | FLAG_PRIV;
+        m.data = MessageData::Encrypted(vec![1, 2, 3, 4]);
+        let bytes = m.to_bytes().unwrap();
+        let back = Message::from_bytes(&bytes).unwrap();
+        assert_eq!(back.data, MessageData::Encrypted(vec![1, 2, 3, 4]));
+        assert!(back.global.priv_bit());
+    }
+
+    #[test]
+    fn plain_data_without_priv_bit_roundtrip() {
+        let mut m = sample_message();
+        m.global.msg_flags = 0;
+        let bytes = m.to_bytes().unwrap();
+        let back = Message::from_bytes(&bytes).unwrap();
+        match back.data {
+            MessageData::Plain(_) => {}
+            MessageData::Encrypted(_) => panic!("expected plaintext"),
+        }
+    }
+
+    #[test]
+    fn security_parameters_default_is_empty() {
+        let d = SecurityParameters::default();
+        assert!(d.engine_id.is_empty());
+        assert_eq!(d.engine_boots, 0);
+        assert_eq!(d.engine_time, 0);
+        assert!(d.user_name.is_empty());
+    }
+
+    #[test]
     fn security_params_roundtrip() {
         let sp = SecurityParameters {
             engine_id: vec![0x80, 0, 0, 0, 1, 2, 3],

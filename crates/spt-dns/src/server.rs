@@ -177,3 +177,105 @@ impl Drop for DnsHandle {
 /// Convenience type alias mirroring the spec wording (`DnsServer` runs a
 /// transparent resolver).
 pub type DnsServer = DnsHandle;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::zone::{ManagedZone, Record};
+
+    fn rt() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+    }
+
+    #[test]
+    fn builder_default_and_new_match() {
+        let _b = DnsServerBuilder::new();
+        let _b2 = DnsServerBuilder::default();
+        // Both compile and accept the fluent chain below.
+    }
+
+    #[test]
+    fn builder_run_without_bind_returns_config_error() {
+        rt().block_on(async {
+            let res = DnsServerBuilder::new().run().await;
+            match res {
+                Err(DnsError::Config(msg)) => {
+                    assert!(msg.contains("bind"));
+                }
+                Err(other) => panic!("expected Config error, got {other:?}"),
+                Ok(_) => panic!("expected Config error, got Ok"),
+            }
+        });
+    }
+
+    #[test]
+    fn builder_fluent_methods_threaded() {
+        rt().block_on(async {
+            let mut zone = ManagedZone::new("tunnel.local.");
+            zone.add(Record::a(
+                "a.tunnel.local.",
+                "10.0.0.1".parse().unwrap(),
+                Duration::from_secs(60),
+            ))
+            .unwrap();
+            let handle = DnsServerBuilder::new()
+                .bind("127.0.0.1:0".parse().unwrap())
+                .upstream(vec![]) // empty -> no upstream wired
+                .add_zone(zone)
+                .health_source(Arc::new(NoHealth))
+                .tcp_timeout(Duration::from_millis(500))
+                .run()
+                .await
+                .unwrap();
+            // Sanity: ports allocated.
+            assert!(handle.udp_addr().port() > 0);
+            assert_eq!(handle.udp_addr().ip(), handle.tcp_addr().ip());
+            handle.shutdown().await;
+        });
+    }
+
+    #[test]
+    fn builder_run_with_upstream_list_starts_ok() {
+        rt().block_on(async {
+            let handle = DnsServerBuilder::new()
+                .bind("127.0.0.1:0".parse().unwrap())
+                .upstream(vec!["127.0.0.1:5353".parse().unwrap()])
+                .run()
+                .await
+                .unwrap();
+            assert!(handle.udp_addr().port() > 0);
+            handle.shutdown().await;
+        });
+    }
+
+    #[test]
+    fn handle_drop_aborts_task_without_panic() {
+        rt().block_on(async {
+            let handle = DnsServerBuilder::new()
+                .bind("127.0.0.1:0".parse().unwrap())
+                .run()
+                .await
+                .unwrap();
+            // Cause Drop without explicit shutdown.
+            drop(handle);
+        });
+    }
+
+    #[test]
+    fn handle_udp_and_tcp_addrs_accessible() {
+        rt().block_on(async {
+            let handle = DnsServerBuilder::new()
+                .bind("127.0.0.1:0".parse().unwrap())
+                .run()
+                .await
+                .unwrap();
+            let udp = handle.udp_addr();
+            let tcp = handle.tcp_addr();
+            assert_eq!(udp.ip(), tcp.ip());
+            handle.shutdown().await;
+        });
+    }
+}

@@ -223,4 +223,90 @@ mod tests {
         let v = json!({"result": {"resources": [{"a":1},{"b":2},{"c":3}]}});
         assert_eq!(count_array(&v, "resources"), 3);
     }
+
+    #[test]
+    fn count_array_returns_zero_when_result_missing() {
+        let v = json!({"other": "thing"});
+        assert_eq!(count_array(&v, "resources"), 0);
+    }
+
+    #[test]
+    fn count_array_returns_zero_when_key_missing() {
+        let v = json!({"result": {"tools": []}});
+        assert_eq!(count_array(&v, "resources"), 0);
+    }
+
+    #[test]
+    fn count_array_returns_zero_when_value_not_array() {
+        let v = json!({"result": {"resources": "not-array"}});
+        assert_eq!(count_array(&v, "resources"), 0);
+    }
+
+    #[test]
+    fn count_helper_for_zero_match() {
+        let c = check_count("mcp.zero", 0, 0);
+        assert_eq!(c.status, Status::Pass);
+        assert!(!c.evidence.is_empty());
+    }
+
+    #[test]
+    fn count_helper_carries_remediation_on_mismatch() {
+        let c = check_count("mcp.mismatch", 12, 16);
+        assert_eq!(c.status, Status::Warn);
+        let joined = c.evidence.join("\n");
+        assert!(joined.contains("expected 16"), "evidence: {joined}");
+        assert!(c.remediation.is_some());
+    }
+
+    #[test]
+    fn mcp_diagnostic_default_has_five_second_timeout() {
+        let d = McpDiagnostic::default();
+        assert_eq!(d.timeout, Duration::from_secs(5));
+    }
+
+    #[test]
+    fn group_returns_mcp() {
+        assert_eq!(McpDiagnostic::default().group(), "mcp");
+    }
+
+    #[tokio::test]
+    async fn no_binary_check_evidence_explains_skip() {
+        let ctx = DiagnosticContext {
+            mcp_enabled: true,
+            ..Default::default()
+        };
+        let r = McpDiagnostic::default().run(&ctx).await;
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].id, "mcp.binary");
+        assert_eq!(r[0].severity, Severity::Medium);
+        let evidence = r[0].evidence.join("\n");
+        assert!(evidence.contains("no MCP binary"), "got: {evidence}");
+    }
+
+    #[tokio::test]
+    async fn disabled_check_evidence_mentions_config() {
+        let r = McpDiagnostic::default()
+            .run(&DiagnosticContext::default())
+            .await;
+        let evidence = r[0].evidence.join("\n");
+        assert!(evidence.contains("[mcp].enabled = false"), "got: {evidence}");
+    }
+
+    #[tokio::test]
+    async fn missing_binary_produces_remediation_hint() {
+        let ctx = DiagnosticContext {
+            mcp_enabled: true,
+            mcp_binary: Some(std::path::PathBuf::from("definitely-not-on-path-zz")),
+            ..Default::default()
+        };
+        let r = McpDiagnostic {
+            timeout: Duration::from_millis(300),
+        }
+        .run(&ctx)
+        .await;
+        assert_eq!(r[0].status, Status::Fail);
+        assert!(r[0].remediation.is_some());
+        let ev = r[0].evidence.join("\n");
+        assert!(ev.contains("handshake failed"), "evidence: {ev}");
+    }
 }

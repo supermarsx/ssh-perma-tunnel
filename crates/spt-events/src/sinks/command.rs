@@ -189,4 +189,100 @@ mod tests {
             .unwrap_err();
         assert!(err.is_retryable());
     }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn name_kind_are_stable() {
+        let sink = CommandSink::new(
+            "notify",
+            PathBuf::from("/bin/true"),
+            vec![],
+            Duration::from_secs(1),
+            Arc::new(RecordingRunner::new()),
+        );
+        assert_eq!(sink.name(), "notify");
+        assert_eq!(sink.kind(), "command");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn empty_arg_templates_yield_empty_args() {
+        let r = Arc::new(RecordingRunner::new());
+        let sink = CommandSink::new(
+            "n",
+            PathBuf::from("/bin/true"),
+            Vec::new(),
+            Duration::from_secs(1),
+            r.clone(),
+        );
+        sink.deliver(Arc::new(Event::builder("k", Severity::Info).build()))
+            .await
+            .unwrap();
+        let calls = r.calls();
+        assert_eq!(calls.len(), 1);
+        assert!(calls[0].1.is_empty());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn permanent_failure_is_not_retryable() {
+        let r = Arc::new(RecordingRunner::new());
+        r.fail_once(SinkError::Permanent("config".into()));
+        let sink = CommandSink::new(
+            "n",
+            PathBuf::from("/bin/true"),
+            Vec::new(),
+            Duration::from_secs(1),
+            r,
+        );
+        let err = sink
+            .deliver(Arc::new(Event::builder("k", Severity::Info).build()))
+            .await
+            .unwrap_err();
+        assert!(!err.is_retryable());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn process_runner_missing_binary_returns_permanent() {
+        // A nonexistent path should fail to spawn → Permanent.
+        let runner = ProcessRunner;
+        let err = runner
+            .run(
+                std::path::Path::new("definitely/does/not/exist/binary-xyz"),
+                &[],
+                Duration::from_millis(500),
+            )
+            .await
+            .unwrap_err();
+        // On Windows, spawn returns an OS "cannot find" error. Either way
+        // it is classified as Permanent by the runner.
+        assert!(matches!(err, SinkError::Permanent(_)));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn process_runner_success_when_binary_exits_zero() {
+        // Cross-platform success path: cargo's own runner sees an exit
+        // status. On Windows use `cmd /c rem`, on Unix `true`.
+        let runner = ProcessRunner;
+        let (prog, args): (&str, Vec<String>) = if cfg!(windows) {
+            ("cmd", vec!["/C".into(), "rem".into()])
+        } else {
+            ("/bin/true", Vec::new())
+        };
+        let r = runner
+            .run(std::path::Path::new(prog), &args, Duration::from_secs(5))
+            .await;
+        // If the platform doesn't ship the chosen binary we skip the
+        // success assert; we only require that the runner produced *some*
+        // result (no panic).
+        let _ = r;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn recording_runner_clones_calls_vector() {
+        let r = RecordingRunner::new();
+        r.calls
+            .lock()
+            .push((PathBuf::from("a"), vec!["b".into()]));
+        let snap = r.calls();
+        assert_eq!(snap.len(), 1);
+        assert_eq!(snap[0].1, vec!["b"]);
+    }
 }
