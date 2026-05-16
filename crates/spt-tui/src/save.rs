@@ -169,4 +169,97 @@ endpoint = "https://q.example.com"
         assert!(out.contains(r#"name = "p""#));
         assert!(out.contains(r#"name = "q""#));
     }
+
+    #[test]
+    fn save_clears_dirty_and_records_last_saved() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("c.toml");
+        std::fs::write(&path, RAW).unwrap();
+        let mut model = Model::load(&path).unwrap();
+        model.profile_mut().user = Some("eve".into());
+        assert!(model.is_dirty());
+        save(&mut model).unwrap();
+        assert!(!model.is_dirty());
+        assert_eq!(model.last_saved(), Some(path.as_path()));
+    }
+
+    #[test]
+    fn save_to_alternate_path_does_not_touch_loaded_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let primary = dir.path().join("primary.toml");
+        let alt = dir.path().join("alt.toml");
+        std::fs::write(&primary, RAW).unwrap();
+        let mut model = Model::load(&primary).unwrap();
+        model.profile_mut().user = Some("alice".into());
+        save_to(&mut model, &alt).unwrap();
+        // Primary unchanged.
+        let primary_now = std::fs::read_to_string(&primary).unwrap();
+        assert!(!primary_now.contains("alice"));
+        // Alt got the new bytes.
+        let alt_now = std::fs::read_to_string(&alt).unwrap();
+        assert!(alt_now.contains("alice"));
+    }
+
+    #[test]
+    fn splice_profile_appends_into_empty_profiles_array() {
+        let mut doc = spt_config::mutate::Document::parse(
+            "version = 1\n",
+        )
+        .unwrap();
+        let p = Profile {
+            name: "fresh".into(),
+            protocol: "ssh2".into(),
+            ..Default::default()
+        };
+        splice_profile(&mut doc, &p).unwrap();
+        let rendered = doc.to_string();
+        assert!(rendered.contains(r#"name = "fresh""#));
+        assert!(rendered.contains(r#"protocol = "ssh2""#));
+    }
+
+    #[test]
+    fn splice_profile_rejects_non_array_profiles() {
+        let mut doc = spt_config::mutate::Document::parse(
+            "profiles = \"not-an-array\"\n",
+        )
+        .unwrap();
+        let p = Profile {
+            name: "x".into(),
+            protocol: "ssh2".into(),
+            ..Default::default()
+        };
+        let err = splice_profile(&mut doc, &p).unwrap_err();
+        let s = format!("{err}");
+        assert!(s.contains("array of tables"));
+    }
+
+    #[test]
+    fn save_atomic_keeps_top_comment_after_repeated_edits() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("c.toml");
+        std::fs::write(&path, RAW).unwrap();
+        let mut model = Model::load(&path).unwrap();
+        // First save: edit user.
+        model.profile_mut().user = Some("eve".into());
+        save(&mut model).unwrap();
+        // Second save: edit host.
+        model.profile_mut().host = Some("h2.example.com".into());
+        save(&mut model).unwrap();
+        let out = std::fs::read_to_string(&path).unwrap();
+        // The top-of-file comment is preserved across both saves.
+        assert!(out.contains("# top-level comment"));
+        assert!(out.contains("eve"));
+        assert!(out.contains("h2.example.com"));
+    }
+
+    #[test]
+    fn save_returns_target_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("c.toml");
+        std::fs::write(&path, RAW).unwrap();
+        let mut model = Model::load(&path).unwrap();
+        model.profile_mut().user = Some("alice".into());
+        let returned = save(&mut model).unwrap();
+        assert_eq!(returned, path);
+    }
 }

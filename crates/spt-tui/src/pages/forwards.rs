@@ -357,3 +357,156 @@ impl Page for ForwardsPage {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
+
+    fn k(c: KeyCode) -> KeyEvent {
+        KeyEvent::new(c, KeyModifiers::NONE)
+    }
+
+    fn model() -> Model {
+        Model::from_str(
+            r#"version = 1
+[[profiles]]
+name = "p"
+protocol = "ssh2"
+"#,
+        )
+    }
+
+    #[test]
+    fn add_pushes_new_forward_and_opens_editor() {
+        let mut p = ForwardsPage::new();
+        let mut m = model();
+        assert_eq!(m.profile().forwards.len(), 0);
+        p.on_key(k(KeyCode::Char('a')), &mut m);
+        assert_eq!(m.profile().forwards.len(), 1);
+        let f = &m.profile().forwards[0];
+        assert_eq!(f.name, "forward-1");
+        assert_eq!(f.kind, "local");
+        assert_eq!(f.transport, "tcp");
+        assert!(p.editor.is_some());
+    }
+
+    #[test]
+    fn delete_removes_focused_forward() {
+        let mut p = ForwardsPage::new();
+        let mut m = model();
+        p.on_key(k(KeyCode::Char('a')), &mut m);
+        // Close the editor so 'd' is interpreted as the list-mode delete.
+        p.on_key(k(KeyCode::Esc), &mut m);
+        assert!(p.editor.is_none());
+        p.on_key(k(KeyCode::Char('d')), &mut m);
+        assert_eq!(m.profile().forwards.len(), 0);
+    }
+
+    #[test]
+    fn esc_closes_editor() {
+        let mut p = ForwardsPage::new();
+        let mut m = model();
+        p.on_key(k(KeyCode::Char('a')), &mut m);
+        assert!(p.editor.is_some());
+        p.on_key(k(KeyCode::Esc), &mut m);
+        assert!(p.editor.is_none());
+    }
+
+    #[test]
+    fn renders_with_no_forwards() {
+        let mut p = ForwardsPage::new();
+        let m = model();
+        let area = Rect::new(0, 0, 100, 30);
+        let mut buf = Buffer::empty(area);
+        p.render(area, &mut buf, &m);
+        let mut s = String::new();
+        for y in 0..area.height {
+            for x in 0..area.width {
+                s.push_str(buf[(x, y)].symbol());
+            }
+        }
+        // "no forwards" copy is shown.
+        assert!(s.contains("press"));
+    }
+
+    #[test]
+    fn renders_with_one_forward() {
+        let mut p = ForwardsPage::new();
+        let mut m = model();
+        p.on_key(k(KeyCode::Char('a')), &mut m);
+        let area = Rect::new(0, 0, 120, 30);
+        let mut buf = Buffer::empty(area);
+        p.render(area, &mut buf, &m);
+        let mut s = String::new();
+        for y in 0..area.height {
+            for x in 0..area.width {
+                s.push_str(buf[(x, y)].symbol());
+            }
+        }
+        assert!(s.contains("local"));
+    }
+
+    #[test]
+    fn down_does_not_go_past_end() {
+        let mut p = ForwardsPage::new();
+        let mut m = model();
+        p.on_key(k(KeyCode::Char('a')), &mut m);
+        p.on_key(k(KeyCode::Esc), &mut m); // close editor
+        // Only one forward; Down should stay at 0.
+        p.on_key(k(KeyCode::Down), &mut m);
+        assert_eq!(p.selected, 0);
+    }
+
+    #[test]
+    fn up_at_zero_is_noop() {
+        let mut p = ForwardsPage::new();
+        let mut m = model();
+        p.on_key(k(KeyCode::Up), &mut m);
+        assert_eq!(p.selected, 0);
+    }
+
+    #[test]
+    fn editor_field_count() {
+        let fields = forward_fields(0);
+        // 11 fields: name, type, transport, bind, target, bind_mode,
+        //   bind_interface, expose, idle_timeout, max_connections,
+        //   max_packets_per_second.
+        assert_eq!(fields.len(), 11);
+    }
+
+    #[test]
+    fn enter_opens_editor() {
+        let mut p = ForwardsPage::new();
+        let mut m = model();
+        p.on_key(k(KeyCode::Char('a')), &mut m);
+        p.on_key(k(KeyCode::Esc), &mut m);
+        assert!(p.editor.is_none());
+        p.on_key(k(KeyCode::Enter), &mut m);
+        assert!(p.editor.is_some());
+    }
+
+    #[test]
+    fn editor_field_edit_updates_target() {
+        let mut p = ForwardsPage::new();
+        let mut m = model();
+        p.on_key(k(KeyCode::Char('a')), &mut m); // add + open editor
+        // Move focus inside editor to "target" (index 4).
+        for _ in 0..4 {
+            p.on_key(k(KeyCode::Down), &mut m);
+        }
+        p.on_key(k(KeyCode::Enter), &mut m); // begin edit
+        // Erase existing value via End + N backspaces.
+        p.on_key(k(KeyCode::End), &mut m);
+        for _ in 0..20 {
+            p.on_key(k(KeyCode::Backspace), &mut m);
+        }
+        for c in "db:5432".chars() {
+            p.on_key(k(KeyCode::Char(c)), &mut m);
+        }
+        p.on_key(k(KeyCode::Enter), &mut m); // commit
+        assert_eq!(m.profile().forwards[0].target.as_deref(), Some("db:5432"));
+    }
+}

@@ -162,3 +162,83 @@ impl Page for FailoverPage {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
+
+    fn k(c: KeyCode) -> KeyEvent {
+        KeyEvent::new(c, KeyModifiers::NONE)
+    }
+
+    fn model() -> Model {
+        Model::from_str(
+            r#"version = 1
+[[profiles]]
+name = "p"
+protocol = "ssh2"
+"#,
+        )
+    }
+
+    #[test]
+    fn builds_with_reconnect_and_failover_fields() {
+        let p = FailoverPage::new();
+        let labels: Vec<&str> = p.list.fields.iter().map(|f| f.def.label).collect();
+        assert!(labels.contains(&"reconnect.initial_delay"));
+        assert!(labels.contains(&"reconnect.max_attempts"));
+        assert!(labels.contains(&"instability.enabled"));
+        assert!(labels.contains(&"failover.mode"));
+    }
+
+    #[test]
+    fn renders_without_panic() {
+        let mut p = FailoverPage::new();
+        let m = model();
+        let area = Rect::new(0, 0, 100, 60);
+        let mut buf = Buffer::empty(area);
+        p.render(area, &mut buf, &m);
+    }
+
+    #[test]
+    fn initial_delay_round_trip() {
+        let mut p = FailoverPage::new();
+        let mut m = model();
+        p.on_key(k(KeyCode::Enter), &mut m);
+        for c in "2s".chars() {
+            p.on_key(k(KeyCode::Char(c)), &mut m);
+        }
+        p.on_key(k(KeyCode::Enter), &mut m);
+        assert_eq!(
+            m.profile()
+                .reconnect
+                .as_ref()
+                .and_then(|r| r.initial_delay.clone())
+                .as_deref(),
+            Some("2s")
+        );
+    }
+
+    #[test]
+    fn instability_toggle_via_enter_then_enter() {
+        let mut p = FailoverPage::new();
+        let mut m = model();
+        // instability.enabled is index 6.
+        for _ in 0..6 {
+            p.on_key(k(KeyCode::Down), &mut m);
+        }
+        p.on_key(k(KeyCode::Enter), &mut m); // begin edit on a Bool (buf=false)
+        // Second Enter: Toggle flips false→true, then commits.
+        p.on_key(k(KeyCode::Enter), &mut m);
+        assert_eq!(
+            m.profile()
+                .instability
+                .as_ref()
+                .and_then(|i| i.enabled),
+            Some(true)
+        );
+    }
+}

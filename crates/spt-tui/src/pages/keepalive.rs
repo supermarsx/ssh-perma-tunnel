@@ -55,3 +55,77 @@ impl Page for KeepalivePage {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
+
+    fn k(c: KeyCode) -> KeyEvent {
+        KeyEvent::new(c, KeyModifiers::NONE)
+    }
+
+    fn model() -> Model {
+        Model::from_str(
+            r#"version = 1
+[[profiles]]
+name = "p"
+protocol = "ssh2"
+"#,
+        )
+    }
+
+    #[test]
+    fn three_fields_built() {
+        let p = KeepalivePage::new();
+        assert_eq!(p.list.fields.len(), 3);
+    }
+
+    #[test]
+    fn renders() {
+        let mut p = KeepalivePage::new();
+        let m = model();
+        let area = Rect::new(0, 0, 80, 20);
+        let mut buf = Buffer::empty(area);
+        p.render(area, &mut buf, &m);
+    }
+
+    #[test]
+    fn interval_round_trip() {
+        let mut p = KeepalivePage::new();
+        let mut m = model();
+        p.on_key(k(KeyCode::Enter), &mut m);
+        for c in "30s".chars() {
+            p.on_key(k(KeyCode::Char(c)), &mut m);
+        }
+        p.on_key(k(KeyCode::Enter), &mut m);
+        assert_eq!(
+            m.profile()
+                .keepalive
+                .as_ref()
+                .and_then(|kk| kk.interval.clone())
+                .as_deref(),
+            Some("30s")
+        );
+    }
+
+    #[test]
+    fn max_missed_numeric() {
+        let mut p = KeepalivePage::new();
+        let mut m = model();
+        for _ in 0..2 {
+            p.on_key(k(KeyCode::Down), &mut m);
+        }
+        p.on_key(k(KeyCode::Enter), &mut m);
+        for c in "5".chars() {
+            p.on_key(k(KeyCode::Char(c)), &mut m);
+        }
+        p.on_key(k(KeyCode::Enter), &mut m);
+        assert_eq!(
+            m.profile().keepalive.as_ref().and_then(|kk| kk.max_missed),
+            Some(5)
+        );
+    }
+}

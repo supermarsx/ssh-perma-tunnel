@@ -1,0 +1,34 @@
+---
+source: crates/spt-tui/tests/pages_snapshots.rs
+expression: snap
+---
+┌Canonical TOML (redacted) — Ctrl-S to save────────────────────────────────────────────────────────┐
+│version = 1                                                                                       │
+│                                                                                                  │
+│[[dns.records]]                                                                                   │
+│name = "service.local"                                                                            │
+│type = "A"                                                                                        │
+│value = "127.0.0.1"                                                                               │
+│                                                                                                  │
+│[[profiles]]                                                                                      │
+│name = "demo"                                                                                     │
+│protocol = "ssh2"                                                                                 │
+│host = "demo.example.com"                                                                         │
+│user = "alice"                                                                                    │
+│                                                                                                  │
+│[profiles.crypto]                                                                                 │
+│policy = "modern"                                                                                 │
+│                                                                                                  │
+│[profiles.auth]                                                                                   │
+│method = "public_key"                                                                             │
+│identity_file = "/home/alice/.ssh/id_ed25519"                                                     │
+│                                                                                                  │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+┌Validation: 0 error(s), 0 warning(s)──────────────────────────────────────────────────────────────┐
+│no issues                                                                                         │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘

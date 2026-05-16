@@ -121,6 +121,57 @@ impl AppHarness {
     pub fn current_page(&self) -> &'static str {
         self.app.current.title()
     }
+
+    /// Assert that the most recently rendered buffer contains `needle`
+    /// somewhere in its flattened text. Panics with a helpful message if not.
+    ///
+    /// ```
+    /// use spt_tui::testing::{AppHarness, fixtures};
+    /// let mut h = AppHarness::with_profile(fixtures::test_profile());
+    /// let _ = h.render();
+    /// h.assert_buffer_contains("Basics");
+    /// ```
+    pub fn assert_buffer_contains(&self, needle: &str) {
+        let txt = self.buffer_text();
+        assert!(
+            txt.contains(needle),
+            "buffer does not contain `{needle}`. \nbuffer:\n{txt}"
+        );
+    }
+
+    /// Capture the current buffer as a multi-line snapshot string suitable
+    /// for use with `insta::assert_snapshot!`. The output is a deterministic,
+    /// trimmed plain-text rendering of the most recent render pass.
+    ///
+    /// ```
+    /// use spt_tui::testing::{AppHarness, fixtures};
+    /// let mut h = AppHarness::with_profile(fixtures::test_profile());
+    /// let _ = h.render();
+    /// let snap = h.snapshot("basics");
+    /// assert!(!snap.is_empty());
+    /// ```
+    pub fn snapshot(&mut self, _name: &str) -> String {
+        let _ = self.render();
+        let txt = self.buffer_text();
+        // Trim trailing spaces on each line for stable snapshots.
+        txt.lines()
+            .map(str::trim_end)
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// Apply an arbitrary mutation to the underlying [`Model`]. Convenience
+    /// hook for tests that need to seed state without driving the keyboard.
+    ///
+    /// ```
+    /// use spt_tui::testing::{AppHarness, fixtures};
+    /// let mut h = AppHarness::with_profile(fixtures::test_profile());
+    /// h.mutate_model(|m| { m.profile_mut().user = Some("bob".into()); });
+    /// assert!(h.app.model.is_dirty());
+    /// ```
+    pub fn mutate_model<F: FnOnce(&mut crate::model::Model)>(&mut self, f: F) {
+        f(&mut self.app.model);
+    }
 }
 
 /// Pre-baked profile fixtures.
@@ -193,5 +244,73 @@ mod tests {
         let b1 = h1.render();
         let b2 = h2.render();
         assert_eq!(b1, b2);
+    }
+
+    #[test]
+    fn assert_buffer_contains_finds_title() {
+        let mut h = AppHarness::with_profile(fixtures::test_profile());
+        let _ = h.render();
+        h.assert_buffer_contains("Basics");
+        h.assert_buffer_contains("Connection");
+    }
+
+    #[test]
+    #[should_panic(expected = "does not contain")]
+    fn assert_buffer_contains_panics_when_missing() {
+        let mut h = AppHarness::with_profile(fixtures::test_profile());
+        let _ = h.render();
+        h.assert_buffer_contains("ThisStringIsNotRendered_zzzzzz");
+    }
+
+    #[test]
+    fn snapshot_returns_trimmed_text() {
+        let mut h = AppHarness::with_profile(fixtures::test_profile());
+        let snap = h.snapshot("basics");
+        assert!(snap.contains("Basics"));
+        // No trailing spaces per line.
+        for line in snap.lines() {
+            assert_eq!(line, line.trim_end());
+        }
+    }
+
+    #[test]
+    fn mutate_model_changes_state() {
+        let mut h = AppHarness::with_profile(fixtures::test_profile());
+        assert!(!h.app.model.is_dirty());
+        h.mutate_model(|m| {
+            m.profile_mut().user = Some("bob".into());
+        });
+        assert!(h.app.model.is_dirty());
+        assert_eq!(h.app.model.profile().user.as_deref(), Some("bob"));
+    }
+
+    #[test]
+    fn fixtures_test_profile_is_complete_enough_for_wizard() {
+        let p = fixtures::test_profile();
+        assert_eq!(p.name, "test");
+        assert_eq!(p.protocol, "ssh2");
+        assert_eq!(p.host.as_deref(), Some("test.example.com"));
+        assert_eq!(p.port, Some(22));
+        assert_eq!(p.user.as_deref(), Some("alice"));
+    }
+
+    #[test]
+    fn harness_with_custom_size() {
+        let mut h =
+            AppHarness::with_profile_sized(fixtures::test_profile(), 80, 24);
+        let buf = h.render();
+        assert_eq!(buf.area.width, 80);
+        assert_eq!(buf.area.height, 24);
+    }
+
+    #[test]
+    fn serialize_profile_round_trips_minimal_fields() {
+        let p = fixtures::test_profile();
+        let toml = serialize_profile(&p);
+        assert!(toml.contains("name = \"test\""));
+        assert!(toml.contains("protocol = \"ssh2\""));
+        assert!(toml.contains("host = \"test.example.com\""));
+        assert!(toml.contains("port = 22"));
+        assert!(toml.contains("user = \"alice\""));
     }
 }

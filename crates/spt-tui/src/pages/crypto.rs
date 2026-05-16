@@ -171,3 +171,84 @@ impl Page for CryptoPage {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
+
+    fn k(c: KeyCode) -> KeyEvent {
+        KeyEvent::new(c, KeyModifiers::NONE)
+    }
+
+    fn model() -> Model {
+        Model::from_str(
+            r#"version = 1
+[[profiles]]
+name = "p"
+protocol = "ssh2"
+"#,
+        )
+    }
+
+    #[test]
+    fn builds_with_all_lists() {
+        let p = CryptoPage::new();
+        let labels: Vec<&str> = p.list.fields.iter().map(|f| f.def.label).collect();
+        assert!(labels.contains(&"crypto.ciphers"));
+        assert!(labels.contains(&"crypto.kex_algorithms"));
+        assert!(labels.contains(&"crypto.macs"));
+        assert!(labels.contains(&"crypto.host_key_algorithms"));
+        assert!(labels.contains(&"crypto.compression"));
+    }
+
+    #[test]
+    fn renders_without_panic() {
+        let mut p = CryptoPage::new();
+        let m = model();
+        let area = Rect::new(0, 0, 100, 50);
+        let mut buf = Buffer::empty(area);
+        p.render(area, &mut buf, &m);
+    }
+
+    #[test]
+    fn policy_choice_selects() {
+        let mut p = CryptoPage::new();
+        let mut m = model();
+        // Index 0 is crypto.policy (Choice).
+        p.on_key(k(KeyCode::Enter), &mut m);
+        p.on_key(k(KeyCode::Down), &mut m); // index 1 = "interop"
+        p.on_key(k(KeyCode::Enter), &mut m); // commit
+        assert_eq!(
+            m.profile()
+                .crypto
+                .as_ref()
+                .and_then(|c| c.policy.clone())
+                .as_deref(),
+            Some("interop")
+        );
+    }
+
+    #[test]
+    fn multiselect_toggles_then_commits_on_s() {
+        let mut p = CryptoPage::new();
+        let mut m = model();
+        // Index 3 is crypto.ciphers (Multi).
+        for _ in 0..3 {
+            p.on_key(k(KeyCode::Down), &mut m);
+        }
+        p.on_key(k(KeyCode::Enter), &mut m); // begin edit (Multi)
+        // Toggle the first option (Space) then commit via 's'.
+        p.on_key(k(KeyCode::Char(' ')), &mut m);
+        p.on_key(k(KeyCode::Char('s')), &mut m);
+        let ciphers = m
+            .profile()
+            .crypto
+            .as_ref()
+            .and_then(|c| c.ciphers.clone())
+            .unwrap_or_default();
+        assert_eq!(ciphers, vec!["chacha20-poly1305@openssh.com"]);
+    }
+}

@@ -224,4 +224,100 @@ host = "h.example.com"
         let diag = m.validate();
         assert!(diag.is_ok(), "expected clean config, got {:?}", diag);
     }
+
+    #[test]
+    fn select_profile_by_name_misses() {
+        let mut m = Model::from_str(RAW);
+        assert!(m.select_profile_by_name("not-there").is_none());
+        assert_eq!(m.selected_index(), 0);
+    }
+
+    #[test]
+    fn select_profile_by_name_hits() {
+        let raw = r#"version = 1
+[[profiles]]
+name = "p"
+protocol = "ssh2"
+
+[[profiles]]
+name = "q"
+protocol = "ssh3"
+endpoint = "https://q.example.com"
+"#;
+        let mut m = Model::from_str(raw);
+        assert_eq!(m.select_profile_by_name("q"), Some(1));
+        assert_eq!(m.profile().name, "q");
+    }
+
+    #[test]
+    fn select_profile_index_out_of_range_is_noop() {
+        let mut m = Model::from_str(RAW);
+        m.select_profile_index(99);
+        assert_eq!(m.selected_index(), 0);
+    }
+
+    #[test]
+    fn original_toml_matches_input() {
+        let m = Model::from_str(RAW);
+        assert_eq!(m.original_toml().trim(), RAW.trim());
+    }
+
+    #[test]
+    fn render_redacted_returns_canonical_toml() {
+        let m = Model::from_str(RAW);
+        let out = m.render_redacted();
+        assert!(out.contains("name = \"p\""));
+        assert!(out.contains("protocol = \"ssh2\""));
+    }
+
+    #[test]
+    fn path_reports_memory_for_inline_models() {
+        let m = Model::from_str(RAW);
+        assert_eq!(m.path().to_string_lossy(), "<memory>");
+        assert!(m.last_saved().is_none());
+    }
+
+    #[test]
+    fn load_reports_io_error_for_missing_path() {
+        let p = std::path::Path::new("F:/Projects/ssh-perma-tunnel/__not_real__.toml");
+        let err = Model::load(p).unwrap_err();
+        // Just confirm an Err comes back; surface variant is InvalidConfig.
+        let s = format!("{err}");
+        assert!(s.contains("__not_real__") || !s.is_empty());
+    }
+
+    #[test]
+    fn load_round_trips_through_tempfile() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("c.toml");
+        std::fs::write(&path, RAW).unwrap();
+        let m = Model::load(&path).unwrap();
+        assert_eq!(m.profile().name, "p");
+        assert_eq!(m.path(), path);
+    }
+
+    #[test]
+    fn config_accessor_exposes_full_config() {
+        let m = Model::from_str(RAW);
+        let cfg = m.config();
+        assert_eq!(cfg.profiles.len(), 1);
+        assert_eq!(cfg.version, 1);
+    }
+
+    #[test]
+    fn create_profile_marks_dirty_and_picks_default() {
+        let mut m = Model::from_str(RAW);
+        assert!(!m.is_dirty());
+        m.create_profile("brand-new", "ssh2");
+        assert!(m.is_dirty());
+        assert_eq!(m.profile().name, "brand-new");
+        assert_eq!(m.profile().protocol, "ssh2");
+    }
+
+    #[test]
+    fn profile_mut_marks_dirty_even_without_visible_change() {
+        let mut m = Model::from_str(RAW);
+        let _p = m.profile_mut();
+        assert!(m.is_dirty());
+    }
 }

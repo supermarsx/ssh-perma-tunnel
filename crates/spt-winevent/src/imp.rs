@@ -15,9 +15,40 @@ use windows::Win32::System::Registry::{
     KEY_WRITE, REG_DWORD, REG_OPTION_NON_VOLATILE, REG_SZ,
 };
 
-use crate::Level;
+use crate::{EventLogBackend, Level};
 
 const SUBKEY_PREFIX: &str = r"SYSTEM\CurrentControlSet\Services\EventLog";
+
+/// Real Win32 backend that calls `RegCreateKeyExW`, `RegisterEventSourceW`,
+/// `ReportEventW`, etc.
+///
+/// Default backend on Windows targets. Holds no state.
+pub(crate) struct WindowsEventLogBackend;
+
+impl EventLogBackend for WindowsEventLogBackend {
+    fn register_source(
+        &self,
+        name: &str,
+        channel: &str,
+        message_dll: Option<&Path>,
+    ) -> Result<()> {
+        register_source(name, channel, message_dll)
+    }
+
+    fn unregister_source(&self, name: &str, channel: &str) -> Result<()> {
+        unregister_source(name, channel)
+    }
+
+    fn report_event(
+        &self,
+        name: &str,
+        level: Level,
+        event_id: u32,
+        message: &str,
+    ) -> Result<()> {
+        report_event(name, level, event_id, message)
+    }
+}
 
 fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()

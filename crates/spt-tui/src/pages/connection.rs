@@ -161,3 +161,98 @@ impl Page for ConnectionPage {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
+
+    fn k(c: KeyCode) -> KeyEvent {
+        KeyEvent::new(c, KeyModifiers::NONE)
+    }
+
+    fn model() -> Model {
+        Model::from_str(
+            r#"version = 1
+[[profiles]]
+name = "p"
+protocol = "ssh2"
+"#,
+        )
+    }
+
+    #[test]
+    fn builds_with_all_fields() {
+        let p = ConnectionPage::new();
+        let labels: Vec<&str> = p.list.fields.iter().map(|f| f.def.label).collect();
+        assert!(labels.contains(&"host"));
+        assert!(labels.contains(&"port"));
+        assert!(labels.contains(&"endpoint"));
+        assert!(labels.contains(&"user"));
+    }
+
+    #[test]
+    fn renders_into_buffer() {
+        let mut p = ConnectionPage::new();
+        let m = model();
+        let area = Rect::new(0, 0, 100, 40);
+        let mut buf = Buffer::empty(area);
+        p.render(area, &mut buf, &m);
+        let mut s = String::new();
+        for y in 0..area.height {
+            for x in 0..area.width {
+                s.push_str(buf[(x, y)].symbol());
+            }
+        }
+        assert!(s.contains("host"));
+        assert!(s.contains("port"));
+    }
+
+    #[test]
+    fn port_numeric_validation_rejects_overflow() {
+        let mut p = ConnectionPage::new();
+        let mut m = model();
+        // Move focus to port (index 1).
+        p.on_key(k(KeyCode::Down), &mut m);
+        p.on_key(k(KeyCode::Enter), &mut m); // edit
+        for c in "999999".chars() {
+            p.on_key(k(KeyCode::Char(c)), &mut m);
+        }
+        p.on_key(k(KeyCode::Enter), &mut m); // commit
+        assert!(p.list.fields[1].last_error().is_some());
+    }
+
+    #[test]
+    fn host_text_round_trip() {
+        let mut p = ConnectionPage::new();
+        let mut m = model();
+        p.on_key(k(KeyCode::Enter), &mut m); // host edit
+        for c in "h.example.com".chars() {
+            p.on_key(k(KeyCode::Char(c)), &mut m);
+        }
+        p.on_key(k(KeyCode::Enter), &mut m); // commit
+        assert_eq!(m.profile().host.as_deref(), Some("h.example.com"));
+    }
+
+    #[test]
+    fn esc_cancels_edit() {
+        let mut p = ConnectionPage::new();
+        let mut m = model();
+        p.on_key(k(KeyCode::Enter), &mut m);
+        assert!(p.list.editing);
+        p.on_key(k(KeyCode::Char('x')), &mut m);
+        p.on_key(k(KeyCode::Esc), &mut m);
+        assert!(!p.list.editing);
+        assert!(m.profile().host.is_none());
+    }
+
+    #[test]
+    fn endpoints_and_hops_count_fields_present() {
+        let p = ConnectionPage::new();
+        let labels: Vec<&str> = p.list.fields.iter().map(|f| f.def.label).collect();
+        assert!(labels.contains(&"endpoints (count)"));
+        assert!(labels.contains(&"hops (count)"));
+    }
+}

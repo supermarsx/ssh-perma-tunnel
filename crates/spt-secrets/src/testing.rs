@@ -424,10 +424,54 @@ mod keymock {
     use std::sync::{Mutex, OnceLock};
 
     type Store = Mutex<HashMap<(String, String), Vec<u8>>>;
+    type FaultMap = Mutex<HashMap<(String, String), FaultKind>>;
+
+    /// Discriminator used by the mock to construct fresh `keyring::Error`
+    /// values per call. We cannot store `keyring::Error` directly because
+    /// it is `#[non_exhaustive]` and non-`Clone`.
+    #[derive(Debug, Clone, Copy)]
+    pub(crate) enum FaultKind {
+        PlatformFailure,
+        NoStorageAccess,
+        NoEntry,
+        BadEncoding,
+        Invalid,
+    }
+
+    impl FaultKind {
+        pub(crate) fn to_error(self) -> keyring::Error {
+            match self {
+                Self::PlatformFailure => keyring::Error::PlatformFailure(Box::new(
+                    std::io::Error::other("mock platform failure"),
+                )),
+                Self::NoStorageAccess => keyring::Error::NoStorageAccess(Box::new(
+                    std::io::Error::other("mock no storage access"),
+                )),
+                Self::NoEntry => keyring::Error::NoEntry,
+                Self::BadEncoding => keyring::Error::BadEncoding(Vec::new()),
+                Self::Invalid => {
+                    keyring::Error::Invalid("attr".to_owned(), "mock invalid".to_owned())
+                }
+            }
+        }
+    }
 
     pub(super) fn shared_store() -> &'static Store {
         static S: OnceLock<Store> = OnceLock::new();
         S.get_or_init(|| Mutex::new(HashMap::new()))
+    }
+
+    pub(super) fn fault_map() -> &'static FaultMap {
+        static F: OnceLock<FaultMap> = OnceLock::new();
+        F.get_or_init(|| Mutex::new(HashMap::new()))
+    }
+
+    fn current_fault(service: &str, user: &str) -> Option<FaultKind> {
+        fault_map()
+            .lock()
+            .unwrap()
+            .get(&(service.to_owned(), user.to_owned()))
+            .copied()
     }
 
     #[derive(Debug)]
@@ -441,6 +485,9 @@ mod keymock {
             self.set_secret(password.as_bytes())
         }
         fn set_secret(&self, secret: &[u8]) -> keyring::Result<()> {
+            if let Some(kind) = current_fault(&self.service, &self.user) {
+                return Err(kind.to_error());
+            }
             shared_store()
                 .lock()
                 .unwrap()
@@ -452,6 +499,9 @@ mod keymock {
             String::from_utf8(bytes).map_err(|_| keyring::Error::BadEncoding(Vec::new()))
         }
         fn get_secret(&self) -> keyring::Result<Vec<u8>> {
+            if let Some(kind) = current_fault(&self.service, &self.user) {
+                return Err(kind.to_error());
+            }
             shared_store()
                 .lock()
                 .unwrap()
@@ -460,6 +510,9 @@ mod keymock {
                 .ok_or(keyring::Error::NoEntry)
         }
         fn delete_credential(&self) -> keyring::Result<()> {
+            if let Some(kind) = current_fault(&self.service, &self.user) {
+                return Err(kind.to_error());
+            }
             let mut g = shared_store().lock().unwrap();
             if g.remove(&(self.service.clone(), self.user.clone()))
                 .is_some()
@@ -505,8 +558,34 @@ mod keymock {
         });
     }
 
+    /// Force the shared-mock builder to be the active keyring default,
+    /// regardless of any other module's prior install. Tests that need
+    /// fault injection must call this to be sure their `set_fault` calls
+    /// are observed.
+    pub(crate) fn install_force() {
+        use keyring::credential::CredentialBuilder;
+        keyring::set_default_credential_builder(
+            Box::new(SharedMockBuilder) as Box<CredentialBuilder>,
+        );
+    }
+
     pub(super) fn clear_store() {
         shared_store().lock().unwrap().clear();
+        fault_map().lock().unwrap().clear();
+    }
+
+    pub(crate) fn set_fault_inner(service: &str, user: &str, kind: FaultKind) {
+        fault_map()
+            .lock()
+            .unwrap()
+            .insert((service.to_owned(), user.to_owned()), kind);
+    }
+
+    pub(crate) fn clear_fault_inner(service: &str, user: &str) {
+        fault_map()
+            .lock()
+            .unwrap()
+            .remove(&(service.to_owned(), user.to_owned()));
     }
 }
 
@@ -539,6 +618,84 @@ pub struct KeychainTestGuard {
 }
 
 impl Drop for KeychainTestGuard {
+    fn drop(&mut self) {
+        keymock::clear_store();
+    }
+}
+
+/// Fault kinds that can be programmed into a [`MockKeychainGuard`]-managed
+/// shared store. Each kind reconstructs the corresponding `keyring::Error`
+/// variant on every `get`/`set`/`delete_credential` call against the
+/// configured `(service, user)` slot.
+#[derive(Debug, Clone, Copy)]
+pub enum MockFaultKind {
+    /// Yields `keyring::Error::PlatformFailure`.
+    PlatformFailure,
+    /// Yields `keyring::Error::NoStorageAccess`.
+    NoStorageAccess,
+    /// Yields `keyring::Error::NoEntry`.
+    NoEntry,
+    /// Yields `keyring::Error::BadEncoding`.
+    BadEncoding,
+    /// Yields `keyring::Error::Invalid`.
+    Invalid,
+}
+
+impl From<MockFaultKind> for keymock::FaultKind {
+    fn from(value: MockFaultKind) -> Self {
+        match value {
+            MockFaultKind::PlatformFailure => Self::PlatformFailure,
+            MockFaultKind::NoStorageAccess => Self::NoStorageAccess,
+            MockFaultKind::NoEntry => Self::NoEntry,
+            MockFaultKind::BadEncoding => Self::BadEncoding,
+            MockFaultKind::Invalid => Self::Invalid,
+        }
+    }
+}
+
+/// Install the shared-mock keyring builder unconditionally and return an
+/// RAII guard that clears the store + fault map on drop.
+///
+/// Unlike [`seeded_keychain`], this **always** wins the global builder
+/// race — useful in integration tests where fault injection must be
+/// observed regardless of any other module's prior install.
+///
+/// The guard exposes [`MockKeychainGuard::set_fault`] /
+/// [`MockKeychainGuard::clear_fault`] to program per-entry error returns.
+#[must_use]
+pub fn install_mock_keyring() -> MockKeychainGuard {
+    keymock::install_force();
+    keymock::clear_store();
+    MockKeychainGuard { _priv: () }
+}
+
+/// Stronger sibling of [`KeychainTestGuard`] returned by
+/// [`install_mock_keyring`]. Programs per-entry fault injection and clears
+/// the shared store on drop.
+pub struct MockKeychainGuard {
+    _priv: (),
+}
+
+impl MockKeychainGuard {
+    /// Register a fault: subsequent `get`/`set`/`delete_credential` calls
+    /// against the `(service, user)` slot return the matching
+    /// `keyring::Error` variant.
+    ///
+    /// Method-style on the guard (rather than a free fn) to make ownership
+    /// of the active mock explicit at call sites.
+    #[allow(clippy::unused_self)]
+    pub fn set_fault(&self, service: &str, user: &str, kind: MockFaultKind) {
+        keymock::set_fault_inner(service, user, kind.into());
+    }
+
+    /// Remove a previously-registered fault.
+    #[allow(clippy::unused_self)]
+    pub fn clear_fault(&self, service: &str, user: &str) {
+        keymock::clear_fault_inner(service, user);
+    }
+}
+
+impl Drop for MockKeychainGuard {
     fn drop(&mut self) {
         keymock::clear_store();
     }
@@ -626,5 +783,256 @@ mod tests {
         e.set_secret(b"hello").expect("set");
         let got = e.get_secret().expect("get");
         assert_eq!(got, b"hello");
+    }
+
+    #[test]
+    fn memory_backend_default_is_empty() {
+        let b: MemoryBackend = MemoryBackend::default();
+        assert!(b.list().unwrap().is_empty());
+        assert_eq!(b.kind(), BackendKind::Vault);
+    }
+
+    #[test]
+    fn memory_backend_with_kind_overrides() {
+        let b = MemoryBackend::new().with_kind(BackendKind::Keychain);
+        assert_eq!(b.kind(), BackendKind::Keychain);
+    }
+
+    #[test]
+    fn memory_backend_doctor_is_ok() {
+        let b = MemoryBackend::new();
+        let d = b.doctor();
+        assert!(matches!(d.status, crate::BackendStatus::Ok));
+        assert_eq!(d.kind, BackendKind::Vault);
+    }
+
+    #[test]
+    fn always_fail_backend_set_list_remove_propagate() {
+        let r = SecretRef::new("ns", "n").unwrap();
+        let b = AlwaysFailBackend::secret_unavailable("absent");
+        assert!(matches!(
+            b.set(&r, b"x"),
+            Err(Error::SecretUnavailable { .. })
+        ));
+        assert!(matches!(b.list(), Err(Error::SecretUnavailable { .. })));
+        assert!(matches!(b.remove(&r), Err(Error::SecretUnavailable { .. })));
+        let d = b.doctor();
+        assert!(matches!(d.status, crate::BackendStatus::Unavailable));
+    }
+
+    #[test]
+    fn always_fail_backend_permission_denied_variant() {
+        let r = SecretRef::new("ns", "n").unwrap();
+        let b = AlwaysFailBackend::permission_denied("EACCES");
+        assert_eq!(b.kind(), BackendKind::File);
+        assert!(matches!(b.get(&r), Err(Error::PermissionDenied(_))));
+    }
+
+    #[test]
+    fn always_fail_backend_unsupported_variant() {
+        let r = SecretRef::new("ns", "n").unwrap();
+        let b = AlwaysFailBackend::unsupported("haiku");
+        assert_eq!(b.kind(), BackendKind::Keychain);
+        assert!(matches!(b.get(&r), Err(Error::UnsupportedPlatform(_))));
+    }
+
+    #[test]
+    fn always_fail_backend_with_kind_overrides() {
+        let b = AlwaysFailBackend::secret_unavailable("x").with_kind(BackendKind::Env);
+        assert_eq!(b.kind(), BackendKind::Env);
+    }
+
+    #[test]
+    fn recording_resolver_pass_through_methods() {
+        let inner: Arc<dyn SecretBackend> = Arc::new(MemoryBackend::new());
+        let rec = RecordingResolver::new(inner);
+        let r = SecretRef::new("ns", "n").unwrap();
+        rec.set(&r, b"v").unwrap();
+        assert_eq!(rec.kind(), BackendKind::Vault);
+        let list = rec.list().unwrap();
+        assert!(list.contains(&r));
+        assert!(rec.remove(&r).unwrap());
+        let d = rec.doctor();
+        assert!(matches!(d.status, crate::BackendStatus::Ok));
+        // Only `get` is recorded; the helpers above never touched `get`.
+        assert!(rec.calls().is_empty());
+    }
+
+    #[test]
+    fn expose_bytes_copies_inner() {
+        let b = secret_bytes(b"hi".to_vec());
+        let copy = expose_bytes(&b);
+        assert_eq!(copy.as_slice(), b"hi");
+    }
+
+    // -----------------------------------------------------------------
+    // MockKeychainGuard / fault injection
+    //
+    // These tests use `install_mock_keyring()` which unconditionally
+    // overwrites the global keyring builder — so even if another module's
+    // install ran first, the `keymock` store/fault map are guaranteed to
+    // be the ones consulted on subsequent `Entry` calls within this test.
+    // Every test uses a unique service prefix to avoid shared-store
+    // collisions with parallel tests.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn install_mock_keyring_round_trip() {
+        use keyring::Entry;
+        let _g = install_mock_keyring();
+        let e = Entry::new("spt-tmock-rt", "u").expect("entry");
+        e.set_secret(b"data").expect("set");
+        assert_eq!(e.get_secret().expect("get"), b"data");
+    }
+
+    #[test]
+    fn install_mock_keyring_drop_clears_store() {
+        use keyring::Entry;
+        {
+            let _g = install_mock_keyring();
+            let e = Entry::new("spt-tmock-drop", "u").expect("entry");
+            e.set_secret(b"x").unwrap();
+            assert!(e.get_secret().is_ok());
+        }
+        // After drop, the store is wiped; a new guard sees no prior
+        // entries even with the same service/user.
+        let _g2 = install_mock_keyring();
+        let e2 = Entry::new("spt-tmock-drop", "u").expect("entry");
+        assert!(matches!(e2.get_secret(), Err(keyring::Error::NoEntry)));
+    }
+
+    #[test]
+    fn mock_fault_kind_platform_failure_surfaces() {
+        use keyring::Entry;
+        let g = install_mock_keyring();
+        let e = Entry::new("spt-tmock-pf", "u").expect("entry");
+        g.set_fault("spt-tmock-pf", "u", MockFaultKind::PlatformFailure);
+        assert!(matches!(
+            e.get_secret(),
+            Err(keyring::Error::PlatformFailure(_))
+        ));
+        assert!(matches!(
+            e.set_secret(b"x"),
+            Err(keyring::Error::PlatformFailure(_))
+        ));
+        assert!(matches!(
+            e.delete_credential(),
+            Err(keyring::Error::PlatformFailure(_))
+        ));
+    }
+
+    #[test]
+    fn mock_fault_kind_no_storage_access_surfaces() {
+        use keyring::Entry;
+        let g = install_mock_keyring();
+        let e = Entry::new("spt-tmock-nsa", "u").expect("entry");
+        g.set_fault("spt-tmock-nsa", "u", MockFaultKind::NoStorageAccess);
+        assert!(matches!(
+            e.get_secret(),
+            Err(keyring::Error::NoStorageAccess(_))
+        ));
+    }
+
+    #[test]
+    fn mock_fault_kind_no_entry_surfaces() {
+        use keyring::Entry;
+        let g = install_mock_keyring();
+        let e = Entry::new("spt-tmock-ne", "u").expect("entry");
+        g.set_fault("spt-tmock-ne", "u", MockFaultKind::NoEntry);
+        assert!(matches!(e.get_secret(), Err(keyring::Error::NoEntry)));
+    }
+
+    #[test]
+    fn mock_fault_kind_bad_encoding_surfaces() {
+        use keyring::Entry;
+        let g = install_mock_keyring();
+        let e = Entry::new("spt-tmock-be", "u").expect("entry");
+        g.set_fault("spt-tmock-be", "u", MockFaultKind::BadEncoding);
+        assert!(matches!(
+            e.get_secret(),
+            Err(keyring::Error::BadEncoding(_))
+        ));
+    }
+
+    #[test]
+    fn mock_fault_kind_invalid_surfaces() {
+        use keyring::Entry;
+        let g = install_mock_keyring();
+        let e = Entry::new("spt-tmock-inv", "u").expect("entry");
+        g.set_fault("spt-tmock-inv", "u", MockFaultKind::Invalid);
+        assert!(matches!(
+            e.get_secret(),
+            Err(keyring::Error::Invalid(_, _))
+        ));
+    }
+
+    #[test]
+    fn clear_fault_restores_normal_behavior() {
+        use keyring::Entry;
+        let g = install_mock_keyring();
+        let e = Entry::new("spt-tmock-clear", "u").expect("entry");
+        g.set_fault("spt-tmock-clear", "u", MockFaultKind::PlatformFailure);
+        assert!(matches!(
+            e.set_secret(b"v"),
+            Err(keyring::Error::PlatformFailure(_))
+        ));
+        g.clear_fault("spt-tmock-clear", "u");
+        // After clear, the entry behaves normally — write succeeds,
+        // read returns the written bytes.
+        e.set_secret(b"v").expect("set after clear");
+        assert_eq!(e.get_secret().unwrap(), b"v");
+    }
+
+    #[test]
+    fn fault_is_scoped_per_entry() {
+        use keyring::Entry;
+        let g = install_mock_keyring();
+        let e_bad = Entry::new("spt-tmock-scope", "bad").expect("entry");
+        let e_good = Entry::new("spt-tmock-scope", "good").expect("entry");
+        g.set_fault("spt-tmock-scope", "bad", MockFaultKind::PlatformFailure);
+        assert!(matches!(
+            e_bad.get_secret(),
+            Err(keyring::Error::PlatformFailure(_))
+        ));
+        // The other entry is unaffected.
+        e_good.set_secret(b"g").unwrap();
+        assert_eq!(e_good.get_secret().unwrap(), b"g");
+    }
+
+    #[test]
+    fn delete_credential_fault_surfaces() {
+        use keyring::Entry;
+        let g = install_mock_keyring();
+        let e = Entry::new("spt-tmock-del-fault", "u").expect("entry");
+        // Seed first so the unfaulted path would have returned Ok.
+        e.set_secret(b"v").unwrap();
+        g.set_fault("spt-tmock-del-fault", "u", MockFaultKind::NoStorageAccess);
+        assert!(matches!(
+            e.delete_credential(),
+            Err(keyring::Error::NoStorageAccess(_))
+        ));
+    }
+
+    #[test]
+    fn mock_fault_kind_from_round_trips_all_variants() {
+        // Each MockFaultKind maps to a distinct keymock::FaultKind, and
+        // each FaultKind reconstructs the matching keyring::Error.
+        for (kind, label) in [
+            (MockFaultKind::PlatformFailure, "platform"),
+            (MockFaultKind::NoStorageAccess, "nsa"),
+            (MockFaultKind::NoEntry, "ne"),
+            (MockFaultKind::BadEncoding, "be"),
+            (MockFaultKind::Invalid, "inv"),
+        ] {
+            let inner: keymock::FaultKind = kind.into();
+            // We only need to prove conversion compiles and the inner
+            // FaultKind builds a non-panicking keyring::Error.
+            let err = inner.to_error();
+            // Display impl is exhaustive in keyring; printing exercises
+            // the matching arm. Use the label to keep the loop body alive
+            // under release builds.
+            let s = format!("{err}");
+            assert!(!s.is_empty(), "label={label}");
+        }
     }
 }

@@ -82,3 +82,82 @@ fn diagnostics_to_lines(d: &ValidationDiagnostics) -> Vec<Line<'static>> {
     }
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
+
+    fn rendered_text(p: &mut ReviewPage, m: &Model) -> String {
+        let area = Rect::new(0, 0, 100, 40);
+        let mut buf = Buffer::empty(area);
+        p.render(area, &mut buf, m);
+        let mut s = String::new();
+        for y in 0..area.height {
+            for x in 0..area.width {
+                s.push_str(buf[(x, y)].symbol());
+            }
+        }
+        s
+    }
+
+    #[test]
+    fn renders_clean_profile() {
+        let m = Model::from_str(
+            r#"version = 1
+[[profiles]]
+name = "p"
+protocol = "ssh2"
+host = "h.example.com"
+"#,
+        );
+        let mut page = ReviewPage::new();
+        let s = rendered_text(&mut page, &m);
+        // Title and validation block headers present.
+        assert!(s.contains("Canonical TOML"));
+        assert!(s.contains("Validation"));
+        assert!(s.contains("no issues") || s.contains("0 error"));
+    }
+
+    #[test]
+    fn renders_diagnostics_for_broken_profile() {
+        // Missing host AND endpoint should be flagged by validate.
+        let m = Model::from_str(
+            r#"version = 1
+[[profiles]]
+name = "p"
+protocol = "ssh2"
+"#,
+        );
+        let mut page = ReviewPage::new();
+        let s = rendered_text(&mut page, &m);
+        assert!(s.contains("Validation"));
+    }
+
+    #[test]
+    fn ignores_key_events() {
+        let mut page = ReviewPage::new();
+        let mut m = Model::from_str(
+            r#"version = 1
+[[profiles]]
+name = "p"
+protocol = "ssh2"
+"#,
+        );
+        let key = KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE);
+        assert!(!page.on_key(key, &mut m));
+        assert!(!page.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &mut m));
+    }
+
+    #[test]
+    fn diagnostics_to_lines_handles_empty() {
+        let d = ValidationDiagnostics {
+            errors: vec![],
+            warnings: vec![],
+        };
+        let lines = diagnostics_to_lines(&d);
+        assert_eq!(lines.len(), 1);
+    }
+}

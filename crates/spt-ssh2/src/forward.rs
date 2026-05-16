@@ -312,3 +312,39 @@ where
     let _ = channel.close().await;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use spt_core::BindAddr;
+
+    #[test]
+    fn bind_addr_string_renders_tcp_socket() {
+        let sock: std::net::SocketAddr = "127.0.0.1:4242".parse().unwrap();
+        let s = bind_addr_string(&BindAddr::Tcp(sock)).unwrap();
+        assert_eq!(s, "127.0.0.1:4242");
+    }
+
+    #[test]
+    fn bind_addr_string_renders_host_port() {
+        let s = bind_addr_string(&BindAddr::TcpHostPort {
+            host: "example.local".into(),
+            port: 4040,
+        })
+        .unwrap();
+        assert_eq!(s, "example.local:4040");
+    }
+
+    #[test]
+    fn bind_addr_string_renders_ipv6() {
+        let sock: std::net::SocketAddr = "[::1]:8080".parse().unwrap();
+        let s = bind_addr_string(&BindAddr::Tcp(sock)).unwrap();
+        assert_eq!(s, "[::1]:8080");
+    }
+
+    #[test]
+    fn bind_addr_string_unix_rejected_as_unsupported() {
+        let err = bind_addr_string(&BindAddr::Unix("/tmp/sock".into())).unwrap_err();
+        assert!(matches!(err, Error::UnsupportedPlatform(_)));
+    }
+}

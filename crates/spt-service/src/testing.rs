@@ -23,6 +23,11 @@ use crate::{
 // Re-exports for parity with sibling crates' `testing` modules.
 pub use crate::runner::{MockRunner, RunOutput};
 
+// Re-export the SCM mock + its supporting types so external tests can
+// exercise `ScmManagerImpl` against a recording backend without poking
+// into the implementation module directly.
+pub use crate::windows_scm::{BackendStatus, MockScmBackend, ScmAccess, ScmCall};
+
 /// One observed call against a [`MockServiceManager`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ServiceCall {

@@ -123,3 +123,99 @@ impl Page for AuthPage {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
+
+    fn k(c: KeyCode) -> KeyEvent {
+        KeyEvent::new(c, KeyModifiers::NONE)
+    }
+
+    fn model() -> Model {
+        Model::from_str(
+            r#"version = 1
+[[profiles]]
+name = "p"
+protocol = "ssh2"
+"#,
+        )
+    }
+
+    #[test]
+    fn builds_with_expected_method_choices() {
+        let p = AuthPage::new();
+        // First field is auth.method choice.
+        let labels: Vec<&str> = p.list.fields.iter().map(|f| f.def.label).collect();
+        assert!(labels.contains(&"auth.method"));
+        assert!(labels.contains(&"auth.identity_file"));
+        assert!(labels.contains(&"auth.passphrase"));
+        assert!(labels.contains(&"auth.token"));
+    }
+
+    #[test]
+    fn renders_without_panic() {
+        let mut p = AuthPage::new();
+        let m = model();
+        let area = Rect::new(0, 0, 100, 50);
+        let mut buf = Buffer::empty(area);
+        p.render(area, &mut buf, &m);
+    }
+
+    #[test]
+    fn invalid_secret_ref_blocks_commit() {
+        let mut p = AuthPage::new();
+        let mut m = model();
+        // Move to auth.passphrase (index 3).
+        for _ in 0..3 {
+            p.on_key(k(KeyCode::Down), &mut m);
+        }
+        p.on_key(k(KeyCode::Enter), &mut m);
+        for c in "garbage".chars() {
+            p.on_key(k(KeyCode::Char(c)), &mut m);
+        }
+        p.on_key(k(KeyCode::Enter), &mut m);
+        assert!(p.list.fields[3].last_error().is_some());
+        assert!(p.list.editing);
+    }
+
+    #[test]
+    fn valid_secret_ref_commits() {
+        let mut p = AuthPage::new();
+        let mut m = model();
+        // Move to auth.passphrase (index 3).
+        for _ in 0..3 {
+            p.on_key(k(KeyCode::Down), &mut m);
+        }
+        p.on_key(k(KeyCode::Enter), &mut m);
+        for c in "secret://ns/key".chars() {
+            p.on_key(k(KeyCode::Char(c)), &mut m);
+        }
+        p.on_key(k(KeyCode::Enter), &mut m);
+        assert!(!p.list.editing);
+        let v = m.profile().auth.as_ref().and_then(|a| a.passphrase.clone());
+        assert_eq!(v.as_deref(), Some("secret://ns/key"));
+    }
+
+    #[test]
+    fn method_choice_cycles_via_down_arrow() {
+        let mut p = AuthPage::new();
+        let mut m = model();
+        // Index 0 is auth.method (Choice).
+        p.on_key(k(KeyCode::Enter), &mut m); // edit
+        // Press Down then Enter to pick the next option.
+        p.on_key(k(KeyCode::Down), &mut m);
+        p.on_key(k(KeyCode::Enter), &mut m); // commit selection
+        let method = m
+            .profile()
+            .auth
+            .as_ref()
+            .map(|a| a.method.clone())
+            .unwrap_or_default();
+        // First option is "public_key"; Down moves index to 1 = "agent".
+        assert_eq!(method, "agent");
+    }
+}

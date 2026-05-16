@@ -62,3 +62,18 @@ async-trait = { workspace = true }
 [[test]]
 name = "russh_basic"
 required-features = ["testing"]
+
+# OpenSSH-against-libssh2 interop tests (Unix-only at runtime; Windows compiles
+# but every test no-ops via `cfg_attr(target_os = "windows", ignore)`). Sidesteps
+# the upstream russh-0.46 ↔ libssh2-WinCNG `-8 KEY_EXCHANGE_FAILURE` bug.
+[[test]]
+name = "openssh_interop"
+required-features = ["testing"]
+
+# Real-libssh2 interop tests against `RusshTestServer`. Requires
+# `vendored-openssl` so libssh2 uses OpenSSL (which negotiates correctly with
+# russh 0.46) instead of WinCNG. **Linux-only**; needs Perl + NASM on `PATH`
+# to build the vendored OpenSSL. Do not run on Windows.
+[[test]]
+name = "russh_interop"
+required-features = ["testing", "vendored-openssl"]

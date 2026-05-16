@@ -384,6 +384,9 @@ fn method_name(m: &AuthMethod) -> &'static str {
 #[cfg(test)]
 mod tests {
     use ssh_key::{Algorithm, LineEnding, PrivateKey};
+    use std::path::PathBuf;
+
+    use spt_auth::SecretRef as AuthSecretRef;
 
     use super::*;
 
@@ -409,5 +412,276 @@ mod tests {
 
         assert!(normalized.starts_with("-----BEGIN RSA PRIVATE KEY-----"));
         assert!(normalized.ends_with("-----END RSA PRIVATE KEY-----\n"));
+    }
+
+    #[test]
+    fn normalize_passthrough_when_not_openssh() {
+        let pem = "-----BEGIN RSA PRIVATE KEY-----\nblob\n-----END RSA PRIVATE KEY-----\n";
+        let out = normalize_private_key_for_libssh2(pem).unwrap();
+        assert_eq!(out, pem);
+    }
+
+    #[test]
+    fn normalize_rejects_malformed_openssh_blob() {
+        let bad = "-----BEGIN OPENSSH PRIVATE KEY-----\nnot base64!\n-----END OPENSSH PRIVATE KEY-----\n";
+        assert!(normalize_private_key_for_libssh2(bad).is_err());
+    }
+
+    #[test]
+    fn method_name_covers_every_variant() {
+        // PublicKey / Agent / Password / KeyboardInteractive / Certificate /
+        // Bearer / Basic / OidcDeviceFlow.
+        let pk = AuthMethod::PublicKey {
+            identity_file: PathBuf::from("/tmp/id_test"),
+            passphrase: None,
+        };
+        assert_eq!(method_name(&pk), "public_key");
+        let agent = AuthMethod::Agent { socket: None };
+        assert_eq!(method_name(&agent), "agent");
+        let pw = AuthMethod::Password {
+            secret: AuthSecretRef::Env("X".into()),
+        };
+        assert_eq!(method_name(&pw), "password");
+        let kbi = AuthMethod::KeyboardInteractive { responder: vec![] };
+        assert_eq!(method_name(&kbi), "keyboard_interactive");
+        let cert = AuthMethod::Certificate {
+            cert: PathBuf::from("/tmp/c"),
+            key: PathBuf::from("/tmp/k"),
+            passphrase: None,
+        };
+        assert_eq!(method_name(&cert), "certificate");
+        let bearer = AuthMethod::Bearer {
+            token: AuthSecretRef::Env("X".into()),
+        };
+        assert_eq!(method_name(&bearer), "bearer");
+        let basic = AuthMethod::Basic {
+            username: "u".into(),
+            password: AuthSecretRef::Env("X".into()),
+        };
+        assert_eq!(method_name(&basic), "basic");
+        let oidc = AuthMethod::OidcDeviceFlow {
+            issuer: "https://i".parse().unwrap(),
+            client_id: "c".into(),
+            audience: None,
+        };
+        assert_eq!(method_name(&oidc), "oidc_device_flow");
+    }
+
+    #[test]
+    fn discover_public_key_path_finds_dotpub() {
+        let dir = tempfile::tempdir().unwrap();
+        let priv_path = dir.path().join("id_ed25519");
+        let pub_path = dir.path().join("id_ed25519.pub");
+        std::fs::write(&priv_path, b"priv").unwrap();
+        std::fs::write(&pub_path, b"pub").unwrap();
+        let got = discover_public_key_path(&priv_path).expect("found");
+        assert_eq!(got, pub_path);
+    }
+
+    #[test]
+    fn discover_public_key_path_none_when_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let priv_path = dir.path().join("id_x");
+        std::fs::write(&priv_path, b"priv").unwrap();
+        assert!(discover_public_key_path(&priv_path).is_none());
+    }
+
+    #[test]
+    fn public_key_material_uses_explicit_cert_path_when_provided() {
+        let dir = tempfile::tempdir().unwrap();
+        let priv_path = dir.path().join("k");
+        let cert_path = dir.path().join("k-cert.pub");
+        std::fs::write(&priv_path, b"priv").unwrap();
+        std::fs::write(&cert_path, "CERTBODY").unwrap();
+        let got = public_key_material(&priv_path, Some(&cert_path)).unwrap();
+        assert_eq!(got.as_deref(), Some("CERTBODY"));
+    }
+
+    #[test]
+    fn public_key_material_falls_back_to_dotpub() {
+        let dir = tempfile::tempdir().unwrap();
+        let priv_path = dir.path().join("id_e");
+        let pub_path = dir.path().join("id_e.pub");
+        std::fs::write(&priv_path, b"priv").unwrap();
+        std::fs::write(&pub_path, "PUBBODY").unwrap();
+        let got = public_key_material(&priv_path, None).unwrap();
+        assert_eq!(got.as_deref(), Some("PUBBODY"));
+    }
+
+    #[test]
+    fn public_key_material_none_when_no_cert_and_no_dotpub() {
+        let dir = tempfile::tempdir().unwrap();
+        let priv_path = dir.path().join("k");
+        std::fs::write(&priv_path, b"priv").unwrap();
+        let got = public_key_material(&priv_path, None).unwrap();
+        assert!(got.is_none());
+    }
+
+    #[test]
+    fn public_key_material_errors_when_explicit_cert_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let priv_path = dir.path().join("k");
+        let cert_path = dir.path().join("does-not-exist");
+        std::fs::write(&priv_path, b"priv").unwrap();
+        let err = public_key_material(&priv_path, Some(&cert_path)).unwrap_err();
+        assert!(matches!(err, Error::KeyFailure(_)));
+    }
+
+    #[test]
+    fn resolve_secret_env_variant() {
+        std::env::set_var("SPT_TEST_AUTH_E", "value");
+        let backends: Vec<&dyn SecretBackend> = vec![];
+        let rf = AuthSecretRef::Env("SPT_TEST_AUTH_E".into());
+        let got = resolve_secret(&backends, &rf).unwrap();
+        assert_eq!(got.expose_secret().as_slice(), b"value");
+        std::env::remove_var("SPT_TEST_AUTH_E");
+    }
+
+    #[test]
+    fn resolve_secret_env_variant_missing_returns_unavailable() {
+        std::env::remove_var("SPT_TEST_AUTH_MISSING");
+        let backends: Vec<&dyn SecretBackend> = vec![];
+        let rf = AuthSecretRef::Env("SPT_TEST_AUTH_MISSING".into());
+        let err = resolve_secret(&backends, &rf).unwrap_err();
+        match err {
+            Error::SecretUnavailable { reference, .. } => {
+                assert!(reference.contains("SPT_TEST_AUTH_MISSING"));
+            }
+            other => panic!("expected SecretUnavailable, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_secret_file_variant() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("s.txt");
+        std::fs::write(&p, b"filebody").unwrap();
+        let backends: Vec<&dyn SecretBackend> = vec![];
+        let rf = AuthSecretRef::File(p.to_string_lossy().into_owned());
+        let got = resolve_secret(&backends, &rf).unwrap();
+        assert_eq!(got.expose_secret().as_slice(), b"filebody");
+    }
+
+    #[test]
+    fn resolve_secret_file_variant_missing() {
+        let backends: Vec<&dyn SecretBackend> = vec![];
+        let rf = AuthSecretRef::File("/no/such/path/here".into());
+        let err = resolve_secret(&backends, &rf).unwrap_err();
+        assert!(matches!(err, Error::SecretUnavailable { .. }));
+    }
+
+    /// In-memory `SecretBackend` always returning a fixed value.
+    struct CannedBackend(&'static [u8]);
+    impl SecretBackend for CannedBackend {
+        fn kind(&self) -> spt_secrets::BackendKind {
+            spt_secrets::BackendKind::Env
+        }
+        fn get(
+            &self,
+            _r: &spt_secrets::SecretRef,
+        ) -> Result<Option<spt_secrets::SecretBytes>> {
+            Ok(Some(spt_secrets::backend::secret_bytes(self.0.to_vec())))
+        }
+        fn set(&self, _r: &spt_secrets::SecretRef, _value: &[u8]) -> Result<()> {
+            Ok(())
+        }
+        fn list(&self) -> Result<Vec<spt_secrets::SecretRef>> {
+            Ok(vec![])
+        }
+        fn remove(&self, _r: &spt_secrets::SecretRef) -> Result<bool> {
+            Ok(false)
+        }
+        fn doctor(&self) -> spt_secrets::BackendDoctor {
+            spt_secrets::BackendDoctor::ok(spt_secrets::BackendKind::Env, "test")
+        }
+    }
+
+    /// Backend that always returns `Ok(None)`.
+    struct EmptyBackend;
+    impl SecretBackend for EmptyBackend {
+        fn kind(&self) -> spt_secrets::BackendKind {
+            spt_secrets::BackendKind::Env
+        }
+        fn get(
+            &self,
+            _r: &spt_secrets::SecretRef,
+        ) -> Result<Option<spt_secrets::SecretBytes>> {
+            Ok(None)
+        }
+        fn set(&self, _r: &spt_secrets::SecretRef, _value: &[u8]) -> Result<()> {
+            Ok(())
+        }
+        fn list(&self) -> Result<Vec<spt_secrets::SecretRef>> {
+            Ok(vec![])
+        }
+        fn remove(&self, _r: &spt_secrets::SecretRef) -> Result<bool> {
+            Ok(false)
+        }
+        fn doctor(&self) -> spt_secrets::BackendDoctor {
+            spt_secrets::BackendDoctor::ok(spt_secrets::BackendKind::Env, "test")
+        }
+    }
+
+    #[test]
+    fn resolve_secret_vault_variant_returns_first_hit() {
+        let b1 = EmptyBackend;
+        let b2 = CannedBackend(b"hello");
+        let backends: Vec<&dyn SecretBackend> = vec![&b1, &b2];
+        let rf = AuthSecretRef::Vault {
+            namespace: "ns".into(),
+            name: "n".into(),
+        };
+        let got = resolve_secret(&backends, &rf).unwrap();
+        assert_eq!(got.expose_secret().as_slice(), b"hello");
+    }
+
+    #[test]
+    fn resolve_secret_vault_variant_none_yields_unavailable() {
+        let b1 = EmptyBackend;
+        let backends: Vec<&dyn SecretBackend> = vec![&b1];
+        let rf = AuthSecretRef::Vault {
+            namespace: "ns".into(),
+            name: "n".into(),
+        };
+        let err = resolve_secret(&backends, &rf).unwrap_err();
+        assert!(matches!(err, Error::SecretUnavailable { .. }));
+    }
+
+    #[test]
+    fn resolve_passphrase_none_yields_none() {
+        let backends: Vec<&dyn SecretBackend> = vec![];
+        let got = resolve_passphrase(&backends, None).unwrap();
+        assert!(got.is_none());
+    }
+
+    #[test]
+    fn resolve_passphrase_some_resolves_to_string() {
+        std::env::set_var("SPT_TEST_PASSPHRASE", "secretpw");
+        let backends: Vec<&dyn SecretBackend> = vec![];
+        let rf = AuthSecretRef::Env("SPT_TEST_PASSPHRASE".into());
+        let got = resolve_passphrase(&backends, Some(&rf)).unwrap();
+        assert_eq!(got.as_deref(), Some("secretpw"));
+        std::env::remove_var("SPT_TEST_PASSPHRASE");
+    }
+
+    #[test]
+    fn resolve_passphrase_non_utf8_errors() {
+        // Write 0xFF (invalid UTF-8) into a file and resolve through File variant.
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("badutf8.bin");
+        std::fs::write(&p, [0xFFu8, 0xFE]).unwrap();
+        let backends: Vec<&dyn SecretBackend> = vec![];
+        let rf = AuthSecretRef::File(p.to_string_lossy().into_owned());
+        let err = resolve_passphrase(&backends, Some(&rf)).unwrap_err();
+        assert!(matches!(err, Error::AuthFailed(_)));
+    }
+
+    #[test]
+    fn mpint_to_biguint_roundtrip() {
+        let raw: &[u8] = &[0x01, 0x00, 0x00];
+        let mp = ssh_key::Mpint::from_bytes(raw).unwrap();
+        let bi = mpint_to_biguint(&mp);
+        // The mpint should round-trip to a positive integer equal to 0x010000.
+        assert_eq!(bi, rsa::BigUint::from(0x0001_0000u64));
     }
 }

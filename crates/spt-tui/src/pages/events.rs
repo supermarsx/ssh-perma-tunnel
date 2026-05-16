@@ -76,3 +76,47 @@ impl Page for EventsPage {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
+
+    fn k(c: KeyCode) -> KeyEvent {
+        KeyEvent::new(c, KeyModifiers::NONE)
+    }
+
+    fn model() -> Model {
+        Model::from_str(
+            r#"version = 1
+[[profiles]]
+name = "p"
+protocol = "ssh2"
+"#,
+        )
+    }
+
+    #[test]
+    fn renders_with_no_global_bindings() {
+        let mut p = EventsPage::new();
+        let m = model();
+        let area = Rect::new(0, 0, 100, 20);
+        let mut buf = Buffer::empty(area);
+        p.render(area, &mut buf, &m);
+    }
+
+    #[test]
+    fn tag_edit_round_trip() {
+        let mut p = EventsPage::new();
+        let mut m = model();
+        p.on_key(k(KeyCode::Enter), &mut m); // begin edit (List)
+        for c in "prod, eu-west".chars() {
+            p.on_key(k(KeyCode::Char(c)), &mut m);
+        }
+        p.on_key(k(KeyCode::Enter), &mut m); // commit
+        let tags = m.profile().tags.clone().unwrap_or_default();
+        assert_eq!(tags, vec!["prod", "eu-west"]);
+    }
+}

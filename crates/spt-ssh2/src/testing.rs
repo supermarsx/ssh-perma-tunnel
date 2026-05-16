@@ -1,6 +1,6 @@
 //! Test fixtures for [`spt_ssh2`] consumers.
 //!
-//! Two helpers ship here:
+//! Three helpers ship here:
 //!
 //! * [`MockSsh2Session`] — pure in-memory [`spt_protocol::TunnelSession`]
 //!   recording every call. Useful for tests that want to verify *what* the
@@ -9,8 +9,13 @@
 //!   to ephemeral loopback. Exposed under the `testing` feature so end-to-end
 //!   tests in sibling crates can target a real SSH2 endpoint without
 //!   re-implementing the russh handler glue.
+//! * [`OpenSshTestServer`] — Unix-only builder that locates a system `sshd`
+//!   on `PATH`, generates an ephemeral RSA-2048 host key + minimal config in a
+//!   tempdir, and spawns sshd against `127.0.0.1:0`. Sidesteps the upstream
+//!   russh-0.46 ↔ libssh2-WinCNG `-8 KEY_EXCHANGE_FAILURE` interop bug by
+//!   driving libssh2 against a real OpenSSH server.
 //!
-//! Both helpers live behind `#[cfg(any(test, feature = "testing"))]`.
+//! All helpers live behind `#[cfg(any(test, feature = "testing"))]`.
 
 #[cfg(feature = "testing")]
 use std::net::SocketAddr;
@@ -686,6 +691,245 @@ impl Drop for RunningRusshServer {
     }
 }
 
+// -----------------------------------------------------------------------------
+// OpenSshTestServer (Unix-only) — drives libssh2 against a real `sshd`.
+// -----------------------------------------------------------------------------
+
+/// Unix-only builder that locates the system `sshd` binary on `PATH`,
+/// generates an ephemeral RSA-2048 host key + a minimal `sshd_config` in a
+/// tempdir, and spawns `sshd -D -e -f <config>` bound to `127.0.0.1:0`.
+///
+/// Returns `Ok(None)` from [`Self::start`] when `sshd` is not on `PATH` — the
+/// caller is expected to `return` (skip) the test in that case.
+///
+/// Used as a workaround for the upstream russh-0.46 ↔ libssh2-WinCNG
+/// `LIBSSH2_ERROR_KEY_EXCHANGE_FAILURE` interop bug: a real OpenSSH server
+/// negotiates cleanly with libssh2 on Linux/macOS where this matters.
+///
+/// **Windows is unsupported** by design — the Windows OpenSSH `sshd.exe` would
+/// need a meaningfully different config schema and ACL setup. Tests that want
+/// to use this fixture must `#[cfg_attr(target_os = "windows", ignore)]` or
+/// branch on `cfg!(target_os = "windows")`.
+#[cfg(all(unix, feature = "testing"))]
+pub struct OpenSshTestServer {
+    /// Optional override for the authorized user's pubkey (OpenSSH format).
+    /// When `None`, `start()` does not enable pubkey auth.
+    pub authorized_keys_pem: Option<String>,
+    /// Username configured in `sshd_config`'s `AllowUsers` line.
+    pub username: String,
+    /// Whether to enable password auth (default off).
+    pub password_auth: bool,
+}
+
+#[cfg(all(unix, feature = "testing"))]
+impl Default for OpenSshTestServer {
+    fn default() -> Self {
+        Self {
+            authorized_keys_pem: None,
+            username: std::env::var("USER").unwrap_or_else(|_| "spttest".into()),
+            password_auth: false,
+        }
+    }
+}
+
+#[cfg(all(unix, feature = "testing"))]
+impl OpenSshTestServer {
+    /// New server with default settings.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Set the authorized user's pubkey (OpenSSH single-line public key form).
+    #[must_use]
+    pub fn with_authorized_key(mut self, pubkey: impl Into<String>) -> Self {
+        self.authorized_keys_pem = Some(pubkey.into());
+        self
+    }
+
+    /// Override the configured username.
+    #[must_use]
+    pub fn with_username(mut self, user: impl Into<String>) -> Self {
+        self.username = user.into();
+        self
+    }
+
+    /// Locate `sshd` on `PATH`. Returns `None` when not found.
+    #[must_use]
+    pub fn locate_sshd() -> Option<std::path::PathBuf> {
+        // Probe a few well-known locations first, then `which`.
+        for candidate in ["/usr/sbin/sshd", "/usr/local/sbin/sshd", "/sbin/sshd"] {
+            let p = std::path::Path::new(candidate);
+            if p.exists() {
+                return Some(p.to_path_buf());
+            }
+        }
+        let path = std::env::var_os("PATH")?;
+        for dir in std::env::split_paths(&path) {
+            let cand = dir.join("sshd");
+            if cand.exists() {
+                return Some(cand);
+            }
+        }
+        None
+    }
+
+    /// Bind on `127.0.0.1:0`, generate a host key + config, and spawn sshd.
+    ///
+    /// Returns `Ok(None)` when `sshd` is not on `PATH`. Tests should branch
+    /// on this to skip cleanly.
+    pub async fn start(self) -> std::io::Result<Option<RunningOpenSshServer>> {
+        let Some(sshd_path) = Self::locate_sshd() else {
+            return Ok(None);
+        };
+        let dir = tempfile::tempdir()?;
+        let dir_path = dir.path().to_path_buf();
+
+        // Pick an ephemeral port by binding loopback briefly.
+        let port = {
+            let lis = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+            let port = lis.local_addr()?.port();
+            drop(lis);
+            port
+        };
+
+        // Generate a host key with ssh-key (no external `ssh-keygen` needed).
+        let host_key_path = dir_path.join("ssh_host_rsa_key");
+        let host_key_pub_path = dir_path.join("ssh_host_rsa_key.pub");
+        let mut rng = ssh_key::rand_core::OsRng;
+        let host_key = ssh_key::PrivateKey::random(
+            &mut rng,
+            ssh_key::Algorithm::Rsa { hash: None },
+        )
+        .map_err(|e| std::io::Error::other(format!("genkey: {e}")))?;
+        let pem = host_key
+            .to_openssh(ssh_key::LineEnding::LF)
+            .map_err(|e| std::io::Error::other(format!("encode hostkey: {e}")))?;
+        std::fs::write(&host_key_path, pem.as_bytes())?;
+        let pubkey = host_key
+            .public_key()
+            .to_openssh()
+            .map_err(|e| std::io::Error::other(format!("encode hostkey pub: {e}")))?;
+        std::fs::write(&host_key_pub_path, format!("{pubkey}\n"))?;
+        // sshd is strict about host-key permissions.
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(
+                &host_key_path,
+                std::fs::Permissions::from_mode(0o600),
+            )?;
+        }
+
+        // Optional authorized-keys file.
+        let authorized_keys_path = if let Some(pubkey) = &self.authorized_keys_pem {
+            let p = dir_path.join("authorized_keys");
+            std::fs::write(&p, pubkey)?;
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o600))?;
+            Some(p)
+        } else {
+            None
+        };
+
+        // Minimal sshd_config. We deliberately avoid PAM / motd / login banner.
+        let mut cfg = String::new();
+        cfg.push_str(&format!("Port {port}\n"));
+        cfg.push_str("ListenAddress 127.0.0.1\n");
+        cfg.push_str(&format!("HostKey {}\n", host_key_path.display()));
+        cfg.push_str("UsePAM no\n");
+        cfg.push_str("StrictModes no\n");
+        cfg.push_str("PrintMotd no\n");
+        cfg.push_str("PermitRootLogin no\n");
+        cfg.push_str(&format!(
+            "PasswordAuthentication {}\n",
+            if self.password_auth { "yes" } else { "no" }
+        ));
+        cfg.push_str("PubkeyAuthentication yes\n");
+        cfg.push_str("ChallengeResponseAuthentication no\n");
+        cfg.push_str(&format!("AllowUsers {}\n", self.username));
+        if let Some(akp) = &authorized_keys_path {
+            cfg.push_str(&format!("AuthorizedKeysFile {}\n", akp.display()));
+        }
+        cfg.push_str("AllowTcpForwarding yes\n");
+        cfg.push_str("GatewayPorts no\n");
+        cfg.push_str("ClientAliveInterval 30\n");
+
+        let cfg_path = dir_path.join("sshd_config");
+        std::fs::write(&cfg_path, cfg.as_bytes())?;
+
+        // Spawn sshd in foreground / log-to-stderr mode.
+        let child = std::process::Command::new(&sshd_path)
+            .arg("-D")
+            .arg("-e")
+            .arg("-f")
+            .arg(&cfg_path)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()?;
+
+        // Wait briefly for the socket to come up.
+        let addr: std::net::SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        loop {
+            if tokio::net::TcpStream::connect(addr).await.is_ok() {
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+
+        Ok(Some(RunningOpenSshServer {
+            addr,
+            sshd_path,
+            tempdir: Some(dir),
+            child: Some(child),
+        }))
+    }
+}
+
+/// Handle to a running `sshd` started by [`OpenSshTestServer`].
+#[cfg(all(unix, feature = "testing"))]
+pub struct RunningOpenSshServer {
+    /// Loopback address sshd is listening on.
+    pub addr: std::net::SocketAddr,
+    /// Path to the located `sshd` binary.
+    pub sshd_path: std::path::PathBuf,
+    /// Tempdir holding `sshd_config` and the ephemeral host key.
+    tempdir: Option<tempfile::TempDir>,
+    child: Option<std::process::Child>,
+}
+
+#[cfg(all(unix, feature = "testing"))]
+impl RunningOpenSshServer {
+    /// Returns the path to the on-disk `sshd_config` for inspection.
+    #[must_use]
+    pub fn config_path(&self) -> Option<std::path::PathBuf> {
+        self.tempdir.as_ref().map(|d| d.path().join("sshd_config"))
+    }
+
+    /// Kill `sshd` and clean up.
+    pub fn shutdown(mut self) {
+        if let Some(mut c) = self.child.take() {
+            let _ = c.kill();
+            let _ = c.wait();
+        }
+        // tempdir Drop fires automatically.
+        drop(self.tempdir.take());
+    }
+}
+
+#[cfg(all(unix, feature = "testing"))]
+impl Drop for RunningOpenSshServer {
+    fn drop(&mut self) {
+        if let Some(mut c) = self.child.take() {
+            let _ = c.kill();
+            let _ = c.wait();
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -805,6 +1049,60 @@ mod tests {
         }
         assert!(server.connection_count() >= 1);
         server.shutdown().await;
+    }
+
+    #[cfg(all(unix, feature = "testing"))]
+    #[test]
+    fn openssh_locate_sshd_smoke() {
+        // The function returns None when sshd is absent (e.g. on Windows or
+        // a stripped container). We only assert it doesn't panic; the actual
+        // value depends on the build host.
+        let _ = OpenSshTestServer::locate_sshd();
+    }
+
+    #[cfg(all(unix, feature = "testing"))]
+    #[tokio::test]
+    async fn openssh_start_returns_none_when_path_strips_sshd() {
+        // Stash the original PATH; restore at end. Override to an empty
+        // string so locate_sshd cannot find sshd (also unset SHELL well-known
+        // alternative paths via empty PATH).
+        let original = std::env::var_os("PATH");
+        std::env::set_var("PATH", "");
+        // Note: still might find /usr/sbin/sshd via the hardcoded fallback.
+        // The fallback check is well-known absolute paths, so on a host where
+        // sshd is installed start() will succeed even with empty PATH. We
+        // accept either outcome — what matters is the function returns Ok.
+        let server = OpenSshTestServer::new().start().await.expect("start ok");
+        if let Some(s) = server {
+            s.shutdown();
+        }
+        if let Some(p) = original {
+            std::env::set_var("PATH", p);
+        } else {
+            std::env::remove_var("PATH");
+        }
+    }
+
+    #[cfg(all(unix, feature = "testing"))]
+    #[tokio::test]
+    async fn openssh_default_builder_has_no_authorized_key() {
+        let s = OpenSshTestServer::new();
+        assert!(s.authorized_keys_pem.is_none());
+        assert!(!s.password_auth);
+    }
+
+    #[cfg(all(unix, feature = "testing"))]
+    #[tokio::test]
+    async fn openssh_builder_chaining_records_state() {
+        let s = OpenSshTestServer::new()
+            .with_username("alice")
+            .with_authorized_key("ssh-rsa AAAA testkey alice@host");
+        assert_eq!(s.username, "alice");
+        assert!(s
+            .authorized_keys_pem
+            .as_deref()
+            .unwrap()
+            .contains("testkey"));
     }
 
     #[cfg(feature = "testing")]

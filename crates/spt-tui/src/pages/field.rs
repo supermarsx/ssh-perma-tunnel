@@ -79,7 +79,7 @@ pub struct Field {
     select: Select,
     multi: MultiSelect,
     list_state: StringList,
-    last_error: Option<String>,
+    pub(crate) last_error: Option<String>,
 }
 
 impl Field {
@@ -95,6 +95,12 @@ impl Field {
             list_state: StringList::default(),
             last_error: None,
         }
+    }
+
+    /// Most recent validation error for this field, if any.
+    #[must_use]
+    pub fn last_error(&self) -> Option<&str> {
+        self.last_error.as_deref()
     }
 }
 
@@ -589,5 +595,280 @@ mod tests {
         let committed = list.commit_edit(&mut p);
         assert!(!committed, "garbage should fail validation");
         assert!(list.fields[0].last_error.is_some());
+    }
+
+    fn key(code: crossterm::event::KeyCode) -> crossterm::event::KeyEvent {
+        crossterm::event::KeyEvent::new(code, crossterm::event::KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn empty_list_move_focus_is_noop() {
+        let mut list = FieldList::new(vec![]);
+        list.move_focus(1);
+        list.move_focus(-1);
+        assert_eq!(list.focus, 0);
+    }
+
+    #[test]
+    fn move_focus_wraps_around() {
+        let defs = vec![
+            opt_text("a", "", |p: &Profile| p.user.clone(), |p, v| p.user = v),
+            opt_text(
+                "b",
+                "",
+                |p: &Profile| p.host.clone(),
+                |p, v| p.host = v,
+            ),
+            opt_text(
+                "c",
+                "",
+                |p: &Profile| p.description.clone(),
+                |p, v| p.description = v,
+            ),
+        ];
+        let mut list = FieldList::new(defs);
+        assert_eq!(list.focus, 0);
+        list.move_focus(-1);
+        assert_eq!(list.focus, 2);
+        list.move_focus(1);
+        assert_eq!(list.focus, 0);
+        list.move_focus(5);
+        assert_eq!(list.focus, 2);
+    }
+
+    #[test]
+    fn nav_key_down_advances() {
+        let defs = vec![
+            opt_text(
+                "a",
+                "",
+                |p: &Profile| p.user.clone(),
+                |p, v| p.user = v,
+            ),
+            opt_text(
+                "b",
+                "",
+                |p: &Profile| p.host.clone(),
+                |p, v| p.host = v,
+            ),
+        ];
+        let mut list = FieldList::new(defs);
+        let p = sample_profile();
+        assert!(list.on_nav_key(key(crossterm::event::KeyCode::Down), &p));
+        assert_eq!(list.focus, 1);
+        assert!(list.on_nav_key(key(crossterm::event::KeyCode::Up), &p));
+        assert_eq!(list.focus, 0);
+    }
+
+    #[test]
+    fn cancel_edit_clears_buffer() {
+        let def = opt_text(
+            "u",
+            "",
+            |p: &Profile| p.user.clone(),
+            |p, v| p.user = v,
+        );
+        let mut list = FieldList::new(vec![def]);
+        let p = sample_profile();
+        list.begin_edit(&p);
+        assert!(list.editing);
+        list.cancel_edit();
+        assert!(!list.editing);
+        assert!(list.fields[0].edit_buf.is_none());
+    }
+
+    #[test]
+    fn opt_bool_round_trip() {
+        let def = opt_bool(
+            "agent",
+            "",
+            |p: &Profile| p.auth.as_ref().and_then(|a| a.agent),
+            |p, v| p.auth.get_or_insert_with(Default::default).agent = v,
+        );
+        let mut list = FieldList::new(vec![def]);
+        let mut p = sample_profile();
+        list.begin_edit(&p);
+        // Enter: Toggle flips false → true and commits.
+        list.on_edit_key(key(crossterm::event::KeyCode::Enter), &mut p);
+        assert_eq!(p.auth.as_ref().and_then(|a| a.agent), Some(true));
+    }
+
+    #[test]
+    fn opt_u32_validation_rejects_bad_text() {
+        let def = opt_u32(
+            "n",
+            "",
+            |p: &Profile| {
+                p.connection
+                    .as_ref()
+                    .and_then(|c| c.keepalive_retries)
+            },
+            |p, v| {
+                p.connection
+                    .get_or_insert_with(Default::default)
+                    .keepalive_retries = v;
+            },
+        );
+        let v = FieldValue::Numeric("abc".to_owned());
+        let err = def.validate.as_ref().unwrap()(&v);
+        assert!(err.is_some());
+        // Empty is acceptable (clears).
+        let v = FieldValue::Numeric(String::new());
+        assert!(def.validate.as_ref().unwrap()(&v).is_none());
+    }
+
+    #[test]
+    fn opt_choice_commits_chosen() {
+        let def = opt_choice(
+            "startup",
+            "",
+            &["eager", "lazy"],
+            |p: &Profile| p.startup.clone(),
+            |p, v| p.startup = v,
+        );
+        let mut list = FieldList::new(vec![def]);
+        let mut p = sample_profile();
+        list.begin_edit(&p);
+        // Down then Enter to pick "lazy".
+        list.on_edit_key(key(crossterm::event::KeyCode::Down), &mut p);
+        list.on_edit_key(key(crossterm::event::KeyCode::Enter), &mut p);
+        assert_eq!(p.startup.as_deref(), Some("lazy"));
+    }
+
+    #[test]
+    fn opt_list_commits_csv() {
+        let def = opt_list(
+            "tags",
+            "",
+            |p: &Profile| p.tags.clone().unwrap_or_default(),
+            |p, v| p.tags = if v.is_empty() { None } else { Some(v) },
+        );
+        let mut list = FieldList::new(vec![def]);
+        let mut p = sample_profile();
+        list.begin_edit(&p);
+        for c in "a, b, c".chars() {
+            list.on_edit_key(key(crossterm::event::KeyCode::Char(c)), &mut p);
+        }
+        list.on_edit_key(key(crossterm::event::KeyCode::Enter), &mut p);
+        assert_eq!(p.tags, Some(vec!["a".into(), "b".into(), "c".into()]));
+    }
+
+    #[test]
+    fn opt_multi_commits_on_s() {
+        let def = opt_multi(
+            "ciphers",
+            "",
+            &["aes256-gcm", "chacha20"],
+            |p: &Profile| {
+                p.crypto
+                    .as_ref()
+                    .and_then(|c| c.ciphers.clone())
+                    .unwrap_or_default()
+            },
+            |p, v| {
+                p.crypto.get_or_insert_with(Default::default).ciphers =
+                    if v.is_empty() { None } else { Some(v) }
+            },
+        );
+        let mut list = FieldList::new(vec![def]);
+        let mut p = sample_profile();
+        list.begin_edit(&p);
+        // Toggle the first option (Space) then commit via 's'.
+        list.on_edit_key(key(crossterm::event::KeyCode::Char(' ')), &mut p);
+        list.on_edit_key(key(crossterm::event::KeyCode::Char('s')), &mut p);
+        let cs = p.crypto.as_ref().and_then(|c| c.ciphers.clone());
+        assert_eq!(cs, Some(vec!["aes256-gcm".into()]));
+    }
+
+    #[test]
+    fn opt_multi_esc_cancels_without_commit() {
+        let def = opt_multi(
+            "ciphers",
+            "",
+            &["aes256-gcm", "chacha20"],
+            |p: &Profile| {
+                p.crypto
+                    .as_ref()
+                    .and_then(|c| c.ciphers.clone())
+                    .unwrap_or_default()
+            },
+            |p, v| {
+                p.crypto.get_or_insert_with(Default::default).ciphers =
+                    if v.is_empty() { None } else { Some(v) }
+            },
+        );
+        let mut list = FieldList::new(vec![def]);
+        let mut p = sample_profile();
+        list.begin_edit(&p);
+        list.on_edit_key(key(crossterm::event::KeyCode::Char(' ')), &mut p);
+        list.on_edit_key(key(crossterm::event::KeyCode::Esc), &mut p);
+        // Esc cancels — no commit happened.
+        assert!(p.crypto.as_ref().and_then(|c| c.ciphers.clone()).is_none());
+        assert!(!list.editing);
+    }
+
+    #[test]
+    fn opt_text_empty_clears_to_none() {
+        let mut p = sample_profile();
+        p.user = Some("a".into());
+        let def = opt_text(
+            "u",
+            "",
+            |p: &Profile| p.user.clone(),
+            |p, v| p.user = v,
+        );
+        let mut list = FieldList::new(vec![def]);
+        list.begin_edit(&p);
+        list.on_edit_key(key(crossterm::event::KeyCode::Backspace), &mut p);
+        list.on_edit_key(key(crossterm::event::KeyCode::Enter), &mut p);
+        assert!(p.user.is_none());
+    }
+
+    #[test]
+    fn tab_commits_and_moves_focus() {
+        let defs = vec![
+            opt_text("a", "", |p: &Profile| p.user.clone(), |p, v| p.user = v),
+            opt_text("b", "", |p: &Profile| p.host.clone(), |p, v| p.host = v),
+        ];
+        let mut list = FieldList::new(defs);
+        let mut p = sample_profile();
+        list.begin_edit(&p);
+        for c in "abc".chars() {
+            list.on_edit_key(key(crossterm::event::KeyCode::Char(c)), &mut p);
+        }
+        // Tab commits and moves down.
+        list.on_edit_key(key(crossterm::event::KeyCode::Tab), &mut p);
+        assert_eq!(p.user.as_deref(), Some("abc"));
+        assert_eq!(list.focus, 1);
+        assert!(!list.editing);
+    }
+
+    #[test]
+    fn secret_ref_empty_is_valid_and_clears() {
+        let def = opt_secret(
+            "pw",
+            "",
+            |p: &Profile| p.auth.as_ref().and_then(|a| a.password.clone()),
+            |p, v| p.auth.get_or_insert_with(Default::default).password = v,
+        );
+        let mut list = FieldList::new(vec![def]);
+        let mut p = sample_profile();
+        list.begin_edit(&p);
+        // No characters; commit empty.
+        list.on_edit_key(key(crossterm::event::KeyCode::Enter), &mut p);
+        assert!(!list.editing);
+    }
+
+    #[test]
+    fn field_debug_renders_label() {
+        let def = opt_text(
+            "x",
+            "",
+            |p: &Profile| p.user.clone(),
+            |p, v| p.user = v,
+        );
+        let s = format!("{def:?}");
+        assert!(s.contains("FieldDef"));
+        assert!(s.contains('x'));
     }
 }

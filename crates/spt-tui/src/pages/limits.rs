@@ -116,3 +116,101 @@ impl Page for LimitsPage {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
+
+    fn k(c: KeyCode) -> KeyEvent {
+        KeyEvent::new(c, KeyModifiers::NONE)
+    }
+
+    fn model() -> Model {
+        Model::from_str(
+            r#"version = 1
+[[profiles]]
+name = "p"
+protocol = "ssh2"
+"#,
+        )
+    }
+
+    #[test]
+    fn builds_with_six_fields() {
+        let p = LimitsPage::new();
+        assert_eq!(p.list.fields.len(), 6);
+    }
+
+    #[test]
+    fn renders_without_panic() {
+        let mut p = LimitsPage::new();
+        let m = model();
+        let area = Rect::new(0, 0, 100, 40);
+        let mut buf = Buffer::empty(area);
+        p.render(area, &mut buf, &m);
+    }
+
+    #[test]
+    fn max_active_round_trip() {
+        let mut p = LimitsPage::new();
+        let mut m = model();
+        p.on_key(k(KeyCode::Enter), &mut m);
+        for c in "100".chars() {
+            p.on_key(k(KeyCode::Char(c)), &mut m);
+        }
+        p.on_key(k(KeyCode::Enter), &mut m);
+        assert_eq!(
+            m.profile()
+                .limits
+                .as_ref()
+                .and_then(|l| l.max_active_connections),
+            Some(100)
+        );
+    }
+
+    #[test]
+    fn bytes_per_second_text_field() {
+        let mut p = LimitsPage::new();
+        let mut m = model();
+        for _ in 0..2 {
+            p.on_key(k(KeyCode::Down), &mut m);
+        }
+        p.on_key(k(KeyCode::Enter), &mut m);
+        for c in "20MiB".chars() {
+            p.on_key(k(KeyCode::Char(c)), &mut m);
+        }
+        p.on_key(k(KeyCode::Enter), &mut m);
+        assert_eq!(
+            m.profile()
+                .limits
+                .as_ref()
+                .and_then(|l| l.max_bytes_per_second_in.clone())
+                .as_deref(),
+            Some("20MiB")
+        );
+    }
+
+    #[test]
+    fn throttle_algorithm_choice() {
+        let mut p = LimitsPage::new();
+        let mut m = model();
+        for _ in 0..4 {
+            p.on_key(k(KeyCode::Down), &mut m);
+        }
+        p.on_key(k(KeyCode::Enter), &mut m);
+        // First option = "token_bucket"; Down moves to "leaky_bucket".
+        p.on_key(k(KeyCode::Down), &mut m);
+        p.on_key(k(KeyCode::Enter), &mut m);
+        assert_eq!(
+            m.profile()
+                .limits
+                .as_ref()
+                .and_then(|l| l.throttle_algorithm.clone())
+                .as_deref(),
+            Some("leaky_bucket")
+        );
+    }
+}

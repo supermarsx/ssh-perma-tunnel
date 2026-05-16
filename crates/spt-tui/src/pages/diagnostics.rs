@@ -70,3 +70,66 @@ impl Page for DiagnosticsPage {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
+
+    fn k(c: KeyCode) -> KeyEvent {
+        KeyEvent::new(c, KeyModifiers::NONE)
+    }
+
+    fn model() -> Model {
+        Model::from_str(
+            r#"version = 1
+[[profiles]]
+name = "p"
+protocol = "ssh2"
+"#,
+        )
+    }
+
+    #[test]
+    fn builds_with_expected_fields() {
+        let p = DiagnosticsPage::new();
+        let labels: Vec<&str> = p.list.fields.iter().map(|f| f.def.label).collect();
+        assert!(labels.contains(&"tags"));
+        assert!(labels.contains(&"acknowledge_experimental"));
+        assert!(labels.contains(&"ssh3.idle_timeout"));
+    }
+
+    #[test]
+    fn renders_without_panic() {
+        let mut p = DiagnosticsPage::new();
+        let m = model();
+        let area = Rect::new(0, 0, 100, 30);
+        let mut buf = Buffer::empty(area);
+        p.render(area, &mut buf, &m);
+    }
+
+    #[test]
+    fn tags_list_round_trip() {
+        let mut p = DiagnosticsPage::new();
+        let mut m = model();
+        p.on_key(k(KeyCode::Enter), &mut m);
+        for c in "alpha, beta".chars() {
+            p.on_key(k(KeyCode::Char(c)), &mut m);
+        }
+        p.on_key(k(KeyCode::Enter), &mut m);
+        let tags = m.profile().tags.clone().unwrap_or_default();
+        assert_eq!(tags, vec!["alpha", "beta"]);
+    }
+
+    #[test]
+    fn ack_experimental_toggle() {
+        let mut p = DiagnosticsPage::new();
+        let mut m = model();
+        p.on_key(k(KeyCode::Down), &mut m); // focus index 1
+        p.on_key(k(KeyCode::Enter), &mut m); // begin edit (Bool false)
+        p.on_key(k(KeyCode::Enter), &mut m); // flip+commit
+        assert_eq!(m.profile().acknowledge_experimental, Some(true));
+    }
+}

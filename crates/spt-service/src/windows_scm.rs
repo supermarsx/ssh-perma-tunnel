@@ -24,6 +24,17 @@
 //! `ParamChange` is mapped to a SIGHUP-equivalent reload signal per spec
 //! §13.7; spt-bin's runtime is expected to wait on
 //! [`ScmHandles::reload`] alongside its Unix `SIGHUP` handler.
+//!
+//! # Internal architecture
+//!
+//! The lifecycle paths route through a private [`ScmBackend`] trait so the
+//! SCM-facing logic (exit-code decoding, "service not installed" branch,
+//! `reload` precheck, `sc.exe` shell-out) can be exercised by an in-memory
+//! [`MockScmBackend`] without touching real Win32 handles. The production
+//! impl ([`WindowsServiceCrateBackend`]) wraps `windows-service 0.7`. The
+//! public [`WindowsScmManager`] type stays `#[derive(Debug, Default, Clone,
+//! Copy)]` and routes calls through `WindowsServiceCrateBackend` on Windows,
+//! preserving byte-identical public API.
 
 use std::sync::Arc;
 
@@ -31,7 +42,7 @@ use spt_core::error::Result;
 
 #[cfg(not(target_os = "windows"))]
 use crate::unsupported;
-use crate::{ServiceCapabilities, ServiceManager, ServiceSpec, ServiceStatus};
+use crate::{ServiceCapabilities, ServiceManager, ServiceSpec, ServiceState, ServiceStatus};
 
 /// Stable backend name reported via [`ServiceManager::name`].
 pub const BACKEND_NAME: &str = "windows-scm";
@@ -71,6 +82,286 @@ impl WindowsScmManager {
     #[must_use]
     pub const fn new() -> Self {
         Self
+    }
+}
+
+// ============================================================================
+// ScmBackend trait — internal indirection so the SCM-facing decision logic
+// can be exercised by an in-memory mock. Operation-level methods so the mock
+// never has to mint a real `windows-service::Service` handle (which wraps a
+// raw Win32 HSERVICE and cannot be synthesised outside the crate).
+// ============================================================================
+
+/// Outcome of a `windows-service` query, decoded into a portable form.
+///
+/// Mirrors the relevant fields of `windows_service::service::ServiceStatus`
+/// minus the foreign enums; constructed by [`ScmBackend::query_status`] and
+/// re-decoded by [`ScmManagerImpl::status`] into a [`ServiceStatus`].
+///
+/// Visibility: `pub` so [`crate::testing`] (gated behind `feature = "testing"`)
+/// can re-export it for external integration tests. Under default features
+/// the type lives in a `pub(crate)`-cfg-gated path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BackendStatus {
+    /// Mapped lifecycle state (already normalised to our enum).
+    pub state: ServiceState,
+    /// Win32 PID reported by SCM, if any.
+    pub pid: Option<u32>,
+    /// Exit code reported by SCM. `None` for `Win32(0)`; otherwise the raw
+    /// value from `ServiceExitCode::Win32` or `ServiceExitCode::ServiceSpecific`.
+    pub exit_code: Option<i32>,
+}
+
+/// Outcome of `ScmBackend::reload` precheck — separates "service is not
+/// running" from "send the SCM control" so the test mock can drive either
+/// branch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ReloadPrecheck {
+    /// Service is currently `Running`; safe to dispatch `paramchange`.
+    Running,
+    /// Service is not `Running`; caller should fail with a typed error.
+    NotRunning(ServiceState),
+}
+
+/// Internal trait abstracting the SCM operations used by [`WindowsScmManager`].
+///
+/// One implementation: [`WindowsServiceCrateBackend`] (Windows only, wraps
+/// `windows-service 0.7`). A second [`MockScmBackend`] sits behind
+/// `feature = "testing"` and records every call into a `Mutex<Vec<ScmCall>>`
+/// for inline coverage tests.
+///
+/// Method shapes deliberately avoid leaking `windows-service` types so the
+/// trait is implementable on any platform.
+///
+/// Visibility: `pub` so [`crate::testing`] can re-export the mock; the trait
+/// is not part of `spt-service`'s public *stable* contract — its API may
+/// shift between crate versions.
+pub trait ScmBackend: Send + Sync {
+    /// Pre-check whether SCM is reachable. Called by [`ScmManagerImpl::install`]
+    /// before constructing the `ServiceInfo`. Returns `Err` if the SCM cannot
+    /// be opened with `CREATE_SERVICE` rights (typically: not running as
+    /// Administrator).
+    fn open_scm(&self) -> Result<()>;
+
+    /// Pre-check whether `name` exists with the given access mask. Returns
+    /// `Ok(true)` if open succeeded, `Ok(false)` if the service does not
+    /// exist (so the caller can short-circuit to "`NotInstalled`" / "idempotent
+    /// uninstall"), `Err` for any other failure.
+    fn open_service_for(&self, name: &str, access: ScmAccess) -> Result<bool>;
+
+    /// Create the service. The caller has already rendered the
+    /// `launch_arguments` array (see [`scm_launch_arguments`]).
+    fn create_service(&self, spec: &ServiceSpec) -> Result<()>;
+
+    /// Start `name`. Returns `Err(...)` if SCM refuses (already-running is
+    /// not an error — backends decide).
+    fn start_service(&self, name: &str) -> Result<()>;
+
+    /// Stop `name`. Errors propagate; "already stopped" is **not** mapped
+    /// here — the SCM crate returns a typed error and we surface it.
+    fn stop_service(&self, name: &str) -> Result<()>;
+
+    /// Delete `name`. Caller has already ensured the service exists.
+    fn delete_service(&self, name: &str) -> Result<()>;
+
+    /// Query the live status of `name`. Returns `Ok(None)` if the service
+    /// does not exist (caller maps to `NotInstalled`).
+    fn query_status(&self, name: &str) -> Result<Option<BackendStatus>>;
+
+    /// Send `SERVICE_CONTROL_PARAMCHANGE` to `name`. The implementation
+    /// shells out to `sc.exe` on Windows because the `windows-service` 0.7
+    /// crate does not expose this control publicly.
+    fn send_paramchange(&self, name: &str) -> Result<()>;
+}
+
+/// Subset of `windows_service::service::ServiceAccess` rights used by
+/// [`ScmBackend::open_service_for`]. Defined here so the trait is
+/// implementable on non-Windows targets (the foreign type is gated to
+/// `target_os = "windows"`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScmAccess {
+    /// `QUERY_STATUS` — what `status` / `reload` pre-checks ask for.
+    QueryStatus,
+    /// `STOP | DELETE` — what `uninstall` asks for.
+    StopAndDelete,
+    /// `START` — what `start` asks for.
+    Start,
+    /// `STOP` — what `stop` asks for.
+    Stop,
+}
+
+// ============================================================================
+// WindowsServiceCrateBackend — real impl. Windows-only methods on Windows;
+// the type still exists on non-Windows so the trait surface is referenceable
+// (its methods return `unsupported` on non-Windows so the type still compiles).
+// ============================================================================
+
+/// Real SCM backend. Wraps `windows-service 0.7` calls.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct WindowsServiceCrateBackend;
+
+#[cfg(target_os = "windows")]
+impl ScmBackend for WindowsServiceCrateBackend {
+    fn open_scm(&self) -> Result<()> {
+        windows_impl::open_scm_for_create().map(|_| ())
+    }
+
+    fn open_service_for(&self, name: &str, access: ScmAccess) -> Result<bool> {
+        windows_impl::open_service_exists(name, access)
+    }
+
+    fn create_service(&self, spec: &ServiceSpec) -> Result<()> {
+        windows_impl::do_create_service(spec)
+    }
+
+    fn start_service(&self, name: &str) -> Result<()> {
+        windows_impl::do_start_service(name)
+    }
+
+    fn stop_service(&self, name: &str) -> Result<()> {
+        windows_impl::do_stop_service(name)
+    }
+
+    fn delete_service(&self, name: &str) -> Result<()> {
+        windows_impl::do_delete_service(name)
+    }
+
+    fn query_status(&self, name: &str) -> Result<Option<BackendStatus>> {
+        windows_impl::do_query_status(name)
+    }
+
+    fn send_paramchange(&self, name: &str) -> Result<()> {
+        windows_impl::do_send_paramchange(name)
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+impl ScmBackend for WindowsServiceCrateBackend {
+    fn open_scm(&self) -> Result<()> {
+        Err(unsupported(BACKEND_NAME, "open_scm"))
+    }
+    fn open_service_for(&self, _name: &str, _access: ScmAccess) -> Result<bool> {
+        Err(unsupported(BACKEND_NAME, "open_service"))
+    }
+    fn create_service(&self, _spec: &ServiceSpec) -> Result<()> {
+        Err(unsupported(BACKEND_NAME, "create_service"))
+    }
+    fn start_service(&self, _name: &str) -> Result<()> {
+        Err(unsupported(BACKEND_NAME, "start_service"))
+    }
+    fn stop_service(&self, _name: &str) -> Result<()> {
+        Err(unsupported(BACKEND_NAME, "stop_service"))
+    }
+    fn delete_service(&self, _name: &str) -> Result<()> {
+        Err(unsupported(BACKEND_NAME, "delete_service"))
+    }
+    fn query_status(&self, _name: &str) -> Result<Option<BackendStatus>> {
+        Err(unsupported(BACKEND_NAME, "query_status"))
+    }
+    fn send_paramchange(&self, _name: &str) -> Result<()> {
+        Err(unsupported(BACKEND_NAME, "send_paramchange"))
+    }
+}
+
+// ============================================================================
+// ScmManagerImpl — the business-logic newtype carrying an
+// `Arc<dyn ScmBackend>`. Public `WindowsScmManager` stays `Copy` and
+// constructs a fresh `ScmManagerImpl` per call (cheap; called inside a
+// `spawn_blocking` anyway).
+// ============================================================================
+
+/// Business-logic newtype carrying a backend handle.
+///
+/// All decision logic (exit-code mapping, `not running` precheck on reload,
+/// "`open_service` failed → `NotInstalled`" branches) lives here so it can be
+/// exercised by `MockScmBackend`.
+///
+/// Visibility: `pub` so external tests can construct `ScmManagerImpl::new(
+/// Arc::new(MockScmBackend::new()))` and drive the lifecycle methods.
+pub struct ScmManagerImpl {
+    backend: Arc<dyn ScmBackend>,
+}
+
+impl ScmManagerImpl {
+    /// Construct a manager around the supplied backend.
+    pub fn new(backend: Arc<dyn ScmBackend>) -> Self {
+        Self { backend }
+    }
+
+    /// Install + best-effort start. See module docs for sequencing.
+    pub fn install(&self, spec: &ServiceSpec) -> Result<()> {
+        // Cheap pre-flight so an immediately-following `create_service` call
+        // doesn't blow up with a noisier error if SCM isn't reachable.
+        self.backend.open_scm()?;
+        self.backend.create_service(spec)?;
+        // Best-effort start; post-install start failure is logged but does
+        // not fail the install — callers can retry via `start`.
+        if let Err(e) = self.backend.start_service(&spec.name) {
+            tracing::warn!(error = %e, name = %spec.name, "post-install start failed");
+        }
+        Ok(())
+    }
+
+    /// Idempotent uninstall — unknown services succeed.
+    pub fn uninstall(&self, name: &str) -> Result<()> {
+        // Idempotent: missing service is success.
+        let exists = self
+            .backend
+            .open_service_for(name, ScmAccess::StopAndDelete)?;
+        if !exists {
+            return Ok(());
+        }
+        // Best-effort stop before delete; stop errors are swallowed so we
+        // always reach the delete path.
+        let _ = self.backend.stop_service(name);
+        self.backend.delete_service(name)
+    }
+
+    /// Query lifecycle state.
+    pub fn status(&self, name: &str) -> Result<ServiceStatus> {
+        match self.backend.query_status(name)? {
+            None => Ok(ServiceStatus::new(ServiceState::NotInstalled)),
+            Some(bs) => Ok(ServiceStatus {
+                state: bs.state,
+                pid: bs.pid,
+                exit_code: bs.exit_code,
+                since: None,
+                restart_count: None,
+            }),
+        }
+    }
+
+    /// Start the service.
+    pub fn start(&self, name: &str) -> Result<()> {
+        self.backend.start_service(name)
+    }
+
+    /// Stop the service.
+    pub fn stop(&self, name: &str) -> Result<()> {
+        self.backend.stop_service(name)
+    }
+
+    /// Reload (paramchange) — refuses if the service is not running.
+    pub fn reload(&self, name: &str) -> Result<()> {
+        // Pre-flight: refuse if the service isn't running (so the caller
+        // gets a typed error instead of SCM silently dropping the control).
+        let precheck = match self.backend.query_status(name)? {
+            None => {
+                return Err(spt_core::error::Error::ServiceManagerFailed(format!(
+                    "reload({name}): service is not installed"
+                )));
+            }
+            Some(bs) if bs.state == ServiceState::Running => ReloadPrecheck::Running,
+            Some(bs) => ReloadPrecheck::NotRunning(bs.state),
+        };
+        match precheck {
+            ReloadPrecheck::Running => self.backend.send_paramchange(name),
+            ReloadPrecheck::NotRunning(state) => {
+                Err(spt_core::error::Error::ServiceManagerFailed(format!(
+                    "reload({name}): service is not running (state {state:?})"
+                )))
+            }
+        }
     }
 }
 
@@ -305,6 +596,262 @@ where
 }
 
 // ============================================================================
+// scm_launch_arguments — pure helper, no Win32 reach, cross-platform.
+// Exposed (crate-private) so tests can exercise it on every host.
+// ============================================================================
+
+/// Render the `launch_arguments` array we hand to SCM.
+///
+/// Prepends `--scm-dispatch` (idempotent) so the spt-bin entry point can
+/// detect SCM-driven invocation before clap parses `Cli`. Cross-platform
+/// `ServiceSpec` consumers (systemd / launchd / sysv / openrc render
+/// snapshots) do **not** use this helper; they keep `spec.args` verbatim.
+///
+/// Pure / sync so it's unit-testable without round-tripping SCM.
+pub(crate) fn scm_launch_arguments(spec_args: &[String]) -> Vec<std::ffi::OsString> {
+    const SCM_DISPATCH_FLAG: &str = "--scm-dispatch";
+    let mut out: Vec<std::ffi::OsString> = Vec::with_capacity(spec_args.len() + 1);
+    if !spec_args.iter().any(|a| a == SCM_DISPATCH_FLAG) {
+        out.push(std::ffi::OsString::from(SCM_DISPATCH_FLAG));
+    }
+    out.extend(spec_args.iter().map(std::ffi::OsString::from));
+    out
+}
+
+// ============================================================================
+// MockScmBackend — records every backend call into a `Mutex<Vec<ScmCall>>`
+// and returns programmable canned responses. Available cross-platform behind
+// `feature = "testing"` (and for inline `#[cfg(test)]` builds).
+// ============================================================================
+
+/// One observed call against a [`MockScmBackend`].
+#[cfg(any(test, feature = "testing"))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ScmCall {
+    /// `open_scm()` — pre-flight before install.
+    OpenScm,
+    /// `open_service_for(name, access)`.
+    OpenServiceFor(String, ScmAccess),
+    /// `create_service(spec)`.
+    CreateService(ServiceSpec),
+    /// `start_service(name)`.
+    StartService(String),
+    /// `stop_service(name)`.
+    StopService(String),
+    /// `delete_service(name)`.
+    DeleteService(String),
+    /// `query_status(name)`.
+    QueryStatus(String),
+    /// `send_paramchange(name)` — the `sc.exe control paramchange` path.
+    SendParamchange(String),
+}
+
+/// In-memory recording [`ScmBackend`] for hermetic tests.
+///
+/// Every call against the trait is recorded into a
+/// `parking_lot::Mutex<Vec<ScmCall>>`. Canned responses are configured up
+/// front via the `set_*` helpers; any unset response defaults to "success".
+///
+/// All response handles are cheap clones; the type itself is `Clone` so it
+/// can be shared between the test harness and the `Arc<dyn ScmBackend>`
+/// view handed to [`ScmManagerImpl::new`].
+///
+/// ```
+/// # use std::sync::Arc;
+/// # use spt_service::windows_scm::MockScmBackend;
+/// let mock = MockScmBackend::new();
+/// let _arc: Arc<dyn spt_service::windows_scm::ScmBackend> = Arc::new(mock.clone());
+/// assert_eq!(mock.calls().len(), 0);
+/// ```
+#[cfg(any(test, feature = "testing"))]
+#[derive(Debug, Clone, Default)]
+pub struct MockScmBackend {
+    inner: Arc<MockInner>,
+}
+
+#[cfg(any(test, feature = "testing"))]
+#[derive(Debug, Default)]
+struct MockInner {
+    calls: parking_lot::Mutex<Vec<ScmCall>>,
+    state: parking_lot::Mutex<MockState>,
+}
+
+#[cfg(any(test, feature = "testing"))]
+#[derive(Debug, Default)]
+struct MockState {
+    open_scm_err: Option<String>,
+    open_service_exists: std::collections::HashMap<String, bool>,
+    open_service_err: Option<String>,
+    create_service_err: Option<String>,
+    start_service_err: Option<String>,
+    stop_service_err: Option<String>,
+    delete_service_err: Option<String>,
+    query_status_results: std::collections::HashMap<String, Option<BackendStatus>>,
+    query_status_err: Option<String>,
+    send_paramchange_err: Option<String>,
+}
+
+#[cfg(any(test, feature = "testing"))]
+impl MockScmBackend {
+    /// New mock with no programmed responses. All calls succeed; status
+    /// queries return `None` (i.e. `NotInstalled`).
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Snapshot of every recorded call in chronological order.
+    #[must_use]
+    pub fn calls(&self) -> Vec<ScmCall> {
+        self.inner.calls.lock().clone()
+    }
+
+    /// Number of calls observed so far.
+    #[must_use]
+    pub fn call_count(&self) -> usize {
+        self.inner.calls.lock().len()
+    }
+
+    /// Programme [`ScmBackend::open_scm`] to fail with `msg`.
+    pub fn set_open_scm_error(&self, msg: impl Into<String>) {
+        self.inner.state.lock().open_scm_err = Some(msg.into());
+    }
+
+    /// Programme whether `name` is reported as existing by
+    /// [`ScmBackend::open_service_for`].
+    pub fn set_service_exists(&self, name: impl Into<String>, exists: bool) {
+        self.inner
+            .state
+            .lock()
+            .open_service_exists
+            .insert(name.into(), exists);
+    }
+
+    /// Programme [`ScmBackend::open_service_for`] to fail (used by tests
+    /// that want to exercise the SCM-not-reachable error path).
+    pub fn set_open_service_error(&self, msg: impl Into<String>) {
+        self.inner.state.lock().open_service_err = Some(msg.into());
+    }
+
+    /// Programme [`ScmBackend::create_service`] to fail.
+    pub fn set_create_service_error(&self, msg: impl Into<String>) {
+        self.inner.state.lock().create_service_err = Some(msg.into());
+    }
+
+    /// Programme [`ScmBackend::start_service`] to fail.
+    pub fn set_start_service_error(&self, msg: impl Into<String>) {
+        self.inner.state.lock().start_service_err = Some(msg.into());
+    }
+
+    /// Programme [`ScmBackend::stop_service`] to fail.
+    pub fn set_stop_service_error(&self, msg: impl Into<String>) {
+        self.inner.state.lock().stop_service_err = Some(msg.into());
+    }
+
+    /// Programme [`ScmBackend::delete_service`] to fail.
+    pub fn set_delete_service_error(&self, msg: impl Into<String>) {
+        self.inner.state.lock().delete_service_err = Some(msg.into());
+    }
+
+    /// Programme the response to [`ScmBackend::query_status`] for `name`.
+    ///
+    /// `None` means "service does not exist"; `Some(status)` is returned
+    /// verbatim.
+    pub fn set_query_status(&self, name: impl Into<String>, result: Option<BackendStatus>) {
+        self.inner
+            .state
+            .lock()
+            .query_status_results
+            .insert(name.into(), result);
+    }
+
+    /// Programme [`ScmBackend::query_status`] to fail.
+    pub fn set_query_status_error(&self, msg: impl Into<String>) {
+        self.inner.state.lock().query_status_err = Some(msg.into());
+    }
+
+    /// Programme [`ScmBackend::send_paramchange`] to fail.
+    pub fn set_send_paramchange_error(&self, msg: impl Into<String>) {
+        self.inner.state.lock().send_paramchange_err = Some(msg.into());
+    }
+
+    fn record(&self, call: ScmCall) {
+        self.inner.calls.lock().push(call);
+    }
+}
+
+#[cfg(any(test, feature = "testing"))]
+impl ScmBackend for MockScmBackend {
+    fn open_scm(&self) -> Result<()> {
+        self.record(ScmCall::OpenScm);
+        if let Some(msg) = self.inner.state.lock().open_scm_err.clone() {
+            return Err(spt_core::error::Error::ServiceManagerFailed(msg));
+        }
+        Ok(())
+    }
+
+    fn open_service_for(&self, name: &str, access: ScmAccess) -> Result<bool> {
+        self.record(ScmCall::OpenServiceFor(name.to_string(), access));
+        let st = self.inner.state.lock();
+        if let Some(msg) = st.open_service_err.clone() {
+            return Err(spt_core::error::Error::ServiceManagerFailed(msg));
+        }
+        // Default: exists = false (matches "uninstall of an unknown svc is a
+        // no-op" semantics).
+        Ok(st.open_service_exists.get(name).copied().unwrap_or(false))
+    }
+
+    fn create_service(&self, spec: &ServiceSpec) -> Result<()> {
+        self.record(ScmCall::CreateService(spec.clone()));
+        if let Some(msg) = self.inner.state.lock().create_service_err.clone() {
+            return Err(spt_core::error::Error::ServiceManagerFailed(msg));
+        }
+        Ok(())
+    }
+
+    fn start_service(&self, name: &str) -> Result<()> {
+        self.record(ScmCall::StartService(name.to_string()));
+        if let Some(msg) = self.inner.state.lock().start_service_err.clone() {
+            return Err(spt_core::error::Error::ServiceManagerFailed(msg));
+        }
+        Ok(())
+    }
+
+    fn stop_service(&self, name: &str) -> Result<()> {
+        self.record(ScmCall::StopService(name.to_string()));
+        if let Some(msg) = self.inner.state.lock().stop_service_err.clone() {
+            return Err(spt_core::error::Error::ServiceManagerFailed(msg));
+        }
+        Ok(())
+    }
+
+    fn delete_service(&self, name: &str) -> Result<()> {
+        self.record(ScmCall::DeleteService(name.to_string()));
+        if let Some(msg) = self.inner.state.lock().delete_service_err.clone() {
+            return Err(spt_core::error::Error::ServiceManagerFailed(msg));
+        }
+        Ok(())
+    }
+
+    fn query_status(&self, name: &str) -> Result<Option<BackendStatus>> {
+        self.record(ScmCall::QueryStatus(name.to_string()));
+        let st = self.inner.state.lock();
+        if let Some(msg) = st.query_status_err.clone() {
+            return Err(spt_core::error::Error::ServiceManagerFailed(msg));
+        }
+        Ok(st.query_status_results.get(name).copied().unwrap_or(None))
+    }
+
+    fn send_paramchange(&self, name: &str) -> Result<()> {
+        self.record(ScmCall::SendParamchange(name.to_string()));
+        if let Some(msg) = self.inner.state.lock().send_paramchange_err.clone() {
+            return Err(spt_core::error::Error::ServiceManagerFailed(msg));
+        }
+        Ok(())
+    }
+}
+
+// ============================================================================
 // Windows-only implementation module. Isolated so we can `use` Win32 types
 // without polluting the cross-platform path.
 // ============================================================================
@@ -327,7 +874,9 @@ mod windows_impl {
 
     use crate::{ServiceSpec, ServiceState, ServiceStatus};
 
-    use super::ScmHandles;
+    use super::{
+        BackendStatus, ScmAccess, ScmHandles, ScmManagerImpl, WindowsServiceCrateBackend,
+    };
 
     /// Map a `windows-service` state into our cross-platform [`ServiceState`].
     ///
@@ -341,9 +890,25 @@ mod windows_impl {
         }
     }
 
+    /// Decode `windows_service::ServiceAccess` from our portable enum.
+    fn map_access(a: ScmAccess) -> ServiceAccess {
+        match a {
+            ScmAccess::QueryStatus => ServiceAccess::QUERY_STATUS,
+            ScmAccess::StopAndDelete => ServiceAccess::STOP | ServiceAccess::DELETE,
+            ScmAccess::Start => ServiceAccess::START,
+            ScmAccess::Stop => ServiceAccess::STOP,
+        }
+    }
+
     fn open_scm(access: ServiceManagerAccess) -> Result<ScmHandle> {
         ScmHandle::local_computer(None::<&str>, access)
             .map_err(|e| Error::ServiceManagerFailed(format!("open SCM: {e}")))
+    }
+
+    /// Pre-flight: open SCM with `CREATE_SERVICE` rights. Used by
+    /// [`WindowsServiceCrateBackend::open_scm`] as an installable-check.
+    pub(super) fn open_scm_for_create() -> Result<ScmHandle> {
+        open_scm(ServiceManagerAccess::CREATE_SERVICE)
     }
 
     fn open_service_for(name: &str, access: ServiceAccess) -> Result<Service> {
@@ -352,25 +917,24 @@ mod windows_impl {
             .map_err(|e| Error::ServiceManagerFailed(format!("open_service({name}): {e}")))
     }
 
-    /// Render the `launch_arguments` array we hand to SCM.
+    /// Open `name` with `access` and report whether the open succeeded.
     ///
-    /// Prepends `--scm-dispatch` (idempotent) so the spt-bin entry point can
-    /// detect SCM-driven invocation before clap parses `Cli`. Cross-platform
-    /// `ServiceSpec` consumers (systemd / launchd / sysv / openrc render
-    /// snapshots) do **not** use this helper; they keep `spec.args` verbatim.
-    ///
-    /// Pure / sync so it's unit-testable without round-tripping SCM.
-    pub(super) fn scm_launch_arguments(spec_args: &[String]) -> Vec<OsString> {
-        const SCM_DISPATCH_FLAG: &str = "--scm-dispatch";
-        let mut out: Vec<OsString> = Vec::with_capacity(spec_args.len() + 1);
-        if !spec_args.iter().any(|a| a == SCM_DISPATCH_FLAG) {
-            out.push(OsString::from(SCM_DISPATCH_FLAG));
+    /// Returns `Ok(false)` when the service does not exist — `open_service`
+    /// returning an error is the SCM-native idiom for "doesn't exist", but
+    /// we cannot inspect the error variant generically because
+    /// `windows-service` 0.7 wraps Win32 errors opaquely. Any error here
+    /// surfaces as `Ok(false)` to match the original behaviour of
+    /// `uninstall` / `status` (which short-circuit on open failure).
+    pub(super) fn open_service_exists(name: &str, access: ScmAccess) -> Result<bool> {
+        let scm = open_scm(ServiceManagerAccess::CONNECT)?;
+        match scm.open_service(name, map_access(access)) {
+            Ok(_svc) => Ok(true),
+            Err(_) => Ok(false),
         }
-        out.extend(spec_args.iter().map(OsString::from));
-        out
     }
 
-    pub(super) fn install(spec: &ServiceSpec) -> Result<()> {
+    /// Real `create_service` impl.
+    pub(super) fn do_create_service(spec: &ServiceSpec) -> Result<()> {
         let scm = open_scm(ServiceManagerAccess::CREATE_SERVICE)?;
         let info = ServiceInfo {
             name: OsString::from(&spec.name),
@@ -379,38 +943,42 @@ mod windows_impl {
             start_type: ServiceStartType::AutoStart,
             error_control: ServiceErrorControl::Normal,
             executable_path: spec.exec_path.clone(),
-            launch_arguments: scm_launch_arguments(&spec.args),
+            launch_arguments: super::scm_launch_arguments(&spec.args),
             dependencies: vec![],
             account_name: None,
             account_password: None,
         };
-        let svc = scm
-            .create_service(&info, ServiceAccess::START | ServiceAccess::CHANGE_CONFIG)
+        scm.create_service(&info, ServiceAccess::START | ServiceAccess::CHANGE_CONFIG)
             .map_err(|e| Error::ServiceManagerFailed(format!("create_service: {e}")))?;
-        // Best-effort start; failure here is reported but the service is
-        // still installed. Callers can retry via `start`.
-        if let Err(e) = svc.start::<&str>(&[]) {
-            tracing::warn!(error = %e, name = %spec.name, "post-install start failed");
-        }
         Ok(())
     }
 
-    pub(super) fn uninstall(name: &str) -> Result<()> {
-        // Idempotent: missing service is success.
-        let scm = open_scm(ServiceManagerAccess::CONNECT)?;
-        let Ok(svc) = scm.open_service(name, ServiceAccess::STOP | ServiceAccess::DELETE) else {
-            return Ok(());
-        };
+    pub(super) fn do_start_service(name: &str) -> Result<()> {
+        let svc = open_service_for(name, ServiceAccess::START)?;
+        svc.start::<&str>(&[])
+            .map_err(|e| Error::ServiceManagerFailed(format!("start({name}): {e}")))?;
+        Ok(())
+    }
+
+    pub(super) fn do_stop_service(name: &str) -> Result<()> {
+        let svc = open_service_for(name, ServiceAccess::STOP)?;
+        svc.stop()
+            .map_err(|e| Error::ServiceManagerFailed(format!("stop({name}): {e}")))?;
+        Ok(())
+    }
+
+    pub(super) fn do_delete_service(name: &str) -> Result<()> {
+        let svc = open_service_for(name, ServiceAccess::STOP | ServiceAccess::DELETE)?;
         let _ = svc.stop();
         svc.delete()
             .map_err(|e| Error::ServiceManagerFailed(format!("delete service: {e}")))?;
         Ok(())
     }
 
-    pub(super) fn status(name: &str) -> Result<ServiceStatus> {
+    pub(super) fn do_query_status(name: &str) -> Result<Option<BackendStatus>> {
         let scm = open_scm(ServiceManagerAccess::CONNECT)?;
         let Ok(svc) = scm.open_service(name, ServiceAccess::QUERY_STATUS) else {
-            return Ok(ServiceStatus::new(ServiceState::NotInstalled));
+            return Ok(None);
         };
         let st = svc
             .query_status()
@@ -421,43 +989,14 @@ mod windows_impl {
                 Some(i32::try_from(c).unwrap_or(i32::MAX))
             }
         };
-        Ok(ServiceStatus {
+        Ok(Some(BackendStatus {
             state: map_state(st.current_state),
             pid: st.process_id,
             exit_code,
-            since: None,
-            restart_count: None,
-        })
+        }))
     }
 
-    pub(super) fn start(name: &str) -> Result<()> {
-        let svc = open_service_for(name, ServiceAccess::START)?;
-        svc.start::<&str>(&[])
-            .map_err(|e| Error::ServiceManagerFailed(format!("start({name}): {e}")))?;
-        Ok(())
-    }
-
-    pub(super) fn stop(name: &str) -> Result<()> {
-        let svc = open_service_for(name, ServiceAccess::STOP)?;
-        svc.stop()
-            .map_err(|e| Error::ServiceManagerFailed(format!("stop({name}): {e}")))?;
-        Ok(())
-    }
-
-    pub(super) fn reload(name: &str) -> Result<()> {
-        // Pre-flight: refuse if the service isn't running (so the caller
-        // gets a typed error instead of SCM silently dropping the
-        // control).
-        let svc = open_service_for(name, ServiceAccess::QUERY_STATUS)?;
-        let st = svc
-            .query_status()
-            .map_err(|e| Error::ServiceManagerFailed(format!("query_status({name}): {e}")))?;
-        if st.current_state != WinServiceState::Running {
-            return Err(Error::ServiceManagerFailed(format!(
-                "reload({name}): service is not running (state {:?})",
-                st.current_state
-            )));
-        }
+    pub(super) fn do_send_paramchange(name: &str) -> Result<()> {
         // The `windows-service` crate (0.7) doesn't expose
         // `send_control_command(ParamChange)` publicly — only Stop /
         // Pause / Continue and user-defined `notify(code)` codes (which
@@ -478,6 +1017,40 @@ mod windows_impl {
             )));
         }
         Ok(())
+    }
+
+    // --- Thin wrappers used by the async `impl ServiceManager for
+    // WindowsScmManager` above. Each one builds a fresh ScmManagerImpl
+    // around the real backend and forwards. Keeping the free fns at
+    // module level lets us reuse the existing spawn_blocking call sites
+    // without changing the public surface.
+
+    fn manager() -> ScmManagerImpl {
+        ScmManagerImpl::new(Arc::new(WindowsServiceCrateBackend))
+    }
+
+    pub(super) fn install(spec: &ServiceSpec) -> Result<()> {
+        manager().install(spec)
+    }
+
+    pub(super) fn uninstall(name: &str) -> Result<()> {
+        manager().uninstall(name)
+    }
+
+    pub(super) fn status(name: &str) -> Result<ServiceStatus> {
+        manager().status(name)
+    }
+
+    pub(super) fn start(name: &str) -> Result<()> {
+        manager().start(name)
+    }
+
+    pub(super) fn stop(name: &str) -> Result<()> {
+        manager().stop(name)
+    }
+
+    pub(super) fn reload(name: &str) -> Result<()> {
+        manager().reload(name)
     }
 
     // ------------------------------------------------------------------
@@ -684,47 +1257,6 @@ mod windows_impl {
         }
 
         #[test]
-        fn scm_launch_arguments_prepends_scm_dispatch_flag() {
-            let args = vec![
-                "tunnel".to_string(),
-                "run".to_string(),
-                "--foreground".to_string(),
-                "--config".to_string(),
-                "/etc/spt/spt.toml".to_string(),
-            ];
-            let rendered = scm_launch_arguments(&args);
-            assert_eq!(
-                rendered.first().and_then(|s| s.to_str()),
-                Some("--scm-dispatch")
-            );
-            assert_eq!(rendered.len(), args.len() + 1);
-            // Original args preserved in order.
-            for (i, a) in args.iter().enumerate() {
-                assert_eq!(rendered[i + 1].to_str(), Some(a.as_str()));
-            }
-        }
-
-        #[test]
-        fn scm_launch_arguments_is_idempotent() {
-            let args = vec![
-                "--scm-dispatch".to_string(),
-                "tunnel".to_string(),
-                "run".to_string(),
-            ];
-            let rendered = scm_launch_arguments(&args);
-            assert_eq!(
-                rendered.len(),
-                args.len(),
-                "should not duplicate --scm-dispatch"
-            );
-            let count = rendered
-                .iter()
-                .filter(|a| a.to_str() == Some("--scm-dispatch"))
-                .count();
-            assert_eq!(count, 1);
-        }
-
-        #[test]
         fn map_state_pending_states_are_unknown() {
             assert_eq!(
                 map_state(WinServiceState::StartPending),
@@ -736,17 +1268,38 @@ mod windows_impl {
             );
             assert_eq!(map_state(WinServiceState::Paused), ServiceState::Unknown);
         }
+
+        #[test]
+        fn map_access_round_trips_each_variant() {
+            assert_eq!(map_access(ScmAccess::QueryStatus), ServiceAccess::QUERY_STATUS);
+            assert_eq!(
+                map_access(ScmAccess::StopAndDelete),
+                ServiceAccess::STOP | ServiceAccess::DELETE
+            );
+            assert_eq!(map_access(ScmAccess::Start), ServiceAccess::START);
+            assert_eq!(map_access(ScmAccess::Stop), ServiceAccess::STOP);
+        }
     }
 }
 
 // ============================================================================
-// Tests (cross-platform — exercise capabilities + non-Windows stub paths;
-// real SCM round-trip lives in gated integration tests below).
+// Tests (cross-platform — exercise ScmManagerImpl via MockScmBackend, plus
+// capabilities + non-Windows stub paths; real SCM round-trip lives in gated
+// integration tests below).
 // ============================================================================
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ServiceSpec;
+
+    fn sample_spec(name: &str) -> ServiceSpec {
+        ServiceSpec {
+            name: name.to_string(),
+            description: format!("spt — test svc {name}"),
+            ..Default::default()
+        }
+    }
 
     #[test]
     fn name_is_windows_scm() {
@@ -767,6 +1320,21 @@ mod tests {
         assert!(!caps.supports_user_scope);
         assert!(!caps.supports_status_uptime);
         assert!(!caps.supports_restart_counter);
+    }
+
+    fn pick_default<T: Default>() -> T {
+        T::default()
+    }
+
+    #[test]
+    fn windows_scm_manager_is_copy_and_default_constructible() {
+        // Trips the compiler if anyone removes Copy/Default/Clone from the
+        // public type. `pick_default::<T>` exercises the `Default` impl
+        // without triggering clippy's "default_constructed_unit_structs".
+        let a = WindowsScmManager;
+        let b: WindowsScmManager = a;
+        let _c: WindowsScmManager = pick_default();
+        assert_eq!(a.name(), b.name());
     }
 
     #[cfg(not(target_os = "windows"))]
@@ -792,9 +1360,433 @@ mod tests {
     #[test]
     fn scm_handles_default_constructs() {
         let h = ScmHandles::new();
-        // Notify has no observable un-signalled state; just confirm the
-        // type is constructible without a runtime.
         let _ = format!("{h:?}");
+    }
+
+    // ------------------------------------------------------------------
+    // scm_launch_arguments — pure helper, cross-platform.
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn scm_launch_arguments_prepends_scm_dispatch_flag() {
+        let args = vec![
+            "tunnel".to_string(),
+            "run".to_string(),
+            "--foreground".to_string(),
+            "--config".to_string(),
+            "/etc/spt/spt.toml".to_string(),
+        ];
+        let rendered = scm_launch_arguments(&args);
+        assert_eq!(
+            rendered.first().and_then(|s| s.to_str()),
+            Some("--scm-dispatch")
+        );
+        assert_eq!(rendered.len(), args.len() + 1);
+        for (i, a) in args.iter().enumerate() {
+            assert_eq!(rendered[i + 1].to_str(), Some(a.as_str()));
+        }
+    }
+
+    #[test]
+    fn scm_launch_arguments_is_idempotent() {
+        let args = vec![
+            "--scm-dispatch".to_string(),
+            "tunnel".to_string(),
+            "run".to_string(),
+        ];
+        let rendered = scm_launch_arguments(&args);
+        assert_eq!(rendered.len(), args.len());
+        let count = rendered
+            .iter()
+            .filter(|a| a.to_str() == Some("--scm-dispatch"))
+            .count();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn scm_launch_arguments_empty_input_yields_just_the_flag() {
+        let rendered = scm_launch_arguments(&[]);
+        assert_eq!(rendered.len(), 1);
+        assert_eq!(rendered[0].to_str(), Some("--scm-dispatch"));
+    }
+
+    // ------------------------------------------------------------------
+    // Mock + ScmManagerImpl — happy paths.
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn install_records_open_scm_create_and_start_in_order() {
+        let mock = MockScmBackend::new();
+        let mgr = ScmManagerImpl::new(Arc::new(mock.clone()));
+        let spec = sample_spec("svc-install");
+        mgr.install(&spec).unwrap();
+        let calls = mock.calls();
+        assert!(matches!(calls[0], ScmCall::OpenScm));
+        assert!(matches!(&calls[1], ScmCall::CreateService(s) if s.name == "svc-install"));
+        assert!(matches!(&calls[2], ScmCall::StartService(n) if n == "svc-install"));
+        assert_eq!(calls.len(), 3);
+    }
+
+    #[test]
+    fn install_open_scm_failure_short_circuits() {
+        let mock = MockScmBackend::new();
+        mock.set_open_scm_error("access denied");
+        let mgr = ScmManagerImpl::new(Arc::new(mock.clone()));
+        let err = mgr.install(&sample_spec("svc-x")).unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("access denied"), "got: {msg}");
+        // create_service must NOT have been called.
+        let calls = mock.calls();
+        assert_eq!(calls.len(), 1);
+        assert!(matches!(calls[0], ScmCall::OpenScm));
+    }
+
+    #[test]
+    fn install_create_failure_propagates_without_start() {
+        let mock = MockScmBackend::new();
+        mock.set_create_service_error("dupe name");
+        let mgr = ScmManagerImpl::new(Arc::new(mock.clone()));
+        let err = mgr.install(&sample_spec("svc-dupe")).unwrap_err();
+        assert!(format!("{err}").contains("dupe name"));
+        let calls = mock.calls();
+        // OpenScm + CreateService, no Start.
+        assert_eq!(calls.len(), 2);
+        assert!(!calls.iter().any(|c| matches!(c, ScmCall::StartService(_))));
+    }
+
+    #[test]
+    fn install_start_failure_does_not_fail_install() {
+        let mock = MockScmBackend::new();
+        mock.set_start_service_error("start failed");
+        let mgr = ScmManagerImpl::new(Arc::new(mock.clone()));
+        mgr.install(&sample_spec("svc-warn")).unwrap();
+        let calls = mock.calls();
+        assert_eq!(calls.len(), 3);
+        assert!(matches!(calls[2], ScmCall::StartService(_)));
+    }
+
+    #[test]
+    fn uninstall_unknown_service_is_no_op() {
+        let mock = MockScmBackend::new();
+        let mgr = ScmManagerImpl::new(Arc::new(mock.clone()));
+        mgr.uninstall("ghost").unwrap();
+        let calls = mock.calls();
+        assert_eq!(calls.len(), 1);
+        assert!(matches!(&calls[0], ScmCall::OpenServiceFor(n, ScmAccess::StopAndDelete) if n == "ghost"));
+    }
+
+    #[test]
+    fn uninstall_existing_service_stops_then_deletes() {
+        let mock = MockScmBackend::new();
+        mock.set_service_exists("svc-real", true);
+        let mgr = ScmManagerImpl::new(Arc::new(mock.clone()));
+        mgr.uninstall("svc-real").unwrap();
+        let calls = mock.calls();
+        assert_eq!(calls.len(), 3);
+        assert!(matches!(&calls[0], ScmCall::OpenServiceFor(n, _) if n == "svc-real"));
+        assert!(matches!(&calls[1], ScmCall::StopService(n) if n == "svc-real"));
+        assert!(matches!(&calls[2], ScmCall::DeleteService(n) if n == "svc-real"));
+    }
+
+    #[test]
+    fn uninstall_swallows_stop_error_and_still_deletes() {
+        let mock = MockScmBackend::new();
+        mock.set_service_exists("svc-locked", true);
+        mock.set_stop_service_error("service won't stop");
+        let mgr = ScmManagerImpl::new(Arc::new(mock.clone()));
+        mgr.uninstall("svc-locked").unwrap();
+        let calls = mock.calls();
+        // Stop attempted, but Delete still called and succeeded.
+        assert!(calls.iter().any(|c| matches!(c, ScmCall::StopService(_))));
+        assert!(calls.iter().any(|c| matches!(c, ScmCall::DeleteService(_))));
+    }
+
+    #[test]
+    fn uninstall_delete_error_propagates() {
+        let mock = MockScmBackend::new();
+        mock.set_service_exists("svc", true);
+        mock.set_delete_service_error("delete forbidden");
+        let mgr = ScmManagerImpl::new(Arc::new(mock.clone()));
+        let err = mgr.uninstall("svc").unwrap_err();
+        assert!(format!("{err}").contains("delete forbidden"));
+    }
+
+    #[test]
+    fn uninstall_open_service_error_propagates() {
+        let mock = MockScmBackend::new();
+        mock.set_open_service_error("rpc unavailable");
+        let mgr = ScmManagerImpl::new(Arc::new(mock.clone()));
+        let err = mgr.uninstall("svc").unwrap_err();
+        assert!(format!("{err}").contains("rpc unavailable"));
+    }
+
+    // ------------------------------------------------------------------
+    // Status
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn status_missing_service_yields_not_installed() {
+        let mock = MockScmBackend::new();
+        let mgr = ScmManagerImpl::new(Arc::new(mock.clone()));
+        let st = mgr.status("ghost").unwrap();
+        assert_eq!(st.state, ServiceState::NotInstalled);
+        assert!(st.pid.is_none());
+        assert!(st.exit_code.is_none());
+        // QueryStatus call was recorded.
+        assert!(matches!(&mock.calls()[0], ScmCall::QueryStatus(n) if n == "ghost"));
+    }
+
+    #[test]
+    fn status_running_propagates_pid_and_state() {
+        let mock = MockScmBackend::new();
+        mock.set_query_status(
+            "svc-up",
+            Some(BackendStatus {
+                state: ServiceState::Running,
+                pid: Some(1234),
+                exit_code: None,
+            }),
+        );
+        let mgr = ScmManagerImpl::new(Arc::new(mock));
+        let st = mgr.status("svc-up").unwrap();
+        assert_eq!(st.state, ServiceState::Running);
+        assert_eq!(st.pid, Some(1234));
+        assert!(st.exit_code.is_none());
+        assert!(st.since.is_none());
+        assert!(st.restart_count.is_none());
+    }
+
+    #[test]
+    fn status_stopped_with_exit_code_propagates() {
+        let mock = MockScmBackend::new();
+        mock.set_query_status(
+            "svc-fail",
+            Some(BackendStatus {
+                state: ServiceState::Stopped,
+                pid: None,
+                exit_code: Some(42),
+            }),
+        );
+        let mgr = ScmManagerImpl::new(Arc::new(mock));
+        let st = mgr.status("svc-fail").unwrap();
+        assert_eq!(st.state, ServiceState::Stopped);
+        assert_eq!(st.exit_code, Some(42));
+    }
+
+    #[test]
+    fn status_backend_error_propagates() {
+        let mock = MockScmBackend::new();
+        mock.set_query_status_error("scm down");
+        let mgr = ScmManagerImpl::new(Arc::new(mock));
+        let err = mgr.status("svc").unwrap_err();
+        assert!(format!("{err}").contains("scm down"));
+    }
+
+    // ------------------------------------------------------------------
+    // Start / Stop pass-through
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn start_passes_through_to_backend() {
+        let mock = MockScmBackend::new();
+        let mgr = ScmManagerImpl::new(Arc::new(mock.clone()));
+        mgr.start("svc").unwrap();
+        assert!(matches!(&mock.calls()[0], ScmCall::StartService(n) if n == "svc"));
+    }
+
+    #[test]
+    fn start_error_propagates() {
+        let mock = MockScmBackend::new();
+        mock.set_start_service_error("boom");
+        let mgr = ScmManagerImpl::new(Arc::new(mock));
+        let err = mgr.start("svc").unwrap_err();
+        assert!(format!("{err}").contains("boom"));
+    }
+
+    #[test]
+    fn stop_passes_through_to_backend() {
+        let mock = MockScmBackend::new();
+        let mgr = ScmManagerImpl::new(Arc::new(mock.clone()));
+        mgr.stop("svc").unwrap();
+        assert!(matches!(&mock.calls()[0], ScmCall::StopService(n) if n == "svc"));
+    }
+
+    #[test]
+    fn stop_error_propagates() {
+        let mock = MockScmBackend::new();
+        mock.set_stop_service_error("nope");
+        let mgr = ScmManagerImpl::new(Arc::new(mock));
+        let err = mgr.stop("svc").unwrap_err();
+        assert!(format!("{err}").contains("nope"));
+    }
+
+    // ------------------------------------------------------------------
+    // Reload
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn reload_on_running_service_sends_paramchange() {
+        let mock = MockScmBackend::new();
+        mock.set_query_status(
+            "svc-up",
+            Some(BackendStatus {
+                state: ServiceState::Running,
+                pid: Some(1),
+                exit_code: None,
+            }),
+        );
+        let mgr = ScmManagerImpl::new(Arc::new(mock.clone()));
+        mgr.reload("svc-up").unwrap();
+        let calls = mock.calls();
+        assert!(matches!(&calls[0], ScmCall::QueryStatus(n) if n == "svc-up"));
+        assert!(matches!(&calls[1], ScmCall::SendParamchange(n) if n == "svc-up"));
+    }
+
+    #[test]
+    fn reload_on_stopped_service_errors_without_paramchange() {
+        let mock = MockScmBackend::new();
+        mock.set_query_status(
+            "svc-down",
+            Some(BackendStatus {
+                state: ServiceState::Stopped,
+                pid: None,
+                exit_code: None,
+            }),
+        );
+        let mgr = ScmManagerImpl::new(Arc::new(mock.clone()));
+        let err = mgr.reload("svc-down").unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("not running"), "got: {msg}");
+        // No paramchange sent.
+        assert!(!mock
+            .calls()
+            .iter()
+            .any(|c| matches!(c, ScmCall::SendParamchange(_))));
+    }
+
+    #[test]
+    fn reload_on_unknown_state_errors_without_paramchange() {
+        let mock = MockScmBackend::new();
+        mock.set_query_status(
+            "svc-pend",
+            Some(BackendStatus {
+                state: ServiceState::Unknown,
+                pid: None,
+                exit_code: None,
+            }),
+        );
+        let mgr = ScmManagerImpl::new(Arc::new(mock.clone()));
+        let err = mgr.reload("svc-pend").unwrap_err();
+        assert!(format!("{err}").contains("not running"));
+    }
+
+    #[test]
+    fn reload_on_missing_service_errors_with_typed_message() {
+        let mock = MockScmBackend::new();
+        let mgr = ScmManagerImpl::new(Arc::new(mock.clone()));
+        let err = mgr.reload("ghost").unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("not installed"), "got: {msg}");
+    }
+
+    #[test]
+    fn reload_query_status_error_propagates() {
+        let mock = MockScmBackend::new();
+        mock.set_query_status_error("scm error");
+        let mgr = ScmManagerImpl::new(Arc::new(mock));
+        let err = mgr.reload("svc").unwrap_err();
+        assert!(format!("{err}").contains("scm error"));
+    }
+
+    #[test]
+    fn reload_paramchange_failure_propagates() {
+        let mock = MockScmBackend::new();
+        mock.set_query_status(
+            "svc",
+            Some(BackendStatus {
+                state: ServiceState::Running,
+                pid: Some(1),
+                exit_code: None,
+            }),
+        );
+        mock.set_send_paramchange_error("sc.exe exit 5");
+        let mgr = ScmManagerImpl::new(Arc::new(mock));
+        let err = mgr.reload("svc").unwrap_err();
+        assert!(format!("{err}").contains("sc.exe exit 5"));
+    }
+
+    // ------------------------------------------------------------------
+    // ScmCall + BackendStatus + ScmAccess derives
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn scm_call_derives_debug_clone_eq() {
+        let c = ScmCall::StartService("svc".into());
+        let c2 = c.clone();
+        assert_eq!(c, c2);
+        let _ = format!("{c:?}");
+    }
+
+    #[test]
+    fn scm_access_round_trip_via_clone() {
+        for a in [
+            ScmAccess::QueryStatus,
+            ScmAccess::StopAndDelete,
+            ScmAccess::Start,
+            ScmAccess::Stop,
+        ] {
+            assert_eq!(a, a);
+            let _ = format!("{a:?}");
+        }
+    }
+
+    #[test]
+    fn backend_status_eq_and_debug() {
+        let a = BackendStatus {
+            state: ServiceState::Running,
+            pid: Some(1),
+            exit_code: None,
+        };
+        let b = a;
+        assert_eq!(a, b);
+        let _ = format!("{a:?}");
+    }
+
+    #[test]
+    fn mock_default_yields_empty_call_log() {
+        let m: MockScmBackend = MockScmBackend::default();
+        assert_eq!(m.calls().len(), 0);
+        assert_eq!(m.call_count(), 0);
+    }
+
+    // ------------------------------------------------------------------
+    // WindowsServiceCrateBackend non-Windows stubs (cross-platform sanity).
+    //
+    // These only execute on non-Windows targets. On Windows the real impl
+    // would touch SCM and must NOT run from unit tests.
+    // ------------------------------------------------------------------
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn real_backend_stubs_return_unsupported_on_non_windows() {
+        use spt_core::error::Error;
+        let be = WindowsServiceCrateBackend;
+        for err in [
+            be.open_scm().unwrap_err(),
+            be.open_service_for("x", ScmAccess::Start).unwrap_err(),
+            be.create_service(&ServiceSpec::default()).unwrap_err(),
+            be.start_service("x").unwrap_err(),
+            be.stop_service("x").unwrap_err(),
+            be.delete_service("x").unwrap_err(),
+            be.send_paramchange("x").unwrap_err(),
+        ] {
+            assert!(matches!(err, Error::UnsupportedPlatform(_)));
+        }
+        // query_status returns Result<Option<_>>; check separately.
+        assert!(matches!(
+            be.query_status("x").unwrap_err(),
+            Error::UnsupportedPlatform(_)
+        ));
     }
 }
 
@@ -875,5 +1867,33 @@ mod integration_tests {
             "unexpected error: {msg}"
         );
         mgr.uninstall(&name).await.expect("uninstall");
+    }
+
+    /// Drive the real `WindowsServiceCrateBackend` through the full
+    /// install/start/status/stop/uninstall cycle. Requires Administrator.
+    ///
+    /// This is the only test that exercises the real backend's
+    /// `windows-service`-crate calls — every other test uses
+    /// `MockScmBackend`.
+    #[tokio::test]
+    #[ignore = "requires admin and a real Windows session"]
+    async fn real_backend_full_lifecycle() {
+        use std::sync::Arc;
+        let backend = Arc::new(WindowsServiceCrateBackend);
+        let mgr = ScmManagerImpl::new(backend);
+        let name = unique_name();
+        let spec = ServiceSpec {
+            name: name.clone(),
+            description: "spt — real backend lifecycle".into(),
+            exec_path: cmd_exe_path(),
+            args: vec!["/c".into(), "exit".into(), "0".into()],
+            ..Default::default()
+        };
+        mgr.install(&spec).expect("install");
+        let st = mgr.status(&name).expect("status");
+        assert_ne!(st.state, crate::ServiceState::NotInstalled);
+        mgr.uninstall(&name).expect("uninstall");
+        let st2 = mgr.status(&name).expect("status post-uninstall");
+        assert_eq!(st2.state, crate::ServiceState::NotInstalled);
     }
 }

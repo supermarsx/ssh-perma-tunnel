@@ -75,3 +75,88 @@ impl Page for DnsPage {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
+    use spt_config::schema::Forward;
+
+    fn k(c: KeyCode) -> KeyEvent {
+        KeyEvent::new(c, KeyModifiers::NONE)
+    }
+
+    fn model_with_forward() -> Model {
+        let mut m = Model::from_str(
+            r#"version = 1
+[[profiles]]
+name = "p"
+protocol = "ssh2"
+"#,
+        );
+        m.profile_mut().forwards.push(Forward {
+            name: "f1".into(),
+            kind: "local".into(),
+            transport: "tcp".into(),
+            ..Default::default()
+        });
+        m
+    }
+
+    #[test]
+    fn renders_without_forwards() {
+        let mut p = DnsPage::new();
+        let m = Model::from_str(
+            r#"version = 1
+[[profiles]]
+name = "p"
+protocol = "ssh2"
+"#,
+        );
+        let area = Rect::new(0, 0, 100, 30);
+        let mut buf = Buffer::empty(area);
+        p.render(area, &mut buf, &m);
+    }
+
+    #[test]
+    fn renders_with_global_dns_records() {
+        let m = Model::from_str(
+            r#"version = 1
+[[profiles]]
+name = "p"
+protocol = "ssh2"
+
+[[dns.records]]
+name = "service.local"
+type = "A"
+value = "127.0.0.1"
+"#,
+        );
+        let mut p = DnsPage::new();
+        let area = Rect::new(0, 0, 100, 30);
+        let mut buf = Buffer::empty(area);
+        p.render(area, &mut buf, &m);
+        let mut s = String::new();
+        for y in 0..area.height {
+            for x in 0..area.width {
+                s.push_str(buf[(x, y)].symbol());
+            }
+        }
+        assert!(s.contains("service.local"));
+    }
+
+    #[test]
+    fn list_edit_round_trip() {
+        let mut p = DnsPage::new();
+        let mut m = model_with_forward();
+        p.on_key(k(KeyCode::Enter), &mut m); // begin edit
+        for c in "a.example, b.example".chars() {
+            p.on_key(k(KeyCode::Char(c)), &mut m);
+        }
+        p.on_key(k(KeyCode::Enter), &mut m); // commit
+        let names = m.profile().forwards[0].dns_names.clone().unwrap_or_default();
+        assert_eq!(names, vec!["a.example", "b.example"]);
+    }
+}

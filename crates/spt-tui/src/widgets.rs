@@ -458,4 +458,282 @@ mod tests {
         let l = StringList::from_vec(&["aes256-gcm".into(), "chacha20".into()]);
         assert_eq!(l.parse(), vec!["aes256-gcm", "chacha20"]);
     }
+
+    fn render_into(area: Rect, draw: impl FnOnce(&mut Buffer)) -> String {
+        let mut buf = Buffer::empty(area);
+        draw(&mut buf);
+        let mut out = String::new();
+        for y in 0..area.height {
+            for x in 0..area.width {
+                out.push_str(buf[(x, y)].symbol());
+            }
+            out.push('\n');
+        }
+        out
+    }
+
+    #[test]
+    fn text_input_left_right_home_end() {
+        let mut t = TextInput::default();
+        let mut v = String::from("hello");
+        t.cursor = 5;
+        t.on_key(&mut v, key(KeyCode::Left));
+        assert_eq!(t.cursor, 4);
+        t.on_key(&mut v, key(KeyCode::Home));
+        assert_eq!(t.cursor, 0);
+        t.on_key(&mut v, key(KeyCode::Right));
+        assert_eq!(t.cursor, 1);
+        t.on_key(&mut v, key(KeyCode::End));
+        assert_eq!(t.cursor, 5);
+        // Left at 0 saturates.
+        t.cursor = 0;
+        t.on_key(&mut v, key(KeyCode::Left));
+        assert_eq!(t.cursor, 0);
+        // Right past end is noop.
+        t.cursor = 5;
+        t.on_key(&mut v, key(KeyCode::Right));
+        assert_eq!(t.cursor, 5);
+    }
+
+    #[test]
+    fn text_input_delete_at_end_is_noop() {
+        let mut t = TextInput::default();
+        let mut v = String::from("hi");
+        t.cursor = 2;
+        let changed = t.on_key(&mut v, key(KeyCode::Delete));
+        assert!(!changed);
+        assert_eq!(v, "hi");
+    }
+
+    #[test]
+    fn text_input_delete_removes_char_at_cursor() {
+        let mut t = TextInput::default();
+        let mut v = String::from("abc");
+        t.cursor = 1;
+        let changed = t.on_key(&mut v, key(KeyCode::Delete));
+        assert!(changed);
+        assert_eq!(v, "ac");
+    }
+
+    #[test]
+    fn text_input_backspace_at_zero_is_noop() {
+        let mut t = TextInput::default();
+        let mut v = String::from("x");
+        t.cursor = 0;
+        assert!(!t.on_key(&mut v, key(KeyCode::Backspace)));
+        assert_eq!(v, "x");
+    }
+
+    #[test]
+    fn text_input_ctrl_chars_are_ignored() {
+        let mut t = TextInput::default();
+        let mut v = String::new();
+        let k = KeyEvent {
+            code: KeyCode::Char('s'),
+            modifiers: KeyModifiers::CONTROL,
+            kind: KeyEventKind::Press,
+            state: crossterm::event::KeyEventState::NONE,
+        };
+        assert!(!t.on_key(&mut v, k));
+        assert!(v.is_empty());
+    }
+
+    #[test]
+    fn text_input_clamp_handles_too_large_cursor() {
+        let mut t = TextInput {
+            cursor: 99, // way out of range
+            ..TextInput::default()
+        };
+        let mut v = String::from("abc");
+        t.on_key(&mut v, key(KeyCode::Char('x')));
+        // Cursor was clamped to len=3, char appended.
+        assert_eq!(v, "abcx");
+    }
+
+    #[test]
+    fn text_input_unicode_inserts() {
+        let mut t = TextInput::default();
+        let mut v = String::new();
+        t.on_key(&mut v, key(KeyCode::Char('ö')));
+        t.on_key(&mut v, key(KeyCode::Char('日')));
+        assert_eq!(v, "ö日");
+        assert_eq!(t.cursor, 2);
+    }
+
+    #[test]
+    fn text_input_render_shows_caret_when_focused() {
+        let t = TextInput {
+            cursor: 1,
+            focused: true,
+        };
+        let area = Rect::new(0, 0, 30, 3);
+        let s = render_into(area, |buf| t.render(area, buf, "label", "ab"));
+        assert!(s.contains('▏'));
+        assert!(s.contains("label"));
+    }
+
+    #[test]
+    fn text_input_render_no_caret_when_unfocused() {
+        let t = TextInput {
+            cursor: 0,
+            focused: false,
+        };
+        let area = Rect::new(0, 0, 30, 3);
+        let s = render_into(area, |buf| t.render(area, buf, "label", "ab"));
+        assert!(!s.contains('▏'));
+    }
+
+    #[test]
+    fn numeric_input_renders_via_underlying_text() {
+        let n = NumericInput::default();
+        let area = Rect::new(0, 0, 30, 3);
+        let s = render_into(area, |buf| n.render(area, buf, "port", "22"));
+        assert!(s.contains("22"));
+        assert!(s.contains("port"));
+    }
+
+    #[test]
+    fn toggle_renders_distinct_states() {
+        let t = Toggle { focused: false };
+        let area = Rect::new(0, 0, 30, 3);
+        let yes = render_into(area, |buf| t.render(area, buf, "agent", true));
+        let no = render_into(area, |buf| t.render(area, buf, "agent", false));
+        assert!(yes.contains("yes"));
+        assert!(no.contains("no"));
+    }
+
+    #[test]
+    fn toggle_yn_chars_flip() {
+        let t = Toggle::default();
+        let mut v = false;
+        t.on_key(&mut v, key(KeyCode::Char('y')));
+        assert!(v);
+        t.on_key(&mut v, key(KeyCode::Char('n')));
+        assert!(!v);
+    }
+
+    #[test]
+    fn select_up_at_zero_is_noop() {
+        let mut s = Select::default();
+        let mut out = String::new();
+        let opts = ["a", "b"];
+        s.on_key(&opts, &mut out, key(KeyCode::Up));
+        assert_eq!(s.index, 0);
+    }
+
+    #[test]
+    fn select_down_past_end_clamps() {
+        let mut s = Select::default();
+        let mut out = String::new();
+        let opts = ["a", "b"];
+        s.on_key(&opts, &mut out, key(KeyCode::Down));
+        s.on_key(&opts, &mut out, key(KeyCode::Down)); // would go to 2
+        assert_eq!(s.index, 1);
+    }
+
+    #[test]
+    fn select_renders_current_marker() {
+        let s = Select {
+            index: 1,
+            focused: true,
+        };
+        let area = Rect::new(0, 0, 30, 6);
+        let opts = ["a", "b"];
+        let out = render_into(area, |buf| s.render(area, buf, "kind", &opts, "b"));
+        assert!(out.contains('●'));
+        assert!(out.contains('○'));
+    }
+
+    #[test]
+    fn multi_select_render_shows_marks() {
+        let m = MultiSelect::default();
+        let area = Rect::new(0, 0, 30, 6);
+        let opts = ["aa", "bb"];
+        let sel = vec!["aa".to_owned()];
+        let out = render_into(area, |buf| m.render(area, buf, "lst", &opts, &sel));
+        assert!(out.contains("[x] aa"));
+        assert!(out.contains("[ ] bb"));
+    }
+
+    #[test]
+    fn multi_select_up_saturates() {
+        let mut m = MultiSelect::default();
+        let mut sel: Vec<String> = vec![];
+        let opts = ["a", "b"];
+        m.on_key(&opts, &mut sel, key(KeyCode::Up));
+        assert_eq!(m.index, 0);
+    }
+
+    #[test]
+    fn multi_select_down_clamps_at_end() {
+        let mut m = MultiSelect::default();
+        let mut sel: Vec<String> = vec![];
+        let opts = ["a", "b"];
+        m.on_key(&opts, &mut sel, key(KeyCode::Down));
+        m.on_key(&opts, &mut sel, key(KeyCode::Down)); // would push to 2
+        assert_eq!(m.index, 1);
+    }
+
+    #[test]
+    fn string_list_render_does_not_panic() {
+        let l = StringList::from_vec(&["a".into()]);
+        let area = Rect::new(0, 0, 30, 3);
+        let out = render_into(area, |buf| l.render(area, buf, "lst"));
+        assert!(out.contains("lst"));
+    }
+
+    #[test]
+    fn string_list_on_key_inserts_chars() {
+        let mut l = StringList::default();
+        assert!(l.on_key(key(KeyCode::Char('x'))));
+        assert_eq!(l.raw, "x");
+    }
+
+    #[test]
+    fn string_list_from_vec_seeds_raw() {
+        let l = StringList::from_vec(&["aa".into(), "bb".into()]);
+        assert_eq!(l.raw, "aa, bb");
+        assert_eq!(l.text.cursor, "aa, bb".chars().count());
+    }
+
+    #[test]
+    fn select_no_match_no_panic() {
+        let mut s = Select::default();
+        let mut out = String::new();
+        let opts: [&str; 0] = [];
+        // Empty options + Enter: index stays 0 and no value written.
+        assert!(!s.on_key(&opts, &mut out, key(KeyCode::Enter)));
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn multi_select_empty_options_enter_noop() {
+        let mut m = MultiSelect::default();
+        let mut sel: Vec<String> = vec![];
+        let opts: [&str; 0] = [];
+        assert!(!m.on_key(&opts, &mut sel, key(KeyCode::Enter)));
+    }
+
+    #[test]
+    fn text_input_unhandled_keys_return_false() {
+        let mut t = TextInput::default();
+        let mut v = String::new();
+        let k = KeyEvent {
+            code: KeyCode::F(5),
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: crossterm::event::KeyEventState::NONE,
+        };
+        assert!(!t.on_key(&mut v, k));
+    }
+
+    #[test]
+    fn numeric_input_pass_through_navigation() {
+        let mut n = NumericInput::default();
+        let mut v = String::from("12");
+        n.text.cursor = 2;
+        // Left arrow should pass through.
+        assert!(!n.on_key(&mut v, key(KeyCode::Left)));
+        assert_eq!(n.text.cursor, 1);
+    }
 }

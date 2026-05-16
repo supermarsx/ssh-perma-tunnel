@@ -55,3 +55,149 @@ pub fn from_io(context: &str, e: &io::Error) -> Error {
         _ => Error::RuntimeFailure(format!("{context}: {e}")),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use async_ssh2_lite::Error as AsyncSshError;
+    use io::ErrorKind;
+    use ssh2::ErrorCode;
+
+    fn mk_ssh2(code: i32, msg: &'static str) -> ssh2::Error {
+        ssh2::Error::new(ErrorCode::Session(code), msg)
+    }
+
+    #[test]
+    fn from_ssh2_auth_failed_negative_18() {
+        let e = mk_ssh2(-18, "auth fail");
+        let mapped = from_ssh2("ctx", &e);
+        assert!(matches!(mapped, Error::AuthFailed(ref s) if s.contains("ctx") && s.contains("auth fail")));
+    }
+
+    #[test]
+    fn from_ssh2_auth_failed_negative_16_pubkey_unrecognized() {
+        let e = mk_ssh2(-16, "pubkey unrecognized");
+        assert!(matches!(from_ssh2("ctx", &e), Error::AuthFailed(_)));
+    }
+
+    #[test]
+    fn from_ssh2_auth_failed_negative_19_pubkey_unverified() {
+        let e = mk_ssh2(-19, "pubkey unverified");
+        assert!(matches!(from_ssh2("ctx", &e), Error::AuthFailed(_)));
+    }
+
+    #[test]
+    fn from_ssh2_hostkey_init_negative_44_yields_trust_failed() {
+        let e = mk_ssh2(-44, "hostkey init failed");
+        assert!(matches!(from_ssh2("ctx", &e), Error::TrustFailed(_)));
+    }
+
+    #[test]
+    fn from_ssh2_default_negative_8_is_runtime_failure() {
+        // The famous -8 KEY_EXCHANGE_FAILURE.
+        let e = mk_ssh2(-8, "kex failure");
+        let mapped = from_ssh2("kex", &e);
+        match mapped {
+            Error::RuntimeFailure(s) => {
+                assert!(s.contains("kex"));
+                assert!(s.contains("kex failure"));
+            }
+            other => panic!("expected RuntimeFailure, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn from_io_connection_refused_is_network_unreachable() {
+        let e = io::Error::from(ErrorKind::ConnectionRefused);
+        assert!(matches!(from_io("ctx", &e), Error::NetworkUnreachable(_)));
+    }
+
+    #[test]
+    fn from_io_connection_reset_is_network_unreachable() {
+        let e = io::Error::from(ErrorKind::ConnectionReset);
+        assert!(matches!(from_io("ctx", &e), Error::NetworkUnreachable(_)));
+    }
+
+    #[test]
+    fn from_io_connection_aborted_is_network_unreachable() {
+        let e = io::Error::from(ErrorKind::ConnectionAborted);
+        assert!(matches!(from_io("ctx", &e), Error::NetworkUnreachable(_)));
+    }
+
+    #[test]
+    fn from_io_not_connected_is_network_unreachable() {
+        let e = io::Error::from(ErrorKind::NotConnected);
+        assert!(matches!(from_io("ctx", &e), Error::NetworkUnreachable(_)));
+    }
+
+    #[test]
+    fn from_io_addr_not_available_is_network_unreachable() {
+        let e = io::Error::from(ErrorKind::AddrNotAvailable);
+        assert!(matches!(from_io("ctx", &e), Error::NetworkUnreachable(_)));
+    }
+
+    #[test]
+    fn from_io_timed_out_is_keepalive_timeout() {
+        let e = io::Error::from(ErrorKind::TimedOut);
+        match from_io("ctx", &e) {
+            Error::KeepaliveTimeout { after_ms } => assert_eq!(after_ms, 0),
+            other => panic!("expected KeepaliveTimeout, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn from_io_permission_denied() {
+        let e = io::Error::from(ErrorKind::PermissionDenied);
+        assert!(matches!(from_io("ctx", &e), Error::PermissionDenied(_)));
+    }
+
+    #[test]
+    fn from_io_other_kinds_fall_through_to_runtime_failure() {
+        let e = io::Error::other("weird");
+        assert!(matches!(from_io("ctx", &e), Error::RuntimeFailure(_)));
+        let e = io::Error::from(ErrorKind::InvalidData);
+        assert!(matches!(from_io("ctx", &e), Error::RuntimeFailure(_)));
+        let e = io::Error::from(ErrorKind::BrokenPipe);
+        assert!(matches!(from_io("ctx", &e), Error::RuntimeFailure(_)));
+    }
+
+    #[test]
+    fn from_async_ssh_routes_ssh2_variant() {
+        let e = AsyncSshError::Ssh2(mk_ssh2(-18, "auth fail"));
+        assert!(matches!(from_async_ssh("ctx", e), Error::AuthFailed(_)));
+    }
+
+    #[test]
+    fn from_async_ssh_routes_io_variant() {
+        let e = AsyncSshError::Io(io::Error::from(ErrorKind::ConnectionRefused));
+        assert!(matches!(from_async_ssh("ctx", e), Error::NetworkUnreachable(_)));
+    }
+
+    #[test]
+    fn from_async_ssh_routes_io_timeout_to_keepalive() {
+        let e = AsyncSshError::Io(io::Error::from(ErrorKind::TimedOut));
+        assert!(matches!(
+            from_async_ssh("ctx", e),
+            Error::KeepaliveTimeout { .. }
+        ));
+    }
+
+    #[test]
+    fn from_async_ssh_routes_other_variant_to_runtime_failure() {
+        let inner: Box<dyn std::error::Error + Send + Sync + 'static> = "boom".into();
+        let e = AsyncSshError::Other(inner);
+        match from_async_ssh("ctx", e) {
+            Error::RuntimeFailure(s) => assert!(s.contains("ctx")),
+            other => panic!("expected RuntimeFailure, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn context_is_propagated_into_message() {
+        let e = io::Error::from(ErrorKind::ConnectionRefused);
+        match from_io("dial-bastion", &e) {
+            Error::NetworkUnreachable(s) => assert!(s.contains("dial-bastion")),
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+}

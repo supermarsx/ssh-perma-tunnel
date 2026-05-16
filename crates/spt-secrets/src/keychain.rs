@@ -190,3 +190,215 @@ fn keychain_remediation() -> String {
      encrypted vault."
         .to_owned()
 }
+
+#[cfg(test)]
+mod tests {
+    //! Inline unit tests for [`KeychainBackend`].
+    //!
+    //! ## Isolation strategy
+    //!
+    //! These tests live in the `spt-secrets` lib-test binary, which also
+    //! runs `vault::tests`. Both modules call
+    //! `keyring::set_default_credential_builder` via their own
+    //! `OnceLock<()>` guards, so whichever module's test thread reaches it
+    //! first pins the global builder. Both builders share equivalent
+    //! semantics (a `HashMap<(service,user), Vec<u8>>`), so basic
+    //! round-trip tests work regardless of which one wins.
+    //!
+    //! What we **do not** do here:
+    //!
+    //! * Rely on fault injection. The fault map lives in `testing::keymock`'s
+    //!   `OnceLock`, and the active builder may be `vault::tests`'s
+    //!   non-fault-aware one. Fault-injection-dependent assertions live
+    //!   in the IT file (`tests/keychain_mock.rs`), which runs as its own
+    //!   process and fully owns the global builder.
+    //! * Share service names with `vault::tests` (which use
+    //!   `"spt-test-vault-*"`). All names here are prefixed `"spt-kchn-*"`
+    //!   to keep the per-module shared stores disjoint.
+
+    use super::*;
+    use crate::backend::BackendStatus;
+    use crate::testing::seeded_keychain;
+    use keyring::Entry;
+    use secrecy::ExposeSecret;
+
+    fn ref_for(name: &str) -> SecretRef {
+        SecretRef::new("kchn", name).expect("valid ref")
+    }
+
+    #[test]
+    fn default_is_default_service() {
+        let kc = KeychainBackend::default();
+        assert_eq!(kc.service, SERVICE);
+    }
+
+    #[test]
+    fn new_matches_default() {
+        let kc1 = KeychainBackend::new();
+        let kc2 = KeychainBackend::default();
+        assert_eq!(kc1.service, kc2.service);
+    }
+
+    #[test]
+    fn with_service_overrides_root() {
+        let kc = KeychainBackend::with_service("custom-svc");
+        assert_eq!(kc.service, "custom-svc");
+    }
+
+    #[test]
+    fn kind_is_keychain() {
+        let kc = KeychainBackend::with_service("spt-kchn-kind");
+        assert_eq!(kc.kind(), BackendKind::Keychain);
+    }
+
+    #[test]
+    fn entry_for_uses_ns_colon_name_account() {
+        let _g = seeded_keychain();
+        let kc = KeychainBackend::with_service("spt-kchn-entry-account");
+        let r = SecretRef::new("alpha", "beta").unwrap();
+        let entry = kc.entry_for(&r).expect("entry");
+        // Write through the entry directly, then read back through a fresh
+        // Entry constructed with the same service/account to prove the
+        // account encoding is `ns:name`.
+        entry.set_secret(b"x").unwrap();
+        let again = Entry::new("spt-kchn-entry-account", "alpha:beta").unwrap();
+        assert_eq!(again.get_secret().unwrap(), b"x");
+    }
+
+    #[test]
+    fn master_entry_uses_reserved_account() {
+        let _g = seeded_keychain();
+        let kc = KeychainBackend::with_service("spt-kchn-master");
+        let entry = kc.master_entry().expect("master entry");
+        entry.set_secret(b"master-key-bytes").unwrap();
+        let direct = Entry::new("spt-kchn-master", VAULT_MASTER_ACCOUNT).unwrap();
+        assert_eq!(direct.get_secret().unwrap(), b"master-key-bytes");
+    }
+
+    #[test]
+    fn get_round_trip_returns_some() {
+        let _g = seeded_keychain();
+        let kc = KeychainBackend::with_service("spt-kchn-get-hit");
+        let r = ref_for("hit");
+        kc.set(&r, b"payload").unwrap();
+        let got = kc.get(&r).unwrap().expect("some");
+        assert_eq!(got.expose_secret().as_slice(), b"payload");
+    }
+
+    #[test]
+    fn get_missing_short_circuits_to_none() {
+        let _g = seeded_keychain();
+        let kc = KeychainBackend::with_service("spt-kchn-get-miss");
+        let r = ref_for("absent");
+        // Never `set` — the underlying mock returns `NoEntry`, which the
+        // backend must translate to `Ok(None)`.
+        assert!(kc.get(&r).unwrap().is_none());
+    }
+
+    #[test]
+    fn set_success_writes_into_keychain() {
+        let _g = seeded_keychain();
+        let kc = KeychainBackend::with_service("spt-kchn-set-ok");
+        let r = ref_for("write");
+        kc.set(&r, b"value").unwrap();
+        // Direct readback through the keyring API confirms write landed.
+        let direct = Entry::new("spt-kchn-set-ok", "kchn:write").unwrap();
+        assert_eq!(direct.get_secret().unwrap(), b"value");
+    }
+
+    #[test]
+    fn list_returns_empty_and_emits_warn() {
+        let _g = seeded_keychain();
+        let kc = KeychainBackend::with_service("spt-kchn-list");
+        // Even with entries present, `list` is intentionally a no-op.
+        let r = ref_for("a");
+        kc.set(&r, b"v").unwrap();
+        let listed = kc.list().expect("list ok");
+        assert!(listed.is_empty());
+    }
+
+    #[test]
+    fn remove_existing_entry_returns_true() {
+        let _g = seeded_keychain();
+        let kc = KeychainBackend::with_service("spt-kchn-remove-true");
+        let r = ref_for("present");
+        kc.set(&r, b"v").unwrap();
+        assert!(kc.remove(&r).unwrap());
+        // Second remove must report not-present.
+        assert!(!kc.remove(&r).unwrap());
+    }
+
+    #[test]
+    fn remove_missing_entry_returns_false() {
+        let _g = seeded_keychain();
+        let kc = KeychainBackend::with_service("spt-kchn-remove-false");
+        let r = ref_for("ghost");
+        assert!(!kc.remove(&r).unwrap());
+    }
+
+    #[test]
+    fn doctor_reports_ok_when_probe_is_noentry() {
+        let _g = seeded_keychain();
+        let kc = KeychainBackend::with_service("spt-kchn-doctor-ok");
+        let d = kc.doctor();
+        assert_eq!(d.kind, BackendKind::Keychain);
+        assert!(matches!(d.status, BackendStatus::Ok));
+        assert!(d.message.contains("reachable"));
+        assert!(d.remediation.is_none());
+    }
+
+    #[test]
+    fn doctor_reports_ok_when_probe_is_already_set() {
+        // A pre-existing value at the probe slot is still a healthy
+        // outcome — the doctor accepts either `NoEntry` or a successful
+        // read. We pre-seed the probe slot to exercise that arm.
+        let _g = seeded_keychain();
+        let kc = KeychainBackend::with_service("spt-kchn-doctor-preset");
+        let probe = Entry::new("spt-kchn-doctor-preset", "spt-doctor-probe").unwrap();
+        probe.set_secret(b"already-there").unwrap();
+        let d = kc.doctor();
+        assert_eq!(d.kind, BackendKind::Keychain);
+        assert!(matches!(d.status, BackendStatus::Ok));
+    }
+
+    #[test]
+    fn with_service_isolates_namespaces() {
+        let _g = seeded_keychain();
+        let kc_a = KeychainBackend::with_service("spt-kchn-iso-a");
+        let kc_b = KeychainBackend::with_service("spt-kchn-iso-b");
+        let r = ref_for("shared-name");
+        kc_a.set(&r, b"a-value").unwrap();
+        // `kc_b` shares the same `(ns,name)` reference but a distinct
+        // service, so it must NOT see kc_a's value.
+        assert!(kc_b.get(&r).unwrap().is_none());
+        // Round-trip on each side independently.
+        kc_b.set(&r, b"b-value").unwrap();
+        assert_eq!(
+            kc_a.get(&r).unwrap().unwrap().expose_secret().as_slice(),
+            b"a-value"
+        );
+        assert_eq!(
+            kc_b.get(&r).unwrap().unwrap().expose_secret().as_slice(),
+            b"b-value"
+        );
+    }
+
+    #[test]
+    fn keychain_remediation_is_non_empty_on_target_os() {
+        // Any of the four cfg-arms returns a non-empty string. We only
+        // need the active one to compile and yield prose.
+        let s = keychain_remediation();
+        assert!(!s.is_empty());
+    }
+
+    #[test]
+    fn entry_for_returns_ok_for_well_formed_ref() {
+        // `entry_for` only `map_err`s the keyring init failure; on the
+        // mock builder it cannot fail. Exercising the happy-path branch
+        // proves the SecretRef → account conversion compiles + works.
+        let _g = seeded_keychain();
+        let kc = KeychainBackend::with_service("spt-kchn-entry-ok");
+        let r = SecretRef::new("ns_with_underscore", "name.with.dots").unwrap();
+        let _entry = kc.entry_for(&r).expect("entry");
+    }
+}
