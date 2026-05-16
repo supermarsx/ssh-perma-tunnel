@@ -336,7 +336,10 @@ async fn run_writer(
     'outer: loop {
         // Connect.
         let stream = match connect(&connector, &cfg).await {
-            Ok(s) => s,
+            Ok(s) => {
+                counters.inc_reconnect();
+                s
+            }
             Err(e) => {
                 #[cfg(test)]
                 eprintln!("syslog-tls connect error: {e}");
