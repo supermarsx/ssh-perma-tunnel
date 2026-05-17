@@ -6,26 +6,9 @@
 //! unchanged. Patterns explored:
 //!
 //! * Bearer / Basic Authorization headers
-//! * `key=value` secret fields (quoted, single-quoted)
+//! * `key=value` secret fields (quoted, single-quoted, bareword)
 //! * PEM private-key blocks
 //! * IPv4 / IPv6 / email (Strict-only)
-//!
-//! ## Known carve-out: KV bareword is **not** idempotent
-//!
-//! The `KV_SECRET` regex bareword arm (`[^\s,;)\]}]+`) consumes `[REDACTED`
-//! on a second pass and then re-emits the trailing `]` from the previous
-//! replacement, so e.g.
-//!
-//! ```text
-//! password=secret  →  password=[REDACTED]   →  password=[REDACTED]]
-//! ```
-//!
-//! The third pass converges (the inner `]` is now followed by another `]`
-//! and they're outside any KV arm), but strict idempotence at pass 2 does
-//! not hold. This finding is captured by [`kv_bareword_known_non_idempotent`]
-//! below; the property tests above exclude bareword KV shapes from their
-//! generators. The fix lives in `crates/spt-core/src/redaction.rs` and is
-//! out of this executor's scope.
 
 use arbitrary::Unstructured;
 use spt_core::redaction::{redact, RedactionMode};
@@ -52,13 +35,14 @@ fn arb_token(u: &mut Unstructured<'_>) -> arbitrary::Result<String> {
     Ok(s)
 }
 
-/// Generator for inputs that DO satisfy the idempotence property.
+/// Generator for inputs that satisfy the idempotence property.
 ///
-/// Excludes KV shapes (see module-level "Known carve-out") and constrains
-/// random ASCII to characters outside the KV / Bearer / Basic key prefixes
-/// so the random arm doesn't accidentally synthesise a bareword KV.
+/// Now that the KV-bareword non-idempotence has been fixed in
+/// `crates/spt-core/src/redaction.rs` (the bareword character class excludes
+/// brackets/braces so `[REDACTED]`-style markers are fixed points), all KV
+/// shapes are safe to exercise here too.
 fn arb_safe_input(u: &mut Unstructured<'_>) -> arbitrary::Result<String> {
-    let shape = u.int_in_range(0u8..=4)?;
+    let shape = u.int_in_range(0u8..=6)?;
     Ok(match shape {
         0 => format!("Authorization: Bearer {}", arb_token(u)?),
         1 => format!("Authorization: Basic {}", arb_token(u)?),
@@ -73,7 +57,9 @@ fn arb_safe_input(u: &mut Unstructured<'_>) -> arbitrary::Result<String> {
             u.int_in_range(0u8..=255)?,
             u.int_in_range(0u8..=255)?
         ),
-        _ => format!("user-{}@example.com", arb_token(u)?),
+        4 => format!("user-{}@example.com", arb_token(u)?),
+        5 => format!("password={}", arb_token(u)?),
+        _ => format!("api_key=\"{}\"", arb_token(u)?),
     })
 }
 
@@ -205,22 +191,20 @@ fn idempotent_empty_string() {
     });
 }
 
-/// Documents the known KV-bareword non-idempotence (see module docs).
+/// Regression for the historic KV-bareword non-idempotence.
 ///
-/// The second pass appends a stray `]`, but the third pass converges. The
-/// test asserts both halves of that statement so any future fix is caught
-/// (the assertion will need updating if/when the regex is fixed in
-/// `crates/spt-core/src/redaction.rs`).
+/// Before the fix in `crates/spt-core/src/redaction.rs`, this input
+/// produced `password=[REDACTED]]` on pass 2 because the bareword arm
+/// `[^\s,;)\]}]+` consumed `[REDACTED` and re-emitted the trailing `]`.
+/// The bareword class now excludes brackets/braces so the marker is a
+/// fixed point at pass 1.
 #[test]
-fn kv_bareword_known_non_idempotent() {
+fn kv_bareword_is_idempotent() {
     let input = "password=\"hunter2\"";
     let p1 = redact(input, RedactionMode::Standard).into_owned();
     let p2 = redact(&p1, RedactionMode::Standard).into_owned();
     let p3 = redact(&p2, RedactionMode::Standard).into_owned();
     assert_eq!(p1, "password=[REDACTED]");
-    assert_ne!(p1, p2, "if this assertion fires the regex was fixed — tighten this carve-out");
-    assert_eq!(p2, "password=[REDACTED]]");
-    // p3 may add yet another `]` — record what we observe rather than
-    // asserting convergence we haven't established.
-    assert!(p3.starts_with("password=[REDACTED]"));
+    assert_eq!(p1, p2);
+    assert_eq!(p2, p3);
 }
