@@ -109,8 +109,9 @@ async fn three_concurrent_forwards_all_open() {
 /// across distinct `direct-tcpip` channels on the same SSH session.
 /// `#[ignore]`'d on the same upstream KEX bug.
 #[tokio::test]
-#[ignore = "russh<->libssh2 interop blocked at KEX (-8 KEY_EXCHANGE_FAILURE) — see \
-crates/spt-ssh2/tests/russh_basic.rs for diagnosis."]
+#[ignore = "body unwritten; KEX side unblocked by t3-e8 workaround \
+(spt_ssh2::testing::wincng_libssh2_compatible_preferred + with_algorithm_pinning). \
+russh upstream tracking: https://github.com/warp-tech/russh/issues/245."]
 async fn three_concurrent_forwards_traffic_isolation_real_libssh2() {
     panic!("real-libssh2 variant intentionally unwritten; see #[ignore] reason");
 }

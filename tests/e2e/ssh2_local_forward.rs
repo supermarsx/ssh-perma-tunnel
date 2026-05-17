@@ -79,17 +79,20 @@ async fn local_forward_wires_through_supervisor() {
     orch.shutdown().await;
 }
 
-/// Real-libssh2 variant. **Currently broken upstream** — see
-/// `crates/spt-ssh2/tests/russh_basic.rs` module docs for the russh-0.46 ↔
-/// libssh2-1.11.1 (WinCNG) DH `KEY_EXCHANGE_FAILURE` diagnosis. When the
-/// upstream fix lands, drop the `#[ignore]` and write the body: spin up
-/// `RusshTestServer`, build `Ssh2Protocol` with the WinCNG-compatible
-/// `CryptoPolicy`, open a local forward, connect a `TcpStream` to the local
-/// listener, and assert a 16 KiB echo roundtrip.
+/// Real-libssh2 variant. As of t3-e8 the russh<->libssh2 KEX bug has a
+/// working workaround at the test-helper layer (see
+/// `spt_ssh2::testing::wincng_libssh2_compatible_preferred` +
+/// `RusshTestServer::with_algorithm_pinning`). This test is kept `#[ignore]`'d
+/// only because the body remains unwritten — flipping it on requires:
+/// spin up `RusshTestServer` with the WinCNG-compatible pinning, build
+/// `Ssh2Protocol` with a matching `CryptoPolicy`, open a local forward,
+/// connect a `TcpStream` to the local listener, and assert a 16 KiB echo
+/// roundtrip. Tracking: russh#245 (workaround documented in
+/// crates/spt-ssh2/tests/russh_basic.rs).
 #[tokio::test]
-#[ignore = "russh<->libssh2 interop blocked at KEX (-8 KEY_EXCHANGE_FAILURE) — see \
-crates/spt-ssh2/tests/russh_basic.rs for diagnosis. Test body intentionally \
-unwritten until upstream russh patch or libssh2 transport-state dive lands."]
+#[ignore = "body unwritten; KEX side unblocked by t3-e8 workaround \
+(spt_ssh2::testing::wincng_libssh2_compatible_preferred + with_algorithm_pinning). \
+russh upstream tracking: https://github.com/warp-tech/russh/issues/245."]
 async fn local_forward_16k_roundtrip_real_libssh2() {
     panic!("real-libssh2 variant intentionally unwritten; see #[ignore] reason");
 }

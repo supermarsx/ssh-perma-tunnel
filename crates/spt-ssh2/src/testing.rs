@@ -12,7 +12,7 @@
 //! * [`OpenSshTestServer`] — Unix-only builder that locates a system `sshd`
 //!   on `PATH`, generates an ephemeral RSA-2048 host key + minimal config in a
 //!   tempdir, and spawns sshd against `127.0.0.1:0`. Sidesteps the upstream
-//!   russh-0.46 ↔ libssh2-WinCNG `-8 KEY_EXCHANGE_FAILURE` interop bug by
+//!   russh-0.46 ↔ libssh2-`WinCNG` `-8 KEY_EXCHANGE_FAILURE` interop bug by
 //!   driving libssh2 against a real OpenSSH server.
 //!
 //! All helpers live behind `#[cfg(any(test, feature = "testing"))]`.
@@ -203,6 +203,44 @@ pub fn fake_session() -> Box<dyn TunnelSession> {
 #[cfg(feature = "testing")]
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+/// Build a [`russh::Preferred`] pinned to the algorithm set that
+/// libssh2-sys 0.3.1's `WinCNG` backend can negotiate.
+///
+/// Two unrelated constraints are baked in:
+///
+/// 1. **`WinCNG` algorithm subset.** libssh2-sys 0.3.1 on Windows defines
+///    `LIBSSH2_ED25519=0` and does **not** enable `LIBSSH2_ECDSA_WINCNG`,
+///    so the `WinCNG` client supports only RSA host keys and DH-group KEXes
+///    (no curve25519, no ECDSA, no ed25519).
+/// 2. **Workaround for russh#245 (libssh2 KEX -8).** Even with overlapping
+///    algorithms, libssh2-`WinCNG` aborts with `-8 KEY_EXCHANGE_FAILURE`
+///    mid-DH when russh's server advertises **all three** of
+///    `curve25519-sha256`, `ext-info-s`, and `kex-strict-s-v00@openssh.com`
+///    together. Dropping any one of the three fixes it. This pinning ships
+///    only DH KEXes (no curve25519) and no extension entries, which is the
+///    most conservative working set. See
+///    `crates/spt-ssh2/tests/russh_basic.rs` module docs and the bisection
+///    table for the full evidence. Upstream tracking:
+///    <https://github.com/warp-tech/russh/issues/245>.
+#[cfg(feature = "testing")]
+#[must_use]
+pub fn wincng_libssh2_compatible_preferred() -> russh::Preferred {
+    use std::borrow::Cow;
+    russh::Preferred {
+        kex: Cow::Owned(vec![
+            russh::kex::DH_G14_SHA256,
+            russh::kex::DH_G16_SHA512,
+        ]),
+        key: Cow::Owned(vec![
+            russh_keys::key::RSA_SHA2_256,
+            russh_keys::key::RSA_SHA2_512,
+        ]),
+        cipher: Cow::Owned(vec![russh::cipher::AES_256_CTR]),
+        mac: Cow::Owned(vec![russh::mac::HMAC_SHA256]),
+        compression: russh::Preferred::DEFAULT.compression,
+    }
+}
+
 /// Per-server shared counters and state. Cloneable Arc handle so tests can
 /// observe wire events while the server keeps running.
 #[cfg(feature = "testing")]
@@ -259,6 +297,12 @@ pub struct RusshTestServer {
     accept_any_pubkey: bool,
     authorized_pubkeys: Vec<russh_keys::key::PublicKey>,
     use_ed25519_host_key: bool,
+    /// Optional override for the server's algorithm preference list. When
+    /// `None`, russh's [`russh::Preferred::DEFAULT`] is used. Set via
+    /// [`Self::with_algorithm_pinning`] to constrain the negotiation surface
+    /// — useful for interop tests that need to pin a specific cipher/MAC/KEX
+    /// triple to isolate algorithm-specific bugs.
+    preferred: Option<russh::Preferred>,
 }
 
 #[cfg(feature = "testing")]
@@ -278,7 +322,20 @@ impl RusshTestServer {
             accept_any_pubkey: true,
             authorized_pubkeys: Vec::new(),
             use_ed25519_host_key: false,
+            preferred: None,
         }
+    }
+
+    /// Pin the russh server's algorithm preference list. Overrides the
+    /// default ([`russh::Preferred::DEFAULT`]).
+    ///
+    /// Used by interop tests to constrain the negotiation surface. See
+    /// [`wincng_libssh2_compatible_preferred`] for the algorithm set that
+    /// negotiates cleanly with libssh2-sys 0.3.1's `WinCNG` backend.
+    #[must_use]
+    pub fn with_algorithm_pinning(mut self, preferred: russh::Preferred) -> Self {
+        self.preferred = Some(preferred);
+        self
     }
 
     /// Accept the given `(user, password)` tuple via password auth. Disables
@@ -328,13 +385,17 @@ impl RusshTestServer {
             russh_keys::key::KeyPair::generate_rsa(2048, russh_keys::key::SignatureHash::SHA2_256)
                 .expect("rsa-2048 keygen")
         };
-        russh::server::Config {
+        let mut cfg = russh::server::Config {
             inactivity_timeout: Some(std::time::Duration::from_secs(60)),
             auth_rejection_time: std::time::Duration::from_millis(100),
             auth_rejection_time_initial: Some(std::time::Duration::from_millis(0)),
             keys: vec![key],
             ..Default::default()
+        };
+        if let Some(p) = self.preferred.clone() {
+            cfg.preferred = p;
         }
+        cfg
     }
 
     /// Bind on `127.0.0.1:0`, spawn the accept loop, and return a handle to
@@ -702,7 +763,7 @@ impl Drop for RunningRusshServer {
 /// Returns `Ok(None)` from [`Self::start`] when `sshd` is not on `PATH` — the
 /// caller is expected to `return` (skip) the test in that case.
 ///
-/// Used as a workaround for the upstream russh-0.46 ↔ libssh2-WinCNG
+/// Used as a workaround for the upstream russh-0.46 ↔ libssh2-`WinCNG`
 /// `LIBSSH2_ERROR_KEY_EXCHANGE_FAILURE` interop bug: a real OpenSSH server
 /// negotiates cleanly with libssh2 on Linux/macOS where this matters.
 ///

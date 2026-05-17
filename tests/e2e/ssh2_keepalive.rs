@@ -65,18 +65,25 @@ async fn keepalive_invocations_recorded_on_session() {
     );
 }
 
-/// Real-libssh2 variant. **Doubly blocked**: (1) the russh ↔ libssh2 KEX bug
-/// (see `crates/spt-ssh2/tests/russh_basic.rs`) prevents establishing a
-/// session at all; (2) even once that's fixed, russh 0.46's `Handler` trait
-/// does **not** surface the `keepalive@openssh.com` global request — russh's
-/// dispatcher swallows it before user code runs.
-/// `RunningRusshServer::keepalive_packet_count()` therefore proxies channel-data
-/// callbacks rather than literal keepalives. A faithful test would need a
-/// russh patch or a wire-level proxy.
+/// Real-libssh2 variant. **Single-blocked** as of t3-e8: the russh ↔ libssh2
+/// KEX bug is worked around at the test-helper layer (see
+/// `spt_ssh2::testing::wincng_libssh2_compatible_preferred`), so a libssh2 ↔
+/// russh handshake now completes — but russh 0.46's `Handler` trait still
+/// does **not** surface the `keepalive@openssh.com` global request. russh's
+/// dispatcher swallows it (`server/encrypted.rs:986` default-arm
+/// REQUEST_FAILURE) before user code runs.
+/// `RunningRusshServer::keepalive_packet_count()` therefore proxies
+/// channel-data callbacks rather than literal keepalives. A faithful
+/// keepalive-count test would need either an upstream russh patch exposing
+/// the global request, or a TCP-layer wire-proxy that recognises the
+/// `SSH_MSG_GLOBAL_REQUEST keepalive@openssh.com` packet.
 #[tokio::test]
-#[ignore = "doubly blocked: russh<->libssh2 KEX bug AND russh 0.46 does not expose \
-keepalive@openssh.com to Handler. See crates/spt-ssh2/src/testing.rs \
-RunningRusshServer::keepalive_packet_count for the proxy caveat."]
+#[ignore = "blocked-by: russh 0.46 Handler trait does not expose \
+keepalive@openssh.com global request (russh-0.46 server/encrypted.rs default-arm \
+REQUEST_FAILURE before user-code dispatch). Needs upstream russh patch exposing a \
+`keepalive_request` hook on the Handler trait. The russh<->libssh2 KEX side of the \
+blockage is RESOLVED in t3-e8 via spt_ssh2::testing::wincng_libssh2_compatible_preferred \
+(tracking russh#245: https://github.com/warp-tech/russh/issues/245)."]
 async fn keepalive_after_5s_real_libssh2() {
     panic!("real-libssh2 variant intentionally unwritten; see #[ignore] reason");
 }

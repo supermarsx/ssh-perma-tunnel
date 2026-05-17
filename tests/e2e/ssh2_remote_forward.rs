@@ -81,8 +81,9 @@ async fn remote_forward_wires_through_supervisor() {
 /// request `tcpip-forward`, then push bytes to the server-side listener and
 /// assert they're echoed back on the SSH client side.
 #[tokio::test]
-#[ignore = "russh<->libssh2 interop blocked at KEX (-8 KEY_EXCHANGE_FAILURE) — see \
-crates/spt-ssh2/tests/russh_basic.rs for diagnosis."]
+#[ignore = "body unwritten; KEX side unblocked by t3-e8 workaround \
+(spt_ssh2::testing::wincng_libssh2_compatible_preferred + with_algorithm_pinning). \
+russh upstream tracking: https://github.com/warp-tech/russh/issues/245."]
 async fn remote_forward_roundtrip_real_libssh2() {
     panic!("real-libssh2 variant intentionally unwritten; see #[ignore] reason");
 }

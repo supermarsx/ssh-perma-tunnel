@@ -110,8 +110,9 @@ async fn reconnect_on_connect_failure_then_recovery() {
 /// libssh2 KEX bug is resolved. The helper is unit-tested in
 /// `crates/spt-ssh2/src/testing.rs`.
 #[tokio::test]
-#[ignore = "russh<->libssh2 interop blocked at KEX (-8 KEY_EXCHANGE_FAILURE) — see \
-crates/spt-ssh2/tests/russh_basic.rs for diagnosis."]
+#[ignore = "body unwritten; KEX side unblocked by t3-e8 workaround \
+(spt_ssh2::testing::wincng_libssh2_compatible_preferred + with_algorithm_pinning). \
+russh upstream tracking: https://github.com/warp-tech/russh/issues/245."]
 async fn reconnect_via_restart_on_same_port() {
     panic!("real-libssh2 variant intentionally unwritten; see #[ignore] reason");
 }
