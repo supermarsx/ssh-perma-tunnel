@@ -14,6 +14,9 @@ default = []
 # Public test helpers in `spt_stats::testing`. Off by default so production
 # builds don't carry the extra fixtures.
 testing = []
+# Opt-in gate for Criterion benchmarks. Keeps `cargo test --all-targets`
+# from executing harness-free benches during normal test gates.
+bench = []
 
 [dependencies]
 spt-core = { workspace = true }
@@ -23,5 +26,14 @@ dashmap = { workspace = true }
 parking_lot = { workspace = true }
 chrono = { workspace = true }
 
+[dev-dependencies]
+criterion = { workspace = true }
+
 [lints]
 workspace = true
+
+[[bench]]
+name = "aggregation"
+path = "benches/aggregation.rs"
+harness = false
+required-features = ["bench"]

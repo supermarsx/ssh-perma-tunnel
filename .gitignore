@@ -31,5 +31,7 @@ desktop.ini
 /coverage.txt*
 /coverage.*.stderr.log
 /coverage.stderr.log
+/verify.stderr.log
+/verify.*.stderr.log
 
 # Cargo.lock is intentionally tracked (workspace contains a binary).

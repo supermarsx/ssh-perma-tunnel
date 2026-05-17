@@ -12,6 +12,12 @@ on:
       - "crates/spt-protocol/**"
       - "crates/spt-snmp/**"
       - "crates/spt-forward/**"
+      - "crates/spt-observability/**"
+      - "crates/spt-events/**"
+      - "crates/spt-stats/**"
+      - "crates/spt-ssh3/**"
+      - "crates/spt-trust/**"
+      - "crates/spt-state/**"
       - "scripts/bench-compare.py"
       - ".github/workflows/bench-regression.yml"
 
@@ -30,7 +36,7 @@ jobs:
     if: github.event.pull_request.draft == false
     timeout-minutes: 45
     env:
-      BENCH_CRATES: spt-core spt-config spt-protocol spt-snmp spt-forward
+      BENCH_CRATES: spt-core spt-config spt-protocol spt-snmp spt-forward spt-observability spt-events spt-stats spt-ssh3 spt-trust spt-state
     steps:
       - name: Checkout PR HEAD
         uses: actions/checkout@v4
@@ -63,7 +69,7 @@ jobs:
         run: |
           set -e
           for c in $BENCH_CRATES; do
-            cargo bench -p "$c" --bench '*' -- --warm-up-time 1 \
+            cargo bench -p "$c" --features bench --bench '*' -- --warm-up-time 1 \
               --measurement-time 3 --sample-size 20 || true
           done
 
@@ -74,7 +80,7 @@ jobs:
         run: |
           set -e
           for c in $BENCH_CRATES; do
-            cargo bench -p "$c" --bench '*' -- --warm-up-time 1 \
+            cargo bench -p "$c" --features bench --bench '*' -- --warm-up-time 1 \
               --measurement-time 3 --sample-size 20 || true
           done
 

@@ -17,6 +17,8 @@ default = []
 otlp = ["dep:opentelemetry", "dep:opentelemetry-otlp", "dep:opentelemetry_sdk"]
 # Public test helpers in `spt_observability::testing`.
 testing = []
+# Gate for Criterion microbenches; keeps them out of `cargo test`.
+bench = []
 
 [dependencies]
 spt-core = { workspace = true }
@@ -54,6 +56,13 @@ tracing-journald = { workspace = true }
 [dev-dependencies]
 tempfile = { workspace = true }
 rcgen = { version = "0.13", default-features = false, features = ["aws_lc_rs", "pem"] }
+criterion = { workspace = true }
+
+[[bench]]
+name = "hot_paths"
+path = "benches/hot_paths.rs"
+harness = false
+required-features = ["bench"]
 
 [lints]
 workspace = true

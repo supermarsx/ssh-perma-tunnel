@@ -20,37 +20,70 @@ use crate::event::Event;
 ///
 /// Returns `(rendered_string, missing_fields)`. `missing_fields` collects
 /// any `{{name}}` whose lookup returned `None`.
+///
+/// Implementation: a byte-level detection loop locates `{{` / `}}` markers
+/// (a tight, branch-predictable two-byte compare), and literal spans between
+/// placeholders are emitted in bulk via [`String::push_str`] over `&str`
+/// slices of the original template. This is both UTF-8 correct (no
+/// `byte as char` casts — slice indices land only on ASCII `{` and `}`
+/// bytes, which are guaranteed UTF-8 boundaries) and substantially faster
+/// than the previous per-byte `push(c)` loop.
 #[must_use]
 pub fn render_template(template: &str, event: &Event) -> (String, Vec<String>) {
     let mut out = String::with_capacity(template.len());
     let mut missing = Vec::new();
     let bytes = template.as_bytes();
+    let len = bytes.len();
     let mut i = 0;
-    while i < bytes.len() {
-        // Look for `{{`.
-        if i + 1 < bytes.len() && bytes[i] == b'{' && bytes[i + 1] == b'{' {
-            // Find closing `}}`.
+    // Start of the current literal span (in template byte indices). Any byte
+    // not consumed by a placeholder will be flushed by a single `push_str`
+    // either at the next placeholder hit or at the end of the input.
+    let mut span_start = 0;
+    while i + 1 < len {
+        if bytes[i] == b'{' && bytes[i + 1] == b'{' {
             if let Some(end_rel) = find_close(&bytes[i + 2..]) {
-                let raw = std::str::from_utf8(&bytes[i + 2..i + 2 + end_rel])
-                    .unwrap_or("")
-                    .trim();
+                // Flush the literal span up to (but not including) this `{{`.
+                // `i` is a UTF-8 boundary because `{` is ASCII, so slicing
+                // `template[span_start..i]` is safe.
+                if span_start < i {
+                    out.push_str(&template[span_start..i]);
+                }
+                // `i + 2 + end_rel` likewise lands on the leading `}` of `}}`
+                // (also ASCII / UTF-8 boundary).
+                let raw_end = i + 2 + end_rel;
+                // SAFETY-equivalent: `template[i + 2..raw_end]` slices on
+                // ASCII boundaries, so this is always valid UTF-8.
+                let raw = template[i + 2..raw_end].trim();
                 match event.lookup_field(raw) {
-                    Some(v) => out.push_str(&render_value(&v)),
+                    Some(v) => append_value(&mut out, &v),
                     None => {
                         missing.push(raw.to_owned());
-                        out.push_str(&format!("{{{{{raw}}}}}"));
+                        out.push_str("{{");
+                        out.push_str(raw);
+                        out.push_str("}}");
                     }
                 }
-                i += 2 + end_rel + 2;
+                i = raw_end + 2;
+                span_start = i;
                 continue;
             }
+            // Unmatched `{{`: leave it in the literal span; nothing past it
+            // can ever match (`find_close` already scanned the rest), so
+            // break out and let the tail flush emit the verbatim remainder.
+            break;
         }
-        out.push(bytes[i] as char);
         i += 1;
     }
+    // Flush any trailing literal span (including the case where `template`
+    // had no placeholders at all, an unmatched `{{`, or a normal tail after
+    // the last `}}`). Slicing `template[span_start..]` is UTF-8 safe because
+    // `span_start` is always either `0` or one past a closing ASCII `}`.
+    out.push_str(&template[span_start..]);
     (out, missing)
 }
 
+/// Scan `haystack` for the first `}}` and return its starting byte offset.
+/// Byte-level, branch-predictable, identical to the previous private helper.
 fn find_close(haystack: &[u8]) -> Option<usize> {
     let mut i = 0;
     while i + 1 < haystack.len() {
@@ -62,11 +95,28 @@ fn find_close(haystack: &[u8]) -> Option<usize> {
     None
 }
 
-fn render_value(v: &Value) -> String {
+/// Append a JSON [`Value`] to `out` using template rendering rules:
+/// strings push their UTF-8 bytes verbatim (no surrounding quotes), nulls
+/// render as the empty string, and every other type goes through
+/// `serde_json` formatting. The previous implementation returned a `String`
+/// per call (= one heap allocation per placeholder); appending in place
+/// reuses the `out` buffer and removes that allocation from the hot path.
+fn append_value(out: &mut String, v: &Value) {
     match v {
-        Value::String(s) => s.clone(),
-        Value::Null => String::new(),
-        other => other.to_string(),
+        Value::String(s) => out.push_str(s),
+        Value::Null => {}
+        Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
+        Value::Number(n) => {
+            use std::fmt::Write as _;
+            // `serde_json::Number` already implements `Display` without
+            // heap allocation; `write!` into the destination buffer.
+            // Writing to a `String` cannot fail.
+            let _ = write!(out, "{n}");
+        }
+        // Arrays and objects keep the original semantics: defer to
+        // `serde_json::to_string`. These paths are uncommon in practice
+        // (templates almost always reference scalars).
+        other => out.push_str(&other.to_string()),
     }
 }
 
@@ -117,5 +167,113 @@ mod tests {
             &ev(),
         );
         assert_eq!(s, "[info] profile.connected on smtp-relay: hello");
+    }
+
+    /// Regression test for the prior `bytes[i] as char` UTF-8 corruption bug:
+    /// non-ASCII bytes in the template literal must pass through unchanged.
+    #[test]
+    fn non_ascii_literal_passthrough() {
+        let (s, missing) = render_template("hi {{ message }} 世界", &ev());
+        assert_eq!(s, "hi hello 世界");
+        assert!(missing.is_empty());
+        // Byte-level equality guards against any latent code-point mangling.
+        assert_eq!(s.as_bytes(), b"hi hello \xe4\xb8\x96\xe7\x95\x8c");
+    }
+
+    /// Non-ASCII values resolved from the event must also flow through
+    /// `push_str` cleanly without splitting multi-byte sequences.
+    #[test]
+    fn non_ascii_placeholder_value() {
+        let event = Event::builder("profile.connected", Severity::Info)
+            .profile(ProfileId::new("smtp-relay").unwrap())
+            .field("greeting", "héllo, wörld 🌍")
+            .build();
+        let (s, missing) = render_template("msg: {{greeting}}", &event);
+        assert_eq!(s, "msg: héllo, wörld 🌍");
+        assert!(missing.is_empty());
+    }
+
+    /// Mixed ASCII + non-ASCII with multiple placeholders surrounding
+    /// multi-byte runs (covers boundary crossings around `{{`/`}}`).
+    #[test]
+    fn mixed_ascii_and_unicode_template() {
+        let (s, _) = render_template(
+            "[α] {{kind}} → {{profile_id}}: {{message}} ✔",
+            &ev(),
+        );
+        assert_eq!(s, "[α] profile.connected → smtp-relay: hello ✔");
+    }
+
+    /// Multiple placeholders + literal spans across a realistic subject line.
+    #[test]
+    fn multi_placeholder_realistic_subject() {
+        let event = Event::builder("forward.connection_failed", Severity::Error)
+            .profile(ProfileId::new("smtp-relay").unwrap())
+            .field("error", "connect timeout")
+            .field("attempt", 3)
+            .message("connection refused")
+            .build();
+        let (s, missing) = render_template(
+            "[{{severity}}] {{kind}} on {{profile_id}} (attempt={{attempt}}): {{error}}",
+            &event,
+        );
+        assert_eq!(
+            s,
+            "[error] forward.connection_failed on smtp-relay (attempt=3): connect timeout"
+        );
+        assert!(missing.is_empty());
+    }
+
+    /// Adjacent placeholders with no literal text between them must render
+    /// back-to-back without producing a stray `{{...}}` or eating bytes.
+    #[test]
+    fn adjacent_placeholders() {
+        let (s, missing) = render_template("{{kind}}{{message}}", &ev());
+        assert_eq!(s, "profile.connectedhello");
+        assert!(missing.is_empty());
+    }
+
+    /// Template with no placeholders at all is returned verbatim — including
+    /// any non-ASCII bytes — through the `out.push_str(remaining)` tail.
+    #[test]
+    fn template_without_placeholders() {
+        let (s, missing) = render_template("plain ünicode τέξτ", &ev());
+        assert_eq!(s, "plain ünicode τέξτ");
+        assert!(missing.is_empty());
+    }
+
+    /// `}}` without a preceding `{{` is just literal text (no special handling).
+    #[test]
+    fn stray_close_braces_are_literal() {
+        let (s, _) = render_template("ok }} done", &ev());
+        assert_eq!(s, "ok }} done");
+    }
+
+    /// `append_value` semantics: bool/number/array fields must render
+    /// identically to the previous `render_value` implementation
+    /// (`Display` for scalars, `serde_json` `to_string` for composites).
+    #[test]
+    fn placeholder_value_type_semantics() {
+        let event = Event::builder("profile.connected", Severity::Info)
+            .profile(ProfileId::new("smtp-relay").unwrap())
+            .field("active", true)
+            .field("count", 42)
+            .field("ratio", 1.5)
+            .field("tags", serde_json::json!(["a", "b"]))
+            .build();
+        let (s, missing) = render_template(
+            "active={{active}} count={{count}} ratio={{ratio}} tags={{tags}}",
+            &event,
+        );
+        assert_eq!(s, "active=true count=42 ratio=1.5 tags=[\"a\",\"b\"]");
+        assert!(missing.is_empty());
+    }
+
+    /// Empty template returns empty output.
+    #[test]
+    fn empty_template() {
+        let (s, missing) = render_template("", &ev());
+        assert_eq!(s, "");
+        assert!(missing.is_empty());
     }
 }

@@ -4361,6 +4361,7 @@ dependencies = [
  "base64ct",
  "blake2b_simd",
  "chrono",
+ "criterion",
  "http",
  "humantime",
  "jwt-simple",
@@ -4480,6 +4481,7 @@ name = "spt-observability"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "criterion",
  "once_cell",
  "opentelemetry",
  "opentelemetry-otlp",
@@ -4658,6 +4660,7 @@ dependencies = [
  "async-trait",
  "base64",
  "bytes",
+ "criterion",
  "dashmap",
  "h3",
  "h3-quinn",
@@ -4693,6 +4696,7 @@ version = "0.1.0"
 dependencies = [
  "atomicwrites",
  "chrono",
+ "criterion",
  "directories",
  "fs4",
  "nix",
@@ -4710,6 +4714,7 @@ name = "spt-stats"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "criterion",
  "dashmap",
  "parking_lot",
  "serde",
@@ -4747,6 +4752,7 @@ version = "0.1.0"
 dependencies = [
  "atomicwrites",
  "base64",
+ "criterion",
  "hmac",
  "rand 0.8.6",
  "rcgen",

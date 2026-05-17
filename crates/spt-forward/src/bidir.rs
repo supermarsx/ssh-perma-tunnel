@@ -6,9 +6,12 @@
 //! rate). The two directions are otherwise independent: a half-close on one
 //! side does not stop the other until both halves have closed or errored.
 
+use std::future::poll_fn;
+use std::mem::MaybeUninit;
+use std::pin::Pin;
 use std::time::Instant;
 
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, ReadBuf};
 
 use crate::limits::TokenBucket;
 
@@ -62,10 +65,26 @@ where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
 {
-    let mut buf = vec![0u8; BUF_SIZE];
+    // Heap-allocate a single uninitialised 16 KiB scratch buffer once and reuse
+    // it across every read in this direction. This avoids the per-call
+    // `vec![0u8; BUF_SIZE]` allocation + memset that previously fired on every
+    // `copy_one` invocation (two per accepted forward connection).
+    //
+    // Safety: `Box<[MaybeUninit<u8>; BUF_SIZE]>` holds `BUF_SIZE` uninitialised
+    // bytes. We only ever read from the slice via `ReadBuf::uninit`, which
+    // tracks the initialised prefix internally, and we only forward
+    // `ReadBuf::filled()` (the initialised portion) to `write_all`. We never
+    // expose uninitialised memory to safe code or to the writer.
+    let mut buf: Box<[MaybeUninit<u8>; BUF_SIZE]> = Box::new([MaybeUninit::uninit(); BUF_SIZE]);
     let mut total: u64 = 0;
     loop {
-        let n = src.read(&mut buf).await?;
+        // Wrap the scratch buffer in a fresh `ReadBuf` for every iteration so
+        // `filled()` starts at zero. `ReadBuf::uninit` tracks how much of the
+        // underlying memory the reader has initialised; only that initialised
+        // prefix is exposed via `filled()`.
+        let mut read_buf = ReadBuf::uninit(buf.as_mut_slice());
+        poll_fn(|cx| Pin::new(&mut *src).poll_read(cx, &mut read_buf)).await?;
+        let n = read_buf.filled().len();
         if n == 0 {
             // EOF — half-close downstream so the peer notices.
             let _ = dst.shutdown().await;
@@ -74,7 +93,9 @@ where
         if bucket.is_active() {
             bucket.acquire(n as u64).await;
         }
-        dst.write_all(&buf[..n]).await?;
+        // `filled()` is the initialised portion of the buffer — never pass
+        // uninitialised memory to `write_all`.
+        dst.write_all(read_buf.filled()).await?;
         total += n as u64;
     }
 }
@@ -93,7 +114,7 @@ pub fn throughput_bps(bytes: u64, start: Instant) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tokio::io::duplex;
+    use tokio::io::{duplex, AsyncReadExt};
 
     #[tokio::test]
     async fn copies_both_directions_unthrottled() {

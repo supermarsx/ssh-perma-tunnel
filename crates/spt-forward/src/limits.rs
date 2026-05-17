@@ -29,16 +29,26 @@ pub struct TokenBucket {
     inner: Arc<TokenBucketInner>,
 }
 
+/// Scaling factor: 1 second expressed in nanoseconds. Internal token
+/// accounting is in units of `bytes * NANOS_PER_SEC` so refill (which is
+/// `elapsed_nanos * rate_bps`) and drain (`n * NANOS_PER_SEC`) both land in
+/// the same unit using pure integer math.
+const NANOS_PER_SEC: u128 = 1_000_000_000;
+
 #[derive(Debug)]
 struct TokenBucketInner {
     rate_bps: u64,
     burst: u64,
+    /// Bucket capacity in scaled units (`burst * NANOS_PER_SEC`). Precomputed
+    /// so the per-acquire path never recomputes it.
+    capacity_scaled: u128,
     state: Mutex<State>,
 }
 
 #[derive(Debug)]
 struct State {
-    tokens: f64,
+    /// Available tokens in scaled units: bytes × NANOS_PER_SEC.
+    tokens_scaled: u128,
     last: Instant,
 }
 
@@ -50,12 +60,14 @@ impl TokenBucket {
     #[must_use]
     pub fn new(rate_bps: u64, burst: u64) -> Self {
         let burst = burst.max(rate_bps.max(1));
+        let capacity_scaled = (burst as u128).saturating_mul(NANOS_PER_SEC);
         Self {
             inner: Arc::new(TokenBucketInner {
                 rate_bps,
                 burst,
+                capacity_scaled,
                 state: Mutex::new(State {
-                    tokens: burst as f64,
+                    tokens_scaled: capacity_scaled,
                     last: Instant::now(),
                 }),
             }),
@@ -95,19 +107,36 @@ impl TokenBucket {
         if !self.is_active() {
             return None;
         }
+        let rate = self.inner.rate_bps as u128;
+        let cap = self.inner.capacity_scaled;
+        let need_scaled = (n as u128).saturating_mul(NANOS_PER_SEC);
+
         let mut s = self.inner.state.lock();
         let now = Instant::now();
-        let elapsed = now.duration_since(s.last).as_secs_f64();
+        let elapsed_nanos = now.duration_since(s.last).as_nanos();
         s.last = now;
-        s.tokens = (s.tokens + elapsed * self.inner.rate_bps as f64).min(self.inner.burst as f64);
-        let need = n as f64;
-        if s.tokens >= need {
-            s.tokens -= need;
+        // Refill: tokens += elapsed_nanos * rate_bps (scaled units), cap at
+        // capacity. Saturating math keeps long idle periods from overflowing.
+        let refill = elapsed_nanos.saturating_mul(rate);
+        s.tokens_scaled = s.tokens_scaled.saturating_add(refill).min(cap);
+
+        if s.tokens_scaled >= need_scaled {
+            s.tokens_scaled -= need_scaled;
             None
         } else {
-            let deficit = need - s.tokens;
-            let wait_secs = deficit / self.inner.rate_bps as f64;
-            Some(Duration::from_secs_f64(wait_secs.max(0.0)))
+            let deficit = need_scaled - s.tokens_scaled;
+            // wait_nanos = floor(deficit / rate) + 1. The `+1` guarantees
+            // the caller, on retry after `sleep(wait)`, will find enough
+            // tokens — without it, integer-floor division can leave the
+            // bucket still 1 scaled-unit short and produce a busy spin.
+            // This is the precise edge case the previous f64-based path
+            // could hit (f64 underestimates wait by <1 ULP). rate is
+            // non-zero by virtue of `is_active()` above.
+            let wait_nanos = deficit / rate + 1;
+            // u128 -> u64 saturate: anything beyond u64::MAX nanos
+            // (~584 years) is clamped — Duration::from_nanos takes u64.
+            let wait_nanos = u64::try_from(wait_nanos).unwrap_or(u64::MAX);
+            Some(Duration::from_nanos(wait_nanos))
         }
     }
 
@@ -269,5 +298,167 @@ mod tests {
         let g = ConnectionGate::new(0);
         let _permits: Vec<_> = (0..1000).map(|_| g.try_acquire().unwrap()).collect();
         assert_eq!(g.in_flight(), 0); // unlimited reports 0
+    }
+
+    /// Reference token bucket implemented in pure `f64` (the pre-rewrite
+    /// behavior). Used by `prop_u128_matches_f64_reference` to assert the
+    /// new integer-nanos implementation agrees on accept/reject within a
+    /// 1-byte tolerance across 1000 random `(elapsed_nanos, drain_bytes)`
+    /// sequences.
+    struct RefBucketF64 {
+        rate_bps: u64,
+        burst: u64,
+        tokens: f64,
+    }
+
+    impl RefBucketF64 {
+        fn new(rate_bps: u64, burst: u64) -> Self {
+            let burst = burst.max(rate_bps.max(1));
+            Self {
+                rate_bps,
+                burst,
+                tokens: burst as f64,
+            }
+        }
+
+        /// Pure step: advance by `elapsed_nanos` and attempt to drain `n`.
+        /// Returns `true` on accept, `false` on reject (mirrors the
+        /// `Option<Duration>::is_none()` semantics of `try_acquire`).
+        fn step(&mut self, elapsed_nanos: u128, n: u64) -> bool {
+            if self.rate_bps == 0 {
+                return true;
+            }
+            let elapsed_secs = (elapsed_nanos as f64) / 1.0e9;
+            self.tokens = (self.tokens + elapsed_secs * self.rate_bps as f64)
+                .min(self.burst as f64);
+            let need = n as f64;
+            if self.tokens >= need {
+                self.tokens -= need;
+                true
+            } else {
+                false
+            }
+        }
+    }
+
+    /// Drive the new u128 path manually so we can inject a controlled
+    /// elapsed-nanos value (mirrors `try_acquire` but uses an externally
+    /// supplied "now offset" instead of `Instant::now()`). Returns
+    /// `Some(())` on accept, `None` on reject — matches reference semantics.
+    fn step_u128(
+        rate_bps: u64,
+        capacity_scaled: u128,
+        tokens_scaled: &mut u128,
+        elapsed_nanos: u128,
+        n: u64,
+    ) -> bool {
+        if rate_bps == 0 {
+            return true;
+        }
+        let rate = rate_bps as u128;
+        let need_scaled = (n as u128).saturating_mul(NANOS_PER_SEC);
+        let refill = elapsed_nanos.saturating_mul(rate);
+        *tokens_scaled = tokens_scaled.saturating_add(refill).min(capacity_scaled);
+        if *tokens_scaled >= need_scaled {
+            *tokens_scaled -= need_scaled;
+            true
+        } else {
+            false
+        }
+    }
+
+    #[test]
+    fn prop_u128_matches_f64_reference() {
+        // Deterministic LCG keeps the test reproducible without a new
+        // dev-dep. Constants from Numerical Recipes.
+        let mut rng: u64 = 0xDEAD_BEEF_CAFE_F00D;
+        let mut next = || {
+            rng = rng
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            rng
+        };
+
+        // Realistic-ish bucket: 1 MiB/s, 4 MiB burst.
+        let rate_bps: u64 = 1024 * 1024;
+        let burst: u64 = 4 * 1024 * 1024;
+        let capacity_scaled = (burst as u128).saturating_mul(NANOS_PER_SEC);
+
+        let mut tokens_scaled: u128 = capacity_scaled;
+        let mut reference = RefBucketF64::new(rate_bps, burst);
+        // Re-sync reference to capacity (mirror initial state).
+        reference.tokens = burst as f64;
+
+        let mut disagreements = 0u32;
+        let mut net_drift_bytes: i128 = 0;
+
+        for _ in 0..1000 {
+            // Elapsed in the range [0, 100ms) nanos. Wide enough to exercise
+            // refill saturation against capacity occasionally.
+            let elapsed_nanos = (next() % 100_000_000) as u128;
+            // Drain size in the range [1, 2 * burst). > burst triggers reject.
+            let n = (next() % (2 * burst)) + 1;
+
+            let got = step_u128(rate_bps, capacity_scaled, &mut tokens_scaled, elapsed_nanos, n);
+            let want = reference.step(elapsed_nanos, n);
+
+            if got != want {
+                // Tolerance: only count it as a disagreement if the f64
+                // reference is within 1 byte of the u128 decision point.
+                // That is: |ref.tokens - need| <= 1 byte (in real bytes).
+                let need = n as f64;
+                let diff = (reference.tokens - need).abs();
+                if diff > 1.0 {
+                    disagreements += 1;
+                }
+                // Re-sync the f64 tokens to the u128 view (in bytes) so a
+                // single rounding glitch doesn't snowball through 1000 iter.
+                reference.tokens = (tokens_scaled / NANOS_PER_SEC) as f64;
+                // Track net drift (signed) to assert global behavior.
+                net_drift_bytes += if got { 0 } else { n as i128 };
+            }
+        }
+
+        assert_eq!(
+            disagreements, 0,
+            "u128 and f64 reference disagreed on accept/reject outside the 1-byte tolerance band; net drift = {net_drift_bytes} bytes"
+        );
+    }
+
+    #[test]
+    fn invariant_cumulative_consumption_under_rate_plus_burst() {
+        // Drive the real bucket with `try_acquire` (zero-wait acquires only)
+        // and assert: consumed_bytes <= rate_bps * elapsed + burst at all times.
+        // This is the bucket invariant; the u128 rewrite must preserve it.
+        let rate_bps: u64 = 4096;
+        let burst: u64 = 4096;
+        let b = TokenBucket::new(rate_bps, burst);
+        let mut rng: u64 = 0x1234_5678_9ABC_DEF0;
+        let mut next = || {
+            rng = rng
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            rng
+        };
+
+        let start = std::time::Instant::now();
+        let mut consumed: u128 = 0;
+        for _ in 0..1000 {
+            let n = (next() % 512) + 1;
+            if b.try_acquire(n).is_none() {
+                consumed += n as u128;
+            }
+            let elapsed_nanos = start.elapsed().as_nanos();
+            // Allowed = rate * elapsed_secs + burst, computed in scaled units
+            // to avoid f64.
+            let allowed = elapsed_nanos
+                .saturating_mul(rate_bps as u128)
+                / NANOS_PER_SEC
+                + burst as u128;
+            assert!(
+                consumed <= allowed,
+                "consumed {consumed} > allowed {allowed} after {elapsed_nanos}ns"
+            );
+        }
     }
 }

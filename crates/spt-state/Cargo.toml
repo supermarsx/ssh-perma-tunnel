@@ -14,6 +14,9 @@ workspace = true
 
 [features]
 testing = ["dep:tempfile"]
+# Opt-in gate for Criterion benchmarks. Keeps `cargo test --all-targets` from
+# running harness-free benches as part of the normal test gates.
+bench = []
 
 [dependencies]
 spt-core = { workspace = true }
@@ -34,3 +37,10 @@ nix = { workspace = true }
 [dev-dependencies]
 tempfile = { workspace = true }
 tokio = { workspace = true }
+criterion = { workspace = true }
+
+[[bench]]
+name = "snapshot"
+path = "benches/snapshot.rs"
+harness = false
+required-features = ["bench"]

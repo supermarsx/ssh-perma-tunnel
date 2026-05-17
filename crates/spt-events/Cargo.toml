@@ -49,10 +49,20 @@ default = ["transports"]
 transports = ["dep:reqwest", "dep:lettre", "dep:url"]
 # Public test helpers in `spt_events::testing`.
 testing = []
+# Opt-in gate for Criterion benchmarks. Keeps `cargo test --all-targets`
+# from executing harness-free benches during normal test gates.
+bench = ["testing"]
 
 [dev-dependencies]
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["full", "test-util"] }
+criterion = { workspace = true }
+
+[[bench]]
+name = "hot_paths"
+path = "benches/hot_paths.rs"
+harness = false
+required-features = ["bench"]
 
 [lints]
 workspace = true

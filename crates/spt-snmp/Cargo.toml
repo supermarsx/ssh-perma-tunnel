@@ -49,3 +49,13 @@ criterion = { workspace = true }
 name = "usm"
 harness = false
 required-features = ["bench"]
+
+[[bench]]
+name = "ber"
+harness = false
+required-features = ["bench"]
+
+[[bench]]
+name = "agent"
+harness = false
+required-features = ["bench"]
