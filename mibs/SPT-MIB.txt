@@ -1,9 +1,20 @@
 SPT-MIB DEFINITIONS ::= BEGIN
 
 -- ===========================================================================
--- spt — SSH permanent tunnel — Project enterprise MIB.
+-- spt -- SSH permanent tunnel -- Project enterprise MIB.
 --
--- This checked-in MIB uses the RFC documentation PEN 32473 as a template.
+-- This checked-in MIB uses the RFC 5612 / RFC 9371 documentation PEN 32473
+-- as a deliberate placeholder. The official IANA PEN registration packet
+-- is documented in docs/pen-registration.md. To swap in the assigned PEN
+-- once IANA returns it, run:
+--
+--     scripts/swap-pen.sh <NEW_PEN>          (POSIX)
+--     scripts/swap-pen.ps1 <NEW_PEN>         (Windows / PowerShell)
+--
+-- The script performs a single edit on the `sptEnterprise` constant below
+-- and bumps the MIB REVISION. All subtree OIDs are anchored at
+-- `sptEnterprise`, so no other line in this file needs editing.
+--
 -- Production deployments must publish the MIB under the registered IANA
 -- Private Enterprise Number configured with `[observability.snmp].enterprise_id`.
 -- ===========================================================================
@@ -16,6 +27,23 @@ IMPORTS
         FROM SNMPv2-TC
     MODULE-COMPLIANCE, OBJECT-GROUP, NOTIFICATION-GROUP
         FROM SNMPv2-CONF;
+
+-- ---------------------------------------------------------------------------
+-- IANA Private Enterprise Number (PEN) anchor.
+--
+-- This MODULE-IDENTITY assignment carries the project's IANA Private
+-- Enterprise Number. The current value (32473) is the RFC 5612 / RFC 9371
+-- documentation PEN, used here as a PLACEHOLDER until IANA returns a
+-- production PEN. The registration packet is at docs/pen-registration.md.
+--
+-- To swap in the assigned PEN once IANA returns it, run:
+--     scripts/swap-pen.sh <NEW_PEN>
+--
+-- The swap rewrites exactly one line below (`::= { enterprises 32473 }`
+-- on the MODULE-IDENTITY). All subtree OIDs are anchored at `spt` so no
+-- other line in this file needs editing. Do NOT introduce a second
+-- occurrence of the raw PEN number anywhere else in this MIB.
+-- ---------------------------------------------------------------------------
 
 spt MODULE-IDENTITY
     LAST-UPDATED "202605050000Z"
@@ -30,10 +58,10 @@ spt MODULE-IDENTITY
          rate-limit exhaustion, DNS failure, and remote logging failure."
     REVISION    "202605050000Z"
     DESCRIPTION "Initial revision."
-    ::= { enterprises 32473 } -- replace with your registered production PEN
+    ::= { enterprises 32473 }   -- TODO(IANA): swap via scripts/swap-pen.sh
 
 -- ---------------------------------------------------------------------------
--- Sub-tree layout.
+-- Sub-tree layout. All anchored at `spt` so the PEN swap is one line above.
 -- ---------------------------------------------------------------------------
 
 sptMibObjects        OBJECT IDENTIFIER ::= { spt 1 }

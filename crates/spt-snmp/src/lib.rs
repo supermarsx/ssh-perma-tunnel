@@ -73,6 +73,20 @@
     clippy::manual_let_else
 )]
 
+/// Placeholder IANA Private Enterprise Number OID for the SPT MIB.
+///
+/// Equals `1.3.6.1.4.1.32473`, which is the RFC 5612 / RFC 9371 documentation
+/// PEN reused as a deliberate placeholder until the project receives its own
+/// IANA-assigned PEN. This mirrors the MIB-side anchor in
+/// [`mibs/SPT-MIB.txt`](../../../mibs/SPT-MIB.txt) and parallels
+/// [`DOCUMENTATION_ENTERPRISE_PEN`] (the same number expressed as a scalar).
+///
+/// The actual PEN must be requested via IANA -- see
+/// [`docs/pen-registration.md`](../../../docs/pen-registration.md). After
+/// assignment, run `scripts/swap-pen.sh <NEW_PEN>` (or the `.ps1` variant) to
+/// update both the MIB and this constant in one motion.
+pub const SPT_ENTERPRISE_OID_PLACEHOLDER: &[u32] = &[1, 3, 6, 1, 4, 1, 32_473];
+
 pub mod agent;
 pub mod ber;
 
