@@ -103,6 +103,19 @@ fn make_quic_pair() -> (quinn::ServerConfig, quinn::ClientConfig) {
     (server, client)
 }
 
+/// Crate-internal helper exposing [`connected_pair`] for in-crate tests that
+/// need a raw self-signed QUIC connection pair without going through
+/// [`Ssh3TestServer`]. Gated on the `testing` feature for the same reasons
+/// as the rest of this module (pulls in `rcgen`).
+#[cfg(feature = "testing")]
+pub mod test_support {
+    /// Bring up a connected pair of `quinn::Connection`s on loopback with a
+    /// self-signed certificate. Returns `(client_conn, server_conn)`.
+    pub async fn connected_pair_public() -> (quinn::Connection, quinn::Connection) {
+        super::connected_pair().await
+    }
+}
+
 #[cfg(feature = "testing")]
 async fn connected_pair() -> (quinn::Connection, quinn::Connection) {
     let (server_cfg, client_cfg) = make_quic_pair();

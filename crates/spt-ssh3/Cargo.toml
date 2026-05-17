@@ -17,6 +17,9 @@ default = []
 # Exposes the `testing` module: Ssh3TestServer + fixtures. Pulls in `rcgen` as
 # an optional non-dev dep so downstream test crates can reuse the harness.
 testing = ["dep:rcgen"]
+# Opt-in gate for Criterion benchmarks. This keeps `cargo test --all-targets`
+# from executing harness-free benches during normal test gates.
+bench = []
 
 [dependencies]
 spt-core = { workspace = true }
@@ -56,3 +59,10 @@ tracing-test = "0.2"
 tokio = { workspace = true }
 serde_json = { workspace = true }
 rcgen = "0.13"
+criterion = { workspace = true }
+
+[[bench]]
+name = "wire"
+path = "benches/wire.rs"
+harness = false
+required-features = ["bench"]

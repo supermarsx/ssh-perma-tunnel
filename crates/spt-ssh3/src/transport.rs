@@ -18,7 +18,7 @@
 //! channel. Wiring the per-forward channel framing on top is delegated to
 //! `session.rs` / `forward.rs` (see partial-real status notes there).
 //!
-//! # Why `:protocol = ssh3` ships as the `X-Ssh3-Protocol` header
+//! # `:protocol = ssh3` — raw HTTP/3 bootstrap path
 //!
 //! RFC 9220 (Extended CONNECT over HTTP/3) defines the `:protocol`
 //! pseudo-header as the wire mechanism for upgrading a CONNECT into a
@@ -27,40 +27,37 @@
 //!
 //! The `h3` crate at the version we are pinned to (`=0.0.8`) exposes
 //! Extended CONNECT support via a *closed* `h3::ext::Protocol` enum whose
-//! only variants are `WEB_TRANSPORT` and `CONNECT_UDP`. There is no public
-//! constructor for an arbitrary `:protocol` string and no way to attach the
-//! pseudo-header to an outbound `Request` via `http::Request::extensions_mut`
-//! that h3 0.0.8 will honor. The work to make `Protocol` an open type
-//! (string-backed) was tracked in the upstream tracking issue for
-//! arbitrary-protocol Extended CONNECT support
-//! (`hyperium/h3#218` and the follow-on `#374`); the fix landed only after
-//! the 0.0.8 cut. We are explicitly forbidden by t2's quality bar from
-//! bumping past `=0.0.8` because doing so cascades a `quinn` major-version
-//! change that breaks our MSRV-1.83 floor.
+//! only variants are `WEB_TRANSPORT` and `CONNECT_UDP` (see
+//! `~/.cargo/registry/src/.../h3-0.0.8/src/ext.rs:9-31`). There is no
+//! public constructor for an arbitrary `:protocol` string and no way to
+//! attach the pseudo-header to an outbound `Request` via
+//! `http::Request::extensions_mut` that h3 0.0.8 will honor. The work to
+//! make `Protocol` an open type landed only after the 0.0.8 cut; bumping
+//! past `=0.0.8` cascades a `quinn` major-version change that breaks our
+//! MSRV-1.83 floor and is therefore explicitly forbidden by the project
+//! quality bar.
 //!
-//! As a wire-compat workaround, `build_connect_request` mirrors the
-//! `:protocol` value into a normal HTTP request header named
-//! **`X-Ssh3-Protocol`** (verbatim string `ssh3`). The
-//! `francoismichel/ssh3` reference server can be patched to honor this
-//! header in addition to the pseudo-header, and the spt↔spt path needs no
-//! patch (the responder reads the same custom header). The `:method`,
-//! `:authority`, and `:path` pseudo-headers are still sent normally per
-//! RFC 9220.
+//! **We bypass `h3` for the Extended-CONNECT bootstrap.** See
+//! [`crate::h3_raw`] for the minimal QPACK + HTTP/3-HEADERS implementation
+//! that emits the `:protocol = ssh3` pseudo-header natively over a raw
+//! `quinn::Connection` bidi stream. The `h3` client driver still runs on
+//! the same QUIC connection so that the peer's HTTP/3 stack sees a normal
+//! client control stream + SETTINGS handshake; we only take over the
+//! request stream itself.
 //!
-//! Two paths forward:
+//! For belt-and-suspenders interop with any pre-existing responder that
+//! was keyed on the prior `X-Ssh3-Protocol` mirror, the raw path *also*
+//! emits that custom header alongside the pseudo-header. The
+//! [`build_connect_request`] function below still exists and is the
+//! authoritative source for the request shape (consumed by the test
+//! `build_connect_request_has_protocol_extension_and_bearer` so the header
+//! contract is pinned in two places).
 //!
-//! * Upstream `h3` graduates `Protocol` to a string-backed open type (or
-//!   exposes a constructor for arbitrary tokens). We then drop the custom
-//!   header and emit the pseudo-header natively. Tracked as
-//!   `TODO(spec-clarify)` in this crate's README.
-//! * We move to raw HTTP/3 framing (bypassing `h3` entirely for the
-//!   bootstrap request) and write the pseudo-header field by hand.
-//!
-//! Until then, `X-Ssh3-Protocol: ssh3` is the wire contract. The two unit
-//! tests `x_ssh3_protocol_header_is_byte_exact_value` and
-//! `x_ssh3_protocol_header_name_is_byte_exact` below pin both the header
-//! name and value byte-for-byte so that a careless rename can never silently
-//! break interop.
+//! The unit test
+//! `extended_connect_raw_emits_protocol_ssh3_pseudo_header_to_a_fake_server`
+//! in this module spins up a quinn server, accepts the bootstrap bidi,
+//! decodes the QPACK-encoded HEADERS frame on the wire, and asserts the
+//! decoded `:protocol` pseudo-header value is exactly `ssh3`.
 
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs};
 use std::sync::Arc;
@@ -138,8 +135,22 @@ fn build_quinn_endpoint(remote: SocketAddr, cfg: &Ssh3Config) -> Result<Endpoint
 
 /// Construct the HTTP/3 Extended CONNECT [`Request`] for the SSH3 session.
 ///
-/// Public for the dedicated unit test that asserts the request shape (bearer
-/// header, `:protocol` extension, authority + path).
+/// **Historical / reference path.** Since the
+/// [raw HTTP/3 bootstrap](crate::h3_raw) landed, the live wire request is
+/// emitted by [`crate::h3_raw::extended_connect_raw`] — not by feeding
+/// this `Request` to `h3::client::SendRequest::send_request`. This helper
+/// is retained because:
+///
+/// * The unit tests
+///   `build_connect_request_has_protocol_extension_and_bearer`,
+///   `build_connect_request_basic_auth`,
+///   `build_connect_request_publickey_path_produces_bearer_jwt`, and
+///   `build_connect_request_pins_spt_user_agent` use it to pin the
+///   authorization-header derivation, user-agent shape, and URI building
+///   that `extended_connect_raw` also relies on.
+/// * The `x-ssh3-protocol` header it emits documents (and tests) the
+///   backward-compat X-header that the raw path now ships alongside the
+///   `:protocol = ssh3` pseudo-header.
 pub fn build_connect_request(
     host: &str,
     port: u16,
@@ -202,35 +213,47 @@ pub async fn bootstrap(
         .map_err(|e| Error::RuntimeFailure(format!("ssh3: quinn::connect: {e}")))?;
     let connection = connecting.await.map_err(map_connection_error)?;
 
-    // h3-quinn driver
+    // Spin up the h3 client driver on a clone of the QUIC connection. We do
+    // NOT use it to issue the Extended-CONNECT request — h3 0.0.8 cannot
+    // emit `:protocol = ssh3` (see module docs). The driver's job here is
+    // to send the HTTP/3 client control stream + SETTINGS frame so the
+    // peer's HTTP/3 stack is satisfied. The CONNECT itself goes via
+    // [`h3_raw::extended_connect_raw`] on a separate raw bidi stream.
     let h3_conn = h3_quinn::Connection::new(connection.clone());
-    let (mut driver, mut send_request) = h3::client::new(h3_conn)
+    let (mut driver, _send_request) = h3::client::new(h3_conn)
         .await
         .map_err(|e| Error::RuntimeFailure(format!("ssh3: h3 client init: {e}")))?;
-
-    // Drive the connection in the background. When CONNECT completes we keep
-    // the driver alive on the spawned task; the connection lives as long as
-    // anyone holds the SendRequest handle.
     let driver_task = tokio::spawn(async move {
         let _ = std::future::poll_fn(|cx| driver.poll_close(cx)).await;
     });
 
-    let req = build_connect_request(host, port, &cfg.url_path, auth)?;
-    let mut stream = send_request
-        .send_request(req)
-        .await
-        .map_err(|e| Error::RuntimeFailure(format!("ssh3: send CONNECT: {e}")))?;
-    stream
-        .finish()
-        .await
-        .map_err(|e| Error::RuntimeFailure(format!("ssh3: CONNECT finish: {e}")))?;
-    let resp = stream
-        .recv_response()
-        .await
-        .map_err(|e| Error::RuntimeFailure(format!("ssh3: CONNECT response: {e}")))?;
-    let status = resp.status().as_u16();
+    let auth_header = crate::auth_header::build_authorization_header_for(
+        auth,
+        host,
+        port,
+        &cfg.url_path,
+    )?;
+    let user_agent = concat!("spt/", env!("CARGO_PKG_VERSION"));
+    let raw = crate::h3_raw::extended_connect_raw(
+        &connection,
+        host,
+        port,
+        &cfg.url_path,
+        &auth_header,
+        user_agent,
+    )
+    .await
+    .map_err(|e| match e {
+        Error::AuthFailed(_) | Error::RuntimeFailure(_) | Error::TrustFailed(_) => e,
+        other => Error::RuntimeFailure(format!("ssh3: raw CONNECT: {other}")),
+    })?;
+    let status = raw.status;
+    let peer_version = raw.peer_version;
+    // The raw CONNECT bidi is discarded immediately — spt's wire contract
+    // uses a separate dedicated control bidi (see [`open_control_stream`]).
+    drop(raw.send);
+    drop(raw.recv);
     if !(200..300).contains(&status) {
-        // Cancel the driver task — connection closed shortly after.
         driver_task.abort();
         let body = format!("ssh3: CONNECT returned HTTP {status}");
         return Err(if matches!(status, 401 | 403) {
@@ -239,13 +262,7 @@ pub async fn bootstrap(
             Error::RuntimeFailure(body)
         });
     }
-
-    let peer_version = resp
-        .headers()
-        .get(http::header::SERVER)
-        .and_then(|v| v.to_str().ok())
-        .map(str::to_owned);
-    let negotiated = Some("TLS1.3 + QUIC + h3".to_string());
+    let negotiated = Some("TLS1.3 + QUIC + h3 (raw bootstrap)".to_string());
 
     // Open the SSH3 control bidi stream and exchange `Settings` frames. We
     // run on a fresh raw QUIC stream (bypassing h3) — the spt↔spt
@@ -641,5 +658,93 @@ mod tests {
             let local = ep.local_addr().unwrap();
             assert!(local.is_ipv6());
         }
+    }
+
+    /// End-to-end wire test: spin up a quinn server, have the client call
+    /// [`crate::h3_raw::extended_connect_raw`], accept the first bidi on the
+    /// server, parse the HTTP/3 HEADERS frame off the wire, QPACK-decode it,
+    /// and assert that **the `:protocol` pseudo-header is present with the
+    /// byte-exact value `ssh3`**. This pins the post-fix invariant the
+    /// francoismichel/ssh3 reference server requires per RFC 9220 / RFC 8441.
+    ///
+    /// The server then writes back a HEADERS frame containing
+    /// `:status = 200` (indexed against static table index 25) so the client
+    /// side completes cleanly and returns its [`crate::h3_raw::RawConnectOutcome`].
+    #[cfg(feature = "testing")]
+    #[tokio::test]
+    async fn extended_connect_raw_emits_protocol_ssh3_pseudo_header_to_a_fake_server() {
+        use crate::h3_raw::{
+            build_headers_frame, extended_connect_raw, qpack_decode, qpack_encode,
+            read_frame_typed,
+        };
+        use crate::testing::test_support::connected_pair_public;
+
+        let (client_conn, server_conn) = connected_pair_public().await;
+
+        // Server task: accept the bootstrap bidi, read HEADERS, decode,
+        // write back a `:status = 200` HEADERS frame, then HOLD the
+        // connection open until told to drop. If the task returns the
+        // `server_conn` it owns goes out of scope and the QUIC connection
+        // closes — that races against the client's response read.
+        let (drop_tx, drop_rx) = tokio::sync::oneshot::channel::<()>();
+        let server = tokio::spawn(async move {
+            let (mut s_send, mut s_recv) =
+                server_conn.accept_bi().await.expect("accept bootstrap bidi");
+            let payload = read_frame_typed(&mut s_recv, 0x01).await.expect("read HEADERS");
+            let fields = qpack_decode(&payload).expect("qpack decode");
+            let resp_qpack = qpack_encode(&[(b":status", b"200"), (b"server", b"fake")]);
+            let frame = build_headers_frame(&resp_qpack);
+            s_send.write_all(&frame).await.expect("write response HEADERS");
+            s_send.finish().expect("finish response send");
+            // Stay alive until the test releases us — keeps the QUIC
+            // connection open so the client side can finish reading.
+            let _ = drop_rx.await;
+            drop(server_conn);
+            fields
+        });
+
+        // Client side: issue the raw Extended-CONNECT.
+        let outcome = extended_connect_raw(
+            &client_conn,
+            "example.test",
+            8443,
+            "/ssh3",
+            "Bearer tok-pin",
+            "spt/test",
+        )
+        .await
+        .expect("extended_connect_raw");
+        assert_eq!(outcome.status, 200);
+        assert_eq!(outcome.peer_version.as_deref(), Some("fake"));
+
+        let _ = drop_tx.send(());
+        let fields = server.await.expect("server task");
+        // Locate the `:protocol` pseudo-header by name.
+        let protocol = fields
+            .iter()
+            .find(|(n, _)| n == b":protocol")
+            .map(|(_, v)| v.clone())
+            .expect("`:protocol` pseudo-header MUST be present on the wire");
+        assert_eq!(
+            protocol, b"ssh3",
+            "`:protocol` pseudo-header MUST be byte-exact `ssh3`",
+        );
+        // The :method, :scheme, :authority, :path pseudo-headers must also
+        // make it across so the peer treats this as a proper Extended CONNECT.
+        let by_name = |k: &[u8]| {
+            fields
+                .iter()
+                .find(|(n, _)| n == k)
+                .map(|(_, v)| v.clone())
+                .unwrap_or_default()
+        };
+        assert_eq!(by_name(b":method"), b"CONNECT");
+        assert_eq!(by_name(b":scheme"), b"https");
+        assert_eq!(by_name(b":authority"), b"example.test:8443");
+        assert_eq!(by_name(b":path"), b"/ssh3");
+        // Backward-compat X-header still ships alongside the pseudo-header.
+        assert_eq!(by_name(b"x-ssh3-protocol"), b"ssh3");
+        // Authorization travels through QPACK literal-name-ref (static idx 84).
+        assert_eq!(by_name(b"authorization"), b"Bearer tok-pin");
     }
 }
