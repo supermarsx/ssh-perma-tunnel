@@ -1,0 +1,36 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.6.0.schema.json
+#
+# Installer manifest for Mariana.spt.
+#
+# Placeholders substituted on release by scripts/release/bump-winget.sh
+# (see packaging/winget/README.md for the substitution table):
+#
+#   <VERSION>            — e.g. 0.1.0
+#   <SHA256_WIN_AMD64>   — sha256 of spt-<VERSION>-x86_64-pc-windows-msvc.msi
+#   <SHA256_WIN_ARM64>   — sha256 of spt-<VERSION>-aarch64-pc-windows-msvc.msi
+#   <RELEASE_DATE>       — YYYY-MM-DD
+#   <PRODUCT_CODE_X64>   — MSI ProductCode GUID for the x64 installer, e.g. {12345678-1234-1234-1234-1234567890AB}
+#   <PRODUCT_CODE_ARM64> — MSI ProductCode GUID for the arm64 installer
+
+PackageIdentifier: Mariana.spt
+PackageVersion: 0.1.0
+MinimumOSVersion: 10.0.0.0
+InstallerType: msi
+Scope: machine
+InstallModes:
+  - silent
+  - silentWithProgress
+  - interactive
+UpgradeBehavior: install
+ReleaseDate: <RELEASE_DATE>
+Installers:
+  - Architecture: x64
+    InstallerUrl: https://github.com/Mariana/ssh-perma-tunnel/releases/download/v0.1.0/spt-0.1.0-x86_64-pc-windows-msvc.msi
+    InstallerSha256: <SHA256_WIN_AMD64>
+    ProductCode: <PRODUCT_CODE_X64>
+  - Architecture: arm64
+    InstallerUrl: https://github.com/Mariana/ssh-perma-tunnel/releases/download/v0.1.0/spt-0.1.0-aarch64-pc-windows-msvc.msi
+    InstallerSha256: <SHA256_WIN_ARM64>
+    ProductCode: <PRODUCT_CODE_ARM64>
+ManifestType: installer
+ManifestVersion: 1.6.0

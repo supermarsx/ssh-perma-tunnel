@@ -5,22 +5,68 @@
     "license": "MIT",
     "notes": [
         "spt is a client-only SSH/SSH3 tunnel supervisor.",
-        "Run 'spt --help' to get started, or 'spt profile configure --tui' for the TUI."
+        "",
+        "Quickstart:",
+        "  1. Seed a minimal config:",
+        "       spt config init --example minimal",
+        "     (writes to %USERPROFILE%\\.spt\\spt.toml; this directory is persisted across upgrades.)",
+        "",
+        "  2. Run a supervised tunnel in the foreground:",
+        "       spt tunnel run --config %USERPROFILE%\\.spt\\spt.toml",
+        "",
+        "  3. Or install as a Windows service (separate step):",
+        "       spt service install --config %USERPROFILE%\\.spt\\spt.toml",
+        "",
+        "Shell completions for PowerShell are auto-generated into the install dir as 'spt.ps1'",
+        "and registered as a PowerShell module. Run 'Import-Module spt' (or restart your shell)",
+        "to pick them up.",
+        "",
+        "Docs: https://github.com/Mariana/ssh-perma-tunnel#readme"
     ],
+    "depends": [],
+    "suggest": {
+        "OpenSSH": "Main.openssh"
+    },
     "architecture": {
         "64bit": {
             "url": "https://github.com/Mariana/ssh-perma-tunnel/releases/download/v<VERSION>/spt-<VERSION>-x86_64-pc-windows-msvc.zip",
-            "hash": "<SHA256_WIN_AMD64>"
+            "hash": "<SHA256_WIN_AMD64>",
+            "extract_dir": "spt-<VERSION>-x86_64-pc-windows-msvc"
         },
         "arm64": {
             "url": "https://github.com/Mariana/ssh-perma-tunnel/releases/download/v<VERSION>/spt-<VERSION>-aarch64-pc-windows-msvc.zip",
-            "hash": "<SHA256_WIN_ARM64>"
+            "hash": "<SHA256_WIN_ARM64>",
+            "extract_dir": "spt-<VERSION>-aarch64-pc-windows-msvc"
         }
     },
     "bin": "spt.exe",
+    "shortcuts": [
+        [
+            "spt.exe",
+            "spt — SSH Permanent Tunnel"
+        ]
+    ],
+    "psmodule": {
+        "name": "spt"
+    },
+    "persist": [
+        ".spt"
+    ],
+    "env_add_path": ".",
     "post_install": [
-        "if (Get-Command spt.exe -ErrorAction SilentlyContinue) {",
-        "    & spt.exe completion generate powershell | Out-File -Encoding utf8 \"$dir\\spt.ps1\" -ErrorAction SilentlyContinue",
+        "# Generate PowerShell completions next to spt.exe; harmless if the subcommand is absent.",
+        "if (Test-Path \"$dir\\spt.exe\") {",
+        "    try {",
+        "        & \"$dir\\spt.exe\" completion generate powershell |",
+        "            Out-File -Encoding utf8 \"$dir\\spt.psm1\" -ErrorAction Stop",
+        "    } catch {",
+        "        Write-Host \"spt: completion generation skipped ($($_.Exception.Message))\"",
+        "    }",
+        "}",
+        "# Seed %USERPROFILE%\\.spt on first install so 'persist' has something to track.",
+        "$sptHome = Join-Path $env:USERPROFILE '.spt'",
+        "if (-not (Test-Path $sptHome)) {",
+        "    New-Item -ItemType Directory -Path $sptHome -Force | Out-Null",
         "}"
     ],
     "checkver": {
@@ -29,14 +75,16 @@
     "autoupdate": {
         "architecture": {
             "64bit": {
-                "url": "https://github.com/Mariana/ssh-perma-tunnel/releases/download/v$version/spt-$version-x86_64-pc-windows-msvc.zip"
+                "url": "https://github.com/Mariana/ssh-perma-tunnel/releases/download/v$version/spt-$version-x86_64-pc-windows-msvc.zip",
+                "extract_dir": "spt-$version-x86_64-pc-windows-msvc"
             },
             "arm64": {
-                "url": "https://github.com/Mariana/ssh-perma-tunnel/releases/download/v$version/spt-$version-aarch64-pc-windows-msvc.zip"
+                "url": "https://github.com/Mariana/ssh-perma-tunnel/releases/download/v$version/spt-$version-aarch64-pc-windows-msvc.zip",
+                "extract_dir": "spt-$version-aarch64-pc-windows-msvc"
             }
         },
         "hash": {
-            "url": "$baseurl/SHA256SUMS",
+            "url": "https://github.com/Mariana/ssh-perma-tunnel/releases/download/v$version/SHA256SUMS",
             "regex": "(?<sha>[A-Fa-f0-9]{64})\\s+\\*?$basename"
         }
     }

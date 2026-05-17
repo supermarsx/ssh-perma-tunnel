@@ -1,0 +1,44 @@
+# Flathub-shaped manifest for spt.
+#
+# This manifest is what gets copied to the `flathub/io.spt.spt` repo on
+# submission. The build module is split out into `modules/spt-build.yaml`
+# so that the vendored-sources tarball reference can be regenerated
+# independently of the top-level finish-args.
+#
+# Placeholders rewritten by `scripts/release/update-packaging.sh` and
+# documented in README.md:
+#   <VERSION>             release version, e.g. 0.1.0
+#   <SHA256_SRC_TAR>      sha256 of v<VERSION>.tar.gz from GitHub
+#   <SHA256_VENDOR_TAR>   sha256 of spt-<VERSION>-vendor.tar.xz
+#
+# Local validation:
+#   flatpak-builder --user --install --force-clean build-dir \
+#       packaging/flathub/io.spt.spt.yaml
+#   appstream-util validate-relax packaging/flathub/io.spt.spt.metainfo.xml
+app-id: io.spt.spt
+runtime: org.freedesktop.Platform
+runtime-version: '23.08'
+sdk: org.freedesktop.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+command: spt
+
+finish-args:
+  # spt is a network client and tunnel supervisor.
+  - --share=network
+  # Loopback bind for the embedded MCP server / DNS resolver.
+  - --share=ipc
+  # Read user config (~/.config/spt) and home-relative key/cert paths.
+  - --filesystem=home
+  # Talk to ssh-agent and Secret Service (host keychain).
+  - --socket=session-bus
+  - --talk-name=org.freedesktop.secrets
+
+build-options:
+  append-path: /usr/lib/sdk/rust-stable/bin
+  env:
+    CARGO_HOME: /run/build/spt/cargo
+    CARGO_NET_OFFLINE: 'true'
+
+modules:
+  - modules/spt-build.yaml

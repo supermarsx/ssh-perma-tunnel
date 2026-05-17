@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Chocolatey package manifest for spt (SSH Permanent Tunnel).
+
+  Per-release maintainer checklist:
+    1. Bump <version> below to match the GitHub release tag (without the leading 'v').
+    2. Update the URLs and checksums in tools/chocolateyinstall.ps1.
+    3. Refresh tools/VERIFICATION.txt with the new release tag.
+    4. Drop the new release notes into <releaseNotes/> (or keep the pointer).
+    5. Run `choco pack` from this directory and `choco push` to chocolatey.org.
+
+  Schema reference: https://docs.chocolatey.org/en-us/create/create-packages
+-->
+<package xmlns="http://schemas.microsoft.com/packaging/2015/06/nuspec.xsd">
+  <metadata>
+    <id>spt</id>
+    <version>0.1.0</version>
+    <packageSourceUrl>https://github.com/Mariana/ssh-perma-tunnel/tree/main/packaging/choco</packageSourceUrl>
+    <owners>Mariana</owners>
+
+    <title>spt (SSH Permanent Tunnel)</title>
+    <authors>Mariana</authors>
+    <projectUrl>https://github.com/Mariana/ssh-perma-tunnel</projectUrl>
+    <projectSourceUrl>https://github.com/Mariana/ssh-perma-tunnel</projectSourceUrl>
+    <docsUrl>https://github.com/Mariana/ssh-perma-tunnel#readme</docsUrl>
+    <bugTrackerUrl>https://github.com/Mariana/ssh-perma-tunnel/issues</bugTrackerUrl>
+    <mailingListUrl>https://github.com/Mariana/ssh-perma-tunnel/discussions</mailingListUrl>
+    <licenseUrl>https://github.com/Mariana/ssh-perma-tunnel/blob/main/license.md</licenseUrl>
+    <iconUrl>https://raw.githubusercontent.com/Mariana/ssh-perma-tunnel/main/packaging/choco/icon.png</iconUrl>
+    <requireLicenseAcceptance>false</requireLicenseAcceptance>
+
+    <tags>spt ssh ssh3 tunnel networking security cli windows admin</tags>
+    <summary>Permanent SSH/SSH3 tunnels — supervised local/remote port forwards that survive drops.</summary>
+    <description><![CDATA[
+**spt** (SSH Permanent Tunnel) is a client-only supervisor for long-lived SSH and SSH3 tunnels.
+It keeps local/remote/dynamic port forwards alive across network drops, server restarts, and
+DHCP churn, with structured logging, Prometheus metrics, SNMP, and Windows Service integration.
+
+### Highlights
+
+- **SSH2 (libssh2/russh) and SSH3 (QUIC) transports.**
+- **Local, remote, and dynamic (SOCKS) forwards.** Multiplexed over one durable session.
+- **Supervised reconnect** with jittered exponential backoff and circuit-breaker semantics.
+- **First-class Windows Service** via the SCM (`spt service install`).
+- **Structured diagnostics**: JSON logs, Prometheus exporter, SNMP MIB, Windows Event Log.
+- **Config-first**: declarative TOML profiles, hot-reload, key + secret rotation hooks.
+
+### After install
+
+```
+spt config init --example minimal
+spt tunnel run --config %USERPROFILE%\.spt\spt.toml
+```
+
+Or install as a Windows service:
+
+```
+spt service install --config %USERPROFILE%\.spt\spt.toml
+```
+
+See the project README for the full configuration reference and operator runbooks.
+]]></description>
+    <releaseNotes>See https://github.com/Mariana/ssh-perma-tunnel/releases for full release notes.</releaseNotes>
+
+    <copyright>Copyright (c) 2026 Mariana</copyright>
+  </metadata>
+  <files>
+    <file src="tools\**" target="tools" />
+  </files>
+</package>

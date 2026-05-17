@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=spt
+Comment=Permanent SSH/SSH3 tunnels
+Exec=spt
+Terminal=true
+Type=Application
+Icon=io.spt.spt
+Categories=Network;Security;ConsoleOnly;
+Keywords=ssh;tunnel;networking;
+StartupNotify=false

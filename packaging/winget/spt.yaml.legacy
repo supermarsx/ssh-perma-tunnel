@@ -1,3 +1,9 @@
+# DEPRECATED — this singleton has been superseded by the multi-file layout
+# under packaging/winget/manifests/m/Mariana/spt/<VERSION>/. See
+# packaging/winget/README.md. This file is retained only so existing local
+# scripts that referenced it do not break; new work should target the
+# multi-file manifests.
+#
 # Windows Package Manager (winget) singleton manifest for spt.
 #
 # NOTE: For submission to microsoft/winget-pkgs the canonical layout is a

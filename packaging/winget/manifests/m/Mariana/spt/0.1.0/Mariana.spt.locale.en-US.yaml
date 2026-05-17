@@ -1,0 +1,38 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.6.0.schema.json
+#
+# Default-locale (en-US) manifest for Mariana.spt.
+
+PackageIdentifier: Mariana.spt
+PackageVersion: 0.1.0
+PackageLocale: en-US
+Publisher: Mariana
+PublisherUrl: https://github.com/Mariana
+PublisherSupportUrl: https://github.com/Mariana/ssh-perma-tunnel/issues
+PrivacyUrl: https://github.com/Mariana/ssh-perma-tunnel/blob/main/docs/privacy.md
+Author: Mariana
+PackageName: spt
+PackageUrl: https://github.com/Mariana/ssh-perma-tunnel
+License: MIT
+LicenseUrl: https://github.com/Mariana/ssh-perma-tunnel/blob/main/license.md
+Copyright: Copyright (c) 2026 Mariana
+CopyrightUrl: https://github.com/Mariana/ssh-perma-tunnel/blob/main/license.md
+ShortDescription: Permanent SSH/SSH3 tunnels with reconnect and service integration
+Description: |-
+  spt establishes and maintains permanent SSH tunnels — local and reverse
+  port forwards that survive network drops, host restarts, service
+  restarts, DNS changes, and normal operational drift. It supports both
+  classical SSH (libssh2 / russh backends) and SSH3 over QUIC, ships as a
+  Windows service via the SCM, and exposes structured diagnostics, event
+  logging, and SNMP for operability.
+Moniker: spt
+Tags:
+  - ssh
+  - ssh3
+  - tunnel
+  - networking
+  - security
+  - cli
+ReleaseNotes: <RELEASE_NOTES>
+ReleaseNotesUrl: https://github.com/Mariana/ssh-perma-tunnel/releases/tag/v0.1.0
+ManifestType: defaultLocale
+ManifestVersion: 1.6.0

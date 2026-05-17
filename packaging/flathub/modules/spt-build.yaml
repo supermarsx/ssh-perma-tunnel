@@ -1,0 +1,45 @@
+# Build module for spt.
+#
+# Flathub forbids network access during the build phase, so we ship two
+# tarballs:
+#   1. The source tarball from the GitHub release tag.
+#   2. A separately produced `spt-<VERSION>-vendor.tar.xz` containing
+#      `vendor/` (output of `cargo vendor`) and the `.cargo/config.toml`
+#      that redirects every crate to that directory.
+#
+# The vendor tarball is generated as part of the release pipeline; see
+# `packaging/flathub/README.md` for the exact reproducer.
+name: spt
+buildsystem: simple
+sources:
+  - type: archive
+    url: https://github.com/Mariana/ssh-perma-tunnel/archive/refs/tags/v<VERSION>.tar.gz
+    sha256: <SHA256_SRC_TAR>
+    dest-filename: spt-source.tar.gz
+  - type: archive
+    url: https://github.com/Mariana/ssh-perma-tunnel/releases/download/v<VERSION>/spt-<VERSION>-vendor.tar.xz
+    sha256: <SHA256_VENDOR_TAR>
+    dest-filename: spt-vendor.tar.xz
+    strip-components: 0
+build-commands:
+  # Cargo --offline against the vendored sources directory.
+  - cargo --offline build --release --locked --bin spt
+  - install -Dm755 target/release/spt /app/bin/spt
+  - install -Dm644 license.md /app/share/licenses/spt/LICENSE
+  # Man pages (installed only if produced by the source tree).
+  - |
+    if [ -d packaging/man ]; then
+      for page in packaging/man/spt*.1; do
+        [ -f "$page" ] || continue
+        install -Dm644 "$page" "/app/share/man/man1/$(basename "$page")"
+      done
+    fi
+  # AppStream metainfo.
+  - install -Dm644 packaging/flathub/io.spt.spt.metainfo.xml /app/share/metainfo/io.spt.spt.metainfo.xml
+  # Desktop entry.
+  - install -Dm644 packaging/flathub/io.spt.spt.desktop /app/share/applications/io.spt.spt.desktop
+  # Icons (multiple sizes + scalable).
+  - install -Dm644 packaging/flathub/icons/64x64/io.spt.spt.png    /app/share/icons/hicolor/64x64/apps/io.spt.spt.png
+  - install -Dm644 packaging/flathub/icons/128x128/io.spt.spt.png  /app/share/icons/hicolor/128x128/apps/io.spt.spt.png
+  - install -Dm644 packaging/flathub/icons/256x256/io.spt.spt.png  /app/share/icons/hicolor/256x256/apps/io.spt.spt.png
+  - install -Dm644 packaging/flathub/icons/scalable/io.spt.spt.svg /app/share/icons/hicolor/scalable/apps/io.spt.spt.svg

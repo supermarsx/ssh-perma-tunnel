@@ -1,21 +1,26 @@
 name: spt
 base: core22
-version: '<VERSION>'
-summary: Permanent SSH/SSH3 tunnels with reconnect and service integration
+version: '0.1.0'
+summary: Permanent SSH/SSH3 tunnels — survives drops
+title: spt
+icon: ../snapcraft/icon-256.png
 description: |
-  spt establishes and maintains permanent SSH tunnels — local and reverse
-  port forwards that survive network drops, host restarts, service
-  restarts, DNS changes, and normal operational drift.
+  spt establishes and maintains permanent SSH/SSH3 tunnels — local and
+  reverse port forwards that survive network drops, host restarts,
+  service restarts, DNS changes, and operational drift.
 
-  Features:
+  Ships with:
     - SSH2 transport via libssh2 and an experimental SSH3 transport over
       QUIC + HTTP/3.
     - Local and remote TCP forwards everywhere; UDP forwards over SSH3.
     - A built-in transparent DNS resolver with split-horizon and SRV
       synthesis.
-    - An encrypted secret vault (AES-256-GCM + Argon2id).
-    - Service integration, structured observability, an embedded MCP
-      server, and a TUI profile configurator.
+    - An encrypted secret vault (AES-256-GCM + Argon2id) with OS-keychain
+      integration.
+    - Service integration (systemd/launchd/SCM/OpenRC/SysV/Task Scheduler).
+    - Observability (structured logs, Prometheus metrics, OTLP export,
+      SNMPv3 traps).
+    - An embedded MCP server and a TUI profile configurator.
 
   spt is client-only: bring your own SSH/SSH3 server.
 license: MIT
@@ -25,6 +30,18 @@ source-code: https://github.com/Mariana/ssh-perma-tunnel
 website: https://github.com/Mariana/ssh-perma-tunnel
 
 grade: stable
+# Confinement rationale (see packaging/snapcraft/store-listing.md "Confinement
+# model"): spt is a network client. Everything it does — open sockets, read
+# config from $HOME / /etc/spt, listen on user-supplied local ports, write
+# state under $SNAP_USER_COMMON — is reachable from strict confinement plus
+# the plug set declared below (network*, home, removable-media, system-files
+# via `etc-spt`, hardware-observe for NIC enumeration). Classic confinement
+# is intentionally NOT used; the only future scenarios that would force it
+# are (a) binding to ports <1024 system-wide outside the snap sandbox, or
+# (b) writing into arbitrary host paths outside $HOME / removable-media. If
+# either becomes a hard requirement, switch `confinement: strict` to
+# `confinement: classic`, drop the plug list, and request a Snap Store
+# review for classic approval.
 confinement: strict
 
 # spt is a network client; default user data lives under $SNAP_USER_COMMON.
@@ -50,6 +67,9 @@ parts:
       - libssl3
     override-build: |
       craftctl default
+      # Ensure the binary lands under bin/ (the rust plugin already does this,
+      # but we re-install to a stable path for the `command:` reference below).
+      install -Dm755 "${CRAFT_PART_INSTALL}/bin/spt" "${CRAFT_PART_INSTALL}/bin/spt"
       # Stage man pages and license alongside the binary.
       install -Dm644 "${CRAFT_PART_SRC}/license.md"  "${CRAFT_PART_INSTALL}/usr/share/licenses/spt/LICENSE"
       if [ -d "${CRAFT_PART_SRC}/packaging/man" ]; then
@@ -58,18 +78,28 @@ parts:
           install -Dm644 "$page" "${CRAFT_PART_INSTALL}/usr/share/man/man1/$(basename "$page")"
         done
       fi
+      # Stage bash completion if the build emitted one (cargo xtask gen-completions).
+      if [ -f "${CRAFT_PART_SRC}/packaging/completions/spt.bash" ]; then
+        install -Dm644 "${CRAFT_PART_SRC}/packaging/completions/spt.bash" \
+          "${CRAFT_PART_INSTALL}/usr/share/bash-completion/completions/spt"
+      fi
 
 apps:
   spt:
     command: bin/spt
+    completer: usr/share/bash-completion/completions/spt
     plugs:
       - network
       - network-bind
       - network-observe
       - home
       - removable-media
+      - hardware-observe
+      - log-observe
+      - mount-observe
       - ssh-keys
       - password-manager-service
+      - etc-spt
 
   spt-daemon:
     command: bin/spt service run
@@ -82,5 +112,25 @@ apps:
       - network-bind
       - network-observe
       - home
+      - hardware-observe
+      - log-observe
+      - mount-observe
       - ssh-keys
       - password-manager-service
+      - etc-spt
+
+plugs:
+  # Optional: lets the snap read /etc/spt/spt.toml when an admin installs
+  # one outside of $SNAP_USER_COMMON. Operators must connect this manually
+  # with `snap connect spt:etc-spt :system-files` (it does not auto-connect
+  # without store review approval — see packaging/snapcraft/store-listing.md).
+  etc-spt:
+    interface: system-files
+    read:
+      - /etc/spt
+
+hooks:
+  install:
+    plugs: [network, home]
+  configure:
+    plugs: [network, home]

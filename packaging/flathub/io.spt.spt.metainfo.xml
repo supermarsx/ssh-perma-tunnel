@@ -1,0 +1,149 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  AppStream metainfo for spt (Flathub submission copy).
+
+  Placeholders rewritten by `scripts/release/update-packaging.sh`:
+    @VERSION@        release version, e.g. 0.1.0
+    @RELEASE_DATE@   ISO-8601 date of the tag (UTC), e.g. 2025-11-12
+
+  Validate with:
+    appstream-util validate-relax packaging/flathub/io.spt.spt.metainfo.xml
+-->
+<component type="console-application">
+  <id>io.spt.spt</id>
+  <name>spt</name>
+  <summary>Permanent SSH and SSH3 tunnels with reconnect and service integration</summary>
+
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+
+  <developer_name>Mariana</developer_name>
+
+  <description>
+    <p>
+      spt establishes and maintains permanent SSH tunnels: local and reverse
+      port forwards that survive network drops, host restarts, service
+      restarts, DNS changes, and ordinary operational drift.
+    </p>
+    <p>
+      Transports and forwards:
+    </p>
+    <ul>
+      <li>SSH2 transport via libssh2 and an experimental SSH3 transport over QUIC and HTTP/3.</li>
+      <li>Local and remote TCP forwards; UDP forwards over SSH3.</li>
+      <li>Built-in transparent DNS resolver with split-horizon and SRV synthesis.</li>
+    </ul>
+    <p>
+      Operational surface:
+    </p>
+    <ul>
+      <li>Encrypted secret vault (AES-256-GCM with Argon2id) and OS keychain integration.</li>
+      <li>Service integration for systemd, launchd, the Windows SCM, OpenRC, SysV, and Task Scheduler.</li>
+      <li>Structured observability via tracing, OpenTelemetry, Prometheus, and SNMP.</li>
+      <li>Embedded MCP server and a TUI configurator.</li>
+    </ul>
+    <p>
+      spt is client-only: it connects to existing SSH or SSH3 servers and
+      maintains forwards through them. The Flathub build is the standard
+      Linux distribution channel; native packages are also published for
+      Homebrew, Scoop, Winget, Chocolatey, and Snap.
+    </p>
+  </description>
+
+  <launchable type="desktop-id">io.spt.spt.desktop</launchable>
+
+  <url type="homepage">https://github.com/Mariana/ssh-perma-tunnel</url>
+  <url type="bugtracker">https://github.com/Mariana/ssh-perma-tunnel/issues</url>
+  <url type="vcs-browser">https://github.com/Mariana/ssh-perma-tunnel</url>
+  <url type="help">https://github.com/Mariana/ssh-perma-tunnel/tree/main/docs</url>
+
+  <provides>
+    <binary>spt</binary>
+  </provides>
+
+  <categories>
+    <category>Network</category>
+    <category>Security</category>
+    <category>ConsoleOnly</category>
+  </categories>
+
+  <keywords>
+    <keyword>ssh</keyword>
+    <keyword>ssh3</keyword>
+    <keyword>tunnel</keyword>
+    <keyword>port-forward</keyword>
+    <keyword>networking</keyword>
+  </keywords>
+
+  <!--
+    OARS 1.1 content rating: console networking tool, all categories "none".
+  -->
+  <content_rating type="oars-1.1">
+    <content_attribute id="violence-cartoon">none</content_attribute>
+    <content_attribute id="violence-fantasy">none</content_attribute>
+    <content_attribute id="violence-realistic">none</content_attribute>
+    <content_attribute id="violence-bloodshed">none</content_attribute>
+    <content_attribute id="violence-sexual">none</content_attribute>
+    <content_attribute id="violence-desecration">none</content_attribute>
+    <content_attribute id="violence-slavery">none</content_attribute>
+    <content_attribute id="violence-worship">none</content_attribute>
+    <content_attribute id="drugs-alcohol">none</content_attribute>
+    <content_attribute id="drugs-narcotics">none</content_attribute>
+    <content_attribute id="drugs-tobacco">none</content_attribute>
+    <content_attribute id="sex-nudity">none</content_attribute>
+    <content_attribute id="sex-themes">none</content_attribute>
+    <content_attribute id="sex-homosexuality">none</content_attribute>
+    <content_attribute id="sex-prostitution">none</content_attribute>
+    <content_attribute id="sex-adultery">none</content_attribute>
+    <content_attribute id="sex-appearance">none</content_attribute>
+    <content_attribute id="language-profanity">none</content_attribute>
+    <content_attribute id="language-humor">none</content_attribute>
+    <content_attribute id="language-discrimination">none</content_attribute>
+    <content_attribute id="social-chat">none</content_attribute>
+    <content_attribute id="social-info">none</content_attribute>
+    <content_attribute id="social-audio">none</content_attribute>
+    <content_attribute id="social-location">none</content_attribute>
+    <content_attribute id="social-contacts">none</content_attribute>
+    <content_attribute id="money-purchasing">none</content_attribute>
+    <content_attribute id="money-gambling">none</content_attribute>
+  </content_rating>
+
+  <!--
+    Screenshots are uploaded by the operator after the first Flathub
+    release. The URLs below are placeholders; replace with the actual
+    raw.githubusercontent.com paths once the assets land in the repo.
+  -->
+  <screenshots>
+    <screenshot type="default">
+      <caption>spt status overview in the TUI</caption>
+      <image>https://raw.githubusercontent.com/Mariana/ssh-perma-tunnel/main/docs/screenshots/tui-status.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>spt diag output for a failing forward</caption>
+      <image>https://raw.githubusercontent.com/Mariana/ssh-perma-tunnel/main/docs/screenshots/diag-forward.png</image>
+    </screenshot>
+  </screenshots>
+
+  <releases>
+    <release version="@VERSION@" date="@RELEASE_DATE@">
+      <description>
+        <p>See CHANGELOG.md in the source repository for the detailed change log.</p>
+      </description>
+      <url>https://github.com/Mariana/ssh-perma-tunnel/releases/tag/v@VERSION@</url>
+    </release>
+    <release version="0.1.0" date="2025-11-12">
+      <description>
+        <p>Initial public release.</p>
+        <ul>
+          <li>SSH2 transport via libssh2; experimental SSH3/QUIC transport.</li>
+          <li>Local and reverse TCP forwards; UDP forwards over SSH3.</li>
+          <li>Reconnect supervisor with exponential backoff and DNS reresolution.</li>
+          <li>Encrypted secret vault and OS keychain integration.</li>
+          <li>Service integration for systemd, launchd, SCM, OpenRC, SysV, Task Scheduler.</li>
+          <li>TUI configurator and embedded MCP server.</li>
+        </ul>
+      </description>
+      <url>https://github.com/Mariana/ssh-perma-tunnel/releases/tag/v0.1.0</url>
+    </release>
+  </releases>
+</component>

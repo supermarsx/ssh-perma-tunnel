@@ -1,0 +1,36 @@
+VERIFICATION
+
+Verification is intended to assist the Chocolatey moderators and end users in
+their reviews. This Chocolatey package is a thin wrapper: it does not bundle
+any binaries. Instead, it downloads the official spt MSI installers from the
+upstream GitHub Releases page at install time.
+
+Upstream:    https://github.com/Mariana/ssh-perma-tunnel
+Releases:    https://github.com/Mariana/ssh-perma-tunnel/releases
+Maintainer:  Mariana <see project page>
+License:     MIT (see LICENSE.txt next to this file)
+
+To verify the integrity of the artifacts this package will install:
+
+1. Open tools\chocolateyinstall.ps1 in this package and note the values of
+   the `url64bit`, `urlArm64`, `checksum64`, and `checksumArm64` fields.
+
+2. Download each MSI from the URL embedded in chocolateyinstall.ps1. For
+   example:
+       Invoke-WebRequest -Uri <url64bit> -OutFile spt-x64.msi
+
+3. Compute the SHA-256 of the downloaded file:
+       Get-FileHash spt-x64.msi -Algorithm SHA256
+
+4. Confirm the hash matches the `checksum64` (or `checksumArm64`) value in
+   chocolateyinstall.ps1, character for character (case-insensitive).
+
+5. Cross-check the same hash against the upstream SHA256SUMS file shipped
+   with the matching GitHub release:
+       https://github.com/Mariana/ssh-perma-tunnel/releases/download/v<VERSION>/SHA256SUMS
+
+   The MSI filename and its SHA-256 must appear in that file. SHA256SUMS is
+   signed with the project's minisign key (see packaging\SIGNING.md upstream)
+   and can be verified independently before trusting the hash in this package.
+
+If any of those four checks fails, do NOT install the package.

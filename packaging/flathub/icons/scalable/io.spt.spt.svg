@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!--
+  Placeholder icon for spt. A flat blue square with the "spt" wordmark
+  centered in white. Replace with the final brand mark before the first
+  Flathub submission lands; the file name (io.spt.spt.svg) and the
+  installation paths in modules/spt-build.yaml must stay in sync.
+-->
+<svg xmlns="http://www.w3.org/2000/svg"
+     width="256" height="256" viewBox="0 0 256 256"
+     role="img" aria-label="spt">
+  <title>spt</title>
+  <rect width="256" height="256" rx="40" ry="40" fill="#1f6feb"/>
+  <text x="128" y="160"
+        font-family="DejaVu Sans, Liberation Sans, sans-serif"
+        font-size="120" font-weight="700"
+        text-anchor="middle" fill="#ffffff">spt</text>
+</svg>

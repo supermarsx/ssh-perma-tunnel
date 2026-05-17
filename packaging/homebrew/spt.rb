@@ -2,20 +2,30 @@
 
 # Homebrew formula for `spt` (ssh-perma-tunnel).
 #
-# Placeholders substituted by `scripts/release/update-packaging.sh` after a
+# Placeholders substituted by `scripts/release/bump-homebrew.sh` after a
 # tagged release:
-#   <VERSION>             — release version, e.g. 0.1.0 (no leading "v").
-#   <SHA256_MACOS_ARM64>  — sha256 of spt-<VERSION>-aarch64-apple-darwin.tar.gz
-#   <SHA256_MACOS_AMD64>  — sha256 of spt-<VERSION>-x86_64-apple-darwin.tar.gz
-#   <SHA256_LINUX_ARM64>  — sha256 of spt-<VERSION>-aarch64-unknown-linux-gnu.tar.gz
-#   <SHA256_LINUX_AMD64>  — sha256 of spt-<VERSION>-x86_64-unknown-linux-gnu.tar.gz
+#   <VERSION>             - release version, e.g. 0.1.0 (no leading "v").
+#   <SHA256_MACOS_ARM64>  - sha256 of spt-<VERSION>-aarch64-apple-darwin.tar.gz
+#   <SHA256_MACOS_AMD64>  - sha256 of spt-<VERSION>-x86_64-apple-darwin.tar.gz
+#   <SHA256_LINUX_ARM64>  - sha256 of spt-<VERSION>-aarch64-unknown-linux-gnu.tar.gz
+#   <SHA256_LINUX_AMD64>  - sha256 of spt-<VERSION>-x86_64-unknown-linux-gnu.tar.gz
 #
-# See packaging/README.md for the full release/maintenance flow.
+# See packaging/homebrew/README.md for the full release/submission flow.
 class Spt < Formula
-  desc "Permanent SSH/SSH3 tunnels — local/remote port forwards that survive drops"
+  desc "Permanent SSH/SSH3 tunnels - local/remote port forwards that survive drops"
   homepage "https://github.com/Mariana/ssh-perma-tunnel"
   version "<VERSION>"
   license "MIT"
+
+  livecheck do
+    url :stable
+    strategy :github_latest
+  end
+
+  head do
+    url "https://github.com/Mariana/ssh-perma-tunnel.git", branch: "main"
+    depends_on "rust" => :build
+  end
 
   on_macos do
     on_arm do
@@ -40,18 +50,56 @@ class Spt < Formula
   end
 
   def install
-    bin.install "spt"
-
-    # Install pre-generated man pages if shipped in the tarball.
-    if Dir.exist?("share/man/man1")
-      man1.install Dir["share/man/man1/spt*.1"]
+    if build.head?
+      # Source build (HEAD): cargo-install the workspace's binary crate.
+      system "cargo", "install", *std_cargo_args(path: "crates/spt-bin")
+    else
+      # Pre-built release tarball ships the binary at the archive root and
+      # bundles man pages under share/man/man1/. The shell-completion path
+      # below regenerates completions at install time from the binary.
+      bin.install "spt"
+      man1.install Dir["share/man/man1/spt*.1"] if Dir.exist?("share/man/man1")
     end
 
-    # Shell completions, generated at install time from the binary itself.
+    # Generate and install bash/zsh/fish completions from the binary.
     generate_completions_from_executable(bin/"spt", "completion", "generate")
   end
 
   test do
+    # --version must contain the formula's version string.
     assert_match(/spt #{version}/, shell_output("#{bin}/spt --version"))
+
+    # Validate a minimal, self-contained config. Inlined so the test does
+    # not depend on examples/ being shipped in the release tarball.
+    (testpath/"minimal.toml").write <<~TOML
+      # Minimal spt config for `brew test` smoke validation.
+      version = 1
+
+      [[profiles]]
+      name = "minimal"
+      enabled = true
+      protocol = "ssh2"
+      host = "bastion.example.com"
+      port = 22
+      user = "alice"
+
+      [profiles.auth]
+      method = "agent"
+
+      [profiles.trust]
+      mode = "known_hosts"
+      strict = true
+
+      [[profiles.forwards]]
+      name = "web"
+      type = "local"
+      transport = "tcp"
+      bind = "127.0.0.1:8080"
+      target = "service.internal:80"
+      target_resolve = "remote"
+      required = true
+    TOML
+
+    system bin/"spt", "config", "validate", "--config", testpath/"minimal.toml"
   end
 end
