@@ -30,7 +30,7 @@ jobs:
     name: build+test (1.83.0, --locked)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install MSRV toolchain (1.83.0)
         uses: dtolnay/rust-toolchain@1.83.0
@@ -52,7 +52,7 @@ jobs:
     name: clippy (1.83.0, --locked)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install MSRV toolchain (1.83.0) with clippy
         uses: dtolnay/rust-toolchain@1.83.0

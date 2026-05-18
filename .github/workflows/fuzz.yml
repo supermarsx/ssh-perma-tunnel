@@ -32,7 +32,7 @@ jobs:
           - redaction
           - known_hosts
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install nightly toolchain
         uses: dtolnay/rust-toolchain@nightly

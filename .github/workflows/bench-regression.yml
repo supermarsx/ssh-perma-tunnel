@@ -39,12 +39,12 @@ jobs:
       BENCH_CRATES: spt-core spt-config spt-protocol spt-snmp spt-forward spt-observability spt-events spt-stats spt-ssh3 spt-trust spt-state
     steps:
       - name: Checkout PR HEAD
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           path: pr
 
       - name: Checkout baseline (main)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: main
           path: base
