@@ -49,7 +49,7 @@ path = "tests/fd_leak.rs"
 # These live in `[dependencies]` (not `[dev-dependencies]`) because the helpers
 # in `src/lib.rs` (echo server, RNG, probes) reference them. The integration
 # tests pull additional crates from `[dev-dependencies]` below.
-tokio = { version = "1.40", features = ["full"] }
+tokio = { version = "1.52", features = ["full"] }
 rand = "0.8"
 rand_chacha = "0.3"
 
