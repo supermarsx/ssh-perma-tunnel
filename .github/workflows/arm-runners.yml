@@ -1,0 +1,210 @@
+# ARM CI — exec-tests cross-compiled binaries under QEMU
+#
+# WHY THIS EXISTS
+# ----------------
+# Our main CI cross-compiles to aarch64/armv7 targets but never *runs* the
+# resulting binaries. That misses an entire class of regressions:
+#
+#   - libssh2/openssl dynamic-link issues that only surface at load time
+#     (missing SONAME, wrong glibc version, musl-vs-glibc symbol mismatches).
+#   - Page-size assumptions: aarch64 systems commonly run 4K, 16K, or 64K
+#     pages; code that hard-codes 4K (mmap, ring buffers) breaks silently
+#     on Apple Silicon / Ampere hosts running 16K kernels.
+#   - Atomic / memory-ordering bugs that x86's TSO masks but ARM's weaker
+#     model exposes.
+#   - Endianness or alignment faults in unsafe blocks.
+#   - Binary-format issues: stripped musl-static binaries that fail to
+#     execute because of a broken interpreter path or missing PT_INTERP.
+#
+# This workflow runs the produced binaries through QEMU user-mode emulation
+# on every PR (fast path) and exercises the full test suite on demand
+# (slow path, gated by a `arm-qemu-full` label or manual dispatch).
+#
+# Self-hosted runner stub at the bottom is a placeholder for when real ARM
+# hardware becomes available — emulation is functionally correct but ~10x
+# slower than native and cannot catch every CPU-feature-detection bug.
+
+name: ARM Runners
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'crates/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/arm-runners.yml'
+  push:
+    branches: [main]
+  schedule:
+    # Weekly Monday 04:17 UTC — off-peak, catches dependency drift.
+    - cron: '17 4 * * 1'
+  workflow_dispatch:
+    inputs:
+      full_tests:
+        description: 'Run full cargo test --workspace under QEMU (slow)'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # ---------------------------------------------------------------------
+  # Job A — fast exec-smoke. Runs on every PR.
+  # ---------------------------------------------------------------------
+  arm-exec-smoke:
+    name: arm-exec-smoke (${{ matrix.platform }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/arm64
+            target: aarch64-unknown-linux-musl
+            docker_image: arm64v8/alpine:3.20
+            priority: required
+          - platform: linux/arm/v7
+            target: armv7-unknown-linux-musleabihf
+            docker_image: arm32v7/alpine:3.20
+            priority: best-effort
+    continue-on-error: ${{ matrix.priority == 'best-effort' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: arm-exec-${{ matrix.target }}
+
+      - name: Install cross
+        run: cargo install cross --locked --version 0.2.5
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64,arm
+
+      - name: Cross-build spt-bin for ${{ matrix.target }}
+        run: cross build -p spt-bin --release --locked --target ${{ matrix.target }}
+
+      - name: Stage binary for container exec
+        run: |
+          mkdir -p dist
+          cp target/${{ matrix.target }}/release/spt dist/spt
+          chmod +x dist/spt
+          file dist/spt || true
+
+      - name: Exec-test --version under QEMU (${{ matrix.platform }})
+        run: |
+          docker run --rm \
+            --platform ${{ matrix.platform }} \
+            -v "${PWD}/dist:/work:ro" \
+            ${{ matrix.docker_image }} \
+            /work/spt --version
+
+      - name: Exec-test `config validate` under QEMU
+        run: |
+          docker run --rm \
+            --platform ${{ matrix.platform }} \
+            -v "${PWD}/dist:/work:ro" \
+            -v "${PWD}/examples:/examples:ro" \
+            ${{ matrix.docker_image }} \
+            /work/spt config validate --config /examples/minimal.toml
+
+      - name: Exec-test `completion generate bash` smoke under QEMU
+        run: |
+          docker run --rm \
+            --platform ${{ matrix.platform }} \
+            -v "${PWD}/dist:/work:ro" \
+            ${{ matrix.docker_image }} \
+            sh -c '/work/spt completion generate bash > /dev/null'
+
+  # ---------------------------------------------------------------------
+  # Job B — full cargo test --workspace under QEMU.
+  # Gated: only runs on label `arm-qemu-full` or manual workflow_dispatch.
+  # Extremely slow (~30-60min); never blocks PRs by default.
+  # ---------------------------------------------------------------------
+  arm-full-tests:
+    name: arm-full-tests (${{ matrix.platform }})
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'schedule' ||
+      (github.event_name == 'pull_request' &&
+        contains(github.event.pull_request.labels.*.name, 'arm-qemu-full'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/arm64
+            target: aarch64-unknown-linux-gnu
+            priority: required
+          - platform: linux/arm/v7
+            target: armv7-unknown-linux-gnueabihf
+            priority: best-effort
+    continue-on-error: ${{ matrix.priority == 'best-effort' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: arm-fulltest-${{ matrix.target }}
+
+      - name: Install cross
+        run: cargo install cross --locked --version 0.2.5
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64,arm
+
+      - name: Run cargo test --workspace --locked under QEMU
+        env:
+          CROSS_CONTAINER_OPTS: '--platform ${{ matrix.platform }}'
+        run: |
+          cross test --workspace --locked --target ${{ matrix.target }} -- --test-threads=1
+
+  # ---------------------------------------------------------------------
+  # Self-hosted runner stub.
+  #
+  # Uncomment and adjust the `runs-on` label once real ARM hardware is
+  # provisioned (e.g. an Ampere Altra box, a Raspberry Pi 5, or AWS
+  # Graviton). Native execution catches CPU-feature bugs (PAuth, BTI,
+  # MTE, big.LITTLE scheduling) that QEMU cannot.
+  #
+  # Setup checklist for the operator:
+  #   1. Provision aarch64 host with Ubuntu 22.04+ or Debian 12+.
+  #   2. Register a self-hosted runner via repo Settings -> Actions.
+  #   3. Apply labels: [self-hosted, linux, arm64].
+  #   4. Install rustup + Rust 1.83+, build-essential, libssh2-dev, pkg-config.
+  #   5. Pin `Swatinem/rust-cache@v2` to a host-local cache dir.
+  #   6. Uncomment the job below.
+  # ---------------------------------------------------------------------
+  #
+  # arm-native:
+  #   name: arm-native (self-hosted)
+  #   runs-on: [self-hosted, linux, arm64]
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - uses: dtolnay/rust-toolchain@stable
+  #     - uses: Swatinem/rust-cache@v2
+  #       with:
+  #         key: arm-native
+  #     - name: cargo test --workspace --locked
+  #       run: cargo test --workspace --locked
+  #     - name: cargo clippy --workspace --all-targets
+  #       run: cargo clippy --workspace --all-targets -- -D warnings
