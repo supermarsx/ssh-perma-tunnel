@@ -51,6 +51,7 @@ spt-tui = { workspace = true }
 spt-diagnostics = { workspace = true }
 spt-benchmark = { workspace = true }
 spt-remote-config = { workspace = true }
+spt-status-api = { workspace = true }
 spt-snmp = { workspace = true, features = ["testing"], optional = true }
 spt-winevent = { workspace = true }
 

@@ -18,4 +18,5 @@ pub mod secret;
 pub mod service;
 pub mod session;
 pub mod stats;
+pub mod status;
 pub mod tunnel;

@@ -79,6 +79,22 @@ pub struct Config {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub benchmark: Option<Benchmark>,
 
+    /// `[round_robin]` — endpoint cycling configuration. Plan §t4-e4.
+    ///
+    /// Disabled by default (`enabled = false`). When enabled, the supervisor
+    /// picks endpoints via the configured [`crate::SelectionPolicy`] instead
+    /// of the legacy priority/weight failover selector.
+    #[serde(default, skip_serializing_if = "is_default_round_robin")]
+    pub round_robin: crate::round_robin::RoundRobinConfig,
+
+    /// `[status_api]` — read-only HTTP/JSON status API. Plan §t4-e5.
+    ///
+    /// Disabled by default (`enabled = false`). When enabled, the supervisor
+    /// spawns an HTTP listener that exposes the same status snapshot used by
+    /// `spt tunnel stats` over a stable JSON API.
+    #[serde(default, skip_serializing_if = "is_default_status_api")]
+    pub status_api: crate::status_api::StatusApiConfig,
+
     /// `[[profiles]]` array. Spec §9.11.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub profiles: Vec<Profile>,
@@ -1368,4 +1384,17 @@ pub struct Forward {
     /// UDP packet rate. §10.4.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_packets_per_second: Option<u32>,
+}
+
+// ---------------------------------------------------------------------------
+// `skip_serializing_if` helpers — keep canonical render minimal when the
+// optional sub-tables are at their defaults (added by t4-Bwire).
+// ---------------------------------------------------------------------------
+
+fn is_default_round_robin(v: &crate::round_robin::RoundRobinConfig) -> bool {
+    v == &crate::round_robin::RoundRobinConfig::default()
+}
+
+fn is_default_status_api(v: &crate::status_api::StatusApiConfig) -> bool {
+    v == &crate::status_api::StatusApiConfig::default()
 }

@@ -42,6 +42,7 @@ operational drift.
 | Linux    | `spt_<version>_amd64.deb`,  `*.rpm`     |
 | macOS    | `spt-<version>.pkg`                     |
 | Windows  | `spt-<version>.msi`                     |
+| Docker   | `ghcr.io/mariana/spt:<version>` (linux/amd64, linux/arm64) — see [`packaging/docker/README.md`](packaging/docker/README.md) |
 
 See [`docs/installation.md`](docs/installation.md) for verification and
 per-OS notes.

@@ -80,6 +80,7 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
         Command::Diagnose(c) => diagnose_dispatch(&global, c).await,
         Command::Benchmark(c) => benchmark_dispatch(&global, c).await,
         Command::Mcp(c) => mcp_dispatch(&global, c).await,
+        Command::Status(c) => status_dispatch(&global, c).await,
         Command::Completion(c) => completion_dispatch(&global, c),
     }
 }
@@ -706,6 +707,15 @@ async fn tunnel_run(global: &GlobalOpts, args: groups::tunnel::TunnelRun) -> Res
                     endpoints = bundle.endpoints.len(),
                     "starting profile",
                 );
+                // Plan §t4-e4: build a round-robin policy selector if
+                // `[round_robin].enabled = true`, then attach it to the
+                // profile's `EndpointSelector` AFTER `start_profile` so the
+                // legacy struct's `set_policy_selector` mutator is on the
+                // same `Arc<Mutex<_>>` the spawned task uses.
+                let policy = spt_supervisor::make_policy_selector(
+                    bundle.endpoints.clone(),
+                    &cfg.round_robin,
+                );
                 orchestrator.start_profile(
                     profile,
                     bundle.protocol,
@@ -713,6 +723,22 @@ async fn tunnel_run(global: &GlobalOpts, args: groups::tunnel::TunnelRun) -> Res
                     bundle.endpoints,
                     bundle.supervisor_cfg,
                 );
+                if let Some(ps) = policy {
+                    if let Some(sup) = orchestrator.profile_handle(&profile.name) {
+                        sup.selector().lock().set_policy_selector(Some(ps));
+                        tracing::info!(
+                            profile = %profile.name,
+                            policy = ?cfg.round_robin.policy,
+                            "round-robin policy attached"
+                        );
+                    } else {
+                        tracing::warn!(
+                            profile = %profile.name,
+                            "round-robin selector built but profile handle missing — \
+                             falling back to legacy failover"
+                        );
+                    }
+                }
                 started_profiles.push(profile.name.clone());
             }
             Err(e) => {
@@ -748,6 +774,12 @@ async fn tunnel_run(global: &GlobalOpts, args: groups::tunnel::TunnelRun) -> Res
     let mcp_handle =
         maybe_spawn_mcp_loopback(&cfg, &state_dir, &orchestrator, &resolver, &path).await?;
 
+    // Plan §t4-e5: optionally bring up the read-only HTTP/JSON status API.
+    // The server reads `<state_dir>/status.json` on each request via the
+    // file-backed `StateSnapshotSource` adapter — same file the supervisor's
+    // `StatusWriter` updates. Plain HTTP only in v1 (TLS deferred).
+    let status_api_handle = maybe_spawn_status_api(&cfg, &state_dir, &resolver).await?;
+
     let signal_rx = crate::signals::spawn();
 
     if args.once {
@@ -770,6 +802,9 @@ async fn tunnel_run(global: &GlobalOpts, args: groups::tunnel::TunnelRun) -> Res
         orchestrator.shutdown().await;
         if let Some(h) = mcp_handle {
             h.shutdown(&state_dir).await;
+        }
+        if let Some(h) = status_api_handle {
+            h.shutdown().await;
         }
         writer.flush().await?;
         writer_handle.stop().await;
@@ -810,9 +845,36 @@ async fn tunnel_run(global: &GlobalOpts, args: groups::tunnel::TunnelRun) -> Res
     if let Some(h) = mcp_handle {
         h.shutdown(&state_dir).await;
     }
+    if let Some(h) = status_api_handle {
+        h.shutdown().await;
+    }
     writer.flush().await?;
     writer_handle.stop().await;
     Ok(())
+}
+
+/// Bring up the read-only status API if `[status_api].enabled = true`.
+/// Returns `Ok(None)` when disabled; on a binding/auth error, returns the
+/// error so the caller can fail fast (better than a silently-broken API).
+async fn maybe_spawn_status_api(
+    cfg: &spt_config::schema::Config,
+    state_dir: &Path,
+    resolver: &std::sync::Arc<spt_secrets::Resolver>,
+) -> Result<Option<spt_status_api::StatusApiHandle>> {
+    if !cfg.status_api.enabled {
+        return Ok(None);
+    }
+    crate::cli::status_ops::ensure_tls_not_requested(&cfg.status_api)?;
+    let source: std::sync::Arc<dyn spt_status_api::StateSnapshotSource> = std::sync::Arc::new(
+        crate::cli::status_ops::FileSnapshotSource::new(state_dir.to_path_buf()),
+    );
+    let handle =
+        spt_status_api::StatusApiServer::start(&cfg.status_api, source, resolver.as_ref()).await?;
+    tracing::info!(
+        addr = %handle.local_addr(),
+        "status-api listening (inline supervisor host)"
+    );
+    Ok(Some(handle))
 }
 
 async fn wait_for_once_startup(
@@ -3209,6 +3271,21 @@ async fn mcp_serve(global: &GlobalOpts, args: groups::mcp::McpServe) -> Result<(
             .map_err(|e| Error::McpFailed(e.to_string()))?;
     }
     Ok(())
+}
+
+// ============================================================================
+// status (plan §t4-e5)
+// ============================================================================
+
+async fn status_dispatch(global: &GlobalOpts, c: groups::status::StatusCmd) -> Result<()> {
+    use groups::status::{StatusSub, StatusTokenSub};
+    match c.command {
+        StatusSub::Serve(args) => crate::cli::status_ops::serve(global, args).await,
+        StatusSub::Status(args) => crate::cli::status_ops::status(global, args).await,
+        StatusSub::Token(t) => match t.command {
+            StatusTokenSub::Rotate(args) => crate::cli::status_ops::token_rotate(global, args).await,
+        },
+    }
 }
 
 // ============================================================================

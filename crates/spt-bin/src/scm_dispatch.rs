@@ -168,6 +168,13 @@ async fn run_orchestrator_under_scm(
                     endpoints = bundle.endpoints.len(),
                     "spt service: starting profile"
                 );
+                // Plan §t4-e4: round-robin policy selector. Built before
+                // start_profile so the endpoints Vec is reused; attached after
+                // because the supervisor's selector lives on the spawned task.
+                let policy = spt_supervisor::make_policy_selector(
+                    bundle.endpoints.clone(),
+                    &cfg.round_robin,
+                );
                 orchestrator.start_profile(
                     profile,
                     bundle.protocol,
@@ -175,6 +182,16 @@ async fn run_orchestrator_under_scm(
                     bundle.endpoints,
                     bundle.supervisor_cfg,
                 );
+                if let Some(ps) = policy {
+                    if let Some(sup) = orchestrator.profile_handle(&profile.name) {
+                        sup.selector().lock().set_policy_selector(Some(ps));
+                        tracing::info!(
+                            profile = %profile.name,
+                            policy = ?cfg.round_robin.policy,
+                            "spt service: round-robin policy attached"
+                        );
+                    }
+                }
             }
             Err(e) => {
                 tracing::error!(
@@ -204,6 +221,21 @@ async fn run_orchestrator_under_scm(
         .await;
     writer.flush().await?;
 
+    // Plan §t4-e5: bring up the read-only status API if enabled. Lives
+    // alongside the orchestrator until SCM signals shutdown.
+    let status_api_handle = if cfg.status_api.enabled {
+        crate::cli::status_ops::ensure_tls_not_requested(&cfg.status_api)?;
+        let source: std::sync::Arc<dyn spt_status_api::StateSnapshotSource> =
+            std::sync::Arc::new(crate::cli::status_ops::FileSnapshotSource::new(
+                state_dir.clone(),
+            ));
+        Some(
+            spt_status_api::StatusApiServer::start(&cfg.status_api, source, &resolver).await?,
+        )
+    } else {
+        None
+    };
+
     tracing::info!("spt service: orchestrator running; awaiting SCM signals");
 
     let mut current_cfg = cfg;
@@ -232,6 +264,9 @@ async fn run_orchestrator_under_scm(
 
     tracing::info!("spt service: shutting down orchestrator");
     orchestrator.shutdown().await;
+    if let Some(h) = status_api_handle {
+        h.shutdown().await;
+    }
     writer.flush().await?;
     writer_handle.stop().await;
     tracing::info!("spt service: clean exit");

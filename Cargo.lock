@@ -4219,6 +4219,7 @@ dependencies = [
  "spt-ssh3",
  "spt-state",
  "spt-stats",
+ "spt-status-api",
  "spt-supervisor",
  "spt-trust",
  "spt-tui",
@@ -4258,6 +4259,7 @@ dependencies = [
  "serde_ignored",
  "sha2",
  "spt-core",
+ "spt-secrets",
  "tempfile",
  "thiserror 1.0.69",
  "toml",
@@ -4720,6 +4722,40 @@ dependencies = [
  "serde",
  "serde_json",
  "spt-core",
+]
+
+[[package]]
+name = "spt-status-api"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "axum",
+ "base64",
+ "bytes",
+ "chrono",
+ "futures",
+ "http",
+ "parking_lot",
+ "rcgen",
+ "rustls",
+ "rustls-pemfile",
+ "rustls-pki-types",
+ "secrecy",
+ "serde",
+ "serde_json",
+ "spt-config",
+ "spt-core",
+ "spt-secrets",
+ "spt-state",
+ "subtle",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "tokio-rustls",
+ "tower 0.5.3",
+ "tower-http",
+ "tracing",
+ "x509-parser",
 ]
 
 [[package]]
@@ -5348,6 +5384,7 @@ dependencies = [
  "tower 0.5.3",
  "tower-layer",
  "tower-service",
+ "tracing",
  "url",
 ]
 

@@ -29,6 +29,7 @@ members = [
     "crates/spt-tui",
     "crates/spt-cli",
     "crates/spt-remote-config",
+    "crates/spt-status-api",
     "tests",
     "tests/conformance",
     "tests/stress",
@@ -83,6 +84,7 @@ spt-mcp = { path = "crates/spt-mcp", version = "0.1.0" }
 spt-tui = { path = "crates/spt-tui", version = "0.1.0" }
 spt-cli = { path = "crates/spt-cli", version = "0.1.0" }
 spt-remote-config = { path = "crates/spt-remote-config", version = "0.1.0" }
+spt-status-api = { path = "crates/spt-status-api", version = "0.1.0" }
 
 # Async runtime
 tokio = { version = "1.40", features = ["full"] }
@@ -243,6 +245,14 @@ russh = "0.46"
 proptest = "1"
 insta = { version = "1", features = ["yaml", "json"] }
 axum = "0.7"
+# tower / tower-http for spt-status-api. Versions pinned to the entries already
+# present in Cargo.lock so registering these in the workspace table does NOT
+# trigger a `cargo update`. tower-http 0.6 depends on tower 0.5; axum 0.7 keeps
+# tower 0.4 as a transitive dep — both coexist in the lockfile.
+tower = { version = "0.5", default-features = false, features = ["util"] }
+tower-http = { version = "0.6", default-features = false, features = ["trace", "limit"] }
+# rcgen — self-signed certs for spt-status-api TLS dev/test fixtures.
+rcgen = { version = "0.13", default-features = false, features = ["aws_lc_rs", "pem"] }
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "warn"

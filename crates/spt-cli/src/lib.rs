@@ -179,6 +179,8 @@ pub enum Command {
     Benchmark(groups::benchmark::BenchmarkCmd),
     /// Built-in MCP server controls.
     Mcp(groups::mcp::McpCmd),
+    /// Read-only status API controls (plan §t4-e5).
+    Status(groups::status::StatusCmd),
     /// Generate shell completions.
     Completion(groups::completion::CompletionCmd),
 }
