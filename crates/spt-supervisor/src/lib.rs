@@ -35,6 +35,7 @@ pub mod profile;
 pub mod reconnect;
 pub mod reconnect_trigger;
 pub mod reload;
+pub mod round_robin;
 pub mod session;
 pub mod state_machine;
 pub mod stats;
@@ -54,6 +55,16 @@ pub use profile::{ProfileEvent, ProfileSupervisor, ProfileSupervisorConfig};
 pub use reconnect::{Backoff, BackoffConfig};
 pub use reconnect_trigger::{LiveReconnectTrigger, ReconnectTrigger};
 pub use reload::{ReloadAction, ReloadPlan};
+// t4-e4 round-robin selector layer. The trait would otherwise collide with
+// the legacy `failover::EndpointSelector` struct re-exported above, so we
+// alias it to `PolicySelector` for the crate-root public surface. The full
+// name is available as `spt_supervisor::round_robin::EndpointSelector`.
+pub use round_robin::{
+    make_selector as make_policy_selector, DnsResolver, DnsRoundRobinResolver, EndpointPick,
+    EndpointSelector as PolicySelector, FakeDnsResolver, FakeInstantClock, InstantClock,
+    LeastErrorsSelector, RandomSelector, RoundRobinSelector, StickySelector, SystemInstantClock,
+    WeightedSelector,
+};
 pub use session::{SessionRegistry, SessionRow, SessionState};
 pub use state_machine::{
     ForwardEvent, ProfileEvent as SmEvent, ProfileStateMachine, ProfileStateName,

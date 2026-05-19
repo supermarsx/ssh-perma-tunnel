@@ -4,14 +4,26 @@
 //! * `priority` — pick the lowest-priority endpoint that's not in cooldown.
 //! * `weighted` — among the lowest-priority cohort, pick by weight.
 //! * `manual`   — only return the manually-selected endpoint.
+//!
+//! ### Round-robin policy hook (t4-e4)
+//!
+//! When a [`crate::round_robin::EndpointSelector`] is attached via
+//! [`EndpointSelector::set_policy_selector`], [`EndpointSelector::pick`]
+//! defers to it (after honoring the manual override). This preserves the
+//! legacy priority/weighted/manual behavior whenever the round-robin config
+//! table is disabled.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Duration;
 
+use parking_lot::Mutex as PlMutex;
 use rand::Rng;
 use spt_protocol::Endpoint;
 use thiserror::Error;
 use tokio::time::Instant;
+
+use crate::round_robin::{EndpointPick, EndpointSelector as PolicySelector};
 
 /// Failover mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,13 +72,30 @@ struct EndpointEntry {
 }
 
 /// Endpoint selector.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct EndpointSelector {
     mode: FailoverMode,
     entries: Vec<EndpointEntry>,
     cooldown_secs_per_failure: u64,
     fail_after: u32,
     manual: Option<ManualOverride>,
+    /// Optional round-robin / sticky / weighted policy selector (t4-e4).
+    /// When `Some`, [`Self::pick`] delegates to it after honoring the
+    /// manual override.
+    policy_selector: Option<Arc<PlMutex<Box<dyn PolicySelector>>>>,
+}
+
+impl std::fmt::Debug for EndpointSelector {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EndpointSelector")
+            .field("mode", &self.mode)
+            .field("entries", &self.entries)
+            .field("cooldown_secs_per_failure", &self.cooldown_secs_per_failure)
+            .field("fail_after", &self.fail_after)
+            .field("manual", &self.manual)
+            .field("policy_selector", &self.policy_selector.is_some())
+            .finish()
+    }
 }
 
 impl EndpointSelector {
@@ -86,7 +115,51 @@ impl EndpointSelector {
             cooldown_secs_per_failure: 5,
             fail_after: 1,
             manual: None,
+            policy_selector: None,
         }
+    }
+
+    /// Attach a [`PolicySelector`] (t4-e4). When attached, [`Self::pick`]
+    /// delegates to the policy after honoring any manual override; the
+    /// caller is responsible for funneling success/failure events back into
+    /// the policy via the [`Self::record_success`] / [`Self::record_failure`]
+    /// path on this struct (those calls are mirrored into the inner policy).
+    pub fn set_policy_selector(&mut self, ps: Option<Box<dyn PolicySelector>>) {
+        self.policy_selector = ps.map(|p| Arc::new(PlMutex::new(p)));
+    }
+
+    /// Convenience builder mirror of [`Self::set_policy_selector`].
+    #[must_use]
+    pub fn with_policy_selector(mut self, ps: Option<Box<dyn PolicySelector>>) -> Self {
+        self.set_policy_selector(ps);
+        self
+    }
+
+    /// Returns `true` if a [`PolicySelector`] is currently attached.
+    #[must_use]
+    pub fn has_policy_selector(&self) -> bool {
+        self.policy_selector.is_some()
+    }
+
+    /// Try the attached policy selector. Returns `None` if no selector is
+    /// attached. Returns `Some(Err(SelectorError::AllCoolingDown))` if the
+    /// policy yielded no healthy endpoint. Otherwise resolves to the
+    /// matching [`Endpoint`] from this struct's `entries` list (mapping by
+    /// `host:port`).
+    fn pick_via_policy(&self) -> Option<Result<&Endpoint, SelectorError>> {
+        let ps = self.policy_selector.as_ref()?;
+        let pick: Option<EndpointPick> = ps.lock().next();
+        Some(match pick {
+            None => Err(SelectorError::AllCoolingDown),
+            Some(pick) => self
+                .entries
+                .iter()
+                .find(|e| format!("{}:{}", e.ep.host, e.ep.port) == pick.id)
+                .map(|e| &e.ep)
+                // Should not happen: the policy was constructed from the
+                // same endpoint list. Surface as Empty rather than panic.
+                .ok_or(SelectorError::Empty),
+        })
     }
 
     /// Set per-failure cooldown unit (seconds). The actual cooldown is
@@ -104,6 +177,13 @@ impl EndpointSelector {
 
     /// Apply a manual override.
     pub fn set_manual(&mut self, m: Option<ManualOverride>) {
+        if let Some(ps) = &self.policy_selector {
+            let id = m
+                .as_ref()
+                .map(|o| format!("{}:{}", o.host, o.port))
+                .unwrap_or_default();
+            ps.lock().manual_override(&id);
+        }
         self.manual = m;
     }
 
@@ -141,6 +221,10 @@ impl EndpointSelector {
                     host: m.host.clone(),
                     port: m.port,
                 });
+        }
+        // Delegate to round-robin policy when one is wired in.
+        if let Some(result) = self.pick_via_policy() {
+            return result;
         }
         if matches!(self.mode, FailoverMode::Manual) {
             return Err(SelectorError::Empty);
@@ -192,6 +276,9 @@ impl EndpointSelector {
             e.consecutive_failures = 0;
             e.cooldown_until = None;
         }
+        if let Some(ps) = &self.policy_selector {
+            ps.lock().record_success(&format!("{host}:{port}"));
+        }
     }
 
     /// Record a failure, possibly entering cooldown.
@@ -208,6 +295,12 @@ impl EndpointSelector {
                 let cap = secs.min(60);
                 e.cooldown_until = Some(now + Duration::from_secs(cap));
             }
+        }
+        if let Some(ps) = &self.policy_selector {
+            // Use a generic error since callers may not have an Error handy
+            // (current spec keeps the policy err opaque).
+            let err = spt_core::Error::NetworkUnreachable(format!("{host}:{port}"));
+            ps.lock().record_failure(&format!("{host}:{port}"), &err);
         }
     }
 
