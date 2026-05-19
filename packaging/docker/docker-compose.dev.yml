@@ -1,0 +1,53 @@
+# packaging/docker/docker-compose.dev.yml — local-dev overlay.
+#
+# Layers live-mount of the binary you just `cargo build`'d and verbose
+# logging on top of the production compose file. Usage:
+#
+#   docker compose \
+#     -f docker-compose.yml \
+#     -f docker-compose.dev.yml \
+#     up --build
+#
+# Mount paths assume you ran `cargo build --release -p spt-bin` from the
+# repo root. Override SPT_DEV_BINARY in .env to point elsewhere.
+---
+version: "3.9"
+
+services:
+  spt:
+    # Dev override: build from the in-tree Dockerfile so every `up --build`
+    # picks up source edits without needing GHCR.
+    build:
+      context: ../..
+      dockerfile: packaging/docker/Dockerfile
+    image: spt:dev
+
+    # Loosen the read-only rootfs so we can shell in and poke at things.
+    read_only: false
+
+    environment:
+      SPT_LOG_LEVEL: debug
+      RUST_LOG: ${RUST_LOG:-spt=debug,info}
+      RUST_BACKTRACE: "full"
+
+    volumes:
+      # Mount the host's just-built binary on top of the image's copy. Lets
+      # you iterate without rebuilding the image after each `cargo build`.
+      - type: bind
+        source: ${SPT_DEV_BINARY:-../../target/release/spt}
+        target: /usr/local/bin/spt
+        read_only: true
+
+      # Mount a host-side dev state dir so it survives `docker compose down`.
+      - type: bind
+        source: ./.dev-state
+        target: /var/lib/spt
+
+    # Drop the tight resource caps for dev so `tracing` doesn't OOM.
+    mem_limit: 1g
+    cpus: 2.0
+    pids_limit: 1024
+
+    # Keep stdin open + allocate a TTY for `docker compose exec spt sh`.
+    stdin_open: true
+    tty: true

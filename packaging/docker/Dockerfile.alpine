@@ -1,0 +1,101 @@
+# syntax=docker/dockerfile:1.7
+#
+# packaging/docker/Dockerfile.alpine — slim Alpine variant.
+#
+# Builder: rust:1.83-alpine, builds `spt` with --release --locked against
+# Alpine's musl toolchain and the `ssh2-vendored-openssl` feature so OpenSSL
+# is statically linked. libssh2 is provided by Alpine's `libssh2-static`.
+#
+# Runtime: alpine:3.20 — smaller surface, fewer CVEs to track. Same non-root
+# spt:1000 invariant as the glibc image; the binary is dynamically linked
+# against musl libc + libssh2 only.
+#
+# Build from the repository root:
+#   docker build -f packaging/docker/Dockerfile.alpine -t spt:alpine .
+
+# ---------------------------------------------------------------------------
+# Stage 1 — builder
+# ---------------------------------------------------------------------------
+FROM rust:1.83-alpine3.20 AS builder
+
+# Alpine build deps. `openssl-libs-static` + the vendored-openssl feature
+# guarantee no runtime dependency on the system OpenSSL package; the libssh2
+# crate links against the system libssh2 + zlib.
+RUN apk add --no-cache \
+        build-base \
+        cmake \
+        git \
+        libssh2-dev \
+        libssh2-static \
+        linux-headers \
+        musl-dev \
+        openssl-dev \
+        openssl-libs-static \
+        perl \
+        pkgconfig \
+        zlib-dev \
+        zlib-static
+
+WORKDIR /build
+COPY . .
+
+# Vendored OpenSSL ensures the binary doesn't drag in the system libcrypto
+# (and stays sane across alpine point releases). libssh2 is linked
+# dynamically against the alpine-supplied lib; the runtime image installs
+# the matching package.
+ENV RUSTFLAGS="-C target-feature=-crt-static"
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/build/target \
+    cargo build --release --locked \
+        --features ssh2-vendored-openssl \
+        -p spt-bin --bin spt \
+    && cp /build/target/release/spt /usr/local/bin/spt \
+    && strip /usr/local/bin/spt
+
+# ---------------------------------------------------------------------------
+# Stage 2 — runtime
+# ---------------------------------------------------------------------------
+FROM alpine:3.20 AS runtime
+
+ARG SPT_UID=1000
+ARG SPT_GID=1000
+
+# tini for clean PID-1 signal handling; libssh2 to match the build.
+# ca-certificates so cert validation works against any HTTPS observability
+# sink (OTLP / HTTPS-JSONL).
+RUN apk add --no-cache \
+        ca-certificates \
+        libssh2 \
+        tini \
+    && addgroup -S -g "${SPT_GID}" spt \
+    && adduser  -S -u "${SPT_UID}" -G spt -h /var/lib/spt -s /sbin/nologin spt \
+    && install -d -m 0750 -o spt -g spt /etc/spt \
+    && install -d -m 0750 -o spt -g spt /var/lib/spt \
+    && install -d -m 0750 -o spt -g spt /run/spt
+
+COPY --from=builder /usr/local/bin/spt /usr/local/bin/spt
+COPY license.md                         /usr/share/doc/spt/license.md
+COPY packaging/man/                     /usr/share/man/
+
+ENV SPT_CONFIG_PATH=/etc/spt/spt.toml \
+    SPT_STATE_DIR=/var/lib/spt \
+    SPT_LOG_LEVEL=info \
+    RUST_BACKTRACE=1
+
+USER spt:spt
+WORKDIR /var/lib/spt
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+    CMD ["/usr/local/bin/spt", "tunnel", "health", "--output", "json"]
+
+ENTRYPOINT ["/sbin/tini", "--", "/usr/local/bin/spt"]
+CMD ["tunnel", "run", "--foreground", \
+     "--config", "/etc/spt/spt.toml", \
+     "--state-dir", "/var/lib/spt"]
+
+LABEL org.opencontainers.image.title="spt" \
+      org.opencontainers.image.description="Permanent SSH2/SSH3 tunnels (Alpine slim variant)." \
+      org.opencontainers.image.licenses="MIT" \
+      org.opencontainers.image.source="https://github.com/Mariana/ssh-perma-tunnel" \
+      org.opencontainers.image.documentation="https://github.com/Mariana/ssh-perma-tunnel/blob/main/packaging/docker/README.md"
