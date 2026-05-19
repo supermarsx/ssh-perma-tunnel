@@ -1,0 +1,48 @@
+[package]
+name = "spt-perf-recovery"
+version = "0.0.0"
+edition = "2021"
+rust-version = "1.83"
+publish = false
+license = "MIT"
+description = "Failure-recovery perf benches for spt — standalone, MSRV 1.83."
+
+# Empty workspace block: decouple from the main workspace per t4-e3 plan.
+[workspace]
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+spt-core = { path = "../../crates/spt-core" }
+spt-auth = { path = "../../crates/spt-auth" }
+spt-config = { path = "../../crates/spt-config", features = ["testing"] }
+spt-protocol = { path = "../../crates/spt-protocol" }
+spt-forward = { path = "../../crates/spt-forward", features = ["testing"] }
+spt-supervisor = { path = "../../crates/spt-supervisor", features = ["testing"] }
+
+tokio = { version = "1.40", features = ["macros", "rt-multi-thread", "time", "sync"] }
+async-trait = "0.1"
+parking_lot = "0.12"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+
+[dev-dependencies]
+tokio = { version = "1.40", features = ["macros", "rt-multi-thread", "time", "sync"] }
+
+[[test]]
+name = "peer_kill"
+path = "tests/peer_kill.rs"
+
+[[test]]
+name = "network_partition"
+path = "tests/network_partition.rs"
+
+[[test]]
+name = "dns_loss"
+path = "tests/dns_loss.rs"
+
+[[test]]
+name = "reload_diff"
+path = "tests/reload_diff.rs"

@@ -1,0 +1,42 @@
+[package]
+name = "spt-perf-startup"
+version = "0.0.0"
+edition = "2021"
+rust-version = "1.83"
+publish = false
+license = "MIT"
+description = "Startup-time perf benches for spt (cold + warm) — standalone, MSRV 1.83."
+
+# Empty workspace block: decouple from the main workspace per t4-e3 plan.
+# Mirrors `tests/property/` and `tests/openssh-interop/` which keep their own
+# Cargo.lock so transitive deps stay MSRV-1.83-clean. The Phase-B integrator
+# (t4-Bwire) registers this crate as a workspace member if/when wanted.
+[workspace]
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+# Internal — exercised by the benches.
+spt-core = { path = "../../crates/spt-core" }
+spt-auth = { path = "../../crates/spt-auth" }
+spt-config = { path = "../../crates/spt-config", features = ["testing"] }
+spt-protocol = { path = "../../crates/spt-protocol" }
+spt-forward = { path = "../../crates/spt-forward", features = ["testing"] }
+spt-supervisor = { path = "../../crates/spt-supervisor", features = ["testing"] }
+
+tokio = { version = "1.40", features = ["macros", "rt-multi-thread", "time", "sync", "process"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+
+[dev-dependencies]
+tokio = { version = "1.40", features = ["macros", "rt-multi-thread", "time", "sync", "process"] }
+
+[[test]]
+name = "cold_start"
+path = "tests/cold_start.rs"
+
+[[test]]
+name = "warm_state_dir"
+path = "tests/warm_state_dir.rs"
