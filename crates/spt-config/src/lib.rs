@@ -31,7 +31,9 @@ pub mod mutate;
 pub mod policy;
 pub mod remote;
 pub mod render;
+pub mod round_robin;
 pub mod schema;
+pub mod status_api;
 pub mod validate;
 
 #[cfg(any(test, feature = "testing"))]
@@ -47,5 +49,10 @@ pub use policy::{
     PolicyValue, BINDINGS,
 };
 pub use render::render;
+pub use round_robin::{RoundRobinConfig, SelectionPolicy};
 pub use schema::*;
+pub use status_api::{
+    default_bind as status_api_default_bind, default_rate_limit as status_api_default_rate_limit,
+    StatusApiAuthConfig, StatusApiAuthMode, StatusApiConfig, StatusApiTlsConfig,
+};
 pub use validate::validate;

@@ -1,0 +1,66 @@
+[package]
+name = "spt-status-api"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+description = "Read-only HTTP/JSON status API server for spt (optional, off-by-default)."
+
+[features]
+# Enable hand-rolled rustls/tcp roundtrip integration tests (require `rcgen`
+# at dev-dependency time — see [dev-dependencies] below). Kept feature-gated
+# only so we can document the deviation cleanly; default builds compile
+# everything except those integration tests.
+testing = []
+
+[dependencies]
+spt-config = { workspace = true }
+spt-core = { workspace = true }
+spt-state = { workspace = true }
+spt-secrets = { workspace = true }
+
+# HTTP server
+axum = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+http = { workspace = true }
+bytes = { workspace = true }
+
+# Async runtime
+tokio = { workspace = true }
+tokio-rustls = { workspace = true }
+futures = { workspace = true }
+async-trait = { workspace = true }
+
+# TLS
+rustls = { workspace = true }
+rustls-pemfile = { workspace = true }
+rustls-pki-types = { workspace = true }
+x509-parser = { workspace = true }
+
+# Serde
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Errors / tracing
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+# Misc
+base64 = { workspace = true }
+parking_lot = { workspace = true }
+subtle = { workspace = true }
+chrono = { workspace = true }
+secrecy = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+tower = { workspace = true }
+rcgen = { workspace = true }
+tempfile = { workspace = true }
+
+[lints]
+workspace = true
