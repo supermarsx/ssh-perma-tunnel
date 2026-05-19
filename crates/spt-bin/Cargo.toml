@@ -92,6 +92,19 @@ tempfile = { workspace = true }
 hickory-resolver = { workspace = true }
 hickory-proto = { workspace = true }
 
+# Status-API TLS/mTLS wiring (see `crates/spt-bin/src/status_api_tls.rs`).
+# These features are already activated workspace-wide by `spt-remote-config`'s
+# `testing` feature and other rustls consumers — adding spt-bin as a direct
+# consumer is additive and does not bump the lockfile.
+axum = { workspace = true }
+rustls = { workspace = true }
+rustls-pemfile = { workspace = true }
+tokio-rustls = { workspace = true }
+tower = { workspace = true }
+x509-parser = { workspace = true }
+hyper = { version = "1", features = ["http1", "server"] }
+hyper-util = { version = "0.1", features = ["http1", "server", "server-auto", "tokio", "service"] }
+
 [target.'cfg(unix)'.dependencies]
 nix = { workspace = true }
 
@@ -121,6 +134,9 @@ hex = { workspace = true }
 tokio = { workspace = true }
 clap = { workspace = true }
 clap_complete = { workspace = true }
+# Used by status_api_tls integration tests to mint a self-signed CA, server
+# cert, and client cert at test time.
+rcgen = { workspace = true }
 # `testing` feature exposes MockTunnelProtocol for the lifecycle integration test.
 spt-forward = { workspace = true, features = ["testing"] }
 # `testing` feature exposes deterministic_keypair / fixtures for cli/key_ops tests.

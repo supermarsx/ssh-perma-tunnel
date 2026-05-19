@@ -24,6 +24,7 @@ mod runtime;
 mod scm_dispatch;
 mod secrets_bridge;
 mod signals;
+mod status_api_tls;
 mod tracing_init;
 
 pub(crate) use benchmark_bridge::run_live_benchmark;

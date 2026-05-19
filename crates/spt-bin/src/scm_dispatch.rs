@@ -222,16 +222,12 @@ async fn run_orchestrator_under_scm(
     writer.flush().await?;
 
     // Plan §t4-e5: bring up the read-only status API if enabled. Lives
-    // alongside the orchestrator until SCM signals shutdown.
+    // alongside the orchestrator until SCM signals shutdown. The
+    // `status_api_tls::launch` helper closes the deferred TLS/mTLS gate
+    // from t4-Bwire (see `.orchestration/logs/f-status-tls.md`).
     let status_api_handle = if cfg.status_api.enabled {
-        crate::cli::status_ops::ensure_tls_not_requested(&cfg.status_api)?;
-        let source: std::sync::Arc<dyn spt_status_api::StateSnapshotSource> =
-            std::sync::Arc::new(crate::cli::status_ops::FileSnapshotSource::new(
-                state_dir.clone(),
-            ));
-        Some(
-            spt_status_api::StatusApiServer::start(&cfg.status_api, source, &resolver).await?,
-        )
+        let source = crate::status_api_tls::file_snapshot_source(state_dir.clone());
+        Some(crate::status_api_tls::launch(&cfg.status_api, source, &resolver).await?)
     } else {
         None
     };

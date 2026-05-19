@@ -856,22 +856,25 @@ async fn tunnel_run(global: &GlobalOpts, args: groups::tunnel::TunnelRun) -> Res
 /// Bring up the read-only status API if `[status_api].enabled = true`.
 /// Returns `Ok(None)` when disabled; on a binding/auth error, returns the
 /// error so the caller can fail fast (better than a silently-broken API).
+///
+/// Closes the deferred TLS/mTLS gate from t4-Bwire: delegates to
+/// [`crate::status_api_tls::launch`], which dispatches plain HTTP through
+/// `StatusApiServer::start` (unchanged) and TLS/mTLS through a
+/// `tokio-rustls` accept loop.
 async fn maybe_spawn_status_api(
     cfg: &spt_config::schema::Config,
     state_dir: &Path,
     resolver: &std::sync::Arc<spt_secrets::Resolver>,
-) -> Result<Option<spt_status_api::StatusApiHandle>> {
+) -> Result<Option<crate::status_api_tls::SptStatusApiHandle>> {
     if !cfg.status_api.enabled {
         return Ok(None);
     }
-    crate::cli::status_ops::ensure_tls_not_requested(&cfg.status_api)?;
-    let source: std::sync::Arc<dyn spt_status_api::StateSnapshotSource> = std::sync::Arc::new(
-        crate::cli::status_ops::FileSnapshotSource::new(state_dir.to_path_buf()),
-    );
+    let source = crate::status_api_tls::file_snapshot_source(state_dir.to_path_buf());
     let handle =
-        spt_status_api::StatusApiServer::start(&cfg.status_api, source, resolver.as_ref()).await?;
+        crate::status_api_tls::launch(&cfg.status_api, source, resolver.as_ref()).await?;
     tracing::info!(
         addr = %handle.local_addr(),
+        tls = cfg.status_api.tls.enabled,
         "status-api listening (inline supervisor host)"
     );
     Ok(Some(handle))
