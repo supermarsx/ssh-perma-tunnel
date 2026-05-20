@@ -41,6 +41,94 @@ pub enum ConfigSub {
     Pull(ConfigPull),
     /// Manage remote-config trust pins.
     Trust(ConfigTrust),
+    /// Encrypt a plaintext config to a sealed `SPTENC1` envelope.
+    Encrypt(ConfigEncrypt),
+    /// Decrypt a sealed `SPTENC1` envelope back to plaintext TOML.
+    Decrypt(ConfigDecrypt),
+    /// Open a sealed config in `$EDITOR`; re-seal on save.
+    Edit(ConfigEdit),
+    /// Re-seal a sealed config under a new key (key rotation).
+    Crypt(ConfigCrypt),
+}
+
+/// `spt config crypt`.
+#[derive(Args, Debug)]
+pub struct ConfigCrypt {
+    /// Sub-action.
+    #[command(subcommand)]
+    pub command: ConfigCryptSub,
+}
+
+/// Subcommands of `spt config crypt`.
+#[derive(Subcommand, Debug)]
+pub enum ConfigCryptSub {
+    /// Re-seal a sealed config under a new key.
+    Rotate(ConfigCryptRotate),
+}
+
+/// `spt config encrypt`.
+#[derive(Args, Debug)]
+pub struct ConfigEncrypt {
+    /// Plaintext config path.
+    #[arg(value_name = "IN")]
+    pub input: PathBuf,
+    /// Output path (default: `<IN>.sealed`).
+    #[arg(long, value_name = "PATH")]
+    pub out: Option<PathBuf>,
+    /// Read passphrase from a secret reference (e.g. `secret://env/SPT_PP`).
+    #[arg(long, value_name = "REF")]
+    pub passphrase_from: Option<String>,
+    /// One or more X25519 recipient public keys (base64).
+    #[arg(long, value_name = "PUBKEY")]
+    pub recipient: Vec<String>,
+    /// Use the keychain-resident vault master key.
+    #[arg(long)]
+    pub use_vault_master: bool,
+    /// Overwrite an existing output file.
+    #[arg(long)]
+    pub force: bool,
+}
+
+/// `spt config decrypt`.
+#[derive(Args, Debug)]
+pub struct ConfigDecrypt {
+    /// Sealed config path.
+    #[arg(value_name = "IN")]
+    pub input: PathBuf,
+    /// Output path. If unset, write the cleartext to stdout.
+    #[arg(long, value_name = "PATH")]
+    pub out: Option<PathBuf>,
+    /// Read passphrase from a secret reference.
+    #[arg(long, value_name = "REF")]
+    pub passphrase_from: Option<String>,
+    /// Path to an X25519 private-key file (32 raw bytes or base64 line).
+    #[arg(long, value_name = "PATH")]
+    pub recipient_key: Option<PathBuf>,
+}
+
+/// `spt config edit`.
+#[derive(Args, Debug)]
+pub struct ConfigEdit {
+    /// Sealed config path.
+    #[arg(value_name = "SEALED")]
+    pub sealed: PathBuf,
+    /// Read passphrase from a secret reference.
+    #[arg(long, value_name = "REF")]
+    pub passphrase_from: Option<String>,
+}
+
+/// `spt config crypt rotate`.
+#[derive(Args, Debug)]
+pub struct ConfigCryptRotate {
+    /// Sealed config path.
+    #[arg(value_name = "SEALED")]
+    pub sealed: PathBuf,
+    /// New passphrase, read from a secret reference.
+    #[arg(long, value_name = "REF")]
+    pub new_passphrase_from: Option<String>,
+    /// New X25519 recipient public keys (base64).
+    #[arg(long, value_name = "PUBKEY")]
+    pub new_recipient: Vec<String>,
 }
 
 /// Built-in config templates available to `spt config init`.

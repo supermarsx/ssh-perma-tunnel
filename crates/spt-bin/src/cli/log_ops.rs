@@ -481,7 +481,9 @@ async fn fire_synthetic_event_sink(sc: &EventSink) -> std::result::Result<(), St
                 .map(|s| Subscription {
                     endpoint: s.endpoint.clone(),
                     p256dh_key: s.p256dh.clone(),
-                    auth_secret: s.auth.clone(),
+                    // `s.auth` is a `RedactedString` (t5-e7); pull the
+                    // cleartext to feed `Subscription`'s `String` field.
+                    auth_secret: s.auth.expose().to_owned(),
                 })
                 .collect();
             let transport: Arc<dyn spt_events::sinks::http::HttpTransport> = Arc::new(

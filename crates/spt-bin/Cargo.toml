@@ -28,6 +28,8 @@ path = "src/bin/spt-mangen.rs"
 # Internal crates
 spt-core = { workspace = true }
 spt-config = { workspace = true }
+spt-config-crypt = { workspace = true }
+spt-mem-hygiene = { workspace = true }
 spt-secrets = { workspace = true }
 spt-state = { workspace = true }
 spt-cli = { workspace = true }
@@ -145,6 +147,10 @@ spt-key = { workspace = true, features = ["testing"] }
 spt-state = { workspace = true, features = ["testing"] }
 # `testing` feature exposes FakeZone/LocalhostResolver for cli/dns_ops tests.
 spt-dns = { workspace = true, features = ["testing"] }
+# t5-e6 sealed-config tests need to derive X25519 public keys from a raw
+# scalar. Pinned to a version already present in Cargo.lock via spt-config-crypt
+# so this addition does NOT trigger `cargo update`.
+x25519-dalek = { version = "2", default-features = false, features = ["static_secrets", "zeroize"] }
 
 [features]
 default = []

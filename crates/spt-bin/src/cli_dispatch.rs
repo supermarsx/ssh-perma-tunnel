@@ -101,6 +101,15 @@ async fn config_dispatch(global: &GlobalOpts, c: groups::config::ConfigCmd) -> R
         ConfigSub::Reload(args) => crate::cli::config_ops::reload(global, args).await,
         ConfigSub::Pull(args) => config_pull(global, args).await,
         ConfigSub::Trust(args) => config_trust(global, args),
+        ConfigSub::Encrypt(args) => crate::cli::config_ops::encrypt(args).await,
+        ConfigSub::Decrypt(args) => crate::cli::config_ops::decrypt(args).await,
+        ConfigSub::Edit(args) => crate::cli::config_ops::edit(args).await,
+        ConfigSub::Crypt(args) => {
+            use groups::config::ConfigCryptSub;
+            match args.command {
+                ConfigCryptSub::Rotate(a) => crate::cli::config_ops::crypt_rotate(a).await,
+            }
+        }
     }
 }
 
@@ -2203,7 +2212,7 @@ async fn fire_synthetic_through_sink(
                 .map(|s| Subscription {
                     endpoint: s.endpoint.clone(),
                     p256dh_key: s.p256dh.clone(),
-                    auth_secret: s.auth.clone(),
+                    auth_secret: s.auth.expose().to_owned(),
                 })
                 .collect();
             // Build a reqwest-backed HTTP transport with a short test timeout.

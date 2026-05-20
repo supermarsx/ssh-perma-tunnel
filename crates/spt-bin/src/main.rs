@@ -36,6 +36,14 @@ use spt_cli::{groups, Cli, ColorMode, Command, GlobalOpts, LogLevel};
 use spt_core::{Error, ExitCode, Result};
 
 fn main() -> ProcExitCode {
+    // Memory-hygiene hardening: best-effort process-level lockdown
+    // (PR_SET_DUMPABLE=0 + drop SeDebugPrivilege + PT_DENY_ATTACH + core
+    // dump cap). Runs once, never panics, returns a report we log at
+    // debug. Failure is silent by design — defense-in-depth, not a hard
+    // contract.
+    let hardening = spt_mem_hygiene::harden();
+    tracing::debug!(report = ?hardening, "spt-mem-hygiene applied");
+
     // Windows SCM dispatch path: if SCM started us, the ImagePath ends in
     // `--scm-dispatch`. Detect it BEFORE clap parses `Cli` (clap doesn't
     // know about the flag and would reject it). The dispatch handler builds

@@ -22,13 +22,14 @@
 //!   `--passphrase-from` are kept in `Zeroizing<Vec<u8>>` for their
 //!   entire lifetime in this module.
 
-use std::io::{self, BufRead, Read, Write};
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
 use secrecy::zeroize::Zeroizing;
+use secrecy::ExposeSecret;
 use spt_cli::{GlobalOpts, OutputFormat};
 use spt_core::{Error, Result};
-use spt_secrets::{KeychainBackend, SecretBackend, SecretRef, VaultBackend};
+use spt_secrets::{read_passphrase, KeychainBackend, SecretBackend, SecretRef, VaultBackend};
 
 /// Default sub-directory under `<state_dir>` that holds `vault.spt`.
 const DEFAULT_VAULT_SUBDIR: &str = "secrets";
@@ -345,32 +346,25 @@ fn read_passphrase_source(spec: &str) -> Result<Zeroizing<Vec<u8>>> {
     read_value_source(spec)
 }
 
-/// Prompt for a secret on stderr and read a single line from stdin.
+/// Prompt for a secret on stderr and read a single line from stdin with
+/// terminal echo disabled.
 ///
-/// This implementation does **not** disable terminal echo — the workspace
-/// has no `rpassword`-equivalent dep and adding one is out of scope here.
-/// Operators handling sensitive material should prefer `--passphrase-from`
-/// / `--new-value-from`. The fallback is documented in CLI help.
+/// Delegates to [`spt_secrets::read_passphrase`], which installs a
+/// termios drop-guard on Unix (and a console-mode drop-guard on Windows)
+/// that restores echo on every exit path including panic and SIGINT.
+/// The returned bytes are wrapped in `Zeroizing<Vec<u8>>` so they zero
+/// out when the caller drops them.
+///
+/// An empty passphrase is rejected with [`Error::InvalidArgs`] —
+/// Argon2id accepts an empty input but this is almost always an
+/// operator error.
 fn prompt_passphrase_no_echo(prompt: &str) -> Result<Zeroizing<Vec<u8>>> {
-    eprint!("{prompt}");
-    let _ = io::stderr().flush();
-    let mut buf = String::new();
-    io::stdin()
-        .lock()
-        .read_line(&mut buf)
-        .map_err(|e| Error::RuntimeFailure(format!("read passphrase: {e}")))?;
-    while matches!(buf.chars().last(), Some('\n') | Some('\r')) {
-        buf.pop();
-    }
-    let mut z = Zeroizing::new(buf.into_bytes());
-    // Defensive empty-passphrase guard — Argon2id will accept it but
-    // it's almost certainly an operator error.
+    let s = read_passphrase(prompt)?;
+    let bytes = s.expose_secret().as_bytes().to_vec();
+    let z = Zeroizing::new(bytes);
     if z.is_empty() {
         return Err(Error::InvalidArgs("empty passphrase".into()));
     }
-    // Wipe the original `String` allocation by rebuilding from `z`'s
-    // bytes, which already live in a `Zeroizing` buffer.
-    z.shrink_to_fit();
     Ok(z)
 }
 
