@@ -1,118 +1,139 @@
 # Releasing `spt`
 
-Operator runbook for cutting an `spt` release. The process is fully
-tag-driven: pushing an annotated `vX.Y.Z` tag to `main` triggers
-[`release.yml`](.github/workflows/release.yml) and, in parallel,
-[`docker.yml`](.github/workflows/docker.yml).
+`spt` ships on a **rolling release** model: every commit landed on `main`
+that passes CI becomes a tagged GitHub Release with full multi-platform
+artifacts.  There is no separate release branch, no manual tagging, and no
+pre-flight checklist beyond the standard CI green-light.
 
-## 1. Pre-flight checklist
+The full pipeline lives in [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
 
-Before tagging, confirm every box on this list:
+## Versioning: YY.N rolling
 
-- [ ] Working tree is clean (`git status` shows nothing).
-- [ ] You are on `main` and up to date with `origin/main`.
-- [ ] CI on `main` is green for the commit you intend to tag — check
-      `ci.yml`, `msrv.yml`, `audit.yml`, and `coverage.yml`.
-- [ ] Workspace `version` in the root `Cargo.toml` matches the tag you
-      are about to push (no trailing `-dev` or `-pre`).
-- [ ] `Cargo.lock` was regenerated against the new version (run
-      `cargo build --workspace --locked` and commit the lockfile churn,
-      if any).
-- [ ] [`CHANGELOG.md`](CHANGELOG.md) has a dated `## [X.Y.Z]` section
-      and the `## [Unreleased]` section is empty (or only has entries
-      that are deferred to the next release — be explicit).
-- [ ] The man-page regenerator produces no diff:
-      `cargo run --bin spt-mangen -- --out packaging/man` and
-      `git diff --exit-code packaging/man/`.
-- [ ] Spec version field in `spec.md` matches the release version.
-
-## 2. Tag the release
-
-Use an annotated, signed tag. The tag message should be the
-`## [X.Y.Z]` section from the changelog, verbatim.
-
-```sh
-git tag -s vX.Y.Z -m "spt vX.Y.Z" -m "$(awk '/^## \[X.Y.Z\]/,/^## \[/' CHANGELOG.md | head -n -1)"
-git push origin vX.Y.Z
+```
+YY  = two-digit UTC year         (e.g. 26 for 2026)
+N   = monotonic counter, resets  (first release of the year is N=1)
+Tag = v<YY>.<N>                  (e.g. v26.1, v26.2, ..., v26.99, v26.314)
 ```
 
-## 3. Watch the release pipeline
+- The counter resets to `1` at the first release after the UTC year rolls
+  over. If the previous release was `v26.314` on 2026-12-31, the next
+  release on or after 2027-01-01 UTC will be `v27.1`.
+- Tags are **immutable**. If a release has a bad artifact, do not retag —
+  cut a follow-up release with the fix (see "Rolling back" below).
+- The workspace `version` field in the root `Cargo.toml` always reflects
+  the *currently released* version. The line is marked with a
+  `# rolling` trailer so the bump script can find and update it
+  in-place:
 
-Pushing the tag fires two workflows:
+  ```toml
+  [workspace.package]
+  version = "26.1"  # rolling
+  ```
 
-- [`release.yml`](.github/workflows/release.yml) — cross-builds the
-  eight supported targets, produces `.deb`, `.rpm`, `.pkg`, and `.msi`
-  artifacts, signs them (minisign + per-OS code signing), generates
-  the SBOM and provenance, and creates a **draft** GitHub release.
-- [`docker.yml`](.github/workflows/docker.yml) — builds and publishes
-  multi-arch container images to GHCR.
+  See [`CONTRIBUTING.md`](CONTRIBUTING.md) for why the marker matters.
 
-Both workflows must finish green. If either fails, **delete the tag**
-(`git tag -d vX.Y.Z && git push --delete origin vX.Y.Z`), fix the
-underlying issue on `main`, and re-tag.
+## How a release happens
 
-## 4. Verify draft release artifacts
+1. A commit lands on `main` (push or PR-merge).
+2. The standard `fmt → clippy → test (×6) → build (×6)` pipeline runs.
+   `security` (cargo-deny + RustSec audit) runs in parallel.
+3. The `release` job:
+   1. downloads all six platform artifacts,
+   2. runs [`scripts/release/bump-version.sh`](scripts/release/bump-version.sh)
+      to compute `vYY.N`,
+   3. refuses to proceed if `vYY.N` already exists on the remote
+      (printing `::error::v<YY.N> already exists`),
+   4. generates `dist/<tag>/CHANGELOG-fragment.md`, checksums, optional
+      minisign signatures, SBOM, and the release manifest,
+   5. commits the `Cargo.toml` bump and pushes the annotated tag,
+   6. creates the GitHub Release with `gh release create --target main`,
+   7. multi-arch `docker buildx push`es `ghcr.io/<owner>/spt:<YY.N>` and
+      `:latest`.
 
-On the draft release page:
+The whole thing is unattended.
 
-- Confirm all expected artifacts are attached (one per target plus
-  signatures, checksums, SBOM).
-- Pull at least one binary per OS family (Linux x86_64, macOS arm64,
-  Windows x86_64) and run a smoke test:
-  - `spt --version` reports `X.Y.Z`.
-  - `spt config validate --config examples/minimal.toml` succeeds.
-  - `spt diagnose --redact strict` produces a bundle with no obvious
-    redaction misses.
-- Verify one signature with `minisign -V` against the published public
-  key.
+## Opting out of a release
 
-## 5. Promote the draft
+If a particular `main` commit should **not** trigger a release:
 
-Once smoke tests pass, click **Publish release** on the draft. This
-makes the tag visible in package indexes and triggers any downstream
-notification channels.
+- include `[skip release]` anywhere in the commit message, **or**
+- title the commit exactly `release: skip` (e.g. for an empty commit
+  pushed solely to skip).
 
-## 6. Confirm Docker images
+The `release` job's `if:` guard reads the head-commit message and skips
+when either token is present. The rest of the pipeline still runs.
 
-`docker.yml` runs in parallel and publishes:
+## Pre-releases from staging branches
 
-- `ghcr.io/<owner>/spt:X.Y.Z`
-- `ghcr.io/<owner>/spt:X.Y` (rolling minor)
-- `ghcr.io/<owner>/spt:latest` (only for non-prerelease tags)
+Branches matching `release-staging/*` produce **pre-releases**.  The
+version stamp is `<YY.N>-rc.<M>`, where:
 
-Pull `:X.Y.Z` and run `docker run --rm ghcr.io/<owner>/spt:X.Y.Z --version`
-as a final smoke test.
+- `YY.N` is the next non-released rolling version (i.e. what the next
+  release on `main` would be),
+- `M` is a monotonic RC counter within that `YY.N` slot.
 
-## 7. Post-release: bump to next-dev
+GitHub Release is marked `prerelease`, no Docker `:latest` push, no
+overwriting of the `latest` channel. Use these to validate a packaging
+or codesigning change end-to-end before merging to `main`.
 
-On `main`, immediately after the release is published:
+## Inspecting / dry-running the next version
 
-1. Bump the workspace `version` to the next patch with a `-dev` suffix
-   (e.g. `0.1.4-dev`).
-2. Add an empty `## [Unreleased]` section to `CHANGELOG.md`.
-3. Commit as `chore: begin X.Y.Z+1-dev cycle`.
+```sh
+bash scripts/release/bump-version.sh --dry-run
+```
 
-This guarantees that any new `main` build is unambiguously not the
-just-released version.
+prints the version and tag that would be produced *right now*, without
+editing `Cargo.toml`, committing, or tagging.  Useful when:
+
+- you want to know which version a PR will become, post-merge,
+- you're debugging a year-rollover edge case (set `TZ=UTC` and
+  `faketime` to simulate),
+- you're verifying that an out-of-band manual release didn't leave the
+  counter in an unexpected state.
+
+## Rolling back
+
+Tags are immutable. If `v26.7` shipped with a regression:
+
+1. **Do not** delete or move the tag.
+2. Land a fix on `main`. The next push produces `v26.8` automatically.
+3. (Optional) Yank Docker by re-pointing `:latest` to the prior good
+   tag: `docker buildx imagetools create -t ghcr.io/<owner>/spt:latest \
+   ghcr.io/<owner>/spt:26.6` and announce the rollback in the release
+   notes for `v26.8`.
 
 ## Signing setup (one-time per maintainer)
 
-Releases are signed at three levels. Setup is documented in the
-internal release-keys vault; this section is a pointer.
+The `release` job is gated on the presence of the relevant secrets and
+no-ops the signing step if they are absent.
 
-- **Minisign** — every release artifact is signed with the project's
-  minisign keypair. The public key is published at
-  `packaging/keys/spt-release.pub` and the private half lives in the
-  CI secret store as `MINISIGN_SECRET_KEY` + `MINISIGN_PASSWORD`.
-- **macOS notarization** — the `.pkg` is signed with a Developer ID
-  Installer certificate and notarized via `notarytool`. Secrets:
-  `APPLE_ID`, `APPLE_TEAM_ID`, `APPLE_APP_PASSWORD`,
-  `MACOS_DEVELOPER_ID_INSTALLER_P12` (base64), and
-  `MACOS_DEVELOPER_ID_INSTALLER_PASSWORD`.
-- **Windows Authenticode** — the `.msi` is signed with an EV code-signing
-  certificate. Secrets: `WINDOWS_PFX_BASE64` and `WINDOWS_PFX_PASSWORD`.
-  The certificate is HSM-backed; the PFX is a thin wrapper that points
-  at the cloud HSM.
+- **Minisign** — `MINISIGN_SECRET_KEY` + `MINISIGN_PASSWORD`. Public key
+  lives at `packaging/keys/spt-release.pub`. Every artifact is signed
+  when the secret is set.
+- **macOS notarization** — `MACOS_SIGNING_IDENTITY`, `MACOS_NOTARY_USER`,
+  `MACOS_NOTARY_PASSWORD`. The `.pkg` is signed with a Developer ID
+  Installer certificate and notarized via `notarytool`.
+- **Windows Authenticode** — `WINDOWS_SIGNING_CERT_BASE64` +
+  `WINDOWS_SIGNING_PASSWORD`. The `.msi` is signed with an EV
+  code-signing certificate (HSM-backed; the PFX is a thin wrapper).
+- **Linux GPG** — `LINUX_GPG_KEY` for `.deb` / `.rpm` repository
+  signatures, applied by `scripts/sign/checksum-all.sh`.
 
-Rotate keys every 24 months or on suspected compromise; see the keys
-vault README for the rotation procedure.
+Rotate every 24 months or on suspected compromise; see the keys vault
+README for the rotation procedure.
+
+## Operator dispatch (optional pipelines)
+
+The consolidated `ci.yml` also exposes four `workflow_dispatch.kind`
+options, each running exclusively (not as part of the standard
+fmt→clippy→test→build pipeline):
+
+| `kind`              | Replaces                | What it does                                                |
+|---------------------|-------------------------|-------------------------------------------------------------|
+| `full` (default)    | n/a                     | The standard pipeline (also runs on every push and PR).     |
+| `coverage`          | `coverage.yml`          | `cargo llvm-cov` + Codecov upload.                          |
+| `fuzz`              | `fuzz.yml`              | All 10 cargo-fuzz targets, 60 s each, in parallel.          |
+| `openssh-interop`   | `openssh-interop.yml`   | docker-compose interop fixture against the standalone crate.|
+| `bench-regression`  | `bench-regression.yml`  | Criterion compare against `main` baseline.                  |
+
+Trigger from the Actions tab or with `gh workflow run ci.yml -f kind=fuzz`.

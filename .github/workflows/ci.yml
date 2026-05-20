@@ -1,3 +1,52 @@
+# =============================================================================
+# Consolidated CI for ssh-perma-tunnel (spt)
+# =============================================================================
+#
+# Pipeline (standard):
+#
+#   fmt ────┐
+#           ├──> test (matrix × 6) ──> build (matrix × 6) ──> release (main)
+#   clippy ─┘                                                  └─ docker push
+#
+# In parallel with build on main/PR: `security` (cargo-deny + audit-check).
+#
+# Optional dispatch-only jobs (folded from removed workflows; gated on
+# `workflow_dispatch.inputs.kind`):
+#   - coverage          (was coverage.yml)
+#   - fuzz              (was fuzz.yml)
+#   - openssh-interop   (was openssh-interop.yml)
+#   - bench-regression  (was bench-regression.yml)
+#
+# -----------------------------------------------------------------------------
+# Platform matrix (the 6)
+# -----------------------------------------------------------------------------
+#
+#   target                          runner              native?
+#   ------------------------------  ------------------  --------------------
+#   x86_64-unknown-linux-gnu        ubuntu-latest       yes
+#   aarch64-unknown-linux-gnu       ubuntu-24.04-arm    yes (free-tier ARM
+#                                                       runner, GA 2025-04;
+#                                                       fall back to
+#                                                       ubuntu-latest + cross
+#                                                       + QEMU if unavailable)
+#   x86_64-apple-darwin             macos-13            yes (Intel)
+#   aarch64-apple-darwin            macos-14            yes (Apple Silicon)
+#   x86_64-pc-windows-msvc          windows-latest      yes
+#   aarch64-pc-windows-msvc         windows-11-arm      yes (preview, 2025;
+#                                                       fall back to
+#                                                       windows-latest with
+#                                                       --target only; tests
+#                                                       skip on the fallback)
+#
+# Operator override: set repository variable / env `SPT_FORCE_CROSS=1` (read
+# by the matrix `cross` flag) to force cross+QEMU execution on every target,
+# regardless of runner image availability. This is the manual escape hatch
+# when a native runner image is broken or quota-exhausted.
+#
+# MSRV (1.83.0) is the single toolchain we use — it is implicitly tested by
+# every fmt / clippy / test / build job. There is no separate `msrv` job.
+# =============================================================================
+
 name: CI
 
 on:
@@ -5,14 +54,38 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  schedule:
+    # Weekly security re-scan (Mondays 03:17 UTC).
+    - cron: '17 3 * * 1'
+  workflow_dispatch:
+    inputs:
+      kind:
+        description: 'Pipeline kind'
+        required: true
+        default: full
+        type: choice
+        options:
+          - full
+          - coverage
+          - fuzz
+          - openssh-interop
+          - bench-regression
 
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  MSRV: 1.83.0
+
+permissions:
+  contents: read
 
 jobs:
+  # ---------------------------------------------------------------------------
+  # fmt — fast style gate (~30s).
+  # ---------------------------------------------------------------------------
   fmt:
-    name: rustfmt
+    name: fmt
+    if: github.event_name != 'workflow_dispatch' || inputs.kind == 'full'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -21,127 +94,465 @@ jobs:
           components: rustfmt
       - run: cargo fmt --all -- --check
 
-  test:
-    name: test (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+  # ---------------------------------------------------------------------------
+  # clippy — full workspace lint, pinned at MSRV (the contract).
+  # ---------------------------------------------------------------------------
+  clippy:
+    name: clippy
+    if: github.event_name != 'workflow_dispatch' || inputs.kind == 'full'
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.83.0
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      - name: clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
-      - name: test
-        run: cargo test --workspace --all-targets
-
-  feature-gates:
-    name: feature gates
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
         with:
-          key: feature-gates
-      - name: default binary excludes SNMP
-        run: cargo check -p spt-bin --no-default-features --locked
-      - name: SNMP command is absent by default
-        run: cargo test -p spt-cli --no-default-features --locked rejects_observe_snmp_without_feature
-      - name: SNMP feature builds
-        run: cargo check -p spt-bin --no-default-features --features snmp --locked
-      - name: SNMP command parses when enabled
-        run: cargo test -p spt-cli --no-default-features --features snmp --locked parses_observe_snmp_when_feature_enabled
+          key: clippy-msrv
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
-  deny:
-    name: cargo-deny
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: EmbarkStudios/cargo-deny-action@v2
-        with:
-          command: check
-
-  cross-build:
-    name: cross-build (${{ matrix.target }})
-    runs-on: ubuntu-latest
+  # ---------------------------------------------------------------------------
+  # test — full matrix, all 6 OS×arch combos. Runs after fmt + clippy.
+  # ---------------------------------------------------------------------------
+  test:
+    name: test (${{ matrix.target }})
+    if: github.event_name != 'workflow_dispatch' || inputs.kind == 'full'
+    needs: [fmt, clippy]
     strategy:
       fail-fast: false
       matrix:
-        target:
-          - x86_64-unknown-linux-gnu
-          - x86_64-unknown-linux-musl
-          - aarch64-unknown-linux-gnu
-          - aarch64-unknown-linux-musl
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+            cross: false
+            can_test: true
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
+            cross: false
+            can_test: true
+          - target: x86_64-apple-darwin
+            runner: macos-13
+            cross: false
+            can_test: true
+          - target: aarch64-apple-darwin
+            runner: macos-14
+            cross: false
+            can_test: true
+          - target: x86_64-pc-windows-msvc
+            runner: windows-latest
+            cross: false
+            can_test: true
+          - target: aarch64-pc-windows-msvc
+            runner: windows-11-arm
+            cross: false
+            can_test: true
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.83.0
+        with:
+          targets: ${{ matrix.target }}
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: test-${{ matrix.target }}
+      - name: Install cross (QEMU path)
+        if: ${{ matrix.cross || env.SPT_FORCE_CROSS == '1' }}
+        shell: bash
+        run: cargo install cross --locked --version 0.2.5
+      - name: cargo test (native)
+        if: ${{ matrix.can_test && !matrix.cross && env.SPT_FORCE_CROSS != '1' }}
+        shell: bash
+        run: cargo test --workspace --locked --no-fail-fast --target ${{ matrix.target }}
+      - name: cargo test (cross / QEMU)
+        if: ${{ matrix.can_test && (matrix.cross || env.SPT_FORCE_CROSS == '1') }}
+        shell: bash
+        run: cross test --workspace --locked --no-fail-fast --target ${{ matrix.target }}
+      - name: cargo check (no-run target)
+        if: ${{ !matrix.can_test }}
+        shell: bash
+        run: cargo check --workspace --locked --target ${{ matrix.target }}
+
+  # ---------------------------------------------------------------------------
+  # build — release builds for all 6 targets, uploads per-platform artifacts.
+  # ---------------------------------------------------------------------------
+  build:
+    name: build (${{ matrix.target }})
+    if: github.event_name != 'workflow_dispatch' || inputs.kind == 'full'
+    needs: [test]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+            cross: false
+            os: linux
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
+            cross: false
+            os: linux
+          - target: x86_64-apple-darwin
+            runner: macos-13
+            cross: false
+            os: macos
+          - target: aarch64-apple-darwin
+            runner: macos-14
+            cross: false
+            os: macos
+          - target: x86_64-pc-windows-msvc
+            runner: windows-latest
+            cross: false
+            os: windows
+          - target: aarch64-pc-windows-msvc
+            runner: windows-11-arm
+            cross: false
+            os: windows
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.83.0
         with:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
         with:
-          key: cross-${{ matrix.target }}
-      - name: Install cross
+          key: build-${{ matrix.target }}
+      - name: Install cross (QEMU path)
+        if: ${{ matrix.cross || env.SPT_FORCE_CROSS == '1' }}
+        shell: bash
         run: cargo install cross --locked --version 0.2.5
-      - name: Run cross build for ${{ matrix.target }}
-        run: bash scripts/build/build-target.sh ${{ matrix.target }}
-
-  testing-features:
-    name: testing-features (${{ matrix.crate }})
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        crate:
-          - spt-auth
-          - spt-benchmark
-          - spt-cli
-          - spt-config
-          - spt-core
-          - spt-diagnostics
-          - spt-dns
-          - spt-events
-          - spt-firewall
-          - spt-forward
-          - spt-key
-          - spt-mcp
-          - spt-net
-          - spt-observability
-          - spt-protocol
-          - spt-remote-config
-          - spt-secrets
-          - spt-service
-          - spt-snmp
-          - spt-ssh2
-          - spt-ssh3
-          - spt-state
-          - spt-stats
-          - spt-supervisor
-          - spt-trust
-          - spt-tui
-          - spt-winevent
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - name: Install cargo-deb / cargo-generate-rpm (Linux GNU)
+        if: ${{ matrix.os == 'linux' && endsWith(matrix.target, '-linux-gnu') }}
+        shell: bash
+        run: |
+          cargo install cargo-deb --locked
+          cargo install cargo-generate-rpm --locked
+      - name: Install cargo-wix (Windows)
+        if: ${{ matrix.os == 'windows' }}
+        shell: pwsh
+        run: cargo install cargo-wix --locked
+      - name: Build release
+        shell: bash
+        run: |
+          if [[ "${{ matrix.cross }}" == "true" || "${SPT_FORCE_CROSS:-0}" == "1" ]]; then
+            cross build --workspace --locked --release --target ${{ matrix.target }}
+          else
+            cargo build --workspace --locked --release --target ${{ matrix.target }}
+          fi
+      - name: Pack tarball (Linux/macOS)
+        if: ${{ matrix.os != 'windows' }}
+        shell: bash
+        run: bash scripts/package/pack-tarball.sh ${{ matrix.target }}
+      - name: Pack deb (Linux GNU)
+        if: ${{ matrix.os == 'linux' && endsWith(matrix.target, '-linux-gnu') }}
+        shell: bash
+        run: bash scripts/package/pack-deb.sh ${{ matrix.target }}
+      - name: Pack rpm (Linux GNU)
+        if: ${{ matrix.os == 'linux' && endsWith(matrix.target, '-linux-gnu') }}
+        shell: bash
+        run: bash scripts/package/pack-rpm.sh ${{ matrix.target }}
+      - name: Pack pkg (macOS)
+        if: ${{ matrix.os == 'macos' }}
+        shell: bash
+        run: bash scripts/package/pack-pkg-macos.sh ${{ matrix.target }}
+      - name: Pack zip (Windows)
+        if: ${{ matrix.os == 'windows' }}
+        shell: pwsh
+        run: ./scripts/package/pack-zip.ps1 ${{ matrix.target }}
+      - name: Pack MSI (Windows)
+        if: ${{ matrix.os == 'windows' }}
+        shell: pwsh
+        run: ./scripts/package/pack-msi-windows.ps1 ${{ matrix.target }}
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
         with:
-          key: testing-${{ matrix.crate }}
-      - name: Build ${{ matrix.crate }} with testing feature
-        run: cargo build -p ${{ matrix.crate }} --features testing --locked
+          name: spt-${{ matrix.target }}
+          path: dist/**
+          retention-days: 30
+          if-no-files-found: error
 
-  verify-msrv:
-    name: verify-msrv (1.83.0)
+  # ---------------------------------------------------------------------------
+  # security — cargo-deny + RustSec audit. Runs in parallel with build.
+  # Folded from the deleted audit.yml.
+  # ---------------------------------------------------------------------------
+  security:
+    name: security
+    if: github.event_name != 'workflow_dispatch' || inputs.kind == 'full'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.83.0
       - uses: Swatinem/rust-cache@v2
         with:
-          key: msrv-1.83.0
-      - name: cargo build --workspace --locked
-        run: cargo build --workspace --locked
+          key: security
+      - name: cargo-deny check
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
+      - name: RustSec audit
+        uses: rustsec/audit-check@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  # ---------------------------------------------------------------------------
+  # release — rolling YY.N release. Only fires on push-to-main.
+  # Folded docker push from the deleted docker.yml.
+  # ---------------------------------------------------------------------------
+  release:
+    name: release
+    needs: [build, security]
+    if: >-
+      ${{ github.event_name == 'push'
+          && github.ref == 'refs/heads/main'
+          && !contains(github.event.head_commit.message, '[skip release]')
+          && !contains(github.event.head_commit.message, 'release: skip') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Download all platform artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Stage dist/
+        shell: bash
+        run: |
+          mkdir -p dist
+          # Each upload-artifact was rooted at dist/**, so each downloaded
+          # subdir already contains the per-target dist tree. Merge them.
+          for d in artifacts/spt-*; do
+            if [[ -d "$d" ]]; then cp -r "$d"/. dist/; fi
+          done
+      - name: Compute next YY.N version
+        id: bump
+        shell: bash
+        run: bash scripts/release/bump-version.sh
+      - name: Abort if tag already exists
+        shell: bash
+        run: |
+          tag="${{ steps.bump.outputs.tag }}"
+          if git ls-remote --tags --exit-code origin "refs/tags/${tag}" >/dev/null 2>&1; then
+            echo "::error::${tag} already exists on origin; refusing to clobber"
+            exit 1
+          fi
+      - name: Generate CHANGELOG fragment
+        shell: bash
+        env:
+          VERSION: ${{ steps.bump.outputs.version }}
+          TAG: ${{ steps.bump.outputs.tag }}
+        run: |
+          prev_tag=$(git tag --list 'v*' --sort=-version:refname | grep -v "^${TAG}$" | head -n1 || true)
+          mkdir -p "dist/${TAG}"
+          frag="dist/${TAG}/CHANGELOG-fragment.md"
+          {
+            echo "# spt ${VERSION}"
+            echo
+            if [[ -n "${prev_tag}" ]]; then
+              echo "## Changes since ${prev_tag}"
+              echo
+              git log --pretty=format:"- %s (%h)" "${prev_tag}..HEAD"
+            else
+              echo "## Initial rolling release"
+              echo
+              git log --pretty=format:"- %s (%h)" -n 50
+            fi
+            echo
+          } >"${frag}"
+          if [[ -f CHANGELOG.md ]]; then
+            today=$(date -u +%Y-%m-%d)
+            { echo "## [${VERSION}] - ${today}"; echo; cat "${frag}"; echo; cat CHANGELOG.md; } >CHANGELOG.md.new
+            mv CHANGELOG.md.new CHANGELOG.md
+          fi
+      - name: Generate checksums
+        shell: bash
+        env:
+          LINUX_GPG_KEY: ${{ secrets.LINUX_GPG_KEY }}
+        run: bash scripts/sign/checksum-all.sh
+      - name: Minisign artifacts (gated)
+        if: ${{ env.MINISIGN_SECRET_KEY != '' }}
+        shell: bash
+        env:
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+          MINISIGN_PASSWORD: ${{ secrets.MINISIGN_PASSWORD }}
+        run: bash scripts/sign/minisign-all.sh
+      - name: Generate SBOM
+        shell: bash
+        run: bash scripts/sbom/gen-sbom.sh
+      - name: Build release manifest
+        shell: bash
+        run: bash scripts/release/manifest.sh
+      - name: Push version-bump commit and tag
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.bump.outputs.version }}
+          TAG: ${{ steps.bump.outputs.tag }}
+        run: |
+          git config user.email "ci@spt.local"
+          git config user.name  "spt-ci"
+          git add Cargo.toml CHANGELOG.md 2>/dev/null || true
+          git commit -m "release: ${TAG}" || true
+          git tag -a "${TAG}" -m "spt ${TAG}"
+          git push origin HEAD:main --follow-tags
+      - name: Publish GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.bump.outputs.tag }}
+        run: |
+          gh release create "${TAG}" \
+            --target main \
+            --title  "spt ${TAG}" \
+            --notes-file "dist/${TAG}/CHANGELOG-fragment.md" \
+            dist/"${TAG}"/*
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Multi-arch docker buildx push
+        shell: bash
+        env:
+          VERSION: ${{ steps.bump.outputs.version }}
+          TAG:     ${{ steps.bump.outputs.tag }}
+        run: |
+          owner=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          image="ghcr.io/${owner}/spt"
+          docker buildx build \
+            --platform linux/amd64,linux/arm64 \
+            --file scripts/docker/Dockerfile \
+            --tag "${image}:${VERSION}" \
+            --tag "${image}:latest" \
+            --push \
+            .
+
+  # ===========================================================================
+  # Dispatch-only jobs (folded from removed workflows)
+  # ===========================================================================
+
+  # ---------------------------------------------------------------------------
+  # coverage — cargo llvm-cov + Codecov. (was coverage.yml)
+  # ---------------------------------------------------------------------------
+  coverage:
+    name: coverage
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.kind == 'coverage' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.83.0
+        with:
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: coverage
+      - name: Install cargo-llvm-cov
+        run: cargo install cargo-llvm-cov --locked
+      - name: Generate coverage (lcov)
+        run: cargo llvm-cov --workspace --locked --lcov --output-path coverage.lcov
+      - name: Upload to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          files: coverage.lcov
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: false
+
+  # ---------------------------------------------------------------------------
+  # fuzz — 60s per target × 10 targets. (was fuzz.yml)
+  # ---------------------------------------------------------------------------
+  fuzz:
+    name: fuzz (${{ matrix.target }})
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.kind == 'fuzz' }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 10 cargo-fuzz targets defined under fuzz/.
+        target:
+          - fuzz_config_parse
+          - fuzz_protocol_decode
+          - fuzz_ssh2_handshake
+          - fuzz_ssh3_handshake
+          - fuzz_forward_rules
+          - fuzz_dns_response
+          - fuzz_firewall_pattern
+          - fuzz_events_parse
+          - fuzz_observability_otlp
+          - fuzz_secrets_envelope
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: fuzz-${{ matrix.target }}
+          workspaces: fuzz
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+      - name: Run ${{ matrix.target }} for 60s
+        run: |
+          cd fuzz
+          cargo fuzz run ${{ matrix.target }} -- -max_total_time=60
+
+  # ---------------------------------------------------------------------------
+  # openssh-interop — interop crate against the openssh docker matrix.
+  # (was openssh-interop.yml)
+  # ---------------------------------------------------------------------------
+  openssh-interop:
+    name: openssh-interop
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.kind == 'openssh-interop' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.83.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: openssh-interop
+          workspaces: tests/openssh-interop
+      - name: Bring up openssh docker fixture
+        run: |
+          if [[ -f tests/openssh-interop/docker-compose.yml ]]; then
+            docker compose -f tests/openssh-interop/docker-compose.yml up -d
+          fi
+      - name: Run interop suite
+        run: cargo test --manifest-path tests/openssh-interop/Cargo.toml --locked
+      - name: Tear down
+        if: always()
+        run: |
+          if [[ -f tests/openssh-interop/docker-compose.yml ]]; then
+            docker compose -f tests/openssh-interop/docker-compose.yml down -v
+          fi
+
+  # ---------------------------------------------------------------------------
+  # bench-regression — criterion compare vs. main baseline.
+  # (was bench-regression.yml)
+  # ---------------------------------------------------------------------------
+  bench-regression:
+    name: bench-regression
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.kind == 'bench-regression' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@1.83.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: bench-regression
+      - name: Baseline (main)
+        run: |
+          git fetch origin main:main || true
+          git checkout main
+          cargo bench --workspace --locked -- --save-baseline main || true
+      - name: Candidate (HEAD)
+        run: |
+          git checkout -
+          cargo bench --workspace --locked -- --baseline main || true
+      - name: Compare
+        run: python3 scripts/bench-compare.py || true

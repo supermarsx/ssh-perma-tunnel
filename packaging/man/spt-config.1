@@ -40,6 +40,18 @@ Pull a remote config over HTTPS with pinning
 config\-trust(1)
 Manage remote\-config trust pins
 .TP
+config\-encrypt(1)
+Encrypt a plaintext config to a sealed `SPTENC1` envelope
+.TP
+config\-decrypt(1)
+Decrypt a sealed `SPTENC1` envelope back to plaintext TOML
+.TP
+config\-edit(1)
+Open a sealed config in `$EDITOR`; re\-seal on save
+.TP
+config\-crypt(1)
+Re\-seal a sealed config under a new key (key rotation)
+.TP
 config\-help(1)
 Print this message or the help of the given subcommand(s)
 .SH EXTRA
