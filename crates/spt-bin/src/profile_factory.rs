@@ -18,11 +18,13 @@
 use std::sync::Arc;
 
 use spt_auth::{AuthConfig, AuthMethod, SecretRef as AuthSecretRef};
-use spt_config::schema::{Auth as AuthCfg, Crypto as CryptoCfg, Profile, Trust as TrustCfg};
+use spt_config::schema::{
+    Auth as AuthCfg, Capabilities, Config, Crypto as CryptoCfg, Profile, Trust as TrustCfg,
+};
 use spt_core::{Error, Result};
 use spt_protocol::{Endpoint, TunnelProtocol};
 use spt_secrets::Resolver;
-use spt_ssh2::{CryptoPolicy, Ssh2Protocol, TrustPolicy};
+use spt_ssh2::{CryptoPolicy, Ssh2BackendKind, Ssh2Protocol, TrustPolicy};
 use spt_ssh3::{Ssh3Config, Ssh3Protocol};
 use spt_supervisor::{BackoffConfig, FailoverMode, ProfileSupervisorConfig};
 use spt_trust::{KnownHosts, Sha256HostPin};
@@ -41,11 +43,28 @@ pub struct ProfileBundle {
 
 /// Build a [`ProfileBundle`] for one profile.
 pub fn build(profile: &Profile, resolver: &Resolver) -> Result<ProfileBundle> {
+    build_with_capabilities(profile, resolver, None)
+}
+
+/// Build a [`ProfileBundle`] for one profile using top-level config policy.
+pub fn build_with_config(
+    profile: &Profile,
+    resolver: &Resolver,
+    config: &Config,
+) -> Result<ProfileBundle> {
+    build_with_capabilities(profile, resolver, config.capabilities.as_ref())
+}
+
+fn build_with_capabilities(
+    profile: &Profile,
+    resolver: &Resolver,
+    capabilities: Option<&Capabilities>,
+) -> Result<ProfileBundle> {
     let auth = build_auth_config(profile)?;
     let endpoints = build_endpoints(profile);
 
     let protocol: Arc<dyn TunnelProtocol> = match profile.protocol.as_str() {
-        "ssh2" => Arc::new(build_ssh2(profile, resolver, &endpoints)?),
+        "ssh2" => Arc::new(build_ssh2(profile, resolver, &endpoints, capabilities)?),
         "ssh3" => Arc::new(build_ssh3(profile)),
         other => {
             return Err(Error::InvalidConfig(format!(
@@ -67,6 +86,7 @@ fn build_ssh2(
     profile: &Profile,
     resolver: &Resolver,
     endpoints: &[Endpoint],
+    capabilities: Option<&Capabilities>,
 ) -> Result<Ssh2Protocol> {
     // Pull the resolver's backend chain into the protocol so the auth flow can
     // resolve `secret://` references at connect time.
@@ -75,6 +95,7 @@ fn build_ssh2(
         .map(|endpoint| (endpoint.host.clone(), endpoint.port))
         .collect::<Vec<_>>();
     let mut builder = Ssh2Protocol::builder()
+        .backend_kind(select_ssh2_backend(capabilities)?)
         .crypto(build_crypto_policy(profile.crypto.as_ref()))
         .trust(build_trust_policy(profile.trust.as_ref(), &final_hosts)?);
     for b in resolver.backend_arcs() {
@@ -93,6 +114,21 @@ fn build_ssh2(
         builder = builder.hop_with_auth_trust(&hop.host, hop.port, hop_auth, hop_trust);
     }
     Ok(builder.build())
+}
+
+fn select_ssh2_backend(capabilities: Option<&Capabilities>) -> Result<Ssh2BackendKind> {
+    let requested = capabilities
+        .and_then(|capabilities| capabilities.ssh2_backend.as_deref())
+        .unwrap_or("russh");
+    let backend = requested.parse::<Ssh2BackendKind>()?;
+    if backend == Ssh2BackendKind::Libssh2
+        && capabilities.and_then(|cap| cap.allow_libssh2) == Some(false)
+    {
+        return Err(Error::PermissionDenied(
+            "capabilities.allow_libssh2 = false blocks ssh2_backend = \"libssh2\"".into(),
+        ));
+    }
+    Ok(backend)
 }
 
 fn build_ssh3(profile: &Profile) -> Ssh3Protocol {
@@ -493,6 +529,37 @@ mod tests {
         assert!(policy.ciphers.is_empty());
         assert!(policy.kex.is_empty());
         assert!(policy.macs.is_empty());
+    }
+
+    #[test]
+    fn ssh2_backend_selector_defaults_to_russh() {
+        assert_eq!(select_ssh2_backend(None).unwrap(), Ssh2BackendKind::Russh);
+    }
+
+    #[test]
+    fn ssh2_backend_selector_honors_legacy_libssh2_policy() {
+        let caps = Capabilities {
+            ssh2_backend: Some("libssh2".into()),
+            allow_libssh2: Some(true),
+            ..Default::default()
+        };
+        assert_eq!(
+            select_ssh2_backend(Some(&caps)).unwrap(),
+            Ssh2BackendKind::Libssh2
+        );
+    }
+
+    #[test]
+    fn ssh2_backend_selector_blocks_libssh2_when_policy_denies_it() {
+        let caps = Capabilities {
+            ssh2_backend: Some("libssh2".into()),
+            allow_libssh2: Some(false),
+            ..Default::default()
+        };
+        assert!(matches!(
+            select_ssh2_backend(Some(&caps)),
+            Err(Error::PermissionDenied(_))
+        ));
     }
 
     #[test]

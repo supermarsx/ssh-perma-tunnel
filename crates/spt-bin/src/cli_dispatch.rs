@@ -708,7 +708,7 @@ async fn tunnel_run(global: &GlobalOpts, args: groups::tunnel::TunnelRun) -> Res
             tracing::info!(profile = %profile.name, "profile filtered — skipping");
             continue;
         }
-        match crate::profile_factory::build(profile, &resolver) {
+        match crate::profile_factory::build_with_config(profile, &resolver, &cfg) {
             Ok(bundle) => {
                 tracing::info!(
                     profile = %profile.name,
@@ -1085,7 +1085,8 @@ async fn reload_orchestrator(
             .iter()
             .find(|p| p.name == name)?
             .clone();
-        let bundle = crate::profile_factory::build(&p, resolver).ok()?;
+        let bundle =
+            crate::profile_factory::build_with_config(&p, resolver, &new_for_provider).ok()?;
         Some((
             p,
             bundle.protocol,
@@ -1705,7 +1706,11 @@ fn auth_test(global: &GlobalOpts, args: groups::auth::AuthProfile) -> Result<()>
         .iter()
         .find(|p| p.name == args.profile)
         .ok_or_else(|| Error::InvalidArgs(format!("no profile `{}`", args.profile)))?;
-    let bundle = crate::profile_factory::build(profile, &spt_secrets::Resolver::new(vec![]));
+    let bundle = crate::profile_factory::build_with_config(
+        profile,
+        &spt_secrets::Resolver::new(vec![]),
+        &cfg,
+    );
     match bundle {
         Ok(b) => {
             let v = serde_json::json!({

@@ -92,7 +92,8 @@ impl OrchestratorController {
                     .iter()
                     .find(|p| p.name == name)?
                     .clone();
-                let bundle = profile_factory::build(&p, &resolver).ok()?;
+                let bundle =
+                    profile_factory::build_with_config(&p, &resolver, &new_for_provider).ok()?;
                 Some((
                     p,
                     bundle.protocol,
@@ -153,7 +154,7 @@ impl Controller for OrchestratorController {
             .find(|p| p.name == profile)
             .cloned()
             .ok_or_else(|| McpError::InvalidParams(format!("no such profile `{profile}`")))?;
-        let bundle = profile_factory::build(&p, &self.resolver)
+        let bundle = profile_factory::build_with_config(&p, &self.resolver, &cfg)
             .map_err(|e| McpError::Internal(format!("build profile: {e}")))?;
         self.orchestrator.start_profile(
             &p,

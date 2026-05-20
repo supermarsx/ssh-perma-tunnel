@@ -38,6 +38,35 @@ use crate::session::Ssh2Session;
 /// Re-export of [`crate::hostkey::TrustVerifier`] for the public API.
 pub type TrustPolicy = TrustVerifier;
 
+/// SSH2 implementation backend.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ssh2BackendKind {
+    /// Pure-Rust SSH2 implementation built on `russh`.
+    Russh,
+    /// Legacy libssh2 implementation through `async-ssh2-lite`.
+    Libssh2,
+}
+
+impl Default for Ssh2BackendKind {
+    fn default() -> Self {
+        Self::Libssh2
+    }
+}
+
+impl std::str::FromStr for Ssh2BackendKind {
+    type Err = Error;
+
+    fn from_str(value: &str) -> Result<Self> {
+        match value {
+            "russh" => Ok(Self::Russh),
+            "libssh2" => Ok(Self::Libssh2),
+            other => Err(Error::InvalidConfig(format!(
+                "unknown SSH2 backend `{other}` (expected russh|libssh2)"
+            ))),
+        }
+    }
+}
+
 #[derive(Clone)]
 struct HopConfig {
     host: String,
@@ -48,6 +77,7 @@ struct HopConfig {
 
 /// SSH2 transport adapter.
 pub struct Ssh2Protocol {
+    backend_kind: Ssh2BackendKind,
     crypto: CryptoPolicy,
     trust: TrustPolicy,
     /// Optional intermediate hops `(host, port)` traversed before reaching
@@ -64,6 +94,7 @@ pub struct Ssh2Protocol {
 
 /// Builder for [`Ssh2Protocol`].
 pub struct Ssh2ProtocolBuilder {
+    backend_kind: Ssh2BackendKind,
     crypto: CryptoPolicy,
     trust: TrustPolicy,
     hops: Vec<HopConfig>,
@@ -82,6 +113,7 @@ impl Ssh2ProtocolBuilder {
     #[must_use]
     pub fn new() -> Self {
         Self {
+            backend_kind: Ssh2BackendKind::default(),
             crypto: CryptoPolicy::default(),
             trust: TrustPolicy::default(),
             hops: Vec::new(),
@@ -94,6 +126,13 @@ impl Ssh2ProtocolBuilder {
     #[must_use]
     pub fn crypto(mut self, c: CryptoPolicy) -> Self {
         self.crypto = c;
+        self
+    }
+
+    /// Select the concrete SSH2 backend.
+    #[must_use]
+    pub fn backend_kind(mut self, backend_kind: Ssh2BackendKind) -> Self {
+        self.backend_kind = backend_kind;
         self
     }
 
@@ -153,6 +192,7 @@ impl Ssh2ProtocolBuilder {
     #[must_use]
     pub fn build(self) -> Ssh2Protocol {
         Ssh2Protocol {
+            backend_kind: self.backend_kind,
             crypto: self.crypto,
             trust: self.trust,
             hops: self.hops,
@@ -200,6 +240,20 @@ impl TunnelProtocol for Ssh2Protocol {
         // Apply deprecated-algorithm warnings up-front.
         for w in self.crypto.deprecated_warnings() {
             warn!(target: "spt_ssh2::crypto", "{w}");
+        }
+
+        if self.backend_kind == Ssh2BackendKind::Russh {
+            let endpoint = endpoint.clone();
+            let auth_cfg = auth_cfg.clone();
+            let crypto = self.crypto.clone();
+            let trust = self.trust.clone();
+            let backends = self.backends.clone();
+            let has_hops = !self.hops.is_empty();
+            let session = crate::russh_backend::connect(
+                endpoint, auth_cfg, crypto, trust, backends, has_hops,
+            )
+            .await?;
+            return Ok(Box::new(session));
         }
 
         // Single-hop case: open TCP, build session.

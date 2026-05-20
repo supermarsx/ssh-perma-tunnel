@@ -212,7 +212,7 @@ pub async fn test(global: &GlobalOpts, args: profile::ProfileTest) -> Result<()>
 
     let state_dir = spt_state::resolve_state_dir(global.state_dir.as_deref())?;
     let resolver = crate::secrets_bridge::build_resolver(cfg.secrets.as_ref(), &state_dir)?;
-    let bundle = crate::profile_factory::build(prof, &resolver)?;
+    let bundle = crate::profile_factory::build_with_config(prof, &resolver, &cfg)?;
 
     if bundle.endpoints.is_empty() {
         return Err(Error::InvalidConfig(format!(

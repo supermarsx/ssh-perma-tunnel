@@ -176,6 +176,11 @@ bindings.
 
 The production SSH2 target is the pure-Rust `russh` backend. `libssh2` is kept
 as a legacy migration value only and validation warns when it is selected.
+The current `russh` runtime supports password, public-key, certificate, and
+keyboard-interactive auth plus local and remote TCP forwarding. SSH agent auth
+and multi-hop chains still return explicit unsupported-feature diagnostics on
+the `russh` path; select `ssh2_backend = "libssh2"` only for those migration
+cases and keep `allow_libssh2 = true`.
 `require_post_quantum_kex` requires `allow_post_quantum_kex = true`; Windows
 drive-letter mounts and writeback caching require filesystem mounts to be
 enabled explicitly.

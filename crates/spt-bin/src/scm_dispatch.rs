@@ -160,7 +160,7 @@ async fn run_orchestrator_under_scm(
             tracing::info!(profile = %profile.name, "profile disabled — skipping");
             continue;
         }
-        match crate::profile_factory::build(profile, &resolver) {
+        match crate::profile_factory::build_with_config(profile, &resolver, &cfg) {
             Ok(bundle) => {
                 tracing::info!(
                     profile = %profile.name,
@@ -296,7 +296,8 @@ async fn scm_reload(
             .iter()
             .find(|p| p.name == name)?
             .clone();
-        let bundle = crate::profile_factory::build(&p, resolver).ok()?;
+        let bundle =
+            crate::profile_factory::build_with_config(&p, resolver, &new_for_provider).ok()?;
         Some((
             p,
             bundle.protocol,

@@ -72,6 +72,10 @@ surfaces, completion support, and exit-code contract.
 - `[capabilities]` gates the new production feature families: russh SSH2
   backend selection, GSSAPI/SSPI, PQ/ML-KEM KEX, SOCKS/HTTP CONNECT, SFTP,
   filesystem and Windows drive mounts, Windows Event Log, and GPO writes.
+- `ssh2_backend = "russh"` is the runtime default. Use
+  `ssh2_backend = "libssh2"` with `allow_libssh2 = true` only for legacy
+  migration cases such as SSH agent auth or multi-hop chains until their russh
+  actor path is complete.
 - Remote logging supports `syslog_udp`, `syslog_tcp`, `syslog_tls`,
   `https_jsonl`, and `otlp` config kinds. The live writer implementation
   covers the syslog transports and CLI testing/status/drain paths.

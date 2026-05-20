@@ -7,7 +7,7 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 authors.workspace = true
-description = "SSH2 backend for spt built on libssh2 (async-ssh2-lite)."
+description = "SSH2 backend for spt built on russh with a legacy libssh2 compatibility path."
 
 [lints]
 workspace = true
@@ -19,9 +19,7 @@ default = []
 # WinCNG without requiring a native Perl/OpenSSL toolchain.
 vendored-openssl = ["async-ssh2-lite/vendored-openssl", "ssh2/vendored-openssl"]
 # Exposes the `testing` module: MockSsh2Session, RusshTestServer, fake_session().
-# Pulls in russh + russh-keys as optional non-dev deps so external test crates
-# can reuse the harness without re-vendoring it.
-testing = ["dep:russh", "dep:russh-keys"]
+testing = []
 
 [dependencies]
 spt-core = { workspace = true }
@@ -48,8 +46,8 @@ parking_lot = { workspace = true }
 serde = { workspace = true }
 futures = { workspace = true }
 tempfile = { workspace = true }
-russh = { workspace = true, optional = true }
-russh-keys = { workspace = true, optional = true }
+russh = { workspace = true }
+russh-keys = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
@@ -61,6 +59,10 @@ async-trait = { workspace = true }
 
 [[test]]
 name = "russh_basic"
+required-features = ["testing"]
+
+[[test]]
+name = "russh_backend"
 required-features = ["testing"]
 
 # OpenSSH-against-libssh2 interop tests (Unix-only at runtime; Windows compiles

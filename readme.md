@@ -11,8 +11,8 @@ operational drift.
 
 `spt` ships:
 
-- SSH2 transport via `libssh2` (per spec §17.4) and an experimental SSH3
-  transport over QUIC + HTTP/3.
+- SSH2 transport via the pure-Rust `russh` backend by default, with a legacy
+  `libssh2` compatibility lane, plus experimental SSH3 over QUIC + HTTP/3.
 - Local and remote TCP forwards everywhere; UDP forwards over SSH3.
 - A built-in transparent **DNS resolver** with split-horizon, SRV
   synthesis, and managed-block hosts-file integration.

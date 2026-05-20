@@ -54,8 +54,9 @@ The installer registers the service via SCM. Open an elevated PowerShell:
 
 ### System dependencies
 
-The SSH2 backend builds `libssh2` from source via `libssh2-sys`. The
-crypto backend is selected per platform:
+The production SSH2 runtime uses the pure-Rust `russh` backend. The workspace
+still builds the legacy `libssh2` compatibility lane via `libssh2-sys`, so the
+legacy crypto backend is selected per platform:
 
 - **Windows** — uses **WinCNG** (Windows native crypto, BCryptPrimitives).
   No native dependencies required. In particular, **Strawberry Perl /
