@@ -25,14 +25,23 @@ humantime-serde = { workspace = true }
 bytesize = { workspace = true }
 regex = { workspace = true }
 once_cell = { workspace = true }
+zeroize = { workspace = true }
+subtle = { workspace = true }
+# t5-e12: AuditEvent timestamps + default tracing sink.
+chrono = { workspace = true }
+tracing = { workspace = true }
 rand = { workspace = true, optional = true }
 rand_chacha = { workspace = true, optional = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }
+toml = { workspace = true }
+insta = { workspace = true }
 rand = { workspace = true }
 rand_chacha = { workspace = true }
 criterion = { workspace = true }
+# t5-e12: subscriber-capture tests for the default tracing sink.
+tracing-subscriber = { workspace = true }
 
 [[bench]]
 name = "redaction"

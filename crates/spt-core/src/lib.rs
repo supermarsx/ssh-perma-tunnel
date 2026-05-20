@@ -17,11 +17,13 @@
 #![forbid(unsafe_code)]
 
 pub mod address;
+pub mod audit;
 pub mod duration;
 pub mod error;
 pub mod exit_code;
 pub mod id;
 pub mod path;
+pub mod redacted_string;
 pub mod redaction;
 pub mod size;
 
@@ -29,7 +31,11 @@ pub mod size;
 pub mod testing;
 
 pub use address::BindAddr;
+pub use audit::{
+    record_audit, register_audit_sink, AuditEvent, AuditSeverity, AuditSink,
+};
 pub use error::{Error, Result};
 pub use exit_code::ExitCode;
 pub use id::{ConnectionId, EventId, ForwardId, ProfileId, RunId, SessionId};
+pub use redacted_string::{RedactedString, REDACTED_DEBUG};
 pub use redaction::{redact, RedactionMode};

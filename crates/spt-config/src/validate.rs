@@ -113,7 +113,24 @@ fn check_logging(d: &mut Diagnostics, c: &Config) {
             }
         }
 
-        if matches!(remote.allow_invalid_certs, Some(true)) {
+        if remote.allow_invalid_certs.is_some() {
+            // t5-e2: field renamed to `allow_self_signed` with a stricter
+            // semantic (requires a non-empty pin set). The old name is
+            // accepted but deprecated.
+            d.push(
+                Diagnostic::warning(
+                    "remote_log_allow_invalid_certs_deprecated",
+                    format!(
+                        "`allow_invalid_certs` on remote log sink `{}` is deprecated; \
+                         use `allow_self_signed` with a non-empty `pin_spki_sha256` set",
+                        remote.name
+                    ),
+                )
+                .at(format!("{prefix}.allow_invalid_certs")),
+            );
+        }
+        let self_signed = remote.allow_self_signed.or(remote.allow_invalid_certs);
+        if matches!(self_signed, Some(true)) {
             if matches!(remote.kind.as_str(), "syslog_tls" | "syslog-tls") {
                 d.push(
                     Diagnostic::warning(
@@ -123,15 +140,31 @@ fn check_logging(d: &mut Diagnostics, c: &Config) {
                             remote.name
                         ),
                     )
-                    .at(format!("{prefix}.allow_invalid_certs")),
+                    .at(format!("{prefix}.allow_self_signed")),
                 );
             } else {
                 d.push(
                     Diagnostic::warning(
                         "remote_log_tls_option_ignored",
-                        "allow_invalid_certs only applies to syslog_tls sinks",
+                        "allow_self_signed only applies to syslog_tls sinks",
                     )
-                    .at(format!("{prefix}.allow_invalid_certs")),
+                    .at(format!("{prefix}.allow_self_signed")),
+                );
+            }
+            if matches!(remote.allow_self_signed, Some(true))
+                && remote.pin_spki_sha256.is_empty()
+            {
+                d.push(
+                    Diagnostic::error(
+                        "remote_log_allow_self_signed_without_pin",
+                        format!(
+                            "remote log sink `{}` sets allow_self_signed=true but no \
+                             `pin_spki_sha256` entries — refusing to disable verification \
+                             entirely",
+                            remote.name
+                        ),
+                    )
+                    .at(format!("{prefix}.allow_self_signed")),
                 );
             }
         }
@@ -1287,6 +1320,125 @@ mod tests {
             .warnings
             .iter()
             .any(|w| w.code == "syslog_tls_invalid_certs_allowed"));
+        // t5-e2: legacy field name also yields a deprecation warning.
+        assert!(
+            d.warnings
+                .iter()
+                .any(|w| w.code == "remote_log_allow_invalid_certs_deprecated"),
+            "missing deprecation: {:?}",
+            d.warnings
+        );
+    }
+
+    // ---------- t5-e2: schema round-trip + deprecation tests ----------
+
+    #[test]
+    fn t5e2_schema_round_trip_logging_remote_new_fields() {
+        let raw = r#"
+            version = 1
+            [logging]
+            [[logging.remote]]
+            name = "tls"
+            type = "syslog_tls"
+            endpoint = "logs.example.com"
+            allow_self_signed = true
+            pin_spki_sha256 = ["SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"]
+            max_cert_chain_depth = 3
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let r = &c.logging.as_ref().unwrap().remote[0];
+        assert_eq!(r.allow_self_signed, Some(true));
+        assert_eq!(r.pin_spki_sha256.len(), 1);
+        assert_eq!(r.max_cert_chain_depth, Some(3));
+    }
+
+    #[test]
+    fn t5e2_allow_self_signed_requires_pin_set_errors() {
+        let raw = r#"
+            version = 1
+            [logging]
+            [[logging.remote]]
+            name = "tls"
+            type = "syslog_tls"
+            endpoint = "logs.example.com"
+            allow_self_signed = true
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(
+            d.errors
+                .iter()
+                .any(|e| e.code == "remote_log_allow_self_signed_without_pin"),
+            "expected fail-closed error, got: {:?}",
+            d.errors
+        );
+    }
+
+    #[test]
+    fn t5e2_schema_round_trip_event_sink_new_fields() {
+        let raw = r#"
+            version = 1
+            [events]
+            [[events.sinks]]
+            name = "alerts"
+            type = "http"
+            url = "https://example.com/alerts"
+            allow_self_signed = false
+            pin_spki_sha256 = ["SHA256:BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"]
+            max_cert_chain_depth = 7
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let s = &c.events.as_ref().unwrap().sinks[0];
+        assert_eq!(s.allow_self_signed, Some(false));
+        assert_eq!(s.pin_spki_sha256, vec![
+            "SHA256:BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB".to_string()
+        ]);
+        assert_eq!(s.max_cert_chain_depth, Some(7));
+    }
+
+    #[test]
+    fn t5e2_schema_round_trip_remote_config_new_fields() {
+        let raw = r#"
+            version = 1
+            [runtime]
+            [runtime.remote_config]
+            enabled = true
+            url = "https://example.com/cfg"
+            fingerprint_sha256 = "deadbeef"
+            allow_self_signed = false
+            pin_spki_sha256 = ["SHA256:CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC"]
+            max_cert_chain_depth = 4
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let rc = c.runtime.as_ref().unwrap().remote_config.as_ref().unwrap();
+        assert_eq!(rc.pin_spki_sha256.len(), 1);
+        assert_eq!(rc.allow_self_signed, Some(false));
+        assert_eq!(rc.max_cert_chain_depth, Some(4));
+    }
+
+    #[test]
+    fn t5e2_schema_round_trip_mcp_new_fields() {
+        let raw = r#"
+            version = 1
+            [mcp]
+            enabled = true
+            pin_spki_sha256 = ["SHA256:DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD"]
+            allow_self_signed = false
+            max_cert_chain_depth = 2
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let m = c.mcp.as_ref().unwrap();
+        assert_eq!(m.pin_spki_sha256.len(), 1);
+        assert_eq!(m.allow_self_signed, Some(false));
+        assert_eq!(m.max_cert_chain_depth, Some(2));
     }
 
     #[test]

@@ -14,6 +14,8 @@
 
 use std::path::Path;
 
+use secrecy::ExposeSecret;
+use spt_config_crypt::{is_sealed, unseal, KeySource};
 use spt_core::{Error, Result};
 
 use crate::diagnostic::{Diagnostic, Diagnostics};
@@ -28,10 +30,70 @@ pub type Warnings = Vec<String>;
 /// In strict mode, any unknown TOML key is a hard error. In non-strict mode,
 /// unknown keys are returned as warning paths (e.g. `runtime.unknown_field`)
 /// in the second tuple element.
+///
+/// Auto-detects the [`spt_config_crypt`] `SPTENC1` sealed-envelope magic. If
+/// the file is sealed, a passphrase is prompted from the controlling TTY
+/// via [`spt_secrets::read_passphrase`]. For non-interactive callers, use
+/// [`load_with_key`].
 pub fn load(path: &Path, strict: bool) -> Result<(Config, Warnings)> {
-    let raw = std::fs::read_to_string(path)
+    load_with_key(path, strict, None)
+}
+
+/// Like [`load`], but accepts an explicit [`KeySource`] for sealed configs.
+///
+/// When `key` is `None` and the on-disk file is sealed, a passphrase is
+/// prompted interactively (assuming the envelope's KDF is `argon2id`).
+/// Programmatic callers (tests, scripted edit-sessions) must pass an
+/// explicit `key` to avoid the prompt.
+pub fn load_with_key(
+    path: &Path,
+    strict: bool,
+    key: Option<&KeySource>,
+) -> Result<(Config, Warnings)> {
+    let bytes = std::fs::read(path)
         .map_err(|e| Error::InvalidConfig(format!("read `{}`: {e}", path.display())))?;
-    load_str(&raw, strict)
+    if is_sealed(&bytes) {
+        let cleartext = decrypt_sealed(&bytes, key)?;
+        // The plaintext is held only inside the SecretBox; we view it as
+        // &str (zero-copy from the inner Zeroizing<Vec<u8>>). The Config
+        // value lands on the heap as a normal struct — its secret-shaped
+        // fields are protected separately by the schema's RedactedString
+        // newtype (t5-e7) when materialised.
+        let pt = cleartext.expose_secret();
+        let raw = std::str::from_utf8(pt).map_err(|e| {
+            Error::InvalidConfig(format!("sealed config `{}` is not UTF-8: {e}", path.display()))
+        })?;
+        return load_str(raw, strict);
+    }
+    let raw = std::str::from_utf8(&bytes)
+        .map_err(|e| Error::InvalidConfig(format!("read `{}`: {e}", path.display())))?;
+    load_str(raw, strict)
+}
+
+fn decrypt_sealed(
+    bytes: &[u8],
+    key: Option<&KeySource>,
+) -> Result<spt_config_crypt::SecretSlice> {
+    if let Some(k) = key {
+        return unseal(bytes, k);
+    }
+    // Interactive prompt path — only meaningful for passphrase-KDF
+    // envelopes. For vault / x25519 the caller MUST supply an explicit
+    // KeySource via load_with_key.
+    let meta = spt_config_crypt::peek_meta(bytes)?;
+    match meta.kdf.as_str() {
+        "argon2id" => {
+            let pp = spt_secrets::read_passphrase(
+                "sealed config passphrase: ",
+            )?;
+            let bytes_pp: spt_config_crypt::Passphrase =
+                pp.expose_secret().as_bytes().to_vec().into();
+            unseal(bytes, &KeySource::Passphrase(bytes_pp))
+        }
+        other => Err(Error::InvalidConfig(format!(
+            "sealed config uses kdf `{other}` — pass an explicit key via load_with_key()"
+        ))),
+    }
 }
 
 /// Parse a TOML config string.

@@ -22,6 +22,7 @@
 //!   needed, [`crate::validate()`] re-parses the raw source through `toml_edit`.
 
 use serde::{Deserialize, Serialize};
+use spt_core::RedactedString;
 
 // ---------------------------------------------------------------------------
 // Top-level config (spec §8)
@@ -201,6 +202,18 @@ pub struct RuntimeRemoteConfig {
     /// Refresh interval for services. §9.1.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub poll_interval: Option<String>,
+
+    // ---------------- Pinned-TLS surface (t5-e2) ----------------
+    /// SPKI SHA-256 pin set for the remote-config HTTPS endpoint.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pin_spki_sha256: Vec<String>,
+    /// Allow self-signed certificates. Requires a non-empty pin set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow_self_signed: Option<bool>,
+    /// Maximum certificate-chain depth. Omitted maps to
+    /// `DEFAULT_CHAIN_DEPTH_CAP` (`Some(5)`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_cert_chain_depth: Option<u32>,
 }
 
 // ---------------------------------------------------------------------------
@@ -285,8 +298,30 @@ pub struct LoggingRemote {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_key: Option<String>,
     /// Disable TLS certificate verification. §13.7.
+    ///
+    /// **Deprecated:** renamed to `allow_self_signed`. The old name is
+    /// still accepted but emits a deprecation warning via the validator;
+    /// new configs should use `allow_self_signed` together with a
+    /// non-empty `pin_spki_sha256` set (t5-e2).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub allow_invalid_certs: Option<bool>,
+    /// Allow self-signed certificates. Requires a non-empty
+    /// `pin_spki_sha256` set — `spt_trust::PinnedTlsConnector` refuses
+    /// to build a fully-unauthenticated client. t5-e2.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow_self_signed: Option<bool>,
+    /// SPKI SHA-256 pin set (each pin in `SHA256:<base64>` or hex form).
+    /// Empty by default — strict system-roots verification still applies.
+    /// t5-e2.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pin_spki_sha256: Vec<String>,
+    /// Maximum permitted certificate-chain depth (intermediates between
+    /// leaf and trust anchor). Omitted maps to
+    /// [`spt_trust::DEFAULT_CHAIN_DEPTH_CAP`] at the runtime via
+    /// `ChainDepthCap::from_option(...).or_default_if_unlimited_was_absent()`.
+    /// t5-e2 / t5-e10.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_cert_chain_depth: Option<u32>,
     /// Auth secret reference. §9.2.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth: Option<String>,
@@ -635,11 +670,17 @@ pub struct SnmpTrap {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub user: Option<String>,
     /// USM auth secret. §9.6.
+    ///
+    /// Wrapped in [`RedactedString`] so the value never leaks via the
+    /// derived `Debug` of any containing struct and the heap allocation
+    /// is zeroed on drop. Serialize/Deserialize remain transparent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub auth_secret: Option<String>,
+    pub auth_secret: Option<RedactedString>,
     /// USM privacy secret. §9.6.
+    ///
+    /// See [`Self::auth_secret`] for the redaction contract.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub privacy_secret: Option<String>,
+    pub privacy_secret: Option<RedactedString>,
 }
 
 /// `[observability.windows_event]`. Spec §9.6 / §13.10.
@@ -736,8 +777,11 @@ pub struct EventSink {
     // ---------------- WebPush (`kind = "webpush"`) ---------------- §9.7
     /// VAPID private key (base64url-no-padding-encoded 32-byte scalar).
     /// May also be a `secret://ns/name` reference resolved at runtime.
+    ///
+    /// Wrapped in [`RedactedString`] — see `spt-core::redacted_string`
+    /// for the Debug/Drop/serde contract.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub vapid_private_key: Option<String>,
+    pub vapid_private_key: Option<RedactedString>,
     /// VAPID `sub` claim — usually a `mailto:` URL.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vapid_subject: Option<String>,
@@ -748,6 +792,19 @@ pub struct EventSink {
     /// `endpoint`, `p256dh`, `auth` (the standard `PushSubscription` fields).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subscriptions: Option<Vec<EventSinkSubscription>>,
+
+    // ---------------- Pinned-TLS surface (t5-e2) ----------------
+    /// SPKI SHA-256 pin set for the sink's HTTPS / SMTP endpoint.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pin_spki_sha256: Vec<String>,
+    /// Allow self-signed certificates for the sink endpoint. Requires
+    /// a non-empty `pin_spki_sha256` set at runtime.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow_self_signed: Option<bool>,
+    /// Maximum certificate-chain depth. Omitted maps to
+    /// `DEFAULT_CHAIN_DEPTH_CAP` (`Some(5)`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_cert_chain_depth: Option<u32>,
 }
 
 /// Subset of a Push API `PushSubscription` we persist. §9.7.
@@ -758,7 +815,12 @@ pub struct EventSinkSubscription {
     /// Browser-supplied P256 ECDH key (base64url-no-padding).
     pub p256dh: String,
     /// Browser-supplied auth secret (base64url-no-padding, 16 bytes).
-    pub auth: String,
+    ///
+    /// Wrapped in [`RedactedString`] — this is the per-subscription
+    /// shared secret used by the `WebPush` content-encoding key derivation
+    /// (`RFC 8291` §3.2). Compromise of this byte string permits decrypting
+    /// every push payload sent to that subscription.
+    pub auth: RedactedString,
 }
 
 /// `[[events.commands]]`. Spec §9.7.
@@ -810,6 +872,19 @@ pub struct Mcp {
     /// Required for non-loopback binds. §9.8.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expose: Option<bool>,
+
+    // ---------------- Pinned-TLS surface (t5-e2) ----------------
+    /// SPKI SHA-256 pin set for any HTTPS endpoint the MCP-notify path
+    /// posts to.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pin_spki_sha256: Vec<String>,
+    /// Allow self-signed certificates. Requires a non-empty pin set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow_self_signed: Option<bool>,
+    /// Maximum certificate-chain depth. Omitted maps to
+    /// `DEFAULT_CHAIN_DEPTH_CAP` (`Some(5)`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_cert_chain_depth: Option<u32>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1063,14 +1138,23 @@ pub struct Auth {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub certificate_file: Option<String>,
     /// Identity passphrase reference. §9.12.
+    ///
+    /// Wrapped in [`RedactedString`]: a config value here is *usually* a
+    /// `secret://…` reference (the cleartext lives in the keychain or
+    /// vault) but plaintext is permitted for ephemeral test rigs. Either
+    /// way the value must not leak via `Debug` and must zero on drop.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub passphrase: Option<String>,
+    pub passphrase: Option<RedactedString>,
     /// SSH2 password reference. §9.12.
+    ///
+    /// See [`Self::passphrase`] for the redaction contract.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub password: Option<String>,
+    pub password: Option<RedactedString>,
     /// SSH3 bearer token reference. §9.12.
+    ///
+    /// See [`Self::passphrase`] for the redaction contract.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub token: Option<String>,
+    pub token: Option<RedactedString>,
     /// SSH2 agent flag. §9.12.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<bool>,
@@ -1126,6 +1210,13 @@ pub struct Tls {
     /// Allow self-signed (requires pin or `ca_file` in strict mode). §9.13.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub allow_self_signed: Option<bool>,
+    /// Maximum permitted certificate-chain depth (number of intermediates
+    /// between leaf and trust anchor). When omitted, the runtime applies
+    /// `spt_trust::DEFAULT_CHAIN_DEPTH_CAP` (currently `5`). Set
+    /// explicitly to `0` to disallow any intermediates, or to a higher
+    /// value to relax the cap. §9.13 / t5-e10.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_cert_chain_depth: Option<u32>,
 }
 
 /// `[profiles.ssh3]`. Spec §9.11 / §4.2.

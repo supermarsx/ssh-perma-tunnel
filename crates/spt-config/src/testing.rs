@@ -352,7 +352,7 @@ impl ProfileBuilder {
     pub fn auth_bearer_token(mut self, token_ref: &str) -> Self {
         self.inner.auth = Some(Auth {
             method: "bearer_token".into(),
-            token: Some(token_ref.to_owned()),
+            token: Some(token_ref.to_owned().into()),
             ..Auth::default()
         });
         self

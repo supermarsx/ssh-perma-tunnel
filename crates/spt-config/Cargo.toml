@@ -16,6 +16,7 @@ testing = []
 [dependencies]
 spt-core = { workspace = true }
 spt-secrets = { workspace = true }
+spt-config-crypt = { workspace = true }
 serde = { workspace = true }
 serde_ignored = { workspace = true }
 toml = { workspace = true }
@@ -23,6 +24,7 @@ toml_edit = { workspace = true }
 miette = { workspace = true }
 thiserror = { workspace = true }
 humantime-serde = { workspace = true }
+secrecy = { workspace = true }
 sha2 = { workspace = true }
 atomicwrites = { workspace = true }
 tracing = { workspace = true }
