@@ -146,9 +146,12 @@ load-balancing defaults.
     fail_after = 3
     restore_after = "30s"
 
-`spt firewall gateway show|set` manages the interface/gateway fields without
-hand-editing TOML. `spt firewall policy list|show|set|unset` manages the
-corresponding GPO-style policy values under `Software\Policies\spt`.
+`spt firewall gateway show|set` manages these network policy fields without
+hand-editing TOML, including `--allowed-interface`, `--denied-interface`,
+`--tcp-nodelay`, `--zerocopy`, `--load-balance-strategy`,
+`--load-balance-fail-after`, and gateway route checks. The
+`spt firewall policy list|show|set|unset` commands manage the corresponding
+GPO-style policy values under `Software\Policies\spt`.
 
 ## `[capabilities]`
 

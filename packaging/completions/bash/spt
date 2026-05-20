@@ -7045,13 +7045,33 @@ _spt() {
             return 0
             ;;
         spt__firewall__gateway__set)
-            opts="-q -v -h -V --default-interface --default-gateway --gateway-interface --route-check-target --policy --require-gateway-match --json --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --default-interface --allowed-interface --denied-interface --require-explicit-interface --allow-all-interfaces --bind-ipv6 --default-gateway --gateway-interface --route-check-target --policy --require-gateway-match --tcp-nodelay --socket-keepalive --tcp-fast-open --reuse-port --io-uring --zerocopy --sendfile --checksum-offload --large-send-offload --load-balance-strategy --sticky-sessions --health-check --load-balance-fail-after --load-balance-restore-after --rebalance-interval --json --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
             fi
             case "${prev}" in
                 --default-interface)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --allowed-interface)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --denied-interface)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --require-explicit-interface)
+                    COMPREPLY=($(compgen -W "true false" -- "${cur}"))
+                    return 0
+                    ;;
+                --allow-all-interfaces)
+                    COMPREPLY=($(compgen -W "true false" -- "${cur}"))
+                    return 0
+                    ;;
+                --bind-ipv6)
                     COMPREPLY=($(compgen -f "${cur}"))
                     return 0
                     ;;
@@ -7073,6 +7093,66 @@ _spt() {
                     ;;
                 --require-gateway-match)
                     COMPREPLY=($(compgen -W "true false" -- "${cur}"))
+                    return 0
+                    ;;
+                --tcp-nodelay)
+                    COMPREPLY=($(compgen -W "true false" -- "${cur}"))
+                    return 0
+                    ;;
+                --socket-keepalive)
+                    COMPREPLY=($(compgen -W "true false" -- "${cur}"))
+                    return 0
+                    ;;
+                --tcp-fast-open)
+                    COMPREPLY=($(compgen -W "true false" -- "${cur}"))
+                    return 0
+                    ;;
+                --reuse-port)
+                    COMPREPLY=($(compgen -W "true false" -- "${cur}"))
+                    return 0
+                    ;;
+                --io-uring)
+                    COMPREPLY=($(compgen -W "true false" -- "${cur}"))
+                    return 0
+                    ;;
+                --zerocopy)
+                    COMPREPLY=($(compgen -W "true false" -- "${cur}"))
+                    return 0
+                    ;;
+                --sendfile)
+                    COMPREPLY=($(compgen -W "true false" -- "${cur}"))
+                    return 0
+                    ;;
+                --checksum-offload)
+                    COMPREPLY=($(compgen -W "true false" -- "${cur}"))
+                    return 0
+                    ;;
+                --large-send-offload)
+                    COMPREPLY=($(compgen -W "true false" -- "${cur}"))
+                    return 0
+                    ;;
+                --load-balance-strategy)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --sticky-sessions)
+                    COMPREPLY=($(compgen -W "true false" -- "${cur}"))
+                    return 0
+                    ;;
+                --health-check)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --load-balance-fail-after)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --load-balance-restore-after)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --rebalance-interval)
+                    COMPREPLY=($(compgen -f "${cur}"))
                     return 0
                     ;;
                 --config)

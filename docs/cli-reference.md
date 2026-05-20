@@ -65,7 +65,9 @@ surfaces, completion support, and exit-code contract.
   `bind_interface_preference`, and `bind_ipv6`, plus global `[network]`
   defaults.
 - Gateway, interface, offload, load-balancing, and failover settings live in
-  `[network]` and `[profiles.failover]`.
+  `[network]` and `[profiles.failover]`. Use `spt firewall gateway show|set`
+  to manage `[network.interface]`, `[network.gateway]`, `[network.offload]`,
+  and `[network.load_balance]` from the CLI.
 - Windows GPO-style policy is surfaced through `spt firewall policy`; Windows
   writes target `HKCU` or `HKLM\Software\Policies\spt`, while non-Windows
   hosts return `UnsupportedPlatform` for policy writes. The

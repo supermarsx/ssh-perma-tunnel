@@ -101,6 +101,14 @@ fn firewall_gateway_set_parses() {
         "set",
         "--default-interface",
         "eth0",
+        "--allowed-interface",
+        "eth0,wg0",
+        "--tcp-nodelay",
+        "true",
+        "--load-balance-strategy",
+        "weighted",
+        "--load-balance-fail-after",
+        "3",
     ]);
     match cli.command {
         Command::Firewall(f) => match f.command {
@@ -108,6 +116,10 @@ fn firewall_gateway_set_parses() {
                 command: FirewallGatewaySub::Set(s),
             }) => {
                 assert_eq!(s.default_interface.as_deref(), Some("eth0"));
+                assert_eq!(s.allowed_interface, ["eth0", "wg0"]);
+                assert_eq!(s.tcp_nodelay, Some(true));
+                assert_eq!(s.load_balance_strategy.as_deref(), Some("weighted"));
+                assert_eq!(s.load_balance_fail_after, Some(3));
             }
             other => panic!("expected Gateway::Set, got {other:?}"),
         },

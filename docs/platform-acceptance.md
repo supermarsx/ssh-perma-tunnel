@@ -25,6 +25,10 @@ Required checks:
 - Interface-specific binds, gateway policy, offload policy, weighted failover,
   and manual failover are covered by config validation plus at least one live
   or fixture-backed test on each OS family.
+- `spt firewall gateway show|set` can manage `[network.interface]`,
+  `[network.gateway]`, `[network.offload]`, and `[network.load_balance]`
+  fields without hand-editing TOML; generated completions and man pages must
+  expose every flag.
 - `spt firewall bind-preview` resolves loopback, explicit IP, specific
   interface, auto-interface, and all-interface modes.
 - `spt firewall policy list|show` works everywhere; `set|unset` writes HKCU/HKLM

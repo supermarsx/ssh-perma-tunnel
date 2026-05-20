@@ -46,5 +46,7 @@ EXAMPLES:
   spt firewall remove \-\-user
   spt firewall bind\-preview \-\-forward edge/db
   spt firewall gateway show \-\-json
+  spt firewall gateway set \-\-default\-interface Ethernet \-\-tcp\-nodelay true
+  spt firewall gateway set \-\-load\-balance\-strategy weighted \-\-load\-balance\-fail\-after 3
   spt firewall policy list \-\-json
   spt firewall policy set Network.DefaultInterface Ethernet \-\-scope user

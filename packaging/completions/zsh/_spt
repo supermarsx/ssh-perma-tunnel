@@ -4351,11 +4351,31 @@ never\:"Never emit color escapes"))' \
 (set)
 _arguments "${_arguments_options[@]}" : \
 '--default-interface=[Set \`\[network.interface\].default_interface\`]:IFACE:_default' \
+'*--allowed-interface=[Set \`\[network.interface\].allowed_interfaces\`]:IFACE:_default' \
+'*--denied-interface=[Set \`\[network.interface\].denied_interfaces\`]:IFACE:_default' \
+'--require-explicit-interface=[Set \`\[network.interface\].require_explicit_interface\`]:BOOL:(true false)' \
+'--allow-all-interfaces=[Set \`\[network.interface\].allow_all_interfaces\`]:BOOL:(true false)' \
+'--bind-ipv6=[Set \`\[network.interface\].bind_ipv6\` (\`auto|prefer|disable\`)]:MODE:_default' \
 '--default-gateway=[Set \`\[network.gateway\].default_gateway\`]:ADDR:_default' \
 '--gateway-interface=[Set \`\[network.gateway\].interface\`]:IFACE:_default' \
 '--route-check-target=[Set \`\[network.gateway\].route_check_target\`]:HOST_OR_IP:_default' \
 '--policy=[Set \`\[network.gateway\].policy\`]:POLICY:_default' \
 '--require-gateway-match=[Set \`\[network.gateway\].require_gateway_match\`]:BOOL:(true false)' \
+'--tcp-nodelay=[Set \`\[network.offload\].tcp_nodelay\`]:BOOL:(true false)' \
+'--socket-keepalive=[Set \`\[network.offload\].socket_keepalive\`]:BOOL:(true false)' \
+'--tcp-fast-open=[Set \`\[network.offload\].tcp_fast_open\`]:BOOL:(true false)' \
+'--reuse-port=[Set \`\[network.offload\].reuse_port\`]:BOOL:(true false)' \
+'--io-uring=[Set \`\[network.offload\].io_uring\`]:BOOL:(true false)' \
+'--zerocopy=[Set \`\[network.offload\].zerocopy\`]:BOOL:(true false)' \
+'--sendfile=[Set \`\[network.offload\].sendfile\`]:BOOL:(true false)' \
+'--checksum-offload=[Set \`\[network.offload\].checksum_offload\`]:BOOL:(true false)' \
+'--large-send-offload=[Set \`\[network.offload\].large_send_offload\`]:BOOL:(true false)' \
+'--load-balance-strategy=[Set \`\[network.load_balance\].strategy\`]:STRATEGY:_default' \
+'--sticky-sessions=[Set \`\[network.load_balance\].sticky_sessions\`]:BOOL:(true false)' \
+'--health-check=[Set \`\[network.load_balance\].health_check\`]:MODE:_default' \
+'--load-balance-fail-after=[Set \`\[network.load_balance\].fail_after\`]:N:_default' \
+'--load-balance-restore-after=[Set \`\[network.load_balance\].restore_after\`]:DURATION:_default' \
+'--rebalance-interval=[Set \`\[network.load_balance\].rebalance_interval\`]:DURATION:_default' \
 '--config=[Path to a single config file]:PATH:_files' \
 '--config-dir=[Path to a directory of \`*.toml\` configs (loaded in lexical order)]:PATH:_files' \
 '--config-url=[HTTPS URL of a remote config to fetch]:URL:_default' \

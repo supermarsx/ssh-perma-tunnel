@@ -25,7 +25,7 @@ use spt_config::{BindingKind, PolicyValue};
 use spt_core::{Error, Result};
 use spt_firewall::{new_planner, Action, Direction, FirewallPlanner, Protocol, Rule};
 use spt_net::bind::{resolve_bind, AutoPrefer, BindMode, Family};
-use toml_edit::{value, Item, Table};
+use toml_edit::{value, Array, Item, Table};
 
 /// Args for [`status`].
 ///
@@ -141,11 +141,26 @@ pub async fn gateway_show(global: &GlobalOpts, args: FirewallGatewayShow) -> Res
             format_list(interface.and_then(|i| i.allowed_interfaces.as_deref()))
         );
         println!(
+            "denied interfaces: {}",
+            format_list(interface.and_then(|i| i.denied_interfaces.as_deref()))
+        );
+        println!(
+            "require explicit interface: {}",
+            format_bool(interface.and_then(|i| i.require_explicit_interface))
+        );
+        println!(
             "allow all interfaces: {}",
+            format_bool(
+                interface
+                    .and_then(|i| i.allow_all_interfaces)
+                    .or(firewall.allow_all_interfaces)
+            )
+        );
+        println!(
+            "bind ipv6: {}",
             interface
-                .and_then(|i| i.allow_all_interfaces)
-                .or(firewall.allow_all_interfaces)
-                .map_or("(unset)".to_string(), |v| v.to_string())
+                .and_then(|i| i.bind_ipv6.as_deref())
+                .unwrap_or("(unset)")
         );
         println!(
             "gateway: {}",
@@ -171,6 +186,84 @@ pub async fn gateway_show(global: &GlobalOpts, args: FirewallGatewayShow) -> Res
                 .and_then(|g| g.policy.as_deref())
                 .unwrap_or("(unset)")
         );
+        println!(
+            "require gateway match: {}",
+            format_bool(gateway.and_then(|g| g.require_gateway_match))
+        );
+
+        let offload = network.offload.as_ref();
+        println!(
+            "offload.tcp_nodelay: {}",
+            format_bool(offload.and_then(|o| o.tcp_nodelay))
+        );
+        println!(
+            "offload.socket_keepalive: {}",
+            format_bool(offload.and_then(|o| o.socket_keepalive))
+        );
+        println!(
+            "offload.tcp_fast_open: {}",
+            format_bool(offload.and_then(|o| o.tcp_fast_open))
+        );
+        println!(
+            "offload.reuse_port: {}",
+            format_bool(offload.and_then(|o| o.reuse_port))
+        );
+        println!(
+            "offload.io_uring: {}",
+            format_bool(offload.and_then(|o| o.io_uring))
+        );
+        println!(
+            "offload.zerocopy: {}",
+            format_bool(offload.and_then(|o| o.zerocopy))
+        );
+        println!(
+            "offload.sendfile: {}",
+            format_bool(offload.and_then(|o| o.sendfile))
+        );
+        println!(
+            "offload.checksum_offload: {}",
+            format_bool(offload.and_then(|o| o.checksum_offload))
+        );
+        println!(
+            "offload.large_send_offload: {}",
+            format_bool(offload.and_then(|o| o.large_send_offload))
+        );
+
+        let load_balance = network.load_balance.as_ref();
+        println!(
+            "load balance strategy: {}",
+            load_balance
+                .and_then(|lb| lb.strategy.as_deref())
+                .unwrap_or("(unset)")
+        );
+        println!(
+            "sticky sessions: {}",
+            format_bool(load_balance.and_then(|lb| lb.sticky_sessions))
+        );
+        println!(
+            "health check: {}",
+            load_balance
+                .and_then(|lb| lb.health_check.as_deref())
+                .unwrap_or("(unset)")
+        );
+        println!(
+            "fail after: {}",
+            load_balance
+                .and_then(|lb| lb.fail_after)
+                .map_or("(unset)".to_string(), |v| v.to_string())
+        );
+        println!(
+            "restore after: {}",
+            load_balance
+                .and_then(|lb| lb.restore_after.as_deref())
+                .unwrap_or("(unset)")
+        );
+        println!(
+            "rebalance interval: {}",
+            load_balance
+                .and_then(|lb| lb.rebalance_interval.as_deref())
+                .unwrap_or("(unset)")
+        );
     }
     Ok(())
 }
@@ -178,14 +271,34 @@ pub async fn gateway_show(global: &GlobalOpts, args: FirewallGatewayShow) -> Res
 /// `spt firewall gateway set` — comment-preserving update of `[network]`.
 pub async fn gateway_set(global: &GlobalOpts, args: FirewallGatewaySet) -> Result<()> {
     if args.default_interface.is_none()
+        && args.allowed_interface.is_empty()
+        && args.denied_interface.is_empty()
+        && args.require_explicit_interface.is_none()
+        && args.allow_all_interfaces.is_none()
+        && args.bind_ipv6.is_none()
         && args.default_gateway.is_none()
         && args.gateway_interface.is_none()
         && args.route_check_target.is_none()
         && args.policy.is_none()
         && args.require_gateway_match.is_none()
+        && args.tcp_nodelay.is_none()
+        && args.socket_keepalive.is_none()
+        && args.tcp_fast_open.is_none()
+        && args.reuse_port.is_none()
+        && args.io_uring.is_none()
+        && args.zerocopy.is_none()
+        && args.sendfile.is_none()
+        && args.checksum_offload.is_none()
+        && args.large_send_offload.is_none()
+        && args.load_balance_strategy.is_none()
+        && args.sticky_sessions.is_none()
+        && args.health_check.is_none()
+        && args.load_balance_fail_after.is_none()
+        && args.load_balance_restore_after.is_none()
+        && args.rebalance_interval.is_none()
     {
         return Err(Error::InvalidArgs(
-            "provide at least one gateway/interface setting".into(),
+            "provide at least one network gateway/interface/offload/load-balance setting".into(),
         ));
     }
 
@@ -193,9 +306,32 @@ pub async fn gateway_set(global: &GlobalOpts, args: FirewallGatewaySet) -> Resul
     let mut doc = spt_config::mutate::Document::read(&path)?;
     let root = doc.document_mut().as_table_mut();
     let network = table_entry(root, "network")?;
-    if let Some(default_interface) = args.default_interface.as_ref() {
+    if args.default_interface.is_some()
+        || !args.allowed_interface.is_empty()
+        || !args.denied_interface.is_empty()
+        || args.require_explicit_interface.is_some()
+        || args.allow_all_interfaces.is_some()
+        || args.bind_ipv6.is_some()
+    {
         let interface = table_entry(network, "interface")?;
-        interface["default_interface"] = value(default_interface.clone());
+        if let Some(default_interface) = args.default_interface.as_ref() {
+            interface["default_interface"] = value(default_interface.clone());
+        }
+        if !args.allowed_interface.is_empty() {
+            interface["allowed_interfaces"] = array_value(&args.allowed_interface);
+        }
+        if !args.denied_interface.is_empty() {
+            interface["denied_interfaces"] = array_value(&args.denied_interface);
+        }
+        if let Some(require) = args.require_explicit_interface {
+            interface["require_explicit_interface"] = value(require);
+        }
+        if let Some(allow) = args.allow_all_interfaces {
+            interface["allow_all_interfaces"] = value(allow);
+        }
+        if let Some(mode) = args.bind_ipv6.as_ref() {
+            interface["bind_ipv6"] = value(mode.clone());
+        }
     }
     if args.default_gateway.is_some()
         || args.gateway_interface.is_some()
@@ -218,6 +354,72 @@ pub async fn gateway_set(global: &GlobalOpts, args: FirewallGatewaySet) -> Resul
         }
         if let Some(require) = args.require_gateway_match {
             gateway["require_gateway_match"] = value(require);
+        }
+    }
+    if args.tcp_nodelay.is_some()
+        || args.socket_keepalive.is_some()
+        || args.tcp_fast_open.is_some()
+        || args.reuse_port.is_some()
+        || args.io_uring.is_some()
+        || args.zerocopy.is_some()
+        || args.sendfile.is_some()
+        || args.checksum_offload.is_some()
+        || args.large_send_offload.is_some()
+    {
+        let offload = table_entry(network, "offload")?;
+        if let Some(value_) = args.tcp_nodelay {
+            offload["tcp_nodelay"] = value(value_);
+        }
+        if let Some(value_) = args.socket_keepalive {
+            offload["socket_keepalive"] = value(value_);
+        }
+        if let Some(value_) = args.tcp_fast_open {
+            offload["tcp_fast_open"] = value(value_);
+        }
+        if let Some(value_) = args.reuse_port {
+            offload["reuse_port"] = value(value_);
+        }
+        if let Some(value_) = args.io_uring {
+            offload["io_uring"] = value(value_);
+        }
+        if let Some(value_) = args.zerocopy {
+            offload["zerocopy"] = value(value_);
+        }
+        if let Some(value_) = args.sendfile {
+            offload["sendfile"] = value(value_);
+        }
+        if let Some(value_) = args.checksum_offload {
+            offload["checksum_offload"] = value(value_);
+        }
+        if let Some(value_) = args.large_send_offload {
+            offload["large_send_offload"] = value(value_);
+        }
+    }
+    if args.load_balance_strategy.is_some()
+        || args.sticky_sessions.is_some()
+        || args.health_check.is_some()
+        || args.load_balance_fail_after.is_some()
+        || args.load_balance_restore_after.is_some()
+        || args.rebalance_interval.is_some()
+    {
+        let load_balance = table_entry(network, "load_balance")?;
+        if let Some(strategy) = args.load_balance_strategy.as_ref() {
+            load_balance["strategy"] = value(strategy.clone());
+        }
+        if let Some(sticky) = args.sticky_sessions {
+            load_balance["sticky_sessions"] = value(sticky);
+        }
+        if let Some(health_check) = args.health_check.as_ref() {
+            load_balance["health_check"] = value(health_check.clone());
+        }
+        if let Some(fail_after) = args.load_balance_fail_after {
+            load_balance["fail_after"] = value(i64::from(fail_after));
+        }
+        if let Some(restore_after) = args.load_balance_restore_after.as_ref() {
+            load_balance["restore_after"] = value(restore_after.clone());
+        }
+        if let Some(rebalance_interval) = args.rebalance_interval.as_ref() {
+            load_balance["rebalance_interval"] = value(rebalance_interval.clone());
         }
     }
     doc.write_atomic(&path)?;
@@ -497,6 +699,18 @@ fn format_list(values: Option<&[String]>) -> String {
         Some(values) if !values.is_empty() => values.join(","),
         _ => "(unset)".to_string(),
     }
+}
+
+fn format_bool(value: Option<bool>) -> String {
+    value.map_or("(unset)".to_string(), |v| v.to_string())
+}
+
+fn array_value(values: &[String]) -> Item {
+    let mut array = Array::default();
+    for value_ in values {
+        array.push(value_.as_str());
+    }
+    value(array)
 }
 
 fn policy_map_to_json(

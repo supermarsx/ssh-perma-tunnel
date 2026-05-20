@@ -4830,6 +4830,97 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn firewall_gateway_set_updates_network_policy() {
+        let td = tempfile::tempdir().unwrap();
+        let cfg = minimal_config(td.path());
+        let cli = parse(&[
+            "spt",
+            "--config",
+            cfg.to_str().unwrap(),
+            "firewall",
+            "gateway",
+            "set",
+            "--default-interface",
+            "Ethernet",
+            "--allowed-interface",
+            "Ethernet,Wintun",
+            "--denied-interface",
+            "Wi-Fi",
+            "--require-explicit-interface",
+            "true",
+            "--allow-all-interfaces",
+            "false",
+            "--bind-ipv6",
+            "prefer",
+            "--default-gateway",
+            "192.0.2.1",
+            "--gateway-interface",
+            "Ethernet",
+            "--route-check-target",
+            "198.51.100.10",
+            "--policy",
+            "route_to_target",
+            "--require-gateway-match",
+            "true",
+            "--tcp-nodelay",
+            "true",
+            "--io-uring",
+            "false",
+            "--zerocopy",
+            "true",
+            "--load-balance-strategy",
+            "weighted",
+            "--sticky-sessions",
+            "true",
+            "--health-check",
+            "ssh_handshake",
+            "--load-balance-fail-after",
+            "3",
+            "--load-balance-restore-after",
+            "30s",
+            "--rebalance-interval",
+            "5m",
+        ]);
+        dispatch_ok(cli).await;
+
+        let (loaded, _) = spt_config::load(&cfg, false).unwrap();
+        let network = loaded.network.unwrap();
+        let interface = network.interface.unwrap();
+        assert_eq!(interface.default_interface.as_deref(), Some("Ethernet"));
+        assert_eq!(
+            interface.allowed_interfaces.as_deref(),
+            Some(&["Ethernet".to_string(), "Wintun".to_string()][..])
+        );
+        assert_eq!(
+            interface.denied_interfaces.as_deref(),
+            Some(&["Wi-Fi".to_string()][..])
+        );
+        assert_eq!(interface.require_explicit_interface, Some(true));
+        assert_eq!(interface.allow_all_interfaces, Some(false));
+        assert_eq!(interface.bind_ipv6.as_deref(), Some("prefer"));
+
+        let gateway = network.gateway.unwrap();
+        assert_eq!(gateway.default_gateway.as_deref(), Some("192.0.2.1"));
+        assert_eq!(gateway.interface.as_deref(), Some("Ethernet"));
+        assert_eq!(gateway.route_check_target.as_deref(), Some("198.51.100.10"));
+        assert_eq!(gateway.policy.as_deref(), Some("route_to_target"));
+        assert_eq!(gateway.require_gateway_match, Some(true));
+
+        let offload = network.offload.unwrap();
+        assert_eq!(offload.tcp_nodelay, Some(true));
+        assert_eq!(offload.io_uring, Some(false));
+        assert_eq!(offload.zerocopy, Some(true));
+
+        let load_balance = network.load_balance.unwrap();
+        assert_eq!(load_balance.strategy.as_deref(), Some("weighted"));
+        assert_eq!(load_balance.sticky_sessions, Some(true));
+        assert_eq!(load_balance.health_check.as_deref(), Some("ssh_handshake"));
+        assert_eq!(load_balance.fail_after, Some(3));
+        assert_eq!(load_balance.restore_after.as_deref(), Some("30s"));
+        assert_eq!(load_balance.rebalance_interval.as_deref(), Some("5m"));
+    }
+
+    #[tokio::test]
     async fn firewall_policy_list_routes() {
         let td = tempfile::tempdir().unwrap();
         let cfg = minimal_config(td.path());

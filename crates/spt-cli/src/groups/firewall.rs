@@ -8,6 +8,8 @@ const EXAMPLES: &str = "EXAMPLES:
   spt firewall remove --user
   spt firewall bind-preview --forward edge/db
   spt firewall gateway show --json
+  spt firewall gateway set --default-interface Ethernet --tcp-nodelay true
+  spt firewall gateway set --load-balance-strategy weighted --load-balance-fail-after 3
   spt firewall policy list --json
   spt firewall policy set Network.DefaultInterface Ethernet --scope user";
 
@@ -125,6 +127,21 @@ pub struct FirewallGatewaySet {
     /// Set `[network.interface].default_interface`.
     #[arg(long, value_name = "IFACE")]
     pub default_interface: Option<String>,
+    /// Set `[network.interface].allowed_interfaces`.
+    #[arg(long, value_name = "IFACE", value_delimiter = ',')]
+    pub allowed_interface: Vec<String>,
+    /// Set `[network.interface].denied_interfaces`.
+    #[arg(long, value_name = "IFACE", value_delimiter = ',')]
+    pub denied_interface: Vec<String>,
+    /// Set `[network.interface].require_explicit_interface`.
+    #[arg(long, value_name = "BOOL")]
+    pub require_explicit_interface: Option<bool>,
+    /// Set `[network.interface].allow_all_interfaces`.
+    #[arg(long, value_name = "BOOL")]
+    pub allow_all_interfaces: Option<bool>,
+    /// Set `[network.interface].bind_ipv6` (`auto|prefer|disable`).
+    #[arg(long, value_name = "MODE")]
+    pub bind_ipv6: Option<String>,
     /// Set `[network.gateway].default_gateway`.
     #[arg(long, value_name = "ADDR")]
     pub default_gateway: Option<String>,
@@ -140,6 +157,51 @@ pub struct FirewallGatewaySet {
     /// Set `[network.gateway].require_gateway_match`.
     #[arg(long, value_name = "BOOL")]
     pub require_gateway_match: Option<bool>,
+    /// Set `[network.offload].tcp_nodelay`.
+    #[arg(long, value_name = "BOOL")]
+    pub tcp_nodelay: Option<bool>,
+    /// Set `[network.offload].socket_keepalive`.
+    #[arg(long, value_name = "BOOL")]
+    pub socket_keepalive: Option<bool>,
+    /// Set `[network.offload].tcp_fast_open`.
+    #[arg(long, value_name = "BOOL")]
+    pub tcp_fast_open: Option<bool>,
+    /// Set `[network.offload].reuse_port`.
+    #[arg(long, value_name = "BOOL")]
+    pub reuse_port: Option<bool>,
+    /// Set `[network.offload].io_uring`.
+    #[arg(long, value_name = "BOOL")]
+    pub io_uring: Option<bool>,
+    /// Set `[network.offload].zerocopy`.
+    #[arg(long, value_name = "BOOL")]
+    pub zerocopy: Option<bool>,
+    /// Set `[network.offload].sendfile`.
+    #[arg(long, value_name = "BOOL")]
+    pub sendfile: Option<bool>,
+    /// Set `[network.offload].checksum_offload`.
+    #[arg(long, value_name = "BOOL")]
+    pub checksum_offload: Option<bool>,
+    /// Set `[network.offload].large_send_offload`.
+    #[arg(long, value_name = "BOOL")]
+    pub large_send_offload: Option<bool>,
+    /// Set `[network.load_balance].strategy`.
+    #[arg(long, value_name = "STRATEGY")]
+    pub load_balance_strategy: Option<String>,
+    /// Set `[network.load_balance].sticky_sessions`.
+    #[arg(long, value_name = "BOOL")]
+    pub sticky_sessions: Option<bool>,
+    /// Set `[network.load_balance].health_check`.
+    #[arg(long, value_name = "MODE")]
+    pub health_check: Option<String>,
+    /// Set `[network.load_balance].fail_after`.
+    #[arg(long, value_name = "N")]
+    pub load_balance_fail_after: Option<u32>,
+    /// Set `[network.load_balance].restore_after`.
+    #[arg(long, value_name = "DURATION")]
+    pub load_balance_restore_after: Option<String>,
+    /// Set `[network.load_balance].rebalance_interval`.
+    #[arg(long, value_name = "DURATION")]
+    pub rebalance_interval: Option<String>,
     /// JSON output.
     #[arg(long)]
     pub json: bool,
