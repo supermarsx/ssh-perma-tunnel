@@ -42,6 +42,7 @@ use spt_config_crypt::{is_sealed, peek_meta, seal, unseal, KeySource, X25519Publ
 use spt_core::{Error, Result};
 use spt_diagnostics::check::{Check, Severity, Status};
 use spt_diagnostics::framework::{DiagnosticReport, ReportCounts};
+use spt_secrets::{KeychainBackend, SecretBackend, SecretRef as VaultSecretRef, VaultBackend};
 
 use crate::mcp_client::McpClient;
 
@@ -503,7 +504,7 @@ fn ensure_audit_sink_installed() {
 }
 
 /// `spt config encrypt`.
-pub async fn encrypt(args: groups::config::ConfigEncrypt) -> Result<()> {
+pub async fn encrypt(global: &GlobalOpts, args: groups::config::ConfigEncrypt) -> Result<()> {
     ensure_audit_sink_installed();
     let plaintext = std::fs::read(&args.input)
         .map_err(|e| Error::InvalidConfig(format!("read `{}`: {e}", args.input.display())))?;
@@ -524,9 +525,12 @@ pub async fn encrypt(args: groups::config::ConfigEncrypt) -> Result<()> {
         )));
     }
     let key = build_seal_key_source(
+        global,
         args.passphrase_from.as_deref(),
         &args.recipient,
         args.use_vault_master,
+        args.vault_path.as_deref(),
+        args.vault_passphrase_from.as_deref(),
     )?;
     let sealed = seal(&plaintext, &key)?;
     write_bytes_atomic(&out_path, &sealed)?;
@@ -540,7 +544,7 @@ pub async fn encrypt(args: groups::config::ConfigEncrypt) -> Result<()> {
 }
 
 /// `spt config decrypt`.
-pub async fn decrypt(args: groups::config::ConfigDecrypt) -> Result<()> {
+pub async fn decrypt(global: &GlobalOpts, args: groups::config::ConfigDecrypt) -> Result<()> {
     ensure_audit_sink_installed();
     let sealed = std::fs::read(&args.input)
         .map_err(|e| Error::InvalidConfig(format!("read `{}`: {e}", args.input.display())))?;
@@ -551,9 +555,12 @@ pub async fn decrypt(args: groups::config::ConfigDecrypt) -> Result<()> {
         )));
     }
     let key = build_unseal_key_source(
+        global,
         &sealed,
         args.passphrase_from.as_deref(),
         args.recipient_key.as_deref(),
+        args.vault_path.as_deref(),
+        args.vault_passphrase_from.as_deref(),
     )?;
     let pt = unseal(&sealed, &key)?;
     let bytes = pt.expose_secret().as_slice();
@@ -570,7 +577,7 @@ pub async fn decrypt(args: groups::config::ConfigDecrypt) -> Result<()> {
 }
 
 /// `spt config edit`.
-pub async fn edit(args: groups::config::ConfigEdit) -> Result<()> {
+pub async fn edit(global: &GlobalOpts, args: groups::config::ConfigEdit) -> Result<()> {
     ensure_audit_sink_installed();
     let sealed = std::fs::read(&args.sealed)
         .map_err(|e| Error::InvalidConfig(format!("read `{}`: {e}", args.sealed.display())))?;
@@ -580,7 +587,14 @@ pub async fn edit(args: groups::config::ConfigEdit) -> Result<()> {
             args.sealed.display()
         )));
     }
-    let key = build_unseal_key_source(&sealed, args.passphrase_from.as_deref(), None)?;
+    let key = build_unseal_key_source(
+        global,
+        &sealed,
+        args.passphrase_from.as_deref(),
+        None,
+        args.vault_path.as_deref(),
+        args.vault_passphrase_from.as_deref(),
+    )?;
     let pt = unseal(&sealed, &key)?;
 
     // Stage the cleartext in a runtime-controlled tmp file.
@@ -608,7 +622,10 @@ pub async fn edit(args: groups::config::ConfigEdit) -> Result<()> {
 }
 
 /// `spt config crypt rotate`.
-pub async fn crypt_rotate(args: groups::config::ConfigCryptRotate) -> Result<()> {
+pub async fn crypt_rotate(
+    global: &GlobalOpts,
+    args: groups::config::ConfigCryptRotate,
+) -> Result<()> {
     ensure_audit_sink_installed();
     let sealed = std::fs::read(&args.sealed)
         .map_err(|e| Error::InvalidConfig(format!("read `{}`: {e}", args.sealed.display())))?;
@@ -618,13 +635,23 @@ pub async fn crypt_rotate(args: groups::config::ConfigCryptRotate) -> Result<()>
             args.sealed.display()
         )));
     }
-    let old_key = build_unseal_key_source(&sealed, None, None)?;
+    let old_key = build_unseal_key_source(
+        global,
+        &sealed,
+        None,
+        None,
+        args.vault_path.as_deref(),
+        args.vault_passphrase_from.as_deref(),
+    )?;
     let pt = unseal(&sealed, &old_key)?;
     let bytes = pt.expose_secret().as_slice().to_vec();
     let new_key = build_seal_key_source(
+        global,
         args.new_passphrase_from.as_deref(),
         &args.new_recipient,
         false,
+        args.vault_path.as_deref(),
+        args.vault_passphrase_from.as_deref(),
     )?;
     let resealed = seal(&bytes, &new_key)?;
     write_bytes_atomic(&args.sealed, &resealed)?;
@@ -651,13 +678,16 @@ fn write_bytes_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
 /// prompt interactively. Returns the cleartext bytes inside a
 /// zeroize-on-drop carrier.
 fn read_passphrase_bytes(
+    global: &GlobalOpts,
     reference: Option<&str>,
     prompt: &str,
+    vault_path: Option<&Path>,
+    vault_passphrase_from: Option<&str>,
 ) -> Result<spt_config_crypt::Passphrase> {
     if let Some(reference) = reference {
         // Use spt-auth's lightweight `secret:` parser used by key_ops —
         // supports `env:NAME`, `file:PATH`, and `secret://ns/name`.
-        let bytes = resolve_ref_to_bytes(reference)?;
+        let bytes = resolve_ref_to_bytes(global, reference, vault_path, vault_passphrase_from)?;
         return Ok(spt_config_crypt::Passphrase::from(bytes));
     }
     let pp = spt_secrets::read_passphrase(prompt)?;
@@ -665,35 +695,162 @@ fn read_passphrase_bytes(
     Ok(spt_config_crypt::Passphrase::from(v))
 }
 
-fn resolve_ref_to_bytes(reference: &str) -> Result<Vec<u8>> {
+fn resolve_ref_to_bytes(
+    global: &GlobalOpts,
+    reference: &str,
+    vault_path: Option<&Path>,
+    vault_passphrase_from: Option<&str>,
+) -> Result<Vec<u8>> {
     use spt_auth::SecretRef;
     let r = SecretRef::parse(reference)
         .map_err(|e| Error::InvalidArgs(format!("invalid passphrase ref `{reference}`: {e}")))?;
     match r {
-        SecretRef::Env(name) => {
-            std::env::var(&name)
-                .map(String::into_bytes)
-                .map_err(|e| Error::SecretUnavailable {
-                    reference: format!("env:{name}"),
-                    reason: e.to_string(),
-                })
+        SecretRef::Env(name) => read_env_source(&name),
+        SecretRef::File(p) => read_file_source(&p),
+        SecretRef::Vault { namespace, name } => {
+            let vault = open_config_vault(global, vault_path, vault_passphrase_from)?;
+            let secret_ref = VaultSecretRef::new(namespace.clone(), name.clone()).map_err(|e| {
+                Error::InvalidArgs(format!("bad vault secret ref `{reference}`: {e}"))
+            })?;
+            let bytes = vault
+                .get(&secret_ref)?
+                .ok_or_else(|| Error::SecretUnavailable {
+                    reference: reference.to_string(),
+                    reason: "not found in configured vault".into(),
+                })?;
+            Ok(bytes.expose_secret().as_slice().to_vec())
         }
-        SecretRef::File(p) => std::fs::read(&p)
-            .map(|mut v| {
-                while matches!(v.last(), Some(&b'\n') | Some(&b'\r')) {
-                    v.pop();
-                }
-                v
-            })
-            .map_err(|e| Error::SecretUnavailable {
-                reference: format!("file:{p}"),
-                reason: e.to_string(),
-            }),
-        SecretRef::Vault { .. } => Err(Error::SecretUnavailable {
-            reference: reference.to_string(),
-            reason: "vault-resident passphrases not yet wired for config sealing".into(),
-        }),
     }
+}
+
+fn read_env_source(name: &str) -> Result<Vec<u8>> {
+    std::env::var(name)
+        .map(String::into_bytes)
+        .map_err(|e| Error::SecretUnavailable {
+            reference: format!("env:{name}"),
+            reason: e.to_string(),
+        })
+}
+
+fn read_file_source(path: &str) -> Result<Vec<u8>> {
+    std::fs::read(path)
+        .map(strip_trailing_newlines)
+        .map_err(|e| Error::SecretUnavailable {
+            reference: format!("file:{path}"),
+            reason: e.to_string(),
+        })
+}
+
+fn strip_trailing_newlines(mut v: Vec<u8>) -> Vec<u8> {
+    while matches!(v.last(), Some(&b'\n') | Some(&b'\r')) {
+        v.pop();
+    }
+    v
+}
+
+fn read_vault_unlock_source(spec: &str) -> Result<Vec<u8>> {
+    if spec == "stdin" || spec == "-" {
+        let mut buf = Vec::new();
+        use std::io::Read as _;
+        std::io::stdin()
+            .lock()
+            .read_to_end(&mut buf)
+            .map_err(|e| Error::RuntimeFailure(format!("read stdin: {e}")))?;
+        return Ok(strip_trailing_newlines(buf));
+    }
+    if let Some(name) = spec.strip_prefix("env:") {
+        return read_env_source(name);
+    }
+    if let Ok(spt_auth::SecretRef::File(path)) = spt_auth::SecretRef::parse(spec) {
+        return read_file_source(&path);
+    }
+    if let Some(path) = spec.strip_prefix("file:") {
+        return read_file_source(path);
+    }
+    Err(Error::InvalidArgs(format!(
+        "vault unlock source `{spec}` must be `stdin`, `env:NAME`, `file:<path>`, or `file:///path`"
+    )))
+}
+
+fn load_config_secrets(global: &GlobalOpts) -> Option<spt_config::schema::Secrets> {
+    global
+        .config
+        .as_ref()
+        .and_then(|path| spt_config::load(path, false).ok())
+        .and_then(|(cfg, _)| cfg.secrets)
+}
+
+fn configured_keychain_namespace(global: &GlobalOpts) -> String {
+    load_config_secrets(global)
+        .and_then(|s| s.keychain_namespace)
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "spt".to_string())
+}
+
+fn configured_vault_dir(global: &GlobalOpts, override_path: Option<&Path>) -> Result<PathBuf> {
+    if let Some(path) = override_path {
+        return Ok(vault_location_to_dir(path));
+    }
+    if let Some(path) = load_config_secrets(global)
+        .and_then(|s| s.vault_file)
+        .filter(|s| !s.trim().is_empty())
+    {
+        return Ok(vault_location_to_dir(Path::new(&path)));
+    }
+    let state = spt_state::resolve_state_dir(global.state_dir.as_deref())?;
+    Ok(state.join("secrets"))
+}
+
+fn vault_location_to_dir(path: &Path) -> PathBuf {
+    if path
+        .file_name()
+        .is_some_and(|name| name == std::ffi::OsStr::new("vault.spt"))
+    {
+        return path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .to_path_buf();
+    }
+    path.to_path_buf()
+}
+
+fn open_config_vault(
+    global: &GlobalOpts,
+    vault_path: Option<&Path>,
+    vault_passphrase_from: Option<&str>,
+) -> Result<VaultBackend> {
+    let dir = configured_vault_dir(global, vault_path)?;
+    if !VaultBackend::vault_path(&dir).exists() {
+        return Err(Error::SecretUnavailable {
+            reference: format!("vault at `{}`", dir.display()),
+            reason: "vault does not exist; run `spt secret store init` first".into(),
+        });
+    }
+    if let Some(source) = vault_passphrase_from {
+        let passphrase = read_vault_unlock_source(source)?;
+        return VaultBackend::open_with_passphrase(&dir, &passphrase);
+    }
+    let keychain = KeychainBackend::with_service(configured_keychain_namespace(global));
+    match VaultBackend::open_with_keychain(&dir, &keychain) {
+        Ok(vault) => Ok(vault),
+        Err(e) => {
+            eprintln!("warning: vault keychain unlock unavailable ({e}); prompting for passphrase");
+            let passphrase = spt_secrets::read_passphrase("vault passphrase: ")?;
+            VaultBackend::open_with_passphrase(&dir, passphrase.expose_secret().as_bytes())
+        }
+    }
+}
+
+fn load_vault_master_key(
+    global: &GlobalOpts,
+    vault_path: Option<&Path>,
+    vault_passphrase_from: Option<&str>,
+) -> Result<[u8; 32]> {
+    let vault = open_config_vault(global, vault_path, vault_passphrase_from)?;
+    let master = vault.config_crypt_master_key();
+    let mut out = [0u8; 32];
+    out.copy_from_slice(master.as_ref());
+    Ok(out)
 }
 
 fn parse_x25519_pub(b64: &str) -> Result<X25519PublicKey> {
@@ -740,9 +897,12 @@ fn load_x25519_secret(path: &Path) -> Result<[u8; 32]> {
 }
 
 fn build_seal_key_source(
+    global: &GlobalOpts,
     passphrase_from: Option<&str>,
     recipients: &[String],
     use_vault_master: bool,
+    vault_path: Option<&Path>,
+    vault_passphrase_from: Option<&str>,
 ) -> Result<KeySource> {
     let mut variants = 0;
     if passphrase_from.is_some() {
@@ -765,27 +925,41 @@ fn build_seal_key_source(
         return Ok(KeySource::X25519Recipients(pks?));
     }
     if use_vault_master {
-        return Err(Error::InvalidArgs(
-            "--use-vault-master requires a configured keychain-resident vault master \
-             key, which is not yet exposed in this CLI; pass --passphrase-from or \
-             --recipient instead"
-                .into(),
-        ));
+        return Ok(KeySource::VaultMaster(load_vault_master_key(
+            global,
+            vault_path,
+            vault_passphrase_from,
+        )?));
     }
     // Default → passphrase. Prompt interactively if no `--passphrase-from`.
-    let pp = read_passphrase_bytes(passphrase_from, "new sealing passphrase: ")?;
+    let pp = read_passphrase_bytes(
+        global,
+        passphrase_from,
+        "new sealing passphrase: ",
+        vault_path,
+        vault_passphrase_from,
+    )?;
     Ok(KeySource::Passphrase(pp))
 }
 
 fn build_unseal_key_source(
+    global: &GlobalOpts,
     sealed: &[u8],
     passphrase_from: Option<&str>,
     recipient_key: Option<&Path>,
+    vault_path: Option<&Path>,
+    vault_passphrase_from: Option<&str>,
 ) -> Result<KeySource> {
     let meta = peek_meta(sealed)?;
     match meta.kdf.as_str() {
         "argon2id" => {
-            let pp = read_passphrase_bytes(passphrase_from, "sealed config passphrase: ")?;
+            let pp = read_passphrase_bytes(
+                global,
+                passphrase_from,
+                "sealed config passphrase: ",
+                vault_path,
+                vault_passphrase_from,
+            )?;
             Ok(KeySource::Passphrase(pp))
         }
         "x25519" => {
@@ -797,11 +971,11 @@ fn build_unseal_key_source(
             let s = load_x25519_secret(path)?;
             Ok(KeySource::X25519Secrets(vec![s]))
         }
-        "vault" => Err(Error::InvalidConfig(
-            "sealed config uses vault-master KDF; CLI wiring for this path is not yet \
-             implemented (see t5-e6 deferred items)"
-                .into(),
-        )),
+        "vault" => Ok(KeySource::VaultMaster(load_vault_master_key(
+            global,
+            vault_path,
+            vault_passphrase_from,
+        )?)),
         other => Err(Error::InvalidConfig(format!(
             "sealed config uses unknown kdf `{other}`"
         ))),
@@ -1334,6 +1508,12 @@ host = "h.example.com"
         std::fs::write(path, b64).unwrap();
     }
 
+    fn write_unlock_source(dir: &Path, passphrase: &[u8]) -> String {
+        let path = dir.join(format!("vault-unlock-{}.txt", rand::random::<u64>()));
+        std::fs::write(&path, passphrase).unwrap();
+        format!("file:{}", path.display())
+    }
+
     fn cfg_encrypt_args(input: PathBuf, recipient_b64: String) -> groups::config::ConfigEncrypt {
         groups::config::ConfigEncrypt {
             input,
@@ -1341,6 +1521,8 @@ host = "h.example.com"
             passphrase_from: None,
             recipient: vec![recipient_b64],
             use_vault_master: false,
+            vault_path: None,
+            vault_passphrase_from: None,
             force: false,
         }
     }
@@ -1355,6 +1537,8 @@ host = "h.example.com"
             out,
             passphrase_from: None,
             recipient_key: Some(key_path),
+            vault_path: None,
+            vault_passphrase_from: None,
         }
     }
 
@@ -1366,7 +1550,7 @@ host = "h.example.com"
         std::fs::write(&plain, SAMPLE_CONFIG).unwrap();
 
         let (sk, pk) = fresh_x25519_keypair();
-        encrypt(cfg_encrypt_args(plain.clone(), b64_of(&pk)))
+        encrypt(&opts(None), cfg_encrypt_args(plain.clone(), b64_of(&pk)))
             .await
             .expect("encrypt");
         let sealed = plain.with_extension("toml.sealed");
@@ -1380,11 +1564,110 @@ host = "h.example.com"
         write_b64_secret(&secret_path, &sk);
 
         let out = tmp.path().join("decrypted.toml");
-        decrypt(cfg_decrypt_args(sealed, Some(out.clone()), secret_path))
-            .await
-            .expect("decrypt");
+        decrypt(
+            &opts(None),
+            cfg_decrypt_args(sealed, Some(out.clone()), secret_path),
+        )
+        .await
+        .expect("decrypt");
         let body = std::fs::read_to_string(&out).unwrap();
         assert_eq!(body, SAMPLE_CONFIG);
+    }
+
+    #[tokio::test]
+    async fn encrypt_decrypt_uses_passphrase_stored_in_vault() {
+        let tmp = tempfile::tempdir().unwrap();
+        let vault_dir = tmp.path().join("vault");
+        let unlock = write_unlock_source(tmp.path(), b"vault unlock");
+        let vault = VaultBackend::init_with_passphrase(&vault_dir, b"vault unlock").unwrap();
+        let secret_ref = VaultSecretRef::new("cfg", "seal-passphrase").unwrap();
+        vault.set(&secret_ref, b"sealed-from-vault").unwrap();
+
+        let plain = tmp.path().join("c.toml");
+        std::fs::write(&plain, SAMPLE_CONFIG).unwrap();
+        let sealed = plain.with_extension("toml.sealed");
+        let out = tmp.path().join("out.toml");
+
+        encrypt(
+            &opts(None),
+            groups::config::ConfigEncrypt {
+                input: plain,
+                out: Some(sealed.clone()),
+                passphrase_from: Some("secret://cfg/seal-passphrase".into()),
+                recipient: Vec::new(),
+                use_vault_master: false,
+                vault_path: Some(vault_dir.clone()),
+                vault_passphrase_from: Some(unlock.clone()),
+                force: false,
+            },
+        )
+        .await
+        .expect("encrypt with vault-backed passphrase");
+
+        decrypt(
+            &opts(None),
+            groups::config::ConfigDecrypt {
+                input: sealed,
+                out: Some(out.clone()),
+                passphrase_from: Some("secret://cfg/seal-passphrase".into()),
+                recipient_key: None,
+                vault_path: Some(vault_dir),
+                vault_passphrase_from: Some(unlock),
+            },
+        )
+        .await
+        .expect("decrypt with vault-backed passphrase");
+
+        assert_eq!(std::fs::read_to_string(out).unwrap(), SAMPLE_CONFIG);
+    }
+
+    #[tokio::test]
+    async fn encrypt_decrypt_uses_vault_master_kdf() {
+        let tmp = tempfile::tempdir().unwrap();
+        let vault_dir = tmp.path().join("vault");
+        let unlock = write_unlock_source(tmp.path(), b"vault master unlock");
+        let _vault = VaultBackend::init_with_passphrase(&vault_dir, b"vault master unlock")
+            .expect("init vault");
+
+        let plain = tmp.path().join("c.toml");
+        std::fs::write(&plain, SAMPLE_CONFIG).unwrap();
+        let sealed = plain.with_extension("toml.sealed");
+        let out = tmp.path().join("out.toml");
+
+        encrypt(
+            &opts(None),
+            groups::config::ConfigEncrypt {
+                input: plain,
+                out: Some(sealed.clone()),
+                passphrase_from: None,
+                recipient: Vec::new(),
+                use_vault_master: true,
+                vault_path: Some(vault_dir.clone()),
+                vault_passphrase_from: Some(unlock.clone()),
+                force: false,
+            },
+        )
+        .await
+        .expect("encrypt with vault master");
+
+        let sealed_bytes = std::fs::read(&sealed).unwrap();
+        assert_eq!(peek_meta(&sealed_bytes).unwrap().kdf, "vault");
+
+        decrypt(
+            &opts(None),
+            groups::config::ConfigDecrypt {
+                input: sealed,
+                out: Some(out.clone()),
+                passphrase_from: None,
+                recipient_key: None,
+                vault_path: Some(vault_dir),
+                vault_passphrase_from: Some(unlock),
+            },
+        )
+        .await
+        .expect("decrypt with vault master");
+
+        assert_eq!(std::fs::read_to_string(out).unwrap(), SAMPLE_CONFIG);
     }
 
     /// 2. spt_config::load_with_key on a sealed file returns the same Config.
@@ -1436,10 +1719,15 @@ host = "h.example.com"
         let editor = no_op_editor();
         std::env::set_var(EDITOR_OVERRIDE_ENV, &editor);
 
-        let r = edit(groups::config::ConfigEdit {
-            sealed: sealed_path.clone(),
-            passphrase_from: Some("env:SPT_EDIT_PP".into()),
-        })
+        let r = edit(
+            &opts(None),
+            groups::config::ConfigEdit {
+                sealed: sealed_path.clone(),
+                passphrase_from: Some("env:SPT_EDIT_PP".into()),
+                vault_path: None,
+                vault_passphrase_from: None,
+            },
+        )
         .await;
         std::env::remove_var(EDITOR_OVERRIDE_ENV);
         std::env::remove_var("SPT_EDIT_PP");
@@ -1527,10 +1815,15 @@ host = "h.example.com"
             return;
         }
         std::env::set_var(EDITOR_OVERRIDE_ENV, "false");
-        let r = edit(groups::config::ConfigEdit {
-            sealed: sealed_path.clone(),
-            passphrase_from: Some("env:SPT_CANCEL_PP".into()),
-        })
+        let r = edit(
+            &opts(None),
+            groups::config::ConfigEdit {
+                sealed: sealed_path.clone(),
+                passphrase_from: Some("env:SPT_CANCEL_PP".into()),
+                vault_path: None,
+                vault_passphrase_from: None,
+            },
+        )
         .await;
         std::env::remove_var(EDITOR_OVERRIDE_ENV);
         std::env::remove_var("SPT_CANCEL_PP");
@@ -1697,7 +1990,7 @@ host = "h.example.com"
         let (_sk, pk) = fresh_x25519_keypair();
         let mut args = cfg_encrypt_args(plain.clone(), b64_of(&pk));
         args.force = false;
-        let r = encrypt(args).await;
+        let r = encrypt(&opts(None), args).await;
         assert!(matches!(r, Err(Error::InvalidArgs(_))), "got {r:?}");
         // The pre-existing file must remain unchanged.
         assert_eq!(std::fs::read(&sealed_at).unwrap(), b"pre-existing");
@@ -1719,7 +2012,7 @@ host = "h.example.com"
         write_b64_secret(&secret_path, &sk);
         let args = cfg_decrypt_args(sealed, None, secret_path);
         // Stdout-write doesn't return the bytes to us, but it must not error.
-        decrypt(args).await.expect("decrypt to stdout");
+        decrypt(&opts(None), args).await.expect("decrypt to stdout");
     }
 
     /// 13. Sealed magic detection: is_sealed picks up our envelopes.

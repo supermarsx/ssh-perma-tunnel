@@ -40,6 +40,24 @@ Headless Linux without Secret Service falls back to the local vault.
 master key may live in the OS keychain (preferred) or be unlocked with a
 passphrase (`spt secret store init --backend vault`).
 
+Vault records can be used as sealed-config passphrases:
+
+```text
+spt secret store init --backend vault --vault-path ./secrets --passphrase-from env:VAULT_PP
+spt secret set cfg/seal-passphrase \
+  --from-env CONFIG_SEAL_PP \
+  --vault-path ./secrets \
+  --passphrase-from env:VAULT_PP
+spt config encrypt spt.toml \
+  --passphrase-from secret://cfg/seal-passphrase \
+  --vault-path ./secrets \
+  --vault-passphrase-from env:VAULT_PP
+```
+
+For fleet configs, `spt config encrypt --use-vault-master` seals directly
+under the vault master key. The decrypt/edit/rotate commands accept the same
+`--vault-path` and `--vault-passphrase-from` options.
+
 ## Environment
 
 `EnvBackend` looks up `SPT_SECRET_<NS_UPPER>__<NAME_UPPER>`, with `-`/`.`

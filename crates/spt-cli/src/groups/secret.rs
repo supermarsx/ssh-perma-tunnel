@@ -69,7 +69,7 @@ pub struct SecretStoreInit {
     /// Preferred backend.
     #[arg(long, value_enum, value_name = "BACKEND")]
     pub backend: Option<SecretBackend>,
-    /// Vault file location (overrides default `<state_dir>/vault.spt`).
+    /// Vault directory or `vault.spt` file location.
     #[arg(long, value_name = "PATH")]
     pub vault_path: Option<PathBuf>,
     /// Read the vault passphrase from a value source
@@ -92,6 +92,13 @@ pub struct SecretSet {
     /// Read from a file (mode-checked).
     #[arg(long, value_name = "PATH", group = "secret_source")]
     pub from_file: Option<PathBuf>,
+    /// Vault directory or `vault.spt` file when writing to the local vault.
+    #[arg(long, value_name = "PATH")]
+    pub vault_path: Option<PathBuf>,
+    /// Unlock the vault with a passphrase source (`stdin`, `env:NAME`,
+    /// `file:<path>`, or `file:///path`).
+    #[arg(long, value_name = "SOURCE")]
+    pub passphrase_from: Option<String>,
 }
 
 /// `spt secret get`.
@@ -102,6 +109,12 @@ pub struct SecretGet {
     /// Print the plaintext value.
     #[arg(long)]
     pub reveal: bool,
+    /// Vault directory or `vault.spt` file when reading from the local vault.
+    #[arg(long, value_name = "PATH")]
+    pub vault_path: Option<PathBuf>,
+    /// Unlock the vault with a passphrase source.
+    #[arg(long, value_name = "SOURCE")]
+    pub passphrase_from: Option<String>,
 }
 
 /// `spt secret list`.
@@ -110,7 +123,7 @@ pub struct SecretList {
     /// Restrict to a single namespace.
     #[arg(long, value_name = "NS")]
     pub namespace: Option<String>,
-    /// Vault file location.
+    /// Vault directory or `vault.spt` file location.
     #[arg(long, value_name = "PATH")]
     pub vault_path: Option<PathBuf>,
     /// Read the vault passphrase from a value source.
@@ -130,7 +143,7 @@ pub struct SecretName {
     /// (`stdin`, `file:<path>`, `env:<NAME>`).
     #[arg(long, value_name = "SOURCE")]
     pub new_value_from: Option<String>,
-    /// Vault file location.
+    /// Vault directory or `vault.spt` file location.
     #[arg(long, value_name = "PATH")]
     pub vault_path: Option<PathBuf>,
     /// Read the vault passphrase from a value source.

@@ -3247,7 +3247,7 @@ _spt() {
             return 0
             ;;
         spt__config__crypt__rotate)
-            opts="-q -v -h -V --new-passphrase-from --new-recipient --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <SEALED>"
+            opts="-q -v -h -V --new-passphrase-from --new-recipient --vault-path --vault-passphrase-from --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <SEALED>"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -3258,6 +3258,14 @@ _spt() {
                     return 0
                     ;;
                 --new-recipient)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --vault-path)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --vault-passphrase-from)
                     COMPREPLY=($(compgen -f "${cur}"))
                     return 0
                     ;;
@@ -3305,7 +3313,7 @@ _spt() {
             return 0
             ;;
         spt__config__decrypt)
-            opts="-q -v -h -V --out --passphrase-from --recipient-key --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <IN>"
+            opts="-q -v -h -V --out --passphrase-from --recipient-key --vault-path --vault-passphrase-from --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <IN>"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -3320,6 +3328,14 @@ _spt() {
                     return 0
                     ;;
                 --recipient-key)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --vault-path)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --vault-passphrase-from)
                     COMPREPLY=($(compgen -f "${cur}"))
                     return 0
                     ;;
@@ -3475,13 +3491,21 @@ _spt() {
             return 0
             ;;
         spt__config__edit)
-            opts="-q -v -h -V --passphrase-from --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <SEALED>"
+            opts="-q -v -h -V --passphrase-from --vault-path --vault-passphrase-from --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <SEALED>"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
             fi
             case "${prev}" in
                 --passphrase-from)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --vault-path)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --vault-passphrase-from)
                     COMPREPLY=($(compgen -f "${cur}"))
                     return 0
                     ;;
@@ -3529,7 +3553,7 @@ _spt() {
             return 0
             ;;
         spt__config__encrypt)
-            opts="-q -v -h -V --out --passphrase-from --recipient --use-vault-master --force --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <IN>"
+            opts="-q -v -h -V --out --passphrase-from --recipient --use-vault-master --vault-path --vault-passphrase-from --force --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <IN>"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -3544,6 +3568,14 @@ _spt() {
                     return 0
                     ;;
                 --recipient)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --vault-path)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --vault-passphrase-from)
                     COMPREPLY=($(compgen -f "${cur}"))
                     return 0
                     ;;
@@ -14167,12 +14199,20 @@ _spt() {
             return 0
             ;;
         spt__secret__get)
-            opts="-q -v -h -V --reveal --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <NAME>"
+            opts="-q -v -h -V --reveal --vault-path --passphrase-from --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <NAME>"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
             fi
             case "${prev}" in
+                --vault-path)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --passphrase-from)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
                 --config)
                     COMPREPLY=($(compgen -f "${cur}"))
                     return 0
@@ -14543,7 +14583,7 @@ _spt() {
             return 0
             ;;
         spt__secret__set)
-            opts="-q -v -h -V --prompt --from-env --from-file --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <NAME>"
+            opts="-q -v -h -V --prompt --from-env --from-file --vault-path --passphrase-from --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <NAME>"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -14554,6 +14594,14 @@ _spt() {
                     return 0
                     ;;
                 --from-file)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --vault-path)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --passphrase-from)
                     COMPREPLY=($(compgen -f "${cur}"))
                     return 0
                     ;;

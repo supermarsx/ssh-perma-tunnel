@@ -367,6 +367,8 @@ complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcomma
 complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from encrypt" -l out -d 'Output path (default: `<IN>.sealed`)' -r -F
 complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from encrypt" -l passphrase-from -d 'Read passphrase from a secret reference (e.g. `secret://env/SPT_PP`)' -r
 complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from encrypt" -l recipient -d 'One or more X25519 recipient public keys (base64)' -r
+complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from encrypt" -l vault-path -d 'Vault directory or `vault.spt` file used for `secret://` passphrases and `--use-vault-master`' -r -F
+complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from encrypt" -l vault-passphrase-from -d 'Unlock the vault with a passphrase source instead of the keychain (`stdin`, `env:NAME`, `file:<path>`, or `file:///path`)' -r
 complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from encrypt" -l config -d 'Path to a single config file' -r -F
 complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from encrypt" -l config-dir -d 'Path to a directory of `*.toml` configs (loaded in lexical order)' -r -F
 complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from encrypt" -l config-url -d 'HTTPS URL of a remote config to fetch' -r
@@ -397,6 +399,8 @@ complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcomma
 complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from decrypt" -l out -d 'Output path. If unset, write the cleartext to stdout' -r -F
 complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from decrypt" -l passphrase-from -d 'Read passphrase from a secret reference' -r
 complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from decrypt" -l recipient-key -d 'Path to an X25519 private-key file (32 raw bytes or base64 line)' -r -F
+complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from decrypt" -l vault-path -d 'Vault directory or `vault.spt` file used for `secret://` passphrases and vault-master envelopes' -r -F
+complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from decrypt" -l vault-passphrase-from -d 'Unlock the vault with a passphrase source instead of the keychain' -r
 complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from decrypt" -l config -d 'Path to a single config file' -r -F
 complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from decrypt" -l config-dir -d 'Path to a directory of `*.toml` configs (loaded in lexical order)' -r -F
 complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from decrypt" -l config-url -d 'HTTPS URL of a remote config to fetch' -r
@@ -423,6 +427,8 @@ complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcomma
 complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from decrypt" -s h -l help -d 'Print help (see more with \'--help\')'
 complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from decrypt" -s V -l version -d 'Print version'
 complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from edit" -l passphrase-from -d 'Read passphrase from a secret reference' -r
+complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from edit" -l vault-path -d 'Vault directory or `vault.spt` file used for `secret://` passphrases and vault-master envelopes' -r -F
+complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from edit" -l vault-passphrase-from -d 'Unlock the vault with a passphrase source instead of the keychain' -r
 complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from edit" -l config -d 'Path to a single config file' -r -F
 complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from edit" -l config-dir -d 'Path to a directory of `*.toml` configs (loaded in lexical order)' -r -F
 complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from edit" -l config-url -d 'HTTPS URL of a remote config to fetch' -r
@@ -1796,6 +1802,8 @@ complete -c spt -n "__fish_spt_using_subcommand secret; and __fish_seen_subcomma
 complete -c spt -n "__fish_spt_using_subcommand secret; and __fish_seen_subcommand_from store" -f -a "help" -d 'Print this message or the help of the given subcommand(s)'
 complete -c spt -n "__fish_spt_using_subcommand secret; and __fish_seen_subcommand_from set" -l from-env -d 'Read from an environment variable' -r
 complete -c spt -n "__fish_spt_using_subcommand secret; and __fish_seen_subcommand_from set" -l from-file -d 'Read from a file (mode-checked)' -r -F
+complete -c spt -n "__fish_spt_using_subcommand secret; and __fish_seen_subcommand_from set" -l vault-path -d 'Vault directory or `vault.spt` file when writing to the local vault' -r -F
+complete -c spt -n "__fish_spt_using_subcommand secret; and __fish_seen_subcommand_from set" -l passphrase-from -d 'Unlock the vault with a passphrase source (`stdin`, `env:NAME`, `file:<path>`, or `file:///path`)' -r
 complete -c spt -n "__fish_spt_using_subcommand secret; and __fish_seen_subcommand_from set" -l config -d 'Path to a single config file' -r -F
 complete -c spt -n "__fish_spt_using_subcommand secret; and __fish_seen_subcommand_from set" -l config-dir -d 'Path to a directory of `*.toml` configs (loaded in lexical order)' -r -F
 complete -c spt -n "__fish_spt_using_subcommand secret; and __fish_seen_subcommand_from set" -l config-url -d 'HTTPS URL of a remote config to fetch' -r
@@ -1822,6 +1830,8 @@ complete -c spt -n "__fish_spt_using_subcommand secret; and __fish_seen_subcomma
 complete -c spt -n "__fish_spt_using_subcommand secret; and __fish_seen_subcommand_from set" -l dry-run -d 'Show what would happen without making changes'
 complete -c spt -n "__fish_spt_using_subcommand secret; and __fish_seen_subcommand_from set" -s h -l help -d 'Print help (see more with \'--help\')'
 complete -c spt -n "__fish_spt_using_subcommand secret; and __fish_seen_subcommand_from set" -s V -l version -d 'Print version'
+complete -c spt -n "__fish_spt_using_subcommand secret; and __fish_seen_subcommand_from get" -l vault-path -d 'Vault directory or `vault.spt` file when reading from the local vault' -r -F
+complete -c spt -n "__fish_spt_using_subcommand secret; and __fish_seen_subcommand_from get" -l passphrase-from -d 'Unlock the vault with a passphrase source' -r
 complete -c spt -n "__fish_spt_using_subcommand secret; and __fish_seen_subcommand_from get" -l config -d 'Path to a single config file' -r -F
 complete -c spt -n "__fish_spt_using_subcommand secret; and __fish_seen_subcommand_from get" -l config-dir -d 'Path to a directory of `*.toml` configs (loaded in lexical order)' -r -F
 complete -c spt -n "__fish_spt_using_subcommand secret; and __fish_seen_subcommand_from get" -l config-url -d 'HTTPS URL of a remote config to fetch' -r
@@ -1849,7 +1859,7 @@ complete -c spt -n "__fish_spt_using_subcommand secret; and __fish_seen_subcomma
 complete -c spt -n "__fish_spt_using_subcommand secret; and __fish_seen_subcommand_from get" -s h -l help -d 'Print help (see more with \'--help\')'
 complete -c spt -n "__fish_spt_using_subcommand secret; and __fish_seen_subcommand_from get" -s V -l version -d 'Print version'
 complete -c spt -n "__fish_spt_using_subcommand secret; and __fish_seen_subcommand_from list" -l namespace -d 'Restrict to a single namespace' -r
-complete -c spt -n "__fish_spt_using_subcommand secret; and __fish_seen_subcommand_from list" -l vault-path -d 'Vault file location' -r -F
+complete -c spt -n "__fish_spt_using_subcommand secret; and __fish_seen_subcommand_from list" -l vault-path -d 'Vault directory or `vault.spt` file location' -r -F
 complete -c spt -n "__fish_spt_using_subcommand secret; and __fish_seen_subcommand_from list" -l passphrase-from -d 'Read the vault passphrase from a value source' -r
 complete -c spt -n "__fish_spt_using_subcommand secret; and __fish_seen_subcommand_from list" -l config -d 'Path to a single config file' -r -F
 complete -c spt -n "__fish_spt_using_subcommand secret; and __fish_seen_subcommand_from list" -l config-dir -d 'Path to a directory of `*.toml` configs (loaded in lexical order)' -r -F
@@ -1877,7 +1887,7 @@ complete -c spt -n "__fish_spt_using_subcommand secret; and __fish_seen_subcomma
 complete -c spt -n "__fish_spt_using_subcommand secret; and __fish_seen_subcommand_from list" -s h -l help -d 'Print help (see more with \'--help\')'
 complete -c spt -n "__fish_spt_using_subcommand secret; and __fish_seen_subcommand_from list" -s V -l version -d 'Print version'
 complete -c spt -n "__fish_spt_using_subcommand secret; and __fish_seen_subcommand_from rotate" -l new-value-from -d 'New value source for `rotate` (`stdin`, `file:<path>`, `env:<NAME>`)' -r
-complete -c spt -n "__fish_spt_using_subcommand secret; and __fish_seen_subcommand_from rotate" -l vault-path -d 'Vault file location' -r -F
+complete -c spt -n "__fish_spt_using_subcommand secret; and __fish_seen_subcommand_from rotate" -l vault-path -d 'Vault directory or `vault.spt` file location' -r -F
 complete -c spt -n "__fish_spt_using_subcommand secret; and __fish_seen_subcommand_from rotate" -l passphrase-from -d 'Read the vault passphrase from a value source' -r
 complete -c spt -n "__fish_spt_using_subcommand secret; and __fish_seen_subcommand_from rotate" -l config -d 'Path to a single config file' -r -F
 complete -c spt -n "__fish_spt_using_subcommand secret; and __fish_seen_subcommand_from rotate" -l config-dir -d 'Path to a directory of `*.toml` configs (loaded in lexical order)' -r -F
@@ -1905,7 +1915,7 @@ complete -c spt -n "__fish_spt_using_subcommand secret; and __fish_seen_subcomma
 complete -c spt -n "__fish_spt_using_subcommand secret; and __fish_seen_subcommand_from rotate" -s h -l help -d 'Print help (see more with \'--help\')'
 complete -c spt -n "__fish_spt_using_subcommand secret; and __fish_seen_subcommand_from rotate" -s V -l version -d 'Print version'
 complete -c spt -n "__fish_spt_using_subcommand secret; and __fish_seen_subcommand_from remove" -l new-value-from -d 'New value source for `rotate` (`stdin`, `file:<path>`, `env:<NAME>`)' -r
-complete -c spt -n "__fish_spt_using_subcommand secret; and __fish_seen_subcommand_from remove" -l vault-path -d 'Vault file location' -r -F
+complete -c spt -n "__fish_spt_using_subcommand secret; and __fish_seen_subcommand_from remove" -l vault-path -d 'Vault directory or `vault.spt` file location' -r -F
 complete -c spt -n "__fish_spt_using_subcommand secret; and __fish_seen_subcommand_from remove" -l passphrase-from -d 'Read the vault passphrase from a value source' -r
 complete -c spt -n "__fish_spt_using_subcommand secret; and __fish_seen_subcommand_from remove" -l config -d 'Path to a single config file' -r -F
 complete -c spt -n "__fish_spt_using_subcommand secret; and __fish_seen_subcommand_from remove" -l config-dir -d 'Path to a directory of `*.toml` configs (loaded in lexical order)' -r -F

@@ -280,6 +280,22 @@ impl VaultBackend {
         })
     }
 
+    /// Return a copy of the 32-byte vault master key for config sealing.
+    ///
+    /// The returned buffer zeroizes on drop. This is intended for
+    /// `spt-config-crypt`'s vault-master KDF only; callers must not log,
+    /// persist, or expose the returned bytes.
+    #[must_use]
+    pub fn config_crypt_master_key(&self) -> Zeroizing<[u8; 32]> {
+        match &self.master {
+            MasterKey::Raw(key) => {
+                let mut out = [0u8; 32];
+                out.copy_from_slice(key.expose_secret().as_ref());
+                Zeroizing::new(out)
+            }
+        }
+    }
+
     /// Replace the master key, re-encrypting every record. The new key is
     /// stored in the keychain via `keychain.master_entry()`.
     pub fn rotate_master_key(&mut self, keychain: &KeychainBackend) -> Result<()> {

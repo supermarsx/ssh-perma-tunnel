@@ -84,6 +84,14 @@ pub struct ConfigEncrypt {
     /// Use the keychain-resident vault master key.
     #[arg(long)]
     pub use_vault_master: bool,
+    /// Vault directory or `vault.spt` file used for `secret://` passphrases
+    /// and `--use-vault-master`.
+    #[arg(long, value_name = "PATH")]
+    pub vault_path: Option<PathBuf>,
+    /// Unlock the vault with a passphrase source instead of the keychain
+    /// (`stdin`, `env:NAME`, `file:<path>`, or `file:///path`).
+    #[arg(long, value_name = "SOURCE")]
+    pub vault_passphrase_from: Option<String>,
     /// Overwrite an existing output file.
     #[arg(long)]
     pub force: bool,
@@ -104,6 +112,13 @@ pub struct ConfigDecrypt {
     /// Path to an X25519 private-key file (32 raw bytes or base64 line).
     #[arg(long, value_name = "PATH")]
     pub recipient_key: Option<PathBuf>,
+    /// Vault directory or `vault.spt` file used for `secret://` passphrases
+    /// and vault-master envelopes.
+    #[arg(long, value_name = "PATH")]
+    pub vault_path: Option<PathBuf>,
+    /// Unlock the vault with a passphrase source instead of the keychain.
+    #[arg(long, value_name = "SOURCE")]
+    pub vault_passphrase_from: Option<String>,
 }
 
 /// `spt config edit`.
@@ -115,6 +130,13 @@ pub struct ConfigEdit {
     /// Read passphrase from a secret reference.
     #[arg(long, value_name = "REF")]
     pub passphrase_from: Option<String>,
+    /// Vault directory or `vault.spt` file used for `secret://` passphrases
+    /// and vault-master envelopes.
+    #[arg(long, value_name = "PATH")]
+    pub vault_path: Option<PathBuf>,
+    /// Unlock the vault with a passphrase source instead of the keychain.
+    #[arg(long, value_name = "SOURCE")]
+    pub vault_passphrase_from: Option<String>,
 }
 
 /// `spt config crypt rotate`.
@@ -129,6 +151,13 @@ pub struct ConfigCryptRotate {
     /// New X25519 recipient public keys (base64).
     #[arg(long, value_name = "PUBKEY")]
     pub new_recipient: Vec<String>,
+    /// Vault directory or `vault.spt` file used for `secret://` passphrases
+    /// and vault-master envelopes.
+    #[arg(long, value_name = "PATH")]
+    pub vault_path: Option<PathBuf>,
+    /// Unlock the vault with a passphrase source instead of the keychain.
+    #[arg(long, value_name = "SOURCE")]
+    pub vault_passphrase_from: Option<String>,
 }
 
 /// Built-in config templates available to `spt config init`.

@@ -486,6 +486,8 @@ _arguments "${_arguments_options[@]}" : \
 '--out=[Output path (default\: \`<IN>.sealed\`)]:PATH:_files' \
 '--passphrase-from=[Read passphrase from a secret reference (e.g. \`secret\://env/SPT_PP\`)]:REF:_default' \
 '*--recipient=[One or more X25519 recipient public keys (base64)]:PUBKEY:_default' \
+'--vault-path=[Vault directory or \`vault.spt\` file used for \`secret\://\` passphrases and \`--use-vault-master\`]:PATH:_files' \
+'--vault-passphrase-from=[Unlock the vault with a passphrase source instead of the keychain (\`stdin\`, \`env\:NAME\`, \`file\:<path>\`, or \`file\:///path\`)]:SOURCE:_default' \
 '--config=[Path to a single config file]:PATH:_files' \
 '--config-dir=[Path to a directory of \`*.toml\` configs (loaded in lexical order)]:PATH:_files' \
 '--config-url=[HTTPS URL of a remote config to fetch]:URL:_default' \
@@ -525,6 +527,8 @@ _arguments "${_arguments_options[@]}" : \
 '--out=[Output path. If unset, write the cleartext to stdout]:PATH:_files' \
 '--passphrase-from=[Read passphrase from a secret reference]:REF:_default' \
 '--recipient-key=[Path to an X25519 private-key file (32 raw bytes or base64 line)]:PATH:_files' \
+'--vault-path=[Vault directory or \`vault.spt\` file used for \`secret\://\` passphrases and vault-master envelopes]:PATH:_files' \
+'--vault-passphrase-from=[Unlock the vault with a passphrase source instead of the keychain]:SOURCE:_default' \
 '--config=[Path to a single config file]:PATH:_files' \
 '--config-dir=[Path to a directory of \`*.toml\` configs (loaded in lexical order)]:PATH:_files' \
 '--config-url=[HTTPS URL of a remote config to fetch]:URL:_default' \
@@ -560,6 +564,8 @@ never\:"Never emit color escapes"))' \
 (edit)
 _arguments "${_arguments_options[@]}" : \
 '--passphrase-from=[Read passphrase from a secret reference]:REF:_default' \
+'--vault-path=[Vault directory or \`vault.spt\` file used for \`secret\://\` passphrases and vault-master envelopes]:PATH:_files' \
+'--vault-passphrase-from=[Unlock the vault with a passphrase source instead of the keychain]:SOURCE:_default' \
 '--config=[Path to a single config file]:PATH:_files' \
 '--config-dir=[Path to a directory of \`*.toml\` configs (loaded in lexical order)]:PATH:_files' \
 '--config-url=[HTTPS URL of a remote config to fetch]:URL:_default' \
@@ -637,6 +643,8 @@ never\:"Never emit color escapes"))' \
 _arguments "${_arguments_options[@]}" : \
 '--new-passphrase-from=[New passphrase, read from a secret reference]:REF:_default' \
 '*--new-recipient=[New X25519 recipient public keys (base64)]:PUBKEY:_default' \
+'--vault-path=[Vault directory or \`vault.spt\` file used for \`secret\://\` passphrases and vault-master envelopes]:PATH:_files' \
+'--vault-passphrase-from=[Unlock the vault with a passphrase source instead of the keychain]:SOURCE:_default' \
 '--config=[Path to a single config file]:PATH:_files' \
 '--config-dir=[Path to a directory of \`*.toml\` configs (loaded in lexical order)]:PATH:_files' \
 '--config-url=[HTTPS URL of a remote config to fetch]:URL:_default' \
@@ -2850,7 +2858,7 @@ never\:"Never emit color escapes"))' \
             (init)
 _arguments "${_arguments_options[@]}" : \
 '--backend=[Preferred backend]:BACKEND:(auto keychain vault)' \
-'--vault-path=[Vault file location (overrides default \`<state_dir>/vault.spt\`)]:PATH:_files' \
+'--vault-path=[Vault directory or \`vault.spt\` file location]:PATH:_files' \
 '--passphrase-from=[Read the vault passphrase from a value source (\`stdin\`, \`file\:<path>\`, \`env\:<NAME>\`)]:SOURCE:_default' \
 '--config=[Path to a single config file]:PATH:_files' \
 '--config-dir=[Path to a directory of \`*.toml\` configs (loaded in lexical order)]:PATH:_files' \
@@ -2915,6 +2923,8 @@ esac
 _arguments "${_arguments_options[@]}" : \
 '--from-env=[Read from an environment variable]:ENV:_default' \
 '--from-file=[Read from a file (mode-checked)]:PATH:_files' \
+'--vault-path=[Vault directory or \`vault.spt\` file when writing to the local vault]:PATH:_files' \
+'--passphrase-from=[Unlock the vault with a passphrase source (\`stdin\`, \`env\:NAME\`, \`file\:<path>\`, or \`file\:///path\`)]:SOURCE:_default' \
 '--config=[Path to a single config file]:PATH:_files' \
 '--config-dir=[Path to a directory of \`*.toml\` configs (loaded in lexical order)]:PATH:_files' \
 '--config-url=[HTTPS URL of a remote config to fetch]:URL:_default' \
@@ -2950,6 +2960,8 @@ never\:"Never emit color escapes"))' \
 ;;
 (get)
 _arguments "${_arguments_options[@]}" : \
+'--vault-path=[Vault directory or \`vault.spt\` file when reading from the local vault]:PATH:_files' \
+'--passphrase-from=[Unlock the vault with a passphrase source]:SOURCE:_default' \
 '--config=[Path to a single config file]:PATH:_files' \
 '--config-dir=[Path to a directory of \`*.toml\` configs (loaded in lexical order)]:PATH:_files' \
 '--config-url=[HTTPS URL of a remote config to fetch]:URL:_default' \
@@ -2986,7 +2998,7 @@ never\:"Never emit color escapes"))' \
 (list)
 _arguments "${_arguments_options[@]}" : \
 '--namespace=[Restrict to a single namespace]:NS:_default' \
-'--vault-path=[Vault file location]:PATH:_files' \
+'--vault-path=[Vault directory or \`vault.spt\` file location]:PATH:_files' \
 '--passphrase-from=[Read the vault passphrase from a value source]:SOURCE:_default' \
 '--config=[Path to a single config file]:PATH:_files' \
 '--config-dir=[Path to a directory of \`*.toml\` configs (loaded in lexical order)]:PATH:_files' \
@@ -3022,7 +3034,7 @@ never\:"Never emit color escapes"))' \
 (rotate)
 _arguments "${_arguments_options[@]}" : \
 '--new-value-from=[New value source for \`rotate\` (\`stdin\`, \`file\:<path>\`, \`env\:<NAME>\`)]:SOURCE:_default' \
-'--vault-path=[Vault file location]:PATH:_files' \
+'--vault-path=[Vault directory or \`vault.spt\` file location]:PATH:_files' \
 '--passphrase-from=[Read the vault passphrase from a value source]:SOURCE:_default' \
 '--config=[Path to a single config file]:PATH:_files' \
 '--config-dir=[Path to a directory of \`*.toml\` configs (loaded in lexical order)]:PATH:_files' \
@@ -3059,7 +3071,7 @@ never\:"Never emit color escapes"))' \
 (remove)
 _arguments "${_arguments_options[@]}" : \
 '--new-value-from=[New value source for \`rotate\` (\`stdin\`, \`file\:<path>\`, \`env\:<NAME>\`)]:SOURCE:_default' \
-'--vault-path=[Vault file location]:PATH:_files' \
+'--vault-path=[Vault directory or \`vault.spt\` file location]:PATH:_files' \
 '--passphrase-from=[Read the vault passphrase from a value source]:SOURCE:_default' \
 '--config=[Path to a single config file]:PATH:_files' \
 '--config-dir=[Path to a directory of \`*.toml\` configs (loaded in lexical order)]:PATH:_files' \

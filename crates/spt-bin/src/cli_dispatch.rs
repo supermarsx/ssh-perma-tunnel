@@ -33,9 +33,10 @@
 #![allow(clippy::redundant_closure_for_method_calls)]
 #![allow(clippy::assigning_clones)]
 
+use secrecy::ExposeSecret;
 use spt_cli::{groups, Cli, Command, GlobalOpts};
 use spt_core::{Error, RedactionMode, Result};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 /// Top-level dispatcher.
@@ -101,13 +102,13 @@ async fn config_dispatch(global: &GlobalOpts, c: groups::config::ConfigCmd) -> R
         ConfigSub::Reload(args) => crate::cli::config_ops::reload(global, args).await,
         ConfigSub::Pull(args) => config_pull(global, args).await,
         ConfigSub::Trust(args) => config_trust(global, args),
-        ConfigSub::Encrypt(args) => crate::cli::config_ops::encrypt(args).await,
-        ConfigSub::Decrypt(args) => crate::cli::config_ops::decrypt(args).await,
-        ConfigSub::Edit(args) => crate::cli::config_ops::edit(args).await,
+        ConfigSub::Encrypt(args) => crate::cli::config_ops::encrypt(global, args).await,
+        ConfigSub::Decrypt(args) => crate::cli::config_ops::decrypt(global, args).await,
+        ConfigSub::Edit(args) => crate::cli::config_ops::edit(global, args).await,
         ConfigSub::Crypt(args) => {
             use groups::config::ConfigCryptSub;
             match args.command {
-                ConfigCryptSub::Rotate(a) => crate::cli::config_ops::crypt_rotate(a).await,
+                ConfigCryptSub::Rotate(a) => crate::cli::config_ops::crypt_rotate(global, a).await,
             }
         }
     }
@@ -1506,16 +1507,16 @@ async fn secret_dispatch(global: &GlobalOpts, c: groups::secret::SecretCmd) -> R
     }
 }
 
-fn secret_set(_global: &GlobalOpts, args: groups::secret::SecretSet) -> Result<()> {
+fn secret_set(global: &GlobalOpts, args: groups::secret::SecretSet) -> Result<()> {
     let value = if args.prompt {
         prompt_passphrase(&format!("value for `{}`: ", args.name))?
-    } else if let Some(env) = args.from_env {
-        std::env::var(&env).map_err(|e| Error::SecretUnavailable {
+    } else if let Some(env) = args.from_env.as_deref() {
+        std::env::var(env).map_err(|e| Error::SecretUnavailable {
             reference: format!("env:{env}"),
             reason: e.to_string(),
         })?
-    } else if let Some(file) = args.from_file {
-        std::fs::read_to_string(&file)
+    } else if let Some(file) = args.from_file.as_ref() {
+        std::fs::read_to_string(file)
             .map_err(|e| Error::SecretUnavailable {
                 reference: file.display().to_string(),
                 reason: e.to_string(),
@@ -1528,43 +1529,79 @@ fn secret_set(_global: &GlobalOpts, args: groups::secret::SecretSet) -> Result<(
         ));
     };
     let r = parse_ns_name(&args.name)?;
-    let kc = spt_secrets::KeychainBackend::with_service("spt".to_string());
     use spt_secrets::SecretBackend;
-    kc.set(&r, value.as_bytes())?;
+    if secret_should_use_vault(
+        global,
+        args.vault_path.as_deref(),
+        args.passphrase_from.as_deref(),
+    ) {
+        let vault = open_secret_vault(
+            global,
+            args.vault_path.as_deref(),
+            args.passphrase_from.as_deref(),
+        )?;
+        vault.set(&r, value.as_bytes())?;
+    } else {
+        let kc = spt_secrets::KeychainBackend::with_service(secret_keychain_namespace(global));
+        kc.set(&r, value.as_bytes())?;
+    }
     println!("set secret `{}`", args.name);
     Ok(())
 }
 
-fn secret_get(_global: &GlobalOpts, args: groups::secret::SecretGet) -> Result<()> {
+fn secret_get(global: &GlobalOpts, args: groups::secret::SecretGet) -> Result<()> {
     let r = parse_ns_name(&args.name)?;
-    let kc = spt_secrets::KeychainBackend::with_service("spt".to_string());
     use spt_secrets::SecretBackend;
-    let bytes = kc.get(&r)?.ok_or_else(|| Error::SecretUnavailable {
+    let bytes = if secret_should_use_vault(
+        global,
+        args.vault_path.as_deref(),
+        args.passphrase_from.as_deref(),
+    ) {
+        let vault = open_secret_vault(
+            global,
+            args.vault_path.as_deref(),
+            args.passphrase_from.as_deref(),
+        )?;
+        vault.get(&r)?
+    } else {
+        let kc = spt_secrets::KeychainBackend::with_service(secret_keychain_namespace(global));
+        kc.get(&r)?
+    }
+    .ok_or_else(|| Error::SecretUnavailable {
         reference: format!("secret://{}/{}", r.ns(), r.name()),
-        reason: "not found in keychain".into(),
+        reason: "not found in configured secret backend".into(),
     })?;
     if args.reveal {
+        use std::io::Write as _;
         eprintln!("warning: --reveal exposes plaintext secret material to your terminal.");
-        println!(
-            "(secret loaded, {} bytes — full reveal tracked in M1)",
-            bytes_len_hint(&bytes)
-        );
+        std::io::stdout()
+            .write_all(bytes.expose_secret().as_slice())
+            .map_err(|e| Error::RuntimeFailure(format!("stdout: {e}")))?;
+        println!();
     } else {
         println!("[REDACTED]");
     }
     Ok(())
 }
 
-fn bytes_len_hint(b: &spt_secrets::SecretBytes) -> usize {
-    use secrecy::ExposeSecret;
-    b.expose_secret().len()
-}
-
-fn secret_remove(_global: &GlobalOpts, args: groups::secret::SecretName) -> Result<()> {
+fn secret_remove(global: &GlobalOpts, args: groups::secret::SecretName) -> Result<()> {
     let r = parse_ns_name(&args.name)?;
-    let kc = spt_secrets::KeychainBackend::with_service("spt".to_string());
     use spt_secrets::SecretBackend;
-    let _ = kc.remove(&r)?;
+    if secret_should_use_vault(
+        global,
+        args.vault_path.as_deref(),
+        args.passphrase_from.as_deref(),
+    ) {
+        let vault = open_secret_vault(
+            global,
+            args.vault_path.as_deref(),
+            args.passphrase_from.as_deref(),
+        )?;
+        let _ = vault.remove(&r)?;
+    } else {
+        let kc = spt_secrets::KeychainBackend::with_service(secret_keychain_namespace(global));
+        let _ = kc.remove(&r)?;
+    }
     println!("removed secret `{}`", args.name);
     Ok(())
 }
@@ -1586,8 +1623,137 @@ fn secret_doctor(global: &GlobalOpts) -> Result<()> {
     Ok(())
 }
 
+fn secret_should_use_vault(
+    global: &GlobalOpts,
+    vault_path: Option<&Path>,
+    passphrase_from: Option<&str>,
+) -> bool {
+    vault_path.is_some()
+        || passphrase_from.is_some()
+        || secret_config(global)
+            .and_then(|s| s.backend)
+            .is_some_and(|b| b == "vault")
+}
+
+fn secret_config(global: &GlobalOpts) -> Option<spt_config::schema::Secrets> {
+    global
+        .config
+        .as_ref()
+        .and_then(|path| spt_config::load(path, false).ok())
+        .and_then(|(cfg, _)| cfg.secrets)
+}
+
+fn secret_keychain_namespace(global: &GlobalOpts) -> String {
+    secret_config(global)
+        .and_then(|s| s.keychain_namespace)
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "spt".to_string())
+}
+
+fn secret_vault_dir(global: &GlobalOpts, vault_path: Option<&Path>) -> Result<PathBuf> {
+    if let Some(path) = vault_path {
+        return Ok(secret_vault_location_to_dir(path));
+    }
+    if let Some(path) = secret_config(global)
+        .and_then(|s| s.vault_file)
+        .filter(|s| !s.trim().is_empty())
+    {
+        return Ok(secret_vault_location_to_dir(Path::new(&path)));
+    }
+    let state = resolve_state_dir_for_read(global)?;
+    Ok(state.join("secrets"))
+}
+
+fn secret_vault_location_to_dir(path: &Path) -> PathBuf {
+    if path
+        .file_name()
+        .is_some_and(|name| name == std::ffi::OsStr::new("vault.spt"))
+    {
+        return path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .to_path_buf();
+    }
+    path.to_path_buf()
+}
+
+fn open_secret_vault(
+    global: &GlobalOpts,
+    vault_path: Option<&Path>,
+    passphrase_from: Option<&str>,
+) -> Result<spt_secrets::VaultBackend> {
+    let dir = secret_vault_dir(global, vault_path)?;
+    if !spt_secrets::VaultBackend::vault_path(&dir).exists() {
+        return Err(Error::SecretUnavailable {
+            reference: format!("vault at `{}`", dir.display()),
+            reason: "vault does not exist — run `spt secret store init` first".into(),
+        });
+    }
+    if let Some(source) = passphrase_from {
+        let passphrase = read_secret_value_source(source)?;
+        return spt_secrets::VaultBackend::open_with_passphrase(&dir, &passphrase);
+    }
+    let kc = spt_secrets::KeychainBackend::with_service(secret_keychain_namespace(global));
+    match spt_secrets::VaultBackend::open_with_keychain(&dir, &kc) {
+        Ok(vault) => Ok(vault),
+        Err(e) => {
+            eprintln!("warning: vault keychain unlock unavailable ({e}); prompting for passphrase");
+            let passphrase = spt_secrets::read_passphrase("vault passphrase: ")?;
+            spt_secrets::VaultBackend::open_with_passphrase(
+                &dir,
+                passphrase.expose_secret().as_bytes(),
+            )
+        }
+    }
+}
+
+fn read_secret_value_source(source: &str) -> Result<Vec<u8>> {
+    if source == "stdin" || source == "-" {
+        let mut buf = Vec::new();
+        std::io::stdin()
+            .lock()
+            .read_to_end(&mut buf)
+            .map_err(|e| Error::RuntimeFailure(format!("read stdin: {e}")))?;
+        return Ok(strip_secret_newlines(buf));
+    }
+    if let Some(name) = source.strip_prefix("env:") {
+        return std::env::var(name)
+            .map(String::into_bytes)
+            .map_err(|e| Error::SecretUnavailable {
+                reference: format!("env:{name}"),
+                reason: e.to_string(),
+            });
+    }
+    if let Ok(spt_auth::SecretRef::File(path)) = spt_auth::SecretRef::parse(source) {
+        return read_secret_file_source(&path);
+    }
+    if let Some(path) = source.strip_prefix("file:") {
+        return read_secret_file_source(path);
+    }
+    Err(Error::InvalidArgs(format!(
+        "secret value source `{source}` must be `stdin`, `env:NAME`, `file:<path>`, or `file:///path`"
+    )))
+}
+
+fn read_secret_file_source(path: &str) -> Result<Vec<u8>> {
+    std::fs::read(path)
+        .map(strip_secret_newlines)
+        .map_err(|e| Error::SecretUnavailable {
+            reference: format!("file:{path}"),
+            reason: e.to_string(),
+        })
+}
+
+fn strip_secret_newlines(mut bytes: Vec<u8>) -> Vec<u8> {
+    while matches!(bytes.last().copied(), Some(b'\n' | b'\r')) {
+        bytes.pop();
+    }
+    bytes
+}
+
 fn parse_ns_name(s: &str) -> Result<spt_secrets::SecretRef> {
-    let (ns, name) = s
+    let stripped = s.strip_prefix("secret://").unwrap_or(s);
+    let (ns, name) = stripped
         .split_once('/')
         .ok_or_else(|| Error::InvalidArgs(format!("expected `<ns>/<name>`, got `{s}`")))?;
     spt_secrets::SecretRef::new(ns.to_string(), name.to_string())
@@ -4330,6 +4496,65 @@ mod tests {
             "env:SPT_TEST_VAULT_E21",
         ]);
         let _ = dispatch(cli).await;
+    }
+
+    #[tokio::test]
+    async fn secret_set_writes_to_passphrase_vault() {
+        use secrecy::ExposeSecret as _;
+        use spt_secrets::SecretBackend as _;
+
+        let td = tempfile::tempdir().unwrap();
+        let vault_file = td.path().join("secrets").join("vault.spt");
+        let unlock_var = "SPT_TEST_VAULT_UNLOCK_CLI_E21";
+        let value_var = "SPT_TEST_SECRET_VALUE_CLI_E21";
+        unsafe {
+            std::env::set_var(unlock_var, "vault unlock");
+            std::env::set_var(value_var, "sealed config pass");
+        }
+
+        let init = parse(&[
+            "spt",
+            "--state-dir",
+            td.path().to_str().unwrap(),
+            "secret",
+            "store",
+            "init",
+            "--vault-path",
+            vault_file.to_str().unwrap(),
+            "--passphrase-from",
+            &format!("env:{unlock_var}"),
+        ]);
+        dispatch_ok(init).await;
+
+        let set = parse(&[
+            "spt",
+            "--state-dir",
+            td.path().to_str().unwrap(),
+            "secret",
+            "set",
+            "cfg/seal-passphrase",
+            "--from-env",
+            value_var,
+            "--vault-path",
+            vault_file.to_str().unwrap(),
+            "--passphrase-from",
+            &format!("env:{unlock_var}"),
+        ]);
+        dispatch_ok(set).await;
+
+        let vault = spt_secrets::VaultBackend::open_with_passphrase(
+            vault_file.parent().unwrap(),
+            b"vault unlock",
+        )
+        .unwrap();
+        let r = spt_secrets::SecretRef::new("cfg", "seal-passphrase").unwrap();
+        let got = vault.get(&r).unwrap().unwrap();
+        assert_eq!(got.expose_secret().as_slice(), b"sealed config pass");
+
+        unsafe {
+            std::env::remove_var(unlock_var);
+            std::env::remove_var(value_var);
+        }
     }
 
     #[tokio::test]

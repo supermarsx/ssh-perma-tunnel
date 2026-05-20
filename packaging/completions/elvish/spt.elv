@@ -351,6 +351,8 @@ set edit:completion:arg-completer[spt] = {|@words|
             cand --out 'Output path (default: `<IN>.sealed`)'
             cand --passphrase-from 'Read passphrase from a secret reference (e.g. `secret://env/SPT_PP`)'
             cand --recipient 'One or more X25519 recipient public keys (base64)'
+            cand --vault-path 'Vault directory or `vault.spt` file used for `secret://` passphrases and `--use-vault-master`'
+            cand --vault-passphrase-from 'Unlock the vault with a passphrase source instead of the keychain (`stdin`, `env:NAME`, `file:<path>`, or `file:///path`)'
             cand --config 'Path to a single config file'
             cand --config-dir 'Path to a directory of `*.toml` configs (loaded in lexical order)'
             cand --config-url 'HTTPS URL of a remote config to fetch'
@@ -378,6 +380,8 @@ set edit:completion:arg-completer[spt] = {|@words|
             cand --out 'Output path. If unset, write the cleartext to stdout'
             cand --passphrase-from 'Read passphrase from a secret reference'
             cand --recipient-key 'Path to an X25519 private-key file (32 raw bytes or base64 line)'
+            cand --vault-path 'Vault directory or `vault.spt` file used for `secret://` passphrases and vault-master envelopes'
+            cand --vault-passphrase-from 'Unlock the vault with a passphrase source instead of the keychain'
             cand --config 'Path to a single config file'
             cand --config-dir 'Path to a directory of `*.toml` configs (loaded in lexical order)'
             cand --config-url 'HTTPS URL of a remote config to fetch'
@@ -401,6 +405,8 @@ set edit:completion:arg-completer[spt] = {|@words|
         }
         &'spt;config;edit'= {
             cand --passphrase-from 'Read passphrase from a secret reference'
+            cand --vault-path 'Vault directory or `vault.spt` file used for `secret://` passphrases and vault-master envelopes'
+            cand --vault-passphrase-from 'Unlock the vault with a passphrase source instead of the keychain'
             cand --config 'Path to a single config file'
             cand --config-dir 'Path to a directory of `*.toml` configs (loaded in lexical order)'
             cand --config-url 'HTTPS URL of a remote config to fetch'
@@ -449,6 +455,8 @@ set edit:completion:arg-completer[spt] = {|@words|
         &'spt;config;crypt;rotate'= {
             cand --new-passphrase-from 'New passphrase, read from a secret reference'
             cand --new-recipient 'New X25519 recipient public keys (base64)'
+            cand --vault-path 'Vault directory or `vault.spt` file used for `secret://` passphrases and vault-master envelopes'
+            cand --vault-passphrase-from 'Unlock the vault with a passphrase source instead of the keychain'
             cand --config 'Path to a single config file'
             cand --config-dir 'Path to a directory of `*.toml` configs (loaded in lexical order)'
             cand --config-url 'HTTPS URL of a remote config to fetch'
@@ -1858,7 +1866,7 @@ set edit:completion:arg-completer[spt] = {|@words|
         }
         &'spt;secret;store;init'= {
             cand --backend 'Preferred backend'
-            cand --vault-path 'Vault file location (overrides default `<state_dir>/vault.spt`)'
+            cand --vault-path 'Vault directory or `vault.spt` file location'
             cand --passphrase-from 'Read the vault passphrase from a value source (`stdin`, `file:<path>`, `env:<NAME>`)'
             cand --config 'Path to a single config file'
             cand --config-dir 'Path to a directory of `*.toml` configs (loaded in lexical order)'
@@ -1892,6 +1900,8 @@ set edit:completion:arg-completer[spt] = {|@words|
         &'spt;secret;set'= {
             cand --from-env 'Read from an environment variable'
             cand --from-file 'Read from a file (mode-checked)'
+            cand --vault-path 'Vault directory or `vault.spt` file when writing to the local vault'
+            cand --passphrase-from 'Unlock the vault with a passphrase source (`stdin`, `env:NAME`, `file:<path>`, or `file:///path`)'
             cand --config 'Path to a single config file'
             cand --config-dir 'Path to a directory of `*.toml` configs (loaded in lexical order)'
             cand --config-url 'HTTPS URL of a remote config to fetch'
@@ -1915,6 +1925,8 @@ set edit:completion:arg-completer[spt] = {|@words|
             cand --version 'Print version'
         }
         &'spt;secret;get'= {
+            cand --vault-path 'Vault directory or `vault.spt` file when reading from the local vault'
+            cand --passphrase-from 'Unlock the vault with a passphrase source'
             cand --config 'Path to a single config file'
             cand --config-dir 'Path to a directory of `*.toml` configs (loaded in lexical order)'
             cand --config-url 'HTTPS URL of a remote config to fetch'
@@ -1939,7 +1951,7 @@ set edit:completion:arg-completer[spt] = {|@words|
         }
         &'spt;secret;list'= {
             cand --namespace 'Restrict to a single namespace'
-            cand --vault-path 'Vault file location'
+            cand --vault-path 'Vault directory or `vault.spt` file location'
             cand --passphrase-from 'Read the vault passphrase from a value source'
             cand --config 'Path to a single config file'
             cand --config-dir 'Path to a directory of `*.toml` configs (loaded in lexical order)'
@@ -1964,7 +1976,7 @@ set edit:completion:arg-completer[spt] = {|@words|
         }
         &'spt;secret;rotate'= {
             cand --new-value-from 'New value source for `rotate` (`stdin`, `file:<path>`, `env:<NAME>`)'
-            cand --vault-path 'Vault file location'
+            cand --vault-path 'Vault directory or `vault.spt` file location'
             cand --passphrase-from 'Read the vault passphrase from a value source'
             cand --config 'Path to a single config file'
             cand --config-dir 'Path to a directory of `*.toml` configs (loaded in lexical order)'
@@ -1989,7 +2001,7 @@ set edit:completion:arg-completer[spt] = {|@words|
         }
         &'spt;secret;remove'= {
             cand --new-value-from 'New value source for `rotate` (`stdin`, `file:<path>`, `env:<NAME>`)'
-            cand --vault-path 'Vault file location'
+            cand --vault-path 'Vault directory or `vault.spt` file location'
             cand --passphrase-from 'Read the vault passphrase from a value source'
             cand --config 'Path to a single config file'
             cand --config-dir 'Path to a directory of `*.toml` configs (loaded in lexical order)'

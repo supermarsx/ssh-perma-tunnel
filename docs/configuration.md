@@ -248,8 +248,8 @@ file format is `SPTENC1` (8-byte magic `b"SPTENC1\n"`), an AEAD-protected
 body (`AES-256-GCM`) with one of three key sources:
 
 - **Passphrase** — Argon2id (m=64 MiB, t=3, p=4 by default).
-- **Vault master** — 32-byte key resolved from the OS keychain (deferred
-  CLI wiring; see t5-e6 log).
+- **Vault master** — 32-byte vault master key resolved from the configured
+  vault, unlocked through the OS keychain or `--vault-passphrase-from`.
 - **X25519 recipients** — one or more recipient public keys; any holder
   of a matching private scalar can unseal.
 
@@ -260,17 +260,29 @@ spt config encrypt <in> [--out <PATH>]
                         [--passphrase-from <REF>]   # e.g. env:NAME, file:///path
                         [--recipient <PUBKEY_B64>]
                         [--use-vault-master]
+                        [--vault-path <PATH>]
+                        [--vault-passphrase-from <SOURCE>]
                         [--force]
 spt config decrypt <in> [--out <PATH>]
                         [--passphrase-from <REF>]
                         [--recipient-key <PATH>]
+                        [--vault-path <PATH>]
+                        [--vault-passphrase-from <SOURCE>]
 spt config edit    <sealed>  [--passphrase-from <REF>]
+                        [--vault-path <PATH>]
+                        [--vault-passphrase-from <SOURCE>]
 spt config crypt rotate <sealed> [--new-passphrase-from <REF>]
                                  [--new-recipient <PUBKEY_B64>]
+                                 [--vault-path <PATH>]
+                                 [--vault-passphrase-from <SOURCE>]
 ```
 
 `--passphrase-from` accepts the same `env:` / `file://` / `secret://`
-forms as the rest of the CLI (parsed by `spt_auth::SecretRef`).
+forms as the rest of the CLI. When it points at `secret://ns/name`, the
+config command opens the configured vault and resolves that record without
+printing the secret. `--vault-path` accepts either a vault directory or a
+path ending in `vault.spt`; `--vault-passphrase-from` accepts `stdin`,
+`env:NAME`, `file:<path>`, or `file:///path` for passphrase-only vaults.
 
 ### Loader auto-detection
 
@@ -304,9 +316,10 @@ use `load_with_key(path, strict, Some(&key))`.
   buffers wrapped by `secrecy::SecretBox`.
 - `spt config decrypt` to stdout is honoured but should be piped — the
   cleartext is by definition not redacted.
-- `--use-vault-master` requires a keychain-resident master key. The
-  CLI plumbing for that path is intentionally guarded and emits a
-  clear error until the t5-Bwire integrator wires it.
+- `--use-vault-master` seals the config under the vault master key. Use
+  `--vault-passphrase-from` for headless passphrase-only vaults; otherwise
+  the CLI tries the OS keychain first and prompts for the vault passphrase
+  if keychain unlock is unavailable.
 
 ## See also
 

@@ -369,6 +369,8 @@ Register-ArgumentCompleter -Native -CommandName 'spt' -ScriptBlock {
             [CompletionResult]::new('--out', '--out', [CompletionResultType]::ParameterName, 'Output path (default: `<IN>.sealed`)')
             [CompletionResult]::new('--passphrase-from', '--passphrase-from', [CompletionResultType]::ParameterName, 'Read passphrase from a secret reference (e.g. `secret://env/SPT_PP`)')
             [CompletionResult]::new('--recipient', '--recipient', [CompletionResultType]::ParameterName, 'One or more X25519 recipient public keys (base64)')
+            [CompletionResult]::new('--vault-path', '--vault-path', [CompletionResultType]::ParameterName, 'Vault directory or `vault.spt` file used for `secret://` passphrases and `--use-vault-master`')
+            [CompletionResult]::new('--vault-passphrase-from', '--vault-passphrase-from', [CompletionResultType]::ParameterName, 'Unlock the vault with a passphrase source instead of the keychain (`stdin`, `env:NAME`, `file:<path>`, or `file:///path`)')
             [CompletionResult]::new('--config', '--config', [CompletionResultType]::ParameterName, 'Path to a single config file')
             [CompletionResult]::new('--config-dir', '--config-dir', [CompletionResultType]::ParameterName, 'Path to a directory of `*.toml` configs (loaded in lexical order)')
             [CompletionResult]::new('--config-url', '--config-url', [CompletionResultType]::ParameterName, 'HTTPS URL of a remote config to fetch')
@@ -397,6 +399,8 @@ Register-ArgumentCompleter -Native -CommandName 'spt' -ScriptBlock {
             [CompletionResult]::new('--out', '--out', [CompletionResultType]::ParameterName, 'Output path. If unset, write the cleartext to stdout')
             [CompletionResult]::new('--passphrase-from', '--passphrase-from', [CompletionResultType]::ParameterName, 'Read passphrase from a secret reference')
             [CompletionResult]::new('--recipient-key', '--recipient-key', [CompletionResultType]::ParameterName, 'Path to an X25519 private-key file (32 raw bytes or base64 line)')
+            [CompletionResult]::new('--vault-path', '--vault-path', [CompletionResultType]::ParameterName, 'Vault directory or `vault.spt` file used for `secret://` passphrases and vault-master envelopes')
+            [CompletionResult]::new('--vault-passphrase-from', '--vault-passphrase-from', [CompletionResultType]::ParameterName, 'Unlock the vault with a passphrase source instead of the keychain')
             [CompletionResult]::new('--config', '--config', [CompletionResultType]::ParameterName, 'Path to a single config file')
             [CompletionResult]::new('--config-dir', '--config-dir', [CompletionResultType]::ParameterName, 'Path to a directory of `*.toml` configs (loaded in lexical order)')
             [CompletionResult]::new('--config-url', '--config-url', [CompletionResultType]::ParameterName, 'HTTPS URL of a remote config to fetch')
@@ -421,6 +425,8 @@ Register-ArgumentCompleter -Native -CommandName 'spt' -ScriptBlock {
         }
         'spt;config;edit' {
             [CompletionResult]::new('--passphrase-from', '--passphrase-from', [CompletionResultType]::ParameterName, 'Read passphrase from a secret reference')
+            [CompletionResult]::new('--vault-path', '--vault-path', [CompletionResultType]::ParameterName, 'Vault directory or `vault.spt` file used for `secret://` passphrases and vault-master envelopes')
+            [CompletionResult]::new('--vault-passphrase-from', '--vault-passphrase-from', [CompletionResultType]::ParameterName, 'Unlock the vault with a passphrase source instead of the keychain')
             [CompletionResult]::new('--config', '--config', [CompletionResultType]::ParameterName, 'Path to a single config file')
             [CompletionResult]::new('--config-dir', '--config-dir', [CompletionResultType]::ParameterName, 'Path to a directory of `*.toml` configs (loaded in lexical order)')
             [CompletionResult]::new('--config-url', '--config-url', [CompletionResultType]::ParameterName, 'HTTPS URL of a remote config to fetch')
@@ -471,6 +477,8 @@ Register-ArgumentCompleter -Native -CommandName 'spt' -ScriptBlock {
         'spt;config;crypt;rotate' {
             [CompletionResult]::new('--new-passphrase-from', '--new-passphrase-from', [CompletionResultType]::ParameterName, 'New passphrase, read from a secret reference')
             [CompletionResult]::new('--new-recipient', '--new-recipient', [CompletionResultType]::ParameterName, 'New X25519 recipient public keys (base64)')
+            [CompletionResult]::new('--vault-path', '--vault-path', [CompletionResultType]::ParameterName, 'Vault directory or `vault.spt` file used for `secret://` passphrases and vault-master envelopes')
+            [CompletionResult]::new('--vault-passphrase-from', '--vault-passphrase-from', [CompletionResultType]::ParameterName, 'Unlock the vault with a passphrase source instead of the keychain')
             [CompletionResult]::new('--config', '--config', [CompletionResultType]::ParameterName, 'Path to a single config file')
             [CompletionResult]::new('--config-dir', '--config-dir', [CompletionResultType]::ParameterName, 'Path to a directory of `*.toml` configs (loaded in lexical order)')
             [CompletionResult]::new('--config-url', '--config-url', [CompletionResultType]::ParameterName, 'HTTPS URL of a remote config to fetch')
@@ -2002,7 +2010,7 @@ Register-ArgumentCompleter -Native -CommandName 'spt' -ScriptBlock {
         }
         'spt;secret;store;init' {
             [CompletionResult]::new('--backend', '--backend', [CompletionResultType]::ParameterName, 'Preferred backend')
-            [CompletionResult]::new('--vault-path', '--vault-path', [CompletionResultType]::ParameterName, 'Vault file location (overrides default `<state_dir>/vault.spt`)')
+            [CompletionResult]::new('--vault-path', '--vault-path', [CompletionResultType]::ParameterName, 'Vault directory or `vault.spt` file location')
             [CompletionResult]::new('--passphrase-from', '--passphrase-from', [CompletionResultType]::ParameterName, 'Read the vault passphrase from a value source (`stdin`, `file:<path>`, `env:<NAME>`)')
             [CompletionResult]::new('--config', '--config', [CompletionResultType]::ParameterName, 'Path to a single config file')
             [CompletionResult]::new('--config-dir', '--config-dir', [CompletionResultType]::ParameterName, 'Path to a directory of `*.toml` configs (loaded in lexical order)')
@@ -2040,6 +2048,8 @@ Register-ArgumentCompleter -Native -CommandName 'spt' -ScriptBlock {
         'spt;secret;set' {
             [CompletionResult]::new('--from-env', '--from-env', [CompletionResultType]::ParameterName, 'Read from an environment variable')
             [CompletionResult]::new('--from-file', '--from-file', [CompletionResultType]::ParameterName, 'Read from a file (mode-checked)')
+            [CompletionResult]::new('--vault-path', '--vault-path', [CompletionResultType]::ParameterName, 'Vault directory or `vault.spt` file when writing to the local vault')
+            [CompletionResult]::new('--passphrase-from', '--passphrase-from', [CompletionResultType]::ParameterName, 'Unlock the vault with a passphrase source (`stdin`, `env:NAME`, `file:<path>`, or `file:///path`)')
             [CompletionResult]::new('--config', '--config', [CompletionResultType]::ParameterName, 'Path to a single config file')
             [CompletionResult]::new('--config-dir', '--config-dir', [CompletionResultType]::ParameterName, 'Path to a directory of `*.toml` configs (loaded in lexical order)')
             [CompletionResult]::new('--config-url', '--config-url', [CompletionResultType]::ParameterName, 'HTTPS URL of a remote config to fetch')
@@ -2064,6 +2074,8 @@ Register-ArgumentCompleter -Native -CommandName 'spt' -ScriptBlock {
             break
         }
         'spt;secret;get' {
+            [CompletionResult]::new('--vault-path', '--vault-path', [CompletionResultType]::ParameterName, 'Vault directory or `vault.spt` file when reading from the local vault')
+            [CompletionResult]::new('--passphrase-from', '--passphrase-from', [CompletionResultType]::ParameterName, 'Unlock the vault with a passphrase source')
             [CompletionResult]::new('--config', '--config', [CompletionResultType]::ParameterName, 'Path to a single config file')
             [CompletionResult]::new('--config-dir', '--config-dir', [CompletionResultType]::ParameterName, 'Path to a directory of `*.toml` configs (loaded in lexical order)')
             [CompletionResult]::new('--config-url', '--config-url', [CompletionResultType]::ParameterName, 'HTTPS URL of a remote config to fetch')
@@ -2089,7 +2101,7 @@ Register-ArgumentCompleter -Native -CommandName 'spt' -ScriptBlock {
         }
         'spt;secret;list' {
             [CompletionResult]::new('--namespace', '--namespace', [CompletionResultType]::ParameterName, 'Restrict to a single namespace')
-            [CompletionResult]::new('--vault-path', '--vault-path', [CompletionResultType]::ParameterName, 'Vault file location')
+            [CompletionResult]::new('--vault-path', '--vault-path', [CompletionResultType]::ParameterName, 'Vault directory or `vault.spt` file location')
             [CompletionResult]::new('--passphrase-from', '--passphrase-from', [CompletionResultType]::ParameterName, 'Read the vault passphrase from a value source')
             [CompletionResult]::new('--config', '--config', [CompletionResultType]::ParameterName, 'Path to a single config file')
             [CompletionResult]::new('--config-dir', '--config-dir', [CompletionResultType]::ParameterName, 'Path to a directory of `*.toml` configs (loaded in lexical order)')
@@ -2115,7 +2127,7 @@ Register-ArgumentCompleter -Native -CommandName 'spt' -ScriptBlock {
         }
         'spt;secret;rotate' {
             [CompletionResult]::new('--new-value-from', '--new-value-from', [CompletionResultType]::ParameterName, 'New value source for `rotate` (`stdin`, `file:<path>`, `env:<NAME>`)')
-            [CompletionResult]::new('--vault-path', '--vault-path', [CompletionResultType]::ParameterName, 'Vault file location')
+            [CompletionResult]::new('--vault-path', '--vault-path', [CompletionResultType]::ParameterName, 'Vault directory or `vault.spt` file location')
             [CompletionResult]::new('--passphrase-from', '--passphrase-from', [CompletionResultType]::ParameterName, 'Read the vault passphrase from a value source')
             [CompletionResult]::new('--config', '--config', [CompletionResultType]::ParameterName, 'Path to a single config file')
             [CompletionResult]::new('--config-dir', '--config-dir', [CompletionResultType]::ParameterName, 'Path to a directory of `*.toml` configs (loaded in lexical order)')
@@ -2141,7 +2153,7 @@ Register-ArgumentCompleter -Native -CommandName 'spt' -ScriptBlock {
         }
         'spt;secret;remove' {
             [CompletionResult]::new('--new-value-from', '--new-value-from', [CompletionResultType]::ParameterName, 'New value source for `rotate` (`stdin`, `file:<path>`, `env:<NAME>`)')
-            [CompletionResult]::new('--vault-path', '--vault-path', [CompletionResultType]::ParameterName, 'Vault file location')
+            [CompletionResult]::new('--vault-path', '--vault-path', [CompletionResultType]::ParameterName, 'Vault directory or `vault.spt` file location')
             [CompletionResult]::new('--passphrase-from', '--passphrase-from', [CompletionResultType]::ParameterName, 'Read the vault passphrase from a value source')
             [CompletionResult]::new('--config', '--config', [CompletionResultType]::ParameterName, 'Path to a single config file')
             [CompletionResult]::new('--config-dir', '--config-dir', [CompletionResultType]::ParameterName, 'Path to a directory of `*.toml` configs (loaded in lexical order)')

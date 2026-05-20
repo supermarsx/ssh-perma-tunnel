@@ -38,8 +38,8 @@ const DEFAULT_VAULT_SUBDIR: &str = "secrets";
 #[derive(Debug, Default)]
 pub struct SecretStoreInitArgs {
     /// Optional override for the directory that will hold `vault.spt`
-    /// and `vault.spt.meta`. When unset, the vault is placed under
-    /// `<state_dir>/secrets/`.
+    /// and `vault.spt.meta`, or a path ending in `vault.spt`. When unset,
+    /// the vault is placed under `<state_dir>/secrets/`.
     pub vault_path: Option<PathBuf>,
     /// Optional source for the passphrase used by the Argon2id fallback
     /// path. Accepted forms: `stdin`, `file:<path>`, `env:<NAME>`.
@@ -255,10 +255,23 @@ fn emit_init_summary(global: &GlobalOpts, dir: &Path, used_passphrase: bool) {
 ///    or `--state-dir` override.
 fn resolve_vault_dir(global: &GlobalOpts, override_path: Option<&Path>) -> Result<PathBuf> {
     if let Some(p) = override_path {
-        return Ok(p.to_path_buf());
+        return Ok(vault_location_to_dir(p));
     }
     let state = spt_state::resolve_state_dir(global.state_dir.as_deref())?;
     Ok(state.join(DEFAULT_VAULT_SUBDIR))
+}
+
+fn vault_location_to_dir(path: &Path) -> PathBuf {
+    if path
+        .file_name()
+        .is_some_and(|name| name == std::ffi::OsStr::new("vault.spt"))
+    {
+        return path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .to_path_buf();
+    }
+    path.to_path_buf()
 }
 
 /// Open a vault for read/write, choosing the keychain or passphrase path
@@ -685,6 +698,15 @@ mod tests {
         let override_path = dir.path().join("custom-vault");
         let resolved = resolve_vault_dir(&global, Some(&override_path)).unwrap();
         assert_eq!(resolved, override_path);
+    }
+
+    #[test]
+    fn resolve_vault_dir_accepts_vault_file_path() {
+        let dir = tempdir().unwrap();
+        let global = fake_global(dir.path());
+        let override_path = dir.path().join("custom-vault").join("vault.spt");
+        let resolved = resolve_vault_dir(&global, Some(&override_path)).unwrap();
+        assert_eq!(resolved, dir.path().join("custom-vault"));
     }
 
     #[test]
