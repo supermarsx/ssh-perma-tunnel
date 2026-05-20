@@ -93,8 +93,8 @@ futures = "0.3"
 async-trait = "0.1"
 
 # CLI
-clap = { version = "4.5", features = ["derive", "env", "wrap_help"] }
-clap_complete = "4.5"
+clap = { version = "4.6", features = ["derive", "env", "wrap_help"] }
+clap_complete = "4.6"
 # Pinned to 0.2.31: 0.2.32 pulls roff 1.x (edition2024); 0.2.33+ requires Rust 1.85.
 # 0.2.31 declares rust-version 1.74 and depends on roff ^0.2.1 (rust-version 1.70).
 clap_mangen = "=0.2.31"
@@ -229,7 +229,7 @@ parking_lot = "0.12"
 url = { version = "2", features = ["serde"] }
 hex = "0.4"
 base64 = "0.22"
-base64ct = "1.7"
+base64ct = "1.8"
 http = "1"
 uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
