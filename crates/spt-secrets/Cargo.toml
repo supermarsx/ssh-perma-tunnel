@@ -34,13 +34,21 @@ hex = { workspace = true }
 base64 = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
-nix = { workspace = true }
+# `term` is required for `nix::sys::termios` used by the passphrase
+# reader to disable terminal echo. The workspace `nix` already enables
+# `signal` (used by the SIGINT handler), `fs`, `user`, and `mman`.
+nix = { workspace = true, features = ["term"] }
+# `libc` is used by the SIGINT async-signal-safe restore path
+# (`libc::signal` / `libc::raise`) — `nix` does not expose
+# `signal(2)`/`raise(3)` directly.
+libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
 windows = { workspace = true, features = [
     "Win32_System_Memory",
     "Win32_Security",
     "Win32_Storage_FileSystem",
+    "Win32_System_Console",
     "Win32_Foundation",
 ] }
 

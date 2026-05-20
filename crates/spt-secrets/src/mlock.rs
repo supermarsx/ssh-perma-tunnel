@@ -14,6 +14,10 @@
 //!
 //! `Ok(true)` means the lock was placed; the caller is responsible for
 //! pairing with [`try_munlock`] before the buffer is freed.
+//!
+//! See also [`crate::secret_alloc::SecretAlloc`] for a higher-level wrapper
+//! that pairs `mlock` with a guaranteed zero-on-drop and (on Linux 5.14+)
+//! prefers `memfd_secret(2)` over `mlock`.
 
 use spt_core::Result;
 use tracing::warn;
@@ -34,6 +38,38 @@ pub fn try_munlock(buf: &[u8]) -> Result<bool> {
         return Ok(false);
     }
     do_munlock(buf)
+}
+
+/// Raw-pointer variant of [`try_mlock`] used by allocators that hold a
+/// `NonNull<u8>` rather than a `&[u8]` borrow (e.g.
+/// [`crate::secret_alloc::SecretAlloc`]'s heap path).
+///
+/// # Safety
+///
+/// `ptr` must point to `len` bytes of memory that the caller exclusively
+/// owns for the duration of the call. The contract otherwise matches
+/// [`try_mlock`].
+pub unsafe fn try_mlock_raw(ptr: *const u8, len: usize) -> Result<bool> {
+    if len == 0 || ptr.is_null() {
+        return Ok(false);
+    }
+    // SAFETY: caller guarantees `ptr` is valid for `len` bytes.
+    let view = unsafe { core::slice::from_raw_parts(ptr, len) };
+    do_mlock(view)
+}
+
+/// Pair of [`try_mlock_raw`]; same safety contract.
+///
+/// # Safety
+///
+/// `ptr` must point to `len` bytes of memory the caller exclusively owns.
+pub unsafe fn try_munlock_raw(ptr: *const u8, len: usize) -> Result<bool> {
+    if len == 0 || ptr.is_null() {
+        return Ok(false);
+    }
+    // SAFETY: caller guarantees `ptr` is valid for `len` bytes.
+    let view = unsafe { core::slice::from_raw_parts(ptr, len) };
+    do_munlock(view)
 }
 
 // All `do_mlock`/`do_munlock` impls keep the `Result` return so the public

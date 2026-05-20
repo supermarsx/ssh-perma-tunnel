@@ -15,6 +15,10 @@
 //!   first hit; missing references map to
 //!   [`spt_core::Error::SecretUnavailable`].
 //! * [`mlock`] — best-effort memory locking helpers.
+//! * [`secret_alloc`] — non-swappable, zero-on-drop allocations
+//!   ([`SecretAlloc`], [`SecretSlice`], typed [`MemfdSecretBox<T>`]). Backed
+//!   by `memfd_secret(2)` on Linux ≥5.14 with `CONFIG_SECRETMEM=y`,
+//!   otherwise by `mlock`/`VirtualLock`-ed heap.
 //! * [`doctor`] — per-backend health reports aggregated into
 //!   [`SecretsDoctor`].
 //!
@@ -22,8 +26,9 @@
 //! `secrecy::SecretBox` over a `zeroize::Zeroizing<Vec<u8>>`, ensuring the
 //! buffer is zeroed on drop and not exposed by `Debug`.
 
-// `unsafe` is permitted only in `mlock` for OS-level memory locking
-// syscalls. Everywhere else, deny unsafe via the module-level attribute.
+// `unsafe` is permitted in `mlock` and `secret_alloc` for OS-level memory
+// locking and `memfd_secret`/`mmap` FFI. Every `unsafe` block carries a
+// `// SAFETY:` comment.
 #![deny(unsafe_op_in_unsafe_fn)]
 
 pub mod backend;
@@ -32,8 +37,10 @@ pub mod env;
 pub mod file;
 pub mod keychain;
 pub mod mlock;
+pub mod passphrase;
 pub mod reference;
 pub mod resolver;
+pub mod secret_alloc;
 pub mod vault;
 
 #[cfg(any(test, feature = "testing"))]
@@ -44,6 +51,8 @@ pub use doctor::SecretsDoctor;
 pub use env::EnvBackend;
 pub use file::FileBackend;
 pub use keychain::KeychainBackend;
+pub use passphrase::read_passphrase;
 pub use reference::{ReferenceError, SecretRef};
 pub use resolver::Resolver;
+pub use secret_alloc::{MemfdSecretBox, SecretAlloc, SecretSlice};
 pub use vault::{VaultBackend, VaultMeta};
