@@ -30,6 +30,8 @@ members = [
     "crates/spt-cli",
     "crates/spt-remote-config",
     "crates/spt-status-api",
+    "crates/spt-mem-hygiene",
+    "crates/spt-config-crypt",
     "tests",
     "tests/conformance",
     "tests/stress",
@@ -85,6 +87,8 @@ spt-tui = { path = "crates/spt-tui", version = "0.1.0" }
 spt-cli = { path = "crates/spt-cli", version = "0.1.0" }
 spt-remote-config = { path = "crates/spt-remote-config", version = "0.1.0" }
 spt-status-api = { path = "crates/spt-status-api", version = "0.1.0" }
+spt-mem-hygiene = { path = "crates/spt-mem-hygiene", version = "0.1.0" }
+spt-config-crypt = { path = "crates/spt-config-crypt", version = "0.1.0" }
 
 # Async runtime
 tokio = { version = "1.40", features = ["full"] }
@@ -210,6 +214,10 @@ hickory-proto = "0.24"
 windows-service = "0.7"
 windows = { version = "0.58", features = ["Win32_System_EventLog", "Win32_System_Threading", "Win32_Security", "Win32_Security_Authorization", "Win32_Foundation"] }
 nix = { version = "0.29", features = ["fs", "signal", "user", "mman"] }
+# `libc` is consumed by spt-mem-hygiene (and transitively by many other deps).
+# Pinned indirectly via lockfile; this just exposes the symbol to workspace
+# members without bumping the resolved version.
+libc = "0.2"
 caps = "0.5"
 socket2 = { version = "0.5", features = ["all"] }
 

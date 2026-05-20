@@ -13,6 +13,8 @@ use x509_parser::prelude::*;
 
 use spt_core::{Error, Result};
 
+use crate::chain_depth::{check_chain_depth, ChainDepthCap};
+
 /// One or more accepted SPKI SHA-256 hashes (raw 32-byte digests).
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct TlsPin {
@@ -30,6 +32,42 @@ impl TlsPin {
         Ok(Self { spki_sha256: out })
     }
 
+    /// True iff no pins are configured.
+    pub fn is_empty(&self) -> bool {
+        self.spki_sha256.is_empty()
+    }
+
+    /// Number of configured pins.
+    pub fn len(&self) -> usize {
+        self.spki_sha256.len()
+    }
+
+    /// Compute SPKI SHA-256 of a DER-encoded certificate.
+    ///
+    /// Returns `InvalidConfig` if the certificate fails to parse.
+    pub fn spki_sha256_of(cert: &CertificateDer<'_>) -> Result<[u8; 32]> {
+        let (_, parsed) = X509Certificate::from_der(cert.as_ref())
+            .map_err(|e| Error::InvalidConfig(format!("x509 parse: {e}")))?;
+        let spki_der = parsed.tbs_certificate.subject_pki.raw;
+        let mut h = Sha256::new();
+        h.update(spki_der);
+        Ok(h.finalize().into())
+    }
+
+    /// Constant-time check whether `digest` matches any configured pin.
+    ///
+    /// Returns `false` when the pin set is empty.
+    pub fn matches_digest(&self, digest: &[u8; 32]) -> bool {
+        let mut found = 0u8;
+        for want in &self.spki_sha256 {
+            // ct_eq returns a Choice; OR the byte-equivalent (0 or 1) into
+            // `found`. We never short-circuit so the timing is independent
+            // of which pin matched.
+            found |= digest.ct_eq(want).unwrap_u8();
+        }
+        found != 0
+    }
+
     /// Verify `cert` (DER) against the configured pin set.
     ///
     /// Returns `Ok(())` on first match. Returns `TrustFailed` if the
@@ -41,21 +79,48 @@ impl TlsPin {
                 "TlsPin::verify called with empty pin set".into(),
             ));
         }
-        let (_, parsed) = X509Certificate::from_der(cert.as_ref())
-            .map_err(|e| Error::InvalidConfig(format!("x509 parse: {e}")))?;
-        let spki_der = parsed.tbs_certificate.subject_pki.raw;
-        let mut h = Sha256::new();
-        h.update(spki_der);
-        let got: [u8; 32] = h.finalize().into();
-        for want in &self.spki_sha256 {
-            if got.ct_eq(want).into() {
-                return Ok(());
-            }
+        let got = Self::spki_sha256_of(cert)?;
+        if self.matches_digest(&got) {
+            return Ok(());
         }
         Err(Error::TrustFailed(format!(
             "TLS SPKI pin mismatch: got SHA256:{}",
             base64::engine::general_purpose::STANDARD_NO_PAD.encode(got)
         )))
+    }
+
+    /// Verify a server-presented certificate chain against both the pin
+    /// set and a [`ChainDepthCap`].
+    ///
+    /// `chain` is in TLS-wire order: index 0 is the end-entity (leaf),
+    /// and the remaining entries are intermediates. The pin match is
+    /// performed against the leaf (matching `verify`); the depth cap is
+    /// enforced via [`check_chain_depth`].
+    ///
+    /// This is the entry point shared with t5-e1's `PinnedTlsConnector`
+    /// `ServerCertVerifier`: it lets both the SSH3 verifier and the
+    /// generic pinned-HTTPS connector apply identical policy.
+    ///
+    /// # Errors
+    ///
+    /// * [`Error::TrustFailed`] when the chain is empty, when the
+    ///   intermediate count meets/exceeds the cap, or when the leaf's
+    ///   SPKI does not match any configured pin.
+    /// * [`Error::InvalidConfig`] when called with an empty pin set or
+    ///   when the leaf fails to parse.
+    #[allow(clippy::trivially_copy_pass_by_ref)] // signature matches `check_chain_depth`
+    pub fn verify_chain(
+        &self,
+        chain: &[CertificateDer<'_>],
+        depth_cap: &ChainDepthCap,
+    ) -> Result<()> {
+        check_chain_depth(chain, depth_cap)?;
+        // `check_chain_depth` already rejected the empty-chain case, but
+        // be defensive in case a future refactor relaxes that.
+        let leaf = chain.first().ok_or_else(|| {
+            Error::TrustFailed("empty TLS certificate chain".to_string())
+        })?;
+        self.verify(leaf)
     }
 }
 
