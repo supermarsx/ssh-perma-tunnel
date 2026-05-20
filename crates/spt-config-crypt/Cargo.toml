@@ -1,0 +1,48 @@
+[package]
+name = "spt-config-crypt"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.83"
+license = "MIT"
+repository = "https://github.com/Mariana/ssh-perma-tunnel"
+homepage = "https://github.com/Mariana/ssh-perma-tunnel"
+authors = ["Mariana"]
+description = "Sealed-config envelope (SPTENC1) — AES-256-GCM body with Argon2id / vault-master / X25519-recipient KDF and optional Ed25519 signature."
+
+# Workspace-inheritance fields (`version.workspace = true`, `[lints] workspace = true`,
+# and `{ workspace = true }` deps) are intentionally NOT used yet — the t5-Bwire
+# integrator pass will register this crate in the root [workspace] members list
+# and swap these literal values back to inheritance. Until then, declaring our
+# own values lets the crate type-check standalone via `cargo check -p`.
+
+[features]
+default = []
+# When enabled, `unseal` returns a `SecretSlice` allocated through
+# `spt_secrets::SecretAlloc`. Otherwise (default), it returns a plain
+# `Zeroizing<Vec<u8>>` wrapped in `secrecy::SecretBox`. Both paths zero on
+# drop; the `spt-secrets` path additionally mlocks/memfd_secret-backs the
+# allocation when the host supports it.
+spt-secrets = ["dep:spt-secrets"]
+
+[dependencies]
+spt-core = { path = "../spt-core", version = "0.1.0" }
+spt-secrets = { path = "../spt-secrets", version = "0.1.0", optional = true }
+
+aes-gcm = "0.10"
+argon2 = "0.5"
+base64 = "0.22"
+ed25519-dalek = { version = "2", default-features = false, features = ["std", "rand_core", "zeroize"] }
+rand = "0.8"
+secrecy = "0.10"
+serde = { version = "1", features = ["derive"] }
+sha2 = "0.10"
+subtle = "2"
+thiserror = "1"
+toml = "0.8"
+# x25519-dalek 2.x — sealed-recipient KDF.
+# Pinned to 2.0 (MSRV 1.60). curve25519-dalek 4.x is already in the lockfile via
+# ed25519-dalek 2.2.0, so this adds only the thin x25519 wrapper crate.
+x25519-dalek = { version = "2", default-features = false, features = ["static_secrets", "zeroize"] }
+zeroize = { version = "1.7", features = ["zeroize_derive"] }
+
+[dev-dependencies]
