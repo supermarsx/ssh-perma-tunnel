@@ -5,9 +5,11 @@ sub-directory is a self-contained manifest/template; the existing OS-native
 formats (`deb/`, `rpm/`, `msi/`, `pkg/`, plus service units under
 `systemd/`, `launchd/`, `openrc/`, `sysv/` and man pages under `man/`) are
 produced by CI from the metadata in
-`crates/spt-bin/Cargo.toml`. The newer entries (homebrew, scoop, AUR, snap,
-flatpak, winget, nix) are templated manifests that a release script fills
-in after artifacts have been uploaded.
+`crates/spt-bin/Cargo.toml`. Generated man pages and shell completions are
+committed under `man/` and `completions/` so every package can ship the same
+CLI surface. The newer entries (homebrew, scoop, AUR, snap, flatpak, winget,
+nix) are templated manifests that a release script fills in after artifacts
+have been uploaded.
 
 ## Status matrix
 
@@ -174,6 +176,7 @@ packaging/
 ├── openrc/                  existing — OpenRC init script
 ├── sysv/                    existing — SysV init script
 ├── man/                     existing — generated man pages
+├── completions/             existing — generated bash/zsh/fish/PowerShell/Elvish completions
 ├── homebrew/spt.rb          new      — Homebrew formula
 ├── scoop/spt.json           new      — Scoop manifest
 ├── aur/PKGBUILD             new      — AUR source-build PKGBUILD

@@ -71,6 +71,10 @@ rustPlatform.buildRustPackage rec {
       --bash <($out/bin/spt completion generate bash) \
       --zsh  <($out/bin/spt completion generate zsh)  \
       --fish <($out/bin/spt completion generate fish)
+
+    mkdir -p "$out/share/powershell/Modules/spt" "$out/share/elvish/lib"
+    "$out/bin/spt" completion generate powershell > "$out/share/powershell/Modules/spt/spt.psm1"
+    "$out/bin/spt" completion generate elvish > "$out/share/elvish/lib/spt.elv"
   '';
 
   meta = with lib; {

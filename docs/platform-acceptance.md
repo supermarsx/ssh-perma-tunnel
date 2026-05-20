@@ -40,6 +40,12 @@ Required checks:
 - GSSAPI/Kerberos/SSPI, ML-KEM/PQ KEX, SOCKS/HTTP CONNECT, SFTP, filesystem
   mounts, and Windows drive-letter mounts must each have positive, negative,
   policy-denied, and platform-denied tests before GA.
+- CLI documentation acceptance requires generated man pages for every
+  top-level command group and generated completions for bash, zsh, fish,
+  PowerShell, and Elvish. Linux/macOS packages must install POSIX-shell
+  completions to their standard share paths, Windows package flows must expose
+  the PowerShell module, and release tarballs/zips must carry all completion
+  artifacts under `share/`.
 - Default builds do not expose SNMP CLI. `--features snmp` builds expose SNMP
   agent/trap diagnostics, and enabled SNMP configs must set
   `[observability.snmp].enterprise_id` to a registered production PEN. Runtime

@@ -44,4 +44,5 @@ help_snapshot!(help_session, ["session"]);
 help_snapshot!(help_diagnose, ["diagnose"]);
 help_snapshot!(help_benchmark, ["benchmark"]);
 help_snapshot!(help_mcp, ["mcp"]);
+help_snapshot!(help_status, ["status"]);
 help_snapshot!(help_completion, ["completion"]);

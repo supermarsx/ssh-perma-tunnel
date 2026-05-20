@@ -8,6 +8,11 @@
 #     README.md
 #     docs\...
 #     share\man\man1\spt*.1
+#     share\bash-completion\completions\spt
+#     share\zsh\site-functions\_spt
+#     share\fish\vendor_completions.d\spt.fish
+#     share\powershell\Modules\spt\spt.psm1
+#     share\elvish\lib\spt.elv
 #
 # Output: dist\<version>\spt-<version>-<target>.zip
 
@@ -30,7 +35,7 @@ Usage: scripts/package/pack-zip.ps1 -Target <triple> [-DryRun]
 
 Packs the already-built target/<target>/release/spt.exe into
 dist/<version>/spt-<version>-<target>.zip together with LICENSE, README.md,
-docs/, and the man pages.
+docs/, man pages, and shell completions.
 
 Only Windows-MSVC targets are supported by this script.
 "@
@@ -58,6 +63,11 @@ $staged = Join-Path $stage $name
 New-Item -ItemType Directory -Path $staged -Force | Out-Null
 New-Item -ItemType Directory -Path (Join-Path $staged 'docs') -Force | Out-Null
 New-Item -ItemType Directory -Path (Join-Path $staged 'share/man/man1') -Force | Out-Null
+New-Item -ItemType Directory -Path (Join-Path $staged 'share/bash-completion/completions') -Force | Out-Null
+New-Item -ItemType Directory -Path (Join-Path $staged 'share/zsh/site-functions') -Force | Out-Null
+New-Item -ItemType Directory -Path (Join-Path $staged 'share/fish/vendor_completions.d') -Force | Out-Null
+New-Item -ItemType Directory -Path (Join-Path $staged 'share/powershell/Modules/spt') -Force | Out-Null
+New-Item -ItemType Directory -Path (Join-Path $staged 'share/elvish/lib') -Force | Out-Null
 
 try {
     Copy-Item $bin (Join-Path $staged 'spt.exe')
@@ -81,6 +91,24 @@ try {
     if (Test-Path -LiteralPath $manDir) {
         Get-ChildItem -LiteralPath $manDir -File -Filter 'spt*.1' | ForEach-Object {
             Copy-Item $_.FullName (Join-Path $staged 'share/man/man1') -Force
+        }
+    }
+
+    $completionDir = Join-Path $root 'packaging/completions'
+    if (Test-Path -LiteralPath $completionDir) {
+        $completionCopies = @(
+            @('bash/spt', 'share/bash-completion/completions/spt'),
+            @('zsh/_spt', 'share/zsh/site-functions/_spt'),
+            @('fish/spt.fish', 'share/fish/vendor_completions.d/spt.fish'),
+            @('powershell/spt.psm1', 'share/powershell/Modules/spt/spt.psm1'),
+            @('powershell/spt.ps1', 'share/powershell/Modules/spt/spt.ps1'),
+            @('elvish/spt.elv', 'share/elvish/lib/spt.elv')
+        )
+        foreach ($copy in $completionCopies) {
+            $source = Join-Path $completionDir $copy[0]
+            if (Test-Path -LiteralPath $source) {
+                Copy-Item $source (Join-Path $staged $copy[1]) -Force
+            }
         }
     }
 

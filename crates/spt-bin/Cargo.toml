@@ -24,6 +24,13 @@ path = "src/main.rs"
 name = "spt-mangen"
 path = "src/bin/spt-mangen.rs"
 
+# Auxiliary regenerator for committed shell completions under
+# /packaging/completions/. Run via
+# `cargo run --bin spt-completions -- --out packaging/completions`.
+[[bin]]
+name = "spt-completions"
+path = "src/bin/spt-completions.rs"
+
 [dependencies]
 # Internal crates
 spt-core = { workspace = true }
@@ -199,7 +206,13 @@ assets = [
     ["../../packaging/man/spt-service.1", "usr/share/man/man1/spt-service.1", "644"],
     ["../../packaging/man/spt-session.1", "usr/share/man/man1/spt-session.1", "644"],
     ["../../packaging/man/spt-stats.1", "usr/share/man/man1/spt-stats.1", "644"],
+    ["../../packaging/man/spt-status.1", "usr/share/man/man1/spt-status.1", "644"],
     ["../../packaging/man/spt-tunnel.1", "usr/share/man/man1/spt-tunnel.1", "644"],
+    ["../../packaging/completions/bash/spt", "usr/share/bash-completion/completions/spt", "644"],
+    ["../../packaging/completions/zsh/_spt", "usr/share/zsh/site-functions/_spt", "644"],
+    ["../../packaging/completions/fish/spt.fish", "usr/share/fish/vendor_completions.d/spt.fish", "644"],
+    ["../../packaging/completions/powershell/spt.psm1", "usr/share/powershell/Modules/spt/spt.psm1", "644"],
+    ["../../packaging/completions/elvish/spt.elv", "usr/share/elvish/lib/spt.elv", "644"],
     ["../../docs/getting-started.md", "usr/share/doc/spt/getting-started.md", "644"],
     ["../../docs/configuration.md", "usr/share/doc/spt/configuration.md", "644"],
     ["../../docs/cli-reference.md", "usr/share/doc/spt/cli-reference.md", "644"],
@@ -234,7 +247,13 @@ assets = [
     { source = "packaging/man/spt-service.1", dest = "/usr/share/man/man1/spt-service.1", mode = "644", doc = true },
     { source = "packaging/man/spt-session.1", dest = "/usr/share/man/man1/spt-session.1", mode = "644", doc = true },
     { source = "packaging/man/spt-stats.1", dest = "/usr/share/man/man1/spt-stats.1", mode = "644", doc = true },
+    { source = "packaging/man/spt-status.1", dest = "/usr/share/man/man1/spt-status.1", mode = "644", doc = true },
     { source = "packaging/man/spt-tunnel.1", dest = "/usr/share/man/man1/spt-tunnel.1", mode = "644", doc = true },
+    { source = "packaging/completions/bash/spt", dest = "/usr/share/bash-completion/completions/spt", mode = "644", doc = true },
+    { source = "packaging/completions/zsh/_spt", dest = "/usr/share/zsh/site-functions/_spt", mode = "644", doc = true },
+    { source = "packaging/completions/fish/spt.fish", dest = "/usr/share/fish/vendor_completions.d/spt.fish", mode = "644", doc = true },
+    { source = "packaging/completions/powershell/spt.psm1", dest = "/usr/share/powershell/Modules/spt/spt.psm1", mode = "644", doc = true },
+    { source = "packaging/completions/elvish/spt.elv", dest = "/usr/share/elvish/lib/spt.elv", mode = "644", doc = true },
     { source = "docs/getting-started.md", dest = "/usr/share/doc/spt/getting-started.md", mode = "644", doc = true },
     { source = "examples/minimal.toml", dest = "/usr/share/doc/spt/examples/minimal.toml", mode = "644" },
 ]

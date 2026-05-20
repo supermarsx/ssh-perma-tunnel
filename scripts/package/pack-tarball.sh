@@ -8,6 +8,11 @@
 #     README.md
 #     docs/...
 #     share/man/man1/spt*.1
+#     share/bash-completion/completions/spt
+#     share/zsh/site-functions/_spt
+#     share/fish/vendor_completions.d/spt.fish
+#     share/powershell/Modules/spt/spt.psm1
+#     share/elvish/lib/spt.elv
 #
 # Output: dist/<version>/spt-<version>-<target>.tar.gz
 
@@ -58,7 +63,15 @@ name="spt-$version-$target"
 staged="$stage/$name"
 trap 'rm -rf "$stage"' EXIT
 
-mkdir -p "$staged" "$staged/share/man/man1" "$staged/docs"
+mkdir -p \
+  "$staged" \
+  "$staged/docs" \
+  "$staged/share/man/man1" \
+  "$staged/share/bash-completion/completions" \
+  "$staged/share/zsh/site-functions" \
+  "$staged/share/fish/vendor_completions.d" \
+  "$staged/share/powershell/Modules/spt" \
+  "$staged/share/elvish/lib"
 
 # Binary (preserve .exe suffix on windows targets).
 case "$target" in
@@ -82,6 +95,18 @@ fi
 # Man pages.
 if [[ -d "$root/packaging/man" ]]; then
   cp "$root"/packaging/man/spt*.1 "$staged/share/man/man1/" 2>/dev/null || true
+fi
+
+# Shell completions generated from the live Clap command tree and committed
+# under packaging/completions/.
+completion_root="$root/packaging/completions"
+if [[ -d "$completion_root" ]]; then
+  cp "$completion_root/bash/spt" "$staged/share/bash-completion/completions/spt" 2>/dev/null || true
+  cp "$completion_root/zsh/_spt" "$staged/share/zsh/site-functions/_spt" 2>/dev/null || true
+  cp "$completion_root/fish/spt.fish" "$staged/share/fish/vendor_completions.d/spt.fish" 2>/dev/null || true
+  cp "$completion_root/powershell/spt.psm1" "$staged/share/powershell/Modules/spt/spt.psm1" 2>/dev/null || true
+  cp "$completion_root/powershell/spt.ps1" "$staged/share/powershell/Modules/spt/spt.ps1" 2>/dev/null || true
+  cp "$completion_root/elvish/spt.elv" "$staged/share/elvish/lib/spt.elv" 2>/dev/null || true
 fi
 
 archive="$dist/$name.tar.gz"

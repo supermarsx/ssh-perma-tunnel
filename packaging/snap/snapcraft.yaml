@@ -78,10 +78,26 @@ parts:
           install -Dm644 "$page" "${CRAFT_PART_INSTALL}/usr/share/man/man1/$(basename "$page")"
         done
       fi
-      # Stage bash completion if the build emitted one (cargo xtask gen-completions).
-      if [ -f "${CRAFT_PART_SRC}/packaging/completions/spt.bash" ]; then
-        install -Dm644 "${CRAFT_PART_SRC}/packaging/completions/spt.bash" \
+      # Stage shell completions generated from the live Clap command tree.
+      if [ -f "${CRAFT_PART_SRC}/packaging/completions/bash/spt" ]; then
+        install -Dm644 "${CRAFT_PART_SRC}/packaging/completions/bash/spt" \
           "${CRAFT_PART_INSTALL}/usr/share/bash-completion/completions/spt"
+      fi
+      if [ -f "${CRAFT_PART_SRC}/packaging/completions/zsh/_spt" ]; then
+        install -Dm644 "${CRAFT_PART_SRC}/packaging/completions/zsh/_spt" \
+          "${CRAFT_PART_INSTALL}/usr/share/zsh/site-functions/_spt"
+      fi
+      if [ -f "${CRAFT_PART_SRC}/packaging/completions/fish/spt.fish" ]; then
+        install -Dm644 "${CRAFT_PART_SRC}/packaging/completions/fish/spt.fish" \
+          "${CRAFT_PART_INSTALL}/usr/share/fish/vendor_completions.d/spt.fish"
+      fi
+      if [ -f "${CRAFT_PART_SRC}/packaging/completions/powershell/spt.psm1" ]; then
+        install -Dm644 "${CRAFT_PART_SRC}/packaging/completions/powershell/spt.psm1" \
+          "${CRAFT_PART_INSTALL}/usr/share/powershell/Modules/spt/spt.psm1"
+      fi
+      if [ -f "${CRAFT_PART_SRC}/packaging/completions/elvish/spt.elv" ]; then
+        install -Dm644 "${CRAFT_PART_SRC}/packaging/completions/elvish/spt.elv" \
+          "${CRAFT_PART_INSTALL}/usr/share/elvish/lib/spt.elv"
       fi
 
 apps:

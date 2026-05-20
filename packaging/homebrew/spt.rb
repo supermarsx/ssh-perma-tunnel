@@ -61,8 +61,14 @@ class Spt < Formula
       man1.install Dir["share/man/man1/spt*.1"] if Dir.exist?("share/man/man1")
     end
 
-    # Generate and install bash/zsh/fish completions from the binary.
+    # Generate and install shell completions from the binary.
     generate_completions_from_executable(bin/"spt", "completion", "generate")
+    (share/"powershell/Modules/spt").mkpath
+    File.write(share/"powershell/Modules/spt/spt.psm1",
+      Utils.safe_popen_read(bin/"spt", "completion", "generate", "powershell"))
+    (share/"elvish/lib").mkpath
+    File.write(share/"elvish/lib/spt.elv",
+      Utils.safe_popen_read(bin/"spt", "completion", "generate", "elvish"))
   end
 
   test do

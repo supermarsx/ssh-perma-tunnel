@@ -10,7 +10,7 @@
 //!
 //! Output:
 //! - `spt.1`                  — root command
-//! - `spt-<group>.1`          — one per top-level subcommand group (19 total)
+//! - `spt-<group>.1`          — one per top-level subcommand group (20 total)
 //!
 //! Leaf-subcommand pages are intentionally folded into their parent group page
 //! via clap_mangen's recursive section emission, keeping the published man-page

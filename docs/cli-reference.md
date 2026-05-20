@@ -1,6 +1,6 @@
 # CLI Reference
 
-`spt` is structured as a Docker-style command tree with 19 top-level groups.
+`spt` is structured as a Docker-style command tree with 20 top-level groups.
 The canonical flag listing is generated from the Clap command tree and is
 available through:
 
@@ -51,6 +51,7 @@ surfaces, completion support, and exit-code contract.
 | `diagnose` | `run`, `network`, `auth`, `trust`, `dns`, `bind`, `port`, `service`, `secrets`, `observability`, `mcp`, `bundle` |
 | `benchmark` | `run`, `latency`, `throughput`, `udp`, `reconnect`, `dns`, `limits`, `report compare`, `report export` |
 | `mcp` | `serve`, `inspect`, `policy show`, `policy set` |
+| `status` | `serve`, `status`, `token rotate` |
 | `completion` | `generate bash`, `generate zsh`, `generate fish`, `generate powershell`, `generate elvish` |
 
 ## Capability Notes
@@ -124,6 +125,20 @@ spt completion generate elvish
 
 The package manifests install or generate completions for the relevant shell
 paths, including bash, zsh, fish, PowerShell, and Homebrew's completion helper.
+Committed completion artifacts live under `packaging/completions/` and are
+regenerated with:
+
+```text
+cargo run -p spt-bin --bin spt-completions -- --out packaging/completions
+```
+
+The shipped paths are:
+
+- bash: `share/bash-completion/completions/spt`
+- zsh: `share/zsh/site-functions/_spt`
+- fish: `share/fish/vendor_completions.d/spt.fish`
+- PowerShell: `share/powershell/Modules/spt/spt.psm1`
+- Elvish: `share/elvish/lib/spt.elv`
 
 ## Man Pages
 
@@ -148,6 +163,7 @@ Committed man pages live under `packaging/man/`:
 - `spt-service.1`
 - `spt-session.1`
 - `spt-stats.1`
+- `spt-status.1`
 - `spt-tunnel.1`
 
 Regenerate them after CLI changes with:

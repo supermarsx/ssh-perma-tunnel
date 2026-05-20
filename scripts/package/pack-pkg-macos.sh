@@ -59,7 +59,8 @@ if [[ ! -d "$resources_dir" ]]; then
 <h1>spt</h1>
 <p>Permanent SSH tunnels with reconnect, observability, and service integration.</p>
 <p>This installer places <code>spt</code> at <code>/usr/local/bin/spt</code> and man pages
-under <code>/usr/local/share/man/man1/</code>.</p>
+under <code>/usr/local/share/man/man1/</code>. Shell completions are installed
+under <code>/usr/local/share/</code>.</p>
 </body></html>
 HTML
 fi
@@ -92,10 +93,26 @@ work=$(mktemp -d -t spt-pkg.XXXXXX)
 trap 'rm -rf "$work"' EXIT
 
 staging="$work/payload"
-mkdir -p "$staging/usr/local/bin" "$staging/usr/local/share/man/man1"
+mkdir -p \
+  "$staging/usr/local/bin" \
+  "$staging/usr/local/share/man/man1" \
+  "$staging/usr/local/share/bash-completion/completions" \
+  "$staging/usr/local/share/zsh/site-functions" \
+  "$staging/usr/local/share/fish/vendor_completions.d" \
+  "$staging/usr/local/share/powershell/Modules/spt" \
+  "$staging/usr/local/share/elvish/lib"
 install -m 0755 "$universal" "$staging/usr/local/bin/spt"
 if [[ -d "$root/packaging/man" ]]; then
   cp "$root"/packaging/man/spt*.1 "$staging/usr/local/share/man/man1/" 2>/dev/null || true
+fi
+completion_root="$root/packaging/completions"
+if [[ -d "$completion_root" ]]; then
+  cp "$completion_root/bash/spt" "$staging/usr/local/share/bash-completion/completions/spt" 2>/dev/null || true
+  cp "$completion_root/zsh/_spt" "$staging/usr/local/share/zsh/site-functions/_spt" 2>/dev/null || true
+  cp "$completion_root/fish/spt.fish" "$staging/usr/local/share/fish/vendor_completions.d/spt.fish" 2>/dev/null || true
+  cp "$completion_root/powershell/spt.psm1" "$staging/usr/local/share/powershell/Modules/spt/spt.psm1" 2>/dev/null || true
+  cp "$completion_root/powershell/spt.ps1" "$staging/usr/local/share/powershell/Modules/spt/spt.ps1" 2>/dev/null || true
+  cp "$completion_root/elvish/spt.elv" "$staging/usr/local/share/elvish/lib/spt.elv" 2>/dev/null || true
 fi
 
 component="$work/spt-component.pkg"

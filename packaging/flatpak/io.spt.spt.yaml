@@ -47,4 +47,12 @@ modules:
             install -Dm644 "$page" "/app/share/man/man1/$(basename "$page")"
           done
         fi
+      - |
+        if [ -d packaging/completions ]; then
+          install -Dm644 packaging/completions/bash/spt /app/share/bash-completion/completions/spt || true
+          install -Dm644 packaging/completions/zsh/_spt /app/share/zsh/site-functions/_spt || true
+          install -Dm644 packaging/completions/fish/spt.fish /app/share/fish/vendor_completions.d/spt.fish || true
+          install -Dm644 packaging/completions/powershell/spt.psm1 /app/share/powershell/Modules/spt/spt.psm1 || true
+          install -Dm644 packaging/completions/elvish/spt.elv /app/share/elvish/lib/spt.elv || true
+        fi
       - install -Dm644 packaging/flatpak/io.spt.spt.metainfo.xml /app/share/metainfo/io.spt.spt.metainfo.xml
