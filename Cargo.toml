@@ -209,7 +209,7 @@ hickory-proto = "0.24"
 # Service / OS
 windows-service = "0.7"
 windows = { version = "0.58", features = ["Win32_System_EventLog", "Win32_System_Threading", "Win32_Security", "Win32_Security_Authorization", "Win32_Foundation"] }
-nix = { version = "0.29", features = ["fs", "signal", "user", "mman"] }
+nix = { version = "0.31", features = ["fs", "signal", "user", "mman"] }
 caps = "0.5"
 socket2 = { version = "0.5", features = ["all"] }
 
