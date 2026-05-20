@@ -23,6 +23,7 @@ bench = []
 [dependencies]
 spt-core = { workspace = true }
 spt-state = { workspace = true }
+spt-trust = { workspace = true }
 
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }

@@ -65,7 +65,28 @@ impl ReqwestFetcher {
     /// Build a default client. Returns an error only if the underlying
     /// `reqwest::ClientBuilder` fails (e.g. unable to load system roots).
     pub fn new() -> Result<Self, HttpError> {
+        Self::with_pin(&[], false, None)
+    }
+
+    /// Build with optional SPKI pin set, allow-self-signed flag, and
+    /// chain-depth cap (t5-e2). When `pin_strings` is empty,
+    /// `allow_self_signed` is `false`, and `max_cert_chain_depth` is
+    /// `None`, this still routes through `spt_trust::PinnedTlsConnector`
+    /// to enforce the default chain-depth cap (`Some(5)`).
+    pub fn with_pin(
+        pin_strings: &[String],
+        allow_self_signed: bool,
+        max_cert_chain_depth: Option<u32>,
+    ) -> Result<Self, HttpError> {
+        let rustls_cfg = spt_trust::PinnedTlsConnector::from_config_parts(
+            pin_strings,
+            allow_self_signed,
+            max_cert_chain_depth,
+        )
+        .map_err(|e| HttpError::Transport(format!("pinned tls: {e}")))?;
+        let cfg_inner = (*rustls_cfg).clone();
         let client = reqwest::Client::builder()
+            .use_preconfigured_tls(cfg_inner)
             .https_only(true)
             // Spec §14.3: redirects MUST be limited and MUST never downgrade.
             // reqwest enforces no scheme downgrade by default for cross-origin
@@ -138,5 +159,31 @@ impl HttpFetcher for ReqwestFetcher {
         }
 
         Ok(HttpResponse { status, etag, body })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ---------- t5-e2: PinnedTlsConnector wiring -----------------
+
+    #[test]
+    fn with_pin_empty_set_builds_strict_client() {
+        let f = ReqwestFetcher::with_pin(&[], false, None);
+        assert!(f.is_ok(), "with_pin empty failed: {:?}", f.err());
+    }
+
+    #[test]
+    fn with_pin_allow_self_signed_without_pin_rejects() {
+        let f = ReqwestFetcher::with_pin(&[], true, None);
+        assert!(f.is_err(), "expected refusal: {:?}", f.ok().map(|_| ()));
+    }
+
+    #[test]
+    fn with_pin_explicit_pin_and_depth_cap_builds() {
+        let pin = "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".to_string();
+        let f = ReqwestFetcher::with_pin(&[pin], false, Some(5));
+        assert!(f.is_ok(), "with_pin pinned failed: {:?}", f.err());
     }
 }

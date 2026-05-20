@@ -16,6 +16,7 @@ workspace = true
 spt-core = { workspace = true }
 spt-config = { workspace = true }
 spt-state = { workspace = true }
+spt-trust = { workspace = true }
 
 async-trait = { workspace = true }
 reqwest = { workspace = true }

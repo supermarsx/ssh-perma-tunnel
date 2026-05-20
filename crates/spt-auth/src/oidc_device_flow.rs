@@ -236,7 +236,30 @@ impl OidcDeviceFlowClient {
     /// # Ok(()) }
     /// ```
     pub fn new(issuer: Url, client_id: String, audience: Option<String>) -> CoreResult<Self> {
+        Self::with_pin(issuer, client_id, audience, &[], false, None)
+    }
+
+    /// Construct with pinned-TLS parameters (t5-e2). `pin_strings` is the
+    /// SPKI SHA-256 pin set; `allow_self_signed=true` requires a
+    /// non-empty pin set. `max_cert_chain_depth=None` applies
+    /// `spt_trust::DEFAULT_CHAIN_DEPTH_CAP`.
+    pub fn with_pin(
+        issuer: Url,
+        client_id: String,
+        audience: Option<String>,
+        pin_strings: &[String],
+        allow_self_signed: bool,
+        max_cert_chain_depth: Option<u32>,
+    ) -> CoreResult<Self> {
+        let rustls_cfg = spt_trust::PinnedTlsConnector::from_config_parts(
+            pin_strings,
+            allow_self_signed,
+            max_cert_chain_depth,
+        )
+        .map_err(|e| CoreError::InvalidConfig(format!("oidc pinned tls: {e}")))?;
+        let cfg_inner = (*rustls_cfg).clone();
         let http = reqwest::Client::builder()
+            .use_preconfigured_tls(cfg_inner)
             .user_agent(concat!("spt-auth/", env!("CARGO_PKG_VERSION")))
             .build()
             .map_err(|e| CoreError::RuntimeFailure(format!("reqwest builder: {e}")))?;
@@ -1186,6 +1209,50 @@ mod tests {
             }
             other => panic!("expected MalformedResponse, got {other:?}"),
         }
+    }
+
+    // ---------- t5-e2: PinnedTlsConnector wiring -----------------
+
+    #[test]
+    fn with_pin_empty_set_builds_strict_client() {
+        // Empty pin set + allow_self_signed=false + None cap = strict
+        // system roots routed via the pinned connector.
+        let c = OidcDeviceFlowClient::with_pin(
+            Url::parse("https://login.example.com").unwrap(),
+            "spt-cli".into(),
+            None,
+            &[],
+            false,
+            None,
+        );
+        assert!(c.is_ok(), "with_pin empty failed: {:?}", c.err());
+    }
+
+    #[test]
+    fn with_pin_allow_self_signed_without_pin_rejects() {
+        let c = OidcDeviceFlowClient::with_pin(
+            Url::parse("https://login.example.com").unwrap(),
+            "spt-cli".into(),
+            None,
+            &[],
+            true,
+            None,
+        );
+        assert!(c.is_err(), "expected refusal: {:?}", c.ok());
+    }
+
+    #[test]
+    fn with_pin_explicit_pin_builds() {
+        let pin = "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".to_string();
+        let c = OidcDeviceFlowClient::with_pin(
+            Url::parse("https://login.example.com").unwrap(),
+            "spt-cli".into(),
+            None,
+            &[pin],
+            false,
+            Some(5),
+        );
+        assert!(c.is_ok(), "with_pin pinned mode failed: {:?}", c.err());
     }
 
     #[test]

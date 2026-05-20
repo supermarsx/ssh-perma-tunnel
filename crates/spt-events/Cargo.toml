@@ -13,6 +13,7 @@ description = "Event bus, bindings, and notification sinks for spt."
 spt-core = { workspace = true }
 spt-state = { workspace = true }
 spt-secrets = { workspace = true }
+spt-trust = { workspace = true }
 
 tokio = { workspace = true }
 async-trait = { workspace = true }

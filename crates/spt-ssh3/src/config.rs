@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use spt_auth::SecretRef;
 use spt_core::{Error, Result};
-use spt_trust::TlsPin;
+use spt_trust::{ChainDepthCap, TlsPin};
 use url::Url;
 
 /// SSH3 backend configuration for one profile.
@@ -95,6 +95,14 @@ pub struct Ssh3TlsConfig {
     /// custom string; default `["h3"]`.
     #[serde(default = "default_alpn")]
     pub alpn: Vec<String>,
+
+    /// Maximum permitted certificate-chain depth (intermediates count).
+    ///
+    /// Default `Some(5)`. `None` disables the structural depth check.
+    /// Mirrors `[profiles.tls].max_cert_chain_depth` in the TOML schema.
+    /// See [`spt_trust::ChainDepthCap`].
+    #[serde(default)]
+    pub max_cert_chain_depth: ChainDepthCap,
 }
 
 #[allow(non_snake_case)]
@@ -113,6 +121,7 @@ impl Default for Ssh3TlsConfig {
             pin: TlsPin::default(),
             allow_self_signed: false,
             alpn: default_alpn(),
+            max_cert_chain_depth: ChainDepthCap::default(),
         }
     }
 }

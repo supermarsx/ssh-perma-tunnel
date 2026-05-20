@@ -73,8 +73,25 @@ pub struct SyslogTlsConfig {
     pub client_cert: Option<PathBuf>,
     /// Optional client private key for mutual TLS.
     pub client_key: Option<PathBuf>,
-    /// Disable TLS certificate verification. Dangerous; never the default.
+    /// Disable TLS certificate verification. **Deprecated** — kept for
+    /// backwards compatibility with older configs. Prefer
+    /// [`Self::allow_self_signed`] together with a non-empty
+    /// [`Self::pin_spki_sha256`] set (t5-e2). When the new fields are
+    /// at their defaults, this flag is honoured as before for one
+    /// release; the config validator emits a deprecation warning.
     pub allow_invalid_certs: bool,
+    /// Allow self-signed certificates (t5-e2). When `true` and
+    /// [`Self::pin_spki_sha256`] is non-empty, the pin set becomes the
+    /// sole trust anchor. When `true` and the pin set is empty, the
+    /// pinned connector refuses to build — this is the documented
+    /// fail-closed posture.
+    pub allow_self_signed: bool,
+    /// SPKI SHA-256 pin set (each entry in `SHA256:<base64>` or hex
+    /// form). Empty = no pin enforcement. t5-e2.
+    pub pin_spki_sha256: Vec<String>,
+    /// Maximum certificate-chain depth. `None` ⇒
+    /// [`spt_trust::DEFAULT_CHAIN_DEPTH_CAP`] (`Some(5)`). t5-e2/t5-e10.
+    pub max_cert_chain_depth: Option<u32>,
     /// Disk spool directory for retry queue.
     pub spool_dir: PathBuf,
     /// Spool capacity.
@@ -105,6 +122,9 @@ impl SyslogTlsConfig {
             client_cert: None,
             client_key: None,
             allow_invalid_certs: false,
+            allow_self_signed: false,
+            pin_spki_sha256: Vec::new(),
+            max_cert_chain_depth: None,
             spool_dir,
             spool: SpoolConfig::default(),
             timeout: Duration::from_secs(5),
@@ -179,10 +199,53 @@ pub fn root_store_with_ca_file(ca_file: Option<&std::path::Path>) -> io::Result<
 }
 
 fn build_client_config(cfg: &SyslogTlsConfig) -> Result<ClientConfig, SyslogTlsError> {
-    let wants_client_cert = if cfg.allow_invalid_certs {
+    // t5-e2: when pin set is non-empty, allow_self_signed is requested,
+    // or a chain-depth cap is configured, route through the pinned
+    // connector. Falls back to the original system-roots/no-verify path
+    // for backwards-compatibility.
+    let use_pinned = !cfg.pin_spki_sha256.is_empty()
+        || cfg.allow_self_signed
+        || cfg.max_cert_chain_depth.is_some();
+    let wants_client_cert = if use_pinned {
+        let rustls_cfg = spt_trust::PinnedTlsConnector::from_config_parts(
+            &cfg.pin_spki_sha256,
+            cfg.allow_self_signed,
+            cfg.max_cert_chain_depth,
+        )
+        .map_err(|e| SyslogTlsError::Rustls(format!("pinned tls: {e}")))?;
+        let cfg_inner = (*rustls_cfg).clone();
+        // The pinned connector's verifier already handles roots; just
+        // recover a builder by way of extracting the verifier. Easier:
+        // build a fresh builder using the same verifier. But
+        // `ClientConfig::builder()` paths require a verifier set via
+        // `with_root_certificates` or `with_custom_certificate_verifier`.
+        // The connector returned a ready-to-use ClientConfig — we
+        // already have what we need. Short-circuit: bypass mTLS in
+        // pinned mode for now (mTLS + pin is a follow-up).
+        let _ = cfg_inner;
+        // To preserve mTLS path, build a parallel builder with the same
+        // verifier as the pinned connector. The verifier lives behind
+        // `PinnedTlsConnectorBuilder::build()` only — reconstruct.
+        // Simplest acceptable behaviour: clone the connector's config
+        // and bolt client-auth on if requested via a custom path.
+        match (&cfg.client_cert, &cfg.client_key) {
+            (None, None) => {
+                // Already have a fully-configured client config.
+                return Ok((*rustls_cfg).clone());
+            }
+            _ => {
+                return Err(SyslogTlsError::Rustls(
+                    "syslog_tls: mTLS + pinned-TLS combo not yet supported in pinned mode \
+                     (t5-e2 deferred); omit client_cert/client_key or remove pin fields"
+                        .into(),
+                ));
+            }
+        }
+    } else if cfg.allow_invalid_certs {
         tracing::warn!(
             sink_host = %cfg.host,
-            "syslog_tls allow_invalid_certs=true; TLS certificate verification is disabled"
+            "syslog_tls allow_invalid_certs=true; TLS certificate verification is disabled \
+             (deprecated — use allow_self_signed + pin_spki_sha256)"
         );
         ClientConfig::builder()
             .dangerous()
@@ -441,6 +504,57 @@ async fn write_frame<W: AsyncWriteExt + Unpin>(
 mod tests {
     use super::*;
 
+    // ---------- t5-e2: PinnedTlsConnector wiring -----------------
+
+    #[test]
+    fn pinned_path_built_when_pin_set_present() {
+        // Non-empty pin set routes through PinnedTlsConnector and succeeds
+        // (no mTLS, no roots needed).
+        let mut cfg = SyslogTlsConfig::new("localhost", 6514, PathBuf::from("spool"));
+        cfg.pin_spki_sha256 = vec![
+            "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".into(),
+        ];
+        let r = build_client_config(&cfg);
+        assert!(r.is_ok(), "pinned path failed: {:?}", r.err());
+    }
+
+    #[test]
+    fn pinned_path_self_signed_without_pin_rejects() {
+        let mut cfg = SyslogTlsConfig::new("localhost", 6514, PathBuf::from("spool"));
+        cfg.allow_self_signed = true;
+        let r = build_client_config(&cfg);
+        assert!(r.is_err(), "expected rejection: {:?}", r.ok().map(|_| ()));
+    }
+
+    #[test]
+    fn pinned_path_with_depth_cap_only_builds() {
+        let mut cfg = SyslogTlsConfig::new("localhost", 6514, PathBuf::from("spool"));
+        cfg.max_cert_chain_depth = Some(3);
+        // No pin, allow_self_signed=false, but cap set: routes through pinned
+        // path with system roots + the cap honoured. Should still error
+        // because client cert path is None but we don't have client auth
+        // either, so it should be fine.
+        let r = build_client_config(&cfg);
+        assert!(r.is_ok(), "depth-cap-only build failed: {:?}", r.err());
+    }
+
+    #[test]
+    fn pinned_path_mtls_combo_rejected_with_clear_error() {
+        let mut cfg = SyslogTlsConfig::new("localhost", 6514, PathBuf::from("spool"));
+        cfg.pin_spki_sha256 = vec![
+            "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".into(),
+        ];
+        cfg.client_cert = Some(PathBuf::from("/tmp/c.pem"));
+        cfg.client_key = Some(PathBuf::from("/tmp/k.pem"));
+        let r = build_client_config(&cfg);
+        let err = r.expect_err("must error");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("mTLS") || msg.contains("not yet supported"),
+            "unexpected error: {msg}"
+        );
+    }
+
     #[test]
     fn tls_defaults_are_bounded() {
         let cfg = SyslogTlsConfig::new("localhost", 6514, PathBuf::from("spool"));
@@ -561,6 +675,9 @@ mod tests {
             client_cert: None,
             client_key: None,
             allow_invalid_certs: false,
+            allow_self_signed: false,
+            pin_spki_sha256: Vec::new(),
+            max_cert_chain_depth: None,
             spool_dir: tmp.path().to_path_buf(),
             spool: SpoolConfig::default(),
             timeout: Duration::from_secs(2),
@@ -617,6 +734,9 @@ mod tests {
             client_cert: None,
             client_key: None,
             allow_invalid_certs: false,
+            allow_self_signed: false,
+            pin_spki_sha256: Vec::new(),
+            max_cert_chain_depth: None,
             spool_dir: tmp.path().to_path_buf(),
             spool: SpoolConfig::default(),
             timeout: Duration::from_millis(50),

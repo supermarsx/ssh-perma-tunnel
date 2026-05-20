@@ -55,6 +55,17 @@ pub struct HttpsJsonlConfig {
     pub spool: SpoolConfig,
     /// Redaction mode applied to every string field before serialisation.
     pub redact: RedactionMode,
+    /// SPKI SHA-256 pin set (each pin in `SHA256:<base64>` or hex form).
+    /// Empty = no pin enforcement (strict system-roots still apply).
+    /// t5-e2.
+    pub pin_spki_sha256: Vec<String>,
+    /// Allow self-signed certificates. Requires a non-empty pin set
+    /// (the underlying [`spt_trust::PinnedTlsConnector`] refuses to
+    /// disable verification entirely). t5-e2.
+    pub allow_self_signed: bool,
+    /// Maximum certificate-chain depth. `None` ⇒
+    /// [`spt_trust::DEFAULT_CHAIN_DEPTH_CAP`] (`Some(5)`). t5-e2 / t5-e10.
+    pub max_cert_chain_depth: Option<u32>,
 }
 
 impl HttpsJsonlConfig {
@@ -69,6 +80,9 @@ impl HttpsJsonlConfig {
             spool_dir,
             spool: SpoolConfig::default(),
             redact: RedactionMode::Standard,
+            pin_spki_sha256: Vec::new(),
+            allow_self_signed: false,
+            max_cert_chain_depth: None,
         }
     }
 }
@@ -82,6 +96,9 @@ pub enum HttpsJsonlError {
     /// reqwest client build error.
     #[error("reqwest: {0}")]
     Reqwest(#[from] reqwest::Error),
+    /// Pinned-TLS config build error.
+    #[error("pinned tls: {0}")]
+    PinnedTls(String),
 }
 
 /// Tracing layer that posts NDJSON batches to an HTTPS endpoint.
@@ -120,7 +137,17 @@ pub fn spawn(
     if let Some(hv) = auth_header(&cfg.auth) {
         headers.insert(AUTHORIZATION, hv);
     }
+    // t5-e2: route through `PinnedTlsConnector` so the chain-depth cap +
+    // SPKI pin set + allow_self_signed flag are honoured.
+    let rustls_cfg = spt_trust::PinnedTlsConnector::from_config_parts(
+        &cfg.pin_spki_sha256,
+        cfg.allow_self_signed,
+        cfg.max_cert_chain_depth,
+    )
+    .map_err(|e| HttpsJsonlError::PinnedTls(e.to_string()))?;
+    let cfg_inner = (*rustls_cfg).clone();
     let client = Client::builder()
+        .use_preconfigured_tls(cfg_inner)
         .default_headers(headers)
         .timeout(cfg.timeout)
         .build()?;
@@ -359,6 +386,9 @@ mod tests {
             spool_dir: tmp.path().to_path_buf(),
             spool: SpoolConfig::default(),
             redact: RedactionMode::Standard,
+            pin_spki_sha256: Vec::new(),
+            allow_self_signed: false,
+            max_cert_chain_depth: None,
         };
         let (layer, handle) = spawn(cfg).unwrap();
         // Push 4 records → 2 batches → both should fail and spool.
@@ -376,5 +406,40 @@ mod tests {
             .filter(|e| e.file_name().to_string_lossy().ends_with(".bin"))
             .collect();
         assert!(!entries.is_empty(), "expected spooled batches");
+    }
+
+    // ---------- t5-e2: PinnedTlsConnector wiring -----------------
+
+    #[test]
+    fn pinned_self_signed_without_pin_rejects() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut cfg = HttpsJsonlConfig::new("https://localhost/", tmp.path().to_path_buf());
+        cfg.allow_self_signed = true;
+        let r = spawn(cfg);
+        assert!(
+            matches!(r, Err(HttpsJsonlError::PinnedTls(_))),
+            "expected PinnedTls error, got {:?}",
+            r.err()
+        );
+    }
+
+    #[test]
+    fn pinned_config_default_fields_present() {
+        // Sanity check that the t5-e2 fields are wired into defaults.
+        let cfg = HttpsJsonlConfig::new("https://x", PathBuf::from("/tmp"));
+        assert!(cfg.pin_spki_sha256.is_empty());
+        assert!(!cfg.allow_self_signed);
+        assert_eq!(cfg.max_cert_chain_depth, None);
+    }
+
+    #[test]
+    fn pinned_config_accepts_explicit_pin_and_depth_cap() {
+        // Builds via spt_trust directly — covers the runtime contract
+        // without spinning up the writer task that would otherwise hang
+        // waiting for a TLS peer.
+        let pin =
+            "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".to_string();
+        let r = spt_trust::PinnedTlsConnector::from_config_parts(&[pin], true, Some(5));
+        assert!(r.is_ok(), "pinned tls: {:?}", r.err());
     }
 }

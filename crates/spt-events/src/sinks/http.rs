@@ -124,7 +124,30 @@ pub mod reqwest_transport {
     impl ReqwestTransport {
         /// Build with a per-request timeout.
         pub fn new(timeout: Duration) -> Result<Self, SinkError> {
+            Self::with_pin(timeout, &[], false, None)
+        }
+
+        /// Build with pinned-TLS parameters (t5-e2). The pin set, the
+        /// `allow_self_signed` flag, and the chain-depth cap come straight
+        /// from the per-sink config. Non-empty `pin_strings` enforces
+        /// SPKI-SHA256 pinning against the leaf; `allow_self_signed=true`
+        /// requires a non-empty pin set (the underlying builder refuses
+        /// to disable verification entirely).
+        pub fn with_pin(
+            timeout: Duration,
+            pin_strings: &[String],
+            allow_self_signed: bool,
+            max_cert_chain_depth: Option<u32>,
+        ) -> Result<Self, SinkError> {
+            let rustls_cfg = spt_trust::PinnedTlsConnector::from_config_parts(
+                pin_strings,
+                allow_self_signed,
+                max_cert_chain_depth,
+            )
+            .map_err(|e| SinkError::Config(format!("pinned tls: {e}")))?;
+            let cfg_inner = (*rustls_cfg).clone();
             let client = Client::builder()
+                .use_preconfigured_tls(cfg_inner)
                 .timeout(timeout)
                 .build()
                 .map_err(|e| SinkError::Config(format!("reqwest: {e}")))?;
@@ -413,5 +436,50 @@ mod tests {
     async fn reqwest_transport_from_client_constructs() {
         let client = reqwest::Client::new();
         let _ = reqwest_transport::ReqwestTransport::from_client(client);
+    }
+
+    // ---------- t5-e2: PinnedTlsConnector wiring -----------------
+
+    #[cfg(feature = "transports")]
+    #[tokio::test(flavor = "current_thread")]
+    async fn reqwest_transport_with_pin_empty_set_succeeds() {
+        // Empty pin set + default flag + None cap = strict system roots
+        // routed through the pinned connector. Builds cleanly.
+        let t = reqwest_transport::ReqwestTransport::with_pin(
+            std::time::Duration::from_secs(1),
+            &[],
+            false,
+            None,
+        );
+        assert!(t.is_ok(), "with_pin empty failed: {:?}", t.err());
+    }
+
+    #[cfg(feature = "transports")]
+    #[tokio::test(flavor = "current_thread")]
+    async fn reqwest_transport_with_pin_self_signed_without_pin_rejects() {
+        // allow_self_signed=true with empty pin set must be rejected by
+        // the PinnedTlsConnector builder.
+        let t = reqwest_transport::ReqwestTransport::with_pin(
+            std::time::Duration::from_secs(1),
+            &[],
+            true,
+            None,
+        );
+        assert!(t.is_err(), "expected pin-set requirement to reject");
+    }
+
+    #[cfg(feature = "transports")]
+    #[tokio::test(flavor = "current_thread")]
+    async fn reqwest_transport_with_pin_explicit_pin_builds() {
+        // A well-formed SHA256:b64 pin together with allow_self_signed
+        // builds successfully (the pin set is non-empty).
+        let pin = "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".to_string();
+        let t = reqwest_transport::ReqwestTransport::with_pin(
+            std::time::Duration::from_secs(1),
+            &[pin],
+            true,
+            Some(5),
+        );
+        assert!(t.is_ok(), "with_pin pinned mode failed: {:?}", t.err());
     }
 }

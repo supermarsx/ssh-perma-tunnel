@@ -18,7 +18,7 @@ use rustls::{
     ClientConfig, DigitallySignedStruct, Error as TlsError, RootCertStore, SignatureScheme,
 };
 use spt_core::{Error, Result};
-use spt_trust::TlsPin;
+use spt_trust::{check_chain_depth, ChainDepthCap, TlsPin};
 
 use crate::config::Ssh3TlsConfig;
 
@@ -54,13 +54,21 @@ pub fn build_client_config(tls: &Ssh3TlsConfig) -> Result<ClientConfig> {
         }
     }
 
-    let mut cfg = if tls.allow_self_signed || !tls.pin.spki_sha256.is_empty() {
+    // The depth cap applies on every path, including the unmodified-webpki
+    // path. When the cap is bypassed (`None`) and there's no pin and no
+    // self-signed flag, we can use the off-the-shelf builder.
+    let needs_custom = tls.allow_self_signed
+        || !tls.pin.spki_sha256.is_empty()
+        || !tls.max_cert_chain_depth.is_unlimited();
+    let mut cfg = if needs_custom {
         // Install our custom verifier — wraps webpki on the chain side (or
-        // accepts any chain when allow_self_signed) and enforces the pin set.
+        // accepts any chain when allow_self_signed), enforces the pin set,
+        // and applies the chain-depth cap (t5-e10).
         let verifier = Arc::new(SptVerifier::new(
             roots,
             tls.pin.clone(),
             tls.allow_self_signed,
+            tls.max_cert_chain_depth,
         ));
         ClientConfig::builder()
             .dangerous()
@@ -81,17 +89,24 @@ fn install_default_provider() {
     let _ = rustls::crypto::ring::default_provider().install_default();
 }
 
-/// Custom server-cert verifier honoring [`TlsPin`] and `allow_self_signed`.
+/// Custom server-cert verifier honoring [`TlsPin`], `allow_self_signed`,
+/// and a [`ChainDepthCap`].
 #[derive(Debug)]
 pub(crate) struct SptVerifier {
     /// Underlying webpki verifier (used when `allow_self_signed = false`).
     inner: Option<Arc<dyn ServerCertVerifier>>,
     pin: TlsPin,
     allow_self_signed: bool,
+    chain_depth_cap: ChainDepthCap,
 }
 
 impl SptVerifier {
-    fn new(roots: RootCertStore, pin: TlsPin, allow_self_signed: bool) -> Self {
+    fn new(
+        roots: RootCertStore,
+        pin: TlsPin,
+        allow_self_signed: bool,
+        chain_depth_cap: ChainDepthCap,
+    ) -> Self {
         let inner = if allow_self_signed {
             None
         } else {
@@ -105,6 +120,7 @@ impl SptVerifier {
             inner,
             pin,
             allow_self_signed,
+            chain_depth_cap,
         }
     }
 }
@@ -118,6 +134,21 @@ impl ServerCertVerifier for SptVerifier {
         ocsp_response: &[u8],
         now: UnixTime,
     ) -> std::result::Result<ServerCertVerified, TlsError> {
+        // Apply the structural chain-depth cap before doing any
+        // signature work. The full wire chain is `[leaf, intermediates...]`.
+        // We build it on the stack-cheap clone path (CertificateDer is
+        // ref-counted-equivalent — owns a Vec<u8>) only when the cap is
+        // configured, to avoid allocations on the unlimited path.
+        if !self.chain_depth_cap.is_unlimited() {
+            let mut chain: Vec<CertificateDer<'_>> =
+                Vec::with_capacity(intermediates.len() + 1);
+            chain.push(end_entity.clone());
+            for c in intermediates {
+                chain.push(c.clone());
+            }
+            check_chain_depth(&chain, &self.chain_depth_cap)
+                .map_err(|e| TlsError::General(format!("ssh3 chain depth: {e}")))?;
+        }
         if !self.allow_self_signed {
             if let Some(inner) = &self.inner {
                 inner.verify_server_cert(
@@ -216,12 +247,46 @@ mod tests {
         let pin = TlsPin {
             spki_sha256: vec![[0x42u8; 32]],
         };
-        let verifier = SptVerifier::new(RootCertStore::empty(), pin, true);
+        let verifier = SptVerifier::new(
+            RootCertStore::empty(),
+            pin,
+            true,
+            ChainDepthCap::default(),
+        );
         let server_name = ServerName::try_from("pin-mismatch.test").unwrap();
         let res = verifier.verify_server_cert(&der, &[], &server_name, &[], UnixTime::now());
         let err = res.unwrap_err();
         let s = format!("{err}");
         assert!(s.contains("SPKI pin"), "expected SPKI pin error, got: {s}");
+    }
+
+    #[test]
+    fn chain_depth_cap_rejects_overlong_chain() {
+        // allow_self_signed=true + empty pin set + cap=2 → only the
+        // depth check runs, and a 3-intermediate chain trips the cap.
+        install_default_provider();
+        let leaf = rcgen::generate_simple_self_signed(vec!["leaf.test".into()]).unwrap();
+        let i1 = rcgen::generate_simple_self_signed(vec!["i1.test".into()]).unwrap();
+        let i2 = rcgen::generate_simple_self_signed(vec!["i2.test".into()]).unwrap();
+        let i3 = rcgen::generate_simple_self_signed(vec!["i3.test".into()]).unwrap();
+        let leaf_der = CertificateDer::from(leaf.cert.der().to_vec());
+        let intermediates = vec![
+            CertificateDer::from(i1.cert.der().to_vec()),
+            CertificateDer::from(i2.cert.der().to_vec()),
+            CertificateDer::from(i3.cert.der().to_vec()),
+        ];
+        let verifier = SptVerifier::new(
+            RootCertStore::empty(),
+            TlsPin::default(),
+            true,
+            ChainDepthCap::new(2),
+        );
+        let server_name = ServerName::try_from("leaf.test").unwrap();
+        let err = verifier
+            .verify_server_cert(&leaf_der, &intermediates, &server_name, &[], UnixTime::now())
+            .unwrap_err();
+        let s = format!("{err}");
+        assert!(s.contains("chain depth"), "expected chain-depth error: {s}");
     }
 
     #[test]
@@ -242,7 +307,12 @@ mod tests {
         let pin = TlsPin {
             spki_sha256: vec![spki],
         };
-        let verifier = SptVerifier::new(RootCertStore::empty(), pin, true);
+        let verifier = SptVerifier::new(
+            RootCertStore::empty(),
+            pin,
+            true,
+            ChainDepthCap::default(),
+        );
         let server_name = ServerName::try_from("pin-match.test").unwrap();
         verifier
             .verify_server_cert(&der, &[], &server_name, &[], UnixTime::now())
