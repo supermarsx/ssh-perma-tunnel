@@ -291,6 +291,8 @@ pub async fn policy_show(global: &GlobalOpts, args: FirewallPolicyShow) -> Resul
             "effective": {
                 "network": cfg.network,
                 "firewall": cfg.firewall,
+                "capabilities": cfg.capabilities,
+                "observability": cfg.observability,
             },
         });
         println!(
@@ -327,7 +329,8 @@ pub async fn policy_show(global: &GlobalOpts, args: FirewallPolicyShow) -> Resul
 }
 
 /// `spt firewall policy set`.
-pub async fn policy_set(_global: &GlobalOpts, args: FirewallPolicySet) -> Result<()> {
+pub async fn policy_set(global: &GlobalOpts, args: FirewallPolicySet) -> Result<()> {
+    ensure_gpo_policy_write_allowed(global)?;
     let (section, name) = parse_policy_key(&args.key)?;
     let binding = spt_config::find_binding(&section, &name)
         .ok_or_else(|| Error::InvalidArgs(format!("unknown policy key `{}`", args.key)))?;
@@ -365,7 +368,8 @@ pub async fn policy_set(_global: &GlobalOpts, args: FirewallPolicySet) -> Result
 }
 
 /// `spt firewall policy unset`.
-pub async fn policy_unset(_global: &GlobalOpts, args: FirewallPolicyUnset) -> Result<()> {
+pub async fn policy_unset(global: &GlobalOpts, args: FirewallPolicyUnset) -> Result<()> {
+    ensure_gpo_policy_write_allowed(global)?;
     let (section, name) = parse_policy_key(&args.key)?;
     let binding = spt_config::find_binding(&section, &name)
         .ok_or_else(|| Error::InvalidArgs(format!("unknown policy key `{}`", args.key)))?;
@@ -425,6 +429,32 @@ fn emit_status(json: bool, rules: &[String], planner: &dyn FirewallPlanner) -> R
             println!("(no spt-managed rules currently installed)");
         }
         println!("hint:    {}", manager_command_hint(probe.manager));
+    }
+    Ok(())
+}
+
+fn ensure_gpo_policy_write_allowed(global: &GlobalOpts) -> Result<()> {
+    let mut cfg = if let Some(path) = global.config.as_ref() {
+        spt_config::load(path, false)
+            .map_err(|e| Error::InvalidConfig(format!("load `{}`: {e}", path.display())))?
+            .0
+    } else {
+        Config::default()
+    };
+
+    if let Ok(bundle) = crate::policy::registry::load() {
+        let _ = spt_config::PolicyOverlay::apply(&mut cfg, &bundle);
+    }
+
+    if matches!(
+        cfg.capabilities
+            .as_ref()
+            .and_then(|cap| cap.allow_gpo_policy_writes),
+        Some(false)
+    ) {
+        return Err(Error::PermissionDenied(
+            "GPO policy writes are disabled by capabilities.allow_gpo_policy_writes".into(),
+        ));
     }
     Ok(())
 }
@@ -805,6 +835,24 @@ target = "internal:5432"
         let args = FirewallStatusArgs::default();
         let err = status(&g, args).await.unwrap_err();
         assert!(matches!(err, Error::UnsupportedPlatform(_)));
+    }
+
+    #[test]
+    fn gpo_policy_write_gate_can_deny_cli_writes() {
+        let mut f = NamedTempFile::new().unwrap();
+        writeln!(
+            f,
+            r#"
+version = 1
+
+[capabilities]
+allow_gpo_policy_writes = false
+"#
+        )
+        .unwrap();
+        let g = opts(Some(f.path().to_path_buf()));
+        let err = ensure_gpo_policy_write_allowed(&g).unwrap_err();
+        assert!(matches!(err, Error::PermissionDenied(_)));
     }
 
     #[test]

@@ -194,6 +194,8 @@ pub fn find_binding(section: &str, name: &str) -> Option<&'static Binding> {
 /// * Observability — `Metrics_Enabled`, `Metrics_Format`,
 ///                    `WindowsEvent_Enabled`, `WindowsEvent_Channel`
 /// * Mcp — `Enabled`, `Bind`
+/// * Capabilities — SSH2 backend, GSSAPI/SSPI, PQ/ML-KEM, proxy, SFTP,
+///                  mount/drive, Windows Event Log, and GPO write gates
 /// * `RemoteConfig` — `Enabled`, `Url`, `AllowCachedOnFailure`
 /// * Allowlists — `AllowedRemoteSinks`, `AllowedSecretsBackends`,
 ///                 `AllowedFirewallManagers`, `AllowedLoggingDestinations`
@@ -626,6 +628,32 @@ pub static BINDINGS: &[Binding] = &[
     },
     Binding {
         section: "Observability",
+        name: "WindowsEvent_Source",
+        kind: BindingKind::String,
+        apply: apply_winevent_source,
+        is_unset: |c| {
+            c.observability
+                .as_ref()
+                .and_then(|o| o.windows_event.as_ref())
+                .and_then(|w| w.source.as_ref())
+                .is_none()
+        },
+    },
+    Binding {
+        section: "Observability",
+        name: "WindowsEvent_InstallSource",
+        kind: BindingKind::Bool,
+        apply: apply_winevent_install_source,
+        is_unset: |c| {
+            c.observability
+                .as_ref()
+                .and_then(|o| o.windows_event.as_ref())
+                .and_then(|w| w.install_source)
+                .is_none()
+        },
+    },
+    Binding {
+        section: "Observability",
         name: "Metrics_Enabled",
         kind: BindingKind::Bool,
         apply: apply_metrics_enabled,
@@ -634,6 +662,200 @@ pub static BINDINGS: &[Binding] = &[
                 .as_ref()
                 .and_then(|o| o.metrics.as_ref())
                 .and_then(|m| m.enabled)
+                .is_none()
+        },
+    },
+    // Capability gates. These map directly to `[capabilities]` so GPO can
+    // allow or deny high-impact feature families without mutating profiles.
+    Binding {
+        section: "Capabilities",
+        name: "Ssh2Backend",
+        kind: BindingKind::String,
+        apply: apply_cap_ssh2_backend,
+        is_unset: |c| {
+            c.capabilities
+                .as_ref()
+                .and_then(|cap| cap.ssh2_backend.as_ref())
+                .is_none()
+        },
+    },
+    Binding {
+        section: "Capabilities",
+        name: "AllowLibssh2",
+        kind: BindingKind::Bool,
+        apply: apply_cap_allow_libssh2,
+        is_unset: |c| {
+            c.capabilities
+                .as_ref()
+                .and_then(|cap| cap.allow_libssh2)
+                .is_none()
+        },
+    },
+    Binding {
+        section: "Capabilities",
+        name: "AllowGssapi",
+        kind: BindingKind::Bool,
+        apply: apply_cap_allow_gssapi,
+        is_unset: |c| {
+            c.capabilities
+                .as_ref()
+                .and_then(|cap| cap.allow_gssapi)
+                .is_none()
+        },
+    },
+    Binding {
+        section: "Capabilities",
+        name: "AllowSspi",
+        kind: BindingKind::Bool,
+        apply: apply_cap_allow_sspi,
+        is_unset: |c| {
+            c.capabilities
+                .as_ref()
+                .and_then(|cap| cap.allow_sspi)
+                .is_none()
+        },
+    },
+    Binding {
+        section: "Capabilities",
+        name: "AllowGssapiDelegation",
+        kind: BindingKind::Bool,
+        apply: apply_cap_allow_gssapi_delegation,
+        is_unset: |c| {
+            c.capabilities
+                .as_ref()
+                .and_then(|cap| cap.allow_gssapi_delegation)
+                .is_none()
+        },
+    },
+    Binding {
+        section: "Capabilities",
+        name: "AllowNtlmFallback",
+        kind: BindingKind::Bool,
+        apply: apply_cap_allow_ntlm_fallback,
+        is_unset: |c| {
+            c.capabilities
+                .as_ref()
+                .and_then(|cap| cap.allow_ntlm_fallback)
+                .is_none()
+        },
+    },
+    Binding {
+        section: "Capabilities",
+        name: "AllowPostQuantumKex",
+        kind: BindingKind::Bool,
+        apply: apply_cap_allow_post_quantum_kex,
+        is_unset: |c| {
+            c.capabilities
+                .as_ref()
+                .and_then(|cap| cap.allow_post_quantum_kex)
+                .is_none()
+        },
+    },
+    Binding {
+        section: "Capabilities",
+        name: "AllowMlKem",
+        kind: BindingKind::Bool,
+        apply: apply_cap_allow_ml_kem,
+        is_unset: |c| {
+            c.capabilities
+                .as_ref()
+                .and_then(|cap| cap.allow_ml_kem)
+                .is_none()
+        },
+    },
+    Binding {
+        section: "Capabilities",
+        name: "RequirePostQuantumKex",
+        kind: BindingKind::Bool,
+        apply: apply_cap_require_post_quantum_kex,
+        is_unset: |c| {
+            c.capabilities
+                .as_ref()
+                .and_then(|cap| cap.require_post_quantum_kex)
+                .is_none()
+        },
+    },
+    Binding {
+        section: "Capabilities",
+        name: "AllowDynamicProxy",
+        kind: BindingKind::Bool,
+        apply: apply_cap_allow_dynamic_proxy,
+        is_unset: |c| {
+            c.capabilities
+                .as_ref()
+                .and_then(|cap| cap.allow_dynamic_proxy)
+                .is_none()
+        },
+    },
+    Binding {
+        section: "Capabilities",
+        name: "AllowSftp",
+        kind: BindingKind::Bool,
+        apply: apply_cap_allow_sftp,
+        is_unset: |c| {
+            c.capabilities
+                .as_ref()
+                .and_then(|cap| cap.allow_sftp)
+                .is_none()
+        },
+    },
+    Binding {
+        section: "Capabilities",
+        name: "AllowFilesystemMounts",
+        kind: BindingKind::Bool,
+        apply: apply_cap_allow_filesystem_mounts,
+        is_unset: |c| {
+            c.capabilities
+                .as_ref()
+                .and_then(|cap| cap.allow_filesystem_mounts)
+                .is_none()
+        },
+    },
+    Binding {
+        section: "Capabilities",
+        name: "AllowWindowsDriveMounts",
+        kind: BindingKind::Bool,
+        apply: apply_cap_allow_windows_drive_mounts,
+        is_unset: |c| {
+            c.capabilities
+                .as_ref()
+                .and_then(|cap| cap.allow_windows_drive_mounts)
+                .is_none()
+        },
+    },
+    Binding {
+        section: "Capabilities",
+        name: "AllowWritebackCache",
+        kind: BindingKind::Bool,
+        apply: apply_cap_allow_writeback_cache,
+        is_unset: |c| {
+            c.capabilities
+                .as_ref()
+                .and_then(|cap| cap.allow_writeback_cache)
+                .is_none()
+        },
+    },
+    Binding {
+        section: "Capabilities",
+        name: "AllowWindowsEventLog",
+        kind: BindingKind::Bool,
+        apply: apply_cap_allow_windows_event_log,
+        is_unset: |c| {
+            c.capabilities
+                .as_ref()
+                .and_then(|cap| cap.allow_windows_event_log)
+                .is_none()
+        },
+    },
+    Binding {
+        section: "Capabilities",
+        name: "AllowGpoPolicyWrites",
+        kind: BindingKind::Bool,
+        apply: apply_cap_allow_gpo_policy_writes,
+        is_unset: |c| {
+            c.capabilities
+                .as_ref()
+                .and_then(|cap| cap.allow_gpo_policy_writes)
                 .is_none()
         },
     },
@@ -755,6 +977,10 @@ fn ensure_metrics(c: &mut Config) -> &mut crate::schema::ObservabilityMetrics {
 
 fn ensure_mcp(c: &mut Config) -> &mut crate::schema::Mcp {
     c.mcp.get_or_insert_with(Default::default)
+}
+
+fn ensure_capabilities(c: &mut Config) -> &mut crate::schema::Capabilities {
+    c.capabilities.get_or_insert_with(Default::default)
 }
 
 // String/bool/u32 setters share a tiny helper closure pattern:
@@ -1052,6 +1278,22 @@ fn apply_winevent_channel(c: &mut Config, v: &PolicyValue, _m: ApplyMode) -> boo
     changed
 }
 
+fn apply_winevent_source(c: &mut Config, v: &PolicyValue, _m: ApplyMode) -> bool {
+    let Some(s) = as_string(v) else { return false };
+    let w = ensure_winevent(c);
+    let changed = w.source.as_deref() != Some(s.as_str());
+    w.source = Some(s);
+    changed
+}
+
+fn apply_winevent_install_source(c: &mut Config, v: &PolicyValue, _m: ApplyMode) -> bool {
+    let Some(b) = as_bool(v) else { return false };
+    let w = ensure_winevent(c);
+    let changed = w.install_source != Some(b);
+    w.install_source = Some(b);
+    changed
+}
+
 fn apply_metrics_enabled(c: &mut Config, v: &PolicyValue, _m: ApplyMode) -> bool {
     let Some(b) = as_bool(v) else { return false };
     let m = ensure_metrics(c);
@@ -1111,6 +1353,47 @@ fn apply_mcp_listen(c: &mut Config, v: &PolicyValue, _m: ApplyMode) -> bool {
     m.listen = Some(s);
     changed
 }
+
+// Capabilities
+
+fn apply_cap_ssh2_backend(c: &mut Config, v: &PolicyValue, _m: ApplyMode) -> bool {
+    let Some(s) = as_string(v) else { return false };
+    let cap = ensure_capabilities(c);
+    let changed = cap.ssh2_backend.as_deref() != Some(s.as_str());
+    cap.ssh2_backend = Some(s);
+    changed
+}
+
+macro_rules! capability_bool {
+    ($fn_name:ident, $field:ident) => {
+        fn $fn_name(c: &mut Config, v: &PolicyValue, _m: ApplyMode) -> bool {
+            let Some(b) = as_bool(v) else { return false };
+            let cap = ensure_capabilities(c);
+            let changed = cap.$field != Some(b);
+            cap.$field = Some(b);
+            changed
+        }
+    };
+}
+
+capability_bool!(apply_cap_allow_libssh2, allow_libssh2);
+capability_bool!(apply_cap_allow_gssapi, allow_gssapi);
+capability_bool!(apply_cap_allow_sspi, allow_sspi);
+capability_bool!(apply_cap_allow_gssapi_delegation, allow_gssapi_delegation);
+capability_bool!(apply_cap_allow_ntlm_fallback, allow_ntlm_fallback);
+capability_bool!(apply_cap_allow_post_quantum_kex, allow_post_quantum_kex);
+capability_bool!(apply_cap_allow_ml_kem, allow_ml_kem);
+capability_bool!(apply_cap_require_post_quantum_kex, require_post_quantum_kex);
+capability_bool!(apply_cap_allow_dynamic_proxy, allow_dynamic_proxy);
+capability_bool!(apply_cap_allow_sftp, allow_sftp);
+capability_bool!(apply_cap_allow_filesystem_mounts, allow_filesystem_mounts);
+capability_bool!(
+    apply_cap_allow_windows_drive_mounts,
+    allow_windows_drive_mounts
+);
+capability_bool!(apply_cap_allow_writeback_cache, allow_writeback_cache);
+capability_bool!(apply_cap_allow_windows_event_log, allow_windows_event_log);
+capability_bool!(apply_cap_allow_gpo_policy_writes, allow_gpo_policy_writes);
 
 // Most-restrictive intersection used by allowlist merges. Order is taken from
 // the *current* (config-side) list so that deterministic ordering is preserved
@@ -1541,5 +1824,75 @@ mod tests {
             cfg.secrets.as_ref().unwrap().backend.as_deref(),
             Some("keychain")
         );
+    }
+
+    #[test]
+    fn capability_policy_creates_feature_gates() {
+        let mut cfg = Config::default();
+        let mut b = PolicyBundle::empty();
+        b.machine.insert(
+            key("Capabilities", "Ssh2Backend"),
+            PolicyValue::String("russh".into()),
+        );
+        b.machine.insert(
+            key("Capabilities", "AllowPostQuantumKex"),
+            PolicyValue::Bool(true),
+        );
+        b.machine
+            .insert(key("Capabilities", "AllowMlKem"), PolicyValue::Bool(true));
+        b.machine.insert(
+            key("Capabilities", "AllowFilesystemMounts"),
+            PolicyValue::Bool(true),
+        );
+        b.machine.insert(
+            key("Capabilities", "AllowWindowsDriveMounts"),
+            PolicyValue::Bool(true),
+        );
+        b.machine.insert(
+            key("Capabilities", "AllowGpoPolicyWrites"),
+            PolicyValue::Bool(false),
+        );
+
+        let r = PolicyOverlay::apply(&mut cfg, &b);
+
+        assert_eq!(r.applied.len(), 6);
+        let cap = cfg.capabilities.as_ref().unwrap();
+        assert_eq!(cap.ssh2_backend.as_deref(), Some("russh"));
+        assert_eq!(cap.allow_post_quantum_kex, Some(true));
+        assert_eq!(cap.allow_ml_kem, Some(true));
+        assert_eq!(cap.allow_filesystem_mounts, Some(true));
+        assert_eq!(cap.allow_windows_drive_mounts, Some(true));
+        assert_eq!(cap.allow_gpo_policy_writes, Some(false));
+    }
+
+    #[test]
+    fn windows_event_policy_sets_source_channel_and_install() {
+        let mut cfg = Config::default();
+        let mut b = PolicyBundle::empty();
+        b.machine.insert(
+            key("Observability", "WindowsEvent_Source"),
+            PolicyValue::String("SshPermaTunnel".into()),
+        );
+        b.machine.insert(
+            key("Observability", "WindowsEvent_Channel"),
+            PolicyValue::String("Application".into()),
+        );
+        b.machine.insert(
+            key("Observability", "WindowsEvent_InstallSource"),
+            PolicyValue::Bool(true),
+        );
+
+        PolicyOverlay::apply(&mut cfg, &b);
+
+        let winevent = cfg
+            .observability
+            .as_ref()
+            .unwrap()
+            .windows_event
+            .as_ref()
+            .unwrap();
+        assert_eq!(winevent.source.as_deref(), Some("SshPermaTunnel"));
+        assert_eq!(winevent.channel.as_deref(), Some("Application"));
+        assert_eq!(winevent.install_source, Some(true));
     }
 }

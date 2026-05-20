@@ -31,6 +31,7 @@ Service installs default to:
     [mcp]                     # Model Context Protocol server
     [diagnostics]             # `spt diagnose` defaults
     [benchmark]               # `spt benchmark` defaults
+    [capabilities]            # fleet/admin feature gates
     [[profiles]]              # one or more tunnel profiles
 
 ## Validating a config
@@ -148,6 +149,36 @@ load-balancing defaults.
 `spt firewall gateway show|set` manages the interface/gateway fields without
 hand-editing TOML. `spt firewall policy list|show|set|unset` manages the
 corresponding GPO-style policy values under `Software\Policies\spt`.
+
+## `[capabilities]`
+
+`[capabilities]` is the operator policy table for optional, higher-impact
+feature families. It can be set in config or enforced through Windows GPO
+bindings.
+
+    [capabilities]
+    ssh2_backend = "russh"          # russh | libssh2 (legacy)
+    allow_libssh2 = false
+    allow_gssapi = true
+    allow_sspi = true
+    allow_gssapi_delegation = false
+    allow_ntlm_fallback = false
+    allow_post_quantum_kex = true
+    allow_ml_kem = true
+    require_post_quantum_kex = false
+    allow_dynamic_proxy = true      # SOCKS / HTTP CONNECT listeners
+    allow_sftp = true
+    allow_filesystem_mounts = true
+    allow_windows_drive_mounts = true
+    allow_writeback_cache = false
+    allow_windows_event_log = true
+    allow_gpo_policy_writes = true
+
+The production SSH2 target is the pure-Rust `russh` backend. `libssh2` is kept
+as a legacy migration value only and validation warns when it is selected.
+`require_post_quantum_kex` requires `allow_post_quantum_kex = true`; Windows
+drive-letter mounts and writeback caching require filesystem mounts to be
+enabled explicitly.
 
 ## Profile basics
 

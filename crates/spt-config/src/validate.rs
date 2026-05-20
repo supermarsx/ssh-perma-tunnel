@@ -22,6 +22,8 @@
 //! 15. Duration / size string fields parse via `spt_core` helpers.
 //! 16. `runtime.remote_config.url` (when enabled) must be an HTTPS URL with a
 //!     `fingerprint_sha256` set (spec §14.3).
+//! 17. Fleet feature gates in `[capabilities]` use known values and safe
+//!     combinations.
 
 use spt_core::{address::BindAddr, duration::parse_duration, size::parse_size};
 
@@ -42,6 +44,7 @@ pub fn validate(c: &Config) -> Diagnostics {
     check_network(&mut d, c);
     check_observability(&mut d, c);
     check_mcp(&mut d, c);
+    check_capabilities(&mut d, c);
     check_profiles(&mut d, c);
 
     d
@@ -600,6 +603,111 @@ fn check_mcp(d: &mut Diagnostics, c: &Config) {
                 "mcp.allow_secret_reveal must remain false (spec §9.8/§16)",
             )
             .at("mcp.allow_secret_reveal"),
+        );
+    }
+}
+
+fn check_capabilities(d: &mut Diagnostics, c: &Config) {
+    let Some(cap) = c.capabilities.as_ref() else {
+        return;
+    };
+
+    if let Some(backend) = cap.ssh2_backend.as_deref() {
+        if !matches!(backend, "russh" | "libssh2") {
+            d.push(
+                Diagnostic::error(
+                    "capabilities_ssh2_backend_invalid",
+                    format!("capabilities.ssh2_backend `{backend}` is invalid"),
+                )
+                .at("capabilities.ssh2_backend"),
+            );
+        }
+        if backend == "libssh2" {
+            d.push(
+                Diagnostic::warning(
+                    "capabilities_ssh2_backend_libssh2_deprecated",
+                    "capabilities.ssh2_backend = \"libssh2\" is legacy; russh is the production SSH2 backend target",
+                )
+                .at("capabilities.ssh2_backend"),
+            );
+            if matches!(cap.allow_libssh2, Some(false)) {
+                d.push(
+                    Diagnostic::error(
+                        "capabilities_libssh2_disallowed",
+                        "capabilities.allow_libssh2 = false conflicts with ssh2_backend = \"libssh2\"",
+                    )
+                    .at("capabilities.allow_libssh2"),
+                );
+            }
+        }
+    }
+
+    if matches!(cap.require_post_quantum_kex, Some(true))
+        && !matches!(cap.allow_post_quantum_kex, Some(true))
+    {
+        d.push(
+            Diagnostic::error(
+                "capabilities_pq_required_but_disabled",
+                "capabilities.require_post_quantum_kex requires allow_post_quantum_kex = true",
+            )
+            .at("capabilities.require_post_quantum_kex"),
+        );
+    }
+
+    if matches!(cap.allow_ml_kem, Some(true)) && !matches!(cap.allow_post_quantum_kex, Some(true)) {
+        d.push(
+            Diagnostic::warning(
+                "capabilities_ml_kem_without_pq",
+                "capabilities.allow_ml_kem has no effect unless allow_post_quantum_kex = true",
+            )
+            .at("capabilities.allow_ml_kem"),
+        );
+    }
+
+    if matches!(cap.allow_windows_drive_mounts, Some(true))
+        && !matches!(cap.allow_filesystem_mounts, Some(true))
+    {
+        d.push(
+            Diagnostic::error(
+                "capabilities_windows_drive_mounts_require_fs_mounts",
+                "capabilities.allow_windows_drive_mounts requires allow_filesystem_mounts = true",
+            )
+            .at("capabilities.allow_windows_drive_mounts"),
+        );
+    }
+
+    if matches!(cap.allow_writeback_cache, Some(true))
+        && !matches!(cap.allow_filesystem_mounts, Some(true))
+    {
+        d.push(
+            Diagnostic::error(
+                "capabilities_writeback_requires_fs_mounts",
+                "capabilities.allow_writeback_cache requires allow_filesystem_mounts = true",
+            )
+            .at("capabilities.allow_writeback_cache"),
+        );
+    }
+
+    if matches!(cap.allow_gssapi_delegation, Some(true))
+        && !matches!(cap.allow_gssapi, Some(true))
+        && !matches!(cap.allow_sspi, Some(true))
+    {
+        d.push(
+            Diagnostic::error(
+                "capabilities_gssapi_delegation_requires_provider",
+                "capabilities.allow_gssapi_delegation requires allow_gssapi = true or allow_sspi = true",
+            )
+            .at("capabilities.allow_gssapi_delegation"),
+        );
+    }
+
+    if matches!(cap.allow_ntlm_fallback, Some(true)) && !matches!(cap.allow_sspi, Some(true)) {
+        d.push(
+            Diagnostic::error(
+                "capabilities_ntlm_requires_sspi",
+                "capabilities.allow_ntlm_fallback requires allow_sspi = true",
+            )
+            .at("capabilities.allow_ntlm_fallback"),
         );
     }
 }
@@ -1265,6 +1373,82 @@ mod tests {
             .errors
             .iter()
             .any(|e| e.code == "mcp_secret_reveal_disallowed"));
+    }
+
+    #[test]
+    fn capabilities_invalid_backend_errors() {
+        let raw = r#"
+            version = 1
+            [capabilities]
+            ssh2_backend = "magic"
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(d
+            .errors
+            .iter()
+            .any(|e| e.code == "capabilities_ssh2_backend_invalid"));
+    }
+
+    #[test]
+    fn capabilities_libssh2_is_warned_and_can_be_disallowed() {
+        let raw = r#"
+            version = 1
+            [capabilities]
+            ssh2_backend = "libssh2"
+            allow_libssh2 = false
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(d
+            .warnings
+            .iter()
+            .any(|w| w.code == "capabilities_ssh2_backend_libssh2_deprecated"));
+        assert!(d
+            .errors
+            .iter()
+            .any(|e| e.code == "capabilities_libssh2_disallowed"));
+    }
+
+    #[test]
+    fn capabilities_reject_unsafe_combinations() {
+        let raw = r#"
+            version = 1
+            [capabilities]
+            ssh2_backend = "russh"
+            require_post_quantum_kex = true
+            allow_windows_drive_mounts = true
+            allow_writeback_cache = true
+            allow_gssapi_delegation = true
+            allow_ntlm_fallback = true
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        for code in [
+            "capabilities_pq_required_but_disabled",
+            "capabilities_windows_drive_mounts_require_fs_mounts",
+            "capabilities_writeback_requires_fs_mounts",
+            "capabilities_gssapi_delegation_requires_provider",
+            "capabilities_ntlm_requires_sspi",
+        ] {
+            assert!(
+                d.errors.iter().any(|e| e.code == code),
+                "missing {code}: {:?}",
+                d.errors
+            );
+        }
     }
 
     #[test]

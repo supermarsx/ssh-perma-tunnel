@@ -51,11 +51,15 @@ spt firewall policy list --json
 spt firewall policy show --config /etc/spt/spt.toml --json
 spt firewall policy set Network.DefaultInterface eth0 --scope user
 spt firewall policy set Network.AllowedInterfaces eth0,wg0 --scope machine --enforced
+spt firewall policy set Capabilities.Ssh2Backend russh --scope machine --enforced
+spt firewall policy set Capabilities.AllowGpoPolicyWrites false --scope machine --enforced
 ```
 
 On Windows these commands write `HKCU`/`HKLM\Software\Policies\spt`. On other
 platforms write commands return `UnsupportedPlatform`; `list` still documents
-the supported policy keys.
+the supported policy keys. If config or enforced policy sets
+`[capabilities].allow_gpo_policy_writes = false`, `policy set|unset` returns
+`PermissionDenied` before attempting a registry write.
 
 ## Rule shape
 

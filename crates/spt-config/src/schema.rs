@@ -80,6 +80,11 @@ pub struct Config {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub benchmark: Option<Benchmark>,
 
+    /// `[capabilities]` table. Fleet/admin feature gates for optional
+    /// protocol, proxy, filesystem, and Windows management surfaces.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capabilities: Option<Capabilities>,
+
     /// `[round_robin]` — endpoint cycling configuration. Plan §t4-e4.
     ///
     /// Disabled by default (`enabled = false`). When enabled, the supervisor
@@ -954,6 +959,67 @@ pub struct Benchmark {
     /// Results directory. §9.10.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub results_dir: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// [capabilities] — fleet feature gates
+// ---------------------------------------------------------------------------
+
+/// `[capabilities]` table.
+///
+/// These fields are intended to be controlled either in config or through the
+/// Windows GPO overlay. They gate higher-risk optional surfaces while the core
+/// tunnel runtime remains CLI/config-only.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Capabilities {
+    /// SSH2 backend policy: `russh` (production target) or `libssh2` (legacy).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ssh2_backend: Option<String>,
+    /// Permit legacy libssh2 SSH2 backend during migration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow_libssh2: Option<bool>,
+    /// Permit SSH GSSAPI/Kerberos authentication and key exchange.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow_gssapi: Option<bool>,
+    /// Permit Windows SSPI/Negotiate authentication.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow_sspi: Option<bool>,
+    /// Permit GSSAPI credential delegation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow_gssapi_delegation: Option<bool>,
+    /// Permit NTLM fallback through SSPI/Negotiate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow_ntlm_fallback: Option<bool>,
+    /// Permit post-quantum SSH key exchange.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow_post_quantum_kex: Option<bool>,
+    /// Permit ML-KEM hybrid SSH key exchange.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow_ml_kem: Option<bool>,
+    /// Require post-quantum SSH key exchange for eligible SSH2 profiles.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub require_post_quantum_kex: Option<bool>,
+    /// Permit dynamic SOCKS/HTTP CONNECT proxy listeners.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow_dynamic_proxy: Option<bool>,
+    /// Permit SFTP operations over SSH.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow_sftp: Option<bool>,
+    /// Permit filesystem mounts backed by SFTP.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow_filesystem_mounts: Option<bool>,
+    /// Permit Windows drive-letter mounts backed by SFTP.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow_windows_drive_mounts: Option<bool>,
+    /// Permit writeback caching for mounted SFTP filesystems.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow_writeback_cache: Option<bool>,
+    /// Permit Windows Event Log registration and writes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow_windows_event_log: Option<bool>,
+    /// Permit CLI writes to the Windows GPO registry policy hive.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow_gpo_policy_writes: Option<bool>,
 }
 
 // ---------------------------------------------------------------------------
