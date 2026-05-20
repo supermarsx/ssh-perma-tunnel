@@ -11,6 +11,11 @@ description = "Terminal UI profile configurator for spt."
 
 [features]
 testing = []
+# Enables the real `arboard` clipboard backend. Disabled in headless CI so
+# the wider workspace build does not pull `wl-clipboard-rs` / `xcb` etc.
+# When disabled, `ClipboardWrapper` is a graceful no-op (logs a warning).
+clipboard = ["dep:arboard"]
+default = ["clipboard"]
 
 [lints]
 workspace = true
@@ -28,6 +33,13 @@ thiserror = { workspace = true }
 unicode-width = "0.1"
 toml_edit = { workspace = true }
 toml = { workspace = true }
+# `secrecy::SecretBox` is the cross-workspace type used to hand secret bytes
+# into the redacted-field yank path without an extra plaintext clone.
+secrecy = { workspace = true }
+# Pinned to 3.4 (MSRV 1.67.1, well under workspace MSRV 1.83). 3.4 added
+# `Clipboard::clear()`; we use `set_text("")` for portability across builds
+# without `image-data`. `default-features = false` drops the image/X11 surface.
+arboard = { version = "=3.4.1", default-features = false, optional = true }
 
 [dev-dependencies]
 insta = { workspace = true }

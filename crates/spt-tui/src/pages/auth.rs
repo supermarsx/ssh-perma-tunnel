@@ -51,23 +51,52 @@ impl AuthPage {
                 |p| p.auth.as_ref().and_then(|a| a.certificate_file.clone()),
                 |p, v| p.auth.get_or_insert_with(Default::default).certificate_file = v,
             ),
+            // The schema stores these as `Option<RedactedString>` (t5-e7) so the
+            // value zeroes on drop and never leaks through derived `Debug`.
+            // The TUI form layer still works on `Option<String>`, so the
+            // getter exposes the cleartext (Display via `.to_string()`) and
+            // the setter wraps incoming text back into `RedactedString`. The
+            // cleartext lives in `FieldValue::SecretRef(String)` only for the
+            // duration of a single edit-and-commit; redaction at render-time
+            // still applies via the `FieldValue::SecretRef` variant.
             opt_secret(
                 "auth.passphrase",
                 "Secret ref for an encrypted private key — `secret://ns/name`",
-                |p| p.auth.as_ref().and_then(|a| a.passphrase.clone()),
-                |p, v| p.auth.get_or_insert_with(Default::default).passphrase = v,
+                |p| {
+                    p.auth
+                        .as_ref()
+                        .and_then(|a| a.passphrase.as_ref().map(|r| r.expose().to_owned()))
+                },
+                |p, v| {
+                    p.auth.get_or_insert_with(Default::default).passphrase =
+                        v.map(spt_core::RedactedString::from);
+                },
             ),
             opt_secret(
                 "auth.password",
                 "Secret ref for password auth — `secret://ns/name`",
-                |p| p.auth.as_ref().and_then(|a| a.password.clone()),
-                |p, v| p.auth.get_or_insert_with(Default::default).password = v,
+                |p| {
+                    p.auth
+                        .as_ref()
+                        .and_then(|a| a.password.as_ref().map(|r| r.expose().to_owned()))
+                },
+                |p, v| {
+                    p.auth.get_or_insert_with(Default::default).password =
+                        v.map(spt_core::RedactedString::from);
+                },
             ),
             opt_secret(
                 "auth.token",
                 "Secret ref for SSH3 bearer token — `secret://ns/name`",
-                |p| p.auth.as_ref().and_then(|a| a.token.clone()),
-                |p, v| p.auth.get_or_insert_with(Default::default).token = v,
+                |p| {
+                    p.auth
+                        .as_ref()
+                        .and_then(|a| a.token.as_ref().map(|r| r.expose().to_owned()))
+                },
+                |p, v| {
+                    p.auth.get_or_insert_with(Default::default).token =
+                        v.map(spt_core::RedactedString::from);
+                },
             ),
             opt_bool(
                 "auth.agent",

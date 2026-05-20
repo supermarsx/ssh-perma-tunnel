@@ -577,9 +577,14 @@ mod tests {
         let def = opt_secret(
             "passphrase",
             "secret ref",
-            |p: &Profile| p.auth.as_ref().and_then(|a| a.passphrase.clone()),
+            |p: &Profile| {
+                p.auth
+                    .as_ref()
+                    .and_then(|a| a.passphrase.as_ref().map(|s| s.expose().to_owned()))
+            },
             |p, v| {
-                p.auth.get_or_insert_with(Default::default).passphrase = v;
+                p.auth.get_or_insert_with(Default::default).passphrase =
+                    v.map(spt_core::RedactedString::from);
             },
         );
         let mut list = FieldList::new(vec![def]);
@@ -848,8 +853,15 @@ mod tests {
         let def = opt_secret(
             "pw",
             "",
-            |p: &Profile| p.auth.as_ref().and_then(|a| a.password.clone()),
-            |p, v| p.auth.get_or_insert_with(Default::default).password = v,
+            |p: &Profile| {
+                p.auth
+                    .as_ref()
+                    .and_then(|a| a.password.as_ref().map(|s| s.expose().to_owned()))
+            },
+            |p, v| {
+                p.auth.get_or_insert_with(Default::default).password =
+                    v.map(spt_core::RedactedString::from);
+            },
         );
         let mut list = FieldList::new(vec![def]);
         let mut p = sample_profile();
