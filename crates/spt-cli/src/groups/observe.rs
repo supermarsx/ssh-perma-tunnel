@@ -102,8 +102,10 @@ pub struct ObserveWinEvent {
 pub enum ObserveWinEventSub {
     /// Install a Windows Event Log source.
     InstallSource(ObserveWinEventSource),
+    /// Uninstall a Windows Event Log source.
+    UninstallSource(ObserveWinEventSource),
     /// Emit a test event.
-    Test(ObserveWinEventSource),
+    Test(ObserveWinEventTest),
 }
 
 /// Common args for `spt observe windows-event` subcommands.
@@ -112,4 +114,31 @@ pub struct ObserveWinEventSource {
     /// Source name.
     #[arg(long, value_name = "NAME")]
     pub source: Option<String>,
+    /// Event Log channel. Defaults to `[observability.windows_event].channel`
+    /// or `Application`.
+    #[arg(long, value_name = "CHANNEL")]
+    pub channel: Option<String>,
+    /// Message table DLL or EXE for source registration.
+    #[arg(long, value_name = "PATH")]
+    pub message_dll: Option<std::path::PathBuf>,
+}
+
+/// `spt observe windows-event test`.
+#[derive(Args, Debug)]
+pub struct ObserveWinEventTest {
+    /// Source name.
+    #[arg(long, value_name = "NAME")]
+    pub source: Option<String>,
+    /// Event Log channel. Used for config/default resolution.
+    #[arg(long, value_name = "CHANNEL")]
+    pub channel: Option<String>,
+    /// Event severity (`info`, `warning`, `error`).
+    #[arg(long, value_name = "LEVEL", default_value = "info")]
+    pub level: String,
+    /// Event identifier.
+    #[arg(long, value_name = "ID", default_value_t = 1000)]
+    pub event_id: u32,
+    /// Event message.
+    #[arg(long, value_name = "TEXT")]
+    pub message: Option<String>,
 }

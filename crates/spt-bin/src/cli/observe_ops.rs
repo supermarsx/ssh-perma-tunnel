@@ -10,6 +10,8 @@
 #![allow(clippy::needless_pass_by_value)]
 #![allow(clippy::missing_errors_doc)]
 
+use std::path::PathBuf;
+
 #[cfg(feature = "snmp")]
 use serde_json::json;
 use spt_cli::GlobalOpts;
@@ -50,13 +52,43 @@ impl Default for ObserveSnmpArgs {
 }
 
 /// Args for [`windows_event`].
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct ObserveWindowsEventArgs {
     /// Message body. Defaults to a generic synthetic-test marker.
     pub message: Option<String>,
     /// Event Log source name. Defaults to `[observability.windows_event].source`
     /// in config, or `spt` if absent.
     pub source: Option<String>,
+    /// Event Log channel. Defaults to `[observability.windows_event].channel`
+    /// in config, or `Application` if absent.
+    pub channel: Option<String>,
+    /// Event level (`info`, `warning`, `error`).
+    pub level: String,
+    /// Event identifier.
+    pub event_id: u32,
+}
+
+impl Default for ObserveWindowsEventArgs {
+    fn default() -> Self {
+        Self {
+            message: None,
+            source: None,
+            channel: None,
+            level: "info".to_string(),
+            event_id: 1000,
+        }
+    }
+}
+
+/// Args for Windows Event Log source install/uninstall.
+#[derive(Debug, Clone, Default)]
+pub struct ObserveWindowsEventSourceArgs {
+    /// Event Log source name. Defaults to config or `spt`.
+    pub source: Option<String>,
+    /// Event Log channel. Defaults to config or `Application`.
+    pub channel: Option<String>,
+    /// Message table DLL/EXE. Used only by install-source.
+    pub message_dll: Option<PathBuf>,
 }
 
 // ---------------------------------------------------------------------------
@@ -197,11 +229,10 @@ pub async fn windows_event(global: &GlobalOpts, args: ObserveWindowsEventArgs) -
         .message
         .clone()
         .unwrap_or_else(|| "synthetic event from `spt observe windows-event`".to_string());
-    let source = args
-        .source
-        .clone()
-        .or_else(|| config_winevent_source(global).ok().flatten())
-        .unwrap_or_else(|| "spt".to_string());
+    let source = resolve_winevent_source(global, args.source.clone())?;
+    let _channel = resolve_winevent_channel(global, args.channel.clone())?;
+    let level = parse_winevent_level(&args.level)?;
+    let event_id = args.event_id;
 
     #[cfg(windows)]
     {
@@ -209,15 +240,62 @@ pub async fn windows_event(global: &GlobalOpts, args: ObserveWindowsEventArgs) -
         // we surface the source/level/message that was emitted instead, which
         // is what Event Viewer keys on. Future work can hook the bookmark
         // API to surface the actual event record id.
-        spt_winevent::report_event(&source, spt_winevent::Level::Info, 1000, &message)?;
-        println!("ok: emitted synthetic event (source=`{source}`, level=info, id=1000)");
+        spt_winevent::report_event(&source, level, event_id, &message)?;
+        println!(
+            "ok: emitted synthetic event (source=`{source}`, level={}, id={event_id})",
+            winevent_level_name(level)
+        );
         Ok(())
     }
     #[cfg(not(windows))]
     {
-        let _ = (source, message);
+        let _ = (source, level, event_id, message);
         Err(Error::UnsupportedPlatform(
             "spt observe windows-event is only supported on Windows".to_string(),
+        ))
+    }
+}
+
+/// `spt observe windows-event install-source`.
+pub async fn windows_event_install_source(
+    global: &GlobalOpts,
+    args: ObserveWindowsEventSourceArgs,
+) -> Result<()> {
+    let source = resolve_winevent_source(global, args.source.clone())?;
+    let channel = resolve_winevent_channel(global, args.channel.clone())?;
+    #[cfg(windows)]
+    {
+        spt_winevent::register_source(&source, Some(&channel), args.message_dll.as_deref())?;
+        println!("ok: installed Windows Event Log source `{source}` in `{channel}`");
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (source, channel, args.message_dll);
+        Err(Error::UnsupportedPlatform(
+            "spt observe windows-event install-source is only supported on Windows".to_string(),
+        ))
+    }
+}
+
+/// `spt observe windows-event uninstall-source`.
+pub async fn windows_event_uninstall_source(
+    global: &GlobalOpts,
+    args: ObserveWindowsEventSourceArgs,
+) -> Result<()> {
+    let source = resolve_winevent_source(global, args.source.clone())?;
+    let channel = resolve_winevent_channel(global, args.channel.clone())?;
+    #[cfg(windows)]
+    {
+        spt_winevent::unregister_source(&source, Some(&channel))?;
+        println!("ok: uninstalled Windows Event Log source `{source}` from `{channel}`");
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (source, channel, args.message_dll);
+        Err(Error::UnsupportedPlatform(
+            "spt observe windows-event uninstall-source is only supported on Windows".to_string(),
         ))
     }
 }
@@ -266,6 +344,50 @@ fn config_winevent_source(global: &GlobalOpts) -> Result<Option<String>> {
         .as_ref()
         .and_then(|o| o.windows_event.as_ref())
         .and_then(|w| w.source.clone()))
+}
+
+fn config_winevent_channel(global: &GlobalOpts) -> Result<Option<String>> {
+    let Some(path) = global.config.clone() else {
+        return Ok(None);
+    };
+    let (cfg, _w) =
+        spt_config::load(&path, false).map_err(|e| Error::InvalidConfig(format!("load: {e}")))?;
+    Ok(cfg
+        .observability
+        .as_ref()
+        .and_then(|o| o.windows_event.as_ref())
+        .and_then(|w| w.channel.clone()))
+}
+
+fn resolve_winevent_source(global: &GlobalOpts, arg: Option<String>) -> Result<String> {
+    Ok(arg
+        .or_else(|| config_winevent_source(global).ok().flatten())
+        .unwrap_or_else(|| "spt".to_string()))
+}
+
+fn resolve_winevent_channel(global: &GlobalOpts, arg: Option<String>) -> Result<String> {
+    Ok(arg
+        .or_else(|| config_winevent_channel(global).ok().flatten())
+        .unwrap_or_else(|| spt_winevent::DEFAULT_CHANNEL.to_string()))
+}
+
+fn parse_winevent_level(raw: &str) -> Result<spt_winevent::Level> {
+    match raw {
+        "info" => Ok(spt_winevent::Level::Info),
+        "warning" | "warn" => Ok(spt_winevent::Level::Warning),
+        "error" => Ok(spt_winevent::Level::Error),
+        other => Err(Error::InvalidArgs(format!(
+            "windows-event level `{other}` is invalid; expected info|warning|error"
+        ))),
+    }
+}
+
+fn winevent_level_name(level: spt_winevent::Level) -> &'static str {
+    match level {
+        spt_winevent::Level::Info => "info",
+        spt_winevent::Level::Warning => "warning",
+        spt_winevent::Level::Error => "error",
+    }
 }
 
 /// Resolve a secret reference into a UTF-8 passphrase. When `r` is `None` we
@@ -402,6 +524,7 @@ mod tests {
         let args = ObserveWindowsEventArgs {
             message: Some("unit test".to_string()),
             source: Some("spt-test-unit".to_string()),
+            ..Default::default()
         };
         // Allow either Ok or a permission/registry failure on locked-down CI.
         let _ = windows_event(&g, args).await;
@@ -431,6 +554,25 @@ mod tests {
         g.config = Some(cfg);
         let v = config_winevent_source(&g).unwrap();
         assert_eq!(v.as_deref(), Some("my-source"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn config_winevent_channel_reads_value_from_config() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = tmp.path().join("c.toml");
+        std::fs::write(
+            &cfg,
+            r#"
+                version = 1
+                [observability.windows_event]
+                channel = "Application"
+            "#,
+        )
+        .unwrap();
+        let mut g = opts();
+        g.config = Some(cfg);
+        let v = config_winevent_channel(&g).unwrap();
+        assert_eq!(v.as_deref(), Some("Application"));
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -469,10 +611,46 @@ mod tests {
     }
 
     #[test]
-    fn observe_windows_event_args_default_is_all_none() {
+    fn observe_windows_event_args_default_is_safe_test_event() {
         let a = ObserveWindowsEventArgs::default();
         assert!(a.message.is_none());
         assert!(a.source.is_none());
+        assert!(a.channel.is_none());
+        assert_eq!(a.level, "info");
+        assert_eq!(a.event_id, 1000);
+    }
+
+    #[test]
+    fn parse_winevent_level_accepts_known_levels() {
+        assert_eq!(
+            parse_winevent_level("info").unwrap(),
+            spt_winevent::Level::Info
+        );
+        assert_eq!(
+            parse_winevent_level("warning").unwrap(),
+            spt_winevent::Level::Warning
+        );
+        assert_eq!(
+            parse_winevent_level("warn").unwrap(),
+            spt_winevent::Level::Warning
+        );
+        assert_eq!(
+            parse_winevent_level("error").unwrap(),
+            spt_winevent::Level::Error
+        );
+        assert!(matches!(
+            parse_winevent_level("debug").unwrap_err(),
+            Error::InvalidArgs(_)
+        ));
+    }
+
+    #[cfg(not(windows))]
+    #[tokio::test(flavor = "current_thread")]
+    async fn windows_event_install_source_returns_unsupported_on_non_windows() {
+        let g = opts();
+        let args = ObserveWindowsEventSourceArgs::default();
+        let err = windows_event_install_source(&g, args).await.unwrap_err();
+        assert!(matches!(err, Error::UnsupportedPlatform(_)));
     }
 
     #[cfg(feature = "snmp")]

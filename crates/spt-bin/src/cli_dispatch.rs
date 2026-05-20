@@ -2044,12 +2044,37 @@ async fn observe_dispatch(global: &GlobalOpts, c: groups::observe::ObserveCmd) -
             }
         },
         ObserveSub::WindowsEvent(we) => match we.command {
-            ObserveWinEventSub::InstallSource(s) | ObserveWinEventSub::Test(s) => {
+            ObserveWinEventSub::InstallSource(s) => {
+                crate::cli::observe_ops::windows_event_install_source(
+                    global,
+                    crate::cli::observe_ops::ObserveWindowsEventSourceArgs {
+                        source: s.source,
+                        channel: s.channel,
+                        message_dll: s.message_dll,
+                    },
+                )
+                .await
+            }
+            ObserveWinEventSub::UninstallSource(s) => {
+                crate::cli::observe_ops::windows_event_uninstall_source(
+                    global,
+                    crate::cli::observe_ops::ObserveWindowsEventSourceArgs {
+                        source: s.source,
+                        channel: s.channel,
+                        message_dll: s.message_dll,
+                    },
+                )
+                .await
+            }
+            ObserveWinEventSub::Test(s) => {
                 crate::cli::observe_ops::windows_event(
                     global,
                     crate::cli::observe_ops::ObserveWindowsEventArgs {
-                        message: None,
+                        message: s.message,
                         source: s.source,
+                        channel: s.channel,
+                        level: s.level,
+                        event_id: s.event_id,
                     },
                 )
                 .await

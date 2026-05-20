@@ -28,7 +28,18 @@ Required checks:
 - `spt firewall bind-preview` resolves loopback, explicit IP, specific
   interface, auto-interface, and all-interface modes.
 - `spt firewall policy list|show` works everywhere; `set|unset` writes HKCU/HKLM
-  on Windows and returns `UnsupportedPlatform` elsewhere.
+  on Windows, returns `UnsupportedPlatform` elsewhere, and honors
+  `Capabilities.AllowGpoPolicyWrites` / `[capabilities].allow_gpo_policy_writes`.
+- Windows Event Log acceptance covers source registration, source removal, and
+  test event writes through `spt observe windows-event install-source`,
+  `uninstall-source`, and `test`; non-Windows hosts must return clean
+  `UnsupportedPlatform` diagnostics.
+- SSH2 acceptance uses the pure-Rust `russh` backend as the production target.
+  Any `libssh2` run is a legacy migration lane and must be marked separately
+  in reports.
+- GSSAPI/Kerberos/SSPI, ML-KEM/PQ KEX, SOCKS/HTTP CONNECT, SFTP, filesystem
+  mounts, and Windows drive-letter mounts must each have positive, negative,
+  policy-denied, and platform-denied tests before GA.
 - Default builds do not expose SNMP CLI. `--features snmp` builds expose SNMP
   agent/trap diagnostics, and enabled SNMP configs must set
   `[observability.snmp].enterprise_id` to a registered production PEN.

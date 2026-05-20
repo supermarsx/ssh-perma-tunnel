@@ -44,7 +44,7 @@ surfaces, completion support, and exit-code contract.
 | `dns` | `serve`, `status`, `query`, `upstream set`, `record add`, `record remove`, `hosts render`, `hosts apply`, `hosts restore` |
 | `firewall` | `plan`, `apply`, `remove`, `status`, `interfaces`, `bind-preview`, `gateway show`, `gateway set`, `policy list`, `policy show`, `policy set`, `policy unset` |
 | `log` | `tail`, `test`, `export`, `remote list`, `remote test`, `remote status`, `remote drain` |
-| `observe` | `metrics`, `windows-event install-source`, `windows-event test`; SNMP subcommands are present only in `--features snmp` builds |
+| `observe` | `metrics`, `windows-event install-source`, `windows-event uninstall-source`, `windows-event test`; SNMP subcommands are present only in `--features snmp` builds |
 | `event` | `list`, `test`, `replay`, `sink list`, `sink test` |
 | `stats` | `summary`, `live`, `connections`, `throughput`, `errors`, `export` |
 | `session` | `list`, `show`, `close`, `drain`, `top` |
@@ -67,7 +67,11 @@ surfaces, completion support, and exit-code contract.
   `[network]` and `[profiles.failover]`.
 - Windows GPO-style policy is surfaced through `spt firewall policy`; Windows
   writes target `HKCU` or `HKLM\Software\Policies\spt`, while non-Windows
-  hosts return `UnsupportedPlatform` for policy writes.
+  hosts return `UnsupportedPlatform` for policy writes. The
+  `Capabilities.AllowGpoPolicyWrites` policy can disable those writes.
+- `[capabilities]` gates the new production feature families: russh SSH2
+  backend selection, GSSAPI/SSPI, PQ/ML-KEM KEX, SOCKS/HTTP CONNECT, SFTP,
+  filesystem and Windows drive mounts, Windows Event Log, and GPO writes.
 - Remote logging supports `syslog_udp`, `syslog_tcp`, `syslog_tls`,
   `https_jsonl`, and `otlp` config kinds. The live writer implementation
   covers the syslog transports and CLI testing/status/drain paths.
