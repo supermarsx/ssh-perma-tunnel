@@ -53,3 +53,21 @@ status` and external monitors. Schema in
 OTLP export is feature-gated on the `otlp` cargo feature in
 `spt-observability`. Enable with `--features spt-observability/otlp` and
 configure under `[[logging.remote]]` with `type = "otlp"`.
+
+## Pinned TLS (t5-e2)
+
+Every HTTPS-bearing remote-log sink (`syslog_tls`, `https_jsonl`) carries
+three optional fields that route through `spt_trust::PinnedTlsConnector`:
+
+| Field | Type | Default | Meaning |
+|---|---|---|---|
+| `pin_spki_sha256` | array of strings | `[]` | SPKI SHA-256 pins (`SHA256:<base64>` or hex). Non-empty enables leaf-cert pinning. |
+| `allow_self_signed` | bool | `false` | When `true`, the WebPKI verifier is skipped and the pin set becomes the sole trust anchor. **Requires** a non-empty `pin_spki_sha256` — the builder refuses to disable verification entirely. |
+| `max_cert_chain_depth` | integer | `5` (`Some(5)`) when omitted | Maximum intermediates between leaf and trust anchor. Set explicitly to `0` to disallow intermediates entirely. |
+
+The legacy `allow_invalid_certs` flag on `syslog_tls` remains accepted for
+back-compat but emits a `remote_log_allow_invalid_certs_deprecated`
+warning from `spt config validate`. Operators should migrate to
+`allow_self_signed` + `pin_spki_sha256`. The OTLP exporter currently
+exposes the same schema-level fields but does not yet route through the
+pinned connector (tonic-rustls wiring is deferred to a follow-up).

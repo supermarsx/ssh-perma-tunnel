@@ -204,6 +204,74 @@ The repo ships several examples under [`/examples/`](../examples/):
 - `observability-otel.toml` — OTLP + Prometheus + remote syslog-TLS.
 - `headless-ci.toml` — env-only secrets for CI/CD pipelines.
 
+## Sealed configs (`SPTENC1`)
+
+`spt-config-crypt` ships an authenticated-encryption envelope so a config
+file can live on disk without exposing its secrets in plaintext. The
+file format is `SPTENC1` (8-byte magic `b"SPTENC1\n"`), an AEAD-protected
+body (`AES-256-GCM`) with one of three key sources:
+
+- **Passphrase** — Argon2id (m=64 MiB, t=3, p=4 by default).
+- **Vault master** — 32-byte key resolved from the OS keychain (deferred
+  CLI wiring; see t5-e6 log).
+- **X25519 recipients** — one or more recipient public keys; any holder
+  of a matching private scalar can unseal.
+
+### Commands
+
+```text
+spt config encrypt <in> [--out <PATH>]
+                        [--passphrase-from <REF>]   # e.g. env:NAME, file:///path
+                        [--recipient <PUBKEY_B64>]
+                        [--use-vault-master]
+                        [--force]
+spt config decrypt <in> [--out <PATH>]
+                        [--passphrase-from <REF>]
+                        [--recipient-key <PATH>]
+spt config edit    <sealed>  [--passphrase-from <REF>]
+spt config crypt rotate <sealed> [--new-passphrase-from <REF>]
+                                 [--new-recipient <PUBKEY_B64>]
+```
+
+`--passphrase-from` accepts the same `env:` / `file://` / `secret://`
+forms as the rest of the CLI (parsed by `spt_auth::SecretRef`).
+
+### Loader auto-detection
+
+`spt_config::load` and `load_with_key` peek the on-disk magic bytes
+through `spt_config_crypt::is_sealed`. If sealed and no
+`KeySource` is supplied, the loader prompts for a passphrase on the
+controlling TTY (via `spt_secrets::read_passphrase`, which echo-
+suppresses and restores terminal state on every exit including panic).
+For non-interactive callers (tests, supervised reloads, headless CI)
+use `load_with_key(path, strict, Some(&key))`.
+
+### `edit` flow
+
+1. Unseal into a `secrecy::SecretBox<Zeroizing<Vec<u8>>>` (zero-on-drop).
+2. Write the cleartext to an OS runtime tmpfile (`$XDG_RUNTIME_DIR` on
+   Linux, `$TMPDIR` on macOS, `%LOCALAPPDATA%\Temp` on Windows) created
+   with mode `0600` on Unix; an `EditSession` RAII guard owns it.
+3. Spawn `$EDITOR` (override via `SPT_EDITOR_OVERRIDE`, then `$VISUAL`,
+   then `$EDITOR`, then `vi`/`nano` on Unix or `notepad` on Windows).
+4. On save, re-validate via `spt_config::load_str`. Any parse error
+   aborts the operation without touching the original sealed file.
+5. Re-seal under the **same** `KeySource` (use `crypt rotate` to
+   change keys) and atomic-write back to the original path.
+6. The `Drop` impl on `EditSession` best-effort zeros the tmpfile's
+   contents and unlinks it on every exit path including panic.
+
+### Security notes
+
+- The plaintext **only** lives on disk during the `edit` window;
+  outside of that, every cleartext exposure stays in zeroize-on-drop
+  buffers wrapped by `secrecy::SecretBox`.
+- `spt config decrypt` to stdout is honoured but should be piped — the
+  cleartext is by definition not redacted.
+- `--use-vault-master` requires a keychain-resident master key. The
+  CLI plumbing for that path is intentionally guarded and emits a
+  clear error until the t5-Bwire integrator wires it.
+
 ## See also
 
 - [CLI Reference](cli-reference.md)

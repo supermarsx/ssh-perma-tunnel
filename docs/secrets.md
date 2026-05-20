@@ -56,6 +56,58 @@ Returned bytes are wrapped in `secrecy::SecretBox<Zeroizing<Vec<u8>>>`,
 zeroed on drop and excluded from `Debug`. `mlock` / `VirtualLock` is
 attempted when `[secrets].memory_protection = "strict"`.
 
+### Non-swappable allocations (`SecretAlloc`)
+
+For hot in-memory secrets that must never hit swap, `spt-secrets` offers
+`SecretAlloc::new(len) -> SecretSlice` (and the typed `MemfdSecretBox<T>`
+wrapper). The returned slice is:
+
+1. **Zero-initialised.**
+2. **Non-swappable** — via one of two backends, selected at runtime:
+
+   | Platform        | Primary backend                          | Fallback             |
+   |-----------------|------------------------------------------|----------------------|
+   | Linux ≥5.14     | `memfd_secret(2)` + `mmap(MAP_SHARED)`   | mlocked heap         |
+   | Linux <5.14     | (n/a — probe returns `ENOSYS`)           | mlocked heap         |
+   | Windows         | `VirtualLock`-ed heap                    | (same)               |
+   | macOS / BSD     | `mlock`-ed heap                          | (same)               |
+
+3. **Zeroed on drop**, even on panic.
+
+The `memfd_secret(2)` syscall is runtime-probed once per process via
+`libc::syscall(libc::SYS_memfd_secret, 0)`. A successful probe means the
+kernel was built with `CONFIG_SECRETMEM=y`; the returned fd is sized with
+`ftruncate` and mapped `MAP_SHARED`. Memory backed this way is unmapped
+from the kernel direct map and is therefore not accessible via
+`/proc/<pid>/mem`, kdump, or direct-map kernel read primitives.
+
+`mlock` failure (typically `RLIMIT_MEMLOCK` on unprivileged containers) is
+**not** an error — the allocation still succeeds, the page is just
+swappable. A `tracing::warn!` is emitted. This matches spec §14.6 ("attempt,
+diagnose if unavailable").
+
+`MemfdSecretBox<T>` is a thin typed wrapper sized for exactly
+`size_of::<T>()` bytes; it requires `T: Default + Zeroize` and is intended
+for `bytemuck::Pod`-shaped types (raw key material, nonces, fixed-size
+ciphertext envelopes). Indirect allocations inside `T` (e.g. `Vec<u8>`'s
+heap buffer) are **not** protected by the wrapper — for those, use
+`SecretSlice` directly and serialise into it.
+
+#### Verifying which backend is in use
+
+```rust
+let s = spt_secrets::SecretAlloc::new(4096)?;
+if s.is_memfd_secret() {
+    tracing::info!("secret pages backed by memfd_secret(2)");
+} else {
+    tracing::info!("secret pages on mlocked heap (memfd_secret unavailable)");
+}
+```
+
+On a CI host that you know runs kernel 5.14+ with `CONFIG_SECRETMEM=y`,
+flipping `is_memfd_secret()` to `assert!(...)` confirms the kernel
+feature path is exercised.
+
 ## CLI
 
     spt secret set db/password --prompt
