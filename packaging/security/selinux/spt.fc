@@ -1,0 +1,17 @@
+# SELinux file-context spec for spt (ssh-perma-tunnel).
+#
+# Apply on Fedora/RHEL after `make install`:
+#   sudo restorecon -RFv /usr/local/bin/spt /etc/spt /var/lib/spt /var/log/spt /run/spt
+
+# Binary entry-points.
+/usr/bin/spt               --      gen_context(system_u:object_r:spt_exec_t,s0)
+/usr/local/bin/spt         --      gen_context(system_u:object_r:spt_exec_t,s0)
+
+# Configuration tree.
+/etc/spt(/.*)?                     gen_context(system_u:object_r:spt_etc_t,s0)
+
+# State directories.
+/var/lib/spt(/.*)?                 gen_context(system_u:object_r:spt_var_lib_t,s0)
+/var/log/spt(/.*)?                 gen_context(system_u:object_r:spt_var_log_t,s0)
+/run/spt(/.*)?                     gen_context(system_u:object_r:spt_var_run_t,s0)
+/var/run/spt(/.*)?                 gen_context(system_u:object_r:spt_var_run_t,s0)

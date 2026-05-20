@@ -1,0 +1,119 @@
+policy_module(spt, 0.1.0)
+
+########################################
+#
+# Declarations
+#
+
+require {
+    type sysadm_t;
+    type user_t;
+    type unconfined_t;
+    type init_t;
+    type cert_t;
+    type net_conf_t;
+    type proc_t;
+    type self;
+    class capability { net_bind_service ipc_lock };
+    class process { signal sigchld sigkill sigstop ptrace };
+    class tcp_socket { create connect accept listen bind read write getattr setopt getopt sendto recvfrom shutdown };
+    class udp_socket { create connect read write sendto recvfrom bind getattr setopt getopt };
+    class unix_stream_socket { create connect read write listen accept bind getattr setopt getopt shutdown };
+    class file { read write open create getattr setattr unlink rename map execute_no_trans };
+    class dir { read write add_name remove_name search getattr setattr create rmdir };
+    class lnk_file { read };
+    class fifo_file { read write };
+    class fd use;
+}
+
+# Domain for spt itself.
+type spt_t;
+# Entry-point (binary) label.
+type spt_exec_t;
+domain_type(spt_t)
+domain_entry_file(spt_t, spt_exec_t)
+init_daemon_domain(spt_t, spt_exec_t)
+
+# Configuration tree (read-only).
+type spt_etc_t;
+files_config_file(spt_etc_t)
+
+# State + runtime.
+type spt_var_lib_t;
+files_type(spt_var_lib_t)
+
+type spt_var_log_t;
+logging_log_file(spt_var_log_t)
+
+type spt_var_run_t;
+files_pid_file(spt_var_run_t)
+
+########################################
+#
+# Transitions
+#
+
+# sysadm and ordinary users that exec /usr/local/bin/spt transition into spt_t.
+domtrans_pattern(sysadm_t, spt_exec_t, spt_t)
+domtrans_pattern(user_t,   spt_exec_t, spt_t)
+domtrans_pattern(init_t,   spt_exec_t, spt_t)
+
+########################################
+#
+# spt_t local policy
+#
+
+# Read its own config tree.
+allow spt_t spt_etc_t:dir  { read getattr search open };
+allow spt_t spt_etc_t:file { read getattr open };
+allow spt_t spt_etc_t:lnk_file { read };
+
+# Read+write state + log + run.
+manage_dirs_pattern(spt_t,  spt_var_lib_t, spt_var_lib_t)
+manage_files_pattern(spt_t, spt_var_lib_t, spt_var_lib_t)
+files_var_lib_filetrans(spt_t, spt_var_lib_t, { dir file })
+
+manage_files_pattern(spt_t, spt_var_log_t, spt_var_log_t)
+logging_log_filetrans(spt_t, spt_var_log_t, { dir file })
+
+manage_files_pattern(spt_t, spt_var_run_t, spt_var_run_t)
+files_pid_filetrans(spt_t, spt_var_run_t, { dir file })
+
+# Network: TCP + UDP, client + server.
+allow spt_t self:tcp_socket { create connect accept listen bind read write getattr setopt getopt sendto recvfrom shutdown };
+allow spt_t self:udp_socket { create connect read write sendto recvfrom bind getattr setopt getopt };
+allow spt_t self:unix_stream_socket { create connect read write listen accept bind getattr setopt getopt shutdown };
+
+corenet_tcp_connect_all_ports(spt_t)
+corenet_udp_sendrecv_all_ports(spt_t)
+corenet_tcp_bind_generic_node(spt_t)
+corenet_udp_bind_generic_node(spt_t)
+corenet_tcp_bind_all_ports(spt_t)
+corenet_udp_bind_all_ports(spt_t)
+sysnet_dns_name_resolve(spt_t)
+
+# TLS trust store.
+miscfiles_read_generic_certs(spt_t)
+
+# Capabilities.
+allow spt_t self:capability { net_bind_service ipc_lock };
+
+# Process self-introspection.
+allow spt_t self:process { signal sigchld };
+
+# Read /etc/resolv.conf, /etc/hosts.
+sysnet_read_config(spt_t)
+
+# Allow proc read for own pid (status/snapshot endpoint).
+kernel_read_system_state(spt_t)
+
+########################################
+#
+# Denies (explicit hardening — neverallows could be used too)
+#
+
+# spt must NEVER ptrace anything, including its children.
+neverallow spt_t self:process ptrace;
+neverallow spt_t domain:process ptrace;
+# No module load.
+neverallow spt_t self:capability { sys_module sys_ptrace sys_admin sys_boot };

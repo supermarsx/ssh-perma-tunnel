@@ -1,0 +1,192 @@
+{
+  "defaultAction": "SCMP_ACT_ERRNO",
+  "defaultErrnoRet": 1,
+  "architectures": [
+    "SCMP_ARCH_X86_64",
+    "SCMP_ARCH_AARCH64",
+    "SCMP_ARCH_X86",
+    "SCMP_ARCH_X32"
+  ],
+  "syscalls": [
+    {
+      "names": [
+        "read",
+        "write",
+        "openat",
+        "close",
+        "mmap",
+        "munmap",
+        "mlock",
+        "munlock",
+        "mlock2",
+        "mlockall",
+        "munlockall",
+        "futex",
+        "rt_sigaction",
+        "rt_sigprocmask",
+        "rt_sigreturn",
+        "sigaltstack",
+        "exit",
+        "exit_group",
+        "getpid",
+        "gettid",
+        "getuid",
+        "geteuid",
+        "getgid",
+        "getegid",
+        "epoll_create1",
+        "epoll_ctl",
+        "epoll_wait",
+        "epoll_pwait",
+        "brk",
+        "mprotect",
+        "fcntl",
+        "prctl",
+        "getrandom",
+        "clock_gettime",
+        "clock_getres",
+        "clock_nanosleep",
+        "nanosleep",
+        "socket",
+        "connect",
+        "accept",
+        "accept4",
+        "sendto",
+        "recvfrom",
+        "sendmsg",
+        "recvmsg",
+        "bind",
+        "listen",
+        "setsockopt",
+        "getsockopt",
+        "getsockname",
+        "getpeername",
+        "shutdown",
+        "memfd_secret",
+        "memfd_create",
+        "copy_file_range",
+        "statx",
+        "fstat",
+        "newfstatat",
+        "lstat",
+        "getdents64",
+        "lseek",
+        "ftruncate",
+        "fsync",
+        "fdatasync",
+        "mkdirat",
+        "unlinkat",
+        "renameat",
+        "renameat2",
+        "linkat",
+        "symlinkat",
+        "readlinkat",
+        "chmod",
+        "fchmod",
+        "fchmodat",
+        "fchownat",
+        "pread64",
+        "pwrite64",
+        "writev",
+        "readv",
+        "pipe2",
+        "dup",
+        "dup3",
+        "uname",
+        "sched_yield",
+        "sched_getaffinity",
+        "set_robust_list",
+        "get_robust_list",
+        "tgkill",
+        "set_tid_address",
+        "arch_prctl",
+        "madvise"
+      ],
+      "action": "SCMP_ACT_ALLOW"
+    },
+    {
+      "names": ["ioctl"],
+      "action": "SCMP_ACT_ALLOW",
+      "args": [
+        {
+          "index": 1,
+          "value": 21505,
+          "op": "SCMP_CMP_EQ",
+          "comment": "TCGETS — read terminal attributes for passphrase echo-off"
+        }
+      ]
+    },
+    {
+      "names": ["ioctl"],
+      "action": "SCMP_ACT_ALLOW",
+      "args": [
+        {
+          "index": 1,
+          "value": 21506,
+          "op": "SCMP_CMP_EQ",
+          "comment": "TCSETS — restore terminal attributes on drop-guard"
+        }
+      ]
+    },
+    {
+      "names": ["ioctl"],
+      "action": "SCMP_ACT_ALLOW",
+      "args": [
+        {
+          "index": 1,
+          "value": 21523,
+          "op": "SCMP_CMP_EQ",
+          "comment": "TIOCGWINSZ — TUI resize handling"
+        }
+      ]
+    },
+    {
+      "names": ["ioctl"],
+      "action": "SCMP_ACT_ALLOW",
+      "args": [
+        {
+          "index": 1,
+          "value": 1074025986,
+          "op": "SCMP_CMP_EQ",
+          "comment": "FIONBIO — non-blocking socket setup"
+        }
+      ]
+    },
+    {
+      "names": [
+        "ptrace",
+        "process_vm_readv",
+        "process_vm_writev",
+        "kcmp",
+        "pivot_root",
+        "mount",
+        "umount2",
+        "swapon",
+        "swapoff",
+        "reboot",
+        "init_module",
+        "finit_module",
+        "delete_module",
+        "kexec_load",
+        "kexec_file_load",
+        "perf_event_open",
+        "bpf",
+        "personality",
+        "userfaultfd",
+        "create_module",
+        "query_module",
+        "get_kernel_syms",
+        "iopl",
+        "ioperm",
+        "settimeofday",
+        "stime",
+        "adjtimex",
+        "clock_settime",
+        "clock_adjtime"
+      ],
+      "action": "SCMP_ACT_ERRNO",
+      "errnoRet": 1,
+      "comment": "Hard deny: debugger/introspection, module load, mount, kexec, perf, ebpf, time-setting."
+    }
+  ]
+}

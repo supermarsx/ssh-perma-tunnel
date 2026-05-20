@@ -1,0 +1,95 @@
+# AppArmor profile for spt (ssh-perma-tunnel).
+#
+# Install on Debian/Ubuntu:
+#   sudo cp packaging/security/apparmor/spt /etc/apparmor.d/spt
+#   sudo apparmor_parser -r /etc/apparmor.d/spt
+#
+# Reload after edits with `apparmor_parser -r`. Confine with
+# `aa-enforce /etc/apparmor.d/spt` once validated in complain mode
+# (`aa-complain /etc/apparmor.d/spt`).
+#
+# Profile philosophy: minimal allow-list. spt is a network mediator; it
+# should *only* read config under /etc/spt, read/write its state under
+# /var/lib/spt, read its static data under /usr/share/spt, talk on
+# inet sockets, lock pages it owns, and bind privileged ports when the
+# operator opts in. Everything else (ptrace, raw /proc/<pid>/mem,
+# setuid, module-load, mount, etc.) is denied.
+
+#include <tunables/global>
+
+profile spt /usr/{,local/}bin/spt {
+  #include <abstractions/base>
+  #include <abstractions/nameservice>
+  #include <abstractions/openssl>
+
+  # --- Process self ---
+  /usr/bin/spt              mr,
+  /usr/local/bin/spt        mr,
+
+  # --- Read-only config tree ---
+  /etc/spt/                 r,
+  /etc/spt/**               r,
+
+  # --- Read/write runtime + state ---
+  /var/lib/spt/             rw,
+  /var/lib/spt/**           rwk,
+  /var/log/spt/             rw,
+  /var/log/spt/**           rw,
+  owner /run/spt/           rw,
+  owner /run/spt/**         rwk,
+  owner /run/user/[0-9]*/spt/    rw,
+  owner /run/user/[0-9]*/spt/**  rwk,
+
+  # --- Read-only static / share assets (manpages, completions, MIB) ---
+  /usr/share/spt/           r,
+  /usr/share/spt/**         r,
+
+  # --- known_hosts / authorized agent sockets (operator-supplied) ---
+  owner @{HOME}/.ssh/known_hosts r,
+  owner @{HOME}/.ssh/known_hosts.d/* r,
+  owner /run/user/[0-9]*/ssh-agent.socket rw,
+
+  # --- Networking: TCP + UDP client + server ---
+  network inet  stream,
+  network inet6 stream,
+  network inet  dgram,
+  network inet6 dgram,
+  # Unix sockets for MCP stdio bridge + status-API loopback IPC.
+  network unix  stream,
+  network unix  dgram,
+
+  # --- Capabilities ---
+  # Only when operator binds <1024; otherwise the kernel never grants this
+  # via the systemd AmbientCapabilities=CAP_NET_BIND_SERVICE knob.
+  capability net_bind_service,
+  # mlock(2)/mlockall(2) of secret pages (spt-secrets + spt-mem-hygiene).
+  capability ipc_lock,
+
+  # --- Denies (defence-in-depth; AppArmor closes anyway) ---
+  deny ptrace,
+  deny @{PROC}/[0-9]*/mem rw,
+  deny @{PROC}/[0-9]*/maps w,
+  deny @{PROC}/[0-9]*/environ r,
+  deny /proc/kcore rwklx,
+  deny /proc/kallsyms rwklx,
+  deny /sys/kernel/debug/** rwklx,
+  deny capability sys_module,
+  deny capability sys_ptrace,
+  deny capability sys_admin,
+  deny capability sys_boot,
+  deny capability sys_rawio,
+  deny mount,
+  deny umount,
+  deny pivot_root,
+
+  # --- Signals: spt → spt only (supervisor → workers) ---
+  signal (send,receive) peer=spt,
+  signal (receive) set=(exists,term,int,hup,usr1,usr2,winch,pipe,chld),
+
+  # --- DBus (e.g. systemd-notify Type=notify) ---
+  dbus (send) bus=system path=/org/freedesktop/systemd1 interface=org.freedesktop.systemd1.Manager,
+
+  # --- /tmp for $XDG_RUNTIME_DIR fallback (sealed-config edit) ---
+  owner /tmp/spt-*    rwk,
+  owner /tmp/.spt-*   rwk,
+}

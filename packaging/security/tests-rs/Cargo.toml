@@ -1,0 +1,30 @@
+[package]
+name = "spt-packaging-security-tests"
+version = "0.0.0"
+edition = "2021"
+rust-version = "1.83"
+publish = false
+license = "MIT"
+description = "Parse/compile smoke tests for spt's AppArmor, SELinux and seccomp artifacts."
+
+# Excluded from the root workspace on purpose so that the t5-e11 lock
+# set does not touch the root `Cargo.toml` (`[workspace.members]`). Run
+# manually with:
+#
+#     cargo test --manifest-path packaging/security/tests-rs/Cargo.toml
+#
+# Same standalone-crate pattern as `tests/property` and
+# `tests/openssh-interop` (see workspace `exclude` list in root Cargo.toml).
+[workspace]
+
+[lib]
+path = "src/lib.rs"
+
+[[test]]
+name = "smoke"
+path = "tests/smoke.rs"
+
+[dependencies]
+
+[dev-dependencies]
+serde_json = "1"
