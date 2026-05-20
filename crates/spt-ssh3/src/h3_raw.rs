@@ -86,7 +86,9 @@ pub(crate) fn write_varint(buf: &mut BytesMut, v: u64) {
 /// Decode a QUIC varint from a slice. Returns `(value, bytes_consumed)`.
 pub(crate) fn read_varint(buf: &[u8]) -> Result<(u64, usize)> {
     if buf.is_empty() {
-        return Err(Error::RuntimeFailure("ssh3 h3_raw: varint underflow".into()));
+        return Err(Error::RuntimeFailure(
+            "ssh3 h3_raw: varint underflow".into(),
+        ));
     }
     let first = buf[0];
     let prefix = first >> 6;
@@ -129,7 +131,9 @@ fn write_prefix_int(buf: &mut BytesMut, top: u8, n: u8, value: u64) {
 fn read_prefix_int(buf: &[u8], n: u8) -> Result<(u64, usize)> {
     debug_assert!((1..=8).contains(&n));
     if buf.is_empty() {
-        return Err(Error::RuntimeFailure("ssh3 qpack: prefix-int underflow".into()));
+        return Err(Error::RuntimeFailure(
+            "ssh3 qpack: prefix-int underflow".into(),
+        ));
     }
     let max: u64 = (1u64 << n) - 1;
     let mut value = u64::from(buf[0]) & max;
@@ -395,9 +399,7 @@ async fn read_exact_from_stream(recv: &mut quinn::RecvStream, buf: &mut [u8]) ->
             .read(&mut buf[filled..])
             .await
             .map_err(|e| Error::RuntimeFailure(format!("ssh3 h3_raw: stream read: {e}")))?
-            .ok_or_else(|| {
-                Error::RuntimeFailure("ssh3 h3_raw: stream closed mid-frame".into())
-            })?;
+            .ok_or_else(|| Error::RuntimeFailure("ssh3 h3_raw: stream closed mid-frame".into()))?;
         if n == 0 {
             return Err(Error::RuntimeFailure(
                 "ssh3 h3_raw: stream returned zero bytes".into(),
@@ -470,9 +472,10 @@ pub(crate) async fn extended_connect_raw(
                     v.len()
                 ))
             })?;
-            status = Some(s.parse().map_err(|_| {
-                Error::RuntimeFailure(format!("ssh3 h3_raw: bad :status `{s}`"))
-            })?);
+            status =
+                Some(s.parse().map_err(|_| {
+                    Error::RuntimeFailure(format!("ssh3 h3_raw: bad :status `{s}`"))
+                })?);
         } else if n == b"server" {
             server = std::str::from_utf8(v).ok().map(str::to_owned);
         }

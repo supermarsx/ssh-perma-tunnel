@@ -128,8 +128,8 @@ impl ClipboardBackend for ArboardBackend {
             .inner
             .lock()
             .map_err(|e| ClipboardError::WriteFailed(format!("mutex poisoned: {e}")))?;
-        let mut cb = arboard::Clipboard::new()
-            .map_err(|e| ClipboardError::Unavailable(e.to_string()))?;
+        let mut cb =
+            arboard::Clipboard::new().map_err(|e| ClipboardError::Unavailable(e.to_string()))?;
         cb.set_text(value.to_owned())
             .map_err(|e| ClipboardError::WriteFailed(e.to_string()))?;
         Ok(())
@@ -200,10 +200,7 @@ impl ClipboardWrapper {
         #[cfg(feature = "clipboard")]
         {
             if let Some(b) = ArboardBackend::try_new() {
-                return Self::with_backend(
-                    Arc::new(b),
-                    Arc::new(ThreadSleepTimer),
-                );
+                return Self::with_backend(Arc::new(b), Arc::new(ThreadSleepTimer));
             }
         }
         tracing::warn!("no real clipboard backend available; clipboard ops will be no-ops");
@@ -342,18 +339,17 @@ mod tests {
             .unwrap();
         // Backend should have seen the write.
         let v = mem.current();
-        assert!(v == Some("topsecret".into()) || v == Some(String::new()),
-            "expected secret or post-clear empty, saw {v:?}");
+        assert!(
+            v == Some("topsecret".into()) || v == Some(String::new()),
+            "expected secret or post-clear empty, saw {v:?}"
+        );
     }
 
     #[test]
     fn auto_clear_replaces_value_after_ttl() {
         let mem = InMemoryBackend::new();
         let timer = InstantTimer::default();
-        let w = ClipboardWrapper::with_backend(
-            Arc::new(mem.clone()),
-            Arc::new(timer.clone()),
-        );
+        let w = ClipboardWrapper::with_backend(Arc::new(mem.clone()), Arc::new(timer.clone()));
         w.set_with_ttl(sb("topsecret"), Duration::from_secs(30))
             .unwrap();
         settle();

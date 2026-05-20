@@ -117,9 +117,9 @@ impl TlsPin {
         check_chain_depth(chain, depth_cap)?;
         // `check_chain_depth` already rejected the empty-chain case, but
         // be defensive in case a future refactor relaxes that.
-        let leaf = chain.first().ok_or_else(|| {
-            Error::TrustFailed("empty TLS certificate chain".to_string())
-        })?;
+        let leaf = chain
+            .first()
+            .ok_or_else(|| Error::TrustFailed("empty TLS certificate chain".to_string()))?;
         self.verify(leaf)
     }
 }

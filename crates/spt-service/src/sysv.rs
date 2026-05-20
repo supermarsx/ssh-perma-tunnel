@@ -670,8 +670,8 @@ mod tests {
         let mock = Arc::new(MockRunner::new());
         // Only the chkconfig --add call should fire (cache hits → no probe).
         mock.push_output(ok_out(""));
-        let mgr = SysVManager::new_with_runner(mock.clone())
-            .with_script_root(tmp.path().to_path_buf());
+        let mgr =
+            SysVManager::new_with_runner(mock.clone()).with_script_root(tmp.path().to_path_buf());
         // Manually seed the OnceCell so we skip probing.
         mgr.distro.set(DistroTool::RedHat).unwrap();
 
@@ -684,8 +684,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let mock = Arc::new(MockRunner::new());
         mock.push_output(err_out(1, "chkconfig: command failed"));
-        let mgr = SysVManager::new_with_runner(mock)
-            .with_script_root(tmp.path().to_path_buf());
+        let mgr = SysVManager::new_with_runner(mock).with_script_root(tmp.path().to_path_buf());
         mgr.distro.set(DistroTool::RedHat).unwrap();
 
         let err = mgr.install(&sample_spec()).await.unwrap_err();
@@ -699,8 +698,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let mock = Arc::new(MockRunner::new());
         mock.push_output(err_out(2, "update-rc.d: nope"));
-        let mgr = SysVManager::new_with_runner(mock)
-            .with_script_root(tmp.path().to_path_buf());
+        let mgr = SysVManager::new_with_runner(mock).with_script_root(tmp.path().to_path_buf());
         mgr.distro.set(DistroTool::Debian).unwrap();
 
         let err = mgr.install(&sample_spec()).await.unwrap_err();
@@ -714,8 +712,8 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let mock = Arc::new(MockRunner::new());
         // No canned outputs: Unknown branch never shells out post-detection.
-        let mgr = SysVManager::new_with_runner(mock.clone())
-            .with_script_root(tmp.path().to_path_buf());
+        let mgr =
+            SysVManager::new_with_runner(mock.clone()).with_script_root(tmp.path().to_path_buf());
         mgr.distro.set(DistroTool::Unknown).unwrap();
 
         mgr.install(&sample_spec()).await.expect("install");
@@ -730,8 +728,8 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let mock = Arc::new(MockRunner::new());
         mock.push_output(ok_out(""));
-        let mgr = SysVManager::new_with_runner(mock.clone())
-            .with_script_root(tmp.path().to_path_buf());
+        let mgr =
+            SysVManager::new_with_runner(mock.clone()).with_script_root(tmp.path().to_path_buf());
         mgr.distro.set(DistroTool::RedHat).unwrap();
         let path = tmp.path().join("spt-relay");
         std::fs::write(&path, "#!/bin/sh\n").unwrap();
@@ -744,8 +742,8 @@ mod tests {
     async fn uninstall_unknown_branch_just_removes_file() {
         let tmp = tempfile::tempdir().unwrap();
         let mock = Arc::new(MockRunner::new());
-        let mgr = SysVManager::new_with_runner(mock.clone())
-            .with_script_root(tmp.path().to_path_buf());
+        let mgr =
+            SysVManager::new_with_runner(mock.clone()).with_script_root(tmp.path().to_path_buf());
         mgr.distro.set(DistroTool::Unknown).unwrap();
         let path = tmp.path().join("spt-relay");
         std::fs::write(&path, "#!/bin/sh\n").unwrap();

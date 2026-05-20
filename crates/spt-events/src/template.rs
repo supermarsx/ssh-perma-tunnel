@@ -197,10 +197,7 @@ mod tests {
     /// multi-byte runs (covers boundary crossings around `{{`/`}}`).
     #[test]
     fn mixed_ascii_and_unicode_template() {
-        let (s, _) = render_template(
-            "[α] {{kind}} → {{profile_id}}: {{message}} ✔",
-            &ev(),
-        );
+        let (s, _) = render_template("[α] {{kind}} → {{profile_id}}: {{message}} ✔", &ev());
         assert_eq!(s, "[α] profile.connected → smtp-relay: hello ✔");
     }
 

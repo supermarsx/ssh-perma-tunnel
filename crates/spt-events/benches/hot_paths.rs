@@ -27,13 +27,13 @@ use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criteri
 use tempfile::TempDir;
 use tokio::runtime::Runtime;
 
+use spt_core::{ForwardId, ProfileId};
 use spt_events::binding::{Binding, BindingMatch, ExprFilter, ExprOp, SinkRef};
 use spt_events::dispatcher::{build_for_test, DispatcherConfig};
 use spt_events::event::{Event, Severity};
 use spt_events::sinks::Sink;
 use spt_events::template::render_template;
 use spt_events::testing::CapturingSink;
-use spt_core::{ForwardId, ProfileId};
 
 /// Build an ASCII-only `Event` used by every group.
 fn fixture_event() -> Event {
@@ -134,9 +134,7 @@ fn bench_binding_match(c: &mut Criterion) {
 /// Build a `DispatcherInner` wired to `n` `CapturingSink`s, all subscribed to
 /// the wildcard `forward.*` binding. Returns the dispatcher and the tempdir
 /// that owns its spool root (the tempdir must outlive the dispatcher).
-fn build_fanout_dispatcher(
-    n: usize,
-) -> (spt_events::dispatcher::DispatcherInner, TempDir) {
+fn build_fanout_dispatcher(n: usize) -> (spt_events::dispatcher::DispatcherInner, TempDir) {
     let tmp = tempfile::tempdir().expect("tempdir");
     let cfg = DispatcherConfig {
         spool_root: tmp.path().into(),
@@ -147,7 +145,10 @@ fn build_fanout_dispatcher(
     for i in 0..n {
         let name = format!("sink_{i}");
         sink_refs.push(SinkRef::new(&name));
-        sinks.insert(name.clone(), Arc::new(CapturingSink::new(name)) as Arc<dyn Sink>);
+        sinks.insert(
+            name.clone(),
+            Arc::new(CapturingSink::new(name)) as Arc<dyn Sink>,
+        );
     }
     let bindings = vec![Binding {
         name: "bench".into(),

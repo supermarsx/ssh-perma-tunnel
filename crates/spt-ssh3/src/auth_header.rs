@@ -228,9 +228,8 @@ mod tests {
 
     #[test]
     fn resolve_secret_file_missing_errors() {
-        let bogus = SecretRef::File(
-            "F:/this/path/should/not/exist/spt-ssh3-missing-secret-xyz.txt".into(),
-        );
+        let bogus =
+            SecretRef::File("F:/this/path/should/not/exist/spt-ssh3-missing-secret-xyz.txt".into());
         let err = resolve_secret(&bogus).unwrap_err();
         assert!(matches!(err, Error::InvalidConfig(_)));
     }

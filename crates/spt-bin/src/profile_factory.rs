@@ -565,8 +565,8 @@ mod tests {
 
     #[test]
     fn parse_profile_duration_propagates_invalid() {
-        let err = parse_profile_duration("p", "reconnect.initial_delay", "not-a-duration")
-            .unwrap_err();
+        let err =
+            parse_profile_duration("p", "reconnect.initial_delay", "not-a-duration").unwrap_err();
         assert!(matches!(err, Error::InvalidConfig(_)));
     }
 

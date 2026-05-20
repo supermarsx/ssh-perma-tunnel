@@ -278,9 +278,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn recording_runner_clones_calls_vector() {
         let r = RecordingRunner::new();
-        r.calls
-            .lock()
-            .push((PathBuf::from("a"), vec!["b".into()]));
+        r.calls.lock().push((PathBuf::from("a"), vec!["b".into()]));
         let snap = r.calls();
         assert_eq!(snap.len(), 1);
         assert_eq!(snap[0].1, vec!["b"]);

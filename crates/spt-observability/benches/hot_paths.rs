@@ -126,7 +126,9 @@ fn populated_exporter() -> MetricsExporter {
             format!("bench_histogram_{i}"),
             format!("synthetic histogram {i}"),
         )
-        .buckets(vec![0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0]);
+        .buckets(vec![
+            0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0,
+        ]);
         let h = Histogram::with_opts(opts).expect("hist opts");
         // Observe a handful of values across buckets so the encoder must
         // emit non-trivial per-bucket counts.
@@ -137,10 +139,19 @@ fn populated_exporter() -> MetricsExporter {
         reg.register(Box::new(h)).expect("register histogram");
     }
     // Touch the standard metrics so the gathered output is non-empty there too.
-    me.standard().bytes_in.with_label_values(&["fwd-1"]).inc_by(123);
-    me.standard().bytes_out.with_label_values(&["fwd-1"]).inc_by(456);
+    me.standard()
+        .bytes_in
+        .with_label_values(&["fwd-1"])
+        .inc_by(123);
+    me.standard()
+        .bytes_out
+        .with_label_values(&["fwd-1"])
+        .inc_by(456);
     me.standard().reconnects.with_label_values(&["p1"]).inc();
-    me.standard().profile_state.with_label_values(&["p1"]).set(2);
+    me.standard()
+        .profile_state
+        .with_label_values(&["p1"])
+        .set(2);
     me
 }
 
@@ -261,5 +272,10 @@ fn bench_syslog_framing(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_redaction, bench_metrics_prom, bench_syslog_framing);
+criterion_group!(
+    benches,
+    bench_redaction,
+    bench_metrics_prom,
+    bench_syslog_framing
+);
 criterion_main!(benches);

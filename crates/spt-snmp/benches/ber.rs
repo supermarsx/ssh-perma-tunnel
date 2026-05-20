@@ -73,12 +73,7 @@ fn bench_integer(c: &mut Criterion) {
 
 // ---------- OCTET STRING ----------------------------------------------------
 
-const OCTET_SIZES: &[(&str, usize)] = &[
-    ("1B", 1),
-    ("64B", 64),
-    ("1KB", 1024),
-    ("8KB", 8 * 1024),
-];
+const OCTET_SIZES: &[(&str, usize)] = &[("1B", 1), ("64B", 64), ("1KB", 1024), ("8KB", 8 * 1024)];
 
 fn bench_octet_string(c: &mut Criterion) {
     // Encode

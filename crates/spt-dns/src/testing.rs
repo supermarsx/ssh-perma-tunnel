@@ -307,12 +307,9 @@ mod tests {
     #[tokio::test]
     async fn localhost_resolver_with_health_starts() {
         let zone = fixtures::loopback_zone();
-        let r = LocalhostResolver::start_with_health(
-            vec![zone],
-            Arc::new(FakeHealthSource(true)),
-        )
-        .await
-        .unwrap();
+        let r = LocalhostResolver::start_with_health(vec![zone], Arc::new(FakeHealthSource(true)))
+            .await
+            .unwrap();
         assert!(r.port() > 0);
         assert_eq!(r.udp_addr().ip(), r.tcp_addr().ip());
         r.shutdown().await;

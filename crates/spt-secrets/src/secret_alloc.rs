@@ -171,9 +171,8 @@ impl Drop for SecretSlice {
                     // try_munlock takes a &[u8] view — re-borrow the slice.
                     // SAFETY: pointer + length describe a valid region we
                     // still exclusively own.
-                    let view: &[u8] = unsafe {
-                        core::slice::from_raw_parts(self.ptr.as_ptr(), self.len)
-                    };
+                    let view: &[u8] =
+                        unsafe { core::slice::from_raw_parts(self.ptr.as_ptr(), self.len) };
                     let _ = try_munlock(view);
                 }
                 if layout.size() > 0 {
@@ -187,9 +186,8 @@ impl Drop for SecretSlice {
                 if map_len > 0 {
                     // SAFETY: `self.ptr` was returned by `mmap` with
                     // `map_len`; we still exclusively own the mapping.
-                    let r = unsafe {
-                        libc::munmap(self.ptr.as_ptr().cast::<libc::c_void>(), map_len)
-                    };
+                    let r =
+                        unsafe { libc::munmap(self.ptr.as_ptr().cast::<libc::c_void>(), map_len) };
                     if r != 0 {
                         warn!("munmap failed on secret mapping");
                     }
@@ -281,8 +279,7 @@ fn heap_fallback(len: usize) -> Result<SecretSlice> {
     // SAFETY of the slice view: ptr + len describe a valid initialised
     // region that we exclusively own.
     let locked = {
-        let view: &[u8] =
-            unsafe { core::slice::from_raw_parts(ptr.as_ptr(), len) };
+        let view: &[u8] = unsafe { core::slice::from_raw_parts(ptr.as_ptr(), len) };
         try_mlock(view).unwrap_or(false)
     };
 
@@ -728,16 +725,14 @@ mod tests {
         type Payload = [u8; 32];
         let captured_ptr: *const u8;
         {
-            let mut b: MemfdSecretBox<Payload> =
-                MemfdSecretBox::new().expect("box");
+            let mut b: MemfdSecretBox<Payload> = MemfdSecretBox::new().expect("box");
             for x in b.get_mut().iter_mut() {
                 *x = 0xC3;
             }
             captured_ptr = b.slice.as_ptr();
             assert!(b.get().iter().all(|&x| x == 0xC3));
         }
-        let b2: MemfdSecretBox<Payload> =
-            MemfdSecretBox::new().expect("realloc");
+        let b2: MemfdSecretBox<Payload> = MemfdSecretBox::new().expect("realloc");
         if b2.slice.as_ptr() == captured_ptr {
             assert!(b2.get().iter().all(|&x| x == 0));
         }

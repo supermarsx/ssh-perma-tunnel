@@ -873,10 +873,7 @@ mod tests {
     #[tokio::test]
     async fn forward_remove_missing_args_errors() {
         let ctx = ctx_with(Arc::new(NoopController));
-        let err = ForwardRemove
-            .call(&ctx, json!({}))
-            .await
-            .unwrap_err();
+        let err = ForwardRemove.call(&ctx, json!({})).await.unwrap_err();
         assert!(matches!(err, crate::Error::InvalidParams(_)));
 
         let err = ForwardRemove
@@ -915,10 +912,7 @@ mod tests {
     #[tokio::test]
     async fn tunnel_failover_missing_profile_errors() {
         let ctx = ctx_with(Arc::new(NoopController));
-        let err = TunnelFailover
-            .call(&ctx, json!({}))
-            .await
-            .unwrap_err();
+        let err = TunnelFailover.call(&ctx, json!({})).await.unwrap_err();
         assert!(matches!(err, crate::Error::InvalidParams(_)));
     }
 
@@ -954,10 +948,7 @@ mod tests {
     #[tokio::test]
     async fn session_close_missing_id_errors() {
         let ctx = ctx_with(Arc::new(NoopController));
-        let err = SessionClose
-            .call(&ctx, json!({}))
-            .await
-            .unwrap_err();
+        let err = SessionClose.call(&ctx, json!({})).await.unwrap_err();
         assert!(matches!(err, crate::Error::InvalidParams(_)));
     }
 
@@ -982,10 +973,7 @@ mod tests {
     #[tokio::test]
     async fn session_drain_missing_profile_errors() {
         let ctx = ctx_with(Arc::new(NoopController));
-        let err = SessionDrain
-            .call(&ctx, json!({}))
-            .await
-            .unwrap_err();
+        let err = SessionDrain.call(&ctx, json!({})).await.unwrap_err();
         assert!(matches!(err, crate::Error::InvalidParams(_)));
     }
 
@@ -1004,10 +992,7 @@ mod tests {
     async fn stats_subscribe_without_notify_errors() {
         let ctrl = RecordingController::new();
         let ctx = ctx_with(Arc::new(ctrl.clone()));
-        let err = StatsSubscribe
-            .call(&ctx, json!({}))
-            .await
-            .unwrap_err();
+        let err = StatsSubscribe.call(&ctx, json!({})).await.unwrap_err();
         assert!(matches!(err, crate::Error::InvalidParams(_)));
     }
 
@@ -1045,10 +1030,7 @@ mod tests {
     #[tokio::test]
     async fn planned_tool_envelope_shape() {
         let ctx = ctx_with(Arc::new(NoopController));
-        let v = DnsRecordAdd
-            .call(&ctx, json!({"x":1}))
-            .await
-            .expect("ok");
+        let v = DnsRecordAdd.call(&ctx, json!({"x":1})).await.expect("ok");
         assert_eq!(v["applied"], false);
         assert_eq!(v["planned"]["x"], 1);
     }

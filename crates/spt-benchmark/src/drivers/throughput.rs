@@ -199,7 +199,12 @@ mod tests {
         assert_eq!(r.iterations_completed, 4);
         assert_eq!(r.payload_size, 1024);
         // bytes_written ≈ 4*1024; bytes_read should equal bytes_written.
-        let written = r.metrics.extras.get("bytes_written").copied().unwrap_or(0.0);
+        let written = r
+            .metrics
+            .extras
+            .get("bytes_written")
+            .copied()
+            .unwrap_or(0.0);
         let read_back = r.metrics.extras.get("bytes_read").copied().unwrap_or(0.0);
         assert!((written - 4096.0).abs() < f64::EPSILON);
         assert!((read_back - 4096.0).abs() < f64::EPSILON);
@@ -221,7 +226,12 @@ mod tests {
             r.errors
         );
         // bytes_written remains 0.
-        let w = r.metrics.extras.get("bytes_written").copied().unwrap_or(-1.0);
+        let w = r
+            .metrics
+            .extras
+            .get("bytes_written")
+            .copied()
+            .unwrap_or(-1.0);
         assert!((w - 0.0).abs() < f64::EPSILON);
     }
 
@@ -231,7 +241,12 @@ mod tests {
         let r = d.run(&ctx(echo_connector(8 * 1024), 0, 512)).await;
         assert!(r.errors.is_empty(), "errors = {:?}", r.errors);
         assert_eq!(r.iterations_completed, 0);
-        let w = r.metrics.extras.get("bytes_written").copied().unwrap_or(-1.0);
+        let w = r
+            .metrics
+            .extras
+            .get("bytes_written")
+            .copied()
+            .unwrap_or(-1.0);
         assert!((w - 0.0).abs() < f64::EPSILON);
     }
 
@@ -243,7 +258,12 @@ mod tests {
         // iterations_completed = bytes_written / max(1, block.len()) so ≥ 3.
         assert!(r.errors.is_empty(), "errors = {:?}", r.errors);
         assert!(r.iterations_completed >= 3);
-        let w = r.metrics.extras.get("bytes_written").copied().unwrap_or(0.0);
+        let w = r
+            .metrics
+            .extras
+            .get("bytes_written")
+            .copied()
+            .unwrap_or(0.0);
         assert!(w >= 3.0);
     }
 
@@ -269,7 +289,12 @@ mod tests {
         let d = ThroughputDriver;
         let r = d.run(&ctx(echo_connector(256 * 1024), 2, 8 * 1024)).await;
         assert!(r.errors.is_empty(), "errors = {:?}", r.errors);
-        let w = r.metrics.extras.get("bytes_written").copied().unwrap_or(0.0);
+        let w = r
+            .metrics
+            .extras
+            .get("bytes_written")
+            .copied()
+            .unwrap_or(0.0);
         assert!((w - (2.0 * 8.0 * 1024.0)).abs() < f64::EPSILON);
     }
 

@@ -33,12 +33,12 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use rustls::client::danger::{
-    HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier,
-};
+use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::client::WebPkiServerVerifier;
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
-use rustls::{ClientConfig, DigitallySignedStruct, Error as TlsError, RootCertStore, SignatureScheme};
+use rustls::{
+    ClientConfig, DigitallySignedStruct, Error as TlsError, RootCertStore, SignatureScheme,
+};
 
 use spt_core::{Error, Result};
 
@@ -181,31 +181,20 @@ impl PinnedTlsConnectorBuilder {
                 }
                 if roots.is_empty() {
                     // Final fallback: webpki-roots' bundled Mozilla set.
-                    roots.extend(
-                        webpki_roots::TLS_SERVER_ROOTS.iter().cloned(),
-                    );
+                    roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
                 }
             }
             RootSource::CaFile(path) => {
                 let pem = std::fs::read(path).map_err(|e| {
-                    Error::InvalidConfig(format!(
-                        "read ca_file `{}`: {e}",
-                        path.display()
-                    ))
+                    Error::InvalidConfig(format!("read ca_file `{}`: {e}", path.display()))
                 })?;
                 let mut cursor = std::io::Cursor::new(pem);
                 for item in rustls_pemfile::certs(&mut cursor) {
                     let cert = item.map_err(|e| {
-                        Error::InvalidConfig(format!(
-                            "parse ca_file `{}`: {e}",
-                            path.display()
-                        ))
+                        Error::InvalidConfig(format!("parse ca_file `{}`: {e}", path.display()))
                     })?;
                     roots.add(cert).map_err(|e| {
-                        Error::InvalidConfig(format!(
-                            "add ca cert from `{}`: {e}",
-                            path.display()
-                        ))
+                        Error::InvalidConfig(format!("add ca cert from `{}`: {e}", path.display()))
                     })?;
                 }
                 if roots.is_empty() {
@@ -244,9 +233,7 @@ impl PinnedTlsConnectorBuilder {
                 WebPkiServerVerifier::builder(Arc::new(roots.clone()))
                     .build()
                     .map_err(|e| {
-                        Error::InvalidConfig(format!(
-                            "webpki verifier build failed: {e}"
-                        ))
+                        Error::InvalidConfig(format!("webpki verifier build failed: {e}"))
                     })? as Arc<dyn ServerCertVerifier>,
             )
         };
@@ -294,8 +281,8 @@ impl PinnedTlsConnector {
         max_cert_chain_depth: Option<u32>,
     ) -> Result<Arc<ClientConfig>> {
         let pin = TlsPin::from_strings(pin_strings)?;
-        let cap = ChainDepthCap::from_option(max_cert_chain_depth)
-            .or_default_if_unlimited_was_absent();
+        let cap =
+            ChainDepthCap::from_option(max_cert_chain_depth).or_default_if_unlimited_was_absent();
         let mut b = Self::builder()
             .pin_spki_sha256(pin)
             .allow_self_signed(allow_self_signed)
@@ -336,19 +323,17 @@ impl PinnedVerifier {
         // Build the wire-order chain `check_chain_depth` expects:
         // [leaf, intermediate0, intermediate1, ...]. We hand it
         // borrowed refs so no cloning of the DER blobs happens.
-        let mut wire: Vec<CertificateDer<'_>> =
-            Vec::with_capacity(intermediates.len() + 1);
+        let mut wire: Vec<CertificateDer<'_>> = Vec::with_capacity(intermediates.len() + 1);
         wire.push(leaf.clone());
         for i in intermediates {
             wire.push(i.clone());
         }
-        check_chain_depth(&wire, &self.chain_depth_cap).map_err(|e| {
-            TlsError::General(format!("spt-trust: chain depth: {e}"))
-        })?;
+        check_chain_depth(&wire, &self.chain_depth_cap)
+            .map_err(|e| TlsError::General(format!("spt-trust: chain depth: {e}")))?;
         if !self.pin.is_empty() {
-            self.pin.verify(leaf).map_err(|e| {
-                TlsError::General(format!("spt-trust SPKI pin: {e}"))
-            })?;
+            self.pin
+                .verify(leaf)
+                .map_err(|e| TlsError::General(format!("spt-trust SPKI pin: {e}")))?;
         }
         Ok(())
     }
@@ -370,13 +355,7 @@ impl ServerCertVerifier for PinnedVerifier {
                     "spt-trust: webpki verifier unavailable".into(),
                 ));
             };
-            inner.verify_server_cert(
-                end_entity,
-                intermediates,
-                server_name,
-                ocsp_response,
-                now,
-            )?;
+            inner.verify_server_cert(end_entity, intermediates, server_name, ocsp_response, now)?;
         }
 
         // (3) + (4): chain-depth cap and pin check share a single
@@ -485,8 +464,7 @@ mod tests {
 
     fn gen_three_level_chain(cn: &str) -> ThreeLevelChain {
         // Root.
-        let mut root_params =
-            rcgen::CertificateParams::new(Vec::<String>::new()).unwrap();
+        let mut root_params = rcgen::CertificateParams::new(Vec::<String>::new()).unwrap();
         root_params
             .distinguished_name
             .push(rcgen::DnType::CommonName, "spt-test-root");
@@ -495,8 +473,7 @@ mod tests {
         let root_cert = root_params.self_signed(&root_key).unwrap();
 
         // Intermediate.
-        let mut int_params =
-            rcgen::CertificateParams::new(Vec::<String>::new()).unwrap();
+        let mut int_params = rcgen::CertificateParams::new(Vec::<String>::new()).unwrap();
         int_params
             .distinguished_name
             .push(rcgen::DnType::CommonName, "spt-test-intermediate");
@@ -507,8 +484,7 @@ mod tests {
             .unwrap();
 
         // Leaf.
-        let mut leaf_params =
-            rcgen::CertificateParams::new(vec![cn.to_string()]).unwrap();
+        let mut leaf_params = rcgen::CertificateParams::new(vec![cn.to_string()]).unwrap();
         leaf_params
             .distinguished_name
             .push(rcgen::DnType::CommonName, cn);
@@ -530,11 +506,7 @@ mod tests {
         }
     }
 
-    fn make_verifier(
-        pin: TlsPin,
-        allow_self_signed: bool,
-        cap: Option<u32>,
-    ) -> PinnedVerifier {
+    fn make_verifier(pin: TlsPin, allow_self_signed: bool, cap: Option<u32>) -> PinnedVerifier {
         PinnedVerifier {
             inner: None,
             pin,
@@ -551,7 +523,9 @@ mod tests {
     fn pin_only_accepts_matching_pin() {
         install_default_provider();
         let c = gen_self_signed("pin-match.test");
-        let pin = TlsPin { spki_sha256: vec![c.spki] };
+        let pin = TlsPin {
+            spki_sha256: vec![c.spki],
+        };
         let v = make_verifier(pin, true, None);
         let leaf = CertificateDer::from(c.der);
         let name = ServerName::try_from("pin-match.test").unwrap();
@@ -567,7 +541,9 @@ mod tests {
     fn pin_only_rejects_non_matching_pin() {
         install_default_provider();
         let c = gen_self_signed("pin-mismatch.test");
-        let pin = TlsPin { spki_sha256: vec![[0xAB; 32]] };
+        let pin = TlsPin {
+            spki_sha256: vec![[0xAB; 32]],
+        };
         let v = make_verifier(pin, true, None);
         let leaf = CertificateDer::from(c.der);
         let name = ServerName::try_from("pin-mismatch.test").unwrap();
@@ -586,10 +562,8 @@ mod tests {
     fn allow_self_signed_with_matching_pin_accepts() {
         install_default_provider();
         let c = gen_self_signed("self-signed.test");
-        let pin = TlsPin::from_strings([
-            base64::engine::general_purpose::STANDARD.encode(c.spki)
-        ])
-        .unwrap();
+        let pin = TlsPin::from_strings([base64::engine::general_purpose::STANDARD.encode(c.spki)])
+            .unwrap();
         let v = make_verifier(pin, true, None);
         let leaf = CertificateDer::from(c.der);
         let name = ServerName::try_from("self-signed.test").unwrap();
@@ -622,7 +596,9 @@ mod tests {
     fn chain_depth_cap_rejects_too_many_intermediates() {
         install_default_provider();
         let chain = gen_three_level_chain("depth-reject.test");
-        let pin = TlsPin { spki_sha256: vec![chain.leaf_spki] };
+        let pin = TlsPin {
+            spki_sha256: vec![chain.leaf_spki],
+        };
         // Cap of 0 means "leaf must directly chain to a root, no
         // intermediates allowed". Our chain has 1 intermediate.
         let v = make_verifier(pin, true, Some(0));
@@ -647,7 +623,9 @@ mod tests {
     fn chain_depth_cap_accepts_within_cap() {
         install_default_provider();
         let chain = gen_three_level_chain("depth-accept.test");
-        let pin = TlsPin { spki_sha256: vec![chain.leaf_spki] };
+        let pin = TlsPin {
+            spki_sha256: vec![chain.leaf_spki],
+        };
         // Cap of 5 — comfortable margin over our 1 intermediate.
         let v = make_verifier(pin, true, Some(5));
         let name = ServerName::try_from("depth-accept.test").unwrap();
@@ -712,8 +690,9 @@ mod tests {
         if roots.is_empty() {
             roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
         }
-        let inner =
-            WebPkiServerVerifier::builder(Arc::new(roots)).build().unwrap();
+        let inner = WebPkiServerVerifier::builder(Arc::new(roots))
+            .build()
+            .unwrap();
         let v = PinnedVerifier {
             inner: Some(inner as Arc<dyn ServerCertVerifier>),
             pin: TlsPin::default(),
@@ -723,7 +702,10 @@ mod tests {
         let leaf = CertificateDer::from(c.der);
         let name = ServerName::try_from("rogue.example").unwrap();
         let res = v.verify_server_cert(&leaf, &[], &name, &[], UnixTime::now());
-        assert!(res.is_err(), "self-signed cert must not validate against system roots");
+        assert!(
+            res.is_err(),
+            "self-signed cert must not validate against system roots"
+        );
         // alpn_protocols defaults to empty.
         assert!(cfg.alpn_protocols.is_empty());
     }
@@ -777,10 +759,8 @@ mod tests {
             let pin = TlsPin { spki_sha256: pins };
             let v = make_verifier(pin, true, None);
             let leaf = CertificateDer::from(c.der);
-            let name =
-                ServerName::try_from(format!("prop-{trial}.test")).unwrap();
-            let res =
-                v.verify_server_cert(&leaf, &[], &name, &[], UnixTime::now());
+            let name = ServerName::try_from(format!("prop-{trial}.test")).unwrap();
+            let res = v.verify_server_cert(&leaf, &[], &name, &[], UnixTime::now());
             assert!(
                 res.is_err(),
                 "trial {trial}: random pin set unexpectedly matched"
@@ -830,15 +810,15 @@ mod tests {
     #[test]
     fn ca_file_with_real_pem_builds_and_enforces_pin() {
         install_default_provider();
-        let cert = rcgen::generate_simple_self_signed(vec![
-            "spt-trust-ca.test".to_string()
-        ])
-        .unwrap();
+        let cert =
+            rcgen::generate_simple_self_signed(vec!["spt-trust-ca.test".to_string()]).unwrap();
         let pem = cert.cert.pem();
         let tmp = tempfile::tempdir().unwrap();
         let p = tmp.path().join("ca.pem");
         std::fs::write(&p, pem).unwrap();
-        let pin = TlsPin { spki_sha256: vec![[0u8; 32]] };
+        let pin = TlsPin {
+            spki_sha256: vec![[0u8; 32]],
+        };
         let cfg = PinnedTlsConnector::builder()
             .ca_file(&p)
             .pin_spki_sha256(pin)
@@ -893,7 +873,9 @@ mod tests {
         // Without allow_self_signed: rejected.
         let err = PinnedTlsConnector::builder()
             .empty_roots()
-            .pin_spki_sha256(TlsPin { spki_sha256: vec![[0u8; 32]] })
+            .pin_spki_sha256(TlsPin {
+                spki_sha256: vec![[0u8; 32]],
+            })
             .build()
             .unwrap_err();
         assert!(matches!(err, Error::InvalidConfig(_)));

@@ -1093,12 +1093,9 @@ mod tests {
         // impl block, but we can build a client and discover against a server
         // hosted at the bare issuer (no trailing slash) and verify it doesn't
         // panic.  This exercises the trailing-slash-recovery branch.
-        let client = OidcDeviceFlowClient::new(
-            Url::parse("http://127.0.0.1:1").unwrap(),
-            "id".into(),
-            None,
-        )
-        .unwrap();
+        let client =
+            OidcDeviceFlowClient::new(Url::parse("http://127.0.0.1:1").unwrap(), "id".into(), None)
+                .unwrap();
         assert_eq!(client.issuer().as_str(), "http://127.0.0.1:1/");
         assert_eq!(client.client_id(), "id");
         assert!(client.audience().is_none());
@@ -1148,7 +1145,10 @@ mod tests {
         ];
         for e in net {
             let ce: CoreError = e.into();
-            assert!(matches!(ce, CoreError::NetworkUnreachable(_)), "got: {ce:?}");
+            assert!(
+                matches!(ce, CoreError::NetworkUnreachable(_)),
+                "got: {ce:?}"
+            );
         }
     }
 

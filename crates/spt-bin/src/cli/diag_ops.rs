@@ -546,11 +546,7 @@ agent = true
             spt_diagnostics::check::Severity::High,
             Status::Fail,
         );
-        let good = Check::new(
-            "c.ok",
-            spt_diagnostics::check::Severity::Info,
-            Status::Pass,
-        );
+        let good = Check::new("c.ok", spt_diagnostics::check::Severity::Info, Status::Pass);
         let err = fail_if_any_failures(&[good, bad]).unwrap_err();
         assert!(matches!(err, Error::RuntimeFailure(_)));
     }

@@ -303,13 +303,10 @@ mod tests {
     async fn v6_destination_binds_v6_socket() {
         let dest: SocketAddr = "[::1]:0".parse().unwrap();
         let user = UsmUser::no_auth("u");
-        let sender = TrapSender::with_engine_id(
-            dest,
-            user,
-            EngineId::new(vec![0x80, 0, 0, 0, 1]).unwrap(),
-        )
-        .await
-        .unwrap();
+        let sender =
+            TrapSender::with_engine_id(dest, user, EngineId::new(vec![0x80, 0, 0, 0, 1]).unwrap())
+                .await
+                .unwrap();
         assert!(sender.socket.local_addr().unwrap().is_ipv6());
     }
 

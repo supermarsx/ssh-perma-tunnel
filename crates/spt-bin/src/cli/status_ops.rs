@@ -20,9 +20,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use base64::Engine;
 use serde_json::json;
-use spt_cli::groups::status::{
-    StatusServeArgs, StatusStatusArgs, StatusTokenRotateArgs,
-};
+use spt_cli::groups::status::{StatusServeArgs, StatusStatusArgs, StatusTokenRotateArgs};
 use spt_cli::{GlobalOpts, OutputFormat};
 use spt_config::StatusApiAuthMode;
 use spt_core::{Error, Result};
@@ -93,14 +91,12 @@ pub async fn serve(global: &GlobalOpts, args: StatusServeArgs) -> Result<()> {
     let state_dir = spt_state::resolve_state_dir(global.state_dir.as_deref())?;
     let resolver = crate::secrets_bridge::build_resolver(cfg.secrets.as_ref(), &state_dir)?;
 
-    let source: Arc<dyn StateSnapshotSource> =
-        Arc::new(FileSnapshotSource::new(state_dir.clone()));
+    let source: Arc<dyn StateSnapshotSource> = Arc::new(FileSnapshotSource::new(state_dir.clone()));
     // `launch` closes the deferred TLS/mTLS gate (see
     // `.orchestration/logs/f-status-tls.md`). For plain HTTP it delegates to
     // `StatusApiServer::start`, preserving the byte-identical wire behavior
     // of the t4-Bwire shipped path.
-    let handle =
-        crate::status_api_tls::launch(&cfg.status_api, source, &resolver).await?;
+    let handle = crate::status_api_tls::launch(&cfg.status_api, source, &resolver).await?;
     let bound = handle.local_addr();
     match output_format(global) {
         OutputFormat::Json | OutputFormat::Jsonl => {

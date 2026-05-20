@@ -80,17 +80,13 @@ fn policy_bundle_default_is_empty_and_not_enforced() {
 #[test]
 fn policy_bundle_is_empty_flips_on_machine_or_user_insertion() {
     let mut b = PolicyBundle::empty();
-    b.machine.insert(
-        k("Logging", "Level"),
-        PolicyValue::String("info".into()),
-    );
+    b.machine
+        .insert(k("Logging", "Level"), PolicyValue::String("info".into()));
     assert!(!b.is_empty());
 
     let mut b2 = PolicyBundle::empty();
-    b2.user.insert(
-        k("Logging", "Level"),
-        PolicyValue::String("info".into()),
-    );
+    b2.user
+        .insert(k("Logging", "Level"), PolicyValue::String("info".into()));
     assert!(!b2.is_empty());
 }
 
@@ -110,10 +106,8 @@ fn apply_mode_distinguishes_enforced_from_advisory() {
         ..Default::default()
     });
     let mut b = PolicyBundle::empty();
-    b.machine.insert(
-        k("Logging", "Level"),
-        PolicyValue::String("debug".into()),
-    );
+    b.machine
+        .insert(k("Logging", "Level"), PolicyValue::String("debug".into()));
     // Advisory: existing value wins.
     let r = PolicyOverlay::apply(&mut cfg, &b);
     assert!(r.applied.is_empty());
@@ -203,14 +197,8 @@ fn type_mismatch_records_key_and_does_not_apply() {
     );
     let r: OverlayReport = PolicyOverlay::apply(&mut cfg, &b);
     assert!(r.applied.is_empty());
-    assert!(r
-        .type_mismatch
-        .iter()
-        .any(|s| s == "Logging\\MaxFiles"));
-    assert!(r
-        .type_mismatch
-        .iter()
-        .any(|s| s == "Firewall\\ApplyRules"));
+    assert!(r.type_mismatch.iter().any(|s| s == "Logging\\MaxFiles"));
+    assert!(r.type_mismatch.iter().any(|s| s == "Firewall\\ApplyRules"));
 }
 
 #[test]
@@ -221,10 +209,8 @@ fn unknown_keys_appear_in_overlay_report() {
         "Phantom\\Field".into(),
         PolicyValue::String("ignored".into()),
     );
-    b.user.insert(
-        "AnotherGhost\\Field".into(),
-        PolicyValue::Integer(42),
-    );
+    b.user
+        .insert("AnotherGhost\\Field".into(), PolicyValue::Integer(42));
     let r = PolicyOverlay::apply(&mut cfg, &b);
     assert!(r.unknown.iter().any(|s| s == "Phantom\\Field"));
     assert!(r.unknown.iter().any(|s| s == "AnotherGhost\\Field"));
@@ -252,10 +238,8 @@ fn mcp_binding_creates_table_on_demand() {
     let mut cfg = Config::default();
     assert!(cfg.mcp.is_none());
     let mut b = PolicyBundle::empty();
-    b.machine.insert(
-        k("Network", "McpEnabled"),
-        PolicyValue::Bool(true),
-    );
+    b.machine
+        .insert(k("Network", "McpEnabled"), PolicyValue::Bool(true));
     b.machine.insert(
         k("Network", "McpListen"),
         PolicyValue::String("127.0.0.1:8443".into()),
@@ -272,14 +256,10 @@ fn advisory_user_only_when_machine_silent() {
     let mut b = PolicyBundle::empty();
     // Machine has Logging\Level set, user has Logging\Format set —
     // both should land because they target different fields.
-    b.machine.insert(
-        k("Logging", "Level"),
-        PolicyValue::String("warn".into()),
-    );
-    b.user.insert(
-        k("Logging", "Format"),
-        PolicyValue::String("json".into()),
-    );
+    b.machine
+        .insert(k("Logging", "Level"), PolicyValue::String("warn".into()));
+    b.user
+        .insert(k("Logging", "Format"), PolicyValue::String("json".into()));
     let r = PolicyOverlay::apply(&mut cfg, &b);
     assert!(r.applied.contains(&k("Logging", "Level")));
     assert!(r.applied.contains(&k("Logging", "Format")));

@@ -580,8 +580,7 @@ pub async fn edit(args: groups::config::ConfigEdit) -> Result<()> {
             args.sealed.display()
         )));
     }
-    let key =
-        build_unseal_key_source(&sealed, args.passphrase_from.as_deref(), None)?;
+    let key = build_unseal_key_source(&sealed, args.passphrase_from.as_deref(), None)?;
     let pt = unseal(&sealed, &key)?;
 
     // Stage the cleartext in a runtime-controlled tmp file.
@@ -589,9 +588,8 @@ pub async fn edit(args: groups::config::ConfigEdit) -> Result<()> {
     let edited = session.run_editor()?;
 
     // Re-validate.
-    let raw = std::str::from_utf8(&edited).map_err(|e| {
-        Error::InvalidConfig(format!("edited file is not UTF-8: {e}"))
-    })?;
+    let raw = std::str::from_utf8(&edited)
+        .map_err(|e| Error::InvalidConfig(format!("edited file is not UTF-8: {e}")))?;
     let (_cfg, _w) = spt_config::load_str(raw, false).map_err(|e| {
         Error::InvalidConfig(format!(
             "edited config did not parse — aborting without replacing the original: {e}"
@@ -672,12 +670,14 @@ fn resolve_ref_to_bytes(reference: &str) -> Result<Vec<u8>> {
     let r = SecretRef::parse(reference)
         .map_err(|e| Error::InvalidArgs(format!("invalid passphrase ref `{reference}`: {e}")))?;
     match r {
-        SecretRef::Env(name) => std::env::var(&name)
-            .map(String::into_bytes)
-            .map_err(|e| Error::SecretUnavailable {
-                reference: format!("env:{name}"),
-                reason: e.to_string(),
-            }),
+        SecretRef::Env(name) => {
+            std::env::var(&name)
+                .map(String::into_bytes)
+                .map_err(|e| Error::SecretUnavailable {
+                    reference: format!("env:{name}"),
+                    reason: e.to_string(),
+                })
+        }
         SecretRef::File(p) => std::fs::read(&p)
             .map(|mut v| {
                 while matches!(v.last(), Some(&b'\n') | Some(&b'\r')) {
@@ -722,8 +722,9 @@ fn load_x25519_secret(path: &Path) -> Result<[u8; 32]> {
         arr.copy_from_slice(&raw);
         return Ok(arr);
     }
-    let text = std::str::from_utf8(&raw)
-        .map_err(|e| Error::InvalidConfig(format!("recipient key `{}` not UTF-8: {e}", path.display())))?;
+    let text = std::str::from_utf8(&raw).map_err(|e| {
+        Error::InvalidConfig(format!("recipient key `{}` not UTF-8: {e}", path.display()))
+    })?;
     let decoded = base64::engine::general_purpose::STANDARD
         .decode(text.trim())
         .map_err(|e| Error::InvalidConfig(format!("recipient key b64 decode: {e}")))?;
@@ -1369,7 +1370,11 @@ host = "h.example.com"
             .await
             .expect("encrypt");
         let sealed = plain.with_extension("toml.sealed");
-        assert!(sealed.exists(), "expected sealed file at {}", sealed.display());
+        assert!(
+            sealed.exists(),
+            "expected sealed file at {}",
+            sealed.display()
+        );
 
         let secret_path = tmp.path().join("k.b64");
         write_b64_secret(&secret_path, &sk);
@@ -1401,8 +1406,7 @@ host = "h.example.com"
         std::fs::write(&sealed_path, &sealed_bytes).unwrap();
 
         let key = KeySource::X25519Secrets(vec![sk]);
-        let (cfg_sealed, _w) =
-            spt_config::load_with_key(&sealed_path, false, Some(&key)).unwrap();
+        let (cfg_sealed, _w) = spt_config::load_with_key(&sealed_path, false, Some(&key)).unwrap();
         assert_eq!(cfg_plain.version, cfg_sealed.version);
         assert_eq!(cfg_plain.profiles.len(), cfg_sealed.profiles.len());
         assert_eq!(cfg_plain.profiles[0].name, cfg_sealed.profiles[0].name);
@@ -1622,11 +1626,7 @@ host = "h.example.com"
             &KeySource::X25519Recipients(vec![pk1]),
         )
         .unwrap();
-        let pt = spt_config_crypt::unseal(
-            &sealed1,
-            &KeySource::X25519Secrets(vec![sk1]),
-        )
-        .unwrap();
+        let pt = spt_config_crypt::unseal(&sealed1, &KeySource::X25519Secrets(vec![sk1])).unwrap();
         let sealed2 = spt_config_crypt::seal(
             pt.expose_secret().as_slice(),
             &KeySource::X25519Recipients(vec![pk2]),
@@ -1678,8 +1678,7 @@ host = "h.example.com"
         let sealed_path = tmp.path().join("s.sealed");
         std::fs::write(&sealed_path, &sealed).unwrap();
         let key = KeySource::X25519Secrets(vec![sk]);
-        let (cfg_unsealed, _) =
-            spt_config::load_with_key(&sealed_path, false, Some(&key)).unwrap();
+        let (cfg_unsealed, _) = spt_config::load_with_key(&sealed_path, false, Some(&key)).unwrap();
 
         let r1 = spt_config::render(&cfg_plain, spt_core::RedactionMode::None);
         let r2 = spt_config::render(&cfg_unsealed, spt_core::RedactionMode::None);

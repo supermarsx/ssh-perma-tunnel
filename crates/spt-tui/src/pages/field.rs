@@ -618,12 +618,7 @@ mod tests {
     fn move_focus_wraps_around() {
         let defs = vec![
             opt_text("a", "", |p: &Profile| p.user.clone(), |p, v| p.user = v),
-            opt_text(
-                "b",
-                "",
-                |p: &Profile| p.host.clone(),
-                |p, v| p.host = v,
-            ),
+            opt_text("b", "", |p: &Profile| p.host.clone(), |p, v| p.host = v),
             opt_text(
                 "c",
                 "",
@@ -644,18 +639,8 @@ mod tests {
     #[test]
     fn nav_key_down_advances() {
         let defs = vec![
-            opt_text(
-                "a",
-                "",
-                |p: &Profile| p.user.clone(),
-                |p, v| p.user = v,
-            ),
-            opt_text(
-                "b",
-                "",
-                |p: &Profile| p.host.clone(),
-                |p, v| p.host = v,
-            ),
+            opt_text("a", "", |p: &Profile| p.user.clone(), |p, v| p.user = v),
+            opt_text("b", "", |p: &Profile| p.host.clone(), |p, v| p.host = v),
         ];
         let mut list = FieldList::new(defs);
         let p = sample_profile();
@@ -667,12 +652,7 @@ mod tests {
 
     #[test]
     fn cancel_edit_clears_buffer() {
-        let def = opt_text(
-            "u",
-            "",
-            |p: &Profile| p.user.clone(),
-            |p, v| p.user = v,
-        );
+        let def = opt_text("u", "", |p: &Profile| p.user.clone(), |p, v| p.user = v);
         let mut list = FieldList::new(vec![def]);
         let p = sample_profile();
         list.begin_edit(&p);
@@ -703,11 +683,7 @@ mod tests {
         let def = opt_u32(
             "n",
             "",
-            |p: &Profile| {
-                p.connection
-                    .as_ref()
-                    .and_then(|c| c.keepalive_retries)
-            },
+            |p: &Profile| p.connection.as_ref().and_then(|c| c.keepalive_retries),
             |p, v| {
                 p.connection
                     .get_or_insert_with(Default::default)
@@ -816,12 +792,7 @@ mod tests {
     fn opt_text_empty_clears_to_none() {
         let mut p = sample_profile();
         p.user = Some("a".into());
-        let def = opt_text(
-            "u",
-            "",
-            |p: &Profile| p.user.clone(),
-            |p, v| p.user = v,
-        );
+        let def = opt_text("u", "", |p: &Profile| p.user.clone(), |p, v| p.user = v);
         let mut list = FieldList::new(vec![def]);
         list.begin_edit(&p);
         list.on_edit_key(key(crossterm::event::KeyCode::Backspace), &mut p);
@@ -873,12 +844,7 @@ mod tests {
 
     #[test]
     fn field_debug_renders_label() {
-        let def = opt_text(
-            "x",
-            "",
-            |p: &Profile| p.user.clone(),
-            |p, v| p.user = v,
-        );
+        let def = opt_text("x", "", |p: &Profile| p.user.clone(), |p, v| p.user = v);
         let s = format!("{def:?}");
         assert!(s.contains("FieldDef"));
         assert!(s.contains('x'));

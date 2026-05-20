@@ -9,8 +9,8 @@
 //! external integration-test file populated with meaningful assertions
 //! without duplicating the inline dispatcher coverage.
 
-use spt_cli::{groups, Cli, Command};
 use clap::Parser;
+use spt_cli::{groups, Cli, Command};
 
 fn parse(args: &[&str]) -> Cli {
     Cli::try_parse_from(args).expect("parse")
@@ -48,12 +48,7 @@ fn parses_into_tunnel_group() {
 #[test]
 fn parses_into_service_group() {
     let cli = parse(&[
-        "spt",
-        "service",
-        "render",
-        "--config",
-        "spt.toml",
-        "--system",
+        "spt", "service", "render", "--config", "spt.toml", "--system",
     ]);
     assert!(matches!(cli.command, Command::Service(_)));
 }
@@ -61,13 +56,7 @@ fn parses_into_service_group() {
 #[test]
 fn parses_into_key_group() {
     let cli = parse(&[
-        "spt",
-        "key",
-        "generate",
-        "--type",
-        "ed25519",
-        "--out",
-        "id_test",
+        "spt", "key", "generate", "--type", "ed25519", "--out", "id_test",
     ]);
     assert!(matches!(cli.command, Command::Key(_)));
 }
@@ -160,13 +149,7 @@ fn parses_into_completion_group() {
 
 #[test]
 fn global_options_state_dir_propagates() {
-    let cli = parse(&[
-        "spt",
-        "--state-dir",
-        "/tmp/spt-test",
-        "tunnel",
-        "status",
-    ]);
+    let cli = parse(&["spt", "--state-dir", "/tmp/spt-test", "tunnel", "status"]);
     assert_eq!(
         cli.global.state_dir.as_deref(),
         Some(std::path::Path::new("/tmp/spt-test")),

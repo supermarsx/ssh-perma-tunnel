@@ -789,8 +789,7 @@ mod tests {
     fn apply_syslog_common_tcp_copies_all_optional_fields() {
         let sink = full_sink(RemoteSinkKind::SyslogTcp, "127.0.0.1:514");
         let spool = tempdir().unwrap();
-        let mut cfg =
-            SyslogTcpConfig::new("0.0.0.0".to_string(), 514, spool.path().to_path_buf());
+        let mut cfg = SyslogTcpConfig::new("0.0.0.0".to_string(), 514, spool.path().to_path_buf());
         apply_syslog_common_tcp(&sink, RedactionMode::Strict, &mut cfg);
         assert_eq!(cfg.facility, 7);
         assert_eq!(cfg.app_name, "app");
@@ -807,8 +806,7 @@ mod tests {
     fn apply_syslog_common_tls_copies_all_optional_fields() {
         let sink = full_sink(RemoteSinkKind::SyslogTls, "127.0.0.1:6514");
         let spool = tempdir().unwrap();
-        let mut cfg =
-            SyslogTlsConfig::new("0.0.0.0".to_string(), 6514, spool.path().to_path_buf());
+        let mut cfg = SyslogTlsConfig::new("0.0.0.0".to_string(), 6514, spool.path().to_path_buf());
         apply_syslog_common_tls(&sink, RedactionMode::Strict, &mut cfg).unwrap();
         assert_eq!(cfg.facility, 7);
         assert_eq!(cfg.app_name, "app");

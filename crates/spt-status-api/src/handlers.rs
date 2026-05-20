@@ -61,14 +61,11 @@ pub async fn health(State(state): State<AppState>) -> Response {
         if !matches!(state_str.as_str(), "failed" | "reconnecting") {
             continue;
         }
-        let stale = p
-            .last_successful_connection_at
-            .map_or(true, |t| (now - t).num_seconds() > state.failed_threshold_secs);
+        let stale = p.last_successful_connection_at.map_or(true, |t| {
+            (now - t).num_seconds() > state.failed_threshold_secs
+        });
         if stale {
-            degraded_reason = Some(format!(
-                "profile {} in state `{}`",
-                p.id, p.state
-            ));
+            degraded_reason = Some(format!("profile {} in state `{}`", p.id, p.state));
             break;
         }
     }
@@ -90,9 +87,7 @@ pub async fn status(State(state): State<AppState>) -> Result<Json<StatusSnapshot
 }
 
 /// `GET /v1/profiles`.
-pub async fn list_profiles(
-    State(state): State<AppState>,
-) -> Result<Json<Value>, StatusApiError> {
+pub async fn list_profiles(State(state): State<AppState>) -> Result<Json<Value>, StatusApiError> {
     let snap = state.source.snapshot().await;
     Ok(Json(json!({ "profiles": snap.profiles })))
 }
@@ -112,9 +107,7 @@ pub async fn get_profile(
 }
 
 /// `GET /v1/forwards`.
-pub async fn list_forwards(
-    State(state): State<AppState>,
-) -> Result<Json<Value>, StatusApiError> {
+pub async fn list_forwards(State(state): State<AppState>) -> Result<Json<Value>, StatusApiError> {
     let snap = state.source.snapshot().await;
     Ok(Json(json!({ "forwards": snap.forwards })))
 }
@@ -134,9 +127,7 @@ pub async fn get_forward(
 }
 
 /// `GET /v1/sessions`.
-pub async fn list_sessions(
-    State(state): State<AppState>,
-) -> Result<Json<Value>, StatusApiError> {
+pub async fn list_sessions(State(state): State<AppState>) -> Result<Json<Value>, StatusApiError> {
     let snap = state.source.snapshot().await;
     Ok(Json(json!({ "sessions": snap.sessions })))
 }

@@ -474,7 +474,10 @@ mod tests {
     #[test]
     fn kind_matches_pattern_glob_and_exact() {
         use spt_events::event::EventKind;
-        assert!(kind_matches_pattern(&EventKind::new("profile.connected"), "profile.*"));
+        assert!(kind_matches_pattern(
+            &EventKind::new("profile.connected"),
+            "profile.*"
+        ));
         assert!(kind_matches_pattern(
             &EventKind::new("profile.connected"),
             "profile.connected"

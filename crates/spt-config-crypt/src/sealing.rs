@@ -276,19 +276,17 @@ pub fn unseal(sealed: &[u8], key: &KeySource) -> Result<SecretSlice, Error> {
             derive_argon2id(pp.expose_secret(), params)?
         }
         (KeySource::VaultMaster(master), "vault") => {
-            let vault = meta
-                .vault
-                .as_ref()
-                .ok_or_else(|| Error::SecretCryptoFailed("vault kdf without [meta.vault]".into()))?;
+            let vault = meta.vault.as_ref().ok_or_else(|| {
+                Error::SecretCryptoFailed("vault kdf without [meta.vault]".into())
+            })?;
             let salt = vault.salt()?;
             hkdf_sha256(master, &salt, b"spt-config-crypt/v1/vault")
         }
-        (KeySource::X25519Secrets(secrets), "x25519") => {
-            x25519_unwrap_body_key(&meta, secrets)?
-        }
+        (KeySource::X25519Secrets(secrets), "x25519") => x25519_unwrap_body_key(&meta, secrets)?,
         (KeySource::X25519Recipients(_), "x25519") => {
             return Err(Error::InvalidArgs(
-                "unsealing under X25519 requires private keys — use KeySource::X25519Secrets".into(),
+                "unsealing under X25519 requires private keys — use KeySource::X25519Secrets"
+                    .into(),
             ));
         }
         _ => {
@@ -331,10 +329,7 @@ pub fn unseal(sealed: &[u8], key: &KeySource) -> Result<SecretSlice, Error> {
 
 /// Try each candidate secret against each [`Recipient`] until one ECDH
 /// produces a wrap key that authenticates the wrapped body key.
-fn x25519_unwrap_body_key(
-    meta: &Meta,
-    secrets: &[[u8; 32]],
-) -> Result<Zeroizing<[u8; 32]>, Error> {
+fn x25519_unwrap_body_key(meta: &Meta, secrets: &[[u8; 32]]) -> Result<Zeroizing<[u8; 32]>, Error> {
     if meta.recipients.is_empty() {
         return Err(Error::SecretCryptoFailed(
             "x25519 envelope without recipients".into(),
@@ -405,4 +400,3 @@ fn x25519_unwrap_body_key(
         "no supplied x25519 secret matched any recipient".into(),
     ))
 }
-

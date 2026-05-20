@@ -142,8 +142,8 @@ async fn launch_tls(
     let _ = rustls::crypto::ring::default_provider().install_default();
 
     // Build the rustls ServerConfig.
-    let server_cfg = spt_status_api::build_server_config(&cfg.tls, &cfg.auth.mode)
-        .map_err(map_tls_err)?;
+    let server_cfg =
+        spt_status_api::build_server_config(&cfg.tls, &cfg.auth.mode).map_err(map_tls_err)?;
     let acceptor = TlsAcceptor::from(Arc::new(server_cfg));
 
     // Auth + rate-limit machinery (mirrors `StatusApiServer::start`).
@@ -154,10 +154,7 @@ async fn launch_tls(
 
     // Bind the TCP listener.
     let listener = TcpListener::bind(cfg.bind).await.map_err(|e| {
-        Error::InvalidConfig(format!(
-            "status_api: bind to {} failed: {e}",
-            cfg.bind
-        ))
+        Error::InvalidConfig(format!("status_api: bind to {} failed: {e}", cfg.bind))
     })?;
     let bound_addr = listener
         .local_addr()
@@ -427,25 +424,22 @@ mod tests {
     }
 
     fn make_server_cert(ca: &TestCa) -> (rcgen::Certificate, rcgen::KeyPair) {
-        let mut params =
-            rcgen::CertificateParams::new(vec!["localhost".to_string()]).unwrap();
+        let mut params = rcgen::CertificateParams::new(vec!["localhost".to_string()]).unwrap();
         params
             .distinguished_name
             .push(rcgen::DnType::CommonName, "localhost");
         let key_pair = rcgen::KeyPair::generate().unwrap();
-        let cert = params
-            .signed_by(&key_pair, &ca.cert, &ca.key_pair)
-            .unwrap();
+        let cert = params.signed_by(&key_pair, &ca.cert, &ca.key_pair).unwrap();
         (cert, key_pair)
     }
 
     fn make_client_cert(ca: &TestCa, cn: &str) -> (rcgen::Certificate, rcgen::KeyPair) {
         let mut params = rcgen::CertificateParams::new(Vec::<String>::new()).unwrap();
-        params.distinguished_name.push(rcgen::DnType::CommonName, cn);
+        params
+            .distinguished_name
+            .push(rcgen::DnType::CommonName, cn);
         let key_pair = rcgen::KeyPair::generate().unwrap();
-        let cert = params
-            .signed_by(&key_pair, &ca.cert, &ca.key_pair)
-            .unwrap();
+        let cert = params.signed_by(&key_pair, &ca.cert, &ca.key_pair).unwrap();
         (cert, key_pair)
     }
 
@@ -471,9 +465,7 @@ mod tests {
         let tcp = TcpStream::connect(addr).await.unwrap();
         let dns = ServerName::try_from(host.to_string()).unwrap();
         let mut tls = connector.connect(dns, tcp).await.unwrap();
-        let req = format!(
-            "GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n"
-        );
+        let req = format!("GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n");
         tls.write_all(req.as_bytes()).await.unwrap();
         let mut buf = Vec::new();
         let _ = tls.read_to_end(&mut buf).await;
@@ -538,11 +530,9 @@ mod tests {
 
         // Plain HTTP GET.
         let mut tcp = TcpStream::connect(addr).await.unwrap();
-        tcp.write_all(
-            b"GET /v1/health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
-        )
-        .await
-        .unwrap();
+        tcp.write_all(b"GET /v1/health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+            .await
+            .unwrap();
         let mut buf = Vec::new();
         let _ = tcp.read_to_end(&mut buf).await;
         let (status, _body) = parse_http_response(&buf);
@@ -572,8 +562,7 @@ mod tests {
         let addr = handle.local_addr();
 
         let connector = plain_client_for_ca(&ca.pem());
-        let (status, _body) =
-            http_get_via_tls(&connector, addr, "localhost", "/v1/health").await;
+        let (status, _body) = http_get_via_tls(&connector, addr, "localhost", "/v1/health").await;
         assert_eq!(status, 200, "TLS /v1/health expected 200");
 
         handle.shutdown().await;
@@ -616,9 +605,11 @@ mod tests {
         let addr = handle.local_addr();
 
         let connector = mtls_client(&ca.pem(), &cli_cert, &cli_key);
-        let (status, _body) =
-            http_get_via_tls(&connector, addr, "localhost", "/v1/health").await;
-        assert_eq!(status, 200, "mTLS /v1/health expected 200 for allowed subject");
+        let (status, _body) = http_get_via_tls(&connector, addr, "localhost", "/v1/health").await;
+        assert_eq!(
+            status, 200,
+            "mTLS /v1/health expected 200 for allowed subject"
+        );
 
         handle.shutdown().await;
     }
@@ -657,8 +648,7 @@ mod tests {
         let addr = handle.local_addr();
 
         let connector = mtls_client(&ca.pem(), &cli_cert, &cli_key);
-        let (status, _body) =
-            http_get_via_tls(&connector, addr, "localhost", "/v1/health").await;
+        let (status, _body) = http_get_via_tls(&connector, addr, "localhost", "/v1/health").await;
         assert!(
             status == 403 || status == 401,
             "mTLS rejected subject expected 401/403, got {status}"

@@ -151,9 +151,7 @@ fn check_logging(d: &mut Diagnostics, c: &Config) {
                     .at(format!("{prefix}.allow_self_signed")),
                 );
             }
-            if matches!(remote.allow_self_signed, Some(true))
-                && remote.pin_spki_sha256.is_empty()
-            {
+            if matches!(remote.allow_self_signed, Some(true)) && remote.pin_spki_sha256.is_empty() {
                 d.push(
                     Diagnostic::error(
                         "remote_log_allow_self_signed_without_pin",
@@ -1398,9 +1396,10 @@ mod tests {
         let (c, _) = load_str(raw, false).unwrap();
         let s = &c.events.as_ref().unwrap().sinks[0];
         assert_eq!(s.allow_self_signed, Some(false));
-        assert_eq!(s.pin_spki_sha256, vec![
-            "SHA256:BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB".to_string()
-        ]);
+        assert_eq!(
+            s.pin_spki_sha256,
+            vec!["SHA256:BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB".to_string()]
+        );
         assert_eq!(s.max_cert_chain_depth, Some(7));
     }
 

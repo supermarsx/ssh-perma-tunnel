@@ -198,7 +198,7 @@ protocol = "ssh2"
         let mut page = BasicsPage::new();
         let mut m = model();
         page.on_key(k(KeyCode::Enter), &mut m); // enter edit
-        // Type a forbidden character.
+                                                // Type a forbidden character.
         page.on_key(k(KeyCode::Char('!')), &mut m);
         page.on_key(k(KeyCode::Enter), &mut m); // commit attempt
         assert!(page.list.fields[0].last_error().is_some());

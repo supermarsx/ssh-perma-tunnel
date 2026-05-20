@@ -212,14 +212,11 @@ impl StatusApiServer {
         let router = Self::router(state, auth_ctx, limiter);
 
         let listener = TcpListener::bind(cfg.bind).await.map_err(|e| {
-            spt_core::Error::InvalidConfig(format!(
-                "status-api: bind to {} failed: {e}",
-                cfg.bind
-            ))
+            spt_core::Error::InvalidConfig(format!("status-api: bind to {} failed: {e}", cfg.bind))
         })?;
-        let bound_addr = listener.local_addr().map_err(|e| {
-            spt_core::Error::InvalidConfig(format!("status-api: local_addr: {e}"))
-        })?;
+        let bound_addr = listener
+            .local_addr()
+            .map_err(|e| spt_core::Error::InvalidConfig(format!("status-api: local_addr: {e}")))?;
         info!(addr = %bound_addr, "status-api listening");
 
         let (shutdown_tx, shutdown_rx) = oneshot::channel();

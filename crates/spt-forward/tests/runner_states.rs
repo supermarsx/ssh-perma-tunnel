@@ -60,8 +60,7 @@ async fn protocol_session_runner_lifecycle() {
         *watch.borrow()
     } else {
         // Give it a short window to propagate.
-        let _ =
-            tokio::time::timeout(Duration::from_millis(500), watch.changed()).await;
+        let _ = tokio::time::timeout(Duration::from_millis(500), watch.changed()).await;
         *watch.borrow()
     };
     assert!(final_state.is_terminal(), "got {final_state:?}");

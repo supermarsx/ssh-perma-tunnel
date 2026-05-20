@@ -15,7 +15,10 @@ pub(crate) fn harden_into(report: &mut HardeningReport) {
 }
 
 fn disable_core_dump() -> HardeningResult {
-    let rl = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+    let rl = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
     // SAFETY: `&rl` is a valid pointer to an initialised `rlimit`; the
     // kernel reads it during the syscall and does not retain it.
     let rc = unsafe { libc::setrlimit(libc::RLIMIT_CORE, &rl) };
@@ -39,14 +42,7 @@ fn pt_deny_attach() -> HardeningResult {
     // and does not dereference `addr` (which is passed as NULL). It either
     // succeeds (returning 0) or kills the process when a debugger is
     // already attached — never returns invalid memory.
-    let rc = unsafe {
-        libc::ptrace(
-            PT_DENY_ATTACH,
-            0,
-            std::ptr::null_mut::<libc::c_char>(),
-            0,
-        )
-    };
+    let rc = unsafe { libc::ptrace(PT_DENY_ATTACH, 0, std::ptr::null_mut::<libc::c_char>(), 0) };
     if rc == 0 {
         HardeningResult::ok("ptrace.pt_deny_attach")
     } else {

@@ -445,7 +445,9 @@ agent = true
         );
         let d = AuthDiagnostic::for_profile("does-not-exist").with_config(cfg);
         let r = d.run(&DiagnosticContext::default()).await;
-        assert!(r.iter().any(|c| c.id == "auth.profiles" && c.status == Status::Skipped));
+        assert!(r
+            .iter()
+            .any(|c| c.id == "auth.profiles" && c.status == Status::Skipped));
     }
 
     #[tokio::test]
@@ -490,7 +492,8 @@ oidc_client_id = "id"
         let d = AuthDiagnostic::default().with_config(cfg);
         let r = d.run(&DiagnosticContext::default()).await;
         assert!(
-            r.iter().any(|c| c.id.ends_with(".oidc_device_flow") && c.status == Status::Pass),
+            r.iter()
+                .any(|c| c.id.ends_with(".oidc_device_flow") && c.status == Status::Pass),
             "{r:#?}"
         );
     }

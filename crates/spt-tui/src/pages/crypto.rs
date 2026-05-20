@@ -240,7 +240,7 @@ protocol = "ssh2"
             p.on_key(k(KeyCode::Down), &mut m);
         }
         p.on_key(k(KeyCode::Enter), &mut m); // begin edit (Multi)
-        // Toggle the first option (Space) then commit via 's'.
+                                             // Toggle the first option (Space) then commit via 's'.
         p.on_key(k(KeyCode::Char(' ')), &mut m);
         p.on_key(k(KeyCode::Char('s')), &mut m);
         let ciphers = m

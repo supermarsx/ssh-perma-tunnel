@@ -116,7 +116,9 @@ mod platform_tests {
         let plat = Error::UnsupportedPlatform("non-win".into());
         assert!(plat.to_string().contains("only supported on Windows"));
         let inv = Error::InvalidOperation("user cannot enforce".into());
-        assert!(inv.to_string().contains("invalid policy registry operation"));
+        assert!(inv
+            .to_string()
+            .contains("invalid policy registry operation"));
     }
 
     #[test]

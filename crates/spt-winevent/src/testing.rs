@@ -173,12 +173,7 @@ impl MockEventLogBackend {
 }
 
 impl EventLogBackend for MockEventLogBackend {
-    fn register_source(
-        &self,
-        name: &str,
-        channel: &str,
-        message_dll: Option<&Path>,
-    ) -> Result<()> {
+    fn register_source(&self, name: &str, channel: &str, message_dll: Option<&Path>) -> Result<()> {
         let mut state = self.inner.lock();
         if let Some(msg) = state.register_err.clone() {
             return Err(Error::WindowsEventLogFailed(msg));
@@ -203,13 +198,7 @@ impl EventLogBackend for MockEventLogBackend {
         Ok(())
     }
 
-    fn report_event(
-        &self,
-        name: &str,
-        level: Level,
-        event_id: u32,
-        message: &str,
-    ) -> Result<()> {
+    fn report_event(&self, name: &str, level: Level, event_id: u32, message: &str) -> Result<()> {
         let mut state = self.inner.lock();
         if let Some(msg) = state.report_err.clone() {
             return Err(Error::WindowsEventLogFailed(msg));

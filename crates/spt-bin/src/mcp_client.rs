@@ -358,10 +358,16 @@ mod tests {
             w.flush().await.unwrap();
         });
 
-        let mut client = McpClient::connect(addr).await.unwrap().with_token("hunter2");
+        let mut client = McpClient::connect(addr)
+            .await
+            .unwrap()
+            .with_token("hunter2");
         let _ = client.initialize().await.unwrap();
         let _ = server.await;
         let body = captured.lock().await.clone().unwrap();
-        assert!(body.contains("hunter2"), "expected token in payload: {body}");
+        assert!(
+            body.contains("hunter2"),
+            "expected token in payload: {body}"
+        );
     }
 }

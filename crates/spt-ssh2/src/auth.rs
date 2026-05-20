@@ -423,7 +423,8 @@ mod tests {
 
     #[test]
     fn normalize_rejects_malformed_openssh_blob() {
-        let bad = "-----BEGIN OPENSSH PRIVATE KEY-----\nnot base64!\n-----END OPENSSH PRIVATE KEY-----\n";
+        let bad =
+            "-----BEGIN OPENSSH PRIVATE KEY-----\nnot base64!\n-----END OPENSSH PRIVATE KEY-----\n";
         assert!(normalize_private_key_for_libssh2(bad).is_err());
     }
 
@@ -576,10 +577,7 @@ mod tests {
         fn kind(&self) -> spt_secrets::BackendKind {
             spt_secrets::BackendKind::Env
         }
-        fn get(
-            &self,
-            _r: &spt_secrets::SecretRef,
-        ) -> Result<Option<spt_secrets::SecretBytes>> {
+        fn get(&self, _r: &spt_secrets::SecretRef) -> Result<Option<spt_secrets::SecretBytes>> {
             Ok(Some(spt_secrets::backend::secret_bytes(self.0.to_vec())))
         }
         fn set(&self, _r: &spt_secrets::SecretRef, _value: &[u8]) -> Result<()> {
@@ -602,10 +600,7 @@ mod tests {
         fn kind(&self) -> spt_secrets::BackendKind {
             spt_secrets::BackendKind::Env
         }
-        fn get(
-            &self,
-            _r: &spt_secrets::SecretRef,
-        ) -> Result<Option<spt_secrets::SecretBytes>> {
+        fn get(&self, _r: &spt_secrets::SecretRef) -> Result<Option<spt_secrets::SecretBytes>> {
             Ok(None)
         }
         fn set(&self, _r: &spt_secrets::SecretRef, _value: &[u8]) -> Result<()> {

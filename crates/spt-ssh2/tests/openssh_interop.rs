@@ -75,15 +75,15 @@ async fn openssh_config_path_present_when_running() {
         eprintln!("skip: sshd not on PATH");
         return;
     }
-    let Some(running) = OpenSshTestServer::new()
-        .start()
-        .await
-        .expect("start ok")
-    else {
+    let Some(running) = OpenSshTestServer::new().start().await.expect("start ok") else {
         return;
     };
     let cfg = running.config_path().expect("config path");
-    assert!(cfg.exists(), "sshd_config must exist on disk: {}", cfg.display());
+    assert!(
+        cfg.exists(),
+        "sshd_config must exist on disk: {}",
+        cfg.display()
+    );
     let body = std::fs::read_to_string(&cfg).unwrap();
     assert!(body.contains("ListenAddress 127.0.0.1"));
     assert!(body.contains("StrictModes no"));

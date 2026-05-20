@@ -14,7 +14,9 @@
 use spt_config::{
     find_binding, schema::Config, BindingKind, PolicyBundle, PolicyOverlay, PolicyValue, BINDINGS,
 };
-use spt_firewall::{linux::NftPlanner, Action, Direction, FirewallPlanner, Manager, Protocol, Rule};
+use spt_firewall::{
+    linux::NftPlanner, Action, Direction, FirewallPlanner, Manager, Protocol, Rule,
+};
 
 fn key(section: &str, name: &str) -> String {
     format!("{section}\\{name}")
@@ -83,10 +85,9 @@ fn policy_overlay_records_unknown_and_type_mismatch() {
         key("Logging", "MaxFiles"),
         PolicyValue::String("not-a-number".into()),
     );
-    bundle.machine.insert(
-        key("Mystery", "Foo"),
-        PolicyValue::String("bar".into()),
-    );
+    bundle
+        .machine
+        .insert(key("Mystery", "Foo"), PolicyValue::String("bar".into()));
     let r = PolicyOverlay::apply(&mut cfg, &bundle);
     assert!(r.type_mismatch.contains(&key("Logging", "MaxFiles")));
     assert!(r.unknown.contains(&"Mystery\\Foo".to_string()));

@@ -455,7 +455,7 @@ protocol = "ssh2"
         let mut m = model();
         p.on_key(k(KeyCode::Char('a')), &mut m);
         p.on_key(k(KeyCode::Esc), &mut m); // close editor
-        // Only one forward; Down should stay at 0.
+                                           // Only one forward; Down should stay at 0.
         p.on_key(k(KeyCode::Down), &mut m);
         assert_eq!(p.selected, 0);
     }
@@ -493,12 +493,12 @@ protocol = "ssh2"
         let mut p = ForwardsPage::new();
         let mut m = model();
         p.on_key(k(KeyCode::Char('a')), &mut m); // add + open editor
-        // Move focus inside editor to "target" (index 4).
+                                                 // Move focus inside editor to "target" (index 4).
         for _ in 0..4 {
             p.on_key(k(KeyCode::Down), &mut m);
         }
         p.on_key(k(KeyCode::Enter), &mut m); // begin edit
-        // Erase existing value via End + N backspaces.
+                                             // Erase existing value via End + N backspaces.
         p.on_key(k(KeyCode::End), &mut m);
         for _ in 0..20 {
             p.on_key(k(KeyCode::Backspace), &mut m);

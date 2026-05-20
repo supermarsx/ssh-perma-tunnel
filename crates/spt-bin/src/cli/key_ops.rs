@@ -461,6 +461,16 @@ fn read_public_key_line(path: &Path) -> Result<String> {
 }
 
 fn load_with_passphrase_chain(path: &Path) -> Result<KeyPair> {
+    // Pre-flight: if the file doesn't exist, fail fast instead of falling
+    // through to the interactive prompt path. Without this check, a missing
+    // key file causes `spt_key::load` to return Err, then we'd block on
+    // stdin in non-interactive contexts (tests, batch jobs).
+    if !path.exists() {
+        return Err(Error::InvalidArgs(format!(
+            "key file `{}` not found",
+            path.display()
+        )));
+    }
     // Try unencrypted first.
     if let Ok(kp) = spt_key::load(path, None) {
         return Ok(kp);

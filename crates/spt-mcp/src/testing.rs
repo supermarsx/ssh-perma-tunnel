@@ -428,15 +428,11 @@ mod tests {
         let _ = handshake(&mut client).await.expect("init");
         let frames = client.observed();
         assert!(
-            frames
-                .iter()
-                .any(|f| matches!(f, Frame::ClientToServer(_))),
+            frames.iter().any(|f| matches!(f, Frame::ClientToServer(_))),
             "no client->server frames"
         );
         assert!(
-            frames
-                .iter()
-                .any(|f| matches!(f, Frame::ServerToClient(_))),
+            frames.iter().any(|f| matches!(f, Frame::ServerToClient(_))),
             "no server->client frames"
         );
         drop(client);

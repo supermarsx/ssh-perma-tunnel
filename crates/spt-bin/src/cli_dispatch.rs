@@ -879,8 +879,7 @@ async fn maybe_spawn_status_api(
         return Ok(None);
     }
     let source = crate::status_api_tls::file_snapshot_source(state_dir.to_path_buf());
-    let handle =
-        crate::status_api_tls::launch(&cfg.status_api, source, resolver.as_ref()).await?;
+    let handle = crate::status_api_tls::launch(&cfg.status_api, source, resolver.as_ref()).await?;
     tracing::info!(
         addr = %handle.local_addr(),
         tls = cfg.status_api.tls.enabled,
@@ -3295,7 +3294,9 @@ async fn status_dispatch(global: &GlobalOpts, c: groups::status::StatusCmd) -> R
         StatusSub::Serve(args) => crate::cli::status_ops::serve(global, args).await,
         StatusSub::Status(args) => crate::cli::status_ops::status(global, args).await,
         StatusSub::Token(t) => match t.command {
-            StatusTokenSub::Rotate(args) => crate::cli::status_ops::token_rotate(global, args).await,
+            StatusTokenSub::Rotate(args) => {
+                crate::cli::status_ops::token_rotate(global, args).await
+            }
         },
     }
 }
@@ -3477,10 +3478,7 @@ mod tests {
     #[tokio::test]
     async fn config_validate_missing_config_errors() {
         let cli = parse(&["spt", "config", "validate"]);
-        assert!(matches!(
-            dispatch_err(cli).await,
-            Error::InvalidArgs(_)
-        ));
+        assert!(matches!(dispatch_err(cli).await, Error::InvalidArgs(_)));
     }
 
     #[tokio::test]
@@ -3516,13 +3514,7 @@ mod tests {
     async fn config_render_minimal() {
         let td = tempfile::tempdir().unwrap();
         let cfg = minimal_config(td.path());
-        let cli = parse(&[
-            "spt",
-            "--config",
-            cfg.to_str().unwrap(),
-            "config",
-            "render",
-        ]);
+        let cli = parse(&["spt", "--config", cfg.to_str().unwrap(), "config", "render"]);
         dispatch_ok(cli).await;
     }
 
@@ -3562,13 +3554,7 @@ mod tests {
     async fn config_init_writes_file() {
         let td = tempfile::tempdir().unwrap();
         let out = td.path().join("new.toml");
-        let cli = parse(&[
-            "spt",
-            "config",
-            "init",
-            "--path",
-            out.to_str().unwrap(),
-        ]);
+        let cli = parse(&["spt", "config", "init", "--path", out.to_str().unwrap()]);
         dispatch_ok(cli).await;
         assert!(out.exists());
     }
@@ -3577,17 +3563,8 @@ mod tests {
     async fn config_init_refuses_overwrite() {
         let td = tempfile::tempdir().unwrap();
         let cfg = minimal_config(td.path());
-        let cli = parse(&[
-            "spt",
-            "config",
-            "init",
-            "--path",
-            cfg.to_str().unwrap(),
-        ]);
-        assert!(matches!(
-            dispatch_err(cli).await,
-            Error::InvalidArgs(_)
-        ));
+        let cli = parse(&["spt", "config", "init", "--path", cfg.to_str().unwrap()]);
+        assert!(matches!(dispatch_err(cli).await, Error::InvalidArgs(_)));
     }
 
     #[tokio::test]
@@ -3617,10 +3594,7 @@ mod tests {
             "--url",
             "https://example.invalid/cfg.toml",
         ]);
-        assert!(matches!(
-            dispatch_err(cli).await,
-            Error::InvalidArgs(_)
-        ));
+        assert!(matches!(dispatch_err(cli).await, Error::InvalidArgs(_)));
     }
 
     #[tokio::test]
@@ -3662,13 +3636,7 @@ mod tests {
     async fn profile_list_empty_config() {
         let td = tempfile::tempdir().unwrap();
         let cfg = minimal_config(td.path());
-        let cli = parse(&[
-            "spt",
-            "--config",
-            cfg.to_str().unwrap(),
-            "profile",
-            "list",
-        ]);
+        let cli = parse(&["spt", "--config", cfg.to_str().unwrap(), "profile", "list"]);
         dispatch_ok(cli).await;
     }
 
@@ -3676,13 +3644,7 @@ mod tests {
     async fn profile_list_with_profile() {
         let td = tempfile::tempdir().unwrap();
         let cfg = config_with_profile(td.path());
-        let cli = parse(&[
-            "spt",
-            "--config",
-            cfg.to_str().unwrap(),
-            "profile",
-            "list",
-        ]);
+        let cli = parse(&["spt", "--config", cfg.to_str().unwrap(), "profile", "list"]);
         dispatch_ok(cli).await;
     }
 
@@ -3714,10 +3676,7 @@ mod tests {
             "show",
             "missing",
         ]);
-        assert!(matches!(
-            dispatch_err(cli).await,
-            Error::InvalidArgs(_)
-        ));
+        assert!(matches!(dispatch_err(cli).await, Error::InvalidArgs(_)));
     }
 
     #[tokio::test]
@@ -3778,10 +3737,7 @@ mod tests {
             "remove",
             "missing",
         ]);
-        assert!(matches!(
-            dispatch_err(cli).await,
-            Error::InvalidArgs(_)
-        ));
+        assert!(matches!(dispatch_err(cli).await, Error::InvalidArgs(_)));
     }
 
     #[tokio::test]
@@ -3856,13 +3812,7 @@ mod tests {
     async fn forward_list_routes() {
         let td = tempfile::tempdir().unwrap();
         let cfg = config_with_profile(td.path());
-        let cli = parse(&[
-            "spt",
-            "--config",
-            cfg.to_str().unwrap(),
-            "forward",
-            "list",
-        ]);
+        let cli = parse(&["spt", "--config", cfg.to_str().unwrap(), "forward", "list"]);
         dispatch_ok(cli).await;
     }
 
@@ -4018,10 +3968,7 @@ mod tests {
             "run",
             "--once",
         ]);
-        assert!(matches!(
-            dispatch_err(cli).await,
-            Error::InvalidArgs(_)
-        ));
+        assert!(matches!(dispatch_err(cli).await, Error::InvalidArgs(_)));
     }
 
     #[tokio::test]
@@ -4213,13 +4160,7 @@ mod tests {
             out.to_str().unwrap(),
         ]);
         dispatch_ok(cli).await;
-        let cli = parse(&[
-            "spt",
-            "key",
-            "inspect",
-            out.to_str().unwrap(),
-            "--json",
-        ]);
+        let cli = parse(&["spt", "key", "inspect", out.to_str().unwrap(), "--json"]);
         dispatch_ok(cli).await;
     }
 
@@ -4237,12 +4178,7 @@ mod tests {
             out.to_str().unwrap(),
         ]);
         dispatch_ok(cli).await;
-        let cli = parse(&[
-            "spt",
-            "key",
-            "public",
-            out.to_str().unwrap(),
-        ]);
+        let cli = parse(&["spt", "key", "public", out.to_str().unwrap()]);
         let _ = dispatch(cli).await;
     }
 
@@ -4305,10 +4241,7 @@ mod tests {
     #[tokio::test]
     async fn secret_set_requires_value_source() {
         let cli = parse(&["spt", "secret", "set", "db/password"]);
-        assert!(matches!(
-            dispatch_err(cli).await,
-            Error::InvalidArgs(_)
-        ));
+        assert!(matches!(dispatch_err(cli).await, Error::InvalidArgs(_)));
     }
 
     #[tokio::test]
@@ -4425,10 +4358,7 @@ mod tests {
             "test",
             "missing",
         ]);
-        assert!(matches!(
-            dispatch_err(cli).await,
-            Error::InvalidArgs(_)
-        ));
+        assert!(matches!(dispatch_err(cli).await, Error::InvalidArgs(_)));
     }
 
     #[tokio::test]
@@ -4457,10 +4387,7 @@ mod tests {
             "--client-id",
             "cid",
         ]);
-        assert!(matches!(
-            dispatch_err(cli).await,
-            Error::InvalidArgs(_)
-        ));
+        assert!(matches!(dispatch_err(cli).await, Error::InvalidArgs(_)));
     }
 
     // ----- dns group ---------------------------------------------------------
@@ -4794,19 +4721,8 @@ mod tests {
 
     #[tokio::test]
     async fn log_export_csv_rejected() {
-        let cli = parse(&[
-            "spt",
-            "log",
-            "export",
-            "--format",
-            "csv",
-            "--since",
-            "1h",
-        ]);
-        assert!(matches!(
-            dispatch_err(cli).await,
-            Error::InvalidArgs(_)
-        ));
+        let cli = parse(&["spt", "log", "export", "--format", "csv", "--since", "1h"]);
+        assert!(matches!(dispatch_err(cli).await, Error::InvalidArgs(_)));
     }
 
     // ----- observe group -----------------------------------------------------
@@ -4862,13 +4778,7 @@ mod tests {
     async fn event_list_empty_routes() {
         let td = tempfile::tempdir().unwrap();
         let cfg = minimal_config(td.path());
-        let cli = parse(&[
-            "spt",
-            "--config",
-            cfg.to_str().unwrap(),
-            "event",
-            "list",
-        ]);
+        let cli = parse(&["spt", "--config", cfg.to_str().unwrap(), "event", "list"]);
         dispatch_ok(cli).await;
     }
 
@@ -4914,10 +4824,7 @@ mod tests {
             "test",
             "missing",
         ]);
-        assert!(matches!(
-            dispatch_err(cli).await,
-            Error::InvalidArgs(_)
-        ));
+        assert!(matches!(dispatch_err(cli).await, Error::InvalidArgs(_)));
     }
 
     #[tokio::test]
@@ -4933,10 +4840,7 @@ mod tests {
             "test",
             "missing",
         ]);
-        assert!(matches!(
-            dispatch_err(cli).await,
-            Error::InvalidArgs(_)
-        ));
+        assert!(matches!(dispatch_err(cli).await, Error::InvalidArgs(_)));
     }
 
     #[tokio::test]
@@ -5038,11 +4942,7 @@ mod tests {
         if let Some(parent) = status.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        std::fs::write(
-            &status,
-            r#"{"profiles":[{"id":"edge","state":"active"}]}"#,
-        )
-        .unwrap();
+        std::fs::write(&status, r#"{"profiles":[{"id":"edge","state":"active"}]}"#).unwrap();
         let cli = parse(&[
             "spt",
             "--state-dir",
@@ -5113,10 +5013,7 @@ mod tests {
             "show",
             "no-such-id",
         ]);
-        assert!(matches!(
-            dispatch_err(cli).await,
-            Error::InvalidArgs(_)
-        ));
+        assert!(matches!(dispatch_err(cli).await, Error::InvalidArgs(_)));
     }
 
     #[tokio::test]
@@ -5126,11 +5023,7 @@ mod tests {
         if let Some(parent) = status.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        std::fs::write(
-            &status,
-            r#"{"sessions":[{"id":"abc123","state":"up"}]}"#,
-        )
-        .unwrap();
+        std::fs::write(&status, r#"{"sessions":[{"id":"abc123","state":"up"}]}"#).unwrap();
         let cli = parse(&[
             "spt",
             "--state-dir",
@@ -5398,10 +5291,7 @@ mod tests {
         // The udp driver is gated by check_safety without --unsafe-allow flag.
         // The dispatcher *still* routes through the udp arm — the safety
         // check is what errors. That's the assertion target.
-        assert!(matches!(
-            dispatch_err(cli).await,
-            Error::InvalidArgs(_)
-        ));
+        assert!(matches!(dispatch_err(cli).await, Error::InvalidArgs(_)));
     }
 
     #[tokio::test]
@@ -5418,10 +5308,7 @@ mod tests {
             "--count",
             "2",
         ]);
-        assert!(matches!(
-            dispatch_err(cli).await,
-            Error::InvalidArgs(_)
-        ));
+        assert!(matches!(dispatch_err(cli).await, Error::InvalidArgs(_)));
     }
 
     #[tokio::test]
@@ -5438,10 +5325,7 @@ mod tests {
             "--count",
             "2",
         ]);
-        assert!(matches!(
-            dispatch_err(cli).await,
-            Error::InvalidArgs(_)
-        ));
+        assert!(matches!(dispatch_err(cli).await, Error::InvalidArgs(_)));
     }
 
     #[tokio::test]
@@ -5456,10 +5340,7 @@ mod tests {
             "--driver",
             "nope",
         ]);
-        assert!(matches!(
-            dispatch_err(cli).await,
-            Error::InvalidArgs(_)
-        ));
+        assert!(matches!(dispatch_err(cli).await, Error::InvalidArgs(_)));
     }
 
     #[tokio::test]
@@ -5551,10 +5432,7 @@ mod tests {
             "--candidate",
             td.path().join("missing-b.json").to_str().unwrap(),
         ]);
-        assert!(matches!(
-            dispatch_err(cli).await,
-            Error::BenchmarkFailed(_)
-        ));
+        assert!(matches!(dispatch_err(cli).await, Error::BenchmarkFailed(_)));
     }
 
     // ----- mcp group ---------------------------------------------------------
@@ -5637,24 +5515,13 @@ mod tests {
             "set",
             "bogus=true",
         ]);
-        assert!(matches!(
-            dispatch_err(cli).await,
-            Error::InvalidArgs(_)
-        ));
+        assert!(matches!(dispatch_err(cli).await, Error::InvalidArgs(_)));
     }
 
     #[tokio::test]
     async fn mcp_serve_without_enable_errors() {
-        let cli = parse(&[
-            "spt",
-            "mcp",
-            "serve",
-            "--stdio",
-        ]);
-        assert!(matches!(
-            dispatch_err(cli).await,
-            Error::McpFailed(_)
-        ));
+        let cli = parse(&["spt", "mcp", "serve", "--stdio"]);
+        assert!(matches!(dispatch_err(cli).await, Error::McpFailed(_)));
     }
 
     // ----- completion group --------------------------------------------------
@@ -5689,4 +5556,3 @@ mod tests {
         dispatch_ok(cli).await;
     }
 }
-

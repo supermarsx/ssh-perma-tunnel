@@ -324,7 +324,10 @@ mod tests {
         assert_eq!(evs.len(), 1);
         assert_eq!(evs[0].kind, "audit.reveal");
         assert_eq!(evs[0].severity, AuditSeverity::Notice);
-        assert_eq!(evs[0].fields.get("ttl_ms").map(String::as_str), Some("3000"));
+        assert_eq!(
+            evs[0].fields.get("ttl_ms").map(String::as_str),
+            Some("3000")
+        );
         clear_audit_sink_for_test();
     }
 
@@ -370,10 +373,7 @@ mod tests {
 
         for ev in sink.events() {
             for (k, v) in &ev.fields {
-                assert!(
-                    !v.contains(SECRET),
-                    "field {k}={v} leaked secret {SECRET}"
-                );
+                assert!(!v.contains(SECRET), "field {k}={v} leaked secret {SECRET}");
             }
             // Kind/severity are documented constants — confirm they
             // also don't somehow embed the secret.
@@ -421,7 +421,11 @@ mod tests {
         register_audit_sink(a.clone());
         register_audit_sink(b.clone());
         record_audit(AuditEvent::new("audit.reveal", AuditSeverity::Info));
-        assert_eq!(a.events().len(), 0, "first sink must not see post-swap events");
+        assert_eq!(
+            a.events().len(),
+            0,
+            "first sink must not see post-swap events"
+        );
         assert_eq!(b.events().len(), 1, "second sink must capture event");
         clear_audit_sink_for_test();
     }

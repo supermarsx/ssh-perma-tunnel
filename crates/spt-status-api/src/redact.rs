@@ -15,7 +15,10 @@ use tracing::Span;
 pub fn redacted_span(req: &Request) -> Span {
     let method = req.method();
     let uri = req.uri();
-    let auth_present = req.headers().get(axum::http::header::AUTHORIZATION).is_some();
+    let auth_present = req
+        .headers()
+        .get(axum::http::header::AUTHORIZATION)
+        .is_some();
     tracing::info_span!(
         "status_api_request",
         method = %method,

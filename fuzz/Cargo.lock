@@ -62,6 +62,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "android_system_properties"
+version = "0.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "819e7219dbd41043ac279b19830f2efc897156490d7fd6ea916720117ee66311"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "arbitrary"
 version = "1.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -341,6 +350,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "chrono"
+version = "0.4.44"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c673075a2e0e5f4a1dde27ce9dee1ea4558c7ffe648f576438a20ca1d2acc4b0"
+dependencies = [
+ "iana-time-zone",
+ "num-traits",
+ "serde",
+ "windows-link",
+]
+
+[[package]]
 name = "cipher"
 version = "0.4.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -468,6 +489,7 @@ dependencies = [
  "fiat-crypto",
  "rustc_version",
  "subtle",
+ "zeroize",
 ]
 
 [[package]]
@@ -630,6 +652,7 @@ version = "2.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "115531babc129696a58c64a4fef0a8bf9e9698629fb97e9e40767d235cfbcd53"
 dependencies = [
+ "pkcs8",
  "signature",
 ]
 
@@ -641,8 +664,11 @@ checksum = "70e796c081cee67dc755e1a36a0a172b897fab85fc3f6bc48307991f64e4eca9"
 dependencies = [
  "curve25519-dalek",
  "ed25519",
+ "rand_core 0.6.4",
+ "serde",
  "sha2",
  "subtle",
+ "zeroize",
 ]
 
 [[package]]
@@ -1049,6 +1075,30 @@ dependencies = [
  "tokio",
  "tower-service",
  "tracing",
+]
+
+[[package]]
+name = "iana-time-zone"
+version = "0.1.65"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e31bc9ad994ba00e440a8aa5c9ef0ec67d5cb5e5cb0cc7f8b744a35b389cc470"
+dependencies = [
+ "android_system_properties",
+ "core-foundation-sys",
+ "iana-time-zone-haiku",
+ "js-sys",
+ "log",
+ "wasm-bindgen",
+ "windows-core",
+]
+
+[[package]]
+name = "iana-time-zone-haiku"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f31827a206f56af32e590ba56d5d2d085f558508192593743f16b2306495269f"
+dependencies = [
+ "cc",
 ]
 
 [[package]]
@@ -2287,6 +2337,7 @@ dependencies = [
  "serde_json",
  "spt-core",
  "spt-secrets",
+ "spt-trust",
  "thiserror 1.0.69",
  "tokio",
  "tracing",
@@ -2301,10 +2352,13 @@ dependencies = [
  "atomicwrites",
  "humantime-serde",
  "miette",
+ "secrecy",
  "serde",
  "serde_ignored",
  "sha2",
+ "spt-config-crypt",
  "spt-core",
+ "spt-secrets",
  "thiserror 1.0.69",
  "toml",
  "toml_edit",
@@ -2312,17 +2366,41 @@ dependencies = [
 ]
 
 [[package]]
+name = "spt-config-crypt"
+version = "0.1.0"
+dependencies = [
+ "aes-gcm",
+ "argon2",
+ "base64",
+ "ed25519-dalek",
+ "rand 0.8.6",
+ "secrecy",
+ "serde",
+ "sha2",
+ "spt-core",
+ "subtle",
+ "thiserror 1.0.69",
+ "toml",
+ "x25519-dalek",
+ "zeroize",
+]
+
+[[package]]
 name = "spt-core"
 version = "0.1.0"
 dependencies = [
  "bytesize",
+ "chrono",
  "humantime",
  "humantime-serde",
  "once_cell",
  "regex",
  "serde",
+ "subtle",
  "thiserror 1.0.69",
+ "tracing",
  "uuid",
+ "zeroize",
 ]
 
 [[package]]
@@ -2380,6 +2458,7 @@ dependencies = [
  "directories",
  "hex",
  "keyring",
+ "libc",
  "nix",
  "rand 0.8.6",
  "secrecy",
@@ -2426,16 +2505,21 @@ dependencies = [
  "h3-quinn",
  "http",
  "quinn",
+ "rand 0.8.6",
  "rustls",
  "rustls-native-certs",
  "rustls-pemfile",
  "rustls-pki-types",
  "serde",
+ "serde_json",
  "sha2",
+ "signature",
  "spt-auth",
  "spt-core",
+ "spt-key",
  "spt-protocol",
  "spt-trust",
+ "ssh-key",
  "thiserror 1.0.69",
  "tokio",
  "tracing",
@@ -2451,6 +2535,9 @@ dependencies = [
  "base64",
  "hmac",
  "rand 0.8.6",
+ "rustls",
+ "rustls-native-certs",
+ "rustls-pemfile",
  "rustls-pki-types",
  "serde",
  "sha1",
@@ -2460,7 +2547,9 @@ dependencies = [
  "ssh-key",
  "subtle",
  "thiserror 1.0.69",
+ "tokio-rustls",
  "tracing",
+ "webpki-roots 0.26.11",
  "x509-parser",
 ]
 
@@ -2990,9 +3079,9 @@ checksum = "ccf3ec651a847eb01de73ccad15eb7d99f80485de043efb2f370cd654f4ea44b"
 
 [[package]]
 name = "wasip2"
-version = "1.0.3+wasi-0.2.9"
+version = "1.0.1+wasi-0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "20064672db26d7cdc89c7798c48a0fdfac8213434a1186e5ef29fd560ae223d6"
+checksum = "0562428422c63773dad2c345a1882263bbf4d65cf3f42e90921f787ef5ad58e7"
 dependencies = [
  "wit-bindgen",
 ]
@@ -3415,9 +3504,20 @@ dependencies = [
 
 [[package]]
 name = "wit-bindgen"
-version = "0.57.1"
+version = "0.46.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
+checksum = "f17a85883d4e6d00e8a97c586de764dabcc06133f7f1d55dce5cdc070ad7fe59"
+
+[[package]]
+name = "x25519-dalek"
+version = "2.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c7e468321c81fb07fa7f4c636c3972b9100f0346e5b6a9f2bd0603a52f7ed277"
+dependencies = [
+ "curve25519-dalek",
+ "rand_core 0.6.4",
+ "zeroize",
+]
 
 [[package]]
 name = "x509-parser"

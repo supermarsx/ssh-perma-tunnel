@@ -156,7 +156,10 @@ value = "127.0.0.1"
             p.on_key(k(KeyCode::Char(c)), &mut m);
         }
         p.on_key(k(KeyCode::Enter), &mut m); // commit
-        let names = m.profile().forwards[0].dns_names.clone().unwrap_or_default();
+        let names = m.profile().forwards[0]
+            .dns_names
+            .clone()
+            .unwrap_or_default();
         assert_eq!(names, vec!["a.example", "b.example"]);
     }
 }

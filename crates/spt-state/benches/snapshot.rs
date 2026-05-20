@@ -113,14 +113,12 @@ fn build_populated_snapshot() -> StatusSnapshot {
             healthy: p % 7 != 0,
         });
 
-        snap.failover_state
-            .per_profile
-            .push(FailoverProfileEntry {
-                profile: profile_id.clone(),
-                current_endpoint: Some(format!("edge-{p:02}.example.com:22")),
-                remaining_targets: 3 - (p % 4),
-                cooldown_until: None,
-            });
+        snap.failover_state.per_profile.push(FailoverProfileEntry {
+            profile: profile_id.clone(),
+            current_endpoint: Some(format!("edge-{p:02}.example.com:22")),
+            remaining_targets: 3 - (p % 4),
+            cooldown_until: None,
+        });
     }
 
     snap.last_errors.push(LastError {
@@ -181,8 +179,7 @@ fn bench_status_serialize(c: &mut Criterion) {
     // `to_vec_pretty` — what `StatusWriter::flush` actually writes to disk.
     group.bench_function("to_vec_pretty", |b| {
         b.iter(|| {
-            let v =
-                serde_json::to_vec_pretty(black_box(&snap)).expect("serialize snapshot pretty");
+            let v = serde_json::to_vec_pretty(black_box(&snap)).expect("serialize snapshot pretty");
             black_box(v);
         });
     });

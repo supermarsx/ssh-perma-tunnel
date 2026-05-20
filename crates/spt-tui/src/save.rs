@@ -202,10 +202,7 @@ endpoint = "https://q.example.com"
 
     #[test]
     fn splice_profile_appends_into_empty_profiles_array() {
-        let mut doc = spt_config::mutate::Document::parse(
-            "version = 1\n",
-        )
-        .unwrap();
+        let mut doc = spt_config::mutate::Document::parse("version = 1\n").unwrap();
         let p = Profile {
             name: "fresh".into(),
             protocol: "ssh2".into(),
@@ -219,10 +216,7 @@ endpoint = "https://q.example.com"
 
     #[test]
     fn splice_profile_rejects_non_array_profiles() {
-        let mut doc = spt_config::mutate::Document::parse(
-            "profiles = \"not-an-array\"\n",
-        )
-        .unwrap();
+        let mut doc = spt_config::mutate::Document::parse("profiles = \"not-an-array\"\n").unwrap();
         let p = Profile {
             name: "x".into(),
             protocol: "ssh2".into(),

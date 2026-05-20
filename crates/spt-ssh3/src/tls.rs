@@ -140,8 +140,7 @@ impl ServerCertVerifier for SptVerifier {
         // ref-counted-equivalent — owns a Vec<u8>) only when the cap is
         // configured, to avoid allocations on the unlimited path.
         if !self.chain_depth_cap.is_unlimited() {
-            let mut chain: Vec<CertificateDer<'_>> =
-                Vec::with_capacity(intermediates.len() + 1);
+            let mut chain: Vec<CertificateDer<'_>> = Vec::with_capacity(intermediates.len() + 1);
             chain.push(end_entity.clone());
             for c in intermediates {
                 chain.push(c.clone());
@@ -247,12 +246,8 @@ mod tests {
         let pin = TlsPin {
             spki_sha256: vec![[0x42u8; 32]],
         };
-        let verifier = SptVerifier::new(
-            RootCertStore::empty(),
-            pin,
-            true,
-            ChainDepthCap::default(),
-        );
+        let verifier =
+            SptVerifier::new(RootCertStore::empty(), pin, true, ChainDepthCap::default());
         let server_name = ServerName::try_from("pin-mismatch.test").unwrap();
         let res = verifier.verify_server_cert(&der, &[], &server_name, &[], UnixTime::now());
         let err = res.unwrap_err();
@@ -283,7 +278,13 @@ mod tests {
         );
         let server_name = ServerName::try_from("leaf.test").unwrap();
         let err = verifier
-            .verify_server_cert(&leaf_der, &intermediates, &server_name, &[], UnixTime::now())
+            .verify_server_cert(
+                &leaf_der,
+                &intermediates,
+                &server_name,
+                &[],
+                UnixTime::now(),
+            )
             .unwrap_err();
         let s = format!("{err}");
         assert!(s.contains("chain depth"), "expected chain-depth error: {s}");
@@ -307,12 +308,8 @@ mod tests {
         let pin = TlsPin {
             spki_sha256: vec![spki],
         };
-        let verifier = SptVerifier::new(
-            RootCertStore::empty(),
-            pin,
-            true,
-            ChainDepthCap::default(),
-        );
+        let verifier =
+            SptVerifier::new(RootCertStore::empty(), pin, true, ChainDepthCap::default());
         let server_name = ServerName::try_from("pin-match.test").unwrap();
         verifier
             .verify_server_cert(&der, &[], &server_name, &[], UnixTime::now())

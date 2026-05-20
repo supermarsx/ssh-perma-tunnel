@@ -71,9 +71,7 @@ mod tests {
     fn stub_register_with_dll_returns_unsupported() {
         let b = StubEventLogBackend;
         let p = std::path::PathBuf::from("/tmp/spt");
-        let err = b
-            .register_source("s", "Application", Some(&p))
-            .unwrap_err();
+        let err = b.register_source("s", "Application", Some(&p)).unwrap_err();
         assert!(matches!(err, Error::UnsupportedPlatform(_)));
     }
 

@@ -152,7 +152,12 @@ async fn metrics_endpoint_text_content_type() {
         .unwrap();
     let resp = router.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
-    let ct = resp.headers().get("content-type").unwrap().to_str().unwrap();
+    let ct = resp
+        .headers()
+        .get("content-type")
+        .unwrap()
+        .to_str()
+        .unwrap();
     assert!(ct.starts_with("text/plain"), "got {ct}");
     let bytes = axum::body::to_bytes(resp.into_body(), 4096).await.unwrap();
     assert!(!bytes.is_empty());

@@ -36,6 +36,9 @@ allow = [
     # Permissive licenses used by transitive crates in the locked graph.
     "0BSD",
     "CDLA-Permissive-2.0",
+    # Boost Software License: permissive, OSI-approved, FSF Free/Libre.
+    # Pulled in transitively via arboard -> clipboard-win -> error-code (TUI clipboard).
+    "BSL-1.0",
 ]
 confidence-threshold = 0.9
 exceptions = []

@@ -32,9 +32,7 @@ use spt_snmp::mib::{Handler, SetOutcome};
 use spt_snmp::pdu::{Pdu, PduKind};
 use spt_snmp::usm::{AuthProtocol, SecretBytes, UsmUser};
 use spt_snmp::value::{Value, VarBind};
-use spt_snmp::{
-    AgentBuilder, ConstScalar, ObjectIdentifier, Result, DOCUMENTATION_ENTERPRISE_PEN,
-};
+use spt_snmp::{AgentBuilder, ConstScalar, ObjectIdentifier, Result, DOCUMENTATION_ENTERPRISE_PEN};
 
 fn oid(s: &str) -> ObjectIdentifier {
     s.parse().unwrap()

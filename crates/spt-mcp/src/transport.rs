@@ -518,7 +518,9 @@ mod tests {
         let cursor = std::io::Cursor::new(Vec::<u8>::new());
         let mut reader = tokio::io::BufReader::new(cursor);
         let mut writer: Vec<u8> = Vec::new();
-        run_connection(inner, &mut reader, &mut writer).await.unwrap();
+        run_connection(inner, &mut reader, &mut writer)
+            .await
+            .unwrap();
         assert!(writer.is_empty());
     }
 
@@ -548,7 +550,9 @@ mod tests {
         let cursor = std::io::Cursor::new(body);
         let mut reader = tokio::io::BufReader::new(cursor);
         let mut writer: Vec<u8> = Vec::new();
-        run_connection(inner, &mut reader, &mut writer).await.unwrap();
+        run_connection(inner, &mut reader, &mut writer)
+            .await
+            .unwrap();
         assert!(writer.is_empty(), "notifications must not be replied to");
     }
 }

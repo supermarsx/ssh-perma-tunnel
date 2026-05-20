@@ -34,8 +34,8 @@ use tracing::warn;
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{CloseHandle, GetLastError, HANDLE, LUID};
 use windows::Win32::Security::{
-    AdjustTokenPrivileges, LookupPrivilegeValueW, LUID_AND_ATTRIBUTES,
-    SE_PRIVILEGE_REMOVED, TOKEN_ADJUST_PRIVILEGES, TOKEN_PRIVILEGES, TOKEN_QUERY,
+    AdjustTokenPrivileges, LookupPrivilegeValueW, LUID_AND_ATTRIBUTES, SE_PRIVILEGE_REMOVED,
+    TOKEN_ADJUST_PRIVILEGES, TOKEN_PRIVILEGES, TOKEN_QUERY,
 };
 use windows::Win32::System::Threading::{
     GetCurrentProcess, OpenProcessToken, ProcessDynamicCodePolicy,
@@ -79,10 +79,7 @@ fn disable_extension_points() -> HardeningResult {
         Ok(()) => HardeningResult::ok("mitigation.extension_point_disable"),
         Err(e) => {
             warn!(error = %e, "SetProcessMitigationPolicy(ExtensionPointDisable) failed");
-            HardeningResult::err(
-                "mitigation.extension_point_disable",
-                short_winerr(&e),
-            )
+            HardeningResult::err("mitigation.extension_point_disable", short_winerr(&e))
         }
     }
 }
@@ -257,9 +254,7 @@ mod tests {
     /// in an enabled state.
     #[test]
     fn se_debug_privilege_is_removed_after_harden() {
-        use windows::Win32::Security::{
-            GetTokenInformation, TokenPrivileges, TOKEN_PRIVILEGES,
-        };
+        use windows::Win32::Security::{GetTokenInformation, TokenPrivileges, TOKEN_PRIVILEGES};
         const SE_PRIVILEGE_ENABLED: u32 = 0x2;
 
         let _ = crate::harden();
@@ -315,9 +310,7 @@ mod tests {
         let tp: &TOKEN_PRIVILEGES = unsafe { &*buf.as_ptr().cast() };
         let count = tp.PrivilegeCount as usize;
         // SAFETY: kernel guarantees Privileges[0..count] is initialised.
-        let arr = unsafe {
-            std::slice::from_raw_parts(tp.Privileges.as_ptr(), count)
-        };
+        let arr = unsafe { std::slice::from_raw_parts(tp.Privileges.as_ptr(), count) };
 
         let priv_name: Vec<u16> = "SeDebugPrivilege\0".encode_utf16().collect();
         let mut want = LUID::default();

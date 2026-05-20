@@ -296,8 +296,7 @@ mod tests {
 
     #[test]
     fn harness_with_custom_size() {
-        let mut h =
-            AppHarness::with_profile_sized(fixtures::test_profile(), 80, 24);
+        let mut h = AppHarness::with_profile_sized(fixtures::test_profile(), 80, 24);
         let buf = h.render();
         assert_eq!(buf.area.width, 80);
         assert_eq!(buf.area.height, 24);

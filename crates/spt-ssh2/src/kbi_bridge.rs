@@ -96,11 +96,7 @@ mod tests {
         ) -> spt_core::Result<Option<spt_secrets::SecretBytes>> {
             Ok(Some(spt_secrets::backend::secret_bytes(self.0.clone())))
         }
-        fn set(
-            &self,
-            _r: &spt_secrets::SecretRef,
-            _value: &[u8],
-        ) -> spt_core::Result<()> {
+        fn set(&self, _r: &spt_secrets::SecretRef, _value: &[u8]) -> spt_core::Result<()> {
             Ok(())
         }
         fn list(&self) -> spt_core::Result<Vec<spt_secrets::SecretRef>> {

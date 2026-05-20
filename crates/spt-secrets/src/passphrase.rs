@@ -84,12 +84,9 @@ fn read_passphrase_inner<R: BufRead>(
     // early error or panic still leaves an audit trail. The prompt
     // text itself is non-secret; the typed bytes are never logged.
     spt_core::audit::record_audit(
-        spt_core::audit::AuditEvent::new(
-            "audit.passphrase",
-            spt_core::audit::AuditSeverity::Info,
-        )
-        .with_field("tty", is_tty.to_string())
-        .with_field("prompt_text", prompt.to_string()),
+        spt_core::audit::AuditEvent::new("audit.passphrase", spt_core::audit::AuditSeverity::Info)
+            .with_field("tty", is_tty.to_string())
+            .with_field("prompt_text", prompt.to_string()),
     );
 
     // Drop guard: cleared by `disarm()` on the happy path. While armed,
@@ -215,9 +212,8 @@ mod platform {
     impl PlatformGuard {
         pub(super) fn install() -> Result<Self> {
             let fd = stdin_fd();
-            let original = tcgetattr(fd).map_err(|e| {
-                Error::RuntimeFailure(format!("tcgetattr(stdin) failed: {e}"))
-            })?;
+            let original = tcgetattr(fd)
+                .map_err(|e| Error::RuntimeFailure(format!("tcgetattr(stdin) failed: {e}")))?;
             let mut modified = original.clone();
             modified
                 .local_flags
@@ -309,9 +305,8 @@ mod platform {
             // SAFETY: `handle` is a valid console handle; `&mut original`
             // is a writable CONSOLE_MODE pointer.
             unsafe {
-                GetConsoleMode(handle, &mut original).map_err(|e| {
-                    Error::RuntimeFailure(format!("GetConsoleMode(stdin): {e}"))
-                })?;
+                GetConsoleMode(handle, &mut original)
+                    .map_err(|e| Error::RuntimeFailure(format!("GetConsoleMode(stdin): {e}")))?;
             }
             // Clear ENABLE_ECHO_INPUT; keep ENABLE_LINE_INPUT so the
             // cooked line discipline still hands us a full line on Enter,

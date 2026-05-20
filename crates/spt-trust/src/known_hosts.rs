@@ -494,15 +494,9 @@ mod tests {
         let mut kh = KnownHosts::default();
         kh.add("h.example", 2222, key.clone(), true);
         assert!(kh.entries[0].host_field.starts_with("|1|"));
-        assert_eq!(
-            kh.verify("h.example", 2222, &key),
-            KnownHostsResult::Match
-        );
+        assert_eq!(kh.verify("h.example", 2222, &key), KnownHostsResult::Match);
         // Different port doesn't match.
-        assert_eq!(
-            kh.verify("h.example", 22, &key),
-            KnownHostsResult::NotFound
-        );
+        assert_eq!(kh.verify("h.example", 22, &key), KnownHostsResult::NotFound);
     }
 
     #[test]

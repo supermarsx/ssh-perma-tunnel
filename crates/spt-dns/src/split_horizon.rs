@@ -354,8 +354,7 @@ mod tests {
     #[test]
     fn answer_when_healthy_filters_with_no_health() {
         rt().block_on(async {
-            let zone = FakeZone::new("tunnel.local.")
-                .build();
+            let zone = FakeZone::new("tunnel.local.").build();
             // Add a record with AnswerWhenHealthy + forward_id, so NoHealth filters it out.
             let mut zone = zone;
             zone.records.push(
@@ -374,7 +373,10 @@ mod tests {
                 .lookup("gated.tunnel.local.", RecordType::A)
                 .await
                 .expect_err("must fail because NoHealth filters the record");
-            assert!(matches!(err.kind(), ResolveErrorKind::NoRecordsFound { .. }));
+            assert!(matches!(
+                err.kind(),
+                ResolveErrorKind::NoRecordsFound { .. }
+            ));
             resolver.shutdown().await;
         });
     }
@@ -515,7 +517,10 @@ mod tests {
                 }
             }
             assert_eq!(total, big.len());
-            assert!(chunk_count >= 2, "expected at least 2 chunks, got {chunk_count}");
+            assert!(
+                chunk_count >= 2,
+                "expected at least 2 chunks, got {chunk_count}"
+            );
             resolver.shutdown().await;
         });
     }

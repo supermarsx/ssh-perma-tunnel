@@ -26,12 +26,7 @@ const SUBKEY_PREFIX: &str = r"SYSTEM\CurrentControlSet\Services\EventLog";
 pub(crate) struct WindowsEventLogBackend;
 
 impl EventLogBackend for WindowsEventLogBackend {
-    fn register_source(
-        &self,
-        name: &str,
-        channel: &str,
-        message_dll: Option<&Path>,
-    ) -> Result<()> {
+    fn register_source(&self, name: &str, channel: &str, message_dll: Option<&Path>) -> Result<()> {
         register_source(name, channel, message_dll)
     }
 
@@ -39,13 +34,7 @@ impl EventLogBackend for WindowsEventLogBackend {
         unregister_source(name, channel)
     }
 
-    fn report_event(
-        &self,
-        name: &str,
-        level: Level,
-        event_id: u32,
-        message: &str,
-    ) -> Result<()> {
+    fn report_event(&self, name: &str, level: Level, event_id: u32, message: &str) -> Result<()> {
         report_event(name, level, event_id, message)
     }
 }

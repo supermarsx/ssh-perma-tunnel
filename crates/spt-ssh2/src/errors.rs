@@ -71,7 +71,9 @@ mod tests {
     fn from_ssh2_auth_failed_negative_18() {
         let e = mk_ssh2(-18, "auth fail");
         let mapped = from_ssh2("ctx", &e);
-        assert!(matches!(mapped, Error::AuthFailed(ref s) if s.contains("ctx") && s.contains("auth fail")));
+        assert!(
+            matches!(mapped, Error::AuthFailed(ref s) if s.contains("ctx") && s.contains("auth fail"))
+        );
     }
 
     #[test]
@@ -170,7 +172,10 @@ mod tests {
     #[test]
     fn from_async_ssh_routes_io_variant() {
         let e = AsyncSshError::Io(io::Error::from(ErrorKind::ConnectionRefused));
-        assert!(matches!(from_async_ssh("ctx", e), Error::NetworkUnreachable(_)));
+        assert!(matches!(
+            from_async_ssh("ctx", e),
+            Error::NetworkUnreachable(_)
+        ));
     }
 
     #[test]

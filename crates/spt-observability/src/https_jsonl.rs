@@ -437,8 +437,7 @@ mod tests {
         // Builds via spt_trust directly — covers the runtime contract
         // without spinning up the writer task that would otherwise hang
         // waiting for a TLS peer.
-        let pin =
-            "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".to_string();
+        let pin = "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".to_string();
         let r = spt_trust::PinnedTlsConnector::from_config_parts(&[pin], true, Some(5));
         assert!(r.is_ok(), "pinned tls: {:?}", r.err());
     }

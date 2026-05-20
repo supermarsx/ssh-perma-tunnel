@@ -116,20 +116,27 @@ pub struct HardeningResult {
 impl HardeningResult {
     /// Construct a successful result.
     pub fn ok(name: impl Into<String>) -> Self {
-        Self { name: name.into(), status: HardeningStatus::Ok }
+        Self {
+            name: name.into(),
+            status: HardeningStatus::Ok,
+        }
     }
     /// Construct a skipped result.
     pub fn skipped(name: impl Into<String>, reason: impl Into<String>) -> Self {
         Self {
             name: name.into(),
-            status: HardeningStatus::Skipped { reason: reason.into() },
+            status: HardeningStatus::Skipped {
+                reason: reason.into(),
+            },
         }
     }
     /// Construct an error result.
     pub fn err(name: impl Into<String>, reason: impl Into<String>) -> Self {
         Self {
             name: name.into(),
-            status: HardeningStatus::Err { reason: reason.into() },
+            status: HardeningStatus::Err {
+                reason: reason.into(),
+            },
         }
     }
 }
@@ -175,7 +182,10 @@ impl HardeningReport {
 
     /// Number of `Skipped` results.
     pub fn skipped_count(&self) -> usize {
-        self.results.iter().filter(|r| r.status.is_skipped()).count()
+        self.results
+            .iter()
+            .filter(|r| r.status.is_skipped())
+            .count()
     }
 }
 
@@ -254,7 +264,10 @@ mod tests {
     fn harden_returns_report_on_every_platform() {
         let r = harden();
         // The contract is: never panics, never empty.
-        assert!(!r.results.is_empty(), "report must contain at least one row");
+        assert!(
+            !r.results.is_empty(),
+            "report must contain at least one row"
+        );
         assert!(!r.platform.is_empty(), "platform must be set");
     }
 
@@ -287,12 +300,13 @@ mod tests {
         assert!(s.contains("spt memory hygiene report"));
         assert!(s.contains(&r.platform));
         for row in &r.results {
-            assert!(s.contains(&row.name), "Display must mention every step name");
+            assert!(
+                s.contains(&row.name),
+                "Display must mention every step name"
+            );
         }
         // No trailing nul or weird control chars beyond newline/space.
-        assert!(s
-            .chars()
-            .all(|c| c == '\n' || c == ' ' || !c.is_control()));
+        assert!(s.chars().all(|c| c == '\n' || c == ' ' || !c.is_control()));
     }
 
     #[test]
@@ -327,10 +341,14 @@ mod tests {
     fn status_helpers_classify_correctly() {
         assert!(HardeningStatus::Ok.is_ok());
         assert!(!HardeningStatus::Ok.is_err());
-        let sk = HardeningStatus::Skipped { reason: "nope".into() };
+        let sk = HardeningStatus::Skipped {
+            reason: "nope".into(),
+        };
         assert!(sk.is_skipped());
         assert!(!sk.is_ok());
-        let er = HardeningStatus::Err { reason: "EPERM".into() };
+        let er = HardeningStatus::Err {
+            reason: "EPERM".into(),
+        };
         assert!(er.is_err());
         assert!(!er.is_ok());
     }
@@ -348,7 +366,10 @@ mod tests {
     fn platform_string_is_canonical() {
         let r = harden();
         assert!(
-            matches!(r.platform.as_str(), "linux" | "macos" | "windows" | "unknown"),
+            matches!(
+                r.platform.as_str(),
+                "linux" | "macos" | "windows" | "unknown"
+            ),
             "unexpected platform string: {}",
             r.platform
         );

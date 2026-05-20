@@ -113,10 +113,7 @@ impl ChainDepthCap {
 /// check_chain_depth(&chain, &cap)?;
 /// ```
 #[allow(clippy::trivially_copy_pass_by_ref)] // signature locked by t5-e10 plan + e1 coordination
-pub fn check_chain_depth(
-    certs: &[CertificateDer<'_>],
-    cap: &ChainDepthCap,
-) -> Result<()> {
+pub fn check_chain_depth(certs: &[CertificateDer<'_>], cap: &ChainDepthCap) -> Result<()> {
     if certs.is_empty() {
         return Err(Error::TrustFailed(
             "empty TLS certificate chain".to_string(),
@@ -173,10 +170,8 @@ mod tests {
     fn synthetic_chain(n: usize) -> Vec<CertificateDer<'static>> {
         (0..n)
             .map(|i| {
-                let cert = rcgen::generate_simple_self_signed(vec![format!(
-                    "node-{i}.test"
-                )])
-                .unwrap();
+                let cert =
+                    rcgen::generate_simple_self_signed(vec![format!("node-{i}.test")]).unwrap();
                 der_from(cert.cert.der().to_vec())
             })
             .collect()
@@ -263,15 +258,12 @@ mod tests {
         let int_cert = int_params.signed_by(&int_kp, &root, &root_kp).unwrap();
 
         // Leaf.
-        let mut leaf_params =
-            CertificateParams::new(vec!["leaf.spt.test".to_string()]).unwrap();
+        let mut leaf_params = CertificateParams::new(vec!["leaf.spt.test".to_string()]).unwrap();
         leaf_params
             .distinguished_name
             .push(DnType::CommonName, "leaf.spt.test");
         let leaf_kp = KeyPair::generate().unwrap();
-        let leaf = leaf_params
-            .signed_by(&leaf_kp, &int_cert, &int_kp)
-            .unwrap();
+        let leaf = leaf_params.signed_by(&leaf_kp, &int_cert, &int_kp).unwrap();
 
         let chain: Vec<CertificateDer<'static>> = vec![
             der_from(leaf.der().to_vec()),
@@ -311,10 +303,7 @@ mod tests {
         let s = toml::to_string(&src).unwrap();
         assert!(s.contains("max_cert_chain_depth = 7"), "got:\n{s}");
         let de: TlsLike = toml::from_str(&s).unwrap();
-        assert_eq!(
-            de.max_cert_chain_depth.unwrap().as_option(),
-            Some(7)
-        );
+        assert_eq!(de.max_cert_chain_depth.unwrap().as_option(), Some(7));
 
         // Empty TOML deserializes the field as absent → top-level None.
         let empty: TlsLike = toml::from_str("").unwrap();
@@ -324,8 +313,7 @@ mod tests {
         // in TOML's value model — `serde(transparent)` over `Option<u32>::None`
         // becomes a missing key, which round-trips to the top-level `None`.
         // The runtime maps both to "no cap": confirmed via the helper.
-        let materialized = ChainDepthCap::unlimited()
-            .or_default_if_unlimited_was_absent();
+        let materialized = ChainDepthCap::unlimited().or_default_if_unlimited_was_absent();
         assert_eq!(materialized, ChainDepthCap::default());
     }
 
@@ -345,10 +333,7 @@ mod tests {
 
     #[test]
     fn from_option_some_preserves_value() {
-        assert_eq!(
-            ChainDepthCap::from_option(Some(9)).as_option(),
-            Some(9)
-        );
+        assert_eq!(ChainDepthCap::from_option(Some(9)).as_option(), Some(9));
         assert_eq!(ChainDepthCap::from_option(None).as_option(), None);
     }
 
@@ -372,4 +357,3 @@ mod tests {
         check_chain_depth(&chain, &ChainDepthCap::new(4)).unwrap();
     }
 }
-

@@ -206,10 +206,7 @@ impl AuthContext {
             }
             AuthMode::MutualTls { allowed_subjects } => {
                 let id = peer.ok_or(StatusApiError::Forbidden)?;
-                if allowed_subjects
-                    .iter()
-                    .any(|s| s.as_str() == id.subject_dn)
-                {
+                if allowed_subjects.iter().any(|s| s.as_str() == id.subject_dn) {
                     Ok(AuthSubject {
                         label: id.subject_dn.clone(),
                     })

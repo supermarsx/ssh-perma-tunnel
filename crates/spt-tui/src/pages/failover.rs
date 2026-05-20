@@ -231,13 +231,10 @@ protocol = "ssh2"
             p.on_key(k(KeyCode::Down), &mut m);
         }
         p.on_key(k(KeyCode::Enter), &mut m); // begin edit on a Bool (buf=false)
-        // Second Enter: Toggle flips false→true, then commits.
+                                             // Second Enter: Toggle flips false→true, then commits.
         p.on_key(k(KeyCode::Enter), &mut m);
         assert_eq!(
-            m.profile()
-                .instability
-                .as_ref()
-                .and_then(|i| i.enabled),
+            m.profile().instability.as_ref().and_then(|i| i.enabled),
             Some(true)
         );
     }

@@ -356,11 +356,9 @@ impl ScmManagerImpl {
         };
         match precheck {
             ReloadPrecheck::Running => self.backend.send_paramchange(name),
-            ReloadPrecheck::NotRunning(state) => {
-                Err(spt_core::error::Error::ServiceManagerFailed(format!(
-                    "reload({name}): service is not running (state {state:?})"
-                )))
-            }
+            ReloadPrecheck::NotRunning(state) => Err(spt_core::error::Error::ServiceManagerFailed(
+                format!("reload({name}): service is not running (state {state:?})"),
+            )),
         }
     }
 }
@@ -874,9 +872,7 @@ mod windows_impl {
 
     use crate::{ServiceSpec, ServiceState, ServiceStatus};
 
-    use super::{
-        BackendStatus, ScmAccess, ScmHandles, ScmManagerImpl, WindowsServiceCrateBackend,
-    };
+    use super::{BackendStatus, ScmAccess, ScmHandles, ScmManagerImpl, WindowsServiceCrateBackend};
 
     /// Map a `windows-service` state into our cross-platform [`ServiceState`].
     ///
@@ -1271,7 +1267,10 @@ mod windows_impl {
 
         #[test]
         fn map_access_round_trips_each_variant() {
-            assert_eq!(map_access(ScmAccess::QueryStatus), ServiceAccess::QUERY_STATUS);
+            assert_eq!(
+                map_access(ScmAccess::QueryStatus),
+                ServiceAccess::QUERY_STATUS
+            );
             assert_eq!(
                 map_access(ScmAccess::StopAndDelete),
                 ServiceAccess::STOP | ServiceAccess::DELETE
@@ -1472,7 +1471,9 @@ mod tests {
         mgr.uninstall("ghost").unwrap();
         let calls = mock.calls();
         assert_eq!(calls.len(), 1);
-        assert!(matches!(&calls[0], ScmCall::OpenServiceFor(n, ScmAccess::StopAndDelete) if n == "ghost"));
+        assert!(
+            matches!(&calls[0], ScmCall::OpenServiceFor(n, ScmAccess::StopAndDelete) if n == "ghost")
+        );
     }
 
     #[test]

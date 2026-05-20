@@ -100,10 +100,7 @@ impl FlakyTransport {
 }
 #[async_trait]
 impl spt_events::sinks::http::HttpTransport for FlakyTransport {
-    async fn send(
-        &self,
-        req: spt_events::sinks::http::HttpRequest,
-    ) -> Result<(), SinkError> {
+    async fn send(&self, req: spt_events::sinks::http::HttpRequest) -> Result<(), SinkError> {
         use std::sync::atomic::Ordering;
         let prev = self.fails_remaining.load(Ordering::SeqCst);
         if prev > 0 {
@@ -153,12 +150,7 @@ async fn permanent_failure_does_not_spool() {
     let mut sinks: HashMap<String, Arc<dyn Sink>> = HashMap::new();
     sinks.insert("alerts".into(), always_perm);
 
-    let d = build_for_test(
-        vec![binding("b", vec!["x"], vec!["alerts"])],
-        sinks,
-        cfg,
-    )
-    .unwrap();
+    let d = build_for_test(vec![binding("b", vec!["x"], vec!["alerts"])], sinks, cfg).unwrap();
     d.dispatch(Arc::new(Event::builder("x", Severity::Error).build()))
         .await;
     // Permanent → not spooled.
@@ -268,12 +260,7 @@ async fn spool_max_files_evicts_oldest() {
     ));
     let mut sinks: HashMap<String, Arc<dyn Sink>> = HashMap::new();
     sinks.insert("alerts".into(), sink);
-    let d = build_for_test(
-        vec![binding("b", vec!["k"], vec!["alerts"])],
-        sinks,
-        cfg,
-    )
-    .unwrap();
+    let d = build_for_test(vec![binding("b", vec!["k"], vec!["alerts"])], sinks, cfg).unwrap();
 
     for _ in 0..5 {
         d.dispatch(Arc::new(Event::builder("k", Severity::Info).build()))
@@ -319,12 +306,7 @@ async fn drain_spool_two_pending_entries_clears_in_order() {
     ));
     let mut sinks: HashMap<String, Arc<dyn Sink>> = HashMap::new();
     sinks.insert("alerts".into(), http);
-    let d = build_for_test(
-        vec![binding("b", vec!["k"], vec!["alerts"])],
-        sinks,
-        cfg,
-    )
-    .unwrap();
+    let d = build_for_test(vec![binding("b", vec!["k"], vec!["alerts"])], sinks, cfg).unwrap();
 
     // First two dispatches fail and spool (FlakyTransport fails its first 2).
     d.dispatch(Arc::new(Event::builder("k", Severity::Info).build()))

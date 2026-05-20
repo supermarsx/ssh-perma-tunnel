@@ -227,10 +227,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 pub fn wincng_libssh2_compatible_preferred() -> russh::Preferred {
     use std::borrow::Cow;
     russh::Preferred {
-        kex: Cow::Owned(vec![
-            russh::kex::DH_G14_SHA256,
-            russh::kex::DH_G16_SHA512,
-        ]),
+        kex: Cow::Owned(vec![russh::kex::DH_G14_SHA256, russh::kex::DH_G16_SHA512]),
         key: Cow::Owned(vec![
             russh_keys::key::RSA_SHA2_256,
             russh_keys::key::RSA_SHA2_512,
@@ -858,11 +855,9 @@ impl OpenSshTestServer {
         let host_key_path = dir_path.join("ssh_host_rsa_key");
         let host_key_pub_path = dir_path.join("ssh_host_rsa_key.pub");
         let mut rng = ssh_key::rand_core::OsRng;
-        let host_key = ssh_key::PrivateKey::random(
-            &mut rng,
-            ssh_key::Algorithm::Rsa { hash: None },
-        )
-        .map_err(|e| std::io::Error::other(format!("genkey: {e}")))?;
+        let host_key =
+            ssh_key::PrivateKey::random(&mut rng, ssh_key::Algorithm::Rsa { hash: None })
+                .map_err(|e| std::io::Error::other(format!("genkey: {e}")))?;
         let pem = host_key
             .to_openssh(ssh_key::LineEnding::LF)
             .map_err(|e| std::io::Error::other(format!("encode hostkey: {e}")))?;
@@ -875,10 +870,7 @@ impl OpenSshTestServer {
         // sshd is strict about host-key permissions.
         {
             use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(
-                &host_key_path,
-                std::fs::Permissions::from_mode(0o600),
-            )?;
+            std::fs::set_permissions(&host_key_path, std::fs::Permissions::from_mode(0o600))?;
         }
 
         // Optional authorized-keys file.

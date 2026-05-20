@@ -125,7 +125,14 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn content_type_is_form_urlencoded() {
         let t = Arc::new(RecordingTransport::new());
-        let sink = SmsSink::new("a", "p", "https://x", "k={{kind}}", HttpAuth::None, t.clone());
+        let sink = SmsSink::new(
+            "a",
+            "p",
+            "https://x",
+            "k={{kind}}",
+            HttpAuth::None,
+            t.clone(),
+        );
         sink.deliver(Arc::new(Event::builder("k", Severity::Info).build()))
             .await
             .unwrap();

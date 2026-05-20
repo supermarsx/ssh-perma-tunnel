@@ -377,10 +377,7 @@ mod tests {
         assert!(g.auth_bit());
         assert!(g.priv_bit());
         assert!(g.reportable_bit());
-        let z = GlobalData {
-            msg_flags: 0,
-            ..g
-        };
+        let z = GlobalData { msg_flags: 0, ..g };
         assert!(!z.auth_bit());
         assert!(!z.priv_bit());
         assert!(!z.reportable_bit());

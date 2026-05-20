@@ -423,10 +423,7 @@ host = "h2"
     async fn run_benchmark_missing_driver_errors() {
         let tmp = tempfile::tempdir().unwrap();
         let ctl = fixture(tmp.path());
-        let err = ctl
-            .run_benchmark(serde_json::json!({}))
-            .await
-            .unwrap_err();
+        let err = ctl.run_benchmark(serde_json::json!({})).await.unwrap_err();
         assert!(matches!(err, McpError::InvalidParams(_)));
     }
 

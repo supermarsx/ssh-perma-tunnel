@@ -93,7 +93,9 @@ mod tests {
 
         // Immutable borrow returns the same key.
         assert_eq!(
-            kp.private().public_key().fingerprint(ssh_key::HashAlg::Sha256),
+            kp.private()
+                .public_key()
+                .fingerprint(ssh_key::HashAlg::Sha256),
             public_fp
         );
 

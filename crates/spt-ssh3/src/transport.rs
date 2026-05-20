@@ -227,12 +227,8 @@ pub async fn bootstrap(
         let _ = std::future::poll_fn(|cx| driver.poll_close(cx)).await;
     });
 
-    let auth_header = crate::auth_header::build_authorization_header_for(
-        auth,
-        host,
-        port,
-        &cfg.url_path,
-    )?;
+    let auth_header =
+        crate::auth_header::build_authorization_header_for(auth, host, port, &cfg.url_path)?;
     let user_agent = concat!("spt/", env!("CARGO_PKG_VERSION"));
     let raw = crate::h3_raw::extended_connect_raw(
         &connection,
@@ -674,8 +670,7 @@ mod tests {
     #[tokio::test]
     async fn extended_connect_raw_emits_protocol_ssh3_pseudo_header_to_a_fake_server() {
         use crate::h3_raw::{
-            build_headers_frame, extended_connect_raw, qpack_decode, qpack_encode,
-            read_frame_typed,
+            build_headers_frame, extended_connect_raw, qpack_decode, qpack_encode, read_frame_typed,
         };
         use crate::testing::test_support::connected_pair_public;
 
@@ -688,13 +683,20 @@ mod tests {
         // closes — that races against the client's response read.
         let (drop_tx, drop_rx) = tokio::sync::oneshot::channel::<()>();
         let server = tokio::spawn(async move {
-            let (mut s_send, mut s_recv) =
-                server_conn.accept_bi().await.expect("accept bootstrap bidi");
-            let payload = read_frame_typed(&mut s_recv, 0x01).await.expect("read HEADERS");
+            let (mut s_send, mut s_recv) = server_conn
+                .accept_bi()
+                .await
+                .expect("accept bootstrap bidi");
+            let payload = read_frame_typed(&mut s_recv, 0x01)
+                .await
+                .expect("read HEADERS");
             let fields = qpack_decode(&payload).expect("qpack decode");
             let resp_qpack = qpack_encode(&[(b":status", b"200"), (b"server", b"fake")]);
             let frame = build_headers_frame(&resp_qpack);
-            s_send.write_all(&frame).await.expect("write response HEADERS");
+            s_send
+                .write_all(&frame)
+                .await
+                .expect("write response HEADERS");
             s_send.finish().expect("finish response send");
             // Stay alive until the test releases us — keeps the QUIC
             // connection open so the client side can finish reading.

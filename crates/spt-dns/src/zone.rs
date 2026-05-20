@@ -333,7 +333,11 @@ mod tests {
 
     #[test]
     fn record_validate_aaaa_good_and_bad() {
-        let good = Record::aaaa("v6.tunnel.", "fd00::1".parse().unwrap(), Duration::from_secs(60));
+        let good = Record::aaaa(
+            "v6.tunnel.",
+            "fd00::1".parse().unwrap(),
+            Duration::from_secs(60),
+        );
         assert!(good.validate().is_ok());
         let bad = Record {
             name: "v6.tunnel.".into(),
@@ -344,7 +348,13 @@ mod tests {
             forward_id: None,
         };
         let err = bad.validate().unwrap_err();
-        assert!(matches!(err, DnsError::InvalidValue { kind: RecordKind::AAAA, .. }));
+        assert!(matches!(
+            err,
+            DnsError::InvalidValue {
+                kind: RecordKind::AAAA,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -359,7 +369,9 @@ mod tests {
         };
         let err = r.validate().unwrap_err();
         match err {
-            DnsError::InvalidValue { reason, .. } => assert!(reason.contains("priority weight port target")),
+            DnsError::InvalidValue { reason, .. } => {
+                assert!(reason.contains("priority weight port target"));
+            }
             other => panic!("unexpected err: {other:?}"),
         }
     }
@@ -406,7 +418,14 @@ mod tests {
 
     #[test]
     fn record_srv_constructor_yields_valid_value() {
-        let r = Record::srv("_svc.tunnel.", 1, 2, 3, "target.tunnel.", Duration::from_secs(30));
+        let r = Record::srv(
+            "_svc.tunnel.",
+            1,
+            2,
+            3,
+            "target.tunnel.",
+            Duration::from_secs(30),
+        );
         assert!(r.validate().is_ok());
         assert_eq!(r.kind, RecordKind::SRV);
     }

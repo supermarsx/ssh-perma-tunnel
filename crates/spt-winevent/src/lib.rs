@@ -80,22 +80,11 @@ pub const DEFAULT_CHANNEL: &str = "Application";
 /// `testing::MockEventLogBackend` is exposed for external installation.
 pub trait EventLogBackend: Send + Sync {
     /// Register an Event Log source under `channel` (already resolved).
-    fn register_source(
-        &self,
-        name: &str,
-        channel: &str,
-        message_dll: Option<&Path>,
-    ) -> Result<()>;
+    fn register_source(&self, name: &str, channel: &str, message_dll: Option<&Path>) -> Result<()>;
     /// Unregister an Event Log source from `channel` (already resolved).
     fn unregister_source(&self, name: &str, channel: &str) -> Result<()>;
     /// Emit a single event against an already-registered source.
-    fn report_event(
-        &self,
-        name: &str,
-        level: Level,
-        event_id: u32,
-        message: &str,
-    ) -> Result<()>;
+    fn report_event(&self, name: &str, level: Level, event_id: u32, message: &str) -> Result<()>;
 }
 
 static BACKEND: OnceLock<Box<dyn EventLogBackend>> = OnceLock::new();

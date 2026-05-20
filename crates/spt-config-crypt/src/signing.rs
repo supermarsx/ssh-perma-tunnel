@@ -12,9 +12,7 @@ use spt_core::audit::{record_audit, AuditEvent, AuditSeverity};
 use spt_core::Error;
 use subtle::ConstantTimeEq;
 
-use crate::envelope::{
-    signature_to_bytes, write_envelope, ParsedEnvelope, Signature, MAGIC,
-};
+use crate::envelope::{signature_to_bytes, write_envelope, ParsedEnvelope, Signature, MAGIC};
 
 /// Re-export Ed25519 signing key (32-byte seed → ed25519 keypair).
 pub use ed25519_dalek::SigningKey;
@@ -79,8 +77,7 @@ pub fn verify(sealed: &[u8], allowed_keys: &[VerifyingKey]) -> Result<(), Error>
             .with_field("recipients_count", meta.recipients.len().to_string()),
     );
 
-    let sig = sig_opt
-        .ok_or_else(|| Error::TrustFailed("envelope is not signed".into()))?;
+    let sig = sig_opt.ok_or_else(|| Error::TrustFailed("envelope is not signed".into()))?;
 
     let embedded_pub_bytes = B64
         .decode(&sig.pubkey_b64)

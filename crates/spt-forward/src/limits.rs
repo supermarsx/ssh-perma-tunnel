@@ -329,8 +329,8 @@ mod tests {
                 return true;
             }
             let elapsed_secs = (elapsed_nanos as f64) / 1.0e9;
-            self.tokens = (self.tokens + elapsed_secs * self.rate_bps as f64)
-                .min(self.burst as f64);
+            self.tokens =
+                (self.tokens + elapsed_secs * self.rate_bps as f64).min(self.burst as f64);
             let need = n as f64;
             if self.tokens >= need {
                 self.tokens -= need;
@@ -399,7 +399,13 @@ mod tests {
             // Drain size in the range [1, 2 * burst). > burst triggers reject.
             let n = (next() % (2 * burst)) + 1;
 
-            let got = step_u128(rate_bps, capacity_scaled, &mut tokens_scaled, elapsed_nanos, n);
+            let got = step_u128(
+                rate_bps,
+                capacity_scaled,
+                &mut tokens_scaled,
+                elapsed_nanos,
+                n,
+            );
             let want = reference.step(elapsed_nanos, n);
 
             if got != want {
@@ -451,10 +457,8 @@ mod tests {
             let elapsed_nanos = start.elapsed().as_nanos();
             // Allowed = rate * elapsed_secs + burst, computed in scaled units
             // to avoid f64.
-            let allowed = elapsed_nanos
-                .saturating_mul(rate_bps as u128)
-                / NANOS_PER_SEC
-                + burst as u128;
+            let allowed =
+                elapsed_nanos.saturating_mul(rate_bps as u128) / NANOS_PER_SEC + burst as u128;
             assert!(
                 consumed <= allowed,
                 "consumed {consumed} > allowed {allowed} after {elapsed_nanos}ns"

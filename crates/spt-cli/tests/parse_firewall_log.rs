@@ -6,12 +6,12 @@
 
 use clap::Parser;
 use spt_cli::{
-    Cli, Command,
     groups::firewall::{
         FirewallGateway, FirewallGatewaySub, FirewallPolicy, FirewallPolicyScope,
         FirewallPolicySub, FirewallSub,
     },
     groups::log::{LogExportFormat, LogRemote, LogRemoteSub, LogSub},
+    Cli, Command,
 };
 
 fn parse_ok(args: &[&str]) -> Cli {
@@ -146,7 +146,14 @@ fn firewall_policy_show_parses() {
 #[test]
 fn firewall_policy_set_machine_parses() {
     let cli = parse_ok(&[
-        "spt", "firewall", "policy", "set", "Net.Default", "Ethernet", "--scope", "machine",
+        "spt",
+        "firewall",
+        "policy",
+        "set",
+        "Net.Default",
+        "Ethernet",
+        "--scope",
+        "machine",
     ]);
     match cli.command {
         Command::Firewall(f) => match f.command {

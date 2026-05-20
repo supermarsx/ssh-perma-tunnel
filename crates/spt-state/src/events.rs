@@ -427,8 +427,7 @@ mod tests {
             "warn",
         ));
         ring.stop().await;
-        let body =
-            std::fs::read_to_string(paths::events_file(tmp.path(), "2026-05-05")).unwrap();
+        let body = std::fs::read_to_string(paths::events_file(tmp.path(), "2026-05-05")).unwrap();
         assert_eq!(body.lines().count(), 2, "body:\n{body}");
     }
 

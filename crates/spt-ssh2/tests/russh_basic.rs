@@ -172,7 +172,10 @@ async fn bisect_drop_strict_kex_only_succeeds() {
     ]);
     let r = try_connect(p).await;
     println!("bisect_drop_strict_kex_only: {r:?}");
-    assert!(r.is_ok(), "dropping strict-kex-s alone should fix; got {r:?}");
+    assert!(
+        r.is_ok(),
+        "dropping strict-kex-s alone should fix; got {r:?}"
+    );
 }
 
 #[tokio::test]
@@ -206,8 +209,5 @@ async fn bisect_drop_curve25519_only_succeeds() {
     ]);
     let r = try_connect(p).await;
     println!("bisect_drop_curve25519_only: {r:?}");
-    assert!(
-        r.is_ok(),
-        "dropping curve25519 alone should fix; got {r:?}"
-    );
+    assert!(r.is_ok(), "dropping curve25519 alone should fix; got {r:?}");
 }

@@ -113,7 +113,7 @@ impl<W: Write> RedactingWriter<W> {
                 break;
             };
             let abs_end = self.consumed + rel_idx + 1; // inclusive of '\n'
-            // The line including the trailing '\n':
+                                                       // The line including the trailing '\n':
             let line = &self.buf[self.consumed..abs_end];
             // Body without the '\n' for redaction:
             let body = &line[..line.len() - 1];

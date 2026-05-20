@@ -61,7 +61,10 @@ pub fn load_with_key(
         // newtype (t5-e7) when materialised.
         let pt = cleartext.expose_secret();
         let raw = std::str::from_utf8(pt).map_err(|e| {
-            Error::InvalidConfig(format!("sealed config `{}` is not UTF-8: {e}", path.display()))
+            Error::InvalidConfig(format!(
+                "sealed config `{}` is not UTF-8: {e}",
+                path.display()
+            ))
         })?;
         return load_str(raw, strict);
     }
@@ -70,10 +73,7 @@ pub fn load_with_key(
     load_str(raw, strict)
 }
 
-fn decrypt_sealed(
-    bytes: &[u8],
-    key: Option<&KeySource>,
-) -> Result<spt_config_crypt::SecretSlice> {
+fn decrypt_sealed(bytes: &[u8], key: Option<&KeySource>) -> Result<spt_config_crypt::SecretSlice> {
     if let Some(k) = key {
         return unseal(bytes, k);
     }
@@ -83,9 +83,7 @@ fn decrypt_sealed(
     let meta = spt_config_crypt::peek_meta(bytes)?;
     match meta.kdf.as_str() {
         "argon2id" => {
-            let pp = spt_secrets::read_passphrase(
-                "sealed config passphrase: ",
-            )?;
+            let pp = spt_secrets::read_passphrase("sealed config passphrase: ")?;
             let bytes_pp: spt_config_crypt::Passphrase =
                 pp.expose_secret().as_bytes().to_vec().into();
             unseal(bytes, &KeySource::Passphrase(bytes_pp))

@@ -50,7 +50,10 @@ fn set_no_new_privs() -> HardeningResult {
 /// `setrlimit(RLIMIT_CORE, {0, 0})` — belt-and-braces disable core dumps
 /// even on kernels that ignore PR_SET_DUMPABLE for certain paths.
 fn disable_core_dump() -> HardeningResult {
-    let rl = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+    let rl = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
     // SAFETY: `&rl` is a valid pointer to an initialised `rlimit` for the
     // duration of this call; setrlimit reads it and does not retain it.
     let rc = unsafe { libc::setrlimit(libc::RLIMIT_CORE, &rl) };

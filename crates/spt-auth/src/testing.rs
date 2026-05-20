@@ -471,7 +471,9 @@ mod tests {
         assert_eq!(cfg.username, "u");
         match &cfg.methods[0] {
             AuthMethod::OidcDeviceFlow {
-                client_id, issuer: i, ..
+                client_id,
+                issuer: i,
+                ..
             } => {
                 assert_eq!(client_id, "cli");
                 assert_eq!(i, &issuer);

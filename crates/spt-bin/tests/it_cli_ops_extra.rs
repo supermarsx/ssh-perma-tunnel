@@ -126,7 +126,9 @@ fn resolver_empty_backends_returns_zero_count() {
 #[test]
 fn resolver_with_env_backend_lists_one() {
     use std::sync::Arc;
-    let r = Resolver::new(vec![Arc::new(spt_secrets::EnvBackend::new()) as Arc<dyn SecretBackend>]);
+    let r = Resolver::new(vec![
+        Arc::new(spt_secrets::EnvBackend::new()) as Arc<dyn SecretBackend>
+    ]);
     assert_eq!(r.backends().count(), 1);
 }
 
@@ -162,8 +164,13 @@ fn synthetic_bench_result() -> BenchResult {
 #[test]
 fn benchmark_report_markdown_has_pipe_table() {
     let dir = tempfile::tempdir().unwrap();
-    let p = write_report(dir.path(), "run-1", &[synthetic_bench_result()], ReportFormat::Markdown)
-        .unwrap();
+    let p = write_report(
+        dir.path(),
+        "run-1",
+        &[synthetic_bench_result()],
+        ReportFormat::Markdown,
+    )
+    .unwrap();
     let body = std::fs::read_to_string(&p).unwrap();
     assert!(body.contains("| driver |"), "{body}");
 }
@@ -171,11 +178,19 @@ fn benchmark_report_markdown_has_pipe_table() {
 #[test]
 fn benchmark_report_csv_has_header_line() {
     let dir = tempfile::tempdir().unwrap();
-    let p = write_report(dir.path(), "run-2", &[synthetic_bench_result()], ReportFormat::Csv)
-        .unwrap();
+    let p = write_report(
+        dir.path(),
+        "run-2",
+        &[synthetic_bench_result()],
+        ReportFormat::Csv,
+    )
+    .unwrap();
     let body = std::fs::read_to_string(&p).unwrap();
     // CSV body should have a header row mentioning "driver".
-    assert!(body.lines().next().unwrap_or("").contains("driver"), "{body}");
+    assert!(
+        body.lines().next().unwrap_or("").contains("driver"),
+        "{body}"
+    );
 }
 
 #[test]
@@ -196,8 +211,13 @@ fn benchmark_report_jsonl_is_newline_delimited() {
 #[test]
 fn benchmark_report_json_is_an_array() {
     let dir = tempfile::tempdir().unwrap();
-    let p = write_report(dir.path(), "run-4", &[synthetic_bench_result()], ReportFormat::Json)
-        .unwrap();
+    let p = write_report(
+        dir.path(),
+        "run-4",
+        &[synthetic_bench_result()],
+        ReportFormat::Json,
+    )
+    .unwrap();
     let body = std::fs::read_to_string(&p).unwrap();
     let v: serde_json::Value = serde_json::from_str(&body).unwrap();
     assert!(v.is_array());
@@ -254,9 +274,18 @@ fn diagnostic_check_status_pass_does_not_satisfy_fail_predicate() {
 #[test]
 fn core_duration_parses_basic_units() {
     use std::time::Duration;
-    assert_eq!(spt_core::duration::parse_duration("1s").unwrap(), Duration::from_secs(1));
-    assert_eq!(spt_core::duration::parse_duration("500ms").unwrap(), Duration::from_millis(500));
-    assert_eq!(spt_core::duration::parse_duration("2m").unwrap(), Duration::from_secs(120));
+    assert_eq!(
+        spt_core::duration::parse_duration("1s").unwrap(),
+        Duration::from_secs(1)
+    );
+    assert_eq!(
+        spt_core::duration::parse_duration("500ms").unwrap(),
+        Duration::from_millis(500)
+    );
+    assert_eq!(
+        spt_core::duration::parse_duration("2m").unwrap(),
+        Duration::from_secs(120)
+    );
 }
 
 #[test]

@@ -537,8 +537,6 @@ mod tests {
     #[test]
     fn fixtures_sample_returns_at_least_one_critical_event() {
         let evs = fixtures::sample_event_kinds();
-        assert!(evs
-            .iter()
-            .any(|e| e.severity == Severity::Critical));
+        assert!(evs.iter().any(|e| e.severity == Severity::Critical));
     }
 }

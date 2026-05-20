@@ -55,7 +55,10 @@ fn tab_cycles_through_every_page() {
     for _ in 0..PageKind::COUNT {
         app.on_key(k(KeyCode::Tab));
     }
-    assert_eq!(app.current, initial, "tab should wrap once after COUNT steps");
+    assert_eq!(
+        app.current, initial,
+        "tab should wrap once after COUNT steps"
+    );
 }
 
 #[test]
@@ -220,7 +223,7 @@ fn forwards_page_deletes_entry() {
         app.on_key(k(KeyCode::Tab));
     }
     app.on_key(k(KeyCode::Char('a'))); // add
-    // Close editor that auto-opens after add.
+                                       // Close editor that auto-opens after add.
     app.on_key(k(KeyCode::Esc));
     assert_eq!(app.model.profile().forwards.len(), 1);
     app.on_key(k(KeyCode::Char('d')));

@@ -898,13 +898,9 @@ mod tests {
 
     #[tokio::test]
     async fn with_auth_token_is_required_for_non_initialize() {
-        let s = server_with(McpPolicy::default(), MockAuditSink::new())
-            .with_auth_token("hunter2");
+        let s = server_with(McpPolicy::default(), MockAuditSink::new()).with_auth_token("hunter2");
         assert_eq!(s.inner.auth_token(), Some("hunter2"));
-        let err = s
-            .inner
-            .verify_init_token(None)
-            .unwrap_err();
+        let err = s.inner.verify_init_token(None).unwrap_err();
         assert!(matches!(err, crate::Error::PolicyDenied(_)));
         let err = s
             .inner

@@ -23,9 +23,7 @@ use keyring::credential::{
 };
 use secrecy::ExposeSecret;
 use spt_core::Error;
-use spt_secrets::{
-    BackendKind, BackendStatus, KeychainBackend, SecretBackend, SecretRef,
-};
+use spt_secrets::{BackendKind, BackendStatus, KeychainBackend, SecretBackend, SecretRef};
 
 // ---------------------------------------------------------------------------
 // Local mock with fault injection.

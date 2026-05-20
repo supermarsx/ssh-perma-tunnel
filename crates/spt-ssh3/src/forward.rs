@@ -1006,35 +1006,27 @@ mod tests {
 
     #[test]
     fn bind_addr_string_socketaddr_v4() {
-        let s = bind_addr_string(&BindAddr::Tcp(
-            "127.0.0.1:9090".parse().unwrap(),
-        ))
-        .unwrap();
+        let s = bind_addr_string(&BindAddr::Tcp("127.0.0.1:9090".parse().unwrap())).unwrap();
         assert_eq!(s, "127.0.0.1:9090");
     }
 
     #[test]
     fn bind_addr_string_socketaddr_v6() {
-        let s = bind_addr_string(&BindAddr::Tcp(
-            "[::1]:9091".parse().unwrap(),
-        ))
-        .unwrap();
+        let s = bind_addr_string(&BindAddr::Tcp("[::1]:9091".parse().unwrap())).unwrap();
         assert!(s.contains("[::1]"));
         assert!(s.ends_with(":9091"));
     }
 
     #[test]
     fn bind_host_port_socketaddr_v4() {
-        let (h, p) =
-            bind_host_port(&BindAddr::Tcp("10.0.0.1:7000".parse().unwrap())).unwrap();
+        let (h, p) = bind_host_port(&BindAddr::Tcp("10.0.0.1:7000".parse().unwrap())).unwrap();
         assert_eq!(h, "10.0.0.1");
         assert_eq!(p, 7000);
     }
 
     #[test]
     fn bind_host_port_unix_unsupported() {
-        let err =
-            bind_host_port(&BindAddr::Unix(std::path::PathBuf::from("/tmp/y"))).unwrap_err();
+        let err = bind_host_port(&BindAddr::Unix(std::path::PathBuf::from("/tmp/y"))).unwrap_err();
         assert!(matches!(err, Error::UnsupportedPlatform(_)));
     }
 

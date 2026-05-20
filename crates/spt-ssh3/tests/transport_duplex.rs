@@ -116,7 +116,9 @@ async fn handshake_rejects_non_settings_first_frame() {
         f.write_async(&mut server).await.unwrap();
     });
 
-    let err = open_control_pair(&mut client, client_local).await.unwrap_err();
+    let err = open_control_pair(&mut client, client_local)
+        .await
+        .unwrap_err();
     match err {
         Error::RuntimeFailure(msg) => assert!(msg.contains("Settings")),
         _ => panic!("wrong variant: {err:?}"),
@@ -130,7 +132,9 @@ async fn handshake_propagates_eof_as_runtime_failure() {
     drop(server); // EOF immediately.
 
     let client_local = Ssh3Settings::default();
-    let err = open_control_pair(&mut client, client_local).await.unwrap_err();
+    let err = open_control_pair(&mut client, client_local)
+        .await
+        .unwrap_err();
     assert!(matches!(err, Error::RuntimeFailure(_)));
 }
 

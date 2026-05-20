@@ -559,7 +559,9 @@ mod tests {
         // (Already covered above; here we just exercise the hook.)
         let evs = rec.events.lock().unwrap().clone();
         if !evs.is_empty() {
-            assert!(evs.iter().any(|e| matches!(e, AuditEvent::Yank { label, .. } if label == "auth.password")));
+            assert!(evs
+                .iter()
+                .any(|e| matches!(e, AuditEvent::Yank { label, .. } if label == "auth.password")));
         }
     }
 
@@ -587,7 +589,10 @@ mod tests {
         // path swallows the error into None.
         struct Failing;
         impl super::super::clipboard::ClipboardBackend for Failing {
-            fn set_text(&self, _value: &str) -> Result<(), super::super::clipboard::ClipboardError> {
+            fn set_text(
+                &self,
+                _value: &str,
+            ) -> Result<(), super::super::clipboard::ClipboardError> {
                 Err(super::super::clipboard::ClipboardError::Unavailable(
                     "test".into(),
                 ))

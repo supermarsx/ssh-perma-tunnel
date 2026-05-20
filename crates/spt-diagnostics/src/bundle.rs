@@ -353,10 +353,7 @@ mod tests {
             "stats.txt",
             "report.json",
         ] {
-            assert!(
-                names.contains(&expected),
-                "missing {expected} in {names:?}"
-            );
+            assert!(names.contains(&expected), "missing {expected} in {names:?}");
         }
     }
 

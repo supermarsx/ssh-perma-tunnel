@@ -347,7 +347,9 @@ mod tests {
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     fn lock_env() -> std::sync::MutexGuard<'static, ()> {
-        ENV_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+        ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     #[test]
@@ -404,8 +406,8 @@ mod tests {
         mock.push_output(ok_out(""));
         mock.push_output(ok_out(""));
         mock.push_output(ok_out(""));
-        let mgr = SystemdUserManager::new_with_runner(mock)
-            .with_unit_root(tmp.path().to_path_buf());
+        let mgr =
+            SystemdUserManager::new_with_runner(mock).with_unit_root(tmp.path().to_path_buf());
         let path = tmp.path().join("spt-relay.service");
         std::fs::write(&path, "[Unit]\n").unwrap();
         assert!(path.exists());

@@ -235,7 +235,7 @@ protocol = "ssh2"
         let mut m = model();
         // Index 0 is auth.method (Choice).
         p.on_key(k(KeyCode::Enter), &mut m); // edit
-        // Press Down then Enter to pick the next option.
+                                             // Press Down then Enter to pick the next option.
         p.on_key(k(KeyCode::Down), &mut m);
         p.on_key(k(KeyCode::Enter), &mut m); // commit selection
         let method = m

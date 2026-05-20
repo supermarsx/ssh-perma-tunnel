@@ -226,10 +226,7 @@ impl SelectorCore {
 /// downstream resolver to fill the real address. The supervisor's
 /// connect path always re-resolves anyway.
 fn make_pick(ep: &Endpoint) -> EndpointPick {
-    let ip: IpAddr = ep
-        .host
-        .parse()
-        .unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED));
+    let ip: IpAddr = ep.host.parse().unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED));
     EndpointPick {
         id: endpoint_id(ep),
         addr: SocketAddr::new(ip, ep.port),
@@ -557,10 +554,7 @@ impl LeastErrorsSelector {
     /// New least-errors selector.
     #[must_use]
     pub fn new(endpoints: Vec<Endpoint>, cfg: &RoundRobinConfig) -> Self {
-        let errors = endpoints
-            .iter()
-            .map(|e| (endpoint_id(e), 0u64))
-            .collect();
+        let errors = endpoints.iter().map(|e| (endpoint_id(e), 0u64)).collect();
         Self {
             core: SelectorCore::new(endpoints, cfg),
             errors,
@@ -692,7 +686,11 @@ impl DnsRoundRobinResolver {
     /// lazily on the first [`Self::next_address`] and at most once per
     /// `refresh_interval` afterwards.
     #[must_use]
-    pub fn new(host: impl Into<String>, inner: Arc<dyn DnsResolver>, cfg: &RoundRobinConfig) -> Self {
+    pub fn new(
+        host: impl Into<String>,
+        inner: Arc<dyn DnsResolver>,
+        cfg: &RoundRobinConfig,
+    ) -> Self {
         Self {
             inner,
             refresh_interval: cfg.dns_refresh_interval,
@@ -778,10 +776,8 @@ mod tests {
     #[test]
     fn round_robin_cycles_declared_order() {
         let cfg = enabled_cfg(SelectionPolicy::RoundRobin);
-        let mut s = RoundRobinSelector::new(
-            vec![ep("a", 22, 1), ep("b", 22, 1), ep("c", 22, 1)],
-            &cfg,
-        );
+        let mut s =
+            RoundRobinSelector::new(vec![ep("a", 22, 1), ep("b", 22, 1), ep("c", 22, 1)], &cfg);
         let p1 = s.next().unwrap().id;
         let p2 = s.next().unwrap().id;
         let p3 = s.next().unwrap().id;
@@ -920,11 +916,9 @@ mod tests {
             cooldown_after_failure: Duration::from_millis(1),
             ..Default::default()
         };
-        let mut s = LeastErrorsSelector::new(
-            vec![ep("a", 22, 1), ep("b", 22, 1), ep("c", 22, 1)],
-            &cfg,
-        )
-        .with_clock(clock.clone());
+        let mut s =
+            LeastErrorsSelector::new(vec![ep("a", 22, 1), ep("b", 22, 1), ep("c", 22, 1)], &cfg)
+                .with_clock(clock.clone());
 
         // Make "a" noisy.
         for _ in 0..5 {
@@ -966,8 +960,8 @@ mod tests {
             cooldown_after_failure: Duration::from_secs(30),
             ..Default::default()
         };
-        let mut s = RoundRobinSelector::new(vec![ep("a", 22, 1), ep("b", 22, 1)], &cfg)
-            .with_clock(clock);
+        let mut s =
+            RoundRobinSelector::new(vec![ep("a", 22, 1), ep("b", 22, 1)], &cfg).with_clock(clock);
         s.record_failure("a:22", &Error::NetworkUnreachable("x".into()));
         s.record_failure("b:22", &Error::NetworkUnreachable("x".into()));
         assert!(s.next().is_none());
@@ -1010,10 +1004,7 @@ mod tests {
     #[test]
     fn dns_rr_refreshes_after_interval() {
         let fake = FakeDnsResolver::new();
-        fake.set(
-            "h",
-            vec![IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1))],
-        );
+        fake.set("h", vec![IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1))]);
         let clock = Arc::new(FakeInstantClock::new(Instant::now()));
         let cfg = RoundRobinConfig {
             enabled: true,
@@ -1022,8 +1013,8 @@ mod tests {
             dns_refresh_interval: Duration::from_secs(10),
             ..Default::default()
         };
-        let resolver = DnsRoundRobinResolver::new("h", Arc::new(fake.clone()), &cfg)
-            .with_clock(clock.clone());
+        let resolver =
+            DnsRoundRobinResolver::new("h", Arc::new(fake.clone()), &cfg).with_clock(clock.clone());
         assert_eq!(
             resolver.next_address(),
             Some(IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)))
@@ -1078,8 +1069,8 @@ mod tests {
         let cfg = enabled_cfg(SelectionPolicy::RoundRobin);
         let policy = make_selector(endpoints.clone(), &cfg).expect("enabled");
 
-        let mut legacy =
-            LegacySelector::new(FailoverMode::Priority, endpoints).with_policy_selector(Some(policy));
+        let mut legacy = LegacySelector::new(FailoverMode::Priority, endpoints)
+            .with_policy_selector(Some(policy));
 
         let mut rng = StdRng::seed_from_u64(0);
 
@@ -1154,20 +1145,14 @@ mod tests {
         assert_eq!(p1.id, "alpha:22");
         let r1 = (mock.connect(&endpoints[0], &auth)).await;
         assert!(r1.is_err(), "mock should fail");
-        policy.record_failure(
-            &p1.id,
-            &spt_core::Error::NetworkUnreachable("alpha".into()),
-        );
+        policy.record_failure(&p1.id, &spt_core::Error::NetworkUnreachable("alpha".into()));
 
         // Second pick: beta. Force failure.
         let p2 = policy.next().unwrap();
         assert_eq!(p2.id, "beta:22");
         let r2 = (mock.connect(&endpoints[1], &auth)).await;
         assert!(r2.is_err());
-        policy.record_failure(
-            &p2.id,
-            &spt_core::Error::NetworkUnreachable("beta".into()),
-        );
+        policy.record_failure(&p2.id, &spt_core::Error::NetworkUnreachable("beta".into()));
 
         // Third pick: gamma. Stop failing and confirm a session is born.
         mock.set_connect_fails(false);
@@ -1191,7 +1176,10 @@ mod tests {
             let cfg = enabled_cfg(p);
             let mut s = make_selector(vec![ep("a", 22, 1), ep("b", 22, 1)], &cfg).unwrap();
             // Sanity: each selector should yield at least one pick.
-            assert!(s.next().is_some(), "policy {p:?} returned None on first pick");
+            assert!(
+                s.next().is_some(),
+                "policy {p:?} returned None on first pick"
+            );
         }
     }
 }

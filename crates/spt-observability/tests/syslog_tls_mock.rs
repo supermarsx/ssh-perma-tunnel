@@ -138,7 +138,10 @@ async fn writer_delivers_octet_counted_frame_to_tls_server() {
 
     // Counters: enqueued ≥ 1, no drops.
     let snap = handle.counters().snapshot();
-    assert!(snap.enqueued >= 1, "enqueued counter did not move: {snap:?}");
+    assert!(
+        snap.enqueued >= 1,
+        "enqueued counter did not move: {snap:?}"
+    );
     assert_eq!(snap.dropped_queue_full, 0);
     assert_eq!(snap.dropped_closed, 0);
     // reconnects ≥ 1 (we always pass through `connect()` once on first start).

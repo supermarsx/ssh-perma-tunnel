@@ -565,7 +565,7 @@ mod keymock {
     pub(crate) fn install_force() {
         use keyring::credential::CredentialBuilder;
         keyring::set_default_credential_builder(
-            Box::new(SharedMockBuilder) as Box<CredentialBuilder>,
+            Box::new(SharedMockBuilder) as Box<CredentialBuilder>
         );
     }
 
@@ -960,10 +960,7 @@ mod tests {
         let g = install_mock_keyring();
         let e = Entry::new("spt-tmock-inv", "u").expect("entry");
         g.set_fault("spt-tmock-inv", "u", MockFaultKind::Invalid);
-        assert!(matches!(
-            e.get_secret(),
-            Err(keyring::Error::Invalid(_, _))
-        ));
+        assert!(matches!(e.get_secret(), Err(keyring::Error::Invalid(_, _))));
     }
 
     #[test]

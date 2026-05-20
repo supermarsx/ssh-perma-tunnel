@@ -289,7 +289,10 @@ mod tests {
             .run(&DiagnosticContext::default())
             .await;
         let evidence = r[0].evidence.join("\n");
-        assert!(evidence.contains("[mcp].enabled = false"), "got: {evidence}");
+        assert!(
+            evidence.contains("[mcp].enabled = false"),
+            "got: {evidence}"
+        );
     }
 
     #[tokio::test]

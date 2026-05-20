@@ -511,9 +511,7 @@ mod tests {
         // Non-empty pin set routes through PinnedTlsConnector and succeeds
         // (no mTLS, no roots needed).
         let mut cfg = SyslogTlsConfig::new("localhost", 6514, PathBuf::from("spool"));
-        cfg.pin_spki_sha256 = vec![
-            "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".into(),
-        ];
+        cfg.pin_spki_sha256 = vec!["SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".into()];
         let r = build_client_config(&cfg);
         assert!(r.is_ok(), "pinned path failed: {:?}", r.err());
     }
@@ -541,9 +539,7 @@ mod tests {
     #[test]
     fn pinned_path_mtls_combo_rejected_with_clear_error() {
         let mut cfg = SyslogTlsConfig::new("localhost", 6514, PathBuf::from("spool"));
-        cfg.pin_spki_sha256 = vec![
-            "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".into(),
-        ];
+        cfg.pin_spki_sha256 = vec!["SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".into()];
         cfg.client_cert = Some(PathBuf::from("/tmp/c.pem"));
         cfg.client_key = Some(PathBuf::from("/tmp/k.pem"));
         let r = build_client_config(&cfg);

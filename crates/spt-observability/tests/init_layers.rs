@@ -11,9 +11,7 @@
 use std::time::Duration;
 
 use spt_core::RedactionMode;
-use spt_observability::config::{
-    Destination, FileSink, LogFormat, LoggingConfig, RotationPolicy,
-};
+use spt_observability::config::{Destination, FileSink, LogFormat, LoggingConfig, RotationPolicy};
 use spt_observability::init_for_test;
 use tempfile::tempdir;
 
