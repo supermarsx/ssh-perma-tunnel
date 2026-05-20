@@ -87,7 +87,7 @@ spt-remote-config = { path = "crates/spt-remote-config", version = "0.1.0" }
 spt-status-api = { path = "crates/spt-status-api", version = "0.1.0" }
 
 # Async runtime
-tokio = { version = "1.40", features = ["full"] }
+tokio = { version = "1.52", features = ["full"] }
 tokio-util = { version = "0.7", features = ["full"] }
 futures = "0.3"
 async-trait = "0.1"
@@ -173,7 +173,7 @@ x509-parser = "0.16"
 
 # Email + WebPush transports for spt-events sinks
 # Pinned to 0.11.19: 0.11.20+ requires Cargo edition2024 (Rust 1.85). MSRV 1.83.
-lettre = { version = "=0.11.19", default-features = false, features = ["smtp-transport", "tokio1-rustls-tls", "builder", "ring", "webpki-roots"] }
+lettre = { version = "=0.11.22", default-features = false, features = ["smtp-transport", "tokio1-rustls-tls", "builder", "ring", "webpki-roots"] }
 # `web-push` 0.11 transitively pulls in `chumsky → stacker` (and lettre also
 # pulls `chumsky` independently — `psm` is hand-pinned to 0.1.27 in the
 # lockfile). For the WebPush sink we use `web-push-native` instead: it is a
@@ -188,15 +188,15 @@ web-push-native = { version = "0.4", default-features = false, features = ["vapi
 # clean — those crates may appear in the lockfile (they're transitive of
 # `superboring 0.1.10`'s default features) but are not compiled because
 # none of their gating features are activated.
-jwt-simple = { version = "=0.12.9", default-features = false, features = ["pure-rust"] }
+jwt-simple = { version = "=0.12.11", default-features = false, features = ["pure-rust"] }
 # `superboring` is `jwt-simple`'s `pure-rust` backend. Pinned to =0.1.7:
 # 0.1.8+ enables `ml-dsa` in its default `enabled` feature, which drags
 # `cmov`/`hybrid-array`/`digest 0.11`/`signature 3` (all edition2024) into
 # the build graph. 0.1.7 is API-compatible (jwt-simple 0.12.9 declares
 # `superboring ^0.1.2`).
-superboring = "=0.1.5"
+superboring = "=0.1.10"
 # blake2b_simd 1.0.4 requires edition2024; 1.0.3 is the last MSRV-1.83 release.
-blake2b_simd = "=1.0.3"
+blake2b_simd = "=1.0.4"
 h3 = "0.0.6"
 h3-quinn = "0.0.7"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream", "gzip"] }
