@@ -204,7 +204,7 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 # DNS
 hickory-server = "0.24"
 hickory-resolver = "0.24"
-hickory-proto = "0.24"
+hickory-proto = "0.25"
 
 # Service / OS
 windows-service = "0.7"
