@@ -10,7 +10,7 @@ use std::time::Duration;
 use tokio::net::UdpSocket;
 use tokio::time::timeout;
 
-use crate::agent::{AgentBuilder, AgentHandle, DOCUMENTATION_ENTERPRISE_PEN};
+use crate::agent::{AgentBuilder, AgentHandle};
 use crate::error::Result;
 use crate::message::{
     GlobalData, Message, MessageData, ScopedPdu, SecurityParameters, FLAG_AUTH, FLAG_PRIV,
@@ -57,7 +57,7 @@ impl LocalhostAgent {
         let bind: SocketAddr = "127.0.0.1:0".parse().expect("static parse");
         let handle = AgentBuilder::new()
             .bind(bind)
-            .enterprise_pen(DOCUMENTATION_ENTERPRISE_PEN)
+            .documentation_enterprise_pen()
             .add_user(user)
             .run()
             .await?;
@@ -78,7 +78,7 @@ impl LocalhostAgent {
         let bind: SocketAddr = "127.0.0.1:0".parse().expect("static parse");
         let builder = AgentBuilder::new()
             .bind(bind)
-            .enterprise_pen(DOCUMENTATION_ENTERPRISE_PEN)
+            .documentation_enterprise_pen()
             .add_user(user);
         let builder = configure(builder);
         let handle = builder.run().await?;

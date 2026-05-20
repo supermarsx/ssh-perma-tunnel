@@ -11,6 +11,11 @@ as a deliberate placeholder. Shipping a product under PEN 32473 is
 explicitly NOT permitted by those RFCs, so the swap below must happen
 before any production release.
 
+The runtime does not treat this placeholder as production-safe: config
+validation and `spt-snmp::AgentBuilder::run` reject PEN `32473` and the old
+SPT placeholder `99999` unless a test/example fixture explicitly opts into
+the RFC documentation PEN.
+
 ## Status
 
 | Field          | Value                                                              |
@@ -98,7 +103,7 @@ The script rewrites:
 
 1. The single `::= { enterprises 32473 }` line on the `spt MODULE-IDENTITY`
    in `mibs/SPT-MIB.txt`.
-2. The single `SPT_ENTERPRISE_OID_PLACEHOLDER` constant body in
+2. The single `SPT_ENTERPRISE_OID_ARCS` constant body in
    `crates/spt-snmp/src/lib.rs`.
 
 It leaves `.bak` files alongside each edited file. After verifying the diff,
@@ -124,8 +129,8 @@ delete the `.bak` files, then:
 
    ```sh
    cargo build --workspace --locked
-   cargo test -p spt-snmp --locked
-   cargo clippy -p spt-snmp --locked -- -D warnings
+   cargo test -p spt-snmp --features testing --locked
+   cargo clippy -p spt-snmp --all-targets --features testing --locked -- -D warnings
    ```
 
 4. **Optional but recommended -- run `smilint`.** If `smilint` (from the

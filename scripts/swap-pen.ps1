@@ -5,7 +5,7 @@
 
 .DESCRIPTION
     Rewrites the single `{ enterprises 32473 }` line in mibs/SPT-MIB.txt and
-    the single PLACEHOLDER constant SPT_ENTERPRISE_OID_PLACEHOLDER in
+    the single SPT enterprise OID constant SPT_ENTERPRISE_OID_ARCS in
     crates/spt-snmp/src/lib.rs. Leaves .bak copies. PowerShell equivalent of
     scripts/swap-pen.sh.
 
@@ -49,8 +49,8 @@ if ($MibContent -notmatch 'enterprises 32473') {
     Write-Error "no placeholder '{ enterprises 32473 }' found in $Mib (already swapped? edited by hand?)"
     exit 1
 }
-if ($LibContent -notmatch 'SPT_ENTERPRISE_OID_PLACEHOLDER') {
-    Write-Error "SPT_ENTERPRISE_OID_PLACEHOLDER not found in $Lib"
+if ($LibContent -notmatch 'SPT_ENTERPRISE_OID_ARCS') {
+    Write-Error "SPT_ENTERPRISE_OID_ARCS not found in $Lib"
     exit 1
 }
 

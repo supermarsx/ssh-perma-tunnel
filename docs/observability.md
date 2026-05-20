@@ -40,7 +40,9 @@ HMAC-SHA-256) agent. The project MIB ships at
 [`/mibs/SPT-MIB.txt`](../mibs/SPT-MIB.txt). Enabled SNMP configs must set
 `enterprise_id` to the operator's registered IANA Private Enterprise Number;
 the checked-in `32473` MIB subtree is a documentation template, not a
-production default. Traps are sent to configured sinks via UDP.
+production default. The agent startup path rejects `32473` and the old
+`99999` placeholder unless a test fixture explicitly opts into the
+documentation PEN. Traps are sent to configured sinks via UDP.
 
 ## Status snapshot
 

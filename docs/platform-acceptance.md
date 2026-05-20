@@ -42,5 +42,7 @@ Required checks:
   policy-denied, and platform-denied tests before GA.
 - Default builds do not expose SNMP CLI. `--features snmp` builds expose SNMP
   agent/trap diagnostics, and enabled SNMP configs must set
-  `[observability.snmp].enterprise_id` to a registered production PEN.
+  `[observability.snmp].enterprise_id` to a registered production PEN. Runtime
+  agent startup must reject `32473` and `99999` unless the caller is using an
+  explicit documentation/test fixture.
 - Packages include signed checksums and preserve config/state across upgrade.

@@ -100,7 +100,10 @@ The companion enterprise MIB lives at
 [`mibs/SPT-MIB.txt`](../../mibs/SPT-MIB.txt). The checked-in MIB uses the RFC
 documentation PEN `32473` as a template only. Production deployments must set
 `[observability.snmp].enterprise_id` to their registered IANA Private
-Enterprise Number and publish the MIB under that subtree.
+Enterprise Number and publish the MIB under that subtree. `AgentBuilder::run`
+rejects `32473` and the older `99999` placeholder by default; tests and
+examples that intentionally use the RFC documentation subtree must call
+`AgentBuilder::documentation_enterprise_pen()`.
 
 ## Relationship to `net-snmp`
 

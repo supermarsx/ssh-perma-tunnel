@@ -43,6 +43,44 @@ use crate::value::{Value, VarBind};
 /// must configure a registered IANA Private Enterprise Number.
 pub const DOCUMENTATION_ENTERPRISE_PEN: u32 = 32_473;
 
+/// Legacy placeholder PEN used by early SPT builds before the project moved to
+/// the RFC documentation PEN for template MIBs.
+///
+/// This value is reserved for migration diagnostics and must not be used by a
+/// production SNMP agent.
+pub const OLD_PLACEHOLDER_ENTERPRISE_PEN: u32 = 99_999;
+
+/// Returns `true` when `pen` is reserved for documentation, examples, tests,
+/// or migration diagnostics rather than production SNMP service.
+#[must_use]
+pub const fn is_reserved_enterprise_pen(pen: u32) -> bool {
+    matches!(
+        pen,
+        DOCUMENTATION_ENTERPRISE_PEN | OLD_PLACEHOLDER_ENTERPRISE_PEN
+    )
+}
+
+/// Validates that `pen` is suitable for production SNMP engine-id generation.
+///
+/// # Errors
+/// Returns [`Error::Config`] when the PEN is zero or one of SPT's reserved
+/// documentation/placeholder identifiers.
+pub fn validate_production_enterprise_pen(pen: u32) -> Result<()> {
+    if pen == 0 {
+        return Err(Error::Config(
+            "SNMP enterprise PEN must be greater than zero".into(),
+        ));
+    }
+    if is_reserved_enterprise_pen(pen) {
+        return Err(Error::Config(format!(
+            "SNMP enterprise PEN {pen} is reserved for documentation, tests, \
+             or migration diagnostics; configure a registered IANA Private \
+             Enterprise Number for production"
+        )));
+    }
+    Ok(())
+}
+
 /// Maximum UDP datagram we will accept (matches `msgMaxSize` default).
 pub const MAX_DATAGRAM: usize = 65_507;
 
@@ -52,6 +90,7 @@ pub struct AgentBuilder {
     bind_addr: Option<SocketAddr>,
     engine_id: Option<EngineId>,
     enterprise_pen: Option<u32>,
+    allow_documentation_pen: bool,
     users: Vec<UsmUser>,
     registry: MibRegistry,
 }
@@ -62,6 +101,7 @@ impl std::fmt::Debug for AgentBuilder {
             .field("bind_addr", &self.bind_addr)
             .field("engine_id", &self.engine_id)
             .field("enterprise_pen", &self.enterprise_pen)
+            .field("allow_documentation_pen", &self.allow_documentation_pen)
             .field("users", &self.users.len())
             .field("registry", &self.registry)
             .finish()
@@ -87,6 +127,20 @@ impl AgentBuilder {
     #[must_use]
     pub fn enterprise_pen(mut self, pen: u32) -> Self {
         self.enterprise_pen = Some(pen);
+        self.allow_documentation_pen = false;
+        self
+    }
+
+    /// Uses the RFC documentation PEN for tests, examples, and fixture agents.
+    ///
+    /// Production callers must use [`AgentBuilder::enterprise_pen`] with their
+    /// registered IANA Private Enterprise Number. This method exists so tests
+    /// and documentation examples can keep exercising the RFC 5612 / RFC 9371
+    /// documentation subtree without weakening the production default.
+    #[must_use]
+    pub fn documentation_enterprise_pen(mut self) -> Self {
+        self.enterprise_pen = Some(DOCUMENTATION_ENTERPRISE_PEN);
+        self.allow_documentation_pen = true;
         self
     }
 
@@ -141,10 +195,14 @@ impl AgentBuilder {
                             .into(),
                     )
                 })?;
-                if pen == 0 {
-                    return Err(Error::Config(
-                        "SNMP enterprise PEN must be greater than zero".into(),
-                    ));
+                if self.allow_documentation_pen {
+                    if pen == 0 {
+                        return Err(Error::Config(
+                            "SNMP enterprise PEN must be greater than zero".into(),
+                        ));
+                    }
+                } else {
+                    validate_production_enterprise_pen(pen)?;
                 }
                 generate_engine_id(pen)
             }

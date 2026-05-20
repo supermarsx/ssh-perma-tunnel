@@ -5,8 +5,8 @@
 #
 # Effect:
 #   * Rewrites the single `{ enterprises 32473 }` line in mibs/SPT-MIB.txt.
-#   * Rewrites the single PLACEHOLDER constant in
-#     crates/spt-snmp/src/lib.rs (SPT_ENTERPRISE_OID_PLACEHOLDER).
+#   * Rewrites the single SPT enterprise OID constant in
+#     crates/spt-snmp/src/lib.rs (SPT_ENTERPRISE_OID_ARCS).
 #   * Leaves .bak copies of each edited file.
 #   * Reminds the operator to bump the MIB REVISION and update
 #     DOCUMENTATION_ENTERPRISE_PEN call sites if the production PEN is to
@@ -46,8 +46,8 @@ if ! grep -q "enterprises 32473" "$MIB"; then
     exit 1
 fi
 
-if ! grep -q "SPT_ENTERPRISE_OID_PLACEHOLDER" "$LIB"; then
-    echo "error: SPT_ENTERPRISE_OID_PLACEHOLDER not found in ${LIB}" >&2
+if ! grep -q "SPT_ENTERPRISE_OID_ARCS" "$LIB"; then
+    echo "error: SPT_ENTERPRISE_OID_ARCS not found in ${LIB}" >&2
     exit 1
 fi
 

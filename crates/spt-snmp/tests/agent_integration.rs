@@ -28,10 +28,7 @@ use spt_snmp::usm::{
     SecurityLevel, UsmUser,
 };
 use spt_snmp::value::{Value, VarBind};
-use spt_snmp::{
-    AgentBuilder, ConstScalar, Handler, ObjectIdentifier, TableHandler, TrapSender,
-    DOCUMENTATION_ENTERPRISE_PEN,
-};
+use spt_snmp::{AgentBuilder, ConstScalar, Handler, ObjectIdentifier, TableHandler, TrapSender};
 use tokio::net::UdpSocket;
 use tokio::time::timeout;
 
@@ -40,7 +37,7 @@ fn oid(s: &str) -> ObjectIdentifier {
 }
 
 fn agent_builder() -> AgentBuilder {
-    AgentBuilder::new().enterprise_pen(DOCUMENTATION_ENTERPRISE_PEN)
+    AgentBuilder::new().documentation_enterprise_pen()
 }
 
 /// Builds a `Get` request (authPriv) and returns the encoded datagram bytes

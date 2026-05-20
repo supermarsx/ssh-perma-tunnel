@@ -32,7 +32,10 @@ use spt_snmp::mib::{Handler, SetOutcome};
 use spt_snmp::pdu::{Pdu, PduKind};
 use spt_snmp::usm::{AuthProtocol, SecretBytes, UsmUser};
 use spt_snmp::value::{Value, VarBind};
-use spt_snmp::{AgentBuilder, ConstScalar, ObjectIdentifier, Result, DOCUMENTATION_ENTERPRISE_PEN};
+use spt_snmp::{
+    is_reserved_enterprise_pen, validate_production_enterprise_pen, AgentBuilder, ConstScalar,
+    ObjectIdentifier, Result, DOCUMENTATION_ENTERPRISE_PEN, OLD_PLACEHOLDER_ENTERPRISE_PEN,
+};
 
 fn oid(s: &str) -> ObjectIdentifier {
     s.parse().unwrap()
@@ -43,7 +46,7 @@ fn oid(s: &str) -> ObjectIdentifier {
 #[tokio::test]
 async fn builder_requires_bind() {
     let r = AgentBuilder::new()
-        .enterprise_pen(DOCUMENTATION_ENTERPRISE_PEN)
+        .documentation_enterprise_pen()
         .run()
         .await;
     match r {
@@ -81,6 +84,54 @@ async fn builder_rejects_zero_pen() {
 }
 
 #[tokio::test]
+async fn builder_rejects_documentation_pen_by_default() {
+    let r = AgentBuilder::new()
+        .bind("127.0.0.1:0".parse().unwrap())
+        .enterprise_pen(DOCUMENTATION_ENTERPRISE_PEN)
+        .run()
+        .await;
+    match r {
+        Ok(_) => panic!("documentation PEN must be opt-in only"),
+        Err(e) => assert!(format!("{e}").contains("reserved")),
+    }
+}
+
+#[tokio::test]
+async fn builder_rejects_old_placeholder_pen() {
+    let r = AgentBuilder::new()
+        .bind("127.0.0.1:0".parse().unwrap())
+        .enterprise_pen(OLD_PLACEHOLDER_ENTERPRISE_PEN)
+        .run()
+        .await;
+    match r {
+        Ok(_) => panic!("old placeholder PEN must be rejected"),
+        Err(e) => assert!(format!("{e}").contains("reserved")),
+    }
+}
+
+#[test]
+fn production_pen_validator_accepts_registered_like_pen_only() {
+    assert!(validate_production_enterprise_pen(12_345).is_ok());
+    assert!(validate_production_enterprise_pen(0).is_err());
+    assert!(validate_production_enterprise_pen(DOCUMENTATION_ENTERPRISE_PEN).is_err());
+    assert!(validate_production_enterprise_pen(OLD_PLACEHOLDER_ENTERPRISE_PEN).is_err());
+    assert!(is_reserved_enterprise_pen(DOCUMENTATION_ENTERPRISE_PEN));
+    assert!(is_reserved_enterprise_pen(OLD_PLACEHOLDER_ENTERPRISE_PEN));
+    assert!(!is_reserved_enterprise_pen(12_345));
+}
+
+#[tokio::test]
+async fn builder_fixture_method_allows_documentation_pen() {
+    let agent = AgentBuilder::new()
+        .bind("127.0.0.1:0".parse().unwrap())
+        .documentation_enterprise_pen()
+        .run()
+        .await
+        .expect("fixture method should allow documentation PEN");
+    agent.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn builder_with_explicit_engine_id_skips_pen_check() {
     let id = EngineId::new(vec![0x80, 0, 0, 0, 1, 2, 3, 4, 5]).unwrap();
     let agent = AgentBuilder::new()
@@ -98,7 +149,7 @@ async fn builder_with_explicit_engine_id_skips_pen_check() {
 async fn builder_registry_mut_lets_handlers_be_added() {
     let mut builder = AgentBuilder::new()
         .bind("127.0.0.1:0".parse().unwrap())
-        .enterprise_pen(DOCUMENTATION_ENTERPRISE_PEN)
+        .documentation_enterprise_pen()
         .add_user(UsmUser::no_auth("u"));
     builder.registry_mut().add_scalar(
         oid("1.3.6.1.4.1.32473.99.0"),
@@ -112,7 +163,7 @@ async fn builder_registry_mut_lets_handlers_be_added() {
 async fn builder_debug_redacts_internals() {
     let b = AgentBuilder::new()
         .bind("127.0.0.1:0".parse().unwrap())
-        .enterprise_pen(DOCUMENTATION_ENTERPRISE_PEN)
+        .documentation_enterprise_pen()
         .add_user(UsmUser::no_auth("u"));
     let dbg = format!("{b:?}");
     assert!(dbg.contains("AgentBuilder"));
@@ -123,7 +174,7 @@ async fn builder_debug_redacts_internals() {
 async fn counters_snapshot_starts_at_zero() {
     let agent = AgentBuilder::new()
         .bind("127.0.0.1:0".parse().unwrap())
-        .enterprise_pen(DOCUMENTATION_ENTERPRISE_PEN)
+        .documentation_enterprise_pen()
         .add_user(UsmUser::no_auth("u"))
         .run()
         .await
@@ -142,7 +193,7 @@ async fn counters_snapshot_starts_at_zero() {
 async fn agent_debug_impl_works() {
     let agent = AgentBuilder::new()
         .bind("127.0.0.1:0".parse().unwrap())
-        .enterprise_pen(DOCUMENTATION_ENTERPRISE_PEN)
+        .documentation_enterprise_pen()
         .add_user(UsmUser::no_auth("u"))
         .run()
         .await
@@ -336,7 +387,7 @@ async fn noauth_get_walks_through_multiple_oids() {
     let user = UsmUser::no_auth("u");
     let agent = AgentBuilder::new()
         .bind("127.0.0.1:0".parse().unwrap())
-        .enterprise_pen(DOCUMENTATION_ENTERPRISE_PEN)
+        .documentation_enterprise_pen()
         .add_user(user.clone())
         .add_scalar(
             oid("1.3.6.1.4.1.32473.10.1.0"),
@@ -378,7 +429,7 @@ async fn noauth_get_next_walks_then_returns_endofmib() {
     let user = UsmUser::no_auth("u");
     let agent = AgentBuilder::new()
         .bind("127.0.0.1:0".parse().unwrap())
-        .enterprise_pen(DOCUMENTATION_ENTERPRISE_PEN)
+        .documentation_enterprise_pen()
         .add_user(user.clone())
         .add_scalar(
             oid("1.3.6.1.4.1.32473.11.1.0"),
@@ -424,7 +475,7 @@ async fn set_request_writable_scalar_succeeds() {
     let user = UsmUser::no_auth("u");
     let agent = AgentBuilder::new()
         .bind("127.0.0.1:0".parse().unwrap())
-        .enterprise_pen(DOCUMENTATION_ENTERPRISE_PEN)
+        .documentation_enterprise_pen()
         .add_user(user.clone())
         .add_scalar(
             oid("1.3.6.1.4.1.32473.12.1.0"),
@@ -488,7 +539,7 @@ async fn unknown_user_increments_counter_and_drops() {
     let user = UsmUser::no_auth("known");
     let agent = AgentBuilder::new()
         .bind("127.0.0.1:0".parse().unwrap())
-        .enterprise_pen(DOCUMENTATION_ENTERPRISE_PEN)
+        .documentation_enterprise_pen()
         .add_user(user.clone())
         .run()
         .await
@@ -557,7 +608,7 @@ async fn engine_id_mismatch_is_silently_dropped() {
     let user = UsmUser::no_auth("u");
     let agent = AgentBuilder::new()
         .bind("127.0.0.1:0".parse().unwrap())
-        .enterprise_pen(DOCUMENTATION_ENTERPRISE_PEN)
+        .documentation_enterprise_pen()
         .add_user(user.clone())
         .run()
         .await
@@ -619,7 +670,7 @@ async fn malformed_datagram_is_silently_dropped() {
     let user = UsmUser::no_auth("u");
     let agent = AgentBuilder::new()
         .bind("127.0.0.1:0".parse().unwrap())
-        .enterprise_pen(DOCUMENTATION_ENTERPRISE_PEN)
+        .documentation_enterprise_pen()
         .add_user(user)
         .run()
         .await
@@ -643,7 +694,7 @@ async fn inform_request_returns_empty_response() {
     let user = UsmUser::no_auth("u");
     let agent = AgentBuilder::new()
         .bind("127.0.0.1:0".parse().unwrap())
-        .enterprise_pen(DOCUMENTATION_ENTERPRISE_PEN)
+        .documentation_enterprise_pen()
         .add_user(user.clone())
         .run()
         .await
@@ -672,7 +723,7 @@ async fn handler_dispatch_actually_runs() {
     let calls = Arc::new(AtomicI64::new(0));
     let agent = AgentBuilder::new()
         .bind("127.0.0.1:0".parse().unwrap())
-        .enterprise_pen(DOCUMENTATION_ENTERPRISE_PEN)
+        .documentation_enterprise_pen()
         .add_user(user.clone())
         .add_scalar(
             oid("1.3.6.1.4.1.32473.13.1.0"),
@@ -712,7 +763,7 @@ async fn authpriv_user_handles_noauth_request_under_priv_only_rejected() {
     );
     let agent = AgentBuilder::new()
         .bind("127.0.0.1:0".parse().unwrap())
-        .enterprise_pen(DOCUMENTATION_ENTERPRISE_PEN)
+        .documentation_enterprise_pen()
         .add_user(user.clone())
         .add_scalar(
             oid("1.3.6.1.4.1.32473.14.1.0"),
@@ -745,7 +796,7 @@ async fn discovery_returns_authoritative_engine_id() {
     let user = UsmUser::no_auth("u");
     let agent = AgentBuilder::new()
         .bind("127.0.0.1:0".parse().unwrap())
-        .enterprise_pen(DOCUMENTATION_ENTERPRISE_PEN)
+        .documentation_enterprise_pen()
         .add_user(user.clone())
         .run()
         .await

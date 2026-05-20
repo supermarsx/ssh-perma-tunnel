@@ -73,7 +73,7 @@
     clippy::manual_let_else
 )]
 
-/// Placeholder IANA Private Enterprise Number OID for the SPT MIB.
+/// IANA Private Enterprise Number OID arcs for the checked-in SPT MIB anchor.
 ///
 /// Equals `1.3.6.1.4.1.32473`, which is the RFC 5612 / RFC 9371 documentation
 /// PEN reused as a deliberate placeholder until the project receives its own
@@ -85,7 +85,16 @@
 /// [`docs/pen-registration.md`](../../../docs/pen-registration.md). After
 /// assignment, run `scripts/swap-pen.sh <NEW_PEN>` (or the `.ps1` variant) to
 /// update both the MIB and this constant in one motion.
-pub const SPT_ENTERPRISE_OID_PLACEHOLDER: &[u32] = &[1, 3, 6, 1, 4, 1, 32_473];
+pub const SPT_ENTERPRISE_OID_ARCS: &[u32] = &[1, 3, 6, 1, 4, 1, 32_473];
+
+/// Deprecated alias for [`SPT_ENTERPRISE_OID_ARCS`].
+///
+/// Production SNMP agents must use a registered IANA PEN through
+/// [`AgentBuilder::enterprise_pen`].
+#[deprecated(
+    note = "use SPT_ENTERPRISE_OID_ARCS for the checked-in MIB anchor; production agents must configure a registered IANA PEN"
+)]
+pub const SPT_ENTERPRISE_OID_PLACEHOLDER: &[u32] = SPT_ENTERPRISE_OID_ARCS;
 
 pub mod agent;
 pub mod ber;
@@ -102,7 +111,10 @@ pub mod trap;
 pub mod usm;
 pub mod value;
 
-pub use agent::{Agent, AgentBuilder, AgentHandle, DOCUMENTATION_ENTERPRISE_PEN};
+pub use agent::{
+    is_reserved_enterprise_pen, validate_production_enterprise_pen, Agent, AgentBuilder,
+    AgentHandle, DOCUMENTATION_ENTERPRISE_PEN, OLD_PLACEHOLDER_ENTERPRISE_PEN,
+};
 pub use engine::{generate_engine_id, EngineClock, EngineId};
 pub use error::{Error, Result, UsmError};
 pub use mib::{ConstScalar, Handler, MibRegistry, TableHandler};
