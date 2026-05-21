@@ -18,6 +18,25 @@ pub struct Document {
     inner: DocumentMut,
 }
 
+/// Parameters for adding one `[[profiles.sftp_mounts]]` entry.
+#[derive(Debug, Clone, Copy)]
+pub struct SftpMountMutation<'a> {
+    /// Owning profile.
+    pub profile: &'a str,
+    /// Mount name.
+    pub name: &'a str,
+    /// Remote SFTP path.
+    pub remote_path: &'a str,
+    /// Local filesystem mount point.
+    pub mount_point: Option<&'a str>,
+    /// Windows drive letter.
+    pub drive_letter: Option<&'a str>,
+    /// Read-only mount flag.
+    pub read_only: bool,
+    /// Cache mode.
+    pub cache: Option<&'a str>,
+}
+
 impl Document {
     /// Parse TOML text into a [`Document`].
     pub fn parse(raw: &str) -> Result<Self> {
@@ -183,6 +202,91 @@ impl Document {
         }
     }
 
+    /// Add an SFTP-backed mount to a profile.
+    pub fn add_sftp_mount(&mut self, spec: SftpMountMutation<'_>) -> Result<()> {
+        let idx = self.find_profile_index(spec.profile).ok_or_else(|| {
+            Error::InvalidConfig(format!("profile `{}` does not exist", spec.profile))
+        })?;
+        let arr = self.profiles_array_mut();
+        let prof_tbl = arr
+            .get_mut(idx)
+            .ok_or_else(|| Error::InvalidConfig("profile index disappeared".into()))?;
+
+        if let Some(Item::ArrayOfTables(mounts)) = prof_tbl.get("sftp_mounts") {
+            for entry in mounts {
+                if entry
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|s| s == spec.name)
+                {
+                    return Err(Error::InvalidConfig(format!(
+                        "SFTP mount `{}` already exists in profile `{}`",
+                        spec.name, spec.profile
+                    )));
+                }
+            }
+        }
+
+        let mounts: &mut ArrayOfTables = match prof_tbl
+            .entry("sftp_mounts")
+            .or_insert_with(|| Item::ArrayOfTables(ArrayOfTables::new()))
+        {
+            Item::ArrayOfTables(arr) => arr,
+            _ => {
+                return Err(Error::InvalidConfig(
+                    "`sftp_mounts` exists but is not an array of tables".into(),
+                ))
+            }
+        };
+
+        let mut tbl = Table::new();
+        tbl["name"] = value(spec.name);
+        tbl["remote_path"] = value(spec.remote_path);
+        if let Some(mount_point) = spec.mount_point {
+            tbl["mount_point"] = value(mount_point);
+        }
+        if let Some(drive_letter) = spec.drive_letter {
+            tbl["drive_letter"] = value(drive_letter);
+        }
+        tbl["read_only"] = value(spec.read_only);
+        if let Some(cache) = spec.cache {
+            tbl["cache"] = value(cache);
+        }
+        mounts.push(tbl);
+        Ok(())
+    }
+
+    /// Remove an SFTP-backed mount. Returns `Ok(true)` if removed.
+    pub fn remove_sftp_mount(&mut self, profile: &str, mount: &str) -> Result<bool> {
+        let idx = self
+            .find_profile_index(profile)
+            .ok_or_else(|| Error::InvalidConfig(format!("profile `{profile}` does not exist")))?;
+        let arr = self.profiles_array_mut();
+        let prof_tbl = arr
+            .get_mut(idx)
+            .ok_or_else(|| Error::InvalidConfig("profile index disappeared".into()))?;
+        let Some(Item::ArrayOfTables(mounts)) = prof_tbl.get_mut("sftp_mounts") else {
+            return Ok(false);
+        };
+        let mut found: Option<usize> = None;
+        for (i, entry) in mounts.iter().enumerate() {
+            if entry
+                .get("name")
+                .and_then(|v| v.as_str())
+                .is_some_and(|s| s == mount)
+            {
+                found = Some(i);
+                break;
+            }
+        }
+        if let Some(i) = found {
+            mounts.remove(i);
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
     // ---- Internals --------------------------------------------------------
 
     fn profiles_array_mut(&mut self) -> &mut ArrayOfTables {
@@ -222,7 +326,7 @@ impl std::fmt::Display for Document {
 
 #[cfg(test)]
 mod tests {
-    use super::Document;
+    use super::{Document, SftpMountMutation};
 
     const RAW: &str = r#"# header comment
 version = 1
@@ -265,6 +369,38 @@ host = "h"
             .is_err());
         assert!(doc.remove_forward("p", "f1").unwrap());
         assert!(!doc.remove_forward("p", "f1").unwrap());
+    }
+
+    #[test]
+    fn add_and_remove_sftp_mount() {
+        let mut doc = Document::parse(RAW).unwrap();
+        doc.add_sftp_mount(SftpMountMutation {
+            profile: "p",
+            name: "data",
+            remote_path: "/srv/data",
+            mount_point: Some("/mnt/data"),
+            drive_letter: None,
+            read_only: true,
+            cache: Some("metadata"),
+        })
+        .unwrap();
+        let out = doc.to_string();
+        assert!(out.contains(r#"name = "data""#));
+        assert!(out.contains(r#"remote_path = "/srv/data""#));
+        assert!(out.contains(r#"mount_point = "/mnt/data""#));
+        assert!(doc
+            .add_sftp_mount(SftpMountMutation {
+                profile: "p",
+                name: "data",
+                remote_path: "/srv/data",
+                mount_point: Some("/mnt/data"),
+                drive_letter: None,
+                read_only: true,
+                cache: None,
+            })
+            .is_err());
+        assert!(doc.remove_sftp_mount("p", "data").unwrap());
+        assert!(!doc.remove_sftp_mount("p", "data").unwrap());
     }
 
     #[test]

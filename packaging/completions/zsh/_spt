@@ -6454,6 +6454,935 @@ esac
     ;;
 esac
 ;;
+(sftp)
+_arguments "${_arguments_options[@]}" : \
+'--config=[Path to a single config file]:PATH:_files' \
+'--config-dir=[Path to a directory of \`*.toml\` configs (loaded in lexical order)]:PATH:_files' \
+'--config-url=[HTTPS URL of a remote config to fetch]:URL:_default' \
+'--config-fingerprint=[SHA-256 fingerprint pin for \`--config-url\`]:SHA256:_default' \
+'--state-dir=[Override the runtime state directory]:PATH:_files' \
+'--profile=[Restrict operations to the named profile]:NAME:_default' \
+'--output=[Output format for command results]:OUTPUT:((human\:"Human-readable text (default)"
+json\:"Structured JSON"
+jsonl\:"JSON Lines (one record per line)"
+yaml\:"YAML"))' \
+'--log-level=[Tracing log level]:LOG_LEVEL:((error\:"Only errors"
+warn\:"Warnings and above"
+info\:"Informational and above (default)"
+debug\:"Debug and above"
+trace\:"Trace and above (very verbose)"))' \
+'--color=[Color policy for human output]:COLOR:((auto\:"Auto-detect based on tty"
+always\:"Always emit color escapes"
+never\:"Never emit color escapes"))' \
+'--json[Convenience alias for \`--output json\`]' \
+'-q[Suppress non-essential output]' \
+'--quiet[Suppress non-essential output]' \
+'*-v[Increase verbosity (repeat for more)]' \
+'*--verbose[Increase verbosity (repeat for more)]' \
+'--no-color[Disable color (legacy convenience flag; use \`--color never\`)]' \
+'--dry-run[Show what would happen without making changes]' \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+'-V[Print version]' \
+'--version[Print version]' \
+":: :_spt__sftp_commands" \
+"*::: :->sftp" \
+&& ret=0
+
+    case $state in
+    (sftp)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:spt-sftp-command-$line[1]:"
+        case $line[1] in
+            (test)
+_arguments "${_arguments_options[@]}" : \
+'--profile=[Profile name]:PROFILE:_default' \
+'--config=[Path to a single config file]:PATH:_files' \
+'--config-dir=[Path to a directory of \`*.toml\` configs (loaded in lexical order)]:PATH:_files' \
+'--config-url=[HTTPS URL of a remote config to fetch]:URL:_default' \
+'--config-fingerprint=[SHA-256 fingerprint pin for \`--config-url\`]:SHA256:_default' \
+'--state-dir=[Override the runtime state directory]:PATH:_files' \
+'--output=[Output format for command results]:OUTPUT:((human\:"Human-readable text (default)"
+json\:"Structured JSON"
+jsonl\:"JSON Lines (one record per line)"
+yaml\:"YAML"))' \
+'--log-level=[Tracing log level]:LOG_LEVEL:((error\:"Only errors"
+warn\:"Warnings and above"
+info\:"Informational and above (default)"
+debug\:"Debug and above"
+trace\:"Trace and above (very verbose)"))' \
+'--color=[Color policy for human output]:COLOR:((auto\:"Auto-detect based on tty"
+always\:"Always emit color escapes"
+never\:"Never emit color escapes"))' \
+'--json[JSON output]' \
+'-q[Suppress non-essential output]' \
+'--quiet[Suppress non-essential output]' \
+'*-v[Increase verbosity (repeat for more)]' \
+'*--verbose[Increase verbosity (repeat for more)]' \
+'--no-color[Disable color (legacy convenience flag; use \`--color never\`)]' \
+'--dry-run[Show what would happen without making changes]' \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+'-V[Print version]' \
+'--version[Print version]' \
+&& ret=0
+;;
+(list)
+_arguments "${_arguments_options[@]}" : \
+'--profile=[Profile name]:PROFILE:_default' \
+'--config=[Path to a single config file]:PATH:_files' \
+'--config-dir=[Path to a directory of \`*.toml\` configs (loaded in lexical order)]:PATH:_files' \
+'--config-url=[HTTPS URL of a remote config to fetch]:URL:_default' \
+'--config-fingerprint=[SHA-256 fingerprint pin for \`--config-url\`]:SHA256:_default' \
+'--state-dir=[Override the runtime state directory]:PATH:_files' \
+'--output=[Output format for command results]:OUTPUT:((human\:"Human-readable text (default)"
+json\:"Structured JSON"
+jsonl\:"JSON Lines (one record per line)"
+yaml\:"YAML"))' \
+'--log-level=[Tracing log level]:LOG_LEVEL:((error\:"Only errors"
+warn\:"Warnings and above"
+info\:"Informational and above (default)"
+debug\:"Debug and above"
+trace\:"Trace and above (very verbose)"))' \
+'--color=[Color policy for human output]:COLOR:((auto\:"Auto-detect based on tty"
+always\:"Always emit color escapes"
+never\:"Never emit color escapes"))' \
+'--json[JSON output]' \
+'-q[Suppress non-essential output]' \
+'--quiet[Suppress non-essential output]' \
+'*-v[Increase verbosity (repeat for more)]' \
+'*--verbose[Increase verbosity (repeat for more)]' \
+'--no-color[Disable color (legacy convenience flag; use \`--color never\`)]' \
+'--dry-run[Show what would happen without making changes]' \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+'-V[Print version]' \
+'--version[Print version]' \
+':path -- Remote path:_default' \
+&& ret=0
+;;
+(stat)
+_arguments "${_arguments_options[@]}" : \
+'--profile=[Profile name]:PROFILE:_default' \
+'--config=[Path to a single config file]:PATH:_files' \
+'--config-dir=[Path to a directory of \`*.toml\` configs (loaded in lexical order)]:PATH:_files' \
+'--config-url=[HTTPS URL of a remote config to fetch]:URL:_default' \
+'--config-fingerprint=[SHA-256 fingerprint pin for \`--config-url\`]:SHA256:_default' \
+'--state-dir=[Override the runtime state directory]:PATH:_files' \
+'--output=[Output format for command results]:OUTPUT:((human\:"Human-readable text (default)"
+json\:"Structured JSON"
+jsonl\:"JSON Lines (one record per line)"
+yaml\:"YAML"))' \
+'--log-level=[Tracing log level]:LOG_LEVEL:((error\:"Only errors"
+warn\:"Warnings and above"
+info\:"Informational and above (default)"
+debug\:"Debug and above"
+trace\:"Trace and above (very verbose)"))' \
+'--color=[Color policy for human output]:COLOR:((auto\:"Auto-detect based on tty"
+always\:"Always emit color escapes"
+never\:"Never emit color escapes"))' \
+'--json[JSON output]' \
+'-q[Suppress non-essential output]' \
+'--quiet[Suppress non-essential output]' \
+'*-v[Increase verbosity (repeat for more)]' \
+'*--verbose[Increase verbosity (repeat for more)]' \
+'--no-color[Disable color (legacy convenience flag; use \`--color never\`)]' \
+'--dry-run[Show what would happen without making changes]' \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+'-V[Print version]' \
+'--version[Print version]' \
+':path -- Remote path:_default' \
+&& ret=0
+;;
+(get)
+_arguments "${_arguments_options[@]}" : \
+'--profile=[Profile name]:PROFILE:_default' \
+'--out=[Local output path]:PATH:_files' \
+'--config=[Path to a single config file]:PATH:_files' \
+'--config-dir=[Path to a directory of \`*.toml\` configs (loaded in lexical order)]:PATH:_files' \
+'--config-url=[HTTPS URL of a remote config to fetch]:URL:_default' \
+'--config-fingerprint=[SHA-256 fingerprint pin for \`--config-url\`]:SHA256:_default' \
+'--state-dir=[Override the runtime state directory]:PATH:_files' \
+'--output=[Output format for command results]:OUTPUT:((human\:"Human-readable text (default)"
+json\:"Structured JSON"
+jsonl\:"JSON Lines (one record per line)"
+yaml\:"YAML"))' \
+'--log-level=[Tracing log level]:LOG_LEVEL:((error\:"Only errors"
+warn\:"Warnings and above"
+info\:"Informational and above (default)"
+debug\:"Debug and above"
+trace\:"Trace and above (very verbose)"))' \
+'--color=[Color policy for human output]:COLOR:((auto\:"Auto-detect based on tty"
+always\:"Always emit color escapes"
+never\:"Never emit color escapes"))' \
+'--json[Convenience alias for \`--output json\`]' \
+'-q[Suppress non-essential output]' \
+'--quiet[Suppress non-essential output]' \
+'*-v[Increase verbosity (repeat for more)]' \
+'*--verbose[Increase verbosity (repeat for more)]' \
+'--no-color[Disable color (legacy convenience flag; use \`--color never\`)]' \
+'--dry-run[Show what would happen without making changes]' \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+'-V[Print version]' \
+'--version[Print version]' \
+':remote -- Remote file path:_default' \
+&& ret=0
+;;
+(put)
+_arguments "${_arguments_options[@]}" : \
+'--profile=[Profile name]:PROFILE:_default' \
+'--config=[Path to a single config file]:PATH:_files' \
+'--config-dir=[Path to a directory of \`*.toml\` configs (loaded in lexical order)]:PATH:_files' \
+'--config-url=[HTTPS URL of a remote config to fetch]:URL:_default' \
+'--config-fingerprint=[SHA-256 fingerprint pin for \`--config-url\`]:SHA256:_default' \
+'--state-dir=[Override the runtime state directory]:PATH:_files' \
+'--output=[Output format for command results]:OUTPUT:((human\:"Human-readable text (default)"
+json\:"Structured JSON"
+jsonl\:"JSON Lines (one record per line)"
+yaml\:"YAML"))' \
+'--log-level=[Tracing log level]:LOG_LEVEL:((error\:"Only errors"
+warn\:"Warnings and above"
+info\:"Informational and above (default)"
+debug\:"Debug and above"
+trace\:"Trace and above (very verbose)"))' \
+'--color=[Color policy for human output]:COLOR:((auto\:"Auto-detect based on tty"
+always\:"Always emit color escapes"
+never\:"Never emit color escapes"))' \
+'--json[Convenience alias for \`--output json\`]' \
+'-q[Suppress non-essential output]' \
+'--quiet[Suppress non-essential output]' \
+'*-v[Increase verbosity (repeat for more)]' \
+'*--verbose[Increase verbosity (repeat for more)]' \
+'--no-color[Disable color (legacy convenience flag; use \`--color never\`)]' \
+'--dry-run[Show what would happen without making changes]' \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+'-V[Print version]' \
+'--version[Print version]' \
+':local -- Local input path:_files' \
+':remote -- Remote file path:_default' \
+&& ret=0
+;;
+(mkdir)
+_arguments "${_arguments_options[@]}" : \
+'--profile=[Profile name]:PROFILE:_default' \
+'--config=[Path to a single config file]:PATH:_files' \
+'--config-dir=[Path to a directory of \`*.toml\` configs (loaded in lexical order)]:PATH:_files' \
+'--config-url=[HTTPS URL of a remote config to fetch]:URL:_default' \
+'--config-fingerprint=[SHA-256 fingerprint pin for \`--config-url\`]:SHA256:_default' \
+'--state-dir=[Override the runtime state directory]:PATH:_files' \
+'--output=[Output format for command results]:OUTPUT:((human\:"Human-readable text (default)"
+json\:"Structured JSON"
+jsonl\:"JSON Lines (one record per line)"
+yaml\:"YAML"))' \
+'--log-level=[Tracing log level]:LOG_LEVEL:((error\:"Only errors"
+warn\:"Warnings and above"
+info\:"Informational and above (default)"
+debug\:"Debug and above"
+trace\:"Trace and above (very verbose)"))' \
+'--color=[Color policy for human output]:COLOR:((auto\:"Auto-detect based on tty"
+always\:"Always emit color escapes"
+never\:"Never emit color escapes"))' \
+'--json[JSON output]' \
+'-q[Suppress non-essential output]' \
+'--quiet[Suppress non-essential output]' \
+'*-v[Increase verbosity (repeat for more)]' \
+'*--verbose[Increase verbosity (repeat for more)]' \
+'--no-color[Disable color (legacy convenience flag; use \`--color never\`)]' \
+'--dry-run[Show what would happen without making changes]' \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+'-V[Print version]' \
+'--version[Print version]' \
+':path -- Remote path:_default' \
+&& ret=0
+;;
+(rm)
+_arguments "${_arguments_options[@]}" : \
+'--profile=[Profile name]:PROFILE:_default' \
+'--config=[Path to a single config file]:PATH:_files' \
+'--config-dir=[Path to a directory of \`*.toml\` configs (loaded in lexical order)]:PATH:_files' \
+'--config-url=[HTTPS URL of a remote config to fetch]:URL:_default' \
+'--config-fingerprint=[SHA-256 fingerprint pin for \`--config-url\`]:SHA256:_default' \
+'--state-dir=[Override the runtime state directory]:PATH:_files' \
+'--output=[Output format for command results]:OUTPUT:((human\:"Human-readable text (default)"
+json\:"Structured JSON"
+jsonl\:"JSON Lines (one record per line)"
+yaml\:"YAML"))' \
+'--log-level=[Tracing log level]:LOG_LEVEL:((error\:"Only errors"
+warn\:"Warnings and above"
+info\:"Informational and above (default)"
+debug\:"Debug and above"
+trace\:"Trace and above (very verbose)"))' \
+'--color=[Color policy for human output]:COLOR:((auto\:"Auto-detect based on tty"
+always\:"Always emit color escapes"
+never\:"Never emit color escapes"))' \
+'--json[JSON output]' \
+'-q[Suppress non-essential output]' \
+'--quiet[Suppress non-essential output]' \
+'*-v[Increase verbosity (repeat for more)]' \
+'*--verbose[Increase verbosity (repeat for more)]' \
+'--no-color[Disable color (legacy convenience flag; use \`--color never\`)]' \
+'--dry-run[Show what would happen without making changes]' \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+'-V[Print version]' \
+'--version[Print version]' \
+':path -- Remote path:_default' \
+&& ret=0
+;;
+(rmdir)
+_arguments "${_arguments_options[@]}" : \
+'--profile=[Profile name]:PROFILE:_default' \
+'--config=[Path to a single config file]:PATH:_files' \
+'--config-dir=[Path to a directory of \`*.toml\` configs (loaded in lexical order)]:PATH:_files' \
+'--config-url=[HTTPS URL of a remote config to fetch]:URL:_default' \
+'--config-fingerprint=[SHA-256 fingerprint pin for \`--config-url\`]:SHA256:_default' \
+'--state-dir=[Override the runtime state directory]:PATH:_files' \
+'--output=[Output format for command results]:OUTPUT:((human\:"Human-readable text (default)"
+json\:"Structured JSON"
+jsonl\:"JSON Lines (one record per line)"
+yaml\:"YAML"))' \
+'--log-level=[Tracing log level]:LOG_LEVEL:((error\:"Only errors"
+warn\:"Warnings and above"
+info\:"Informational and above (default)"
+debug\:"Debug and above"
+trace\:"Trace and above (very verbose)"))' \
+'--color=[Color policy for human output]:COLOR:((auto\:"Auto-detect based on tty"
+always\:"Always emit color escapes"
+never\:"Never emit color escapes"))' \
+'--json[JSON output]' \
+'-q[Suppress non-essential output]' \
+'--quiet[Suppress non-essential output]' \
+'*-v[Increase verbosity (repeat for more)]' \
+'*--verbose[Increase verbosity (repeat for more)]' \
+'--no-color[Disable color (legacy convenience flag; use \`--color never\`)]' \
+'--dry-run[Show what would happen without making changes]' \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+'-V[Print version]' \
+'--version[Print version]' \
+':path -- Remote path:_default' \
+&& ret=0
+;;
+(rename)
+_arguments "${_arguments_options[@]}" : \
+'--profile=[Profile name]:PROFILE:_default' \
+'--config=[Path to a single config file]:PATH:_files' \
+'--config-dir=[Path to a directory of \`*.toml\` configs (loaded in lexical order)]:PATH:_files' \
+'--config-url=[HTTPS URL of a remote config to fetch]:URL:_default' \
+'--config-fingerprint=[SHA-256 fingerprint pin for \`--config-url\`]:SHA256:_default' \
+'--state-dir=[Override the runtime state directory]:PATH:_files' \
+'--output=[Output format for command results]:OUTPUT:((human\:"Human-readable text (default)"
+json\:"Structured JSON"
+jsonl\:"JSON Lines (one record per line)"
+yaml\:"YAML"))' \
+'--log-level=[Tracing log level]:LOG_LEVEL:((error\:"Only errors"
+warn\:"Warnings and above"
+info\:"Informational and above (default)"
+debug\:"Debug and above"
+trace\:"Trace and above (very verbose)"))' \
+'--color=[Color policy for human output]:COLOR:((auto\:"Auto-detect based on tty"
+always\:"Always emit color escapes"
+never\:"Never emit color escapes"))' \
+'--json[Convenience alias for \`--output json\`]' \
+'-q[Suppress non-essential output]' \
+'--quiet[Suppress non-essential output]' \
+'*-v[Increase verbosity (repeat for more)]' \
+'*--verbose[Increase verbosity (repeat for more)]' \
+'--no-color[Disable color (legacy convenience flag; use \`--color never\`)]' \
+'--dry-run[Show what would happen without making changes]' \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+'-V[Print version]' \
+'--version[Print version]' \
+':old_path -- Existing remote path:_default' \
+':new_path -- New remote path:_default' \
+&& ret=0
+;;
+(mount)
+_arguments "${_arguments_options[@]}" : \
+'--config=[Path to a single config file]:PATH:_files' \
+'--config-dir=[Path to a directory of \`*.toml\` configs (loaded in lexical order)]:PATH:_files' \
+'--config-url=[HTTPS URL of a remote config to fetch]:URL:_default' \
+'--config-fingerprint=[SHA-256 fingerprint pin for \`--config-url\`]:SHA256:_default' \
+'--state-dir=[Override the runtime state directory]:PATH:_files' \
+'--profile=[Restrict operations to the named profile]:NAME:_default' \
+'--output=[Output format for command results]:OUTPUT:((human\:"Human-readable text (default)"
+json\:"Structured JSON"
+jsonl\:"JSON Lines (one record per line)"
+yaml\:"YAML"))' \
+'--log-level=[Tracing log level]:LOG_LEVEL:((error\:"Only errors"
+warn\:"Warnings and above"
+info\:"Informational and above (default)"
+debug\:"Debug and above"
+trace\:"Trace and above (very verbose)"))' \
+'--color=[Color policy for human output]:COLOR:((auto\:"Auto-detect based on tty"
+always\:"Always emit color escapes"
+never\:"Never emit color escapes"))' \
+'--json[Convenience alias for \`--output json\`]' \
+'-q[Suppress non-essential output]' \
+'--quiet[Suppress non-essential output]' \
+'*-v[Increase verbosity (repeat for more)]' \
+'*--verbose[Increase verbosity (repeat for more)]' \
+'--no-color[Disable color (legacy convenience flag; use \`--color never\`)]' \
+'--dry-run[Show what would happen without making changes]' \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+'-V[Print version]' \
+'--version[Print version]' \
+":: :_spt__sftp__mount_commands" \
+"*::: :->mount" \
+&& ret=0
+
+    case $state in
+    (mount)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:spt-sftp-mount-command-$line[1]:"
+        case $line[1] in
+            (list)
+_arguments "${_arguments_options[@]}" : \
+'--profile=[Profile name]:PROFILE:_default' \
+'--config=[Path to a single config file]:PATH:_files' \
+'--config-dir=[Path to a directory of \`*.toml\` configs (loaded in lexical order)]:PATH:_files' \
+'--config-url=[HTTPS URL of a remote config to fetch]:URL:_default' \
+'--config-fingerprint=[SHA-256 fingerprint pin for \`--config-url\`]:SHA256:_default' \
+'--state-dir=[Override the runtime state directory]:PATH:_files' \
+'--output=[Output format for command results]:OUTPUT:((human\:"Human-readable text (default)"
+json\:"Structured JSON"
+jsonl\:"JSON Lines (one record per line)"
+yaml\:"YAML"))' \
+'--log-level=[Tracing log level]:LOG_LEVEL:((error\:"Only errors"
+warn\:"Warnings and above"
+info\:"Informational and above (default)"
+debug\:"Debug and above"
+trace\:"Trace and above (very verbose)"))' \
+'--color=[Color policy for human output]:COLOR:((auto\:"Auto-detect based on tty"
+always\:"Always emit color escapes"
+never\:"Never emit color escapes"))' \
+'--json[JSON output]' \
+'-q[Suppress non-essential output]' \
+'--quiet[Suppress non-essential output]' \
+'*-v[Increase verbosity (repeat for more)]' \
+'*--verbose[Increase verbosity (repeat for more)]' \
+'--no-color[Disable color (legacy convenience flag; use \`--color never\`)]' \
+'--dry-run[Show what would happen without making changes]' \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+'-V[Print version]' \
+'--version[Print version]' \
+&& ret=0
+;;
+(add)
+_arguments "${_arguments_options[@]}" : \
+'--profile=[Profile name]:PROFILE:_default' \
+'--name=[Mount name]:NAME:_default' \
+'--remote=[Remote SFTP path]:PATH:_default' \
+'--mount-point=[Local mount point]:PATH:_default' \
+'--cache=[Cache mode]:MODE:((none\:"No local caching"
+metadata\:"Cache metadata only"
+writeback\:"Writeback cache. Requires an explicit capability gate"))' \
+'--config=[Path to a single config file]:PATH:_files' \
+'--config-dir=[Path to a directory of \`*.toml\` configs (loaded in lexical order)]:PATH:_files' \
+'--config-url=[HTTPS URL of a remote config to fetch]:URL:_default' \
+'--config-fingerprint=[SHA-256 fingerprint pin for \`--config-url\`]:SHA256:_default' \
+'--state-dir=[Override the runtime state directory]:PATH:_files' \
+'--output=[Output format for command results]:OUTPUT:((human\:"Human-readable text (default)"
+json\:"Structured JSON"
+jsonl\:"JSON Lines (one record per line)"
+yaml\:"YAML"))' \
+'--log-level=[Tracing log level]:LOG_LEVEL:((error\:"Only errors"
+warn\:"Warnings and above"
+info\:"Informational and above (default)"
+debug\:"Debug and above"
+trace\:"Trace and above (very verbose)"))' \
+'--color=[Color policy for human output]:COLOR:((auto\:"Auto-detect based on tty"
+always\:"Always emit color escapes"
+never\:"Never emit color escapes"))' \
+'--read-only[Mount read-only]' \
+'--json[Convenience alias for \`--output json\`]' \
+'-q[Suppress non-essential output]' \
+'--quiet[Suppress non-essential output]' \
+'*-v[Increase verbosity (repeat for more)]' \
+'*--verbose[Increase verbosity (repeat for more)]' \
+'--no-color[Disable color (legacy convenience flag; use \`--color never\`)]' \
+'--dry-run[Show what would happen without making changes]' \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+'-V[Print version]' \
+'--version[Print version]' \
+&& ret=0
+;;
+(remove)
+_arguments "${_arguments_options[@]}" : \
+'--config=[Path to a single config file]:PATH:_files' \
+'--config-dir=[Path to a directory of \`*.toml\` configs (loaded in lexical order)]:PATH:_files' \
+'--config-url=[HTTPS URL of a remote config to fetch]:URL:_default' \
+'--config-fingerprint=[SHA-256 fingerprint pin for \`--config-url\`]:SHA256:_default' \
+'--state-dir=[Override the runtime state directory]:PATH:_files' \
+'--profile=[Restrict operations to the named profile]:NAME:_default' \
+'--output=[Output format for command results]:OUTPUT:((human\:"Human-readable text (default)"
+json\:"Structured JSON"
+jsonl\:"JSON Lines (one record per line)"
+yaml\:"YAML"))' \
+'--log-level=[Tracing log level]:LOG_LEVEL:((error\:"Only errors"
+warn\:"Warnings and above"
+info\:"Informational and above (default)"
+debug\:"Debug and above"
+trace\:"Trace and above (very verbose)"))' \
+'--color=[Color policy for human output]:COLOR:((auto\:"Auto-detect based on tty"
+always\:"Always emit color escapes"
+never\:"Never emit color escapes"))' \
+'--json[Convenience alias for \`--output json\`]' \
+'-q[Suppress non-essential output]' \
+'--quiet[Suppress non-essential output]' \
+'*-v[Increase verbosity (repeat for more)]' \
+'*--verbose[Increase verbosity (repeat for more)]' \
+'--no-color[Disable color (legacy convenience flag; use \`--color never\`)]' \
+'--dry-run[Show what would happen without making changes]' \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+'-V[Print version]' \
+'--version[Print version]' \
+':reference -- `<profile>/<mount>`:_default' \
+&& ret=0
+;;
+(plan)
+_arguments "${_arguments_options[@]}" : \
+'--profile=[Profile name]:PROFILE:_default' \
+'--name=[Existing mount name. If omitted, \`--remote\` and \`--mount-point\` are used]:NAME:_default' \
+'--remote=[Proposed remote path]:PATH:_default' \
+'--mount-point=[Proposed mount point]:PATH:_default' \
+'--cache=[Proposed cache mode]:MODE:((none\:"No local caching"
+metadata\:"Cache metadata only"
+writeback\:"Writeback cache. Requires an explicit capability gate"))' \
+'--config=[Path to a single config file]:PATH:_files' \
+'--config-dir=[Path to a directory of \`*.toml\` configs (loaded in lexical order)]:PATH:_files' \
+'--config-url=[HTTPS URL of a remote config to fetch]:URL:_default' \
+'--config-fingerprint=[SHA-256 fingerprint pin for \`--config-url\`]:SHA256:_default' \
+'--state-dir=[Override the runtime state directory]:PATH:_files' \
+'--output=[Output format for command results]:OUTPUT:((human\:"Human-readable text (default)"
+json\:"Structured JSON"
+jsonl\:"JSON Lines (one record per line)"
+yaml\:"YAML"))' \
+'--log-level=[Tracing log level]:LOG_LEVEL:((error\:"Only errors"
+warn\:"Warnings and above"
+info\:"Informational and above (default)"
+debug\:"Debug and above"
+trace\:"Trace and above (very verbose)"))' \
+'--color=[Color policy for human output]:COLOR:((auto\:"Auto-detect based on tty"
+always\:"Always emit color escapes"
+never\:"Never emit color escapes"))' \
+'--read-only[Proposed read-only mode]' \
+'--json[JSON output]' \
+'-q[Suppress non-essential output]' \
+'--quiet[Suppress non-essential output]' \
+'*-v[Increase verbosity (repeat for more)]' \
+'*--verbose[Increase verbosity (repeat for more)]' \
+'--no-color[Disable color (legacy convenience flag; use \`--color never\`)]' \
+'--dry-run[Show what would happen without making changes]' \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+'-V[Print version]' \
+'--version[Print version]' \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+":: :_spt__sftp__mount__help_commands" \
+"*::: :->help" \
+&& ret=0
+
+    case $state in
+    (help)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:spt-sftp-mount-help-command-$line[1]:"
+        case $line[1] in
+            (list)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(add)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(remove)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(plan)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+        esac
+    ;;
+esac
+;;
+(drive)
+_arguments "${_arguments_options[@]}" : \
+'--config=[Path to a single config file]:PATH:_files' \
+'--config-dir=[Path to a directory of \`*.toml\` configs (loaded in lexical order)]:PATH:_files' \
+'--config-url=[HTTPS URL of a remote config to fetch]:URL:_default' \
+'--config-fingerprint=[SHA-256 fingerprint pin for \`--config-url\`]:SHA256:_default' \
+'--state-dir=[Override the runtime state directory]:PATH:_files' \
+'--profile=[Restrict operations to the named profile]:NAME:_default' \
+'--output=[Output format for command results]:OUTPUT:((human\:"Human-readable text (default)"
+json\:"Structured JSON"
+jsonl\:"JSON Lines (one record per line)"
+yaml\:"YAML"))' \
+'--log-level=[Tracing log level]:LOG_LEVEL:((error\:"Only errors"
+warn\:"Warnings and above"
+info\:"Informational and above (default)"
+debug\:"Debug and above"
+trace\:"Trace and above (very verbose)"))' \
+'--color=[Color policy for human output]:COLOR:((auto\:"Auto-detect based on tty"
+always\:"Always emit color escapes"
+never\:"Never emit color escapes"))' \
+'--json[Convenience alias for \`--output json\`]' \
+'-q[Suppress non-essential output]' \
+'--quiet[Suppress non-essential output]' \
+'*-v[Increase verbosity (repeat for more)]' \
+'*--verbose[Increase verbosity (repeat for more)]' \
+'--no-color[Disable color (legacy convenience flag; use \`--color never\`)]' \
+'--dry-run[Show what would happen without making changes]' \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+'-V[Print version]' \
+'--version[Print version]' \
+":: :_spt__sftp__drive_commands" \
+"*::: :->drive" \
+&& ret=0
+
+    case $state in
+    (drive)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:spt-sftp-drive-command-$line[1]:"
+        case $line[1] in
+            (list)
+_arguments "${_arguments_options[@]}" : \
+'--profile=[Profile name]:PROFILE:_default' \
+'--config=[Path to a single config file]:PATH:_files' \
+'--config-dir=[Path to a directory of \`*.toml\` configs (loaded in lexical order)]:PATH:_files' \
+'--config-url=[HTTPS URL of a remote config to fetch]:URL:_default' \
+'--config-fingerprint=[SHA-256 fingerprint pin for \`--config-url\`]:SHA256:_default' \
+'--state-dir=[Override the runtime state directory]:PATH:_files' \
+'--output=[Output format for command results]:OUTPUT:((human\:"Human-readable text (default)"
+json\:"Structured JSON"
+jsonl\:"JSON Lines (one record per line)"
+yaml\:"YAML"))' \
+'--log-level=[Tracing log level]:LOG_LEVEL:((error\:"Only errors"
+warn\:"Warnings and above"
+info\:"Informational and above (default)"
+debug\:"Debug and above"
+trace\:"Trace and above (very verbose)"))' \
+'--color=[Color policy for human output]:COLOR:((auto\:"Auto-detect based on tty"
+always\:"Always emit color escapes"
+never\:"Never emit color escapes"))' \
+'--json[JSON output]' \
+'-q[Suppress non-essential output]' \
+'--quiet[Suppress non-essential output]' \
+'*-v[Increase verbosity (repeat for more)]' \
+'*--verbose[Increase verbosity (repeat for more)]' \
+'--no-color[Disable color (legacy convenience flag; use \`--color never\`)]' \
+'--dry-run[Show what would happen without making changes]' \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+'-V[Print version]' \
+'--version[Print version]' \
+&& ret=0
+;;
+(add)
+_arguments "${_arguments_options[@]}" : \
+'--profile=[Profile name]:PROFILE:_default' \
+'--name=[Mount name]:NAME:_default' \
+'--remote=[Remote SFTP path]:PATH:_default' \
+'--letter=[Windows drive letter, for example \`S\` or \`S\:\`]:LETTER:_default' \
+'--cache=[Cache mode]:MODE:((none\:"No local caching"
+metadata\:"Cache metadata only"
+writeback\:"Writeback cache. Requires an explicit capability gate"))' \
+'--config=[Path to a single config file]:PATH:_files' \
+'--config-dir=[Path to a directory of \`*.toml\` configs (loaded in lexical order)]:PATH:_files' \
+'--config-url=[HTTPS URL of a remote config to fetch]:URL:_default' \
+'--config-fingerprint=[SHA-256 fingerprint pin for \`--config-url\`]:SHA256:_default' \
+'--state-dir=[Override the runtime state directory]:PATH:_files' \
+'--output=[Output format for command results]:OUTPUT:((human\:"Human-readable text (default)"
+json\:"Structured JSON"
+jsonl\:"JSON Lines (one record per line)"
+yaml\:"YAML"))' \
+'--log-level=[Tracing log level]:LOG_LEVEL:((error\:"Only errors"
+warn\:"Warnings and above"
+info\:"Informational and above (default)"
+debug\:"Debug and above"
+trace\:"Trace and above (very verbose)"))' \
+'--color=[Color policy for human output]:COLOR:((auto\:"Auto-detect based on tty"
+always\:"Always emit color escapes"
+never\:"Never emit color escapes"))' \
+'--read-only[Mount read-only]' \
+'--json[Convenience alias for \`--output json\`]' \
+'-q[Suppress non-essential output]' \
+'--quiet[Suppress non-essential output]' \
+'*-v[Increase verbosity (repeat for more)]' \
+'*--verbose[Increase verbosity (repeat for more)]' \
+'--no-color[Disable color (legacy convenience flag; use \`--color never\`)]' \
+'--dry-run[Show what would happen without making changes]' \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+'-V[Print version]' \
+'--version[Print version]' \
+&& ret=0
+;;
+(remove)
+_arguments "${_arguments_options[@]}" : \
+'--config=[Path to a single config file]:PATH:_files' \
+'--config-dir=[Path to a directory of \`*.toml\` configs (loaded in lexical order)]:PATH:_files' \
+'--config-url=[HTTPS URL of a remote config to fetch]:URL:_default' \
+'--config-fingerprint=[SHA-256 fingerprint pin for \`--config-url\`]:SHA256:_default' \
+'--state-dir=[Override the runtime state directory]:PATH:_files' \
+'--profile=[Restrict operations to the named profile]:NAME:_default' \
+'--output=[Output format for command results]:OUTPUT:((human\:"Human-readable text (default)"
+json\:"Structured JSON"
+jsonl\:"JSON Lines (one record per line)"
+yaml\:"YAML"))' \
+'--log-level=[Tracing log level]:LOG_LEVEL:((error\:"Only errors"
+warn\:"Warnings and above"
+info\:"Informational and above (default)"
+debug\:"Debug and above"
+trace\:"Trace and above (very verbose)"))' \
+'--color=[Color policy for human output]:COLOR:((auto\:"Auto-detect based on tty"
+always\:"Always emit color escapes"
+never\:"Never emit color escapes"))' \
+'--json[Convenience alias for \`--output json\`]' \
+'-q[Suppress non-essential output]' \
+'--quiet[Suppress non-essential output]' \
+'*-v[Increase verbosity (repeat for more)]' \
+'*--verbose[Increase verbosity (repeat for more)]' \
+'--no-color[Disable color (legacy convenience flag; use \`--color never\`)]' \
+'--dry-run[Show what would happen without making changes]' \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+'-V[Print version]' \
+'--version[Print version]' \
+':reference -- `<profile>/<mount>`:_default' \
+&& ret=0
+;;
+(plan)
+_arguments "${_arguments_options[@]}" : \
+'--profile=[Profile name]:PROFILE:_default' \
+'--name=[Existing mount name. If omitted, \`--remote\` and \`--letter\` are used]:NAME:_default' \
+'--remote=[Proposed remote path]:PATH:_default' \
+'--letter=[Proposed Windows drive letter]:LETTER:_default' \
+'--cache=[Proposed cache mode]:MODE:((none\:"No local caching"
+metadata\:"Cache metadata only"
+writeback\:"Writeback cache. Requires an explicit capability gate"))' \
+'--config=[Path to a single config file]:PATH:_files' \
+'--config-dir=[Path to a directory of \`*.toml\` configs (loaded in lexical order)]:PATH:_files' \
+'--config-url=[HTTPS URL of a remote config to fetch]:URL:_default' \
+'--config-fingerprint=[SHA-256 fingerprint pin for \`--config-url\`]:SHA256:_default' \
+'--state-dir=[Override the runtime state directory]:PATH:_files' \
+'--output=[Output format for command results]:OUTPUT:((human\:"Human-readable text (default)"
+json\:"Structured JSON"
+jsonl\:"JSON Lines (one record per line)"
+yaml\:"YAML"))' \
+'--log-level=[Tracing log level]:LOG_LEVEL:((error\:"Only errors"
+warn\:"Warnings and above"
+info\:"Informational and above (default)"
+debug\:"Debug and above"
+trace\:"Trace and above (very verbose)"))' \
+'--color=[Color policy for human output]:COLOR:((auto\:"Auto-detect based on tty"
+always\:"Always emit color escapes"
+never\:"Never emit color escapes"))' \
+'--read-only[Proposed read-only mode]' \
+'--json[JSON output]' \
+'-q[Suppress non-essential output]' \
+'--quiet[Suppress non-essential output]' \
+'*-v[Increase verbosity (repeat for more)]' \
+'*--verbose[Increase verbosity (repeat for more)]' \
+'--no-color[Disable color (legacy convenience flag; use \`--color never\`)]' \
+'--dry-run[Show what would happen without making changes]' \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+'-V[Print version]' \
+'--version[Print version]' \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+":: :_spt__sftp__drive__help_commands" \
+"*::: :->help" \
+&& ret=0
+
+    case $state in
+    (help)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:spt-sftp-drive-help-command-$line[1]:"
+        case $line[1] in
+            (list)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(add)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(remove)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(plan)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+        esac
+    ;;
+esac
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+":: :_spt__sftp__help_commands" \
+"*::: :->help" \
+&& ret=0
+
+    case $state in
+    (help)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:spt-sftp-help-command-$line[1]:"
+        case $line[1] in
+            (test)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(list)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(stat)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(get)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(put)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(mkdir)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(rm)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(rmdir)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(rename)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(mount)
+_arguments "${_arguments_options[@]}" : \
+":: :_spt__sftp__help__mount_commands" \
+"*::: :->mount" \
+&& ret=0
+
+    case $state in
+    (mount)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:spt-sftp-help-mount-command-$line[1]:"
+        case $line[1] in
+            (list)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(add)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(remove)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(plan)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+(drive)
+_arguments "${_arguments_options[@]}" : \
+":: :_spt__sftp__help__drive_commands" \
+"*::: :->drive" \
+&& ret=0
+
+    case $state in
+    (drive)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:spt-sftp-help-drive-command-$line[1]:"
+        case $line[1] in
+            (list)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(add)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(remove)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(plan)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+        esac
+    ;;
+esac
+;;
 (diagnose)
 _arguments "${_arguments_options[@]}" : \
 '--config=[Path to a single config file]:PATH:_files' \
@@ -9053,6 +9982,122 @@ _arguments "${_arguments_options[@]}" : \
     ;;
 esac
 ;;
+(sftp)
+_arguments "${_arguments_options[@]}" : \
+":: :_spt__help__sftp_commands" \
+"*::: :->sftp" \
+&& ret=0
+
+    case $state in
+    (sftp)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:spt-help-sftp-command-$line[1]:"
+        case $line[1] in
+            (test)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(list)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(stat)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(get)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(put)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(mkdir)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(rm)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(rmdir)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(rename)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(mount)
+_arguments "${_arguments_options[@]}" : \
+":: :_spt__help__sftp__mount_commands" \
+"*::: :->mount" \
+&& ret=0
+
+    case $state in
+    (mount)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:spt-help-sftp-mount-command-$line[1]:"
+        case $line[1] in
+            (list)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(add)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(remove)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(plan)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+(drive)
+_arguments "${_arguments_options[@]}" : \
+":: :_spt__help__sftp__drive_commands" \
+"*::: :->drive" \
+&& ret=0
+
+    case $state in
+    (drive)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:spt-help-sftp-drive-command-$line[1]:"
+        case $line[1] in
+            (list)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(add)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(remove)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(plan)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+        esac
+    ;;
+esac
+;;
 (diagnose)
 _arguments "${_arguments_options[@]}" : \
 ":: :_spt__help__diagnose_commands" \
@@ -9328,6 +10373,7 @@ _spt_commands() {
 'event:Event bindings and sinks' \
 'stats:Statistics summaries and live counters' \
 'session:Inspect and manage active sessions' \
+'sftp:SFTP file operations and mount planning' \
 'diagnose:Targeted diagnostics and support bundles' \
 'benchmark:Controlled benchmarking against forwards' \
 'mcp:Built-in MCP server controls' \
@@ -10786,6 +11832,7 @@ _spt__help_commands() {
 'event:Event bindings and sinks' \
 'stats:Statistics summaries and live counters' \
 'session:Inspect and manage active sessions' \
+'sftp:SFTP file operations and mount planning' \
 'diagnose:Targeted diagnostics and support bundles' \
 'benchmark:Controlled benchmarking against forwards' \
 'mcp:Built-in MCP server controls' \
@@ -11731,6 +12778,128 @@ _spt__help__session__show_commands() {
 _spt__help__session__top_commands() {
     local commands; commands=()
     _describe -t commands 'spt help session top commands' commands "$@"
+}
+(( $+functions[_spt__help__sftp_commands] )) ||
+_spt__help__sftp_commands() {
+    local commands; commands=(
+'test:Connect to the profile and open the SFTP subsystem' \
+'list:List a remote directory' \
+'stat:Show metadata for a remote path' \
+'get:Download a remote file' \
+'put:Upload a local file' \
+'mkdir:Create a remote directory' \
+'rm:Remove a remote file' \
+'rmdir:Remove a remote directory' \
+'rename:Rename a remote file or directory' \
+'mount:Manage SFTP-backed filesystem mount entries' \
+'drive:Manage SFTP-backed Windows drive entries' \
+    )
+    _describe -t commands 'spt help sftp commands' commands "$@"
+}
+(( $+functions[_spt__help__sftp__drive_commands] )) ||
+_spt__help__sftp__drive_commands() {
+    local commands; commands=(
+'list:List configured Windows drive mounts' \
+'add:Add a Windows drive mount entry to the config' \
+'remove:Remove a Windows drive mount entry from the config' \
+'plan:Render the platform plan for a configured or proposed drive mount' \
+    )
+    _describe -t commands 'spt help sftp drive commands' commands "$@"
+}
+(( $+functions[_spt__help__sftp__drive__add_commands] )) ||
+_spt__help__sftp__drive__add_commands() {
+    local commands; commands=()
+    _describe -t commands 'spt help sftp drive add commands' commands "$@"
+}
+(( $+functions[_spt__help__sftp__drive__list_commands] )) ||
+_spt__help__sftp__drive__list_commands() {
+    local commands; commands=()
+    _describe -t commands 'spt help sftp drive list commands' commands "$@"
+}
+(( $+functions[_spt__help__sftp__drive__plan_commands] )) ||
+_spt__help__sftp__drive__plan_commands() {
+    local commands; commands=()
+    _describe -t commands 'spt help sftp drive plan commands' commands "$@"
+}
+(( $+functions[_spt__help__sftp__drive__remove_commands] )) ||
+_spt__help__sftp__drive__remove_commands() {
+    local commands; commands=()
+    _describe -t commands 'spt help sftp drive remove commands' commands "$@"
+}
+(( $+functions[_spt__help__sftp__get_commands] )) ||
+_spt__help__sftp__get_commands() {
+    local commands; commands=()
+    _describe -t commands 'spt help sftp get commands' commands "$@"
+}
+(( $+functions[_spt__help__sftp__list_commands] )) ||
+_spt__help__sftp__list_commands() {
+    local commands; commands=()
+    _describe -t commands 'spt help sftp list commands' commands "$@"
+}
+(( $+functions[_spt__help__sftp__mkdir_commands] )) ||
+_spt__help__sftp__mkdir_commands() {
+    local commands; commands=()
+    _describe -t commands 'spt help sftp mkdir commands' commands "$@"
+}
+(( $+functions[_spt__help__sftp__mount_commands] )) ||
+_spt__help__sftp__mount_commands() {
+    local commands; commands=(
+'list:List configured filesystem mounts' \
+'add:Add a filesystem mount entry to the config' \
+'remove:Remove a filesystem mount entry from the config' \
+'plan:Render the platform plan for a configured or proposed mount' \
+    )
+    _describe -t commands 'spt help sftp mount commands' commands "$@"
+}
+(( $+functions[_spt__help__sftp__mount__add_commands] )) ||
+_spt__help__sftp__mount__add_commands() {
+    local commands; commands=()
+    _describe -t commands 'spt help sftp mount add commands' commands "$@"
+}
+(( $+functions[_spt__help__sftp__mount__list_commands] )) ||
+_spt__help__sftp__mount__list_commands() {
+    local commands; commands=()
+    _describe -t commands 'spt help sftp mount list commands' commands "$@"
+}
+(( $+functions[_spt__help__sftp__mount__plan_commands] )) ||
+_spt__help__sftp__mount__plan_commands() {
+    local commands; commands=()
+    _describe -t commands 'spt help sftp mount plan commands' commands "$@"
+}
+(( $+functions[_spt__help__sftp__mount__remove_commands] )) ||
+_spt__help__sftp__mount__remove_commands() {
+    local commands; commands=()
+    _describe -t commands 'spt help sftp mount remove commands' commands "$@"
+}
+(( $+functions[_spt__help__sftp__put_commands] )) ||
+_spt__help__sftp__put_commands() {
+    local commands; commands=()
+    _describe -t commands 'spt help sftp put commands' commands "$@"
+}
+(( $+functions[_spt__help__sftp__rename_commands] )) ||
+_spt__help__sftp__rename_commands() {
+    local commands; commands=()
+    _describe -t commands 'spt help sftp rename commands' commands "$@"
+}
+(( $+functions[_spt__help__sftp__rm_commands] )) ||
+_spt__help__sftp__rm_commands() {
+    local commands; commands=()
+    _describe -t commands 'spt help sftp rm commands' commands "$@"
+}
+(( $+functions[_spt__help__sftp__rmdir_commands] )) ||
+_spt__help__sftp__rmdir_commands() {
+    local commands; commands=()
+    _describe -t commands 'spt help sftp rmdir commands' commands "$@"
+}
+(( $+functions[_spt__help__sftp__stat_commands] )) ||
+_spt__help__sftp__stat_commands() {
+    local commands; commands=()
+    _describe -t commands 'spt help sftp stat commands' commands "$@"
+}
+(( $+functions[_spt__help__sftp__test_commands] )) ||
+_spt__help__sftp__test_commands() {
+    local commands; commands=()
+    _describe -t commands 'spt help sftp test commands' commands "$@"
 }
 (( $+functions[_spt__help__stats_commands] )) ||
 _spt__help__stats_commands() {
@@ -12778,6 +13947,331 @@ _spt__session__show_commands() {
 _spt__session__top_commands() {
     local commands; commands=()
     _describe -t commands 'spt session top commands' commands "$@"
+}
+(( $+functions[_spt__sftp_commands] )) ||
+_spt__sftp_commands() {
+    local commands; commands=(
+'test:Connect to the profile and open the SFTP subsystem' \
+'list:List a remote directory' \
+'stat:Show metadata for a remote path' \
+'get:Download a remote file' \
+'put:Upload a local file' \
+'mkdir:Create a remote directory' \
+'rm:Remove a remote file' \
+'rmdir:Remove a remote directory' \
+'rename:Rename a remote file or directory' \
+'mount:Manage SFTP-backed filesystem mount entries' \
+'drive:Manage SFTP-backed Windows drive entries' \
+'help:Print this message or the help of the given subcommand(s)' \
+    )
+    _describe -t commands 'spt sftp commands' commands "$@"
+}
+(( $+functions[_spt__sftp__drive_commands] )) ||
+_spt__sftp__drive_commands() {
+    local commands; commands=(
+'list:List configured Windows drive mounts' \
+'add:Add a Windows drive mount entry to the config' \
+'remove:Remove a Windows drive mount entry from the config' \
+'plan:Render the platform plan for a configured or proposed drive mount' \
+'help:Print this message or the help of the given subcommand(s)' \
+    )
+    _describe -t commands 'spt sftp drive commands' commands "$@"
+}
+(( $+functions[_spt__sftp__drive__add_commands] )) ||
+_spt__sftp__drive__add_commands() {
+    local commands; commands=()
+    _describe -t commands 'spt sftp drive add commands' commands "$@"
+}
+(( $+functions[_spt__sftp__drive__help_commands] )) ||
+_spt__sftp__drive__help_commands() {
+    local commands; commands=(
+'list:List configured Windows drive mounts' \
+'add:Add a Windows drive mount entry to the config' \
+'remove:Remove a Windows drive mount entry from the config' \
+'plan:Render the platform plan for a configured or proposed drive mount' \
+'help:Print this message or the help of the given subcommand(s)' \
+    )
+    _describe -t commands 'spt sftp drive help commands' commands "$@"
+}
+(( $+functions[_spt__sftp__drive__help__add_commands] )) ||
+_spt__sftp__drive__help__add_commands() {
+    local commands; commands=()
+    _describe -t commands 'spt sftp drive help add commands' commands "$@"
+}
+(( $+functions[_spt__sftp__drive__help__help_commands] )) ||
+_spt__sftp__drive__help__help_commands() {
+    local commands; commands=()
+    _describe -t commands 'spt sftp drive help help commands' commands "$@"
+}
+(( $+functions[_spt__sftp__drive__help__list_commands] )) ||
+_spt__sftp__drive__help__list_commands() {
+    local commands; commands=()
+    _describe -t commands 'spt sftp drive help list commands' commands "$@"
+}
+(( $+functions[_spt__sftp__drive__help__plan_commands] )) ||
+_spt__sftp__drive__help__plan_commands() {
+    local commands; commands=()
+    _describe -t commands 'spt sftp drive help plan commands' commands "$@"
+}
+(( $+functions[_spt__sftp__drive__help__remove_commands] )) ||
+_spt__sftp__drive__help__remove_commands() {
+    local commands; commands=()
+    _describe -t commands 'spt sftp drive help remove commands' commands "$@"
+}
+(( $+functions[_spt__sftp__drive__list_commands] )) ||
+_spt__sftp__drive__list_commands() {
+    local commands; commands=()
+    _describe -t commands 'spt sftp drive list commands' commands "$@"
+}
+(( $+functions[_spt__sftp__drive__plan_commands] )) ||
+_spt__sftp__drive__plan_commands() {
+    local commands; commands=()
+    _describe -t commands 'spt sftp drive plan commands' commands "$@"
+}
+(( $+functions[_spt__sftp__drive__remove_commands] )) ||
+_spt__sftp__drive__remove_commands() {
+    local commands; commands=()
+    _describe -t commands 'spt sftp drive remove commands' commands "$@"
+}
+(( $+functions[_spt__sftp__get_commands] )) ||
+_spt__sftp__get_commands() {
+    local commands; commands=()
+    _describe -t commands 'spt sftp get commands' commands "$@"
+}
+(( $+functions[_spt__sftp__help_commands] )) ||
+_spt__sftp__help_commands() {
+    local commands; commands=(
+'test:Connect to the profile and open the SFTP subsystem' \
+'list:List a remote directory' \
+'stat:Show metadata for a remote path' \
+'get:Download a remote file' \
+'put:Upload a local file' \
+'mkdir:Create a remote directory' \
+'rm:Remove a remote file' \
+'rmdir:Remove a remote directory' \
+'rename:Rename a remote file or directory' \
+'mount:Manage SFTP-backed filesystem mount entries' \
+'drive:Manage SFTP-backed Windows drive entries' \
+'help:Print this message or the help of the given subcommand(s)' \
+    )
+    _describe -t commands 'spt sftp help commands' commands "$@"
+}
+(( $+functions[_spt__sftp__help__drive_commands] )) ||
+_spt__sftp__help__drive_commands() {
+    local commands; commands=(
+'list:List configured Windows drive mounts' \
+'add:Add a Windows drive mount entry to the config' \
+'remove:Remove a Windows drive mount entry from the config' \
+'plan:Render the platform plan for a configured or proposed drive mount' \
+    )
+    _describe -t commands 'spt sftp help drive commands' commands "$@"
+}
+(( $+functions[_spt__sftp__help__drive__add_commands] )) ||
+_spt__sftp__help__drive__add_commands() {
+    local commands; commands=()
+    _describe -t commands 'spt sftp help drive add commands' commands "$@"
+}
+(( $+functions[_spt__sftp__help__drive__list_commands] )) ||
+_spt__sftp__help__drive__list_commands() {
+    local commands; commands=()
+    _describe -t commands 'spt sftp help drive list commands' commands "$@"
+}
+(( $+functions[_spt__sftp__help__drive__plan_commands] )) ||
+_spt__sftp__help__drive__plan_commands() {
+    local commands; commands=()
+    _describe -t commands 'spt sftp help drive plan commands' commands "$@"
+}
+(( $+functions[_spt__sftp__help__drive__remove_commands] )) ||
+_spt__sftp__help__drive__remove_commands() {
+    local commands; commands=()
+    _describe -t commands 'spt sftp help drive remove commands' commands "$@"
+}
+(( $+functions[_spt__sftp__help__get_commands] )) ||
+_spt__sftp__help__get_commands() {
+    local commands; commands=()
+    _describe -t commands 'spt sftp help get commands' commands "$@"
+}
+(( $+functions[_spt__sftp__help__help_commands] )) ||
+_spt__sftp__help__help_commands() {
+    local commands; commands=()
+    _describe -t commands 'spt sftp help help commands' commands "$@"
+}
+(( $+functions[_spt__sftp__help__list_commands] )) ||
+_spt__sftp__help__list_commands() {
+    local commands; commands=()
+    _describe -t commands 'spt sftp help list commands' commands "$@"
+}
+(( $+functions[_spt__sftp__help__mkdir_commands] )) ||
+_spt__sftp__help__mkdir_commands() {
+    local commands; commands=()
+    _describe -t commands 'spt sftp help mkdir commands' commands "$@"
+}
+(( $+functions[_spt__sftp__help__mount_commands] )) ||
+_spt__sftp__help__mount_commands() {
+    local commands; commands=(
+'list:List configured filesystem mounts' \
+'add:Add a filesystem mount entry to the config' \
+'remove:Remove a filesystem mount entry from the config' \
+'plan:Render the platform plan for a configured or proposed mount' \
+    )
+    _describe -t commands 'spt sftp help mount commands' commands "$@"
+}
+(( $+functions[_spt__sftp__help__mount__add_commands] )) ||
+_spt__sftp__help__mount__add_commands() {
+    local commands; commands=()
+    _describe -t commands 'spt sftp help mount add commands' commands "$@"
+}
+(( $+functions[_spt__sftp__help__mount__list_commands] )) ||
+_spt__sftp__help__mount__list_commands() {
+    local commands; commands=()
+    _describe -t commands 'spt sftp help mount list commands' commands "$@"
+}
+(( $+functions[_spt__sftp__help__mount__plan_commands] )) ||
+_spt__sftp__help__mount__plan_commands() {
+    local commands; commands=()
+    _describe -t commands 'spt sftp help mount plan commands' commands "$@"
+}
+(( $+functions[_spt__sftp__help__mount__remove_commands] )) ||
+_spt__sftp__help__mount__remove_commands() {
+    local commands; commands=()
+    _describe -t commands 'spt sftp help mount remove commands' commands "$@"
+}
+(( $+functions[_spt__sftp__help__put_commands] )) ||
+_spt__sftp__help__put_commands() {
+    local commands; commands=()
+    _describe -t commands 'spt sftp help put commands' commands "$@"
+}
+(( $+functions[_spt__sftp__help__rename_commands] )) ||
+_spt__sftp__help__rename_commands() {
+    local commands; commands=()
+    _describe -t commands 'spt sftp help rename commands' commands "$@"
+}
+(( $+functions[_spt__sftp__help__rm_commands] )) ||
+_spt__sftp__help__rm_commands() {
+    local commands; commands=()
+    _describe -t commands 'spt sftp help rm commands' commands "$@"
+}
+(( $+functions[_spt__sftp__help__rmdir_commands] )) ||
+_spt__sftp__help__rmdir_commands() {
+    local commands; commands=()
+    _describe -t commands 'spt sftp help rmdir commands' commands "$@"
+}
+(( $+functions[_spt__sftp__help__stat_commands] )) ||
+_spt__sftp__help__stat_commands() {
+    local commands; commands=()
+    _describe -t commands 'spt sftp help stat commands' commands "$@"
+}
+(( $+functions[_spt__sftp__help__test_commands] )) ||
+_spt__sftp__help__test_commands() {
+    local commands; commands=()
+    _describe -t commands 'spt sftp help test commands' commands "$@"
+}
+(( $+functions[_spt__sftp__list_commands] )) ||
+_spt__sftp__list_commands() {
+    local commands; commands=()
+    _describe -t commands 'spt sftp list commands' commands "$@"
+}
+(( $+functions[_spt__sftp__mkdir_commands] )) ||
+_spt__sftp__mkdir_commands() {
+    local commands; commands=()
+    _describe -t commands 'spt sftp mkdir commands' commands "$@"
+}
+(( $+functions[_spt__sftp__mount_commands] )) ||
+_spt__sftp__mount_commands() {
+    local commands; commands=(
+'list:List configured filesystem mounts' \
+'add:Add a filesystem mount entry to the config' \
+'remove:Remove a filesystem mount entry from the config' \
+'plan:Render the platform plan for a configured or proposed mount' \
+'help:Print this message or the help of the given subcommand(s)' \
+    )
+    _describe -t commands 'spt sftp mount commands' commands "$@"
+}
+(( $+functions[_spt__sftp__mount__add_commands] )) ||
+_spt__sftp__mount__add_commands() {
+    local commands; commands=()
+    _describe -t commands 'spt sftp mount add commands' commands "$@"
+}
+(( $+functions[_spt__sftp__mount__help_commands] )) ||
+_spt__sftp__mount__help_commands() {
+    local commands; commands=(
+'list:List configured filesystem mounts' \
+'add:Add a filesystem mount entry to the config' \
+'remove:Remove a filesystem mount entry from the config' \
+'plan:Render the platform plan for a configured or proposed mount' \
+'help:Print this message or the help of the given subcommand(s)' \
+    )
+    _describe -t commands 'spt sftp mount help commands' commands "$@"
+}
+(( $+functions[_spt__sftp__mount__help__add_commands] )) ||
+_spt__sftp__mount__help__add_commands() {
+    local commands; commands=()
+    _describe -t commands 'spt sftp mount help add commands' commands "$@"
+}
+(( $+functions[_spt__sftp__mount__help__help_commands] )) ||
+_spt__sftp__mount__help__help_commands() {
+    local commands; commands=()
+    _describe -t commands 'spt sftp mount help help commands' commands "$@"
+}
+(( $+functions[_spt__sftp__mount__help__list_commands] )) ||
+_spt__sftp__mount__help__list_commands() {
+    local commands; commands=()
+    _describe -t commands 'spt sftp mount help list commands' commands "$@"
+}
+(( $+functions[_spt__sftp__mount__help__plan_commands] )) ||
+_spt__sftp__mount__help__plan_commands() {
+    local commands; commands=()
+    _describe -t commands 'spt sftp mount help plan commands' commands "$@"
+}
+(( $+functions[_spt__sftp__mount__help__remove_commands] )) ||
+_spt__sftp__mount__help__remove_commands() {
+    local commands; commands=()
+    _describe -t commands 'spt sftp mount help remove commands' commands "$@"
+}
+(( $+functions[_spt__sftp__mount__list_commands] )) ||
+_spt__sftp__mount__list_commands() {
+    local commands; commands=()
+    _describe -t commands 'spt sftp mount list commands' commands "$@"
+}
+(( $+functions[_spt__sftp__mount__plan_commands] )) ||
+_spt__sftp__mount__plan_commands() {
+    local commands; commands=()
+    _describe -t commands 'spt sftp mount plan commands' commands "$@"
+}
+(( $+functions[_spt__sftp__mount__remove_commands] )) ||
+_spt__sftp__mount__remove_commands() {
+    local commands; commands=()
+    _describe -t commands 'spt sftp mount remove commands' commands "$@"
+}
+(( $+functions[_spt__sftp__put_commands] )) ||
+_spt__sftp__put_commands() {
+    local commands; commands=()
+    _describe -t commands 'spt sftp put commands' commands "$@"
+}
+(( $+functions[_spt__sftp__rename_commands] )) ||
+_spt__sftp__rename_commands() {
+    local commands; commands=()
+    _describe -t commands 'spt sftp rename commands' commands "$@"
+}
+(( $+functions[_spt__sftp__rm_commands] )) ||
+_spt__sftp__rm_commands() {
+    local commands; commands=()
+    _describe -t commands 'spt sftp rm commands' commands "$@"
+}
+(( $+functions[_spt__sftp__rmdir_commands] )) ||
+_spt__sftp__rmdir_commands() {
+    local commands; commands=()
+    _describe -t commands 'spt sftp rmdir commands' commands "$@"
+}
+(( $+functions[_spt__sftp__stat_commands] )) ||
+_spt__sftp__stat_commands() {
+    local commands; commands=()
+    _describe -t commands 'spt sftp stat commands' commands "$@"
+}
+(( $+functions[_spt__sftp__test_commands] )) ||
+_spt__sftp__test_commands() {
+    local commands; commands=()
+    _describe -t commands 'spt sftp test commands' commands "$@"
 }
 (( $+functions[_spt__stats_commands] )) ||
 _spt__stats_commands() {

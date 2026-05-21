@@ -173,6 +173,8 @@ pub enum Command {
     Stats(groups::stats::StatsCmd),
     /// Inspect and manage active sessions.
     Session(groups::session::SessionCmd),
+    /// SFTP file operations and mount planning.
+    Sftp(groups::sftp::SftpCmd),
     /// Targeted diagnostics and support bundles.
     Diagnose(groups::diagnose::DiagnoseCmd),
     /// Controlled benchmarking against forwards.
@@ -315,6 +317,27 @@ mod tests {
     #[test]
     fn parses_firewall_apply() {
         Cli::try_parse_from(["spt", "firewall", "apply", "--system", "--dry-run"]).unwrap();
+    }
+
+    #[test]
+    fn parses_sftp_mount_add() {
+        Cli::try_parse_from([
+            "spt",
+            "sftp",
+            "mount",
+            "add",
+            "--profile",
+            "edge",
+            "--name",
+            "data",
+            "--remote",
+            "/srv/data",
+            "--mount-point",
+            "/mnt/data",
+            "--cache",
+            "metadata",
+        ])
+        .unwrap();
     }
 
     #[test]

@@ -44,6 +44,12 @@ Required checks:
 - GSSAPI/Kerberos/SSPI, ML-KEM/PQ KEX, SOCKS/HTTP CONNECT, SFTP, filesystem
   mounts, and Windows drive-letter mounts must each have positive, negative,
   policy-denied, and platform-denied tests before GA.
+- `spt sftp` acceptance covers one-shot file operations (`test`, `list`,
+  `stat`, `get`, `put`, `mkdir`, `rm`, `rmdir`, `rename`) against a controlled
+  SSH2/russh SFTP fixture, plus `mount|drive list/add/remove/plan` config
+  mutation. Mount/drive acceptance must verify capability-denied cases and the
+  platform-helper boundary for FUSE/macFUSE/WinFsp rather than assuming a
+  bundled kernel filesystem driver.
 - CLI documentation acceptance requires generated man pages for every
   top-level command group and generated completions for bash, zsh, fish,
   PowerShell, and Elvish. Linux/macOS packages must install POSIX-shell

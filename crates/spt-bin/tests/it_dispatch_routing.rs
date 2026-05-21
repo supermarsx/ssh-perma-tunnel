@@ -116,6 +116,12 @@ fn parses_into_session_group() {
 }
 
 #[test]
+fn parses_into_sftp_group() {
+    let cli = parse(&["spt", "sftp", "mount", "list"]);
+    assert!(matches!(cli.command, Command::Sftp(_)));
+}
+
+#[test]
 fn parses_into_diagnose_group() {
     let cli = parse(&["spt", "diagnose", "run"]);
     assert!(matches!(cli.command, Command::Diagnose(_)));

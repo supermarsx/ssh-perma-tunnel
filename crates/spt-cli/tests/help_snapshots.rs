@@ -41,6 +41,7 @@ help_snapshot!(help_observe, ["observe"]);
 help_snapshot!(help_event, ["event"]);
 help_snapshot!(help_stats, ["stats"]);
 help_snapshot!(help_session, ["session"]);
+help_snapshot!(help_sftp, ["sftp"]);
 help_snapshot!(help_diagnose, ["diagnose"]);
 help_snapshot!(help_benchmark, ["benchmark"]);
 help_snapshot!(help_mcp, ["mcp"]);

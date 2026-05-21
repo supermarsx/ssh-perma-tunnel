@@ -1116,6 +1116,40 @@ pub struct Profile {
     /// `[[profiles.forwards]]`. §9.14.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub forwards: Vec<Forward>,
+    /// `[[profiles.sftp_mounts]]`. SFTP-backed filesystem/drive mounts.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sftp_mounts: Vec<SftpMount>,
+}
+
+/// `[[profiles.sftp_mounts]]`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct SftpMount {
+    /// Mount id, unique within the profile.
+    pub name: String,
+    /// Enable this mount entry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    /// Remote SFTP path to expose.
+    pub remote_path: String,
+    /// Local mount point for Unix/macOS/FUSE-style mounts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mount_point: Option<String>,
+    /// Windows drive letter, for example `S` or `S:`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub drive_letter: Option<String>,
+    /// Mount read-only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub read_only: Option<bool>,
+    /// Cache mode: `none|metadata|writeback`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache: Option<String>,
+    /// Allow other local users to access the mounted tree when the platform
+    /// mount helper supports it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow_other: Option<bool>,
+    /// Treat mount failure as profile failure.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub required: Option<bool>,
 }
 
 /// `[profiles.connection]`. Spec §9.11.

@@ -51,5 +51,6 @@ pub mod log_ops;
 pub mod observe_ops;
 pub mod profile_ops;
 pub mod secret_ops;
+pub mod sftp_ops;
 pub mod status_ops;
 pub mod tunnel_ops;

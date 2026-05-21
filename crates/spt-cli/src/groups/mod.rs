@@ -17,6 +17,7 @@ pub mod profile;
 pub mod secret;
 pub mod service;
 pub mod session;
+pub mod sftp;
 pub mod stats;
 pub mod status;
 pub mod tunnel;

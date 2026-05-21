@@ -22,10 +22,11 @@ Windows acceptance matrix.
 - `spt-cli` help snapshots verify the top-level command tree and help text for
   `auth`, `benchmark`, `completion`, `config`, `diagnose`, `dns`, `event`,
   `firewall`, `forward`, `key`, `log`, `mcp`, `observe`, `profile`,
-  `secret`, `service`, `session`, `stats`, `status`, and `tunnel`.
+  `secret`, `service`, `session`, `sftp`, `stats`, `status`, and `tunnel`.
 - `spt-bin` dispatch tests exercise routing for config, profile, forward,
   tunnel, service, key, secret, auth, DNS, firewall, log, observe, event,
-  stats, session, diagnose, benchmark, MCP, completion, and status commands.
+  stats, session, SFTP, diagnose, benchmark, MCP, completion, and status
+  commands.
 - Completion tests verify committed bash, zsh, fish, PowerShell, and Elvish
   artifacts match the live CLI tree.
 - Man page generation is covered through the `spt-mangen` generator and
@@ -39,6 +40,7 @@ Windows acceptance matrix.
 | Area | Automated coverage |
 |------|--------------------|
 | SSH2 runtime | `spt-ssh2` russh backend tests cover password/public-key/cert/kbi auth paths, local TCP forwards, remote TCP forwards, dynamic SOCKS5 proxy forwarding, keepalive, and backend selection policy. |
+| SFTP | `spt-ssh2` tests cover the russh SFTP client API and unsupported libssh2 diagnostics. `spt-config` validates `[[profiles.sftp_mounts]]` capability gates, drive-letter policy, and cache modes. `spt-bin` tests cover mount/drive config mutation and planning surfaces. |
 | SSH3 runtime | `spt-ssh3` tests cover QUIC/TLS/HTTP3 CONNECT bootstrap, frame handling, local/remote TCP where peer capability exists, UDP capability gating, and experimental acknowledgement. |
 | Forwards | `spt-forward` tests cover runner translation, bind modes, target parsing, dynamic proxy dispatch, UDP rejection where unsupported, state transitions, connection limits, and testing fixtures. |
 | Runtime/supervisor | `spt-supervisor` tests cover reconnect state, failover, round-robin/weighted selection, reload diffing, live benchmark connectors, session/drain controls, and controller API paths. |

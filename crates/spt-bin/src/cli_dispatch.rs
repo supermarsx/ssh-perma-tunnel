@@ -78,11 +78,43 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
         Command::Event(c) => event_dispatch(&global, c).await,
         Command::Stats(c) => stats_dispatch(&global, c).await,
         Command::Session(c) => session_dispatch(&global, c).await,
+        Command::Sftp(c) => sftp_dispatch(&global, c).await,
         Command::Diagnose(c) => diagnose_dispatch(&global, c).await,
         Command::Benchmark(c) => benchmark_dispatch(&global, c).await,
         Command::Mcp(c) => mcp_dispatch(&global, c).await,
         Command::Status(c) => status_dispatch(&global, c).await,
         Command::Completion(c) => completion_dispatch(&global, c),
+    }
+}
+
+// ============================================================================
+// sftp
+// ============================================================================
+
+async fn sftp_dispatch(global: &GlobalOpts, c: groups::sftp::SftpCmd) -> Result<()> {
+    use groups::sftp::{SftpDriveSub, SftpMountSub, SftpSub};
+    match c.command {
+        SftpSub::Test(args) => crate::cli::sftp_ops::test(global, args).await,
+        SftpSub::List(args) => crate::cli::sftp_ops::list(global, args).await,
+        SftpSub::Stat(args) => crate::cli::sftp_ops::stat(global, args).await,
+        SftpSub::Get(args) => crate::cli::sftp_ops::get(global, args).await,
+        SftpSub::Put(args) => crate::cli::sftp_ops::put(global, args).await,
+        SftpSub::Mkdir(args) => crate::cli::sftp_ops::mkdir(global, args).await,
+        SftpSub::Rm(args) => crate::cli::sftp_ops::rm(global, args).await,
+        SftpSub::Rmdir(args) => crate::cli::sftp_ops::rmdir(global, args).await,
+        SftpSub::Rename(args) => crate::cli::sftp_ops::rename(global, args).await,
+        SftpSub::Mount(cmd) => match cmd.command {
+            SftpMountSub::List(args) => crate::cli::sftp_ops::mount_list(global, args).await,
+            SftpMountSub::Add(args) => crate::cli::sftp_ops::mount_add(global, args).await,
+            SftpMountSub::Remove(args) => crate::cli::sftp_ops::mount_remove(global, args).await,
+            SftpMountSub::Plan(args) => crate::cli::sftp_ops::mount_plan(global, args).await,
+        },
+        SftpSub::Drive(cmd) => match cmd.command {
+            SftpDriveSub::List(args) => crate::cli::sftp_ops::drive_list(global, args).await,
+            SftpDriveSub::Add(args) => crate::cli::sftp_ops::drive_add(global, args).await,
+            SftpDriveSub::Remove(args) => crate::cli::sftp_ops::drive_remove(global, args).await,
+            SftpDriveSub::Plan(args) => crate::cli::sftp_ops::drive_plan(global, args).await,
+        },
     }
 }
 

@@ -28,7 +28,7 @@
 use spt_core::{address::BindAddr, duration::parse_duration, size::parse_size};
 
 use crate::diagnostic::{Diagnostic, Diagnostics};
-use crate::schema::{Auth, Capabilities, Config, Forward, Profile};
+use crate::schema::{Auth, Capabilities, Config, Forward, Profile, SftpMount};
 
 /// Validate a [`Config`]. Always returns a [`Diagnostics`] bundle — the caller
 /// decides whether `errors.is_empty()` is success.
@@ -871,6 +871,26 @@ fn check_profile(d: &mut Diagnostics, i: usize, p: &Profile, capabilities: Optio
         check_forward(d, &p.protocol, capabilities, f, i, j);
     }
 
+    // SFTP mount entries.
+    let mut sftp_mount_names: Vec<&str> = Vec::with_capacity(p.sftp_mounts.len());
+    for (j, mount) in p.sftp_mounts.iter().enumerate() {
+        if sftp_mount_names.contains(&mount.name.as_str()) {
+            d.push(
+                Diagnostic::error(
+                    "duplicate_sftp_mount_id",
+                    format!(
+                        "SFTP mount name `{}` not unique within profile `{}`",
+                        mount.name, p.name
+                    ),
+                )
+                .at(format!("{prefix}.sftp_mounts[{j}].name")),
+            );
+        } else {
+            sftp_mount_names.push(&mount.name);
+        }
+        check_sftp_mount(d, &p.protocol, capabilities, mount, i, j);
+    }
+
     // Limits sizes.
     if let Some(l) = p.limits.as_ref() {
         check_size_field(
@@ -944,6 +964,172 @@ fn check_profile(d: &mut Diagnostics, i: usize, p: &Profile, capabilities: Optio
             failover.restore_after.as_deref(),
             format!("{prefix}.failover.restore_after"),
         );
+    }
+}
+
+fn check_sftp_mount(
+    d: &mut Diagnostics,
+    protocol: &str,
+    capabilities: Option<&Capabilities>,
+    mount: &SftpMount,
+    i: usize,
+    j: usize,
+) {
+    let prefix = format!("profiles[{i}].sftp_mounts[{j}]");
+
+    if mount.name.trim().is_empty() {
+        d.push(
+            Diagnostic::error("sftp_mount_missing_name", "SFTP mount requires `name`")
+                .at(format!("{prefix}.name")),
+        );
+    }
+    if mount.remote_path.trim().is_empty() {
+        d.push(
+            Diagnostic::error(
+                "sftp_mount_missing_remote_path",
+                format!("SFTP mount `{}` requires `remote_path`", mount.name),
+            )
+            .at(format!("{prefix}.remote_path")),
+        );
+    }
+    if protocol != "ssh2" {
+        d.push(
+            Diagnostic::error(
+                "sftp_mount_requires_ssh2",
+                format!(
+                    "SFTP mount `{}` requires profile protocol `ssh2`",
+                    mount.name
+                ),
+            )
+            .at(format!("{prefix}.remote_path")),
+        );
+    }
+    if !matches!(
+        capabilities.and_then(|capabilities| capabilities.allow_sftp),
+        Some(true)
+    ) {
+        d.push(
+            Diagnostic::error(
+                "sftp_capability_disabled",
+                format!(
+                    "SFTP mount `{}` requires capabilities.allow_sftp = true",
+                    mount.name
+                ),
+            )
+            .at("capabilities.allow_sftp"),
+        );
+    }
+    if !matches!(
+        capabilities.and_then(|capabilities| capabilities.allow_filesystem_mounts),
+        Some(true)
+    ) {
+        d.push(
+            Diagnostic::error(
+                "sftp_mount_capability_disabled",
+                format!(
+                    "SFTP mount `{}` requires capabilities.allow_filesystem_mounts = true",
+                    mount.name
+                ),
+            )
+            .at("capabilities.allow_filesystem_mounts"),
+        );
+    }
+
+    let has_mount_point = mount
+        .mount_point
+        .as_deref()
+        .is_some_and(|value| !value.trim().is_empty());
+    let has_drive_letter = mount
+        .drive_letter
+        .as_deref()
+        .is_some_and(|value| !value.trim().is_empty());
+    match (has_mount_point, has_drive_letter) {
+        (true, true) => d.push(
+            Diagnostic::error(
+                "sftp_mount_single_local_target",
+                format!(
+                    "SFTP mount `{}` must set either mount_point or drive_letter, not both",
+                    mount.name
+                ),
+            )
+            .at(format!("{prefix}.mount_point")),
+        ),
+        (false, false) => d.push(
+            Diagnostic::error(
+                "sftp_mount_missing_local_target",
+                format!(
+                    "SFTP mount `{}` requires mount_point or drive_letter",
+                    mount.name
+                ),
+            )
+            .at(format!("{prefix}.mount_point")),
+        ),
+        _ => {}
+    }
+
+    if has_drive_letter {
+        if !matches!(
+            capabilities.and_then(|capabilities| capabilities.allow_windows_drive_mounts),
+            Some(true)
+        ) {
+            d.push(
+                Diagnostic::error(
+                    "sftp_drive_capability_disabled",
+                    format!(
+                        "SFTP drive mount `{}` requires capabilities.allow_windows_drive_mounts = true",
+                        mount.name
+                    ),
+                )
+                .at("capabilities.allow_windows_drive_mounts"),
+            );
+        }
+        if let Some(letter) = mount.drive_letter.as_deref() {
+            let trimmed = letter.trim_end_matches(':');
+            if trimmed.len() != 1 || !trimmed.as_bytes()[0].is_ascii_alphabetic() {
+                d.push(
+                    Diagnostic::error(
+                        "sftp_drive_letter_invalid",
+                        format!(
+                            "SFTP drive mount `{}` has invalid drive_letter `{letter}`",
+                            mount.name
+                        ),
+                    )
+                    .at(format!("{prefix}.drive_letter")),
+                );
+            }
+        }
+    }
+
+    if let Some(cache) = mount.cache.as_deref() {
+        if !matches!(cache, "none" | "metadata" | "writeback") {
+            d.push(
+                Diagnostic::error(
+                    "sftp_mount_cache_invalid",
+                    format!(
+                        "SFTP mount `{}` has unknown cache mode `{cache}`",
+                        mount.name
+                    ),
+                )
+                .at(format!("{prefix}.cache")),
+            );
+        }
+        if cache == "writeback"
+            && !matches!(
+                capabilities.and_then(|capabilities| capabilities.allow_writeback_cache),
+                Some(true)
+            )
+        {
+            d.push(
+                Diagnostic::error(
+                    "sftp_writeback_capability_disabled",
+                    format!(
+                        "SFTP mount `{}` uses writeback cache but capabilities.allow_writeback_cache is not true",
+                        mount.name
+                    ),
+                )
+                .at("capabilities.allow_writeback_cache"),
+            );
+        }
     }
 }
 
@@ -1413,6 +1599,77 @@ mod tests {
         let (c, _) = load_str(raw, false).unwrap();
         let d = validate(&c);
         assert!(d.is_ok(), "errors: {:?}", d.errors);
+    }
+
+    #[test]
+    fn sftp_mount_requires_capability_gates() {
+        let raw = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            [[profiles.sftp_mounts]]
+            name = "data"
+            remote_path = "/srv/data"
+            mount_point = "/mnt/data"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(d
+            .errors
+            .iter()
+            .any(|e| e.code == "sftp_capability_disabled"));
+        assert!(d
+            .errors
+            .iter()
+            .any(|e| e.code == "sftp_mount_capability_disabled"));
+    }
+
+    #[test]
+    fn sftp_mount_valid_when_enabled() {
+        let raw = r#"
+            version = 1
+            [capabilities]
+            allow_sftp = true
+            allow_filesystem_mounts = true
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            [[profiles.sftp_mounts]]
+            name = "data"
+            remote_path = "/srv/data"
+            mount_point = "/mnt/data"
+            cache = "metadata"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(d.is_ok(), "errors: {:?}", d.errors);
+    }
+
+    #[test]
+    fn sftp_drive_requires_drive_gate() {
+        let raw = r#"
+            version = 1
+            [capabilities]
+            allow_sftp = true
+            allow_filesystem_mounts = true
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            [[profiles.sftp_mounts]]
+            name = "data"
+            remote_path = "/srv/data"
+            drive_letter = "S:"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(d
+            .errors
+            .iter()
+            .any(|e| e.code == "sftp_drive_capability_disabled"));
     }
 
     #[test]

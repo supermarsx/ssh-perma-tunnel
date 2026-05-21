@@ -53,6 +53,7 @@ set edit:completion:arg-completer[spt] = {|@words|
             cand event 'Event bindings and sinks'
             cand stats 'Statistics summaries and live counters'
             cand session 'Inspect and manage active sessions'
+            cand sftp 'SFTP file operations and mount planning'
             cand diagnose 'Targeted diagnostics and support bundles'
             cand benchmark 'Controlled benchmarking against forwards'
             cand mcp 'Built-in MCP server controls'
@@ -4037,6 +4038,585 @@ set edit:completion:arg-completer[spt] = {|@words|
         }
         &'spt;session;help;help'= {
         }
+        &'spt;sftp'= {
+            cand --config 'Path to a single config file'
+            cand --config-dir 'Path to a directory of `*.toml` configs (loaded in lexical order)'
+            cand --config-url 'HTTPS URL of a remote config to fetch'
+            cand --config-fingerprint 'SHA-256 fingerprint pin for `--config-url`'
+            cand --state-dir 'Override the runtime state directory'
+            cand --profile 'Restrict operations to the named profile'
+            cand --output 'Output format for command results'
+            cand --log-level 'Tracing log level'
+            cand --color 'Color policy for human output'
+            cand --json 'Convenience alias for `--output json`'
+            cand -q 'Suppress non-essential output'
+            cand --quiet 'Suppress non-essential output'
+            cand -v 'Increase verbosity (repeat for more)'
+            cand --verbose 'Increase verbosity (repeat for more)'
+            cand --no-color 'Disable color (legacy convenience flag; use `--color never`)'
+            cand --dry-run 'Show what would happen without making changes'
+            cand -h 'Print help (see more with ''--help'')'
+            cand --help 'Print help (see more with ''--help'')'
+            cand -V 'Print version'
+            cand --version 'Print version'
+            cand test 'Connect to the profile and open the SFTP subsystem'
+            cand list 'List a remote directory'
+            cand stat 'Show metadata for a remote path'
+            cand get 'Download a remote file'
+            cand put 'Upload a local file'
+            cand mkdir 'Create a remote directory'
+            cand rm 'Remove a remote file'
+            cand rmdir 'Remove a remote directory'
+            cand rename 'Rename a remote file or directory'
+            cand mount 'Manage SFTP-backed filesystem mount entries'
+            cand drive 'Manage SFTP-backed Windows drive entries'
+            cand help 'Print this message or the help of the given subcommand(s)'
+        }
+        &'spt;sftp;test'= {
+            cand --profile 'Profile name'
+            cand --config 'Path to a single config file'
+            cand --config-dir 'Path to a directory of `*.toml` configs (loaded in lexical order)'
+            cand --config-url 'HTTPS URL of a remote config to fetch'
+            cand --config-fingerprint 'SHA-256 fingerprint pin for `--config-url`'
+            cand --state-dir 'Override the runtime state directory'
+            cand --output 'Output format for command results'
+            cand --log-level 'Tracing log level'
+            cand --color 'Color policy for human output'
+            cand --json 'JSON output'
+            cand -q 'Suppress non-essential output'
+            cand --quiet 'Suppress non-essential output'
+            cand -v 'Increase verbosity (repeat for more)'
+            cand --verbose 'Increase verbosity (repeat for more)'
+            cand --no-color 'Disable color (legacy convenience flag; use `--color never`)'
+            cand --dry-run 'Show what would happen without making changes'
+            cand -h 'Print help (see more with ''--help'')'
+            cand --help 'Print help (see more with ''--help'')'
+            cand -V 'Print version'
+            cand --version 'Print version'
+        }
+        &'spt;sftp;list'= {
+            cand --profile 'Profile name'
+            cand --config 'Path to a single config file'
+            cand --config-dir 'Path to a directory of `*.toml` configs (loaded in lexical order)'
+            cand --config-url 'HTTPS URL of a remote config to fetch'
+            cand --config-fingerprint 'SHA-256 fingerprint pin for `--config-url`'
+            cand --state-dir 'Override the runtime state directory'
+            cand --output 'Output format for command results'
+            cand --log-level 'Tracing log level'
+            cand --color 'Color policy for human output'
+            cand --json 'JSON output'
+            cand -q 'Suppress non-essential output'
+            cand --quiet 'Suppress non-essential output'
+            cand -v 'Increase verbosity (repeat for more)'
+            cand --verbose 'Increase verbosity (repeat for more)'
+            cand --no-color 'Disable color (legacy convenience flag; use `--color never`)'
+            cand --dry-run 'Show what would happen without making changes'
+            cand -h 'Print help (see more with ''--help'')'
+            cand --help 'Print help (see more with ''--help'')'
+            cand -V 'Print version'
+            cand --version 'Print version'
+        }
+        &'spt;sftp;stat'= {
+            cand --profile 'Profile name'
+            cand --config 'Path to a single config file'
+            cand --config-dir 'Path to a directory of `*.toml` configs (loaded in lexical order)'
+            cand --config-url 'HTTPS URL of a remote config to fetch'
+            cand --config-fingerprint 'SHA-256 fingerprint pin for `--config-url`'
+            cand --state-dir 'Override the runtime state directory'
+            cand --output 'Output format for command results'
+            cand --log-level 'Tracing log level'
+            cand --color 'Color policy for human output'
+            cand --json 'JSON output'
+            cand -q 'Suppress non-essential output'
+            cand --quiet 'Suppress non-essential output'
+            cand -v 'Increase verbosity (repeat for more)'
+            cand --verbose 'Increase verbosity (repeat for more)'
+            cand --no-color 'Disable color (legacy convenience flag; use `--color never`)'
+            cand --dry-run 'Show what would happen without making changes'
+            cand -h 'Print help (see more with ''--help'')'
+            cand --help 'Print help (see more with ''--help'')'
+            cand -V 'Print version'
+            cand --version 'Print version'
+        }
+        &'spt;sftp;get'= {
+            cand --profile 'Profile name'
+            cand --out 'Local output path'
+            cand --config 'Path to a single config file'
+            cand --config-dir 'Path to a directory of `*.toml` configs (loaded in lexical order)'
+            cand --config-url 'HTTPS URL of a remote config to fetch'
+            cand --config-fingerprint 'SHA-256 fingerprint pin for `--config-url`'
+            cand --state-dir 'Override the runtime state directory'
+            cand --output 'Output format for command results'
+            cand --log-level 'Tracing log level'
+            cand --color 'Color policy for human output'
+            cand --json 'Convenience alias for `--output json`'
+            cand -q 'Suppress non-essential output'
+            cand --quiet 'Suppress non-essential output'
+            cand -v 'Increase verbosity (repeat for more)'
+            cand --verbose 'Increase verbosity (repeat for more)'
+            cand --no-color 'Disable color (legacy convenience flag; use `--color never`)'
+            cand --dry-run 'Show what would happen without making changes'
+            cand -h 'Print help (see more with ''--help'')'
+            cand --help 'Print help (see more with ''--help'')'
+            cand -V 'Print version'
+            cand --version 'Print version'
+        }
+        &'spt;sftp;put'= {
+            cand --profile 'Profile name'
+            cand --config 'Path to a single config file'
+            cand --config-dir 'Path to a directory of `*.toml` configs (loaded in lexical order)'
+            cand --config-url 'HTTPS URL of a remote config to fetch'
+            cand --config-fingerprint 'SHA-256 fingerprint pin for `--config-url`'
+            cand --state-dir 'Override the runtime state directory'
+            cand --output 'Output format for command results'
+            cand --log-level 'Tracing log level'
+            cand --color 'Color policy for human output'
+            cand --json 'Convenience alias for `--output json`'
+            cand -q 'Suppress non-essential output'
+            cand --quiet 'Suppress non-essential output'
+            cand -v 'Increase verbosity (repeat for more)'
+            cand --verbose 'Increase verbosity (repeat for more)'
+            cand --no-color 'Disable color (legacy convenience flag; use `--color never`)'
+            cand --dry-run 'Show what would happen without making changes'
+            cand -h 'Print help (see more with ''--help'')'
+            cand --help 'Print help (see more with ''--help'')'
+            cand -V 'Print version'
+            cand --version 'Print version'
+        }
+        &'spt;sftp;mkdir'= {
+            cand --profile 'Profile name'
+            cand --config 'Path to a single config file'
+            cand --config-dir 'Path to a directory of `*.toml` configs (loaded in lexical order)'
+            cand --config-url 'HTTPS URL of a remote config to fetch'
+            cand --config-fingerprint 'SHA-256 fingerprint pin for `--config-url`'
+            cand --state-dir 'Override the runtime state directory'
+            cand --output 'Output format for command results'
+            cand --log-level 'Tracing log level'
+            cand --color 'Color policy for human output'
+            cand --json 'JSON output'
+            cand -q 'Suppress non-essential output'
+            cand --quiet 'Suppress non-essential output'
+            cand -v 'Increase verbosity (repeat for more)'
+            cand --verbose 'Increase verbosity (repeat for more)'
+            cand --no-color 'Disable color (legacy convenience flag; use `--color never`)'
+            cand --dry-run 'Show what would happen without making changes'
+            cand -h 'Print help (see more with ''--help'')'
+            cand --help 'Print help (see more with ''--help'')'
+            cand -V 'Print version'
+            cand --version 'Print version'
+        }
+        &'spt;sftp;rm'= {
+            cand --profile 'Profile name'
+            cand --config 'Path to a single config file'
+            cand --config-dir 'Path to a directory of `*.toml` configs (loaded in lexical order)'
+            cand --config-url 'HTTPS URL of a remote config to fetch'
+            cand --config-fingerprint 'SHA-256 fingerprint pin for `--config-url`'
+            cand --state-dir 'Override the runtime state directory'
+            cand --output 'Output format for command results'
+            cand --log-level 'Tracing log level'
+            cand --color 'Color policy for human output'
+            cand --json 'JSON output'
+            cand -q 'Suppress non-essential output'
+            cand --quiet 'Suppress non-essential output'
+            cand -v 'Increase verbosity (repeat for more)'
+            cand --verbose 'Increase verbosity (repeat for more)'
+            cand --no-color 'Disable color (legacy convenience flag; use `--color never`)'
+            cand --dry-run 'Show what would happen without making changes'
+            cand -h 'Print help (see more with ''--help'')'
+            cand --help 'Print help (see more with ''--help'')'
+            cand -V 'Print version'
+            cand --version 'Print version'
+        }
+        &'spt;sftp;rmdir'= {
+            cand --profile 'Profile name'
+            cand --config 'Path to a single config file'
+            cand --config-dir 'Path to a directory of `*.toml` configs (loaded in lexical order)'
+            cand --config-url 'HTTPS URL of a remote config to fetch'
+            cand --config-fingerprint 'SHA-256 fingerprint pin for `--config-url`'
+            cand --state-dir 'Override the runtime state directory'
+            cand --output 'Output format for command results'
+            cand --log-level 'Tracing log level'
+            cand --color 'Color policy for human output'
+            cand --json 'JSON output'
+            cand -q 'Suppress non-essential output'
+            cand --quiet 'Suppress non-essential output'
+            cand -v 'Increase verbosity (repeat for more)'
+            cand --verbose 'Increase verbosity (repeat for more)'
+            cand --no-color 'Disable color (legacy convenience flag; use `--color never`)'
+            cand --dry-run 'Show what would happen without making changes'
+            cand -h 'Print help (see more with ''--help'')'
+            cand --help 'Print help (see more with ''--help'')'
+            cand -V 'Print version'
+            cand --version 'Print version'
+        }
+        &'spt;sftp;rename'= {
+            cand --profile 'Profile name'
+            cand --config 'Path to a single config file'
+            cand --config-dir 'Path to a directory of `*.toml` configs (loaded in lexical order)'
+            cand --config-url 'HTTPS URL of a remote config to fetch'
+            cand --config-fingerprint 'SHA-256 fingerprint pin for `--config-url`'
+            cand --state-dir 'Override the runtime state directory'
+            cand --output 'Output format for command results'
+            cand --log-level 'Tracing log level'
+            cand --color 'Color policy for human output'
+            cand --json 'Convenience alias for `--output json`'
+            cand -q 'Suppress non-essential output'
+            cand --quiet 'Suppress non-essential output'
+            cand -v 'Increase verbosity (repeat for more)'
+            cand --verbose 'Increase verbosity (repeat for more)'
+            cand --no-color 'Disable color (legacy convenience flag; use `--color never`)'
+            cand --dry-run 'Show what would happen without making changes'
+            cand -h 'Print help (see more with ''--help'')'
+            cand --help 'Print help (see more with ''--help'')'
+            cand -V 'Print version'
+            cand --version 'Print version'
+        }
+        &'spt;sftp;mount'= {
+            cand --config 'Path to a single config file'
+            cand --config-dir 'Path to a directory of `*.toml` configs (loaded in lexical order)'
+            cand --config-url 'HTTPS URL of a remote config to fetch'
+            cand --config-fingerprint 'SHA-256 fingerprint pin for `--config-url`'
+            cand --state-dir 'Override the runtime state directory'
+            cand --profile 'Restrict operations to the named profile'
+            cand --output 'Output format for command results'
+            cand --log-level 'Tracing log level'
+            cand --color 'Color policy for human output'
+            cand --json 'Convenience alias for `--output json`'
+            cand -q 'Suppress non-essential output'
+            cand --quiet 'Suppress non-essential output'
+            cand -v 'Increase verbosity (repeat for more)'
+            cand --verbose 'Increase verbosity (repeat for more)'
+            cand --no-color 'Disable color (legacy convenience flag; use `--color never`)'
+            cand --dry-run 'Show what would happen without making changes'
+            cand -h 'Print help (see more with ''--help'')'
+            cand --help 'Print help (see more with ''--help'')'
+            cand -V 'Print version'
+            cand --version 'Print version'
+            cand list 'List configured filesystem mounts'
+            cand add 'Add a filesystem mount entry to the config'
+            cand remove 'Remove a filesystem mount entry from the config'
+            cand plan 'Render the platform plan for a configured or proposed mount'
+            cand help 'Print this message or the help of the given subcommand(s)'
+        }
+        &'spt;sftp;mount;list'= {
+            cand --profile 'Profile name'
+            cand --config 'Path to a single config file'
+            cand --config-dir 'Path to a directory of `*.toml` configs (loaded in lexical order)'
+            cand --config-url 'HTTPS URL of a remote config to fetch'
+            cand --config-fingerprint 'SHA-256 fingerprint pin for `--config-url`'
+            cand --state-dir 'Override the runtime state directory'
+            cand --output 'Output format for command results'
+            cand --log-level 'Tracing log level'
+            cand --color 'Color policy for human output'
+            cand --json 'JSON output'
+            cand -q 'Suppress non-essential output'
+            cand --quiet 'Suppress non-essential output'
+            cand -v 'Increase verbosity (repeat for more)'
+            cand --verbose 'Increase verbosity (repeat for more)'
+            cand --no-color 'Disable color (legacy convenience flag; use `--color never`)'
+            cand --dry-run 'Show what would happen without making changes'
+            cand -h 'Print help (see more with ''--help'')'
+            cand --help 'Print help (see more with ''--help'')'
+            cand -V 'Print version'
+            cand --version 'Print version'
+        }
+        &'spt;sftp;mount;add'= {
+            cand --profile 'Profile name'
+            cand --name 'Mount name'
+            cand --remote 'Remote SFTP path'
+            cand --mount-point 'Local mount point'
+            cand --cache 'Cache mode'
+            cand --config 'Path to a single config file'
+            cand --config-dir 'Path to a directory of `*.toml` configs (loaded in lexical order)'
+            cand --config-url 'HTTPS URL of a remote config to fetch'
+            cand --config-fingerprint 'SHA-256 fingerprint pin for `--config-url`'
+            cand --state-dir 'Override the runtime state directory'
+            cand --output 'Output format for command results'
+            cand --log-level 'Tracing log level'
+            cand --color 'Color policy for human output'
+            cand --read-only 'Mount read-only'
+            cand --json 'Convenience alias for `--output json`'
+            cand -q 'Suppress non-essential output'
+            cand --quiet 'Suppress non-essential output'
+            cand -v 'Increase verbosity (repeat for more)'
+            cand --verbose 'Increase verbosity (repeat for more)'
+            cand --no-color 'Disable color (legacy convenience flag; use `--color never`)'
+            cand --dry-run 'Show what would happen without making changes'
+            cand -h 'Print help (see more with ''--help'')'
+            cand --help 'Print help (see more with ''--help'')'
+            cand -V 'Print version'
+            cand --version 'Print version'
+        }
+        &'spt;sftp;mount;remove'= {
+            cand --config 'Path to a single config file'
+            cand --config-dir 'Path to a directory of `*.toml` configs (loaded in lexical order)'
+            cand --config-url 'HTTPS URL of a remote config to fetch'
+            cand --config-fingerprint 'SHA-256 fingerprint pin for `--config-url`'
+            cand --state-dir 'Override the runtime state directory'
+            cand --profile 'Restrict operations to the named profile'
+            cand --output 'Output format for command results'
+            cand --log-level 'Tracing log level'
+            cand --color 'Color policy for human output'
+            cand --json 'Convenience alias for `--output json`'
+            cand -q 'Suppress non-essential output'
+            cand --quiet 'Suppress non-essential output'
+            cand -v 'Increase verbosity (repeat for more)'
+            cand --verbose 'Increase verbosity (repeat for more)'
+            cand --no-color 'Disable color (legacy convenience flag; use `--color never`)'
+            cand --dry-run 'Show what would happen without making changes'
+            cand -h 'Print help (see more with ''--help'')'
+            cand --help 'Print help (see more with ''--help'')'
+            cand -V 'Print version'
+            cand --version 'Print version'
+        }
+        &'spt;sftp;mount;plan'= {
+            cand --profile 'Profile name'
+            cand --name 'Existing mount name. If omitted, `--remote` and `--mount-point` are used'
+            cand --remote 'Proposed remote path'
+            cand --mount-point 'Proposed mount point'
+            cand --cache 'Proposed cache mode'
+            cand --config 'Path to a single config file'
+            cand --config-dir 'Path to a directory of `*.toml` configs (loaded in lexical order)'
+            cand --config-url 'HTTPS URL of a remote config to fetch'
+            cand --config-fingerprint 'SHA-256 fingerprint pin for `--config-url`'
+            cand --state-dir 'Override the runtime state directory'
+            cand --output 'Output format for command results'
+            cand --log-level 'Tracing log level'
+            cand --color 'Color policy for human output'
+            cand --read-only 'Proposed read-only mode'
+            cand --json 'JSON output'
+            cand -q 'Suppress non-essential output'
+            cand --quiet 'Suppress non-essential output'
+            cand -v 'Increase verbosity (repeat for more)'
+            cand --verbose 'Increase verbosity (repeat for more)'
+            cand --no-color 'Disable color (legacy convenience flag; use `--color never`)'
+            cand --dry-run 'Show what would happen without making changes'
+            cand -h 'Print help (see more with ''--help'')'
+            cand --help 'Print help (see more with ''--help'')'
+            cand -V 'Print version'
+            cand --version 'Print version'
+        }
+        &'spt;sftp;mount;help'= {
+            cand list 'List configured filesystem mounts'
+            cand add 'Add a filesystem mount entry to the config'
+            cand remove 'Remove a filesystem mount entry from the config'
+            cand plan 'Render the platform plan for a configured or proposed mount'
+            cand help 'Print this message or the help of the given subcommand(s)'
+        }
+        &'spt;sftp;mount;help;list'= {
+        }
+        &'spt;sftp;mount;help;add'= {
+        }
+        &'spt;sftp;mount;help;remove'= {
+        }
+        &'spt;sftp;mount;help;plan'= {
+        }
+        &'spt;sftp;mount;help;help'= {
+        }
+        &'spt;sftp;drive'= {
+            cand --config 'Path to a single config file'
+            cand --config-dir 'Path to a directory of `*.toml` configs (loaded in lexical order)'
+            cand --config-url 'HTTPS URL of a remote config to fetch'
+            cand --config-fingerprint 'SHA-256 fingerprint pin for `--config-url`'
+            cand --state-dir 'Override the runtime state directory'
+            cand --profile 'Restrict operations to the named profile'
+            cand --output 'Output format for command results'
+            cand --log-level 'Tracing log level'
+            cand --color 'Color policy for human output'
+            cand --json 'Convenience alias for `--output json`'
+            cand -q 'Suppress non-essential output'
+            cand --quiet 'Suppress non-essential output'
+            cand -v 'Increase verbosity (repeat for more)'
+            cand --verbose 'Increase verbosity (repeat for more)'
+            cand --no-color 'Disable color (legacy convenience flag; use `--color never`)'
+            cand --dry-run 'Show what would happen without making changes'
+            cand -h 'Print help (see more with ''--help'')'
+            cand --help 'Print help (see more with ''--help'')'
+            cand -V 'Print version'
+            cand --version 'Print version'
+            cand list 'List configured Windows drive mounts'
+            cand add 'Add a Windows drive mount entry to the config'
+            cand remove 'Remove a Windows drive mount entry from the config'
+            cand plan 'Render the platform plan for a configured or proposed drive mount'
+            cand help 'Print this message or the help of the given subcommand(s)'
+        }
+        &'spt;sftp;drive;list'= {
+            cand --profile 'Profile name'
+            cand --config 'Path to a single config file'
+            cand --config-dir 'Path to a directory of `*.toml` configs (loaded in lexical order)'
+            cand --config-url 'HTTPS URL of a remote config to fetch'
+            cand --config-fingerprint 'SHA-256 fingerprint pin for `--config-url`'
+            cand --state-dir 'Override the runtime state directory'
+            cand --output 'Output format for command results'
+            cand --log-level 'Tracing log level'
+            cand --color 'Color policy for human output'
+            cand --json 'JSON output'
+            cand -q 'Suppress non-essential output'
+            cand --quiet 'Suppress non-essential output'
+            cand -v 'Increase verbosity (repeat for more)'
+            cand --verbose 'Increase verbosity (repeat for more)'
+            cand --no-color 'Disable color (legacy convenience flag; use `--color never`)'
+            cand --dry-run 'Show what would happen without making changes'
+            cand -h 'Print help (see more with ''--help'')'
+            cand --help 'Print help (see more with ''--help'')'
+            cand -V 'Print version'
+            cand --version 'Print version'
+        }
+        &'spt;sftp;drive;add'= {
+            cand --profile 'Profile name'
+            cand --name 'Mount name'
+            cand --remote 'Remote SFTP path'
+            cand --letter 'Windows drive letter, for example `S` or `S:`'
+            cand --cache 'Cache mode'
+            cand --config 'Path to a single config file'
+            cand --config-dir 'Path to a directory of `*.toml` configs (loaded in lexical order)'
+            cand --config-url 'HTTPS URL of a remote config to fetch'
+            cand --config-fingerprint 'SHA-256 fingerprint pin for `--config-url`'
+            cand --state-dir 'Override the runtime state directory'
+            cand --output 'Output format for command results'
+            cand --log-level 'Tracing log level'
+            cand --color 'Color policy for human output'
+            cand --read-only 'Mount read-only'
+            cand --json 'Convenience alias for `--output json`'
+            cand -q 'Suppress non-essential output'
+            cand --quiet 'Suppress non-essential output'
+            cand -v 'Increase verbosity (repeat for more)'
+            cand --verbose 'Increase verbosity (repeat for more)'
+            cand --no-color 'Disable color (legacy convenience flag; use `--color never`)'
+            cand --dry-run 'Show what would happen without making changes'
+            cand -h 'Print help (see more with ''--help'')'
+            cand --help 'Print help (see more with ''--help'')'
+            cand -V 'Print version'
+            cand --version 'Print version'
+        }
+        &'spt;sftp;drive;remove'= {
+            cand --config 'Path to a single config file'
+            cand --config-dir 'Path to a directory of `*.toml` configs (loaded in lexical order)'
+            cand --config-url 'HTTPS URL of a remote config to fetch'
+            cand --config-fingerprint 'SHA-256 fingerprint pin for `--config-url`'
+            cand --state-dir 'Override the runtime state directory'
+            cand --profile 'Restrict operations to the named profile'
+            cand --output 'Output format for command results'
+            cand --log-level 'Tracing log level'
+            cand --color 'Color policy for human output'
+            cand --json 'Convenience alias for `--output json`'
+            cand -q 'Suppress non-essential output'
+            cand --quiet 'Suppress non-essential output'
+            cand -v 'Increase verbosity (repeat for more)'
+            cand --verbose 'Increase verbosity (repeat for more)'
+            cand --no-color 'Disable color (legacy convenience flag; use `--color never`)'
+            cand --dry-run 'Show what would happen without making changes'
+            cand -h 'Print help (see more with ''--help'')'
+            cand --help 'Print help (see more with ''--help'')'
+            cand -V 'Print version'
+            cand --version 'Print version'
+        }
+        &'spt;sftp;drive;plan'= {
+            cand --profile 'Profile name'
+            cand --name 'Existing mount name. If omitted, `--remote` and `--letter` are used'
+            cand --remote 'Proposed remote path'
+            cand --letter 'Proposed Windows drive letter'
+            cand --cache 'Proposed cache mode'
+            cand --config 'Path to a single config file'
+            cand --config-dir 'Path to a directory of `*.toml` configs (loaded in lexical order)'
+            cand --config-url 'HTTPS URL of a remote config to fetch'
+            cand --config-fingerprint 'SHA-256 fingerprint pin for `--config-url`'
+            cand --state-dir 'Override the runtime state directory'
+            cand --output 'Output format for command results'
+            cand --log-level 'Tracing log level'
+            cand --color 'Color policy for human output'
+            cand --read-only 'Proposed read-only mode'
+            cand --json 'JSON output'
+            cand -q 'Suppress non-essential output'
+            cand --quiet 'Suppress non-essential output'
+            cand -v 'Increase verbosity (repeat for more)'
+            cand --verbose 'Increase verbosity (repeat for more)'
+            cand --no-color 'Disable color (legacy convenience flag; use `--color never`)'
+            cand --dry-run 'Show what would happen without making changes'
+            cand -h 'Print help (see more with ''--help'')'
+            cand --help 'Print help (see more with ''--help'')'
+            cand -V 'Print version'
+            cand --version 'Print version'
+        }
+        &'spt;sftp;drive;help'= {
+            cand list 'List configured Windows drive mounts'
+            cand add 'Add a Windows drive mount entry to the config'
+            cand remove 'Remove a Windows drive mount entry from the config'
+            cand plan 'Render the platform plan for a configured or proposed drive mount'
+            cand help 'Print this message or the help of the given subcommand(s)'
+        }
+        &'spt;sftp;drive;help;list'= {
+        }
+        &'spt;sftp;drive;help;add'= {
+        }
+        &'spt;sftp;drive;help;remove'= {
+        }
+        &'spt;sftp;drive;help;plan'= {
+        }
+        &'spt;sftp;drive;help;help'= {
+        }
+        &'spt;sftp;help'= {
+            cand test 'Connect to the profile and open the SFTP subsystem'
+            cand list 'List a remote directory'
+            cand stat 'Show metadata for a remote path'
+            cand get 'Download a remote file'
+            cand put 'Upload a local file'
+            cand mkdir 'Create a remote directory'
+            cand rm 'Remove a remote file'
+            cand rmdir 'Remove a remote directory'
+            cand rename 'Rename a remote file or directory'
+            cand mount 'Manage SFTP-backed filesystem mount entries'
+            cand drive 'Manage SFTP-backed Windows drive entries'
+            cand help 'Print this message or the help of the given subcommand(s)'
+        }
+        &'spt;sftp;help;test'= {
+        }
+        &'spt;sftp;help;list'= {
+        }
+        &'spt;sftp;help;stat'= {
+        }
+        &'spt;sftp;help;get'= {
+        }
+        &'spt;sftp;help;put'= {
+        }
+        &'spt;sftp;help;mkdir'= {
+        }
+        &'spt;sftp;help;rm'= {
+        }
+        &'spt;sftp;help;rmdir'= {
+        }
+        &'spt;sftp;help;rename'= {
+        }
+        &'spt;sftp;help;mount'= {
+            cand list 'List configured filesystem mounts'
+            cand add 'Add a filesystem mount entry to the config'
+            cand remove 'Remove a filesystem mount entry from the config'
+            cand plan 'Render the platform plan for a configured or proposed mount'
+        }
+        &'spt;sftp;help;mount;list'= {
+        }
+        &'spt;sftp;help;mount;add'= {
+        }
+        &'spt;sftp;help;mount;remove'= {
+        }
+        &'spt;sftp;help;mount;plan'= {
+        }
+        &'spt;sftp;help;drive'= {
+            cand list 'List configured Windows drive mounts'
+            cand add 'Add a Windows drive mount entry to the config'
+            cand remove 'Remove a Windows drive mount entry from the config'
+            cand plan 'Render the platform plan for a configured or proposed drive mount'
+        }
+        &'spt;sftp;help;drive;list'= {
+        }
+        &'spt;sftp;help;drive;add'= {
+        }
+        &'spt;sftp;help;drive;remove'= {
+        }
+        &'spt;sftp;help;drive;plan'= {
+        }
+        &'spt;sftp;help;help'= {
+        }
         &'spt;diagnose'= {
             cand --config 'Path to a single config file'
             cand --config-dir 'Path to a directory of `*.toml` configs (loaded in lexical order)'
@@ -5107,6 +5687,7 @@ set edit:completion:arg-completer[spt] = {|@words|
             cand event 'Event bindings and sinks'
             cand stats 'Statistics summaries and live counters'
             cand session 'Inspect and manage active sessions'
+            cand sftp 'SFTP file operations and mount planning'
             cand diagnose 'Targeted diagnostics and support bundles'
             cand benchmark 'Controlled benchmarking against forwards'
             cand mcp 'Built-in MCP server controls'
@@ -5509,6 +6090,65 @@ set edit:completion:arg-completer[spt] = {|@words|
         &'spt;help;session;drain'= {
         }
         &'spt;help;session;top'= {
+        }
+        &'spt;help;sftp'= {
+            cand test 'Connect to the profile and open the SFTP subsystem'
+            cand list 'List a remote directory'
+            cand stat 'Show metadata for a remote path'
+            cand get 'Download a remote file'
+            cand put 'Upload a local file'
+            cand mkdir 'Create a remote directory'
+            cand rm 'Remove a remote file'
+            cand rmdir 'Remove a remote directory'
+            cand rename 'Rename a remote file or directory'
+            cand mount 'Manage SFTP-backed filesystem mount entries'
+            cand drive 'Manage SFTP-backed Windows drive entries'
+        }
+        &'spt;help;sftp;test'= {
+        }
+        &'spt;help;sftp;list'= {
+        }
+        &'spt;help;sftp;stat'= {
+        }
+        &'spt;help;sftp;get'= {
+        }
+        &'spt;help;sftp;put'= {
+        }
+        &'spt;help;sftp;mkdir'= {
+        }
+        &'spt;help;sftp;rm'= {
+        }
+        &'spt;help;sftp;rmdir'= {
+        }
+        &'spt;help;sftp;rename'= {
+        }
+        &'spt;help;sftp;mount'= {
+            cand list 'List configured filesystem mounts'
+            cand add 'Add a filesystem mount entry to the config'
+            cand remove 'Remove a filesystem mount entry from the config'
+            cand plan 'Render the platform plan for a configured or proposed mount'
+        }
+        &'spt;help;sftp;mount;list'= {
+        }
+        &'spt;help;sftp;mount;add'= {
+        }
+        &'spt;help;sftp;mount;remove'= {
+        }
+        &'spt;help;sftp;mount;plan'= {
+        }
+        &'spt;help;sftp;drive'= {
+            cand list 'List configured Windows drive mounts'
+            cand add 'Add a Windows drive mount entry to the config'
+            cand remove 'Remove a Windows drive mount entry from the config'
+            cand plan 'Render the platform plan for a configured or proposed drive mount'
+        }
+        &'spt;help;sftp;drive;list'= {
+        }
+        &'spt;help;sftp;drive;add'= {
+        }
+        &'spt;help;sftp;drive;remove'= {
+        }
+        &'spt;help;sftp;drive;plan'= {
         }
         &'spt;help;diagnose'= {
             cand run 'Run a battery of diagnostic checks'

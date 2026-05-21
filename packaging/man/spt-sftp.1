@@ -1,0 +1,58 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH SPT-SFTP 1  "sftp " 
+.SH NAME
+sftp \- SFTP file operations and mount planning
+.SH SYNOPSIS
+\fBsftp\fR [\fB\-h\fR|\fB\-\-help\fR] <\fIsubcommands\fR>
+.SH DESCRIPTION
+SFTP file operations and mount planning
+.SH OPTIONS
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help
+.SH SUBCOMMANDS
+.TP
+sftp\-test(1)
+Connect to the profile and open the SFTP subsystem
+.TP
+sftp\-list(1)
+List a remote directory
+.TP
+sftp\-stat(1)
+Show metadata for a remote path
+.TP
+sftp\-get(1)
+Download a remote file
+.TP
+sftp\-put(1)
+Upload a local file
+.TP
+sftp\-mkdir(1)
+Create a remote directory
+.TP
+sftp\-rm(1)
+Remove a remote file
+.TP
+sftp\-rmdir(1)
+Remove a remote directory
+.TP
+sftp\-rename(1)
+Rename a remote file or directory
+.TP
+sftp\-mount(1)
+Manage SFTP\-backed filesystem mount entries
+.TP
+sftp\-drive(1)
+Manage SFTP\-backed Windows drive entries
+.TP
+sftp\-help(1)
+Print this message or the help of the given subcommand(s)
+.SH EXTRA
+EXAMPLES:
+  spt sftp test \-\-profile edge
+  spt sftp list \-\-profile edge /var/log \-\-json
+  spt sftp get \-\-profile edge /etc/app/config.toml \-\-out ./config.toml
+  spt sftp put \-\-profile edge ./build.tar.gz /tmp/build.tar.gz
+  spt sftp mount add \-\-profile edge \-\-name data \-\-remote /srv/data \-\-mount\-point /mnt/spt\-data
+  spt sftp drive add \-\-profile edge \-\-name data \-\-remote /srv/data \-\-letter S:

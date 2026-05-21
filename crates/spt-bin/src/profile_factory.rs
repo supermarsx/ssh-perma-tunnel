@@ -41,6 +41,17 @@ pub struct ProfileBundle {
     pub supervisor_cfg: ProfileSupervisorConfig,
 }
 
+/// Connection material for one-shot SFTP operations against an SSH2 profile.
+pub struct SftpProfileBundle {
+    /// SSH2 protocol implementation with the profile trust, crypto, hop, and
+    /// secret resolver policy applied.
+    pub protocol: Ssh2Protocol,
+    /// Username and auth methods.
+    pub auth: AuthConfig,
+    /// Candidate endpoints in config order.
+    pub endpoints: Vec<Endpoint>,
+}
+
 /// Build a [`ProfileBundle`] for one profile.
 pub fn build(profile: &Profile, resolver: &Resolver) -> Result<ProfileBundle> {
     build_with_capabilities(profile, resolver, None)
@@ -53,6 +64,38 @@ pub fn build_with_config(
     config: &Config,
 ) -> Result<ProfileBundle> {
     build_with_capabilities(profile, resolver, config.capabilities.as_ref())
+}
+
+/// Build a one-shot SFTP bundle from an SSH2 profile.
+pub fn build_sftp(
+    profile: &Profile,
+    resolver: &Resolver,
+    config: &Config,
+) -> Result<SftpProfileBundle> {
+    if profile.protocol != "ssh2" {
+        return Err(Error::UnsupportedPlatform(format!(
+            "profile `{}` uses protocol `{}`; SFTP requires SSH2",
+            profile.name, profile.protocol
+        )));
+    }
+    let capabilities = config.capabilities.as_ref();
+    if !matches!(
+        capabilities.and_then(|capabilities| capabilities.allow_sftp),
+        Some(true)
+    ) {
+        return Err(Error::PermissionDenied(
+            "capabilities.allow_sftp = true is required for SFTP operations".into(),
+        ));
+    }
+
+    let auth = build_auth_config(profile)?;
+    let endpoints = build_endpoints(profile);
+    let protocol = build_ssh2(profile, resolver, &endpoints, capabilities)?;
+    Ok(SftpProfileBundle {
+        protocol,
+        auth,
+        endpoints,
+    })
 }
 
 fn build_with_capabilities(

@@ -1,6 +1,6 @@
 # CLI Reference
 
-`spt` is structured as a Docker-style command tree with 20 top-level groups.
+`spt` is structured as a Docker-style command tree with 21 top-level groups.
 The canonical flag listing is generated from the Clap command tree and is
 available through:
 
@@ -48,6 +48,7 @@ surfaces, completion support, and exit-code contract.
 | `event` | `list`, `test`, `replay`, `sink list`, `sink test` |
 | `stats` | `summary`, `live`, `connections`, `throughput`, `errors`, `export` |
 | `session` | `list`, `show`, `close`, `drain`, `top` |
+| `sftp` | `test`, `list`, `stat`, `get`, `put`, `mkdir`, `rm`, `rmdir`, `rename`, `mount list`, `mount add`, `mount remove`, `mount plan`, `drive list`, `drive add`, `drive remove`, `drive plan` |
 | `diagnose` | `run`, `network`, `auth`, `trust`, `dns`, `bind`, `port`, `service`, `secrets`, `observability`, `mcp`, `bundle` |
 | `benchmark` | `run`, `latency`, `throughput`, `udp`, `reconnect`, `dns`, `limits`, `report compare`, `report export` |
 | `mcp` | `serve`, `inspect`, `policy show`, `policy set` |
@@ -75,6 +76,11 @@ surfaces, completion support, and exit-code contract.
 - `[capabilities]` gates the new production feature families: russh SSH2
   backend selection, GSSAPI/SSPI, PQ/ML-KEM KEX, SOCKS/HTTP CONNECT, SFTP,
   filesystem and Windows drive mounts, Windows Event Log, and GPO writes.
+- `spt sftp` requires SSH2 profiles with `[capabilities].allow_sftp = true`.
+  `spt sftp mount|drive` manages `[[profiles.sftp_mounts]]` entries and
+  validates the filesystem/drive/writeback capability gates. The current mount
+  commands store and plan platform helper usage; they do not claim to ship a
+  kernel/FUSE/WinFsp driver.
 - `ssh2_backend = "russh"` is the runtime default. Use
   `ssh2_backend = "libssh2"` with `allow_libssh2 = true` only for legacy
   migration cases such as SSH agent auth or multi-hop chains until their russh
@@ -108,8 +114,9 @@ The TOML schema documents and validates these operational surfaces:
 - `[benchmark]`
 - `[[profiles]]`, `[profiles.auth]`, `[profiles.trust]`, `[profiles.tls]`,
   `[profiles.crypto]`, `[profiles.keepalive]`, `[profiles.reconnect]`,
-  `[profiles.failover]`, unstable-connection detection, limits, forwards, DNS
-  names, bind/interface policy, observability tags, and diagnostics tags
+  `[profiles.failover]`, unstable-connection detection, limits, forwards,
+  `[[profiles.sftp_mounts]]`, DNS names, bind/interface policy,
+  observability tags, and diagnostics tags
 
 See `docs/configuration.md` for the schema walkthrough and examples.
 
@@ -164,6 +171,7 @@ Committed man pages live under `packaging/man/`:
 - `spt-secret.1`
 - `spt-service.1`
 - `spt-session.1`
+- `spt-sftp.1`
 - `spt-stats.1`
 - `spt-status.1`
 - `spt-tunnel.1`

@@ -189,6 +189,38 @@ explicit unsupported-feature diagnostics on the `russh` path; select
 drive-letter mounts and writeback caching require filesystem mounts to be
 enabled explicitly.
 
+## `[[profiles.sftp_mounts]]`
+
+SFTP file operations use `spt sftp ...` against SSH2 profiles. Mount and drive
+entries are stored under the owning profile and are managed by
+`spt sftp mount ...` and `spt sftp drive ...`.
+
+    [capabilities]
+    ssh2_backend = "russh"
+    allow_sftp = true
+    allow_filesystem_mounts = true
+    allow_windows_drive_mounts = true
+
+    [[profiles.sftp_mounts]]
+    name = "data"
+    remote_path = "/srv/data"
+    mount_point = "/mnt/spt-data"
+    read_only = true
+    cache = "metadata"              # none | metadata | writeback
+
+    [[profiles.sftp_mounts]]
+    name = "data-drive"
+    remote_path = "/srv/data"
+    drive_letter = "S:"
+    read_only = true
+    cache = "none"
+
+`mount_point` and `drive_letter` are mutually exclusive. Drive-letter entries
+require `allow_windows_drive_mounts = true`. `cache = "writeback"` also
+requires `allow_writeback_cache = true`. The current CLI stores and validates
+mount plans and reports the platform helper needed (`FUSE`, `macFUSE`, or
+`WinFsp` family); it does not silently install or run an OS filesystem driver.
+
 ## Profile basics
 
 A minimal profile (see [`examples/minimal.toml`](../examples/minimal.toml)):
