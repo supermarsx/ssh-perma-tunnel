@@ -20,6 +20,7 @@ Index of user-facing documentation for `spt` (SSH Permanent Tunnel).
 - [Events](events.md) — bindings, sinks, templating
 - [Diagnostics](diagnostics.md) — `spt diagnose`, bundles, redaction
 - [Benchmarking](benchmarking.md) — drivers, safety, comparing runs
+- [Test Coverage](test-coverage.md) — feature coverage and acceptance gaps
 - [MCP](mcp.md) — MCP server, resources, tools, policy
 - [TUI](tui.md) — interactive profile configurator
 - [SSH3](ssh3.md) — experimental SSH3 support and limitations
