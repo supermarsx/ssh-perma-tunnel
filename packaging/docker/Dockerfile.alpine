@@ -16,7 +16,7 @@
 # ---------------------------------------------------------------------------
 # Stage 1 — builder
 # ---------------------------------------------------------------------------
-FROM rust:1.83-alpine3.20 AS builder
+FROM rust:1.94-alpine3.20 AS builder
 
 # Alpine build deps. `openssl-libs-static` + the vendored-openssl feature
 # guarantee no runtime dependency on the system OpenSSL package; the libssh2

@@ -16,7 +16,7 @@
 # ---------------------------------------------------------------------------
 # Stage 1 — builder
 # ---------------------------------------------------------------------------
-FROM rust:1.83-slim-bookworm AS builder
+FROM rust:1.95-slim-bookworm AS builder
 
 # Build deps:
 #   - pkg-config + libssh2-1-dev + libssl-dev + zlib1g-dev: link spt-ssh2.
