@@ -101,7 +101,8 @@ pub fn build_sftp(
 
     let auth = build_auth_config(profile)?;
     let endpoints = build_endpoints(profile);
-    let protocol = build_ssh2(profile, resolver, &endpoints, capabilities)?;
+    // SFTP one-shot bundle does not need scripting hooks — pass `None`.
+    let protocol = build_ssh2(profile, resolver, &endpoints, capabilities, None)?;
     Ok(SftpProfileBundle {
         protocol,
         auth,
@@ -117,8 +118,23 @@ fn build_with_capabilities(
     let auth = build_auth_config(profile)?;
     let endpoints = build_endpoints(profile);
 
+    // t6-Bwire:start — build a `ScriptEngine` from `[profiles.script]` if
+    // configured. Errors at load are surfaced as `Error::InvalidConfig` so
+    // the startup path fails loudly (per t6-e7 contract). The engine is
+    // wrapped in `Arc` so the supervisor can clone it cheaply per session.
+    let script_engine = build_script_engine(profile)?;
+    // t6-Bwire:end
+
     let protocol: Arc<dyn TunnelProtocol> = match profile.protocol.as_str() {
-        "ssh2" => Arc::new(build_ssh2(profile, resolver, &endpoints, capabilities)?),
+        // t7-A2: thread `script_engine` into `Ssh2Protocol::builder` so the
+        // protocol can clone it onto every freshly-built `Ssh2Session`.
+        "ssh2" => Arc::new(build_ssh2(
+            profile,
+            resolver,
+            &endpoints,
+            capabilities,
+            script_engine.clone(),
+        )?),
         "ssh3" => Arc::new(build_ssh3(profile)),
         other => {
             return Err(Error::InvalidConfig(format!(
@@ -127,13 +143,6 @@ fn build_with_capabilities(
             )));
         }
     };
-
-    // t6-Bwire:start — build a `ScriptEngine` from `[profiles.script]` if
-    // configured. Errors at load are surfaced as `Error::InvalidConfig` so
-    // the startup path fails loudly (per t6-e7 contract). The engine is
-    // wrapped in `Arc` so the supervisor can clone it cheaply per session.
-    let script_engine = build_script_engine(profile)?;
-    // t6-Bwire:end
 
     Ok(ProfileBundle {
         protocol,
@@ -202,6 +211,7 @@ fn build_ssh2(
     resolver: &Resolver,
     endpoints: &[Endpoint],
     capabilities: Option<&Capabilities>,
+    script_engine: Option<Arc<ScriptEngine>>,
 ) -> Result<Ssh2Protocol> {
     // Pull the resolver's backend chain into the protocol so the auth flow can
     // resolve `secret://` references at connect time.
@@ -215,7 +225,10 @@ fn build_ssh2(
     let mut builder = Ssh2Protocol::builder()
         .backend_kind(backend_kind)
         .crypto(crypto)
-        .trust(build_trust_policy(profile.trust.as_ref(), &final_hosts)?);
+        .trust(build_trust_policy(profile.trust.as_ref(), &final_hosts)?)
+        // t7-A2: thread the scripting engine through the builder so the
+        // protocol can attach it to every freshly-handshaked `Ssh2Session`.
+        .script_engine(script_engine);
     for b in resolver.backend_arcs() {
         builder = builder.backend(Arc::clone(b));
     }

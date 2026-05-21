@@ -1,6 +1,6 @@
-//! Scriptable tunnelling hooks for `spt` (t6-e7).
+//! Scriptable tunnelling hooks for `spt` (t6-e7 + t7-A2).
 //!
-//! This crate exposes a sandboxed [`ScriptEngine`] driven by `rhai 1.19`
+//! This crate exposes a sandboxed [`ScriptEngine`] driven by `rhai 1.19`+
 //! (pure-Rust, MSRV 1.66) which surfaces five hook entry-points wired into
 //! [`spt_ssh2::session::Ssh2Session`]:
 //!
@@ -25,37 +25,16 @@
 //!   before AST registration: `max_operations`, `max_call_levels`,
 //!   `max_string_size`, `max_array_size`, `max_modules` (default `0`
 //!   forbids `import`).
-//! * Every hook invocation runs against a *clone* of the engine's seed
-//!   [`rhai::Scope`]; the original scope is never mutated, eliminating
-//!   shared mutable state between hook invocations.
+//! * Every hook invocation runs against a *fresh* [`rhai::Scope`]; the
+//!   AST is the only shared state, eliminating mutable carry-over between
+//!   hook invocations.
 //!
 //! Malformed scripts are rejected at [`ScriptEngine::load`] time — *not* at
 //! first invocation — so configuration errors surface at startup.
 //!
-//! # Lockfile status — rhai absent
-//!
-//! `rhai` is not present in `Cargo.lock`. Under the workspace policy
-//! (`cargo build --workspace --locked`, no `cargo update`), the dep cannot
-//! be activated. This crate ships the **complete sandbox surface** (config
-//! types, event payloads, engine handle, error taxonomy, hook-site
-//! adapter) so:
-//!
-//! * Schema and runtime types are stable and unit-tested today.
-//! * Downstream session code (the hook call sites in
-//!   `crates/spt-ssh2/src/session.rs`) can be wired against the stable
-//!   [`ScriptEngine`] API without touching the lockfile.
-//! * When `rhai` is added to the lockfile in a follow-up, only the body of
-//!   [`engine::ScriptEngine::load`] and the per-hook dispatcher in
-//!   [`engine::ScriptEngine::invoke`] need real implementations — the
-//!   public surface, defaults, and tests stay identical.
-//!
-//! Under the `engine` cargo feature (default `off`) the crate compiles
-//! against `rhai 1.19`. Without it, [`ScriptEngine::load`] still validates
-//! the path-and-syntax shape via the stub interpreter in
-//! [`engine`], and every hook becomes a logged no-op that returns success.
-//!
-//! See `.orchestration/logs/t6-e7.md` for the full decision record (and
-//! `.orchestration/logs/t6-e9.md` for the analogous SSPI / GSSAPI shape).
+//! Event payloads ride into the script as a [`rhai::Dynamic`] built via
+//! `rhai::serde::to_dynamic`; fields are accessed by name from the script
+//! side (e.g. `event.host`, `event.attempt`).
 
 #![deny(unsafe_op_in_unsafe_fn)]
 #![warn(missing_docs)]
@@ -65,7 +44,9 @@ pub mod engine;
 pub mod error;
 pub mod event;
 
-pub use config::{ScriptConfig, ScriptHooks, ScriptLimits, HookName};
+pub use config::{HookName, ScriptConfig, ScriptHooks, ScriptLimits};
 pub use engine::ScriptEngine;
 pub use error::ScriptError;
-pub use event::{Disconnect, ForwardState, ForwardStateTransition, Generic, PostConnect, PreConnect};
+pub use event::{
+    Disconnect, ForwardState, ForwardStateTransition, Generic, PostConnect, PreConnect,
+};

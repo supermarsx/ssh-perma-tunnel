@@ -12,30 +12,20 @@ description = "Scriptable tunnelling hooks for spt. Sandboxed Rhai engine with p
 [lints]
 workspace = true
 
-[features]
-default = []
-# `engine` activates the real `rhai 1.19` interpreter. It is gated because
-# `rhai` is not present in the workspace `Cargo.lock`; under the workspace
-# `--locked` + no-`cargo update` policy the dep cannot be resolved. The crate
-# ships a complete type surface, sandbox configuration, and event payloads
-# without the engine — every hook call site treats the absent engine as a
-# documented no-op. See `.orchestration/logs/t6-e7.md` for the decision
-# record (and t6-e9.md for the analogous SSPI / GSSAPI shape).
-engine = []
-
 [dependencies]
 spt-core = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
-
-# NOTE: `rhai 1.19` (or 1.17 MSRV-1.66 fallback per spec) is deliberately
-# absent from `[dependencies]`. The workspace `Cargo.lock` does not contain
-# rhai, and policy forbids `cargo update`. When the lockfile is bumped, add
-# `rhai = { version = "1.19", default-features = false, features = ["std",
-# "sync"] }` here (or pin `1.17` if MSRV 1.66 binds), enable the `engine`
-# feature, and replace the stub interpreter in `src/engine.rs` accordingly.
+# t7-A2: real rhai engine — replaces the t6-e7 contract-enforcing stub.
+# Pinned to 1.19 (MSRV 1.66, well within workspace MSRV 1.85). `default-features =
+# false` keeps the dep surface minimal; we opt into `std`, `sync` (so the
+# engine is `Send + Sync` and can live in an `Arc<ScriptEngine>` shared
+# across sessions), and `serde` (the bridge that converts our
+# `serde::Serialize` event payloads to `rhai::Dynamic` via
+# `rhai::serde::to_dynamic`). No filesystem / module-loading features.
+rhai = { version = "1.19", default-features = false, features = ["std", "sync", "serde"] }
 
 [dev-dependencies]
 serde_json = { workspace = true }

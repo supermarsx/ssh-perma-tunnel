@@ -1,55 +1,58 @@
-//! Sandbox engine wrapper.
+//! Real `rhai 1.19+` sandbox engine.
 //!
-//! When the `engine` feature is on and `rhai` is in the lockfile, this
-//! module wraps a real [`rhai::Engine`] + [`rhai::AST`] + seed
-//! [`rhai::Scope`]; every hook invocation clones the seed scope so there is
-//! no shared mutable state across calls.
+//! This module wraps a [`rhai::Engine`] + compiled [`rhai::AST`] + a seed
+//! [`rhai::Scope`]. Every hook invocation clones the seed scope so there is
+//! no shared mutable state across calls — a fresh scope per dispatch.
 //!
-//! When the `engine` feature is off (current state of the workspace — see
-//! the crate-level docs and `.orchestration/logs/t6-e7.md`), the engine is
-//! a deterministic *interpreter stub* that:
+//! # Sandbox surface
 //!
-//! * performs the same up-front parse-time validations the real engine
-//!   would (path readable; no `eval`; no `import`; declared function
-//!   names extractable; per-limit budgets honoured);
-//! * delivers the structured event payload to a per-engine recorder so
-//!   tests can assert call sites without depending on rhai itself;
-//! * returns success exactly like a script that does nothing.
+//! * Engine built via [`rhai::Engine::new_raw`] — *nothing* registered by
+//!   default. We register exactly [`rhai::packages::CorePackage`] (arithmetic,
+//!   comparison, string/array core); no filesystem, no network, no `eval`,
+//!   no `import`, no module loading.
+//! * `engine.disable_symbol("eval")` and `engine.disable_symbol("import")`
+//!   are applied before [`rhai::Engine::compile`] so a script using either
+//!   token fails at compile time.
+//! * All five `engine.set_max_*` bounds from [`ScriptLimits`] are applied to
+//!   the engine before AST registration.
+//! * Each invocation runs against a cloned, empty scope; the AST-side
+//!   `static` items are read-only after compilation, so hooks cannot retain
+//!   state across calls.
 //!
-//! Both paths share the same public surface. The hook-site code in
-//! `spt-ssh2` does not branch on the cargo feature.
+//! Malformed scripts are rejected at [`ScriptEngine::load`] time, mapped to
+//! [`ScriptError::CompileFailed`] / [`ScriptError::DisabledSymbol`] /
+//! [`ScriptError::ScriptUnreadable`].
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Instant;
 
+use rhai::packages::Package as _;
 use tracing::{debug, warn};
 
 use crate::config::{HookName, ScriptConfig, ScriptLimits};
 use crate::error::ScriptError;
 use crate::event::Event;
 
-/// Sandbox state: the compiled script, the seed scope, and the limits.
+/// Sandbox engine: compiled script + bounded `rhai::Engine`.
 ///
-/// The struct is intentionally `Send + Sync` so it can live inside an
-/// `Arc<ScriptEngine>` on the session.
+/// Cheap to clone via `Arc<ScriptEngine>` — the engine, AST, and limits live
+/// behind the `Arc` and are shared across every session opened for the
+/// owning profile.
 pub struct ScriptEngine {
-    /// Path that was loaded (kept for diagnostics).
     path: PathBuf,
-    /// Source after the parser-stage scrub. The real implementation would
-    /// hold a `rhai::AST` here.
-    source: String,
-    /// Function names declared in the source (computed at load time so
-    /// missing-hook detection is instant).
+    engine: rhai::Engine,
+    ast: rhai::AST,
+    /// Function names declared in the AST. Cached at load time so the
+    /// hook dispatcher can short-circuit (and emit a single WARN) for
+    /// hook bindings that reference a missing function.
     declared_functions: HashSet<String>,
-    /// Hook bindings.
     hooks: crate::config::ScriptHooks,
-    /// Sandbox limits.
     limits: ScriptLimits,
-    /// Recorder for hook invocations. Tests rely on this to observe call
-    /// sites without depending on rhai; in production the recorder is
-    /// off (record-events disabled) and contributes a single atomic load.
+    /// In-process record of hook invocations. The audit layer (Phase B1)
+    /// drains this; tests use [`Self::recorder_snapshot`] to assert call
+    /// sites without spinning up a full session.
     recorder: Mutex<HookRecorder>,
 }
 
@@ -72,48 +75,44 @@ impl ScriptEngine {
     /// [`ScriptError::ScriptUnreadable`] / [`ScriptError::CompileFailed`]
     /// / [`ScriptError::DisabledSymbol`].
     pub fn load(cfg: &ScriptConfig) -> Result<Self, ScriptError> {
-        let source = read_to_string(&cfg.path)?;
-
-        // Apply the same disabled-symbol gate the real engine would. The
-        // production implementation uses `engine.disable_symbol("eval")`
-        // + `engine.disable_symbol("import")`; the stub matches the
-        // surface bytewise so the test contract is identical.
-        for symbol in ["eval", "import"] {
-            if has_keyword(&source, symbol) {
-                return Err(ScriptError::DisabledSymbol {
-                    path: cfg.path.clone(),
-                    symbol: symbol.to_owned(),
-                });
-            }
-        }
-
-        // Reject any module-loading attempt up-front when `max_modules`
-        // is `0` (the default). Real rhai aborts at compile time via the
-        // `Engine::set_max_modules(0)` call; we mirror that here.
-        if cfg.limits.max_modules == 0 && has_keyword(&source, "import") {
-            return Err(ScriptError::CompileFailed {
+        let source =
+            std::fs::read_to_string(&cfg.path).map_err(|e| ScriptError::ScriptUnreadable {
                 path: cfg.path.clone(),
-                reason: "module loading is disabled (`max_modules = 0`)".to_owned(),
-            });
-        }
+                reason: e.to_string(),
+            })?;
 
-        // Minimal "parse" — extract function names declared as `fn NAME(`.
-        // This is enough to detect malformed scripts (mismatched braces,
-        // truncated declarations) and to wire HookName -> function-name
-        // dispatch. The real engine would emit a proper parse error here.
-        let declared_functions = parse_function_names(&source).map_err(|reason| {
-            ScriptError::CompileFailed {
-                path: cfg.path.clone(),
-                reason,
-            }
-        })?;
+        // `Engine::new_raw` registers ZERO packages by default — no
+        // filesystem, no network, no print, no debug. We then layer the
+        // Core package on top to give scripts arithmetic / comparison /
+        // string / array primitives. Anything beyond Core (Standard,
+        // Arithmetic, BasicArray, …) is deliberately omitted: scripts can
+        // read event fields, do math, and return — they cannot touch the
+        // outside world.
+        let mut engine = rhai::Engine::new_raw();
+        engine.register_global_module(rhai::packages::CorePackage::new().as_shared_module());
 
-        // String-size and array-size limits are enforced statically over
-        // any literal in the source. The real engine enforces these
-        // dynamically on every allocation; this mirror catches the
-        // obvious "construct an oversize literal" path so the limit
-        // tests are meaningful even without rhai in the lockfile.
-        validate_static_limits(&source, &cfg.limits, &cfg.path)?;
+        // Apply all sandbox limits before compilation so the parser also
+        // honours them (rhai enforces some at parse time, e.g. literal
+        // length bounds are not enforced statically but the
+        // `max_modules = 0` setting refuses `import` at parse time).
+        engine.set_max_operations(cfg.limits.max_operations);
+        engine.set_max_call_levels(cfg.limits.max_call_levels);
+        engine.set_max_string_size(cfg.limits.max_string_size);
+        engine.set_max_array_size(cfg.limits.max_array_size);
+        engine.set_max_modules(cfg.limits.max_modules);
+
+        // Belt-and-braces: disable the dangerous symbols explicitly so
+        // even if a future rhai release re-enables them by default, our
+        // sandbox stays intact.
+        engine.disable_symbol("eval");
+        engine.disable_symbol("import");
+
+        let ast = engine
+            .compile(&source)
+            .map_err(|e| classify_compile_error(&cfg.path, &e))?;
+
+        let declared_functions: HashSet<String> =
+            ast.iter_functions().map(|f| f.name.to_string()).collect();
 
         debug!(
             path = %cfg.path.display(),
@@ -123,7 +122,8 @@ impl ScriptEngine {
 
         Ok(Self {
             path: cfg.path.clone(),
-            source,
+            engine,
+            ast,
             declared_functions,
             hooks: cfg.hooks.clone(),
             limits: cfg.limits,
@@ -136,13 +136,18 @@ impl ScriptEngine {
     /// * If `hook` is not configured (`function_for == None`), this
     ///   returns immediately without allocating.
     /// * If the configured function name is not declared in the script,
-    ///   the call is logged at WARN and the invocation is a no-op (this
-    ///   matches `rhai`'s `EvalAltResult::ErrorFunctionNotFound` shape
-    ///   collapsed to a soft skip rather than a hard error — surveyors
-    ///   should know about typos but not be killed by them).
-    /// * Otherwise the event is recorded and dispatched. When the real
-    ///   engine is wired in, this is the place that calls
-    ///   `engine.call_fn(scope.clone_visible(), &ast, fn_name, args)`.
+    ///   the call is logged at WARN and the invocation is a no-op — a
+    ///   typo in the hook binding should not kill the session.
+    /// * Otherwise the event is serialised to a [`rhai::Dynamic`] via
+    ///   `rhai::serde::to_dynamic`, a *fresh* scope is built (no carry-over
+    ///   across invocations), and the function is invoked through
+    ///   [`rhai::Engine::call_fn`]. The return value is ignored — hooks
+    ///   are fire-and-forget by design.
+    ///
+    /// Sandbox-limit violations and uncaught script-side errors are
+    /// surfaced to the caller; the session-side dispatcher in
+    /// `Ssh2Session::dispatch_script_event` logs and *continues* (a script
+    /// failure must not bring down the supervisor).
     pub fn invoke(&self, hook: HookName, event: &Event) -> Result<(), ScriptError> {
         let Some(fn_name) = self.hooks.function_for(hook) else {
             return Ok(());
@@ -157,36 +162,51 @@ impl ScriptEngine {
             return Ok(());
         }
 
+        // Serialise the structured event into a `rhai::Dynamic`. The
+        // event payloads implement `serde::Serialize`, so we route via
+        // `rhai::serde::to_dynamic` rather than hand-rolling a `CustomType`
+        // impl for each payload.
+        let payload = rhai::serde::to_dynamic(event).map_err(|e| ScriptError::HookFailed {
+            hook: hook.to_string(),
+            reason: format!("event serialisation: {e}"),
+        })?;
+
         let started = Instant::now();
-        // Synthetic budget enforcement mirrors the rhai limits. The real
-        // engine enforces these dynamically; the stub uses a heuristic
-        // based on the source size as a proxy for operation count so
-        // limit-exceeded tests have something to measure. The
-        // operations-budget and call-levels budget are tested via the
-        // dedicated stress-script fixtures (see tests/sandbox.rs).
-        enforce_runtime_limits(&self.source, &self.limits, hook)?;
+        // Fresh scope per call. Anything the previous invocation pushed is
+        // gone; the only thing in scope is the `event` payload itself.
+        let mut scope = rhai::Scope::new();
+        let result: Result<rhai::Dynamic, _> =
+            self.engine
+                .call_fn(&mut scope, &self.ast, fn_name, (payload,));
 
-        let json = event.to_json();
-        debug!(
-            hook = %hook,
-            function = fn_name,
-            elapsed_us = started.elapsed().as_micros() as u64,
-            "spt-scripting: invoked hook"
-        );
-
-        if let Ok(mut rec) = self.recorder.lock() {
-            rec.calls.push((hook, json));
+        match result {
+            Ok(_) => {
+                let json = event.to_json();
+                debug!(
+                    hook = %hook,
+                    function = fn_name,
+                    elapsed_us = started.elapsed().as_micros() as u64,
+                    "spt-scripting: invoked hook"
+                );
+                if let Ok(mut rec) = self.recorder.lock() {
+                    rec.calls.push((hook, json));
+                }
+                Ok(())
+            }
+            Err(e) => {
+                let err = classify_runtime_error(hook, &e);
+                if let Ok(mut rec) = self.recorder.lock() {
+                    rec.aborts.push((hook, err.to_string()));
+                }
+                Err(err)
+            }
         }
-        Ok(())
     }
 
     /// Snapshot of the recorder. Cheap clone; intended for assertions.
     #[must_use]
     pub fn recorder_snapshot(&self) -> HookRecorder {
-        self.recorder
-            .lock()
-            .map(|g| g.clone())
-            .unwrap_or_default()
+        self.recorder.lock().map(|g| g.clone()).unwrap_or_default()
     }
 
     /// Path of the script this engine was built from.
@@ -204,266 +224,128 @@ impl ScriptEngine {
 
 impl std::fmt::Debug for ScriptEngine {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // `rhai::Engine` and `rhai::AST` are intentionally elided — both are
+        // large opaque types whose `Debug` would dump the entire compiled
+        // bytecode. The remaining fields fully describe the configuration
+        // surface a test or audit subscriber cares about.
         f.debug_struct("ScriptEngine")
             .field("path", &self.path)
-            .field("source_len", &self.source.len())
             .field("functions", &self.declared_functions)
             .field("hooks", &self.hooks)
             .field("limits", &self.limits)
             .field("recorder", &"<Mutex>")
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
 // ---------------------------------------------------------------------------
-// Helpers
+// Error classification
 // ---------------------------------------------------------------------------
 
-fn read_to_string(path: &Path) -> Result<String, ScriptError> {
-    std::fs::read_to_string(path).map_err(|e| ScriptError::ScriptUnreadable {
-        path: path.to_path_buf(),
-        reason: e.to_string(),
-    })
-}
-
-/// Detect a free-standing keyword (not part of a longer identifier and not
-/// inside a string literal). Operates on byte indices so it remains
-/// allocation-free for hot-path use.
-fn has_keyword(src: &str, kw: &str) -> bool {
-    let bytes = src.as_bytes();
-    let kw_bytes = kw.as_bytes();
-    let mut in_str: Option<u8> = None;
-    let mut i = 0;
-    while i < bytes.len() {
-        let b = bytes[i];
-        if let Some(q) = in_str {
-            if b == b'\\' && i + 1 < bytes.len() {
-                i += 2;
-                continue;
-            }
-            if b == q {
-                in_str = None;
-            }
-            i += 1;
-            continue;
-        }
-        if b == b'"' || b == b'\'' {
-            in_str = Some(b);
-            i += 1;
-            continue;
-        }
-        if b == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
-            // line comment
-            while i < bytes.len() && bytes[i] != b'\n' {
-                i += 1;
-            }
-            continue;
-        }
-        if i + kw_bytes.len() <= bytes.len() && &bytes[i..i + kw_bytes.len()] == kw_bytes {
-            let before_ok = i == 0 || !is_ident_byte(bytes[i - 1]);
-            let after_ok = i + kw_bytes.len() == bytes.len()
-                || !is_ident_byte(bytes[i + kw_bytes.len()]);
-            if before_ok && after_ok {
-                return true;
-            }
-        }
-        i += 1;
-    }
-    false
-}
-
-fn is_ident_byte(b: u8) -> bool {
-    b.is_ascii_alphanumeric() || b == b'_'
-}
-
-fn parse_function_names(src: &str) -> Result<HashSet<String>, String> {
-    // Brace-balance check.
-    let mut depth: i32 = 0;
-    let mut in_str: Option<u8> = None;
-    for (i, b) in src.bytes().enumerate() {
-        if let Some(q) = in_str {
-            if b == b'\\' {
-                continue;
-            }
-            if b == q {
-                in_str = None;
-            }
-            continue;
-        }
-        if b == b'"' || b == b'\'' {
-            in_str = Some(b);
-            continue;
-        }
-        if b == b'{' {
-            depth += 1;
-        }
-        if b == b'}' {
-            depth -= 1;
-            if depth < 0 {
-                return Err(format!("unbalanced `}}` at byte {i}"));
-            }
-        }
-    }
-    if depth != 0 {
-        return Err(format!("unbalanced braces (final depth = {depth})"));
-    }
-    if in_str.is_some() {
-        return Err("unterminated string literal".to_owned());
-    }
-
-    let mut out = HashSet::new();
-    let bytes = src.as_bytes();
-    let needle = b"fn ";
-    let mut i = 0;
-    while i + needle.len() < bytes.len() {
-        if &bytes[i..i + needle.len()] == needle
-            && (i == 0 || !is_ident_byte(bytes[i - 1]))
+fn classify_compile_error(path: &Path, err: &rhai::ParseError) -> ScriptError {
+    let msg = err.to_string();
+    // `disable_symbol("eval")` causes the rhai parser to emit a "disabled
+    // operator/token" diagnostic when `eval` appears as a call site, and
+    // `set_max_modules(0)` causes `import` to surface as a "reserved
+    // keyword" diagnostic (rhai treats `import` as a parser-level keyword
+    // gated by the `no_module` configuration). Catch both shapes and
+    // collapse them into `DisabledSymbol` so the audit / config layers can
+    // distinguish sandbox violations from generic syntax errors.
+    let lowered = msg.to_ascii_lowercase();
+    for symbol in ["eval", "import"] {
+        if lowered.contains(symbol)
+            && (lowered.contains("disabled")
+                || lowered.contains("improper")
+                || lowered.contains("not allowed")
+                || lowered.contains("reserved keyword"))
         {
-            let mut j = i + needle.len();
-            while j < bytes.len() && bytes[j] == b' ' {
-                j += 1;
-            }
-            let start = j;
-            while j < bytes.len() && is_ident_byte(bytes[j]) {
-                j += 1;
-            }
-            if j > start {
-                if let Ok(name) = std::str::from_utf8(&bytes[start..j]) {
-                    out.insert(name.to_owned());
-                }
-            }
-            i = j;
-            continue;
+            return ScriptError::DisabledSymbol {
+                path: path.to_path_buf(),
+                symbol: (*symbol).to_owned(),
+            };
         }
-        i += 1;
     }
-    Ok(out)
+    ScriptError::CompileFailed {
+        path: path.to_path_buf(),
+        reason: msg,
+    }
 }
 
-fn validate_static_limits(
-    src: &str,
-    limits: &ScriptLimits,
-    path: &Path,
-) -> Result<(), ScriptError> {
-    // Largest contiguous string literal in the source.
-    let mut in_str: Option<u8> = None;
-    let mut current = 0usize;
-    let mut max_str = 0usize;
-    for b in src.bytes() {
-        if let Some(q) = in_str {
-            if b == q {
-                in_str = None;
-                if current > max_str {
-                    max_str = current;
-                }
-                current = 0;
-            } else {
-                current = current.saturating_add(1);
-            }
-        } else if b == b'"' || b == b'\'' {
-            in_str = Some(b);
-            current = 0;
-        }
-    }
-    if max_str > limits.max_string_size {
-        return Err(ScriptError::CompileFailed {
-            path: path.to_path_buf(),
-            reason: format!(
-                "string literal length {max_str} exceeds max_string_size {}",
-                limits.max_string_size
-            ),
-        });
-    }
-    Ok(())
-}
-
-fn enforce_runtime_limits(
-    src: &str,
-    limits: &ScriptLimits,
-    hook: HookName,
-) -> Result<(), ScriptError> {
-    // Operations heuristic: each non-whitespace, non-comment byte counts
-    // as one synthetic "op". Real rhai counts AST node evaluations; this
-    // heuristic is monotone in script complexity so the limit-exceeded
-    // tests can drive it deterministically by length.
-    let ops = src
-        .bytes()
-        .filter(|b| !b.is_ascii_whitespace())
-        .count() as u64;
-    if ops > limits.max_operations {
-        return Err(ScriptError::LimitExceeded {
+fn classify_runtime_error(hook: HookName, err: &rhai::EvalAltResult) -> ScriptError {
+    // Sandbox-limit violations map to LimitExceeded; everything else is a
+    // hook failure (uncaught script-side error, type mismatch, …).
+    use rhai::EvalAltResult as E;
+    let reason = err.to_string();
+    let limit_kind: Option<&'static str> = match err {
+        E::ErrorTooManyOperations(_) => Some("max_operations"),
+        E::ErrorStackOverflow(_) => Some("max_call_levels"),
+        E::ErrorDataTooLarge(_, _) => Some("max_string_size/max_array_size"),
+        E::ErrorTooManyModules(_) => Some("max_modules"),
+        _ => None,
+    };
+    if let Some(kind) = limit_kind {
+        return ScriptError::LimitExceeded {
             hook: hook.to_string(),
-            reason: format!(
-                "operations {ops} exceeded max_operations {}",
-                limits.max_operations
-            ),
-        });
+            reason: format!("{kind}: {reason}"),
+        };
     }
-
-    // Call-levels heuristic: count nested `{` openings to detect a
-    // deeply-recursive script. The real engine measures recursion at
-    // call-time; the stub measures lexical nesting which is the
-    // worst-case bound.
-    let mut depth: usize = 0;
-    let mut max_depth: usize = 0;
-    let mut in_str: Option<u8> = None;
-    for b in src.bytes() {
-        if let Some(q) = in_str {
-            if b == q {
-                in_str = None;
-            }
-            continue;
-        }
-        if b == b'"' || b == b'\'' {
-            in_str = Some(b);
-            continue;
-        }
-        if b == b'{' {
-            depth += 1;
-            if depth > max_depth {
-                max_depth = depth;
-            }
-        }
-        if b == b'}' && depth > 0 {
-            depth -= 1;
-        }
+    ScriptError::HookFailed {
+        hook: hook.to_string(),
+        reason,
     }
-    if max_depth > limits.max_call_levels {
-        return Err(ScriptError::LimitExceeded {
-            hook: hook.to_string(),
-            reason: format!(
-                "nesting depth {max_depth} exceeded max_call_levels {}",
-                limits.max_call_levels
-            ),
-        });
-    }
-    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::ScriptHooks;
+    use crate::event::PreConnect;
 
-    #[test]
-    fn has_keyword_skips_strings_and_comments() {
-        assert!(has_keyword("eval()", "eval"));
-        assert!(has_keyword("let x = eval(1);", "eval"));
-        assert!(!has_keyword(r#"let x = "eval";"#, "eval"));
-        assert!(!has_keyword("// eval here", "eval"));
-        assert!(!has_keyword("let evaluation = 1;", "eval"));
+    fn write(dir: &tempfile::TempDir, body: &str) -> PathBuf {
+        let p = dir.path().join("h.rhai");
+        std::fs::write(&p, body).unwrap();
+        p
+    }
+
+    fn hooks_pre(name: &str) -> ScriptHooks {
+        ScriptHooks {
+            pre_connect: Some(name.to_owned()),
+            ..Default::default()
+        }
     }
 
     #[test]
-    fn parse_function_names_extracts_top_level() {
-        let src = "fn alpha() { 1 }\nfn beta() { 2 }";
-        let names = parse_function_names(src).unwrap();
-        assert!(names.contains("alpha"));
-        assert!(names.contains("beta"));
+    fn load_extracts_declared_functions() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = write(&dir, "fn alpha(ev) { ev }\nfn beta(ev) { ev }\n");
+        let eng = ScriptEngine::load(&ScriptConfig {
+            path: p,
+            hooks: ScriptHooks::default(),
+            limits: ScriptLimits::default(),
+        })
+        .unwrap();
+        assert!(eng.declared_functions.contains("alpha"));
+        assert!(eng.declared_functions.contains("beta"));
     }
 
     #[test]
-    fn parse_function_names_flags_unbalanced_braces() {
-        assert!(parse_function_names("fn x() {").is_err());
-        assert!(parse_function_names("fn x() }").is_err());
+    fn invoke_with_missing_function_softskips() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = write(&dir, "fn other(ev) { ev }\n");
+        let eng = ScriptEngine::load(&ScriptConfig {
+            path: p,
+            hooks: hooks_pre("not_present"),
+            limits: ScriptLimits::default(),
+        })
+        .unwrap();
+        let ev = Event::PreConnect(PreConnect {
+            profile: "p".into(),
+            host: "h".into(),
+            port: 22,
+            attempt: 1,
+        });
+        // Missing fn → soft skip, no error, no recorder entry.
+        eng.invoke(HookName::PreConnect, &ev).unwrap();
+        assert!(eng.recorder_snapshot().calls.is_empty());
     }
 }
