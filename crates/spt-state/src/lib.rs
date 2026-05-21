@@ -10,6 +10,8 @@
 //! * [`events`] — bounded JSONL event ring with daily rotation.
 //! * [`spool`] — bounded on-disk spool for sinks.
 //! * [`paths`] — single source of truth for state-file paths.
+//! * [`portable`] — runtime context for `--portable` mode (gates every
+//!   BaseDirs leakage site).
 
 #![forbid(unsafe_code)]
 
@@ -19,6 +21,7 @@ pub mod dir;
 pub mod events;
 pub mod lock;
 pub mod paths;
+pub mod portable;
 pub mod spool;
 pub mod status;
 
@@ -30,6 +33,7 @@ pub use clock::{Clock, SystemClock};
 pub use dir::resolve_state_dir;
 pub use events::{Event, EventRing, EventRingConfig};
 pub use lock::StateLock;
+pub use portable::{ensure_writable, portable_context_for, PortableContext};
 pub use spool::{DiskSpool, SpoolConfig, SpoolEntry};
 pub use status::{
     Counters, FailoverState, StatusSnapshot, StatusWriter, StatusWriterConfig, StatusWriterHandle,

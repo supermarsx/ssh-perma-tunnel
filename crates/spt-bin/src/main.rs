@@ -36,6 +36,39 @@ use spt_cli::{groups, Cli, ColorMode, Command, GlobalOpts, LogLevel};
 use spt_core::{Error, ExitCode, Result};
 
 fn main() -> ProcExitCode {
+    // ------------------------------------------------------------------
+    // Pre-clap scan for the global `--portable` flag (t6-e8).
+    //
+    // The flag is intentionally NOT declared on `spt_cli::GlobalOpts` —
+    // adding it there would touch a crate outside this executor's lock
+    // budget. We strip the flag from the raw argv before clap sees the
+    // rest, then install the resulting context into the three
+    // process-global slots that gate BaseDirs leakage:
+    //
+    // * `spt_state::portable::install` — state dir, file sink root.
+    // * `spt_secrets::set_portable_mode` — keyring skip + file-backed
+    //   master key.
+    // * `spt_config::load::set_portable_mode` — `~/.ssh/config` skip.
+    let (raw_args, portable) = portable_pre_scan(std::env::args_os());
+
+    let portable_install = if portable {
+        match resolve_portable_context() {
+            Ok(ctx) => {
+                let root = ctx.root.clone();
+                spt_state::portable::install(Some(ctx));
+                spt_secrets::set_portable_mode(true);
+                spt_config::load::set_portable_mode(true);
+                Some(root)
+            }
+            Err(e) => {
+                eprintln!("spt: --portable: {e}");
+                return ProcExitCode::from(ExitCode::RuntimeFailure.as_i32() as u8);
+            }
+        }
+    } else {
+        None
+    };
+
     // Memory-hygiene hardening: best-effort process-level lockdown
     // (PR_SET_DUMPABLE=0 + drop SeDebugPrivilege + PT_DENY_ATTACH + core
     // dump cap). Runs once, never panics, returns a report we log at
@@ -43,6 +76,13 @@ fn main() -> ProcExitCode {
     // contract.
     let hardening = spt_mem_hygiene::harden();
     tracing::debug!(report = ?hardening, "spt-mem-hygiene applied");
+
+    if let Some(root) = portable_install.as_ref() {
+        if let Err(e) = spt_state::ensure_writable(root) {
+            eprintln!("spt: --portable: {e}");
+            return ProcExitCode::from(ExitCode::RuntimeFailure.as_i32() as u8);
+        }
+    }
 
     // Windows SCM dispatch path: if SCM started us, the ImagePath ends in
     // `--scm-dispatch`. Detect it BEFORE clap parses `Cli` (clap doesn't
@@ -58,7 +98,14 @@ fn main() -> ProcExitCode {
         return map_exit(result);
     }
 
-    let cli = Cli::parse_args();
+    let cli = match <Cli as clap::Parser>::try_parse_from(&raw_args) {
+        Ok(c) => c,
+        Err(e) => {
+            // Defer to clap's built-in formatter (handles --help/--version
+            // exit codes correctly).
+            e.exit();
+        }
+    };
 
     // Tracing: best-effort init from CLI flags. We can't read config yet
     // (commands like `config validate` parse it themselves), so we initialise
@@ -165,4 +212,90 @@ pub(crate) fn stub_err(cmd: &str, milestone: &str) -> Error {
         "`{cmd}` is not yet implemented in this milestone (tracked in {milestone}). \
          See docs/milestones.md."
     ))
+}
+
+/// Strip the global `--portable` flag from a raw argv. Returns the
+/// filtered argv plus a boolean indicating whether the flag was seen.
+///
+/// Anything after a `--` terminator is left intact so a future
+/// `spt exec -- foo --portable bar` invocation would pass `--portable`
+/// to the child unmodified. The flag is otherwise position-agnostic.
+pub(crate) fn portable_pre_scan<I, S>(args: I) -> (Vec<std::ffi::OsString>, bool)
+where
+    I: IntoIterator<Item = S>,
+    S: Into<std::ffi::OsString>,
+{
+    let mut out: Vec<std::ffi::OsString> = Vec::new();
+    let mut seen = false;
+    let mut after_term = false;
+    for raw in args {
+        let arg = raw.into();
+        if after_term {
+            out.push(arg);
+            continue;
+        }
+        if arg == "--" {
+            after_term = true;
+            out.push(arg);
+            continue;
+        }
+        if arg == "--portable" {
+            seen = true;
+            continue;
+        }
+        out.push(arg);
+    }
+    (out, seen)
+}
+
+/// Resolve a [`spt_state::PortableContext`] from the running executable.
+fn resolve_portable_context() -> Result<spt_state::PortableContext> {
+    let exe = std::env::current_exe().map_err(|e| {
+        Error::RuntimeFailure(format!(
+            "--portable: could not determine executable path: {e}"
+        ))
+    })?;
+    spt_state::portable_context_for(&exe)
+}
+
+#[cfg(test)]
+mod portable_tests {
+    use super::*;
+    use std::ffi::OsString;
+
+    fn vs(items: &[&str]) -> Vec<OsString> {
+        items.iter().map(|s| OsString::from(*s)).collect()
+    }
+
+    #[test]
+    fn pre_scan_strips_flag() {
+        let (out, seen) = portable_pre_scan(vs(&["spt", "--portable", "tunnel", "run"]));
+        assert!(seen);
+        assert_eq!(out, vs(&["spt", "tunnel", "run"]));
+    }
+
+    #[test]
+    fn pre_scan_returns_false_when_absent() {
+        let (out, seen) = portable_pre_scan(vs(&["spt", "tunnel", "list"]));
+        assert!(!seen);
+        assert_eq!(out, vs(&["spt", "tunnel", "list"]));
+    }
+
+    #[test]
+    fn pre_scan_preserves_args_after_terminator() {
+        let (out, seen) =
+            portable_pre_scan(vs(&["spt", "exec", "--", "child", "--portable", "arg"]));
+        assert!(!seen);
+        assert_eq!(
+            out,
+            vs(&["spt", "exec", "--", "child", "--portable", "arg"])
+        );
+    }
+
+    #[test]
+    fn pre_scan_strips_flag_after_subcommand() {
+        let (out, seen) = portable_pre_scan(vs(&["spt", "tunnel", "run", "--portable"]));
+        assert!(seen);
+        assert_eq!(out, vs(&["spt", "tunnel", "run"]));
+    }
 }

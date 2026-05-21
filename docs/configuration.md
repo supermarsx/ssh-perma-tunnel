@@ -15,6 +15,47 @@ Service installs default to:
 | macOS   | `/usr/local/etc/spt/spt.toml`                    |
 | Windows | `%PROGRAMDATA%\spt\spt.toml`                     |
 
+## Portable mode
+
+Pass the global `--portable` flag to confine every on-disk artifact to a
+self-contained tree next to the executable. No user directories
+(`~/.local/state`, `%LOCALAPPDATA%`, the OS keychain, `~/.ssh/config`,
+journald, the Windows Event Log) are touched.
+
+### On-disk layout
+
+    <exe-dir>/spt[.exe]
+    <exe-dir>/data/state/...        # runtime locks, status snapshots, events
+    <exe-dir>/data/vault/master.key # 0600 file-backed master key (Unix)
+    <exe-dir>/data/vault/vault.spt  # sealed records, AES-256-GCM
+    <exe-dir>/data/logs/spt.log     # tracing file sink
+    <exe-dir>/data/config/spt.toml  # operator config (read by `--config-dir`)
+
+### What changes under `--portable`
+
+| Subsystem                  | Default                                | Portable                                          |
+|----------------------------|----------------------------------------|---------------------------------------------------|
+| State dir                  | `BaseDirs::data_local_dir()/spt`       | `<exe-dir>/data/state/`                           |
+| Secrets resolver           | keychain -> vault -> env -> file       | vault -> env -> file (keychain skipped)           |
+| Vault master key           | OS keychain (`vault-master`)           | `<exe-dir>/data/vault/master.key` (0600 on Unix)  |
+| Logs file sink             | `state_dir/spt.log`                    | `<exe-dir>/data/logs/spt.log`                     |
+| `~/.ssh/config`            | read on demand by `-J` chains          | never read                                        |
+| journald (Linux)           | available via `destinations="journald"`| layer not installed                               |
+| Windows Event Log          | writer installed when configured       | writer becomes a no-op                            |
+| AppArmor / SELinux profile | loaded on Linux service install        | not attempted                                     |
+
+### Diagnostics
+
+* The portable root is created on first launch. If `<exe-dir>/data/`
+  cannot be written (e.g. the binary lives on a read-only image),
+  `spt --portable` exits with `RuntimeFailure` and the diagnostic
+  `--portable: portable root is not writable: <reason>`.
+* Explicit `--state-dir` always wins over the portable anchor — operators
+  can park state on a writable volume while leaving config, vault, and
+  logs next to the binary.
+* `spt diagnose` reports `portable_mode = true` and the resolved root in
+  its top-level summary so support bundles capture the deployment shape.
+
 ## Top-level shape
 
     version = 1

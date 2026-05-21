@@ -13,6 +13,7 @@
 //! `events`, `mcp`, `diagnostics`, `benchmark`). Conflicts are rejected.
 
 use std::path::Path;
+use std::sync::OnceLock;
 
 use secrecy::ExposeSecret;
 use spt_config_crypt::{is_sealed, unseal, KeySource};
@@ -20,6 +21,32 @@ use spt_core::{Error, Result};
 
 use crate::diagnostic::{Diagnostic, Diagnostics};
 use crate::schema::Config;
+
+/// Process-global portable flag for the config loader. When `true`,
+/// secondary discovery paths that depend on user-managed directories
+/// (most importantly `~/.ssh/config`, used by the OpenSSH-config bridge
+/// landing in t6-e3) are skipped. `spt-bin::main` flips this exactly
+/// once after pre-scanning the CLI for `--portable`.
+static PORTABLE: OnceLock<bool> = OnceLock::new();
+
+/// Install the portable-mode flag for the config loader. Returns `true`
+/// when the value was recorded, `false` when a prior call already locked
+/// the slot (no-op behaviour matching `spt_state::portable::install`).
+pub fn set_portable_mode(active: bool) -> bool {
+    PORTABLE.set(active).is_ok()
+}
+
+/// `true` when readers may consult `~/.ssh/config` and similar
+/// user-managed discovery sources. Defaults to `true`; flipping to
+/// `false` is opt-in via [`set_portable_mode(true)`](set_portable_mode).
+///
+/// The t6-e3 OpenSSH-config bridge consults this predicate before
+/// attempting `BaseDirs::home_dir().join(".ssh/config")` so portable
+/// deployments never read from the operator's user account.
+#[must_use]
+pub fn ssh_config_reads_allowed() -> bool {
+    !PORTABLE.get().copied().unwrap_or(false)
+}
 
 /// Convenience alias for the unknown-keys warnings list returned by
 /// [`load`] / [`load_str`].
@@ -343,6 +370,18 @@ mod tests {
     fn warnings_to_diagnostics_works() {
         let d = warnings_to_diagnostics(&["a.b".to_owned()]);
         assert_eq!(d.warnings.len(), 1);
+    }
+
+    #[test]
+    fn ssh_config_reads_allowed_matches_portable_slot() {
+        use super::{ssh_config_reads_allowed, PORTABLE};
+        // OnceLock contents are shared across the test binary, so we
+        // verify the function matches its derivation rather than
+        // attempting to mutate the global. Default (slot empty) is
+        // "allowed".
+        let stored = PORTABLE.get().copied();
+        let expected = !stored.unwrap_or(false);
+        assert_eq!(ssh_config_reads_allowed(), expected);
     }
 
     // ---------------- load_dir tests --------------------------------------

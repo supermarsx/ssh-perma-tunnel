@@ -38,6 +38,7 @@ pub mod file;
 pub mod keychain;
 pub mod mlock;
 pub mod passphrase;
+pub mod portable;
 pub mod reference;
 pub mod resolver;
 pub mod secret_alloc;
@@ -52,6 +53,9 @@ pub use env::EnvBackend;
 pub use file::FileBackend;
 pub use keychain::KeychainBackend;
 pub use passphrase::read_passphrase;
+pub use portable::{
+    keychain_allowed, set_portable_mode, vault_passphrase_from_file, PortableVaultLayout,
+};
 pub use reference::{ReferenceError, SecretRef};
 pub use resolver::Resolver;
 pub use secret_alloc::{MemfdSecretBox, SecretAlloc, SecretSlice};

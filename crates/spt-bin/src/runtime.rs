@@ -24,6 +24,35 @@ pub fn build_default_runtime() -> Result<Runtime> {
         .map_err(|e| Error::RuntimeFailure(format!("tokio runtime build failed: {e}")))
 }
 
+/// Propagate the portable-mode state-directory anchor to a long-running
+/// command's resolver. When portable mode is active and no explicit
+/// `--state-dir` was supplied, returns the `<exe-dir>/data/state/` path.
+/// Otherwise returns the explicit override or `None`.
+#[must_use]
+pub fn resolve_state_root(explicit: Option<&std::path::Path>) -> Option<std::path::PathBuf> {
+    if let Some(p) = explicit {
+        return Some(p.to_path_buf());
+    }
+    spt_state::portable::current().map(|ctx| ctx.state_dir())
+}
+
+/// `true` when `--portable` was supplied. Long-running commands consult
+/// this to suppress journald (Linux) and the Windows Event Log writer,
+/// and to skip AppArmor / SELinux profile loading.
+#[must_use]
+pub fn is_portable() -> bool {
+    spt_state::portable::current().is_some()
+}
+
+/// Resolve the log-file path for portable deployments. Returns
+/// `<exe-dir>/data/logs/spt.log` when portable mode is active, otherwise
+/// `None` (so the caller falls back to `state_dir.join("spt.log")` or
+/// the `[logging].file` override).
+#[must_use]
+pub fn portable_log_file() -> Option<std::path::PathBuf> {
+    spt_state::portable::current().map(|ctx| ctx.logs_dir().join("spt.log"))
+}
+
 /// Build a runtime configured per `[runtime.threads]`.
 pub fn build_runtime(cfg: &RuntimeThreadsConfig) -> Result<Runtime> {
     let workers = cfg.total_workers().max(1);
@@ -176,6 +205,36 @@ mod tests {
         };
         let rt = build_runtime(&cfg).unwrap();
         rt.block_on(async { 42 });
+    }
+
+    #[test]
+    fn resolve_state_root_returns_explicit_override() {
+        let explicit = std::path::PathBuf::from("/explicit/state");
+        assert_eq!(resolve_state_root(Some(&explicit)), Some(explicit.clone()));
+    }
+
+    #[test]
+    fn resolve_state_root_with_no_portable_returns_none() {
+        // The OnceLock-backed portable context is process-global. In test
+        // binaries that don't install one, the helper returns None and
+        // callers fall back to BaseDirs resolution downstream.
+        if spt_state::portable::current().is_some() {
+            // Another test installed a context; honour it.
+            return;
+        }
+        assert_eq!(resolve_state_root(None), None);
+    }
+
+    #[test]
+    fn portable_log_file_consistent_with_portable_context() {
+        let got = portable_log_file();
+        let expected = spt_state::portable::current().map(|c| c.logs_dir().join("spt.log"));
+        assert_eq!(got, expected);
+    }
+
+    #[test]
+    fn is_portable_reflects_state_module() {
+        assert_eq!(is_portable(), spt_state::portable::current().is_some());
     }
 
     #[test]

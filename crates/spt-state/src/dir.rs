@@ -5,6 +5,11 @@
 //! * Linux:   `~/.local/state/spt/`
 //! * macOS:   `~/Library/Application Support/spt/`
 //! * Windows: `%LOCALAPPDATA%\spt\state\`
+//!
+//! Portable mode (see [`crate::portable`]) overrides the default with
+//! `<exe-dir>/data/state/`. An explicit `config_state_dir` always wins,
+//! even when portable mode is active, so operator overrides remain
+//! authoritative.
 
 use std::path::{Path, PathBuf};
 
@@ -12,14 +17,30 @@ use spt_core::{Error, Result};
 
 /// Resolve and create the state directory.
 ///
-/// If `config_state_dir` is `Some`, that path is honoured verbatim. Otherwise
-/// a per-OS default is chosen as documented at the module level.
+/// Precedence (high to low):
+///
+/// 1. `config_state_dir` — honoured verbatim when `Some`.
+/// 2. Portable mode (when [`crate::portable::current`] is set) — returns
+///    `<exe-dir>/data/state/`.
+/// 3. Per-OS default — see the module-level docs.
 ///
 /// The directory tree is created if missing. On Unix it is created with mode
 /// `0700` (best-effort).
 pub fn resolve_state_dir(config_state_dir: Option<&Path>) -> Result<PathBuf> {
+    resolve_state_dir_inner(config_state_dir, crate::portable::current())
+}
+
+/// Internal test seam — same logic as [`resolve_state_dir`] but with the
+/// portable context passed explicitly so unit tests can exercise both
+/// branches without mutating the process-global [`crate::portable`] slot.
+pub(crate) fn resolve_state_dir_inner(
+    config_state_dir: Option<&Path>,
+    portable: Option<&crate::portable::PortableContext>,
+) -> Result<PathBuf> {
     let dir = if let Some(cfg) = config_state_dir {
         cfg.to_path_buf()
+    } else if let Some(portable) = portable {
+        portable.state_dir()
     } else {
         default_state_dir()?
     };
@@ -155,6 +176,44 @@ mod tests {
         let b = resolve_state_dir(Some(&target)).unwrap();
         assert_eq!(a, b);
         assert!(target.is_dir());
+    }
+
+    #[test]
+    fn portable_mode_routes_state_under_exe_dir() {
+        use crate::portable::PortableContext;
+        let tmp = tempdir().unwrap();
+        let exe_dir = tmp.path().join("install");
+        std::fs::create_dir_all(&exe_dir).unwrap();
+        let ctx = PortableContext::at_exe_dir(&exe_dir);
+        let resolved = resolve_state_dir_inner(None, Some(&ctx)).unwrap();
+        assert_eq!(resolved, exe_dir.join("data").join("state"));
+        assert!(resolved.is_dir());
+    }
+
+    #[test]
+    fn default_mode_does_not_use_exe_dir_when_portable_is_none() {
+        // When portable context is None and no explicit dir is given,
+        // resolution falls back to the per-OS default. We just confirm
+        // the computed path includes the canonical "spt" segment, which a
+        // portable path would NOT have unless the exe lived under such a
+        // tree.
+        let computed = default_state_dir().unwrap();
+        assert!(computed.components().any(|c| c.as_os_str() == "spt"));
+    }
+
+    #[test]
+    fn explicit_dir_wins_over_portable_context() {
+        use crate::portable::PortableContext;
+        let tmp = tempdir().unwrap();
+        let exe_dir = tmp.path().join("install");
+        std::fs::create_dir_all(&exe_dir).unwrap();
+        let ctx = PortableContext::at_exe_dir(&exe_dir);
+        let explicit = tmp.path().join("explicit-state");
+        let resolved = resolve_state_dir_inner(Some(&explicit), Some(&ctx)).unwrap();
+        assert_eq!(resolved, explicit);
+        assert!(resolved.is_dir());
+        // Portable's state dir must NOT have been touched.
+        assert!(!exe_dir.join("data").join("state").exists());
     }
 
     #[cfg(unix)]
