@@ -76,6 +76,10 @@ surfaces, completion support, and exit-code contract.
 - `[capabilities]` gates the new production feature families: russh SSH2
   backend selection, GSSAPI/SSPI, PQ/ML-KEM KEX, SOCKS/HTTP CONNECT, SFTP,
   filesystem and Windows drive mounts, Windows Event Log, and GPO writes.
+- PQ/ML-KEM KEX names in `[profiles.crypto].kex_algorithms` are validated
+  behind `allow_post_quantum_kex` and `allow_ml_kem`. Current SSH2 backends
+  return explicit unsupported-feature diagnostics for ML-KEM/SNTRUP runtime
+  negotiation rather than silently falling back.
 - `spt sftp` requires SSH2 profiles with `[capabilities].allow_sftp = true`.
   `spt sftp mount|drive` manages `[[profiles.sftp_mounts]]` entries and
   validates the filesystem/drive/writeback capability gates. The current mount

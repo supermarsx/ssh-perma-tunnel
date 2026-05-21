@@ -40,6 +40,7 @@ Windows acceptance matrix.
 | Area | Automated coverage |
 |------|--------------------|
 | SSH2 runtime | `spt-ssh2` russh backend tests cover password/public-key/cert/kbi auth paths, local TCP forwards, remote TCP forwards, dynamic SOCKS5 proxy forwarding, keepalive, and backend selection policy. |
+| SSH crypto policy | `spt-ssh2` classifies deprecated, post-quantum, and ML-KEM KEX names. `spt-config` validates PQ/ML-KEM capability gates and required-PQ policy. `spt-bin` tests assert requested PQ KEX returns an explicit runtime unsupported diagnostic until the transport KEX engines exist. |
 | SFTP | `spt-ssh2` tests cover the russh SFTP client API and unsupported libssh2 diagnostics. `spt-config` validates `[[profiles.sftp_mounts]]` capability gates, drive-letter policy, and cache modes. `spt-bin` tests cover mount/drive config mutation and planning surfaces. |
 | SSH3 runtime | `spt-ssh3` tests cover QUIC/TLS/HTTP3 CONNECT bootstrap, frame handling, local/remote TCP where peer capability exists, UDP capability gating, and experimental acknowledgement. |
 | Forwards | `spt-forward` tests cover runner translation, bind modes, target parsing, dynamic proxy dispatch, UDP rejection where unsupported, state transitions, connection limits, and testing fixtures. |
@@ -119,5 +120,5 @@ cargo test --workspace --all-targets --features snmp --locked
 - Exercise live OpenSSH/dropbear/libssh interoperability fixtures for SSH2
   local, remote, and dynamic proxy coverage.
 - Add production-positive runtime tests for GSSAPI/Kerberos/SSPI, ML-KEM/PQ
-  KEX, SFTP, filesystem mounts, and Windows drive-letter mounts once their
-  runtime implementations are complete.
+  KEX negotiation, SFTP live server operations, filesystem mounts, and Windows
+  drive-letter mounts once their runtime implementations are complete.

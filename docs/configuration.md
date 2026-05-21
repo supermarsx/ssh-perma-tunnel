@@ -221,6 +221,31 @@ requires `allow_writeback_cache = true`. The current CLI stores and validates
 mount plans and reports the platform helper needed (`FUSE`, `macFUSE`, or
 `WinFsp` family); it does not silently install or run an OS filesystem driver.
 
+## `[profiles.crypto]` And PQ KEX
+
+`[profiles.crypto]` is an allow-list. Empty lists defer to the selected SSH2
+backend defaults. Deprecated algorithms are allowed only with warnings; see
+`config validate` and `diagnose run`.
+
+    [capabilities]
+    allow_post_quantum_kex = true
+    allow_ml_kem = true
+
+    [profiles.crypto]
+    kex_algorithms = [
+      "mlkem768x25519-sha256",
+      "sntrup761x25519-sha512@openssh.com",
+      "curve25519-sha256",
+    ]
+
+Recognized post-quantum SSH KEX names are validated behind
+`allow_post_quantum_kex`; ML-KEM names additionally require `allow_ml_kem`.
+`require_post_quantum_kex = true` rejects explicit classical-only KEX lists and
+warns when a profile relies on backend defaults. Runtime support is still
+bounded by the SSH backend: the current russh/libssh2 paths return an explicit
+unsupported-feature diagnostic for requested ML-KEM/SNTRUP KEX until those KEX
+engines are implemented in the transport.
+
 ## Profile basics
 
 A minimal profile (see [`examples/minimal.toml`](../examples/minimal.toml)):

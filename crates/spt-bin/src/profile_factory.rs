@@ -137,9 +137,12 @@ fn build_ssh2(
         .iter()
         .map(|endpoint| (endpoint.host.clone(), endpoint.port))
         .collect::<Vec<_>>();
+    let backend_kind = select_ssh2_backend(capabilities)?;
+    let crypto = build_crypto_policy(profile.crypto.as_ref());
+    reject_unsupported_post_quantum_runtime(profile, capabilities, &crypto)?;
     let mut builder = Ssh2Protocol::builder()
-        .backend_kind(select_ssh2_backend(capabilities)?)
-        .crypto(build_crypto_policy(profile.crypto.as_ref()))
+        .backend_kind(backend_kind)
+        .crypto(crypto)
         .trust(build_trust_policy(profile.trust.as_ref(), &final_hosts)?);
     for b in resolver.backend_arcs() {
         builder = builder.backend(Arc::clone(b));
@@ -157,6 +160,25 @@ fn build_ssh2(
         builder = builder.hop_with_auth_trust(&hop.host, hop.port, hop_auth, hop_trust);
     }
     Ok(builder.build())
+}
+
+fn reject_unsupported_post_quantum_runtime(
+    profile: &Profile,
+    capabilities: Option<&Capabilities>,
+    crypto: &CryptoPolicy,
+) -> Result<()> {
+    if crypto.has_post_quantum_kex()
+        || matches!(
+            capabilities.and_then(|capabilities| capabilities.require_post_quantum_kex),
+            Some(true)
+        )
+    {
+        return Err(Error::UnsupportedPlatform(format!(
+            "profile `{}` requests SSH post-quantum KEX, but the current SSH2 backends do not implement ML-KEM/SNTRUP KEX yet",
+            profile.name
+        )));
+    }
+    Ok(())
 }
 
 fn select_ssh2_backend(capabilities: Option<&Capabilities>) -> Result<Ssh2BackendKind> {
@@ -515,6 +537,30 @@ mod tests {
         assert_eq!(policy.macs, vec!["hmac-sha2-256"]);
         assert_eq!(policy.host_keys, vec!["rsa-sha2-256"]);
         assert_eq!(policy.compression, vec!["none"]);
+    }
+
+    #[test]
+    fn post_quantum_kex_returns_explicit_runtime_unsupported() {
+        let cfg = r#"
+            version = 1
+            [capabilities]
+            allow_post_quantum_kex = true
+            allow_ml_kem = true
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            [profiles.crypto]
+            kex_algorithms = ["mlkem768x25519-sha256"]
+        "#;
+        let (c, _) = load_str(cfg, false).unwrap();
+        match build_with_config(&c.profiles[0], &empty_resolver(), &c) {
+            Err(Error::UnsupportedPlatform(message)) => {
+                assert!(message.contains("post-quantum KEX"));
+            }
+            Ok(_) => panic!("expected UnsupportedPlatform error"),
+            Err(other) => panic!("expected UnsupportedPlatform, got {other:?}"),
+        }
     }
 
     #[test]

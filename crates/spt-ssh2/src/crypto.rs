@@ -33,6 +33,26 @@ const DEPRECATED: &[&str] = &[
     "arcfour256",
 ];
 
+/// Post-quantum or hybrid post-quantum SSH KEX method names recognized by
+/// config validation and diagnostics.
+pub const POST_QUANTUM_KEX: &[&str] = &[
+    "mlkem768x25519-sha256",
+    "mlkem768x25519-sha256@openssh.com",
+    "mlkem768nistp256-sha256",
+    "mlkem1024nistp384-sha384",
+    "sntrup761x25519-sha512",
+    "sntrup761x25519-sha512@openssh.com",
+];
+
+/// ML-KEM hybrid SSH KEX method names recognized by config validation and
+/// diagnostics.
+pub const ML_KEM_KEX: &[&str] = &[
+    "mlkem768x25519-sha256",
+    "mlkem768x25519-sha256@openssh.com",
+    "mlkem768nistp256-sha256",
+    "mlkem1024nistp384-sha384",
+];
+
 /// Allow-lists per algorithm category. Empty list = "library default".
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CryptoPolicy {
@@ -103,10 +123,32 @@ impl CryptoPolicy {
         }
         warnings
     }
+
+    /// Whether the policy explicitly requests a recognized post-quantum KEX.
+    #[must_use]
+    pub fn has_post_quantum_kex(&self) -> bool {
+        self.kex
+            .iter()
+            .any(|algo| contains_ignore_ascii_case(POST_QUANTUM_KEX, algo))
+    }
+
+    /// Whether the policy explicitly requests a recognized ML-KEM KEX.
+    #[must_use]
+    pub fn has_ml_kem_kex(&self) -> bool {
+        self.kex
+            .iter()
+            .any(|algo| contains_ignore_ascii_case(ML_KEM_KEX, algo))
+    }
 }
 
 fn comma(v: &[String]) -> String {
     v.join(",")
+}
+
+fn contains_ignore_ascii_case(values: &[&str], needle: &str) -> bool {
+    values
+        .iter()
+        .any(|value| value.eq_ignore_ascii_case(needle))
 }
 
 #[cfg(test)]
@@ -192,5 +234,25 @@ mod tests {
             compression: vec!["none".into()],
         };
         assert!(p.deprecated_warnings().is_empty());
+    }
+
+    #[test]
+    fn classifies_post_quantum_kex() {
+        let p = CryptoPolicy {
+            kex: vec!["curve25519-sha256".into(), "mlkem768x25519-sha256".into()],
+            ..Default::default()
+        };
+        assert!(p.has_post_quantum_kex());
+        assert!(p.has_ml_kem_kex());
+    }
+
+    #[test]
+    fn classifies_sntrup_as_pq_not_ml_kem() {
+        let p = CryptoPolicy {
+            kex: vec!["sntrup761x25519-sha512@openssh.com".into()],
+            ..Default::default()
+        };
+        assert!(p.has_post_quantum_kex());
+        assert!(!p.has_ml_kem_kex());
     }
 }

@@ -30,6 +30,22 @@ use spt_core::{address::BindAddr, duration::parse_duration, size::parse_size};
 use crate::diagnostic::{Diagnostic, Diagnostics};
 use crate::schema::{Auth, Capabilities, Config, Forward, Profile, SftpMount};
 
+const POST_QUANTUM_KEX: &[&str] = &[
+    "mlkem768x25519-sha256",
+    "mlkem768x25519-sha256@openssh.com",
+    "mlkem768nistp256-sha256",
+    "mlkem1024nistp384-sha384",
+    "sntrup761x25519-sha512",
+    "sntrup761x25519-sha512@openssh.com",
+];
+
+const ML_KEM_KEX: &[&str] = &[
+    "mlkem768x25519-sha256",
+    "mlkem768x25519-sha256@openssh.com",
+    "mlkem768nistp256-sha256",
+    "mlkem1024nistp384-sha384",
+];
+
 /// Validate a [`Config`]. Always returns a [`Diagnostics`] bundle — the caller
 /// decides whether `errors.is_empty()` is success.
 #[must_use]
@@ -813,6 +829,8 @@ fn check_profile(d: &mut Diagnostics, i: usize, p: &Profile, capabilities: Optio
         check_auth(d, auth, &format!("{prefix}.auth"));
     }
 
+    check_profile_crypto(d, p, capabilities, &prefix);
+
     for (j, hop) in p.hops.iter().enumerate() {
         let hop_prefix = format!("{prefix}.hops[{j}]");
         if hop.host.is_empty() {
@@ -1131,6 +1149,107 @@ fn check_sftp_mount(
             );
         }
     }
+}
+
+fn check_profile_crypto(
+    d: &mut Diagnostics,
+    p: &Profile,
+    capabilities: Option<&Capabilities>,
+    prefix: &str,
+) {
+    let kex_algorithms = p
+        .crypto
+        .as_ref()
+        .and_then(|crypto| crypto.kex_algorithms.as_ref());
+    let has_pq = kex_algorithms
+        .is_some_and(|algorithms| contains_any_algorithm(algorithms, POST_QUANTUM_KEX));
+    let has_ml_kem =
+        kex_algorithms.is_some_and(|algorithms| contains_any_algorithm(algorithms, ML_KEM_KEX));
+
+    if has_pq && p.protocol != "ssh2" {
+        d.push(
+            Diagnostic::error(
+                "post_quantum_kex_requires_ssh2",
+                format!(
+                    "profile `{}` configures SSH post-quantum KEX but protocol is `{}`",
+                    p.name, p.protocol
+                ),
+            )
+            .at(format!("{prefix}.crypto.kex_algorithms")),
+        );
+    }
+    if has_pq
+        && !matches!(
+            capabilities.and_then(|capabilities| capabilities.allow_post_quantum_kex),
+            Some(true)
+        )
+    {
+        d.push(
+            Diagnostic::error(
+                "post_quantum_kex_capability_disabled",
+                format!(
+                    "profile `{}` configures post-quantum KEX but capabilities.allow_post_quantum_kex is not true",
+                    p.name
+                ),
+            )
+            .at("capabilities.allow_post_quantum_kex"),
+        );
+    }
+    if has_ml_kem
+        && !matches!(
+            capabilities.and_then(|capabilities| capabilities.allow_ml_kem),
+            Some(true)
+        )
+    {
+        d.push(
+            Diagnostic::error(
+                "ml_kem_capability_disabled",
+                format!(
+                    "profile `{}` configures ML-KEM KEX but capabilities.allow_ml_kem is not true",
+                    p.name
+                ),
+            )
+            .at("capabilities.allow_ml_kem"),
+        );
+    }
+
+    if matches!(
+        capabilities.and_then(|capabilities| capabilities.require_post_quantum_kex),
+        Some(true)
+    ) && p.protocol == "ssh2"
+    {
+        match kex_algorithms {
+            Some(algorithms) if !contains_any_algorithm(algorithms, POST_QUANTUM_KEX) => d.push(
+                Diagnostic::error(
+                    "post_quantum_kex_required_but_absent",
+                    format!(
+                        "profile `{}` must include a recognized post-quantum KEX because capabilities.require_post_quantum_kex = true",
+                        p.name
+                    ),
+                )
+                .at(format!("{prefix}.crypto.kex_algorithms")),
+            ),
+            None => d.push(
+                Diagnostic::warning(
+                    "post_quantum_kex_required_without_explicit_list",
+                    format!(
+                        "profile `{}` relies on backend defaults while capabilities.require_post_quantum_kex = true; set profiles.crypto.kex_algorithms explicitly",
+                        p.name
+                    ),
+                )
+                .at(format!("{prefix}.crypto.kex_algorithms")),
+            ),
+            _ => {}
+        }
+    }
+}
+
+fn contains_any_algorithm(configured: &[String], known: &[&str]) -> bool {
+    configured.iter().any(|algorithm| {
+        known
+            .iter()
+            .any(|known| known.eq_ignore_ascii_case(algorithm))
+    })
 }
 
 fn check_auth(d: &mut Diagnostics, auth: &Auth, prefix: &str) {
@@ -1775,6 +1894,92 @@ mod tests {
             .errors
             .iter()
             .any(|e| e.code == "capabilities_libssh2_disallowed"));
+    }
+
+    #[test]
+    fn post_quantum_kex_requires_capability_gate() {
+        let raw = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            [profiles.crypto]
+            kex_algorithms = ["sntrup761x25519-sha512@openssh.com"]
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(d
+            .errors
+            .iter()
+            .any(|e| e.code == "post_quantum_kex_capability_disabled"));
+    }
+
+    #[test]
+    fn ml_kem_kex_requires_ml_kem_capability_gate() {
+        let raw = r#"
+            version = 1
+            [capabilities]
+            allow_post_quantum_kex = true
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            [profiles.crypto]
+            kex_algorithms = ["mlkem768x25519-sha256"]
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(d
+            .errors
+            .iter()
+            .any(|e| e.code == "ml_kem_capability_disabled"));
+    }
+
+    #[test]
+    fn required_post_quantum_kex_rejects_classical_only_list() {
+        let raw = r#"
+            version = 1
+            [capabilities]
+            allow_post_quantum_kex = true
+            require_post_quantum_kex = true
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            [profiles.crypto]
+            kex_algorithms = ["curve25519-sha256"]
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(d
+            .errors
+            .iter()
+            .any(|e| e.code == "post_quantum_kex_required_but_absent"));
+    }
+
+    #[test]
+    fn ml_kem_kex_validates_when_gated() {
+        let raw = r#"
+            version = 1
+            [capabilities]
+            allow_post_quantum_kex = true
+            allow_ml_kem = true
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            [profiles.crypto]
+            kex_algorithms = ["mlkem768x25519-sha256"]
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(
+            d.is_ok(),
+            "errors: {:?} warnings: {:?}",
+            d.errors,
+            d.warnings
+        );
     }
 
     #[test]
