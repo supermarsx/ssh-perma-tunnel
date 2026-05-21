@@ -30,7 +30,7 @@ Tag = v<YY>.<N>                  (e.g. v26.1, v26.2, ..., v26.99, v26.314)
   version = "26.1"  # rolling
   ```
 
-  See [`CONTRIBUTING.md`](CONTRIBUTING.md) for why the marker matters.
+  See [`contributing.md`](contributing.md) for why the marker matters.
 
 ## How a release happens
 

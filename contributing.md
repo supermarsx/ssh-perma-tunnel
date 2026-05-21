@@ -98,7 +98,7 @@ Tests live where they belong:
 3. Conventional-commit-style bodies are welcome (`feat:`, `fix:`,
    `docs:`, …) but **not required**. A clear human-readable subject
    line is the only hard rule.
-4. Update [`CHANGELOG.md`](CHANGELOG.md) under `## [Unreleased]` if
+4. Update [`changelog.md`](changelog.md) under `## [Unreleased]` if
    your change is user-visible.
 5. Link spec sections (`spec.md` §N) when your change implements or
    alters specified behaviour.
@@ -114,16 +114,16 @@ will become the squashed commit message.
 
 ## Release process
 
-Releases follow the runbook in [`RELEASING.md`](RELEASING.md). If your
+Releases follow the runbook in [`releasing.md`](releasing.md). If your
 change is user-visible, please add a `## [Unreleased]` entry to the
 changelog so the release engineer doesn't have to reconstruct it later.
 
 ## Reporting security issues
 
 Please **do not** open a public issue for security vulnerabilities.
-Follow the process in [`SECURITY.md`](SECURITY.md).
+Follow the process in [`security.md`](security.md).
 
 ## Code of conduct
 
-This project follows the [Contributor Covenant 2.1](CODE_OF_CONDUCT.md).
+This project follows the [Contributor Covenant 2.1](code_of_conduct.md).
 By participating you agree to uphold it.

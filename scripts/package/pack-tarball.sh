@@ -5,7 +5,7 @@
 #   spt-<version>-<target>/
 #     spt[.exe]
 #     LICENSE
-#     README.md
+#     readme.md
 #     docs/...
 #     share/man/man1/spt*.1
 #     share/bash-completion/completions/spt
@@ -81,7 +81,7 @@ esac
 
 # License + README at archive root with conventional names.
 [[ -f "$root/license.md" ]] && cp "$root/license.md" "$staged/LICENSE"
-[[ -f "$root/readme.md"  ]] && cp "$root/readme.md"  "$staged/README.md"
+[[ -f "$root/readme.md"  ]] && cp "$root/readme.md"  "$staged/readme.md"
 
 # Bundle the docs/ tree (markdown only, no nested target/ artefacts).
 if [[ -d "$root/docs" ]]; then

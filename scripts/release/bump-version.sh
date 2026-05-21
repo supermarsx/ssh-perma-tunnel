@@ -73,7 +73,7 @@ if [[ "${DRY_RUN}" == "1" ]]; then
 fi
 
 # Update workspace Cargo.toml. The version line must carry the trailing
-# `# rolling` marker so this sed is unambiguous; see CONTRIBUTING.md.
+# `# rolling` marker so this sed is unambiguous; see contributing.md.
 ROOT="$(git rev-parse --show-toplevel)"
 CARGO_TOML="${ROOT}/Cargo.toml"
 if grep -qE '^version = "[^"]*"[[:space:]]*#[[:space:]]*rolling' "${CARGO_TOML}"; then

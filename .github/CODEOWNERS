@@ -15,4 +15,4 @@
 /crates/spt-snmp/       @<owner>
 /packaging/             @<owner>
 /.github/               @<owner>
-SECURITY.md             @<owner>
+security.md             @<owner>

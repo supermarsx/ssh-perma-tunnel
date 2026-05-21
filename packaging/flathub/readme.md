@@ -20,7 +20,7 @@ packaging/flathub/
 |   `-- scalable/io.spt.spt.svg
 |-- modules/
 |   `-- spt-build.yaml          # cargo --offline build module
-`-- README.md
+`-- readme.md
 ```
 
 ## Placeholder substitution table

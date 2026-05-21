@@ -7,6 +7,6 @@ labels: []
 
 **Stop.** Do not file security vulnerabilities through public issues.
 
-See [SECURITY.md](../../SECURITY.md) for the private reporting
+See [security.md](../../security.md) for the private reporting
 channels (GitHub Security Advisories, or the maintainer email listed
 in that document).

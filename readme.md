@@ -1,8 +1,8 @@
 # ssh-perma-tunnel (`spt`)
 
-[![CI](https://github.com/Mariana/ssh-perma-tunnel/actions/workflows/ci.yml/badge.svg)](https://github.com/Mariana/ssh-perma-tunnel/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](license.md)
-[![Built with Rust 1.83+](https://img.shields.io/badge/built_with-Rust_1.83+-dea584?logo=rust&logoColor=white)](rust-toolchain.toml)
+[![CI](https://github.com/Mariana/ssh-perma-tunnel/actions/workflows/ci.yml/badge.svg?style=flat-square)](https://github.com/Mariana/ssh-perma-tunnel/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg?style=flat-square)](license.md)
+[![Built with Rust 1.83+](https://img.shields.io/badge/built_with-Rust_1.83+-dea584?logo=rust&logoColor=white&style=flat-square)](rust-toolchain.toml)
 
 A single Rust command-line tool, `spt`, that establishes and maintains
 **permanent SSH tunnels** — local and reverse port forwards that survive
@@ -42,7 +42,7 @@ operational drift.
 | Linux    | `spt_<version>_amd64.deb`,  `*.rpm`     |
 | macOS    | `spt-<version>.pkg`                     |
 | Windows  | `spt-<version>.msi`                     |
-| Docker   | `ghcr.io/mariana/spt:<version>` (linux/amd64, linux/arm64) — see [`packaging/docker/README.md`](packaging/docker/README.md) |
+| Docker   | `ghcr.io/mariana/spt:<version>` (linux/amd64, linux/arm64) — see [`packaging/docker/readme.md`](packaging/docker/readme.md) |
 
 See [`docs/installation.md`](docs/installation.md) for verification and
 per-OS notes.

@@ -133,7 +133,7 @@ Additional steps recommended for hostile environments:
    the host; the bind-mount preserves the mode inside the container.
 4. **Image signing.** Verify the GHCR tag against the project's cosign
    key before pulling into production. (Signed images are out of scope
-   for this release — see RELEASING.md.)
+   for this release — see releasing.md.)
 5. **Network namespace.** Use a dedicated user-defined network if you
    run multiple stacks; never reuse the default `bridge` for sensitive
    tunnels.

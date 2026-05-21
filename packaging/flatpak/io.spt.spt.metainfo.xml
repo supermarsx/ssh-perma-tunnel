@@ -55,7 +55,7 @@
   <releases>
     <release version="@VERSION@" date="@RELEASE_DATE@">
       <description>
-        <p>See CHANGELOG.md for details.</p>
+        <p>See changelog.md for details.</p>
       </description>
     </release>
   </releases>

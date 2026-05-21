@@ -38,9 +38,9 @@ specific testing the reviewer should reproduce. -->
 - [ ] `cargo clippy --workspace --all-targets -- -D warnings` passes.
 - [ ] `cargo test --workspace --locked` passes.
 - [ ] New public items have rustdoc, with a doc-test where practical.
-- [ ] `CHANGELOG.md` updated under `## [Unreleased]` if user-visible.
+- [ ] `changelog.md` updated under `## [Unreleased]` if user-visible.
 - [ ] No `cargo update` was run (lockfile pinned for MSRV — see
-      [CONTRIBUTING.md](../CONTRIBUTING.md#why-the-lockfile-is-pinned)).
+      [contributing.md](../contributing.md#why-the-lockfile-is-pinned)).
 - [ ] If a new crate was added, it exposes a `testing` Cargo feature.
 - [ ] If touching secrets/redaction/listening sockets, security
       implications considered and called out above.

@@ -11,7 +11,7 @@ body:
         reproduce and fix the issue.
 
         **Do not** report security vulnerabilities through this form.
-        Follow the process in [SECURITY.md](../../SECURITY.md) instead.
+        Follow the process in [security.md](../../security.md) instead.
 
   - type: input
     id: version
@@ -115,7 +115,7 @@ body:
       options:
         - label: I have searched existing issues and this is not a duplicate.
           required: true
-        - label: I have read [SECURITY.md](../../SECURITY.md) and this is not a security vulnerability.
+        - label: I have read [security.md](../../security.md) and this is not a security vulnerability.
           required: true
         - label: I have redacted secrets and sensitive hostnames from the logs above.
           required: true

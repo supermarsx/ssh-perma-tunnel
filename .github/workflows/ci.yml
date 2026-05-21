@@ -367,10 +367,10 @@ jobs:
             fi
             echo
           } >"${frag}"
-          if [[ -f CHANGELOG.md ]]; then
+          if [[ -f changelog.md ]]; then
             today=$(date -u +%Y-%m-%d)
-            { echo "## [${VERSION}] - ${today}"; echo; cat "${frag}"; echo; cat CHANGELOG.md; } >CHANGELOG.md.new
-            mv CHANGELOG.md.new CHANGELOG.md
+            { echo "## [${VERSION}] - ${today}"; echo; cat "${frag}"; echo; cat changelog.md; } >changelog.md.new
+            mv changelog.md.new changelog.md
           fi
       - name: Generate checksums
         shell: bash
@@ -399,7 +399,7 @@ jobs:
         run: |
           git config user.email "ci@spt.local"
           git config user.name  "spt-ci"
-          git add Cargo.toml CHANGELOG.md 2>/dev/null || true
+          git add Cargo.toml changelog.md 2>/dev/null || true
           git commit -m "release: ${TAG}" || true
           git tag -a "${TAG}" -m "spt ${TAG}"
           git push origin HEAD:main --follow-tags

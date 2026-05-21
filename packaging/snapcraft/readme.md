@@ -47,7 +47,7 @@ Full per-channel promotion criteria are in
 |------------------------|-----------------------------------------------------------------------------------------------------------|
 | `icon-256.png`         | 256×256 app icon referenced from `packaging/snap/snapcraft.yaml`. **Placeholder — replace before release.** |
 | `store-listing.md`     | The complete Snap Store submission runbook.                                                               |
-| `README.md`            | This file.                                                                                                |
+| `readme.md`            | This file.                                                                                                |
 | `screenshots/<n>.png`  | (Not committed) 1920×1080 screenshots. Operator-supplied.                                                 |
 
 ## Placeholder substitution table

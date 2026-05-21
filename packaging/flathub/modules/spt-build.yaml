@@ -8,7 +8,7 @@
 #      that redirects every crate to that directory.
 #
 # The vendor tarball is generated as part of the release pipeline; see
-# `packaging/flathub/README.md` for the exact reproducer.
+# `packaging/flathub/readme.md` for the exact reproducer.
 name: spt
 buildsystem: simple
 sources:

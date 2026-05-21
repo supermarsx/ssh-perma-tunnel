@@ -1,7 +1,7 @@
 # Dependabot configuration for ssh-perma-tunnel.
 #
 # Three ecosystems are tracked. All Cargo updates are advisory: the
-# lockfile is pinned for MSRV reasons (see CONTRIBUTING.md), so a
+# lockfile is pinned for MSRV reasons (see contributing.md), so a
 # Dependabot PR is the *start* of a review, not the end. A human must
 # verify the proposed lockfile still builds on Rust 1.83 before merge.
 

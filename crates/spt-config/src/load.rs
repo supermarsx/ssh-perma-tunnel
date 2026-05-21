@@ -436,7 +436,7 @@ mod tests {
             "#,
         );
         // A non-toml file should be ignored.
-        fs::write(tmp.path().join("README.md"), "ignore me").unwrap();
+        fs::write(tmp.path().join("readme.md"), "ignore me").unwrap();
 
         let (cfg, w) = load_dir(tmp.path(), false).unwrap();
         assert!(w.is_empty(), "no warnings expected, got: {w:?}");

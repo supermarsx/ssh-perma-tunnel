@@ -5,7 +5,7 @@
 #   spt-<version>-<target>\
 #     spt.exe
 #     LICENSE
-#     README.md
+#     readme.md
 #     docs\...
 #     share\man\man1\spt*.1
 #     share\bash-completion\completions\spt
@@ -34,7 +34,7 @@ function Show-Usage {
 Usage: scripts/package/pack-zip.ps1 -Target <triple> [-DryRun]
 
 Packs the already-built target/<target>/release/spt.exe into
-dist/<version>/spt-<version>-<target>.zip together with LICENSE, README.md,
+dist/<version>/spt-<version>-<target>.zip together with LICENSE, readme.md,
 docs/, man pages, and shell completions.
 
 Only Windows-MSVC targets are supported by this script.
@@ -75,7 +75,7 @@ try {
     $license = Join-Path $root 'license.md'
     if (Test-Path -LiteralPath $license) { Copy-Item $license (Join-Path $staged 'LICENSE') }
     $readme = Join-Path $root 'readme.md'
-    if (Test-Path -LiteralPath $readme)  { Copy-Item $readme  (Join-Path $staged 'README.md') }
+    if (Test-Path -LiteralPath $readme)  { Copy-Item $readme  (Join-Path $staged 'readme.md') }
 
     $docsDir = Join-Path $root 'docs'
     if (Test-Path -LiteralPath $docsDir) {

@@ -187,6 +187,6 @@ packaging/
 ├── flatpak/io.spt.spt.metainfo.xml  new — AppStream metainfo
 ├── winget/spt.yaml          new      — winget singleton manifest
 ├── nix/default.nix          new      — Nix package
-├── SIGNING.md               existing — release signing process
-└── README.md                this file
+├── signing.md               existing — release signing process
+└── readme.md                this file
 ```

@@ -73,7 +73,7 @@ unsigned artifacts.
 
 ## Signing material
 
-See [`packaging/SIGNING.md`](../../packaging/SIGNING.md) for the trust
+See [`packaging/signing.md`](../../packaging/signing.md) for the trust
 chain. tl;dr:
 
 - `MINISIGN_SECRET_KEY` (CI secret) — required for project-level

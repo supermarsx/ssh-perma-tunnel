@@ -200,5 +200,5 @@ git checkout packaging/homebrew/spt.rb
 ```
 packaging/homebrew/
 ├── spt.rb       Homebrew formula (template; bumped in place by the script)
-└── README.md    this file
+└── readme.md    this file
 ```

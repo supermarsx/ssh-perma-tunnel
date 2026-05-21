@@ -8,7 +8,7 @@ expects them so the contents can be lifted into a fork and submitted as-is.
 
 ```
 packaging/winget/
-├── README.md                           — this file
+├── readme.md                           — this file
 ├── spt.yaml.legacy                     — old singleton, kept only as a
 │                                         redirect for any local scripts
 │                                         that still reference it
@@ -43,7 +43,7 @@ the following placeholders in every file:
 | `<RELEASE_DATE>`       | UTC release date, `YYYY-MM-DD`.                                         |
 | `<PRODUCT_CODE_X64>`   | `msiinfo export ... Property` → `ProductCode` row (uppercase GUID).     |
 | `<PRODUCT_CODE_ARM64>` | Same, for the ARM64 MSI.                                                |
-| `<RELEASE_NOTES>`      | First section of `CHANGELOG.md` for the new version (≤ 10000 chars).    |
+| `<RELEASE_NOTES>`      | First section of `changelog.md` for the new version (≤ 10000 chars).    |
 
 The bump script also renames the directory from
 `manifests/m/Mariana/spt/<OLD>/` to `manifests/m/Mariana/spt/<NEW>/` and

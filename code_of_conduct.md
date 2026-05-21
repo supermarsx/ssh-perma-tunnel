@@ -9,7 +9,7 @@ https://www.contributor-covenant.org/version/2/1/code-of-conduct/
 
 Conduct concerns can be reported privately at <CONTACT_EMAIL_PLACEHOLDER>.
 Reports are read by the maintainers listed in [CODEOWNERS](.github/CODEOWNERS).
-Disclosure follows the timelines in [SECURITY.md](SECURITY.md).
+Disclosure follows the timelines in [security.md](security.md).
 
 # Enforcement
 

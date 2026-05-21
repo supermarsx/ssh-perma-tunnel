@@ -6,7 +6,7 @@
 # independently of the top-level finish-args.
 #
 # Placeholders rewritten by `scripts/release/update-packaging.sh` and
-# documented in README.md:
+# documented in readme.md:
 #   <VERSION>             release version, e.g. 0.1.0
 #   <SHA256_SRC_TAR>      sha256 of v<VERSION>.tar.gz from GitHub
 #   <SHA256_VENDOR_TAR>   sha256 of spt-<VERSION>-vendor.tar.xz

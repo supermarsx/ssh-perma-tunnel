@@ -127,7 +127,7 @@
   <releases>
     <release version="@VERSION@" date="@RELEASE_DATE@">
       <description>
-        <p>See CHANGELOG.md in the source repository for the detailed change log.</p>
+        <p>See changelog.md in the source repository for the detailed change log.</p>
       </description>
       <url>https://github.com/Mariana/ssh-perma-tunnel/releases/tag/v@VERSION@</url>
     </release>

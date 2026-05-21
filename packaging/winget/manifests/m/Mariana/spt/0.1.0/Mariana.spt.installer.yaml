@@ -3,7 +3,7 @@
 # Installer manifest for Mariana.spt.
 #
 # Placeholders substituted on release by scripts/release/bump-winget.sh
-# (see packaging/winget/README.md for the substitution table):
+# (see packaging/winget/readme.md for the substitution table):
 #
 #   <VERSION>            — e.g. 0.1.0
 #   <SHA256_WIN_AMD64>   — sha256 of spt-<VERSION>-x86_64-pc-windows-msvc.msi

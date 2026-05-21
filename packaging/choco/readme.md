@@ -16,7 +16,7 @@ packaging/choco/
 │   ├── chocolateybeforemodify.ps1   # Gracefully stops the spt service on upgrade/uninstall
 │   ├── LICENSE.txt                  # MIT, copy of upstream license.md
 │   └── VERIFICATION.txt             # Reviewer-facing integrity guide
-└── README.md                        # (this file)
+└── readme.md                        # (this file)
 ```
 
 ## Build the .nupkg locally
@@ -95,7 +95,7 @@ checks:
 Signed MSIs (Authenticode) substantially shorten the review queue and let
 moderators verify provenance without re-running checksum math. spt's MSI
 build (`packaging/msi/`) is signed when the release CI has access to the
-code-signing certificate; see `packaging/SIGNING.md`. The Chocolatey package
+code-signing certificate; see `packaging/signing.md`. The Chocolatey package
 itself does NOT need to be signed — the MSI signature is what reviewers
 trust transitively.
 

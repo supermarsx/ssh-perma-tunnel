@@ -10,7 +10,7 @@
 #   <SHA256_LINUX_ARM64>  - sha256 of spt-<VERSION>-aarch64-unknown-linux-gnu.tar.gz
 #   <SHA256_LINUX_AMD64>  - sha256 of spt-<VERSION>-x86_64-unknown-linux-gnu.tar.gz
 #
-# See packaging/homebrew/README.md for the full release/submission flow.
+# See packaging/homebrew/readme.md for the full release/submission flow.
 class Spt < Formula
   desc "Permanent SSH/SSH3 tunnels - local/remote port forwards that survive drops"
   homepage "https://github.com/Mariana/ssh-perma-tunnel"
