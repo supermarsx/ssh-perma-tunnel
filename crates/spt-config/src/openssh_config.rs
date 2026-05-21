@@ -76,9 +76,8 @@ pub fn parse(text: &str) -> Vec<HostBlock> {
         if line.is_empty() {
             continue;
         }
-        let (key, value) = match split_kv(line) {
-            Some(kv) => kv,
-            None => continue,
+        let Some((key, value)) = split_kv(line) else {
+            continue;
         };
         let key_lc = key.to_ascii_lowercase();
         if key_lc == "host" {

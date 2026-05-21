@@ -53,6 +53,8 @@ pub mod local_tcp;
 pub mod remote_tcp;
 pub mod runner;
 pub mod udp;
+pub mod udp_ssh2;
+pub mod uds_listener;
 
 // Test fixtures are gated behind the `testing` feature so other crates'
 // tests (notably spt-supervisor) can reuse [`testing::MockTunnelProtocol`].

@@ -24,6 +24,7 @@
 #![warn(missing_docs)]
 
 pub mod auth;
+pub mod connect;
 pub mod crypto;
 pub(crate) mod dynamic;
 pub mod errors;
@@ -36,6 +37,9 @@ pub mod proxy_jump;
 pub(crate) mod russh_backend;
 pub mod session;
 pub mod sftp;
+pub mod udp_tcp_framed;
+pub mod udp_uds_mode;
+pub mod uds_forward;
 
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
@@ -44,3 +48,8 @@ pub use crypto::CryptoPolicy;
 pub use protocol::{Ssh2BackendKind, Ssh2Protocol, Ssh2ProtocolBuilder, TrustPolicy};
 pub use session::Ssh2Session;
 pub use sftp::{SftpClient, SftpDirEntry, SftpMetadata};
+
+// t6-e13: re-export the obfuscation surface so callers can build connect
+// streams without depending on `spt-obfs` directly.
+pub use connect::{connect_to_endpoint, ConnectStream};
+pub use spt_obfs::{AuditHook, NoopAuditHook, ObfsConfig, ObfsTransport};

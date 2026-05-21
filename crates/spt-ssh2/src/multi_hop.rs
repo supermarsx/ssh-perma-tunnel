@@ -204,10 +204,10 @@ where
     // a clean tunnel to `(target_host, target_port)`.
     match kind {
         HopKind::Socks5 => {
-            socks5_connect(&mut client_side, target_host, target_port, creds.as_ref()).await?
+            socks5_connect(&mut client_side, target_host, target_port, creds.as_ref()).await?;
         }
         HopKind::HttpConnect => {
-            http_connect(&mut client_side, target_host, target_port, creds.as_ref()).await?
+            http_connect(&mut client_side, target_host, target_port, creds.as_ref()).await?;
         }
         HopKind::Ssh => unreachable!(),
     }

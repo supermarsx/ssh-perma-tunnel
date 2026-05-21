@@ -25,11 +25,14 @@ testing = []
 spt-core = { workspace = true }
 spt-protocol = { workspace = true }
 spt-auth = { workspace = true }
+spt-auth-sspi = { workspace = true }
 spt-key = { workspace = true }
 spt-trust = { workspace = true }
 spt-net = { workspace = true }
 spt-secrets = { workspace = true }
 spt-sftp = { workspace = true }
+spt-scripting = { workspace = true }
+spt-obfs = { workspace = true }
 
 tokio = { workspace = true }
 async-trait = { workspace = true }
@@ -83,3 +86,10 @@ required-features = ["testing"]
 [[test]]
 name = "russh_interop"
 required-features = ["testing", "vendored-openssl"]
+
+# UDS forwarding (t6-e2). Inline russh server with streamlocal-forward
+# hooks. `testing` feature provides RusshTestServer counterparts and
+# satisfies the `--features testing` gate used by sibling test files.
+[[test]]
+name = "uds_forward"
+required-features = ["testing"]

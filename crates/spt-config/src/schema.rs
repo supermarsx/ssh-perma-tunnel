@@ -1120,6 +1120,136 @@ pub struct Profile {
     /// `[[profiles.sftp_mounts]]`. SFTP-backed filesystem/drive mounts.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sftp_mounts: Vec<SftpMount>,
+    /// `[profiles.script]`. Rhai scripting hooks (t6-e7). Optional; when
+    /// absent the scripting engine is not instantiated and all hook call
+    /// sites in the session layer are no-ops with zero allocation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub script: Option<ScriptConfig>,
+    /// `[profiles.transport]`. Obfuscation transport selection (t6-e13).
+    /// Optional; when absent the plain TCP path is used and no
+    /// `spt-obfs` machinery runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transport: Option<Transport>,
+}
+
+/// `[profiles.transport]` — transport-layer selection. Spec t6-e13.
+///
+/// Currently exposes a single `obfuscation` knob; future transports
+/// (`[profiles.transport.tls]`, `[profiles.transport.proxy]`, etc.) hang
+/// off the same table. Mirrors `spt_obfs::ObfsConfig` on the schema side
+/// so that `spt-config` need not depend on the obfuscation crate.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Transport {
+    /// `[profiles.transport.obfuscation]`. Absent → plain TCP path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub obfuscation: Option<ObfsConfig>,
+}
+
+/// Schema mirror of `spt_obfs::ObfsConfig`. `tag = "kind"` matches the
+/// `[serde(tag = "kind")]` on the engine-side enum, so loaders can map
+/// between the two without a hand-written conversion.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+#[non_exhaustive]
+pub enum ObfsConfig {
+    /// Tor PT obfs4 bridge (t6-e13).
+    Obfs4 {
+        /// Hex-encoded 20-byte server node id (parsed by the loader).
+        node_id: String,
+        /// Hex-encoded 32-byte server identity public key.
+        public_key: String,
+        /// IAT mode (0 / 1 / 2).
+        iat_mode: u8,
+    },
+    /// meek-style HTTPS-CONNECT fronting (t6-e13).
+    MeekHttp {
+        /// Fronting URL (HTTPS).
+        url: String,
+        /// Optional Host: header override (domain fronting).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        front_host: Option<String>,
+        /// Optional explicit SNI override.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sni: Option<String>,
+    },
+    /// SSH over a WebSocket upgrade (t6-e13).
+    Websocket {
+        /// Endpoint URL (`ws://` or `wss://`).
+        url: String,
+        /// Extra HTTP headers added to the upgrade request.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        headers: Vec<(String, String)>,
+    },
+    /// SSH over Shadowsocks AEAD framing (t6-e13).
+    Shadowsocks {
+        /// Cipher identifier (mirrors `SsMethod::as_str`).
+        method: String,
+        /// `secret://ns/name` reference to the pre-shared password.
+        password: spt_secrets::SecretRef,
+    },
+}
+
+/// `[profiles.script]` — Rhai scripting hook configuration. Spec t6-e7.
+///
+/// Mirrors [`spt_scripting::ScriptConfig`] for the on-disk surface. The
+/// runtime mapper in `spt-bin` (Bwire) converts this schema struct into the
+/// engine-facing struct so that `spt-config` remains free of a build-time
+/// dependency on the engine crate.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ScriptConfig {
+    /// Filesystem path to the Rhai script. Resolved relative to the
+    /// configuration file directory at validation time.
+    pub path: String,
+    /// Per-hook entry-point function names.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hooks: Option<ScriptHooks>,
+    /// Sandbox limits. Defaults are documented on [`ScriptLimits`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limits: Option<ScriptLimits>,
+}
+
+/// `[profiles.script.hooks]` — function names invoked at each lifecycle event.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ScriptHooks {
+    /// Function called before the SSH connect attempt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pre_connect: Option<String>,
+    /// Function called after auth completes successfully.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub post_connect: Option<String>,
+    /// Function called on every forward state-machine transition.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_forward_state: Option<String>,
+    /// Function called when the session is disconnected.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_disconnect: Option<String>,
+    /// Catch-all function for any structured event payload.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_event: Option<String>,
+}
+
+/// `[profiles.script.limits]` — Rhai sandbox bounds.
+///
+/// Every field is `Option`-typed in the schema so absent keys take the
+/// `Default` values defined by [`spt_scripting::ScriptLimits`].
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[allow(clippy::struct_field_names)] // every limit is `max_*` by spec.
+pub struct ScriptLimits {
+    /// Maximum number of Rhai operations per hook invocation (default `1_000_000`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_operations: Option<u64>,
+    /// Maximum call-stack depth (default 32).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_call_levels: Option<u64>,
+    /// Maximum string size in bytes (default 65536).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_string_size: Option<u64>,
+    /// Maximum array size in elements (default 4096).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_array_size: Option<u64>,
+    /// Maximum number of modules loadable per session (default 0 = no module loading).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_modules: Option<u64>,
 }
 
 /// `[[profiles.sftp_mounts]]`.
@@ -1545,6 +1675,26 @@ pub struct Hop {
     pub proxy_password_ref: Option<SecretRef>,
 }
 
+/// UDP forwarding mode for SSH2-backed UDP forwards. Added by t6-e1.
+///
+/// * `TcpFramed` (default; both libssh2 and russh backends) — UDP datagrams
+///   are length-prefixed (`[u32_be len][bytes payload]`) and shipped through a
+///   single `direct-tcpip` channel. Frames larger than 64 KiB are rejected.
+/// * `UdsBridge` (russh only) — open a `direct-streamlocal@openssh.com`
+///   channel to a UNIX-domain socket on the server; an operator-run
+///   UDP↔UDS shim on the server side bridges datagrams. The libssh2 path
+///   returns [`spt_core::Error::UnsupportedPlatform`] because `ssh2` 0.9
+///   lacks `direct-streamlocal` support.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum UdpMode {
+    /// Length-prefixed `direct-tcpip` framing. Default; both backends.
+    #[default]
+    TcpFramed,
+    /// `direct-streamlocal@openssh.com` to a remote UDS bridge. Russh only.
+    UdsBridge,
+}
+
 /// `[[profiles.forwards]]`. Spec §9.14.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Forward {
@@ -1631,6 +1781,38 @@ pub struct Forward {
     /// UDP packet rate. §10.4.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_packets_per_second: Option<u32>,
+    /// SSH2-only: UDP forwarding mode. Defaults to
+    /// [`UdpMode::TcpFramed`] when absent. Added by t6-e1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub udp_mode: Option<UdpMode>,
+    /// Forward link kind selecting the wire flavour underneath the existing
+    /// direction in [`Forward::kind`]. Recognised values (t6-e2):
+    ///
+    /// * `tcp` — RFC 4254 `direct-tcpip` / `tcpip-forward` (default when
+    ///   absent — preserves all pre-t6 behaviour).
+    /// * `local_uds` — OpenSSH non-standard `direct-streamlocal@openssh.com`
+    ///   channel-open. Requires [`Forward::remote_socket_path`].
+    /// * `remote_uds` — OpenSSH non-standard `streamlocal-forward@openssh.com`
+    ///   global request. Requires [`Forward::local_socket_path`] (the local
+    ///   UDS the client binds, only valid on `cfg(unix)` targets) and
+    ///   [`Forward::remote_socket_path`] (the server-side socket the
+    ///   peer is asked to listen on).
+    ///
+    /// The TOML key is `kind` (the Rust name avoids collision with
+    /// [`Forward::kind`] which is `type` in TOML).
+    #[serde(default, rename = "kind", skip_serializing_if = "Option::is_none")]
+    pub link_kind: Option<String>,
+    /// Server-side UNIX socket path for `local_uds` (the remote socket the
+    /// client opens a `direct-streamlocal` channel to) or for `remote_uds`
+    /// (the path the server is asked to listen on). t6-e2.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_socket_path: Option<String>,
+    /// Client-side UNIX socket path for `local_uds` (the local UDS the client
+    /// binds and accepts on, then forwards into the SSH channel) or for
+    /// `remote_uds` (the local UDS the client connects to for each accepted
+    /// `forwarded-streamlocal` channel from the server). Unix-only. t6-e2.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_socket_path: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1704,5 +1886,103 @@ proxy_password_ref = \"secret://proxies/alice\"
         let pw = hop.proxy_password_ref.expect("ref present");
         assert_eq!(pw.ns(), "proxies");
         assert_eq!(pw.name(), "alice");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// t6-e1: UdpMode round-trip + default behaviour on `Forward`
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod udp_mode_tests {
+    use super::*;
+
+    #[test]
+    fn udp_mode_both_variants_round_trip_through_toml() {
+        for (variant, repr) in [(UdpMode::TcpFramed, "tcp-framed"), (UdpMode::UdsBridge, "uds-bridge")] {
+            let toml_str = format!(
+                "name = \"f\"\ntype = \"local\"\ntransport = \"udp\"\nudp_mode = \"{repr}\"\n",
+            );
+            let fwd: Forward = toml::from_str(&toml_str).unwrap();
+            assert_eq!(fwd.udp_mode, Some(variant), "deserialise `{repr}`");
+            let rendered = toml::to_string(&fwd).unwrap();
+            assert!(
+                rendered.contains(&format!("udp_mode = \"{repr}\"")),
+                "expected `udp_mode = \"{repr}\"` in: {rendered}"
+            );
+        }
+    }
+
+    #[test]
+    fn udp_mode_defaults_to_tcp_framed_when_absent() {
+        // No `udp_mode` field present — must deserialise as None, which is
+        // interpreted as `UdpMode::default()` (i.e. `TcpFramed`) at the
+        // dispatch site (`spt-forward::udp_ssh2::resolve_udp_mode`).
+        let toml_str = "name = \"f\"\ntype = \"local\"\ntransport = \"udp\"\n";
+        let fwd: Forward = toml::from_str(toml_str).unwrap();
+        assert!(fwd.udp_mode.is_none());
+        // The conventional "resolved" mode is then the enum default.
+        assert_eq!(fwd.udp_mode.unwrap_or_default(), UdpMode::TcpFramed);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// t6-e2: Forward.link_kind / remote_socket_path / local_socket_path round-trip
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod uds_kind_tests {
+    use super::*;
+
+    /// All three documented `kind` link variants must round-trip through TOML:
+    /// `tcp`, `local_uds`, `remote_uds`.
+    #[test]
+    fn link_kind_three_variants_round_trip_through_toml() {
+        for repr in ["tcp", "local_uds", "remote_uds"] {
+            let toml_str = format!(
+                "name = \"f\"\ntype = \"local\"\ntransport = \"tcp\"\nkind = \"{repr}\"\n",
+            );
+            let fwd: Forward = toml::from_str(&toml_str).unwrap();
+            assert_eq!(
+                fwd.link_kind.as_deref(),
+                Some(repr),
+                "deserialise link_kind=`{repr}`"
+            );
+            let rendered = toml::to_string(&fwd).unwrap();
+            assert!(
+                rendered.contains(&format!("kind = \"{repr}\"")),
+                "expected `kind = \"{repr}\"` in: {rendered}"
+            );
+        }
+    }
+
+    #[test]
+    fn link_kind_defaults_to_none_meaning_tcp() {
+        // No `kind` (link kind) field — defaults to None, dispatchers treat
+        // that as the implicit `tcp` link kind (preserving pre-t6 behaviour).
+        let toml_str = "name = \"f\"\ntype = \"local\"\ntransport = \"tcp\"\n";
+        let fwd: Forward = toml::from_str(toml_str).unwrap();
+        assert!(fwd.link_kind.is_none());
+        assert!(fwd.remote_socket_path.is_none());
+        assert!(fwd.local_socket_path.is_none());
+    }
+
+    #[test]
+    fn uds_socket_paths_round_trip() {
+        let toml_str = "\
+name = \"db\"
+type = \"local\"
+transport = \"tcp\"
+kind = \"local_uds\"
+remote_socket_path = \"/run/db.sock\"
+local_socket_path = \"/tmp/db.sock\"
+";
+        let fwd: Forward = toml::from_str(toml_str).unwrap();
+        assert_eq!(fwd.link_kind.as_deref(), Some("local_uds"));
+        assert_eq!(fwd.remote_socket_path.as_deref(), Some("/run/db.sock"));
+        assert_eq!(fwd.local_socket_path.as_deref(), Some("/tmp/db.sock"));
+        let rendered = toml::to_string(&fwd).unwrap();
+        assert!(rendered.contains("remote_socket_path = \"/run/db.sock\""));
+        assert!(rendered.contains("local_socket_path = \"/tmp/db.sock\""));
     }
 }
