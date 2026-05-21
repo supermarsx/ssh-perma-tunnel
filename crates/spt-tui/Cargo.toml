@@ -30,7 +30,7 @@ serde = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }
-unicode-width = "0.1"
+unicode-width = "0.2"
 toml_edit = { workspace = true }
 toml = { workspace = true }
 # `secrecy::SecretBox` is the cross-workspace type used to hand secret bytes
