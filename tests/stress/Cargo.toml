@@ -55,7 +55,7 @@ rand_chacha = "0.3"
 
 [target.'cfg(windows)'.dependencies]
 # Adding features to an already-locked crate version does not bump the lock.
-windows = { version = "0.58", features = [
+windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_System_Threading",
     "Win32_System_ProcessStatus",
