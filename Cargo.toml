@@ -128,7 +128,7 @@ toml = "0.8"
 toml_edit = "0.22"
 humantime = "2"
 humantime-serde = "1"
-bytesize = "1"
+bytesize = "2"
 serde_ignored = "0.1"
 
 # Errors / diagnostics
