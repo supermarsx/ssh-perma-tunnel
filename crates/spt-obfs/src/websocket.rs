@@ -1,22 +1,29 @@
 //! ssh-over-websocket transport.
 //!
-//! ## Stub status
+//! ## Wire summary
 //!
-//! `tokio-tungstenite` is **absent from `Cargo.lock`**; stub-where-needed
-//! precedent applies. The connect path surfaces a stable
-//! `Error::UnsupportedPlatform` with a `tokio-tungstenite` detail string so
-//! callers (Bwire's audit layer; the supervisor) can distinguish the
-//! "missing dep" case from genuine network failures.
+//! Uses `tokio-tungstenite 0.24` to perform the RFC 6455 upgrade and
+//! exchange binary frames. The advertised subprotocol is `ssh`. Caller
+//! supplied headers (`headers` in `ObfsConfig::Websocket`) are merged
+//! into the upgrade request verbatim.
 //!
-//! The handshake contract — `Sec-WebSocket-Protocol: ssh`, binary-frame round
-//! trip — is enforced via in-process helpers ([`build_upgrade_request`],
-//! [`encode_binary_frame`] / [`decode_binary_frame`]) so the test contract
-//! holds even when the wire path is gated.
+//! Only binary opcodes carry SSH bytes — incoming text frames cause the
+//! reader to surface an `InvalidData` error so a misconfigured server
+//! is detected immediately. Ping frames are handled transparently by
+//! `tokio-tungstenite`; close frames propagate as EOF to the SSH layer.
 
+use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context, Poll};
 
 use async_trait::async_trait;
 use bytes::{BufMut, Bytes, BytesMut};
+use futures::sink::SinkExt;
+use futures::stream::StreamExt;
+use http::Request;
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+use tokio_tungstenite::tungstenite::protocol::{CloseFrame, Message, WebSocketConfig};
+use tokio_tungstenite::{connect_async_with_config, MaybeTlsStream, WebSocketStream};
 
 use spt_core::Result;
 
@@ -32,6 +39,8 @@ pub const SSH_SUBPROTOCOL: &str = "ssh";
 pub struct WebsocketTransport {
     cfg: ObfsConfig,
     audit: Arc<dyn AuditHook>,
+    /// Test-only override for the dial target.
+    url_override: Option<String>,
 }
 
 impl WebsocketTransport {
@@ -44,7 +53,18 @@ impl WebsocketTransport {
             .into());
         };
         cfg.validate().map_err(spt_core::Error::from)?;
-        Ok(Self { cfg, audit })
+        Ok(Self {
+            cfg,
+            audit,
+            url_override: None,
+        })
+    }
+
+    /// Override the dial URL (test hook for loopback fixtures).
+    #[must_use]
+    pub fn with_url_override(mut self, url: impl Into<String>) -> Self {
+        self.url_override = Some(url.into());
+        self
     }
 
     /// Borrow the configured target URL.
@@ -56,9 +76,11 @@ impl WebsocketTransport {
         }
     }
 
-    /// Render the HTTP upgrade request the real backend would emit. Returns
-    /// the canonical `Sec-WebSocket-*` header set plus any caller-supplied
-    /// extras so the unit test can assert the subprotocol is present.
+    /// Render the HTTP upgrade request the live backend emits.
+    ///
+    /// Returns the canonical headers (`Upgrade`, `Connection`,
+    /// `Sec-WebSocket-Version`, `Sec-WebSocket-Protocol: ssh`) plus any
+    /// caller-supplied extras. The unit test pins the subprotocol.
     #[must_use]
     pub fn build_upgrade_request(&self) -> Vec<(String, String)> {
         let mut hdrs = vec![
@@ -77,13 +99,61 @@ impl WebsocketTransport {
         }
         hdrs
     }
+
+    /// Build the `http::Request` handed to `tokio-tungstenite`.
+    ///
+    /// Exposed for unit testing of header propagation.
+    pub fn build_http_request(&self) -> std::result::Result<Request<()>, ObfsError> {
+        let url = self.url_override.as_deref().unwrap_or_else(|| self.url());
+        // `tokio-tungstenite` requires Host, Upgrade, Connection,
+        // Sec-WebSocket-Key, Sec-WebSocket-Version. Of those, our
+        // explicit list provides everything except Host (which the
+        // crate fills from the URL) and Sec-WebSocket-Key (random,
+        // tungstenite-generated). We can pre-build those though to
+        // make the request fully concrete for tests.
+        let parsed = url::Url::parse(url)
+            .map_err(|e| ObfsError::InvalidConfig(format!("ws url: {e}")))?;
+        let host = parsed
+            .host_str()
+            .ok_or_else(|| ObfsError::InvalidConfig("ws url has no host".into()))?;
+        let port = parsed.port_or_known_default().unwrap_or(443);
+        let host_hdr = if (parsed.scheme() == "wss" && port == 443)
+            || (parsed.scheme() == "ws" && port == 80)
+        {
+            host.to_owned()
+        } else {
+            format!("{host}:{port}")
+        };
+        let key = ws_random_key();
+        let mut builder = Request::builder()
+            .method("GET")
+            .uri(url)
+            .header("Host", host_hdr)
+            .header("Upgrade", "websocket")
+            .header("Connection", "Upgrade")
+            .header("Sec-WebSocket-Version", "13")
+            .header("Sec-WebSocket-Key", key)
+            .header("Sec-WebSocket-Protocol", SSH_SUBPROTOCOL);
+        if let ObfsConfig::Websocket { headers, .. } = &self.cfg {
+            for (k, v) in headers {
+                builder = builder.header(k.as_str(), v.as_str());
+            }
+        }
+        builder
+            .body(())
+            .map_err(|e| ObfsError::InvalidConfig(format!("ws req: {e}")))
+    }
 }
 
-/// Minimal binary-frame encoder used by the round-trip test.
-///
-/// Layout: `[opcode=0x82 binary][len 4 BE][payload]`. Real implementations
-/// emit RFC 6455 frames via `tokio-tungstenite`; this in-process form is
-/// sufficient to drive the contract.
+fn ws_random_key() -> String {
+    use base64::Engine;
+    let mut buf = [0u8; 16];
+    rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut buf);
+    base64::engine::general_purpose::STANDARD.encode(buf)
+}
+
+/// Minimal binary-frame encoder kept for backwards compatibility with the
+/// t6-e13 contract tests. Encodes the payload with a fixed binary opcode.
 #[must_use]
 pub fn encode_binary_frame(payload: &[u8]) -> Bytes {
     let mut buf = BytesMut::with_capacity(5 + payload.len());
@@ -94,8 +164,6 @@ pub fn encode_binary_frame(payload: &[u8]) -> Bytes {
 }
 
 /// Decode a frame produced by [`encode_binary_frame`].
-///
-/// Returns the inner payload on success.
 pub fn decode_binary_frame(frame: &[u8]) -> Result<Vec<u8>> {
     if frame.len() < 5 {
         return Err(ObfsError::Handshake(format!(
@@ -123,22 +191,157 @@ pub fn decode_binary_frame(frame: &[u8]) -> Result<Vec<u8>> {
     Ok(frame[5..].to_vec())
 }
 
+/// Duplex bridge translating WebSocket frames to/from `AsyncRead+Write`.
+pub struct WebsocketStream {
+    ws: WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>,
+    rx: Vec<u8>,
+    closed: bool,
+    pending_write: Option<Vec<u8>>,
+}
+
+impl WebsocketStream {
+    /// Construct from a live `tokio-tungstenite` stream.
+    pub fn new(ws: WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>) -> Self {
+        Self {
+            ws,
+            rx: Vec::new(),
+            closed: false,
+            pending_write: None,
+        }
+    }
+}
+
+impl AsyncRead for WebsocketStream {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        loop {
+            if !self.rx.is_empty() {
+                let n = buf.remaining().min(self.rx.len());
+                let drained: Vec<u8> = self.rx.drain(..n).collect();
+                buf.put_slice(&drained);
+                return Poll::Ready(Ok(()));
+            }
+            if self.closed {
+                return Poll::Ready(Ok(())); // EOF
+            }
+            match self.ws.poll_next_unpin(cx) {
+                Poll::Ready(Some(Ok(msg))) => match msg {
+                    Message::Binary(b) => {
+                        self.rx.extend_from_slice(&b);
+                    }
+                    Message::Close(_) => {
+                        self.closed = true;
+                    }
+                    Message::Ping(_) | Message::Pong(_) | Message::Frame(_) => {
+                        // tungstenite auto-responds to Ping; raw frames
+                        // are an artefact of low-level configurations
+                        // we don't enable.
+                    }
+                    Message::Text(_) => {
+                        return Poll::Ready(Err(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            "ws: text frame not allowed on ssh subprotocol",
+                        )));
+                    }
+                },
+                Poll::Ready(Some(Err(e))) => {
+                    return Poll::Ready(Err(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        format!("ws: {e}"),
+                    )));
+                }
+                Poll::Ready(None) => {
+                    self.closed = true;
+                }
+                Poll::Pending => return Poll::Pending,
+            }
+        }
+    }
+}
+
+impl AsyncWrite for WebsocketStream {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        // First, ensure the sink is ready.
+        match self.ws.poll_ready_unpin(cx) {
+            Poll::Ready(Ok(())) => {}
+            Poll::Ready(Err(e)) => {
+                return Poll::Ready(Err(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("ws ready: {e}"),
+                )))
+            }
+            Poll::Pending => return Poll::Pending,
+        }
+        if buf.is_empty() {
+            return Poll::Ready(Ok(0));
+        }
+        let owned = buf.to_vec();
+        let n = owned.len();
+        match self.ws.start_send_unpin(Message::Binary(owned)) {
+            Ok(()) => Poll::Ready(Ok(n)),
+            Err(e) => Poll::Ready(Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("ws send: {e}"),
+            ))),
+        }
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        match self.ws.poll_flush_unpin(cx) {
+            Poll::Ready(Ok(())) => Poll::Ready(Ok(())),
+            Poll::Ready(Err(e)) => Poll::Ready(Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("ws flush: {e}"),
+            ))),
+            Poll::Pending => Poll::Pending,
+        }
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        // Issue a clean close frame on first call.
+        if self.pending_write.is_none() {
+            self.pending_write = Some(Vec::new()); // sentinel
+            let close = Message::Close(Some(CloseFrame {
+                code: tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode::Normal,
+                reason: std::borrow::Cow::Borrowed("ssh-shutdown"),
+            }));
+            let _ = self.ws.start_send_unpin(close);
+        }
+        match self.ws.poll_close_unpin(cx) {
+            Poll::Ready(Ok(())) => Poll::Ready(Ok(())),
+            Poll::Ready(Err(e)) => Poll::Ready(Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("ws close: {e}"),
+            ))),
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
 #[async_trait]
 impl ObfsTransport for WebsocketTransport {
     async fn connect(&mut self, target: &str) -> Result<Box<dyn AsyncReadWrite>> {
         self.audit.on_connect(self.name(), target);
-        tracing::warn!(
+        let req = self
+            .build_http_request()
+            .map_err(spt_core::Error::from)?;
+        let cfg = WebSocketConfig::default();
+        let (ws, _resp) = connect_async_with_config(req, Some(cfg), false)
+            .await
+            .map_err(|e| ObfsError::Handshake(format!("ws connect: {e}")))?;
+        tracing::debug!(
             transport = self.name(),
-            url = self.url(),
-            "ssh-over-websocket: stub transport — `tokio-tungstenite` not in Cargo.lock"
+            url = self.url_override.as_deref().unwrap_or_else(|| self.url()),
+            "ws: upgrade complete"
         );
-        Err(ObfsError::Unsupported {
-            transport: "ssh-over-websocket",
-            crate_name: "tokio-tungstenite",
-            detail: "stub transport; activate via `real-tokio-tungstenite` once dep lands"
-                .into(),
-        }
-        .into())
+        Ok(Box::new(WebsocketStream::new(ws)))
     }
 
     fn name(&self) -> &'static str {
@@ -166,6 +369,19 @@ mod tests {
             .iter()
             .any(|(k, v)| k == "Sec-WebSocket-Protocol" && v == "ssh"));
         assert!(h.iter().any(|(k, v)| k == "X-Auth" && v == "tok"));
+    }
+
+    #[test]
+    fn http_request_contains_subprotocol_and_custom_headers() {
+        let t = WebsocketTransport::new(cfg(), Arc::new(NoopAuditHook)).unwrap();
+        let req = t.build_http_request().unwrap();
+        let hdrs = req.headers();
+        assert_eq!(
+            hdrs.get("Sec-WebSocket-Protocol").unwrap().to_str().unwrap(),
+            "ssh"
+        );
+        assert_eq!(hdrs.get("X-Auth").unwrap().to_str().unwrap(), "tok");
+        assert!(hdrs.get("Sec-WebSocket-Key").is_some());
     }
 
     #[test]

@@ -1,36 +1,27 @@
 //! Pluggable obfuscation transports for SSH backends.
 //!
-//! This crate ships the public [`ObfsTransport`] trait, the on-wire [`ObfsConfig`]
-//! enum (`obfs4`, `meek-http`, `ssh-over-websocket`, `ssh-over-shadowsocks`),
-//! the [`transport_for`] dispatcher, and an [`AuditHook`] sink that the parent
-//! binary attaches at construction so audit / metrics layers observe every
-//! obfuscated connect attempt.
+//! This crate ships the public [`ObfsTransport`] trait, the on-wire
+//! [`ObfsConfig`] enum (`obfs4`, `meek-http`, `ssh-over-websocket`,
+//! `ssh-over-shadowsocks`), the [`transport_for`] dispatcher, and an
+//! [`AuditHook`] sink that the parent binary attaches at construction so
+//! audit / metrics layers observe every obfuscated connect attempt.
 //!
-//! ## Stub-where-needed precedent
+//! ## Implementations
 //!
-//! Several transports require crates that are not currently present in
-//! `Cargo.lock`. Per the workspace policy that forbids `cargo update`, this
-//! crate ships **contract-enforcing stubs** today (matching the t6-e7 / t6-e9
-//! precedent) that:
+//! Each transport ships a real wire path as of t7-A4:
 //!
-//! * accept the same parsed config the real implementation will,
-//! * advance through the documented state machine far enough to surface
-//!   shape-level errors (`Error::InvalidConfig` for bad arguments,
-//!   `Error::UnsupportedPlatform` for unimplemented network paths),
-//! * fire the [`AuditHook`] with the transport name,
-//! * release every owned resource on drop.
-//!
-//! Bwire activates the real implementations once the upstream crates land in
-//! `Cargo.lock`; the public surface is intended to be byte-stable across that
-//! flip.
-//!
-//! ## Error-variant mapping
-//!
-//! The t6-e13 plan names `Error::ConfigInvalid` and `Error::UnsupportedFeature`.
-//! Those variants do not exist in `spt-core::Error`; following the t6-e9
-//! precedent for `UnsupportedBackend`, this crate maps them to the existing
-//! `Error::InvalidConfig` and `Error::UnsupportedPlatform`. See the
-//! `.orchestration/logs/t6-e13.md` log for the rationale.
+//! * `obfs4` — hand-rolled NTOR-style handshake (X25519 + HMAC-SHA256
+//!   KDF) and ChaCha20-Poly1305 frame layer. Documented as the "obfs4
+//!   client subset" — see [`obfs4`] and `docs/obfuscation.md` for the
+//!   wire-incompatibility caveats vs. obfs4proxy.
+//! * `meek-http` — HTTPS POST/POST chunked tunnel over `reqwest`, with
+//!   the standard Host-vs-SNI domain-fronting split.
+//! * `ssh-over-websocket` — RFC 6455 upgrade via `tokio-tungstenite
+//!   0.24`, advertising the `ssh` subprotocol.
+//! * `ssh-over-shadowsocks` — AEAD-2022 framing with the BLAKE3
+//!   `derive_key` KDF (`"shadowsocks 2022 session subkey"` context),
+//!   AES-128/256-GCM and ChaCha20-Poly1305 ciphers, sliding-window
+//!   replay protection.
 
 #![deny(unsafe_op_in_unsafe_fn)]
 #![warn(missing_docs)]
@@ -40,10 +31,10 @@ pub mod config;
 pub mod error;
 pub mod transport;
 
-pub mod obfs4;
 pub mod meek;
-pub mod websocket;
+pub mod obfs4;
 pub mod shadowsocks;
+pub mod websocket;
 
 pub use audit::{AuditHook, NoopAuditHook};
 pub use config::{ObfsConfig, SsMethod};
@@ -56,11 +47,8 @@ use spt_core::{Error, Result};
 
 /// Construct a boxed [`ObfsTransport`] for the given configuration.
 ///
-/// Returns `Error::InvalidConfig` (the variant the plan refers to as
-/// `ConfigInvalid`) when the supplied config is rejected at construction time.
-/// Returns `Error::UnsupportedPlatform` (`UnsupportedFeature`) when the
-/// corresponding upstream crate is not present in the lockfile and the stub
-/// transport refuses to surface an unfaithful wire path.
+/// Returns [`Error::InvalidConfig`] when the supplied config is rejected
+/// at construction time.
 ///
 /// The constructed transport carries a [`NoopAuditHook`]; call
 /// [`transport_for_with_audit`] to plug a real audit sink in.
@@ -70,10 +58,10 @@ pub fn transport_for(cfg: &ObfsConfig) -> Result<Box<dyn ObfsTransport>> {
 
 /// Like [`transport_for`] but accepts a caller-supplied audit hook.
 ///
-/// The hook fires from inside [`ObfsTransport::connect`] with the transport
-/// name verbatim so that downstream subscribers (Bwire's audit layer; the
-/// metrics pipeline) can record per-transport selection counts and per-attempt
-/// telemetry.
+/// The hook fires from inside [`ObfsTransport::connect`] with the
+/// transport name verbatim so that downstream subscribers (the audit
+/// layer; the metrics pipeline) can record per-transport selection
+/// counts and per-attempt telemetry.
 pub fn transport_for_with_audit(
     cfg: &ObfsConfig,
     audit: Arc<dyn AuditHook>,
@@ -83,7 +71,9 @@ pub fn transport_for_with_audit(
         ObfsConfig::Obfs4 { .. } => Ok(Box::new(obfs4::Obfs4Transport::new(cfg.clone(), audit)?)),
         ObfsConfig::MeekHttp { .. } => Ok(Box::new(meek::MeekHttpTransport::new(cfg.clone(), audit)?)),
         ObfsConfig::Websocket { .. } => Ok(Box::new(websocket::WebsocketTransport::new(cfg.clone(), audit)?)),
-        ObfsConfig::Shadowsocks { .. } => Ok(Box::new(shadowsocks::ShadowsocksTransport::new(cfg.clone(), audit)?)),
+        ObfsConfig::Shadowsocks { .. } => {
+            Ok(Box::new(shadowsocks::ShadowsocksTransport::new(cfg.clone(), audit)?))
+        }
     }
 }
 

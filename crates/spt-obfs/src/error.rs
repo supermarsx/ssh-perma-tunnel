@@ -16,16 +16,15 @@ pub enum ObfsError {
     #[error("invalid obfuscation config: {0}")]
     InvalidConfig(String),
 
-    /// The transport requires an upstream crate (`obfs4`, `tokio-tungstenite`,
-    /// `blake3`) that is not present in the workspace lockfile. The stub path
-    /// refuses to forge a partial implementation.
-    #[error("transport `{transport}` requires `{crate_name}` in Cargo.lock: {detail}")]
+    /// Reserved error class for transports that explicitly refuse to
+    /// run on a given build (no-op on the live wire paths shipped today
+    /// but kept on the public surface for back-compat with t6-era
+    /// callers that match on it).
+    #[error("transport `{transport}` requires `{crate_name}`: {detail}")]
     Unsupported {
-        /// Transport identifier (`obfs4` / `meek-http` / `ssh-over-websocket`
-        /// / `ssh-over-shadowsocks`).
+        /// Transport identifier.
         transport: &'static str,
-        /// Upstream crate that must land in `Cargo.lock` to activate the real
-        /// path.
+        /// Name of the upstream dep / feature.
         crate_name: &'static str,
         /// Free-form human-readable detail.
         detail: String,

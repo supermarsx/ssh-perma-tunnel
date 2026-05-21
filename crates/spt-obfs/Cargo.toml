@@ -14,12 +14,6 @@ workspace = true
 
 [features]
 default = []
-# When the upstream transport crates land in `Cargo.lock`, flipping `real`
-# (and adding the dep) is the integration knob. Today every transport ships
-# its contract-enforcing stub per the t6-e9 / t6-e7 precedent.
-real-obfs4 = []
-real-tokio-tungstenite = []
-real-blake3-aead2022 = []
 # Exposes the `MockAuditHook` + factories used in cross-crate tests.
 testing = []
 
@@ -36,16 +30,25 @@ bytes = { workspace = true }
 base64 = { workspace = true }
 hex = { workspace = true }
 parking_lot = { workspace = true }
-# Real cryptographic primitives available today for the Shadowsocks stub's
-# AEAD framing (AES-256-GCM/ChaCha20-Poly1305 packet wrapping). BLAKE3-keyed
-# subkey derivation per AEAD-2022 is gated behind `real-blake3-aead2022`
-# until the crate lands in `Cargo.lock`.
+url = { workspace = true }
+http = { workspace = true }
+# Cryptographic primitives. `aes-gcm` covers the legacy AEAD shadowsocks
+# methods; `chacha20poly1305` powers the obfs4 frame layer + the
+# ChaCha20-Poly1305 shadowsocks variants. BLAKE3 is the AEAD-2022 KDF.
 aes-gcm = { workspace = true }
+chacha20poly1305 = "0.10"
 hmac = { workspace = true }
 sha2 = { workspace = true }
+blake3 = "1"
+hkdf = "0.12"
+x25519-dalek = { version = "2", features = ["static_secrets"] }
 rand = { workspace = true }
 subtle = { workspace = true }
 zeroize = { workspace = true }
+# Real transports.
+reqwest = { workspace = true }
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
+futures = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
