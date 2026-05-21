@@ -132,6 +132,44 @@ async fn russh_backend_dynamic_forward_bridges_socks5_to_direct_tcpip() {
 }
 
 #[tokio::test]
+async fn russh_backend_dynamic_forward_bridges_http_connect_to_direct_tcpip() {
+    let (server, mut session) = connect_russh_session().await;
+    let port = free_loopback_port().await;
+
+    let handle = session
+        .open_dynamic_forward(&DynamicForwardSpec {
+            name: "dynamic-http-proxy".into(),
+            listen: BindAddr::parse(&format!("127.0.0.1:{port}")).unwrap(),
+            max_connections: Some(4),
+            allow_socks5: true,
+            allow_http_connect: true,
+        })
+        .await
+        .expect("open dynamic forward");
+
+    let mut sock = TcpStream::connect(("127.0.0.1", port))
+        .await
+        .expect("connect dynamic forward");
+    sock.write_all(b"CONNECT server-side-echo:7 HTTP/1.1\r\nHost: server-side-echo:7\r\n\r\n")
+        .await
+        .expect("write HTTP CONNECT request");
+
+    let mut response = [0_u8; 39];
+    sock.read_exact(&mut response)
+        .await
+        .expect("read HTTP CONNECT response");
+    assert_eq!(&response, b"HTTP/1.1 200 Connection Established\r\n\r\n");
+
+    sock.write_all(b"http").await.expect("write payload");
+    let mut echoed = [0_u8; 4];
+    sock.read_exact(&mut echoed).await.expect("read echo");
+    assert_eq!(&echoed, b"http");
+
+    handle.close().await;
+    server.shutdown().await;
+}
+
+#[tokio::test]
 async fn russh_backend_remote_forward_bridges_server_to_client() {
     let (server, mut session) = connect_russh_session().await;
 
