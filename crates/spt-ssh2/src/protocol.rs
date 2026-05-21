@@ -32,6 +32,7 @@ use crate::crypto::CryptoPolicy;
 use crate::errors::from_async_ssh;
 use crate::hostkey::{rebuild_public_key, TrustVerifier};
 use crate::session::Ssh2Session;
+use crate::sftp::SftpClient;
 
 /// Trust-verification policy attached to one [`Ssh2Protocol`] instance.
 ///
@@ -221,6 +222,34 @@ impl Ssh2Protocol {
             .iter()
             .map(std::convert::AsRef::as_ref)
             .collect()
+    }
+
+    /// Establish an SSH2 session and start the SFTP subsystem.
+    ///
+    /// This uses the pure-Rust `russh` backend. The legacy libssh2 backend
+    /// still supports forwards, but SFTP is intentionally exposed through the
+    /// production russh path first so CLI and policy surfaces do not grow a new
+    /// libssh2 dependency contract.
+    pub async fn connect_sftp(
+        &self,
+        endpoint: &Endpoint,
+        auth_cfg: &AuthConfig,
+    ) -> Result<SftpClient> {
+        if self.backend_kind != Ssh2BackendKind::Russh {
+            return Err(Error::UnsupportedPlatform(
+                "SFTP over SSH2 is exposed through the russh backend; set capabilities.ssh2_backend = \"russh\"".into(),
+            ));
+        }
+        let session = crate::russh_backend::connect(
+            endpoint.clone(),
+            auth_cfg.clone(),
+            self.crypto.clone(),
+            self.trust.clone(),
+            self.backends.clone(),
+            !self.hops.is_empty(),
+        )
+        .await?;
+        session.open_sftp_client().await
     }
 }
 
@@ -450,4 +479,23 @@ async fn open_tcp(host: &str, port: u16) -> Result<TcpStream> {
         "connect to {host}:{port}: {}",
         last_err.map_or_else(|| "no addresses".into(), |e| e.to_string())
     )))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn sftp_requires_russh_backend() {
+        let proto = Ssh2Protocol::builder()
+            .backend_kind(Ssh2BackendKind::Libssh2)
+            .build();
+        let endpoint = Endpoint::new("127.0.0.1", 22);
+        let auth = AuthConfig::new("alice", Vec::new());
+
+        match proto.connect_sftp(&endpoint, &auth).await {
+            Err(Error::UnsupportedPlatform(message)) => assert!(message.contains("russh")),
+            other => panic!("expected unsupported platform, got {:?}", other.map(|_| ())),
+        }
+    }
 }

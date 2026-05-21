@@ -4844,6 +4844,7 @@ dependencies = [
  "rsa",
  "russh",
  "russh-keys",
+ "russh-sftp",
  "secrecy",
  "serde",
  "spt-auth",

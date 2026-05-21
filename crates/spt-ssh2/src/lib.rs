@@ -34,6 +34,7 @@ pub mod multi_hop;
 pub mod protocol;
 pub(crate) mod russh_backend;
 pub mod session;
+pub mod sftp;
 
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
@@ -41,3 +42,4 @@ pub mod testing;
 pub use crypto::CryptoPolicy;
 pub use protocol::{Ssh2BackendKind, Ssh2Protocol, Ssh2ProtocolBuilder, TrustPolicy};
 pub use session::Ssh2Session;
+pub use sftp::{SftpClient, SftpDirEntry, SftpMetadata};

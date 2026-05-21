@@ -27,6 +27,7 @@ use tracing::warn;
 use crate::auth;
 use crate::crypto::CryptoPolicy;
 use crate::hostkey::TrustVerifier;
+use crate::sftp::SftpClient;
 
 type RusshHandle = client::Handle<ClientHandler>;
 type SharedHandle = Arc<AsyncMutex<RusshHandle>>;
@@ -191,6 +192,26 @@ pub(crate) struct RusshSsh2Session {
     handle: SharedHandle,
     remote_forwards: RemoteForwardMap,
     info: SessionInfo,
+}
+
+impl RusshSsh2Session {
+    pub(crate) async fn open_sftp_client(&self) -> Result<SftpClient> {
+        let channel = {
+            let handle = self.handle.lock().await;
+            handle
+                .channel_open_session()
+                .await
+                .map_err(|e| Error::RuntimeFailure(format!("russh sftp session channel: {e}")))?
+        };
+        channel
+            .request_subsystem(true, "sftp")
+            .await
+            .map_err(|e| Error::RuntimeFailure(format!("russh request sftp subsystem: {e}")))?;
+        let sftp = russh_sftp::client::SftpSession::new(channel.into_stream())
+            .await
+            .map_err(|e| Error::RuntimeFailure(format!("sftp init: {e}")))?;
+        Ok(SftpClient::from_russh(sftp))
+    }
 }
 
 #[async_trait]
