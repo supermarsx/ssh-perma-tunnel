@@ -17,7 +17,12 @@ testing = ["dep:rand_chacha", "dep:tempfile"]
 
 [dependencies]
 spt-core = { workspace = true }
-ssh-key = { workspace = true }
+# Enable p384 + p521 in addition to the workspace defaults so the algorithm
+# matrix integration test can exercise ecdsa-sha2-nistp384 / -nistp521 keys.
+# The lockfile already pins both crates (transitive of `ssh-key` + other
+# downstream consumers); enabling these features here does NOT trigger a
+# `cargo update`.
+ssh-key = { workspace = true, features = ["p384", "p521"] }
 secrecy = { workspace = true }
 zeroize = { workspace = true }
 serde = { workspace = true }
@@ -33,3 +38,16 @@ tempfile = { workspace = true, optional = true }
 [dev-dependencies]
 tempfile = { workspace = true }
 rand_chacha = { workspace = true }
+# Cross-library verification matrix (t6-e11): russh-keys signs/verifies the
+# same byte sequences that ssh-key does; we round-trip through both to catch
+# wire-format drift between the two SSH key crates.
+russh-keys = { workspace = true }
+spt-auth = { workspace = true }
+# `signature` provides the `Signer` / `Verifier` traits implemented for
+# ssh-key's `PrivateKey` / `PublicKey`. `ssh-encoding` exposes the SSH binary
+# `Decode` / `Encode` traits used to bridge wire bytes between ssh-key and
+# russh-keys. Both already appear in `Cargo.lock` as transitive deps of
+# ssh-key — declaring them here just lifts the symbols into the dev-dep
+# graph without triggering a `cargo update`.
+signature = "2"
+ssh-encoding = "0.2"
