@@ -25,7 +25,7 @@
 //! * `spt-config` — `~/.ssh/config` reads are skipped.
 //! * `spt-observability` — journald (Linux) and Windows Event Log writers
 //!   become no-ops; the file sink rolls under `<exe-dir>/data/logs/`.
-//! * AppArmor / SELinux profile loading is not attempted.
+//! * `AppArmor` / `SELinux` profile loading is not attempted.
 //!
 //! ### Plumbing model
 //!
@@ -161,7 +161,7 @@ pub fn install(ctx: Option<PortableContext>) -> bool {
 ///
 /// Returns `None` when portable mode is disabled or before [`install`] has
 /// been called. Consumers in non-`spt-bin` crates use this to decide
-/// whether to skip BaseDirs lookups, the OS keychain, journald, etc.
+/// whether to skip `BaseDirs` lookups, the OS keychain, journald, etc.
 #[must_use]
 pub fn current() -> Option<&'static PortableContext> {
     PORTABLE.get().and_then(Option::as_ref)

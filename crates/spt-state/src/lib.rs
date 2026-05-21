@@ -11,7 +11,7 @@
 //! * [`spool`] — bounded on-disk spool for sinks.
 //! * [`paths`] — single source of truth for state-file paths.
 //! * [`portable`] — runtime context for `--portable` mode (gates every
-//!   BaseDirs leakage site).
+//!   `BaseDirs` leakage site).
 
 #![forbid(unsafe_code)]
 

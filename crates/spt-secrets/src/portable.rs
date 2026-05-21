@@ -101,6 +101,8 @@ impl PortableVaultLayout {
 pub fn vault_passphrase_from_file(
     layout: &PortableVaultLayout,
 ) -> Result<SecretBox<Zeroizing<Vec<u8>>>> {
+    use rand::RngCore;
+
     let path = layout.master_key_file();
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| Error::SecretUnavailable {
@@ -110,7 +112,6 @@ pub fn vault_passphrase_from_file(
     }
     if !path.exists() {
         let mut key = Zeroizing::new(vec![0u8; 32]);
-        use rand::RngCore;
         rand::thread_rng().fill_bytes(&mut key);
         write_master_key(&path, &key)?;
         return Ok(SecretBox::new(Box::new(key)));
