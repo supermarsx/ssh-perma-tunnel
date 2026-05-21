@@ -52,4 +52,4 @@ tokio = { workspace = true }
 serde_json = { workspace = true }
 toml = { workspace = true }
 spt-config = { workspace = true }
-spt-obfs = { path = ".", features = ["testing"] }
+spt-obfs = { path = ".", version = "0.1", features = ["testing"] }

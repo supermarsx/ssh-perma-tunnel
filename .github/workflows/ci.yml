@@ -285,10 +285,14 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: security
+      # Install cargo-deny explicitly so we control the version. The
+      # bundled EmbarkStudios/cargo-deny-action@v2 binary historically
+      # pinned to 0.17.0, which fails to parse CVSS 4.0 advisories such
+      # as RUSTSEC-2026-0146. 0.18+ ships the upgraded parser.
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --locked --version ^0.18
       - name: cargo-deny check
-        uses: EmbarkStudios/cargo-deny-action@v2
-        with:
-          command: check
+        run: cargo deny check
       - name: RustSec audit
         uses: rustsec/audit-check@v2
         with:
