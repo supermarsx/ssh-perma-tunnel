@@ -39,7 +39,7 @@ secrecy = { workspace = true }
 # Pinned to 3.4 (MSRV 1.67.1, well under workspace MSRV 1.83). 3.4 added
 # `Clipboard::clear()`; we use `set_text("")` for portability across builds
 # without `image-data`. `default-features = false` drops the image/X11 surface.
-arboard = { version = "=3.4.1", default-features = false, optional = true }
+arboard = { version = "=3.6.1", default-features = false, optional = true }
 
 [dev-dependencies]
 insta = { workspace = true }
