@@ -4284,14 +4284,19 @@ name = "spt-auth"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "hmac",
  "rand 0.8.6",
+ "regex",
  "reqwest",
  "secrecy",
  "serde",
  "serde_json",
+ "sha1",
+ "sha2",
  "spt-core",
  "spt-secrets",
  "spt-trust",
+ "subtle",
  "tempfile",
  "thiserror 1.0.69",
  "tokio",
@@ -4371,6 +4376,7 @@ dependencies = [
  "spt-remote-config",
  "spt-secrets",
  "spt-service",
+ "spt-sftp",
  "spt-snmp",
  "spt-ssh2",
  "spt-ssh3",
@@ -4413,6 +4419,7 @@ version = "0.1.0"
 dependencies = [
  "atomicwrites",
  "criterion",
+ "directories",
  "humantime-serde",
  "insta",
  "miette",
@@ -4627,10 +4634,14 @@ dependencies = [
  "base64",
  "rand 0.8.6",
  "rand_chacha 0.3.1",
+ "russh-keys",
  "secrecy",
  "serde",
  "sha2",
+ "signature",
+ "spt-auth",
  "spt-core",
+ "ssh-encoding",
  "ssh-key",
  "tempfile",
  "thiserror 1.0.69",
@@ -4806,6 +4817,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "spt-sftp"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "hex",
+ "russh-sftp",
+ "sha2",
+ "spt-core",
+ "spt-ssh2",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "spt-snmp"
 version = "0.1.0"
 dependencies = [
@@ -4836,11 +4863,13 @@ version = "0.1.0"
 dependencies = [
  "async-ssh2-lite",
  "async-trait",
+ "base64",
  "bytes",
  "ed25519-dalek",
  "futures",
  "parking_lot",
  "rand 0.8.6",
+ "regex",
  "rsa",
  "russh",
  "russh-keys",
@@ -4853,6 +4882,7 @@ dependencies = [
  "spt-net",
  "spt-protocol",
  "spt-secrets",
+ "spt-sftp",
  "spt-trust",
  "ssh-key",
  "ssh2",
