@@ -1,0 +1,42 @@
+[package]
+name = "spt-scripting"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+description = "Scriptable tunnelling hooks for spt. Sandboxed Rhai engine with per-hook event payloads (pre_connect / post_connect / on_forward_state / on_disconnect / on_event)."
+
+[lints]
+workspace = true
+
+[features]
+default = []
+# `engine` activates the real `rhai 1.19` interpreter. It is gated because
+# `rhai` is not present in the workspace `Cargo.lock`; under the workspace
+# `--locked` + no-`cargo update` policy the dep cannot be resolved. The crate
+# ships a complete type surface, sandbox configuration, and event payloads
+# without the engine — every hook call site treats the absent engine as a
+# documented no-op. See `.orchestration/logs/t6-e7.md` for the decision
+# record (and t6-e9.md for the analogous SSPI / GSSAPI shape).
+engine = []
+
+[dependencies]
+spt-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+# NOTE: `rhai 1.19` (or 1.17 MSRV-1.66 fallback per spec) is deliberately
+# absent from `[dependencies]`. The workspace `Cargo.lock` does not contain
+# rhai, and policy forbids `cargo update`. When the lockfile is bumped, add
+# `rhai = { version = "1.19", default-features = false, features = ["std",
+# "sync"] }` here (or pin `1.17` if MSRV 1.66 binds), enable the `engine`
+# feature, and replace the stub interpreter in `src/engine.rs` accordingly.
+
+[dev-dependencies]
+serde_json = { workspace = true }
+tempfile = { workspace = true }
