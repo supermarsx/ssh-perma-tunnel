@@ -566,3 +566,465 @@ fn parse_epsv_port(reply: &str) -> Option<u16> {
     let port_str = &reply[open + 4..open + close];
     port_str.parse().ok()
 }
+
+// ---------------------------------------------------------------------------
+// t7-A8 tests: AUTH TLS in-place upgrade + Ssh2SftpFactory pooling.
+// ---------------------------------------------------------------------------
+
+mod tls_helpers {
+    use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
+    use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
+    use rustls::{DigitallySignedStruct, SignatureScheme};
+
+    /// Test-only `ServerCertVerifier` that accepts any certificate. Mirrors
+    /// the pattern used by `spt-observability::syslog_tls::NoCertificateVerification`.
+    #[derive(Debug)]
+    pub struct AcceptAnyCert;
+
+    impl ServerCertVerifier for AcceptAnyCert {
+        fn verify_server_cert(
+            &self,
+            _end_entity: &CertificateDer<'_>,
+            _intermediates: &[CertificateDer<'_>],
+            _server_name: &ServerName<'_>,
+            _ocsp_response: &[u8],
+            _now: UnixTime,
+        ) -> Result<ServerCertVerified, rustls::Error> {
+            Ok(ServerCertVerified::assertion())
+        }
+
+        fn verify_tls12_signature(
+            &self,
+            _message: &[u8],
+            _cert: &CertificateDer<'_>,
+            _dss: &DigitallySignedStruct,
+        ) -> Result<HandshakeSignatureValid, rustls::Error> {
+            Ok(HandshakeSignatureValid::assertion())
+        }
+
+        fn verify_tls13_signature(
+            &self,
+            _message: &[u8],
+            _cert: &CertificateDer<'_>,
+            _dss: &DigitallySignedStruct,
+        ) -> Result<HandshakeSignatureValid, rustls::Error> {
+            Ok(HandshakeSignatureValid::assertion())
+        }
+
+        fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+            vec![
+                SignatureScheme::ECDSA_NISTP256_SHA256,
+                SignatureScheme::ED25519,
+                SignatureScheme::RSA_PSS_SHA256,
+                SignatureScheme::RSA_PSS_SHA384,
+                SignatureScheme::RSA_PSS_SHA512,
+                SignatureScheme::RSA_PKCS1_SHA256,
+                SignatureScheme::RSA_PKCS1_SHA384,
+                SignatureScheme::RSA_PKCS1_SHA512,
+            ]
+        }
+    }
+}
+
+/// Spawn an FTP translator with TLS configured and return the listener
+/// address, server handle, and tempdir. Auth is `alice` / `s3cret`.
+async fn spawn_tls_translator() -> (
+    SocketAddr,
+    spt_ftp_translator::ServerHandle,
+    TempDir,
+    std::path::PathBuf,
+) {
+    let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()])
+        .expect("rcgen self-signed");
+    let cert_dir = tempfile::tempdir().expect("tempdir");
+    let cert_path = cert_dir.path().join("cert.pem");
+    let key_path = cert_dir.path().join("key.pem");
+    std::fs::write(&cert_path, cert.cert.pem()).unwrap();
+    std::fs::write(&key_path, cert.key_pair.serialize_pem()).unwrap();
+
+    // Keep the cert_dir alive for the whole test by leaking it into the
+    // returned tempdir — the caller can reuse `_dir.path()`.
+    let dir = tempfile::tempdir().expect("sftp tempdir");
+    let factory = Arc::new(MockSftpFactory::new(dir.path().to_path_buf()));
+    let mut cfg = TranslatorConfig::defaults_for(SocketAddr::new(
+        IpAddr::V4(Ipv4Addr::LOCALHOST),
+        0,
+    ));
+    cfg.tls = Some(TlsConfig {
+        cert_file: cert_path.clone(),
+        key_file: key_path,
+        require_tls: false,
+    });
+    cfg.auth = AuthPolicy::Static {
+        username: "alice".into(),
+        password: "s3cret".into(),
+    };
+    cfg.passive_port_range = (54_000, 54_100);
+    let server = Server::new(cfg, factory);
+    let handle = server.start().await.expect("start tls server");
+    // Move cert_dir's path into the returned tempdir so the cert files
+    // outlive the function. Simpler: leak the cert tempdir.
+    std::mem::forget(cert_dir);
+    (handle.local_addr, handle, dir, cert_path)
+}
+
+fn build_client_tls_connector() -> tokio_rustls::TlsConnector {
+    let cfg = rustls::ClientConfig::builder()
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(tls_helpers::AcceptAnyCert))
+        .with_no_client_auth();
+    tokio_rustls::TlsConnector::from(Arc::new(cfg))
+}
+
+// ---------------------------------------------------------------------------
+// 13. AUTH TLS in-place upgrade — the control channel transitions from
+//     plaintext to TLS on the same socket, then USER/PASS succeed over
+//     the encrypted channel.
+// ---------------------------------------------------------------------------
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn auth_tls_in_place_upgrade_continues_session() {
+    let (addr, handle, _dir, _cert_path) = spawn_tls_translator().await;
+
+    // Plain phase: connect, read banner, send AUTH TLS.
+    let stream = TcpStream::connect(addr).await.expect("tcp connect");
+    let mut br = BufReader::new(stream);
+
+    let mut greeting = String::new();
+    br.read_line(&mut greeting).await.unwrap();
+    assert!(greeting.starts_with("220 "));
+
+    {
+        let inner = br.get_mut();
+        inner.write_all(b"AUTH TLS\r\n").await.unwrap();
+        inner.flush().await.unwrap();
+    }
+    let mut auth_reply = String::new();
+    br.read_line(&mut auth_reply).await.unwrap();
+    assert!(
+        auth_reply.starts_with("234"),
+        "expected 234 AUTH TLS OK, got `{auth_reply}`",
+    );
+
+    // Recover the underlying TcpStream and TLS-handshake on it.
+    let tcp = br.into_inner();
+    let connector = build_client_tls_connector();
+    let server_name = rustls::pki_types::ServerName::try_from("localhost").unwrap();
+    let tls = connector.connect(server_name, tcp).await.expect("tls connect");
+
+    // Now drive USER/PASS over the encrypted channel.
+    let (rd, mut wr) = tokio::io::split(tls);
+    let mut br = BufReader::new(rd);
+
+    wr.write_all(b"USER alice\r\n").await.unwrap();
+    wr.flush().await.unwrap();
+    let mut line = String::new();
+    br.read_line(&mut line).await.unwrap();
+    assert!(line.starts_with("331"), "USER over TLS → `{line}`");
+
+    wr.write_all(b"PASS s3cret\r\n").await.unwrap();
+    wr.flush().await.unwrap();
+    let mut line = String::new();
+    br.read_line(&mut line).await.unwrap();
+    assert!(
+        line.starts_with("230"),
+        "PASS over TLS expected 230, got `{line}`",
+    );
+
+    // QUIT cleanly.
+    wr.write_all(b"QUIT\r\n").await.unwrap();
+    wr.flush().await.unwrap();
+    let mut line = String::new();
+    let _ = br.read_line(&mut line).await;
+    assert!(
+        line.starts_with("221") || line.is_empty(),
+        "QUIT over TLS → `{line}`",
+    );
+
+    handle.shutdown();
+}
+
+// ---------------------------------------------------------------------------
+// 14. PBSZ 0 + PROT P + PASV → data connection is TLS-wrapped end-to-end.
+//     The server accepts the data socket, performs a TLS handshake against
+//     the same self-signed cert, then sends the LIST body encrypted.
+// ---------------------------------------------------------------------------
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pbsz_prot_p_wraps_data_channel_in_tls() {
+    let (addr, handle, dir, _cert_path) = spawn_tls_translator().await;
+    std::fs::write(dir.path().join("greet.txt"), b"hello-tls").unwrap();
+
+    // AUTH TLS handshake.
+    let stream = TcpStream::connect(addr).await.expect("tcp connect");
+    let mut br = BufReader::new(stream);
+    let mut g = String::new();
+    br.read_line(&mut g).await.unwrap();
+    br.get_mut().write_all(b"AUTH TLS\r\n").await.unwrap();
+    let mut r = String::new();
+    br.read_line(&mut r).await.unwrap();
+    assert!(r.starts_with("234"));
+
+    let tcp = br.into_inner();
+    let connector = build_client_tls_connector();
+    let server_name = rustls::pki_types::ServerName::try_from("localhost").unwrap();
+    let tls = connector.connect(server_name, tcp).await.expect("tls connect");
+    let (rd, mut wr) = tokio::io::split(tls);
+    let mut br = BufReader::new(rd);
+
+    // Login over TLS.
+    wr.write_all(b"USER alice\r\n").await.unwrap();
+    let mut line = String::new();
+    br.read_line(&mut line).await.unwrap();
+    line.clear();
+    wr.write_all(b"PASS s3cret\r\n").await.unwrap();
+    br.read_line(&mut line).await.unwrap();
+    assert!(line.starts_with("230"), "PASS → `{line}`");
+
+    // PBSZ 0.
+    line.clear();
+    wr.write_all(b"PBSZ 0\r\n").await.unwrap();
+    br.read_line(&mut line).await.unwrap();
+    assert!(line.starts_with("200"), "PBSZ → `{line}`");
+
+    // PROT P.
+    line.clear();
+    wr.write_all(b"PROT P\r\n").await.unwrap();
+    br.read_line(&mut line).await.unwrap();
+    assert!(line.starts_with("200"), "PROT P → `{line}`");
+
+    // PASV — capture the port.
+    line.clear();
+    wr.write_all(b"PASV\r\n").await.unwrap();
+    br.read_line(&mut line).await.unwrap();
+    assert!(line.starts_with("227"), "PASV → `{line}`");
+    let port = parse_pasv_port(&line).expect("parse pasv");
+
+    // RETR triggers the server to accept the data connection. We connect
+    // raw TCP, then immediately TLS-handshake — the server expects PROT P
+    // and wraps the accepted socket with the same TlsAcceptor.
+    line.clear();
+    wr.write_all(b"RETR greet.txt\r\n").await.unwrap();
+    let dc_tcp = TcpStream::connect(SocketAddr::new(
+        IpAddr::V4(Ipv4Addr::LOCALHOST),
+        port,
+    ))
+    .await
+    .expect("data tcp connect");
+    let server_name = rustls::pki_types::ServerName::try_from("localhost").unwrap();
+    let mut dc_tls = connector
+        .connect(server_name, dc_tcp)
+        .await
+        .expect("data tls connect");
+    let mut body = Vec::new();
+    dc_tls.read_to_end(&mut body).await.expect("data read");
+    assert_eq!(
+        body, b"hello-tls",
+        "TLS-wrapped RETR diverged: {body:?}",
+    );
+
+    // 226 follows on the control channel.
+    br.read_line(&mut line).await.unwrap();
+    assert!(line.starts_with("226"), "RETR completion → `{line}`");
+
+    handle.shutdown();
+}
+
+// ---------------------------------------------------------------------------
+// 15. Ssh2SftpFactory opens a real russh SFTP session and pools it across
+//     calls. On the second `open_for("alice")` the tcp_accepts counter
+//     must NOT bump — the cached `Arc<SftpClient>` is returned.
+// ---------------------------------------------------------------------------
+
+mod russh_sftp_bridge {
+    use std::sync::Arc;
+
+    use async_trait::async_trait;
+    use russh::server::{Auth, Msg, Session};
+    use russh::{Channel, ChannelId};
+    use tokio::sync::Mutex;
+
+    /// Minimal russh server handler that:
+    /// 1. Accepts password `tester`/`anything`.
+    /// 2. Accepts session channel opens.
+    /// 3. On `subsystem_request("sftp")`, spawns a `russh_sftp::server::run`
+    ///    loop over the channel stream, backed by [`MinimalSftpHandler`].
+    pub struct SshHandler {
+        pub channels: Arc<Mutex<std::collections::HashMap<ChannelId, Channel<Msg>>>>,
+    }
+
+    impl SshHandler {
+        pub fn new() -> Self {
+            Self {
+                channels: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl russh::server::Handler for SshHandler {
+        type Error = russh::Error;
+
+        async fn auth_password(
+            &mut self,
+            _user: &str,
+            _password: &str,
+        ) -> Result<Auth, Self::Error> {
+            Ok(Auth::Accept)
+        }
+
+        async fn channel_open_session(
+            &mut self,
+            channel: Channel<Msg>,
+            _session: &mut Session,
+        ) -> Result<bool, Self::Error> {
+            self.channels.lock().await.insert(channel.id(), channel);
+            Ok(true)
+        }
+
+        async fn subsystem_request(
+            &mut self,
+            channel: ChannelId,
+            name: &str,
+            _session: &mut Session,
+        ) -> Result<(), Self::Error> {
+            if name == "sftp" {
+                if let Some(chan) = self.channels.lock().await.remove(&channel) {
+                    let stream = chan.into_stream();
+                    russh_sftp::server::run(stream, MinimalSftpHandler).await;
+                }
+            }
+            Ok(())
+        }
+    }
+
+    /// SFTP handler that responds to INIT and immediately fails every
+    /// subsequent operation — enough to satisfy `SftpSession::new`'s
+    /// version exchange.
+    pub struct MinimalSftpHandler;
+
+    #[async_trait::async_trait]
+    impl russh_sftp::server::Handler for MinimalSftpHandler {
+        type Error = russh_sftp::protocol::StatusCode;
+
+        fn unimplemented(&self) -> Self::Error {
+            russh_sftp::protocol::StatusCode::OpUnsupported
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ssh2_sftp_factory_pools_sessions_across_open_for() {
+    use russh::server::Config as RusshConfig;
+    use russh_keys::key::KeyPair;
+    use spt_auth::{AuthConfig, AuthMethod};
+    use spt_ftp_translator::{factory::Ssh2UserBinding, SftpFactory, Ssh2SftpFactory};
+    use spt_protocol::Endpoint;
+    use spt_ssh2::{CryptoPolicy, TrustPolicy};
+
+    // 1) Start an embedded russh server with WinCNG-compatible algorithm
+    //    pinning + SFTP subsystem bridge.
+    let key = KeyPair::generate_rsa(2048, russh_keys::key::SignatureHash::SHA2_256)
+        .expect("rsa keygen");
+    let preferred = spt_ssh2::testing::wincng_libssh2_compatible_preferred();
+    let cfg = Arc::new(RusshConfig {
+        inactivity_timeout: Some(Duration::from_secs(60)),
+        auth_rejection_time: Duration::from_millis(50),
+        auth_rejection_time_initial: Some(Duration::from_millis(0)),
+        keys: vec![key],
+        preferred,
+        ..Default::default()
+    });
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let tcp_accepts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+    {
+        let cfg = cfg.clone();
+        let tcp_accepts = tcp_accepts.clone();
+        tokio::spawn(async move {
+            loop {
+                let Ok((sock, _)) = listener.accept().await else {
+                    break;
+                };
+                tcp_accepts.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let cfg = cfg.clone();
+                tokio::spawn(async move {
+                    let handler = russh_sftp_bridge::SshHandler::new();
+                    let _ = russh::server::run_stream(cfg, sock, handler).await;
+                });
+            }
+        });
+    }
+
+    // 2) Build a `Ssh2SftpFactory` that resolves any FTP user → this russh server.
+    let resolver: spt_ftp_translator::ProfileResolver = Arc::new(move |user: &str| {
+        if user != "alice" {
+            return None;
+        }
+        Some(Ssh2UserBinding {
+            endpoint: Endpoint::new("127.0.0.1", addr.port()),
+            auth: AuthConfig::new(
+                "tester",
+                vec![AuthMethod::Password {
+                    secret: spt_auth::SecretRef::Env(
+                        "SPT_FTP_SSH2_FACTORY_PW".into(),
+                    ),
+                }],
+            ),
+            trust: TrustPolicy::default(),
+            crypto: CryptoPolicy {
+                kex: vec![
+                    "diffie-hellman-group14-sha256".into(),
+                    "diffie-hellman-group16-sha512".into(),
+                ],
+                ciphers: vec!["aes256-ctr".into()],
+                macs: vec!["hmac-sha2-256".into()],
+                host_keys: vec!["rsa-sha2-256".into(), "rsa-sha2-512".into()],
+                compression: vec![],
+            },
+        })
+    });
+    std::env::set_var("SPT_FTP_SSH2_FACTORY_PW", "anything");
+    let factory = Ssh2SftpFactory::new(resolver);
+
+    // 3) First open_for: a fresh SSH session is opened. accept_count == 1.
+    let sftp1 = factory
+        .open_for("alice")
+        .await
+        .expect("first open_for should connect");
+    let after_first = tcp_accepts.load(std::sync::atomic::Ordering::Relaxed);
+    assert!(after_first >= 1, "expected ≥1 SSH accept, got {after_first}");
+
+    // 4) Second open_for("alice"): pool returns the cached Arc; no new
+    //    connection is made.
+    let sftp2 = factory
+        .open_for("alice")
+        .await
+        .expect("second open_for should hit the pool");
+    let after_second = tcp_accepts.load(std::sync::atomic::Ordering::Relaxed);
+    assert_eq!(
+        after_second, after_first,
+        "second open_for must reuse the pooled SftpClient (accepts grew {after_first}→{after_second})",
+    );
+    assert!(
+        Arc::ptr_eq(&sftp1, &sftp2),
+        "pooled Arc<SftpClient> must be identical across calls",
+    );
+    assert_eq!(factory.pool_size().await, 1);
+
+    // 5) Unknown user surfaces as `Sftp` translator error.
+    let err = match factory.open_for("nobody").await {
+        Ok(_) => panic!("unknown user should not resolve"),
+        Err(e) => e,
+    };
+    let msg = err.to_string();
+    assert!(
+        msg.contains("no SSH binding"),
+        "unexpected resolver-miss error: `{msg}`",
+    );
+
+    // Cleanup: drop the factory which drops every pooled session.
+    drop(sftp1);
+    drop(sftp2);
+    drop(factory);
+}

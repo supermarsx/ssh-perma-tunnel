@@ -8,14 +8,29 @@
 //! single `match` arm and returns a [`Reply`]. Data-channel transfers
 //! (RETR/STOR/LIST/MLSD/NLST) block the control loop until completion,
 //! mirroring the historical FTP server posture.
+//!
+//! ## AUTH TLS in-place upgrade (RFC 4217 §4.2)
+//!
+//! The control channel is held as a [`ControlStream`] enum, not as
+//! split halves. After `AUTH TLS` is acknowledged with `234`, the session
+//! upgrades the same `TcpStream` to a TLS-wrapped stream in place. All
+//! subsequent verbs (USER/PASS, MLSD, RETR, ...) flow over the encrypted
+//! channel. Once `PBSZ 0` + `PROT P` have been negotiated, each
+//! passive data connection accepted after PASV/EPSV is wrapped with the
+//! same [`TlsAcceptor`].
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::pin::Pin;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::task::{Context, Poll};
 
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{
+    AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader, ReadBuf,
+};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::time::timeout;
+use tokio_rustls::server::TlsStream;
 use tokio_rustls::TlsAcceptor;
 use tracing::{debug, info, warn};
 
@@ -150,14 +165,131 @@ async fn send_421(mut stream: TcpStream) -> std::io::Result<()> {
         .await
 }
 
-/// Wrapper for the (possibly TLS-upgraded) control channel.
+/// The FTP control channel. Holds either a plain TCP stream or a
+/// TLS-wrapped one after `AUTH TLS` succeeds.
 ///
-/// Boxing via `dyn` keeps the verb-dispatch loop monomorphic in one
-/// implementation regardless of whether AUTH TLS happened. The hot path
-/// is line-oriented anyway so the virtual call overhead is negligible.
-type ControlStream =
-    Box<dyn tokio::io::AsyncRead + Send + Unpin>;
-type ControlSink = Box<dyn tokio::io::AsyncWrite + Send + Unpin>;
+/// We keep the stream whole (no `into_split()`) so the AUTH TLS upgrade
+/// can hand the underlying [`TcpStream`] to the [`TlsAcceptor`] without
+/// any unsafe `dyn`-downcast tricks. FTP control traffic is strict
+/// request/response, so concurrent read/write halves aren't needed.
+pub enum ControlStream {
+    /// Plaintext control channel — the initial state.
+    Plain(BufReader<TcpStream>),
+    /// TLS-wrapped control channel — after `AUTH TLS` succeeded.
+    Tls(BufReader<TlsStream<TcpStream>>),
+}
+
+impl ControlStream {
+    /// Read one CRLF-terminated line into `buf`.
+    async fn read_line(&mut self, buf: &mut String) -> std::io::Result<usize> {
+        match self {
+            Self::Plain(br) => br.read_line(buf).await,
+            Self::Tls(br) => br.read_line(buf).await,
+        }
+    }
+
+    /// Whether the BufReader holds any pre-fetched bytes (relevant before
+    /// switching to TLS — see [`Self::upgrade_to_tls`]).
+    fn buffer_is_empty(&self) -> bool {
+        match self {
+            Self::Plain(br) => br.buffer().is_empty(),
+            Self::Tls(br) => br.buffer().is_empty(),
+        }
+    }
+}
+
+impl AsyncWrite for ControlStream {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        // We use the BufReader's `get_mut()` to reach the underlying writer.
+        // `BufReader<T>` impls `AsyncWrite` only when T does; `TcpStream`
+        // and `TlsStream` both do.
+        match self.get_mut() {
+            Self::Plain(br) => Pin::new(br.get_mut()).poll_write(cx, buf),
+            Self::Tls(br) => Pin::new(br.get_mut()).poll_write(cx, buf),
+        }
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        match self.get_mut() {
+            Self::Plain(br) => Pin::new(br.get_mut()).poll_flush(cx),
+            Self::Tls(br) => Pin::new(br.get_mut()).poll_flush(cx),
+        }
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        match self.get_mut() {
+            Self::Plain(br) => Pin::new(br.get_mut()).poll_shutdown(cx),
+            Self::Tls(br) => Pin::new(br.get_mut()).poll_shutdown(cx),
+        }
+    }
+}
+
+impl AsyncRead for ControlStream {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        match self.get_mut() {
+            Self::Plain(br) => Pin::new(br).poll_read(cx, buf),
+            Self::Tls(br) => Pin::new(br).poll_read(cx, buf),
+        }
+    }
+}
+
+/// A data-channel socket — TLS-wrapped iff PROT P negotiated.
+enum DataStream {
+    /// Plain TCP data connection (PROT C, the default).
+    Plain(TcpStream),
+    /// TLS-wrapped data connection (PROT P, after a successful AUTH TLS
+    /// on the control channel).
+    Tls(TlsStream<TcpStream>),
+}
+
+impl DataStream {
+    async fn write_all(&mut self, buf: &[u8]) -> std::io::Result<()> {
+        match self {
+            Self::Plain(s) => s.write_all(buf).await,
+            Self::Tls(s) => s.write_all(buf).await,
+        }
+    }
+
+    async fn read_to_end(&mut self, buf: &mut Vec<u8>) -> std::io::Result<usize> {
+        match self {
+            Self::Plain(s) => s.read_to_end(buf).await,
+            Self::Tls(s) => s.read_to_end(buf).await,
+        }
+    }
+
+    async fn shutdown(&mut self) -> std::io::Result<()> {
+        match self {
+            Self::Plain(s) => s.shutdown().await,
+            Self::Tls(s) => s.shutdown().await,
+        }
+    }
+}
+
+/// Wrap a freshly-accepted data socket according to the session's PROT
+/// status. If `PROT P` is in effect (and the control channel is
+/// encrypted), the data socket is upgraded to TLS via the same acceptor
+/// before any bytes flow.
+async fn wrap_data(
+    sock: TcpStream,
+    state: &SessionState,
+    tls_acceptor: Option<&TlsAcceptor>,
+) -> std::io::Result<DataStream> {
+    if state.prot_private && state.control == ControlState::Encrypted {
+        if let Some(acceptor) = tls_acceptor {
+            let tls = acceptor.accept(sock).await?;
+            return Ok(DataStream::Tls(tls));
+        }
+    }
+    Ok(DataStream::Plain(sock))
+}
 
 async fn run_session(
     cfg: TranslatorConfig,
@@ -168,26 +300,23 @@ async fn run_session(
 ) -> Result<(), TranslatorError> {
     stream.set_nodelay(true).ok();
     let local = stream.local_addr()?.ip();
-    let (rd, wr) = stream.into_split();
-    let reader: ControlStream = Box::new(rd);
-    let mut writer: ControlSink = Box::new(wr);
+    let mut control = ControlStream::Plain(BufReader::new(stream));
 
-    write_reply(&mut writer, &Reply::ok_220(cfg.welcome_banner.clone())).await?;
+    write_reply(&mut control, &Reply::ok_220(cfg.welcome_banner.clone())).await?;
 
     let mut state = SessionState::new();
-    let mut buf_reader = BufReader::new(reader);
     let mut line = String::new();
 
     loop {
         line.clear();
-        let read = timeout(cfg.idle_timeout, buf_reader.read_line(&mut line)).await;
+        let read = timeout(cfg.idle_timeout, control.read_line(&mut line)).await;
         let n = match read {
             Ok(Ok(n)) => n,
             Ok(Err(e)) => return Err(e.into()),
             Err(_) => {
                 // Idle timeout — RFC 959 §5.1 hints 421.
                 let _ = write_reply(
-                    &mut writer,
+                    &mut control,
                     &Reply::new(421, "Idle timeout, closing control connection."),
                 )
                 .await;
@@ -201,7 +330,7 @@ async fn run_session(
         // Reject excessively long lines defensively (8 KiB).
         if n > 8 * 1024 {
             write_reply(
-                &mut writer,
+                &mut control,
                 &Reply::new(500, "Command line too long."),
             )
             .await?;
@@ -211,18 +340,18 @@ async fn run_session(
         debug!(peer = %peer, tag = verb.tag(), "ftp verb");
 
         let (reply, want_quit, tls_upgrade) =
-            dispatch(&mut state, &cfg, &factory, &verb, local).await;
+            dispatch(&mut state, &cfg, &factory, &verb, local, tls_acceptor.as_ref()).await;
 
         // Most replies are single Reply; FEAT is multi-line so we handle
         // it inline rather than re-tooling the Reply struct.
         match &verb {
             Verb::Feat if matches!(reply.code, 211) => {
                 let body = feat_block(&advertised_features(&cfg));
-                writer.write_all(body.as_bytes()).await?;
-                writer.flush().await?;
+                control.write_all(body.as_bytes()).await?;
+                control.flush().await?;
             }
             _ => {
-                write_reply(&mut writer, &reply).await?;
+                write_reply(&mut control, &reply).await?;
             }
         }
 
@@ -233,52 +362,47 @@ async fn run_session(
         // Handle AUTH TLS upgrade after the 234 reply is on the wire.
         if tls_upgrade {
             let Some(acceptor) = tls_acceptor.as_ref() else {
-                // Shouldn't happen — dispatch only returns true when tls cfg present.
+                // dispatch only returns tls_upgrade=true when tls is configured.
                 return Ok(());
             };
-            // Drain the BufReader back into the underlying half so we
-            // can recombine the split. We require the buffer to be
-            // empty: a TLS-aware client never sends bytes after AUTH TLS
-            // until the handshake. If anything is buffered, treat it as
-            // protocol violation.
-            if !buf_reader.buffer().is_empty() {
+            // A well-behaved TLS-aware client never sends bytes after AUTH
+            // TLS until the handshake. If anything is buffered, treat it
+            // as a protocol violation.
+            if !control.buffer_is_empty() {
                 debug!("client sent data before TLS handshake; abort");
                 return Ok(());
             }
-            let rd = buf_reader.into_inner();
-            // We need to recombine reader+writer into a TcpStream to
-            // hand off to the TlsAcceptor. We split via OwnedHalves so
-            // we can `unsplit` them — but `Box<dyn AsyncRead>` lost the
-            // type. The simpler path is to bypass the box once: if the
-            // CC has not yet been wrapped (we know it hasn't because
-            // `state.control == Plain`), the boxed halves are the raw
-            // OwnedReadHalf / OwnedWriteHalf. Recover them by using a
-            // dedicated TLS-upgrade flow that bypasses the Box.
-            //
-            // Implementation note: rather than introduce unsafe to
-            // downcast `Box<dyn AsyncRead>`, we accept that this code
-            // path runs at most once per session and pay the cost of
-            // closing the boxed halves and re-accepting the upgrade on
-            // the underlying socket via a thin re-design below.
-            //
-            // The current architecture cannot recover the `TcpStream`
-            // post-split-and-box, so we exit here. The tests cover the
-            // pre-handshake `234 AUTH TLS OK` reply explicitly; the
-            // post-upgrade verb traffic is exercised by a hand-rolled
-            // unit test that drives the TlsAcceptor directly against an
-            // in-process duplex pair (see `tests/translator.rs`).
-            let _ = (rd, acceptor);
-            return Ok(());
+            // Unwrap the BufReader to get back the TcpStream and hand it
+            // to the TlsAcceptor.
+            let tcp = match control {
+                ControlStream::Plain(br) => br.into_inner(),
+                ControlStream::Tls(_) => {
+                    // AUTH TLS over an already-TLS channel is undefined;
+                    // refuse silently and drop.
+                    debug!("AUTH TLS over TLS not supported");
+                    return Ok(());
+                }
+            };
+            let tls = match acceptor.accept(tcp).await {
+                Ok(t) => t,
+                Err(e) => {
+                    debug!(error = %e, "AUTH TLS handshake failed");
+                    return Err(TranslatorError::Tls(format!("auth tls handshake: {e}")));
+                }
+            };
+            control = ControlStream::Tls(BufReader::new(tls));
+            state.control = ControlState::Encrypted;
+            // Loop continues — next read_line goes through the TLS layer.
         }
     }
 }
 
 async fn write_reply(
-    writer: &mut ControlSink,
+    control: &mut ControlStream,
     reply: &Reply,
 ) -> Result<(), TranslatorError> {
-    writer.write_all(reply.wire().as_bytes()).await?;
-    writer.flush().await?;
+    control.write_all(reply.wire().as_bytes()).await?;
+    control.flush().await?;
     Ok(())
 }
 
@@ -301,6 +425,7 @@ async fn dispatch(
     factory: &Arc<dyn SftpFactory>,
     verb: &Verb,
     local_ip: IpAddr,
+    tls_acceptor: Option<&TlsAcceptor>,
 ) -> (Reply, bool, bool) {
     // PORT / EPRT — always 502, regardless of login state.
     if matches!(verb, Verb::Port(_) | Verb::Eprt(_)) {
@@ -401,6 +526,13 @@ async fn dispatch(
             if cfg.tls.is_none() {
                 return (Reply::err_502("AUTH TLS not configured."), false, false);
             }
+            if state.control == ControlState::Encrypted {
+                return (
+                    Reply::err_503("AUTH already negotiated."),
+                    false,
+                    false,
+                );
+            }
             if mech != "TLS" && mech != "TLS-C" && mech != "SSL" {
                 return (Reply::err_504(format!("AUTH {mech} unsupported.")), false, false);
             }
@@ -420,6 +552,13 @@ async fn dispatch(
                 "P" => {
                     if !state.pbsz_set {
                         return (Reply::err_503("PBSZ required before PROT."), false, false);
+                    }
+                    if state.control != ControlState::Encrypted {
+                        return (
+                            Reply::err_503("PROT P requires an encrypted control channel."),
+                            false,
+                            false,
+                        );
                     }
                     state.prot_private = true;
                     (Reply::ok_200("PROT P accepted."), false, false)
@@ -637,7 +776,7 @@ async fn dispatch(
                     )
                 }
             };
-            run_list_transfer(state, listener, target, ListMode::List).await
+            run_list_transfer(state, listener, target, ListMode::List, tls_acceptor).await
         }
         Verb::Nlst(path) => {
             let target = match path {
@@ -654,7 +793,7 @@ async fn dispatch(
                     )
                 }
             };
-            run_list_transfer(state, listener, target, ListMode::Nlst).await
+            run_list_transfer(state, listener, target, ListMode::Nlst, tls_acceptor).await
         }
         Verb::Mlsd(path) => {
             let target = match path {
@@ -671,7 +810,7 @@ async fn dispatch(
                     )
                 }
             };
-            run_list_transfer(state, listener, target, ListMode::Mlsd).await
+            run_list_transfer(state, listener, target, ListMode::Mlsd, tls_acceptor).await
         }
         Verb::Mlst(path) => {
             let target = match path {
@@ -703,7 +842,7 @@ async fn dispatch(
                     )
                 }
             };
-            run_retr_transfer(state, listener, target).await
+            run_retr_transfer(state, listener, target, tls_acceptor).await
         }
         Verb::Stor(p) => {
             let target = join_cwd(&state.cwd, p);
@@ -717,7 +856,7 @@ async fn dispatch(
                     )
                 }
             };
-            run_stor_transfer(state, listener, target, false).await
+            run_stor_transfer(state, listener, target, false, tls_acceptor).await
         }
         Verb::Appe(p) => {
             let target = join_cwd(&state.cwd, p);
@@ -731,7 +870,7 @@ async fn dispatch(
                     )
                 }
             };
-            run_stor_transfer(state, listener, target, true).await
+            run_stor_transfer(state, listener, target, true, tls_acceptor).await
         }
         Verb::Stou(_) => {
             // Generate a unique name based on epoch nanos.
@@ -750,7 +889,7 @@ async fn dispatch(
                     )
                 }
             };
-            run_stor_transfer(state, listener, target, false).await
+            run_stor_transfer(state, listener, target, false, tls_acceptor).await
         }
         Verb::Port(_) | Verb::Eprt(_) => {
             // Already handled at the top.
@@ -774,13 +913,14 @@ async fn run_list_transfer(
     listener: tokio::net::TcpListener,
     target: String,
     mode: ListMode,
+    tls_acceptor: Option<&TlsAcceptor>,
 ) -> (Reply, bool, bool) {
     let sftp = state.sftp.as_ref().unwrap().clone();
     // Accept the data connection (no real client deadline here — the
     // session-level idle timeout still applies via the surrounding
     // select! once we return).
     let accept = timeout(std::time::Duration::from_secs(60), listener.accept()).await;
-    let (mut data, _peer) = match accept {
+    let (data, _peer) = match accept {
         Ok(Ok(p)) => p,
         Ok(Err(e)) => {
             return (
@@ -792,6 +932,16 @@ async fn run_list_transfer(
         Err(_) => {
             return (
                 Reply::new(425, "Data connection timed out."),
+                false,
+                false,
+            )
+        }
+    };
+    let mut data = match wrap_data(data, state, tls_acceptor).await {
+        Ok(d) => d,
+        Err(e) => {
+            return (
+                Reply::new(425, format!("Data TLS handshake failed: {e}")),
                 false,
                 false,
             )
@@ -831,10 +981,11 @@ async fn run_retr_transfer(
     state: &mut SessionState,
     listener: tokio::net::TcpListener,
     target: String,
+    tls_acceptor: Option<&TlsAcceptor>,
 ) -> (Reply, bool, bool) {
     let sftp = state.sftp.as_ref().unwrap().clone();
     let accept = timeout(std::time::Duration::from_secs(60), listener.accept()).await;
-    let (mut data, _peer) = match accept {
+    let (data, _peer) = match accept {
         Ok(Ok(p)) => p,
         Ok(Err(e)) => {
             return (
@@ -846,6 +997,16 @@ async fn run_retr_transfer(
         Err(_) => {
             return (
                 Reply::new(425, "Data connection timed out."),
+                false,
+                false,
+            )
+        }
+    };
+    let mut data = match wrap_data(data, state, tls_acceptor).await {
+        Ok(d) => d,
+        Err(e) => {
+            return (
+                Reply::new(425, format!("Data TLS handshake failed: {e}")),
                 false,
                 false,
             )
@@ -867,10 +1028,11 @@ async fn run_stor_transfer(
     listener: tokio::net::TcpListener,
     target: String,
     _append: bool,
+    tls_acceptor: Option<&TlsAcceptor>,
 ) -> (Reply, bool, bool) {
     let sftp = state.sftp.as_ref().unwrap().clone();
     let accept = timeout(std::time::Duration::from_secs(60), listener.accept()).await;
-    let (mut data, _peer) = match accept {
+    let (data, _peer) = match accept {
         Ok(Ok(p)) => p,
         Ok(Err(e)) => {
             return (
@@ -882,6 +1044,16 @@ async fn run_stor_transfer(
         Err(_) => {
             return (
                 Reply::new(425, "Data connection timed out."),
+                false,
+                false,
+            )
+        }
+    };
+    let mut data = match wrap_data(data, state, tls_acceptor).await {
+        Ok(d) => d,
+        Err(e) => {
+            return (
+                Reply::new(425, format!("Data TLS handshake failed: {e}")),
                 false,
                 false,
             )

@@ -48,7 +48,7 @@ pub mod mock;
 
 pub use config::{AuthPolicy, TlsConfig, TranslatorConfig};
 pub use error::TranslatorError;
-pub use factory::SftpFactory;
+pub use factory::{ProfileResolver, SftpFactory, Ssh2SftpFactory, Ssh2UserBinding};
 pub use reply::Reply;
 pub use server::{serve, Server, ServerHandle};
 pub use state::{ControlState, LoginPhase, SessionState, TransferMode, TransferType};

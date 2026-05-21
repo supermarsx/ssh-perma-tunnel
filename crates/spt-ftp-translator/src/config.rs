@@ -3,6 +3,7 @@
 //! See the crate root for a discussion of the security policy these
 //! options encode.
 
+use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::time::Duration;
@@ -30,6 +31,14 @@ pub struct TranslatorConfig {
     /// Idle timeout for the control channel. The data channel uses a
     /// derived per-transfer timeout.
     pub idle_timeout: Duration,
+    /// Mapping from FTP username to backing SSH `[[profiles]]` name.
+    ///
+    /// Consumed by the spt-bin glue that constructs the production
+    /// `Ssh2SftpFactory`: each entry `users.alice = "production-bastion"`
+    /// instructs the factory's resolver to look up the named profile
+    /// when FTP-user `alice` logs in. Empty by default; the
+    /// `MockSftpFactory` ignores this field.
+    pub user_profiles: HashMap<String, String>,
 }
 
 impl TranslatorConfig {
@@ -45,6 +54,7 @@ impl TranslatorConfig {
             tls: None,
             max_clients: 32,
             idle_timeout: Duration::from_secs(300),
+            user_profiles: HashMap::new(),
         }
     }
 

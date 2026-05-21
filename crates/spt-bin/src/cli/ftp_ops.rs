@@ -62,6 +62,7 @@ pub async fn translator_serve(global: &GlobalOpts, args: FtpServeArgs) -> Result
         tls,
         max_clients: args.max_clients,
         idle_timeout: idle,
+        user_profiles: std::collections::HashMap::new(),
     };
     cfg.validate()
         .map_err(|e| Error::InvalidConfig(format!("ftp translator: {e}")))?;
