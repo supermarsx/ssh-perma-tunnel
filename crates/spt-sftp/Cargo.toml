@@ -20,11 +20,20 @@ default = []
 testing = []
 # Linux FUSE backend. Pulls in `fuser` which links libfuse via pkg-config
 # at build time; default-off so workspace builds on hosts without
-# libfuse-dev installed.
-mount-fuse = []
-# Windows WinFsp backend. Default-off; without it the Windows mounter
-# falls back to a `winfsp-launcher` shell-out path that surfaces a clean
-# `UnsupportedPlatform` diagnostic when the launcher is absent.
+# libfuse-dev installed. The optional `fuser`/`libc` deps are scoped to
+# `cfg(target_os = "linux")` so enabling the feature on non-Linux hosts
+# is a no-op (the stub `Filesystem` impl is selected instead).
+mount-fuse = ["dep:fuser", "dep:libc"]
+# Windows WinFsp backend. Reserved for the in-process `winfsp` Rust
+# binding the operator selected in t7-A6. The binding is currently
+# blocked: `winfsp = "=0.10"` ships under GPL-3.0 and the workspace's
+# `deny.toml` allow-list does not include GPL-3.0 (see
+# `crates/spt-sftp/src/mount/windows_winfsp.rs` and
+# `.orchestration/logs/t7-A6.md`). Until that policy gap closes, this
+# feature is a no-op — the Windows mounter surfaces a structured
+# `UnsupportedPlatform` diagnostic naming the blocker either way. The
+# feature stays declared so config / CLI / packaging surfaces that
+# reference it keep compiling without churn.
 mount-winfsp = []
 
 [dependencies]
@@ -36,6 +45,14 @@ thiserror = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
 futures = { workspace = true }
+
+# Linux FUSE session loop. Gated behind `mount-fuse` so workspace builds on
+# hosts without `libfuse-dev` installed; the platform `cfg` keeps the dep
+# off non-Linux targets entirely. `fuser 0.15` MSRV is 1.74 (workspace
+# MSRV 1.85 is well above).
+[target.'cfg(target_os = "linux")'.dependencies]
+fuser = { version = "0.15", optional = true }
+libc = { version = "0.2", optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
