@@ -23,6 +23,7 @@
 
 use serde::{Deserialize, Serialize};
 use spt_core::RedactedString;
+use spt_secrets::SecretRef;
 
 // ---------------------------------------------------------------------------
 // Top-level config (spec §8)
@@ -1489,6 +1490,26 @@ pub struct Endpoint {
     pub weight: Option<u32>,
 }
 
+/// Hop transport kind. Added by t6-e3 for proxy-jump support.
+///
+/// * `Ssh` — open `direct-tcpip` to the next hop and re-launch an SSH session
+///   (the historical behaviour, retained as the default).
+/// * `Socks5` — speak RFC 1928 CONNECT (with optional RFC 1929 user/password
+///   auth) over the channel to reach the next hop.
+/// * `HttpConnect` — speak HTTP `CONNECT host:port HTTP/1.1` (with optional
+///   `Proxy-Authorization: Basic …`) to reach the next hop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum HopKind {
+    /// Re-establish an SSH session through this hop. Default.
+    #[default]
+    Ssh,
+    /// SOCKS5 proxy hop (RFC 1928 + optional RFC 1929 user/pw auth).
+    Socks5,
+    /// HTTP `CONNECT` proxy hop (with optional Basic `Proxy-Authorization`).
+    HttpConnect,
+}
+
 /// `[[profiles.hops]]`. Spec §8.2.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Hop {
@@ -1512,6 +1533,16 @@ pub struct Hop {
     /// Where to resolve names: `local|remote|previous-hop`. §8.2.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target_resolve: Option<String>,
+    /// Hop transport kind: `ssh` (default), `socks5`, `http-connect`. t6-e3.
+    #[serde(default)]
+    pub kind: HopKind,
+    /// Optional proxy username for SOCKS5 / HTTP CONNECT proxies. t6-e3.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proxy_username: Option<RedactedString>,
+    /// Optional `secret://` reference for the proxy password used by
+    /// SOCKS5 / HTTP CONNECT proxies. t6-e3.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proxy_password_ref: Option<SecretRef>,
 }
 
 /// `[[profiles.forwards]]`. Spec §9.14.
@@ -1613,4 +1644,65 @@ fn is_default_round_robin(v: &crate::round_robin::RoundRobinConfig) -> bool {
 
 fn is_default_status_api(v: &crate::status_api::StatusApiConfig) -> bool {
     v == &crate::status_api::StatusApiConfig::default()
+}
+
+// ---------------------------------------------------------------------------
+// t6-e3: HopKind round-trip + Hop proxy-field defaults
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod hop_kind_tests {
+    use super::*;
+
+    #[test]
+    fn hopkind_all_three_round_trip_through_toml() {
+        for (variant, repr) in [
+            (HopKind::Ssh, "ssh"),
+            (HopKind::Socks5, "socks5"),
+            (HopKind::HttpConnect, "http-connect"),
+        ] {
+            // TOML round-trip in context.
+            let toml_str = format!(
+                "name = \"h\"\nprotocol = \"ssh\"\nhost = \"x\"\nport = 22\nkind = \"{repr}\"\n",
+            );
+            let hop: Hop = toml::from_str(&toml_str).unwrap();
+            assert_eq!(hop.kind, variant, "deserialise `{repr}`");
+            // And re-serialise: the `kind` field should round-trip back to
+            // its kebab-case form.
+            let rendered = toml::to_string(&hop).unwrap();
+            assert!(
+                rendered.contains(&format!("kind = \"{repr}\"")),
+                "expected `kind = \"{repr}\"` in: {rendered}"
+            );
+        }
+    }
+
+    #[test]
+    fn hop_kind_defaults_to_ssh_when_unspecified() {
+        // No `kind` field present — must default to Ssh.
+        let toml_str = "name = \"h\"\nprotocol = \"ssh\"\nhost = \"x\"\nport = 22\n";
+        let hop: Hop = toml::from_str(toml_str).unwrap();
+        assert_eq!(hop.kind, HopKind::Ssh);
+        assert!(hop.proxy_username.is_none());
+        assert!(hop.proxy_password_ref.is_none());
+    }
+
+    #[test]
+    fn hop_proxy_fields_round_trip() {
+        let toml_str = "\
+name = \"jump\"
+protocol = \"ssh\"
+host = \"proxy.example.com\"
+port = 1080
+kind = \"socks5\"
+proxy_username = \"alice\"
+proxy_password_ref = \"secret://proxies/alice\"
+";
+        let hop: Hop = toml::from_str(toml_str).unwrap();
+        assert_eq!(hop.kind, HopKind::Socks5);
+        assert!(hop.proxy_username.is_some());
+        let pw = hop.proxy_password_ref.expect("ref present");
+        assert_eq!(pw.ns(), "proxies");
+        assert_eq!(pw.name(), "alice");
+    }
 }

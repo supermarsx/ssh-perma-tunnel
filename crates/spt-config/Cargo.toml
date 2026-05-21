@@ -28,6 +28,7 @@ secrecy = { workspace = true }
 sha2 = { workspace = true }
 atomicwrites = { workspace = true }
 tracing = { workspace = true }
+directories = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

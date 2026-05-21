@@ -28,6 +28,8 @@ use serde::Serialize;
 use serde_json::json;
 use spt_cli::groups::tunnel::{TunnelHealth, TunnelSessions, TunnelStats};
 use spt_cli::GlobalOpts;
+use spt_config::openssh_config::parse_user_host_port;
+use spt_config::schema::{Config, Hop};
 use spt_core::{Error, Result};
 use spt_state::status::{LastError, ProfileStatus, StatusSnapshot};
 
@@ -756,6 +758,63 @@ fn fmt_clock(t: DateTime<Utc>) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// t6-e3: `-J` proxy-jump consumption
+// ---------------------------------------------------------------------------
+
+/// Parse a `-J user@host[:port][,user@host…]` chain string into a list of
+/// `Hop`s. Each element becomes a `kind = "ssh"` hop (HTTP/SOCKS5 proxy
+/// hops are configured via the profile table — `-J` mirrors OpenSSH's
+/// SSH-only chain).
+///
+/// Empty chains return `Ok(vec![])`. Whitespace around commas is tolerated.
+pub fn parse_jump_chain(raw: &str) -> Result<Vec<Hop>> {
+    let mut out = Vec::new();
+    for part in raw.split(',') {
+        let part = part.trim();
+        if part.is_empty() {
+            continue;
+        }
+        let (user, host, port) = parse_user_host_port(part);
+        if host.is_empty() {
+            return Err(Error::InvalidArgs(format!(
+                "-J: empty host in `{part}` (expected `user@host[:port]`)"
+            )));
+        }
+        let mut hop = Hop::default();
+        hop.name = format!("cli-jump-{}", out.len() + 1);
+        hop.protocol = "ssh".to_string();
+        hop.host = host;
+        hop.port = port.unwrap_or(22);
+        hop.user = user;
+        // hop.kind defaults to HopKind::Ssh — OpenSSH `-J` semantics.
+        out.push(hop);
+    }
+    Ok(out)
+}
+
+/// Splat the parsed `-J` chain into every selected profile's `hops`,
+/// replacing the profile-file hops so CLI takes precedence (per t6-e3
+/// spec).
+///
+/// `selected_profiles` is a name filter; when empty every enabled profile
+/// is mutated. Returns the number of profiles updated.
+pub fn apply_jump_chain_to_config(
+    cfg: &mut Config,
+    selected_profiles: &[String],
+    chain: &[Hop],
+) -> usize {
+    let mut n = 0;
+    for p in &mut cfg.profiles {
+        if !selected_profiles.is_empty() && !selected_profiles.iter().any(|name| name == &p.name) {
+            continue;
+        }
+        p.hops = chain.to_vec();
+        n += 1;
+    }
+    n
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -765,6 +824,65 @@ mod tests {
     use chrono::{TimeZone, Utc};
     use spt_state::status::{ForwardStatus, ProfileStatus, SessionStatus};
     use spt_state::testing::StatusSnapshotBuilder;
+
+    // --- t6-e3: `-J` jump-chain parsing ----------------------------------
+
+    #[test]
+    fn jump_chain_parse_single_hop() {
+        let hops = parse_jump_chain("bastion.example.com").unwrap();
+        assert_eq!(hops.len(), 1);
+        assert_eq!(hops[0].host, "bastion.example.com");
+        assert_eq!(hops[0].port, 22);
+        assert!(hops[0].user.is_none());
+    }
+
+    #[test]
+    fn jump_chain_parse_two_hops_with_user_and_port() {
+        let hops = parse_jump_chain("alice@h1:2200,bob@h2").unwrap();
+        assert_eq!(hops.len(), 2);
+        assert_eq!(hops[0].user.as_deref(), Some("alice"));
+        assert_eq!(hops[0].host, "h1");
+        assert_eq!(hops[0].port, 2200);
+        assert_eq!(hops[1].user.as_deref(), Some("bob"));
+        assert_eq!(hops[1].host, "h2");
+        assert_eq!(hops[1].port, 22);
+    }
+
+    #[test]
+    fn jump_chain_parse_three_hops_tolerates_spaces() {
+        let hops = parse_jump_chain("h1, alice@h2:22 , h3:2202").unwrap();
+        assert_eq!(hops.len(), 3);
+        assert_eq!(hops[0].host, "h1");
+        assert_eq!(hops[1].host, "h2");
+        assert_eq!(hops[1].user.as_deref(), Some("alice"));
+        assert_eq!(hops[2].host, "h3");
+        assert_eq!(hops[2].port, 2202);
+    }
+
+    #[test]
+    fn jump_chain_cli_takes_precedence_over_profile_hops() {
+        use spt_config::schema::{Hop, Profile};
+        let mut cfg = Config {
+            version: 1,
+            ..Default::default()
+        };
+        let mut p = Profile::default();
+        p.name = "prod".into();
+        // Profile-file hop the operator put in the TOML.
+        let mut existing = Hop::default();
+        existing.name = "from-toml".into();
+        existing.host = "stale.example.com".into();
+        existing.port = 22;
+        p.hops = vec![existing];
+        cfg.profiles.push(p);
+
+        let chain = parse_jump_chain("fresh.example.com:2222").unwrap();
+        let n = apply_jump_chain_to_config(&mut cfg, &[], &chain);
+        assert_eq!(n, 1);
+        assert_eq!(cfg.profiles[0].hops.len(), 1);
+        assert_eq!(cfg.profiles[0].hops[0].host, "fresh.example.com");
+        assert_eq!(cfg.profiles[0].hops[0].port, 2222);
+    }
 
     fn ts() -> DateTime<Utc> {
         Utc.with_ymd_and_hms(2026, 5, 5, 12, 0, 0).unwrap()

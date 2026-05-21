@@ -32,6 +32,7 @@ pub mod hostkey;
 pub mod kbi_bridge;
 pub mod multi_hop;
 pub mod protocol;
+pub mod proxy_jump;
 pub(crate) mod russh_backend;
 pub mod session;
 pub mod sftp;

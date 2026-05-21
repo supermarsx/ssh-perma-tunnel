@@ -28,6 +28,7 @@ pub mod fingerprint;
 pub mod load;
 pub mod migrate;
 pub mod mutate;
+pub mod openssh_config;
 pub mod policy;
 pub mod remote;
 pub mod render;

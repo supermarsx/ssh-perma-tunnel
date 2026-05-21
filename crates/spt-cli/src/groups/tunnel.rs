@@ -51,6 +51,12 @@ pub struct TunnelRun {
     /// Comma-separated profile filter.
     #[arg(long, value_name = "A,B,C", value_delimiter = ',')]
     pub profiles: Vec<String>,
+    /// Proxy-jump chain `user@host[:port][,user@host…]`. When set, the chain
+    /// is splatted into every selected profile's `hops` table at startup
+    /// (CLI values take precedence over profile-file hops). Mirrors the
+    /// OpenSSH `-J` flag (t6-e3).
+    #[arg(short = 'J', long = "jump", value_name = "JUMP_CHAIN")]
+    pub jump: Option<String>,
 }
 
 /// `spt tunnel status`.
