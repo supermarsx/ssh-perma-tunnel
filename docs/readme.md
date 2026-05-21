@@ -27,6 +27,8 @@ Index of user-facing documentation for `spt` (SSH Permanent Tunnel).
 - [Remote Config](remote-config.md) — HTTPS config, fingerprint pinning
 - [Security](security.md) — threat model, redaction, secret handling
 - [Troubleshooting](troubleshooting.md) — common issues and exit codes
+- [Bitvise Comparison](bitvise-comparison.md) — parity and gap matrix against
+  Bitvise SSH Client
 
 ## Migration guides
 
