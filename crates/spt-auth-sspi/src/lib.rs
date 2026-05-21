@@ -9,28 +9,35 @@
 //!
 //! # Backends
 //!
-//! | Target  | Library                    | Mechanisms                  |
-//! |---------|----------------------------|-----------------------------|
-//! | Windows | `sspi 0.15` (fallback 0.14)| Kerberos, NTLM (Negotiate)  |
-//! | Unix    | `cross-krb5 0.4`           | Kerberos-5 only             |
+//! | Target  | Library             | Mechanisms                 |
+//! |---------|---------------------|----------------------------|
+//! | Windows | `sspi = 0.15`       | Kerberos, NTLM, Negotiate  |
+//! | Unix    | `libgssapi = 0.9`   | Kerberos-5 only            |
 //!
-//! ## Lockfile status
+//! The Unix dependency choice deviates from the t7-A3 plan's
+//! `cross-krb5 0.4` call: `cross-krb5` exposes only `wrap`/`unwrap`, not
+//! `gss_get_mic` / `gss_verify_mic`. SSH `gssapi-with-mic` (RFC 4462 §3.5)
+//! mandates the MIC token form (RFC 2743), which is wire-distinct from a
+//! non-encrypting Wrap token. We use `libgssapi` directly — `cross-krb5`
+//! was going to pull it transitively in any case, so the dependency-graph
+//! delta is zero. See `.orchestration/logs/t7-A3.md` for the decision
+//! record (including the `picky 7.0.0-rc.12` transitive pin needed to make
+//! `sspi 0.15.12` build on stable 1.85).
 //!
-//! Neither `sspi` nor `cross-krb5` is currently present in `Cargo.lock`. Under
-//! the workspace policy (`cargo build --workspace --locked`, no
-//! `cargo update`) those crates cannot be activated yet. Until the lockfile is
-//! updated, [`provider_for`] / [`sspi_provider_for`] return the documented
-//! [`Error::UnsupportedBackend`] terminal state on every OS. The full trait
-//! surface, principal parser, configuration types, and an in-process
-//! [`mock::MockGssProvider`] are nevertheless complete and unit-tested so
-//! that:
+//! ## Test infrastructure
 //!
-//! * Downstream code (notably the russh wiring of `gssapi-with-mic`) can be
-//!   written against the stable [`GssProvider`] API today.
-//! * The fallback chain `sspi 0.15 → 0.14 → UnsupportedBackend` collapses
-//!   to its final element cleanly without `unimplemented!()` panics.
+//! Real GSS / SSPI round-trips require an external KDC or Active Directory
+//! domain. The crate ships:
 //!
-//! See `.orchestration/logs/t6-e9.md` for the lockfile decision record.
+//! * [`mock::MockGssProvider`] — an in-process, deterministic-token
+//!   `GssProvider` for unit-level testing (`testing` feature).
+//! * `KERBEROS_LIVE=1` / `SSPI_KDC_URL=…` -gated integration tests that
+//!   exercise the real `libgssapi` / `sspi` code paths against a live
+//!   Heimdal / MIT-KRB5 / AD fixture (`#[ignore]` by default so CI is opt-in).
+//!
+//! Every token exchange and MIC operation also fires an [`AuditHook`]
+//! event so the supervisor's audit subscriber (wired by Phase B1) can
+//! record per-step provenance.
 //!
 //! # SSH `gssapi-with-mic` shape
 //!
@@ -58,6 +65,8 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 #![warn(missing_docs)]
 
+use std::sync::Arc;
+
 use spt_core::{Error, Result};
 use thiserror::Error as ThisError;
 
@@ -69,6 +78,10 @@ pub mod unix;
 
 #[cfg(any(feature = "testing", test))]
 pub mod mock;
+
+pub mod audit;
+
+pub use audit::{AuditEvent, AuditHook, MockAuditHook, NoopAuditHook};
 
 /// One step of a GSS / SSPI security-context token exchange.
 ///
@@ -118,7 +131,7 @@ pub enum Mechanism {
 }
 
 /// Configuration for the GSSAPI (Unix) initiator.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default)]
 pub struct GssApiConfig {
     /// Service principal hint, e.g. `host/edge.example.com@REALM`.
     pub service: Option<String>,
@@ -126,10 +139,32 @@ pub struct GssApiConfig {
     pub principal: Option<String>,
     /// Permit credential delegation (`GSS_C_DELEG_FLAG`).
     pub delegate: bool,
+    /// Request confidentiality (`GSS_C_CONF_FLAG`).
+    ///
+    /// Off by default; SSH `gssapi-with-mic` (RFC 4462) does not require it.
+    pub confidentiality: bool,
+    /// Optional [`AuditHook`] subscriber. `None` disables audit emission.
+    pub audit_hook: Option<Arc<dyn AuditHook>>,
 }
 
+impl PartialEq for GssApiConfig {
+    fn eq(&self, other: &Self) -> bool {
+        self.service == other.service
+            && self.principal == other.principal
+            && self.delegate == other.delegate
+            && self.confidentiality == other.confidentiality
+            // `Arc<dyn AuditHook>` is not Eq; we compare by pointer identity.
+            && match (&self.audit_hook, &other.audit_hook) {
+                (None, None) => true,
+                (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+                _ => false,
+            }
+    }
+}
+impl Eq for GssApiConfig {}
+
 /// Configuration for the SSPI (Windows) initiator.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default)]
 pub struct SspiConfig {
     /// Service principal hint, e.g. `host/edge.example.com`.
     pub service: Option<String>,
@@ -139,13 +174,34 @@ pub struct SspiConfig {
     pub delegate: bool,
     /// Permit NTLM fallback when Kerberos cannot be negotiated.
     pub allow_ntlm_fallback: bool,
+    /// Request confidentiality (`ISC_REQ_CONFIDENTIALITY`).
+    pub confidentiality: bool,
+    /// Optional [`AuditHook`] subscriber. `None` disables audit emission.
+    pub audit_hook: Option<Arc<dyn AuditHook>>,
 }
+
+impl PartialEq for SspiConfig {
+    fn eq(&self, other: &Self) -> bool {
+        self.service == other.service
+            && self.principal == other.principal
+            && self.delegate == other.delegate
+            && self.allow_ntlm_fallback == other.allow_ntlm_fallback
+            && self.confidentiality == other.confidentiality
+            && match (&self.audit_hook, &other.audit_hook) {
+                (None, None) => true,
+                (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+                _ => false,
+            }
+    }
+}
+impl Eq for SspiConfig {}
 
 /// Resolve a Unix [`GssProvider`] from the supplied configuration.
 ///
-/// Returns [`Error::UnsupportedPlatform`] on non-Unix targets; returns the
-/// documented [`Error::UnsupportedPlatform`] (`UnsupportedBackend`) on Unix
-/// until the `cross-krb5` dependency is added to the lockfile.
+/// Returns [`Error::UnsupportedPlatform`] on non-Unix targets; on Unix the
+/// real `libgssapi` initiator is constructed (errors propagate from
+/// `gss_init_sec_context` if the local krb5 ticket cache is empty, the SPN
+/// cannot be resolved, etc.).
 pub fn provider_for(cfg: &GssApiConfig) -> Result<Box<dyn GssProvider>> {
     #[cfg(unix)]
     {
@@ -155,15 +211,18 @@ pub fn provider_for(cfg: &GssApiConfig) -> Result<Box<dyn GssProvider>> {
     {
         let _ = cfg;
         Err(unsupported_backend(
-            "gssapi (cross-krb5) is Unix-only; this target is not Unix",
+            "gssapi (libgssapi) is Unix-only; this target is not Unix",
         ))
     }
 }
 
 /// Resolve a Windows [`GssProvider`] from the supplied configuration.
 ///
-/// Returns [`Error::UnsupportedPlatform`] (`UnsupportedBackend`) until the
-/// `sspi` dependency is added to the lockfile.
+/// On Windows, dispatches to the real `sspi`-backed initiator. On Unix,
+/// NTLM is unsupported (libgssapi is Kerberos-only) — if
+/// `allow_ntlm_fallback` is set we return [`Error::AuthFailed`] with the
+/// stable `UnsupportedOnUnix` marker; otherwise we degrade to the Kerberos
+/// (`provider_for`) path so the call still produces a usable initiator.
 pub fn sspi_provider_for(cfg: &SspiConfig) -> Result<Box<dyn GssProvider>> {
     #[cfg(target_os = "windows")]
     {
@@ -180,6 +239,8 @@ pub fn sspi_provider_for(cfg: &SspiConfig) -> Result<Box<dyn GssProvider>> {
                 service: cfg.service.clone(),
                 principal: cfg.principal.clone(),
                 delegate: cfg.delegate,
+                confidentiality: cfg.confidentiality,
+                audit_hook: cfg.audit_hook.clone(),
             })
         }
     }
@@ -356,6 +417,7 @@ mod config_tests {
             service: Some("host@h".into()),
             principal: None,
             delegate: true,
+            ..Default::default()
         };
         assert!(g.delegate);
 
@@ -364,6 +426,7 @@ mod config_tests {
             principal: Some("user@R".into()),
             delegate: true,
             allow_ntlm_fallback: false,
+            ..Default::default()
         };
         assert!(s.delegate);
         assert!(!s.allow_ntlm_fallback);

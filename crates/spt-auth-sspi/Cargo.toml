@@ -23,13 +23,36 @@ spt-core = { workspace = true }
 spt-auth = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }
+parking_lot = { workspace = true }
 
-# NOTE: real `sspi` / `cross-krb5` / `libgssapi` crates are deliberately NOT
-# listed. They are not present in `Cargo.lock`, so under the workspace
-# `--locked` + no-`cargo update` policy they cannot be activated. This crate
-# ships the trait surface, configuration types, principal parser, mock
-# provider, and a documented `UnsupportedBackend` fallback for every OS until
-# the lockfile is updated in a future executor (see ../../.orchestration/logs/t6-e9.md).
+# t7-A3: real backends.
+#
+# Target-gated to keep the build hermetic on the opposite platform:
+#   * Windows pulls only `sspi` (which compiles purely against Win32 SSPI).
+#   * Unix pulls only `cross-krb5` (which wraps libgssapi-sys; that
+#     transitive crate requires krb5 headers at build time and would fail
+#     on Windows).
+#
+# Version selection: spec called for `sspi = "0.15"` (fallback `=0.14`) and
+# `cross-krb5 = "0.4"`. The latest `sspi 0.21` declares MSRV 1.89 (> 1.85);
+# `sspi 0.15.x` and `0.14.x` declare no MSRV in metadata and build cleanly
+# on 1.85, so we pin to the `0.15` major. `cross-krb5 0.4.x` declares no
+# MSRV and is the current latest. Both pinned with `=` per the t7
+# milestone's "documented dep" policy.
+
+[target.'cfg(windows)'.dependencies]
+sspi = { version = "=0.15.12", default-features = false }
+
+[target.'cfg(unix)'.dependencies]
+# t7-A3 deviation from spec: the spec called for `cross-krb5 0.4`, but
+# `cross-krb5 0.4.2` only exposes `wrap`/`unwrap`, not `gss_get_mic` /
+# `gss_verify_mic`. SSH `gssapi-with-mic` (RFC 4462 §3.5) requires the MIC
+# token form (RFC 2743), which is wire-distinct from a non-encrypting Wrap
+# token — `wrap(false, ..)` is NOT a valid MIC substitute and a real OpenSSH
+# server rejects the conflation. We use `libgssapi 0.9` directly instead;
+# `cross-krb5` was going to pull it transitively in any case, so the
+# dependency-graph delta is zero. See `.orchestration/logs/t7-A3.md`.
+libgssapi = { version = "=0.9.1", default-features = false }
 
 [dev-dependencies]
 # The `testing` feature is activated for integration tests via the dev-dep
