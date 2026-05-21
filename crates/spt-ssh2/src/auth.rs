@@ -86,6 +86,7 @@ where
         AuthMethod::PublicKey {
             identity_file,
             passphrase,
+            allow_ssh_rsa_sha1: _,
         } => {
             let pw_string = resolve_passphrase(backends, passphrase.as_ref())?;
             try_pubkey(session, username, identity_file, None, pw_string.as_deref()).await
@@ -99,7 +100,7 @@ where
             try_pubkey(session, username, key, Some(cert), pw_string.as_deref()).await
         }
         AuthMethod::KeyboardInteractive { responder } => {
-            let mut prompter = ScriptedPrompter::new(responder, backends);
+            let mut prompter = ScriptedPrompter::new(responder, backends)?;
             session
                 .userauth_keyboard_interactive(username, &mut prompter)
                 .await
@@ -443,6 +444,7 @@ mod tests {
         let pk = AuthMethod::PublicKey {
             identity_file: PathBuf::from("/tmp/id_test"),
             passphrase: None,
+            allow_ssh_rsa_sha1: false,
         };
         assert_eq!(method_name(&pk), "public_key");
         let agent = AuthMethod::Agent { socket: None };

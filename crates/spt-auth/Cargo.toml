@@ -14,6 +14,10 @@ workspace = true
 
 [features]
 testing = ["dep:axum"]
+# Enables shelling out to the `ykman` CLI for YubiKey OATH-TOTP responder
+# answers. Without this feature, `KbiAnswer::YubikeyOath` evaluation returns
+# `Error::UnsupportedPlatform` cleanly.
+yubikey = []
 
 [dependencies]
 spt-core = { workspace = true }
@@ -29,6 +33,13 @@ secrecy = { workspace = true }
 reqwest = { workspace = true }
 tokio = { workspace = true }
 rand = { workspace = true }
+# TOTP (RFC 6238) hand-rolled on workspace primitives.
+hmac = { workspace = true }
+sha1 = { workspace = true }
+sha2 = { workspace = true }
+subtle = { workspace = true }
+# Regex for per-prompt keyboard-interactive responder matching (§9.12).
+regex = { workspace = true }
 axum = { workspace = true, optional = true }
 
 [dev-dependencies]

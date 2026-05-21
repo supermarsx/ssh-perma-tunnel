@@ -14,10 +14,9 @@ use crate::method::AuthMethod;
 /// Structurally validate a single [`AuthMethod`].
 pub fn validate(method: &AuthMethod) -> Result<()> {
     match method {
-        AuthMethod::PublicKey {
-            identity_file,
-            passphrase: _,
-        } => check_file_exists("identity_file", identity_file),
+        AuthMethod::PublicKey { identity_file, .. } => {
+            check_file_exists("identity_file", identity_file)
+        }
 
         AuthMethod::Agent { socket } => {
             if let Some(path) = socket {
@@ -39,11 +38,15 @@ pub fn validate(method: &AuthMethod) -> Result<()> {
                 ));
             }
             for (i, ans) in responder.iter().enumerate() {
-                if ans.pattern.is_empty() {
+                if ans.prompt_regex.is_empty() {
                     return Err(invalid(format!(
-                        "keyboard_interactive.responder[{i}].pattern must not be empty"
+                        "keyboard_interactive.responder[{i}].prompt_regex must not be empty"
                     )));
                 }
+                // Surface regex syntax errors at validate time, not at the
+                // moment the server first sends a prompt.
+                ans.compile()
+                    .map_err(|e| invalid(format!("keyboard_interactive.responder[{i}]: {e}")))?;
             }
             Ok(())
         }
@@ -144,7 +147,7 @@ mod tests {
     use url::Url;
 
     use super::*;
-    use crate::kbi::KbiAnswer;
+    use crate::kbi::{KbiAnswer, KbiResponder};
     use crate::secret_ref::SecretRef;
 
     fn touch() -> NamedTempFile {
@@ -159,6 +162,7 @@ mod tests {
         let m = AuthMethod::PublicKey {
             identity_file: f.path().to_path_buf(),
             passphrase: None,
+            allow_ssh_rsa_sha1: false,
         };
         validate(&m).unwrap();
     }
@@ -168,6 +172,7 @@ mod tests {
         let m = AuthMethod::PublicKey {
             identity_file: "/no/such/file/spt-test".into(),
             passphrase: None,
+            allow_ssh_rsa_sha1: false,
         };
         assert!(validate(&m).is_err());
     }
@@ -186,9 +191,9 @@ mod tests {
     #[test]
     fn kbi_ok() {
         let m = AuthMethod::KeyboardInteractive {
-            responder: vec![KbiAnswer {
-                pattern: "Password:".into(),
-                response: SecretRef::Env("X".into()),
+            responder: vec![KbiResponder {
+                prompt_regex: "(?i)password:".into(),
+                answer: KbiAnswer::SecretRef(SecretRef::Env("X".into())),
                 echo: false,
             }],
         };
@@ -278,6 +283,7 @@ mod tests {
         let m = AuthMethod::PublicKey {
             identity_file: tmp.path().to_path_buf(),
             passphrase: None,
+            allow_ssh_rsa_sha1: false,
         };
         let err = validate(&m).unwrap_err();
         let s = err.to_string();
@@ -306,16 +312,16 @@ mod tests {
     #[test]
     fn kbi_rejects_entry_with_empty_pattern() {
         let m = AuthMethod::KeyboardInteractive {
-            responder: vec![KbiAnswer {
-                pattern: String::new(),
-                response: SecretRef::Env("X".into()),
+            responder: vec![KbiResponder {
+                prompt_regex: String::new(),
+                answer: KbiAnswer::SecretRef(SecretRef::Env("X".into())),
                 echo: false,
             }],
         };
         let err = validate(&m).unwrap_err();
         let s = err.to_string();
         assert!(s.contains("responder[0]"), "{s}");
-        assert!(s.contains("pattern"), "{s}");
+        assert!(s.contains("prompt_regex"), "{s}");
     }
 
     #[test]
@@ -383,6 +389,7 @@ mod tests {
         let m = AuthMethod::PublicKey {
             identity_file: f.path().to_path_buf(),
             passphrase: Some(SecretRef::Env("PASS".into())),
+            allow_ssh_rsa_sha1: false,
         };
         validate(&m).unwrap();
     }

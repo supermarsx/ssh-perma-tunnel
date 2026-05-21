@@ -3,10 +3,32 @@
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
+use spt_core::{Error, Result};
 use url::Url;
 
-use crate::kbi::KbiAnswer;
+use crate::kbi::KbiResponder;
 use crate::secret_ref::SecretRef;
+
+/// Algorithm-policy gate for incoming public-key auth offers.
+///
+/// `algorithm` is the SSH signature-algorithm name negotiated for the
+/// authentication exchange — for example `ssh-ed25519`, `rsa-sha2-256`,
+/// `rsa-sha2-512`, `ecdsa-sha2-nistp256` etc. Legacy `ssh-rsa` (SHA-1, RFC
+/// 4253) is rejected unless `allow_ssh_rsa_sha1` is `true`; the escape hatch
+/// exists for connecting to servers that have not been upgraded to RFC 8332
+/// (`rsa-sha2-256` / `rsa-sha2-512`).
+///
+/// Returns `Ok(())` on accepted algorithms; an [`Error::AuthFailed`] with a
+/// stable message prefix `algorithm policy:` on rejected ones.
+pub fn check_pubkey_algorithm_allowed(algorithm: &str, allow_ssh_rsa_sha1: bool) -> Result<()> {
+    if algorithm == "ssh-rsa" && !allow_ssh_rsa_sha1 {
+        return Err(Error::AuthFailed(format!(
+            "algorithm policy: refusing legacy `{algorithm}` (SHA-1); \
+             enable `allow_ssh_rsa_sha1 = true` to permit"
+        )));
+    }
+    Ok(())
+}
 
 /// One authentication method modeled by spec §9.12.
 ///
@@ -22,6 +44,15 @@ pub enum AuthMethod {
         /// Optional passphrase reference for an encrypted key.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         passphrase: Option<SecretRef>,
+        /// Permit legacy `ssh-rsa` (SHA-1) public-key auth (RFC 4253).
+        ///
+        /// SHA-1 is collision-broken; ssh-rsa SHA-1 is rejected by default.
+        /// Newer servers negotiate `rsa-sha2-256` / `rsa-sha2-512` (RFC 8332)
+        /// from the same key bytes, so this escape hatch is only needed when
+        /// connecting to legacy OpenSSH (<7.2) or proprietary servers that
+        /// have not been updated. See `docs/auth.md` for the policy rationale.
+        #[serde(default)]
+        allow_ssh_rsa_sha1: bool,
     },
 
     /// SSH2 agent auth — uses `SSH_AUTH_SOCK` (or Pageant on Windows) when
@@ -40,8 +71,8 @@ pub enum AuthMethod {
 
     /// SSH2 keyboard-interactive auth — typically password-equivalent.
     KeyboardInteractive {
-        /// Scripted answers; tried in order against each prompt batch.
-        responder: Vec<KbiAnswer>,
+        /// Scripted prompt/answer bindings; tried in order. First-match wins.
+        responder: Vec<KbiResponder>,
     },
 
     /// SSH2 OpenSSH user certificate auth.
@@ -127,6 +158,44 @@ impl AuthConfig {
         Self {
             username: username.into(),
             methods,
+        }
+    }
+}
+
+#[cfg(test)]
+mod policy_tests {
+    use super::*;
+
+    #[test]
+    fn ssh_rsa_sha1_rejected_by_default() {
+        let err = check_pubkey_algorithm_allowed("ssh-rsa", false).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("algorithm policy"), "{msg}");
+        assert!(msg.contains("ssh-rsa"), "{msg}");
+    }
+
+    #[test]
+    fn ssh_rsa_sha1_accepted_with_escape_hatch() {
+        check_pubkey_algorithm_allowed("ssh-rsa", true).unwrap();
+    }
+
+    #[test]
+    fn rsa_sha2_variants_always_accepted() {
+        check_pubkey_algorithm_allowed("rsa-sha2-256", false).unwrap();
+        check_pubkey_algorithm_allowed("rsa-sha2-512", false).unwrap();
+        // Even with the legacy escape hatch on, the SHA-2 variants pass.
+        check_pubkey_algorithm_allowed("rsa-sha2-256", true).unwrap();
+    }
+
+    #[test]
+    fn ed25519_and_ecdsa_always_accepted() {
+        for algo in [
+            "ssh-ed25519",
+            "ecdsa-sha2-nistp256",
+            "ecdsa-sha2-nistp384",
+            "ecdsa-sha2-nistp521",
+        ] {
+            check_pubkey_algorithm_allowed(algo, false).unwrap();
         }
     }
 }

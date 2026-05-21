@@ -43,6 +43,49 @@ The identity file must be readable owner-only (mode `0600` on Unix; ACLs on
 Windows). The validator emits `KeyFailure` (exit code 19) on a mode-check
 failure.
 
+### Supported signature algorithms
+
+`spt` accepts the modern SSH public-key signature algorithms across both the
+`ssh-key` 0.6 and `russh-keys` 0.46 backends (see
+[`crates/spt-key/docs/algorithms.md`](../crates/spt-key/docs/algorithms.md)
+for the full crypto rationale and implementation matrix):
+
+| Algorithm                | Curve / hash    | Status                                |
+|--------------------------|-----------------|---------------------------------------|
+| `ssh-ed25519`            | Curve25519      | Accepted (recommended default).       |
+| `ecdsa-sha2-nistp256`    | NIST P-256      | Accepted.                             |
+| `ecdsa-sha2-nistp384`    | NIST P-384      | Accepted.                             |
+| `ecdsa-sha2-nistp521`    | NIST P-521      | Accepted.                             |
+| `rsa-sha2-256`           | RSA + SHA-256   | Accepted. RSA modulus ≥ 3072 bits.    |
+| `rsa-sha2-512`           | RSA + SHA-512   | Accepted. RSA modulus ≥ 3072 bits.    |
+| `ssh-rsa`                | RSA + SHA-1     | **Rejected by default** (see below).  |
+
+`ssh-rsa` is the legacy RFC 4253 RSA signature using SHA-1. SHA-1 is
+collision-broken, so `spt` refuses to authenticate with it. Modern servers
+(OpenSSH 7.2+) negotiate `rsa-sha2-256` or `rsa-sha2-512` automatically
+against the same private key — no config change is required.
+
+If you must connect to a pre-7.2 OpenSSH or a non-OpenSSH peer that has not
+been updated past RFC 4253, the escape hatch enables `ssh-rsa` for that
+single profile:
+
+```toml
+[profiles.auth]
+method = "public_key"
+identity_file = "~/.ssh/id_rsa_legacy"
+# Permit legacy ssh-rsa (SHA-1) — only required for old or proprietary
+# servers that have not been updated to RFC 8332. Leave this OUT for any
+# modern server.
+allow_ssh_rsa_sha1 = true
+```
+
+The rejection error message has the stable prefix `algorithm policy:` so it
+is easy to match in CI:
+
+```text
+algorithm policy: refusing legacy `ssh-rsa` (SHA-1); enable `allow_ssh_rsa_sha1 = true` to permit
+```
+
 ## SSH agent
 
 ```toml

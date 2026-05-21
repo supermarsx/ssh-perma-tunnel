@@ -172,6 +172,7 @@ fn build_auth(env: &InteropEnv) -> Option<AuthConfig> {
         vec![AuthMethod::PublicKey {
             identity_file,
             passphrase: env.identity_passphrase.clone(),
+            allow_ssh_rsa_sha1: false,
         }],
     ))
 }

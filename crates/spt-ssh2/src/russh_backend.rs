@@ -356,6 +356,7 @@ async fn try_auth_method(
         AuthMethod::PublicKey {
             identity_file,
             passphrase,
+            ..
         } => {
             let passphrase = resolve_passphrase(&backends, passphrase.as_ref())?;
             let key = russh_keys::load_secret_key(&identity_file, passphrase.as_deref())
@@ -404,9 +405,15 @@ async fn try_auth_method(
 async fn try_keyboard_interactive(
     handle: &mut RusshHandle,
     username: String,
-    responder: Vec<spt_auth::KbiAnswer>,
+    responder: Vec<spt_auth::KbiResponder>,
     backends: Vec<Arc<dyn SecretBackend>>,
 ) -> Result<bool> {
+    // Compile regexes up front so a bad pattern fails before the network
+    // round-trip. (Config-validate normally catches this earlier.)
+    let compiled = responder
+        .iter()
+        .map(spt_auth::KbiResponder::compile)
+        .collect::<Result<Vec<_>>>()?;
     let mut response = handle
         .authenticate_keyboard_interactive_start(username, None::<String>)
         .await
@@ -418,35 +425,28 @@ async fn try_keyboard_interactive(
             client::KeyboardInteractiveAuthResponse::InfoRequest { prompts, .. } => {
                 let mut answers = Vec::with_capacity(prompts.len());
                 for prompt in prompts {
-                    let prompt_lc = prompt.prompt.to_ascii_lowercase();
-                    let answer = responder
+                    let idx = compiled
                         .iter()
-                        .find(|candidate| {
-                            prompt_lc.contains(&candidate.pattern.to_ascii_lowercase())
-                        })
+                        .position(|re| re.is_match(&prompt.prompt))
                         .ok_or_else(|| {
                             Error::AuthFailed(format!(
                                 "no keyboard-interactive responder matched prompt `{}`",
                                 prompt.prompt
                             ))
                         })?;
-                    if answer.echo != prompt.echo {
+                    let r = &responder[idx];
+                    if r.echo != prompt.echo {
                         warn!(
                             target: "spt_ssh2::russh",
                             prompt = %prompt.prompt,
-                            configured_echo = answer.echo,
+                            configured_echo = r.echo,
                             server_echo = prompt.echo,
                             "keyboard-interactive echo flag mismatch"
                         );
                     }
                     let value = {
                         let refs = backend_refs(&backends);
-                        let bytes = auth::resolve_secret(&refs, &answer.response)?;
-                        std::str::from_utf8(bytes.expose_secret())
-                            .map_err(|_| {
-                                Error::AuthFailed("keyboard-interactive secret is not utf-8".into())
-                            })?
-                            .to_owned()
+                        crate::kbi_bridge::evaluate_answer(&r.answer, &refs)?
                     };
                     answers.push(value);
                 }

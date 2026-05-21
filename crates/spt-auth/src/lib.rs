@@ -17,16 +17,19 @@ pub mod kbi;
 pub mod method;
 pub mod oidc_device_flow;
 pub mod secret_ref;
+pub mod totp;
 pub mod validate;
+pub mod yubikey_oath;
 
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
 
-pub use kbi::KbiAnswer;
-pub use method::{AuthConfig, AuthMethod};
+pub use kbi::{KbiAnswer, KbiResponder};
+pub use method::{check_pubkey_algorithm_allowed, AuthConfig, AuthMethod};
 pub use oidc_device_flow::{
     store_token, DeviceCodeResponse, DiscoveryDocument, OidcDeviceFlowClient, OidcError,
     TokenResponse,
 };
 pub use secret_ref::{SecretRef, SecretRefError};
+pub use totp::TotpAlgo;
 pub use validate::validate;

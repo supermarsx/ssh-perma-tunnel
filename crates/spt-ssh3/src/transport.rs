@@ -538,6 +538,7 @@ mod tests {
             vec![AuthMethod::PublicKey {
                 identity_file: path.clone(),
                 passphrase: None,
+                allow_ssh_rsa_sha1: false,
             }],
         );
         let req = build_connect_request("h.example", 7443, "/ssh3", &auth).unwrap();

@@ -257,6 +257,7 @@ fn translate_methods(profile: &Profile, a: &AuthCfg) -> Result<Vec<AuthMethod>, 
         out.push(AuthMethod::PublicKey {
             identity_file: PathBuf::from(key),
             passphrase,
+            allow_ssh_rsa_sha1: false,
         });
     }
     if a.agent.unwrap_or(false) {

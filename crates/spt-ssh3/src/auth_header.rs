@@ -82,6 +82,7 @@ pub fn build_authorization_header_for(
         if let AuthMethod::PublicKey {
             identity_file,
             passphrase,
+            ..
         } = m
         {
             let pass = passphrase.as_ref().map(resolve_secret).transpose()?;
@@ -327,6 +328,7 @@ mod tests {
             vec![AuthMethod::PublicKey {
                 identity_file: tmp.clone(),
                 passphrase: None,
+                allow_ssh_rsa_sha1: false,
             }],
         );
         let h = build_authorization_header_for(&cfg, "host.example", 7443, "/ssh3").unwrap();
@@ -345,6 +347,7 @@ mod tests {
                     "F:/this/path/should/not/exist/spt-ssh3-missing-key-xyz.pem",
                 ),
                 passphrase: None,
+                allow_ssh_rsa_sha1: false,
             }],
         );
         let err = build_authorization_header_for(&cfg, "h", 1, "/").unwrap_err();

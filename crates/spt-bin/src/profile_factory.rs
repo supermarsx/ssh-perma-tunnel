@@ -363,9 +363,9 @@ fn translate_auth(a: &AuthCfg, username: &str, context: &str) -> Result<Vec<Auth
             let mut methods = vec![AuthMethod::Password { secret }];
             if a.keyboard_interactive.unwrap_or(false) {
                 methods.push(AuthMethod::KeyboardInteractive {
-                    responder: vec![spt_auth::KbiAnswer {
-                        pattern: "password".into(),
-                        response: password()?,
+                    responder: vec![spt_auth::KbiResponder {
+                        prompt_regex: "(?i)password".into(),
+                        answer: spt_auth::KbiAnswer::SecretRef(password()?),
                         echo: false,
                     }],
                 });
@@ -386,14 +386,15 @@ fn translate_auth(a: &AuthCfg, username: &str, context: &str) -> Result<Vec<Auth
                 AuthMethod::PublicKey {
                     identity_file: std::path::PathBuf::from(key),
                     passphrase: passphrase()?,
+                    allow_ssh_rsa_sha1: false,
                 }
             }
         }
         "agent" => AuthMethod::Agent { socket: None },
         "keyboard_interactive" => AuthMethod::KeyboardInteractive {
-            responder: vec![spt_auth::KbiAnswer {
-                pattern: "password".into(),
-                response: password()?,
+            responder: vec![spt_auth::KbiResponder {
+                prompt_regex: "(?i)password".into(),
+                answer: spt_auth::KbiAnswer::SecretRef(password()?),
                 echo: false,
             }],
         },

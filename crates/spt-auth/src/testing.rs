@@ -36,6 +36,7 @@ pub fn auth_config_pubkey(user: &str, key_path: &Path) -> AuthConfig {
         vec![AuthMethod::PublicKey {
             identity_file: PathBuf::from(key_path),
             passphrase: None,
+            allow_ssh_rsa_sha1: false,
         }],
     )
 }
