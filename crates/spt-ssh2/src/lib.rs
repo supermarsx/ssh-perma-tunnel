@@ -23,6 +23,7 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+pub mod agent;
 pub mod auth;
 pub mod connect;
 pub mod crypto;
@@ -44,6 +45,7 @@ pub mod uds_forward;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
 
+pub use agent::Agent;
 pub use crypto::CryptoPolicy;
 pub use protocol::{Ssh2BackendKind, Ssh2Protocol, Ssh2ProtocolBuilder, TrustPolicy};
 pub use session::Ssh2Session;

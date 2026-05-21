@@ -121,6 +121,7 @@ where
                 service: service.clone(),
                 principal: principal.clone(),
                 delegate: *delegate,
+                ..Default::default()
             };
             let _ = spt_auth_sspi::provider_for(&cfg); // result ignored; libssh2 can't drive it
             Err(spt_auth_sspi::unsupported_backend(
@@ -138,6 +139,7 @@ where
                 principal: principal.clone(),
                 delegate: *delegate,
                 allow_ntlm_fallback: *allow_ntlm_fallback,
+                ..Default::default()
             };
             let _ = spt_auth_sspi::sspi_provider_for(&cfg);
             Err(spt_auth_sspi::unsupported_backend(

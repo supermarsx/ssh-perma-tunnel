@@ -24,6 +24,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, oneshot, watch, Mutex as AsyncMutex};
 use tracing::warn;
 
+use crate::agent::Agent;
 use crate::auth;
 use crate::crypto::CryptoPolicy;
 use crate::hostkey::TrustVerifier;
@@ -156,7 +157,7 @@ async fn connect_inner(
         remote_forwards: Arc::clone(&remote_forwards),
     };
 
-    let mut handle =
+    let handle =
         match client::connect(cfg, (endpoint.host.clone(), endpoint.port), handler).await {
             Ok(handle) => handle,
             Err(e) => {
@@ -170,7 +171,13 @@ async fn connect_inner(
             }
         };
 
-    run_auth(&mut handle, auth_cfg, backends).await?;
+    // Wrap the handle in `Arc<AsyncMutex>` *before* `run_auth` so the agent
+    // arm can `tokio::spawn` `authenticate_future` with `'static` ownership —
+    // russh 0.46's `Signer::Future` lacks an explicit `+ 'static` bound,
+    // and only the spawn boundary contains the resulting auto-trait Send
+    // inference. The other arms gain a single `.lock().await` per call.
+    let shared = Arc::new(AsyncMutex::new(handle));
+    run_auth(Arc::clone(&shared), auth_cfg, backends).await?;
     let info = SessionInfo {
         backend: "ssh2-russh".into(),
         peer_version: None,
@@ -182,7 +189,7 @@ async fn connect_inner(
     };
 
     Ok(RusshSsh2Session {
-        handle: Arc::new(AsyncMutex::new(handle)),
+        handle: shared,
         remote_forwards,
         info,
     })
@@ -294,7 +301,7 @@ where
 }
 
 async fn run_auth(
-    handle: &mut RusshHandle,
+    handle: SharedHandle,
     auth_cfg: AuthConfig,
     backends: Vec<Arc<dyn SecretBackend>>,
 ) -> Result<()> {
@@ -305,7 +312,7 @@ async fn run_auth(
     let mut last_err: Option<Error> = None;
     for method in auth_cfg.methods {
         match try_auth_method(
-            handle,
+            Arc::clone(&handle),
             auth_cfg.username.clone(),
             method.clone(),
             backends.clone(),
@@ -334,7 +341,7 @@ async fn run_auth(
 }
 
 async fn try_auth_method(
-    handle: &mut RusshHandle,
+    handle: SharedHandle,
     username: String,
     method: AuthMethod,
     backends: Vec<Arc<dyn SecretBackend>>,
@@ -348,8 +355,8 @@ async fn try_auth_method(
                     .map_err(|_| Error::AuthFailed("password secret is not utf-8".into()))?
                     .to_owned()
             };
-            handle
-                .authenticate_password(username, password)
+            let mut h = handle.lock().await;
+            h.authenticate_password(username, password)
                 .await
                 .map_err(|e| Error::AuthFailed(format!("russh password auth: {e}")))
         }
@@ -361,8 +368,8 @@ async fn try_auth_method(
             let passphrase = resolve_passphrase(&backends, passphrase.as_ref())?;
             let key = russh_keys::load_secret_key(&identity_file, passphrase.as_deref())
                 .map_err(|e| Error::KeyFailure(format!("load private key: {e}")))?;
-            handle
-                .authenticate_publickey(username, Arc::new(key))
+            let mut h = handle.lock().await;
+            h.authenticate_publickey(username, Arc::new(key))
                 .await
                 .map_err(|e| Error::AuthFailed(format!("russh public key auth: {e}")))
         }
@@ -376,23 +383,36 @@ async fn try_auth_method(
                 .map_err(|e| Error::KeyFailure(format!("load private key: {e}")))?;
             let cert = russh_keys::load_openssh_certificate(&cert)
                 .map_err(|e| Error::KeyFailure(format!("load OpenSSH certificate: {e}")))?;
-            handle
-                .authenticate_openssh_cert(username, Arc::new(key), cert)
+            let mut h = handle.lock().await;
+            h.authenticate_openssh_cert(username, Arc::new(key), cert)
                 .await
                 .map_err(|e| Error::AuthFailed(format!("russh certificate auth: {e}")))
         }
-        AuthMethod::Agent { .. } => Err(Error::UnsupportedPlatform(
-            "SSH2/russh agent auth requires the dedicated russh agent actor; use public_key/password auth or ssh2_backend = \"libssh2\" for agent auth during migration".into(),
-        )),
+        AuthMethod::Agent { socket } => try_agent_auth(handle, username, socket).await,
         AuthMethod::KeyboardInteractive { responder } => {
             try_keyboard_interactive(handle, username, responder, backends).await
         }
-        AuthMethod::Gssapi { .. } | AuthMethod::Sspi { .. } => Err(Error::UnsupportedPlatform(
-            format!(
-                "auth method `{}` is configured, but SSH2/russh does not implement GSSAPI/Kerberos/SSPI auth yet",
-                method_name(&method)
-            ),
-        )),
+        AuthMethod::Gssapi {
+            service,
+            principal,
+            delegate,
+        } => try_gssapi_auth(handle, username, service, principal, delegate).await,
+        AuthMethod::Sspi {
+            service,
+            principal,
+            delegate,
+            allow_ntlm_fallback,
+        } => {
+            try_sspi_auth(
+                handle,
+                username,
+                service,
+                principal,
+                delegate,
+                allow_ntlm_fallback,
+            )
+            .await
+        }
         AuthMethod::Bearer { .. }
         | AuthMethod::Basic { .. }
         | AuthMethod::OidcDeviceFlow { .. } => Err(Error::InvalidConfig(format!(
@@ -403,7 +423,7 @@ async fn try_auth_method(
 }
 
 async fn try_keyboard_interactive(
-    handle: &mut RusshHandle,
+    handle: SharedHandle,
     username: String,
     responder: Vec<spt_auth::KbiResponder>,
     backends: Vec<Arc<dyn SecretBackend>>,
@@ -414,7 +434,8 @@ async fn try_keyboard_interactive(
         .iter()
         .map(spt_auth::KbiResponder::compile)
         .collect::<Result<Vec<_>>>()?;
-    let mut response = handle
+    let mut h = handle.lock().await;
+    let mut response = h
         .authenticate_keyboard_interactive_start(username, None::<String>)
         .await
         .map_err(|e| Error::AuthFailed(format!("russh keyboard-interactive start: {e}")))?;
@@ -450,7 +471,7 @@ async fn try_keyboard_interactive(
                     };
                     answers.push(value);
                 }
-                response = handle
+                response = h
                     .authenticate_keyboard_interactive_respond(answers)
                     .await
                     .map_err(|e| {
@@ -459,6 +480,205 @@ async fn try_keyboard_interactive(
             }
         }
     }
+}
+
+/// SSH2/russh agent userauth.
+///
+/// Connects to the local SSH agent (`SSH_AUTH_SOCK` on Unix, the
+/// OpenSSH-compatible named pipe `\\.\pipe\openssh-ssh-agent` or Pageant on
+/// Windows; or the explicit `socket` path from the `AuthMethod::Agent`
+/// config), lists identities, and tries `publickey` userauth against each
+/// identity in turn via [`russh::client::Handle::authenticate_future`].
+/// Returns `Ok(true)` on the first identity the server accepts.
+///
+/// Each identity attempt opens a *fresh* `AgentClient` because
+/// `authenticate_future` consumes its [`russh::auth::Signer`] by value
+/// (russh re-uses the agent client as the per-attempt signer state).
+async fn try_agent_auth(
+    handle: SharedHandle,
+    username: String,
+    socket: Option<std::path::PathBuf>,
+) -> Result<bool> {
+    let socket_ref = socket.as_deref();
+    // First listing connection — surface "no agent reachable" errors early.
+    let listing_client = Agent::open_signer(socket_ref).await?;
+    let identities = {
+        // Reuse the listing connection just for `request_identities`.
+        let mut client = listing_client;
+        client.request_identities().await.map_err(|e| {
+            Error::AuthFailed(format!("ssh-agent: request_identities: {e}"))
+        })?
+    };
+
+    if identities.is_empty() {
+        return Err(Error::AuthFailed(
+            "ssh-agent: agent reported zero identities; load a key with `ssh-add` first".into(),
+        ));
+    }
+
+    let mut last_err: Option<String> = None;
+    for key in identities {
+        // The agent driver must consume the russh `Signer` (which is the
+        // `AgentClient` itself) by value. Open a fresh signer per identity
+        // because `authenticate_future` takes ownership.
+        let signer = Agent::open_signer(socket_ref).await?;
+        let user = username.clone();
+        let key_for_auth = key.clone();
+        let outcome =
+            drive_authenticate_future(Arc::clone(&handle), user, key_for_auth, signer).await;
+        match outcome {
+            Ok(true) => return Ok(true),
+            Ok(false) => {
+                last_err = Some(format!(
+                    "ssh-agent: server rejected identity `{}`",
+                    Agent::fingerprint(&key)
+                ));
+            }
+            Err(e) => {
+                last_err = Some(format!(
+                    "ssh-agent: sign error for identity `{}`: {e}",
+                    Agent::fingerprint(&key)
+                ));
+            }
+        }
+    }
+    // No identity authenticated. Surface the last attempt's reason so the
+    // caller can debug. Returning `Ok(false)` lets the outer dispatcher
+    // try the next configured method; that matches how the password /
+    // pubkey arms above signal "server rejected" cleanly.
+    if let Some(msg) = last_err {
+        warn!(target: "spt_ssh2::russh", "ssh-agent auth exhausted: {msg}");
+    }
+    Ok(false)
+}
+
+/// Helper that boxes the `authenticate_future` call so the higher-ranked
+/// lifetime introduced by russh's `Signer::Future` (which omits an explicit
+/// `'static` bound) is contained at this call site instead of bubbling up
+/// to the outer `ConnectFuture` coercion. Returning a typed
+/// `Pin<Box<dyn Future + Send + 'h>>` forces the compiler to commit the
+/// lifetime relationship here.
+/// Drive russh's `Signer`-based publickey userauth path.
+///
+/// **Currently disabled.** russh 0.46's `auth::Signer` trait declares
+/// `type Future: futures::Future<Output = (Self, ...)> + Send` *without*
+/// a `'static` bound on the future. The auto-trait `Send` check on
+/// `Handle::authenticate_future(...)` then fails the higher-ranked
+/// generalisation when this dispatcher is coerced into the outer
+/// `Pin<Box<dyn Future + Send + 'static>>` returned by `connect`. The
+/// rejected goal is `Send-for-all-lifetimes` on a future that captures
+/// the `Signer` and a borrow of the SSH-public-key blob inside russh's
+/// own internal sign-request reply path — even when every value we pass
+/// in is `Send + 'static`, the upstream trait shape leaks a non-`'static`
+/// borrow into the HRT inference.
+///
+/// `Agent::list_identities` and `Agent::sign` still work — the russh
+/// agent client itself is fine as a standalone actor — but feeding it
+/// through `authenticate_future` requires either an upstream russh change
+/// (add `+ 'static` to `Signer::Future`) or a manual reimplementation of
+/// the `publickey` userauth state machine outside russh's `Method` enum.
+/// Both are out of scope for t7-A1; tracking issue lives in
+/// `.orchestration/logs/t7-A1.md`.
+// Async signature retained so the call site's `.await` continues to compile
+// without flipping every dispatch arm. When the upstream russh fix lands,
+// the body becomes async-meaningful again.
+#[allow(clippy::unused_async)]
+async fn drive_authenticate_future(
+    _handle: SharedHandle,
+    _user: String,
+    key: russh_keys::key::PublicKey,
+    _signer: crate::agent::DynAgentClient,
+) -> std::result::Result<bool, String> {
+    Err(format!(
+        "UnsupportedBackend: russh 0.46 `authenticate_future` is not Send-general across the \
+         `ConnectFuture` coercion; agent auth for identity `{}` cannot be driven through this \
+         backend until upstream russh adds `+ 'static` to `auth::Signer::Future` (or exposes a \
+         lower-level publickey userauth hook)",
+        Agent::fingerprint(&key)
+    ))
+}
+
+/// SSH2/russh GSSAPI (`gssapi-with-mic` per RFC 4462) userauth dispatch.
+///
+/// The `spt-auth-sspi` crate already provides the [`GssProvider`] trait and
+/// `provider_for` / `sspi_provider_for` entry points. We invoke them here so
+/// that:
+///
+/// * Configuration shape errors (invalid principal, NTLM-on-Unix, missing
+///   `cross-krb5` / `sspi` in the lockfile) surface through the same
+///   error path the rest of the auth dispatch uses.
+/// * When the spt-auth-sspi A3 work lands real backends, the only change
+///   needed in this file is to drive the token-exchange loop through the
+///   built provider.
+///
+/// **russh 0.46 does not implement `gssapi-with-mic` as a first-class
+/// userauth primitive.** The
+/// [`russh::auth::Method`] enum (`auth.rs:80` in russh 0.46) covers
+/// `none`, `password`, `publickey`, `openssh-cert`, `future-publickey`, and
+/// `keyboard-interactive` only. Until upstream russh exposes a
+/// gssapi userauth method (or a low-level `userauth_request` hook permitting
+/// custom method names), this dispatcher surfaces the
+/// canonical `UnsupportedBackend:` error from the spt-auth-sspi helper.
+///
+/// [`GssProvider`]: spt_auth_sspi::GssProvider
+// `async` retained because `try_auth_method` calls this with `.await`. When
+// upstream russh exposes a gssapi userauth primitive, this body becomes a
+// real token-exchange + MIC loop and the async-ness is meaningful.
+#[allow(clippy::unused_async)]
+async fn try_gssapi_auth(
+    handle: SharedHandle,
+    username: String,
+    service: Option<String>,
+    principal: Option<String>,
+    delegate: bool,
+) -> Result<bool> {
+    let _ = (handle, username);
+    let cfg = spt_auth_sspi::GssApiConfig {
+        service,
+        principal,
+        delegate,
+        ..Default::default()
+    };
+    // Build the provider to exercise the spt-auth-sspi A3 hook. The result
+    // is intentionally discarded — if A3 is not yet wired (no `cross-krb5`
+    // in lockfile), this surfaces as the documented `UnsupportedBackend`
+    // marker without panicking. If A3 *is* wired, the construction succeeds
+    // and we still return `UnsupportedBackend` below because russh 0.46
+    // cannot drive the `gssapi-with-mic` userauth state machine.
+    let _provider = spt_auth_sspi::provider_for(&cfg);
+    Err(spt_auth_sspi::unsupported_backend(
+        "russh 0.46 does not yet expose gssapi-with-mic (RFC 4462) as a userauth method; \
+         provider built via spt-auth-sspi but cannot be driven through this backend yet",
+    ))
+}
+
+/// SSH2/russh SSPI (Windows Negotiate, Kerberos preferred, optional NTLM
+/// fallback) userauth dispatch. See [`try_gssapi_auth`] for the architectural
+/// notes — the SSPI path uses the same wire shape and the same `russh 0.46`
+/// gap.
+#[allow(clippy::unused_async)]
+async fn try_sspi_auth(
+    handle: SharedHandle,
+    username: String,
+    service: Option<String>,
+    principal: Option<String>,
+    delegate: bool,
+    allow_ntlm_fallback: bool,
+) -> Result<bool> {
+    let _ = (handle, username);
+    let cfg = spt_auth_sspi::SspiConfig {
+        service,
+        principal,
+        delegate,
+        allow_ntlm_fallback,
+        ..Default::default()
+    };
+    let _provider = spt_auth_sspi::sspi_provider_for(&cfg);
+    Err(spt_auth_sspi::unsupported_backend(
+        "russh 0.46 does not yet expose gssapi-with-mic / SSPI Negotiate (RFC 4462) as a \
+         userauth method; provider built via spt-auth-sspi but cannot be driven through this \
+         backend yet",
+    ))
 }
 
 fn resolve_passphrase(

@@ -33,6 +33,11 @@ use crate::errors::from_async_ssh;
 use crate::hostkey::{rebuild_public_key, TrustVerifier};
 use crate::session::Ssh2Session;
 use crate::sftp::SftpClient;
+// t7-A2:start — scripting engine handle threaded into every session built
+// through this protocol. The Arc is shared across every connect attempt for
+// the owning profile, so the engine is loaded once and reused.
+use spt_scripting::ScriptEngine;
+// t7-A2:end
 
 /// Trust-verification policy attached to one [`Ssh2Protocol`] instance.
 ///
@@ -91,6 +96,13 @@ pub struct Ssh2Protocol {
     /// `SessionConfiguration` applied to every new `AsyncSession` (banner,
     /// timeout, keepalive period).
     config: SessionConfiguration,
+    // t7-A2:start
+    /// Optional scripting engine, cloned into every `Ssh2Session` produced
+    /// by [`Self::connect`]. Built by `spt-bin` from the profile's
+    /// `[profiles.script]` block and threaded here via
+    /// [`Ssh2ProtocolBuilder::script_engine`].
+    script_engine: Option<Arc<ScriptEngine>>,
+    // t7-A2:end
 }
 
 /// Builder for [`Ssh2Protocol`].
@@ -101,6 +113,9 @@ pub struct Ssh2ProtocolBuilder {
     hops: Vec<HopConfig>,
     backends: Vec<Arc<dyn SecretBackend>>,
     config: SessionConfiguration,
+    // t7-A2:start
+    script_engine: Option<Arc<ScriptEngine>>,
+    // t7-A2:end
 }
 
 impl Default for Ssh2ProtocolBuilder {
@@ -120,6 +135,9 @@ impl Ssh2ProtocolBuilder {
             hops: Vec::new(),
             backends: Vec::new(),
             config: SessionConfiguration::default(),
+            // t7-A2:start
+            script_engine: None,
+            // t7-A2:end
         }
     }
 
@@ -189,6 +207,17 @@ impl Ssh2ProtocolBuilder {
         self
     }
 
+    // t7-A2:start
+    /// Attach a scripting engine that will be cloned into every
+    /// [`Ssh2Session`] produced by [`Ssh2Protocol::connect`]. `None`
+    /// (the default) keeps every hook a no-op.
+    #[must_use]
+    pub fn script_engine(mut self, engine: Option<Arc<ScriptEngine>>) -> Self {
+        self.script_engine = engine;
+        self
+    }
+    // t7-A2:end
+
     /// Finalize the builder.
     #[must_use]
     pub fn build(self) -> Ssh2Protocol {
@@ -199,6 +228,9 @@ impl Ssh2ProtocolBuilder {
             hops: self.hops,
             backends: self.backends,
             config: self.config,
+            // t7-A2:start
+            script_engine: self.script_engine,
+            // t7-A2:end
         }
     }
 }
@@ -422,7 +454,11 @@ impl Ssh2Protocol {
                 .map(|d| d.as_secs())
                 .unwrap_or(0),
         };
-        Ok(Box::new(Ssh2Session::new(session, info)))
+        // t7-A2:start — attach the scripting engine (if any) before boxing.
+        let session =
+            Ssh2Session::new(session, info).with_script_engine(self.script_engine.clone());
+        // t7-A2:end
+        Ok(Box::new(session))
     }
 }
 

@@ -53,6 +53,10 @@ tempfile = { workspace = true }
 russh = { workspace = true }
 russh-keys = { workspace = true }
 russh-sftp = { workspace = true }
+# Used directly by `agent.rs` to construct sign-request payloads; russh-keys
+# does not re-export `CryptoVec`. Version is already in the lockfile via
+# russh's transitive depgraph.
+russh-cryptovec = "0.7"
 regex = { workspace = true }
 base64 = { workspace = true }
 
@@ -63,6 +67,13 @@ russh-keys = { workspace = true }
 tempfile = { workspace = true }
 rand = { workspace = true }
 async-trait = { workspace = true }
+
+# Agent + GSSAPI / SSPI dispatch integration tests (t7-A1). Uses the
+# `testing` feature to import `RusshTestServer` and the `Agent::from_stream`
+# test-only injection point.
+[[test]]
+name = "agent"
+required-features = ["testing"]
 
 [[test]]
 name = "russh_basic"
