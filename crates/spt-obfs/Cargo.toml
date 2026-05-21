@@ -1,0 +1,55 @@
+[package]
+name = "spt-obfs"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+description = "Pluggable obfuscation transports (obfs4, meek-http, ssh-over-websocket, ssh-over-shadowsocks) for spt SSH backends."
+
+[lints]
+workspace = true
+
+[features]
+default = []
+# When the upstream transport crates land in `Cargo.lock`, flipping `real`
+# (and adding the dep) is the integration knob. Today every transport ships
+# its contract-enforcing stub per the t6-e9 / t6-e7 precedent.
+real-obfs4 = []
+real-tokio-tungstenite = []
+real-blake3-aead2022 = []
+# Exposes the `MockAuditHook` + factories used in cross-crate tests.
+testing = []
+
+[dependencies]
+spt-core = { workspace = true }
+spt-secrets = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+bytes = { workspace = true }
+base64 = { workspace = true }
+hex = { workspace = true }
+parking_lot = { workspace = true }
+# Real cryptographic primitives available today for the Shadowsocks stub's
+# AEAD framing (AES-256-GCM/ChaCha20-Poly1305 packet wrapping). BLAKE3-keyed
+# subkey derivation per AEAD-2022 is gated behind `real-blake3-aead2022`
+# until the crate lands in `Cargo.lock`.
+aes-gcm = { workspace = true }
+hmac = { workspace = true }
+sha2 = { workspace = true }
+rand = { workspace = true }
+subtle = { workspace = true }
+zeroize = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+spt-config = { workspace = true }
+spt-obfs = { path = ".", features = ["testing"] }
