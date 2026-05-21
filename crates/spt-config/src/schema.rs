@@ -999,7 +999,7 @@ pub struct Capabilities {
     /// Require post-quantum SSH key exchange for eligible SSH2 profiles.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub require_post_quantum_kex: Option<bool>,
-    /// Permit dynamic SOCKS/HTTP CONNECT proxy listeners.
+    /// Permit dynamic SOCKS4/SOCKS4A/SOCKS5/HTTP CONNECT proxy listeners.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub allow_dynamic_proxy: Option<bool>,
     /// Permit SFTP operations over SSH.
@@ -1569,6 +1569,10 @@ pub struct Forward {
     /// Per-forward connection cap. §9.14.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_connections: Option<u32>,
+    /// Dynamic proxy protocols accepted by `type = "dynamic"` forwards:
+    /// `all|socks4|socks4a|socks5|http_connect`. Omitted means all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proxy_protocols: Option<Vec<String>>,
     /// Bind conflict policy: `fail|retry|next_port`. §9.14.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on_bind_conflict: Option<String>,

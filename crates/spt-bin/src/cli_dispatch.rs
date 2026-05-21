@@ -521,34 +521,66 @@ fn forward_list(global: &GlobalOpts, args: groups::forward::ForwardList) -> Resu
 }
 
 fn forward_add(global: &GlobalOpts, args: groups::forward::ForwardAdd) -> Result<()> {
-    use groups::forward::ForwardDirection;
-    let (direction, profile, listen, target, transport, max_connections) = match args.direction {
-        ForwardDirection::Local(a) => {
-            let transport = if a.udp { "udp" } else { "tcp" };
-            (
-                "local",
-                a.profile,
-                a.listen,
-                Some(a.to),
-                transport,
-                None::<u32>,
-            )
-        }
-        ForwardDirection::Remote(a) => {
-            let transport = if a.udp { "udp" } else { "tcp" };
-            (
-                "remote",
-                a.profile,
-                a.listen,
-                Some(a.to),
-                transport,
-                None::<u32>,
-            )
-        }
-        ForwardDirection::Dynamic(a) => {
-            ("dynamic", a.profile, a.listen, None, "tcp", a.connections)
-        }
-    };
+    use groups::forward::{DynamicProxyProtocolArg, ForwardDirection};
+    let (direction, profile, listen, target, transport, max_connections, proxy_protocols) =
+        match args.direction {
+            ForwardDirection::Local(a) => {
+                let transport = if a.udp { "udp" } else { "tcp" };
+                (
+                    "local",
+                    a.profile,
+                    a.listen,
+                    Some(a.to),
+                    transport,
+                    None::<u32>,
+                    None::<Vec<String>>,
+                )
+            }
+            ForwardDirection::Remote(a) => {
+                let transport = if a.udp { "udp" } else { "tcp" };
+                (
+                    "remote",
+                    a.profile,
+                    a.listen,
+                    Some(a.to),
+                    transport,
+                    None::<u32>,
+                    None::<Vec<String>>,
+                )
+            }
+            ForwardDirection::Dynamic(a) => {
+                let proxy_protocols = if a.proxy_protocols.is_empty() {
+                    None
+                } else if a
+                    .proxy_protocols
+                    .iter()
+                    .any(|p| matches!(p, DynamicProxyProtocolArg::All))
+                {
+                    Some(vec![
+                        "socks4".into(),
+                        "socks4a".into(),
+                        "socks5".into(),
+                        "http_connect".into(),
+                    ])
+                } else {
+                    Some(
+                        a.proxy_protocols
+                            .into_iter()
+                            .map(dynamic_proxy_protocol_arg)
+                            .collect(),
+                    )
+                };
+                (
+                    "dynamic",
+                    a.profile,
+                    a.listen,
+                    None,
+                    "tcp",
+                    a.connections,
+                    proxy_protocols,
+                )
+            }
+        };
     let path = require_config_path(global)?;
     let raw =
         std::fs::read_to_string(&path).map_err(|e| Error::InvalidConfig(format!("read: {e}")))?;
@@ -580,12 +612,30 @@ fn forward_add(global: &GlobalOpts, args: groups::forward::ForwardAdd) -> Result
         if let Some(max_connections) = max_connections {
             t["max_connections"] = toml_edit::value(i64::from(max_connections));
         }
+        if let Some(proxy_protocols) = proxy_protocols {
+            let mut arr = toml_edit::Array::new();
+            for protocol in proxy_protocols {
+                arr.push(protocol);
+            }
+            t["proxy_protocols"] = toml_edit::value(arr);
+        }
         a.push(t);
         println!("added forward `{profile}/{name}`");
     }
     spt_state::write_atomic_string(&path, &doc.to_string())
         .map_err(|e| Error::InvalidConfig(format!("write: {e}")))?;
     Ok(())
+}
+
+fn dynamic_proxy_protocol_arg(value: groups::forward::DynamicProxyProtocolArg) -> String {
+    match value {
+        groups::forward::DynamicProxyProtocolArg::All => "all",
+        groups::forward::DynamicProxyProtocolArg::Socks4 => "socks4",
+        groups::forward::DynamicProxyProtocolArg::Socks4a => "socks4a",
+        groups::forward::DynamicProxyProtocolArg::Socks5 => "socks5",
+        groups::forward::DynamicProxyProtocolArg::HttpConnect => "http_connect",
+    }
+    .into()
 }
 
 fn forward_remove(global: &GlobalOpts, args: groups::forward::ForwardRef) -> Result<()> {
@@ -4148,11 +4198,16 @@ mod tests {
             "127.0.0.1:1080",
             "--connections",
             "128",
+            "--proxy-protocol",
+            "socks4a",
+            "--proxy-protocol",
+            "http-connect",
         ]);
         dispatch_ok(cli).await;
         let raw = std::fs::read_to_string(cfg).unwrap();
         assert!(raw.contains("type = \"dynamic\""));
         assert!(raw.contains("max_connections = 128"));
+        assert!(raw.contains("proxy_protocols = [\"socks4a\", \"http_connect\"]"));
         assert!(!raw.contains("target = \"\""));
     }
 

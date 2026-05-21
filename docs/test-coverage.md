@@ -39,7 +39,7 @@ Windows acceptance matrix.
 
 | Area | Automated coverage |
 |------|--------------------|
-| SSH2 runtime | `spt-ssh2` russh backend tests cover password/public-key/cert/kbi auth paths, local TCP forwards, remote TCP forwards, dynamic SOCKS5 and HTTP CONNECT proxy forwarding, keepalive, and backend selection policy. |
+| SSH2 runtime | `spt-ssh2` russh backend tests cover password/public-key/cert/kbi auth paths, local TCP forwards, remote TCP forwards, dynamic SOCKS4/SOCKS4A/SOCKS5 and HTTP CONNECT proxy forwarding, keepalive, and backend selection policy. |
 | SSH auth policy | `spt-auth`, `spt-config`, `spt-diagnostics`, and `spt-bin` tests cover declared auth method translation, GSSAPI/Kerberos/SSPI config shape, delegation/NTLM capability gates, and explicit unsupported-runtime diagnostics for Kerberos/SSPI until backend negotiation exists. |
 | SSH crypto policy | `spt-ssh2` classifies deprecated, post-quantum, and ML-KEM KEX names. `spt-config` validates PQ/ML-KEM capability gates and required-PQ policy. `spt-bin` tests assert requested PQ KEX returns an explicit runtime unsupported diagnostic until the transport KEX engines exist. |
 | SFTP | `spt-ssh2` tests cover the russh SFTP client API and unsupported libssh2 diagnostics. `spt-config` validates `[[profiles.sftp_mounts]]` capability gates, drive-letter policy, and cache modes. `spt-bin` tests cover mount/drive config mutation and planning surfaces. |

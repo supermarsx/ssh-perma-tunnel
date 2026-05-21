@@ -78,8 +78,9 @@ where
 
 /// Open a client-side dynamic TCP proxy listener.
 ///
-/// The listener accepts SOCKS5 CONNECT and HTTP CONNECT requests. Each request
-/// opens a fresh SSH `direct-tcpip` channel to the target chosen by the client.
+/// The listener accepts SOCKS4, SOCKS4A, SOCKS5, and HTTP CONNECT requests.
+/// Each request opens a fresh SSH `direct-tcpip` channel to the target chosen
+/// by the client.
 pub async fn open_dynamic<S>(
     session: Arc<Mutex<AsyncSession<S>>>,
     spec: &DynamicForwardSpec,
@@ -100,8 +101,12 @@ where
     let id = ForwardId::new();
     let name = spec.name.clone();
     let max = spec.max_connections;
-    let allow_socks5 = spec.allow_socks5;
-    let allow_http_connect = spec.allow_http_connect;
+    let protocols = dynamic::DynamicProxyProtocolSet {
+        socks4: spec.allow_socks4,
+        socks4a: spec.allow_socks4a,
+        socks5: spec.allow_socks5,
+        http_connect: spec.allow_http_connect,
+    };
 
     tokio::spawn(dynamic_loop(
         listener,
@@ -110,8 +115,7 @@ where
         close_rx,
         max,
         name.clone(),
-        allow_socks5,
-        allow_http_connect,
+        protocols,
     ));
 
     Ok(ForwardHandle::new(id, name, state_rx, close_tx))
@@ -175,8 +179,7 @@ async fn dynamic_loop<S>(
     mut close_rx: oneshot::Receiver<()>,
     max: Option<u32>,
     name: String,
-    allow_socks5: bool,
-    allow_http_connect: bool,
+    protocols: dynamic::DynamicProxyProtocolSet,
 ) where
     S: AsyncSessionStream + Send + Sync + 'static,
 {
@@ -207,7 +210,7 @@ async fn dynamic_loop<S>(
                 active.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 let name_t = name.clone();
                 tokio::spawn(async move {
-                    if let Err(e) = bridge_dynamic(session, sock, allow_socks5, allow_http_connect).await {
+                    if let Err(e) = bridge_dynamic(session, sock, protocols).await {
                         warn!(target: "spt_ssh2::forward", forward = %name_t, error = %e, "dynamic proxy connection failed");
                     }
                     active.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
@@ -281,13 +284,12 @@ where
 async fn bridge_dynamic<S>(
     session: Arc<Mutex<AsyncSession<S>>>,
     mut sock: TcpStream,
-    allow_socks5: bool,
-    allow_http_connect: bool,
+    protocols: dynamic::DynamicProxyProtocolSet,
 ) -> Result<()>
 where
     S: AsyncSessionStream + Send + Sync + 'static,
 {
-    let request = dynamic::read_request(&mut sock, allow_socks5, allow_http_connect).await?;
+    let request = dynamic::read_request(&mut sock, protocols).await?;
     let channel = {
         let s = session.lock().clone();
         s.channel_direct_tcpip(&request.target.host, request.target.port, None)

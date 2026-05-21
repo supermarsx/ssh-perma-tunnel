@@ -1,4 +1,4 @@
-//! SOCKS5 and HTTP CONNECT parsing for SSH2 dynamic forwards.
+//! SOCKS4, SOCKS4A, SOCKS5, and HTTP CONNECT parsing for SSH2 dynamic forwards.
 
 use spt_core::{Error, Result};
 use spt_protocol::TargetAddr;
@@ -6,6 +6,13 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
 const MAX_HTTP_CONNECT_HEADER: usize = 16 * 1024;
+const SOCKS4_VERSION: u8 = 0x04;
+const SOCKS4_CONNECT: u8 = 0x01;
+const SOCKS4_REPLY_VERSION: u8 = 0x00;
+const SOCKS4_GRANTED: u8 = 0x5a;
+const SOCKS4_REJECTED: u8 = 0x5b;
+const MAX_SOCKS4_USER_ID: usize = 1024;
+const MAX_SOCKS4_DOMAIN: usize = 255;
 const SOCKS5_VERSION: u8 = 0x05;
 const SOCKS5_NO_AUTH: u8 = 0x00;
 const SOCKS5_CONNECT: u8 = 0x01;
@@ -16,10 +23,27 @@ const SOCKS5_ATYP_IPV6: u8 = 0x04;
 /// Client proxy protocol detected on a dynamic forward listener.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DynamicProxyProtocol {
+    /// SOCKS4 CONNECT with an IPv4 target.
+    Socks4,
+    /// SOCKS4A CONNECT with remote DNS.
+    Socks4a,
     /// SOCKS5 CONNECT.
     Socks5,
     /// HTTP/1.x CONNECT.
     HttpConnect,
+}
+
+/// Enabled proxy protocols for one dynamic listener.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct DynamicProxyProtocolSet {
+    /// Accept SOCKS4 CONNECT requests with IPv4 targets.
+    pub(crate) socks4: bool,
+    /// Accept SOCKS4A CONNECT requests with remote DNS targets.
+    pub(crate) socks4a: bool,
+    /// Accept SOCKS5 CONNECT requests.
+    pub(crate) socks5: bool,
+    /// Accept HTTP CONNECT requests.
+    pub(crate) http_connect: bool,
 }
 
 /// Parsed client request for one dynamic proxy connection.
@@ -31,11 +55,11 @@ pub(crate) struct DynamicProxyRequest {
     pub(crate) protocol: DynamicProxyProtocol,
 }
 
-/// Read and parse one SOCKS5 or HTTP CONNECT request from `sock`.
+/// Read and parse one SOCKS4, SOCKS4A, SOCKS5, or HTTP CONNECT request from
+/// `sock`.
 pub(crate) async fn read_request(
     sock: &mut TcpStream,
-    allow_socks5: bool,
-    allow_http_connect: bool,
+    protocols: DynamicProxyProtocolSet,
 ) -> Result<DynamicProxyRequest> {
     let mut first = [0_u8; 1];
     let n = sock
@@ -49,16 +73,23 @@ pub(crate) async fn read_request(
     }
 
     match first[0] {
-        SOCKS5_VERSION if allow_socks5 => read_socks5(sock).await,
+        SOCKS4_VERSION if protocols.socks4 || protocols.socks4a => read_socks4(sock, protocols).await,
+        SOCKS4_VERSION => {
+            let _ = write_socks4_reply(sock, false).await;
+            Err(Error::UnsupportedPlatform(
+                "SOCKS4/SOCKS4A are disabled for this dynamic forward".into(),
+            ))
+        }
+        SOCKS5_VERSION if protocols.socks5 => read_socks5(sock).await,
         SOCKS5_VERSION => Err(Error::UnsupportedPlatform(
             "SOCKS5 is disabled for this dynamic forward".into(),
         )),
-        b'C' | b'c' if allow_http_connect => read_http_connect(sock).await,
+        b'C' | b'c' if protocols.http_connect => read_http_connect(sock).await,
         b'C' | b'c' => Err(Error::UnsupportedPlatform(
             "HTTP CONNECT is disabled for this dynamic forward".into(),
         )),
         other => Err(Error::InvalidConfig(format!(
-            "dynamic proxy expected SOCKS5 or HTTP CONNECT, got first byte 0x{other:02x}"
+            "dynamic proxy expected SOCKS4/SOCKS4A/SOCKS5 or HTTP CONNECT, got first byte 0x{other:02x}"
         ))),
     }
 }
@@ -69,6 +100,9 @@ pub(crate) async fn reply_success(
     protocol: DynamicProxyProtocol,
 ) -> Result<()> {
     match protocol {
+        DynamicProxyProtocol::Socks4 | DynamicProxyProtocol::Socks4a => {
+            write_socks4_reply(sock, true).await?;
+        }
         DynamicProxyProtocol::Socks5 => {
             sock.write_all(&[
                 SOCKS5_VERSION,
@@ -100,6 +134,9 @@ pub(crate) async fn reply_failure(
     protocol: DynamicProxyProtocol,
 ) -> Result<()> {
     match protocol {
+        DynamicProxyProtocol::Socks4 | DynamicProxyProtocol::Socks4a => {
+            write_socks4_reply(sock, false).await?;
+        }
         DynamicProxyProtocol::Socks5 => {
             sock.write_all(&[
                 SOCKS5_VERSION,
@@ -123,6 +160,110 @@ pub(crate) async fn reply_failure(
         }
     }
     Ok(())
+}
+
+async fn write_socks4_reply(sock: &mut TcpStream, granted: bool) -> Result<()> {
+    let status = if granted {
+        SOCKS4_GRANTED
+    } else {
+        SOCKS4_REJECTED
+    };
+    sock.write_all(&[SOCKS4_REPLY_VERSION, status, 0, 0, 0, 0, 0, 0])
+        .await
+        .map_err(|e| Error::RuntimeFailure(format!("SOCKS4 reply: {e}")))
+}
+
+async fn read_socks4(
+    sock: &mut TcpStream,
+    protocols: DynamicProxyProtocolSet,
+) -> Result<DynamicProxyRequest> {
+    let mut head = [0_u8; 8];
+    sock.read_exact(&mut head)
+        .await
+        .map_err(|e| Error::RuntimeFailure(format!("SOCKS4 request header: {e}")))?;
+    if head[0] != SOCKS4_VERSION {
+        return Err(Error::InvalidConfig(
+            "SOCKS4 request version mismatch".into(),
+        ));
+    }
+    if head[1] != SOCKS4_CONNECT {
+        let _ = write_socks4_reply(sock, false).await;
+        return Err(Error::UnsupportedPlatform(
+            "SOCKS4 dynamic forward supports CONNECT only".into(),
+        ));
+    }
+
+    let port = u16::from_be_bytes([head[2], head[3]]);
+    if port == 0 {
+        let _ = write_socks4_reply(sock, false).await;
+        return Err(Error::InvalidConfig(
+            "SOCKS4 target port cannot be zero".into(),
+        ));
+    }
+    let octets = [head[4], head[5], head[6], head[7]];
+    let _user_id = read_cstring(sock, "SOCKS4 user id", MAX_SOCKS4_USER_ID).await?;
+
+    let socks4a = octets[0] == 0 && octets[1] == 0 && octets[2] == 0 && octets[3] != 0;
+    if socks4a {
+        let domain = read_cstring(sock, "SOCKS4A domain", MAX_SOCKS4_DOMAIN).await?;
+        if domain.is_empty() {
+            let _ = write_socks4_reply(sock, false).await;
+            return Err(Error::InvalidConfig(
+                "SOCKS4A domain cannot be empty".into(),
+            ));
+        }
+        if !protocols.socks4a {
+            let _ = write_socks4_reply(sock, false).await;
+            return Err(Error::UnsupportedPlatform(
+                "SOCKS4A is disabled for this dynamic forward".into(),
+            ));
+        }
+        let Ok(host) = String::from_utf8(domain) else {
+            let _ = write_socks4_reply(sock, false).await;
+            return Err(Error::InvalidConfig("SOCKS4A domain is not UTF-8".into()));
+        };
+        return Ok(DynamicProxyRequest {
+            target: TargetAddr::new(host, port),
+            protocol: DynamicProxyProtocol::Socks4a,
+        });
+    }
+
+    if octets == [0, 0, 0, 0] {
+        let _ = write_socks4_reply(sock, false).await;
+        return Err(Error::InvalidConfig(
+            "SOCKS4 IPv4 target cannot be 0.0.0.0".into(),
+        ));
+    }
+    if !protocols.socks4 {
+        let _ = write_socks4_reply(sock, false).await;
+        return Err(Error::UnsupportedPlatform(
+            "SOCKS4 is disabled for this dynamic forward".into(),
+        ));
+    }
+
+    Ok(DynamicProxyRequest {
+        target: TargetAddr::new(std::net::Ipv4Addr::from(octets).to_string(), port),
+        protocol: DynamicProxyProtocol::Socks4,
+    })
+}
+
+async fn read_cstring(sock: &mut TcpStream, label: &str, max: usize) -> Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    loop {
+        let byte = sock
+            .read_u8()
+            .await
+            .map_err(|e| Error::RuntimeFailure(format!("{label}: {e}")))?;
+        if byte == 0 {
+            return Ok(bytes);
+        }
+        if bytes.len() >= max {
+            return Err(Error::InvalidConfig(format!(
+                "{label} exceeded {max} bytes before NUL terminator"
+            )));
+        }
+        bytes.push(byte);
+    }
 }
 
 async fn read_socks5(sock: &mut TcpStream) -> Result<DynamicProxyRequest> {
@@ -315,6 +456,15 @@ mod tests {
         (client, server)
     }
 
+    fn all_protocols() -> DynamicProxyProtocolSet {
+        DynamicProxyProtocolSet {
+            socks4: true,
+            socks4a: true,
+            socks5: true,
+            http_connect: true,
+        }
+    }
+
     #[tokio::test]
     async fn parses_http_connect_target_and_replies() {
         let (mut client, mut server) = loopback_pair().await;
@@ -323,7 +473,7 @@ mod tests {
             .await
             .unwrap();
 
-        let request = read_request(&mut server, true, true).await.unwrap();
+        let request = read_request(&mut server, all_protocols()).await.unwrap();
         assert_eq!(request.protocol, DynamicProxyProtocol::HttpConnect);
         assert_eq!(request.target.host, "example.com");
         assert_eq!(request.target.port, 443);
@@ -346,7 +496,7 @@ mod tests {
             .await
             .unwrap();
 
-        let request = read_request(&mut server, true, true).await.unwrap();
+        let request = read_request(&mut server, all_protocols()).await.unwrap();
         assert_eq!(request.protocol, DynamicProxyProtocol::Socks5);
         assert_eq!(request.target.host, "example.com");
         assert_eq!(request.target.port, 443);
@@ -356,6 +506,75 @@ mod tests {
         client.read_exact(&mut response).await.unwrap();
         assert_eq!(&response[..2], &[0x05, 0x00]);
         assert_eq!(&response[2..], &[0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0]);
+    }
+
+    #[tokio::test]
+    async fn parses_socks4_ipv4_target_and_replies() {
+        let (mut client, mut server) = loopback_pair().await;
+        client
+            .write_all(&[
+                0x04, 0x01, 0x01, 0xbb, 192, 0, 2, 10, b'u', b's', b'e', b'r', 0x00,
+            ])
+            .await
+            .unwrap();
+
+        let request = read_request(&mut server, all_protocols()).await.unwrap();
+        assert_eq!(request.protocol, DynamicProxyProtocol::Socks4);
+        assert_eq!(request.target.host, "192.0.2.10");
+        assert_eq!(request.target.port, 443);
+        reply_success(&mut server, request.protocol).await.unwrap();
+
+        let mut response = [0_u8; 8];
+        client.read_exact(&mut response).await.unwrap();
+        assert_eq!(response, [0x00, 0x5a, 0, 0, 0, 0, 0, 0]);
+    }
+
+    #[tokio::test]
+    async fn parses_socks4a_domain_target_and_replies() {
+        let (mut client, mut server) = loopback_pair().await;
+        client
+            .write_all(&[
+                0x04, 0x01, 0x00, 0x50, 0, 0, 0, 1, 0x00, b'e', b'x', b'a', b'm', b'p', b'l', b'e',
+                b'.', b'c', b'o', b'm', 0x00,
+            ])
+            .await
+            .unwrap();
+
+        let request = read_request(&mut server, all_protocols()).await.unwrap();
+        assert_eq!(request.protocol, DynamicProxyProtocol::Socks4a);
+        assert_eq!(request.target.host, "example.com");
+        assert_eq!(request.target.port, 80);
+        reply_success(&mut server, request.protocol).await.unwrap();
+
+        let mut response = [0_u8; 8];
+        client.read_exact(&mut response).await.unwrap();
+        assert_eq!(response, [0x00, 0x5a, 0, 0, 0, 0, 0, 0]);
+    }
+
+    #[tokio::test]
+    async fn rejects_disabled_socks4a_after_parsing_domain() {
+        let (mut client, mut server) = loopback_pair().await;
+        client
+            .write_all(&[0x04, 0x01, 0x00, 0x50, 0, 0, 0, 1, 0x00, b'e', b'x', 0x00])
+            .await
+            .unwrap();
+
+        let err = read_request(
+            &mut server,
+            DynamicProxyProtocolSet {
+                socks4: true,
+                socks4a: false,
+                socks5: true,
+                http_connect: true,
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, Error::UnsupportedPlatform(_)));
+
+        let mut response = [0_u8; 8];
+        client.read_exact(&mut response).await.unwrap();
+        assert_eq!(response, [0x00, 0x5b, 0, 0, 0, 0, 0, 0]);
     }
 
     #[test]

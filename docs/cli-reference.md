@@ -77,8 +77,9 @@ surfaces, completion support, and exit-code contract.
   hosts return `UnsupportedPlatform` for policy writes. The
   `Capabilities.AllowGpoPolicyWrites` policy can disable those writes.
 - `[capabilities]` gates the new production feature families: russh SSH2
-  backend selection, GSSAPI/SSPI, PQ/ML-KEM KEX, SOCKS/HTTP CONNECT, SFTP,
-  filesystem and Windows drive mounts, Windows Event Log, and GPO writes.
+  backend selection, GSSAPI/SSPI, PQ/ML-KEM KEX,
+  SOCKS4/SOCKS4A/SOCKS5/HTTP CONNECT, SFTP, filesystem and Windows drive
+  mounts, Windows Event Log, and GPO writes.
 - `[profiles.auth] method = "gssapi" | "kerberos" | "sspi" | "negotiate"`
   is validated and translated into explicit auth methods. The current SSH2
   backends return unsupported-feature diagnostics for Kerberos/SSPI runtime

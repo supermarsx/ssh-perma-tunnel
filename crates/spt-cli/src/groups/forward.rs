@@ -1,6 +1,6 @@
 //! `spt forward` — manage forwards.
 
-use clap::{Args, Subcommand};
+use clap::{Args, Subcommand, ValueEnum};
 
 const EXAMPLES: &str = "EXAMPLES:
   spt forward add local --profile edge --listen 127.0.0.1:5432 --to db:5432 --tcp
@@ -78,7 +78,7 @@ pub enum ForwardDirection {
     Local(ForwardAddArgs),
     /// Remote forward (`-R`).
     Remote(ForwardAddArgs),
-    /// Dynamic SOCKS5/HTTP CONNECT proxy (`-D`).
+    /// Dynamic SOCKS4/SOCKS4A/SOCKS5/HTTP CONNECT proxy (`-D`).
     Dynamic(ForwardAddDynamicArgs),
 }
 
@@ -114,6 +114,25 @@ pub struct ForwardAddDynamicArgs {
     /// Per-forward concurrent connection limit.
     #[arg(long, value_name = "N")]
     pub connections: Option<u32>,
+    /// Proxy protocol to accept. Repeat to select a subset; default accepts all.
+    #[arg(long = "proxy-protocol", value_enum, value_name = "PROTO")]
+    pub proxy_protocols: Vec<DynamicProxyProtocolArg>,
+}
+
+/// Accepted dynamic proxy protocols.
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum DynamicProxyProtocolArg {
+    /// Accept every supported dynamic proxy protocol.
+    All,
+    /// SOCKS4 with IPv4 targets.
+    Socks4,
+    /// SOCKS4A with remote DNS targets.
+    Socks4a,
+    /// SOCKS5 CONNECT.
+    Socks5,
+    /// HTTP CONNECT.
+    #[value(alias = "http_connect", alias = "http")]
+    HttpConnect,
 }
 
 /// `<profile>/<forward>` shorthand argument.

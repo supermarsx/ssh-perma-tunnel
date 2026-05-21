@@ -59,9 +59,9 @@ pub struct RemoteForwardSpec {
 
 /// Specification for a client-side dynamic TCP proxy.
 ///
-/// The local listener accepts SOCKS5 and HTTP CONNECT requests. Each accepted
-/// request selects its own remote target, which the SSH backend dials through a
-/// fresh direct TCP channel.
+/// The local listener accepts SOCKS4, SOCKS4A, SOCKS5, and HTTP CONNECT
+/// requests. Each accepted request selects its own remote target, which the SSH
+/// backend dials through a fresh direct TCP channel.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DynamicForwardSpec {
     /// User-facing forward name.
@@ -71,6 +71,10 @@ pub struct DynamicForwardSpec {
     /// Optional max concurrent proxy connections.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_connections: Option<u32>,
+    /// Accept SOCKS4 CONNECT requests with IPv4 targets.
+    pub allow_socks4: bool,
+    /// Accept SOCKS4A CONNECT requests with remote DNS targets.
+    pub allow_socks4a: bool,
     /// Accept SOCKS5 CONNECT requests.
     pub allow_socks5: bool,
     /// Accept HTTP CONNECT requests.

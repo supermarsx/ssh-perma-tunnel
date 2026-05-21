@@ -150,6 +150,9 @@ pub struct ForwardView {
     pub bind_interface: Option<String>,
     /// Canonical target.
     pub target: String,
+    /// Dynamic proxy protocols accepted by this forward.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub proxy_protocols: Option<Vec<String>>,
     /// `local`, `remote`, `previous-hop`, or `auto` (default).
     pub target_resolve: String,
     /// DNS names registered for this forward.
@@ -255,7 +258,10 @@ fn build_view(profile: &Profile, fwd: &Forward) -> ForwardView {
         .or_else(|| fwd.connect.clone())
         .unwrap_or_else(|| {
             if fwd.kind == "dynamic" {
-                "per-request SOCKS5/HTTP CONNECT target".to_owned()
+                format!(
+                    "per-request {} target",
+                    dynamic_proxy_protocols(fwd).join("/")
+                )
             } else {
                 "?".to_owned()
             }
@@ -296,6 +302,7 @@ fn build_view(profile: &Profile, fwd: &Forward) -> ForwardView {
         bind_mode: fwd.bind_mode.clone(),
         bind_interface: fwd.bind_interface.clone(),
         target: canonical_target,
+        proxy_protocols: (fwd.kind == "dynamic").then(|| dynamic_proxy_protocols(fwd)),
         target_resolve: fwd
             .target_resolve
             .clone()
@@ -309,6 +316,43 @@ fn build_view(profile: &Profile, fwd: &Forward) -> ForwardView {
         health,
         required: fwd.required,
         on_bind_conflict: fwd.on_bind_conflict.clone(),
+    }
+}
+
+fn dynamic_proxy_protocols(fwd: &Forward) -> Vec<String> {
+    let Some(values) = fwd.proxy_protocols.as_ref() else {
+        return vec![
+            "socks4".into(),
+            "socks4a".into(),
+            "socks5".into(),
+            "http_connect".into(),
+        ];
+    };
+    if values
+        .iter()
+        .any(|value| normalize_proxy_protocol(value) == Some("all"))
+    {
+        return vec![
+            "socks4".into(),
+            "socks4a".into(),
+            "socks5".into(),
+            "http_connect".into(),
+        ];
+    }
+    values
+        .iter()
+        .filter_map(|value| normalize_proxy_protocol(value).map(str::to_owned))
+        .collect()
+}
+
+fn normalize_proxy_protocol(value: &str) -> Option<&'static str> {
+    match value.trim().to_ascii_lowercase().replace('-', "_").as_str() {
+        "all" => Some("all"),
+        "socks4" => Some("socks4"),
+        "socks4a" => Some("socks4a"),
+        "socks5" => Some("socks5"),
+        "http" | "connect" | "http_connect" => Some("http_connect"),
+        _ => None,
     }
 }
 
@@ -436,6 +480,9 @@ fn print_human(v: &ForwardView) {
         push(&mut out, "bind_interface", i);
     }
     push(&mut out, "target", &v.target);
+    if let Some(protocols) = &v.proxy_protocols {
+        push(&mut out, "proxy_protocols", &protocols.join(", "));
+    }
     push(&mut out, "target_resolve", &v.target_resolve);
     if !v.dns_names.is_empty() {
         push(&mut out, "dns_names", &v.dns_names.join(", "));
@@ -584,8 +631,20 @@ fn render_narrative(v: &ForwardView, profile: &Profile) -> String {
         _ => "an SSH forward channel",
     };
     if v.direction == "dynamic" {
+        let protocols = v
+            .proxy_protocols
+            .clone()
+            .unwrap_or_else(|| {
+                vec![
+                    "socks4".into(),
+                    "socks4a".into(),
+                    "socks5".into(),
+                    "http_connect".into(),
+                ]
+            })
+            .join(", ");
         out.push_str(&format!(
-            "  - Each accepted {proto_upper} proxy connection speaks SOCKS5 or HTTP CONNECT,\n    opens {channel_kind} through the `{}` session.\n",
+            "  - Each accepted {proto_upper} proxy connection speaks one of: {protocols};\n    opens {channel_kind} through the `{}` session.\n",
             v.profile
         ));
     } else {

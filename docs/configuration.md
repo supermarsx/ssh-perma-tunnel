@@ -169,7 +169,7 @@ bindings.
     allow_post_quantum_kex = true
     allow_ml_kem = true
     require_post_quantum_kex = false
-    allow_dynamic_proxy = true      # SOCKS / HTTP CONNECT listeners
+    allow_dynamic_proxy = true      # SOCKS4/SOCKS4A/SOCKS5/HTTP CONNECT listeners
     allow_sftp = true
     allow_filesystem_mounts = true
     allow_windows_drive_mounts = true
@@ -180,9 +180,10 @@ bindings.
 The production SSH2 target is the pure-Rust `russh` backend. `libssh2` is kept
 as a legacy migration value only and validation warns when it is selected.
 The current `russh` runtime supports password, public-key, certificate, and
-keyboard-interactive auth plus local TCP, remote TCP, and dynamic SOCKS5/HTTP
-CONNECT proxy forwarding. SSH agent auth and multi-hop chains still return
-explicit unsupported-feature diagnostics on the `russh` path; select
+keyboard-interactive auth plus local TCP, remote TCP, and dynamic
+SOCKS4/SOCKS4A/SOCKS5/HTTP CONNECT proxy forwarding. SSH agent auth and
+multi-hop chains still return explicit unsupported-feature diagnostics on the
+`russh` path; select
 `ssh2_backend = "libssh2"` only for those migration cases and keep
 `allow_libssh2 = true`.
 `require_post_quantum_kex` requires `allow_post_quantum_kex = true`; Windows
@@ -313,6 +314,7 @@ Dynamic proxy listener:
     transport = "tcp"
     bind = "127.0.0.1:1080"
     max_connections = 128
+    proxy_protocols = ["socks4", "socks4a", "socks5", "http_connect"]
 
 See [Profiles](profiles.md), [Forwards](forwards.md), and
 [Authentication](auth.md) for the per-profile sub-tables.

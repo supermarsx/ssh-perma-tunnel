@@ -13,7 +13,7 @@
 //!   [`spt_trust::Sha256HostPin`] (whichever the profile selects, both
 //!   supported).
 //! * Local TCP forwards (`direct-tcpip`), remote TCP forwards
-//!   (`tcpip-forward` + `forwarded-tcpip`), dynamic SOCKS5/HTTP CONNECT
+//!   (`tcpip-forward` + `forwarded-tcpip`), dynamic SOCKS4/SOCKS4A/SOCKS5/HTTP CONNECT
 //!   proxy listeners, and multi-hop chains via per-hop `direct-tcpip`
 //!   channels promoted to the next session's transport.
 //! * Periodic keepalive driver (`keepalive_send`).

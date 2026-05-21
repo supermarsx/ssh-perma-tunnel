@@ -21,8 +21,9 @@ pub trait TunnelSession: Send + Sync {
 
     /// Open a client-side dynamic TCP proxy listener.
     ///
-    /// Backends that support this accept SOCKS5 and/or HTTP CONNECT on the
-    /// listener and open one direct TCP channel per requested target.
+    /// Backends that support this accept SOCKS4, SOCKS4A, SOCKS5, and/or HTTP
+    /// CONNECT on the listener and open one direct TCP channel per requested
+    /// target.
     async fn open_dynamic_forward(&mut self, spec: &DynamicForwardSpec) -> Result<ForwardHandle>;
 
     /// Open a UDP forward (SSH3 only — backends without UDP capability return

@@ -18,7 +18,7 @@ status column calls that out.
 | Terminal access, terminal recording, remote exec | Gap / non-goal pending decision | No `sexec`/`stermc` equivalent. This should stay out unless the product scope expands beyond permanent tunnels, SFTP operations, and service management. |
 | Local TCP forwarding | Parity target implemented | SSH2/russh and forwarding runner cover local TCP forwards. |
 | Remote TCP forwarding, server-to-client direction | Parity target implemented | `remote` forwards are implemented and tested for server-originated connections back to a local target. |
-| Dynamic proxy forwarding | Partial parity | `spt` supports SOCKS5 and HTTP CONNECT over SSH2/russh. Bitvise also lists SOCKS4/SOCKS4A. |
+| Dynamic proxy forwarding | Parity target implemented | `spt` supports SOCKS4, SOCKS4A, SOCKS5, and HTTP CONNECT over SSH2/russh with config/CLI protocol selection. |
 | UDP forwarding | Differentiator with SSH3 | `spt` supports UDP through SSH3/QUIC capability gates. SSH2 UDP remains unsupported by protocol design. |
 | Server-side Unix socket forwarding | Gap | `spt` parses Unix bind addresses in core types but forward targets reject Unix sockets today. |
 | Centrally managed server-side forwarding rules | Partial / different model | `spt` uses config, remote config, MCP guarded reload, and GPO-style policy. It does not mirror Bitvise Server central rule management. |
@@ -73,9 +73,8 @@ and secure file operations" rather than GUI parity:
 2. Runtime ML-KEM hybrid KEX support in the pure-Rust SSH2 backend.
 3. SFTP recursive/resume/mirror/check-file operations.
 4. Real SFTP mount/drive execution through platform helpers.
-5. SOCKS4/SOCKS4A if compatibility with older proxy-aware apps is required.
-6. FTP-to-SFTP bridge if legacy FTP client support is in scope.
-7. Algorithm-by-algorithm SSH2 crypto acceptance tests.
+5. FTP-to-SFTP bridge if legacy FTP client support is in scope.
+6. Algorithm-by-algorithm SSH2 crypto acceptance tests.
 
 ## Deliberate Non-Goals Unless Scope Changes
 
@@ -96,6 +95,7 @@ rows to release reports:
   negotiates successfully or returns a documented unsupported diagnostic.
 - SFTP transfer matrix: single file, recursive, resume, mirror, integrity
   check, large file, permission failure, interrupted transfer, and retry.
-- Dynamic proxy matrix: SOCKS5, HTTP CONNECT, and, if implemented, SOCKS4/4A.
+- Dynamic proxy matrix: SOCKS4, SOCKS4A, SOCKS5, HTTP CONNECT, protocol
+  allowlist subsets, disabled-protocol failures, and max-connection limits.
 - Windows file-system integration matrix: WinFsp drive mapping install,
   mount, read, write, reconnect, unmount, service account, and policy-denied.

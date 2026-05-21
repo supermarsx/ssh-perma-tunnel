@@ -1463,6 +1463,11 @@ _arguments "${_arguments_options[@]}" : \
 '--profile=[Owning profile name]:PROFILE:_default' \
 '--listen=[Local proxy listen address (\`host\:port\` or \`\[\:\:1\]\:port\`)]:ADDR:PORT:_default' \
 '--connections=[Per-forward concurrent connection limit]:N:_default' \
+'*--proxy-protocol=[Proxy protocol to accept. Repeat to select a subset; default accepts all]:PROTO:((all\:"Accept every supported dynamic proxy protocol"
+socks4\:"SOCKS4 with IPv4 targets"
+socks4a\:"SOCKS4A with remote DNS targets"
+socks5\:"SOCKS5 CONNECT"
+http-connect\:"HTTP CONNECT"))' \
 '--config=[Path to a single config file]:PATH:_files' \
 '--config-dir=[Path to a directory of \`*.toml\` configs (loaded in lexical order)]:PATH:_files' \
 '--config-url=[HTTPS URL of a remote config to fetch]:URL:_default' \
@@ -11661,7 +11666,7 @@ _spt__forward__add_commands() {
     local commands; commands=(
 'local:Local forward (\`-L\`)' \
 'remote:Remote forward (\`-R\`)' \
-'dynamic:Dynamic SOCKS5/HTTP CONNECT proxy (\`-D\`)' \
+'dynamic:Dynamic SOCKS4/SOCKS4A/SOCKS5/HTTP CONNECT proxy (\`-D\`)' \
 'help:Print this message or the help of the given subcommand(s)' \
     )
     _describe -t commands 'spt forward add commands' commands "$@"
@@ -11676,7 +11681,7 @@ _spt__forward__add__help_commands() {
     local commands; commands=(
 'local:Local forward (\`-L\`)' \
 'remote:Remote forward (\`-R\`)' \
-'dynamic:Dynamic SOCKS5/HTTP CONNECT proxy (\`-D\`)' \
+'dynamic:Dynamic SOCKS4/SOCKS4A/SOCKS5/HTTP CONNECT proxy (\`-D\`)' \
 'help:Print this message or the help of the given subcommand(s)' \
     )
     _describe -t commands 'spt forward add help commands' commands "$@"
@@ -11735,7 +11740,7 @@ _spt__forward__help__add_commands() {
     local commands; commands=(
 'local:Local forward (\`-L\`)' \
 'remote:Remote forward (\`-R\`)' \
-'dynamic:Dynamic SOCKS5/HTTP CONNECT proxy (\`-D\`)' \
+'dynamic:Dynamic SOCKS4/SOCKS4A/SOCKS5/HTTP CONNECT proxy (\`-D\`)' \
     )
     _describe -t commands 'spt forward help add commands' commands "$@"
 }
@@ -12349,7 +12354,7 @@ _spt__help__forward__add_commands() {
     local commands; commands=(
 'local:Local forward (\`-L\`)' \
 'remote:Remote forward (\`-R\`)' \
-'dynamic:Dynamic SOCKS5/HTTP CONNECT proxy (\`-D\`)' \
+'dynamic:Dynamic SOCKS4/SOCKS4A/SOCKS5/HTTP CONNECT proxy (\`-D\`)' \
     )
     _describe -t commands 'spt help forward add commands' commands "$@"
 }

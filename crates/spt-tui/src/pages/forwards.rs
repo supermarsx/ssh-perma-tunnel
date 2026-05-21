@@ -17,11 +17,11 @@ use spt_config::schema::{Forward, Profile};
 
 use crate::model::Model;
 use crate::pages::field::{
-    opt_bool, opt_choice, opt_text, opt_u32, FieldDef, FieldList, FieldValue,
+    opt_bool, opt_choice, opt_multi, opt_text, opt_u32, FieldDef, FieldList, FieldValue,
 };
 use crate::pages::Page;
 
-const KIND: &[&str] = &["local", "remote"];
+const KIND: &[&str] = &["local", "remote", "dynamic"];
 const TRANSPORT: &[&str] = &["tcp", "udp"];
 const BIND_MODE: &[&str] = &[
     "loopback",
@@ -30,6 +30,7 @@ const BIND_MODE: &[&str] = &[
     "all_interfaces",
     "auto_interface",
 ];
+const PROXY_PROTOCOLS: &[&str] = &["socks4", "socks4a", "socks5", "http_connect"];
 
 /// Forwards list page.
 pub struct ForwardsPage {
@@ -206,6 +207,22 @@ fn forward_fields(idx: usize) -> Vec<FieldDef> {
                 }
             },
         ),
+        opt_multi(
+            "proxy_protocols",
+            "Dynamic proxy protocols (empty = all)",
+            PROXY_PROTOCOLS,
+            move |p| {
+                p.forwards
+                    .get(i)
+                    .and_then(|f| f.proxy_protocols.clone())
+                    .unwrap_or_default()
+            },
+            move |p, v| {
+                if let Some(f) = p.forwards.get_mut(i) {
+                    f.proxy_protocols = if v.is_empty() { None } else { Some(v) };
+                }
+            },
+        ),
         opt_u32(
             "max_packets_per_second",
             "UDP packet rate (SSH3)",
@@ -232,12 +249,22 @@ impl Page for ForwardsPage {
             .forwards
             .iter()
             .map(|f| {
+                let target = if f.kind == "dynamic" {
+                    f.proxy_protocols
+                        .clone()
+                        .unwrap_or_else(|| {
+                            PROXY_PROTOCOLS.iter().map(|s| (*s).to_owned()).collect()
+                        })
+                        .join(",")
+                } else {
+                    f.target.clone().unwrap_or_else(|| "-".into())
+                };
                 ListItem::new(format!(
                     "{:>8} {:>5}  {} → {}",
                     f.kind,
                     f.transport,
                     f.bind.clone().unwrap_or_else(|| "-".into()),
-                    f.target.clone().unwrap_or_else(|| "-".into())
+                    target
                 ))
             })
             .collect();
@@ -260,7 +287,7 @@ impl Page for ForwardsPage {
         if let Some(ed) = self.editor.as_mut() {
             ed.fields.render(chunks[1], buf, model.profile());
         } else if let Some(f) = model.profile().forwards.get(self.selected) {
-            let lines = vec![
+            let mut lines = vec![
                 Line::from(format!("name:           {}", f.name)),
                 Line::from(format!("type:           {}", f.kind)),
                 Line::from(format!("transport:      {}", f.transport)),
@@ -272,6 +299,20 @@ impl Page for ForwardsPage {
                     "target:         {}",
                     f.target.clone().unwrap_or_default()
                 )),
+            ];
+            if f.kind == "dynamic" {
+                lines.push(Line::from(format!(
+                    "proxy_protocols: {}",
+                    f.proxy_protocols
+                        .clone()
+                        .unwrap_or_else(|| PROXY_PROTOCOLS
+                            .iter()
+                            .map(|s| (*s).to_owned())
+                            .collect())
+                        .join(", ")
+                )));
+            }
+            lines.extend([
                 Line::from(format!(
                     "bind_mode:      {}",
                     f.bind_mode.clone().unwrap_or_default()
@@ -280,7 +321,7 @@ impl Page for ForwardsPage {
                     "expose:         {}",
                     f.expose.map(|b| b.to_string()).unwrap_or_default()
                 )),
-            ];
+            ]);
             let block = Block::default().borders(Borders::ALL).title("Detail");
             Paragraph::new(lines).block(block).render(chunks[1], buf);
         } else {
@@ -471,10 +512,10 @@ protocol = "ssh2"
     #[test]
     fn editor_field_count() {
         let fields = forward_fields(0);
-        // 11 fields: name, type, transport, bind, target, bind_mode,
+        // 12 fields: name, type, transport, bind, target, bind_mode,
         //   bind_interface, expose, idle_timeout, max_connections,
-        //   max_packets_per_second.
-        assert_eq!(fields.len(), 11);
+        //   proxy_protocols, max_packets_per_second.
+        assert_eq!(fields.len(), 12);
     }
 
     #[test]

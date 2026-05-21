@@ -275,8 +275,8 @@ SHA-256 pins are also supported via `[profiles.trust]` — see
 
 - **Remote dynamic proxy listeners.** OpenSSH's `-D` opens a local SOCKS
   proxy. `spt` supports the local equivalent with `type = "dynamic"` on
-  SSH2/russh and also accepts HTTP CONNECT on that listener. `spt` does
-  not expose a server-side dynamic proxy listener.
+  SSH2/russh and accepts SOCKS4, SOCKS4A, SOCKS5, and HTTP CONNECT on that
+  listener. `spt` does not expose a server-side dynamic proxy listener.
 - **`ProxyCommand` arbitrary executable.** `spt` reaches the remote
   via `direct-tcpip` channels through declared hops; it does not
   shell out to an arbitrary `ProxyCommand`. (Bridges like

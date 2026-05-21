@@ -8354,7 +8354,7 @@ _spt() {
             return 0
             ;;
         spt__forward__add__dynamic)
-            opts="-q -v -h -V --profile --listen --connections --config --config-dir --config-url --config-fingerprint --state-dir --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --profile --listen --connections --proxy-protocol --config --config-dir --config-url --config-fingerprint --state-dir --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -8370,6 +8370,10 @@ _spt() {
                     ;;
                 --connections)
                     COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --proxy-protocol)
+                    COMPREPLY=($(compgen -W "all socks4 socks4a socks5 http-connect" -- "${cur}"))
                     return 0
                     ;;
                 --config)

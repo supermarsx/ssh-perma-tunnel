@@ -48,14 +48,14 @@ There is no graphical interface, web console, REST API, or background control so
 The tool MUST NOT attempt to provide:
 
 - SSH1 support.
-- Telnet, raw TLS, WireGuard, OpenVPN, SOCKS, or generic proxy tunneling outside SSH2 or SSH3.
+- Telnet, raw TLS, WireGuard, OpenVPN, or generic proxy tunneling outside SSH2 or SSH3.
 - A GUI, tray application, browser UI, or mobile UI.
 - A persistent REST, GraphQL, gRPC, or WebSocket management API.
 - A general SSH client replacement for interactive shells, file copy, SCP, SFTP, or remote command execution.
 - A general SSH server.
 - Full VPN semantics, TUN/TAP devices, network routes, or transparent packet interception.
 - Plaintext secret storage in config files, state files, logs, command histories, or generated examples.
-- SOCKS4, SOCKS4a, SOCKS5, HTTP CONNECT proxy mode, or browser proxy features.
+- Browser proxy features outside explicit SSH2 dynamic port forwarding.
 
 ## 4. Protocol Scope
 
@@ -63,7 +63,9 @@ Capability policy:
 
 - Capabilities listed in this specification are required product capabilities unless explicitly marked as an out-of-scope non-goal.
 - If a required product capability depends on a remote SSH server or SSH3 peer capability, the CLI MUST implement local support and fail with a clear `unsupported_feature` diagnostic when the peer cannot negotiate it.
-- SOCKS/dynamic proxy support remains out of scope even though many SSH clients provide it.
+- Dynamic proxy support is scoped to explicit SSH2 client-side dynamic port
+  forwards. It MUST accept SOCKS4, SOCKS4A, SOCKS5, and HTTP CONNECT when
+  enabled by capability policy.
 
 ### 4.1 SSH2
 
@@ -80,6 +82,7 @@ Required SSH2 capabilities:
 - Host key verification using OpenSSH-compatible `known_hosts`.
 - Local TCP forwarding.
 - Remote TCP forwarding.
+- Dynamic TCP proxy forwarding over SSH2 `direct-tcpip`.
 - Multiple forwards over a single SSH session.
 - Keepalive and reconnect handling.
 - Jump-host chains using SSH2 TCP forwarding.
@@ -95,7 +98,8 @@ Required SSH2 capabilities:
 SSH2 limitations:
 
 - UDP forwarding is not part of standard SSH2 forwarding and MUST NOT be advertised as an SSH2 capability.
-- SOCKS and dynamic proxy forwarding are not supported.
+- Dynamic proxy forwarding is supported for SOCKS4, SOCKS4A, SOCKS5, and HTTP
+  CONNECT over SSH2 `direct-tcpip`.
 - SSH agent forwarding is out of scope for tunnel operation and MUST be disabled by default.
 - X11 forwarding is out of scope.
 - PTY allocation and shell sessions are out of scope.
@@ -1564,7 +1568,11 @@ Requirements:
 - Interface auto-binding MUST support preferences by interface name, interface alias, CIDR, route to target, interface type, or explicit priority list.
 - Remote forwards MUST require an explicit `bind`.
 - UDP forwards MUST require `protocol = "ssh3"` and negotiated datagram support.
-- SOCKS and dynamic forwarding MUST NOT be supported.
+- Dynamic forwards MUST require `protocol = "ssh2"`, `transport = "tcp"`, and
+  `[capabilities].allow_dynamic_proxy = true`.
+- Dynamic forwards MUST accept a configurable subset of `socks4`, `socks4a`,
+  `socks5`, and `http_connect`; omitting the subset means all supported
+  protocols are accepted.
 - Privileged local ports MUST produce a clear permission error and remediation hint.
 - `listen` and `connect` are user-friendly aliases for `bind` and `target`; rendered config MUST normalize to canonical fields.
 - `dns_names` MUST create internal DNS records when `[dns].auto_records = true`.
@@ -1629,7 +1637,8 @@ Requirements:
 - `spt forward explain` MUST show plain-language direction, listener, target, DNS behavior, SNI guidance, limits, and failover behavior.
 - `spt forward add` MUST accept friendly flags such as `--listen`, `--to`, `--tcp`, `--udp`, `--dns-name`, and `--sni-name`.
 - Validation errors MUST name the exact forward and explain whether the problem is a local bind, remote bind, DNS, protocol, limit, or trust issue.
-- SOCKS and dynamic proxy forwarding MUST be rejected with a clear message that this tool only supports explicit SSH2/SSH3 tunnel forwards.
+- Dynamic proxy forwarding MUST reject unsupported proxy protocols with a clear
+  message and MUST continue to reject UDP dynamic forwards.
 
 ### 10.4 UDP Forwarding
 

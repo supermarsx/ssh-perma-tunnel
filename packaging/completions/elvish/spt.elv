@@ -912,7 +912,7 @@ set edit:completion:arg-completer[spt] = {|@words|
             cand --version 'Print version'
             cand local 'Local forward (`-L`)'
             cand remote 'Remote forward (`-R`)'
-            cand dynamic 'Dynamic SOCKS5/HTTP CONNECT proxy (`-D`)'
+            cand dynamic 'Dynamic SOCKS4/SOCKS4A/SOCKS5/HTTP CONNECT proxy (`-D`)'
             cand help 'Print this message or the help of the given subcommand(s)'
         }
         &'spt;forward;add;local'= {
@@ -971,6 +971,7 @@ set edit:completion:arg-completer[spt] = {|@words|
             cand --profile 'Owning profile name'
             cand --listen 'Local proxy listen address (`host:port` or `[::1]:port`)'
             cand --connections 'Per-forward concurrent connection limit'
+            cand --proxy-protocol 'Proxy protocol to accept. Repeat to select a subset; default accepts all'
             cand --config 'Path to a single config file'
             cand --config-dir 'Path to a directory of `*.toml` configs (loaded in lexical order)'
             cand --config-url 'HTTPS URL of a remote config to fetch'
@@ -994,7 +995,7 @@ set edit:completion:arg-completer[spt] = {|@words|
         &'spt;forward;add;help'= {
             cand local 'Local forward (`-L`)'
             cand remote 'Remote forward (`-R`)'
-            cand dynamic 'Dynamic SOCKS5/HTTP CONNECT proxy (`-D`)'
+            cand dynamic 'Dynamic SOCKS4/SOCKS4A/SOCKS5/HTTP CONNECT proxy (`-D`)'
             cand help 'Print this message or the help of the given subcommand(s)'
         }
         &'spt;forward;add;help;local'= {
@@ -1116,7 +1117,7 @@ set edit:completion:arg-completer[spt] = {|@words|
         &'spt;forward;help;add'= {
             cand local 'Local forward (`-L`)'
             cand remote 'Remote forward (`-R`)'
-            cand dynamic 'Dynamic SOCKS5/HTTP CONNECT proxy (`-D`)'
+            cand dynamic 'Dynamic SOCKS4/SOCKS4A/SOCKS5/HTTP CONNECT proxy (`-D`)'
         }
         &'spt;forward;help;add;local'= {
         }
@@ -5787,7 +5788,7 @@ set edit:completion:arg-completer[spt] = {|@words|
         &'spt;help;forward;add'= {
             cand local 'Local forward (`-L`)'
             cand remote 'Remote forward (`-R`)'
-            cand dynamic 'Dynamic SOCKS5/HTTP CONNECT proxy (`-D`)'
+            cand dynamic 'Dynamic SOCKS4/SOCKS4A/SOCKS5/HTTP CONNECT proxy (`-D`)'
         }
         &'spt;help;forward;add;local'= {
         }

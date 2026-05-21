@@ -118,7 +118,7 @@ pub fn remote_forward_spec(port: u16) -> RemoteForwardSpec {
 /// # #[cfg(feature = "testing")] fn _doc() {
 /// use spt_protocol::testing::dynamic_forward_spec;
 /// let s = dynamic_forward_spec(1080);
-/// assert!(s.allow_socks5 && s.allow_http_connect);
+/// assert!(s.allow_socks4 && s.allow_socks4a && s.allow_socks5 && s.allow_http_connect);
 /// # }
 /// ```
 #[must_use]
@@ -127,6 +127,8 @@ pub fn dynamic_forward_spec(port: u16) -> DynamicForwardSpec {
         name: format!("dynamic-{port}"),
         listen: loopback_v4(port),
         max_connections: None,
+        allow_socks4: true,
+        allow_socks4a: true,
         allow_socks5: true,
         allow_http_connect: true,
     }

@@ -17,7 +17,8 @@ pub struct ProtocolCapabilities {
     pub local_udp: bool,
     /// Can request server-listener UDP forwards.
     pub remote_udp: bool,
-    /// Can open client-side SOCKS5/HTTP CONNECT dynamic TCP proxy listeners.
+    /// Can open client-side SOCKS4/SOCKS4A/SOCKS5/HTTP CONNECT dynamic TCP
+    /// proxy listeners.
     pub dynamic_tcp: bool,
     /// Supports tunnelling through one or more intermediate hops (jump hosts).
     pub multi_hop: bool,

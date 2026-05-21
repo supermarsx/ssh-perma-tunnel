@@ -3,7 +3,7 @@
 A forward is a single accept-and-relay rule attached to a profile. `spt`
 supports local TCP, remote TCP, and UDP forwards (UDP only via SSH3 since
 SSH2 has no UDP channel type). SSH2/russh also supports dynamic TCP proxy
-listeners for SOCKS5 and HTTP CONNECT.
+listeners for SOCKS4, SOCKS4A, SOCKS5, and HTTP CONNECT.
 
 ## Local TCP (`type = "local"`)
 
@@ -31,9 +31,10 @@ tunneled back through and connected to the local target.
 
 ## Dynamic TCP Proxy (`type = "dynamic"`)
 
-Listens locally and accepts SOCKS5 CONNECT or HTTP CONNECT. Each client
-request chooses its own remote target, and `spt` opens an SSH2 `direct-tcpip`
-channel to that target. This is controlled by `allow_dynamic_proxy`.
+Listens locally and accepts SOCKS4, SOCKS4A, SOCKS5 CONNECT, or HTTP CONNECT.
+Each client request chooses its own remote target, and `spt` opens an SSH2
+`direct-tcpip` channel to that target. This is controlled by
+`allow_dynamic_proxy`.
 
     [capabilities]
     allow_dynamic_proxy = true
@@ -44,10 +45,17 @@ channel to that target. This is controlled by `allow_dynamic_proxy`.
     transport = "tcp"
     bind = "127.0.0.1:1080"
     max_connections = 128
+    proxy_protocols = ["socks4", "socks4a", "socks5", "http_connect"]
 
 CLI:
 
     spt forward add dynamic --profile edge --listen 127.0.0.1:1080 --connections 128
+    spt forward add dynamic --profile edge --listen 127.0.0.1:1080 --proxy-protocol socks5 --proxy-protocol http-connect
+
+`proxy_protocols` is optional. When omitted, the listener accepts every
+supported dynamic proxy protocol. Use a subset when compatibility policy
+requires it. SOCKS4A and SOCKS5 domain-name requests are forwarded by hostname
+so the SSH server side performs target DNS resolution.
 
 ## UDP (SSH3 only)
 

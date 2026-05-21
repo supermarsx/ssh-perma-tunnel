@@ -95,6 +95,8 @@ async fn russh_backend_dynamic_forward_bridges_socks5_to_direct_tcpip() {
             name: "dynamic-proxy".into(),
             listen: BindAddr::parse(&format!("127.0.0.1:{port}")).unwrap(),
             max_connections: Some(4),
+            allow_socks4: true,
+            allow_socks4a: true,
             allow_socks5: true,
             allow_http_connect: true,
         })
@@ -132,6 +134,91 @@ async fn russh_backend_dynamic_forward_bridges_socks5_to_direct_tcpip() {
 }
 
 #[tokio::test]
+async fn russh_backend_dynamic_forward_bridges_socks4_to_direct_tcpip() {
+    let (server, mut session) = connect_russh_session().await;
+    let port = free_loopback_port().await;
+
+    let handle = session
+        .open_dynamic_forward(&DynamicForwardSpec {
+            name: "dynamic-socks4-proxy".into(),
+            listen: BindAddr::parse(&format!("127.0.0.1:{port}")).unwrap(),
+            max_connections: Some(4),
+            allow_socks4: true,
+            allow_socks4a: true,
+            allow_socks5: true,
+            allow_http_connect: true,
+        })
+        .await
+        .expect("open dynamic forward");
+
+    let mut sock = TcpStream::connect(("127.0.0.1", port))
+        .await
+        .expect("connect dynamic forward");
+    sock.write_all(&[
+        0x04, 0x01, 0x00, 0x07, 192, 0, 2, 10, b'u', b's', b'e', b'r', 0x00,
+    ])
+    .await
+    .expect("write SOCKS4 connect");
+
+    let mut reply = [0_u8; 8];
+    sock.read_exact(&mut reply)
+        .await
+        .expect("read SOCKS4 reply");
+    assert_eq!(&reply[..2], &[0x00, 0x5a]);
+
+    sock.write_all(b"s4!!").await.expect("write payload");
+    let mut echoed = [0_u8; 4];
+    sock.read_exact(&mut echoed).await.expect("read echo");
+    assert_eq!(&echoed, b"s4!!");
+
+    handle.close().await;
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn russh_backend_dynamic_forward_bridges_socks4a_to_direct_tcpip() {
+    let (server, mut session) = connect_russh_session().await;
+    let port = free_loopback_port().await;
+
+    let handle = session
+        .open_dynamic_forward(&DynamicForwardSpec {
+            name: "dynamic-socks4a-proxy".into(),
+            listen: BindAddr::parse(&format!("127.0.0.1:{port}")).unwrap(),
+            max_connections: Some(4),
+            allow_socks4: true,
+            allow_socks4a: true,
+            allow_socks5: true,
+            allow_http_connect: true,
+        })
+        .await
+        .expect("open dynamic forward");
+
+    let mut sock = TcpStream::connect(("127.0.0.1", port))
+        .await
+        .expect("connect dynamic forward");
+    sock.write_all(&[
+        0x04, 0x01, 0x00, 0x07, 0, 0, 0, 1, 0x00, b's', b'e', b'r', b'v', b'e', b'r', b'-', b's',
+        b'i', b'd', b'e', b'-', b'e', b'c', b'h', b'o', 0x00,
+    ])
+    .await
+    .expect("write SOCKS4A connect");
+
+    let mut reply = [0_u8; 8];
+    sock.read_exact(&mut reply)
+        .await
+        .expect("read SOCKS4A reply");
+    assert_eq!(&reply[..2], &[0x00, 0x5a]);
+
+    sock.write_all(b"s4a!").await.expect("write payload");
+    let mut echoed = [0_u8; 4];
+    sock.read_exact(&mut echoed).await.expect("read echo");
+    assert_eq!(&echoed, b"s4a!");
+
+    handle.close().await;
+    server.shutdown().await;
+}
+
+#[tokio::test]
 async fn russh_backend_dynamic_forward_bridges_http_connect_to_direct_tcpip() {
     let (server, mut session) = connect_russh_session().await;
     let port = free_loopback_port().await;
@@ -141,6 +228,8 @@ async fn russh_backend_dynamic_forward_bridges_http_connect_to_direct_tcpip() {
             name: "dynamic-http-proxy".into(),
             listen: BindAddr::parse(&format!("127.0.0.1:{port}")).unwrap(),
             max_connections: Some(4),
+            allow_socks4: true,
+            allow_socks4a: true,
             allow_socks5: true,
             allow_http_connect: true,
         })

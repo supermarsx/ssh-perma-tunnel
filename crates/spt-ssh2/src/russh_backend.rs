@@ -519,6 +519,12 @@ async fn open_dynamic(handle: SharedHandle, spec: &DynamicForwardSpec) -> Result
     let (close_tx, close_rx) = oneshot::channel();
     let id = ForwardId::new();
     let name = spec.name.clone();
+    let protocols = crate::dynamic::DynamicProxyProtocolSet {
+        socks4: spec.allow_socks4,
+        socks4a: spec.allow_socks4a,
+        socks5: spec.allow_socks5,
+        http_connect: spec.allow_http_connect,
+    };
     tokio::spawn(dynamic_loop(
         listener,
         handle,
@@ -526,8 +532,7 @@ async fn open_dynamic(handle: SharedHandle, spec: &DynamicForwardSpec) -> Result
         close_rx,
         spec.max_connections,
         name.clone(),
-        spec.allow_socks5,
-        spec.allow_http_connect,
+        protocols,
     ));
     Ok(ForwardHandle::new(id, name, state_rx, close_tx))
 }
@@ -585,8 +590,7 @@ async fn dynamic_loop(
     mut close_rx: oneshot::Receiver<()>,
     max_connections: Option<u32>,
     name: String,
-    allow_socks5: bool,
-    allow_http_connect: bool,
+    protocols: crate::dynamic::DynamicProxyProtocolSet,
 ) {
     let _ = state_tx.send(ForwardState::Active);
     let active = Arc::new(std::sync::atomic::AtomicU32::new(0));
@@ -612,7 +616,7 @@ async fn dynamic_loop(
                 let active = Arc::clone(&active);
                 let name = name.clone();
                 tokio::spawn(async move {
-                    if let Err(e) = bridge_dynamic(handle, sock, peer, allow_socks5, allow_http_connect).await {
+                    if let Err(e) = bridge_dynamic(handle, sock, peer, protocols).await {
                         warn!(target: "spt_ssh2::russh", forward = %name, error = %e, "dynamic bridge failed");
                     }
                     active.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
@@ -653,10 +657,9 @@ async fn bridge_dynamic(
     handle: SharedHandle,
     mut sock: TcpStream,
     peer: SocketAddr,
-    allow_socks5: bool,
-    allow_http_connect: bool,
+    protocols: crate::dynamic::DynamicProxyProtocolSet,
 ) -> Result<()> {
-    let request = crate::dynamic::read_request(&mut sock, allow_socks5, allow_http_connect).await?;
+    let request = crate::dynamic::read_request(&mut sock, protocols).await?;
     let channel = {
         let handle = handle.lock().await;
         handle

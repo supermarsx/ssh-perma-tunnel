@@ -213,7 +213,7 @@ impl TunnelSession for Ssh3Session {
 
     async fn open_dynamic_forward(&mut self, _spec: &DynamicForwardSpec) -> Result<ForwardHandle> {
         Err(Error::UnsupportedPlatform(
-            "SSH3 dynamic SOCKS/HTTP CONNECT proxy listeners are not implemented; use an SSH2/russh profile for dynamic proxying".into(),
+            "SSH3 dynamic SOCKS4/SOCKS4A/SOCKS5/HTTP CONNECT proxy listeners are not implemented; use an SSH2/russh profile for dynamic proxying".into(),
         ))
     }
 

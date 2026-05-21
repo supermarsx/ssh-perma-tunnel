@@ -1448,6 +1448,80 @@ fn check_non_empty_string(d: &mut Diagnostics, value: Option<&str>, path: String
     }
 }
 
+fn check_dynamic_proxy_protocols(d: &mut Diagnostics, f: &Forward, prefix: &str) {
+    let Some(values) = f.proxy_protocols.as_ref() else {
+        return;
+    };
+    if values.is_empty() {
+        d.push(
+            Diagnostic::error(
+                "dynamic_proxy_protocols_empty",
+                format!(
+                    "dynamic forward `{}` proxy_protocols cannot be empty",
+                    f.name
+                ),
+            )
+            .at(format!("{prefix}.proxy_protocols")),
+        );
+        return;
+    }
+
+    let mut seen = Vec::<String>::new();
+    for (idx, value) in values.iter().enumerate() {
+        let Some(canonical) = normalize_dynamic_proxy_protocol(value) else {
+            d.push(
+                Diagnostic::error(
+                    "dynamic_proxy_protocol_invalid",
+                    format!(
+                        "dynamic forward `{}` has unknown proxy protocol `{value}`",
+                        f.name
+                    ),
+                )
+                .at(format!("{prefix}.proxy_protocols[{idx}]")),
+            );
+            continue;
+        };
+        if seen.iter().any(|seen| seen == canonical) {
+            d.push(
+                Diagnostic::warning(
+                    "dynamic_proxy_protocol_duplicate",
+                    format!(
+                        "dynamic forward `{}` lists proxy protocol `{canonical}` more than once",
+                        f.name
+                    ),
+                )
+                .at(format!("{prefix}.proxy_protocols[{idx}]")),
+            );
+        } else {
+            seen.push(canonical.to_owned());
+        }
+    }
+
+    if seen.iter().any(|value| value == "all") && seen.len() > 1 {
+        d.push(
+            Diagnostic::warning(
+                "dynamic_proxy_protocol_all_overrides",
+                format!(
+                    "dynamic forward `{}` lists `all`; other proxy_protocols are redundant",
+                    f.name
+                ),
+            )
+            .at(format!("{prefix}.proxy_protocols")),
+        );
+    }
+}
+
+fn normalize_dynamic_proxy_protocol(value: &str) -> Option<&'static str> {
+    match value.trim().to_ascii_lowercase().replace('-', "_").as_str() {
+        "all" => Some("all"),
+        "socks4" => Some("socks4"),
+        "socks4a" => Some("socks4a"),
+        "socks5" => Some("socks5"),
+        "http" | "http_connect" | "connect" => Some("http_connect"),
+        _ => None,
+    }
+}
+
 #[allow(clippy::many_single_char_names)]
 fn check_forward(
     d: &mut Diagnostics,
@@ -1495,7 +1569,7 @@ fn check_forward(
                 Diagnostic::error(
                     "dynamic_forward_requires_ssh2",
                     format!(
-                        "dynamic forward `{}` requires profile protocol `ssh2` (SOCKS/HTTP CONNECT over SSH2 direct-tcpip)",
+                        "dynamic forward `{}` requires profile protocol `ssh2` (SOCKS4/SOCKS4A/SOCKS5/HTTP CONNECT over SSH2 direct-tcpip)",
                         f.name
                     ),
                 )
@@ -1522,13 +1596,25 @@ fn check_forward(
                 Diagnostic::warning(
                     "dynamic_forward_ignores_target",
                     format!(
-                        "dynamic forward `{}` chooses targets per SOCKS/HTTP CONNECT request; remove target/connect",
+                        "dynamic forward `{}` chooses targets per SOCKS4/SOCKS4A/SOCKS5/HTTP CONNECT request; remove target/connect",
                         f.name
                     ),
                 )
                 .at(format!("{prefix}.target")),
             );
         }
+        check_dynamic_proxy_protocols(d, f, &prefix);
+    } else if f.proxy_protocols.is_some() {
+        d.push(
+            Diagnostic::error(
+                "dynamic_proxy_protocols_require_dynamic_forward",
+                format!(
+                    "forward `{}` sets proxy_protocols but is not a dynamic forward",
+                    f.name
+                ),
+            )
+            .at(format!("{prefix}.proxy_protocols")),
+        );
     }
     if f.transport == "udp" && protocol != "ssh3" {
         d.push(
@@ -1902,6 +1988,77 @@ mod tests {
         let (c, _) = load_str(raw, false).unwrap();
         let d = validate(&c);
         assert!(d.is_ok(), "errors: {:?}", d.errors);
+    }
+
+    #[test]
+    fn dynamic_forward_accepts_proxy_protocol_selection() {
+        let raw = r#"
+            version = 1
+            [capabilities]
+            allow_dynamic_proxy = true
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            [[profiles.forwards]]
+            name = "proxy"
+            type = "dynamic"
+            transport = "tcp"
+            bind = "127.0.0.1:1080"
+            proxy_protocols = ["socks4", "socks4a", "socks5", "http_connect"]
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(d.is_ok(), "errors: {:?}", d.errors);
+    }
+
+    #[test]
+    fn dynamic_forward_rejects_bad_proxy_protocol() {
+        let raw = r#"
+            version = 1
+            [capabilities]
+            allow_dynamic_proxy = true
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            [[profiles.forwards]]
+            name = "proxy"
+            type = "dynamic"
+            transport = "tcp"
+            bind = "127.0.0.1:1080"
+            proxy_protocols = ["socks6"]
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(d
+            .errors
+            .iter()
+            .any(|e| e.code == "dynamic_proxy_protocol_invalid"));
+    }
+
+    #[test]
+    fn proxy_protocols_require_dynamic_forward() {
+        let raw = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            [[profiles.forwards]]
+            name = "web"
+            type = "local"
+            transport = "tcp"
+            bind = "127.0.0.1:8080"
+            target = "web:80"
+            proxy_protocols = ["socks5"]
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(d
+            .errors
+            .iter()
+            .any(|e| e.code == "dynamic_proxy_protocols_require_dynamic_forward"));
     }
 
     #[test]

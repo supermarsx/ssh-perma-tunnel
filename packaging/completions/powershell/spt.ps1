@@ -979,7 +979,7 @@ Register-ArgumentCompleter -Native -CommandName 'spt' -ScriptBlock {
             [CompletionResult]::new('--version', '--version', [CompletionResultType]::ParameterName, 'Print version')
             [CompletionResult]::new('local', 'local', [CompletionResultType]::ParameterValue, 'Local forward (`-L`)')
             [CompletionResult]::new('remote', 'remote', [CompletionResultType]::ParameterValue, 'Remote forward (`-R`)')
-            [CompletionResult]::new('dynamic', 'dynamic', [CompletionResultType]::ParameterValue, 'Dynamic SOCKS5/HTTP CONNECT proxy (`-D`)')
+            [CompletionResult]::new('dynamic', 'dynamic', [CompletionResultType]::ParameterValue, 'Dynamic SOCKS4/SOCKS4A/SOCKS5/HTTP CONNECT proxy (`-D`)')
             [CompletionResult]::new('help', 'help', [CompletionResultType]::ParameterValue, 'Print this message or the help of the given subcommand(s)')
             break
         }
@@ -1041,6 +1041,7 @@ Register-ArgumentCompleter -Native -CommandName 'spt' -ScriptBlock {
             [CompletionResult]::new('--profile', '--profile', [CompletionResultType]::ParameterName, 'Owning profile name')
             [CompletionResult]::new('--listen', '--listen', [CompletionResultType]::ParameterName, 'Local proxy listen address (`host:port` or `[::1]:port`)')
             [CompletionResult]::new('--connections', '--connections', [CompletionResultType]::ParameterName, 'Per-forward concurrent connection limit')
+            [CompletionResult]::new('--proxy-protocol', '--proxy-protocol', [CompletionResultType]::ParameterName, 'Proxy protocol to accept. Repeat to select a subset; default accepts all')
             [CompletionResult]::new('--config', '--config', [CompletionResultType]::ParameterName, 'Path to a single config file')
             [CompletionResult]::new('--config-dir', '--config-dir', [CompletionResultType]::ParameterName, 'Path to a directory of `*.toml` configs (loaded in lexical order)')
             [CompletionResult]::new('--config-url', '--config-url', [CompletionResultType]::ParameterName, 'HTTPS URL of a remote config to fetch')
@@ -1065,7 +1066,7 @@ Register-ArgumentCompleter -Native -CommandName 'spt' -ScriptBlock {
         'spt;forward;add;help' {
             [CompletionResult]::new('local', 'local', [CompletionResultType]::ParameterValue, 'Local forward (`-L`)')
             [CompletionResult]::new('remote', 'remote', [CompletionResultType]::ParameterValue, 'Remote forward (`-R`)')
-            [CompletionResult]::new('dynamic', 'dynamic', [CompletionResultType]::ParameterValue, 'Dynamic SOCKS5/HTTP CONNECT proxy (`-D`)')
+            [CompletionResult]::new('dynamic', 'dynamic', [CompletionResultType]::ParameterValue, 'Dynamic SOCKS4/SOCKS4A/SOCKS5/HTTP CONNECT proxy (`-D`)')
             [CompletionResult]::new('help', 'help', [CompletionResultType]::ParameterValue, 'Print this message or the help of the given subcommand(s)')
             break
         }
@@ -1199,7 +1200,7 @@ Register-ArgumentCompleter -Native -CommandName 'spt' -ScriptBlock {
         'spt;forward;help;add' {
             [CompletionResult]::new('local', 'local', [CompletionResultType]::ParameterValue, 'Local forward (`-L`)')
             [CompletionResult]::new('remote', 'remote', [CompletionResultType]::ParameterValue, 'Remote forward (`-R`)')
-            [CompletionResult]::new('dynamic', 'dynamic', [CompletionResultType]::ParameterValue, 'Dynamic SOCKS5/HTTP CONNECT proxy (`-D`)')
+            [CompletionResult]::new('dynamic', 'dynamic', [CompletionResultType]::ParameterValue, 'Dynamic SOCKS4/SOCKS4A/SOCKS5/HTTP CONNECT proxy (`-D`)')
             break
         }
         'spt;forward;help;add;local' {
@@ -6304,7 +6305,7 @@ Register-ArgumentCompleter -Native -CommandName 'spt' -ScriptBlock {
         'spt;help;forward;add' {
             [CompletionResult]::new('local', 'local', [CompletionResultType]::ParameterValue, 'Local forward (`-L`)')
             [CompletionResult]::new('remote', 'remote', [CompletionResultType]::ParameterValue, 'Remote forward (`-R`)')
-            [CompletionResult]::new('dynamic', 'dynamic', [CompletionResultType]::ParameterValue, 'Dynamic SOCKS5/HTTP CONNECT proxy (`-D`)')
+            [CompletionResult]::new('dynamic', 'dynamic', [CompletionResultType]::ParameterValue, 'Dynamic SOCKS4/SOCKS4A/SOCKS5/HTTP CONNECT proxy (`-D`)')
             break
         }
         'spt;help;forward;add;local' {

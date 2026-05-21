@@ -82,12 +82,15 @@ impl ForwardRunner {
 
         let handle = match (cfg.kind.as_str(), cfg.transport.as_str()) {
             ("dynamic", "tcp") => {
+                let protocols = dynamic_proxy_protocols(cfg);
                 let spec = DynamicForwardSpec {
                     name: name.clone(),
                     listen,
                     max_connections: cfg.max_connections,
-                    allow_socks5: true,
-                    allow_http_connect: true,
+                    allow_socks4: protocols.socks4,
+                    allow_socks4a: protocols.socks4a,
+                    allow_socks5: protocols.socks5,
+                    allow_http_connect: protocols.http_connect,
                 };
                 session.open_dynamic_forward(&spec).await?
             }
@@ -202,6 +205,65 @@ impl ForwardRunner {
     /// Stop the forward, awaiting terminal state.
     pub async fn stop(self) {
         self.handle.close().await;
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DynamicProxyProtocols {
+    socks4: bool,
+    socks4a: bool,
+    socks5: bool,
+    http_connect: bool,
+}
+
+impl DynamicProxyProtocols {
+    const ALL: Self = Self {
+        socks4: true,
+        socks4a: true,
+        socks5: true,
+        http_connect: true,
+    };
+
+    const NONE: Self = Self {
+        socks4: false,
+        socks4a: false,
+        socks5: false,
+        http_connect: false,
+    };
+}
+
+fn dynamic_proxy_protocols(cfg: &Forward) -> DynamicProxyProtocols {
+    let Some(values) = cfg.proxy_protocols.as_ref() else {
+        return DynamicProxyProtocols::ALL;
+    };
+    if values
+        .iter()
+        .any(|value| normalize_proxy_protocol(value) == Some("all"))
+    {
+        return DynamicProxyProtocols::ALL;
+    }
+
+    let mut protocols = DynamicProxyProtocols::NONE;
+    for value in values {
+        match normalize_proxy_protocol(value) {
+            Some("socks4") => protocols.socks4 = true,
+            Some("socks4a") => protocols.socks4a = true,
+            Some("socks5") => protocols.socks5 = true,
+            Some("http_connect") => protocols.http_connect = true,
+            _ => {}
+        }
+    }
+    protocols
+}
+
+fn normalize_proxy_protocol(value: &str) -> Option<&'static str> {
+    match value.trim().to_ascii_lowercase().replace('-', "_").as_str() {
+        "all" => Some("all"),
+        "socks4" => Some("socks4"),
+        "socks4a" => Some("socks4a"),
+        "socks5" => Some("socks5"),
+        "http" | "http_connect" | "connect" => Some("http_connect"),
+        _ => None,
     }
 }
 
@@ -524,6 +586,34 @@ mod tests {
             .await
             .unwrap();
         runner.stop().await;
+    }
+
+    #[test]
+    fn dynamic_proxy_protocols_default_to_all() {
+        let cfg = fwd("dynamic", "tcp", "127.0.0.1:0", "ignored:1");
+        assert_eq!(dynamic_proxy_protocols(&cfg), DynamicProxyProtocols::ALL);
+    }
+
+    #[test]
+    fn dynamic_proxy_protocols_select_subset() {
+        let mut cfg = fwd("dynamic", "tcp", "127.0.0.1:0", "ignored:1");
+        cfg.proxy_protocols = Some(vec!["socks4a".into(), "http-connect".into()]);
+        assert_eq!(
+            dynamic_proxy_protocols(&cfg),
+            DynamicProxyProtocols {
+                socks4: false,
+                socks4a: true,
+                socks5: false,
+                http_connect: true,
+            }
+        );
+    }
+
+    #[test]
+    fn dynamic_proxy_protocols_all_overrides_subset() {
+        let mut cfg = fwd("dynamic", "tcp", "127.0.0.1:0", "ignored:1");
+        cfg.proxy_protocols = Some(vec!["socks5".into(), "all".into()]);
+        assert_eq!(dynamic_proxy_protocols(&cfg), DynamicProxyProtocols::ALL);
     }
 
     #[tokio::test]
