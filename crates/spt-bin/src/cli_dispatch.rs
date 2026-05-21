@@ -87,6 +87,35 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
     }
 }
 
+// t6-e6:start
+// ============================================================================
+// ftp (translator) — Phase B
+// ============================================================================
+//
+// `Command::Ftp` is added to the top-level enum by **t6-Bwire**. Until that
+// edit lands, this function is unreachable from the dispatcher; the
+// `#[allow(dead_code)]` attribute keeps `cargo build --workspace --locked
+// -D warnings` green. When Bwire adds the variant, the wire-up is a
+// one-liner in the `match cli.command { ... }` block at the top of
+// `dispatch`:
+//
+//     Command::Ftp(c) => ftp_dispatch(&global, c).await,
+//
+// The body below is otherwise complete: it owns the FtpSub / FtpTranslatorSub
+// match and delegates to `crate::cli::ftp_ops` for each verb implementation.
+#[allow(dead_code)]
+async fn ftp_dispatch(global: &GlobalOpts, c: groups::ftp::FtpCmd) -> Result<()> {
+    use groups::ftp::{FtpSub, FtpTranslatorSub};
+    match c.command {
+        FtpSub::Translator(t) => match t.command {
+            FtpTranslatorSub::Serve(args) => {
+                crate::cli::ftp_ops::translator_serve(global, args).await
+            }
+        },
+    }
+}
+// t6-e6:end
+
 // ============================================================================
 // sftp
 // ============================================================================
@@ -116,6 +145,8 @@ async fn sftp_dispatch(global: &GlobalOpts, c: groups::sftp::SftpCmd) -> Result<
             SftpMountSub::Add(args) => crate::cli::sftp_ops::mount_add(global, args).await,
             SftpMountSub::Remove(args) => crate::cli::sftp_ops::mount_remove(global, args).await,
             SftpMountSub::Plan(args) => crate::cli::sftp_ops::mount_plan(global, args).await,
+            SftpMountSub::Start(args) => crate::cli::sftp_ops::mount_start(global, args).await,
+            SftpMountSub::Stop(args) => crate::cli::sftp_ops::mount_stop(global, args).await,
         },
         SftpSub::Drive(cmd) => match cmd.command {
             SftpDriveSub::List(args) => crate::cli::sftp_ops::drive_list(global, args).await,
@@ -123,6 +154,7 @@ async fn sftp_dispatch(global: &GlobalOpts, c: groups::sftp::SftpCmd) -> Result<
             SftpDriveSub::Remove(args) => crate::cli::sftp_ops::drive_remove(global, args).await,
             SftpDriveSub::Plan(args) => crate::cli::sftp_ops::drive_plan(global, args).await,
         },
+        SftpSub::Umount(args) => crate::cli::sftp_ops::mount_stop(global, args).await,
     }
 }
 

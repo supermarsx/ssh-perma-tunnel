@@ -1,0 +1,54 @@
+[package]
+name = "spt-ftp-translator"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+description = "Passive-only FTP server that translates RFC 959/3659 verbs into spt-sftp calls."
+
+# t6-e6 — this crate is intentionally NOT registered in `[workspace.members]`.
+# That edit is owned by t6-Bwire per the t6.md phasing table
+# ("Workspace.members append"). The crate is referenced via
+# `[workspace.dependencies]` so any in-workspace consumer (notably
+# `spt-bin`/`spt-cli` once Bwire wires `Command::Ftp`) compiles it under
+# `--locked` without bumping the lockfile.
+
+[lints]
+workspace = true
+
+[features]
+default = []
+# Exposes the in-process mock `SftpFactory` so downstream crates can drive
+# the translator without an SSH transport. Pulls in `spt-sftp/testing`.
+testing = ["spt-sftp/testing"]
+
+[dependencies]
+spt-core = { workspace = true }
+spt-sftp = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+async-trait = { workspace = true }
+futures = { workspace = true }
+# Real TLS — rustls/tokio-rustls/rustls-pemfile are all in Cargo.lock via the
+# workspace's existing status-API / syslog-TLS / lettre consumers. Adding the
+# direct dep here does NOT trigger `cargo update`.
+rustls = { workspace = true }
+tokio-rustls = { workspace = true }
+rustls-pemfile = { workspace = true }
+rustls-pki-types = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+tempfile = { workspace = true }
+spt-sftp = { workspace = true, features = ["testing"] }
+# Self-signed test cert/key for the AUTH TLS handshake test (mirrors
+# `spt-status-api`'s tls integration test posture).
+rcgen = { workspace = true }
+
+[[test]]
+name = "translator"
+required-features = ["testing"]
