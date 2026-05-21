@@ -78,6 +78,11 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
         Command::Event(c) => event_dispatch(&global, c).await,
         Command::Stats(c) => stats_dispatch(&global, c).await,
         Command::Session(c) => session_dispatch(&global, c).await,
+        // t6-Bwire: dispatch FTP→SFTP translator. `ftp_dispatch` was added by
+        // t6-e6 and was annotated `#[allow(dead_code)]` until this variant
+        // existed; that annotation is removed below now that the variant is
+        // wired in.
+        Command::Ftp(c) => ftp_dispatch(&global, c).await,
         Command::Sftp(c) => sftp_dispatch(&global, c).await,
         Command::Diagnose(c) => diagnose_dispatch(&global, c).await,
         Command::Benchmark(c) => benchmark_dispatch(&global, c).await,
@@ -92,18 +97,11 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
 // ftp (translator) — Phase B
 // ============================================================================
 //
-// `Command::Ftp` is added to the top-level enum by **t6-Bwire**. Until that
-// edit lands, this function is unreachable from the dispatcher; the
-// `#[allow(dead_code)]` attribute keeps `cargo build --workspace --locked
-// -D warnings` green. When Bwire adds the variant, the wire-up is a
-// one-liner in the `match cli.command { ... }` block at the top of
-// `dispatch`:
-//
-//     Command::Ftp(c) => ftp_dispatch(&global, c).await,
-//
-// The body below is otherwise complete: it owns the FtpSub / FtpTranslatorSub
-// match and delegates to `crate::cli::ftp_ops` for each verb implementation.
-#[allow(dead_code)]
+// t6-Bwire: `Command::Ftp` is now wired into the top-level dispatch match
+// above; the `#[allow(dead_code)]` annotation that originally guarded this
+// function during Phase B has been removed. The body owns the FtpSub /
+// FtpTranslatorSub match and delegates to `crate::cli::ftp_ops` for each
+// verb implementation.
 async fn ftp_dispatch(global: &GlobalOpts, c: groups::ftp::FtpCmd) -> Result<()> {
     use groups::ftp::{FtpSub, FtpTranslatorSub};
     match c.command {

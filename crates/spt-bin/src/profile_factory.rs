@@ -19,10 +19,15 @@ use std::sync::Arc;
 
 use spt_auth::{AuthConfig, AuthMethod, SecretRef as AuthSecretRef};
 use spt_config::schema::{
-    Auth as AuthCfg, Capabilities, Config, Crypto as CryptoCfg, Profile, Trust as TrustCfg,
+    Auth as AuthCfg, Capabilities, Config, Crypto as CryptoCfg, Profile,
+    ScriptConfig as SchemaScriptConfig, Trust as TrustCfg,
 };
 use spt_core::{Error, Result};
 use spt_protocol::{Endpoint, TunnelProtocol};
+use spt_scripting::{
+    config::{ScriptConfig, ScriptHooks, ScriptLimits},
+    ScriptEngine,
+};
 use spt_secrets::Resolver;
 use spt_ssh2::{CryptoPolicy, Ssh2BackendKind, Ssh2Protocol, TrustPolicy};
 use spt_ssh3::{Ssh3Config, Ssh3Protocol};
@@ -39,6 +44,12 @@ pub struct ProfileBundle {
     pub endpoints: Vec<Endpoint>,
     /// Backoff/instability/failover/runner tuning. M0: defaults.
     pub supervisor_cfg: ProfileSupervisorConfig,
+    // t6-Bwire: scripting hook engine built from `Profile::script`. `None`
+    // when the profile does not declare a script. The supervisor attaches it
+    // to each fresh `Ssh2Session` via `with_script_engine` (the protocol-side
+    // plumbing through `Ssh2Protocol` is tracked as a follow-up; this field
+    // is the construction-site half of the contract t6-e7 carved out).
+    pub script_engine: Option<Arc<ScriptEngine>>,
 }
 
 /// Connection material for one-shot SFTP operations against an SSH2 profile.
@@ -117,13 +128,74 @@ fn build_with_capabilities(
         }
     };
 
+    // t6-Bwire:start — build a `ScriptEngine` from `[profiles.script]` if
+    // configured. Errors at load are surfaced as `Error::InvalidConfig` so
+    // the startup path fails loudly (per t6-e7 contract). The engine is
+    // wrapped in `Arc` so the supervisor can clone it cheaply per session.
+    let script_engine = build_script_engine(profile)?;
+    // t6-Bwire:end
+
     Ok(ProfileBundle {
         protocol,
         auth,
         endpoints,
         supervisor_cfg: build_supervisor_config(profile)?,
+        script_engine,
     })
 }
+
+// t6-Bwire:start
+/// Build the optional scripting engine from `profile.script`. Returns
+/// `Ok(None)` when the profile does not declare a script.
+///
+/// Errors at this site are mapped to `Error::InvalidConfig` so an invalid
+/// script aborts profile registration rather than silently disabling hooks.
+pub(crate) fn build_script_engine(profile: &Profile) -> Result<Option<Arc<ScriptEngine>>> {
+    let Some(script) = profile.script.as_ref() else {
+        return Ok(None);
+    };
+    let cfg = translate_script_config(script);
+    let engine = ScriptEngine::load(&cfg).map_err(Error::from)?;
+    Ok(Some(Arc::new(engine)))
+}
+
+fn translate_script_config(schema: &SchemaScriptConfig) -> ScriptConfig {
+    let hooks = schema
+        .hooks
+        .as_ref()
+        .map(|h| ScriptHooks {
+            pre_connect: h.pre_connect.clone(),
+            post_connect: h.post_connect.clone(),
+            on_forward_state: h.on_forward_state.clone(),
+            on_disconnect: h.on_disconnect.clone(),
+            on_event: h.on_event.clone(),
+        })
+        .unwrap_or_default();
+    let mut limits = ScriptLimits::default();
+    if let Some(l) = schema.limits.as_ref() {
+        if let Some(v) = l.max_operations {
+            limits.max_operations = v;
+        }
+        if let Some(v) = l.max_call_levels {
+            limits.max_call_levels = v as usize;
+        }
+        if let Some(v) = l.max_string_size {
+            limits.max_string_size = v as usize;
+        }
+        if let Some(v) = l.max_array_size {
+            limits.max_array_size = v as usize;
+        }
+        if let Some(v) = l.max_modules {
+            limits.max_modules = v as usize;
+        }
+    }
+    ScriptConfig {
+        path: std::path::PathBuf::from(&schema.path),
+        hooks,
+        limits,
+    }
+}
+// t6-Bwire:end
 
 fn build_ssh2(
     profile: &Profile,
@@ -881,4 +953,114 @@ mod tests {
             std::time::Duration::from_secs(2)
         );
     }
+
+    // t6-Bwire:start
+    /// `[profiles.script]` → `ScriptEngine` is constructed and the
+    /// `pre_connect` hook fires when invoked. Pins the
+    /// `build_script_engine` contract owned by Bwire.
+    #[test]
+    fn profile_script_constructs_engine_and_pre_connect_fires() {
+        use spt_scripting::config::HookName;
+        use spt_scripting::event::{Event, PreConnect};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let script_path = dir.path().join("hooks.rhai");
+        std::fs::write(
+            &script_path,
+            "fn before(event) { print(`pre-connect: ${event.host}`); }\n",
+        )
+        .expect("write script");
+
+        let cfg = format!(
+            r#"
+            version = 1
+            [[profiles]]
+            name = "edge"
+            protocol = "ssh2"
+            host = "example.com"
+            user = "alice"
+            [profiles.script]
+            path = {path:?}
+            [profiles.script.hooks]
+            pre_connect = "before"
+            "#,
+            path = script_path.to_string_lossy()
+        );
+        let (c, _) = load_str(&cfg, false).expect("load");
+        let bundle =
+            build_with_config(&c.profiles[0], &empty_resolver(), &c).expect("build_with_config");
+        let engine = bundle
+            .script_engine
+            .as_ref()
+            .expect("ScriptEngine must be constructed when [profiles.script] is set");
+
+        let event = Event::PreConnect(PreConnect {
+            profile: "edge".into(),
+            host: "example.com".into(),
+            port: 22,
+            attempt: 1,
+        });
+        engine
+            .invoke(HookName::PreConnect, &event)
+            .expect("invoke pre_connect");
+
+        let snap = engine.recorder_snapshot();
+        assert_eq!(snap.calls.len(), 1, "pre_connect must fire exactly once");
+        assert_eq!(snap.calls[0].0, HookName::PreConnect);
+    }
+
+    /// Absent `[profiles.script]` → `script_engine == None`.
+    #[test]
+    fn profile_without_script_yields_none_engine() {
+        let cfg = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+        "#;
+        let (c, _) = load_str(cfg, false).unwrap();
+        let bundle = build(&c.profiles[0], &empty_resolver()).unwrap();
+        assert!(bundle.script_engine.is_none());
+    }
+
+    /// `Profile::auth.method = "sspi"` translates into the explicit
+    /// `AuthMethod::Sspi` variant with all four fields populated. The
+    /// runtime dispatch path from this `AuthMethod` into `spt-auth-sspi`
+    /// is pinned by `crates/spt-ssh2/src/auth.rs` and exercised by the
+    /// integration test in `tests/it_t6_bwire.rs`.
+    #[test]
+    fn sspi_auth_method_translates_to_explicit_authmethod_variant() {
+        let cfg = r#"
+            version = 1
+            [capabilities]
+            allow_libssh2 = true
+            [[profiles]]
+            name = "win-edge"
+            protocol = "ssh2"
+            host = "example.com"
+            user = "alice"
+            [profiles.auth]
+            method = "sspi"
+            sspi_service = "host/edge.example.com"
+            sspi_delegate = true
+            sspi_allow_ntlm_fallback = false
+        "#;
+        let (c, _) = load_str(cfg, false).unwrap();
+        let bundle = build_with_config(&c.profiles[0], &empty_resolver(), &c).unwrap();
+        match &bundle.auth.methods[0] {
+            AuthMethod::Sspi {
+                service,
+                delegate,
+                allow_ntlm_fallback,
+                ..
+            } => {
+                assert_eq!(service.as_deref(), Some("host/edge.example.com"));
+                assert!(*delegate);
+                assert!(!*allow_ntlm_fallback);
+            }
+            other => panic!("expected AuthMethod::Sspi, got {other:?}"),
+        }
+    }
+    // t6-Bwire:end
 }

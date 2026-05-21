@@ -173,6 +173,10 @@ pub enum Command {
     Stats(groups::stats::StatsCmd),
     /// Inspect and manage active sessions.
     Session(groups::session::SessionCmd),
+    // t6-Bwire: wire FTP→SFTP translator group (declared in groups::ftp by
+    // t6-e6) into the top-level command tree, alongside the SFTP group.
+    /// FTP→SFTP translator service.
+    Ftp(groups::ftp::FtpCmd),
     /// SFTP file operations and mount planning.
     Sftp(groups::sftp::SftpCmd),
     /// Targeted diagnostics and support bundles.
@@ -433,5 +437,36 @@ mod tests {
     #[test]
     fn parses_completion_generate() {
         Cli::try_parse_from(["spt", "completion", "generate", "bash"]).unwrap();
+    }
+
+    // t6-Bwire: verify the FTP translator group is reachable from the
+    // top-level `spt ftp translator serve` invocation. This pins both the
+    // new `Command::Ftp` variant and the underlying clap surface defined by
+    // `groups::ftp`.
+    #[test]
+    fn parses_ftp_translator_serve() {
+        let cli = Cli::try_parse_from([
+            "spt",
+            "ftp",
+            "translator",
+            "serve",
+            "--bind",
+            "127.0.0.1:0",
+            "--pasv-range",
+            "50000-50050",
+        ])
+        .unwrap();
+        match cli.command {
+            Command::Ftp(c) => match c.command {
+                groups::ftp::FtpSub::Translator(t) => match t.command {
+                    groups::ftp::FtpTranslatorSub::Serve(args) => {
+                        assert_eq!(args.pasv_range, "50000-50050");
+                        let (lo, hi) = args.parse_pasv_range().unwrap();
+                        assert_eq!((lo, hi), (50000, 50050));
+                    }
+                },
+            },
+            other => panic!("expected Command::Ftp, got {other:?}"),
+        }
     }
 }

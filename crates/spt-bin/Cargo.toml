@@ -51,9 +51,14 @@ spt-ssh2 = { workspace = true }
 spt-ssh3 = { workspace = true }
 spt-sftp = { workspace = true }
 # t6-e6 — FTP-to-SFTP translator crate. Direct dep so `cargo build` exercises
-# it under `--locked` even though `[workspace.members]` is still owned by
-# t6-Bwire.
+# it under `--locked`. t6-Bwire later registered the crate in
+# `[workspace.members]`; the direct dep here is retained because the binary
+# constructs the translator at runtime.
 spt-ftp-translator = { workspace = true }
+# t6-Bwire — scripting engine constructed from `Profile::script` and attached
+# to live sessions via `Ssh2Session::with_script_engine` (the wiring through
+# the protocol layer is a follow-up; see `profile_factory::build`).
+spt-scripting = { workspace = true }
 spt-dns = { workspace = true }
 spt-firewall = { workspace = true }
 spt-service = { workspace = true }
@@ -159,6 +164,11 @@ spt-key = { workspace = true, features = ["testing"] }
 spt-state = { workspace = true, features = ["testing"] }
 # `testing` feature exposes FakeZone/LocalhostResolver for cli/dns_ops tests.
 spt-dns = { workspace = true, features = ["testing"] }
+# t6-Bwire — integration tests in `tests/it_t6_bwire.rs` exercise the
+# Phase A/B crate surfaces (obfs audit hook, SSPI dispatch, auth-sspi
+# principal parse, ftp-translator error taxonomy).
+spt-obfs = { workspace = true, features = ["testing"] }
+spt-auth-sspi = { workspace = true }
 # t5-e6 sealed-config tests need to derive X25519 public keys from a raw
 # scalar. Pinned to a version already present in Cargo.lock via spt-config-crypt
 # so this addition does NOT trigger `cargo update`.

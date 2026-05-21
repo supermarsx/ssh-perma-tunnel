@@ -56,6 +56,7 @@ Register-ArgumentCompleter -Native -CommandName 'spt' -ScriptBlock {
             [CompletionResult]::new('event', 'event', [CompletionResultType]::ParameterValue, 'Event bindings and sinks')
             [CompletionResult]::new('stats', 'stats', [CompletionResultType]::ParameterValue, 'Statistics summaries and live counters')
             [CompletionResult]::new('session', 'session', [CompletionResultType]::ParameterValue, 'Inspect and manage active sessions')
+            [CompletionResult]::new('ftp', 'ftp', [CompletionResultType]::ParameterValue, 'FTP→SFTP translator service')
             [CompletionResult]::new('sftp', 'sftp', [CompletionResultType]::ParameterValue, 'SFTP file operations and mount planning')
             [CompletionResult]::new('diagnose', 'diagnose', [CompletionResultType]::ParameterValue, 'Targeted diagnostics and support bundles')
             [CompletionResult]::new('benchmark', 'benchmark', [CompletionResultType]::ParameterValue, 'Controlled benchmarking against forwards')
@@ -4385,6 +4386,114 @@ Register-ArgumentCompleter -Native -CommandName 'spt' -ScriptBlock {
         'spt;session;help;help' {
             break
         }
+        'spt;ftp' {
+            [CompletionResult]::new('--config', '--config', [CompletionResultType]::ParameterName, 'Path to a single config file')
+            [CompletionResult]::new('--config-dir', '--config-dir', [CompletionResultType]::ParameterName, 'Path to a directory of `*.toml` configs (loaded in lexical order)')
+            [CompletionResult]::new('--config-url', '--config-url', [CompletionResultType]::ParameterName, 'HTTPS URL of a remote config to fetch')
+            [CompletionResult]::new('--config-fingerprint', '--config-fingerprint', [CompletionResultType]::ParameterName, 'SHA-256 fingerprint pin for `--config-url`')
+            [CompletionResult]::new('--state-dir', '--state-dir', [CompletionResultType]::ParameterName, 'Override the runtime state directory')
+            [CompletionResult]::new('--profile', '--profile', [CompletionResultType]::ParameterName, 'Restrict operations to the named profile')
+            [CompletionResult]::new('--output', '--output', [CompletionResultType]::ParameterName, 'Output format for command results')
+            [CompletionResult]::new('--log-level', '--log-level', [CompletionResultType]::ParameterName, 'Tracing log level')
+            [CompletionResult]::new('--color', '--color', [CompletionResultType]::ParameterName, 'Color policy for human output')
+            [CompletionResult]::new('--json', '--json', [CompletionResultType]::ParameterName, 'Convenience alias for `--output json`')
+            [CompletionResult]::new('-q', '-q', [CompletionResultType]::ParameterName, 'Suppress non-essential output')
+            [CompletionResult]::new('--quiet', '--quiet', [CompletionResultType]::ParameterName, 'Suppress non-essential output')
+            [CompletionResult]::new('-v', '-v', [CompletionResultType]::ParameterName, 'Increase verbosity (repeat for more)')
+            [CompletionResult]::new('--verbose', '--verbose', [CompletionResultType]::ParameterName, 'Increase verbosity (repeat for more)')
+            [CompletionResult]::new('--no-color', '--no-color', [CompletionResultType]::ParameterName, 'Disable color (legacy convenience flag; use `--color never`)')
+            [CompletionResult]::new('--dry-run', '--dry-run', [CompletionResultType]::ParameterName, 'Show what would happen without making changes')
+            [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help (see more with ''--help'')')
+            [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help (see more with ''--help'')')
+            [CompletionResult]::new('-V', '-V ', [CompletionResultType]::ParameterName, 'Print version')
+            [CompletionResult]::new('--version', '--version', [CompletionResultType]::ParameterName, 'Print version')
+            [CompletionResult]::new('translator', 'translator', [CompletionResultType]::ParameterValue, 'Run / manage the FTP→SFTP translator service')
+            [CompletionResult]::new('help', 'help', [CompletionResultType]::ParameterValue, 'Print this message or the help of the given subcommand(s)')
+            break
+        }
+        'spt;ftp;translator' {
+            [CompletionResult]::new('--config', '--config', [CompletionResultType]::ParameterName, 'Path to a single config file')
+            [CompletionResult]::new('--config-dir', '--config-dir', [CompletionResultType]::ParameterName, 'Path to a directory of `*.toml` configs (loaded in lexical order)')
+            [CompletionResult]::new('--config-url', '--config-url', [CompletionResultType]::ParameterName, 'HTTPS URL of a remote config to fetch')
+            [CompletionResult]::new('--config-fingerprint', '--config-fingerprint', [CompletionResultType]::ParameterName, 'SHA-256 fingerprint pin for `--config-url`')
+            [CompletionResult]::new('--state-dir', '--state-dir', [CompletionResultType]::ParameterName, 'Override the runtime state directory')
+            [CompletionResult]::new('--profile', '--profile', [CompletionResultType]::ParameterName, 'Restrict operations to the named profile')
+            [CompletionResult]::new('--output', '--output', [CompletionResultType]::ParameterName, 'Output format for command results')
+            [CompletionResult]::new('--log-level', '--log-level', [CompletionResultType]::ParameterName, 'Tracing log level')
+            [CompletionResult]::new('--color', '--color', [CompletionResultType]::ParameterName, 'Color policy for human output')
+            [CompletionResult]::new('--json', '--json', [CompletionResultType]::ParameterName, 'Convenience alias for `--output json`')
+            [CompletionResult]::new('-q', '-q', [CompletionResultType]::ParameterName, 'Suppress non-essential output')
+            [CompletionResult]::new('--quiet', '--quiet', [CompletionResultType]::ParameterName, 'Suppress non-essential output')
+            [CompletionResult]::new('-v', '-v', [CompletionResultType]::ParameterName, 'Increase verbosity (repeat for more)')
+            [CompletionResult]::new('--verbose', '--verbose', [CompletionResultType]::ParameterName, 'Increase verbosity (repeat for more)')
+            [CompletionResult]::new('--no-color', '--no-color', [CompletionResultType]::ParameterName, 'Disable color (legacy convenience flag; use `--color never`)')
+            [CompletionResult]::new('--dry-run', '--dry-run', [CompletionResultType]::ParameterName, 'Show what would happen without making changes')
+            [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help (see more with ''--help'')')
+            [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help (see more with ''--help'')')
+            [CompletionResult]::new('-V', '-V ', [CompletionResultType]::ParameterName, 'Print version')
+            [CompletionResult]::new('--version', '--version', [CompletionResultType]::ParameterName, 'Print version')
+            [CompletionResult]::new('serve', 'serve', [CompletionResultType]::ParameterValue, 'Start the FTP translator listening on `--bind`')
+            [CompletionResult]::new('help', 'help', [CompletionResultType]::ParameterValue, 'Print this message or the help of the given subcommand(s)')
+            break
+        }
+        'spt;ftp;translator;serve' {
+            [CompletionResult]::new('--bind', '--bind', [CompletionResultType]::ParameterName, 'Control-channel listen address (`host:port`)')
+            [CompletionResult]::new('--pasv-range', '--pasv-range', [CompletionResultType]::ParameterName, 'Inclusive passive-port range, formatted `lo-hi`')
+            [CompletionResult]::new('--external-ip', '--external-ip', [CompletionResultType]::ParameterName, 'Optional external IP to advertise in PASV replies (defaults to the control connection''s local address)')
+            [CompletionResult]::new('--welcome-banner', '--welcome-banner', [CompletionResultType]::ParameterName, 'Welcome banner sent on connect')
+            [CompletionResult]::new('--max-clients', '--max-clients', [CompletionResultType]::ParameterName, 'Maximum concurrent control sessions')
+            [CompletionResult]::new('--idle-timeout', '--idle-timeout', [CompletionResultType]::ParameterName, 'Idle timeout for the control channel, e.g. `5m`, `300s`')
+            [CompletionResult]::new('--tls-cert', '--tls-cert', [CompletionResultType]::ParameterName, 'PEM file with the TLS certificate chain')
+            [CompletionResult]::new('--tls-key', '--tls-key', [CompletionResultType]::ParameterName, 'PEM file with the TLS private key')
+            [CompletionResult]::new('--profile', '--profile', [CompletionResultType]::ParameterName, 'Profile name used to open the SFTP backend')
+            [CompletionResult]::new('--config', '--config', [CompletionResultType]::ParameterName, 'Path to a single config file')
+            [CompletionResult]::new('--config-dir', '--config-dir', [CompletionResultType]::ParameterName, 'Path to a directory of `*.toml` configs (loaded in lexical order)')
+            [CompletionResult]::new('--config-url', '--config-url', [CompletionResultType]::ParameterName, 'HTTPS URL of a remote config to fetch')
+            [CompletionResult]::new('--config-fingerprint', '--config-fingerprint', [CompletionResultType]::ParameterName, 'SHA-256 fingerprint pin for `--config-url`')
+            [CompletionResult]::new('--state-dir', '--state-dir', [CompletionResultType]::ParameterName, 'Override the runtime state directory')
+            [CompletionResult]::new('--output', '--output', [CompletionResultType]::ParameterName, 'Output format for command results')
+            [CompletionResult]::new('--log-level', '--log-level', [CompletionResultType]::ParameterName, 'Tracing log level')
+            [CompletionResult]::new('--color', '--color', [CompletionResultType]::ParameterName, 'Color policy for human output')
+            [CompletionResult]::new('--tls-required', '--tls-required', [CompletionResultType]::ParameterName, 'Require TLS before accepting USER/PASS')
+            [CompletionResult]::new('--json', '--json', [CompletionResultType]::ParameterName, 'JSON output')
+            [CompletionResult]::new('-q', '-q', [CompletionResultType]::ParameterName, 'Suppress non-essential output')
+            [CompletionResult]::new('--quiet', '--quiet', [CompletionResultType]::ParameterName, 'Suppress non-essential output')
+            [CompletionResult]::new('-v', '-v', [CompletionResultType]::ParameterName, 'Increase verbosity (repeat for more)')
+            [CompletionResult]::new('--verbose', '--verbose', [CompletionResultType]::ParameterName, 'Increase verbosity (repeat for more)')
+            [CompletionResult]::new('--no-color', '--no-color', [CompletionResultType]::ParameterName, 'Disable color (legacy convenience flag; use `--color never`)')
+            [CompletionResult]::new('--dry-run', '--dry-run', [CompletionResultType]::ParameterName, 'Show what would happen without making changes')
+            [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help (see more with ''--help'')')
+            [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help (see more with ''--help'')')
+            [CompletionResult]::new('-V', '-V ', [CompletionResultType]::ParameterName, 'Print version')
+            [CompletionResult]::new('--version', '--version', [CompletionResultType]::ParameterName, 'Print version')
+            break
+        }
+        'spt;ftp;translator;help' {
+            [CompletionResult]::new('serve', 'serve', [CompletionResultType]::ParameterValue, 'Start the FTP translator listening on `--bind`')
+            [CompletionResult]::new('help', 'help', [CompletionResultType]::ParameterValue, 'Print this message or the help of the given subcommand(s)')
+            break
+        }
+        'spt;ftp;translator;help;serve' {
+            break
+        }
+        'spt;ftp;translator;help;help' {
+            break
+        }
+        'spt;ftp;help' {
+            [CompletionResult]::new('translator', 'translator', [CompletionResultType]::ParameterValue, 'Run / manage the FTP→SFTP translator service')
+            [CompletionResult]::new('help', 'help', [CompletionResultType]::ParameterValue, 'Print this message or the help of the given subcommand(s)')
+            break
+        }
+        'spt;ftp;help;translator' {
+            [CompletionResult]::new('serve', 'serve', [CompletionResultType]::ParameterValue, 'Start the FTP translator listening on `--bind`')
+            break
+        }
+        'spt;ftp;help;translator;serve' {
+            break
+        }
+        'spt;ftp;help;help' {
+            break
+        }
         'spt;sftp' {
             [CompletionResult]::new('--config', '--config', [CompletionResultType]::ParameterName, 'Path to a single config file')
             [CompletionResult]::new('--config-dir', '--config-dir', [CompletionResultType]::ParameterName, 'Path to a directory of `*.toml` configs (loaded in lexical order)')
@@ -6509,6 +6618,7 @@ Register-ArgumentCompleter -Native -CommandName 'spt' -ScriptBlock {
             [CompletionResult]::new('event', 'event', [CompletionResultType]::ParameterValue, 'Event bindings and sinks')
             [CompletionResult]::new('stats', 'stats', [CompletionResultType]::ParameterValue, 'Statistics summaries and live counters')
             [CompletionResult]::new('session', 'session', [CompletionResultType]::ParameterValue, 'Inspect and manage active sessions')
+            [CompletionResult]::new('ftp', 'ftp', [CompletionResultType]::ParameterValue, 'FTP→SFTP translator service')
             [CompletionResult]::new('sftp', 'sftp', [CompletionResultType]::ParameterValue, 'SFTP file operations and mount planning')
             [CompletionResult]::new('diagnose', 'diagnose', [CompletionResultType]::ParameterValue, 'Targeted diagnostics and support bundles')
             [CompletionResult]::new('benchmark', 'benchmark', [CompletionResultType]::ParameterValue, 'Controlled benchmarking against forwards')
@@ -7049,6 +7159,17 @@ Register-ArgumentCompleter -Native -CommandName 'spt' -ScriptBlock {
             break
         }
         'spt;help;session;top' {
+            break
+        }
+        'spt;help;ftp' {
+            [CompletionResult]::new('translator', 'translator', [CompletionResultType]::ParameterValue, 'Run / manage the FTP→SFTP translator service')
+            break
+        }
+        'spt;help;ftp;translator' {
+            [CompletionResult]::new('serve', 'serve', [CompletionResultType]::ParameterValue, 'Start the FTP translator listening on `--bind`')
+            break
+        }
+        'spt;help;ftp;translator;serve' {
             break
         }
         'spt;help;sftp' {

@@ -53,6 +53,7 @@ set edit:completion:arg-completer[spt] = {|@words|
             cand event 'Event bindings and sinks'
             cand stats 'Statistics summaries and live counters'
             cand session 'Inspect and manage active sessions'
+            cand ftp 'FTP→SFTP translator service'
             cand sftp 'SFTP file operations and mount planning'
             cand diagnose 'Targeted diagnostics and support bundles'
             cand benchmark 'Controlled benchmarking against forwards'
@@ -4041,6 +4042,104 @@ set edit:completion:arg-completer[spt] = {|@words|
         }
         &'spt;session;help;help'= {
         }
+        &'spt;ftp'= {
+            cand --config 'Path to a single config file'
+            cand --config-dir 'Path to a directory of `*.toml` configs (loaded in lexical order)'
+            cand --config-url 'HTTPS URL of a remote config to fetch'
+            cand --config-fingerprint 'SHA-256 fingerprint pin for `--config-url`'
+            cand --state-dir 'Override the runtime state directory'
+            cand --profile 'Restrict operations to the named profile'
+            cand --output 'Output format for command results'
+            cand --log-level 'Tracing log level'
+            cand --color 'Color policy for human output'
+            cand --json 'Convenience alias for `--output json`'
+            cand -q 'Suppress non-essential output'
+            cand --quiet 'Suppress non-essential output'
+            cand -v 'Increase verbosity (repeat for more)'
+            cand --verbose 'Increase verbosity (repeat for more)'
+            cand --no-color 'Disable color (legacy convenience flag; use `--color never`)'
+            cand --dry-run 'Show what would happen without making changes'
+            cand -h 'Print help (see more with ''--help'')'
+            cand --help 'Print help (see more with ''--help'')'
+            cand -V 'Print version'
+            cand --version 'Print version'
+            cand translator 'Run / manage the FTP→SFTP translator service'
+            cand help 'Print this message or the help of the given subcommand(s)'
+        }
+        &'spt;ftp;translator'= {
+            cand --config 'Path to a single config file'
+            cand --config-dir 'Path to a directory of `*.toml` configs (loaded in lexical order)'
+            cand --config-url 'HTTPS URL of a remote config to fetch'
+            cand --config-fingerprint 'SHA-256 fingerprint pin for `--config-url`'
+            cand --state-dir 'Override the runtime state directory'
+            cand --profile 'Restrict operations to the named profile'
+            cand --output 'Output format for command results'
+            cand --log-level 'Tracing log level'
+            cand --color 'Color policy for human output'
+            cand --json 'Convenience alias for `--output json`'
+            cand -q 'Suppress non-essential output'
+            cand --quiet 'Suppress non-essential output'
+            cand -v 'Increase verbosity (repeat for more)'
+            cand --verbose 'Increase verbosity (repeat for more)'
+            cand --no-color 'Disable color (legacy convenience flag; use `--color never`)'
+            cand --dry-run 'Show what would happen without making changes'
+            cand -h 'Print help (see more with ''--help'')'
+            cand --help 'Print help (see more with ''--help'')'
+            cand -V 'Print version'
+            cand --version 'Print version'
+            cand serve 'Start the FTP translator listening on `--bind`'
+            cand help 'Print this message or the help of the given subcommand(s)'
+        }
+        &'spt;ftp;translator;serve'= {
+            cand --bind 'Control-channel listen address (`host:port`)'
+            cand --pasv-range 'Inclusive passive-port range, formatted `lo-hi`'
+            cand --external-ip 'Optional external IP to advertise in PASV replies (defaults to the control connection''s local address)'
+            cand --welcome-banner 'Welcome banner sent on connect'
+            cand --max-clients 'Maximum concurrent control sessions'
+            cand --idle-timeout 'Idle timeout for the control channel, e.g. `5m`, `300s`'
+            cand --tls-cert 'PEM file with the TLS certificate chain'
+            cand --tls-key 'PEM file with the TLS private key'
+            cand --profile 'Profile name used to open the SFTP backend'
+            cand --config 'Path to a single config file'
+            cand --config-dir 'Path to a directory of `*.toml` configs (loaded in lexical order)'
+            cand --config-url 'HTTPS URL of a remote config to fetch'
+            cand --config-fingerprint 'SHA-256 fingerprint pin for `--config-url`'
+            cand --state-dir 'Override the runtime state directory'
+            cand --output 'Output format for command results'
+            cand --log-level 'Tracing log level'
+            cand --color 'Color policy for human output'
+            cand --tls-required 'Require TLS before accepting USER/PASS'
+            cand --json 'JSON output'
+            cand -q 'Suppress non-essential output'
+            cand --quiet 'Suppress non-essential output'
+            cand -v 'Increase verbosity (repeat for more)'
+            cand --verbose 'Increase verbosity (repeat for more)'
+            cand --no-color 'Disable color (legacy convenience flag; use `--color never`)'
+            cand --dry-run 'Show what would happen without making changes'
+            cand -h 'Print help (see more with ''--help'')'
+            cand --help 'Print help (see more with ''--help'')'
+            cand -V 'Print version'
+            cand --version 'Print version'
+        }
+        &'spt;ftp;translator;help'= {
+            cand serve 'Start the FTP translator listening on `--bind`'
+            cand help 'Print this message or the help of the given subcommand(s)'
+        }
+        &'spt;ftp;translator;help;serve'= {
+        }
+        &'spt;ftp;translator;help;help'= {
+        }
+        &'spt;ftp;help'= {
+            cand translator 'Run / manage the FTP→SFTP translator service'
+            cand help 'Print this message or the help of the given subcommand(s)'
+        }
+        &'spt;ftp;help;translator'= {
+            cand serve 'Start the FTP translator listening on `--bind`'
+        }
+        &'spt;ftp;help;translator;serve'= {
+        }
+        &'spt;ftp;help;help'= {
+        }
         &'spt;sftp'= {
             cand --config 'Path to a single config file'
             cand --config-dir 'Path to a directory of `*.toml` configs (loaded in lexical order)'
@@ -5998,6 +6097,7 @@ set edit:completion:arg-completer[spt] = {|@words|
             cand event 'Event bindings and sinks'
             cand stats 'Statistics summaries and live counters'
             cand session 'Inspect and manage active sessions'
+            cand ftp 'FTP→SFTP translator service'
             cand sftp 'SFTP file operations and mount planning'
             cand diagnose 'Targeted diagnostics and support bundles'
             cand benchmark 'Controlled benchmarking against forwards'
@@ -6401,6 +6501,14 @@ set edit:completion:arg-completer[spt] = {|@words|
         &'spt;help;session;drain'= {
         }
         &'spt;help;session;top'= {
+        }
+        &'spt;help;ftp'= {
+            cand translator 'Run / manage the FTP→SFTP translator service'
+        }
+        &'spt;help;ftp;translator'= {
+            cand serve 'Start the FTP translator listening on `--bind`'
+        }
+        &'spt;help;ftp;translator;serve'= {
         }
         &'spt;help;sftp'= {
             cand test 'Connect to the profile and open the SFTP subsystem'

@@ -121,6 +121,35 @@ fn parses_into_sftp_group() {
     assert!(matches!(cli.command, Command::Sftp(_)));
 }
 
+// t6-Bwire: the FTP→SFTP translator group is reachable from the top-level
+// CLI. The dispatch wiring is exercised separately by parse-then-match on
+// the variant; the actual `ftp_dispatch` body invokes `cli::ftp_ops::
+// translator_serve` for the only `Serve` arm.
+#[test]
+fn parses_into_ftp_group() {
+    let cli = parse(&[
+        "spt",
+        "ftp",
+        "translator",
+        "serve",
+        "--bind",
+        "127.0.0.1:0",
+        "--pasv-range",
+        "50000-50050",
+    ]);
+    match cli.command {
+        Command::Ftp(c) => match c.command {
+            groups::ftp::FtpSub::Translator(t) => match t.command {
+                groups::ftp::FtpTranslatorSub::Serve(args) => {
+                    assert_eq!(args.bind.port(), 0);
+                    assert_eq!(args.parse_pasv_range().unwrap(), (50000, 50050));
+                }
+            },
+        },
+        other => panic!("expected Command::Ftp(_), got {other:?}"),
+    }
+}
+
 #[test]
 fn parses_into_diagnose_group() {
     let cli = parse(&["spt", "diagnose", "run"]);

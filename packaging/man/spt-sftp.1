@@ -40,11 +40,38 @@ Remove a remote directory
 sftp\-rename(1)
 Rename a remote file or directory
 .TP
+sftp\-cat(1)
+Print a remote file (with a size cap)
+.TP
+sftp\-tail(1)
+Print the trailing bytes of a remote file
+.TP
+sftp\-chmod(1)
+Change POSIX permissions on a remote path
+.TP
+sftp\-symlink(1)
+Create a remote symbolic link
+.TP
+sftp\-readlink(1)
+Read the target of a remote symbolic link
+.TP
+sftp\-realpath(1)
+Canonicalise a remote path
+.TP
+sftp\-put\-recursive(1)
+Mirror a local directory tree onto the server (recursive `put`)
+.TP
+sftp\-get\-recursive(1)
+Mirror a remote directory tree onto the local filesystem (recursive `get`)
+.TP
 sftp\-mount(1)
 Manage SFTP\-backed filesystem mount entries
 .TP
 sftp\-drive(1)
 Manage SFTP\-backed Windows drive entries
+.TP
+sftp\-umount(1)
+Tear down an SFTP\-backed filesystem mount (shorthand for `spt sftp mount stop`)
 .TP
 sftp\-help(1)
 Print this message or the help of the given subcommand(s)
@@ -54,5 +81,13 @@ EXAMPLES:
   spt sftp list \-\-profile edge /var/log \-\-json
   spt sftp get \-\-profile edge /etc/app/config.toml \-\-out ./config.toml
   spt sftp put \-\-profile edge ./build.tar.gz /tmp/build.tar.gz
+  spt sftp cat \-\-profile edge /etc/hostname
+  spt sftp tail \-\-profile edge /var/log/app.log \-\-bytes 4096
+  spt sftp chmod \-\-profile edge \-\-mode 0640 /tmp/build.tar.gz
+  spt sftp symlink \-\-profile edge \-\-target /opt/app/current /opt/app/live
+  spt sftp readlink \-\-profile edge /opt/app/live
+  spt sftp realpath \-\-profile edge ./reports
+  spt sftp put\-recursive \-\-profile edge ./dist /srv/app \-\-bps 5MiB \-\-checksum sha256
+  spt sftp get\-recursive \-\-profile edge /srv/app ./mirror \-\-resume
   spt sftp mount add \-\-profile edge \-\-name data \-\-remote /srv/data \-\-mount\-point /mnt/spt\-data
   spt sftp drive add \-\-profile edge \-\-name data \-\-remote /srv/data \-\-letter S:

@@ -6461,6 +6461,202 @@ esac
     ;;
 esac
 ;;
+(ftp)
+_arguments "${_arguments_options[@]}" : \
+'--config=[Path to a single config file]:PATH:_files' \
+'--config-dir=[Path to a directory of \`*.toml\` configs (loaded in lexical order)]:PATH:_files' \
+'--config-url=[HTTPS URL of a remote config to fetch]:URL:_default' \
+'--config-fingerprint=[SHA-256 fingerprint pin for \`--config-url\`]:SHA256:_default' \
+'--state-dir=[Override the runtime state directory]:PATH:_files' \
+'--profile=[Restrict operations to the named profile]:NAME:_default' \
+'--output=[Output format for command results]:OUTPUT:((human\:"Human-readable text (default)"
+json\:"Structured JSON"
+jsonl\:"JSON Lines (one record per line)"
+yaml\:"YAML"))' \
+'--log-level=[Tracing log level]:LOG_LEVEL:((error\:"Only errors"
+warn\:"Warnings and above"
+info\:"Informational and above (default)"
+debug\:"Debug and above"
+trace\:"Trace and above (very verbose)"))' \
+'--color=[Color policy for human output]:COLOR:((auto\:"Auto-detect based on tty"
+always\:"Always emit color escapes"
+never\:"Never emit color escapes"))' \
+'--json[Convenience alias for \`--output json\`]' \
+'-q[Suppress non-essential output]' \
+'--quiet[Suppress non-essential output]' \
+'*-v[Increase verbosity (repeat for more)]' \
+'*--verbose[Increase verbosity (repeat for more)]' \
+'--no-color[Disable color (legacy convenience flag; use \`--color never\`)]' \
+'--dry-run[Show what would happen without making changes]' \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+'-V[Print version]' \
+'--version[Print version]' \
+":: :_spt__ftp_commands" \
+"*::: :->ftp" \
+&& ret=0
+
+    case $state in
+    (ftp)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:spt-ftp-command-$line[1]:"
+        case $line[1] in
+            (translator)
+_arguments "${_arguments_options[@]}" : \
+'--config=[Path to a single config file]:PATH:_files' \
+'--config-dir=[Path to a directory of \`*.toml\` configs (loaded in lexical order)]:PATH:_files' \
+'--config-url=[HTTPS URL of a remote config to fetch]:URL:_default' \
+'--config-fingerprint=[SHA-256 fingerprint pin for \`--config-url\`]:SHA256:_default' \
+'--state-dir=[Override the runtime state directory]:PATH:_files' \
+'--profile=[Restrict operations to the named profile]:NAME:_default' \
+'--output=[Output format for command results]:OUTPUT:((human\:"Human-readable text (default)"
+json\:"Structured JSON"
+jsonl\:"JSON Lines (one record per line)"
+yaml\:"YAML"))' \
+'--log-level=[Tracing log level]:LOG_LEVEL:((error\:"Only errors"
+warn\:"Warnings and above"
+info\:"Informational and above (default)"
+debug\:"Debug and above"
+trace\:"Trace and above (very verbose)"))' \
+'--color=[Color policy for human output]:COLOR:((auto\:"Auto-detect based on tty"
+always\:"Always emit color escapes"
+never\:"Never emit color escapes"))' \
+'--json[Convenience alias for \`--output json\`]' \
+'-q[Suppress non-essential output]' \
+'--quiet[Suppress non-essential output]' \
+'*-v[Increase verbosity (repeat for more)]' \
+'*--verbose[Increase verbosity (repeat for more)]' \
+'--no-color[Disable color (legacy convenience flag; use \`--color never\`)]' \
+'--dry-run[Show what would happen without making changes]' \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+'-V[Print version]' \
+'--version[Print version]' \
+":: :_spt__ftp__translator_commands" \
+"*::: :->translator" \
+&& ret=0
+
+    case $state in
+    (translator)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:spt-ftp-translator-command-$line[1]:"
+        case $line[1] in
+            (serve)
+_arguments "${_arguments_options[@]}" : \
+'--bind=[Control-channel listen address (\`host\:port\`)]:ADDR:_default' \
+'--pasv-range=[Inclusive passive-port range, formatted \`lo-hi\`]:LO-HI:_default' \
+'--external-ip=[Optional external IP to advertise in PASV replies (defaults to the control connection'\''s local address)]:IP:_default' \
+'--welcome-banner=[Welcome banner sent on connect]:TEXT:_default' \
+'--max-clients=[Maximum concurrent control sessions]:N:_default' \
+'--idle-timeout=[Idle timeout for the control channel, e.g. \`5m\`, \`300s\`]:DURATION:_default' \
+'--tls-cert=[PEM file with the TLS certificate chain]:PATH:_files' \
+'--tls-key=[PEM file with the TLS private key]:PATH:_files' \
+'--profile=[Profile name used to open the SFTP backend]:NAME:_default' \
+'--config=[Path to a single config file]:PATH:_files' \
+'--config-dir=[Path to a directory of \`*.toml\` configs (loaded in lexical order)]:PATH:_files' \
+'--config-url=[HTTPS URL of a remote config to fetch]:URL:_default' \
+'--config-fingerprint=[SHA-256 fingerprint pin for \`--config-url\`]:SHA256:_default' \
+'--state-dir=[Override the runtime state directory]:PATH:_files' \
+'--output=[Output format for command results]:OUTPUT:((human\:"Human-readable text (default)"
+json\:"Structured JSON"
+jsonl\:"JSON Lines (one record per line)"
+yaml\:"YAML"))' \
+'--log-level=[Tracing log level]:LOG_LEVEL:((error\:"Only errors"
+warn\:"Warnings and above"
+info\:"Informational and above (default)"
+debug\:"Debug and above"
+trace\:"Trace and above (very verbose)"))' \
+'--color=[Color policy for human output]:COLOR:((auto\:"Auto-detect based on tty"
+always\:"Always emit color escapes"
+never\:"Never emit color escapes"))' \
+'--tls-required[Require TLS before accepting USER/PASS]' \
+'--json[JSON output]' \
+'-q[Suppress non-essential output]' \
+'--quiet[Suppress non-essential output]' \
+'*-v[Increase verbosity (repeat for more)]' \
+'*--verbose[Increase verbosity (repeat for more)]' \
+'--no-color[Disable color (legacy convenience flag; use \`--color never\`)]' \
+'--dry-run[Show what would happen without making changes]' \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+'-V[Print version]' \
+'--version[Print version]' \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+":: :_spt__ftp__translator__help_commands" \
+"*::: :->help" \
+&& ret=0
+
+    case $state in
+    (help)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:spt-ftp-translator-help-command-$line[1]:"
+        case $line[1] in
+            (serve)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+        esac
+    ;;
+esac
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+":: :_spt__ftp__help_commands" \
+"*::: :->help" \
+&& ret=0
+
+    case $state in
+    (help)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:spt-ftp-help-command-$line[1]:"
+        case $line[1] in
+            (translator)
+_arguments "${_arguments_options[@]}" : \
+":: :_spt__ftp__help__translator_commands" \
+"*::: :->translator" \
+&& ret=0
+
+    case $state in
+    (translator)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:spt-ftp-help-translator-command-$line[1]:"
+        case $line[1] in
+            (serve)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+        esac
+    ;;
+esac
+;;
 (sftp)
 _arguments "${_arguments_options[@]}" : \
 '--config=[Path to a single config file]:PATH:_files' \
@@ -10434,6 +10630,42 @@ _arguments "${_arguments_options[@]}" : \
     ;;
 esac
 ;;
+(ftp)
+_arguments "${_arguments_options[@]}" : \
+":: :_spt__help__ftp_commands" \
+"*::: :->ftp" \
+&& ret=0
+
+    case $state in
+    (ftp)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:spt-help-ftp-command-$line[1]:"
+        case $line[1] in
+            (translator)
+_arguments "${_arguments_options[@]}" : \
+":: :_spt__help__ftp__translator_commands" \
+"*::: :->translator" \
+&& ret=0
+
+    case $state in
+    (translator)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:spt-help-ftp-translator-command-$line[1]:"
+        case $line[1] in
+            (serve)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+        esac
+    ;;
+esac
+;;
 (sftp)
 _arguments "${_arguments_options[@]}" : \
 ":: :_spt__help__sftp_commands" \
@@ -10869,6 +11101,7 @@ _spt_commands() {
 'event:Event bindings and sinks' \
 'stats:Statistics summaries and live counters' \
 'session:Inspect and manage active sessions' \
+'ftp:FTP→SFTP translator service' \
 'sftp:SFTP file operations and mount planning' \
 'diagnose:Targeted diagnostics and support bundles' \
 'benchmark:Controlled benchmarking against forwards' \
@@ -12310,6 +12543,70 @@ _spt__forward__throttle_commands() {
     local commands; commands=()
     _describe -t commands 'spt forward throttle commands' commands "$@"
 }
+(( $+functions[_spt__ftp_commands] )) ||
+_spt__ftp_commands() {
+    local commands; commands=(
+'translator:Run / manage the FTP→SFTP translator service' \
+'help:Print this message or the help of the given subcommand(s)' \
+    )
+    _describe -t commands 'spt ftp commands' commands "$@"
+}
+(( $+functions[_spt__ftp__help_commands] )) ||
+_spt__ftp__help_commands() {
+    local commands; commands=(
+'translator:Run / manage the FTP→SFTP translator service' \
+'help:Print this message or the help of the given subcommand(s)' \
+    )
+    _describe -t commands 'spt ftp help commands' commands "$@"
+}
+(( $+functions[_spt__ftp__help__help_commands] )) ||
+_spt__ftp__help__help_commands() {
+    local commands; commands=()
+    _describe -t commands 'spt ftp help help commands' commands "$@"
+}
+(( $+functions[_spt__ftp__help__translator_commands] )) ||
+_spt__ftp__help__translator_commands() {
+    local commands; commands=(
+'serve:Start the FTP translator listening on \`--bind\`' \
+    )
+    _describe -t commands 'spt ftp help translator commands' commands "$@"
+}
+(( $+functions[_spt__ftp__help__translator__serve_commands] )) ||
+_spt__ftp__help__translator__serve_commands() {
+    local commands; commands=()
+    _describe -t commands 'spt ftp help translator serve commands' commands "$@"
+}
+(( $+functions[_spt__ftp__translator_commands] )) ||
+_spt__ftp__translator_commands() {
+    local commands; commands=(
+'serve:Start the FTP translator listening on \`--bind\`' \
+'help:Print this message or the help of the given subcommand(s)' \
+    )
+    _describe -t commands 'spt ftp translator commands' commands "$@"
+}
+(( $+functions[_spt__ftp__translator__help_commands] )) ||
+_spt__ftp__translator__help_commands() {
+    local commands; commands=(
+'serve:Start the FTP translator listening on \`--bind\`' \
+'help:Print this message or the help of the given subcommand(s)' \
+    )
+    _describe -t commands 'spt ftp translator help commands' commands "$@"
+}
+(( $+functions[_spt__ftp__translator__help__help_commands] )) ||
+_spt__ftp__translator__help__help_commands() {
+    local commands; commands=()
+    _describe -t commands 'spt ftp translator help help commands' commands "$@"
+}
+(( $+functions[_spt__ftp__translator__help__serve_commands] )) ||
+_spt__ftp__translator__help__serve_commands() {
+    local commands; commands=()
+    _describe -t commands 'spt ftp translator help serve commands' commands "$@"
+}
+(( $+functions[_spt__ftp__translator__serve_commands] )) ||
+_spt__ftp__translator__serve_commands() {
+    local commands; commands=()
+    _describe -t commands 'spt ftp translator serve commands' commands "$@"
+}
 (( $+functions[_spt__help_commands] )) ||
 _spt__help_commands() {
     local commands; commands=(
@@ -12328,6 +12625,7 @@ _spt__help_commands() {
 'event:Event bindings and sinks' \
 'stats:Statistics summaries and live counters' \
 'session:Inspect and manage active sessions' \
+'ftp:FTP→SFTP translator service' \
 'sftp:SFTP file operations and mount planning' \
 'diagnose:Targeted diagnostics and support bundles' \
 'benchmark:Controlled benchmarking against forwards' \
@@ -12893,6 +13191,25 @@ _spt__help__forward__test_commands() {
 _spt__help__forward__throttle_commands() {
     local commands; commands=()
     _describe -t commands 'spt help forward throttle commands' commands "$@"
+}
+(( $+functions[_spt__help__ftp_commands] )) ||
+_spt__help__ftp_commands() {
+    local commands; commands=(
+'translator:Run / manage the FTP→SFTP translator service' \
+    )
+    _describe -t commands 'spt help ftp commands' commands "$@"
+}
+(( $+functions[_spt__help__ftp__translator_commands] )) ||
+_spt__help__ftp__translator_commands() {
+    local commands; commands=(
+'serve:Start the FTP translator listening on \`--bind\`' \
+    )
+    _describe -t commands 'spt help ftp translator commands' commands "$@"
+}
+(( $+functions[_spt__help__ftp__translator__serve_commands] )) ||
+_spt__help__ftp__translator__serve_commands() {
+    local commands; commands=()
+    _describe -t commands 'spt help ftp translator serve commands' commands "$@"
 }
 (( $+functions[_spt__help__help_commands] )) ||
 _spt__help__help_commands() {

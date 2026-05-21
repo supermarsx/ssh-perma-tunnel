@@ -23,6 +23,13 @@ members = [
     "crates/spt-key",
     "crates/spt-trust",
     "crates/spt-auth",
+    # t6-Bwire: register Phase A/B crates so `cargo {test,clippy} --workspace`
+    # exercises them directly. They were already in `[workspace.dependencies]`
+    # via t6-e6 / t6-e7 / t6-e9 / t6-e13; this completes their integration.
+    "crates/spt-auth-sspi",
+    "crates/spt-ftp-translator",
+    "crates/spt-obfs",
+    "crates/spt-scripting",
     "crates/spt-stats",
     "crates/spt-diagnostics",
     "crates/spt-benchmark",
@@ -56,7 +63,7 @@ repository = "https://github.com/Mariana/ssh-perma-tunnel"
 homepage = "https://github.com/Mariana/ssh-perma-tunnel"
 authors = ["Mariana"]
 description = "Permanent SSH2/SSH3 tunnels with reconnect, observability, and service integration."
-readme = "README.md"
+readme = "readme.md"
 
 [workspace.dependencies]
 # Internal crates

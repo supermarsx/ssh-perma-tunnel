@@ -1,5 +1,6 @@
 ---
 source: crates/spt-cli/tests/help_snapshots.rs
+assertion_line: 28
 expression: out
 ---
 Permanent SSH2/SSH3 tunnels with reconnect, observability, and service integration.
@@ -22,6 +23,7 @@ Commands:
   event       Event bindings and sinks
   stats       Statistics summaries and live counters
   session     Inspect and manage active sessions
+  ftp         FTP→SFTP translator service
   sftp        SFTP file operations and mount planning
   diagnose    Targeted diagnostics and support bundles
   benchmark   Controlled benchmarking against forwards
