@@ -4,7 +4,9 @@ use std::time::Duration;
 
 use spt_auth::{AuthConfig, AuthMethod};
 use spt_core::BindAddr;
-use spt_protocol::{Endpoint, LocalForwardSpec, RemoteForwardSpec, TargetAddr, TunnelProtocol};
+use spt_protocol::{
+    DynamicForwardSpec, Endpoint, LocalForwardSpec, RemoteForwardSpec, TargetAddr, TunnelProtocol,
+};
 use spt_ssh2::testing::RusshTestServer;
 use spt_ssh2::{Ssh2BackendKind, Ssh2Protocol};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
@@ -78,6 +80,52 @@ async fn russh_backend_local_forward_bridges_to_direct_tcpip() {
     let mut buf = [0u8; 4];
     sock.read_exact(&mut buf).await.expect("read echo");
     assert_eq!(&buf, b"ping");
+
+    handle.close().await;
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn russh_backend_dynamic_forward_bridges_socks5_to_direct_tcpip() {
+    let (server, mut session) = connect_russh_session().await;
+    let port = free_loopback_port().await;
+
+    let handle = session
+        .open_dynamic_forward(&DynamicForwardSpec {
+            name: "dynamic-proxy".into(),
+            listen: BindAddr::parse(&format!("127.0.0.1:{port}")).unwrap(),
+            max_connections: Some(4),
+            allow_socks5: true,
+            allow_http_connect: true,
+        })
+        .await
+        .expect("open dynamic forward");
+
+    let mut sock = TcpStream::connect(("127.0.0.1", port))
+        .await
+        .expect("connect dynamic forward");
+    sock.write_all(&[0x05, 0x01, 0x00])
+        .await
+        .expect("write SOCKS greeting");
+    let mut method = [0_u8; 2];
+    sock.read_exact(&mut method)
+        .await
+        .expect("read SOCKS method");
+    assert_eq!(method, [0x05, 0x00]);
+
+    let host = b"server-side-echo";
+    let mut request = vec![0x05, 0x01, 0x00, 0x03, host.len() as u8];
+    request.extend_from_slice(host);
+    request.extend_from_slice(&7_u16.to_be_bytes());
+    sock.write_all(&request).await.expect("write SOCKS connect");
+    let mut reply = [0_u8; 10];
+    sock.read_exact(&mut reply).await.expect("read SOCKS reply");
+    assert_eq!(&reply[..2], &[0x05, 0x00]);
+
+    sock.write_all(b"dyn!").await.expect("write payload");
+    let mut echoed = [0_u8; 4];
+    sock.read_exact(&mut echoed).await.expect("read echo");
+    assert_eq!(&echoed, b"dyn!");
 
     handle.close().await;
     server.shutdown().await;

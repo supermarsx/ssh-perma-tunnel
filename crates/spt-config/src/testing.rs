@@ -427,8 +427,9 @@ impl ProfileBuilder {
 /// Fluent builder for [`Forward`].
 ///
 /// Use the named constructors [`ForwardBuilder::local_tcp`],
-/// [`ForwardBuilder::remote_tcp`], or [`ForwardBuilder::local_udp`] for
-/// sensible defaults; tweak with the `with_*` setters.
+/// [`ForwardBuilder::remote_tcp`], [`ForwardBuilder::dynamic_tcp`], or
+/// [`ForwardBuilder::local_udp`] for sensible defaults; tweak with the
+/// `with_*` setters.
 ///
 /// # Examples
 ///
@@ -488,6 +489,30 @@ impl ForwardBuilder {
                 bind: Some(bind.to_owned()),
                 target: Some(target.to_owned()),
                 target_resolve: Some("local".into()),
+                required: Some(true),
+                ..Forward::default()
+            },
+        }
+    }
+
+    /// Dynamic TCP proxy forward.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use spt_config::testing::ForwardBuilder;
+    /// let f = ForwardBuilder::dynamic_tcp("proxy", "127.0.0.1:1080").build();
+    /// assert_eq!(f.kind, "dynamic");
+    /// ```
+    #[must_use]
+    pub fn dynamic_tcp(name: &str, bind: &str) -> Self {
+        Self {
+            inner: Forward {
+                name: name.to_owned(),
+                kind: "dynamic".into(),
+                transport: "tcp".into(),
+                bind: Some(bind.to_owned()),
+                target_resolve: Some("remote".into()),
                 required: Some(true),
                 ..Forward::default()
             },

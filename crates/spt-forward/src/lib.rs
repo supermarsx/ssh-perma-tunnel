@@ -26,8 +26,8 @@
 //!    one config [`spt_config::Forward`] entry and drive a single
 //!    [`spt_protocol::ForwardHandle`] through its lifecycle. The runner does
 //!    *not* itself bind sockets — it asks the session to do so via
-//!    `open_local_forward` / `open_remote_forward` / `open_udp_forward` and
-//!    surfaces the resulting state.
+//!    `open_local_forward` / `open_remote_forward` / `open_dynamic_forward` /
+//!    `open_udp_forward` and surfaces the resulting state.
 //!
 //! ## Why this layering
 //!

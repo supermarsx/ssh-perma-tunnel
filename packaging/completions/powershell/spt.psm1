@@ -978,6 +978,7 @@ Register-ArgumentCompleter -Native -CommandName 'spt' -ScriptBlock {
             [CompletionResult]::new('--version', '--version', [CompletionResultType]::ParameterName, 'Print version')
             [CompletionResult]::new('local', 'local', [CompletionResultType]::ParameterValue, 'Local forward (`-L`)')
             [CompletionResult]::new('remote', 'remote', [CompletionResultType]::ParameterValue, 'Remote forward (`-R`)')
+            [CompletionResult]::new('dynamic', 'dynamic', [CompletionResultType]::ParameterValue, 'Dynamic SOCKS5/HTTP CONNECT proxy (`-D`)')
             [CompletionResult]::new('help', 'help', [CompletionResultType]::ParameterValue, 'Print this message or the help of the given subcommand(s)')
             break
         }
@@ -1035,9 +1036,35 @@ Register-ArgumentCompleter -Native -CommandName 'spt' -ScriptBlock {
             [CompletionResult]::new('--version', '--version', [CompletionResultType]::ParameterName, 'Print version')
             break
         }
+        'spt;forward;add;dynamic' {
+            [CompletionResult]::new('--profile', '--profile', [CompletionResultType]::ParameterName, 'Owning profile name')
+            [CompletionResult]::new('--listen', '--listen', [CompletionResultType]::ParameterName, 'Local proxy listen address (`host:port` or `[::1]:port`)')
+            [CompletionResult]::new('--connections', '--connections', [CompletionResultType]::ParameterName, 'Per-forward concurrent connection limit')
+            [CompletionResult]::new('--config', '--config', [CompletionResultType]::ParameterName, 'Path to a single config file')
+            [CompletionResult]::new('--config-dir', '--config-dir', [CompletionResultType]::ParameterName, 'Path to a directory of `*.toml` configs (loaded in lexical order)')
+            [CompletionResult]::new('--config-url', '--config-url', [CompletionResultType]::ParameterName, 'HTTPS URL of a remote config to fetch')
+            [CompletionResult]::new('--config-fingerprint', '--config-fingerprint', [CompletionResultType]::ParameterName, 'SHA-256 fingerprint pin for `--config-url`')
+            [CompletionResult]::new('--state-dir', '--state-dir', [CompletionResultType]::ParameterName, 'Override the runtime state directory')
+            [CompletionResult]::new('--output', '--output', [CompletionResultType]::ParameterName, 'Output format for command results')
+            [CompletionResult]::new('--log-level', '--log-level', [CompletionResultType]::ParameterName, 'Tracing log level')
+            [CompletionResult]::new('--color', '--color', [CompletionResultType]::ParameterName, 'Color policy for human output')
+            [CompletionResult]::new('--json', '--json', [CompletionResultType]::ParameterName, 'Convenience alias for `--output json`')
+            [CompletionResult]::new('-q', '-q', [CompletionResultType]::ParameterName, 'Suppress non-essential output')
+            [CompletionResult]::new('--quiet', '--quiet', [CompletionResultType]::ParameterName, 'Suppress non-essential output')
+            [CompletionResult]::new('-v', '-v', [CompletionResultType]::ParameterName, 'Increase verbosity (repeat for more)')
+            [CompletionResult]::new('--verbose', '--verbose', [CompletionResultType]::ParameterName, 'Increase verbosity (repeat for more)')
+            [CompletionResult]::new('--no-color', '--no-color', [CompletionResultType]::ParameterName, 'Disable color (legacy convenience flag; use `--color never`)')
+            [CompletionResult]::new('--dry-run', '--dry-run', [CompletionResultType]::ParameterName, 'Show what would happen without making changes')
+            [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help (see more with ''--help'')')
+            [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help (see more with ''--help'')')
+            [CompletionResult]::new('-V', '-V ', [CompletionResultType]::ParameterName, 'Print version')
+            [CompletionResult]::new('--version', '--version', [CompletionResultType]::ParameterName, 'Print version')
+            break
+        }
         'spt;forward;add;help' {
             [CompletionResult]::new('local', 'local', [CompletionResultType]::ParameterValue, 'Local forward (`-L`)')
             [CompletionResult]::new('remote', 'remote', [CompletionResultType]::ParameterValue, 'Remote forward (`-R`)')
+            [CompletionResult]::new('dynamic', 'dynamic', [CompletionResultType]::ParameterValue, 'Dynamic SOCKS5/HTTP CONNECT proxy (`-D`)')
             [CompletionResult]::new('help', 'help', [CompletionResultType]::ParameterValue, 'Print this message or the help of the given subcommand(s)')
             break
         }
@@ -1045,6 +1072,9 @@ Register-ArgumentCompleter -Native -CommandName 'spt' -ScriptBlock {
             break
         }
         'spt;forward;add;help;remote' {
+            break
+        }
+        'spt;forward;add;help;dynamic' {
             break
         }
         'spt;forward;add;help;help' {
@@ -1168,12 +1198,16 @@ Register-ArgumentCompleter -Native -CommandName 'spt' -ScriptBlock {
         'spt;forward;help;add' {
             [CompletionResult]::new('local', 'local', [CompletionResultType]::ParameterValue, 'Local forward (`-L`)')
             [CompletionResult]::new('remote', 'remote', [CompletionResultType]::ParameterValue, 'Remote forward (`-R`)')
+            [CompletionResult]::new('dynamic', 'dynamic', [CompletionResultType]::ParameterValue, 'Dynamic SOCKS5/HTTP CONNECT proxy (`-D`)')
             break
         }
         'spt;forward;help;add;local' {
             break
         }
         'spt;forward;help;add;remote' {
+            break
+        }
+        'spt;forward;help;add;dynamic' {
             break
         }
         'spt;forward;help;explain' {
@@ -5636,12 +5670,16 @@ Register-ArgumentCompleter -Native -CommandName 'spt' -ScriptBlock {
         'spt;help;forward;add' {
             [CompletionResult]::new('local', 'local', [CompletionResultType]::ParameterValue, 'Local forward (`-L`)')
             [CompletionResult]::new('remote', 'remote', [CompletionResultType]::ParameterValue, 'Remote forward (`-R`)')
+            [CompletionResult]::new('dynamic', 'dynamic', [CompletionResultType]::ParameterValue, 'Dynamic SOCKS5/HTTP CONNECT proxy (`-D`)')
             break
         }
         'spt;help;forward;add;local' {
             break
         }
         'spt;help;forward;add;remote' {
+            break
+        }
+        'spt;help;forward;add;dynamic' {
             break
         }
         'spt;help;forward;explain' {

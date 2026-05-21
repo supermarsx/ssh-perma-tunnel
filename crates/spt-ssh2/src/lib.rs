@@ -13,8 +13,9 @@
 //!   [`spt_trust::Sha256HostPin`] (whichever the profile selects, both
 //!   supported).
 //! * Local TCP forwards (`direct-tcpip`), remote TCP forwards
-//!   (`tcpip-forward` + `forwarded-tcpip`), multi-hop chains via per-hop
-//!   `direct-tcpip` channels promoted to the next session's transport.
+//!   (`tcpip-forward` + `forwarded-tcpip`), dynamic SOCKS5/HTTP CONNECT
+//!   proxy listeners, and multi-hop chains via per-hop `direct-tcpip`
+//!   channels promoted to the next session's transport.
 //! * Periodic keepalive driver (`keepalive_send`).
 //! * Crypto policy enforcement via libssh2 `method_pref` calls with warning
 //!   logs on deprecated algorithms.
@@ -24,6 +25,7 @@
 
 pub mod auth;
 pub mod crypto;
+pub(crate) mod dynamic;
 pub mod errors;
 pub mod forward;
 pub mod hostkey;

@@ -136,7 +136,7 @@ pub struct ForwardView {
     pub profile: String,
     /// Forward id.
     pub name: String,
-    /// `local` or `remote`.
+    /// `local`, `remote`, or `dynamic`.
     pub direction: String,
     /// `tcp` or `udp`.
     pub transport: String,
@@ -253,7 +253,13 @@ fn build_view(profile: &Profile, fwd: &Forward) -> ForwardView {
         .target
         .clone()
         .or_else(|| fwd.connect.clone())
-        .unwrap_or_else(|| "?".to_owned());
+        .unwrap_or_else(|| {
+            if fwd.kind == "dynamic" {
+                "per-request SOCKS5/HTTP CONNECT target".to_owned()
+            } else {
+                "?".to_owned()
+            }
+        });
 
     let limits = ForwardLimits {
         max_bytes_per_second_in: fwd.max_bytes_per_second_in.clone(),
@@ -571,16 +577,24 @@ fn render_narrative(v: &ForwardView, profile: &Profile) -> String {
     let channel_kind = match v.transport.as_str() {
         "tcp" => match v.direction.as_str() {
             "remote" => "an SSH `forwarded-tcpip` channel from the remote side",
+            "dynamic" => "an SSH `direct-tcpip` channel to the requested proxy target",
             _ => "an SSH `direct-tcpip` channel",
         },
         "udp" => "a QUIC datagram flow (SSH3 only)",
         _ => "an SSH forward channel",
     };
-    out.push_str(&format!(
-        "  - Each accepted {proto_upper} connection opens {channel_kind}\n    \
-         through the `{}` session to {}.\n",
-        v.profile, v.target
-    ));
+    if v.direction == "dynamic" {
+        out.push_str(&format!(
+            "  - Each accepted {proto_upper} proxy connection speaks SOCKS5 or HTTP CONNECT,\n    opens {channel_kind} through the `{}` session.\n",
+            v.profile
+        ));
+    } else {
+        out.push_str(&format!(
+            "  - Each accepted {proto_upper} connection opens {channel_kind}\n    \
+             through the `{}` session to {}.\n",
+            v.profile, v.target
+        ));
+    }
 
     // Target resolution side.
     out.push_str(&format!(

@@ -29,7 +29,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use async_trait::async_trait;
 use quinn::{Connection, RecvStream, SendStream};
 use spt_core::{Error, Result};
-use spt_protocol::forward::{LocalForwardSpec, RemoteForwardSpec, UdpForwardSpec};
+use spt_protocol::forward::{
+    DynamicForwardSpec, LocalForwardSpec, RemoteForwardSpec, UdpForwardSpec,
+};
 use spt_protocol::handle::ForwardHandle;
 use spt_protocol::session::{SessionInfo, TunnelSession};
 use tokio::sync::Mutex as AsyncMutex;
@@ -207,6 +209,12 @@ impl TunnelSession for Ssh3Session {
             self.peer_settings.remote_tcp,
         )
         .await
+    }
+
+    async fn open_dynamic_forward(&mut self, _spec: &DynamicForwardSpec) -> Result<ForwardHandle> {
+        Err(Error::UnsupportedPlatform(
+            "SSH3 dynamic SOCKS/HTTP CONNECT proxy listeners are not implemented; use an SSH2/russh profile for dynamic proxying".into(),
+        ))
     }
 
     async fn open_udp_forward(&mut self, spec: &UdpForwardSpec) -> Result<ForwardHandle> {

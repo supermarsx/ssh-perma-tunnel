@@ -57,6 +57,26 @@ pub struct RemoteForwardSpec {
     pub max_connections: Option<u32>,
 }
 
+/// Specification for a client-side dynamic TCP proxy.
+///
+/// The local listener accepts SOCKS5 and HTTP CONNECT requests. Each accepted
+/// request selects its own remote target, which the SSH backend dials through a
+/// fresh direct TCP channel.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DynamicForwardSpec {
+    /// User-facing forward name.
+    pub name: String,
+    /// Local socket the supervisor will bind.
+    pub listen: BindAddr,
+    /// Optional max concurrent proxy connections.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_connections: Option<u32>,
+    /// Accept SOCKS5 CONNECT requests.
+    pub allow_socks5: bool,
+    /// Accept HTTP CONNECT requests.
+    pub allow_http_connect: bool,
+}
+
 /// Specification for a UDP forward (SSH3 only — see [`ProtocolCapabilities`](crate::ProtocolCapabilities)).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UdpForwardSpec {

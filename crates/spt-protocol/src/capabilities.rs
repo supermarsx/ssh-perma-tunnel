@@ -17,6 +17,8 @@ pub struct ProtocolCapabilities {
     pub local_udp: bool,
     /// Can request server-listener UDP forwards.
     pub remote_udp: bool,
+    /// Can open client-side SOCKS5/HTTP CONNECT dynamic TCP proxy listeners.
+    pub dynamic_tcp: bool,
     /// Supports tunnelling through one or more intermediate hops (jump hosts).
     pub multi_hop: bool,
     /// Supports forwarding the user's SSH agent into the session.
@@ -36,6 +38,7 @@ impl ProtocolCapabilities {
             remote_tcp: true,
             local_udp: false,
             remote_udp: false,
+            dynamic_tcp: true,
             multi_hop: true,
             agent_forwarding: true,
             host_keys: true,
@@ -51,6 +54,7 @@ impl ProtocolCapabilities {
             remote_tcp: true,
             local_udp: true,
             remote_udp: true,
+            dynamic_tcp: false,
             multi_hop: false,
             agent_forwarding: false,
             host_keys: false,
@@ -67,6 +71,7 @@ mod tests {
     fn ssh2_caps() {
         let c = ProtocolCapabilities::ssh2();
         assert!(c.local_tcp && c.remote_tcp && c.host_keys);
+        assert!(c.dynamic_tcp);
         assert!(!c.local_udp && !c.remote_udp);
     }
 
@@ -74,5 +79,6 @@ mod tests {
     fn ssh3_caps() {
         let c = ProtocolCapabilities::ssh3();
         assert!(c.local_udp && c.remote_udp && !c.host_keys);
+        assert!(!c.dynamic_tcp);
     }
 }

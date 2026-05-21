@@ -19,7 +19,8 @@ fn any_v4(port: u16) -> BindAddr {
 
 use crate::endpoint::{AddressFamily, Endpoint};
 use crate::forward::{
-    ForwardDirection, ForwardState, LocalForwardSpec, RemoteForwardSpec, UdpForwardSpec,
+    DynamicForwardSpec, ForwardDirection, ForwardState, LocalForwardSpec, RemoteForwardSpec,
+    UdpForwardSpec,
 };
 use crate::handle::{ForwardHandle, ForwardId};
 use crate::TargetAddr;
@@ -108,6 +109,26 @@ pub fn remote_forward_spec(port: u16) -> RemoteForwardSpec {
         listen: any_v4(port),
         target: TargetAddr::new("127.0.0.1", port),
         max_connections: None,
+    }
+}
+
+/// Build a dynamic TCP proxy spec bound to `127.0.0.1:port`.
+///
+/// ```
+/// # #[cfg(feature = "testing")] fn _doc() {
+/// use spt_protocol::testing::dynamic_forward_spec;
+/// let s = dynamic_forward_spec(1080);
+/// assert!(s.allow_socks5 && s.allow_http_connect);
+/// # }
+/// ```
+#[must_use]
+pub fn dynamic_forward_spec(port: u16) -> DynamicForwardSpec {
+    DynamicForwardSpec {
+        name: format!("dynamic-{port}"),
+        listen: loopback_v4(port),
+        max_connections: None,
+        allow_socks5: true,
+        allow_http_connect: true,
     }
 }
 
@@ -213,6 +234,7 @@ mod tests {
     fn forward_specs_carry_port() {
         assert_eq!(local_forward_spec(8080).target.port, 8080);
         assert_eq!(remote_forward_spec(9090).target.port, 9090);
+        assert_eq!(dynamic_forward_spec(1080).name, "dynamic-1080");
         assert_eq!(udp_forward_spec(53).target.port, 53);
     }
 

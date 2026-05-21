@@ -5,6 +5,7 @@ use clap::{Args, Subcommand};
 const EXAMPLES: &str = "EXAMPLES:
   spt forward add local --profile edge --listen 127.0.0.1:5432 --to db:5432 --tcp
   spt forward add remote --profile edge --listen 0.0.0.0:8080 --to web:80 --tcp
+  spt forward add dynamic --profile edge --listen 127.0.0.1:1080
   spt forward throttle edge/db --in 10MiB/s --out 10MiB/s --connections 64
   spt forward test edge/db --connect --dns-name db.local
   spt forward remove edge/db";
@@ -77,6 +78,8 @@ pub enum ForwardDirection {
     Local(ForwardAddArgs),
     /// Remote forward (`-R`).
     Remote(ForwardAddArgs),
+    /// Dynamic SOCKS5/HTTP CONNECT proxy (`-D`).
+    Dynamic(ForwardAddDynamicArgs),
 }
 
 /// Args common to `spt forward add local|remote`.
@@ -97,6 +100,20 @@ pub struct ForwardAddArgs {
     /// UDP forward (SSH3 only).
     #[arg(long, group = "fwd_proto")]
     pub udp: bool,
+}
+
+/// Args for `spt forward add dynamic`.
+#[derive(Args, Debug)]
+pub struct ForwardAddDynamicArgs {
+    /// Owning profile name.
+    #[arg(long)]
+    pub profile: String,
+    /// Local proxy listen address (`host:port` or `[::1]:port`).
+    #[arg(long, value_name = "ADDR:PORT")]
+    pub listen: String,
+    /// Per-forward concurrent connection limit.
+    #[arg(long, value_name = "N")]
+    pub connections: Option<u32>,
 }
 
 /// `<profile>/<forward>` shorthand argument.

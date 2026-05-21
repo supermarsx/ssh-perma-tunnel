@@ -2,7 +2,8 @@
 
 A forward is a single accept-and-relay rule attached to a profile. `spt`
 supports local TCP, remote TCP, and UDP forwards (UDP only via SSH3 since
-SSH2 has no UDP channel type).
+SSH2 has no UDP channel type). SSH2/russh also supports dynamic TCP proxy
+listeners for SOCKS5 and HTTP CONNECT.
 
 ## Local TCP (`type = "local"`)
 
@@ -27,6 +28,26 @@ tunneled back through and connected to the local target.
     transport = "tcp"
     bind = "0.0.0.0:9090"
     target = "127.0.0.1:9090"
+
+## Dynamic TCP Proxy (`type = "dynamic"`)
+
+Listens locally and accepts SOCKS5 CONNECT or HTTP CONNECT. Each client
+request chooses its own remote target, and `spt` opens an SSH2 `direct-tcpip`
+channel to that target. This is controlled by `allow_dynamic_proxy`.
+
+    [capabilities]
+    allow_dynamic_proxy = true
+
+    [[profiles.forwards]]
+    name = "proxy"
+    type = "dynamic"
+    transport = "tcp"
+    bind = "127.0.0.1:1080"
+    max_connections = 128
+
+CLI:
+
+    spt forward add dynamic --profile edge --listen 127.0.0.1:1080 --connections 128
 
 ## UDP (SSH3 only)
 

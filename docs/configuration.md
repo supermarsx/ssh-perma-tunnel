@@ -180,10 +180,11 @@ bindings.
 The production SSH2 target is the pure-Rust `russh` backend. `libssh2` is kept
 as a legacy migration value only and validation warns when it is selected.
 The current `russh` runtime supports password, public-key, certificate, and
-keyboard-interactive auth plus local and remote TCP forwarding. SSH agent auth
-and multi-hop chains still return explicit unsupported-feature diagnostics on
-the `russh` path; select `ssh2_backend = "libssh2"` only for those migration
-cases and keep `allow_libssh2 = true`.
+keyboard-interactive auth plus local TCP, remote TCP, and dynamic SOCKS5/HTTP
+CONNECT proxy forwarding. SSH agent auth and multi-hop chains still return
+explicit unsupported-feature diagnostics on the `russh` path; select
+`ssh2_backend = "libssh2"` only for those migration cases and keep
+`allow_libssh2 = true`.
 `require_post_quantum_kex` requires `allow_post_quantum_kex = true`; Windows
 drive-letter mounts and writeback caching require filesystem mounts to be
 enabled explicitly.
@@ -212,6 +213,18 @@ A minimal profile (see [`examples/minimal.toml`](../examples/minimal.toml)):
     transport = "tcp"
     bind = "127.0.0.1:8080"
     target = "service.internal:80"
+
+Dynamic proxy listener:
+
+    [capabilities]
+    allow_dynamic_proxy = true
+
+    [[profiles.forwards]]
+    name = "proxy"
+    type = "dynamic"
+    transport = "tcp"
+    bind = "127.0.0.1:1080"
+    max_connections = 128
 
 See [Profiles](profiles.md), [Forwards](forwards.md), and
 [Authentication](auth.md) for the per-profile sub-tables.

@@ -15,8 +15,8 @@ use secrecy::ExposeSecret as _;
 use spt_auth::{AuthConfig, AuthMethod, SecretRef as AuthSecretRef};
 use spt_core::{BindAddr, Error, Result};
 use spt_protocol::{
-    Endpoint, ForwardHandle, ForwardId, ForwardState, LocalForwardSpec, RemoteForwardSpec,
-    SessionInfo, TargetAddr, TunnelSession, UdpForwardSpec,
+    DynamicForwardSpec, Endpoint, ForwardHandle, ForwardId, ForwardState, LocalForwardSpec,
+    RemoteForwardSpec, SessionInfo, TargetAddr, TunnelSession, UdpForwardSpec,
 };
 use spt_secrets::SecretBackend;
 use tokio::io::AsyncWriteExt as _;
@@ -206,6 +206,10 @@ impl TunnelSession for RusshSsh2Session {
             spec,
         )
         .await
+    }
+
+    async fn open_dynamic_forward(&mut self, spec: &DynamicForwardSpec) -> Result<ForwardHandle> {
+        open_dynamic(Arc::clone(&self.handle), spec).await
     }
 
     async fn open_udp_forward(&mut self, _spec: &UdpForwardSpec) -> Result<ForwardHandle> {
@@ -475,6 +479,32 @@ async fn open_local(handle: SharedHandle, spec: &LocalForwardSpec) -> Result<For
     Ok(ForwardHandle::new(id, name, state_rx, close_tx))
 }
 
+async fn open_dynamic(handle: SharedHandle, spec: &DynamicForwardSpec) -> Result<ForwardHandle> {
+    let bind = bind_addr_string(&spec.listen)?;
+    let listener = TcpListener::bind(&bind)
+        .await
+        .map_err(|e| Error::LocalBindFailed {
+            address: bind.clone(),
+            reason: e.to_string(),
+        })?;
+
+    let (state_tx, state_rx) = watch::channel(ForwardState::Listening);
+    let (close_tx, close_rx) = oneshot::channel();
+    let id = ForwardId::new();
+    let name = spec.name.clone();
+    tokio::spawn(dynamic_loop(
+        listener,
+        handle,
+        state_tx,
+        close_rx,
+        spec.max_connections,
+        name.clone(),
+        spec.allow_socks5,
+        spec.allow_http_connect,
+    ));
+    Ok(ForwardHandle::new(id, name, state_rx, close_tx))
+}
+
 async fn local_loop(
     listener: TcpListener,
     handle: SharedHandle,
@@ -520,6 +550,52 @@ async fn local_loop(
     let _ = state_tx.send(ForwardState::Stopped);
 }
 
+#[allow(clippy::too_many_arguments)]
+async fn dynamic_loop(
+    listener: TcpListener,
+    handle: SharedHandle,
+    state_tx: watch::Sender<ForwardState>,
+    mut close_rx: oneshot::Receiver<()>,
+    max_connections: Option<u32>,
+    name: String,
+    allow_socks5: bool,
+    allow_http_connect: bool,
+) {
+    let _ = state_tx.send(ForwardState::Active);
+    let active = Arc::new(std::sync::atomic::AtomicU32::new(0));
+    loop {
+        tokio::select! {
+            _ = &mut close_rx => break,
+            accept = listener.accept() => {
+                let (sock, peer) = match accept {
+                    Ok(value) => value,
+                    Err(e) => {
+                        warn!(target: "spt_ssh2::russh", forward = %name, error = %e, "dynamic accept failed");
+                        continue;
+                    }
+                };
+                if let Some(limit) = max_connections {
+                    if active.load(std::sync::atomic::Ordering::Relaxed) >= limit {
+                        warn!(target: "spt_ssh2::russh", forward = %name, "max_connections reached");
+                        continue;
+                    }
+                }
+                active.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let handle = Arc::clone(&handle);
+                let active = Arc::clone(&active);
+                let name = name.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = bridge_dynamic(handle, sock, peer, allow_socks5, allow_http_connect).await {
+                        warn!(target: "spt_ssh2::russh", forward = %name, error = %e, "dynamic bridge failed");
+                    }
+                    active.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                });
+            }
+        }
+    }
+    let _ = state_tx.send(ForwardState::Stopped);
+}
+
 async fn bridge_local(
     handle: SharedHandle,
     mut sock: TcpStream,
@@ -542,6 +618,46 @@ async fn bridge_local(
     tokio::io::copy_bidirectional(&mut sock, &mut stream)
         .await
         .map_err(|e| Error::RuntimeFailure(format!("russh local bridge I/O: {e}")))?;
+    let _ = stream.shutdown().await;
+    Ok(())
+}
+
+async fn bridge_dynamic(
+    handle: SharedHandle,
+    mut sock: TcpStream,
+    peer: SocketAddr,
+    allow_socks5: bool,
+    allow_http_connect: bool,
+) -> Result<()> {
+    let request = crate::dynamic::read_request(&mut sock, allow_socks5, allow_http_connect).await?;
+    let channel = {
+        let handle = handle.lock().await;
+        handle
+            .channel_open_direct_tcpip(
+                request.target.host.clone(),
+                u32::from(request.target.port),
+                peer.ip().to_string(),
+                u32::from(peer.port()),
+            )
+            .await
+    };
+    let channel = match channel {
+        Ok(channel) => {
+            crate::dynamic::reply_success(&mut sock, request.protocol).await?;
+            channel
+        }
+        Err(e) => {
+            let _ = crate::dynamic::reply_failure(&mut sock, request.protocol).await;
+            return Err(Error::RuntimeFailure(format!(
+                "russh dynamic direct-tcpip to {}:{}: {e}",
+                request.target.host, request.target.port
+            )));
+        }
+    };
+    let mut stream = channel.into_stream();
+    tokio::io::copy_bidirectional(&mut sock, &mut stream)
+        .await
+        .map_err(|e| Error::RuntimeFailure(format!("russh dynamic bridge I/O: {e}")))?;
     let _ = stream.shutdown().await;
     Ok(())
 }

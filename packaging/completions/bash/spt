@@ -691,6 +691,9 @@ _spt() {
             spt__forward,throttle)
                 cmd="spt__forward__throttle"
                 ;;
+            spt__forward__add,dynamic)
+                cmd="spt__forward__add__dynamic"
+                ;;
             spt__forward__add,help)
                 cmd="spt__forward__add__help"
                 ;;
@@ -699,6 +702,9 @@ _spt() {
                 ;;
             spt__forward__add,remote)
                 cmd="spt__forward__add__remote"
+                ;;
+            spt__forward__add__help,dynamic)
+                cmd="spt__forward__add__help__dynamic"
                 ;;
             spt__forward__add__help,help)
                 cmd="spt__forward__add__help__help"
@@ -732,6 +738,9 @@ _spt() {
                 ;;
             spt__forward__help,throttle)
                 cmd="spt__forward__help__throttle"
+                ;;
+            spt__forward__help__add,dynamic)
+                cmd="spt__forward__help__add__dynamic"
                 ;;
             spt__forward__help__add,local)
                 cmd="spt__forward__help__add__local"
@@ -1038,6 +1047,9 @@ _spt() {
                 ;;
             spt__help__forward,throttle)
                 cmd="spt__help__forward__throttle"
+                ;;
+            spt__help__forward__add,dynamic)
+                cmd="spt__help__forward__add__dynamic"
                 ;;
             spt__help__forward__add,local)
                 cmd="spt__help__forward__add__local"
@@ -8073,7 +8085,7 @@ _spt() {
             return 0
             ;;
         spt__forward__add)
-            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version local remote help"
+            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version local remote dynamic help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -8122,9 +8134,81 @@ _spt() {
             COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
             return 0
             ;;
-        spt__forward__add__help)
-            opts="local remote help"
+        spt__forward__add__dynamic)
+            opts="-q -v -h -V --profile --listen --connections --config --config-dir --config-url --config-fingerprint --state-dir --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                --profile)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --listen)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --connections)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --config)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --config-dir)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --config-url)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --config-fingerprint)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --state-dir)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --output)
+                    COMPREPLY=($(compgen -W "human json jsonl yaml" -- "${cur}"))
+                    return 0
+                    ;;
+                --log-level)
+                    COMPREPLY=($(compgen -W "error warn info debug trace" -- "${cur}"))
+                    return 0
+                    ;;
+                --color)
+                    COMPREPLY=($(compgen -W "auto always never" -- "${cur}"))
+                    return 0
+                    ;;
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        spt__forward__add__help)
+            opts="local remote dynamic help"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        spt__forward__add__help__dynamic)
+            opts=""
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 5 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
             fi
@@ -8359,8 +8443,22 @@ _spt() {
             return 0
             ;;
         spt__forward__help__add)
-            opts="local remote"
+            opts="local remote dynamic"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        spt__forward__help__add__dynamic)
+            opts=""
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 5 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
             fi
@@ -9917,8 +10015,22 @@ _spt() {
             return 0
             ;;
         spt__help__forward__add)
-            opts="local remote"
+            opts="local remote dynamic"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        spt__help__forward__add__dynamic)
+            opts=""
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 5 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
             fi

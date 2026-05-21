@@ -490,11 +490,33 @@ fn forward_list(global: &GlobalOpts, args: groups::forward::ForwardList) -> Resu
 
 fn forward_add(global: &GlobalOpts, args: groups::forward::ForwardAdd) -> Result<()> {
     use groups::forward::ForwardDirection;
-    let (direction, fa) = match args.direction {
-        ForwardDirection::Local(a) => ("local", a),
-        ForwardDirection::Remote(a) => ("remote", a),
+    let (direction, profile, listen, target, transport, max_connections) = match args.direction {
+        ForwardDirection::Local(a) => {
+            let transport = if a.udp { "udp" } else { "tcp" };
+            (
+                "local",
+                a.profile,
+                a.listen,
+                Some(a.to),
+                transport,
+                None::<u32>,
+            )
+        }
+        ForwardDirection::Remote(a) => {
+            let transport = if a.udp { "udp" } else { "tcp" };
+            (
+                "remote",
+                a.profile,
+                a.listen,
+                Some(a.to),
+                transport,
+                None::<u32>,
+            )
+        }
+        ForwardDirection::Dynamic(a) => {
+            ("dynamic", a.profile, a.listen, None, "tcp", a.connections)
+        }
     };
-    let transport = if fa.udp { "udp" } else { "tcp" };
     let path = require_config_path(global)?;
     let raw =
         std::fs::read_to_string(&path).map_err(|e| Error::InvalidConfig(format!("read: {e}")))?;
@@ -508,8 +530,8 @@ fn forward_add(global: &GlobalOpts, args: groups::forward::ForwardAdd) -> Result
         .ok_or_else(|| Error::InvalidArgs("config has no [[profiles]]".into()))?;
     let prof = profiles
         .iter_mut()
-        .find(|t| t.get("name").and_then(|v| v.as_str()) == Some(&fa.profile))
-        .ok_or_else(|| Error::InvalidArgs(format!("no profile `{}`", fa.profile)))?;
+        .find(|t| t.get("name").and_then(|v| v.as_str()) == Some(profile.as_str()))
+        .ok_or_else(|| Error::InvalidArgs(format!("no profile `{profile}`")))?;
     let arr = prof
         .entry("forwards")
         .or_insert_with(|| toml_edit::Item::ArrayOfTables(toml_edit::ArrayOfTables::new()));
@@ -519,10 +541,15 @@ fn forward_add(global: &GlobalOpts, args: groups::forward::ForwardAdd) -> Result
         t["name"] = toml_edit::value(name.clone());
         t["type"] = toml_edit::value(direction);
         t["transport"] = toml_edit::value(transport);
-        t["bind"] = toml_edit::value(fa.listen);
-        t["target"] = toml_edit::value(fa.to);
+        t["bind"] = toml_edit::value(listen);
+        if let Some(target) = target {
+            t["target"] = toml_edit::value(target);
+        }
+        if let Some(max_connections) = max_connections {
+            t["max_connections"] = toml_edit::value(i64::from(max_connections));
+        }
         a.push(t);
-        println!("added forward `{}/{name}`", fa.profile);
+        println!("added forward `{profile}/{name}`");
     }
     spt_state::write_atomic_string(&path, &doc.to_string())
         .map_err(|e| Error::InvalidConfig(format!("write: {e}")))?;
@@ -4070,6 +4097,31 @@ mod tests {
             "--udp",
         ]);
         dispatch_ok(cli).await;
+    }
+
+    #[tokio::test]
+    async fn forward_add_dynamic_routes() {
+        let td = tempfile::tempdir().unwrap();
+        let cfg = config_with_profile(td.path());
+        let cli = parse(&[
+            "spt",
+            "--config",
+            cfg.to_str().unwrap(),
+            "forward",
+            "add",
+            "dynamic",
+            "--profile",
+            "edge",
+            "--listen",
+            "127.0.0.1:1080",
+            "--connections",
+            "128",
+        ]);
+        dispatch_ok(cli).await;
+        let raw = std::fs::read_to_string(cfg).unwrap();
+        assert!(raw.contains("type = \"dynamic\""));
+        assert!(raw.contains("max_connections = 128"));
+        assert!(!raw.contains("target = \"\""));
     }
 
     #[tokio::test]

@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use spt_core::Result;
 
-use crate::forward::{LocalForwardSpec, RemoteForwardSpec, UdpForwardSpec};
+use crate::forward::{DynamicForwardSpec, LocalForwardSpec, RemoteForwardSpec, UdpForwardSpec};
 use crate::handle::ForwardHandle;
 
 /// One live session to a remote endpoint.
@@ -18,6 +18,12 @@ pub trait TunnelSession: Send + Sync {
 
     /// Request the remote peer to open a listener and forward back to us.
     async fn open_remote_forward(&mut self, spec: &RemoteForwardSpec) -> Result<ForwardHandle>;
+
+    /// Open a client-side dynamic TCP proxy listener.
+    ///
+    /// Backends that support this accept SOCKS5 and/or HTTP CONNECT on the
+    /// listener and open one direct TCP channel per requested target.
+    async fn open_dynamic_forward(&mut self, spec: &DynamicForwardSpec) -> Result<ForwardHandle>;
 
     /// Open a UDP forward (SSH3 only — backends without UDP capability return
     /// [`spt_core::Error::UnsupportedPlatform`]).

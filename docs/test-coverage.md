@@ -38,9 +38,9 @@ Windows acceptance matrix.
 
 | Area | Automated coverage |
 |------|--------------------|
-| SSH2 runtime | `spt-ssh2` russh backend tests cover password/public-key/cert/kbi auth paths, local TCP forwards, remote TCP forwards, keepalive, and backend selection policy. |
+| SSH2 runtime | `spt-ssh2` russh backend tests cover password/public-key/cert/kbi auth paths, local TCP forwards, remote TCP forwards, dynamic SOCKS5 proxy forwarding, keepalive, and backend selection policy. |
 | SSH3 runtime | `spt-ssh3` tests cover QUIC/TLS/HTTP3 CONNECT bootstrap, frame handling, local/remote TCP where peer capability exists, UDP capability gating, and experimental acknowledgement. |
-| Forwards | `spt-forward` tests cover runner translation, bind modes, target parsing, UDP rejection where unsupported, state transitions, connection limits, and testing fixtures. |
+| Forwards | `spt-forward` tests cover runner translation, bind modes, target parsing, dynamic proxy dispatch, UDP rejection where unsupported, state transitions, connection limits, and testing fixtures. |
 | Runtime/supervisor | `spt-supervisor` tests cover reconnect state, failover, round-robin/weighted selection, reload diffing, live benchmark connectors, session/drain controls, and controller API paths. |
 | Secrets/vault | `spt-secrets` tests cover vault lifecycle, encrypted-at-rest records, keychain mocks, refs, redaction, passphrase reading, and zeroizing buffers. `spt-bin` config tests cover sealed config passphrases stored in the vault and vault-master sealing. |
 | Encrypted configs | `spt-config-crypt` tests cover SPTENC1 sealing, passphrase/X25519/vault-master key sources, metadata, tamper detection, wrong-key failures, and loader auto-detection. |
@@ -115,7 +115,7 @@ cargo test --workspace --all-targets --features snmp --locked
 - Run ignored stress tests for burst traffic, long soak, file descriptor/handle
   leaks, remote log outage/spool bounds, and low idle CPU.
 - Exercise live OpenSSH/dropbear/libssh interoperability fixtures for SSH2
-  local, remote, and future dynamic proxy coverage.
+  local, remote, and dynamic proxy coverage.
 - Add production-positive runtime tests for GSSAPI/Kerberos/SSPI, ML-KEM/PQ
-  KEX, SOCKS/HTTP CONNECT, SFTP, filesystem mounts, and Windows drive-letter
-  mounts once their runtime implementations are complete.
+  KEX, SFTP, filesystem mounts, and Windows drive-letter mounts once their
+  runtime implementations are complete.

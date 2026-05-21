@@ -13,8 +13,8 @@ use spt_config::schema::Forward;
 use spt_core::{BindAddr, Error, Result};
 use spt_net::bind::{resolve_bind, AutoPrefer, BindMode, Family};
 use spt_protocol::{
-    ForwardDirection, ForwardHandle, ForwardState, LocalForwardSpec, RemoteForwardSpec, TargetAddr,
-    TunnelSession, UdpForwardSpec,
+    DynamicForwardSpec, ForwardDirection, ForwardHandle, ForwardState, LocalForwardSpec,
+    RemoteForwardSpec, TargetAddr, TunnelSession, UdpForwardSpec,
 };
 use thiserror::Error;
 use tokio::sync::watch;
@@ -78,74 +78,102 @@ impl ForwardRunner {
                 name: name.clone(),
                 reason: "missing `bind`/`listen`".into(),
             })?;
-        let target_str = cfg
-            .target
-            .as_deref()
-            .or(cfg.connect.as_deref())
-            .ok_or_else(|| ForwardRunnerError::Malformed {
-                name: name.clone(),
-                reason: "missing `target`/`connect`".into(),
-            })?;
-
         let listen = resolve_listen(cfg, listen_str)?;
-        let target = parse_target(target_str).map_err(|e| ForwardRunnerError::Malformed {
-            name: name.clone(),
-            reason: format!("invalid target `{target_str}`: {e}"),
-        })?;
 
-        let direction = parse_direction(&cfg.kind).map_err(|e| ForwardRunnerError::Malformed {
-            name: name.clone(),
-            reason: e.to_string(),
-        })?;
-
-        let handle = match (direction, cfg.transport.as_str()) {
-            (ForwardDirection::Local, "tcp") => {
-                let spec = LocalForwardSpec {
+        let handle = match (cfg.kind.as_str(), cfg.transport.as_str()) {
+            ("dynamic", "tcp") => {
+                let spec = DynamicForwardSpec {
                     name: name.clone(),
                     listen,
-                    target,
                     max_connections: cfg.max_connections,
+                    allow_socks5: true,
+                    allow_http_connect: true,
                 };
-                session.open_local_forward(&spec).await?
+                session.open_dynamic_forward(&spec).await?
             }
-            (ForwardDirection::Remote, "tcp") => {
-                let spec = RemoteForwardSpec {
-                    name: name.clone(),
-                    listen,
-                    target,
-                    max_connections: cfg.max_connections,
-                };
-                session.open_remote_forward(&spec).await?
-            }
-            (dir, "udp") => {
-                let idle_secs = cfg
-                    .udp_idle_timeout
-                    .as_deref()
-                    .map(|s| {
-                        humantime::parse_duration(s)
-                            .map_err(|e| ForwardRunnerError::Malformed {
-                                name: name.clone(),
-                                reason: format!("udp_idle_timeout `{s}`: {e}"),
-                            })
-                            .map(|d| d.as_secs() as u32)
-                    })
-                    .transpose()?
-                    .or_else(|| runner_cfg.default_udp_idle.map(|d| d.as_secs() as u32))
-                    .unwrap_or(60);
-                let spec = UdpForwardSpec {
-                    name: name.clone(),
-                    direction: dir,
-                    listen,
-                    target,
-                    idle_timeout_secs: idle_secs,
-                    max_flows: cfg.max_connections,
-                };
-                session.open_udp_forward(&spec).await?
-            }
-            (_, other) => {
+            ("dynamic", other) => {
                 return Err(ForwardRunnerError::Malformed {
                     name: name.clone(),
-                    reason: format!("unknown transport `{other}`"),
+                    reason: format!("dynamic forwards require transport `tcp`, got `{other}`"),
+                }
+                .into());
+            }
+            (kind @ ("local" | "remote"), transport) => {
+                let target_str = cfg
+                    .target
+                    .as_deref()
+                    .or(cfg.connect.as_deref())
+                    .ok_or_else(|| ForwardRunnerError::Malformed {
+                        name: name.clone(),
+                        reason: "missing `target`/`connect`".into(),
+                    })?;
+                let target =
+                    parse_target(target_str).map_err(|e| ForwardRunnerError::Malformed {
+                        name: name.clone(),
+                        reason: format!("invalid target `{target_str}`: {e}"),
+                    })?;
+                let direction =
+                    parse_direction(kind).map_err(|e| ForwardRunnerError::Malformed {
+                        name: name.clone(),
+                        reason: e.to_string(),
+                    })?;
+                match (direction, transport) {
+                    (ForwardDirection::Local, "tcp") => {
+                        let spec = LocalForwardSpec {
+                            name: name.clone(),
+                            listen: listen.clone(),
+                            target,
+                            max_connections: cfg.max_connections,
+                        };
+                        session.open_local_forward(&spec).await?
+                    }
+                    (ForwardDirection::Remote, "tcp") => {
+                        let spec = RemoteForwardSpec {
+                            name: name.clone(),
+                            listen: listen.clone(),
+                            target,
+                            max_connections: cfg.max_connections,
+                        };
+                        session.open_remote_forward(&spec).await?
+                    }
+                    (dir, "udp") => {
+                        let idle_secs = cfg
+                            .udp_idle_timeout
+                            .as_deref()
+                            .map(|s| {
+                                humantime::parse_duration(s)
+                                    .map_err(|e| ForwardRunnerError::Malformed {
+                                        name: name.clone(),
+                                        reason: format!("udp_idle_timeout `{s}`: {e}"),
+                                    })
+                                    .map(|d| d.as_secs() as u32)
+                            })
+                            .transpose()?
+                            .or_else(|| runner_cfg.default_udp_idle.map(|d| d.as_secs() as u32))
+                            .unwrap_or(60);
+                        let spec = UdpForwardSpec {
+                            name: name.clone(),
+                            direction: dir,
+                            listen: listen.clone(),
+                            target,
+                            idle_timeout_secs: idle_secs,
+                            max_flows: cfg.max_connections,
+                        };
+                        session.open_udp_forward(&spec).await?
+                    }
+                    (_, other) => {
+                        return Err(ForwardRunnerError::Malformed {
+                            name: name.clone(),
+                            reason: format!("unknown transport `{other}`"),
+                        }
+                        .into());
+                    }
+                }
+            }
+            (other, _) => {
+                return Err(ForwardRunnerError::Malformed {
+                    name: name.clone(),
+                    reason: format!("unknown forward type `{other}`"),
                 }
                 .into());
             }
@@ -405,6 +433,14 @@ mod tests {
             self.inner.open_remote_forward(spec).await
         }
 
+        async fn open_dynamic_forward(
+            &mut self,
+            spec: &DynamicForwardSpec,
+        ) -> Result<ForwardHandle> {
+            self.last_listen = Some(spec.listen.clone());
+            self.inner.open_dynamic_forward(spec).await
+        }
+
         async fn open_udp_forward(&mut self, spec: &UdpForwardSpec) -> Result<ForwardHandle> {
             self.last_listen = Some(spec.listen.clone());
             self.inner.open_udp_forward(spec).await
@@ -472,6 +508,18 @@ mod tests {
     async fn start_remote_tcp() {
         let mut session = MockTunnelSession::new();
         let cfg = fwd("remote", "tcp", "0.0.0.0:0", "127.0.0.1:8080");
+        let runner = ForwardRunner::start(&cfg, &mut session, &ForwardRunnerConfig::default())
+            .await
+            .unwrap();
+        runner.stop().await;
+    }
+
+    #[tokio::test]
+    async fn start_dynamic_tcp_does_not_require_target() {
+        let mut session = MockTunnelSession::new();
+        let mut cfg = fwd("dynamic", "tcp", "127.0.0.1:0", "ignored:1");
+        cfg.target = None;
+        cfg.connect = None;
         let runner = ForwardRunner::start(&cfg, &mut session, &ForwardRunnerConfig::default())
             .await
             .unwrap();

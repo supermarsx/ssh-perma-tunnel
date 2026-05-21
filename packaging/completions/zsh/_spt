@@ -1458,6 +1458,41 @@ never\:"Never emit color escapes"))' \
 '--version[Print version]' \
 && ret=0
 ;;
+(dynamic)
+_arguments "${_arguments_options[@]}" : \
+'--profile=[Owning profile name]:PROFILE:_default' \
+'--listen=[Local proxy listen address (\`host\:port\` or \`\[\:\:1\]\:port\`)]:ADDR:PORT:_default' \
+'--connections=[Per-forward concurrent connection limit]:N:_default' \
+'--config=[Path to a single config file]:PATH:_files' \
+'--config-dir=[Path to a directory of \`*.toml\` configs (loaded in lexical order)]:PATH:_files' \
+'--config-url=[HTTPS URL of a remote config to fetch]:URL:_default' \
+'--config-fingerprint=[SHA-256 fingerprint pin for \`--config-url\`]:SHA256:_default' \
+'--state-dir=[Override the runtime state directory]:PATH:_files' \
+'--output=[Output format for command results]:OUTPUT:((human\:"Human-readable text (default)"
+json\:"Structured JSON"
+jsonl\:"JSON Lines (one record per line)"
+yaml\:"YAML"))' \
+'--log-level=[Tracing log level]:LOG_LEVEL:((error\:"Only errors"
+warn\:"Warnings and above"
+info\:"Informational and above (default)"
+debug\:"Debug and above"
+trace\:"Trace and above (very verbose)"))' \
+'--color=[Color policy for human output]:COLOR:((auto\:"Auto-detect based on tty"
+always\:"Always emit color escapes"
+never\:"Never emit color escapes"))' \
+'--json[Convenience alias for \`--output json\`]' \
+'-q[Suppress non-essential output]' \
+'--quiet[Suppress non-essential output]' \
+'*-v[Increase verbosity (repeat for more)]' \
+'*--verbose[Increase verbosity (repeat for more)]' \
+'--no-color[Disable color (legacy convenience flag; use \`--color never\`)]' \
+'--dry-run[Show what would happen without making changes]' \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+'-V[Print version]' \
+'--version[Print version]' \
+&& ret=0
+;;
 (help)
 _arguments "${_arguments_options[@]}" : \
 ":: :_spt__forward__add__help_commands" \
@@ -1475,6 +1510,10 @@ _arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
 (remote)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(dynamic)
 _arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
@@ -1669,6 +1708,10 @@ _arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
 (remote)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(dynamic)
 _arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
@@ -8330,6 +8373,10 @@ _arguments "${_arguments_options[@]}" : \
 _arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
+(dynamic)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
         esac
     ;;
 esac
@@ -10568,18 +10615,30 @@ _spt__forward__add_commands() {
     local commands; commands=(
 'local:Local forward (\`-L\`)' \
 'remote:Remote forward (\`-R\`)' \
+'dynamic:Dynamic SOCKS5/HTTP CONNECT proxy (\`-D\`)' \
 'help:Print this message or the help of the given subcommand(s)' \
     )
     _describe -t commands 'spt forward add commands' commands "$@"
+}
+(( $+functions[_spt__forward__add__dynamic_commands] )) ||
+_spt__forward__add__dynamic_commands() {
+    local commands; commands=()
+    _describe -t commands 'spt forward add dynamic commands' commands "$@"
 }
 (( $+functions[_spt__forward__add__help_commands] )) ||
 _spt__forward__add__help_commands() {
     local commands; commands=(
 'local:Local forward (\`-L\`)' \
 'remote:Remote forward (\`-R\`)' \
+'dynamic:Dynamic SOCKS5/HTTP CONNECT proxy (\`-D\`)' \
 'help:Print this message or the help of the given subcommand(s)' \
     )
     _describe -t commands 'spt forward add help commands' commands "$@"
+}
+(( $+functions[_spt__forward__add__help__dynamic_commands] )) ||
+_spt__forward__add__help__dynamic_commands() {
+    local commands; commands=()
+    _describe -t commands 'spt forward add help dynamic commands' commands "$@"
 }
 (( $+functions[_spt__forward__add__help__help_commands] )) ||
 _spt__forward__add__help__help_commands() {
@@ -10630,8 +10689,14 @@ _spt__forward__help__add_commands() {
     local commands; commands=(
 'local:Local forward (\`-L\`)' \
 'remote:Remote forward (\`-R\`)' \
+'dynamic:Dynamic SOCKS5/HTTP CONNECT proxy (\`-D\`)' \
     )
     _describe -t commands 'spt forward help add commands' commands "$@"
+}
+(( $+functions[_spt__forward__help__add__dynamic_commands] )) ||
+_spt__forward__help__add__dynamic_commands() {
+    local commands; commands=()
+    _describe -t commands 'spt forward help add dynamic commands' commands "$@"
 }
 (( $+functions[_spt__forward__help__add__local_commands] )) ||
 _spt__forward__help__add__local_commands() {
@@ -11237,8 +11302,14 @@ _spt__help__forward__add_commands() {
     local commands; commands=(
 'local:Local forward (\`-L\`)' \
 'remote:Remote forward (\`-R\`)' \
+'dynamic:Dynamic SOCKS5/HTTP CONNECT proxy (\`-D\`)' \
     )
     _describe -t commands 'spt help forward add commands' commands "$@"
+}
+(( $+functions[_spt__help__forward__add__dynamic_commands] )) ||
+_spt__help__forward__add__dynamic_commands() {
+    local commands; commands=()
+    _describe -t commands 'spt help forward add dynamic commands' commands "$@"
 }
 (( $+functions[_spt__help__forward__add__local_commands] )) ||
 _spt__help__forward__add__local_commands() {

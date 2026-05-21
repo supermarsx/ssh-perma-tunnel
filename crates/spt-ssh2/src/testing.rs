@@ -25,8 +25,8 @@ use async_trait::async_trait;
 use parking_lot::Mutex;
 use spt_core::Result;
 use spt_protocol::{
-    ForwardHandle, ForwardId, ForwardState, LocalForwardSpec, RemoteForwardSpec, SessionInfo,
-    TunnelSession, UdpForwardSpec,
+    DynamicForwardSpec, ForwardHandle, ForwardId, ForwardState, LocalForwardSpec,
+    RemoteForwardSpec, SessionInfo, TunnelSession, UdpForwardSpec,
 };
 use tokio::sync::{oneshot, watch};
 
@@ -41,6 +41,8 @@ pub enum MockSsh2Call {
     OpenLocal(String),
     /// `open_remote_forward` invoked with this forward name.
     OpenRemote(String),
+    /// `open_dynamic_forward` invoked with this forward name.
+    OpenDynamic(String),
     /// `open_udp_forward` invoked with this forward name.
     OpenUdp(String),
     /// `keepalive` invoked.
@@ -159,6 +161,13 @@ impl TunnelSession for MockSsh2Session {
         self.calls
             .lock()
             .push(MockSsh2Call::OpenRemote(spec.name.clone()));
+        Ok(self.make_handle(&spec.name))
+    }
+
+    async fn open_dynamic_forward(&mut self, spec: &DynamicForwardSpec) -> Result<ForwardHandle> {
+        self.calls
+            .lock()
+            .push(MockSsh2Call::OpenDynamic(spec.name.clone()));
         Ok(self.make_handle(&spec.name))
     }
 

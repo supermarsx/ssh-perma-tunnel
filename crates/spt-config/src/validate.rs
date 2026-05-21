@@ -18,7 +18,7 @@
 //! 11. Secret references match `secret://<ns>/<name>` shape.
 //! 12. DNS bind on a privileged port (<1024) is warned.
 //! 13. Firewall planner mismatch with current OS warns.
-//! 14. `forward.type` is `local|remote`; `transport` is `tcp|udp`.
+//! 14. `forward.type` is `local|remote|dynamic`; `transport` is `tcp|udp`.
 //! 15. Duration / size string fields parse via `spt_core` helpers.
 //! 16. `runtime.remote_config.url` (when enabled) must be an HTTPS URL with a
 //!     `fingerprint_sha256` set (spec §14.3).
@@ -28,7 +28,7 @@
 use spt_core::{address::BindAddr, duration::parse_duration, size::parse_size};
 
 use crate::diagnostic::{Diagnostic, Diagnostics};
-use crate::schema::{Auth, Config, Forward, Profile};
+use crate::schema::{Auth, Capabilities, Config, Forward, Profile};
 
 /// Validate a [`Config`]. Always returns a [`Diagnostics`] bundle — the caller
 /// decides whether `errors.is_empty()` is success.
@@ -726,11 +726,11 @@ fn check_profiles(d: &mut Diagnostics, c: &Config) {
         } else {
             seen_names.push(&p.name);
         }
-        check_profile(d, i, p);
+        check_profile(d, i, p, c.capabilities.as_ref());
     }
 }
 
-fn check_profile(d: &mut Diagnostics, i: usize, p: &Profile) {
+fn check_profile(d: &mut Diagnostics, i: usize, p: &Profile, capabilities: Option<&Capabilities>) {
     let prefix = format!("profiles[{i}]");
 
     match p.protocol.as_str() {
@@ -868,7 +868,7 @@ fn check_profile(d: &mut Diagnostics, i: usize, p: &Profile) {
         } else {
             fwd_names.push(&f.name);
         }
-        check_forward(d, &p.protocol, f, i, j);
+        check_forward(d, &p.protocol, capabilities, f, i, j);
     }
 
     // Limits sizes.
@@ -960,10 +960,17 @@ fn check_auth(d: &mut Diagnostics, auth: &Auth, prefix: &str) {
 }
 
 #[allow(clippy::many_single_char_names)]
-fn check_forward(d: &mut Diagnostics, protocol: &str, f: &Forward, i: usize, j: usize) {
+fn check_forward(
+    d: &mut Diagnostics,
+    protocol: &str,
+    capabilities: Option<&Capabilities>,
+    f: &Forward,
+    i: usize,
+    j: usize,
+) {
     let prefix = format!("profiles[{i}].forwards[{j}]");
 
-    if !matches!(f.kind.as_str(), "local" | "remote") {
+    if !matches!(f.kind.as_str(), "local" | "remote" | "dynamic") {
         d.push(
             Diagnostic::error(
                 "forward_type_invalid",
@@ -983,6 +990,56 @@ fn check_forward(d: &mut Diagnostics, protocol: &str, f: &Forward, i: usize, j: 
             )
             .at(format!("{prefix}.transport")),
         );
+    }
+    if f.kind == "dynamic" {
+        if f.transport != "tcp" {
+            d.push(
+                Diagnostic::error(
+                    "dynamic_forward_requires_tcp",
+                    format!("dynamic forward `{}` must use transport `tcp`", f.name),
+                )
+                .at(format!("{prefix}.transport")),
+            );
+        }
+        if protocol != "ssh2" {
+            d.push(
+                Diagnostic::error(
+                    "dynamic_forward_requires_ssh2",
+                    format!(
+                        "dynamic forward `{}` requires profile protocol `ssh2` (SOCKS/HTTP CONNECT over SSH2 direct-tcpip)",
+                        f.name
+                    ),
+                )
+                .at(format!("{prefix}.type")),
+            );
+        }
+        if !matches!(
+            capabilities.and_then(|capabilities| capabilities.allow_dynamic_proxy),
+            Some(true)
+        ) {
+            d.push(
+                Diagnostic::error(
+                    "dynamic_proxy_capability_disabled",
+                    format!(
+                        "dynamic forward `{}` requires capabilities.allow_dynamic_proxy = true",
+                        f.name
+                    ),
+                )
+                .at("capabilities.allow_dynamic_proxy"),
+            );
+        }
+        if f.target.is_some() || f.connect.is_some() {
+            d.push(
+                Diagnostic::warning(
+                    "dynamic_forward_ignores_target",
+                    format!(
+                        "dynamic forward `{}` chooses targets per SOCKS/HTTP CONNECT request; remove target/connect",
+                        f.name
+                    ),
+                )
+                .at(format!("{prefix}.target")),
+            );
+        }
     }
     if f.transport == "udp" && protocol != "ssh3" {
         d.push(
@@ -1047,17 +1104,19 @@ fn check_forward(d: &mut Diagnostics, protocol: &str, f: &Forward, i: usize, j: 
                 .at(format!("{prefix}.bind")),
             ),
         }
-    } else if f.kind == "local" {
+    } else if matches!(f.kind.as_str(), "local" | "dynamic") {
         d.push(
             Diagnostic::error(
                 "local_forward_missing_bind",
-                format!("local forward `{}` has no `bind`/`listen`", f.name),
+                format!("{} forward `{}` has no `bind`/`listen`", f.kind, f.name),
             )
             .at(format!("{prefix}.bind")),
         );
     }
 
-    if let Some(t) = target_str {
+    if f.kind == "dynamic" {
+        // Dynamic forwards choose a target per client request.
+    } else if let Some(t) = target_str {
         if let Err(e) = BindAddr::parse(t) {
             d.push(
                 Diagnostic::error(
@@ -1067,11 +1126,11 @@ fn check_forward(d: &mut Diagnostics, protocol: &str, f: &Forward, i: usize, j: 
                 .at(format!("{prefix}.target")),
             );
         }
-    } else if f.kind == "local" {
+    } else if matches!(f.kind.as_str(), "local" | "remote") {
         d.push(
             Diagnostic::error(
                 "local_forward_missing_target",
-                format!("local forward `{}` has no `target`/`connect`", f.name),
+                format!("{} forward `{}` has no `target`/`connect`", f.kind, f.name),
             )
             .at(format!("{prefix}.target")),
         );
@@ -1311,6 +1370,49 @@ mod tests {
         let (c, _) = load_str(raw, false).unwrap();
         let d = validate(&c);
         assert!(d.errors.iter().any(|e| e.code == "udp_requires_ssh3"));
+    }
+
+    #[test]
+    fn dynamic_forward_requires_capability_gate() {
+        let raw = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            [[profiles.forwards]]
+            name = "proxy"
+            type = "dynamic"
+            transport = "tcp"
+            bind = "127.0.0.1:1080"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(d
+            .errors
+            .iter()
+            .any(|e| e.code == "dynamic_proxy_capability_disabled"));
+    }
+
+    #[test]
+    fn dynamic_forward_valid_when_enabled() {
+        let raw = r#"
+            version = 1
+            [capabilities]
+            allow_dynamic_proxy = true
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            [[profiles.forwards]]
+            name = "proxy"
+            type = "dynamic"
+            transport = "tcp"
+            bind = "127.0.0.1:1080"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(d.is_ok(), "errors: {:?}", d.errors);
     }
 
     #[test]

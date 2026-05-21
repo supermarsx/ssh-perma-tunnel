@@ -25,9 +25,9 @@ use parking_lot::Mutex;
 use spt_auth::AuthConfig;
 use spt_core::Result;
 use spt_protocol::{
-    Endpoint, ForwardHandle, ForwardId as ProtocolForwardId, ForwardState, LocalForwardSpec,
-    ProtocolCapabilities, RemoteForwardSpec, SessionInfo, TunnelProtocol, TunnelSession,
-    UdpForwardSpec,
+    DynamicForwardSpec, Endpoint, ForwardHandle, ForwardId as ProtocolForwardId, ForwardState,
+    LocalForwardSpec, ProtocolCapabilities, RemoteForwardSpec, SessionInfo, TunnelProtocol,
+    TunnelSession, UdpForwardSpec,
 };
 use tokio::sync::{oneshot, watch};
 
@@ -170,6 +170,10 @@ impl TunnelSession for MockTunnelSession {
         Ok(self.make_handle(&spec.name))
     }
 
+    async fn open_dynamic_forward(&mut self, spec: &DynamicForwardSpec) -> Result<ForwardHandle> {
+        Ok(self.make_handle(&spec.name))
+    }
+
     async fn open_udp_forward(&mut self, spec: &UdpForwardSpec) -> Result<ForwardHandle> {
         Ok(self.make_handle(&spec.name))
     }
@@ -200,6 +204,8 @@ pub enum SessionCall {
     OpenLocal(String),
     /// `open_remote_forward` invoked with this forward name.
     OpenRemote(String),
+    /// `open_dynamic_forward` invoked with this forward name.
+    OpenDynamic(String),
     /// `open_udp_forward` invoked with this forward name.
     OpenUdp(String),
     /// `keepalive` invoked.
@@ -272,6 +278,13 @@ impl TunnelSession for RecordingTunnelSession {
             .lock()
             .push(SessionCall::OpenRemote(spec.name.clone()));
         self.inner.open_remote_forward(spec).await
+    }
+
+    async fn open_dynamic_forward(&mut self, spec: &DynamicForwardSpec) -> Result<ForwardHandle> {
+        self.log
+            .lock()
+            .push(SessionCall::OpenDynamic(spec.name.clone()));
+        self.inner.open_dynamic_forward(spec).await
     }
 
     async fn open_udp_forward(&mut self, spec: &UdpForwardSpec) -> Result<ForwardHandle> {

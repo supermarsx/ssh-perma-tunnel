@@ -911,6 +911,7 @@ set edit:completion:arg-completer[spt] = {|@words|
             cand --version 'Print version'
             cand local 'Local forward (`-L`)'
             cand remote 'Remote forward (`-R`)'
+            cand dynamic 'Dynamic SOCKS5/HTTP CONNECT proxy (`-D`)'
             cand help 'Print this message or the help of the given subcommand(s)'
         }
         &'spt;forward;add;local'= {
@@ -965,14 +966,41 @@ set edit:completion:arg-completer[spt] = {|@words|
             cand -V 'Print version'
             cand --version 'Print version'
         }
+        &'spt;forward;add;dynamic'= {
+            cand --profile 'Owning profile name'
+            cand --listen 'Local proxy listen address (`host:port` or `[::1]:port`)'
+            cand --connections 'Per-forward concurrent connection limit'
+            cand --config 'Path to a single config file'
+            cand --config-dir 'Path to a directory of `*.toml` configs (loaded in lexical order)'
+            cand --config-url 'HTTPS URL of a remote config to fetch'
+            cand --config-fingerprint 'SHA-256 fingerprint pin for `--config-url`'
+            cand --state-dir 'Override the runtime state directory'
+            cand --output 'Output format for command results'
+            cand --log-level 'Tracing log level'
+            cand --color 'Color policy for human output'
+            cand --json 'Convenience alias for `--output json`'
+            cand -q 'Suppress non-essential output'
+            cand --quiet 'Suppress non-essential output'
+            cand -v 'Increase verbosity (repeat for more)'
+            cand --verbose 'Increase verbosity (repeat for more)'
+            cand --no-color 'Disable color (legacy convenience flag; use `--color never`)'
+            cand --dry-run 'Show what would happen without making changes'
+            cand -h 'Print help (see more with ''--help'')'
+            cand --help 'Print help (see more with ''--help'')'
+            cand -V 'Print version'
+            cand --version 'Print version'
+        }
         &'spt;forward;add;help'= {
             cand local 'Local forward (`-L`)'
             cand remote 'Remote forward (`-R`)'
+            cand dynamic 'Dynamic SOCKS5/HTTP CONNECT proxy (`-D`)'
             cand help 'Print this message or the help of the given subcommand(s)'
         }
         &'spt;forward;add;help;local'= {
         }
         &'spt;forward;add;help;remote'= {
+        }
+        &'spt;forward;add;help;dynamic'= {
         }
         &'spt;forward;add;help;help'= {
         }
@@ -1087,10 +1115,13 @@ set edit:completion:arg-completer[spt] = {|@words|
         &'spt;forward;help;add'= {
             cand local 'Local forward (`-L`)'
             cand remote 'Remote forward (`-R`)'
+            cand dynamic 'Dynamic SOCKS5/HTTP CONNECT proxy (`-D`)'
         }
         &'spt;forward;help;add;local'= {
         }
         &'spt;forward;help;add;remote'= {
+        }
+        &'spt;forward;help;add;dynamic'= {
         }
         &'spt;forward;help;explain'= {
         }
@@ -5175,10 +5206,13 @@ set edit:completion:arg-completer[spt] = {|@words|
         &'spt;help;forward;add'= {
             cand local 'Local forward (`-L`)'
             cand remote 'Remote forward (`-R`)'
+            cand dynamic 'Dynamic SOCKS5/HTTP CONNECT proxy (`-D`)'
         }
         &'spt;help;forward;add;local'= {
         }
         &'spt;help;forward;add;remote'= {
+        }
+        &'spt;help;forward;add;dynamic'= {
         }
         &'spt;help;forward;explain'= {
         }

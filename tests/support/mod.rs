@@ -21,8 +21,8 @@ use spt_auth::AuthConfig;
 use spt_core::Result;
 use spt_forward::testing::{MockTunnelSession, SessionCall};
 use spt_protocol::{
-    Endpoint, ForwardHandle, LocalForwardSpec, ProtocolCapabilities, RemoteForwardSpec,
-    SessionInfo, TunnelProtocol, TunnelSession, UdpForwardSpec,
+    DynamicForwardSpec, Endpoint, ForwardHandle, LocalForwardSpec, ProtocolCapabilities,
+    RemoteForwardSpec, SessionInfo, TunnelProtocol, TunnelSession, UdpForwardSpec,
 };
 
 /// `TunnelProtocol` that hands out [`SharedLogSession`]s wired to a single
@@ -123,6 +123,13 @@ impl TunnelSession for SharedLogSession {
             .lock()
             .push(SessionCall::OpenRemote(spec.name.clone()));
         self.inner.open_remote_forward(spec).await
+    }
+
+    async fn open_dynamic_forward(&mut self, spec: &DynamicForwardSpec) -> Result<ForwardHandle> {
+        self.log
+            .lock()
+            .push(SessionCall::OpenDynamic(spec.name.clone()));
+        self.inner.open_dynamic_forward(spec).await
     }
 
     async fn open_udp_forward(&mut self, spec: &UdpForwardSpec) -> Result<ForwardHandle> {

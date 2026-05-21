@@ -98,6 +98,7 @@ Options:
 EXAMPLES:
   spt forward add local --profile edge --listen 127.0.0.1:5432 --to db:5432 --tcp
   spt forward add remote --profile edge --listen 0.0.0.0:8080 --to web:80 --tcp
+  spt forward add dynamic --profile edge --listen 127.0.0.1:1080
   spt forward throttle edge/db --in 10MiB/s --out 10MiB/s --connections 64
   spt forward test edge/db --connect --dns-name db.local
   spt forward remove edge/db

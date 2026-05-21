@@ -892,6 +892,7 @@ complete -c spt -n "__fish_spt_using_subcommand forward; and __fish_seen_subcomm
 complete -c spt -n "__fish_spt_using_subcommand forward; and __fish_seen_subcommand_from add" -s V -l version -d 'Print version'
 complete -c spt -n "__fish_spt_using_subcommand forward; and __fish_seen_subcommand_from add" -f -a "local" -d 'Local forward (`-L`)'
 complete -c spt -n "__fish_spt_using_subcommand forward; and __fish_seen_subcommand_from add" -f -a "remote" -d 'Remote forward (`-R`)'
+complete -c spt -n "__fish_spt_using_subcommand forward; and __fish_seen_subcommand_from add" -f -a "dynamic" -d 'Dynamic SOCKS5/HTTP CONNECT proxy (`-D`)'
 complete -c spt -n "__fish_spt_using_subcommand forward; and __fish_seen_subcommand_from add" -f -a "help" -d 'Print this message or the help of the given subcommand(s)'
 complete -c spt -n "__fish_spt_using_subcommand forward; and __fish_seen_subcommand_from explain" -l config -d 'Path to a single config file' -r -F
 complete -c spt -n "__fish_spt_using_subcommand forward; and __fish_seen_subcommand_from explain" -l config-dir -d 'Path to a directory of `*.toml` configs (loaded in lexical order)' -r -F

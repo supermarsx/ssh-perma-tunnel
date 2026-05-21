@@ -28,8 +28,8 @@ use spt_core::Result;
 pub use capabilities::ProtocolCapabilities;
 pub use endpoint::{Endpoint, TargetAddr};
 pub use forward::{
-    ForwardDirection, ForwardState, ForwardTransport, LocalForwardSpec, RemoteForwardSpec,
-    UdpForwardSpec,
+    DynamicForwardSpec, ForwardDirection, ForwardState, ForwardTransport, LocalForwardSpec,
+    RemoteForwardSpec, UdpForwardSpec,
 };
 pub use handle::{ForwardHandle, ForwardId};
 pub use session::{SessionInfo, TunnelSession};

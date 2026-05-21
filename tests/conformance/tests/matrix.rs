@@ -342,9 +342,9 @@ fn write_cell_config(path: &Path, cell: Cell) -> std::io::Result<()> {
 
     let forward_block = match cell.forward {
         ForwardKind::None => String::new(),
-        ForwardKind::Local => "[[profiles.forwards]]\nkind = \"local\"\nlisten = \"127.0.0.1:0\"\nremote = \"127.0.0.1:80\"\n".into(),
-        ForwardKind::Remote => "[[profiles.forwards]]\nkind = \"remote\"\nlisten = \"127.0.0.1:0\"\nremote = \"127.0.0.1:80\"\n".into(),
-        ForwardKind::Dynamic => "[[profiles.forwards]]\nkind = \"dynamic\"\nlisten = \"127.0.0.1:0\"\n".into(),
+        ForwardKind::Local => "[[profiles.forwards]]\nname = \"local\"\ntype = \"local\"\ntransport = \"tcp\"\nbind = \"127.0.0.1:0\"\ntarget = \"127.0.0.1:80\"\n".into(),
+        ForwardKind::Remote => "[[profiles.forwards]]\nname = \"remote\"\ntype = \"remote\"\ntransport = \"tcp\"\nbind = \"127.0.0.1:0\"\ntarget = \"127.0.0.1:80\"\n".into(),
+        ForwardKind::Dynamic => "[capabilities]\nallow_dynamic_proxy = true\n\n[[profiles.forwards]]\nname = \"dynamic\"\ntype = \"dynamic\"\ntransport = \"tcp\"\nbind = \"127.0.0.1:0\"\n".into(),
     };
 
     let body = format!(

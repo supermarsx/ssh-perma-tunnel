@@ -1464,7 +1464,7 @@ pub struct Hop {
 pub struct Forward {
     /// Forward id (unique within profile). §9.14.
     pub name: String,
-    /// `local` or `remote`. §9.14.
+    /// `local`, `remote`, or `dynamic`. §9.14.
     #[serde(rename = "type")]
     pub kind: String,
     /// `tcp` or `udp`. §9.14.

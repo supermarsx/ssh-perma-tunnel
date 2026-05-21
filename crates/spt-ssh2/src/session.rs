@@ -7,7 +7,9 @@ use async_ssh2_lite::AsyncSession;
 use async_trait::async_trait;
 use parking_lot::Mutex;
 use spt_core::{Error, Result};
-use spt_protocol::forward::{LocalForwardSpec, RemoteForwardSpec, UdpForwardSpec};
+use spt_protocol::forward::{
+    DynamicForwardSpec, LocalForwardSpec, RemoteForwardSpec, UdpForwardSpec,
+};
 use spt_protocol::handle::ForwardHandle;
 use spt_protocol::session::{SessionInfo, TunnelSession};
 
@@ -62,6 +64,10 @@ where
 
     async fn open_remote_forward(&mut self, spec: &RemoteForwardSpec) -> Result<ForwardHandle> {
         forward::open_remote(self.session.clone(), spec).await
+    }
+
+    async fn open_dynamic_forward(&mut self, spec: &DynamicForwardSpec) -> Result<ForwardHandle> {
+        forward::open_dynamic(self.session.clone(), spec).await
     }
 
     async fn open_udp_forward(&mut self, _spec: &UdpForwardSpec) -> Result<ForwardHandle> {

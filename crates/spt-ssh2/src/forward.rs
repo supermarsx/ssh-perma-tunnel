@@ -13,13 +13,16 @@ use async_ssh2_lite::session_stream::AsyncSessionStream;
 use async_ssh2_lite::{AsyncChannel, AsyncSession};
 use parking_lot::Mutex;
 use spt_core::{Error, Result};
-use spt_protocol::forward::{ForwardState, LocalForwardSpec, RemoteForwardSpec};
+use spt_protocol::forward::{
+    DynamicForwardSpec, ForwardState, LocalForwardSpec, RemoteForwardSpec,
+};
 use spt_protocol::handle::{ForwardHandle, ForwardId};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{oneshot, watch};
 use tracing::{debug, error, warn};
 
+use crate::dynamic;
 use crate::errors::from_async_ssh;
 
 /// Render a `BindAddr` into the `host:port` form `tokio::net::TcpListener` accepts.
@@ -73,6 +76,47 @@ where
     Ok(ForwardHandle::new(id, name, state_rx, close_tx))
 }
 
+/// Open a client-side dynamic TCP proxy listener.
+///
+/// The listener accepts SOCKS5 CONNECT and HTTP CONNECT requests. Each request
+/// opens a fresh SSH `direct-tcpip` channel to the target chosen by the client.
+pub async fn open_dynamic<S>(
+    session: Arc<Mutex<AsyncSession<S>>>,
+    spec: &DynamicForwardSpec,
+) -> Result<ForwardHandle>
+where
+    S: AsyncSessionStream + Send + Sync + 'static,
+{
+    let bind = bind_addr_string(&spec.listen)?;
+    let listener = TcpListener::bind(&bind)
+        .await
+        .map_err(|e| Error::LocalBindFailed {
+            address: bind.clone(),
+            reason: e.to_string(),
+        })?;
+
+    let (state_tx, state_rx) = watch::channel(ForwardState::Listening);
+    let (close_tx, close_rx) = oneshot::channel();
+    let id = ForwardId::new();
+    let name = spec.name.clone();
+    let max = spec.max_connections;
+    let allow_socks5 = spec.allow_socks5;
+    let allow_http_connect = spec.allow_http_connect;
+
+    tokio::spawn(dynamic_loop(
+        listener,
+        session,
+        state_tx,
+        close_rx,
+        max,
+        name.clone(),
+        allow_socks5,
+        allow_http_connect,
+    ));
+
+    Ok(ForwardHandle::new(id, name, state_rx, close_tx))
+}
+
 async fn local_loop<S>(
     listener: TcpListener,
     session: Arc<Mutex<AsyncSession<S>>>,
@@ -114,6 +158,57 @@ async fn local_loop<S>(
                 tokio::spawn(async move {
                     if let Err(e) = bridge_local(session, sock, &target).await {
                         warn!(target: "spt_ssh2::forward", forward = %name_t, error = %e, "local conn failed");
+                    }
+                    active.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                });
+            }
+        }
+    }
+    let _ = state_tx.send(ForwardState::Stopped);
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn dynamic_loop<S>(
+    listener: TcpListener,
+    session: Arc<Mutex<AsyncSession<S>>>,
+    state_tx: watch::Sender<ForwardState>,
+    mut close_rx: oneshot::Receiver<()>,
+    max: Option<u32>,
+    name: String,
+    allow_socks5: bool,
+    allow_http_connect: bool,
+) where
+    S: AsyncSessionStream + Send + Sync + 'static,
+{
+    let _ = state_tx.send(ForwardState::Active);
+    let active = Arc::new(std::sync::atomic::AtomicU32::new(0));
+    loop {
+        tokio::select! {
+            _ = &mut close_rx => {
+                debug!(target: "spt_ssh2::forward", forward = %name, "dynamic forward shutdown signal");
+                break;
+            }
+            accept = listener.accept() => {
+                let (sock, _peer) = match accept {
+                    Ok(v) => v,
+                    Err(e) => {
+                        error!(target: "spt_ssh2::forward", forward = %name, error = %e, "dynamic accept failed");
+                        continue;
+                    }
+                };
+                if let Some(limit) = max {
+                    if active.load(std::sync::atomic::Ordering::Relaxed) >= limit {
+                        warn!(target: "spt_ssh2::forward", forward = %name, "max_connections reached, dropping dynamic client");
+                        continue;
+                    }
+                }
+                let session = session.clone();
+                let active = active.clone();
+                active.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let name_t = name.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = bridge_dynamic(session, sock, allow_socks5, allow_http_connect).await {
+                        warn!(target: "spt_ssh2::forward", forward = %name_t, error = %e, "dynamic proxy connection failed");
                     }
                     active.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
                 });
@@ -175,6 +270,78 @@ where
                         })?;
                     }
                     Err(e) => return Err(Error::RuntimeFailure(format!("channel read: {e}"))),
+                }
+            }
+        }
+    }
+    let _ = channel.close().await;
+    Ok(())
+}
+
+async fn bridge_dynamic<S>(
+    session: Arc<Mutex<AsyncSession<S>>>,
+    mut sock: TcpStream,
+    allow_socks5: bool,
+    allow_http_connect: bool,
+) -> Result<()>
+where
+    S: AsyncSessionStream + Send + Sync + 'static,
+{
+    let request = dynamic::read_request(&mut sock, allow_socks5, allow_http_connect).await?;
+    let channel = {
+        let s = session.lock().clone();
+        s.channel_direct_tcpip(&request.target.host, request.target.port, None)
+            .await
+            .map_err(|e| from_async_ssh("dynamic channel_direct_tcpip", e))
+    };
+    let mut channel = match channel {
+        Ok(channel) => {
+            dynamic::reply_success(&mut sock, request.protocol).await?;
+            channel
+        }
+        Err(e) => {
+            let _ = dynamic::reply_failure(&mut sock, request.protocol).await;
+            return Err(Error::RuntimeFailure(format!(
+                "dynamic direct-tcpip to {}:{}: {e}",
+                request.target.host, request.target.port
+            )));
+        }
+    };
+
+    let (mut sock_r, mut sock_w) = sock.split();
+    let mut buf_in = vec![0u8; 32 * 1024];
+    let mut buf_out = vec![0u8; 32 * 1024];
+
+    let mut sock_done = false;
+    let mut channel_done = false;
+    while !sock_done || !channel_done {
+        tokio::select! {
+            n = sock_r.read(&mut buf_in), if !sock_done => {
+                match n {
+                    Ok(0) => {
+                        sock_done = true;
+                        let _ = channel.send_eof().await;
+                    }
+                    Ok(n) => {
+                        channel.write_all(&buf_in[..n]).await.map_err(|e| {
+                            Error::RuntimeFailure(format!("dynamic channel write: {e}"))
+                        })?;
+                    }
+                    Err(e) => return Err(Error::RuntimeFailure(format!("dynamic sock read: {e}"))),
+                }
+            }
+            n = channel.read(&mut buf_out), if !channel_done => {
+                match n {
+                    Ok(0) => {
+                        channel_done = true;
+                        let _ = sock_w.shutdown().await;
+                    }
+                    Ok(n) => {
+                        sock_w.write_all(&buf_out[..n]).await.map_err(|e| {
+                            Error::RuntimeFailure(format!("dynamic sock write: {e}"))
+                        })?;
+                    }
+                    Err(e) => return Err(Error::RuntimeFailure(format!("dynamic channel read: {e}"))),
                 }
             }
         }
