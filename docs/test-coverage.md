@@ -49,6 +49,7 @@ Windows acceptance matrix.
 | Secrets/vault | `spt-secrets` tests cover vault lifecycle, encrypted-at-rest records, keychain mocks, refs, redaction, passphrase reading, and zeroizing buffers. `spt-bin` config tests cover sealed config passphrases stored in the vault and vault-master sealing. |
 | Encrypted configs | `spt-config-crypt` tests cover SPTENC1 sealing, passphrase/X25519/vault-master key sources, metadata, tamper detection, wrong-key failures, and loader auto-detection. |
 | Firewall/network policy | Firewall tests cover rule planning, bind preview, interface-specific binds, GPO write gates, policy list/show routes, and CLI mutation of `[network.interface]`, `[network.gateway]`, `[network.offload]`, and `[network.load_balance]`. |
+| Profile failover policy | `spt-bin` profile tests cover CLI mutation of `[[profiles.endpoints]]` priority/weight fields and `[profiles.failover]` mode/failure windows through `spt profile set` dotted paths. |
 | GPO policy | `spt-config` policy tests cover advisory/enforced precedence, type mismatches, unknown keys, allowlist intersection, denylist union, network/offload/load-balance bindings, capability gates, and Windows Event policy fields. |
 | DNS | `spt-dns` and CLI tests cover record parsing, hosts-file render/apply/restore paths, resolver mode validation, upstream management, and query routing. |
 | Observability/logging | `spt-observability` and CLI tests cover syslog TLS mock delivery, log export/tail, remote log list/test/status/drain routing, OTLP/syslog config validation, metrics state, and redaction. |

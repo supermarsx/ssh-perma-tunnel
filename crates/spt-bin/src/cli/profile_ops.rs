@@ -894,6 +894,45 @@ connect_timeout = "5s"
     }
 
     #[tokio::test]
+    async fn set_manages_endpoint_and_failover_policy() {
+        let (_d, path) = write_tmp(RAW);
+        let g = global_with_path(&path);
+        let args = profile::ProfileSet {
+            name: "p".into(),
+            overrides: vec![
+                "endpoints.0.name=primary".into(),
+                "endpoints.0.host=gw-a.example".into(),
+                "endpoints.0.port=22".into(),
+                "endpoints.0.priority=10".into(),
+                "endpoints.0.weight=80".into(),
+                "endpoints.1.name=dr".into(),
+                "endpoints.1.host=gw-b.example".into(),
+                "endpoints.1.port=2222".into(),
+                "endpoints.1.priority=20".into(),
+                "endpoints.1.weight=20".into(),
+                "failover.mode=weighted".into(),
+                "failover.fail_after=3".into(),
+                "failover.restore_after=30s".into(),
+            ],
+        };
+        set(&g, args).await.unwrap();
+        let new_raw = std::fs::read_to_string(&path).unwrap();
+        let (cfg, _) = spt_config::load_str(&new_raw, false).unwrap();
+        let profile = &cfg.profiles[0];
+        assert_eq!(profile.endpoints.len(), 2);
+        assert_eq!(profile.endpoints[0].name, "primary");
+        assert_eq!(profile.endpoints[0].host, "gw-a.example");
+        assert_eq!(profile.endpoints[0].priority, Some(10));
+        assert_eq!(profile.endpoints[0].weight, Some(80));
+        assert_eq!(profile.endpoints[1].name, "dr");
+        assert_eq!(profile.endpoints[1].port, 2222);
+        let failover = profile.failover.as_ref().unwrap();
+        assert_eq!(failover.mode.as_deref(), Some("weighted"));
+        assert_eq!(failover.fail_after, Some(3));
+        assert_eq!(failover.restore_after.as_deref(), Some("30s"));
+    }
+
+    #[tokio::test]
     async fn set_invalid_field_path_rejected() {
         let (_d, path) = write_tmp(RAW);
         let g = global_with_path(&path);

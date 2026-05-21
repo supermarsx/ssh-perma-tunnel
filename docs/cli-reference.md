@@ -69,6 +69,9 @@ surfaces, completion support, and exit-code contract.
   `[network]` and `[profiles.failover]`. Use `spt firewall gateway show|set`
   to manage `[network.interface]`, `[network.gateway]`, `[network.offload]`,
   and `[network.load_balance]` from the CLI.
+- Profile endpoint load balancing and failover can be managed with dotted
+  profile mutations, for example:
+  `spt profile set edge endpoints.0.name=primary endpoints.0.host=gw-a endpoints.0.weight=80 failover.mode=weighted failover.fail_after=3`.
 - Windows GPO-style policy is surfaced through `spt firewall policy`; Windows
   writes target `HKCU` or `HKLM\Software\Policies\spt`, while non-Windows
   hosts return `UnsupportedPlatform` for policy writes. The
