@@ -51,7 +51,7 @@ path = "tests/fd_leak.rs"
 # tests pull additional crates from `[dev-dependencies]` below.
 tokio = { version = "1.40", features = ["full"] }
 rand = "0.8"
-rand_chacha = "0.3"
+rand_chacha = "0.9"
 
 [target.'cfg(windows)'.dependencies]
 # Adding features to an already-locked crate version does not bump the lock.
