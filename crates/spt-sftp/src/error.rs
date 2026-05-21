@@ -87,12 +87,26 @@ pub enum SftpError {
         /// Description of the failure.
         detail: String,
     },
+
+    /// The requested operation is not supported on this OS or this
+    /// build (e.g. FUSE backend on Linux without `mount-fuse`, or any
+    /// SFTP mount on an unrecognised platform). Maps to
+    /// [`spt_core::ExitCode::UnsupportedPlatform`] (exit 10) so operators
+    /// can branch on the structured exit code instead of grep-ing logs.
+    #[error("sftp {op}: unsupported platform: {detail}")]
+    UnsupportedPlatform {
+        /// Operation tag (`mount`, `umount`).
+        op: &'static str,
+        /// Diagnostic explaining what's missing and how to enable it.
+        detail: String,
+    },
 }
 
 impl SftpError {
     /// Map a [`russh-sftp` client error](RusshSftpError) into an
     /// [`SftpError`], tagging it with `op` for diagnostics.
     #[must_use]
+    #[allow(clippy::match_same_arms)] // Each arm is documented separately.
     pub fn from_russh(op: &'static str, err: RusshSftpError) -> Self {
         match err {
             RusshSftpError::Status(status) => Self::from_status(op, status),
@@ -151,7 +165,8 @@ impl SftpError {
             | Self::NotEmpty { op, .. }
             | Self::NoSpace { op, .. }
             | Self::Other { op, .. }
-            | Self::Local { op, .. } => op,
+            | Self::Local { op, .. }
+            | Self::UnsupportedPlatform { op, .. } => op,
         }
     }
 }
@@ -160,6 +175,9 @@ impl From<SftpError> for CoreError {
     fn from(err: SftpError) -> Self {
         match err {
             SftpError::PermissionDenied { .. } => CoreError::PermissionDenied(err.to_string()),
+            SftpError::UnsupportedPlatform { .. } => {
+                CoreError::UnsupportedPlatform(err.to_string())
+            }
             other => CoreError::RuntimeFailure(other.to_string()),
         }
     }
@@ -236,5 +254,20 @@ mod tests {
         };
         let core: CoreError = err.into();
         assert!(matches!(core, CoreError::RuntimeFailure(_)));
+    }
+
+    #[test]
+    fn into_core_error_maps_unsupported_platform_to_exit_code_10() {
+        // SftpError::UnsupportedPlatform must land on
+        // CoreError::UnsupportedPlatform so the CLI dispatcher emits
+        // ExitCode::UnsupportedPlatform (10) — operators rely on the
+        // structured exit code to differentiate "no driver installed"
+        // from a generic runtime failure.
+        let err = SftpError::UnsupportedPlatform {
+            op: "mount",
+            detail: "sshfs missing".into(),
+        };
+        let core: CoreError = err.into();
+        assert!(matches!(core, CoreError::UnsupportedPlatform(_)));
     }
 }

@@ -70,6 +70,9 @@ pub enum SftpSub {
     Mount(SftpMountCmd),
     /// Manage SFTP-backed Windows drive entries.
     Drive(SftpDriveCmd),
+    /// Tear down an SFTP-backed filesystem mount (shorthand for
+    /// `spt sftp mount stop`).
+    Umount(SftpMountStopArgs),
 }
 
 /// Common profile selector.
@@ -175,6 +178,44 @@ pub enum SftpMountSub {
     Remove(SftpMountRefArgs),
     /// Render the platform plan for a configured or proposed mount.
     Plan(SftpMountPlanArgs),
+    /// Start an SFTP-backed filesystem mount.
+    Start(SftpMountStartArgs),
+    /// Tear down an SFTP-backed filesystem mount.
+    Stop(SftpMountStopArgs),
+}
+
+/// `spt sftp mount start`.
+#[derive(Args, Debug)]
+pub struct SftpMountStartArgs {
+    /// Profile name.
+    #[arg(long)]
+    pub profile: Option<String>,
+    /// Local mountpoint. Overrides any configured `mount_point`.
+    #[arg(long, value_name = "PATH")]
+    pub local: Option<PathBuf>,
+    /// Remote SFTP path to mount. Overrides any configured `remote_path`.
+    #[arg(long, value_name = "PATH")]
+    pub remote: Option<PathBuf>,
+    /// Mount read-only.
+    #[arg(long)]
+    pub read_only: bool,
+    /// Volume label (Windows).
+    #[arg(long, value_name = "NAME")]
+    pub volume: Option<String>,
+    /// JSON output.
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// `spt sftp mount stop`.
+#[derive(Args, Debug)]
+pub struct SftpMountStopArgs {
+    /// Local mountpoint to unmount.
+    #[arg(value_name = "PATH")]
+    pub path: PathBuf,
+    /// JSON output.
+    #[arg(long)]
+    pub json: bool,
 }
 
 /// `spt sftp drive`.

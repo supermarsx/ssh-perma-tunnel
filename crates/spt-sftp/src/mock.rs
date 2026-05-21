@@ -110,10 +110,10 @@ impl Handler for MockHandler {
         let canonical = fs::canonicalize(&resolved)
             .await
             .unwrap_or(resolved.clone());
-        let rel = canonical
-            .strip_prefix(&self.root)
-            .map(|p| format!("/{}", p.to_string_lossy()))
-            .unwrap_or_else(|_| canonical.to_string_lossy().into_owned());
+        let rel = canonical.strip_prefix(&self.root).map_or_else(
+            |_| canonical.to_string_lossy().into_owned(),
+            |p| format!("/{}", p.to_string_lossy()),
+        );
         Ok(Name {
             id,
             files: vec![File {
@@ -366,10 +366,7 @@ impl Handler for MockHandler {
         let resolved = self.resolve(&path);
         fs::create_dir(&resolved)
             .await
-            .map_err(|e| match e.kind() {
-                std::io::ErrorKind::AlreadyExists => StatusCode::Failure,
-                _ => StatusCode::Failure,
-            })?;
+            .map_err(|_| StatusCode::Failure)?;
         Ok(Status {
             id,
             status_code: StatusCode::Ok,

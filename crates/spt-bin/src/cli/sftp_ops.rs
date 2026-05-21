@@ -34,6 +34,8 @@ type SftpDriveAddArgs = groups::sftp::SftpDriveAddArgs;
 type SftpMountRefArgs = groups::sftp::SftpMountRefArgs;
 type SftpMountPlanArgs = groups::sftp::SftpMountPlanArgs;
 type SftpDrivePlanArgs = groups::sftp::SftpDrivePlanArgs;
+type SftpMountStartArgs = groups::sftp::SftpMountStartArgs;
+type SftpMountStopArgs = groups::sftp::SftpMountStopArgs;
 type SftpCacheMode = groups::sftp::SftpCacheMode;
 
 #[derive(Debug, Serialize)]
@@ -483,6 +485,154 @@ pub async fn mount_plan(global: &GlobalOpts, args: SftpMountPlanArgs) -> Result<
     )?;
     let plan = build_plan(&cfg, profile, &mount, MountKind::Mount)?;
     emit_plan(global, args.json, &plan)
+}
+
+/// Start an SFTP-backed filesystem mount.
+///
+/// Picks the platform-correct backend via
+/// [`spt_sftp::mounter_for_current_os`], wires an audit hook that emits
+/// `tracing` events (t6-Bwire wires this through to the workspace audit
+/// subsystem), and surfaces backend errors directly. On platforms without
+/// a live driver (Linux without `mount-fuse`, Windows without WinFsp,
+/// macOS without `sshfs`) the command exits with
+/// [`spt_core::ExitCode::UnsupportedPlatform`].
+pub async fn mount_start(global: &GlobalOpts, args: SftpMountStartArgs) -> Result<()> {
+    use std::sync::Arc;
+
+    use spt_sftp::mount::{AuditHook, MountEvent, MountOpts};
+
+    let profile_name = args.profile.clone().or_else(|| global.profile.clone()).ok_or_else(
+        || Error::InvalidArgs("no profile supplied (pass --profile or set --profile globally)".into()),
+    )?;
+
+    // Resolve the mountpoint and remote root: explicit CLI args win,
+    // then fall back to the first matching mount entry in the profile.
+    let (local, remote) = resolve_mount_targets(global, &profile_name, &args)?;
+
+    let client = open_client(global, &profile_name).await?;
+    let sftp = Arc::new(client);
+    let mut mounter = spt_sftp::mounter_for_current_os(sftp).map_err(Error::from)?;
+
+    let hook: AuditHook = Arc::new(|event: &MountEvent| match event {
+        MountEvent::MountAttempt { target, backend, .. } => {
+            tracing::info!(?target, backend, "sftp.mount.attempt");
+        }
+        MountEvent::MountSucceeded { target, backend } => {
+            tracing::info!(?target, backend, "sftp.mount.succeeded");
+        }
+        MountEvent::MountFailed { target, reason } => {
+            tracing::warn!(?target, %reason, "sftp.mount.failed");
+        }
+        MountEvent::UmountAttempt { target } => {
+            tracing::info!(?target, "sftp.umount.attempt");
+        }
+        MountEvent::UmountSucceeded { target } => {
+            tracing::info!(?target, "sftp.umount.succeeded");
+        }
+    });
+
+    let mut opts = MountOpts::new(&local, &remote);
+    opts.readonly = args.read_only;
+    opts.volume_name = args.volume.clone();
+    opts.audit_hook = Some(hook);
+
+    let handle = mounter.mount(opts).map_err(Error::from)?;
+    if wants_json(global, args.json) {
+        print_json(&json!({
+            "profile": profile_name,
+            "mountpoint": local,
+            "remote": remote,
+            "backend": handle.backend(),
+            "helper_pid": handle.helper_pid,
+        }))?;
+    } else {
+        println!(
+            "mounted {} -> {} via {}",
+            local.display(),
+            remote.display(),
+            handle.backend()
+        );
+    }
+    Ok(())
+}
+
+/// Tear down an SFTP-backed filesystem mount.
+pub async fn mount_stop(global: &GlobalOpts, args: SftpMountStopArgs) -> Result<()> {
+    use std::sync::Arc;
+
+    use spt_sftp::mount::{AuditHook, MountEvent, MountHandle};
+
+    // We don't keep a runtime registry of live mounts in t6-e5 — t6-Bwire
+    // adds the supervisor wire. Construct a synthetic handle whose
+    // backend dispatches to the platform-correct umount.
+    let profile_name = global.profile.clone().unwrap_or_else(|| "default".to_owned());
+    let client = open_client(global, &profile_name).await.ok();
+    let sftp = match client {
+        Some(c) => Arc::new(c),
+        None => {
+            return Err(Error::InvalidArgs(
+                "umount without a live SFTP session needs --profile".into(),
+            ));
+        }
+    };
+    let mut mounter = spt_sftp::mounter_for_current_os(sftp).map_err(Error::from)?;
+
+    let hook: AuditHook = Arc::new(|event: &MountEvent| {
+        if let MountEvent::UmountSucceeded { target } = event {
+            tracing::info!(?target, "sftp.umount.succeeded");
+        }
+    });
+
+    let backend = if cfg!(target_os = "linux") {
+        "linux-fuse"
+    } else if cfg!(target_os = "macos") {
+        "macos-sshfs"
+    } else if cfg!(windows) {
+        "windows-winfsp"
+    } else {
+        "unsupported"
+    };
+
+    let handle = MountHandle::new(args.path.clone(), backend);
+    let _ = hook;
+    mounter.umount(handle).map_err(Error::from)?;
+    if wants_json(global, args.json) {
+        print_json(&json!({ "umounted": args.path }))?;
+    } else {
+        println!("umounted {}", args.path.display());
+    }
+    Ok(())
+}
+
+fn resolve_mount_targets(
+    global: &GlobalOpts,
+    profile_name: &str,
+    args: &SftpMountStartArgs,
+) -> Result<(PathBuf, PathBuf)> {
+    if let (Some(local), Some(remote)) = (args.local.clone(), args.remote.clone()) {
+        return Ok((local, remote));
+    }
+    let path = require_config_path(global)?;
+    let (cfg, _warnings) = spt_config::load(&path, false)
+        .map_err(|e| Error::InvalidConfig(format!("load `{}`: {e}", path.display())))?;
+    let profile = find_profile(&cfg, profile_name)?;
+    let mount = profile
+        .sftp_mounts
+        .iter()
+        .find(|m| m.mount_point.is_some())
+        .ok_or_else(|| {
+            Error::InvalidArgs(format!(
+                "profile `{profile_name}` has no SFTP mount entry; pass --local and --remote"
+            ))
+        })?;
+    let local = args.local.clone().or_else(|| mount.mount_point.clone().map(PathBuf::from)).ok_or_else(
+        || Error::InvalidArgs("mount entry is missing mount_point".into()),
+    )?;
+    let remote = args
+        .remote
+        .clone()
+        .unwrap_or_else(|| PathBuf::from(&mount.remote_path));
+    Ok((local, remote))
 }
 
 pub async fn drive_plan(global: &GlobalOpts, args: SftpDrivePlanArgs) -> Result<()> {

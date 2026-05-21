@@ -18,6 +18,14 @@ default = []
 # crates (notably the spt-bin CLI tests) can wire SFTP fixtures without
 # building an SSH transport.
 testing = []
+# Linux FUSE backend. Pulls in `fuser` which links libfuse via pkg-config
+# at build time; default-off so workspace builds on hosts without
+# libfuse-dev installed.
+mount-fuse = []
+# Windows WinFsp backend. Default-off; without it the Windows mounter
+# falls back to a `winfsp-launcher` shell-out path that surfaces a clean
+# `UnsupportedPlatform` diagnostic when the launcher is absent.
+mount-winfsp = []
 
 [dependencies]
 spt-core = { workspace = true }
@@ -38,4 +46,8 @@ spt-ssh2 = { workspace = true }
 
 [[test]]
 name = "ops"
+required-features = ["testing"]
+
+[[test]]
+name = "mount"
 required-features = ["testing"]
