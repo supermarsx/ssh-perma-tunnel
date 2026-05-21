@@ -246,6 +246,37 @@ bounded by the SSH backend: the current russh/libssh2 paths return an explicit
 unsupported-feature diagnostic for requested ML-KEM/SNTRUP KEX until those KEX
 engines are implemented in the transport.
 
+## `[profiles.auth]` GSSAPI And SSPI
+
+GSSAPI/Kerberos and Windows SSPI/Negotiate auth are explicit config surfaces:
+
+    [capabilities]
+    allow_gssapi = true
+    allow_sspi = true
+
+    [profiles.auth]
+    method = "kerberos"       # aliases: gssapi, gssapi-with-mic
+    gssapi_service = "host/edge.example.com"
+    gssapi_principal = "alice@EXAMPLE.COM"
+    gssapi_delegate = false
+
+Or on Windows:
+
+    [capabilities]
+    allow_sspi = true
+
+    [profiles.auth]
+    method = "sspi"           # alias: negotiate
+    sspi_service = "host/edge.example.com"
+    sspi_principal = "alice@example.com"
+    sspi_delegate = false
+    sspi_allow_ntlm_fallback = false
+
+Validation enforces the capability gates, delegation policy, and NTLM fallback
+policy. Runtime support is still bounded by backend implementation and returns
+an explicit unsupported-feature diagnostic until Kerberos/SSPI negotiation is
+implemented.
+
 ## Profile basics
 
 A minimal profile (see [`examples/minimal.toml`](../examples/minimal.toml)):

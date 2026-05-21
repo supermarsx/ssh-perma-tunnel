@@ -321,41 +321,138 @@ fn build_auth_config_parts(
     auth: Option<&AuthCfg>,
     context: &str,
 ) -> Result<AuthConfig> {
+    let username = username.unwrap_or_default();
     let methods = auth
-        .map(|auth| translate_auth(auth, context))
+        .map(|auth| translate_auth(auth, username, context))
         .transpose()?
         .unwrap_or_default();
-    Ok(AuthConfig::new(username.unwrap_or_default(), methods))
+    Ok(AuthConfig::new(username, methods))
 }
 
-fn translate_auth(a: &AuthCfg, context: &str) -> Result<Vec<AuthMethod>> {
-    // `Auth` in the schema is a permissive accumulator of fields; we
-    // translate the *first* declared method only in M0 and let unset
-    // configs round-trip as an empty method list (the supervisor will
-    // surface an `AuthFailed` on the first connect attempt).
-    let mut out = Vec::new();
-    if let Some(p) = &a.password {
-        let secret = AuthSecretRef::parse(p).map_err(|e| {
-            Error::InvalidConfig(format!("{context}.password: invalid secret reference: {e}"))
-        })?;
-        out.push(AuthMethod::Password { secret });
-    }
-    if let Some(key) = &a.identity_file {
-        let passphrase = a
-            .passphrase
+fn translate_auth(a: &AuthCfg, username: &str, context: &str) -> Result<Vec<AuthMethod>> {
+    let method = normalize_auth_method(&a.method);
+    let passphrase = || {
+        a.passphrase
             .as_ref()
             .map(|p| AuthSecretRef::parse(p))
             .transpose()
-            .map_err(|e| Error::InvalidConfig(format!("{context}.passphrase: {e}")))?;
-        out.push(AuthMethod::PublicKey {
-            identity_file: std::path::PathBuf::from(key),
-            passphrase,
-        });
+            .map_err(|e| Error::InvalidConfig(format!("{context}.passphrase: {e}")))
+    };
+    let password = || {
+        let p = a
+            .password
+            .as_ref()
+            .ok_or_else(|| Error::InvalidConfig(format!("{context}.password is required")))?;
+        AuthSecretRef::parse(p).map_err(|e| {
+            Error::InvalidConfig(format!("{context}.password: invalid secret reference: {e}"))
+        })
+    };
+    let token = || {
+        let p = a
+            .token
+            .as_ref()
+            .ok_or_else(|| Error::InvalidConfig(format!("{context}.token is required")))?;
+        AuthSecretRef::parse(p).map_err(|e| {
+            Error::InvalidConfig(format!("{context}.token: invalid secret reference: {e}"))
+        })
+    };
+
+    let method = match method.as_str() {
+        "password" => {
+            let secret = password()?;
+            let mut methods = vec![AuthMethod::Password { secret }];
+            if a.keyboard_interactive.unwrap_or(false) {
+                methods.push(AuthMethod::KeyboardInteractive {
+                    responder: vec![spt_auth::KbiAnswer {
+                        pattern: "password".into(),
+                        response: password()?,
+                        echo: false,
+                    }],
+                });
+            }
+            return Ok(methods);
+        }
+        "public_key" => {
+            let key = a.identity_file.as_ref().ok_or_else(|| {
+                Error::InvalidConfig(format!("{context}.identity_file is required"))
+            })?;
+            if let Some(cert) = a.certificate_file.as_ref() {
+                AuthMethod::Certificate {
+                    cert: std::path::PathBuf::from(cert),
+                    key: std::path::PathBuf::from(key),
+                    passphrase: passphrase()?,
+                }
+            } else {
+                AuthMethod::PublicKey {
+                    identity_file: std::path::PathBuf::from(key),
+                    passphrase: passphrase()?,
+                }
+            }
+        }
+        "agent" => AuthMethod::Agent { socket: None },
+        "keyboard_interactive" => AuthMethod::KeyboardInteractive {
+            responder: vec![spt_auth::KbiAnswer {
+                pattern: "password".into(),
+                response: password()?,
+                echo: false,
+            }],
+        },
+        "certificate" => AuthMethod::Certificate {
+            cert: std::path::PathBuf::from(a.certificate_file.as_ref().ok_or_else(|| {
+                Error::InvalidConfig(format!("{context}.certificate_file is required"))
+            })?),
+            key: std::path::PathBuf::from(a.identity_file.as_ref().ok_or_else(|| {
+                Error::InvalidConfig(format!("{context}.identity_file is required"))
+            })?),
+            passphrase: passphrase()?,
+        },
+        "bearer" => AuthMethod::Bearer { token: token()? },
+        "basic" => AuthMethod::Basic {
+            username: username.to_owned(),
+            password: password()?,
+        },
+        "oidc_device_flow" => AuthMethod::OidcDeviceFlow {
+            issuer: a
+                .oidc_issuer
+                .as_ref()
+                .ok_or_else(|| Error::InvalidConfig(format!("{context}.oidc_issuer is required")))?
+                .parse()
+                .map_err(|e| Error::InvalidConfig(format!("{context}.oidc_issuer: {e}")))?,
+            client_id: a.oidc_client_id.clone().ok_or_else(|| {
+                Error::InvalidConfig(format!("{context}.oidc_client_id is required"))
+            })?,
+            audience: None,
+        },
+        "gssapi" => AuthMethod::Gssapi {
+            service: a.gssapi_service.clone(),
+            principal: a.gssapi_principal.clone(),
+            delegate: a.gssapi_delegate.unwrap_or(false),
+        },
+        "sspi" => AuthMethod::Sspi {
+            service: a.sspi_service.clone(),
+            principal: a.sspi_principal.clone(),
+            delegate: a.sspi_delegate.unwrap_or(false),
+            allow_ntlm_fallback: a.sspi_allow_ntlm_fallback.unwrap_or(false),
+        },
+        other => {
+            return Err(Error::InvalidConfig(format!(
+                "{context}.method `{other}` is not supported"
+            )));
+        }
+    };
+    Ok(vec![method])
+}
+
+fn normalize_auth_method(method: &str) -> String {
+    match method.trim().to_ascii_lowercase().as_str() {
+        "publickey" | "public-key" | "ssh3_public_key" => "public_key".into(),
+        "bearer_token" => "bearer".into(),
+        "http_basic" => "basic".into(),
+        "oidc" => "oidc_device_flow".into(),
+        "kerberos" | "gssapi-with-mic" | "gssapi_with_mic" => "gssapi".into(),
+        "negotiate" => "sspi".into(),
+        other => other.into(),
     }
-    if a.agent.unwrap_or(false) {
-        out.push(AuthMethod::Agent { socket: None });
-    }
-    Ok(out)
 }
 
 fn build_trust_policy(trust: Option<&TrustCfg>, hosts: &[(String, u16)]) -> Result<TrustPolicy> {
@@ -474,6 +571,52 @@ mod tests {
         let (c, _) = load_str(cfg, false).unwrap();
         let bundle = build(&c.profiles[0], &empty_resolver()).unwrap();
         assert!(bundle.endpoints.is_empty());
+    }
+
+    #[test]
+    fn agent_method_translates_without_extra_flag() {
+        let cfg = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "example.com"
+            user = "alice"
+            [profiles.auth]
+            method = "agent"
+        "#;
+        let (c, _) = load_str(cfg, false).unwrap();
+        let bundle = build(&c.profiles[0], &empty_resolver()).unwrap();
+        assert!(matches!(bundle.auth.methods[0], AuthMethod::Agent { .. }));
+    }
+
+    #[test]
+    fn gssapi_method_translates_to_explicit_auth_variant() {
+        let cfg = r#"
+            version = 1
+            [capabilities]
+            allow_gssapi = true
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "example.com"
+            user = "alice"
+            [profiles.auth]
+            method = "kerberos"
+            gssapi_service = "host/edge.example.com"
+            gssapi_delegate = true
+        "#;
+        let (c, _) = load_str(cfg, false).unwrap();
+        let bundle = build_with_config(&c.profiles[0], &empty_resolver(), &c).unwrap();
+        match &bundle.auth.methods[0] {
+            AuthMethod::Gssapi {
+                service, delegate, ..
+            } => {
+                assert_eq!(service.as_deref(), Some("host/edge.example.com"));
+                assert!(*delegate);
+            }
+            other => panic!("expected GSSAPI method, got {other:?}"),
+        }
     }
 
     #[test]

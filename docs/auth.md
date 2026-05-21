@@ -15,6 +15,8 @@ and reflected by [`crates/spt-config/src/schema.rs`](../crates/spt-config/src/sc
 | `agent`                | SSH2  | Delegate to a running ssh-agent.         |
 | `password`             | SSH2  | Password (with optional kbi fallback).   |
 | `keyboard_interactive` | SSH2  | Server-driven prompt/response.           |
+| `gssapi` / `kerberos`  | SSH2  | GSSAPI/Kerberos shape + policy gates.    |
+| `sspi` / `negotiate`   | SSH2  | Windows SSPI/Negotiate shape + gates.    |
 | `bearer_token`         | SSH3  | HTTP `Authorization: Bearer …`.          |
 | `http_basic`           | SSH3  | HTTP `Authorization: Basic …`.           |
 | `oidc`                 | SSH3  | OIDC device-flow / authorization-code.   |
@@ -73,6 +75,37 @@ password = "secret://ssh/edge/password"
 `keyboard_interactive` is server-driven: the response to each prompt is taken
 from the resolved `password` secret. For multi-prompt servers, configure your
 prompts at the IdP, not in the config file.
+
+## SSH2 GSSAPI, Kerberos, And SSPI
+
+```toml
+[capabilities]
+allow_gssapi = true
+allow_sspi = true
+allow_gssapi_delegation = false
+allow_ntlm_fallback = false
+
+[profiles.auth]
+method = "kerberos"
+gssapi_service = "host/edge.example.com"
+gssapi_principal = "alice@EXAMPLE.COM"
+gssapi_delegate = false
+```
+
+```toml
+[profiles.auth]
+method = "sspi"
+sspi_service = "host/edge.example.com"
+sspi_principal = "alice@example.com"
+sspi_delegate = false
+sspi_allow_ntlm_fallback = false
+```
+
+These methods are now first-class config and diagnostic shapes. They are gated
+by `[capabilities]`; delegation and NTLM fallback require their own explicit
+policy flags. Runtime negotiation is still pending in the SSH2 backend, so a
+profile using these methods returns a clear unsupported-feature error rather
+than falling through to an empty auth method list.
 
 ## SSH3 bearer token
 

@@ -55,6 +55,35 @@ pub enum AuthMethod {
         passphrase: Option<SecretRef>,
     },
 
+    /// SSH2 GSSAPI/Kerberos auth.
+    Gssapi {
+        /// Optional service principal, for example `host/edge.example.com`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        service: Option<String>,
+        /// Optional client principal hint.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        principal: Option<String>,
+        /// Permit credential delegation.
+        #[serde(default)]
+        delegate: bool,
+    },
+
+    /// Windows SSPI/Negotiate auth for SSH2.
+    Sspi {
+        /// Optional service principal name.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        service: Option<String>,
+        /// Optional client principal hint.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        principal: Option<String>,
+        /// Permit credential delegation.
+        #[serde(default)]
+        delegate: bool,
+        /// Permit NTLM fallback when Kerberos cannot be negotiated.
+        #[serde(default)]
+        allow_ntlm_fallback: bool,
+    },
+
     /// SSH3 bearer-token auth (`Authorization: Bearer …`).
     Bearer {
         /// Reference to the bearer token.

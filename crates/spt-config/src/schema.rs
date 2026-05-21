@@ -1264,6 +1264,27 @@ pub struct Auth {
     /// SSH2 keyboard-interactive fallback. §9.12.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub keyboard_interactive: Option<bool>,
+    /// GSSAPI/Kerberos service principal hint, for example `host/server`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gssapi_service: Option<String>,
+    /// GSSAPI/Kerberos client principal hint.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gssapi_principal: Option<String>,
+    /// Permit GSSAPI credential delegation for this auth method.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gssapi_delegate: Option<bool>,
+    /// Windows SSPI/Negotiate service principal name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sspi_service: Option<String>,
+    /// Windows SSPI client principal hint.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sspi_principal: Option<String>,
+    /// Permit SSPI credential delegation for this auth method.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sspi_delegate: Option<bool>,
+    /// Permit NTLM fallback through SSPI/Negotiate for this auth method.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sspi_allow_ntlm_fallback: Option<bool>,
     /// OIDC issuer (SSH3). §9.12.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub oidc_issuer: Option<String>,

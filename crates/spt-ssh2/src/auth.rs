@@ -105,6 +105,12 @@ where
                 .await
                 .map_err(|e| from_async_ssh("userauth_keyboard_interactive", e))
         }
+        AuthMethod::Gssapi { .. } | AuthMethod::Sspi { .. } => Err(Error::UnsupportedPlatform(
+            format!(
+                "auth method `{}` is configured, but SSH2 GSSAPI/Kerberos/SSPI auth is not implemented by the active backend yet",
+                method_name(method)
+            ),
+        )),
         AuthMethod::Bearer { .. }
         | AuthMethod::Basic { .. }
         | AuthMethod::OidcDeviceFlow { .. } => Err(Error::InvalidConfig(format!(
@@ -375,6 +381,8 @@ fn method_name(m: &AuthMethod) -> &'static str {
         AuthMethod::Password { .. } => "password",
         AuthMethod::KeyboardInteractive { .. } => "keyboard_interactive",
         AuthMethod::Certificate { .. } => "certificate",
+        AuthMethod::Gssapi { .. } => "gssapi",
+        AuthMethod::Sspi { .. } => "sspi",
         AuthMethod::Bearer { .. } => "bearer",
         AuthMethod::Basic { .. } => "basic",
         AuthMethod::OidcDeviceFlow { .. } => "oidc_device_flow",
@@ -431,7 +439,7 @@ mod tests {
     #[test]
     fn method_name_covers_every_variant() {
         // PublicKey / Agent / Password / KeyboardInteractive / Certificate /
-        // Bearer / Basic / OidcDeviceFlow.
+        // Gssapi / Sspi / Bearer / Basic / OidcDeviceFlow.
         let pk = AuthMethod::PublicKey {
             identity_file: PathBuf::from("/tmp/id_test"),
             passphrase: None,
@@ -451,6 +459,19 @@ mod tests {
             passphrase: None,
         };
         assert_eq!(method_name(&cert), "certificate");
+        let gssapi = AuthMethod::Gssapi {
+            service: None,
+            principal: None,
+            delegate: false,
+        };
+        assert_eq!(method_name(&gssapi), "gssapi");
+        let sspi = AuthMethod::Sspi {
+            service: None,
+            principal: None,
+            delegate: false,
+            allow_ntlm_fallback: false,
+        };
+        assert_eq!(method_name(&sspi), "sspi");
         let bearer = AuthMethod::Bearer {
             token: AuthSecretRef::Env("X".into()),
         };

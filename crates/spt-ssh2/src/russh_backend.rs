@@ -386,6 +386,12 @@ async fn try_auth_method(
         AuthMethod::KeyboardInteractive { responder } => {
             try_keyboard_interactive(handle, username, responder, backends).await
         }
+        AuthMethod::Gssapi { .. } | AuthMethod::Sspi { .. } => Err(Error::UnsupportedPlatform(
+            format!(
+                "auth method `{}` is configured, but SSH2/russh does not implement GSSAPI/Kerberos/SSPI auth yet",
+                method_name(&method)
+            ),
+        )),
         AuthMethod::Bearer { .. }
         | AuthMethod::Basic { .. }
         | AuthMethod::OidcDeviceFlow { .. } => Err(Error::InvalidConfig(format!(
@@ -833,6 +839,8 @@ fn method_name(method: &AuthMethod) -> &'static str {
         AuthMethod::Password { .. } => "password",
         AuthMethod::KeyboardInteractive { .. } => "keyboard_interactive",
         AuthMethod::Certificate { .. } => "certificate",
+        AuthMethod::Gssapi { .. } => "gssapi",
+        AuthMethod::Sspi { .. } => "sspi",
         AuthMethod::Bearer { .. } => "bearer",
         AuthMethod::Basic { .. } => "basic",
         AuthMethod::OidcDeviceFlow { .. } => "oidc_device_flow",

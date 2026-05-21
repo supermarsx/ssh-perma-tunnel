@@ -826,7 +826,13 @@ fn check_profile(d: &mut Diagnostics, i: usize, p: &Profile, capabilities: Optio
 
     // Auth.
     if let Some(auth) = p.auth.as_ref() {
-        check_auth(d, auth, &format!("{prefix}.auth"));
+        check_auth(
+            d,
+            auth,
+            &p.protocol,
+            capabilities,
+            &format!("{prefix}.auth"),
+        );
     }
 
     check_profile_crypto(d, p, capabilities, &prefix);
@@ -865,7 +871,13 @@ fn check_profile(d: &mut Diagnostics, i: usize, p: &Profile, capabilities: Optio
             }
         }
         if let Some(auth) = hop.auth.as_ref() {
-            check_auth(d, auth, &format!("{hop_prefix}.auth"));
+            check_auth(
+                d,
+                auth,
+                &hop.protocol,
+                capabilities,
+                &format!("{hop_prefix}.auth"),
+            );
         }
     }
 
@@ -1252,7 +1264,161 @@ fn contains_any_algorithm(configured: &[String], known: &[&str]) -> bool {
     })
 }
 
-fn check_auth(d: &mut Diagnostics, auth: &Auth, prefix: &str) {
+fn check_auth(
+    d: &mut Diagnostics,
+    auth: &Auth,
+    protocol: &str,
+    capabilities: Option<&Capabilities>,
+    prefix: &str,
+) {
+    let method = auth.method.trim();
+    if method.is_empty() {
+        d.push(
+            Diagnostic::error("auth_method_missing", "`auth.method` must not be empty")
+                .at(format!("{prefix}.method")),
+        );
+    } else if !matches!(
+        normalize_auth_method(method).as_str(),
+        "public_key"
+            | "agent"
+            | "password"
+            | "keyboard_interactive"
+            | "certificate"
+            | "bearer"
+            | "basic"
+            | "oidc_device_flow"
+            | "gssapi"
+            | "sspi"
+    ) {
+        d.push(
+            Diagnostic::error(
+                "auth_method_invalid",
+                format!("unknown auth method `{method}`"),
+            )
+            .at(format!("{prefix}.method")),
+        );
+    }
+
+    match normalize_auth_method(method).as_str() {
+        "gssapi" => {
+            if protocol != "ssh2" {
+                d.push(
+                    Diagnostic::error(
+                        "gssapi_requires_ssh2",
+                        format!("GSSAPI/Kerberos auth requires profile protocol `ssh2`, got `{protocol}`"),
+                    )
+                    .at(format!("{prefix}.method")),
+                );
+            }
+            if !matches!(
+                capabilities.and_then(|capabilities| capabilities.allow_gssapi),
+                Some(true)
+            ) {
+                d.push(
+                    Diagnostic::error(
+                        "gssapi_capability_disabled",
+                        "GSSAPI/Kerberos auth requires capabilities.allow_gssapi = true",
+                    )
+                    .at("capabilities.allow_gssapi"),
+                );
+            }
+            if matches!(auth.gssapi_delegate, Some(true))
+                && !matches!(
+                    capabilities.and_then(|capabilities| capabilities.allow_gssapi_delegation),
+                    Some(true)
+                )
+            {
+                d.push(
+                    Diagnostic::error(
+                        "gssapi_delegation_capability_disabled",
+                        "GSSAPI delegation requires capabilities.allow_gssapi_delegation = true",
+                    )
+                    .at("capabilities.allow_gssapi_delegation"),
+                );
+            }
+            check_non_empty_string(
+                d,
+                auth.gssapi_service.as_deref(),
+                format!("{prefix}.gssapi_service"),
+            );
+            check_non_empty_string(
+                d,
+                auth.gssapi_principal.as_deref(),
+                format!("{prefix}.gssapi_principal"),
+            );
+        }
+        "sspi" => {
+            if protocol != "ssh2" {
+                d.push(
+                    Diagnostic::error(
+                        "sspi_requires_ssh2",
+                        format!("SSPI/Negotiate auth requires profile protocol `ssh2`, got `{protocol}`"),
+                    )
+                    .at(format!("{prefix}.method")),
+                );
+            }
+            if !matches!(
+                capabilities.and_then(|capabilities| capabilities.allow_sspi),
+                Some(true)
+            ) {
+                d.push(
+                    Diagnostic::error(
+                        "sspi_capability_disabled",
+                        "SSPI/Negotiate auth requires capabilities.allow_sspi = true",
+                    )
+                    .at("capabilities.allow_sspi"),
+                );
+            }
+            if matches!(auth.sspi_delegate, Some(true))
+                && !matches!(
+                    capabilities.and_then(|capabilities| capabilities.allow_gssapi_delegation),
+                    Some(true)
+                )
+            {
+                d.push(
+                    Diagnostic::error(
+                        "sspi_delegation_capability_disabled",
+                        "SSPI delegation requires capabilities.allow_gssapi_delegation = true",
+                    )
+                    .at("capabilities.allow_gssapi_delegation"),
+                );
+            }
+            if matches!(auth.sspi_allow_ntlm_fallback, Some(true))
+                && !matches!(
+                    capabilities.and_then(|capabilities| capabilities.allow_ntlm_fallback),
+                    Some(true)
+                )
+            {
+                d.push(
+                    Diagnostic::error(
+                        "sspi_ntlm_capability_disabled",
+                        "SSPI NTLM fallback requires capabilities.allow_ntlm_fallback = true",
+                    )
+                    .at("capabilities.allow_ntlm_fallback"),
+                );
+            }
+            #[cfg(not(windows))]
+            d.push(
+                Diagnostic::warning(
+                    "sspi_windows_only",
+                    "SSPI/Negotiate auth is available only on Windows; non-Windows runtimes will report unsupported",
+                )
+                .at(format!("{prefix}.method")),
+            );
+            check_non_empty_string(
+                d,
+                auth.sspi_service.as_deref(),
+                format!("{prefix}.sspi_service"),
+            );
+            check_non_empty_string(
+                d,
+                auth.sspi_principal.as_deref(),
+                format!("{prefix}.sspi_principal"),
+            );
+        }
+        _ => {}
+    }
+
     for (label, val) in [
         ("passphrase", &auth.passphrase),
         ("password", &auth.password),
@@ -1261,6 +1427,24 @@ fn check_auth(d: &mut Diagnostics, auth: &Auth, prefix: &str) {
         if let Some(s) = val.as_deref() {
             check_secret_ref_shape(d, s, format!("{prefix}.{label}"));
         }
+    }
+}
+
+fn normalize_auth_method(method: &str) -> String {
+    match method.trim().to_ascii_lowercase().as_str() {
+        "publickey" | "public-key" | "ssh3_public_key" => "public_key".into(),
+        "bearer_token" => "bearer".into(),
+        "http_basic" => "basic".into(),
+        "oidc" => "oidc_device_flow".into(),
+        "kerberos" | "gssapi-with-mic" | "gssapi_with_mic" => "gssapi".into(),
+        "negotiate" => "sspi".into(),
+        other => other.into(),
+    }
+}
+
+fn check_non_empty_string(d: &mut Diagnostics, value: Option<&str>, path: String) {
+    if matches!(value, Some("")) {
+        d.push(Diagnostic::error("empty_string", format!("`{path}` must not be empty")).at(path));
     }
 }
 
@@ -1980,6 +2164,71 @@ mod tests {
             d.errors,
             d.warnings
         );
+    }
+
+    #[test]
+    fn gssapi_auth_requires_capability_gate() {
+        let raw = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            [profiles.auth]
+            method = "gssapi"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(d
+            .errors
+            .iter()
+            .any(|e| e.code == "gssapi_capability_disabled"));
+    }
+
+    #[test]
+    fn gssapi_auth_validates_when_gated() {
+        let raw = r#"
+            version = 1
+            [capabilities]
+            allow_gssapi = true
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            [profiles.auth]
+            method = "kerberos"
+            gssapi_service = "host/edge.example.com"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(
+            d.is_ok(),
+            "errors: {:?} warnings: {:?}",
+            d.errors,
+            d.warnings
+        );
+    }
+
+    #[test]
+    fn sspi_ntlm_requires_capability_gate() {
+        let raw = r#"
+            version = 1
+            [capabilities]
+            allow_sspi = true
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            [profiles.auth]
+            method = "sspi"
+            sspi_allow_ntlm_fallback = true
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(d
+            .errors
+            .iter()
+            .any(|e| e.code == "sspi_ntlm_capability_disabled"));
     }
 
     #[test]

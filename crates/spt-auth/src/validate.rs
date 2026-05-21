@@ -58,6 +58,25 @@ pub fn validate(method: &AuthMethod) -> Result<()> {
             Ok(())
         }
 
+        AuthMethod::Gssapi {
+            service,
+            principal,
+            delegate: _,
+        } => {
+            check_optional_non_empty("gssapi.service", service.as_deref())?;
+            check_optional_non_empty("gssapi.principal", principal.as_deref())
+        }
+
+        AuthMethod::Sspi {
+            service,
+            principal,
+            delegate: _,
+            allow_ntlm_fallback: _,
+        } => {
+            check_optional_non_empty("sspi.service", service.as_deref())?;
+            check_optional_non_empty("sspi.principal", principal.as_deref())
+        }
+
         AuthMethod::Basic {
             username,
             password: _,
@@ -102,6 +121,13 @@ fn check_file_exists(field: &str, path: &Path) -> Result<()> {
             "{field} `{}` is not a regular file",
             path.display()
         )));
+    }
+    Ok(())
+}
+
+fn check_optional_non_empty(field: &str, value: Option<&str>) -> Result<()> {
+    if matches!(value, Some("")) {
+        return Err(invalid(format!("{field} must not be empty")));
     }
     Ok(())
 }
@@ -214,6 +240,28 @@ mod tests {
             token: SecretRef::Env("T".into()),
         })
         .unwrap();
+    }
+
+    #[test]
+    fn gssapi_shape_passes() {
+        validate(&AuthMethod::Gssapi {
+            service: Some("host/edge.example.com".into()),
+            principal: Some("alice@EXAMPLE.COM".into()),
+            delegate: false,
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn sspi_rejects_empty_service() {
+        let err = validate(&AuthMethod::Sspi {
+            service: Some(String::new()),
+            principal: None,
+            delegate: false,
+            allow_ntlm_fallback: false,
+        })
+        .unwrap_err();
+        assert!(err.to_string().contains("sspi.service"));
     }
 
     #[test]

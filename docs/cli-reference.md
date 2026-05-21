@@ -76,6 +76,10 @@ surfaces, completion support, and exit-code contract.
 - `[capabilities]` gates the new production feature families: russh SSH2
   backend selection, GSSAPI/SSPI, PQ/ML-KEM KEX, SOCKS/HTTP CONNECT, SFTP,
   filesystem and Windows drive mounts, Windows Event Log, and GPO writes.
+- `[profiles.auth] method = "gssapi" | "kerberos" | "sspi" | "negotiate"`
+  is validated and translated into explicit auth methods. The current SSH2
+  backends return unsupported-feature diagnostics for Kerberos/SSPI runtime
+  negotiation until that transport work is complete.
 - PQ/ML-KEM KEX names in `[profiles.crypto].kex_algorithms` are validated
   behind `allow_post_quantum_kex` and `allow_ml_kem`. Current SSH2 backends
   return explicit unsupported-feature diagnostics for ML-KEM/SNTRUP runtime

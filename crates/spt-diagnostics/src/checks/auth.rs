@@ -118,7 +118,7 @@ fn check_profile(profile: &Profile, out: &mut Vec<Check>) {
         return;
     };
 
-    let methods = match translate_methods(auth) {
+    let methods = match translate_methods(profile, auth) {
         Ok(v) => v,
         Err(msg) => {
             out.push(
@@ -180,6 +180,8 @@ fn check_profile(profile: &Profile, out: &mut Vec<Check>) {
                 AuthMethod::Agent { .. }
                     | AuthMethod::PublicKey { .. }
                     | AuthMethod::KeyboardInteractive { .. }
+                    | AuthMethod::Gssapi { .. }
+                    | AuthMethod::Sspi { .. }
             ) {
                 out.push(
                     Check::new(
@@ -227,11 +229,19 @@ fn check_profile(profile: &Profile, out: &mut Vec<Check>) {
 
 /// Translate the loose `[profiles.auth]` accumulator into the strict
 /// [`AuthMethod`] enum so [`spt_auth::validate`] can vet shape.
-fn translate_methods(a: &AuthCfg) -> Result<Vec<AuthMethod>, String> {
+fn translate_methods(profile: &Profile, a: &AuthCfg) -> Result<Vec<AuthMethod>, String> {
     let mut out = Vec::new();
+    let method = normalize_auth_method(&a.method);
     if let Some(p) = &a.password {
         let secret = SecretRef::parse(p).map_err(|e| format!("auth.password: {e}"))?;
-        out.push(AuthMethod::Password { secret });
+        if method == "basic" {
+            out.push(AuthMethod::Basic {
+                username: profile.user.clone().unwrap_or_default(),
+                password: secret,
+            });
+        } else {
+            out.push(AuthMethod::Password { secret });
+        }
     }
     if let Some(t) = &a.token {
         let secret = SecretRef::parse(t).map_err(|e| format!("auth.token: {e}"))?;
@@ -260,6 +270,21 @@ fn translate_methods(a: &AuthCfg) -> Result<Vec<AuthMethod>, String> {
             audience: None,
         });
     }
+    if method == "gssapi" {
+        out.push(AuthMethod::Gssapi {
+            service: a.gssapi_service.clone(),
+            principal: a.gssapi_principal.clone(),
+            delegate: a.gssapi_delegate.unwrap_or(false),
+        });
+    }
+    if method == "sspi" {
+        out.push(AuthMethod::Sspi {
+            service: a.sspi_service.clone(),
+            principal: a.sspi_principal.clone(),
+            delegate: a.sspi_delegate.unwrap_or(false),
+            allow_ntlm_fallback: a.sspi_allow_ntlm_fallback.unwrap_or(false),
+        });
+    }
     if let Some(cert) = &a.certificate_file {
         // certificate requires a paired key — use identity_file.
         if let Some(key) = &a.identity_file {
@@ -279,6 +304,18 @@ fn translate_methods(a: &AuthCfg) -> Result<Vec<AuthMethod>, String> {
     Ok(out)
 }
 
+fn normalize_auth_method(method: &str) -> String {
+    match method.trim().to_ascii_lowercase().as_str() {
+        "publickey" | "public-key" | "ssh3_public_key" => "public_key".into(),
+        "bearer_token" => "bearer".into(),
+        "http_basic" => "basic".into(),
+        "oidc" => "oidc_device_flow".into(),
+        "kerberos" | "gssapi-with-mic" | "gssapi_with_mic" => "gssapi".into(),
+        "negotiate" => "sspi".into(),
+        other => other.into(),
+    }
+}
+
 fn method_label(m: &AuthMethod) -> &'static str {
     match m {
         AuthMethod::PublicKey { .. } => "public_key",
@@ -287,6 +324,8 @@ fn method_label(m: &AuthMethod) -> &'static str {
         AuthMethod::Bearer { .. } => "bearer",
         AuthMethod::KeyboardInteractive { .. } => "keyboard_interactive",
         AuthMethod::Certificate { .. } => "certificate",
+        AuthMethod::Gssapi { .. } => "gssapi",
+        AuthMethod::Sspi { .. } => "sspi",
         AuthMethod::Basic { .. } => "http_basic",
         AuthMethod::OidcDeviceFlow { .. } => "oidc_device_flow",
     }
@@ -494,6 +533,31 @@ oidc_client_id = "id"
         assert!(
             r.iter()
                 .any(|c| c.id.ends_with(".oidc_device_flow") && c.status == Status::Pass),
+            "{r:#?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn gssapi_method_passes_structural_validation_on_ssh2() {
+        let cfg = cfg_str(
+            r#"
+version = 1
+[capabilities]
+allow_gssapi = true
+[[profiles]]
+name = "p"
+protocol = "ssh2"
+host = "h"
+[profiles.auth]
+method = "kerberos"
+gssapi_service = "host/edge.example.com"
+"#,
+        );
+        let d = AuthDiagnostic::default().with_config(cfg);
+        let r = d.run(&DiagnosticContext::default()).await;
+        assert!(
+            r.iter()
+                .any(|c| c.id.ends_with(".gssapi") && c.status == Status::Pass),
             "{r:#?}"
         );
     }
