@@ -81,6 +81,14 @@ spt-service = { path = "crates/spt-service", version = "0.1.0" }
 spt-key = { path = "crates/spt-key", version = "0.1.0" }
 spt-trust = { path = "crates/spt-trust", version = "0.1.0" }
 spt-auth = { path = "crates/spt-auth", version = "0.1.0" }
+spt-auth-sspi = { path = "crates/spt-auth-sspi", version = "0.1.0" }
+spt-scripting = { path = "crates/spt-scripting", version = "0.1.0" }
+# t6-e13 — obfuscation transports crate. NOT in `[workspace.members]`
+# yet; t6-Bwire owns that edit per the t6.md phasing table.
+spt-obfs = { path = "crates/spt-obfs", version = "0.1.0" }
+# t6-e6 — new FTP-to-SFTP translator crate. NOT in `[workspace.members]`
+# yet; t6-Bwire owns that edit per the t6.md phasing table.
+spt-ftp-translator = { path = "crates/spt-ftp-translator", version = "0.1.0" }
 spt-stats = { path = "crates/spt-stats", version = "0.1.0" }
 spt-diagnostics = { path = "crates/spt-diagnostics", version = "0.1.0" }
 spt-benchmark = { path = "crates/spt-benchmark", version = "0.1.0" }

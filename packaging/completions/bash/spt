@@ -1225,11 +1225,20 @@ _spt() {
             spt__help__session,top)
                 cmd="spt__help__session__top"
                 ;;
+            spt__help__sftp,cat)
+                cmd="spt__help__sftp__cat"
+                ;;
+            spt__help__sftp,chmod)
+                cmd="spt__help__sftp__chmod"
+                ;;
             spt__help__sftp,drive)
                 cmd="spt__help__sftp__drive"
                 ;;
             spt__help__sftp,get)
                 cmd="spt__help__sftp__get"
+                ;;
+            spt__help__sftp,get-recursive)
+                cmd="spt__help__sftp__get__recursive"
                 ;;
             spt__help__sftp,list)
                 cmd="spt__help__sftp__list"
@@ -1243,6 +1252,15 @@ _spt() {
             spt__help__sftp,put)
                 cmd="spt__help__sftp__put"
                 ;;
+            spt__help__sftp,put-recursive)
+                cmd="spt__help__sftp__put__recursive"
+                ;;
+            spt__help__sftp,readlink)
+                cmd="spt__help__sftp__readlink"
+                ;;
+            spt__help__sftp,realpath)
+                cmd="spt__help__sftp__realpath"
+                ;;
             spt__help__sftp,rename)
                 cmd="spt__help__sftp__rename"
                 ;;
@@ -1255,8 +1273,17 @@ _spt() {
             spt__help__sftp,stat)
                 cmd="spt__help__sftp__stat"
                 ;;
+            spt__help__sftp,symlink)
+                cmd="spt__help__sftp__symlink"
+                ;;
+            spt__help__sftp,tail)
+                cmd="spt__help__sftp__tail"
+                ;;
             spt__help__sftp,test)
                 cmd="spt__help__sftp__test"
+                ;;
+            spt__help__sftp,umount)
+                cmd="spt__help__sftp__umount"
                 ;;
             spt__help__sftp__drive,add)
                 cmd="spt__help__sftp__drive__add"
@@ -1281,6 +1308,12 @@ _spt() {
                 ;;
             spt__help__sftp__mount,remove)
                 cmd="spt__help__sftp__mount__remove"
+                ;;
+            spt__help__sftp__mount,start)
+                cmd="spt__help__sftp__mount__start"
+                ;;
+            spt__help__sftp__mount,stop)
+                cmd="spt__help__sftp__mount__stop"
                 ;;
             spt__help__stats,connections)
                 cmd="spt__help__stats__connections"
@@ -1762,11 +1795,20 @@ _spt() {
             spt__session__help,top)
                 cmd="spt__session__help__top"
                 ;;
+            spt__sftp,cat)
+                cmd="spt__sftp__cat"
+                ;;
+            spt__sftp,chmod)
+                cmd="spt__sftp__chmod"
+                ;;
             spt__sftp,drive)
                 cmd="spt__sftp__drive"
                 ;;
             spt__sftp,get)
                 cmd="spt__sftp__get"
+                ;;
+            spt__sftp,get-recursive)
+                cmd="spt__sftp__get__recursive"
                 ;;
             spt__sftp,help)
                 cmd="spt__sftp__help"
@@ -1783,6 +1825,15 @@ _spt() {
             spt__sftp,put)
                 cmd="spt__sftp__put"
                 ;;
+            spt__sftp,put-recursive)
+                cmd="spt__sftp__put__recursive"
+                ;;
+            spt__sftp,readlink)
+                cmd="spt__sftp__readlink"
+                ;;
+            spt__sftp,realpath)
+                cmd="spt__sftp__realpath"
+                ;;
             spt__sftp,rename)
                 cmd="spt__sftp__rename"
                 ;;
@@ -1795,8 +1846,17 @@ _spt() {
             spt__sftp,stat)
                 cmd="spt__sftp__stat"
                 ;;
+            spt__sftp,symlink)
+                cmd="spt__sftp__symlink"
+                ;;
+            spt__sftp,tail)
+                cmd="spt__sftp__tail"
+                ;;
             spt__sftp,test)
                 cmd="spt__sftp__test"
+                ;;
+            spt__sftp,umount)
+                cmd="spt__sftp__umount"
                 ;;
             spt__sftp__drive,add)
                 cmd="spt__sftp__drive__add"
@@ -1828,11 +1888,20 @@ _spt() {
             spt__sftp__drive__help,remove)
                 cmd="spt__sftp__drive__help__remove"
                 ;;
+            spt__sftp__help,cat)
+                cmd="spt__sftp__help__cat"
+                ;;
+            spt__sftp__help,chmod)
+                cmd="spt__sftp__help__chmod"
+                ;;
             spt__sftp__help,drive)
                 cmd="spt__sftp__help__drive"
                 ;;
             spt__sftp__help,get)
                 cmd="spt__sftp__help__get"
+                ;;
+            spt__sftp__help,get-recursive)
+                cmd="spt__sftp__help__get__recursive"
                 ;;
             spt__sftp__help,help)
                 cmd="spt__sftp__help__help"
@@ -1849,6 +1918,15 @@ _spt() {
             spt__sftp__help,put)
                 cmd="spt__sftp__help__put"
                 ;;
+            spt__sftp__help,put-recursive)
+                cmd="spt__sftp__help__put__recursive"
+                ;;
+            spt__sftp__help,readlink)
+                cmd="spt__sftp__help__readlink"
+                ;;
+            spt__sftp__help,realpath)
+                cmd="spt__sftp__help__realpath"
+                ;;
             spt__sftp__help,rename)
                 cmd="spt__sftp__help__rename"
                 ;;
@@ -1861,8 +1939,17 @@ _spt() {
             spt__sftp__help,stat)
                 cmd="spt__sftp__help__stat"
                 ;;
+            spt__sftp__help,symlink)
+                cmd="spt__sftp__help__symlink"
+                ;;
+            spt__sftp__help,tail)
+                cmd="spt__sftp__help__tail"
+                ;;
             spt__sftp__help,test)
                 cmd="spt__sftp__help__test"
+                ;;
+            spt__sftp__help,umount)
+                cmd="spt__sftp__help__umount"
                 ;;
             spt__sftp__help__drive,add)
                 cmd="spt__sftp__help__drive__add"
@@ -1888,6 +1975,12 @@ _spt() {
             spt__sftp__help__mount,remove)
                 cmd="spt__sftp__help__mount__remove"
                 ;;
+            spt__sftp__help__mount,start)
+                cmd="spt__sftp__help__mount__start"
+                ;;
+            spt__sftp__help__mount,stop)
+                cmd="spt__sftp__help__mount__stop"
+                ;;
             spt__sftp__mount,add)
                 cmd="spt__sftp__mount__add"
                 ;;
@@ -1903,6 +1996,12 @@ _spt() {
             spt__sftp__mount,remove)
                 cmd="spt__sftp__mount__remove"
                 ;;
+            spt__sftp__mount,start)
+                cmd="spt__sftp__mount__start"
+                ;;
+            spt__sftp__mount,stop)
+                cmd="spt__sftp__mount__stop"
+                ;;
             spt__sftp__mount__help,add)
                 cmd="spt__sftp__mount__help__add"
                 ;;
@@ -1917,6 +2016,12 @@ _spt() {
                 ;;
             spt__sftp__mount__help,remove)
                 cmd="spt__sftp__mount__help__remove"
+                ;;
+            spt__sftp__mount__help,start)
+                cmd="spt__sftp__mount__help__start"
+                ;;
+            spt__sftp__mount__help,stop)
+                cmd="spt__sftp__mount__help__stop"
                 ;;
             spt__stats,connections)
                 cmd="spt__stats__connections"
@@ -11260,8 +11365,36 @@ _spt() {
             return 0
             ;;
         spt__help__sftp)
-            opts="test list stat get put mkdir rm rmdir rename mount drive"
+            opts="test list stat get put mkdir rm rmdir rename cat tail chmod symlink readlink realpath put-recursive get-recursive mount drive umount"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        spt__help__sftp__cat)
+            opts=""
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        spt__help__sftp__chmod)
+            opts=""
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
             fi
@@ -11357,6 +11490,20 @@ _spt() {
             COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
             return 0
             ;;
+        spt__help__sftp__get__recursive)
+            opts=""
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
         spt__help__sftp__list)
             opts=""
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
@@ -11386,7 +11533,7 @@ _spt() {
             return 0
             ;;
         spt__help__sftp__mount)
-            opts="list add remove plan"
+            opts="list add remove plan start stop"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -11455,7 +11602,77 @@ _spt() {
             COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
             return 0
             ;;
+        spt__help__sftp__mount__start)
+            opts=""
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 5 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        spt__help__sftp__mount__stop)
+            opts=""
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 5 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
         spt__help__sftp__put)
+            opts=""
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        spt__help__sftp__put__recursive)
+            opts=""
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        spt__help__sftp__readlink)
+            opts=""
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        spt__help__sftp__realpath)
             opts=""
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
@@ -11525,7 +11742,49 @@ _spt() {
             COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
             return 0
             ;;
+        spt__help__sftp__symlink)
+            opts=""
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        spt__help__sftp__tail)
+            opts=""
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
         spt__help__sftp__test)
+            opts=""
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        spt__help__sftp__umount)
             opts=""
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
@@ -16478,7 +16737,7 @@ _spt() {
             return 0
             ;;
         spt__sftp)
-            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version test list stat get put mkdir rm rmdir rename mount drive help"
+            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version test list stat get put mkdir rm rmdir rename cat tail chmod symlink readlink realpath put-recursive get-recursive mount drive umount help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -16505,6 +16764,114 @@ _spt() {
                     return 0
                     ;;
                 --profile)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --output)
+                    COMPREPLY=($(compgen -W "human json jsonl yaml" -- "${cur}"))
+                    return 0
+                    ;;
+                --log-level)
+                    COMPREPLY=($(compgen -W "error warn info debug trace" -- "${cur}"))
+                    return 0
+                    ;;
+                --color)
+                    COMPREPLY=($(compgen -W "auto always never" -- "${cur}"))
+                    return 0
+                    ;;
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        spt__sftp__cat)
+            opts="-q -v -h -V --profile --size-cap --config --config-dir --config-url --config-fingerprint --state-dir --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <PATH>"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                --profile)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --size-cap)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --config)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --config-dir)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --config-url)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --config-fingerprint)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --state-dir)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --output)
+                    COMPREPLY=($(compgen -W "human json jsonl yaml" -- "${cur}"))
+                    return 0
+                    ;;
+                --log-level)
+                    COMPREPLY=($(compgen -W "error warn info debug trace" -- "${cur}"))
+                    return 0
+                    ;;
+                --color)
+                    COMPREPLY=($(compgen -W "auto always never" -- "${cur}"))
+                    return 0
+                    ;;
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        spt__sftp__chmod)
+            opts="-q -v -h -V --profile --mode --config --config-dir --config-url --config-fingerprint --state-dir --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <PATH>"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                --profile)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --mode)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --config)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --config-dir)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --config-url)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --config-fingerprint)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --state-dir)
                     COMPREPLY=($(compgen -f "${cur}"))
                     return 0
                     ;;
@@ -16947,9 +17314,95 @@ _spt() {
             COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
             return 0
             ;;
-        spt__sftp__help)
-            opts="test list stat get put mkdir rm rmdir rename mount drive help"
+        spt__sftp__get__recursive)
+            opts="-q -v -h -V --profile --resume --bps --checksum --follow-symlinks --config --config-dir --config-url --config-fingerprint --state-dir --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <SOURCE> <DESTINATION>"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                --profile)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --bps)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --checksum)
+                    COMPREPLY=($(compgen -W "none sha256" -- "${cur}"))
+                    return 0
+                    ;;
+                --config)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --config-dir)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --config-url)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --config-fingerprint)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --state-dir)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --output)
+                    COMPREPLY=($(compgen -W "human json jsonl yaml" -- "${cur}"))
+                    return 0
+                    ;;
+                --log-level)
+                    COMPREPLY=($(compgen -W "error warn info debug trace" -- "${cur}"))
+                    return 0
+                    ;;
+                --color)
+                    COMPREPLY=($(compgen -W "auto always never" -- "${cur}"))
+                    return 0
+                    ;;
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        spt__sftp__help)
+            opts="test list stat get put mkdir rm rmdir rename cat tail chmod symlink readlink realpath put-recursive get-recursive mount drive umount help"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        spt__sftp__help__cat)
+            opts=""
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        spt__sftp__help__chmod)
+            opts=""
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
             fi
@@ -17045,6 +17498,20 @@ _spt() {
             COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
             return 0
             ;;
+        spt__sftp__help__get__recursive)
+            opts=""
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
         spt__sftp__help__help)
             opts=""
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
@@ -17088,7 +17555,7 @@ _spt() {
             return 0
             ;;
         spt__sftp__help__mount)
-            opts="list add remove plan"
+            opts="list add remove plan start stop"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -17157,7 +17624,77 @@ _spt() {
             COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
             return 0
             ;;
+        spt__sftp__help__mount__start)
+            opts=""
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 5 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        spt__sftp__help__mount__stop)
+            opts=""
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 5 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
         spt__sftp__help__put)
+            opts=""
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        spt__sftp__help__put__recursive)
+            opts=""
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        spt__sftp__help__readlink)
+            opts=""
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        spt__sftp__help__realpath)
             opts=""
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
@@ -17227,7 +17764,49 @@ _spt() {
             COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
             return 0
             ;;
+        spt__sftp__help__symlink)
+            opts=""
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        spt__sftp__help__tail)
+            opts=""
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
         spt__sftp__help__test)
+            opts=""
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        spt__sftp__help__umount)
             opts=""
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
@@ -17342,7 +17921,7 @@ _spt() {
             return 0
             ;;
         spt__sftp__mount)
-            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version list add remove plan help"
+            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version list add remove plan start stop help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -17458,7 +18037,7 @@ _spt() {
             return 0
             ;;
         spt__sftp__mount__help)
-            opts="list add remove plan help"
+            opts="list add remove plan start stop help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -17528,6 +18107,34 @@ _spt() {
             return 0
             ;;
         spt__sftp__mount__help__remove)
+            opts=""
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 5 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        spt__sftp__mount__help__start)
+            opts=""
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 5 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        spt__sftp__mount__help__stop)
             opts=""
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 5 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
@@ -17707,8 +18314,278 @@ _spt() {
             COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
             return 0
             ;;
+        spt__sftp__mount__start)
+            opts="-q -v -h -V --profile --local --remote --read-only --volume --json --config --config-dir --config-url --config-fingerprint --state-dir --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                --profile)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --local)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --remote)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --volume)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --config)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --config-dir)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --config-url)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --config-fingerprint)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --state-dir)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --output)
+                    COMPREPLY=($(compgen -W "human json jsonl yaml" -- "${cur}"))
+                    return 0
+                    ;;
+                --log-level)
+                    COMPREPLY=($(compgen -W "error warn info debug trace" -- "${cur}"))
+                    return 0
+                    ;;
+                --color)
+                    COMPREPLY=($(compgen -W "auto always never" -- "${cur}"))
+                    return 0
+                    ;;
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        spt__sftp__mount__stop)
+            opts="-q -v -h -V --json --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --log-level --color --quiet --verbose --no-color --dry-run --help --version <PATH>"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                --config)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --config-dir)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --config-url)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --config-fingerprint)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --state-dir)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --profile)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --output)
+                    COMPREPLY=($(compgen -W "human json jsonl yaml" -- "${cur}"))
+                    return 0
+                    ;;
+                --log-level)
+                    COMPREPLY=($(compgen -W "error warn info debug trace" -- "${cur}"))
+                    return 0
+                    ;;
+                --color)
+                    COMPREPLY=($(compgen -W "auto always never" -- "${cur}"))
+                    return 0
+                    ;;
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
         spt__sftp__put)
             opts="-q -v -h -V --profile --config --config-dir --config-url --config-fingerprint --state-dir --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <LOCAL> <REMOTE>"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                --profile)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --config)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --config-dir)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --config-url)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --config-fingerprint)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --state-dir)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --output)
+                    COMPREPLY=($(compgen -W "human json jsonl yaml" -- "${cur}"))
+                    return 0
+                    ;;
+                --log-level)
+                    COMPREPLY=($(compgen -W "error warn info debug trace" -- "${cur}"))
+                    return 0
+                    ;;
+                --color)
+                    COMPREPLY=($(compgen -W "auto always never" -- "${cur}"))
+                    return 0
+                    ;;
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        spt__sftp__put__recursive)
+            opts="-q -v -h -V --profile --resume --bps --checksum --follow-symlinks --config --config-dir --config-url --config-fingerprint --state-dir --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <SOURCE> <DESTINATION>"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                --profile)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --bps)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --checksum)
+                    COMPREPLY=($(compgen -W "none sha256" -- "${cur}"))
+                    return 0
+                    ;;
+                --config)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --config-dir)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --config-url)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --config-fingerprint)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --state-dir)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --output)
+                    COMPREPLY=($(compgen -W "human json jsonl yaml" -- "${cur}"))
+                    return 0
+                    ;;
+                --log-level)
+                    COMPREPLY=($(compgen -W "error warn info debug trace" -- "${cur}"))
+                    return 0
+                    ;;
+                --color)
+                    COMPREPLY=($(compgen -W "auto always never" -- "${cur}"))
+                    return 0
+                    ;;
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        spt__sftp__readlink)
+            opts="-q -v -h -V --profile --json --config --config-dir --config-url --config-fingerprint --state-dir --output --log-level --color --quiet --verbose --no-color --dry-run --help --version <PATH>"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                --profile)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --config)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --config-dir)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --config-url)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --config-fingerprint)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --state-dir)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --output)
+                    COMPREPLY=($(compgen -W "human json jsonl yaml" -- "${cur}"))
+                    return 0
+                    ;;
+                --log-level)
+                    COMPREPLY=($(compgen -W "error warn info debug trace" -- "${cur}"))
+                    return 0
+                    ;;
+                --color)
+                    COMPREPLY=($(compgen -W "auto always never" -- "${cur}"))
+                    return 0
+                    ;;
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        spt__sftp__realpath)
+            opts="-q -v -h -V --profile --json --config --config-dir --config-url --config-fingerprint --state-dir --output --log-level --color --quiet --verbose --no-color --dry-run --help --version <PATH>"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -17957,6 +18834,114 @@ _spt() {
             COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
             return 0
             ;;
+        spt__sftp__symlink)
+            opts="-q -v -h -V --profile --target --config --config-dir --config-url --config-fingerprint --state-dir --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <LINKPATH>"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                --profile)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --target)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --config)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --config-dir)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --config-url)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --config-fingerprint)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --state-dir)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --output)
+                    COMPREPLY=($(compgen -W "human json jsonl yaml" -- "${cur}"))
+                    return 0
+                    ;;
+                --log-level)
+                    COMPREPLY=($(compgen -W "error warn info debug trace" -- "${cur}"))
+                    return 0
+                    ;;
+                --color)
+                    COMPREPLY=($(compgen -W "auto always never" -- "${cur}"))
+                    return 0
+                    ;;
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        spt__sftp__tail)
+            opts="-q -v -h -V --profile --bytes --config --config-dir --config-url --config-fingerprint --state-dir --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <PATH>"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                --profile)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --bytes)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --config)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --config-dir)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --config-url)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --config-fingerprint)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --state-dir)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --output)
+                    COMPREPLY=($(compgen -W "human json jsonl yaml" -- "${cur}"))
+                    return 0
+                    ;;
+                --log-level)
+                    COMPREPLY=($(compgen -W "error warn info debug trace" -- "${cur}"))
+                    return 0
+                    ;;
+                --color)
+                    COMPREPLY=($(compgen -W "auto always never" -- "${cur}"))
+                    return 0
+                    ;;
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
         spt__sftp__test)
             opts="-q -v -h -V --profile --json --config --config-dir --config-url --config-fingerprint --state-dir --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
@@ -17985,6 +18970,56 @@ _spt() {
                     return 0
                     ;;
                 --state-dir)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --output)
+                    COMPREPLY=($(compgen -W "human json jsonl yaml" -- "${cur}"))
+                    return 0
+                    ;;
+                --log-level)
+                    COMPREPLY=($(compgen -W "error warn info debug trace" -- "${cur}"))
+                    return 0
+                    ;;
+                --color)
+                    COMPREPLY=($(compgen -W "auto always never" -- "${cur}"))
+                    return 0
+                    ;;
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        spt__sftp__umount)
+            opts="-q -v -h -V --json --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --log-level --color --quiet --verbose --no-color --dry-run --help --version <PATH>"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                --config)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --config-dir)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --config-url)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --config-fingerprint)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --state-dir)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --profile)
                     COMPREPLY=($(compgen -f "${cur}"))
                     return 0
                     ;;
@@ -19234,13 +20269,21 @@ _spt() {
             return 0
             ;;
         spt__tunnel__run)
-            opts="-q -v -h -V --foreground --once --profiles --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-J -q -v -h -V --foreground --once --profiles --jump --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
             fi
             case "${prev}" in
                 --profiles)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --jump)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                -J)
                     COMPREPLY=($(compgen -f "${cur}"))
                     return 0
                     ;;

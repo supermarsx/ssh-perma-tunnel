@@ -1261,6 +1261,8 @@ Register-ArgumentCompleter -Native -CommandName 'spt' -ScriptBlock {
         }
         'spt;tunnel;run' {
             [CompletionResult]::new('--profiles', '--profiles', [CompletionResultType]::ParameterName, 'Comma-separated profile filter')
+            [CompletionResult]::new('-J', '-J ', [CompletionResultType]::ParameterName, 'Proxy-jump chain `user@host[:port][,user@host…]`. When set, the chain is splatted into every selected profile''s `hops` table at startup (CLI values take precedence over profile-file hops). Mirrors the OpenSSH `-J` flag (t6-e3)')
+            [CompletionResult]::new('--jump', '--jump', [CompletionResultType]::ParameterName, 'Proxy-jump chain `user@host[:port][,user@host…]`. When set, the chain is splatted into every selected profile''s `hops` table at startup (CLI values take precedence over profile-file hops). Mirrors the OpenSSH `-J` flag (t6-e3)')
             [CompletionResult]::new('--config', '--config', [CompletionResultType]::ParameterName, 'Path to a single config file')
             [CompletionResult]::new('--config-dir', '--config-dir', [CompletionResultType]::ParameterName, 'Path to a directory of `*.toml` configs (loaded in lexical order)')
             [CompletionResult]::new('--config-url', '--config-url', [CompletionResultType]::ParameterName, 'HTTPS URL of a remote config to fetch')
@@ -4413,8 +4415,17 @@ Register-ArgumentCompleter -Native -CommandName 'spt' -ScriptBlock {
             [CompletionResult]::new('rm', 'rm', [CompletionResultType]::ParameterValue, 'Remove a remote file')
             [CompletionResult]::new('rmdir', 'rmdir', [CompletionResultType]::ParameterValue, 'Remove a remote directory')
             [CompletionResult]::new('rename', 'rename', [CompletionResultType]::ParameterValue, 'Rename a remote file or directory')
+            [CompletionResult]::new('cat', 'cat', [CompletionResultType]::ParameterValue, 'Print a remote file (with a size cap)')
+            [CompletionResult]::new('tail', 'tail', [CompletionResultType]::ParameterValue, 'Print the trailing bytes of a remote file')
+            [CompletionResult]::new('chmod', 'chmod', [CompletionResultType]::ParameterValue, 'Change POSIX permissions on a remote path')
+            [CompletionResult]::new('symlink', 'symlink', [CompletionResultType]::ParameterValue, 'Create a remote symbolic link')
+            [CompletionResult]::new('readlink', 'readlink', [CompletionResultType]::ParameterValue, 'Read the target of a remote symbolic link')
+            [CompletionResult]::new('realpath', 'realpath', [CompletionResultType]::ParameterValue, 'Canonicalise a remote path')
+            [CompletionResult]::new('put-recursive', 'put-recursive', [CompletionResultType]::ParameterValue, 'Mirror a local directory tree onto the server (recursive `put`)')
+            [CompletionResult]::new('get-recursive', 'get-recursive', [CompletionResultType]::ParameterValue, 'Mirror a remote directory tree onto the local filesystem (recursive `get`)')
             [CompletionResult]::new('mount', 'mount', [CompletionResultType]::ParameterValue, 'Manage SFTP-backed filesystem mount entries')
             [CompletionResult]::new('drive', 'drive', [CompletionResultType]::ParameterValue, 'Manage SFTP-backed Windows drive entries')
+            [CompletionResult]::new('umount', 'umount', [CompletionResultType]::ParameterValue, 'Tear down an SFTP-backed filesystem mount (shorthand for `spt sftp mount stop`)')
             [CompletionResult]::new('help', 'help', [CompletionResultType]::ParameterValue, 'Print this message or the help of the given subcommand(s)')
             break
         }
@@ -4626,6 +4637,202 @@ Register-ArgumentCompleter -Native -CommandName 'spt' -ScriptBlock {
             [CompletionResult]::new('--version', '--version', [CompletionResultType]::ParameterName, 'Print version')
             break
         }
+        'spt;sftp;cat' {
+            [CompletionResult]::new('--profile', '--profile', [CompletionResultType]::ParameterName, 'Profile name')
+            [CompletionResult]::new('--size-cap', '--size-cap', [CompletionResultType]::ParameterName, 'Maximum number of bytes to read; defaults to 4 MiB')
+            [CompletionResult]::new('--config', '--config', [CompletionResultType]::ParameterName, 'Path to a single config file')
+            [CompletionResult]::new('--config-dir', '--config-dir', [CompletionResultType]::ParameterName, 'Path to a directory of `*.toml` configs (loaded in lexical order)')
+            [CompletionResult]::new('--config-url', '--config-url', [CompletionResultType]::ParameterName, 'HTTPS URL of a remote config to fetch')
+            [CompletionResult]::new('--config-fingerprint', '--config-fingerprint', [CompletionResultType]::ParameterName, 'SHA-256 fingerprint pin for `--config-url`')
+            [CompletionResult]::new('--state-dir', '--state-dir', [CompletionResultType]::ParameterName, 'Override the runtime state directory')
+            [CompletionResult]::new('--output', '--output', [CompletionResultType]::ParameterName, 'Output format for command results')
+            [CompletionResult]::new('--log-level', '--log-level', [CompletionResultType]::ParameterName, 'Tracing log level')
+            [CompletionResult]::new('--color', '--color', [CompletionResultType]::ParameterName, 'Color policy for human output')
+            [CompletionResult]::new('--json', '--json', [CompletionResultType]::ParameterName, 'Convenience alias for `--output json`')
+            [CompletionResult]::new('-q', '-q', [CompletionResultType]::ParameterName, 'Suppress non-essential output')
+            [CompletionResult]::new('--quiet', '--quiet', [CompletionResultType]::ParameterName, 'Suppress non-essential output')
+            [CompletionResult]::new('-v', '-v', [CompletionResultType]::ParameterName, 'Increase verbosity (repeat for more)')
+            [CompletionResult]::new('--verbose', '--verbose', [CompletionResultType]::ParameterName, 'Increase verbosity (repeat for more)')
+            [CompletionResult]::new('--no-color', '--no-color', [CompletionResultType]::ParameterName, 'Disable color (legacy convenience flag; use `--color never`)')
+            [CompletionResult]::new('--dry-run', '--dry-run', [CompletionResultType]::ParameterName, 'Show what would happen without making changes')
+            [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help (see more with ''--help'')')
+            [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help (see more with ''--help'')')
+            [CompletionResult]::new('-V', '-V ', [CompletionResultType]::ParameterName, 'Print version')
+            [CompletionResult]::new('--version', '--version', [CompletionResultType]::ParameterName, 'Print version')
+            break
+        }
+        'spt;sftp;tail' {
+            [CompletionResult]::new('--profile', '--profile', [CompletionResultType]::ParameterName, 'Profile name')
+            [CompletionResult]::new('--bytes', '--bytes', [CompletionResultType]::ParameterName, 'Number of trailing bytes to print; defaults to 4 KiB')
+            [CompletionResult]::new('--config', '--config', [CompletionResultType]::ParameterName, 'Path to a single config file')
+            [CompletionResult]::new('--config-dir', '--config-dir', [CompletionResultType]::ParameterName, 'Path to a directory of `*.toml` configs (loaded in lexical order)')
+            [CompletionResult]::new('--config-url', '--config-url', [CompletionResultType]::ParameterName, 'HTTPS URL of a remote config to fetch')
+            [CompletionResult]::new('--config-fingerprint', '--config-fingerprint', [CompletionResultType]::ParameterName, 'SHA-256 fingerprint pin for `--config-url`')
+            [CompletionResult]::new('--state-dir', '--state-dir', [CompletionResultType]::ParameterName, 'Override the runtime state directory')
+            [CompletionResult]::new('--output', '--output', [CompletionResultType]::ParameterName, 'Output format for command results')
+            [CompletionResult]::new('--log-level', '--log-level', [CompletionResultType]::ParameterName, 'Tracing log level')
+            [CompletionResult]::new('--color', '--color', [CompletionResultType]::ParameterName, 'Color policy for human output')
+            [CompletionResult]::new('--json', '--json', [CompletionResultType]::ParameterName, 'Convenience alias for `--output json`')
+            [CompletionResult]::new('-q', '-q', [CompletionResultType]::ParameterName, 'Suppress non-essential output')
+            [CompletionResult]::new('--quiet', '--quiet', [CompletionResultType]::ParameterName, 'Suppress non-essential output')
+            [CompletionResult]::new('-v', '-v', [CompletionResultType]::ParameterName, 'Increase verbosity (repeat for more)')
+            [CompletionResult]::new('--verbose', '--verbose', [CompletionResultType]::ParameterName, 'Increase verbosity (repeat for more)')
+            [CompletionResult]::new('--no-color', '--no-color', [CompletionResultType]::ParameterName, 'Disable color (legacy convenience flag; use `--color never`)')
+            [CompletionResult]::new('--dry-run', '--dry-run', [CompletionResultType]::ParameterName, 'Show what would happen without making changes')
+            [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help (see more with ''--help'')')
+            [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help (see more with ''--help'')')
+            [CompletionResult]::new('-V', '-V ', [CompletionResultType]::ParameterName, 'Print version')
+            [CompletionResult]::new('--version', '--version', [CompletionResultType]::ParameterName, 'Print version')
+            break
+        }
+        'spt;sftp;chmod' {
+            [CompletionResult]::new('--profile', '--profile', [CompletionResultType]::ParameterName, 'Profile name')
+            [CompletionResult]::new('--mode', '--mode', [CompletionResultType]::ParameterName, 'Octal mode, for example `0640`')
+            [CompletionResult]::new('--config', '--config', [CompletionResultType]::ParameterName, 'Path to a single config file')
+            [CompletionResult]::new('--config-dir', '--config-dir', [CompletionResultType]::ParameterName, 'Path to a directory of `*.toml` configs (loaded in lexical order)')
+            [CompletionResult]::new('--config-url', '--config-url', [CompletionResultType]::ParameterName, 'HTTPS URL of a remote config to fetch')
+            [CompletionResult]::new('--config-fingerprint', '--config-fingerprint', [CompletionResultType]::ParameterName, 'SHA-256 fingerprint pin for `--config-url`')
+            [CompletionResult]::new('--state-dir', '--state-dir', [CompletionResultType]::ParameterName, 'Override the runtime state directory')
+            [CompletionResult]::new('--output', '--output', [CompletionResultType]::ParameterName, 'Output format for command results')
+            [CompletionResult]::new('--log-level', '--log-level', [CompletionResultType]::ParameterName, 'Tracing log level')
+            [CompletionResult]::new('--color', '--color', [CompletionResultType]::ParameterName, 'Color policy for human output')
+            [CompletionResult]::new('--json', '--json', [CompletionResultType]::ParameterName, 'Convenience alias for `--output json`')
+            [CompletionResult]::new('-q', '-q', [CompletionResultType]::ParameterName, 'Suppress non-essential output')
+            [CompletionResult]::new('--quiet', '--quiet', [CompletionResultType]::ParameterName, 'Suppress non-essential output')
+            [CompletionResult]::new('-v', '-v', [CompletionResultType]::ParameterName, 'Increase verbosity (repeat for more)')
+            [CompletionResult]::new('--verbose', '--verbose', [CompletionResultType]::ParameterName, 'Increase verbosity (repeat for more)')
+            [CompletionResult]::new('--no-color', '--no-color', [CompletionResultType]::ParameterName, 'Disable color (legacy convenience flag; use `--color never`)')
+            [CompletionResult]::new('--dry-run', '--dry-run', [CompletionResultType]::ParameterName, 'Show what would happen without making changes')
+            [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help (see more with ''--help'')')
+            [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help (see more with ''--help'')')
+            [CompletionResult]::new('-V', '-V ', [CompletionResultType]::ParameterName, 'Print version')
+            [CompletionResult]::new('--version', '--version', [CompletionResultType]::ParameterName, 'Print version')
+            break
+        }
+        'spt;sftp;symlink' {
+            [CompletionResult]::new('--profile', '--profile', [CompletionResultType]::ParameterName, 'Profile name')
+            [CompletionResult]::new('--target', '--target', [CompletionResultType]::ParameterName, 'Target path the link should point to')
+            [CompletionResult]::new('--config', '--config', [CompletionResultType]::ParameterName, 'Path to a single config file')
+            [CompletionResult]::new('--config-dir', '--config-dir', [CompletionResultType]::ParameterName, 'Path to a directory of `*.toml` configs (loaded in lexical order)')
+            [CompletionResult]::new('--config-url', '--config-url', [CompletionResultType]::ParameterName, 'HTTPS URL of a remote config to fetch')
+            [CompletionResult]::new('--config-fingerprint', '--config-fingerprint', [CompletionResultType]::ParameterName, 'SHA-256 fingerprint pin for `--config-url`')
+            [CompletionResult]::new('--state-dir', '--state-dir', [CompletionResultType]::ParameterName, 'Override the runtime state directory')
+            [CompletionResult]::new('--output', '--output', [CompletionResultType]::ParameterName, 'Output format for command results')
+            [CompletionResult]::new('--log-level', '--log-level', [CompletionResultType]::ParameterName, 'Tracing log level')
+            [CompletionResult]::new('--color', '--color', [CompletionResultType]::ParameterName, 'Color policy for human output')
+            [CompletionResult]::new('--json', '--json', [CompletionResultType]::ParameterName, 'Convenience alias for `--output json`')
+            [CompletionResult]::new('-q', '-q', [CompletionResultType]::ParameterName, 'Suppress non-essential output')
+            [CompletionResult]::new('--quiet', '--quiet', [CompletionResultType]::ParameterName, 'Suppress non-essential output')
+            [CompletionResult]::new('-v', '-v', [CompletionResultType]::ParameterName, 'Increase verbosity (repeat for more)')
+            [CompletionResult]::new('--verbose', '--verbose', [CompletionResultType]::ParameterName, 'Increase verbosity (repeat for more)')
+            [CompletionResult]::new('--no-color', '--no-color', [CompletionResultType]::ParameterName, 'Disable color (legacy convenience flag; use `--color never`)')
+            [CompletionResult]::new('--dry-run', '--dry-run', [CompletionResultType]::ParameterName, 'Show what would happen without making changes')
+            [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help (see more with ''--help'')')
+            [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help (see more with ''--help'')')
+            [CompletionResult]::new('-V', '-V ', [CompletionResultType]::ParameterName, 'Print version')
+            [CompletionResult]::new('--version', '--version', [CompletionResultType]::ParameterName, 'Print version')
+            break
+        }
+        'spt;sftp;readlink' {
+            [CompletionResult]::new('--profile', '--profile', [CompletionResultType]::ParameterName, 'Profile name')
+            [CompletionResult]::new('--config', '--config', [CompletionResultType]::ParameterName, 'Path to a single config file')
+            [CompletionResult]::new('--config-dir', '--config-dir', [CompletionResultType]::ParameterName, 'Path to a directory of `*.toml` configs (loaded in lexical order)')
+            [CompletionResult]::new('--config-url', '--config-url', [CompletionResultType]::ParameterName, 'HTTPS URL of a remote config to fetch')
+            [CompletionResult]::new('--config-fingerprint', '--config-fingerprint', [CompletionResultType]::ParameterName, 'SHA-256 fingerprint pin for `--config-url`')
+            [CompletionResult]::new('--state-dir', '--state-dir', [CompletionResultType]::ParameterName, 'Override the runtime state directory')
+            [CompletionResult]::new('--output', '--output', [CompletionResultType]::ParameterName, 'Output format for command results')
+            [CompletionResult]::new('--log-level', '--log-level', [CompletionResultType]::ParameterName, 'Tracing log level')
+            [CompletionResult]::new('--color', '--color', [CompletionResultType]::ParameterName, 'Color policy for human output')
+            [CompletionResult]::new('--json', '--json', [CompletionResultType]::ParameterName, 'JSON output')
+            [CompletionResult]::new('-q', '-q', [CompletionResultType]::ParameterName, 'Suppress non-essential output')
+            [CompletionResult]::new('--quiet', '--quiet', [CompletionResultType]::ParameterName, 'Suppress non-essential output')
+            [CompletionResult]::new('-v', '-v', [CompletionResultType]::ParameterName, 'Increase verbosity (repeat for more)')
+            [CompletionResult]::new('--verbose', '--verbose', [CompletionResultType]::ParameterName, 'Increase verbosity (repeat for more)')
+            [CompletionResult]::new('--no-color', '--no-color', [CompletionResultType]::ParameterName, 'Disable color (legacy convenience flag; use `--color never`)')
+            [CompletionResult]::new('--dry-run', '--dry-run', [CompletionResultType]::ParameterName, 'Show what would happen without making changes')
+            [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help (see more with ''--help'')')
+            [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help (see more with ''--help'')')
+            [CompletionResult]::new('-V', '-V ', [CompletionResultType]::ParameterName, 'Print version')
+            [CompletionResult]::new('--version', '--version', [CompletionResultType]::ParameterName, 'Print version')
+            break
+        }
+        'spt;sftp;realpath' {
+            [CompletionResult]::new('--profile', '--profile', [CompletionResultType]::ParameterName, 'Profile name')
+            [CompletionResult]::new('--config', '--config', [CompletionResultType]::ParameterName, 'Path to a single config file')
+            [CompletionResult]::new('--config-dir', '--config-dir', [CompletionResultType]::ParameterName, 'Path to a directory of `*.toml` configs (loaded in lexical order)')
+            [CompletionResult]::new('--config-url', '--config-url', [CompletionResultType]::ParameterName, 'HTTPS URL of a remote config to fetch')
+            [CompletionResult]::new('--config-fingerprint', '--config-fingerprint', [CompletionResultType]::ParameterName, 'SHA-256 fingerprint pin for `--config-url`')
+            [CompletionResult]::new('--state-dir', '--state-dir', [CompletionResultType]::ParameterName, 'Override the runtime state directory')
+            [CompletionResult]::new('--output', '--output', [CompletionResultType]::ParameterName, 'Output format for command results')
+            [CompletionResult]::new('--log-level', '--log-level', [CompletionResultType]::ParameterName, 'Tracing log level')
+            [CompletionResult]::new('--color', '--color', [CompletionResultType]::ParameterName, 'Color policy for human output')
+            [CompletionResult]::new('--json', '--json', [CompletionResultType]::ParameterName, 'JSON output')
+            [CompletionResult]::new('-q', '-q', [CompletionResultType]::ParameterName, 'Suppress non-essential output')
+            [CompletionResult]::new('--quiet', '--quiet', [CompletionResultType]::ParameterName, 'Suppress non-essential output')
+            [CompletionResult]::new('-v', '-v', [CompletionResultType]::ParameterName, 'Increase verbosity (repeat for more)')
+            [CompletionResult]::new('--verbose', '--verbose', [CompletionResultType]::ParameterName, 'Increase verbosity (repeat for more)')
+            [CompletionResult]::new('--no-color', '--no-color', [CompletionResultType]::ParameterName, 'Disable color (legacy convenience flag; use `--color never`)')
+            [CompletionResult]::new('--dry-run', '--dry-run', [CompletionResultType]::ParameterName, 'Show what would happen without making changes')
+            [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help (see more with ''--help'')')
+            [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help (see more with ''--help'')')
+            [CompletionResult]::new('-V', '-V ', [CompletionResultType]::ParameterName, 'Print version')
+            [CompletionResult]::new('--version', '--version', [CompletionResultType]::ParameterName, 'Print version')
+            break
+        }
+        'spt;sftp;put-recursive' {
+            [CompletionResult]::new('--profile', '--profile', [CompletionResultType]::ParameterName, 'Profile name')
+            [CompletionResult]::new('--bps', '--bps', [CompletionResultType]::ParameterName, 'Bandwidth cap, e.g. `5MiB` (parsed via `bytesize`); `0` disables')
+            [CompletionResult]::new('--checksum', '--checksum', [CompletionResultType]::ParameterName, 'Post-transfer integrity check')
+            [CompletionResult]::new('--config', '--config', [CompletionResultType]::ParameterName, 'Path to a single config file')
+            [CompletionResult]::new('--config-dir', '--config-dir', [CompletionResultType]::ParameterName, 'Path to a directory of `*.toml` configs (loaded in lexical order)')
+            [CompletionResult]::new('--config-url', '--config-url', [CompletionResultType]::ParameterName, 'HTTPS URL of a remote config to fetch')
+            [CompletionResult]::new('--config-fingerprint', '--config-fingerprint', [CompletionResultType]::ParameterName, 'SHA-256 fingerprint pin for `--config-url`')
+            [CompletionResult]::new('--state-dir', '--state-dir', [CompletionResultType]::ParameterName, 'Override the runtime state directory')
+            [CompletionResult]::new('--output', '--output', [CompletionResultType]::ParameterName, 'Output format for command results')
+            [CompletionResult]::new('--log-level', '--log-level', [CompletionResultType]::ParameterName, 'Tracing log level')
+            [CompletionResult]::new('--color', '--color', [CompletionResultType]::ParameterName, 'Color policy for human output')
+            [CompletionResult]::new('--resume', '--resume', [CompletionResultType]::ParameterName, 'Resume mode: seek into existing target files instead of truncating')
+            [CompletionResult]::new('--follow-symlinks', '--follow-symlinks', [CompletionResultType]::ParameterName, 'Follow symbolic links during the walk (loops are still detected)')
+            [CompletionResult]::new('--json', '--json', [CompletionResultType]::ParameterName, 'Convenience alias for `--output json`')
+            [CompletionResult]::new('-q', '-q', [CompletionResultType]::ParameterName, 'Suppress non-essential output')
+            [CompletionResult]::new('--quiet', '--quiet', [CompletionResultType]::ParameterName, 'Suppress non-essential output')
+            [CompletionResult]::new('-v', '-v', [CompletionResultType]::ParameterName, 'Increase verbosity (repeat for more)')
+            [CompletionResult]::new('--verbose', '--verbose', [CompletionResultType]::ParameterName, 'Increase verbosity (repeat for more)')
+            [CompletionResult]::new('--no-color', '--no-color', [CompletionResultType]::ParameterName, 'Disable color (legacy convenience flag; use `--color never`)')
+            [CompletionResult]::new('--dry-run', '--dry-run', [CompletionResultType]::ParameterName, 'Show what would happen without making changes')
+            [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help (see more with ''--help'')')
+            [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help (see more with ''--help'')')
+            [CompletionResult]::new('-V', '-V ', [CompletionResultType]::ParameterName, 'Print version')
+            [CompletionResult]::new('--version', '--version', [CompletionResultType]::ParameterName, 'Print version')
+            break
+        }
+        'spt;sftp;get-recursive' {
+            [CompletionResult]::new('--profile', '--profile', [CompletionResultType]::ParameterName, 'Profile name')
+            [CompletionResult]::new('--bps', '--bps', [CompletionResultType]::ParameterName, 'Bandwidth cap, e.g. `5MiB` (parsed via `bytesize`); `0` disables')
+            [CompletionResult]::new('--checksum', '--checksum', [CompletionResultType]::ParameterName, 'Post-transfer integrity check')
+            [CompletionResult]::new('--config', '--config', [CompletionResultType]::ParameterName, 'Path to a single config file')
+            [CompletionResult]::new('--config-dir', '--config-dir', [CompletionResultType]::ParameterName, 'Path to a directory of `*.toml` configs (loaded in lexical order)')
+            [CompletionResult]::new('--config-url', '--config-url', [CompletionResultType]::ParameterName, 'HTTPS URL of a remote config to fetch')
+            [CompletionResult]::new('--config-fingerprint', '--config-fingerprint', [CompletionResultType]::ParameterName, 'SHA-256 fingerprint pin for `--config-url`')
+            [CompletionResult]::new('--state-dir', '--state-dir', [CompletionResultType]::ParameterName, 'Override the runtime state directory')
+            [CompletionResult]::new('--output', '--output', [CompletionResultType]::ParameterName, 'Output format for command results')
+            [CompletionResult]::new('--log-level', '--log-level', [CompletionResultType]::ParameterName, 'Tracing log level')
+            [CompletionResult]::new('--color', '--color', [CompletionResultType]::ParameterName, 'Color policy for human output')
+            [CompletionResult]::new('--resume', '--resume', [CompletionResultType]::ParameterName, 'Resume mode: seek into existing target files instead of truncating')
+            [CompletionResult]::new('--follow-symlinks', '--follow-symlinks', [CompletionResultType]::ParameterName, 'Follow symbolic links during the walk (loops are still detected)')
+            [CompletionResult]::new('--json', '--json', [CompletionResultType]::ParameterName, 'Convenience alias for `--output json`')
+            [CompletionResult]::new('-q', '-q', [CompletionResultType]::ParameterName, 'Suppress non-essential output')
+            [CompletionResult]::new('--quiet', '--quiet', [CompletionResultType]::ParameterName, 'Suppress non-essential output')
+            [CompletionResult]::new('-v', '-v', [CompletionResultType]::ParameterName, 'Increase verbosity (repeat for more)')
+            [CompletionResult]::new('--verbose', '--verbose', [CompletionResultType]::ParameterName, 'Increase verbosity (repeat for more)')
+            [CompletionResult]::new('--no-color', '--no-color', [CompletionResultType]::ParameterName, 'Disable color (legacy convenience flag; use `--color never`)')
+            [CompletionResult]::new('--dry-run', '--dry-run', [CompletionResultType]::ParameterName, 'Show what would happen without making changes')
+            [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help (see more with ''--help'')')
+            [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help (see more with ''--help'')')
+            [CompletionResult]::new('-V', '-V ', [CompletionResultType]::ParameterName, 'Print version')
+            [CompletionResult]::new('--version', '--version', [CompletionResultType]::ParameterName, 'Print version')
+            break
+        }
         'spt;sftp;mount' {
             [CompletionResult]::new('--config', '--config', [CompletionResultType]::ParameterName, 'Path to a single config file')
             [CompletionResult]::new('--config-dir', '--config-dir', [CompletionResultType]::ParameterName, 'Path to a directory of `*.toml` configs (loaded in lexical order)')
@@ -4651,6 +4858,8 @@ Register-ArgumentCompleter -Native -CommandName 'spt' -ScriptBlock {
             [CompletionResult]::new('add', 'add', [CompletionResultType]::ParameterValue, 'Add a filesystem mount entry to the config')
             [CompletionResult]::new('remove', 'remove', [CompletionResultType]::ParameterValue, 'Remove a filesystem mount entry from the config')
             [CompletionResult]::new('plan', 'plan', [CompletionResultType]::ParameterValue, 'Render the platform plan for a configured or proposed mount')
+            [CompletionResult]::new('start', 'start', [CompletionResultType]::ParameterValue, 'Start an SFTP-backed filesystem mount')
+            [CompletionResult]::new('stop', 'stop', [CompletionResultType]::ParameterValue, 'Tear down an SFTP-backed filesystem mount')
             [CompletionResult]::new('help', 'help', [CompletionResultType]::ParameterValue, 'Print this message or the help of the given subcommand(s)')
             break
         }
@@ -4756,11 +4965,63 @@ Register-ArgumentCompleter -Native -CommandName 'spt' -ScriptBlock {
             [CompletionResult]::new('--version', '--version', [CompletionResultType]::ParameterName, 'Print version')
             break
         }
+        'spt;sftp;mount;start' {
+            [CompletionResult]::new('--profile', '--profile', [CompletionResultType]::ParameterName, 'Profile name')
+            [CompletionResult]::new('--local', '--local', [CompletionResultType]::ParameterName, 'Local mountpoint. Overrides any configured `mount_point`')
+            [CompletionResult]::new('--remote', '--remote', [CompletionResultType]::ParameterName, 'Remote SFTP path to mount. Overrides any configured `remote_path`')
+            [CompletionResult]::new('--volume', '--volume', [CompletionResultType]::ParameterName, 'Volume label (Windows)')
+            [CompletionResult]::new('--config', '--config', [CompletionResultType]::ParameterName, 'Path to a single config file')
+            [CompletionResult]::new('--config-dir', '--config-dir', [CompletionResultType]::ParameterName, 'Path to a directory of `*.toml` configs (loaded in lexical order)')
+            [CompletionResult]::new('--config-url', '--config-url', [CompletionResultType]::ParameterName, 'HTTPS URL of a remote config to fetch')
+            [CompletionResult]::new('--config-fingerprint', '--config-fingerprint', [CompletionResultType]::ParameterName, 'SHA-256 fingerprint pin for `--config-url`')
+            [CompletionResult]::new('--state-dir', '--state-dir', [CompletionResultType]::ParameterName, 'Override the runtime state directory')
+            [CompletionResult]::new('--output', '--output', [CompletionResultType]::ParameterName, 'Output format for command results')
+            [CompletionResult]::new('--log-level', '--log-level', [CompletionResultType]::ParameterName, 'Tracing log level')
+            [CompletionResult]::new('--color', '--color', [CompletionResultType]::ParameterName, 'Color policy for human output')
+            [CompletionResult]::new('--read-only', '--read-only', [CompletionResultType]::ParameterName, 'Mount read-only')
+            [CompletionResult]::new('--json', '--json', [CompletionResultType]::ParameterName, 'JSON output')
+            [CompletionResult]::new('-q', '-q', [CompletionResultType]::ParameterName, 'Suppress non-essential output')
+            [CompletionResult]::new('--quiet', '--quiet', [CompletionResultType]::ParameterName, 'Suppress non-essential output')
+            [CompletionResult]::new('-v', '-v', [CompletionResultType]::ParameterName, 'Increase verbosity (repeat for more)')
+            [CompletionResult]::new('--verbose', '--verbose', [CompletionResultType]::ParameterName, 'Increase verbosity (repeat for more)')
+            [CompletionResult]::new('--no-color', '--no-color', [CompletionResultType]::ParameterName, 'Disable color (legacy convenience flag; use `--color never`)')
+            [CompletionResult]::new('--dry-run', '--dry-run', [CompletionResultType]::ParameterName, 'Show what would happen without making changes')
+            [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help (see more with ''--help'')')
+            [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help (see more with ''--help'')')
+            [CompletionResult]::new('-V', '-V ', [CompletionResultType]::ParameterName, 'Print version')
+            [CompletionResult]::new('--version', '--version', [CompletionResultType]::ParameterName, 'Print version')
+            break
+        }
+        'spt;sftp;mount;stop' {
+            [CompletionResult]::new('--config', '--config', [CompletionResultType]::ParameterName, 'Path to a single config file')
+            [CompletionResult]::new('--config-dir', '--config-dir', [CompletionResultType]::ParameterName, 'Path to a directory of `*.toml` configs (loaded in lexical order)')
+            [CompletionResult]::new('--config-url', '--config-url', [CompletionResultType]::ParameterName, 'HTTPS URL of a remote config to fetch')
+            [CompletionResult]::new('--config-fingerprint', '--config-fingerprint', [CompletionResultType]::ParameterName, 'SHA-256 fingerprint pin for `--config-url`')
+            [CompletionResult]::new('--state-dir', '--state-dir', [CompletionResultType]::ParameterName, 'Override the runtime state directory')
+            [CompletionResult]::new('--profile', '--profile', [CompletionResultType]::ParameterName, 'Restrict operations to the named profile')
+            [CompletionResult]::new('--output', '--output', [CompletionResultType]::ParameterName, 'Output format for command results')
+            [CompletionResult]::new('--log-level', '--log-level', [CompletionResultType]::ParameterName, 'Tracing log level')
+            [CompletionResult]::new('--color', '--color', [CompletionResultType]::ParameterName, 'Color policy for human output')
+            [CompletionResult]::new('--json', '--json', [CompletionResultType]::ParameterName, 'JSON output')
+            [CompletionResult]::new('-q', '-q', [CompletionResultType]::ParameterName, 'Suppress non-essential output')
+            [CompletionResult]::new('--quiet', '--quiet', [CompletionResultType]::ParameterName, 'Suppress non-essential output')
+            [CompletionResult]::new('-v', '-v', [CompletionResultType]::ParameterName, 'Increase verbosity (repeat for more)')
+            [CompletionResult]::new('--verbose', '--verbose', [CompletionResultType]::ParameterName, 'Increase verbosity (repeat for more)')
+            [CompletionResult]::new('--no-color', '--no-color', [CompletionResultType]::ParameterName, 'Disable color (legacy convenience flag; use `--color never`)')
+            [CompletionResult]::new('--dry-run', '--dry-run', [CompletionResultType]::ParameterName, 'Show what would happen without making changes')
+            [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help (see more with ''--help'')')
+            [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help (see more with ''--help'')')
+            [CompletionResult]::new('-V', '-V ', [CompletionResultType]::ParameterName, 'Print version')
+            [CompletionResult]::new('--version', '--version', [CompletionResultType]::ParameterName, 'Print version')
+            break
+        }
         'spt;sftp;mount;help' {
             [CompletionResult]::new('list', 'list', [CompletionResultType]::ParameterValue, 'List configured filesystem mounts')
             [CompletionResult]::new('add', 'add', [CompletionResultType]::ParameterValue, 'Add a filesystem mount entry to the config')
             [CompletionResult]::new('remove', 'remove', [CompletionResultType]::ParameterValue, 'Remove a filesystem mount entry from the config')
             [CompletionResult]::new('plan', 'plan', [CompletionResultType]::ParameterValue, 'Render the platform plan for a configured or proposed mount')
+            [CompletionResult]::new('start', 'start', [CompletionResultType]::ParameterValue, 'Start an SFTP-backed filesystem mount')
+            [CompletionResult]::new('stop', 'stop', [CompletionResultType]::ParameterValue, 'Tear down an SFTP-backed filesystem mount')
             [CompletionResult]::new('help', 'help', [CompletionResultType]::ParameterValue, 'Print this message or the help of the given subcommand(s)')
             break
         }
@@ -4774,6 +5035,12 @@ Register-ArgumentCompleter -Native -CommandName 'spt' -ScriptBlock {
             break
         }
         'spt;sftp;mount;help;plan' {
+            break
+        }
+        'spt;sftp;mount;help;start' {
+            break
+        }
+        'spt;sftp;mount;help;stop' {
             break
         }
         'spt;sftp;mount;help;help' {
@@ -4932,6 +5199,29 @@ Register-ArgumentCompleter -Native -CommandName 'spt' -ScriptBlock {
         'spt;sftp;drive;help;help' {
             break
         }
+        'spt;sftp;umount' {
+            [CompletionResult]::new('--config', '--config', [CompletionResultType]::ParameterName, 'Path to a single config file')
+            [CompletionResult]::new('--config-dir', '--config-dir', [CompletionResultType]::ParameterName, 'Path to a directory of `*.toml` configs (loaded in lexical order)')
+            [CompletionResult]::new('--config-url', '--config-url', [CompletionResultType]::ParameterName, 'HTTPS URL of a remote config to fetch')
+            [CompletionResult]::new('--config-fingerprint', '--config-fingerprint', [CompletionResultType]::ParameterName, 'SHA-256 fingerprint pin for `--config-url`')
+            [CompletionResult]::new('--state-dir', '--state-dir', [CompletionResultType]::ParameterName, 'Override the runtime state directory')
+            [CompletionResult]::new('--profile', '--profile', [CompletionResultType]::ParameterName, 'Restrict operations to the named profile')
+            [CompletionResult]::new('--output', '--output', [CompletionResultType]::ParameterName, 'Output format for command results')
+            [CompletionResult]::new('--log-level', '--log-level', [CompletionResultType]::ParameterName, 'Tracing log level')
+            [CompletionResult]::new('--color', '--color', [CompletionResultType]::ParameterName, 'Color policy for human output')
+            [CompletionResult]::new('--json', '--json', [CompletionResultType]::ParameterName, 'JSON output')
+            [CompletionResult]::new('-q', '-q', [CompletionResultType]::ParameterName, 'Suppress non-essential output')
+            [CompletionResult]::new('--quiet', '--quiet', [CompletionResultType]::ParameterName, 'Suppress non-essential output')
+            [CompletionResult]::new('-v', '-v', [CompletionResultType]::ParameterName, 'Increase verbosity (repeat for more)')
+            [CompletionResult]::new('--verbose', '--verbose', [CompletionResultType]::ParameterName, 'Increase verbosity (repeat for more)')
+            [CompletionResult]::new('--no-color', '--no-color', [CompletionResultType]::ParameterName, 'Disable color (legacy convenience flag; use `--color never`)')
+            [CompletionResult]::new('--dry-run', '--dry-run', [CompletionResultType]::ParameterName, 'Show what would happen without making changes')
+            [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help (see more with ''--help'')')
+            [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help (see more with ''--help'')')
+            [CompletionResult]::new('-V', '-V ', [CompletionResultType]::ParameterName, 'Print version')
+            [CompletionResult]::new('--version', '--version', [CompletionResultType]::ParameterName, 'Print version')
+            break
+        }
         'spt;sftp;help' {
             [CompletionResult]::new('test', 'test', [CompletionResultType]::ParameterValue, 'Connect to the profile and open the SFTP subsystem')
             [CompletionResult]::new('list', 'list', [CompletionResultType]::ParameterValue, 'List a remote directory')
@@ -4942,8 +5232,17 @@ Register-ArgumentCompleter -Native -CommandName 'spt' -ScriptBlock {
             [CompletionResult]::new('rm', 'rm', [CompletionResultType]::ParameterValue, 'Remove a remote file')
             [CompletionResult]::new('rmdir', 'rmdir', [CompletionResultType]::ParameterValue, 'Remove a remote directory')
             [CompletionResult]::new('rename', 'rename', [CompletionResultType]::ParameterValue, 'Rename a remote file or directory')
+            [CompletionResult]::new('cat', 'cat', [CompletionResultType]::ParameterValue, 'Print a remote file (with a size cap)')
+            [CompletionResult]::new('tail', 'tail', [CompletionResultType]::ParameterValue, 'Print the trailing bytes of a remote file')
+            [CompletionResult]::new('chmod', 'chmod', [CompletionResultType]::ParameterValue, 'Change POSIX permissions on a remote path')
+            [CompletionResult]::new('symlink', 'symlink', [CompletionResultType]::ParameterValue, 'Create a remote symbolic link')
+            [CompletionResult]::new('readlink', 'readlink', [CompletionResultType]::ParameterValue, 'Read the target of a remote symbolic link')
+            [CompletionResult]::new('realpath', 'realpath', [CompletionResultType]::ParameterValue, 'Canonicalise a remote path')
+            [CompletionResult]::new('put-recursive', 'put-recursive', [CompletionResultType]::ParameterValue, 'Mirror a local directory tree onto the server (recursive `put`)')
+            [CompletionResult]::new('get-recursive', 'get-recursive', [CompletionResultType]::ParameterValue, 'Mirror a remote directory tree onto the local filesystem (recursive `get`)')
             [CompletionResult]::new('mount', 'mount', [CompletionResultType]::ParameterValue, 'Manage SFTP-backed filesystem mount entries')
             [CompletionResult]::new('drive', 'drive', [CompletionResultType]::ParameterValue, 'Manage SFTP-backed Windows drive entries')
+            [CompletionResult]::new('umount', 'umount', [CompletionResultType]::ParameterValue, 'Tear down an SFTP-backed filesystem mount (shorthand for `spt sftp mount stop`)')
             [CompletionResult]::new('help', 'help', [CompletionResultType]::ParameterValue, 'Print this message or the help of the given subcommand(s)')
             break
         }
@@ -4974,11 +5273,37 @@ Register-ArgumentCompleter -Native -CommandName 'spt' -ScriptBlock {
         'spt;sftp;help;rename' {
             break
         }
+        'spt;sftp;help;cat' {
+            break
+        }
+        'spt;sftp;help;tail' {
+            break
+        }
+        'spt;sftp;help;chmod' {
+            break
+        }
+        'spt;sftp;help;symlink' {
+            break
+        }
+        'spt;sftp;help;readlink' {
+            break
+        }
+        'spt;sftp;help;realpath' {
+            break
+        }
+        'spt;sftp;help;put-recursive' {
+            break
+        }
+        'spt;sftp;help;get-recursive' {
+            break
+        }
         'spt;sftp;help;mount' {
             [CompletionResult]::new('list', 'list', [CompletionResultType]::ParameterValue, 'List configured filesystem mounts')
             [CompletionResult]::new('add', 'add', [CompletionResultType]::ParameterValue, 'Add a filesystem mount entry to the config')
             [CompletionResult]::new('remove', 'remove', [CompletionResultType]::ParameterValue, 'Remove a filesystem mount entry from the config')
             [CompletionResult]::new('plan', 'plan', [CompletionResultType]::ParameterValue, 'Render the platform plan for a configured or proposed mount')
+            [CompletionResult]::new('start', 'start', [CompletionResultType]::ParameterValue, 'Start an SFTP-backed filesystem mount')
+            [CompletionResult]::new('stop', 'stop', [CompletionResultType]::ParameterValue, 'Tear down an SFTP-backed filesystem mount')
             break
         }
         'spt;sftp;help;mount;list' {
@@ -4991,6 +5316,12 @@ Register-ArgumentCompleter -Native -CommandName 'spt' -ScriptBlock {
             break
         }
         'spt;sftp;help;mount;plan' {
+            break
+        }
+        'spt;sftp;help;mount;start' {
+            break
+        }
+        'spt;sftp;help;mount;stop' {
             break
         }
         'spt;sftp;help;drive' {
@@ -5010,6 +5341,9 @@ Register-ArgumentCompleter -Native -CommandName 'spt' -ScriptBlock {
             break
         }
         'spt;sftp;help;drive;plan' {
+            break
+        }
+        'spt;sftp;help;umount' {
             break
         }
         'spt;sftp;help;help' {
@@ -6727,8 +7061,17 @@ Register-ArgumentCompleter -Native -CommandName 'spt' -ScriptBlock {
             [CompletionResult]::new('rm', 'rm', [CompletionResultType]::ParameterValue, 'Remove a remote file')
             [CompletionResult]::new('rmdir', 'rmdir', [CompletionResultType]::ParameterValue, 'Remove a remote directory')
             [CompletionResult]::new('rename', 'rename', [CompletionResultType]::ParameterValue, 'Rename a remote file or directory')
+            [CompletionResult]::new('cat', 'cat', [CompletionResultType]::ParameterValue, 'Print a remote file (with a size cap)')
+            [CompletionResult]::new('tail', 'tail', [CompletionResultType]::ParameterValue, 'Print the trailing bytes of a remote file')
+            [CompletionResult]::new('chmod', 'chmod', [CompletionResultType]::ParameterValue, 'Change POSIX permissions on a remote path')
+            [CompletionResult]::new('symlink', 'symlink', [CompletionResultType]::ParameterValue, 'Create a remote symbolic link')
+            [CompletionResult]::new('readlink', 'readlink', [CompletionResultType]::ParameterValue, 'Read the target of a remote symbolic link')
+            [CompletionResult]::new('realpath', 'realpath', [CompletionResultType]::ParameterValue, 'Canonicalise a remote path')
+            [CompletionResult]::new('put-recursive', 'put-recursive', [CompletionResultType]::ParameterValue, 'Mirror a local directory tree onto the server (recursive `put`)')
+            [CompletionResult]::new('get-recursive', 'get-recursive', [CompletionResultType]::ParameterValue, 'Mirror a remote directory tree onto the local filesystem (recursive `get`)')
             [CompletionResult]::new('mount', 'mount', [CompletionResultType]::ParameterValue, 'Manage SFTP-backed filesystem mount entries')
             [CompletionResult]::new('drive', 'drive', [CompletionResultType]::ParameterValue, 'Manage SFTP-backed Windows drive entries')
+            [CompletionResult]::new('umount', 'umount', [CompletionResultType]::ParameterValue, 'Tear down an SFTP-backed filesystem mount (shorthand for `spt sftp mount stop`)')
             break
         }
         'spt;help;sftp;test' {
@@ -6758,11 +7101,37 @@ Register-ArgumentCompleter -Native -CommandName 'spt' -ScriptBlock {
         'spt;help;sftp;rename' {
             break
         }
+        'spt;help;sftp;cat' {
+            break
+        }
+        'spt;help;sftp;tail' {
+            break
+        }
+        'spt;help;sftp;chmod' {
+            break
+        }
+        'spt;help;sftp;symlink' {
+            break
+        }
+        'spt;help;sftp;readlink' {
+            break
+        }
+        'spt;help;sftp;realpath' {
+            break
+        }
+        'spt;help;sftp;put-recursive' {
+            break
+        }
+        'spt;help;sftp;get-recursive' {
+            break
+        }
         'spt;help;sftp;mount' {
             [CompletionResult]::new('list', 'list', [CompletionResultType]::ParameterValue, 'List configured filesystem mounts')
             [CompletionResult]::new('add', 'add', [CompletionResultType]::ParameterValue, 'Add a filesystem mount entry to the config')
             [CompletionResult]::new('remove', 'remove', [CompletionResultType]::ParameterValue, 'Remove a filesystem mount entry from the config')
             [CompletionResult]::new('plan', 'plan', [CompletionResultType]::ParameterValue, 'Render the platform plan for a configured or proposed mount')
+            [CompletionResult]::new('start', 'start', [CompletionResultType]::ParameterValue, 'Start an SFTP-backed filesystem mount')
+            [CompletionResult]::new('stop', 'stop', [CompletionResultType]::ParameterValue, 'Tear down an SFTP-backed filesystem mount')
             break
         }
         'spt;help;sftp;mount;list' {
@@ -6775,6 +7144,12 @@ Register-ArgumentCompleter -Native -CommandName 'spt' -ScriptBlock {
             break
         }
         'spt;help;sftp;mount;plan' {
+            break
+        }
+        'spt;help;sftp;mount;start' {
+            break
+        }
+        'spt;help;sftp;mount;stop' {
             break
         }
         'spt;help;sftp;drive' {
@@ -6794,6 +7169,9 @@ Register-ArgumentCompleter -Native -CommandName 'spt' -ScriptBlock {
             break
         }
         'spt;help;sftp;drive;plan' {
+            break
+        }
+        'spt;help;sftp;umount' {
             break
         }
         'spt;help;diagnose' {

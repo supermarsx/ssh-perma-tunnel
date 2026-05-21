@@ -4306,6 +4306,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "spt-auth-sspi"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "spt-auth",
+ "spt-auth-sspi",
+ "spt-core",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "spt-benchmark"
 version = "0.1.0"
 dependencies = [
@@ -4367,6 +4380,7 @@ dependencies = [
  "spt-events",
  "spt-firewall",
  "spt-forward",
+ "spt-ftp-translator",
  "spt-key",
  "spt-mcp",
  "spt-mem-hygiene",
@@ -4627,6 +4641,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "spt-ftp-translator"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "futures",
+ "rcgen",
+ "rustls",
+ "rustls-pemfile",
+ "rustls-pki-types",
+ "spt-core",
+ "spt-sftp",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "tokio-rustls",
+ "tracing",
+]
+
+[[package]]
 name = "spt-key"
 version = "0.1.0"
 dependencies = [
@@ -4691,6 +4724,33 @@ dependencies = [
  "tokio",
  "tracing",
  "windows",
+]
+
+[[package]]
+name = "spt-obfs"
+version = "0.1.0"
+dependencies = [
+ "aes-gcm",
+ "async-trait",
+ "base64",
+ "bytes",
+ "hex",
+ "hmac",
+ "parking_lot",
+ "rand 0.8.6",
+ "serde",
+ "serde_json",
+ "sha2",
+ "spt-config",
+ "spt-core",
+ "spt-obfs",
+ "spt-secrets",
+ "subtle",
+ "thiserror 1.0.69",
+ "tokio",
+ "toml",
+ "tracing",
+ "zeroize",
 ]
 
 [[package]]
@@ -4769,6 +4829,18 @@ dependencies = [
  "tower 0.5.3",
  "tracing",
  "url",
+]
+
+[[package]]
+name = "spt-scripting"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "spt-core",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tracing",
 ]
 
 [[package]]
@@ -4877,10 +4949,13 @@ dependencies = [
  "secrecy",
  "serde",
  "spt-auth",
+ "spt-auth-sspi",
  "spt-core",
  "spt-key",
  "spt-net",
+ "spt-obfs",
  "spt-protocol",
+ "spt-scripting",
  "spt-secrets",
  "spt-sftp",
  "spt-trust",

@@ -1168,6 +1168,8 @@ set edit:completion:arg-completer[spt] = {|@words|
         }
         &'spt;tunnel;run'= {
             cand --profiles 'Comma-separated profile filter'
+            cand -J 'Proxy-jump chain `user@host[:port][,user@host…]`. When set, the chain is splatted into every selected profile''s `hops` table at startup (CLI values take precedence over profile-file hops). Mirrors the OpenSSH `-J` flag (t6-e3)'
+            cand --jump 'Proxy-jump chain `user@host[:port][,user@host…]`. When set, the chain is splatted into every selected profile''s `hops` table at startup (CLI values take precedence over profile-file hops). Mirrors the OpenSSH `-J` flag (t6-e3)'
             cand --config 'Path to a single config file'
             cand --config-dir 'Path to a directory of `*.toml` configs (loaded in lexical order)'
             cand --config-url 'HTTPS URL of a remote config to fetch'
@@ -4069,8 +4071,17 @@ set edit:completion:arg-completer[spt] = {|@words|
             cand rm 'Remove a remote file'
             cand rmdir 'Remove a remote directory'
             cand rename 'Rename a remote file or directory'
+            cand cat 'Print a remote file (with a size cap)'
+            cand tail 'Print the trailing bytes of a remote file'
+            cand chmod 'Change POSIX permissions on a remote path'
+            cand symlink 'Create a remote symbolic link'
+            cand readlink 'Read the target of a remote symbolic link'
+            cand realpath 'Canonicalise a remote path'
+            cand put-recursive 'Mirror a local directory tree onto the server (recursive `put`)'
+            cand get-recursive 'Mirror a remote directory tree onto the local filesystem (recursive `get`)'
             cand mount 'Manage SFTP-backed filesystem mount entries'
             cand drive 'Manage SFTP-backed Windows drive entries'
+            cand umount 'Tear down an SFTP-backed filesystem mount (shorthand for `spt sftp mount stop`)'
             cand help 'Print this message or the help of the given subcommand(s)'
         }
         &'spt;sftp;test'= {
@@ -4272,6 +4283,194 @@ set edit:completion:arg-completer[spt] = {|@words|
             cand -V 'Print version'
             cand --version 'Print version'
         }
+        &'spt;sftp;cat'= {
+            cand --profile 'Profile name'
+            cand --size-cap 'Maximum number of bytes to read; defaults to 4 MiB'
+            cand --config 'Path to a single config file'
+            cand --config-dir 'Path to a directory of `*.toml` configs (loaded in lexical order)'
+            cand --config-url 'HTTPS URL of a remote config to fetch'
+            cand --config-fingerprint 'SHA-256 fingerprint pin for `--config-url`'
+            cand --state-dir 'Override the runtime state directory'
+            cand --output 'Output format for command results'
+            cand --log-level 'Tracing log level'
+            cand --color 'Color policy for human output'
+            cand --json 'Convenience alias for `--output json`'
+            cand -q 'Suppress non-essential output'
+            cand --quiet 'Suppress non-essential output'
+            cand -v 'Increase verbosity (repeat for more)'
+            cand --verbose 'Increase verbosity (repeat for more)'
+            cand --no-color 'Disable color (legacy convenience flag; use `--color never`)'
+            cand --dry-run 'Show what would happen without making changes'
+            cand -h 'Print help (see more with ''--help'')'
+            cand --help 'Print help (see more with ''--help'')'
+            cand -V 'Print version'
+            cand --version 'Print version'
+        }
+        &'spt;sftp;tail'= {
+            cand --profile 'Profile name'
+            cand --bytes 'Number of trailing bytes to print; defaults to 4 KiB'
+            cand --config 'Path to a single config file'
+            cand --config-dir 'Path to a directory of `*.toml` configs (loaded in lexical order)'
+            cand --config-url 'HTTPS URL of a remote config to fetch'
+            cand --config-fingerprint 'SHA-256 fingerprint pin for `--config-url`'
+            cand --state-dir 'Override the runtime state directory'
+            cand --output 'Output format for command results'
+            cand --log-level 'Tracing log level'
+            cand --color 'Color policy for human output'
+            cand --json 'Convenience alias for `--output json`'
+            cand -q 'Suppress non-essential output'
+            cand --quiet 'Suppress non-essential output'
+            cand -v 'Increase verbosity (repeat for more)'
+            cand --verbose 'Increase verbosity (repeat for more)'
+            cand --no-color 'Disable color (legacy convenience flag; use `--color never`)'
+            cand --dry-run 'Show what would happen without making changes'
+            cand -h 'Print help (see more with ''--help'')'
+            cand --help 'Print help (see more with ''--help'')'
+            cand -V 'Print version'
+            cand --version 'Print version'
+        }
+        &'spt;sftp;chmod'= {
+            cand --profile 'Profile name'
+            cand --mode 'Octal mode, for example `0640`'
+            cand --config 'Path to a single config file'
+            cand --config-dir 'Path to a directory of `*.toml` configs (loaded in lexical order)'
+            cand --config-url 'HTTPS URL of a remote config to fetch'
+            cand --config-fingerprint 'SHA-256 fingerprint pin for `--config-url`'
+            cand --state-dir 'Override the runtime state directory'
+            cand --output 'Output format for command results'
+            cand --log-level 'Tracing log level'
+            cand --color 'Color policy for human output'
+            cand --json 'Convenience alias for `--output json`'
+            cand -q 'Suppress non-essential output'
+            cand --quiet 'Suppress non-essential output'
+            cand -v 'Increase verbosity (repeat for more)'
+            cand --verbose 'Increase verbosity (repeat for more)'
+            cand --no-color 'Disable color (legacy convenience flag; use `--color never`)'
+            cand --dry-run 'Show what would happen without making changes'
+            cand -h 'Print help (see more with ''--help'')'
+            cand --help 'Print help (see more with ''--help'')'
+            cand -V 'Print version'
+            cand --version 'Print version'
+        }
+        &'spt;sftp;symlink'= {
+            cand --profile 'Profile name'
+            cand --target 'Target path the link should point to'
+            cand --config 'Path to a single config file'
+            cand --config-dir 'Path to a directory of `*.toml` configs (loaded in lexical order)'
+            cand --config-url 'HTTPS URL of a remote config to fetch'
+            cand --config-fingerprint 'SHA-256 fingerprint pin for `--config-url`'
+            cand --state-dir 'Override the runtime state directory'
+            cand --output 'Output format for command results'
+            cand --log-level 'Tracing log level'
+            cand --color 'Color policy for human output'
+            cand --json 'Convenience alias for `--output json`'
+            cand -q 'Suppress non-essential output'
+            cand --quiet 'Suppress non-essential output'
+            cand -v 'Increase verbosity (repeat for more)'
+            cand --verbose 'Increase verbosity (repeat for more)'
+            cand --no-color 'Disable color (legacy convenience flag; use `--color never`)'
+            cand --dry-run 'Show what would happen without making changes'
+            cand -h 'Print help (see more with ''--help'')'
+            cand --help 'Print help (see more with ''--help'')'
+            cand -V 'Print version'
+            cand --version 'Print version'
+        }
+        &'spt;sftp;readlink'= {
+            cand --profile 'Profile name'
+            cand --config 'Path to a single config file'
+            cand --config-dir 'Path to a directory of `*.toml` configs (loaded in lexical order)'
+            cand --config-url 'HTTPS URL of a remote config to fetch'
+            cand --config-fingerprint 'SHA-256 fingerprint pin for `--config-url`'
+            cand --state-dir 'Override the runtime state directory'
+            cand --output 'Output format for command results'
+            cand --log-level 'Tracing log level'
+            cand --color 'Color policy for human output'
+            cand --json 'JSON output'
+            cand -q 'Suppress non-essential output'
+            cand --quiet 'Suppress non-essential output'
+            cand -v 'Increase verbosity (repeat for more)'
+            cand --verbose 'Increase verbosity (repeat for more)'
+            cand --no-color 'Disable color (legacy convenience flag; use `--color never`)'
+            cand --dry-run 'Show what would happen without making changes'
+            cand -h 'Print help (see more with ''--help'')'
+            cand --help 'Print help (see more with ''--help'')'
+            cand -V 'Print version'
+            cand --version 'Print version'
+        }
+        &'spt;sftp;realpath'= {
+            cand --profile 'Profile name'
+            cand --config 'Path to a single config file'
+            cand --config-dir 'Path to a directory of `*.toml` configs (loaded in lexical order)'
+            cand --config-url 'HTTPS URL of a remote config to fetch'
+            cand --config-fingerprint 'SHA-256 fingerprint pin for `--config-url`'
+            cand --state-dir 'Override the runtime state directory'
+            cand --output 'Output format for command results'
+            cand --log-level 'Tracing log level'
+            cand --color 'Color policy for human output'
+            cand --json 'JSON output'
+            cand -q 'Suppress non-essential output'
+            cand --quiet 'Suppress non-essential output'
+            cand -v 'Increase verbosity (repeat for more)'
+            cand --verbose 'Increase verbosity (repeat for more)'
+            cand --no-color 'Disable color (legacy convenience flag; use `--color never`)'
+            cand --dry-run 'Show what would happen without making changes'
+            cand -h 'Print help (see more with ''--help'')'
+            cand --help 'Print help (see more with ''--help'')'
+            cand -V 'Print version'
+            cand --version 'Print version'
+        }
+        &'spt;sftp;put-recursive'= {
+            cand --profile 'Profile name'
+            cand --bps 'Bandwidth cap, e.g. `5MiB` (parsed via `bytesize`); `0` disables'
+            cand --checksum 'Post-transfer integrity check'
+            cand --config 'Path to a single config file'
+            cand --config-dir 'Path to a directory of `*.toml` configs (loaded in lexical order)'
+            cand --config-url 'HTTPS URL of a remote config to fetch'
+            cand --config-fingerprint 'SHA-256 fingerprint pin for `--config-url`'
+            cand --state-dir 'Override the runtime state directory'
+            cand --output 'Output format for command results'
+            cand --log-level 'Tracing log level'
+            cand --color 'Color policy for human output'
+            cand --resume 'Resume mode: seek into existing target files instead of truncating'
+            cand --follow-symlinks 'Follow symbolic links during the walk (loops are still detected)'
+            cand --json 'Convenience alias for `--output json`'
+            cand -q 'Suppress non-essential output'
+            cand --quiet 'Suppress non-essential output'
+            cand -v 'Increase verbosity (repeat for more)'
+            cand --verbose 'Increase verbosity (repeat for more)'
+            cand --no-color 'Disable color (legacy convenience flag; use `--color never`)'
+            cand --dry-run 'Show what would happen without making changes'
+            cand -h 'Print help (see more with ''--help'')'
+            cand --help 'Print help (see more with ''--help'')'
+            cand -V 'Print version'
+            cand --version 'Print version'
+        }
+        &'spt;sftp;get-recursive'= {
+            cand --profile 'Profile name'
+            cand --bps 'Bandwidth cap, e.g. `5MiB` (parsed via `bytesize`); `0` disables'
+            cand --checksum 'Post-transfer integrity check'
+            cand --config 'Path to a single config file'
+            cand --config-dir 'Path to a directory of `*.toml` configs (loaded in lexical order)'
+            cand --config-url 'HTTPS URL of a remote config to fetch'
+            cand --config-fingerprint 'SHA-256 fingerprint pin for `--config-url`'
+            cand --state-dir 'Override the runtime state directory'
+            cand --output 'Output format for command results'
+            cand --log-level 'Tracing log level'
+            cand --color 'Color policy for human output'
+            cand --resume 'Resume mode: seek into existing target files instead of truncating'
+            cand --follow-symlinks 'Follow symbolic links during the walk (loops are still detected)'
+            cand --json 'Convenience alias for `--output json`'
+            cand -q 'Suppress non-essential output'
+            cand --quiet 'Suppress non-essential output'
+            cand -v 'Increase verbosity (repeat for more)'
+            cand --verbose 'Increase verbosity (repeat for more)'
+            cand --no-color 'Disable color (legacy convenience flag; use `--color never`)'
+            cand --dry-run 'Show what would happen without making changes'
+            cand -h 'Print help (see more with ''--help'')'
+            cand --help 'Print help (see more with ''--help'')'
+            cand -V 'Print version'
+            cand --version 'Print version'
+        }
         &'spt;sftp;mount'= {
             cand --config 'Path to a single config file'
             cand --config-dir 'Path to a directory of `*.toml` configs (loaded in lexical order)'
@@ -4297,6 +4496,8 @@ set edit:completion:arg-completer[spt] = {|@words|
             cand add 'Add a filesystem mount entry to the config'
             cand remove 'Remove a filesystem mount entry from the config'
             cand plan 'Render the platform plan for a configured or proposed mount'
+            cand start 'Start an SFTP-backed filesystem mount'
+            cand stop 'Tear down an SFTP-backed filesystem mount'
             cand help 'Print this message or the help of the given subcommand(s)'
         }
         &'spt;sftp;mount;list'= {
@@ -4397,11 +4598,61 @@ set edit:completion:arg-completer[spt] = {|@words|
             cand -V 'Print version'
             cand --version 'Print version'
         }
+        &'spt;sftp;mount;start'= {
+            cand --profile 'Profile name'
+            cand --local 'Local mountpoint. Overrides any configured `mount_point`'
+            cand --remote 'Remote SFTP path to mount. Overrides any configured `remote_path`'
+            cand --volume 'Volume label (Windows)'
+            cand --config 'Path to a single config file'
+            cand --config-dir 'Path to a directory of `*.toml` configs (loaded in lexical order)'
+            cand --config-url 'HTTPS URL of a remote config to fetch'
+            cand --config-fingerprint 'SHA-256 fingerprint pin for `--config-url`'
+            cand --state-dir 'Override the runtime state directory'
+            cand --output 'Output format for command results'
+            cand --log-level 'Tracing log level'
+            cand --color 'Color policy for human output'
+            cand --read-only 'Mount read-only'
+            cand --json 'JSON output'
+            cand -q 'Suppress non-essential output'
+            cand --quiet 'Suppress non-essential output'
+            cand -v 'Increase verbosity (repeat for more)'
+            cand --verbose 'Increase verbosity (repeat for more)'
+            cand --no-color 'Disable color (legacy convenience flag; use `--color never`)'
+            cand --dry-run 'Show what would happen without making changes'
+            cand -h 'Print help (see more with ''--help'')'
+            cand --help 'Print help (see more with ''--help'')'
+            cand -V 'Print version'
+            cand --version 'Print version'
+        }
+        &'spt;sftp;mount;stop'= {
+            cand --config 'Path to a single config file'
+            cand --config-dir 'Path to a directory of `*.toml` configs (loaded in lexical order)'
+            cand --config-url 'HTTPS URL of a remote config to fetch'
+            cand --config-fingerprint 'SHA-256 fingerprint pin for `--config-url`'
+            cand --state-dir 'Override the runtime state directory'
+            cand --profile 'Restrict operations to the named profile'
+            cand --output 'Output format for command results'
+            cand --log-level 'Tracing log level'
+            cand --color 'Color policy for human output'
+            cand --json 'JSON output'
+            cand -q 'Suppress non-essential output'
+            cand --quiet 'Suppress non-essential output'
+            cand -v 'Increase verbosity (repeat for more)'
+            cand --verbose 'Increase verbosity (repeat for more)'
+            cand --no-color 'Disable color (legacy convenience flag; use `--color never`)'
+            cand --dry-run 'Show what would happen without making changes'
+            cand -h 'Print help (see more with ''--help'')'
+            cand --help 'Print help (see more with ''--help'')'
+            cand -V 'Print version'
+            cand --version 'Print version'
+        }
         &'spt;sftp;mount;help'= {
             cand list 'List configured filesystem mounts'
             cand add 'Add a filesystem mount entry to the config'
             cand remove 'Remove a filesystem mount entry from the config'
             cand plan 'Render the platform plan for a configured or proposed mount'
+            cand start 'Start an SFTP-backed filesystem mount'
+            cand stop 'Tear down an SFTP-backed filesystem mount'
             cand help 'Print this message or the help of the given subcommand(s)'
         }
         &'spt;sftp;mount;help;list'= {
@@ -4411,6 +4662,10 @@ set edit:completion:arg-completer[spt] = {|@words|
         &'spt;sftp;mount;help;remove'= {
         }
         &'spt;sftp;mount;help;plan'= {
+        }
+        &'spt;sftp;mount;help;start'= {
+        }
+        &'spt;sftp;mount;help;stop'= {
         }
         &'spt;sftp;mount;help;help'= {
         }
@@ -4556,6 +4811,28 @@ set edit:completion:arg-completer[spt] = {|@words|
         }
         &'spt;sftp;drive;help;help'= {
         }
+        &'spt;sftp;umount'= {
+            cand --config 'Path to a single config file'
+            cand --config-dir 'Path to a directory of `*.toml` configs (loaded in lexical order)'
+            cand --config-url 'HTTPS URL of a remote config to fetch'
+            cand --config-fingerprint 'SHA-256 fingerprint pin for `--config-url`'
+            cand --state-dir 'Override the runtime state directory'
+            cand --profile 'Restrict operations to the named profile'
+            cand --output 'Output format for command results'
+            cand --log-level 'Tracing log level'
+            cand --color 'Color policy for human output'
+            cand --json 'JSON output'
+            cand -q 'Suppress non-essential output'
+            cand --quiet 'Suppress non-essential output'
+            cand -v 'Increase verbosity (repeat for more)'
+            cand --verbose 'Increase verbosity (repeat for more)'
+            cand --no-color 'Disable color (legacy convenience flag; use `--color never`)'
+            cand --dry-run 'Show what would happen without making changes'
+            cand -h 'Print help (see more with ''--help'')'
+            cand --help 'Print help (see more with ''--help'')'
+            cand -V 'Print version'
+            cand --version 'Print version'
+        }
         &'spt;sftp;help'= {
             cand test 'Connect to the profile and open the SFTP subsystem'
             cand list 'List a remote directory'
@@ -4566,8 +4843,17 @@ set edit:completion:arg-completer[spt] = {|@words|
             cand rm 'Remove a remote file'
             cand rmdir 'Remove a remote directory'
             cand rename 'Rename a remote file or directory'
+            cand cat 'Print a remote file (with a size cap)'
+            cand tail 'Print the trailing bytes of a remote file'
+            cand chmod 'Change POSIX permissions on a remote path'
+            cand symlink 'Create a remote symbolic link'
+            cand readlink 'Read the target of a remote symbolic link'
+            cand realpath 'Canonicalise a remote path'
+            cand put-recursive 'Mirror a local directory tree onto the server (recursive `put`)'
+            cand get-recursive 'Mirror a remote directory tree onto the local filesystem (recursive `get`)'
             cand mount 'Manage SFTP-backed filesystem mount entries'
             cand drive 'Manage SFTP-backed Windows drive entries'
+            cand umount 'Tear down an SFTP-backed filesystem mount (shorthand for `spt sftp mount stop`)'
             cand help 'Print this message or the help of the given subcommand(s)'
         }
         &'spt;sftp;help;test'= {
@@ -4588,11 +4874,29 @@ set edit:completion:arg-completer[spt] = {|@words|
         }
         &'spt;sftp;help;rename'= {
         }
+        &'spt;sftp;help;cat'= {
+        }
+        &'spt;sftp;help;tail'= {
+        }
+        &'spt;sftp;help;chmod'= {
+        }
+        &'spt;sftp;help;symlink'= {
+        }
+        &'spt;sftp;help;readlink'= {
+        }
+        &'spt;sftp;help;realpath'= {
+        }
+        &'spt;sftp;help;put-recursive'= {
+        }
+        &'spt;sftp;help;get-recursive'= {
+        }
         &'spt;sftp;help;mount'= {
             cand list 'List configured filesystem mounts'
             cand add 'Add a filesystem mount entry to the config'
             cand remove 'Remove a filesystem mount entry from the config'
             cand plan 'Render the platform plan for a configured or proposed mount'
+            cand start 'Start an SFTP-backed filesystem mount'
+            cand stop 'Tear down an SFTP-backed filesystem mount'
         }
         &'spt;sftp;help;mount;list'= {
         }
@@ -4601,6 +4905,10 @@ set edit:completion:arg-completer[spt] = {|@words|
         &'spt;sftp;help;mount;remove'= {
         }
         &'spt;sftp;help;mount;plan'= {
+        }
+        &'spt;sftp;help;mount;start'= {
+        }
+        &'spt;sftp;help;mount;stop'= {
         }
         &'spt;sftp;help;drive'= {
             cand list 'List configured Windows drive mounts'
@@ -4615,6 +4923,8 @@ set edit:completion:arg-completer[spt] = {|@words|
         &'spt;sftp;help;drive;remove'= {
         }
         &'spt;sftp;help;drive;plan'= {
+        }
+        &'spt;sftp;help;umount'= {
         }
         &'spt;sftp;help;help'= {
         }
@@ -6102,8 +6412,17 @@ set edit:completion:arg-completer[spt] = {|@words|
             cand rm 'Remove a remote file'
             cand rmdir 'Remove a remote directory'
             cand rename 'Rename a remote file or directory'
+            cand cat 'Print a remote file (with a size cap)'
+            cand tail 'Print the trailing bytes of a remote file'
+            cand chmod 'Change POSIX permissions on a remote path'
+            cand symlink 'Create a remote symbolic link'
+            cand readlink 'Read the target of a remote symbolic link'
+            cand realpath 'Canonicalise a remote path'
+            cand put-recursive 'Mirror a local directory tree onto the server (recursive `put`)'
+            cand get-recursive 'Mirror a remote directory tree onto the local filesystem (recursive `get`)'
             cand mount 'Manage SFTP-backed filesystem mount entries'
             cand drive 'Manage SFTP-backed Windows drive entries'
+            cand umount 'Tear down an SFTP-backed filesystem mount (shorthand for `spt sftp mount stop`)'
         }
         &'spt;help;sftp;test'= {
         }
@@ -6123,11 +6442,29 @@ set edit:completion:arg-completer[spt] = {|@words|
         }
         &'spt;help;sftp;rename'= {
         }
+        &'spt;help;sftp;cat'= {
+        }
+        &'spt;help;sftp;tail'= {
+        }
+        &'spt;help;sftp;chmod'= {
+        }
+        &'spt;help;sftp;symlink'= {
+        }
+        &'spt;help;sftp;readlink'= {
+        }
+        &'spt;help;sftp;realpath'= {
+        }
+        &'spt;help;sftp;put-recursive'= {
+        }
+        &'spt;help;sftp;get-recursive'= {
+        }
         &'spt;help;sftp;mount'= {
             cand list 'List configured filesystem mounts'
             cand add 'Add a filesystem mount entry to the config'
             cand remove 'Remove a filesystem mount entry from the config'
             cand plan 'Render the platform plan for a configured or proposed mount'
+            cand start 'Start an SFTP-backed filesystem mount'
+            cand stop 'Tear down an SFTP-backed filesystem mount'
         }
         &'spt;help;sftp;mount;list'= {
         }
@@ -6136,6 +6473,10 @@ set edit:completion:arg-completer[spt] = {|@words|
         &'spt;help;sftp;mount;remove'= {
         }
         &'spt;help;sftp;mount;plan'= {
+        }
+        &'spt;help;sftp;mount;start'= {
+        }
+        &'spt;help;sftp;mount;stop'= {
         }
         &'spt;help;sftp;drive'= {
             cand list 'List configured Windows drive mounts'
@@ -6150,6 +6491,8 @@ set edit:completion:arg-completer[spt] = {|@words|
         &'spt;help;sftp;drive;remove'= {
         }
         &'spt;help;sftp;drive;plan'= {
+        }
+        &'spt;help;sftp;umount'= {
         }
         &'spt;help;diagnose'= {
             cand run 'Run a battery of diagnostic checks'

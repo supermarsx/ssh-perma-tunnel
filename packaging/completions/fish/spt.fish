@@ -1044,6 +1044,7 @@ complete -c spt -n "__fish_spt_using_subcommand tunnel; and not __fish_seen_subc
 complete -c spt -n "__fish_spt_using_subcommand tunnel; and not __fish_seen_subcommand_from run status stats sessions stop reload health failover help" -f -a "failover" -d 'Manually trigger failover for a profile'
 complete -c spt -n "__fish_spt_using_subcommand tunnel; and not __fish_seen_subcommand_from run status stats sessions stop reload health failover help" -f -a "help" -d 'Print this message or the help of the given subcommand(s)'
 complete -c spt -n "__fish_spt_using_subcommand tunnel; and __fish_seen_subcommand_from run" -l profiles -d 'Comma-separated profile filter' -r
+complete -c spt -n "__fish_spt_using_subcommand tunnel; and __fish_seen_subcommand_from run" -s J -l jump -d 'Proxy-jump chain `user@host[:port][,user@host…]`. When set, the chain is splatted into every selected profile\'s `hops` table at startup (CLI values take precedence over profile-file hops). Mirrors the OpenSSH `-J` flag (t6-e3)' -r
 complete -c spt -n "__fish_spt_using_subcommand tunnel; and __fish_seen_subcommand_from run" -l config -d 'Path to a single config file' -r -F
 complete -c spt -n "__fish_spt_using_subcommand tunnel; and __fish_seen_subcommand_from run" -l config-dir -d 'Path to a directory of `*.toml` configs (loaded in lexical order)' -r -F
 complete -c spt -n "__fish_spt_using_subcommand tunnel; and __fish_seen_subcommand_from run" -l config-url -d 'HTTPS URL of a remote config to fetch' -r
@@ -3269,43 +3270,52 @@ complete -c spt -n "__fish_spt_using_subcommand session; and __fish_seen_subcomm
 complete -c spt -n "__fish_spt_using_subcommand session; and __fish_seen_subcommand_from help" -f -a "drain" -d 'Drain sessions for a profile'
 complete -c spt -n "__fish_spt_using_subcommand session; and __fish_seen_subcommand_from help" -f -a "top" -d 'Top-style live view'
 complete -c spt -n "__fish_spt_using_subcommand session; and __fish_seen_subcommand_from help" -f -a "help" -d 'Print this message or the help of the given subcommand(s)'
-complete -c spt -n "__fish_spt_using_subcommand sftp; and not __fish_seen_subcommand_from test list stat get put mkdir rm rmdir rename mount drive help" -l config -d 'Path to a single config file' -r -F
-complete -c spt -n "__fish_spt_using_subcommand sftp; and not __fish_seen_subcommand_from test list stat get put mkdir rm rmdir rename mount drive help" -l config-dir -d 'Path to a directory of `*.toml` configs (loaded in lexical order)' -r -F
-complete -c spt -n "__fish_spt_using_subcommand sftp; and not __fish_seen_subcommand_from test list stat get put mkdir rm rmdir rename mount drive help" -l config-url -d 'HTTPS URL of a remote config to fetch' -r
-complete -c spt -n "__fish_spt_using_subcommand sftp; and not __fish_seen_subcommand_from test list stat get put mkdir rm rmdir rename mount drive help" -l config-fingerprint -d 'SHA-256 fingerprint pin for `--config-url`' -r
-complete -c spt -n "__fish_spt_using_subcommand sftp; and not __fish_seen_subcommand_from test list stat get put mkdir rm rmdir rename mount drive help" -l state-dir -d 'Override the runtime state directory' -r -F
-complete -c spt -n "__fish_spt_using_subcommand sftp; and not __fish_seen_subcommand_from test list stat get put mkdir rm rmdir rename mount drive help" -l profile -d 'Restrict operations to the named profile' -r
-complete -c spt -n "__fish_spt_using_subcommand sftp; and not __fish_seen_subcommand_from test list stat get put mkdir rm rmdir rename mount drive help" -l output -d 'Output format for command results' -r -f -a "human\t'Human-readable text (default)'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and not __fish_seen_subcommand_from test list stat get put mkdir rm rmdir rename cat tail chmod symlink readlink realpath put-recursive get-recursive mount drive umount help" -l config -d 'Path to a single config file' -r -F
+complete -c spt -n "__fish_spt_using_subcommand sftp; and not __fish_seen_subcommand_from test list stat get put mkdir rm rmdir rename cat tail chmod symlink readlink realpath put-recursive get-recursive mount drive umount help" -l config-dir -d 'Path to a directory of `*.toml` configs (loaded in lexical order)' -r -F
+complete -c spt -n "__fish_spt_using_subcommand sftp; and not __fish_seen_subcommand_from test list stat get put mkdir rm rmdir rename cat tail chmod symlink readlink realpath put-recursive get-recursive mount drive umount help" -l config-url -d 'HTTPS URL of a remote config to fetch' -r
+complete -c spt -n "__fish_spt_using_subcommand sftp; and not __fish_seen_subcommand_from test list stat get put mkdir rm rmdir rename cat tail chmod symlink readlink realpath put-recursive get-recursive mount drive umount help" -l config-fingerprint -d 'SHA-256 fingerprint pin for `--config-url`' -r
+complete -c spt -n "__fish_spt_using_subcommand sftp; and not __fish_seen_subcommand_from test list stat get put mkdir rm rmdir rename cat tail chmod symlink readlink realpath put-recursive get-recursive mount drive umount help" -l state-dir -d 'Override the runtime state directory' -r -F
+complete -c spt -n "__fish_spt_using_subcommand sftp; and not __fish_seen_subcommand_from test list stat get put mkdir rm rmdir rename cat tail chmod symlink readlink realpath put-recursive get-recursive mount drive umount help" -l profile -d 'Restrict operations to the named profile' -r
+complete -c spt -n "__fish_spt_using_subcommand sftp; and not __fish_seen_subcommand_from test list stat get put mkdir rm rmdir rename cat tail chmod symlink readlink realpath put-recursive get-recursive mount drive umount help" -l output -d 'Output format for command results' -r -f -a "human\t'Human-readable text (default)'
 json\t'Structured JSON'
 jsonl\t'JSON Lines (one record per line)'
 yaml\t'YAML'"
-complete -c spt -n "__fish_spt_using_subcommand sftp; and not __fish_seen_subcommand_from test list stat get put mkdir rm rmdir rename mount drive help" -l log-level -d 'Tracing log level' -r -f -a "error\t'Only errors'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and not __fish_seen_subcommand_from test list stat get put mkdir rm rmdir rename cat tail chmod symlink readlink realpath put-recursive get-recursive mount drive umount help" -l log-level -d 'Tracing log level' -r -f -a "error\t'Only errors'
 warn\t'Warnings and above'
 info\t'Informational and above (default)'
 debug\t'Debug and above'
 trace\t'Trace and above (very verbose)'"
-complete -c spt -n "__fish_spt_using_subcommand sftp; and not __fish_seen_subcommand_from test list stat get put mkdir rm rmdir rename mount drive help" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and not __fish_seen_subcommand_from test list stat get put mkdir rm rmdir rename cat tail chmod symlink readlink realpath put-recursive get-recursive mount drive umount help" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
-complete -c spt -n "__fish_spt_using_subcommand sftp; and not __fish_seen_subcommand_from test list stat get put mkdir rm rmdir rename mount drive help" -l json -d 'Convenience alias for `--output json`'
-complete -c spt -n "__fish_spt_using_subcommand sftp; and not __fish_seen_subcommand_from test list stat get put mkdir rm rmdir rename mount drive help" -s q -l quiet -d 'Suppress non-essential output'
-complete -c spt -n "__fish_spt_using_subcommand sftp; and not __fish_seen_subcommand_from test list stat get put mkdir rm rmdir rename mount drive help" -s v -l verbose -d 'Increase verbosity (repeat for more)'
-complete -c spt -n "__fish_spt_using_subcommand sftp; and not __fish_seen_subcommand_from test list stat get put mkdir rm rmdir rename mount drive help" -l no-color -d 'Disable color (legacy convenience flag; use `--color never`)'
-complete -c spt -n "__fish_spt_using_subcommand sftp; and not __fish_seen_subcommand_from test list stat get put mkdir rm rmdir rename mount drive help" -l dry-run -d 'Show what would happen without making changes'
-complete -c spt -n "__fish_spt_using_subcommand sftp; and not __fish_seen_subcommand_from test list stat get put mkdir rm rmdir rename mount drive help" -s h -l help -d 'Print help (see more with \'--help\')'
-complete -c spt -n "__fish_spt_using_subcommand sftp; and not __fish_seen_subcommand_from test list stat get put mkdir rm rmdir rename mount drive help" -s V -l version -d 'Print version'
-complete -c spt -n "__fish_spt_using_subcommand sftp; and not __fish_seen_subcommand_from test list stat get put mkdir rm rmdir rename mount drive help" -f -a "test" -d 'Connect to the profile and open the SFTP subsystem'
-complete -c spt -n "__fish_spt_using_subcommand sftp; and not __fish_seen_subcommand_from test list stat get put mkdir rm rmdir rename mount drive help" -f -a "list" -d 'List a remote directory'
-complete -c spt -n "__fish_spt_using_subcommand sftp; and not __fish_seen_subcommand_from test list stat get put mkdir rm rmdir rename mount drive help" -f -a "stat" -d 'Show metadata for a remote path'
-complete -c spt -n "__fish_spt_using_subcommand sftp; and not __fish_seen_subcommand_from test list stat get put mkdir rm rmdir rename mount drive help" -f -a "get" -d 'Download a remote file'
-complete -c spt -n "__fish_spt_using_subcommand sftp; and not __fish_seen_subcommand_from test list stat get put mkdir rm rmdir rename mount drive help" -f -a "put" -d 'Upload a local file'
-complete -c spt -n "__fish_spt_using_subcommand sftp; and not __fish_seen_subcommand_from test list stat get put mkdir rm rmdir rename mount drive help" -f -a "mkdir" -d 'Create a remote directory'
-complete -c spt -n "__fish_spt_using_subcommand sftp; and not __fish_seen_subcommand_from test list stat get put mkdir rm rmdir rename mount drive help" -f -a "rm" -d 'Remove a remote file'
-complete -c spt -n "__fish_spt_using_subcommand sftp; and not __fish_seen_subcommand_from test list stat get put mkdir rm rmdir rename mount drive help" -f -a "rmdir" -d 'Remove a remote directory'
-complete -c spt -n "__fish_spt_using_subcommand sftp; and not __fish_seen_subcommand_from test list stat get put mkdir rm rmdir rename mount drive help" -f -a "rename" -d 'Rename a remote file or directory'
-complete -c spt -n "__fish_spt_using_subcommand sftp; and not __fish_seen_subcommand_from test list stat get put mkdir rm rmdir rename mount drive help" -f -a "mount" -d 'Manage SFTP-backed filesystem mount entries'
-complete -c spt -n "__fish_spt_using_subcommand sftp; and not __fish_seen_subcommand_from test list stat get put mkdir rm rmdir rename mount drive help" -f -a "drive" -d 'Manage SFTP-backed Windows drive entries'
-complete -c spt -n "__fish_spt_using_subcommand sftp; and not __fish_seen_subcommand_from test list stat get put mkdir rm rmdir rename mount drive help" -f -a "help" -d 'Print this message or the help of the given subcommand(s)'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and not __fish_seen_subcommand_from test list stat get put mkdir rm rmdir rename cat tail chmod symlink readlink realpath put-recursive get-recursive mount drive umount help" -l json -d 'Convenience alias for `--output json`'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and not __fish_seen_subcommand_from test list stat get put mkdir rm rmdir rename cat tail chmod symlink readlink realpath put-recursive get-recursive mount drive umount help" -s q -l quiet -d 'Suppress non-essential output'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and not __fish_seen_subcommand_from test list stat get put mkdir rm rmdir rename cat tail chmod symlink readlink realpath put-recursive get-recursive mount drive umount help" -s v -l verbose -d 'Increase verbosity (repeat for more)'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and not __fish_seen_subcommand_from test list stat get put mkdir rm rmdir rename cat tail chmod symlink readlink realpath put-recursive get-recursive mount drive umount help" -l no-color -d 'Disable color (legacy convenience flag; use `--color never`)'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and not __fish_seen_subcommand_from test list stat get put mkdir rm rmdir rename cat tail chmod symlink readlink realpath put-recursive get-recursive mount drive umount help" -l dry-run -d 'Show what would happen without making changes'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and not __fish_seen_subcommand_from test list stat get put mkdir rm rmdir rename cat tail chmod symlink readlink realpath put-recursive get-recursive mount drive umount help" -s h -l help -d 'Print help (see more with \'--help\')'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and not __fish_seen_subcommand_from test list stat get put mkdir rm rmdir rename cat tail chmod symlink readlink realpath put-recursive get-recursive mount drive umount help" -s V -l version -d 'Print version'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and not __fish_seen_subcommand_from test list stat get put mkdir rm rmdir rename cat tail chmod symlink readlink realpath put-recursive get-recursive mount drive umount help" -f -a "test" -d 'Connect to the profile and open the SFTP subsystem'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and not __fish_seen_subcommand_from test list stat get put mkdir rm rmdir rename cat tail chmod symlink readlink realpath put-recursive get-recursive mount drive umount help" -f -a "list" -d 'List a remote directory'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and not __fish_seen_subcommand_from test list stat get put mkdir rm rmdir rename cat tail chmod symlink readlink realpath put-recursive get-recursive mount drive umount help" -f -a "stat" -d 'Show metadata for a remote path'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and not __fish_seen_subcommand_from test list stat get put mkdir rm rmdir rename cat tail chmod symlink readlink realpath put-recursive get-recursive mount drive umount help" -f -a "get" -d 'Download a remote file'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and not __fish_seen_subcommand_from test list stat get put mkdir rm rmdir rename cat tail chmod symlink readlink realpath put-recursive get-recursive mount drive umount help" -f -a "put" -d 'Upload a local file'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and not __fish_seen_subcommand_from test list stat get put mkdir rm rmdir rename cat tail chmod symlink readlink realpath put-recursive get-recursive mount drive umount help" -f -a "mkdir" -d 'Create a remote directory'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and not __fish_seen_subcommand_from test list stat get put mkdir rm rmdir rename cat tail chmod symlink readlink realpath put-recursive get-recursive mount drive umount help" -f -a "rm" -d 'Remove a remote file'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and not __fish_seen_subcommand_from test list stat get put mkdir rm rmdir rename cat tail chmod symlink readlink realpath put-recursive get-recursive mount drive umount help" -f -a "rmdir" -d 'Remove a remote directory'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and not __fish_seen_subcommand_from test list stat get put mkdir rm rmdir rename cat tail chmod symlink readlink realpath put-recursive get-recursive mount drive umount help" -f -a "rename" -d 'Rename a remote file or directory'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and not __fish_seen_subcommand_from test list stat get put mkdir rm rmdir rename cat tail chmod symlink readlink realpath put-recursive get-recursive mount drive umount help" -f -a "cat" -d 'Print a remote file (with a size cap)'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and not __fish_seen_subcommand_from test list stat get put mkdir rm rmdir rename cat tail chmod symlink readlink realpath put-recursive get-recursive mount drive umount help" -f -a "tail" -d 'Print the trailing bytes of a remote file'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and not __fish_seen_subcommand_from test list stat get put mkdir rm rmdir rename cat tail chmod symlink readlink realpath put-recursive get-recursive mount drive umount help" -f -a "chmod" -d 'Change POSIX permissions on a remote path'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and not __fish_seen_subcommand_from test list stat get put mkdir rm rmdir rename cat tail chmod symlink readlink realpath put-recursive get-recursive mount drive umount help" -f -a "symlink" -d 'Create a remote symbolic link'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and not __fish_seen_subcommand_from test list stat get put mkdir rm rmdir rename cat tail chmod symlink readlink realpath put-recursive get-recursive mount drive umount help" -f -a "readlink" -d 'Read the target of a remote symbolic link'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and not __fish_seen_subcommand_from test list stat get put mkdir rm rmdir rename cat tail chmod symlink readlink realpath put-recursive get-recursive mount drive umount help" -f -a "realpath" -d 'Canonicalise a remote path'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and not __fish_seen_subcommand_from test list stat get put mkdir rm rmdir rename cat tail chmod symlink readlink realpath put-recursive get-recursive mount drive umount help" -f -a "put-recursive" -d 'Mirror a local directory tree onto the server (recursive `put`)'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and not __fish_seen_subcommand_from test list stat get put mkdir rm rmdir rename cat tail chmod symlink readlink realpath put-recursive get-recursive mount drive umount help" -f -a "get-recursive" -d 'Mirror a remote directory tree onto the local filesystem (recursive `get`)'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and not __fish_seen_subcommand_from test list stat get put mkdir rm rmdir rename cat tail chmod symlink readlink realpath put-recursive get-recursive mount drive umount help" -f -a "mount" -d 'Manage SFTP-backed filesystem mount entries'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and not __fish_seen_subcommand_from test list stat get put mkdir rm rmdir rename cat tail chmod symlink readlink realpath put-recursive get-recursive mount drive umount help" -f -a "drive" -d 'Manage SFTP-backed Windows drive entries'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and not __fish_seen_subcommand_from test list stat get put mkdir rm rmdir rename cat tail chmod symlink readlink realpath put-recursive get-recursive mount drive umount help" -f -a "umount" -d 'Tear down an SFTP-backed filesystem mount (shorthand for `spt sftp mount stop`)'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and not __fish_seen_subcommand_from test list stat get put mkdir rm rmdir rename cat tail chmod symlink readlink realpath put-recursive get-recursive mount drive umount help" -f -a "help" -d 'Print this message or the help of the given subcommand(s)'
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from test" -l profile -d 'Profile name' -r
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from test" -l config -d 'Path to a single config file' -r -F
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from test" -l config-dir -d 'Path to a directory of `*.toml` configs (loaded in lexical order)' -r -F
@@ -3532,6 +3542,220 @@ complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from rename" -l dry-run -d 'Show what would happen without making changes'
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from rename" -s h -l help -d 'Print help (see more with \'--help\')'
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from rename" -s V -l version -d 'Print version'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from cat" -l profile -d 'Profile name' -r
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from cat" -l size-cap -d 'Maximum number of bytes to read; defaults to 4 MiB' -r
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from cat" -l config -d 'Path to a single config file' -r -F
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from cat" -l config-dir -d 'Path to a directory of `*.toml` configs (loaded in lexical order)' -r -F
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from cat" -l config-url -d 'HTTPS URL of a remote config to fetch' -r
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from cat" -l config-fingerprint -d 'SHA-256 fingerprint pin for `--config-url`' -r
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from cat" -l state-dir -d 'Override the runtime state directory' -r -F
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from cat" -l output -d 'Output format for command results' -r -f -a "human\t'Human-readable text (default)'
+json\t'Structured JSON'
+jsonl\t'JSON Lines (one record per line)'
+yaml\t'YAML'"
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from cat" -l log-level -d 'Tracing log level' -r -f -a "error\t'Only errors'
+warn\t'Warnings and above'
+info\t'Informational and above (default)'
+debug\t'Debug and above'
+trace\t'Trace and above (very verbose)'"
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from cat" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
+always\t'Always emit color escapes'
+never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from cat" -l json -d 'Convenience alias for `--output json`'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from cat" -s q -l quiet -d 'Suppress non-essential output'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from cat" -s v -l verbose -d 'Increase verbosity (repeat for more)'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from cat" -l no-color -d 'Disable color (legacy convenience flag; use `--color never`)'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from cat" -l dry-run -d 'Show what would happen without making changes'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from cat" -s h -l help -d 'Print help (see more with \'--help\')'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from cat" -s V -l version -d 'Print version'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from tail" -l profile -d 'Profile name' -r
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from tail" -l bytes -d 'Number of trailing bytes to print; defaults to 4 KiB' -r
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from tail" -l config -d 'Path to a single config file' -r -F
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from tail" -l config-dir -d 'Path to a directory of `*.toml` configs (loaded in lexical order)' -r -F
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from tail" -l config-url -d 'HTTPS URL of a remote config to fetch' -r
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from tail" -l config-fingerprint -d 'SHA-256 fingerprint pin for `--config-url`' -r
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from tail" -l state-dir -d 'Override the runtime state directory' -r -F
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from tail" -l output -d 'Output format for command results' -r -f -a "human\t'Human-readable text (default)'
+json\t'Structured JSON'
+jsonl\t'JSON Lines (one record per line)'
+yaml\t'YAML'"
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from tail" -l log-level -d 'Tracing log level' -r -f -a "error\t'Only errors'
+warn\t'Warnings and above'
+info\t'Informational and above (default)'
+debug\t'Debug and above'
+trace\t'Trace and above (very verbose)'"
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from tail" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
+always\t'Always emit color escapes'
+never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from tail" -l json -d 'Convenience alias for `--output json`'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from tail" -s q -l quiet -d 'Suppress non-essential output'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from tail" -s v -l verbose -d 'Increase verbosity (repeat for more)'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from tail" -l no-color -d 'Disable color (legacy convenience flag; use `--color never`)'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from tail" -l dry-run -d 'Show what would happen without making changes'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from tail" -s h -l help -d 'Print help (see more with \'--help\')'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from tail" -s V -l version -d 'Print version'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from chmod" -l profile -d 'Profile name' -r
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from chmod" -l mode -d 'Octal mode, for example `0640`' -r
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from chmod" -l config -d 'Path to a single config file' -r -F
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from chmod" -l config-dir -d 'Path to a directory of `*.toml` configs (loaded in lexical order)' -r -F
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from chmod" -l config-url -d 'HTTPS URL of a remote config to fetch' -r
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from chmod" -l config-fingerprint -d 'SHA-256 fingerprint pin for `--config-url`' -r
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from chmod" -l state-dir -d 'Override the runtime state directory' -r -F
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from chmod" -l output -d 'Output format for command results' -r -f -a "human\t'Human-readable text (default)'
+json\t'Structured JSON'
+jsonl\t'JSON Lines (one record per line)'
+yaml\t'YAML'"
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from chmod" -l log-level -d 'Tracing log level' -r -f -a "error\t'Only errors'
+warn\t'Warnings and above'
+info\t'Informational and above (default)'
+debug\t'Debug and above'
+trace\t'Trace and above (very verbose)'"
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from chmod" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
+always\t'Always emit color escapes'
+never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from chmod" -l json -d 'Convenience alias for `--output json`'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from chmod" -s q -l quiet -d 'Suppress non-essential output'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from chmod" -s v -l verbose -d 'Increase verbosity (repeat for more)'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from chmod" -l no-color -d 'Disable color (legacy convenience flag; use `--color never`)'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from chmod" -l dry-run -d 'Show what would happen without making changes'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from chmod" -s h -l help -d 'Print help (see more with \'--help\')'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from chmod" -s V -l version -d 'Print version'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from symlink" -l profile -d 'Profile name' -r
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from symlink" -l target -d 'Target path the link should point to' -r
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from symlink" -l config -d 'Path to a single config file' -r -F
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from symlink" -l config-dir -d 'Path to a directory of `*.toml` configs (loaded in lexical order)' -r -F
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from symlink" -l config-url -d 'HTTPS URL of a remote config to fetch' -r
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from symlink" -l config-fingerprint -d 'SHA-256 fingerprint pin for `--config-url`' -r
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from symlink" -l state-dir -d 'Override the runtime state directory' -r -F
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from symlink" -l output -d 'Output format for command results' -r -f -a "human\t'Human-readable text (default)'
+json\t'Structured JSON'
+jsonl\t'JSON Lines (one record per line)'
+yaml\t'YAML'"
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from symlink" -l log-level -d 'Tracing log level' -r -f -a "error\t'Only errors'
+warn\t'Warnings and above'
+info\t'Informational and above (default)'
+debug\t'Debug and above'
+trace\t'Trace and above (very verbose)'"
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from symlink" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
+always\t'Always emit color escapes'
+never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from symlink" -l json -d 'Convenience alias for `--output json`'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from symlink" -s q -l quiet -d 'Suppress non-essential output'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from symlink" -s v -l verbose -d 'Increase verbosity (repeat for more)'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from symlink" -l no-color -d 'Disable color (legacy convenience flag; use `--color never`)'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from symlink" -l dry-run -d 'Show what would happen without making changes'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from symlink" -s h -l help -d 'Print help (see more with \'--help\')'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from symlink" -s V -l version -d 'Print version'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from readlink" -l profile -d 'Profile name' -r
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from readlink" -l config -d 'Path to a single config file' -r -F
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from readlink" -l config-dir -d 'Path to a directory of `*.toml` configs (loaded in lexical order)' -r -F
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from readlink" -l config-url -d 'HTTPS URL of a remote config to fetch' -r
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from readlink" -l config-fingerprint -d 'SHA-256 fingerprint pin for `--config-url`' -r
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from readlink" -l state-dir -d 'Override the runtime state directory' -r -F
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from readlink" -l output -d 'Output format for command results' -r -f -a "human\t'Human-readable text (default)'
+json\t'Structured JSON'
+jsonl\t'JSON Lines (one record per line)'
+yaml\t'YAML'"
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from readlink" -l log-level -d 'Tracing log level' -r -f -a "error\t'Only errors'
+warn\t'Warnings and above'
+info\t'Informational and above (default)'
+debug\t'Debug and above'
+trace\t'Trace and above (very verbose)'"
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from readlink" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
+always\t'Always emit color escapes'
+never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from readlink" -l json -d 'JSON output'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from readlink" -s q -l quiet -d 'Suppress non-essential output'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from readlink" -s v -l verbose -d 'Increase verbosity (repeat for more)'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from readlink" -l no-color -d 'Disable color (legacy convenience flag; use `--color never`)'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from readlink" -l dry-run -d 'Show what would happen without making changes'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from readlink" -s h -l help -d 'Print help (see more with \'--help\')'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from readlink" -s V -l version -d 'Print version'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from realpath" -l profile -d 'Profile name' -r
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from realpath" -l config -d 'Path to a single config file' -r -F
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from realpath" -l config-dir -d 'Path to a directory of `*.toml` configs (loaded in lexical order)' -r -F
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from realpath" -l config-url -d 'HTTPS URL of a remote config to fetch' -r
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from realpath" -l config-fingerprint -d 'SHA-256 fingerprint pin for `--config-url`' -r
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from realpath" -l state-dir -d 'Override the runtime state directory' -r -F
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from realpath" -l output -d 'Output format for command results' -r -f -a "human\t'Human-readable text (default)'
+json\t'Structured JSON'
+jsonl\t'JSON Lines (one record per line)'
+yaml\t'YAML'"
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from realpath" -l log-level -d 'Tracing log level' -r -f -a "error\t'Only errors'
+warn\t'Warnings and above'
+info\t'Informational and above (default)'
+debug\t'Debug and above'
+trace\t'Trace and above (very verbose)'"
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from realpath" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
+always\t'Always emit color escapes'
+never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from realpath" -l json -d 'JSON output'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from realpath" -s q -l quiet -d 'Suppress non-essential output'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from realpath" -s v -l verbose -d 'Increase verbosity (repeat for more)'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from realpath" -l no-color -d 'Disable color (legacy convenience flag; use `--color never`)'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from realpath" -l dry-run -d 'Show what would happen without making changes'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from realpath" -s h -l help -d 'Print help (see more with \'--help\')'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from realpath" -s V -l version -d 'Print version'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from put-recursive" -l profile -d 'Profile name' -r
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from put-recursive" -l bps -d 'Bandwidth cap, e.g. `5MiB` (parsed via `bytesize`); `0` disables' -r
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from put-recursive" -l checksum -d 'Post-transfer integrity check' -r -f -a "none\t'No post-transfer verification'
+sha256\t'SHA-256 each file on both ends'"
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from put-recursive" -l config -d 'Path to a single config file' -r -F
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from put-recursive" -l config-dir -d 'Path to a directory of `*.toml` configs (loaded in lexical order)' -r -F
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from put-recursive" -l config-url -d 'HTTPS URL of a remote config to fetch' -r
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from put-recursive" -l config-fingerprint -d 'SHA-256 fingerprint pin for `--config-url`' -r
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from put-recursive" -l state-dir -d 'Override the runtime state directory' -r -F
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from put-recursive" -l output -d 'Output format for command results' -r -f -a "human\t'Human-readable text (default)'
+json\t'Structured JSON'
+jsonl\t'JSON Lines (one record per line)'
+yaml\t'YAML'"
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from put-recursive" -l log-level -d 'Tracing log level' -r -f -a "error\t'Only errors'
+warn\t'Warnings and above'
+info\t'Informational and above (default)'
+debug\t'Debug and above'
+trace\t'Trace and above (very verbose)'"
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from put-recursive" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
+always\t'Always emit color escapes'
+never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from put-recursive" -l resume -d 'Resume mode: seek into existing target files instead of truncating'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from put-recursive" -l follow-symlinks -d 'Follow symbolic links during the walk (loops are still detected)'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from put-recursive" -l json -d 'Convenience alias for `--output json`'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from put-recursive" -s q -l quiet -d 'Suppress non-essential output'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from put-recursive" -s v -l verbose -d 'Increase verbosity (repeat for more)'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from put-recursive" -l no-color -d 'Disable color (legacy convenience flag; use `--color never`)'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from put-recursive" -l dry-run -d 'Show what would happen without making changes'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from put-recursive" -s h -l help -d 'Print help (see more with \'--help\')'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from put-recursive" -s V -l version -d 'Print version'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from get-recursive" -l profile -d 'Profile name' -r
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from get-recursive" -l bps -d 'Bandwidth cap, e.g. `5MiB` (parsed via `bytesize`); `0` disables' -r
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from get-recursive" -l checksum -d 'Post-transfer integrity check' -r -f -a "none\t'No post-transfer verification'
+sha256\t'SHA-256 each file on both ends'"
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from get-recursive" -l config -d 'Path to a single config file' -r -F
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from get-recursive" -l config-dir -d 'Path to a directory of `*.toml` configs (loaded in lexical order)' -r -F
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from get-recursive" -l config-url -d 'HTTPS URL of a remote config to fetch' -r
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from get-recursive" -l config-fingerprint -d 'SHA-256 fingerprint pin for `--config-url`' -r
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from get-recursive" -l state-dir -d 'Override the runtime state directory' -r -F
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from get-recursive" -l output -d 'Output format for command results' -r -f -a "human\t'Human-readable text (default)'
+json\t'Structured JSON'
+jsonl\t'JSON Lines (one record per line)'
+yaml\t'YAML'"
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from get-recursive" -l log-level -d 'Tracing log level' -r -f -a "error\t'Only errors'
+warn\t'Warnings and above'
+info\t'Informational and above (default)'
+debug\t'Debug and above'
+trace\t'Trace and above (very verbose)'"
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from get-recursive" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
+always\t'Always emit color escapes'
+never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from get-recursive" -l resume -d 'Resume mode: seek into existing target files instead of truncating'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from get-recursive" -l follow-symlinks -d 'Follow symbolic links during the walk (loops are still detected)'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from get-recursive" -l json -d 'Convenience alias for `--output json`'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from get-recursive" -s q -l quiet -d 'Suppress non-essential output'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from get-recursive" -s v -l verbose -d 'Increase verbosity (repeat for more)'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from get-recursive" -l no-color -d 'Disable color (legacy convenience flag; use `--color never`)'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from get-recursive" -l dry-run -d 'Show what would happen without making changes'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from get-recursive" -s h -l help -d 'Print help (see more with \'--help\')'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from get-recursive" -s V -l version -d 'Print version'
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from mount" -l config -d 'Path to a single config file' -r -F
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from mount" -l config-dir -d 'Path to a directory of `*.toml` configs (loaded in lexical order)' -r -F
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from mount" -l config-url -d 'HTTPS URL of a remote config to fetch' -r
@@ -3561,6 +3785,8 @@ complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from mount" -f -a "add" -d 'Add a filesystem mount entry to the config'
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from mount" -f -a "remove" -d 'Remove a filesystem mount entry from the config'
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from mount" -f -a "plan" -d 'Render the platform plan for a configured or proposed mount'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from mount" -f -a "start" -d 'Start an SFTP-backed filesystem mount'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from mount" -f -a "stop" -d 'Tear down an SFTP-backed filesystem mount'
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from mount" -f -a "help" -d 'Print this message or the help of the given subcommand(s)'
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from drive" -l config -d 'Path to a single config file' -r -F
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from drive" -l config-dir -d 'Path to a directory of `*.toml` configs (loaded in lexical order)' -r -F
@@ -3592,6 +3818,31 @@ complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from drive" -f -a "remove" -d 'Remove a Windows drive mount entry from the config'
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from drive" -f -a "plan" -d 'Render the platform plan for a configured or proposed drive mount'
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from drive" -f -a "help" -d 'Print this message or the help of the given subcommand(s)'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from umount" -l config -d 'Path to a single config file' -r -F
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from umount" -l config-dir -d 'Path to a directory of `*.toml` configs (loaded in lexical order)' -r -F
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from umount" -l config-url -d 'HTTPS URL of a remote config to fetch' -r
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from umount" -l config-fingerprint -d 'SHA-256 fingerprint pin for `--config-url`' -r
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from umount" -l state-dir -d 'Override the runtime state directory' -r -F
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from umount" -l profile -d 'Restrict operations to the named profile' -r
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from umount" -l output -d 'Output format for command results' -r -f -a "human\t'Human-readable text (default)'
+json\t'Structured JSON'
+jsonl\t'JSON Lines (one record per line)'
+yaml\t'YAML'"
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from umount" -l log-level -d 'Tracing log level' -r -f -a "error\t'Only errors'
+warn\t'Warnings and above'
+info\t'Informational and above (default)'
+debug\t'Debug and above'
+trace\t'Trace and above (very verbose)'"
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from umount" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
+always\t'Always emit color escapes'
+never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from umount" -l json -d 'JSON output'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from umount" -s q -l quiet -d 'Suppress non-essential output'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from umount" -s v -l verbose -d 'Increase verbosity (repeat for more)'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from umount" -l no-color -d 'Disable color (legacy convenience flag; use `--color never`)'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from umount" -l dry-run -d 'Show what would happen without making changes'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from umount" -s h -l help -d 'Print help (see more with \'--help\')'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from umount" -s V -l version -d 'Print version'
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from help" -f -a "test" -d 'Connect to the profile and open the SFTP subsystem'
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from help" -f -a "list" -d 'List a remote directory'
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from help" -f -a "stat" -d 'Show metadata for a remote path'
@@ -3601,8 +3852,17 @@ complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from help" -f -a "rm" -d 'Remove a remote file'
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from help" -f -a "rmdir" -d 'Remove a remote directory'
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from help" -f -a "rename" -d 'Rename a remote file or directory'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from help" -f -a "cat" -d 'Print a remote file (with a size cap)'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from help" -f -a "tail" -d 'Print the trailing bytes of a remote file'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from help" -f -a "chmod" -d 'Change POSIX permissions on a remote path'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from help" -f -a "symlink" -d 'Create a remote symbolic link'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from help" -f -a "readlink" -d 'Read the target of a remote symbolic link'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from help" -f -a "realpath" -d 'Canonicalise a remote path'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from help" -f -a "put-recursive" -d 'Mirror a local directory tree onto the server (recursive `put`)'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from help" -f -a "get-recursive" -d 'Mirror a remote directory tree onto the local filesystem (recursive `get`)'
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from help" -f -a "mount" -d 'Manage SFTP-backed filesystem mount entries'
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from help" -f -a "drive" -d 'Manage SFTP-backed Windows drive entries'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from help" -f -a "umount" -d 'Tear down an SFTP-backed filesystem mount (shorthand for `spt sftp mount stop`)'
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from help" -f -a "help" -d 'Print this message or the help of the given subcommand(s)'
 complete -c spt -n "__fish_spt_using_subcommand diagnose; and not __fish_seen_subcommand_from run network auth trust dns bind port service secrets observability mcp bundle help" -l config -d 'Path to a single config file' -r -F
 complete -c spt -n "__fish_spt_using_subcommand diagnose; and not __fish_seen_subcommand_from run network auth trust dns bind port service secrets observability mcp bundle help" -l config-dir -d 'Path to a directory of `*.toml` configs (loaded in lexical order)' -r -F
@@ -4645,8 +4905,17 @@ complete -c spt -n "__fish_spt_using_subcommand help; and __fish_seen_subcommand
 complete -c spt -n "__fish_spt_using_subcommand help; and __fish_seen_subcommand_from sftp" -f -a "rm" -d 'Remove a remote file'
 complete -c spt -n "__fish_spt_using_subcommand help; and __fish_seen_subcommand_from sftp" -f -a "rmdir" -d 'Remove a remote directory'
 complete -c spt -n "__fish_spt_using_subcommand help; and __fish_seen_subcommand_from sftp" -f -a "rename" -d 'Rename a remote file or directory'
+complete -c spt -n "__fish_spt_using_subcommand help; and __fish_seen_subcommand_from sftp" -f -a "cat" -d 'Print a remote file (with a size cap)'
+complete -c spt -n "__fish_spt_using_subcommand help; and __fish_seen_subcommand_from sftp" -f -a "tail" -d 'Print the trailing bytes of a remote file'
+complete -c spt -n "__fish_spt_using_subcommand help; and __fish_seen_subcommand_from sftp" -f -a "chmod" -d 'Change POSIX permissions on a remote path'
+complete -c spt -n "__fish_spt_using_subcommand help; and __fish_seen_subcommand_from sftp" -f -a "symlink" -d 'Create a remote symbolic link'
+complete -c spt -n "__fish_spt_using_subcommand help; and __fish_seen_subcommand_from sftp" -f -a "readlink" -d 'Read the target of a remote symbolic link'
+complete -c spt -n "__fish_spt_using_subcommand help; and __fish_seen_subcommand_from sftp" -f -a "realpath" -d 'Canonicalise a remote path'
+complete -c spt -n "__fish_spt_using_subcommand help; and __fish_seen_subcommand_from sftp" -f -a "put-recursive" -d 'Mirror a local directory tree onto the server (recursive `put`)'
+complete -c spt -n "__fish_spt_using_subcommand help; and __fish_seen_subcommand_from sftp" -f -a "get-recursive" -d 'Mirror a remote directory tree onto the local filesystem (recursive `get`)'
 complete -c spt -n "__fish_spt_using_subcommand help; and __fish_seen_subcommand_from sftp" -f -a "mount" -d 'Manage SFTP-backed filesystem mount entries'
 complete -c spt -n "__fish_spt_using_subcommand help; and __fish_seen_subcommand_from sftp" -f -a "drive" -d 'Manage SFTP-backed Windows drive entries'
+complete -c spt -n "__fish_spt_using_subcommand help; and __fish_seen_subcommand_from sftp" -f -a "umount" -d 'Tear down an SFTP-backed filesystem mount (shorthand for `spt sftp mount stop`)'
 complete -c spt -n "__fish_spt_using_subcommand help; and __fish_seen_subcommand_from diagnose" -f -a "run" -d 'Run a battery of diagnostic checks'
 complete -c spt -n "__fish_spt_using_subcommand help; and __fish_seen_subcommand_from diagnose" -f -a "network" -d 'Network checks'
 complete -c spt -n "__fish_spt_using_subcommand help; and __fish_seen_subcommand_from diagnose" -f -a "auth" -d 'Authentication checks for a profile'
