@@ -57,7 +57,7 @@ exclude = ["fuzz", "tests/property", "tests/openssh-interop"]
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.83"
+rust-version = "1.85"
 license = "MIT"
 repository = "https://github.com/Mariana/ssh-perma-tunnel"
 homepage = "https://github.com/Mariana/ssh-perma-tunnel"
