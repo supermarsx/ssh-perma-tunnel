@@ -106,12 +106,44 @@ where
                 .await
                 .map_err(|e| from_async_ssh("userauth_keyboard_interactive", e))
         }
-        AuthMethod::Gssapi { .. } | AuthMethod::Sspi { .. } => Err(Error::UnsupportedPlatform(
-            format!(
-                "auth method `{}` is configured, but SSH2 GSSAPI/Kerberos/SSPI auth is not implemented by the active backend yet",
-                method_name(method)
-            ),
-        )),
+        AuthMethod::Gssapi {
+            service,
+            principal,
+            delegate,
+        } => {
+            // Build the GSS provider to surface config-shape errors early
+            // (principal validity, NTLM-on-Unix, etc.). The libssh2 backend
+            // does NOT wire `gssapi-with-mic` (RFC 4462) — that path is the
+            // russh backend's responsibility. We construct the provider here
+            // so the dispatch is observable in logs, then return the
+            // documented `UnsupportedBackend` marker for libssh2.
+            let cfg = spt_auth_sspi::GssApiConfig {
+                service: service.clone(),
+                principal: principal.clone(),
+                delegate: *delegate,
+            };
+            let _ = spt_auth_sspi::provider_for(&cfg); // result ignored; libssh2 can't drive it
+            Err(spt_auth_sspi::unsupported_backend(
+                "libssh2 backend does not support gssapi-with-mic (RFC 4462); use russh backend",
+            ))
+        }
+        AuthMethod::Sspi {
+            service,
+            principal,
+            delegate,
+            allow_ntlm_fallback,
+        } => {
+            let cfg = spt_auth_sspi::SspiConfig {
+                service: service.clone(),
+                principal: principal.clone(),
+                delegate: *delegate,
+                allow_ntlm_fallback: *allow_ntlm_fallback,
+            };
+            let _ = spt_auth_sspi::sspi_provider_for(&cfg);
+            Err(spt_auth_sspi::unsupported_backend(
+                "libssh2 backend does not support sspi/gssapi-with-mic (RFC 4462); use russh backend",
+            ))
+        }
         AuthMethod::Bearer { .. }
         | AuthMethod::Basic { .. }
         | AuthMethod::OidcDeviceFlow { .. } => Err(Error::InvalidConfig(format!(
