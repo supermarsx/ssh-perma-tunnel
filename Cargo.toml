@@ -8,6 +8,7 @@ members = [
     "crates/spt-protocol",
     "crates/spt-ssh2",
     "crates/spt-ssh3",
+    "crates/spt-sftp",
     "crates/spt-forward",
     "crates/spt-supervisor",
     "crates/spt-state",
@@ -65,6 +66,7 @@ spt-secrets = { path = "crates/spt-secrets", version = "0.1.0" }
 spt-protocol = { path = "crates/spt-protocol", version = "0.1.0" }
 spt-ssh2 = { path = "crates/spt-ssh2", version = "0.1.0" }
 spt-ssh3 = { path = "crates/spt-ssh3", version = "0.1.0" }
+spt-sftp = { path = "crates/spt-sftp", version = "0.1.0" }
 spt-forward = { path = "crates/spt-forward", version = "0.1.0" }
 spt-supervisor = { path = "crates/spt-supervisor", version = "0.1.0" }
 spt-state = { path = "crates/spt-state", version = "0.1.0" }

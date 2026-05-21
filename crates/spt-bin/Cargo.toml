@@ -49,6 +49,7 @@ spt-forward = { workspace = true }
 spt-supervisor = { workspace = true }
 spt-ssh2 = { workspace = true }
 spt-ssh3 = { workspace = true }
+spt-sftp = { workspace = true }
 spt-dns = { workspace = true }
 spt-firewall = { workspace = true }
 spt-service = { workspace = true }

@@ -9,6 +9,14 @@ const EXAMPLES: &str = "EXAMPLES:
   spt sftp list --profile edge /var/log --json
   spt sftp get --profile edge /etc/app/config.toml --out ./config.toml
   spt sftp put --profile edge ./build.tar.gz /tmp/build.tar.gz
+  spt sftp cat --profile edge /etc/hostname
+  spt sftp tail --profile edge /var/log/app.log --bytes 4096
+  spt sftp chmod --profile edge --mode 0640 /tmp/build.tar.gz
+  spt sftp symlink --profile edge --target /opt/app/current /opt/app/live
+  spt sftp readlink --profile edge /opt/app/live
+  spt sftp realpath --profile edge ./reports
+  spt sftp put-recursive --profile edge ./dist /srv/app --bps 5MiB --checksum sha256
+  spt sftp get-recursive --profile edge /srv/app ./mirror --resume
   spt sftp mount add --profile edge --name data --remote /srv/data --mount-point /mnt/spt-data
   spt sftp drive add --profile edge --name data --remote /srv/data --letter S:";
 
@@ -42,6 +50,22 @@ pub enum SftpSub {
     Rmdir(SftpPathArgs),
     /// Rename a remote file or directory.
     Rename(SftpRenameArgs),
+    /// Print a remote file (with a size cap).
+    Cat(SftpCatArgs),
+    /// Print the trailing bytes of a remote file.
+    Tail(SftpTailArgs),
+    /// Change POSIX permissions on a remote path.
+    Chmod(SftpChmodArgs),
+    /// Create a remote symbolic link.
+    Symlink(SftpSymlinkArgs),
+    /// Read the target of a remote symbolic link.
+    Readlink(SftpPathArgs),
+    /// Canonicalise a remote path.
+    Realpath(SftpPathArgs),
+    /// Mirror a local directory tree onto the server (recursive `put`).
+    PutRecursive(SftpRecursiveArgs),
+    /// Mirror a remote directory tree onto the local filesystem (recursive `get`).
+    GetRecursive(SftpRecursiveArgs),
     /// Manage SFTP-backed filesystem mount entries.
     Mount(SftpMountCmd),
     /// Manage SFTP-backed Windows drive entries.
@@ -263,6 +287,93 @@ pub struct SftpMountPlanArgs {
     /// JSON output.
     #[arg(long)]
     pub json: bool,
+}
+
+/// `spt sftp cat`.
+#[derive(Args, Debug)]
+pub struct SftpCatArgs {
+    /// Profile name.
+    #[arg(long)]
+    pub profile: String,
+    /// Remote file path.
+    pub path: String,
+    /// Maximum number of bytes to read; defaults to 4 MiB.
+    #[arg(long, value_name = "BYTES", default_value_t = 4 * 1024 * 1024)]
+    pub size_cap: u64,
+}
+
+/// `spt sftp tail`.
+#[derive(Args, Debug)]
+pub struct SftpTailArgs {
+    /// Profile name.
+    #[arg(long)]
+    pub profile: String,
+    /// Remote file path.
+    pub path: String,
+    /// Number of trailing bytes to print; defaults to 4 KiB.
+    #[arg(long, value_name = "BYTES", default_value_t = 4096)]
+    pub bytes: u64,
+}
+
+/// `spt sftp chmod`.
+#[derive(Args, Debug)]
+pub struct SftpChmodArgs {
+    /// Profile name.
+    #[arg(long)]
+    pub profile: String,
+    /// Octal mode, for example `0640`.
+    #[arg(long, value_name = "OCTAL")]
+    pub mode: String,
+    /// Remote path.
+    pub path: String,
+}
+
+/// `spt sftp symlink`.
+#[derive(Args, Debug)]
+pub struct SftpSymlinkArgs {
+    /// Profile name.
+    #[arg(long)]
+    pub profile: String,
+    /// Target path the link should point to.
+    #[arg(long)]
+    pub target: String,
+    /// Link path to create.
+    pub linkpath: String,
+}
+
+/// Checksum verification modes accepted by recursive transfers.
+#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
+pub enum SftpChecksumMode {
+    /// No post-transfer verification.
+    None,
+    /// SHA-256 each file on both ends.
+    Sha256,
+}
+
+/// `spt sftp put-recursive` / `spt sftp get-recursive`.
+#[derive(Args, Debug)]
+pub struct SftpRecursiveArgs {
+    /// Profile name.
+    #[arg(long)]
+    pub profile: String,
+    /// Source path. For `put-recursive` this is a local directory; for
+    /// `get-recursive` it is a remote directory.
+    pub source: String,
+    /// Destination path. For `put-recursive` this is a remote directory;
+    /// for `get-recursive` it is a local directory.
+    pub destination: String,
+    /// Resume mode: seek into existing target files instead of truncating.
+    #[arg(long)]
+    pub resume: bool,
+    /// Bandwidth cap, e.g. `5MiB` (parsed via `bytesize`); `0` disables.
+    #[arg(long, value_name = "RATE", default_value = "0")]
+    pub bps: String,
+    /// Post-transfer integrity check.
+    #[arg(long, value_enum, value_name = "ALGO", default_value_t = SftpChecksumMode::None)]
+    pub checksum: SftpChecksumMode,
+    /// Follow symbolic links during the walk (loops are still detected).
+    #[arg(long)]
+    pub follow_symlinks: bool,
 }
 
 /// `spt sftp drive plan`.

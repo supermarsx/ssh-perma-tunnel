@@ -3,6 +3,7 @@
 #![allow(clippy::missing_errors_doc)]
 #![allow(clippy::module_name_repetitions)]
 
+use std::io::Write as _;
 use std::path::PathBuf;
 
 use serde::Serialize;
@@ -11,6 +12,10 @@ use spt_cli::{groups, GlobalOpts};
 use spt_config::mutate::{Document, SftpMountMutation};
 use spt_config::schema::{Config, Profile, SftpMount};
 use spt_core::{Error, Result};
+use spt_sftp::{
+    get_recursive as do_get_recursive, put_recursive as do_put_recursive, ChecksumMode,
+    RecursiveOptions,
+};
 use spt_ssh2::{SftpDirEntry, SftpMetadata};
 
 type SftpProfileArgs = groups::sftp::SftpProfileArgs;
@@ -18,6 +23,11 @@ type SftpPathArgs = groups::sftp::SftpPathArgs;
 type SftpGetArgs = groups::sftp::SftpGetArgs;
 type SftpPutArgs = groups::sftp::SftpPutArgs;
 type SftpRenameArgs = groups::sftp::SftpRenameArgs;
+type SftpCatArgs = groups::sftp::SftpCatArgs;
+type SftpTailArgs = groups::sftp::SftpTailArgs;
+type SftpChmodArgs = groups::sftp::SftpChmodArgs;
+type SftpSymlinkArgs = groups::sftp::SftpSymlinkArgs;
+type SftpRecursiveArgs = groups::sftp::SftpRecursiveArgs;
 type SftpMountListArgs = groups::sftp::SftpMountListArgs;
 type SftpMountAddArgs = groups::sftp::SftpMountAddArgs;
 type SftpDriveAddArgs = groups::sftp::SftpDriveAddArgs;
@@ -58,6 +68,17 @@ struct CapabilityCheck {
     name: &'static str,
     required: bool,
     ok: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct RecursiveReportView {
+    profile: String,
+    source: String,
+    destination: String,
+    files: u64,
+    directories: u64,
+    symlinks: u64,
+    bytes: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -195,6 +216,211 @@ pub async fn rename(global: &GlobalOpts, args: SftpRenameArgs) -> Result<()> {
         .await?;
     let _ = client.close().await;
     println!("renamed {} to {}", args.old_path, args.new_path);
+    Ok(())
+}
+
+pub async fn cat(global: &GlobalOpts, args: SftpCatArgs) -> Result<()> {
+    let client = open_client(global, &args.profile).await?;
+    let data = client.cat(args.path.clone(), args.size_cap).await?;
+    let _ = client.close().await;
+    if global.json {
+        print_json(&json!({
+            "profile": args.profile,
+            "path": args.path,
+            "bytes": data.len(),
+            "text": String::from_utf8_lossy(&data),
+        }))?;
+    } else {
+        std::io::stdout()
+            .write_all(&data)
+            .map_err(|e| Error::RuntimeFailure(format!("write stdout: {e}")))?;
+    }
+    Ok(())
+}
+
+pub async fn tail(global: &GlobalOpts, args: SftpTailArgs) -> Result<()> {
+    let client = open_client(global, &args.profile).await?;
+    let data = client.tail(args.path.clone(), args.bytes).await?;
+    let _ = client.close().await;
+    if global.json {
+        print_json(&json!({
+            "profile": args.profile,
+            "path": args.path,
+            "bytes": data.len(),
+            "text": String::from_utf8_lossy(&data),
+        }))?;
+    } else {
+        std::io::stdout()
+            .write_all(&data)
+            .map_err(|e| Error::RuntimeFailure(format!("write stdout: {e}")))?;
+    }
+    Ok(())
+}
+
+pub async fn chmod(global: &GlobalOpts, args: SftpChmodArgs) -> Result<()> {
+    let mode = parse_octal_mode(&args.mode)?;
+    let client = open_client(global, &args.profile).await?;
+    client.chmod(args.path.clone(), mode).await?;
+    let _ = client.close().await;
+    if global.json {
+        print_json(
+            &json!({ "profile": args.profile, "path": args.path, "mode": format!("{mode:o}") }),
+        )?;
+    } else {
+        println!("chmod {:o} {}", mode, args.path);
+    }
+    Ok(())
+}
+
+pub async fn symlink(global: &GlobalOpts, args: SftpSymlinkArgs) -> Result<()> {
+    let client = open_client(global, &args.profile).await?;
+    client
+        .symlink(args.target.clone(), args.linkpath.clone())
+        .await?;
+    let _ = client.close().await;
+    if global.json {
+        print_json(
+            &json!({ "profile": args.profile, "target": args.target, "linkpath": args.linkpath }),
+        )?;
+    } else {
+        println!("linked {} -> {}", args.linkpath, args.target);
+    }
+    Ok(())
+}
+
+pub async fn readlink(global: &GlobalOpts, args: SftpPathArgs) -> Result<()> {
+    let client = open_client(global, &args.profile).await?;
+    let target = client.readlink(args.path.clone()).await?;
+    let _ = client.close().await;
+    if wants_json(global, args.json) {
+        print_json(&json!({ "profile": args.profile, "path": args.path, "target": target }))?;
+    } else {
+        println!("{}", target.display());
+    }
+    Ok(())
+}
+
+pub async fn realpath(global: &GlobalOpts, args: SftpPathArgs) -> Result<()> {
+    let client = open_client(global, &args.profile).await?;
+    let path = client.realpath(args.path.clone()).await?;
+    let _ = client.close().await;
+    if wants_json(global, args.json) {
+        print_json(&json!({ "profile": args.profile, "path": args.path, "realpath": path }))?;
+    } else {
+        println!("{}", path.display());
+    }
+    Ok(())
+}
+
+pub async fn put_recursive(global: &GlobalOpts, args: SftpRecursiveArgs) -> Result<()> {
+    let opts = recursive_options(&args)?;
+    let client = open_client(global, &args.profile).await?;
+    let report = do_put_recursive(
+        &client,
+        &PathBuf::from(&args.source),
+        &args.destination,
+        &opts,
+    )
+    .await?;
+    let _ = client.close().await;
+    emit_recursive_report(global, &args, report)
+}
+
+pub async fn get_recursive(global: &GlobalOpts, args: SftpRecursiveArgs) -> Result<()> {
+    let opts = recursive_options(&args)?;
+    let client = open_client(global, &args.profile).await?;
+    let report = do_get_recursive(
+        &client,
+        &args.source,
+        &PathBuf::from(&args.destination),
+        &opts,
+    )
+    .await?;
+    let _ = client.close().await;
+    emit_recursive_report(global, &args, report)
+}
+
+fn parse_octal_mode(raw: &str) -> Result<u32> {
+    let trimmed = raw.trim();
+    let digits = trimmed
+        .strip_prefix("0o")
+        .or_else(|| trimmed.strip_prefix("0O"))
+        .unwrap_or(trimmed);
+    if digits.is_empty() || !digits.chars().all(|c| matches!(c, '0'..='7')) {
+        return Err(Error::InvalidArgs(format!(
+            "invalid chmod mode `{raw}`; expected an octal value such as 0640"
+        )));
+    }
+    u32::from_str_radix(digits, 8)
+        .map_err(|e| Error::InvalidArgs(format!("invalid chmod mode `{raw}`: {e}")))
+}
+
+fn recursive_options(args: &SftpRecursiveArgs) -> Result<RecursiveOptions> {
+    Ok(RecursiveOptions {
+        resume: args.resume,
+        bps: parse_rate(&args.bps)?,
+        checksum: match args.checksum {
+            groups::sftp::SftpChecksumMode::None => ChecksumMode::None,
+            groups::sftp::SftpChecksumMode::Sha256 => ChecksumMode::Sha256,
+        },
+        follow_symlinks: args.follow_symlinks,
+    })
+}
+
+fn parse_rate(raw: &str) -> Result<u64> {
+    let s = raw.trim();
+    if s.is_empty() {
+        return Err(Error::InvalidArgs("empty --bps value".into()));
+    }
+    let split_at = s.find(|c: char| !c.is_ascii_digit()).unwrap_or(s.len());
+    let (num, suffix) = s.split_at(split_at);
+    if num.is_empty() {
+        return Err(Error::InvalidArgs(format!("invalid --bps value `{raw}`")));
+    }
+    let value: u64 = num
+        .parse()
+        .map_err(|e| Error::InvalidArgs(format!("invalid --bps value `{raw}`: {e}")))?;
+    let multiplier = match suffix.trim().to_ascii_lowercase().as_str() {
+        "" | "b" => 1,
+        "k" | "kb" => 1_000,
+        "m" | "mb" => 1_000_000,
+        "g" | "gb" => 1_000_000_000,
+        "kib" => 1024,
+        "mib" => 1024 * 1024,
+        "gib" => 1024 * 1024 * 1024,
+        other => {
+            return Err(Error::InvalidArgs(format!(
+                "invalid --bps suffix `{other}`; use B, KB, MB, GB, KiB, MiB, or GiB"
+            )));
+        }
+    };
+    value
+        .checked_mul(multiplier)
+        .ok_or_else(|| Error::InvalidArgs(format!("--bps value `{raw}` overflows u64")))
+}
+
+fn emit_recursive_report(
+    global: &GlobalOpts,
+    args: &SftpRecursiveArgs,
+    report: spt_sftp::RecursiveReport,
+) -> Result<()> {
+    let view = RecursiveReportView {
+        profile: args.profile.clone(),
+        source: args.source.clone(),
+        destination: args.destination.clone(),
+        files: report.files,
+        directories: report.directories,
+        symlinks: report.symlinks,
+        bytes: report.bytes,
+    };
+    if global.json {
+        print_json(&view)?;
+    } else {
+        println!(
+            "transferred {} files, {} directories, {} symlinks, {} bytes",
+            view.files, view.directories, view.symlinks, view.bytes
+        );
+    }
     Ok(())
 }
 
