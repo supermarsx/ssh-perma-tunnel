@@ -32,6 +32,10 @@ fn binding_key_uses_canonical_section_backslash_name() {
     assert_eq!(b.key(), "Firewall\\ApplyRules");
     let b = find_binding("Logging", "AllowedDestinations").expect("known");
     assert_eq!(b.kind, BindingKind::Allowlist);
+    let b = find_binding("Network", "OffloadTcpNoDelay").expect("known");
+    assert_eq!(b.kind, BindingKind::Bool);
+    let b = find_binding("Network", "LoadBalanceRebalanceInterval").expect("known");
+    assert_eq!(b.kind, BindingKind::String);
 }
 
 #[test]
@@ -155,6 +159,41 @@ fn reg_multi_sz_shape_drives_allowlist_intersection() {
         .unwrap();
     // Intersection preserves config-side ordering: "eth1","wlan0".
     assert_eq!(got, vec!["eth1".to_string(), "wlan0".to_string()]);
+}
+
+#[test]
+fn reg_multi_sz_shape_drives_denylist_union() {
+    let mut cfg = Config::default();
+    cfg.network = Some(Network {
+        interface: Some(NetworkInterface {
+            denied_interfaces: Some(vec!["wlan0".into(), "bad0".into()]),
+            ..Default::default()
+        }),
+        ..Default::default()
+    });
+    let mut b = PolicyBundle::empty();
+    let key = k("Network", "DeniedInterfaces");
+    b.machine.insert(
+        key.clone(),
+        PolicyValue::MultiString(vec!["bad0".into(), "wwan0".into()]),
+    );
+    b.enforced.insert(key);
+    PolicyOverlay::apply(&mut cfg, &b);
+
+    let got = cfg
+        .network
+        .as_ref()
+        .unwrap()
+        .interface
+        .as_ref()
+        .unwrap()
+        .denied_interfaces
+        .clone()
+        .unwrap();
+    assert_eq!(
+        got,
+        vec!["wlan0".to_string(), "bad0".to_string(), "wwan0".to_string()]
+    );
 }
 
 #[test]

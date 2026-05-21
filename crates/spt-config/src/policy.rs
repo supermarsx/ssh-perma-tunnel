@@ -372,6 +372,19 @@ pub static BINDINGS: &[Binding] = &[
     },
     Binding {
         section: "Network",
+        name: "DeniedInterfaces",
+        kind: BindingKind::Allowlist,
+        apply: apply_network_denied_interfaces,
+        is_unset: |c| {
+            c.network
+                .as_ref()
+                .and_then(|n| n.interface.as_ref())
+                .and_then(|i| i.denied_interfaces.as_ref())
+                .is_none()
+        },
+    },
+    Binding {
+        section: "Network",
         name: "RequireExplicitInterface",
         kind: BindingKind::Bool,
         apply: apply_network_require_explicit_interface,
@@ -489,6 +502,58 @@ pub static BINDINGS: &[Binding] = &[
     },
     Binding {
         section: "Network",
+        name: "OffloadTcpNoDelay",
+        kind: BindingKind::Bool,
+        apply: apply_network_offload_tcp_nodelay,
+        is_unset: |c| {
+            c.network
+                .as_ref()
+                .and_then(|n| n.offload.as_ref())
+                .and_then(|o| o.tcp_nodelay)
+                .is_none()
+        },
+    },
+    Binding {
+        section: "Network",
+        name: "OffloadSocketKeepalive",
+        kind: BindingKind::Bool,
+        apply: apply_network_offload_socket_keepalive,
+        is_unset: |c| {
+            c.network
+                .as_ref()
+                .and_then(|n| n.offload.as_ref())
+                .and_then(|o| o.socket_keepalive)
+                .is_none()
+        },
+    },
+    Binding {
+        section: "Network",
+        name: "OffloadTcpFastOpen",
+        kind: BindingKind::Bool,
+        apply: apply_network_offload_tcp_fast_open,
+        is_unset: |c| {
+            c.network
+                .as_ref()
+                .and_then(|n| n.offload.as_ref())
+                .and_then(|o| o.tcp_fast_open)
+                .is_none()
+        },
+    },
+    Binding {
+        section: "Network",
+        name: "OffloadReusePort",
+        kind: BindingKind::Bool,
+        apply: apply_network_offload_reuse_port,
+        is_unset: |c| {
+            c.network
+                .as_ref()
+                .and_then(|n| n.offload.as_ref())
+                .and_then(|o| o.reuse_port)
+                .is_none()
+        },
+    },
+    Binding {
+        section: "Network",
         name: "OffloadIoUring",
         kind: BindingKind::Bool,
         apply: apply_network_offload_io_uring,
@@ -497,6 +562,45 @@ pub static BINDINGS: &[Binding] = &[
                 .as_ref()
                 .and_then(|n| n.offload.as_ref())
                 .and_then(|o| o.io_uring)
+                .is_none()
+        },
+    },
+    Binding {
+        section: "Network",
+        name: "OffloadSendfile",
+        kind: BindingKind::Bool,
+        apply: apply_network_offload_sendfile,
+        is_unset: |c| {
+            c.network
+                .as_ref()
+                .and_then(|n| n.offload.as_ref())
+                .and_then(|o| o.sendfile)
+                .is_none()
+        },
+    },
+    Binding {
+        section: "Network",
+        name: "OffloadChecksumOffload",
+        kind: BindingKind::Bool,
+        apply: apply_network_offload_checksum_offload,
+        is_unset: |c| {
+            c.network
+                .as_ref()
+                .and_then(|n| n.offload.as_ref())
+                .and_then(|o| o.checksum_offload)
+                .is_none()
+        },
+    },
+    Binding {
+        section: "Network",
+        name: "OffloadLargeSendOffload",
+        kind: BindingKind::Bool,
+        apply: apply_network_offload_large_send_offload,
+        is_unset: |c| {
+            c.network
+                .as_ref()
+                .and_then(|n| n.offload.as_ref())
+                .and_then(|o| o.large_send_offload)
                 .is_none()
         },
     },
@@ -515,6 +619,32 @@ pub static BINDINGS: &[Binding] = &[
     },
     Binding {
         section: "Network",
+        name: "LoadBalanceStickySessions",
+        kind: BindingKind::Bool,
+        apply: apply_network_load_balance_sticky_sessions,
+        is_unset: |c| {
+            c.network
+                .as_ref()
+                .and_then(|n| n.load_balance.as_ref())
+                .and_then(|lb| lb.sticky_sessions)
+                .is_none()
+        },
+    },
+    Binding {
+        section: "Network",
+        name: "LoadBalanceHealthCheck",
+        kind: BindingKind::String,
+        apply: apply_network_load_balance_health_check,
+        is_unset: |c| {
+            c.network
+                .as_ref()
+                .and_then(|n| n.load_balance.as_ref())
+                .and_then(|lb| lb.health_check.as_ref())
+                .is_none()
+        },
+    },
+    Binding {
+        section: "Network",
         name: "LoadBalanceFailAfter",
         kind: BindingKind::U32,
         apply: apply_network_load_balance_fail_after,
@@ -523,6 +653,19 @@ pub static BINDINGS: &[Binding] = &[
                 .as_ref()
                 .and_then(|n| n.load_balance.as_ref())
                 .and_then(|lb| lb.fail_after)
+                .is_none()
+        },
+    },
+    Binding {
+        section: "Network",
+        name: "LoadBalanceRebalanceInterval",
+        kind: BindingKind::String,
+        apply: apply_network_load_balance_rebalance_interval,
+        is_unset: |c| {
+            c.network
+                .as_ref()
+                .and_then(|n| n.load_balance.as_ref())
+                .and_then(|lb| lb.rebalance_interval.as_ref())
                 .is_none()
         },
     },
@@ -1148,6 +1291,20 @@ fn apply_network_allowed_interfaces(c: &mut Config, v: &PolicyValue, mode: Apply
     changed
 }
 
+fn apply_network_denied_interfaces(c: &mut Config, v: &PolicyValue, mode: ApplyMode) -> bool {
+    let Some(policy_list) = as_multi(v) else {
+        return false;
+    };
+    let i = ensure_network_interface(c);
+    let new = match (mode, i.denied_interfaces.as_ref()) {
+        (ApplyMode::Enforced, Some(existing)) => union_preserve(existing, policy_list),
+        _ => policy_list.to_vec(),
+    };
+    let changed = i.denied_interfaces.as_deref() != Some(new.as_slice());
+    i.denied_interfaces = Some(new);
+    changed
+}
+
 fn apply_network_require_explicit_interface(
     c: &mut Config,
     v: &PolicyValue,
@@ -1216,6 +1373,23 @@ fn apply_network_gateway_policy(c: &mut Config, v: &PolicyValue, _m: ApplyMode) 
     changed
 }
 
+macro_rules! network_offload_bool {
+    ($name:ident, $field:ident) => {
+        fn $name(c: &mut Config, v: &PolicyValue, _m: ApplyMode) -> bool {
+            let Some(b) = as_bool(v) else { return false };
+            let o = ensure_network_offload(c);
+            let changed = o.$field != Some(b);
+            o.$field = Some(b);
+            changed
+        }
+    };
+}
+
+network_offload_bool!(apply_network_offload_tcp_nodelay, tcp_nodelay);
+network_offload_bool!(apply_network_offload_socket_keepalive, socket_keepalive);
+network_offload_bool!(apply_network_offload_tcp_fast_open, tcp_fast_open);
+network_offload_bool!(apply_network_offload_reuse_port, reuse_port);
+
 fn apply_network_offload_zerocopy(c: &mut Config, v: &PolicyValue, _m: ApplyMode) -> bool {
     let Some(b) = as_bool(v) else { return false };
     let o = ensure_network_offload(c);
@@ -1232,11 +1406,35 @@ fn apply_network_offload_io_uring(c: &mut Config, v: &PolicyValue, _m: ApplyMode
     changed
 }
 
+network_offload_bool!(apply_network_offload_sendfile, sendfile);
+network_offload_bool!(apply_network_offload_checksum_offload, checksum_offload);
+network_offload_bool!(apply_network_offload_large_send_offload, large_send_offload);
+
 fn apply_network_load_balance_strategy(c: &mut Config, v: &PolicyValue, _m: ApplyMode) -> bool {
     let Some(s) = as_string(v) else { return false };
     let lb = ensure_network_load_balance(c);
     let changed = lb.strategy.as_deref() != Some(s.as_str());
     lb.strategy = Some(s);
+    changed
+}
+
+fn apply_network_load_balance_sticky_sessions(
+    c: &mut Config,
+    v: &PolicyValue,
+    _m: ApplyMode,
+) -> bool {
+    let Some(b) = as_bool(v) else { return false };
+    let lb = ensure_network_load_balance(c);
+    let changed = lb.sticky_sessions != Some(b);
+    lb.sticky_sessions = Some(b);
+    changed
+}
+
+fn apply_network_load_balance_health_check(c: &mut Config, v: &PolicyValue, _m: ApplyMode) -> bool {
+    let Some(s) = as_string(v) else { return false };
+    let lb = ensure_network_load_balance(c);
+    let changed = lb.health_check.as_deref() != Some(s.as_str());
+    lb.health_check = Some(s);
     changed
 }
 
@@ -1257,6 +1455,18 @@ fn apply_network_load_balance_restore_after(
     let lb = ensure_network_load_balance(c);
     let changed = lb.restore_after.as_deref() != Some(s.as_str());
     lb.restore_after = Some(s);
+    changed
+}
+
+fn apply_network_load_balance_rebalance_interval(
+    c: &mut Config,
+    v: &PolicyValue,
+    _m: ApplyMode,
+) -> bool {
+    let Some(s) = as_string(v) else { return false };
+    let lb = ensure_network_load_balance(c);
+    let changed = lb.rebalance_interval.as_deref() != Some(s.as_str());
+    lb.rebalance_interval = Some(s);
     changed
 }
 
@@ -1401,6 +1611,18 @@ capability_bool!(apply_cap_allow_gpo_policy_writes, allow_gpo_policy_writes);
 fn intersect(a: &[String], b: &[String]) -> Vec<String> {
     let bset: BTreeSet<&String> = b.iter().collect();
     a.iter().filter(|x| bset.contains(*x)).cloned().collect()
+}
+
+// Most-restrictive union used by denylist merges. Existing config-side order
+// is preserved, then policy-only entries are appended in policy order.
+fn union_preserve(a: &[String], b: &[String]) -> Vec<String> {
+    let mut out = a.to_vec();
+    for value in b {
+        if !out.iter().any(|existing| existing == value) {
+            out.push(value.clone());
+        }
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -1752,6 +1974,10 @@ mod tests {
             PolicyValue::String("eth0".into()),
         );
         b.machine.insert(
+            key("Network", "DeniedInterfaces"),
+            PolicyValue::MultiString(vec!["wlan0".into()]),
+        );
+        b.machine.insert(
             key("Network", "DefaultGateway"),
             PolicyValue::String("192.0.2.1".into()),
         );
@@ -1763,8 +1989,26 @@ mod tests {
             key("Network", "LoadBalanceStrategy"),
             PolicyValue::String("weighted".into()),
         );
+        b.machine.insert(
+            key("Network", "LoadBalanceStickySessions"),
+            PolicyValue::Bool(true),
+        );
+        b.machine.insert(
+            key("Network", "LoadBalanceHealthCheck"),
+            PolicyValue::String("ssh_handshake".into()),
+        );
+        b.machine.insert(
+            key("Network", "LoadBalanceRebalanceInterval"),
+            PolicyValue::String("5m".into()),
+        );
+        b.machine
+            .insert(key("Network", "OffloadTcpNoDelay"), PolicyValue::Bool(true));
+        b.machine.insert(
+            key("Network", "OffloadLargeSendOffload"),
+            PolicyValue::Bool(false),
+        );
         let r = PolicyOverlay::apply(&mut cfg, &b);
-        assert_eq!(r.applied.len(), 4);
+        assert_eq!(r.applied.len(), 10);
         let network = cfg.network.as_ref().unwrap();
         assert_eq!(
             network
@@ -1776,12 +2020,48 @@ mod tests {
             Some("eth0")
         );
         assert_eq!(
+            network
+                .interface
+                .as_ref()
+                .unwrap()
+                .denied_interfaces
+                .as_deref(),
+            Some(["wlan0".to_string()].as_slice())
+        );
+        assert_eq!(
             network.gateway.as_ref().unwrap().default_gateway.as_deref(),
             Some("192.0.2.1")
         );
         assert_eq!(
             network.load_balance.as_ref().unwrap().strategy.as_deref(),
             Some("weighted")
+        );
+        assert_eq!(
+            network.load_balance.as_ref().unwrap().sticky_sessions,
+            Some(true)
+        );
+        assert_eq!(
+            network
+                .load_balance
+                .as_ref()
+                .unwrap()
+                .health_check
+                .as_deref(),
+            Some("ssh_handshake")
+        );
+        assert_eq!(
+            network
+                .load_balance
+                .as_ref()
+                .unwrap()
+                .rebalance_interval
+                .as_deref(),
+            Some("5m")
+        );
+        assert_eq!(network.offload.as_ref().unwrap().tcp_nodelay, Some(true));
+        assert_eq!(
+            network.offload.as_ref().unwrap().large_send_offload,
+            Some(false)
         );
     }
 

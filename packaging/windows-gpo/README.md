@@ -148,6 +148,7 @@ HKCU\Software\Policies\spt\Security
 | Network       | `BindRestrictions`               | REG_MULTI_SZ      | one CIDR per line |
 | Network       | `DefaultInterface`               | REG_SZ            | default bind interface |
 | Network       | `AllowedInterfaces`              | REG_MULTI_SZ      | interface allow-list |
+| Network       | `DeniedInterfaces`               | REG_MULTI_SZ      | interface deny-list |
 | Network       | `RequireExplicitInterface`       | REG_DWORD (0/1)   | require per-forward interface |
 | Network       | `AllowAllInterfaces`             | REG_DWORD (0/1)   | permit wildcard binds |
 | Network       | `BindIpv6`                       | REG_SZ            | auto/prefer/disable |
@@ -156,11 +157,21 @@ HKCU\Software\Policies\spt\Security
 | Network       | `RouteCheckTarget`               | REG_SZ            | route probe target |
 | Network       | `RequireGatewayMatch`            | REG_DWORD (0/1)   | enforce gateway/interface match |
 | Network       | `GatewayPolicy`                  | REG_SZ            | disabled/default_route/interface_only/route_to_target |
+| Network       | `OffloadTcpNoDelay`              | REG_DWORD (0/1)   | TCP_NODELAY policy |
+| Network       | `OffloadSocketKeepalive`         | REG_DWORD (0/1)   | socket keepalive policy |
+| Network       | `OffloadTcpFastOpen`             | REG_DWORD (0/1)   | TCP Fast Open policy |
+| Network       | `OffloadReusePort`               | REG_DWORD (0/1)   | listener port reuse policy |
 | Network       | `OffloadZeroCopy`                | REG_DWORD (0/1)   | zero-copy policy |
 | Network       | `OffloadIoUring`                 | REG_DWORD (0/1)   | Linux io_uring policy |
+| Network       | `OffloadSendfile`                | REG_DWORD (0/1)   | sendfile-style transfer policy |
+| Network       | `OffloadChecksumOffload`         | REG_DWORD (0/1)   | NIC checksum offload policy |
+| Network       | `OffloadLargeSendOffload`        | REG_DWORD (0/1)   | TSO/large-send offload policy |
 | Network       | `LoadBalanceStrategy`            | REG_SZ            | priority/weighted/round_robin/least_connections/manual |
+| Network       | `LoadBalanceStickySessions`      | REG_DWORD (0/1)   | endpoint stickiness |
+| Network       | `LoadBalanceHealthCheck`         | REG_SZ            | tcp_connect/ssh_handshake/ssh_auth_preflight/ssh3_endpoint |
 | Network       | `LoadBalanceFailAfter`           | REG_DWORD         | consecutive failures |
 | Network       | `LoadBalanceRestoreAfter`        | REG_SZ            | duration, e.g. 30s |
+| Network       | `LoadBalanceRebalanceInterval`   | REG_SZ            | duration, e.g. 5m |
 | Crypto        | `AllowSsh2`                      | REG_DWORD (0/1)   | |
 | Crypto        | `AllowSsh3`                      | REG_DWORD (0/1)   | |
 | Crypto        | `AllowedKexAlgorithms`           | REG_MULTI_SZ      | |
