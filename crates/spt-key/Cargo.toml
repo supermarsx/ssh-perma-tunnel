@@ -49,5 +49,5 @@ spt-auth = { workspace = true }
 # russh-keys. Both already appear in `Cargo.lock` as transitive deps of
 # ssh-key — declaring them here just lifts the symbols into the dev-dep
 # graph without triggering a `cargo update`.
-signature = "2"
+signature = "3"
 ssh-encoding = "0.2"

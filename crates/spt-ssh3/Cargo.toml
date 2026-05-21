@@ -49,7 +49,7 @@ base64 = { workspace = true }
 sha2 = { workspace = true }
 x509-parser = { workspace = true }
 ssh-key = { workspace = true }
-signature = "2"
+signature = "3"
 serde_json = { workspace = true }
 rand = { workspace = true }
 rcgen = { version = "0.13", optional = true }
