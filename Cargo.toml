@@ -224,7 +224,7 @@ h3-quinn = "0.0.7"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream", "gzip"] }
 
 # DNS
-hickory-server = "0.24"
+hickory-server = "0.25"
 hickory-resolver = "0.24"
 hickory-proto = "0.24"
 
