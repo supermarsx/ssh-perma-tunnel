@@ -19,8 +19,13 @@ fn disable_core_dump() -> HardeningResult {
         rlim_cur: 0,
         rlim_max: 0,
     };
-    // SAFETY: `&rl` is a valid pointer to an initialised `rlimit`; the
-    // kernel reads it during the syscall and does not retain it.
+    // SAFETY: `setrlimit(2)` on macOS (Darwin) takes an `int resource`
+    // by value and a `const struct rlimit *rlp`. We pass `RLIMIT_CORE`
+    // and `&rl`, a pointer to a fully-initialised `libc::rlimit` whose
+    // storage outlives the call. The kernel reads the two `rlim_t`
+    // fields and does not retain the pointer. No caller-supplied
+    // pointers participate. Returns -1/errno on failure; surfaced via
+    // `last_os_error`. See `setrlimit(2)` man page.
     let rc = unsafe { libc::setrlimit(libc::RLIMIT_CORE, &rl) };
     if rc == 0 {
         HardeningResult::ok("setrlimit.rlimit_core")
@@ -38,10 +43,16 @@ fn pt_deny_attach() -> HardeningResult {
     // the value here. The signature is
     //   int ptrace(int request, pid_t pid, caddr_t addr, int data);
     const PT_DENY_ATTACH: libc::c_int = 31;
-    // SAFETY: ptrace(PT_DENY_ATTACH, ...) reads only the integer arguments
-    // and does not dereference `addr` (which is passed as NULL). It either
-    // succeeds (returning 0) or kills the process when a debugger is
-    // already attached — never returns invalid memory.
+    // SAFETY: macOS `ptrace(2)` is invoked with request = PT_DENY_ATTACH
+    // (31) per <sys/ptrace.h>. Apple's documentation specifies that for
+    // PT_DENY_ATTACH the `pid`, `addr`, and `data` arguments are ignored;
+    // we pass 0 / NULL / 0 anyway to match the C prototype
+    // `int ptrace(int, pid_t, caddr_t, int)`. No memory is dereferenced
+    // by the kernel for this request. The call is thread-safe and may
+    // be made at most once per process; subsequent calls return EBUSY,
+    // which we report via `HardeningResult::err` — never a panic. If a
+    // debugger is already attached when this call runs the kernel will
+    // SIGKILL the process, which is the intended hardening behavior.
     let rc = unsafe { libc::ptrace(PT_DENY_ATTACH, 0, std::ptr::null_mut::<libc::c_char>(), 0) };
     if rc == 0 {
         HardeningResult::ok("ptrace.pt_deny_attach")

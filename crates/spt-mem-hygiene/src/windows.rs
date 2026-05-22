@@ -55,8 +55,13 @@ pub(crate) fn harden_into(report: &mut HardeningReport) {
 
 fn set_error_mode() -> HardeningResult {
     let mode: THREAD_ERROR_MODE = SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX;
-    // SAFETY: `SetErrorMode` is a stateless Win32 API that takes a bitmask
-    // by value and returns the previous mask. No memory is dereferenced.
+    // SAFETY: `SetErrorMode` (kernel32.dll; MSDN: SetErrorMode) takes a
+    // `UINT` bitmask by value and returns the previous mask. No pointer
+    // arguments, no caller-allocated buffers, no aliasing concerns. The
+    // mode is a process-wide attribute; calling it from any thread is
+    // safe — the documented thread-safety caveat is only about
+    // observation ordering, not soundness. Cannot fail (the previous
+    // mask is always valid).
     let _prev = unsafe { SetErrorMode(mode) };
     HardeningResult::ok("set_error_mode")
 }
@@ -65,9 +70,18 @@ fn disable_extension_points() -> HardeningResult {
     // PROCESS_MITIGATION_EXTENSION_POINT_DISABLE_POLICY is a single DWORD
     // bitfield. Bit 0 = DisableExtensionPoints. Remaining bits reserved.
     let policy: u32 = 0x0000_0001;
-    // SAFETY: We pass a pointer to a stack-local u32 whose lifetime
-    // outlives the call, and the matching size (4). The kernel reads the
-    // buffer for `dwlength` bytes and does not retain the pointer.
+    // SAFETY: `SetProcessMitigationPolicy` (kernel32.dll; MSDN:
+    // SetProcessMitigationPolicy) reads `dwlength` bytes from `lpBuffer`
+    // and interprets them as the policy struct selected by the first
+    // parameter. Per MSDN, the
+    // `PROCESS_MITIGATION_EXTENSION_POINT_DISABLE_POLICY` struct is a
+    // single DWORD bitfield whose bit 0 == DisableExtensionPoints — so a
+    // `u32` (4 bytes) with bit 0 set is an exact bit-compatible payload.
+    // `policy` is on our stack and outlives the call; we pass its
+    // address via `addr_of!` (avoiding any &T -> *const T provenance
+    // surprises). The kernel does not retain the pointer. No aliasing
+    // (no other reference exists), no thread-safety concerns (process-
+    // wide, atomic).
     let r = unsafe {
         SetProcessMitigationPolicy(
             ProcessExtensionPointDisablePolicy,
@@ -91,8 +105,13 @@ fn disable_dynamic_code() -> HardeningResult {
     //   bit 2 = AllowRemoteDowngrade
     // We set only bit 0.
     let policy: u32 = 0x0000_0001;
-    // SAFETY: pointer to a stack-local u32, matching size; kernel reads
-    // and does not retain.
+    // SAFETY: `SetProcessMitigationPolicy` (MSDN: same). Per MSDN the
+    // `PROCESS_MITIGATION_DYNAMIC_CODE_POLICY` struct is a DWORD bitfield
+    // with bit 0 = ProhibitDynamicCode; a `u32` with bit 0 set is the
+    // exact bit-compatible payload. `policy` lives on the stack for the
+    // duration of the call; `addr_of!` yields a valid `*const u32`; the
+    // kernel reads `size_of::<u32>()` bytes and does not retain the
+    // pointer. Process-wide, no aliasing, no thread-safety hazards.
     let r = unsafe {
         SetProcessMitigationPolicy(
             ProcessDynamicCodePolicy,
@@ -112,9 +131,15 @@ fn disable_dynamic_code() -> HardeningResult {
 fn drop_se_debug_privilege() -> HardeningResult {
     const ERROR_NOT_ALL_ASSIGNED: u32 = 1300;
     let mut token: HANDLE = HANDLE::default();
-    // SAFETY: `GetCurrentProcess` returns a pseudo-handle. `OpenProcessToken`
-    // writes the handle into `token` on success; `token` is owned local
-    // storage with lifetime spanning the call.
+    // SAFETY: `OpenProcessToken` (advapi32.dll; MSDN: OpenProcessToken).
+    // `GetCurrentProcess()` returns the (-1) pseudo-handle which is
+    // always valid and need not be closed. The third parameter is an
+    // out-param: the function writes a new HANDLE into `*token`. `token`
+    // is a properly-aligned stack local of type `HANDLE` whose storage
+    // outlives the call. We use `addr_of_mut!` to obtain `*mut HANDLE`
+    // without forming an intermediate `&mut`. On success the handle is
+    // owned by us and must be closed exactly once via `CloseHandle` —
+    // we do so on every exit path below.
     let opened = unsafe {
         OpenProcessToken(
             GetCurrentProcess(),
@@ -123,7 +148,11 @@ fn drop_se_debug_privilege() -> HardeningResult {
         )
     };
     if opened.is_err() {
-        // SAFETY: GetLastError is a stateless thread-local read.
+        // SAFETY: `GetLastError` (MSDN: GetLastError) reads thread-local
+        // storage maintained by the OS for the calling thread. No
+        // pointers, no parameters, cannot fail. The value is stale-safe
+        // because we read it immediately after the failed call above
+        // with no intervening Win32 API.
         let code = unsafe { GetLastError().0 } as i32;
         let e = std::io::Error::from_raw_os_error(code);
         warn!(error = %e, "OpenProcessToken failed");
@@ -132,8 +161,15 @@ fn drop_se_debug_privilege() -> HardeningResult {
 
     let priv_name: Vec<u16> = "SeDebugPrivilege\0".encode_utf16().collect();
     let mut luid = LUID::default();
-    // SAFETY: `priv_name` is NUL-terminated UTF-16, owned for the call;
-    // `luid` is a valid out-parameter on our stack.
+    // SAFETY: `LookupPrivilegeValueW` (advapi32.dll; MSDN:
+    // LookupPrivilegeValueW). `lpSystemName = NULL` requests the local
+    // system. `lpName` must be a NUL-terminated wide string; `priv_name`
+    // is owned by this stack frame, contains the explicit `\0`
+    // terminator, and outlives the call — its `.as_ptr()` is a valid
+    // `*const u16`. `lpLuid` is an out-parameter; `&mut luid` (taken via
+    // `addr_of_mut!`) is a properly-aligned stack location owned by us.
+    // The kernel writes a LUID on success and does not retain any
+    // pointer.
     let look = unsafe {
         LookupPrivilegeValueW(
             PCWSTR::null(),
@@ -142,7 +178,11 @@ fn drop_se_debug_privilege() -> HardeningResult {
         )
     };
     if look.is_err() {
-        // SAFETY: `token` opened above; close exactly once.
+        // SAFETY: `CloseHandle` (MSDN: CloseHandle). `token` was
+        // successfully returned by `OpenProcessToken` above and has not
+        // been closed on any other path; we close it exactly once here
+        // before early-returning. After this call `token` must not be
+        // used.
         let _ = unsafe { CloseHandle(token) };
         return HardeningResult::skipped(
             "token.drop_se_debug_privilege",
@@ -157,8 +197,18 @@ fn drop_se_debug_privilege() -> HardeningResult {
             Attributes: SE_PRIVILEGE_REMOVED,
         }],
     };
-    // SAFETY: valid token handle and valid TOKEN_PRIVILEGES; the previous-
-    // state output parameters are explicitly `None`.
+    // SAFETY: `AdjustTokenPrivileges` (advapi32.dll; MSDN:
+    // AdjustTokenPrivileges). `token` is a live handle opened above with
+    // `TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY`. `DisableAllPrivileges =
+    // false`. `NewState` is `&mut tp`, a properly-initialised
+    // `TOKEN_PRIVILEGES` with `PrivilegeCount = 1` and a single
+    // `LUID_AND_ATTRIBUTES` whose `Luid` was populated by the
+    // immediately-preceding `LookupPrivilegeValueW`; the kernel reads
+    // exactly `PrivilegeCount` entries. `BufferLength = 0` and
+    // `PreviousState = None` since we do not care about the previous
+    // state; per MSDN passing 0/NULL together is valid. `ReturnLength`
+    // may then be `None` as well. The kernel does not retain any of our
+    // pointers.
     let adj = unsafe {
         AdjustTokenPrivileges(
             token,
@@ -174,7 +224,10 @@ fn drop_se_debug_privilege() -> HardeningResult {
             // AdjustTokenPrivileges returns Ok even when not every entry
             // was adjusted; ERROR_NOT_ALL_ASSIGNED means the privilege was
             // not held — which is exactly the state we want.
-            // SAFETY: GetLastError is a stateless thread-local read.
+            // SAFETY: `GetLastError` reads thread-local OS storage; no
+            // arguments, no pointers, cannot fail. Read immediately
+            // after the call above with no intervening Win32 API, so
+            // the value is the one set by `AdjustTokenPrivileges`.
             let last = unsafe { GetLastError().0 };
             if last == 0 || last == ERROR_NOT_ALL_ASSIGNED {
                 HardeningResult::ok("token.drop_se_debug_privilege")
@@ -188,7 +241,9 @@ fn drop_se_debug_privilege() -> HardeningResult {
             HardeningResult::err("token.drop_se_debug_privilege", short_winerr(&e))
         }
     };
-    // SAFETY: token was successfully opened above; safe to close exactly once.
+    // SAFETY: `CloseHandle` (MSDN: CloseHandle). `token` was returned
+    // by `OpenProcessToken` above and reaches this line only via paths
+    // that did not previously close it. We close it exactly once here.
     let _ = unsafe { CloseHandle(token) };
     outcome
 }
@@ -260,7 +315,12 @@ mod tests {
         let _ = crate::harden();
 
         let mut token: HANDLE = HANDLE::default();
-        // SAFETY: pseudo-handle; out-parameter on our stack.
+        // SAFETY: `OpenProcessToken` with `GetCurrentProcess()` pseudo-
+        // handle (always valid, never closed by us) and `TOKEN_QUERY`
+        // access. Third argument is `*mut HANDLE` taken via
+        // `addr_of_mut!` from a stack-local that outlives the call;
+        // kernel writes the new HANDLE there on success. If success we
+        // own it and close it exactly once below.
         let ok = unsafe {
             OpenProcessToken(
                 GetCurrentProcess(),
@@ -273,7 +333,12 @@ mod tests {
         }
 
         let mut needed: u32 = 0;
-        // SAFETY: with a null buffer GetTokenInformation only writes `needed`.
+        // SAFETY: `GetTokenInformation` (MSDN). Probe call: `TokenInformation
+        // = None`, `TokenInformationLength = 0`. Per MSDN this is the
+        // documented size-probe form which sets ERROR_INSUFFICIENT_BUFFER
+        // and writes the required byte count into `ReturnLength`. The
+        // out-pointer `&mut needed` is a properly-aligned stack u32
+        // owned by us. The kernel does not retain any pointer.
         let _ = unsafe {
             GetTokenInformation(
                 token,
@@ -284,13 +349,21 @@ mod tests {
             )
         };
         if needed == 0 {
-            // SAFETY: token opened above; close exactly once.
+            // SAFETY: `CloseHandle` on a token returned by
+            // `OpenProcessToken` above; closed exactly once on this
+            // early-return path.
             let _ = unsafe { CloseHandle(token) };
             return;
         }
 
         let mut buf = vec![0u8; needed as usize];
-        // SAFETY: buf has `needed` bytes; we pass that length explicitly.
+        // SAFETY: `GetTokenInformation` second invocation. `buf` is a
+        // Vec<u8> of length exactly `needed`; `as_mut_ptr()` yields a
+        // valid `*mut u8` whose write-region is `needed` bytes and
+        // outlives the call. We cast to `*mut c_void` to match the FFI
+        // signature, and pass `needed` for both the buffer length and
+        // the ReturnLength out-pointer (kernel will overwrite the
+        // latter). No aliasing: `buf` is uniquely owned by this frame.
         let r = unsafe {
             GetTokenInformation(
                 token,
@@ -300,21 +373,41 @@ mod tests {
                 std::ptr::addr_of_mut!(needed),
             )
         };
-        // SAFETY: token opened above; close exactly once.
+        // SAFETY: `CloseHandle` on a token returned by
+        // `OpenProcessToken`; closed exactly once at this point. The
+        // function does not use `token` again after this line.
         let _ = unsafe { CloseHandle(token) };
         if r.is_err() {
             return;
         }
 
-        // SAFETY: kernel wrote a valid TOKEN_PRIVILEGES into buf.
+        // SAFETY: The preceding successful `GetTokenInformation(
+        // TokenPrivileges, …)` call wrote a valid `TOKEN_PRIVILEGES`
+        // header at `buf.as_ptr()`. `buf` is at least `size_of::<
+        // TOKEN_PRIVILEGES>()` bytes (the kernel reported `needed` and
+        // we allocated `needed`). `buf` is owned and not mutated for
+        // the lifetime of `tp`, so the borrow is exclusive enough for a
+        // shared reference. Alignment: `Vec<u8>::as_ptr()` returns an
+        // 8-byte-aligned pointer in practice; `TOKEN_PRIVILEGES` is
+        // 4-byte-aligned (DWORDs only), so the cast is alignment-safe
+        // on all Windows targets.
         let tp: &TOKEN_PRIVILEGES = unsafe { &*buf.as_ptr().cast() };
         let count = tp.PrivilegeCount as usize;
-        // SAFETY: kernel guarantees Privileges[0..count] is initialised.
+        // SAFETY: Per MSDN, on success `GetTokenInformation` writes
+        // exactly `PrivilegeCount` `LUID_AND_ATTRIBUTES` entries after
+        // the header. `buf` is sized to `needed` which includes those
+        // entries, so the slice covers initialised memory owned by us
+        // and not aliased elsewhere. The lifetime is bound by `buf`.
         let arr = unsafe { std::slice::from_raw_parts(tp.Privileges.as_ptr(), count) };
 
         let priv_name: Vec<u16> = "SeDebugPrivilege\0".encode_utf16().collect();
         let mut want = LUID::default();
-        // SAFETY: NUL-terminated UTF-16; out-LUID is valid.
+        // SAFETY: `LookupPrivilegeValueW`. `lpSystemName = NULL` -> local
+        // system. `priv_name` is owned by this stack frame and contains
+        // an explicit `\0` terminator, so `priv_name.as_ptr()` is a
+        // valid NUL-terminated `*const u16`. `&mut want` (via
+        // `addr_of_mut!`) is a stack-local `LUID` out-parameter the
+        // kernel writes on success.
         let look = unsafe {
             LookupPrivilegeValueW(
                 PCWSTR::null(),

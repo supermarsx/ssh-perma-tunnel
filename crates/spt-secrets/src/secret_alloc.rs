@@ -78,14 +78,21 @@ pub struct SecretSlice {
     backing: Backing,
 }
 
-// SAFETY: `SecretSlice` owns its pointer exclusively (no aliasing copies
-// exist) and the memory itself is plain bytes with no per-thread state.
-// Moving the wrapper to another thread is sound; concurrent `&` access from
-// multiple threads is sound because bytes are POD. Concurrent `&mut` access
-// is prevented by the borrow checker.
+// SAFETY: `Send` for `SecretSlice` — `SecretSlice` is the unique owner of
+// its `NonNull<u8>` pointer (the type has no `Clone`/`Copy` and no public
+// way to extract a second owning handle). The backing allocation is plain
+// bytes with no thread-local state (no `Rc`, no `Cell`, no `*mut`-into-
+// thread-local). Moving ownership across threads transfers the
+// allocation, the `mlock` lifetime, and the `Drop` responsibility
+// atomically. The `Backing::MemfdSecret` fd is also process-global, not
+// thread-local.
 unsafe impl Send for SecretSlice {}
-// SAFETY: same as `Send` — bytes are POD; `&SecretSlice` only hands out
-// `&[u8]` which is `Sync`.
+// SAFETY: `Sync` for `SecretSlice` — shared access (`&SecretSlice`) only
+// exposes `&[u8]` via `Deref`, and `&[u8]: Sync` for any `T: Sync` (here
+// `u8: Sync`). No interior mutability is exposed through `&self` — the
+// only mutation path is `DerefMut`, which requires `&mut self` and is
+// thus excluded from concurrent shared access. Concurrent `&mut` access
+// is prevented by the borrow checker.
 unsafe impl Sync for SecretSlice {}
 
 impl SecretSlice {
@@ -130,10 +137,23 @@ impl Deref for SecretSlice {
         if self.len == 0 {
             return &[];
         }
-        // SAFETY: `self.ptr` is a valid, aligned pointer to `self.len`
-        // initialized bytes; the lifetime of the returned slice is bounded by
-        // `&self`; no other `&mut` reference can exist concurrently because
-        // `&self` is borrowed.
+        // SAFETY: `core::slice::from_raw_parts` invariants:
+        // * `self.ptr` is non-null (`NonNull`), originated from either
+        //   `alloc::alloc(layout)` with `layout.size() == self.len` and
+        //   alignment 8 (heap path) or `mmap` over a `memfd_secret` fd
+        //   sized to `self.len` (Linux path) — both yield a single
+        //   allocation of `self.len` bytes.
+        // * Every byte in `[ptr, ptr+self.len)` is initialised (heap path
+        //   writes zero via `write_bytes` immediately after `alloc::alloc`;
+        //   `memfd_secret` pages are zero by kernel contract).
+        // * Alignment for `u8` is trivially satisfied (`align == 1`).
+        // * `self.len <= isize::MAX` (validated by `SecretAlloc::new`).
+        // * Aliasing: the returned `&[u8]` lifetime is bounded by `&self`,
+        //   and `&mut self` access (which would create a `&mut [u8]` via
+        //   `DerefMut`) is prevented by the borrow checker for the same
+        //   lifetime.
+        // * Zeroize: the bytes remain live until `Drop`, which zeroes
+        //   in-place before deallocation.
         unsafe { core::slice::from_raw_parts(self.ptr.as_ptr(), self.len) }
     }
 }
@@ -143,8 +163,12 @@ impl DerefMut for SecretSlice {
         if self.len == 0 {
             return &mut [];
         }
-        // SAFETY: `self.ptr` is a valid, aligned, exclusively-owned pointer
-        // to `self.len` bytes; `&mut self` guarantees uniqueness.
+        // SAFETY: `core::slice::from_raw_parts_mut` invariants — identical
+        // to `Deref::deref` above (validity, init, alignment, len bound,
+        // zeroize-on-drop discipline) with the added mutable-uniqueness
+        // requirement satisfied by `&mut self`: the borrow checker forbids
+        // any other live `&` or `&mut` reference for the returned slice's
+        // lifetime, so no concurrent reader/writer aliasing is possible.
         unsafe { core::slice::from_raw_parts_mut(self.ptr.as_ptr(), self.len) }
     }
 }
@@ -155,7 +179,18 @@ impl Drop for SecretSlice {
         //    implementation on the slice view so the compiler cannot elide
         //    the write.
         if self.len > 0 {
-            // SAFETY: same conditions as `deref_mut`.
+            // SAFETY: `core::slice::from_raw_parts_mut` — invariants
+            // identical to `DerefMut::deref_mut`. We are inside `Drop` so
+            // `&mut self` is uniquely held; no other `&`/`&mut` aliases
+            // exist. The bytes are still initialised (allocation has not
+            // yet been freed). This is the zeroize discipline's primary
+            // path: `zeroize()` is called before the backing teardown
+            // (`dealloc` / `munmap`), and `compiler_fence(SeqCst)` below
+            // prevents the compiler from reordering the writes past the
+            // free. Panic-safety: this `Drop` is the sole zeroize site —
+            // no earlier panic in `SecretAlloc::new` can leave a
+            // half-initialised `SecretSlice` because the struct is only
+            // returned after all unsafe construction completes.
             let slice: &mut [u8] =
                 unsafe { core::slice::from_raw_parts_mut(self.ptr.as_ptr(), self.len) };
             slice.zeroize();
@@ -169,31 +204,54 @@ impl Drop for SecretSlice {
             Backing::Heap { layout, locked } => {
                 if locked && self.len > 0 {
                     // try_munlock takes a &[u8] view — re-borrow the slice.
-                    // SAFETY: pointer + length describe a valid region we
-                    // still exclusively own.
+                    // SAFETY: `core::slice::from_raw_parts` — `self.ptr`
+                    // and `self.len` still describe the live heap
+                    // allocation (we have not yet called `alloc::dealloc`);
+                    // the slice is post-zeroize but bytes remain
+                    // initialised (all-zero). `&mut self` in `Drop`
+                    // guarantees exclusive ownership. The borrow lives only
+                    // for the `try_munlock` call.
                     let view: &[u8] =
                         unsafe { core::slice::from_raw_parts(self.ptr.as_ptr(), self.len) };
                     let _ = try_munlock(view);
                 }
                 if layout.size() > 0 {
-                    // SAFETY: `self.ptr` came from `alloc::alloc` with the
-                    // same `layout`; we own it exclusively.
+                    // SAFETY: `alloc::dealloc` requires the pointer to
+                    // have been allocated by the same global allocator
+                    // with the exact same `Layout`. `self.ptr` was
+                    // returned by `alloc::alloc(layout)` in
+                    // `heap_fallback` and the `layout` stored in
+                    // `Backing::Heap` is bit-identical (moved, not
+                    // re-derived). We have not freed it yet and `Drop`
+                    // holds the sole reference, satisfying the no-aliasing
+                    // requirement.
                     unsafe { alloc::dealloc(self.ptr.as_ptr(), layout) };
                 }
             }
             #[cfg(target_os = "linux")]
             Backing::MemfdSecret { fd, map_len } => {
                 if map_len > 0 {
-                    // SAFETY: `self.ptr` was returned by `mmap` with
-                    // `map_len`; we still exclusively own the mapping.
+                    // SAFETY: `libc::munmap` — `self.ptr` was returned by
+                    // `mmap(NULL, len, PROT_READ|PROT_WRITE, MAP_SHARED,
+                    // fd, 0)` in `try_memfd_secret` with `len == map_len`;
+                    // no overlapping `munmap` call has occurred and `Drop`
+                    // is the unique owner. `cast::<libc::c_void>()` is a
+                    // pointer-to-pointer cast; alignment is preserved.
+                    // Errno on failure is read by `warn!`, not propagated
+                    // because we're already in `Drop` and cannot return.
                     let r =
                         unsafe { libc::munmap(self.ptr.as_ptr().cast::<libc::c_void>(), map_len) };
                     if r != 0 {
                         warn!("munmap failed on secret mapping");
                     }
                 }
-                // SAFETY: `fd` was returned by `memfd_secret` and never
-                // dup'ed; closing here is the only owner.
+                // SAFETY: `libc::close` — `fd` was returned by
+                // `syscall(SYS_memfd_secret, 0)` in `try_memfd_secret`,
+                // stored in `Backing::MemfdSecret`, and never duplicated
+                // (`dup`/`fcntl(F_DUPFD)`) nor closed. `Drop` is the sole
+                // owner, so the close is unambiguous (no double-close
+                // race). Return-value check only logs — we cannot
+                // propagate errors from `Drop`.
                 let r = unsafe { libc::close(fd) };
                 if r != 0 {
                     warn!("close failed on secret memfd");
@@ -262,8 +320,15 @@ fn heap_fallback(len: usize) -> Result<SecretSlice> {
     let layout = Layout::from_size_align(len, 8).map_err(|e| {
         Error::RuntimeFailure(format!("SecretAlloc: invalid layout for {len}: {e}"))
     })?;
-    // SAFETY: `layout.size() > 0` (checked above); `alloc::alloc` is the
-    // sanctioned global allocator entry point.
+    // SAFETY: `alloc::alloc` — the only documented precondition is
+    // `layout.size() > 0`. `Layout::from_size_align(len, 8)` above
+    // succeeded with `len > 0` (`debug_assert!(len > 0)` at function entry
+    // and `len <= isize::MAX` from `SecretAlloc::new`). On allocation
+    // failure the allocator returns null, which is handled by
+    // `NonNull::new` below (no UB on null). Zeroize discipline: the
+    // returned bytes are uninitialised, so we MUST write them before any
+    // borrow is created — that happens immediately below via
+    // `write_bytes`.
     let raw = unsafe { alloc::alloc(layout) };
     let Some(ptr) = NonNull::new(raw) else {
         return Err(Error::RuntimeFailure(format!(
@@ -272,13 +337,25 @@ fn heap_fallback(len: usize) -> Result<SecretSlice> {
     };
     // Zero the allocation. `alloc::alloc` returns uninitialised bytes; we
     // contract zero-initialisation in the public API.
-    // SAFETY: `ptr` is valid for writes of `len` bytes; alignment is 8.
+    // SAFETY: `core::ptr::write_bytes` — `ptr` is non-null (just unwrapped
+    // from `NonNull::new`), aligned to 8 (`layout` alignment), exclusively
+    // owned (no aliases — we have not handed it out yet), and the
+    // destination region `[ptr, ptr+len)` is wholly within the just-
+    // allocated block. `len <= isize::MAX` (from `SecretAlloc::new`).
+    // Writing into uninitialised memory is sound; the result is fully
+    // initialised to zero. This is the first half of the zero-initialise
+    // contract; the corresponding zero-on-drop is in `Drop::drop`.
     unsafe { core::ptr::write_bytes(ptr.as_ptr(), 0u8, len) };
 
     // Attempt mlock. Failure is non-fatal (warned via tracing in mlock.rs).
-    // SAFETY of the slice view: ptr + len describe a valid initialised
-    // region that we exclusively own.
     let locked = {
+        // SAFETY: `core::slice::from_raw_parts` — `ptr` came from
+        // `alloc::alloc(layout)` with `layout.size() == len`, was just
+        // zero-initialised via `write_bytes` so every byte is initialised,
+        // is 8-byte aligned per `Layout`, and we exclusively own the
+        // allocation for the duration of this borrow (no aliases yet — the
+        // `SecretSlice` is not constructed until after this block). Length
+        // `len` is `<= isize::MAX` (validated by `SecretAlloc::new`).
         let view: &[u8] = unsafe { core::slice::from_raw_parts(ptr.as_ptr(), len) };
         try_mlock(view).unwrap_or(false)
     };
@@ -307,9 +384,13 @@ fn try_memfd_secret(len: usize) -> Result<Option<SecretSlice>> {
     //    is defined by the upstream syscall ABI; the kernel sets close-on-
     //    exec implicitly).
     //
-    // SAFETY: `SYS_memfd_secret` takes a single `unsigned int flags`
-    // argument; passing 0 is always valid. The return value is either a
-    // non-negative fd or -1 with errno set.
+    // SAFETY: `libc::syscall(SYS_memfd_secret, flags)` — the
+    // `memfd_secret(2)` ABI takes a single `unsigned int flags` argument
+    // and returns a `long` (>= 0 on success, -1 with errno set on
+    // failure). `0u64` widens to `unsigned int` cleanly. No memory is
+    // read or written by the syscall variadic plumbing for this single-
+    // argument form. Thread-safety: the kernel serialises fd allocation;
+    // we do not consult or mutate any shared state in this call.
     let fd_raw = unsafe { libc::syscall(libc::SYS_memfd_secret, 0u64) };
     if fd_raw < 0 {
         let errno = errno();
@@ -326,7 +407,12 @@ fn try_memfd_secret(len: usize) -> Result<Option<SecretSlice>> {
         Ok(v) => v,
         Err(_) => {
             // Extremely unlikely; clean up and bail.
-            // SAFETY: fd_raw is a valid kernel-returned fd.
+            // SAFETY: `libc::close` — `fd_raw` is the just-returned kernel
+            // fd (we narrow via `as libc::c_int` which truncates on out-
+            // of-range, but on Linux fds always fit in c_int — this
+            // branch only fires on a hypothetical kernel ABI break).
+            // Closing here transfers ownership to the kernel; no
+            // subsequent use of the fd occurs.
             let _ = unsafe { libc::close(fd_raw as libc::c_int) };
             return Err(Error::RuntimeFailure(
                 "memfd_secret returned out-of-range fd".into(),
@@ -335,18 +421,23 @@ fn try_memfd_secret(len: usize) -> Result<Option<SecretSlice>> {
     };
 
     // 2. Size the fd.
-    // SAFETY: `fd` is a fresh kernel-allocated fd we own; `len` is bounded
-    // by isize::MAX which fits in off_t on Linux.
     let off_len = libc::off_t::try_from(len).map_err(|_| {
-        // SAFETY: clean up the fd before returning.
+        // SAFETY: `libc::close` — `fd` is a fresh kernel-allocated fd we
+        // own exclusively; closing on the error path is the standard fd
+        // cleanup. No subsequent use of `fd` occurs in this branch.
         let _ = unsafe { libc::close(fd) };
         Error::RuntimeFailure(format!("len {len} does not fit in off_t"))
     })?;
-    // SAFETY: fd is owned, off_len was range-checked.
+    // SAFETY: `libc::ftruncate(fd, off_len)` — `fd` is owned by this
+    // function (returned by the syscall above, narrowed to `c_int`).
+    // `off_len` was range-checked against `off_t` immediately above.
+    // ftruncate on a memfd is a kernel-internal sizing operation; it
+    // touches no user-memory and is thread-safe per POSIX.
     let r = unsafe { libc::ftruncate(fd, off_len) };
     if r != 0 {
         let errno = errno();
-        // SAFETY: cleanup of owned fd.
+        // SAFETY: `libc::close` — same as above: owned fd, single close,
+        // no further use.
         let _ = unsafe { libc::close(fd) };
         return Err(Error::RuntimeFailure(format!(
             "ftruncate(memfd_secret, {len}) failed: errno {errno}"
@@ -355,10 +446,21 @@ fn try_memfd_secret(len: usize) -> Result<Option<SecretSlice>> {
 
     // 3. Map the fd. MAP_SHARED is mandatory for memfd_secret (the kernel
     //    rejects MAP_PRIVATE).
-    // SAFETY: `ptr::null_mut()` lets the kernel choose the address; `len`
-    // matches what we ftruncate'd to; PROT_READ|PROT_WRITE matches the
-    // intended access pattern; MAP_SHARED is required for memfd_secret;
-    // `fd` is owned; offset 0.
+    // SAFETY: `libc::mmap` — argument validity:
+    // * `addr == NULL`: kernel chooses the placement; no aliasing risk.
+    // * `len`: matches the `ftruncate` size above; > 0 (caller guards
+    //   `len == 0` in `SecretAlloc::new`).
+    // * `prot = PROT_READ | PROT_WRITE`: matches the intended r/w usage
+    //   via `&[u8]` / `&mut [u8]`.
+    // * `flags = MAP_SHARED`: required by `memfd_secret`; the kernel
+    //   rejects `MAP_PRIVATE`.
+    // * `fd`: owned by this function (closed on every error path).
+    // * `offset = 0`: aligned to page size trivially.
+    // The returned address is either a fresh, page-aligned mapping or
+    // `MAP_FAILED` (checked immediately below). On success the mapping
+    // is exclusively owned by the returned `SecretSlice` and zero-
+    // initialised by the kernel (memfd_secret pages are zero by
+    // construction).
     let addr = unsafe {
         libc::mmap(
             core::ptr::null_mut(),
@@ -371,7 +473,7 @@ fn try_memfd_secret(len: usize) -> Result<Option<SecretSlice>> {
     };
     if addr == libc::MAP_FAILED {
         let errno = errno();
-        // SAFETY: cleanup of owned fd.
+        // SAFETY: `libc::close` — owned fd, single close, no further use.
         let _ = unsafe { libc::close(fd) };
         return Err(Error::RuntimeFailure(format!(
             "mmap(memfd_secret) failed: errno {errno}"
@@ -395,8 +497,12 @@ fn try_memfd_secret(len: usize) -> Result<Option<SecretSlice>> {
 
 #[cfg(target_os = "linux")]
 fn errno() -> libc::c_int {
-    // SAFETY: `__errno_location` returns a thread-local pointer that is
-    // always valid for reads.
+    // SAFETY: `libc::__errno_location()` — glibc/musl contract: returns a
+    // non-null pointer to the calling thread's `errno` storage. The
+    // pointer is valid for the lifetime of the thread (TLS-backed) and
+    // aligned for `c_int`. Reading it (single non-atomic load) is sound:
+    // no other thread can write our thread-local errno, and the value
+    // was set by the most recent libc syscall on this thread.
     unsafe { *libc::__errno_location() }
 }
 
@@ -408,10 +514,16 @@ fn errno() -> libc::c_int {
 fn memfd_secret_available() -> bool {
     static AVAILABLE: OnceLock<bool> = OnceLock::new();
     *AVAILABLE.get_or_init(|| {
-        // SAFETY: same as in `try_memfd_secret` — single-arg syscall.
+        // SAFETY: `libc::syscall(SYS_memfd_secret, 0)` — same invariants
+        // as the call in `try_memfd_secret`: single `unsigned int flags`
+        // argument, returns fd or -1. This is the one-shot probe; the
+        // result is memoised in `AVAILABLE` so we issue at most one
+        // probe per process.
         let fd = unsafe { libc::syscall(libc::SYS_memfd_secret, 0u64) };
         if fd >= 0 {
-            // SAFETY: close an owned fd.
+            // SAFETY: `libc::close` — `fd` was just returned by the
+            // syscall above and not stored anywhere; closing here
+            // releases the probe fd. Single close, no further use.
             let _ = unsafe { libc::close(fd as libc::c_int) };
             true
         } else {
@@ -470,9 +582,25 @@ impl<T: Default + Zeroize> MemfdSecretBox<T> {
                 core::mem::align_of::<T>()
             );
             let dst = slice.as_mut_ptr().cast::<T>();
-            // SAFETY: `dst` is non-null, exclusively owned, points to
-            // `size_of::<T>()` writeable bytes, and (subject to the
-            // debug_assert above) is properly aligned for `T`.
+            // SAFETY: `core::ptr::write(dst, default)` — performs a
+            // non-drop typed write (does not read or drop the previous
+            // contents). Invariants:
+            // * `dst` non-null: derived from `slice.as_mut_ptr()` which is
+            //   a `NonNull`-backed pointer.
+            // * `dst` aligned for `T`: `slice`'s backing is 8-byte aligned
+            //   and `align_of::<T>() <= 8` (debug_assert above).
+            // * `dst` valid for writes of `size_of::<T>()` bytes: `slice`
+            //   was allocated with exactly `size_of::<T>()` bytes via
+            //   `SecretAlloc::new(size)`.
+            // * No aliasing: `slice` is local, just allocated, no other
+            //   borrows exist.
+            // * `default` is moved into the slot — its original stack
+            //   slot is logically uninitialised after the write, and
+            //   `T: Zeroize` ensures any indirect resources can be
+            //   cleared via the typed Zeroize path in our `Drop`.
+            // Zeroize discipline: the bytes are now a live `T`; on
+            // `Drop` we call `T::zeroize` followed by the slice's own
+            // zero pass.
             unsafe { core::ptr::write(dst, default) };
         }
 
@@ -484,14 +612,28 @@ impl<T: Default + Zeroize> MemfdSecretBox<T> {
 
     /// Shared reference to the protected `T`.
     pub fn get(&self) -> &T {
-        // SAFETY: invariants from `new`: the slice contains a valid `T`
-        // for the lifetime of `self`; alignment was checked at construction.
+        // SAFETY: pointer dereference (`&*p`) producing `&T` —
+        // invariants:
+        // * The slot contains a valid `T`: `new` wrote a `T::default()`
+        //   via `ptr::write` and no method on `MemfdSecretBox` mutates
+        //   the bytes except through `get_mut` (typed `&mut T`).
+        // * Alignment: checked at construction (`align_of::<T>() <= 8`).
+        // * Aliasing: returned `&T` lifetime is bounded by `&self`;
+        //   `get_mut` requires `&mut self` and is therefore mutually
+        //   exclusive with this `&` view.
+        // * No invalidation: the underlying `SecretSlice` is owned by
+        //   `self` and is not dropped until `MemfdSecretBox` is dropped.
         unsafe { &*self.slice.as_ptr().cast::<T>() }
     }
 
     /// Mutable reference to the protected `T`.
     pub fn get_mut(&mut self) -> &mut T {
-        // SAFETY: same as `get`, plus `&mut self` guarantees uniqueness.
+        // SAFETY: pointer dereference (`&mut *p`) producing `&mut T` —
+        // invariants identical to `get` (valid `T`, alignment, no
+        // invalidation) with `&mut self` providing exclusive access. The
+        // intermediate `deref_mut()` borrow is alive for the cast and
+        // for the lifetime of the returned `&mut T`, so the slice's
+        // bytes are kept live for as long as the typed reference exists.
         unsafe { &mut *self.slice.deref_mut().as_mut_ptr().cast::<T>() }
     }
 }

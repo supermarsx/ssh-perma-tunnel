@@ -238,11 +238,16 @@ mod platform {
     }
 
     fn stdin_fd() -> BorrowedFd<'static> {
-        // SAFETY: fd 0 is always valid for the lifetime of the process
-        // (even when redirected). `BorrowedFd::borrow_raw(0)` is the
-        // idiomatic way to obtain a fd handle without taking ownership.
-        // We cannot use `io::stdin().as_fd()` because the returned
-        // BorrowedFd's lifetime is tied to the temporary StdinLock.
+        // SAFETY: `BorrowedFd::borrow_raw(0)` — the contract is that the
+        // raw fd is open and remains open for `'static`. POSIX requires
+        // fd 0 (stdin) to be open at process entry and Rust's stdlib
+        // never closes it; even when stdin is redirected, the kernel
+        // keeps a valid fd at descriptor 0 for the entire process
+        // lifetime. `BorrowedFd` does not assume exclusive ownership —
+        // multiple `BorrowedFd::borrow_raw(0)` calls are sound and the
+        // `Drop` impl is a no-op. We cannot use `io::stdin().as_fd()`
+        // because the returned `BorrowedFd<'_>`'s lifetime is tied to
+        // the temporary `StdinLock` rather than `'static`.
         unsafe { BorrowedFd::borrow_raw(0) }
     }
 
@@ -287,23 +292,37 @@ mod platform {
         original: CONSOLE_MODE,
     }
 
-    // SAFETY: HANDLE is a thin pointer to a kernel object; the kernel
-    // owns lifetime — we hold a borrowed reference for the duration of
-    // the guard.
+    // SAFETY: `HANDLE` is a thin newtype over a `*mut c_void` referring to
+    // a kernel object; the kernel owns its lifetime. `PlatformGuard` holds
+    // a process-global stdin handle (obtained via `GetStdHandle`) which is
+    // valid for the entire process lifetime and may be passed between
+    // threads. `CONSOLE_MODE` is a POD bitfield. No interior mutability is
+    // exposed, so cross-thread sharing of `&PlatformGuard` is sound.
     unsafe impl Send for PlatformGuard {}
+    // SAFETY: identical to the `Send` impl above — `HANDLE` is a process-
+    // lifetime kernel-owned pointer, `CONSOLE_MODE` is POD, and no method
+    // on `PlatformGuard` exposes interior mutability across threads.
     unsafe impl Sync for PlatformGuard {}
 
     impl PlatformGuard {
         pub(super) fn install() -> Result<Self> {
-            // SAFETY: GetStdHandle is a safe FFI call returning the
-            // process-global handle for stdin. STD_INPUT_HANDLE is a
-            // constant from the windows crate.
+            // SAFETY: `GetStdHandle(STD_INPUT_HANDLE)` — Win32 FFI taking
+            // a single `STD_HANDLE` constant. Returns a process-global
+            // pseudo-handle whose lifetime is bounded by the process. No
+            // memory is read or written by the caller; the kernel owns
+            // the underlying object. The result is `Result<HANDLE,
+            // Error>` so the null/INVALID_HANDLE_VALUE failure path is
+            // surfaced as `Err`.
             let handle = unsafe { GetStdHandle(STD_INPUT_HANDLE) }.map_err(|e| {
                 Error::RuntimeFailure(format!("GetStdHandle(STD_INPUT_HANDLE): {e}"))
             })?;
             let mut original = CONSOLE_MODE::default();
-            // SAFETY: `handle` is a valid console handle; `&mut original`
-            // is a writable CONSOLE_MODE pointer.
+            // SAFETY: `GetConsoleMode(handle, lpMode)` — `handle` is the
+            // just-returned valid stdin handle; `&mut original` is a
+            // properly aligned, writable pointer to a `CONSOLE_MODE`
+            // (a `#[repr(transparent)]` newtype over `u32`). The FFI
+            // writes a single `DWORD` to `*lpMode` on success. No
+            // aliasing: `original` is a fresh local.
             unsafe {
                 GetConsoleMode(handle, &mut original)
                     .map_err(|e| Error::RuntimeFailure(format!("GetConsoleMode(stdin): {e}")))?;
@@ -315,7 +334,11 @@ mod platform {
             let mut modified = original;
             modified.0 &= !ENABLE_ECHO_INPUT.0;
             modified.0 |= ENABLE_LINE_INPUT.0 | ENABLE_PROCESSED_INPUT.0;
-            // SAFETY: handle is valid; modified is a valid CONSOLE_MODE.
+            // SAFETY: `SetConsoleMode(handle, mode)` — `handle` is valid
+            // (just obtained); `modified` is a `CONSOLE_MODE` bitmask
+            // assembled from kernel-defined constants OR'd with the
+            // preserved original bits, so it cannot trigger an out-of-
+            // range flag rejection. The FFI updates kernel state only.
             unsafe {
                 SetConsoleMode(handle, modified).map_err(|e| {
                     Error::RuntimeFailure(format!("SetConsoleMode(stdin, no-echo): {e}"))
@@ -326,7 +349,14 @@ mod platform {
         }
 
         pub(super) fn restore(self) {
-            // SAFETY: handle is valid for the lifetime of the process.
+            // SAFETY: `SetConsoleMode(self.handle, self.original)` — both
+            // values originated from the matching `install` call on this
+            // same `PlatformGuard`: `self.handle` is the process-lifetime
+            // stdin pseudo-handle and `self.original` is the snapshot
+            // captured by `GetConsoleMode`. Restoring a previously-
+            // observed mode is always a valid argument. Best-effort:
+            // we ignore the result because the guard runs from `Drop`
+            // and must never panic.
             let _ = unsafe { SetConsoleMode(self.handle, self.original) };
             *SAVED_CONSOLE_MODE.lock().unwrap() = None;
         }
@@ -338,9 +368,15 @@ mod platform {
         if let Ok(g) = SAVED_CONSOLE_MODE.lock() {
             if let Some((raw_handle, original)) = *g {
                 let handle = HANDLE(raw_handle as *mut _);
-                // SAFETY: same handle obtained from GetStdHandle earlier
-                // in this process; the kernel object is alive for the
-                // lifetime of the process.
+                // SAFETY: `SetConsoleMode(handle, original)` — the handle
+                // was obtained earlier in this process via
+                // `GetStdHandle(STD_INPUT_HANDLE)` and stashed as a
+                // `usize` in `SAVED_CONSOLE_MODE` before being widened
+                // back to `HANDLE` here. Stdin's pseudo-handle is valid
+                // for the lifetime of the process, so the round-trip
+                // through `usize` does not invalidate it. `original`
+                // is a previously observed mode (see `install`),
+                // therefore a valid argument.
                 let _ = unsafe { SetConsoleMode(handle, original) };
             }
         }
@@ -398,8 +434,17 @@ fn install_signal_handler() {
             // Restore echo, then re-raise SIGINT with the default
             // disposition so the process actually exits.
             platform::restore_from_saved();
-            // SAFETY: signal(2) is async-signal-safe; raise(3) is also
-            // async-signal-safe per POSIX.
+            // SAFETY: both `libc::signal` and `libc::raise` are listed as
+            // async-signal-safe in POSIX.1-2017 §2.4.3. `signal(SIGINT,
+            // SIG_DFL)` resets the disposition to the default
+            // (terminate); `raise(SIGINT)` then delivers the signal
+            // synchronously to the current thread, which fires the
+            // default-disposition behaviour. The ordering matters: if we
+            // swapped the calls we would re-enter our own handler in an
+            // infinite loop. Note `platform::restore_from_saved` above
+            // is technically unsafe-ish (`Mutex::lock` in a signal
+            // handler) — see the comment on `restore_from_saved` and
+            // the follow-up flagged in the audit log.
             unsafe {
                 libc::signal(libc::SIGINT, libc::SIG_DFL);
                 libc::raise(libc::SIGINT);
@@ -410,9 +455,15 @@ fn install_signal_handler() {
             SaFlags::empty(),
             SigSet::empty(),
         );
-        // SAFETY: installing a signal handler is unsafe because the
-        // handler must be async-signal-safe; `handle_sigint` only calls
-        // tcsetattr / signal / raise which are all on the POSIX list.
+        // SAFETY: `nix::sys::signal::sigaction` wraps `sigaction(2)`.
+        // The kernel-side precondition is that `handle_sigint` is
+        // async-signal-safe: it only calls `tcsetattr`, `signal`, and
+        // `raise`, all of which appear on the POSIX async-signal-safe
+        // list (the `Mutex::lock` caveat is documented above and tracked
+        // as a follow-up). Installation itself is racy with other
+        // threads installing handlers for the same signal — we serialise
+        // via `HANDLER_INSTALLED: Once`, so each process installs
+        // exactly one handler.
         unsafe {
             let _ = sigaction(Signal::SIGINT, &action);
         }
@@ -432,8 +483,15 @@ fn install_signal_handler() {
             // (typically the default which terminates the process).
             BOOL(0)
         }
-        // SAFETY: SetConsoleCtrlHandler accepts a static function
-        // pointer; `handler` has the required `extern "system"` ABI.
+        // SAFETY: `SetConsoleCtrlHandler(handler, add)` — Win32 FFI.
+        // `handler` is a `'static` `extern "system" fn` (the required
+        // calling convention and lifetime for a console control
+        // handler). `add = TRUE` installs; the kernel keeps the
+        // function pointer until process exit. The function body of
+        // `handler` only calls `restore_from_saved` and returns a
+        // `BOOL`, both safe operations from kernel context. Idempotent
+        // install: `HANDLER_INSTALLED: Once` guarantees a single
+        // installation per process.
         let _ = unsafe { SetConsoleCtrlHandler(Some(handler), true) };
     });
 }
