@@ -27,6 +27,7 @@ spt-auth = { workspace = true }
 spt-state = { workspace = true }
 spt-stats = { workspace = true }
 spt-forward = { workspace = true }
+spt-sftp = { workspace = true }
 
 tokio = { workspace = true }
 async-trait = { workspace = true }

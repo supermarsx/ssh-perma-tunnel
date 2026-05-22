@@ -184,7 +184,9 @@ impl spt_scripting::AuditSink for ScriptAuditBridge {
                 .with_field("hook", hook.as_str())
                 .with_field(
                     "duration_us",
-                    u64::try_from(duration.as_micros()).unwrap_or(u64::MAX).to_string(),
+                    u64::try_from(duration.as_micros())
+                        .unwrap_or(u64::MAX)
+                        .to_string(),
                 )
                 .with_field("outcome", outcome.as_str()),
         );
@@ -328,10 +330,7 @@ mod tests {
             evs[0].fields.get("duration_us").map(String::as_str),
             Some("123")
         );
-        assert_eq!(
-            evs[0].fields.get("outcome").map(String::as_str),
-            Some("ok")
-        );
+        assert_eq!(evs[0].fields.get("outcome").map(String::as_str), Some("ok"));
         assert_eq!(evs[0].severity, AuditSeverity::Info);
         clear_audit_sink_for_test();
     }
@@ -406,15 +405,9 @@ mod tests {
         assert_eq!(evs.len(), 2);
         assert_eq!(evs[0].kind, "audit.auth.gssapi.mic_verified");
         assert_eq!(evs[0].severity, AuditSeverity::Info);
-        assert_eq!(
-            evs[0].fields.get("ok").map(String::as_str),
-            Some("true")
-        );
+        assert_eq!(evs[0].fields.get("ok").map(String::as_str), Some("true"));
         assert_eq!(evs[1].severity, AuditSeverity::Warning);
-        assert_eq!(
-            evs[1].fields.get("ok").map(String::as_str),
-            Some("false")
-        );
+        assert_eq!(evs[1].fields.get("ok").map(String::as_str), Some("false"));
         clear_audit_sink_for_test();
     }
 
@@ -472,10 +465,7 @@ mod tests {
         let evs = sink.events();
         assert_eq!(evs.len(), 1);
         assert_eq!(evs[0].kind, "audit.auth.gssapi.mic_issued");
-        assert_eq!(
-            evs[0].fields.get("mic_len").map(String::as_str),
-            Some("64")
-        );
+        assert_eq!(evs[0].fields.get("mic_len").map(String::as_str), Some("64"));
         assert_eq!(evs[0].severity, AuditSeverity::Info);
         clear_audit_sink_for_test();
     }

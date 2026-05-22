@@ -5,6 +5,7 @@
 
 use std::io::Write as _;
 use std::path::PathBuf;
+use std::sync::OnceLock;
 
 use serde::Serialize;
 use serde_json::json;
@@ -17,6 +18,33 @@ use spt_sftp::{
     RecursiveOptions,
 };
 use spt_ssh2::{SftpDirEntry, SftpMetadata};
+use spt_supervisor::{MountKey, MountRegistry};
+
+/// Process-global supervisor-side mount registry (t7-B2). Holds the
+/// live `Box<dyn SftpMounter>` returned by [`mount_start`] so that
+/// [`mount_stop`] can tear the mount down without re-opening an SSH
+/// session. The registry is initialised lazily on first access and
+/// shared across every CLI subcommand invocation in the same process.
+fn mount_registry() -> &'static MountRegistry {
+    static REGISTRY: OnceLock<MountRegistry> = OnceLock::new();
+    REGISTRY.get_or_init(MountRegistry::new)
+}
+
+/// Resolve the profile name to use for a mount-related operation.
+/// `mount_start` and `mount_stop` MUST use the same resolution rule so
+/// that the [`MountKey`] computed by `mount_stop` matches what
+/// `mount_start` registered. Falling back to `"default"` (as the
+/// pre-B2 `mount_stop` did) is a registry-miss footgun.
+fn resolve_mount_profile(global: &GlobalOpts, arg_profile: Option<&str>) -> Result<String> {
+    arg_profile
+        .map(ToOwned::to_owned)
+        .or_else(|| global.profile.clone())
+        .ok_or_else(|| {
+            Error::InvalidArgs(
+                "no profile supplied (pass --profile or set --profile globally)".into(),
+            )
+        })
+}
 
 type SftpProfileArgs = groups::sftp::SftpProfileArgs;
 type SftpPathArgs = groups::sftp::SftpPathArgs;
@@ -501,9 +529,7 @@ pub async fn mount_start(global: &GlobalOpts, args: SftpMountStartArgs) -> Resul
 
     use spt_sftp::mount::{AuditHook, MountEvent, MountOpts};
 
-    let profile_name = args.profile.clone().or_else(|| global.profile.clone()).ok_or_else(
-        || Error::InvalidArgs("no profile supplied (pass --profile or set --profile globally)".into()),
-    )?;
+    let profile_name = resolve_mount_profile(global, args.profile.as_deref())?;
 
     // Resolve the mountpoint and remote root: explicit CLI args win,
     // then fall back to the first matching mount entry in the profile.
@@ -514,7 +540,9 @@ pub async fn mount_start(global: &GlobalOpts, args: SftpMountStartArgs) -> Resul
     let mut mounter = spt_sftp::mounter_for_current_os(sftp).map_err(Error::from)?;
 
     let hook: AuditHook = Arc::new(|event: &MountEvent| match event {
-        MountEvent::MountAttempt { target, backend, .. } => {
+        MountEvent::MountAttempt {
+            target, backend, ..
+        } => {
             tracing::info!(?target, backend, "sftp.mount.attempt");
         }
         MountEvent::MountSucceeded { target, backend } => {
@@ -537,26 +565,49 @@ pub async fn mount_start(global: &GlobalOpts, args: SftpMountStartArgs) -> Resul
     opts.audit_hook = Some(hook);
 
     let handle = mounter.mount(opts).map_err(Error::from)?;
+    let backend = handle.backend();
+    let helper_pid = handle.helper_pid;
+
+    // t7-B2: keep the live mounter in the supervisor-side registry so a
+    // subsequent `mount stop` can tear it down in place instead of
+    // opening a fresh SSH session and synthesising a handle.
+    let key = MountKey::new(profile_name.clone(), local.clone());
+    mount_registry()
+        .register(key, mounter, handle.clone())
+        .map_err(|e| Error::RuntimeFailure(format!("register live mount: {e}")))?;
+
     if wants_json(global, args.json) {
         print_json(&json!({
             "profile": profile_name,
             "mountpoint": local,
             "remote": remote,
-            "backend": handle.backend(),
-            "helper_pid": handle.helper_pid,
+            "backend": backend,
+            "helper_pid": helper_pid,
         }))?;
     } else {
         println!(
             "mounted {} -> {} via {}",
             local.display(),
             remote.display(),
-            handle.backend()
+            backend
         );
     }
     Ok(())
 }
 
 /// Tear down an SFTP-backed filesystem mount.
+///
+/// Preferred path (t7-B2): the supervisor-side [`MountRegistry`] holds
+/// the live `Box<dyn SftpMounter>` returned by [`mount_start`], so we
+/// look the mount up by `(profile, mountpoint)` and tear it down in
+/// place. This avoids re-opening an SSH session purely to call `umount`
+/// and keeps the audit trail attached to the original session.
+///
+/// Fallback path: if no live registry entry exists (the mount was
+/// created out-of-band, e.g. by a previous process invocation, or by a
+/// manual `sshfs` call), we open a fresh mounter and call `umount` by
+/// path — the legacy pre-B2 behaviour. A deprecation warning is logged
+/// in this case so operators can spot stale state.
 ///
 /// On successful umount, fires `audit.sftp.umount` through the workspace
 /// audit sink (t7-B1, Bwire follow-up #3) with `mountpoint` /
@@ -567,19 +618,53 @@ pub async fn mount_stop(global: &GlobalOpts, args: SftpMountStopArgs) -> Result<
 
     use spt_sftp::mount::MountHandle;
 
-    // We don't keep a runtime registry of live mounts in t6-e5 — t6-Bwire
-    // adds the supervisor wire. Construct a synthetic handle whose
-    // backend dispatches to the platform-correct umount.
-    let profile_name = global.profile.clone().unwrap_or_else(|| "default".to_owned());
-    let client = open_client(global, &profile_name).await.ok();
-    let sftp = match client {
-        Some(c) => Arc::new(c),
-        None => {
-            return Err(Error::InvalidArgs(
-                "umount without a live SFTP session needs --profile".into(),
-            ));
+    // Resolve the profile name using the same rule as `mount_start` so
+    // the MountKey we look up matches what was registered.
+    let profile_name = resolve_mount_profile(global, None).ok();
+
+    if let Some(name) = profile_name.as_deref() {
+        let key = MountKey::new(name, args.path.clone());
+        if mount_registry().contains(&key) {
+            let handle = mount_registry()
+                .tear_down(&key)
+                .map_err(|e| Error::RuntimeFailure(format!("tear down live mount: {e}")))?;
+            crate::audit::emit_sftp_umount(&args.path, "operator_request");
+            if wants_json(global, args.json) {
+                print_json(&json!({
+                    "umounted": args.path,
+                    "backend": handle.backend(),
+                    "source": "registry",
+                }))?;
+            } else {
+                println!(
+                    "umounted {} via {} (registry)",
+                    args.path.display(),
+                    handle.backend()
+                );
+            }
+            return Ok(());
         }
-    };
+    }
+
+    // Fallback: legacy path for mounts not present in the supervisor
+    // registry. Emit a tracing warning so operators can correlate this
+    // with stale state or out-of-band mounts (e.g. a previous process
+    // crashed without tearing down).
+    tracing::warn!(
+        path = %args.path.display(),
+        profile = ?profile_name,
+        "sftp.umount.fallback: no registry entry; opening fresh mounter (deprecated path)",
+    );
+
+    let name = profile_name.ok_or_else(|| {
+        Error::InvalidArgs("umount without a live registry entry needs --profile".into())
+    })?;
+    let client = open_client(global, &name).await.map_err(|e| {
+        Error::InvalidArgs(format!(
+            "umount without a live SFTP session needs --profile (open `{name}`: {e})",
+        ))
+    })?;
+    let sftp = Arc::new(client);
     let mut mounter = spt_sftp::mounter_for_current_os(sftp).map_err(Error::from)?;
 
     let backend = if cfg!(target_os = "linux") {
@@ -599,7 +684,11 @@ pub async fn mount_stop(global: &GlobalOpts, args: SftpMountStopArgs) -> Result<
     // intent.
     crate::audit::emit_sftp_umount(&args.path, "operator_request");
     if wants_json(global, args.json) {
-        print_json(&json!({ "umounted": args.path }))?;
+        print_json(&json!({
+            "umounted": args.path,
+            "backend": backend,
+            "source": "fallback",
+        }))?;
     } else {
         println!("umounted {}", args.path.display());
     }
@@ -627,9 +716,11 @@ fn resolve_mount_targets(
                 "profile `{profile_name}` has no SFTP mount entry; pass --local and --remote"
             ))
         })?;
-    let local = args.local.clone().or_else(|| mount.mount_point.clone().map(PathBuf::from)).ok_or_else(
-        || Error::InvalidArgs("mount entry is missing mount_point".into()),
-    )?;
+    let local = args
+        .local
+        .clone()
+        .or_else(|| mount.mount_point.clone().map(PathBuf::from))
+        .ok_or_else(|| Error::InvalidArgs("mount entry is missing mount_point".into()))?;
     let remote = args
         .remote
         .clone()

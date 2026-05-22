@@ -30,6 +30,7 @@ pub mod control;
 pub mod failover;
 pub mod instability;
 pub mod live_connector;
+pub mod mount_registry;
 pub mod orchestrator;
 pub mod profile;
 pub mod reconnect;
@@ -50,6 +51,7 @@ pub use live_connector::{
     AsyncReadWrite, BoxedStream, EchoLiveConnector, LiveConnector, UdpEndpoint,
     UnavailableConnector,
 };
+pub use mount_registry::{MountKey, MountRegistry, MountRegistryError};
 pub use orchestrator::Orchestrator;
 pub use profile::{ProfileEvent, ProfileSupervisor, ProfileSupervisorConfig};
 pub use reconnect::{Backoff, BackoffConfig};
