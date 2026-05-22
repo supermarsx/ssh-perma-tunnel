@@ -42,6 +42,7 @@ bitflags! {
 fn delete_ctx(mut ctx: gss_ctx_id_t) {
     if !ctx.is_null() {
         let mut minor = GSS_S_COMPLETE;
+        // SAFETY: pristine from upstream libgssapi@0.9.1. See upstream source for invariants.
         let _major = unsafe {
             gss_delete_sec_context(
                 &mut minor as *mut OM_uint32,
@@ -570,7 +571,9 @@ impl Drop for ServerCtx {
     }
 }
 
+// SAFETY: pristine from upstream libgssapi@0.9.1. See upstream source for invariants.
 unsafe impl Send for ServerCtx {}
+// SAFETY: pristine from upstream libgssapi@0.9.1. See upstream source for invariants.
 unsafe impl Sync for ServerCtx {}
 
 impl ServerCtx {
@@ -605,6 +608,7 @@ impl ServerCtx {
         let mut out_tok = Buf::empty();
         let mut delegated_cred = ptr::null_mut::<gss_cred_id_struct>();
         let mut flag_bits: u32 = 0;
+        // SAFETY: pristine from upstream libgssapi@0.9.1. See upstream source for invariants.
         let major = unsafe {
             gss_accept_sec_context(
                 &mut minor as *mut OM_uint32,
@@ -625,9 +629,11 @@ impl ServerCtx {
         };
         if !delegated_cred.is_null() {
             match &self.delegated_cred {
+                // SAFETY: pristine from upstream libgssapi@0.9.1. See upstream source for invariants.
                 None => unsafe {
                     self.delegated_cred = Some(Cred::from_c(delegated_cred));
                 },
+                // SAFETY: pristine from upstream libgssapi@0.9.1. See upstream source for invariants.
                 Some(current) => unsafe {
                     if current.to_c() != delegated_cred {
                         self.delegated_cred = Some(Cred::from_c(delegated_cred));
@@ -669,11 +675,13 @@ impl ServerCtx {
 
 impl SecurityContext for ServerCtx {
     fn wrap(&mut self, encrypt: bool, msg: &[u8]) -> Result<Buf, Error> {
+        // SAFETY: pristine from upstream libgssapi@0.9.1. See upstream source for invariants.
         unsafe { wrap(self.ctx, encrypt, msg) }
     }
 
     #[cfg(feature = "iov")]
     fn wrap_iov(&mut self, encrypt: bool, msg: &mut [GssIov]) -> Result<(), Error> {
+        // SAFETY: pristine from upstream libgssapi@0.9.1. See upstream source for invariants.
         unsafe { wrap_iov(self.ctx, encrypt, msg) }
     }
 
@@ -683,55 +691,77 @@ impl SecurityContext for ServerCtx {
         encrypt: bool,
         msg: &mut [GssIovFake],
     ) -> Result<(), Error> {
+        // SAFETY: pristine from upstream libgssapi@0.9.1. See upstream source for invariants.
         unsafe { wrap_iov_length(self.ctx, encrypt, msg) }
     }
 
     fn unwrap(&mut self, msg: &[u8]) -> Result<Buf, Error> {
+        // SAFETY: pristine from upstream libgssapi@0.9.1. See upstream source for invariants.
         unsafe { unwrap(self.ctx, msg) }
     }
 
     fn get_mic(&mut self, msg: &[u8]) -> Result<Buf, Error> {
+        // SAFETY: fork-delta (t7-P3). `self.ctx` is a valid `gss_ctx_id_t` produced by
+        // `gss_accept_sec_context` and owned by this `ServerCtx`; it has not been freed
+        // because `Drop for ServerCtx` only runs on owner drop. `msg` is a non-null slice
+        // borrowed for the duration of the call (`BufRef::from` inside `get_mic`).
+        // `gss_get_mic` does not capture either pointer past the call. See
+        // `vendor/libgssapi-fork/libgssapi/src/context.rs:get_mic` for the wrapper
+        // and `.orchestration/logs/t7-P3.md` for the rationale.
         unsafe { get_mic(self.ctx, msg) }
     }
 
     fn verify_mic(&mut self, msg: &[u8], mic: &[u8]) -> Result<(), Error> {
+        // SAFETY: fork-delta (t7-P3). `self.ctx` is a valid `gss_ctx_id_t` owned by this
+        // `ServerCtx` (see comment on `get_mic` above). `msg` and `mic` are non-null
+        // borrowed slices; `gss_verify_mic` reads only — no escape past the call. See
+        // `vendor/libgssapi-fork/libgssapi/src/context.rs:verify_mic`.
         unsafe { verify_mic(self.ctx, msg, mic) }
     }
 
     #[cfg(feature = "iov")]
     fn unwrap_iov(&mut self, msg: &mut [GssIov]) -> Result<(), Error> {
+        // SAFETY: pristine from upstream libgssapi@0.9.1. See upstream source for invariants.
         unsafe { unwrap_iov(self.ctx, msg) }
     }
 
     fn info(&mut self) -> Result<CtxInfo, Error> {
+        // SAFETY: pristine from upstream libgssapi@0.9.1. See upstream source for invariants.
         unsafe { full_info(self.ctx) }
     }
 
     fn source_name(&mut self) -> Result<Name, Error> {
+        // SAFETY: pristine from upstream libgssapi@0.9.1. See upstream source for invariants.
         unsafe { source_name(self.ctx) }
     }
 
     fn target_name(&mut self) -> Result<Name, Error> {
+        // SAFETY: pristine from upstream libgssapi@0.9.1. See upstream source for invariants.
         unsafe { target_name(self.ctx) }
     }
 
     fn lifetime(&mut self) -> Result<Duration, Error> {
+        // SAFETY: pristine from upstream libgssapi@0.9.1. See upstream source for invariants.
         unsafe { lifetime(self.ctx) }
     }
 
     fn mechanism(&mut self) -> Result<&'static Oid, Error> {
+        // SAFETY: pristine from upstream libgssapi@0.9.1. See upstream source for invariants.
         unsafe { mechanism(self.ctx) }
     }
 
     fn flags(&mut self) -> Result<CtxFlags, Error> {
+        // SAFETY: pristine from upstream libgssapi@0.9.1. See upstream source for invariants.
         unsafe { flags(self.ctx) }
     }
 
     fn local(&mut self) -> Result<bool, Error> {
+        // SAFETY: pristine from upstream libgssapi@0.9.1. See upstream source for invariants.
         unsafe { local(self.ctx) }
     }
 
     fn open(&mut self) -> Result<bool, Error> {
+        // SAFETY: pristine from upstream libgssapi@0.9.1. See upstream source for invariants.
         unsafe { open(self.ctx) }
     }
 
@@ -770,7 +800,9 @@ impl Drop for ClientCtx {
     }
 }
 
+// SAFETY: pristine from upstream libgssapi@0.9.1. See upstream source for invariants.
 unsafe impl Send for ClientCtx {}
+// SAFETY: pristine from upstream libgssapi@0.9.1. See upstream source for invariants.
 unsafe impl Sync for ClientCtx {}
 
 impl ClientCtx {
@@ -843,6 +875,7 @@ impl ClientCtx {
         let mut tok = tok.map(BufRef::from);
         let mut out_tok = Buf::empty();
         let mut flag_bits: u32 = 0;
+        // SAFETY: pristine from upstream libgssapi@0.9.1. See upstream source for invariants.
         let major = unsafe {
             gss_init_sec_context(
                 &mut minor as *mut OM_uint32,
@@ -895,11 +928,13 @@ impl ClientCtx {
 
 impl SecurityContext for ClientCtx {
     fn wrap(&mut self, encrypt: bool, msg: &[u8]) -> Result<Buf, Error> {
+        // SAFETY: pristine from upstream libgssapi@0.9.1. See upstream source for invariants.
         unsafe { wrap(self.ctx, encrypt, msg) }
     }
 
     #[cfg(feature = "iov")]
     fn wrap_iov(&mut self, encrypt: bool, msg: &mut [GssIov]) -> Result<(), Error> {
+        // SAFETY: pristine from upstream libgssapi@0.9.1. See upstream source for invariants.
         unsafe { wrap_iov(self.ctx, encrypt, msg) }
     }
 
@@ -909,55 +944,76 @@ impl SecurityContext for ClientCtx {
         encrypt: bool,
         msg: &mut [GssIovFake],
     ) -> Result<(), Error> {
+        // SAFETY: pristine from upstream libgssapi@0.9.1. See upstream source for invariants.
         unsafe { wrap_iov_length(self.ctx, encrypt, msg) }
     }
 
     fn unwrap(&mut self, msg: &[u8]) -> Result<Buf, Error> {
+        // SAFETY: pristine from upstream libgssapi@0.9.1. See upstream source for invariants.
         unsafe { unwrap(self.ctx, msg) }
     }
 
     fn get_mic(&mut self, msg: &[u8]) -> Result<Buf, Error> {
+        // SAFETY: fork-delta (t7-P3). `self.ctx` is a valid `gss_ctx_id_t` produced by
+        // `gss_init_sec_context` and owned by this `ClientCtx`; it has not been freed
+        // because `Drop for ClientCtx` only runs on owner drop. `msg` is a non-null slice
+        // borrowed for the duration of the call (`BufRef::from` inside `get_mic`).
+        // `gss_get_mic` does not capture either pointer past the call. See
+        // `vendor/libgssapi-fork/libgssapi/src/context.rs:get_mic` for the wrapper.
         unsafe { get_mic(self.ctx, msg) }
     }
 
     fn verify_mic(&mut self, msg: &[u8], mic: &[u8]) -> Result<(), Error> {
+        // SAFETY: fork-delta (t7-P3). `self.ctx` is a valid `gss_ctx_id_t` owned by this
+        // `ClientCtx` (see comment on `get_mic` above). `msg` and `mic` are non-null
+        // borrowed slices; `gss_verify_mic` reads only — no escape past the call. See
+        // `vendor/libgssapi-fork/libgssapi/src/context.rs:verify_mic`.
         unsafe { verify_mic(self.ctx, msg, mic) }
     }
 
     #[cfg(feature = "iov")]
     fn unwrap_iov(&mut self, msg: &mut [GssIov]) -> Result<(), Error> {
+        // SAFETY: pristine from upstream libgssapi@0.9.1. See upstream source for invariants.
         unsafe { unwrap_iov(self.ctx, msg) }
     }
 
     fn info(&mut self) -> Result<CtxInfo, Error> {
+        // SAFETY: pristine from upstream libgssapi@0.9.1. See upstream source for invariants.
         unsafe { full_info(self.ctx) }
     }
 
     fn source_name(&mut self) -> Result<Name, Error> {
+        // SAFETY: pristine from upstream libgssapi@0.9.1. See upstream source for invariants.
         unsafe { source_name(self.ctx) }
     }
 
     fn target_name(&mut self) -> Result<Name, Error> {
+        // SAFETY: pristine from upstream libgssapi@0.9.1. See upstream source for invariants.
         unsafe { target_name(self.ctx) }
     }
 
     fn lifetime(&mut self) -> Result<Duration, Error> {
+        // SAFETY: pristine from upstream libgssapi@0.9.1. See upstream source for invariants.
         unsafe { lifetime(self.ctx) }
     }
 
     fn mechanism(&mut self) -> Result<&'static Oid, Error> {
+        // SAFETY: pristine from upstream libgssapi@0.9.1. See upstream source for invariants.
         unsafe { mechanism(self.ctx) }
     }
 
     fn flags(&mut self) -> Result<CtxFlags, Error> {
+        // SAFETY: pristine from upstream libgssapi@0.9.1. See upstream source for invariants.
         unsafe { flags(self.ctx) }
     }
 
     fn local(&mut self) -> Result<bool, Error> {
+        // SAFETY: pristine from upstream libgssapi@0.9.1. See upstream source for invariants.
         unsafe { local(self.ctx) }
     }
 
     fn open(&mut self) -> Result<bool, Error> {
+        // SAFETY: pristine from upstream libgssapi@0.9.1. See upstream source for invariants.
         unsafe { open(self.ctx) }
     }
 

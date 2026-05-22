@@ -12,7 +12,11 @@ pub struct CryptoVec {
 }
 
 impl Unpin for CryptoVec {}
+// SAFETY: pristine from upstream russh-cryptovec@0.7.3. See upstream source for
+// invariants — CryptoVec owns a unique heap allocation indexed by `size`/`capacity`;
+// no interior mutability through shared references, so Send and Sync are sound.
 unsafe impl Send for CryptoVec {}
+// SAFETY: pristine from upstream russh-cryptovec@0.7.3. See upstream source for invariants.
 unsafe impl Sync for CryptoVec {}
 
 // Common traits implementations
@@ -31,12 +35,14 @@ impl AsMut<[u8]> for CryptoVec {
 impl Deref for CryptoVec {
     type Target = [u8];
     fn deref(&self) -> &[u8] {
+        // SAFETY: pristine from upstream russh-cryptovec@0.7.3. See upstream source for invariants.
         unsafe { std::slice::from_raw_parts(self.p, self.size) }
     }
 }
 
 impl DerefMut for CryptoVec {
     fn deref_mut(&mut self) -> &mut [u8] {
+        // SAFETY: pristine from upstream russh-cryptovec@0.7.3. See upstream source for invariants.
         unsafe { std::slice::from_raw_parts_mut(self.p, self.size) }
     }
 }
@@ -140,6 +146,7 @@ impl CryptoVec {
 
     /// Creates a new `CryptoVec` with `n` zeros.
     pub fn new_zeroed(size: usize) -> CryptoVec {
+        // SAFETY: pristine from upstream russh-cryptovec@0.7.3. See upstream source for invariants.
         unsafe {
             let capacity = size.next_power_of_two();
             let layout = std::alloc::Layout::from_size_align_unchecked(capacity, 1);
@@ -151,6 +158,7 @@ impl CryptoVec {
 
     /// Creates a new `CryptoVec` with capacity `capacity`.
     pub fn with_capacity(capacity: usize) -> CryptoVec {
+        // SAFETY: pristine from upstream russh-cryptovec@0.7.3. See upstream source for invariants.
         unsafe {
             let capacity = capacity.next_power_of_two();
             let layout = std::alloc::Layout::from_size_align_unchecked(capacity, 1);
@@ -191,12 +199,14 @@ impl CryptoVec {
             self.size = size
         } else if size <= self.size {
             // If this is a truncation, resize and erase the extra memory.
+            // SAFETY: pristine from upstream russh-cryptovec@0.7.3. See upstream source for invariants.
             unsafe {
                 memset(self.p.add(size), 0, self.size - size);
             }
             self.size = size;
         } else {
             // realloc ! and erase the previous memory.
+            // SAFETY: pristine from upstream russh-cryptovec@0.7.3. See upstream source for invariants.
             unsafe {
                 let next_capacity = size.next_power_of_two();
                 let old_ptr = self.p;
@@ -243,6 +253,7 @@ impl CryptoVec {
     pub fn push(&mut self, s: u8) {
         let size = self.size;
         self.resize(size + 1);
+        // SAFETY: pristine from upstream russh-cryptovec@0.7.3. See upstream source for invariants.
         unsafe { *self.p.add(size) = s }
     }
 
@@ -272,6 +283,7 @@ impl CryptoVec {
     pub fn read_u32_be(&self, i: usize) -> u32 {
         assert!(i + 4 <= self.size);
         let mut x: u32 = 0;
+        // SAFETY: pristine from upstream russh-cryptovec@0.7.3. See upstream source for invariants.
         unsafe {
             memcpy((&mut x) as *mut u32, self.p.add(i), 4);
         }
@@ -287,6 +299,7 @@ impl CryptoVec {
     ) -> Result<usize, std::io::Error> {
         let cur_size = self.size;
         self.resize(cur_size + n_bytes);
+        // SAFETY: pristine from upstream russh-cryptovec@0.7.3. See upstream source for invariants.
         let s = unsafe { std::slice::from_raw_parts_mut(self.p.add(cur_size), n_bytes) };
         // Resize the buffer to its appropriate size.
         match r.read(s) {
@@ -317,6 +330,7 @@ impl CryptoVec {
     ) -> Result<usize, std::io::Error> {
         assert!(offset < self.size);
         // if we're past this point, self.p cannot be null.
+        // SAFETY: pristine from upstream russh-cryptovec@0.7.3. See upstream source for invariants.
         unsafe {
             let s = std::slice::from_raw_parts(self.p.add(offset), self.size - offset);
             w.write(s)
@@ -332,6 +346,7 @@ impl CryptoVec {
     pub fn resize_mut(&mut self, n: usize) -> &mut [u8] {
         let size = self.size;
         self.resize(size + n);
+        // SAFETY: pristine from upstream russh-cryptovec@0.7.3. See upstream source for invariants.
         unsafe { std::slice::from_raw_parts_mut(self.p.add(size), n) }
     }
 
@@ -344,6 +359,7 @@ impl CryptoVec {
     pub fn extend(&mut self, s: &[u8]) {
         let size = self.size;
         self.resize(size + s.len());
+        // SAFETY: pristine from upstream russh-cryptovec@0.7.3. See upstream source for invariants.
         unsafe {
             std::ptr::copy_nonoverlapping(s.as_ptr(), self.p.add(size), s.len());
         }
@@ -357,6 +373,7 @@ impl CryptoVec {
     pub fn from_slice(s: &[u8]) -> CryptoVec {
         let mut v = CryptoVec::new();
         v.resize(s.len());
+        // SAFETY: pristine from upstream russh-cryptovec@0.7.3. See upstream source for invariants.
         unsafe {
             std::ptr::copy_nonoverlapping(s.as_ptr(), v.p, s.len());
         }
@@ -376,6 +393,7 @@ impl Clone for CryptoVec {
 impl Drop for CryptoVec {
     fn drop(&mut self) {
         if self.capacity > 0 {
+            // SAFETY: pristine from upstream russh-cryptovec@0.7.3. See upstream source for invariants.
             unsafe {
                 for i in 0..self.size {
                     std::ptr::write_volatile(self.p.add(i), 0);

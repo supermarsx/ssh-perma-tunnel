@@ -92,7 +92,9 @@ mod iov {
     #[derive(Debug)]
     pub struct GssIov<'a>(gss_iov_buffer_desc, PhantomData<&'a [u8]>);
 
+    // SAFETY: pristine from upstream libgssapi@0.9.1. See upstream source for invariants.
     unsafe impl<'a> Send for GssIov<'a> {}
+    // SAFETY: pristine from upstream libgssapi@0.9.1. See upstream source for invariants.
     unsafe impl<'a> Sync for GssIov<'a> {}
 
     impl<'a> Drop for GssIov<'a> {
@@ -101,6 +103,7 @@ mod iov {
             if self.0.type_ & GSS_IOV_BUFFER_FLAG_MASK & GSS_IOV_BUFFER_FLAG_ALLOCATED > 0
             {
                 let mut minor = GSS_S_COMPLETE;
+                // SAFETY: pristine from upstream libgssapi@0.9.1. See upstream source for invariants.
                 let _major = unsafe {
                     gss_release_buffer(
                         &mut minor as *mut OM_uint32,
@@ -119,6 +122,7 @@ mod iov {
             if buf.value.is_null() && buf.length == 0 {
                 &[]
             } else {
+                // SAFETY: pristine from upstream libgssapi@0.9.1. See upstream source for invariants.
                 unsafe { slice::from_raw_parts(buf.value.cast(), buf.length as usize) }
             }
         }
@@ -127,6 +131,7 @@ mod iov {
     impl<'a> DerefMut for GssIov<'a> {
         fn deref_mut(&mut self) -> &mut Self::Target {
             let buf = self.0.buffer;
+            // SAFETY: pristine from upstream libgssapi@0.9.1. See upstream source for invariants.
             unsafe {
                 if buf.value.is_null() && buf.length == 0 {
                     &mut []
@@ -205,7 +210,9 @@ pub use iov::*;
 #[derive(Debug)]
 pub(crate) struct BufRef<'a>(gss_buffer_desc_struct, PhantomData<&'a [u8]>);
 
+// SAFETY: pristine from upstream libgssapi@0.9.1. See upstream source for invariants.
 unsafe impl<'a> Send for BufRef<'a> {}
+// SAFETY: pristine from upstream libgssapi@0.9.1. See upstream source for invariants.
 unsafe impl<'a> Sync for BufRef<'a> {}
 
 impl<'a> Deref for BufRef<'a> {
@@ -215,6 +222,7 @@ impl<'a> Deref for BufRef<'a> {
         if self.0.value.is_null() && self.0.length == 0 {
             &[]
         } else {
+            // SAFETY: pristine from upstream libgssapi@0.9.1. See upstream source for invariants.
             unsafe { slice::from_raw_parts(self.0.value.cast(), self.0.length as usize) }
         }
     }
@@ -243,13 +251,16 @@ impl<'a> BufRef<'a> {
 #[derive(Debug)]
 pub struct Buf(gss_buffer_desc);
 
+// SAFETY: pristine from upstream libgssapi@0.9.1. See upstream source for invariants.
 unsafe impl Send for Buf {}
+// SAFETY: pristine from upstream libgssapi@0.9.1. See upstream source for invariants.
 unsafe impl Sync for Buf {}
 
 impl Deref for Buf {
     type Target = [u8];
 
     fn deref(&self) -> &Self::Target {
+        // SAFETY: pristine from upstream libgssapi@0.9.1. See upstream source for invariants.
         unsafe {
             if self.0.value.is_null() && self.0.length == 0 {
                 &[]
@@ -262,6 +273,7 @@ impl Deref for Buf {
 
 impl DerefMut for Buf {
     fn deref_mut(&mut self) -> &mut Self::Target {
+        // SAFETY: pristine from upstream libgssapi@0.9.1. See upstream source for invariants.
         unsafe {
             if self.0.value.is_null() && self.0.length == 0 {
                 &mut []
@@ -276,6 +288,7 @@ impl Drop for Buf {
     fn drop(&mut self) {
         if !self.0.value.is_null() {
             let mut minor = GSS_S_COMPLETE;
+            // SAFETY: pristine from upstream libgssapi@0.9.1. See upstream source for invariants.
             let _major = unsafe {
                 gss_release_buffer(
                     &mut minor as *mut OM_uint32,
@@ -350,18 +363,22 @@ mod s4u {
     #[derive(Debug)]
     pub(crate) struct BufSet<'a>(gss_buffer_set_t, PhantomData<&'a [BufRef<'a>]>);
 
+    // SAFETY: pristine from upstream libgssapi@0.9.1. See upstream source for invariants.
     unsafe impl Send for BufSet<'_> {}
+    // SAFETY: pristine from upstream libgssapi@0.9.1. See upstream source for invariants.
     unsafe impl Sync for BufSet<'_> {}
 
     impl<'a> Deref for BufSet<'a> {
         type Target = [BufRef<'a>];
 
         fn deref(&self) -> &'a Self::Target {
+            // SAFETY: pristine from upstream libgssapi@0.9.1. See upstream source for invariants.
             if self.0.is_null()
                 || unsafe { (*self.0).elements.is_null() && (*self.0).count == 0 }
             {
                 &[]
             } else {
+                // SAFETY: pristine from upstream libgssapi@0.9.1. See upstream source for invariants.
                 unsafe {
                     slice::from_raw_parts(
                         (*self.0).elements.cast(),
@@ -374,11 +391,13 @@ mod s4u {
 
     impl<'a> DerefMut for BufSet<'a> {
         fn deref_mut(&mut self) -> &'a mut Self::Target {
+            // SAFETY: pristine from upstream libgssapi@0.9.1. See upstream source for invariants.
             if self.0.is_null()
                 || unsafe { (*self.0).elements.is_null() && (*self.0).count == 0 }
             {
                 &mut []
             } else {
+                // SAFETY: pristine from upstream libgssapi@0.9.1. See upstream source for invariants.
                 unsafe {
                     slice::from_raw_parts_mut(
                         (*self.0).elements.cast(),
@@ -393,6 +412,7 @@ mod s4u {
         fn drop(&mut self) {
             if !self.0.is_null() {
                 let mut minor = GSS_S_COMPLETE;
+                // SAFETY: pristine from upstream libgssapi@0.9.1. See upstream source for invariants.
                 let _major = unsafe {
                     gss_release_buffer_set(&mut minor as *mut OM_uint32, &mut self.0)
                 };

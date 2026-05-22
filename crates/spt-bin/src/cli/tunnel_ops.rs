@@ -206,10 +206,14 @@ mod windows_impl {
     /// Open the process, terminate it, wait up to `grace`, then close the
     /// handle. Returns `RuntimeFailure` for any Win32 error.
     pub(super) fn terminate_with_grace(pid: u32, grace: Duration) -> Result<()> {
-        // Safety: `OpenProcess` returns a HANDLE we own and free via
-        // `CloseHandle` in the `finish` closure below. `TerminateProcess` and
-        // `WaitForSingleObject` only read from `handle`. No aliasing.
         let handle: HANDLE =
+            // SAFETY: `OpenProcess` (kernel32.dll) takes only PoD arguments —
+            // `PROCESS_TERMINATE | PROCESS_SYNCHRONIZE` access mask, `bInheritHandle=false`,
+            // and the caller-supplied `pid`. It returns a HANDLE we own and must free via
+            // `CloseHandle` (done at the bottom of this function on every exit path).
+            // `TerminateProcess` and `WaitForSingleObject` only read from the handle; no
+            // aliasing. If `pid` is invalid the call returns INVALID_HANDLE_VALUE which is
+            // checked via `handle.is_invalid()` below.
             unsafe { OpenProcess(PROCESS_TERMINATE | PROCESS_SYNCHRONIZE, false, pid) }
                 .map_err(|e| Error::RuntimeFailure(format!("OpenProcess({pid}): {e}")))?;
 

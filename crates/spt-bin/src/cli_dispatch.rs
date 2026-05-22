@@ -4675,9 +4675,13 @@ mod tests {
     #[tokio::test]
     async fn secret_set_from_env_routes() {
         let td = tempfile::tempdir().unwrap();
-        // SAFETY: read-only test only setting our own var.
         // Use a unique env-var name to avoid race with other tests.
         let var = "SPT_TEST_SECRET_E21";
+        // SAFETY: `std::env::set_var` is `unsafe` since Rust 1.85 because it
+        // mutates process-global state. This test owns a unique var name and
+        // serialises via the unique-suffix convention; no other thread reads or
+        // writes `SPT_TEST_SECRET_E21` concurrently. There is no safer std API
+        // for setting env vars in-process.
         unsafe {
             std::env::set_var(var, "v");
         }
@@ -4694,6 +4698,9 @@ mod tests {
         // Routing only; keychain operations may succeed or fail
         // depending on host.
         let _ = dispatch(cli).await;
+        // SAFETY: `std::env::remove_var` is `unsafe` since Rust 1.85 because it
+        // mutates process-global state. Restoring the env to its pre-test
+        // shape; same uniqueness/serialisation argument as `set_var` above.
         unsafe {
             std::env::remove_var(var);
         }
@@ -4739,6 +4746,10 @@ mod tests {
         let vault_file = td.path().join("secrets").join("vault.spt");
         let unlock_var = "SPT_TEST_VAULT_UNLOCK_CLI_E21";
         let value_var = "SPT_TEST_SECRET_VALUE_CLI_E21";
+        // SAFETY: `std::env::set_var` is `unsafe` since Rust 1.85 because it
+        // mutates process-global state. Both var names are unique-suffix per
+        // the test-isolation convention; no other thread touches them. No
+        // safer std API exists for in-process env mutation.
         unsafe {
             std::env::set_var(unlock_var, "vault unlock");
             std::env::set_var(value_var, "sealed config pass");
@@ -4783,6 +4794,9 @@ mod tests {
         let got = vault.get(&r).unwrap().unwrap();
         assert_eq!(got.expose_secret().as_slice(), b"sealed config pass");
 
+        // SAFETY: `std::env::remove_var` is `unsafe` since Rust 1.85; same
+        // unique-suffix / single-test-owner argument as the `set_var` block
+        // above. Restoring env to its pre-test state.
         unsafe {
             std::env::remove_var(unlock_var);
             std::env::remove_var(value_var);

@@ -119,7 +119,9 @@ pub struct Oid(gss_OID_desc);
 
 /* OIDs are defined in the standard as const pointers into static
  * memory, so this should be safe. */
+// SAFETY: pristine from upstream libgssapi@0.9.1. See upstream source for invariants.
 unsafe impl Send for Oid {}
+// SAFETY: pristine from upstream libgssapi@0.9.1. See upstream source for invariants.
 unsafe impl Sync for Oid {}
 
 impl fmt::Debug for Oid {
@@ -144,6 +146,7 @@ impl Deref for Oid {
         if self.0.elements.is_null() && self.0.length == 0 {
             &[]
         } else {
+            // SAFETY: pristine from upstream libgssapi@0.9.1. See upstream source for invariants.
             unsafe { slice::from_raw_parts(self.0.elements.cast(), self.0.length as usize) }
         }
     }
@@ -239,13 +242,16 @@ pub struct OidSet(gss_OID_set);
 // to make copies if they need to retain the sets. They'd be crazy not
 // to, given that the user will probably free the set soon after
 // making the call.
+// SAFETY: pristine from upstream libgssapi@0.9.1. See upstream source for invariants.
 unsafe impl Send for OidSet {}
+// SAFETY: pristine from upstream libgssapi@0.9.1. See upstream source for invariants.
 unsafe impl Sync for OidSet {}
 
 impl Drop for OidSet {
     fn drop(&mut self) {
         if !self.0.is_null() {
             let mut _minor = GSS_S_COMPLETE;
+            // SAFETY: pristine from upstream libgssapi@0.9.1. See upstream source for invariants.
             let _major = unsafe {
                 gss_release_oid_set(
                     &mut _minor as *mut OM_uint32,
@@ -263,6 +269,7 @@ impl Index<usize> for OidSet {
     fn index(&self, index: usize) -> &Self::Output {
         let len = self.len();
         if index < len {
+            // SAFETY: pristine from upstream libgssapi@0.9.1. See upstream source for invariants.
             unsafe { &*((*self.0).elements.add(index) as *const Oid) }
         } else {
             panic!("index {} out of bounds count {}", index, len);
@@ -294,6 +301,7 @@ impl OidSet {
     pub fn new() -> Result<OidSet, Error> {
         let mut minor = GSS_S_COMPLETE;
         let mut out = ptr::null_mut::<gss_OID_set_desc>();
+        // SAFETY: pristine from upstream libgssapi@0.9.1. See upstream source for invariants.
         let major = unsafe {
             gss_create_empty_oid_set(
                 &mut minor as *mut OM_uint32,
@@ -321,12 +329,14 @@ impl OidSet {
 
     /// How many oids are in this set
     pub fn len(&self) -> usize {
+        // SAFETY: pristine from upstream libgssapi@0.9.1. See upstream source for invariants.
         unsafe { (*self.0).count as usize }
     }
 
     /// Add an OID to the set.
     pub fn add(&mut self, id: &Oid) -> Result<(), Error> {
         let mut minor = GSS_S_COMPLETE;
+        // SAFETY: pristine from upstream libgssapi@0.9.1. See upstream source for invariants.
         let major = unsafe {
             gss_add_oid_set_member(
                 &mut minor as *mut OM_uint32,
@@ -349,6 +359,7 @@ impl OidSet {
     pub fn contains(&self, id: &Oid) -> Result<bool, Error> {
         let mut minor = GSS_S_COMPLETE;
         let mut present = 0;
+        // SAFETY: pristine from upstream libgssapi@0.9.1. See upstream source for invariants.
         let major = unsafe {
             gss_test_oid_set_member(
                 &mut minor as *mut OM_uint32,

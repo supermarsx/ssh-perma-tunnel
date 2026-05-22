@@ -95,6 +95,7 @@ impl Drop for CredInner {
     fn drop(&mut self) {
         if !self.0.is_null() {
             let mut minor = GSS_S_COMPLETE;
+            // SAFETY: pristine from upstream libgssapi@0.9.1. See upstream source for invariants.
             let _major = unsafe {
                 gss_release_cred(
                     &mut minor as *mut OM_uint32,
@@ -105,7 +106,9 @@ impl Drop for CredInner {
     }
 }
 
+// SAFETY: pristine from upstream libgssapi@0.9.1. See upstream source for invariants.
 unsafe impl Send for CredInner {}
+// SAFETY: pristine from upstream libgssapi@0.9.1. See upstream source for invariants.
 unsafe impl Sync for CredInner {}
 
 /// gssapi credentials.
@@ -144,6 +147,7 @@ impl Cred {
         let mut minor = GSS_S_COMPLETE;
         let usage = usage.to_c();
         let mut cred = ptr::null_mut::<gss_cred_id_struct>();
+        // SAFETY: pristine from upstream libgssapi@0.9.1. See upstream source for invariants.
         let major = unsafe {
             gss_acquire_cred(
                 &mut minor as *mut OM_uint32,
@@ -185,6 +189,7 @@ impl Cred {
         let mut minor = GSS_S_COMPLETE;
         let usage = usage.to_c();
         let mut cred = ptr::null_mut::<gss_cred_id_struct>();
+        // SAFETY: pristine from upstream libgssapi@0.9.1. See upstream source for invariants.
         let major = unsafe {
             gss_acquire_cred_with_password(
                 &mut minor as *mut OM_uint32,
@@ -228,6 +233,7 @@ impl Cred {
         let mut minor = GSS_S_COMPLETE;
         let usage = usage.to_c();
         let mut cred = ptr::null_mut::<gss_cred_id_struct>();
+        // SAFETY: pristine from upstream libgssapi@0.9.1. See upstream source for invariants.
         let major = unsafe {
             gss_acquire_cred_impersonate_name(
                 &mut minor as *mut OM_uint32,
@@ -278,6 +284,7 @@ impl Cred {
             count: 1,
             elements: &mut elems,
         };
+        // SAFETY: pristine from upstream libgssapi@0.9.1. See upstream source for invariants.
         let major = unsafe {
             gss_store_cred_into(
                 &mut minor as *mut OM_uint32,
@@ -316,6 +323,7 @@ impl Cred {
         let mut minor = GSS_S_COMPLETE;
         let elements_stored = OidSet::new()?;
         let res_usage = CredUsage::Both.to_c();
+        // SAFETY: pristine from upstream libgssapi@0.9.1. See upstream source for invariants.
         let major = unsafe {
             gss_store_cred(
                 &mut minor as *mut OM_uint32,
@@ -390,6 +398,7 @@ impl Cred {
 
     /// Return all the information associated with this credential
     pub fn info(&self) -> Result<CredInfo, Error> {
+        // SAFETY: pristine from upstream libgssapi@0.9.1. See upstream source for invariants.
         unsafe {
             let c = self.info_c(CredInfoC {
                 name: Some(ptr::null_mut()),
@@ -409,6 +418,7 @@ impl Cred {
 
     /// Return the name associated with this credential
     pub fn name(&self) -> Result<Name, Error> {
+        // SAFETY: pristine from upstream libgssapi@0.9.1. See upstream source for invariants.
         unsafe {
             let c = self.info_c(CredInfoC {
                 name: Some(ptr::null_mut()),
@@ -421,6 +431,7 @@ impl Cred {
     /// Return the proxy service associated with this credential
     pub fn proxy(&self) -> Result<Option<Name>, Error> {
         #[cfg(feature = "s4u")]
+        // SAFETY: pristine from upstream libgssapi@0.9.1. See upstream source for invariants.
         unsafe {
             let mut out = BufSet::empty();
             let mut minor: u32 = 0;
@@ -449,6 +460,7 @@ impl Cred {
 
     /// Return the lifetime of this credential
     pub fn lifetime(&self) -> Result<Duration, Error> {
+        // SAFETY: pristine from upstream libgssapi@0.9.1. See upstream source for invariants.
         unsafe {
             let c = self.info_c(CredInfoC {
                 lifetime: Some(0),
@@ -460,6 +472,7 @@ impl Cred {
 
     /// Return the allowed usage of this credential
     pub fn usage(&self) -> Result<CredUsage, Error> {
+        // SAFETY: pristine from upstream libgssapi@0.9.1. See upstream source for invariants.
         unsafe {
             let c = self.info_c(CredInfoC {
                 usage: Some(0),
@@ -471,6 +484,7 @@ impl Cred {
 
     /// Return the mechanisms this credential may be used with
     pub fn mechanisms(&self) -> Result<OidSet, Error> {
+        // SAFETY: pristine from upstream libgssapi@0.9.1. See upstream source for invariants.
         unsafe {
             let c = self.info_c(CredInfoC {
                 mechanisms: Some(ptr::null_mut()),
@@ -493,6 +507,7 @@ mod tests {
 
     #[test]
     fn test_gss_store() {
+        // SAFETY: pristine from upstream libgssapi@0.9.1. See upstream source for invariants.
         let c = unsafe { Cred::from_c(NO_CRED) };
         c.store_default(true, true, CredUsage::Both, None)
             .expect_err("Expected error when storing empty credential");

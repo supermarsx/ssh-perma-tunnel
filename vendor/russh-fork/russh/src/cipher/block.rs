@@ -105,6 +105,7 @@ impl<C: BlockStreamCipher + KeySizeUser + IvSizeUser> super::OpeningKey for Open
             encrypted_packet_length[..4].try_into().unwrap()
         } else {
             // Work around uncloneable Aes<>
+            // SAFETY: pristine from upstream russh@0.46.0. See upstream source for invariants.
             let mut cipher: C = unsafe { std::ptr::read(&self.cipher as *const C) };
 
             cipher.decrypt_data(&mut first_block);

@@ -225,11 +225,17 @@ mod imp {
                     }
                 }
             }
+            // SAFETY: `section_h` came from `open_subkey_handle` (a successful
+            // `RegOpenKeyExW`) and is owned by this scope; no aliasing. `RegCloseKey`
+            // must be called once per opened key (advapi32.dll). Errors are ignored
+            // because best-effort cleanup cannot change the caller-visible result.
             unsafe {
                 let _ = RegCloseKey(section_h);
             }
         }
 
+        // SAFETY: `root` came from `open_subkey` (a successful `RegOpenKeyExW`).
+        // Single owner, close-once. Errors ignored — best-effort cleanup.
         unsafe {
             let _ = RegCloseKey(root);
         }
@@ -253,6 +259,8 @@ mod imp {
         if matches!(scope, Scope::Machine) && enforced {
             set_dword(h, ENFORCED_VALUE, 1)?;
         }
+        // SAFETY: `h` came from `create_policy_section` (successful
+        // `RegCreateKeyExW`). Single owner, close-once. Best-effort cleanup.
         unsafe {
             let _ = RegCloseKey(h);
         }
@@ -275,6 +283,8 @@ mod imp {
         if clear_enforced {
             delete_value(h, ENFORCED_VALUE)?;
         }
+        // SAFETY: `h` came from `open_subkey` (successful `RegOpenKeyExW`).
+        // Single owner, close-once. Best-effort cleanup.
         unsafe {
             let _ = RegCloseKey(h);
         }
@@ -292,6 +302,11 @@ mod imp {
         let path = format!("{POLICY_ROOT}\\{section}");
         let path_w = wide(&path);
         let mut h = HKEY::default();
+        // SAFETY: `RegCreateKeyExW` (advapi32.dll). `path_w` is a NUL-terminated UTF-16
+        // buffer that outlives the call (owned `Vec<u16>` on this stack frame). All
+        // pointer-shaped arguments are exclusive: `&mut h` receives the freshly opened
+        // handle; the rest are PoD constants. Caller must `RegCloseKey(h)` exactly once
+        // on success — done by every caller of `create_policy_section`.
         let rc = unsafe {
             RegCreateKeyExW(
                 scope_hkey(scope),
@@ -328,6 +343,9 @@ mod imp {
     fn set_dword(h: HKEY, name: &str, value: u32) -> Result<(), Error> {
         let name_w = wide(name);
         let bytes = value.to_le_bytes();
+        // SAFETY: `RegSetValueExW` (advapi32.dll). `h` is a caller-owned valid HKEY.
+        // `name_w` and `bytes` are stack-rooted, NUL-terminated/sized buffers that
+        // outlive the call. `REG_DWORD` + 4-byte payload is the documented contract.
         let rc = unsafe { RegSetValueExW(h, PCWSTR(name_w.as_ptr()), 0, REG_DWORD, Some(&bytes)) };
         if rc == ERROR_SUCCESS {
             Ok(())
@@ -339,12 +357,18 @@ mod imp {
     fn set_sz(h: HKEY, name: &str, value: &str) -> Result<(), Error> {
         let name_w = wide(name);
         let val_w = wide(value);
+        // SAFETY: `from_raw_parts` over the UTF-16 `val_w` buffer reinterpreted as bytes.
+        // `val_w` is a stack-rooted `Vec<u16>` that outlives the slice; alignment of u16
+        // is 2 which is compatible with u8 reads. The length `val_w.len() * size_of::<u16>()`
+        // is exactly the in-bounds byte count.
         let bytes = unsafe {
             std::slice::from_raw_parts(
                 val_w.as_ptr().cast::<u8>(),
                 val_w.len() * std::mem::size_of::<u16>(),
             )
         };
+        // SAFETY: `RegSetValueExW` (advapi32.dll). See `set_dword` SAFETY note above —
+        // same invariants, payload here is the wide-encoded UTF-16 NUL-terminated string.
         let rc = unsafe { RegSetValueExW(h, PCWSTR(name_w.as_ptr()), 0, REG_SZ, Some(bytes)) };
         if rc == ERROR_SUCCESS {
             Ok(())
@@ -361,12 +385,16 @@ mod imp {
             buf.push(0);
         }
         buf.push(0);
+        // SAFETY: see `set_sz` — same UTF-16 → bytes reinterpretation. `buf` is the
+        // stack-rooted backing store.
         let bytes = unsafe {
             std::slice::from_raw_parts(
                 buf.as_ptr().cast::<u8>(),
                 buf.len() * std::mem::size_of::<u16>(),
             )
         };
+        // SAFETY: `RegSetValueExW` (advapi32.dll). See `set_dword` SAFETY note above;
+        // payload here is a doubly-NUL-terminated UTF-16 multi-string per REG_MULTI_SZ.
         let rc =
             unsafe { RegSetValueExW(h, PCWSTR(name_w.as_ptr()), 0, REG_MULTI_SZ, Some(bytes)) };
         if rc == ERROR_SUCCESS {
@@ -378,6 +406,9 @@ mod imp {
 
     fn delete_value(h: HKEY, name: &str) -> Result<(), Error> {
         let name_w = wide(name);
+        // SAFETY: `RegDeleteValueW` (advapi32.dll). `h` is a caller-owned valid HKEY
+        // opened with KEY_WRITE; `name_w` is a stack-rooted UTF-16 NUL-terminated
+        // string that outlives the call.
         let rc = unsafe { RegDeleteValueW(h, PCWSTR(name_w.as_ptr())) };
         if rc == ERROR_SUCCESS || rc == ERROR_FILE_NOT_FOUND {
             Ok(())
@@ -397,6 +428,9 @@ mod imp {
     fn open_subkey(hive: HKEY, path: &str) -> Result<HKEY, u32> {
         let path_w = wide(path);
         let mut h = HKEY::default();
+        // SAFETY: `RegOpenKeyExW` (advapi32.dll). `path_w` is a stack-rooted UTF-16
+        // NUL-terminated buffer that outlives the call. `&mut h` receives the freshly
+        // opened handle on success; caller must `RegCloseKey(h)` exactly once.
         let rc = unsafe { RegOpenKeyExW(hive, PCWSTR(path_w.as_ptr()), 0, KEY_READ, &mut h) };
         if rc == ERROR_SUCCESS {
             Ok(h)
@@ -415,6 +449,9 @@ mod imp {
         loop {
             let mut name = vec![0u16; 256];
             let mut len: u32 = name.len() as u32;
+            // SAFETY: `RegEnumKeyExW` (advapi32.dll). `h` is the caller-owned HKEY.
+            // `name` is a stack-rooted 256-u16 buffer; `len` is initialized to its
+            // capacity and the API updates it with the actual name length.
             let rc = unsafe {
                 RegEnumKeyExW(
                     h,
@@ -450,6 +487,9 @@ mod imp {
             let mut vtype: REG_VALUE_TYPE = REG_VALUE_TYPE(0);
             let mut data_len: u32 = 0;
             // First call: discover required data size.
+            // SAFETY: `RegEnumValueW` (advapi32.dll). Two-call pattern: this first call
+            // passes `None` for the data pointer so the API writes only the size into
+            // `data_len`. All other args are stack-rooted, exclusive, and outlive the call.
             let rc = unsafe {
                 RegEnumValueW(
                     h,
@@ -474,6 +514,10 @@ mod imp {
             let mut name2_len: u32 = name2.len() as u32;
             let mut vtype2: REG_VALUE_TYPE = REG_VALUE_TYPE(0);
             let mut data2_len: u32 = data_len;
+            // SAFETY: `RegEnumValueW` second call. `data` buffer is allocated with
+            // `data_len` bytes (from the first call) and is stack-rooted; `data2_len` is
+            // initialized to `data_len` and gets updated with the actual bytes written.
+            // All pointer args are exclusive and outlive the call.
             let rc2 = unsafe {
                 RegEnumValueW(
                     h,
@@ -503,6 +547,9 @@ mod imp {
         let name_w = wide(name);
         let mut vtype: REG_VALUE_TYPE = REG_VALUE_TYPE(0);
         let mut data_len: u32 = 0;
+        // SAFETY: `RegQueryValueExW` (advapi32.dll). Two-call pattern: this call passes
+        // `None` for the data pointer so the API writes only the size into `data_len`.
+        // `h` is the caller-owned HKEY; `name_w` is a stack-rooted UTF-16 NUL string.
         let rc = unsafe {
             RegQueryValueExW(
                 h,
@@ -519,6 +566,10 @@ mod imp {
         let mut data = vec![0u8; data_len as usize];
         let mut data_len2 = data_len;
         let mut vtype2 = REG_VALUE_TYPE(0);
+        // SAFETY: `RegQueryValueExW` second call. `data` is freshly allocated with
+        // `data_len` bytes and is exclusive. `data_len2` is initialized to `data_len`
+        // and updated with the actual bytes written. Same pointer-lifetime story as the
+        // sizing call above.
         let rc2 = unsafe {
             RegQueryValueExW(
                 h,
@@ -620,6 +671,9 @@ mod imp {
         fn create_subkey(hive: HKEY, path: &str) -> HKEY {
             let path_w = wide(path);
             let mut h = HKEY::default();
+            // SAFETY: `RegCreateKeyExW` (advapi32.dll); test-only synthetic HKCU path.
+            // `path_w` is stack-rooted UTF-16 NUL-terminated and outlives the call;
+            // `&mut h` receives the freshly opened handle.
             let rc = unsafe {
                 RegCreateKeyExW(
                     hive,
@@ -640,6 +694,9 @@ mod imp {
         fn set_dword(h: HKEY, name: &str, v: u32) {
             let name_w = wide(name);
             let bytes = v.to_le_bytes();
+            // SAFETY: test-only helper. Same invariants as the production `set_dword`
+            // above — caller-owned valid HKEY, stack-rooted UTF-16 name and 4-byte
+            // payload that outlive the call.
             let rc =
                 unsafe { RegSetValueExW(h, PCWSTR(name_w.as_ptr()), 0, REG_DWORD, Some(&bytes)) };
             assert_eq!(rc, ERROR_SUCCESS);
@@ -648,12 +705,16 @@ mod imp {
         fn set_sz(h: HKEY, name: &str, v: &str) {
             let name_w = wide(name);
             let val_w = wide(v);
+            // SAFETY: see production `set_sz` — UTF-16 → byte slice reinterpretation
+            // over a stack-rooted `Vec<u16>` that outlives the slice.
             let bytes = unsafe {
                 std::slice::from_raw_parts(
                     val_w.as_ptr().cast::<u8>(),
                     val_w.len() * std::mem::size_of::<u16>(),
                 )
             };
+            // SAFETY: test-only `RegSetValueExW` call. Same invariants as the
+            // production code; HKCU synthetic test hive.
             let rc = unsafe {
                 RegSetValueExW(h, PCWSTR(name_w.as_ptr()), 0, super::REG_SZ, Some(bytes))
             };
@@ -668,12 +729,16 @@ mod imp {
                 buf.push(0);
             }
             buf.push(0); // terminating empty string
+            // SAFETY: see production `set_multi_sz` — UTF-16 → byte slice over a
+            // stack-rooted `Vec<u16>` that outlives the slice.
             let bytes = unsafe {
                 std::slice::from_raw_parts(
                     buf.as_ptr().cast::<u8>(),
                     buf.len() * std::mem::size_of::<u16>(),
                 )
             };
+            // SAFETY: test-only `RegSetValueExW` call with REG_MULTI_SZ; same
+            // invariants as production code.
             let rc = unsafe {
                 RegSetValueExW(
                     h,
@@ -688,6 +753,9 @@ mod imp {
 
         fn cleanup(path: &str) {
             let path_w = wide(path);
+            // SAFETY: `RegDeleteTreeW` (advapi32.dll); test-only HKCU cleanup. `path_w`
+            // is a stack-rooted UTF-16 NUL string that outlives the call. Error ignored
+            // — best-effort cleanup; if the key doesn't exist nothing happens.
             unsafe {
                 let _ = RegDeleteTreeW(HKEY_CURRENT_USER, PCWSTR(path_w.as_ptr()));
             }
@@ -736,6 +804,9 @@ mod imp {
         impl Drop for Cleanup<'_> {
             fn drop(&mut self) {
                 let path_w: Vec<u16> = self.0.encode_utf16().chain(std::iter::once(0)).collect();
+                // SAFETY: `RegDeleteTreeW` (advapi32.dll); test-only Drop guard.
+                // `path_w` is stack-rooted UTF-16 NUL and outlives the call. Error
+                // ignored — best-effort cleanup invoked from `Drop`.
                 unsafe {
                     let _ = windows::Win32::System::Registry::RegDeleteTreeW(
                         HKEY_CURRENT_USER,
@@ -765,6 +836,8 @@ mod imp {
             set_dword(h, "MaxFiles", 7);
             set_multi_sz(h, "AllowedDestinations", &["stderr", "file"]);
             set_dword(h, "Enforced", 1);
+            // SAFETY: `h` came from the local `create_subkey` helper (successful
+            // `RegCreateKeyExW`). Single owner, close-once. Best-effort cleanup.
             unsafe {
                 let _ = RegCloseKey(h);
             }
@@ -783,6 +856,9 @@ mod imp {
                 got.insert(n, v);
             }
             assert!(is_enforced_section(sec_h));
+            // SAFETY: `sec_h` and `root_h` came from `open_subkey_handle`/`open_subkey`
+            // (successful `RegOpenKeyExW`). Each is a single-owner handle; close-once.
+            // Best-effort cleanup.
             unsafe {
                 let _ = RegCloseKey(sec_h);
                 let _ = RegCloseKey(root_h);

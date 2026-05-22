@@ -16,13 +16,16 @@ use std::{ptr, fmt};
 
 pub struct Name(gss_name_t);
 
+// SAFETY: pristine from upstream libgssapi@0.9.1. See upstream source for invariants.
 unsafe impl Send for Name {}
+// SAFETY: pristine from upstream libgssapi@0.9.1. See upstream source for invariants.
 unsafe impl Sync for Name {}
 
 impl Drop for Name {
     fn drop(&mut self) {
         if !self.0.is_null() {
             let mut _minor = GSS_S_COMPLETE;
+            // SAFETY: pristine from upstream libgssapi@0.9.1. See upstream source for invariants.
             let _major = unsafe {
                 gss_release_name(
                     &mut _minor as *mut OM_uint32,
@@ -70,6 +73,7 @@ impl Name {
         let mut buf = BufRef::from(s);
         let mut minor = GSS_S_COMPLETE;
         let mut name = ptr::null_mut::<gss_name_struct>();
+        // SAFETY: pristine from upstream libgssapi@0.9.1. See upstream source for invariants.
         let major = unsafe {
             gss_import_name(
                 &mut minor as *mut OM_uint32,
@@ -97,6 +101,7 @@ impl Name {
     pub fn canonicalize(&self, mech: Option<&Oid>) -> Result<Self, Error> {
         let mut out = ptr::null_mut::<gss_name_struct>();
         let mut minor = GSS_S_COMPLETE;
+        // SAFETY: pristine from upstream libgssapi@0.9.1. See upstream source for invariants.
         let major = unsafe {
             gss_canonicalize_name(
                 &mut minor as *mut OM_uint32,
@@ -124,6 +129,7 @@ impl Name {
     pub fn export(&self) -> Result<Buf, Error> {
         let mut out = Buf::empty();
         let mut minor = GSS_S_COMPLETE;
+        // SAFETY: pristine from upstream libgssapi@0.9.1. See upstream source for invariants.
         let major = unsafe {
             gss_export_name(
                 &mut minor as *mut OM_uint32,
@@ -148,6 +154,7 @@ impl Name {
         let mut out = Buf::empty();
         let mut minor = GSS_S_COMPLETE;
         let mut oid = ptr::null_mut::<gss_OID_desc>();
+        // SAFETY: pristine from upstream libgssapi@0.9.1. See upstream source for invariants.
         let major = unsafe {
             gss_display_name(
                 &mut minor as *mut OM_uint32,
@@ -173,6 +180,7 @@ impl Name {
     pub fn local_name(&self, mechs: Option<&Oid>) -> Result<Buf, Error> {
         let mut out = Buf::empty();
         let mut minor = GSS_S_COMPLETE;
+        // SAFETY: pristine from upstream libgssapi@0.9.1. See upstream source for invariants.
         let major = unsafe {
             gss_localname(
                 &mut minor as *mut OM_uint32,
@@ -195,6 +203,7 @@ impl Name {
     pub fn duplicate(&self) -> Result<Self, Error> {
         let mut copy = ptr::null_mut::<gss_name_struct>();
         let mut minor = GSS_S_COMPLETE;
+        // SAFETY: pristine from upstream libgssapi@0.9.1. See upstream source for invariants.
         let major = unsafe {
             gss_duplicate_name(
                 &mut minor as *mut OM_uint32,

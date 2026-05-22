@@ -76,6 +76,7 @@ impl Error {
         loop {
             let mut minor = GSS_S_COMPLETE as OM_uint32;
             let mut buf = Buf::empty();
+            // SAFETY: pristine from upstream libgssapi@0.9.1. See upstream source for invariants.
             let major = unsafe {
                 gss_display_status(
                     &mut minor as *mut OM_uint32,
