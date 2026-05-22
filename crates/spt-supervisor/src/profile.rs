@@ -352,6 +352,8 @@ impl ProfileTask {
                 let _ = self.events_tx.send(ProfileEvent::BackoffExhausted {
                     profile: self.name.clone(),
                 });
+                // t8-C1: notify chaos / harness observer (no-op in production).
+                crate::reconnect::notify_max_exhausted(self.backoff.attempt());
                 break;
             }
 
@@ -403,6 +405,8 @@ impl ProfileTask {
                     self.selector
                         .lock()
                         .record_success(&endpoint.host, endpoint.port);
+                    // t8-C1: notify chaos / harness observer (no-op in production).
+                    crate::reconnect::notify_success(self.backoff.attempt());
                     s
                 }
                 Err(e) => {
@@ -607,6 +611,8 @@ impl ProfileTask {
             delay,
             attempt,
         });
+        // t8-C1: notify chaos / harness observer (no-op in production).
+        crate::reconnect::notify_attempt(attempt, delay);
         delay
     }
 

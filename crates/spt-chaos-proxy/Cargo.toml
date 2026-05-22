@@ -1,0 +1,26 @@
+[package]
+name = "spt-chaos-proxy"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+description = "Cross-platform TCP chaos proxy: injectable latency / loss / RST / partition for reconnect tests."
+
+[lints]
+workspace = true
+
+[dependencies]
+# All deps are already pinned in the root lockfile via [workspace.dependencies].
+# No `cargo update` should be triggered by adding this crate.
+tokio = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+rand = { workspace = true }
+parking_lot = { workspace = true }
+socket2 = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full", "test-util"] }

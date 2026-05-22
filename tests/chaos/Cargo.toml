@@ -1,0 +1,38 @@
+[package]
+name = "spt-chaos-tests"
+version = "0.0.0"
+edition = "2021"
+rust-version = "1.85"
+publish = false
+license = "MIT"
+description = "Chaos / reconnect scenario harness driving the `spt` binary against `spt-chaos-proxy`."
+
+# Decoupled workspace: this crate is intentionally NOT a member of the root
+# workspace. It (a) spawns the real `spt` binary as a subprocess, (b) brings
+# up stub SSH / DNS servers, and (c) drives long-running multi-second
+# scenarios — none of which we want kicking off under a default
+# `cargo test --workspace`. Mirrors the `tests/property` and
+# `tests/openssh-interop` escape-hatch pattern.
+#
+# Exercise standalone with:
+#     cargo test --manifest-path tests/chaos/Cargo.toml
+[workspace]
+
+[lib]
+path = "src/lib.rs"
+
+[[test]]
+name = "harness_smoke"
+path = "tests/harness_smoke.rs"
+
+[dependencies]
+# Internal — the chaos proxy lives in the root workspace.
+spt-chaos-proxy = { path = "../../crates/spt-chaos-proxy" }
+# Supervisor exposes the `install_test_hook` API behind its `testing`
+# feature; we depend on it for in-process scenarios that don't need a
+# separately-spawned `spt` binary.
+spt-supervisor = { path = "../../crates/spt-supervisor", features = ["testing"] }
+
+tokio = { version = "1.40", features = ["full"] }
+parking_lot = "0.12"
+tracing = "0.1"

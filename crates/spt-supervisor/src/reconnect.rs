@@ -182,3 +182,188 @@ mod tests {
         assert!(!b.exhausted());
     }
 }
+
+// ---------------------------------------------------------------------------
+// t8-C1: in-process reconnect observer hook (testing only).
+//
+// The chaos test harness (`tests/chaos` + `spt-chaos-proxy`) needs to observe
+// the reconnect attempt sequence (delay, attempt count, success, exhaustion)
+// without scraping logs or events. We expose a global slot for a single
+// `ReconnectObserver` implementation, gated on `cfg(test)` *or* the crate's
+// `testing` feature so production builds carry no overhead and no extra
+// symbol.
+//
+// The static is `std::sync::Mutex<Option<Arc<dyn ReconnectObserver>>>`. We
+// always `.clone()` the `Arc` out under the lock and then drop the guard
+// before invoking the trait method, so an observer that re-enters
+// supervisor code (e.g. logs a tracing event that the same fixture is
+// listening for) can't deadlock.
+//
+// Call-site wiring lives in `profile.rs::ProfileTask::next_backoff` and
+// the session-failure / exhaustion arms. Those edits are minimum-invasive
+// (three notify lines, no behaviour changes).
+// ---------------------------------------------------------------------------
+
+#[cfg(any(test, feature = "testing"))]
+use std::sync::Arc;
+
+/// Observer trait for chaos / harness tests. Implementations must be
+/// `Send + Sync` because the supervisor invokes them from its
+/// `ProfileTask` future, which may move across runtime workers.
+#[cfg(any(test, feature = "testing"))]
+pub trait ReconnectObserver: Send + Sync {
+    /// Called once per scheduled reconnect attempt, *before* the sleep.
+    /// `attempt` is 1-based (i.e. matches `ProfileEvent::ReconnectScheduled.attempt`).
+    fn on_attempt(&self, attempt: u32, delay: Duration);
+    /// Called when an attempt produced a healthy session.
+    fn on_success(&self, attempt: u32);
+    /// Called when `BackoffConfig::max_attempts` has been reached.
+    fn on_max_exhausted(&self, attempt: u32);
+}
+
+#[cfg(any(test, feature = "testing"))]
+static RECONNECT_OBSERVER: std::sync::Mutex<Option<Arc<dyn ReconnectObserver>>> =
+    std::sync::Mutex::new(None);
+
+/// Install (or replace) the process-wide reconnect observer. Returns the
+/// previously installed observer, if any, so tests can stack/restore.
+///
+/// This is intentionally a plain function (not a builder method on
+/// `ProfileSupervisor`) so the harness can wire it once at startup and
+/// then drive multiple profiles without threading the observer through
+/// every config struct.
+#[cfg(any(test, feature = "testing"))]
+pub fn install_test_hook(
+    hook: Arc<dyn ReconnectObserver>,
+) -> Option<Arc<dyn ReconnectObserver>> {
+    let mut g = RECONNECT_OBSERVER.lock().expect("RECONNECT_OBSERVER poisoned");
+    g.replace(hook)
+}
+
+/// Remove the currently installed reconnect observer, if any.
+#[cfg(any(test, feature = "testing"))]
+pub fn clear_test_hook() -> Option<Arc<dyn ReconnectObserver>> {
+    let mut g = RECONNECT_OBSERVER.lock().expect("RECONNECT_OBSERVER poisoned");
+    g.take()
+}
+
+/// Internal: snapshot the current observer (clones the `Arc`, drops the
+/// guard) so the supervisor can notify without holding the lock across an
+/// `.await` or user code.
+#[cfg(any(test, feature = "testing"))]
+pub(crate) fn current_observer() -> Option<Arc<dyn ReconnectObserver>> {
+    RECONNECT_OBSERVER
+        .lock()
+        .expect("RECONNECT_OBSERVER poisoned")
+        .clone()
+}
+
+/// Production builds compile this no-op so call sites in `profile.rs` can
+/// be unconditional. The optimiser strips it away.
+#[cfg(not(any(test, feature = "testing")))]
+#[inline(always)]
+pub(crate) fn notify_attempt(_attempt: u32, _delay: Duration) {}
+#[cfg(any(test, feature = "testing"))]
+#[inline]
+pub(crate) fn notify_attempt(attempt: u32, delay: Duration) {
+    if let Some(obs) = current_observer() {
+        obs.on_attempt(attempt, delay);
+    }
+}
+
+#[cfg(not(any(test, feature = "testing")))]
+#[inline(always)]
+pub(crate) fn notify_success(_attempt: u32) {}
+#[cfg(any(test, feature = "testing"))]
+#[inline]
+pub(crate) fn notify_success(attempt: u32) {
+    if let Some(obs) = current_observer() {
+        obs.on_success(attempt);
+    }
+}
+
+#[cfg(not(any(test, feature = "testing")))]
+#[inline(always)]
+pub(crate) fn notify_max_exhausted(_attempt: u32) {}
+#[cfg(any(test, feature = "testing"))]
+#[inline]
+pub(crate) fn notify_max_exhausted(attempt: u32) {
+    if let Some(obs) = current_observer() {
+        obs.on_max_exhausted(attempt);
+    }
+}
+
+// ---- Public test-only re-exports of the notify_* helpers ----------------
+//
+// The internal `notify_*` functions are `pub(crate)` because production
+// `profile.rs` call sites should be the only emitters. But the chaos
+// harness in `tests/chaos` needs to fabricate synthetic events to verify
+// its observer wiring without booting a full supervisor. We expose
+// `notify_*_for_test` aliases under the `testing` feature for that.
+
+/// Test-only: directly invoke `on_attempt` on the installed observer.
+/// **Only available with `feature = "testing"`** (or in this crate's tests).
+#[cfg(any(test, feature = "testing"))]
+pub fn notify_attempt_for_test(attempt: u32, delay: Duration) {
+    notify_attempt(attempt, delay);
+}
+
+/// Test-only: directly invoke `on_success` on the installed observer.
+#[cfg(any(test, feature = "testing"))]
+pub fn notify_success_for_test(attempt: u32) {
+    notify_success(attempt);
+}
+
+/// Test-only: directly invoke `on_max_exhausted` on the installed observer.
+#[cfg(any(test, feature = "testing"))]
+pub fn notify_max_exhausted_for_test(attempt: u32) {
+    notify_max_exhausted(attempt);
+}
+
+#[cfg(test)]
+mod hook_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    #[derive(Default)]
+    struct Counting {
+        attempts: AtomicU32,
+        successes: AtomicU32,
+        exhausted: AtomicU32,
+    }
+    impl ReconnectObserver for Counting {
+        fn on_attempt(&self, _: u32, _: Duration) {
+            self.attempts.fetch_add(1, Ordering::SeqCst);
+        }
+        fn on_success(&self, _: u32) {
+            self.successes.fetch_add(1, Ordering::SeqCst);
+        }
+        fn on_max_exhausted(&self, _: u32) {
+            self.exhausted.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    #[test]
+    fn install_then_notify_dispatches() {
+        // Note: this test mutates process-wide state. Other hook-using
+        // tests in this crate should serialize via a mutex or run with
+        // `--test-threads=1` if added.
+        let c = Arc::new(Counting::default());
+        let prev = install_test_hook(c.clone());
+        notify_attempt(1, Duration::from_millis(10));
+        notify_success(1);
+        notify_max_exhausted(7);
+        assert_eq!(c.attempts.load(Ordering::SeqCst), 1);
+        assert_eq!(c.successes.load(Ordering::SeqCst), 1);
+        assert_eq!(c.exhausted.load(Ordering::SeqCst), 1);
+        // Restore.
+        match prev {
+            Some(p) => {
+                install_test_hook(p);
+            }
+            None => {
+                let _ = clear_test_hook();
+            }
+        }
+    }
+}

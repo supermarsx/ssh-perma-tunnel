@@ -40,6 +40,10 @@ members = [
     "crates/spt-status-api",
     "crates/spt-mem-hygiene",
     "crates/spt-config-crypt",
+    # t8-C1: chaos TCP proxy (latency / loss / RST / partition injection).
+    # Pure library crate, no integration infra needed — safe as a workspace
+    # member so `cargo test --workspace` exercises its behaviour suite.
+    "crates/spt-chaos-proxy",
     "tests",
     "tests/conformance",
     "tests/stress",
@@ -56,6 +60,12 @@ exclude = [
     "fuzz",
     "tests/property",
     "tests/openssh-interop",
+    # t8-C1: chaos harness spawns the real `spt` binary against
+    # `spt-chaos-proxy` and stub SSH servers. Excluding it from the default
+    # workspace keeps `cargo test --workspace` fast and CI-stable; exercise
+    # standalone with `cargo test --manifest-path tests/chaos/Cargo.toml`.
+    # Mirrors the precedent set by `tests/property` and `tests/openssh-interop`.
+    "tests/chaos",
     # t7-P1: vendored russh fork (carries a single-line `+ 'static` trait-bound
     # patch on `russh::auth::Signer::Future` so we can drive agent userauth
     # through the russh backend). The fork ships its own `[workspace]` table —
@@ -144,6 +154,9 @@ spt-remote-config = { path = "crates/spt-remote-config", version = "0.1.0" }
 spt-status-api = { path = "crates/spt-status-api", version = "0.1.0" }
 spt-mem-hygiene = { path = "crates/spt-mem-hygiene", version = "0.1.0" }
 spt-config-crypt = { path = "crates/spt-config-crypt", version = "0.1.0" }
+# t8-C1 — chaos TCP proxy library, consumed by `tests/chaos` (which is its
+# own decoupled workspace) and any future in-process chaos test.
+spt-chaos-proxy = { path = "crates/spt-chaos-proxy", version = "0.1.0" }
 
 # Async runtime
 tokio = { version = "1.40", features = ["full"] }
