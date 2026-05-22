@@ -22,7 +22,7 @@ use spt_forward::{ForwardRunner, ForwardRunnerConfig};
 use spt_protocol::{Endpoint, TunnelProtocol, TunnelSession};
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
-use tokio::time::Instant;
+use tokio::time::{Instant, MissedTickBehavior};
 
 use crate::control::{Control, DrainReport};
 use crate::failover::{EndpointSelector, FailoverMode, ManualOverride};
@@ -92,6 +92,11 @@ pub struct ProfileSupervisorConfig {
     pub instability: InstabilityWindow,
     /// Optional override for the runner.
     pub runner_cfg: ForwardRunnerConfig,
+    /// Interval between in-`run_active` session-health polls
+    /// (`TunnelSession::keepalive`). When the keepalive returns `Err`, the
+    /// supervisor triggers a reconnect — see spec §11.3 ("missed keepalives
+    /// beyond policy MUST trigger session replacement"). Default 30 s.
+    pub keepalive_interval: Duration,
     /// RNG seed (for deterministic tests). `None` ⇒ entropy.
     pub rng_seed: Option<u64>,
     /// Shared registry to publish session rows into. Default = a fresh
@@ -108,6 +113,7 @@ impl Default for ProfileSupervisorConfig {
             failover_cooldown: Duration::from_secs(5),
             instability: InstabilityWindow::default(),
             runner_cfg: ForwardRunnerConfig::default(),
+            keepalive_interval: Duration::from_secs(30),
             rng_seed: None,
             registry: SessionRegistry::new(),
         }
@@ -173,6 +179,7 @@ impl ProfileSupervisor {
             selector: Arc::clone(&selector),
             registry,
             current_session: Arc::clone(&current_session),
+            session_up_since: None,
         };
         let join = tokio::spawn(task.run(control_rx));
 
@@ -318,6 +325,12 @@ struct ProfileTask {
     selector: Arc<Mutex<EndpointSelector>>,
     registry: SessionRegistry,
     current_session: Arc<Mutex<Option<SessionId>>>,
+    /// `Some(t)` while a session is up *and* has reached `ForwardsUp`.
+    /// Set when forwards come up; cleared when the active session exits
+    /// (cleanly or via failure). Used by [`Self::maybe_reset_backoff`] to
+    /// honour `BackoffConfig::reset_after` per spec §11.2:
+    /// "Backoff MUST reset after a stable connected duration."
+    session_up_since: Option<Instant>,
 }
 
 /// Outcome of one supervised session — drives the outer `run` loop.
@@ -326,6 +339,27 @@ enum LoopAction {
     Retry(Duration),
     /// Exit the run loop entirely.
     Exit,
+}
+
+/// Internal decision made inside [`ProfileTask::run_active`]'s
+/// `tokio::select!`. Lifted to module scope so clippy's
+/// `items-after-statements` is satisfied; carries control-message
+/// reply senders so the dispatch happens *after* the select! arms
+/// have released their borrows on `session` / `runners`.
+enum ActiveDecision {
+    ShutdownExit,
+    Failover {
+        override_to: Option<String>,
+        reply: oneshot::Sender<Result<()>>,
+    },
+    CloseSession {
+        reply: oneshot::Sender<Result<()>>,
+    },
+    Drain {
+        grace: Duration,
+        reply: oneshot::Sender<Result<DrainReport>>,
+    },
+    KeepaliveFailed,
 }
 
 impl ProfileTask {
@@ -440,7 +474,13 @@ impl ProfileTask {
                 }
             };
             self.fire(SmEvent::ForwardsUp);
-            self.backoff.reset();
+            // Spec §11.2: "Backoff MUST reset after a stable connected
+            // duration." We do *not* reset eagerly on ForwardsUp — that
+            // would make `BackoffConfig::reset_after` a no-op. Instead, we
+            // record when the session reached `ForwardsUp` and reset the
+            // attempt counter on the *next* failure, conditional on
+            // uptime ≥ `reset_after`. See `maybe_reset_backoff`.
+            self.session_up_since = Some(Instant::now());
 
             // 4. Hold the session until shutdown / control message.
             let action = self.run_active(&mut control, session, runners).await;
@@ -464,19 +504,60 @@ impl ProfileTask {
     async fn run_active(
         &mut self,
         control: &mut mpsc::Receiver<Control>,
-        session: Box<dyn TunnelSession>,
+        mut session: Box<dyn TunnelSession>,
         runners: Vec<ForwardRunner>,
     ) -> LoopAction {
-        let msg = control.recv().await;
-        match msg {
-            None | Some(Control::Shutdown) => {
+        // Spec §11.3: the supervisor MUST detect session-level liveness
+        // failures and trigger replacement. We drive
+        // `TunnelSession::keepalive` on `cfg.keepalive_interval` and
+        // treat any `Err` as "session dead → reconnect now".
+        let mut keepalive = tokio::time::interval(self.cfg.keepalive_interval);
+        // The first interval tick fires immediately; consume it so we
+        // don't probe the moment we enter the loop.
+        keepalive.set_missed_tick_behavior(MissedTickBehavior::Delay);
+        keepalive.tick().await;
+
+        let decision = loop {
+            tokio::select! {
+                msg = control.recv() => {
+                    break match msg {
+                        None | Some(Control::Shutdown) => ActiveDecision::ShutdownExit,
+                        Some(Control::Failover { override_to, reply }) => {
+                            ActiveDecision::Failover { override_to, reply }
+                        }
+                        Some(Control::CloseSession { reply }) => {
+                            ActiveDecision::CloseSession { reply }
+                        }
+                        Some(Control::Drain { grace, reply }) => {
+                            ActiveDecision::Drain { grace, reply }
+                        }
+                    };
+                }
+                _ = keepalive.tick() => {
+                    match session.keepalive().await {
+                        Ok(()) => continue,
+                        Err(e) => {
+                            tracing::warn!(
+                                profile = %self.name,
+                                error = %e,
+                                "session keepalive failed; triggering reconnect"
+                            );
+                            break ActiveDecision::KeepaliveFailed;
+                        }
+                    }
+                }
+            }
+        };
+
+        match decision {
+            ActiveDecision::ShutdownExit => {
                 for r in runners {
                     r.stop().await;
                 }
                 let _ = session.close().await;
                 LoopAction::Exit
             }
-            Some(Control::Failover { override_to, reply }) => {
+            ActiveDecision::Failover { override_to, reply } => {
                 let res = self.apply_manual_override(override_to.as_deref());
                 let _ = self.events_tx.send(ProfileEvent::FailoverRequested {
                     profile: self.name.clone(),
@@ -489,7 +570,7 @@ impl ProfileTask {
                 let _ = session.close().await;
                 LoopAction::Retry(Duration::from_millis(0))
             }
-            Some(Control::CloseSession { reply }) => {
+            ActiveDecision::CloseSession { reply } => {
                 for r in runners {
                     r.stop().await;
                 }
@@ -497,11 +578,19 @@ impl ProfileTask {
                 let _ = reply.send(Ok(()));
                 LoopAction::Retry(Duration::from_millis(0))
             }
-            Some(Control::Drain { grace, reply }) => {
+            ActiveDecision::Drain { grace, reply } => {
                 let report = drain_runners(runners, grace).await;
                 let _ = session.close().await;
                 let _ = reply.send(Ok(report));
                 LoopAction::Exit
+            }
+            ActiveDecision::KeepaliveFailed => {
+                self.fire(SmEvent::ForwardDown);
+                for r in runners {
+                    r.stop().await;
+                }
+                let _ = session.close().await;
+                LoopAction::Retry(Duration::from_millis(0))
             }
         }
     }
@@ -604,6 +693,16 @@ impl ProfileTask {
     }
 
     fn next_backoff(&mut self) -> Duration {
+        // Spec §11.2 reset semantics: if the just-ended session was up
+        // (had reached `ForwardsUp`) for at least `reset_after`, drop the
+        // attempt counter back to 0 *before* computing the next delay.
+        // Always clear `session_up_since` here because, regardless of
+        // uptime length, the session is no longer up.
+        if let Some(since) = self.session_up_since.take() {
+            if since.elapsed() >= self.cfg.backoff.reset_after {
+                self.backoff.reset();
+            }
+        }
         let attempt = self.backoff.attempt() + 1;
         let delay = self.backoff.next_delay_default();
         let _ = self.events_tx.send(ProfileEvent::ReconnectScheduled {
@@ -774,6 +873,269 @@ mod tests {
             }
         }
         assert!(got_exhausted, "expected BackoffExhausted");
+        sup.stop().await;
+    }
+
+    // ──────── t8-FixSup: reset_after + session-health regression tests ─
+
+    /// A tunnel session whose `keepalive()` fails on demand. Used to
+    /// drive the session-health loop into the reconnect path
+    /// deterministically.
+    #[derive(Debug)]
+    struct ToggleKeepaliveSession {
+        fail: Arc<std::sync::atomic::AtomicBool>,
+        info: spt_protocol::SessionInfo,
+    }
+
+    impl ToggleKeepaliveSession {
+        fn new(fail: Arc<std::sync::atomic::AtomicBool>) -> Self {
+            Self {
+                fail,
+                info: spt_protocol::SessionInfo {
+                    backend: "toggle".into(),
+                    peer_version: None,
+                    negotiated: None,
+                    established_at: 0,
+                },
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl spt_protocol::TunnelSession for ToggleKeepaliveSession {
+        async fn open_local_forward(
+            &mut self,
+            _spec: &spt_protocol::LocalForwardSpec,
+        ) -> Result<spt_protocol::ForwardHandle> {
+            Err(Error::RuntimeFailure("no forwards".into()))
+        }
+        async fn open_remote_forward(
+            &mut self,
+            _spec: &spt_protocol::RemoteForwardSpec,
+        ) -> Result<spt_protocol::ForwardHandle> {
+            Err(Error::RuntimeFailure("no forwards".into()))
+        }
+        async fn open_dynamic_forward(
+            &mut self,
+            _spec: &spt_protocol::DynamicForwardSpec,
+        ) -> Result<spt_protocol::ForwardHandle> {
+            Err(Error::RuntimeFailure("no forwards".into()))
+        }
+        async fn open_udp_forward(
+            &mut self,
+            _spec: &spt_protocol::UdpForwardSpec,
+        ) -> Result<spt_protocol::ForwardHandle> {
+            Err(Error::RuntimeFailure("no forwards".into()))
+        }
+        async fn keepalive(&mut self) -> Result<()> {
+            if self.fail.load(std::sync::atomic::Ordering::SeqCst) {
+                Err(Error::NetworkUnreachable("toggle".into()))
+            } else {
+                Ok(())
+            }
+        }
+        async fn close(self: Box<Self>) -> Result<()> {
+            Ok(())
+        }
+        fn session_info(&self) -> spt_protocol::SessionInfo {
+            self.info.clone()
+        }
+    }
+
+    /// `TunnelProtocol` that hands out [`ToggleKeepaliveSession`] but
+    /// can be flipped to fail `connect()` too, simulating an upstream
+    /// that's gone away.
+    #[derive(Debug)]
+    struct ToggleProto {
+        keepalive_fail: Arc<std::sync::atomic::AtomicBool>,
+        connect_fail: Arc<std::sync::atomic::AtomicBool>,
+        connect_count: Arc<std::sync::atomic::AtomicU32>,
+    }
+
+    impl ToggleProto {
+        fn new() -> Self {
+            Self {
+                keepalive_fail: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                connect_fail: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                connect_count: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl spt_protocol::TunnelProtocol for ToggleProto {
+        async fn connect(
+            &self,
+            _endpoint: &Endpoint,
+            _auth: &AuthConfig,
+        ) -> Result<Box<dyn spt_protocol::TunnelSession>> {
+            self.connect_count
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if self
+                .connect_fail
+                .load(std::sync::atomic::Ordering::SeqCst)
+            {
+                return Err(Error::NetworkUnreachable("toggle".into()));
+            }
+            Ok(Box::new(ToggleKeepaliveSession::new(Arc::clone(
+                &self.keepalive_fail,
+            ))))
+        }
+        fn capabilities(&self) -> spt_protocol::ProtocolCapabilities {
+            spt_protocol::ProtocolCapabilities::ssh3()
+        }
+        fn name(&self) -> &'static str {
+            "toggle"
+        }
+    }
+
+    /// Wait for the next `ProfileEvent::ReconnectScheduled` and
+    /// return its `attempt` field. Times out after `deadline`.
+    async fn wait_for_reconnect_attempt(
+        events: &mut mpsc::UnboundedReceiver<ProfileEvent>,
+        deadline: Duration,
+    ) -> Option<u32> {
+        let until = tokio::time::Instant::now() + deadline;
+        loop {
+            let remaining = until.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                return None;
+            }
+            match tokio::time::timeout(remaining, events.recv()).await {
+                Ok(Some(ProfileEvent::ReconnectScheduled { attempt, .. })) => {
+                    return Some(attempt);
+                }
+                Ok(Some(_)) => continue,
+                Ok(None) | Err(_) => return None,
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn reset_after_short_uptime_does_not_reset() {
+        // Session is up only briefly (< reset_after) before keepalive
+        // fails. Verify the next-failure backoff attempt is *not* 1
+        // (i.e. did not reset) when uptime was short.
+        let proto = Arc::new(ToggleProto::new());
+        let keepalive_fail = Arc::clone(&proto.keepalive_fail);
+        let connect_fail = Arc::clone(&proto.connect_fail);
+
+        let mut cfg = ProfileSupervisorConfig::default();
+        cfg.backoff.initial_delay = Duration::from_millis(5);
+        cfg.backoff.max_delay = Duration::from_millis(20);
+        cfg.backoff.max_attempts = 0;
+        cfg.backoff.reset_after = Duration::from_secs(60); // long
+        cfg.keepalive_interval = Duration::from_millis(30);
+
+        // Force connect failures FIRST so the supervisor bumps the
+        // attempt counter, then let it succeed so the session is up
+        // for a short moment, then trip keepalive.
+        connect_fail.store(true, std::sync::atomic::Ordering::SeqCst);
+
+        let sup = ProfileSupervisor::spawn(
+            "p",
+            proto.clone(),
+            auth(),
+            vec![endpoint("a")],
+            vec![],
+            cfg,
+        );
+        let mut events = sup.take_events().unwrap();
+
+        // Wait until at least 2 reconnect attempts have been scheduled.
+        let mut seen_attempts = 0_u32;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        while tokio::time::Instant::now() < deadline && seen_attempts < 2 {
+            if let Some(a) = wait_for_reconnect_attempt(
+                &mut events,
+                Duration::from_millis(500),
+            )
+            .await
+            {
+                seen_attempts = a;
+            }
+        }
+        assert!(
+            seen_attempts >= 2,
+            "expected ≥2 attempts before allowing connect, got {seen_attempts}"
+        );
+
+        // Let the next connect succeed.
+        connect_fail.store(false, std::sync::atomic::Ordering::SeqCst);
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        // Trip keepalive — uptime was ~200ms, well under 60s reset_after.
+        keepalive_fail.store(true, std::sync::atomic::Ordering::SeqCst);
+        // Re-arm connect_fail so the post-keepalive reconnect attempt
+        // surfaces a ReconnectScheduled event with the carried-over
+        // attempt counter.
+        connect_fail.store(true, std::sync::atomic::Ordering::SeqCst);
+
+        let next_attempt =
+            wait_for_reconnect_attempt(&mut events, Duration::from_secs(2))
+                .await
+                .expect("expected a reconnect-scheduled event after keepalive failure");
+        assert!(
+            next_attempt > 1,
+            "short-uptime should NOT reset backoff; expected attempt > 1, got {next_attempt}"
+        );
+
+        sup.stop().await;
+    }
+
+    #[tokio::test]
+    async fn reset_after_long_uptime_resets() {
+        // Session stays up longer than reset_after; the next failure
+        // must reset the attempt counter to 0 → next attempt is 1.
+        let proto = Arc::new(ToggleProto::new());
+        let keepalive_fail = Arc::clone(&proto.keepalive_fail);
+        let connect_fail = Arc::clone(&proto.connect_fail);
+
+        let mut cfg = ProfileSupervisorConfig::default();
+        cfg.backoff.initial_delay = Duration::from_millis(5);
+        cfg.backoff.max_delay = Duration::from_millis(20);
+        cfg.backoff.max_attempts = 0;
+        cfg.backoff.reset_after = Duration::from_millis(150);
+        cfg.keepalive_interval = Duration::from_millis(50);
+
+        // Connect succeeds → session up.
+        connect_fail.store(false, std::sync::atomic::Ordering::SeqCst);
+
+        let sup = ProfileSupervisor::spawn(
+            "p",
+            proto.clone(),
+            auth(),
+            vec![endpoint("a")],
+            vec![],
+            cfg,
+        );
+        let mut events = sup.take_events().unwrap();
+
+        // Drain events until ForwardsUp; that's when session_up_since
+        // is set. We can't easily peek that internal state — instead,
+        // we just wait long enough to exceed reset_after.
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        assert!(
+            proto
+                .connect_count
+                .load(std::sync::atomic::Ordering::SeqCst)
+                >= 1,
+            "expected ≥1 successful connect by now"
+        );
+
+        // Trip keepalive AND set connect_fail so the subsequent
+        // reconnect attempt produces an observable ReconnectScheduled
+        // event.
+        keepalive_fail.store(true, std::sync::atomic::Ordering::SeqCst);
+        connect_fail.store(true, std::sync::atomic::Ordering::SeqCst);
+
+        let attempt = wait_for_reconnect_attempt(&mut events, Duration::from_secs(2))
+            .await
+            .expect("expected reconnect event after keepalive failure");
+        assert_eq!(
+            attempt, 1,
+            "uptime ≥ reset_after should reset backoff; expected attempt = 1, got {attempt}"
+        );
+
         sup.stop().await;
     }
 

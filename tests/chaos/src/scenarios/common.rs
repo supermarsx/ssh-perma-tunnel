@@ -159,7 +159,10 @@ impl TunnelProtocol for TcpProbeProtocol {
         .await;
 
         match res {
-            Ok(Ok(())) => Ok(Box::new(ProbeSession)),
+            Ok(Ok(())) => Ok(Box::new(ProbeSession {
+                target: self.target,
+                timeout: self.timeout,
+            })),
             Ok(Err(e)) => Err(spt_core::Error::NetworkUnreachable(format!(
                 "probe: {e}"
             ))),
@@ -178,7 +181,16 @@ impl TunnelProtocol for TcpProbeProtocol {
     }
 }
 
-struct ProbeSession;
+/// Stateless probe-driven session. Each `keepalive()` reopens a fresh
+/// TCP probe against `target` so the supervisor's session-health loop
+/// can observe chaos-proxy mid-session disconnects (RstAfterBytes,
+/// Partition, LossPct(100), …). This is intentionally not a long-lived
+/// socket because the chaos proxy operates at the connection-attempt
+/// granularity.
+struct ProbeSession {
+    target: SocketAddr,
+    timeout: Duration,
+}
 
 #[async_trait]
 impl TunnelSession for ProbeSession {
@@ -223,7 +235,36 @@ impl TunnelSession for ProbeSession {
         ))
     }
     async fn keepalive(&mut self) -> CoreResult<()> {
-        Ok(())
+        // Drive a fresh TCP probe against the same target the original
+        // connect used. The chaos proxy's per-attempt behaviour
+        // (Partition / RstAfterBytes(0) / LossPct(100)) makes this
+        // probe fail when the upstream is partitioned, which is the
+        // seam that exercises the supervisor's session-health loop.
+        let target = self.target;
+        let timeout = self.timeout;
+        let res = tokio::time::timeout(timeout, async {
+            let mut s = TcpStream::connect(target).await?;
+            s.write_all(b"keepalive\n").await?;
+            let mut b = [0_u8; 1];
+            let n = s.read(&mut b).await?;
+            if n == 0 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "keepalive got 0 bytes",
+                ));
+            }
+            Ok::<_, std::io::Error>(())
+        })
+        .await;
+        match res {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(e)) => Err(spt_core::Error::NetworkUnreachable(format!(
+                "keepalive: {e}"
+            ))),
+            Err(_) => Err(spt_core::Error::NetworkUnreachable(
+                "keepalive: timeout".into(),
+            )),
+        }
     }
     async fn close(self: Box<Self>) -> CoreResult<()> {
         Ok(())
@@ -309,16 +350,32 @@ pub async fn spawn_proxy_to(
 }
 
 /// Build a supervisor wired to `proxy_addr` with `cfg`. Auth is empty
-/// (the `TcpProbeProtocol` doesn't use it).
+/// (the `TcpProbeProtocol` doesn't use it). Uses a tight keepalive
+/// interval (100ms) so session-health failures surface within the
+/// sub-second windows the scenarios assert against. Production default
+/// (30s) is far too slow for the test suite.
 #[must_use]
 pub fn spawn_supervisor(
     name: &str,
     proxy_addr: SocketAddr,
     backoff: BackoffConfig,
 ) -> ProfileSupervisor {
+    spawn_supervisor_with_keepalive(name, proxy_addr, backoff, Duration::from_millis(100))
+}
+
+/// Like [`spawn_supervisor`] but lets a scenario tune the keepalive
+/// interval explicitly.
+#[must_use]
+pub fn spawn_supervisor_with_keepalive(
+    name: &str,
+    proxy_addr: SocketAddr,
+    backoff: BackoffConfig,
+    keepalive_interval: Duration,
+) -> ProfileSupervisor {
     let proto = Arc::new(TcpProbeProtocol::new(proxy_addr));
     let mut cfg = ProfileSupervisorConfig::default();
     cfg.backoff = backoff;
+    cfg.keepalive_interval = keepalive_interval;
     ProfileSupervisor::spawn(
         name,
         proto,

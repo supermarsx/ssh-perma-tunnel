@@ -1,12 +1,11 @@
 //! Scenario 3 — **`network_partition_during_keepalive`**.
 //!
-//! Same bug class as scenario 2: the supervisor's `run_active` does not
-//! drive `TunnelSession::keepalive` and does not detect when the
-//! underlying transport becomes silent. A `Partition { after: 5s }`
-//! injected *after* the session establishes therefore never surfaces as
-//! a reconnect.
-//!
-//! Ship `#[ignore]`'d with a FIXME pointing at the bug.
+//! Fixed by t8-FixSup: the supervisor now drives
+//! `TunnelSession::keepalive` periodically in `run_active`. A
+//! `Partition { after: … }` injected post-session causes the next
+//! keepalive probe (a fresh TCP round-trip in the test
+//! `ProbeSession`) to hang past the probe timeout and surface as
+//! `Err`, which triggers the reconnect loop.
 
 use std::time::Duration;
 
@@ -16,7 +15,6 @@ use crate::scenarios::common::{
 use spt_chaos_proxy::ChaosBehaviour;
 
 #[tokio::test]
-#[ignore = "FIXME(bug): supervisor has no keepalive loop in run_active — see t8-C2.md"]
 async fn network_partition_during_keepalive() {
     let echo = EchoServer::spawn().await.expect("echo server");
     let (proxy, proxy_addr, _proxy_task) =
@@ -27,21 +25,25 @@ async fn network_partition_during_keepalive() {
 
     let sup = spawn_supervisor("partition-keepalive", proxy_addr, fast_backoff(0));
 
-    // Let the first probe succeed.
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    // Let the first probe succeed and the supervisor reach run_active.
+    tokio::time::sleep(Duration::from_millis(300)).await;
 
-    // Partition the proxy after 5 s (representing post-session
-    // keepalive scenario).
+    // Partition the proxy immediately — every newly accepted
+    // connection becomes silent the moment it's spawned. The
+    // probe-style `ProbeSession::keepalive` opens a fresh TCP per
+    // call, so its `read()` will hang past the probe timeout and the
+    // supervisor will reconnect.
     proxy.set_behaviour(ChaosBehaviour::Partition {
-        after: Duration::from_millis(500),
+        after: Duration::from_millis(0),
     });
 
     tokio::time::sleep(Duration::from_secs(3)).await;
 
-    // FIXME: bug — see log. With keepalive wired this would assert
-    // attempts.len() >= 1. Until then, the test only exercises the
-    // chaos-proxy partition mechanism end-to-end.
-    let _ = obs.attempts_snapshot();
+    let attempts = obs.attempts_snapshot();
+    assert!(
+        !attempts.is_empty(),
+        "expected ≥1 reconnect attempt after partition, got 0"
+    );
 
     sup.stop().await;
 }

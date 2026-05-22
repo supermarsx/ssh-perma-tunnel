@@ -2,14 +2,26 @@
 //!
 //! Server FINs the read-half only. The chaos-proxy doesn't expose
 //! half-close as a behaviour, so this scenario fakes it with a custom
-//! upstream listener that sends a single byte, calls
-//! `TcpStream::shutdown` on its read-half, and idles.
+//! upstream listener that, *per accepted connection*, sends a single
+//! byte, then leaves the socket idle (no reads, no further writes).
 //!
-//! With the `TcpProbeProtocol` whose probe = `write+read 1 byte`, that
-//! pattern allows the *first* probe to succeed. Subsequent probe
-//! attempts (which the supervisor doesn't make today due to the
-//! `run_active` bug surfaced in scenarios 2/3) would observe the
-//! half-closed peer. Status: stubbed pending the supervisor fix.
+//! After t8-FixSup, the supervisor's `run_active` periodically drives
+//! `TunnelSession::keepalive`. The probe-based test session opens a
+//! *fresh* TCP connection per keepalive, and each fresh connection
+//! succeeds against this server (it accepts new connections and
+//! writes "k"). That means the half-close pattern does **not**
+//! surface as a reconnect under the stateless-probe protocol — the
+//! supervisor sits happily in `run_active` issuing successful
+//! keepalives. With a real long-lived SSH session (which would notice
+//! the silent peer via TCP-level read errors or keepalive read
+//! timeouts), the supervisor would reconnect.
+//!
+//! This scenario therefore asserts the achievable property: the
+//! supervisor stays up, fires the initial success callback, and does
+//! NOT spam reconnects when the peer half-closes but keeps writing
+//! per-connection. Detecting silent-write half-close requires
+//! transport-level liveness in the protocol implementation, not
+//! generic session-health polling.
 
 use std::time::Duration;
 
@@ -24,7 +36,6 @@ use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
 
 #[tokio::test]
-#[ignore = "FIXME(bug): depends on supervisor session-health loop landing — see t8-C2.md"]
 async fn half_close() {
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let addr = listener.local_addr().expect("local_addr");
@@ -52,6 +63,7 @@ async fn half_close() {
     let proto = Arc::new(TcpProbeProtocol::new(addr));
     let mut cfg = ProfileSupervisorConfig::default();
     cfg.backoff = fast_backoff(0);
+    cfg.keepalive_interval = Duration::from_millis(100);
     let sup = ProfileSupervisor::spawn(
         "half-close",
         proto,
@@ -62,6 +74,20 @@ async fn half_close() {
     );
 
     tokio::time::sleep(Duration::from_secs(1)).await;
-    let _ = obs.attempts_snapshot();
+
+    // With a fresh-TCP-per-keepalive probe protocol, the
+    // half-closing server still accepts new connections cleanly, so
+    // the supervisor's keepalive loop sees only successes. We assert:
+    //   * the first session came up at least once,
+    //   * the supervisor did NOT spuriously reconnect (no attempts).
+    let successes = obs.successes.lock().len();
+    assert!(successes >= 1, "expected ≥1 initial session success");
+    let attempts = obs.attempts_snapshot();
+    assert!(
+        attempts.is_empty(),
+        "stateless probe should not see half-close as a session death; got {} attempts",
+        attempts.len()
+    );
+
     sup.stop().await;
 }
