@@ -66,14 +66,21 @@ pub fn transport_for_with_audit(
     cfg: &ObfsConfig,
     audit: Arc<dyn AuditHook>,
 ) -> Result<Box<dyn ObfsTransport>> {
-    cfg.validate().map_err(|e| Error::InvalidConfig(e.to_string()))?;
+    cfg.validate()
+        .map_err(|e| Error::InvalidConfig(e.to_string()))?;
     match cfg {
         ObfsConfig::Obfs4 { .. } => Ok(Box::new(obfs4::Obfs4Transport::new(cfg.clone(), audit)?)),
-        ObfsConfig::MeekHttp { .. } => Ok(Box::new(meek::MeekHttpTransport::new(cfg.clone(), audit)?)),
-        ObfsConfig::Websocket { .. } => Ok(Box::new(websocket::WebsocketTransport::new(cfg.clone(), audit)?)),
-        ObfsConfig::Shadowsocks { .. } => {
-            Ok(Box::new(shadowsocks::ShadowsocksTransport::new(cfg.clone(), audit)?))
+        ObfsConfig::MeekHttp { .. } => {
+            Ok(Box::new(meek::MeekHttpTransport::new(cfg.clone(), audit)?))
         }
+        ObfsConfig::Websocket { .. } => Ok(Box::new(websocket::WebsocketTransport::new(
+            cfg.clone(),
+            audit,
+        )?)),
+        ObfsConfig::Shadowsocks { .. } => Ok(Box::new(shadowsocks::ShadowsocksTransport::new(
+            cfg.clone(),
+            audit,
+        )?)),
     }
 }
 

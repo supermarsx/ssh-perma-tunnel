@@ -4,7 +4,7 @@
 //! allow-list. Pre-t7 this module rendered the allow-lists into libssh2
 //! `method_pref` comma-strings; the russh backend now consumes the typed
 //! [`russh::Preferred`] struct directly (see
-//! [`crate::russh_backend::build_preferred`]). What survives in this file
+//! `crate::russh_backend::build_preferred`). What survives in this file
 //! is the typed [`CryptoPolicy`] config struct plus the
 //! deprecated-algorithm warning helper that fires once per profile load.
 

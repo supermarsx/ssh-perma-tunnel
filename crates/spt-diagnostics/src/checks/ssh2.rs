@@ -81,7 +81,14 @@ impl Diagnostic for Ssh2Diagnostic {
                 .with_evidence("russh algorithm catalog reachable; pure-Rust SSH2 backend"),
         );
 
-        for label in ["kex", "hostkey", "cipher_cs", "cipher_sc", "mac_cs", "mac_sc"] {
+        for label in [
+            "kex",
+            "hostkey",
+            "cipher_cs",
+            "cipher_sc",
+            "mac_cs",
+            "mac_sc",
+        ] {
             let algs = russh_supported(label);
             if algs.is_empty() {
                 out.push(

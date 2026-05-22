@@ -34,10 +34,8 @@ async fn spawn_translator(
 ) -> (SocketAddr, spt_ftp_translator::ServerHandle, TempDir) {
     let dir = tempfile::tempdir().expect("tempdir");
     let factory = Arc::new(MockSftpFactory::new(dir.path().to_path_buf()));
-    let mut cfg = TranslatorConfig::defaults_for(SocketAddr::new(
-        IpAddr::V4(Ipv4Addr::LOCALHOST),
-        0,
-    ));
+    let mut cfg =
+        TranslatorConfig::defaults_for(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0));
     cfg.auth = AuthPolicy::Static {
         username: "alice".into(),
         password: "s3cret".into(),
@@ -51,7 +49,12 @@ async fn spawn_translator(
     (handle.local_addr, handle, dir)
 }
 
-async fn connect(addr: SocketAddr) -> (BufReader<tokio::net::tcp::OwnedReadHalf>, tokio::net::tcp::OwnedWriteHalf) {
+async fn connect(
+    addr: SocketAddr,
+) -> (
+    BufReader<tokio::net::tcp::OwnedReadHalf>,
+    tokio::net::tcp::OwnedWriteHalf,
+) {
     let stream = tokio::time::timeout(HANDSHAKE_TIMEOUT, TcpStream::connect(addr))
         .await
         .expect("connect timeout")
@@ -63,7 +66,10 @@ async fn connect(addr: SocketAddr) -> (BufReader<tokio::net::tcp::OwnedReadHalf>
         .await
         .expect("greet timeout")
         .expect("greet read");
-    assert!(greeting.starts_with("220 "), "expected 220 greeting, got `{greeting}`");
+    assert!(
+        greeting.starts_with("220 "),
+        "expected 220 greeting, got `{greeting}`"
+    );
     (br, wr)
 }
 
@@ -135,12 +141,9 @@ async fn type_image_stor_uploads_verbatim() {
     send(&mut wr, "STOR hello.bin").await;
     // Data connection: open it BEFORE consuming the next control reply
     // (the server writes 226 only after the upload completes).
-    let mut dc = TcpStream::connect(SocketAddr::new(
-        IpAddr::V4(Ipv4Addr::LOCALHOST),
-        port,
-    ))
-    .await
-    .expect("data connect");
+    let mut dc = TcpStream::connect(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port))
+        .await
+        .expect("data connect");
     dc.write_all(data).await.expect("write data");
     dc.shutdown().await.expect("shutdown data");
 
@@ -208,10 +211,8 @@ async fn epsv_ipv6_round_trip() {
     // Bind on `[::1]`; some CI hosts lack v6 loopback, so skip on bind err.
     let dir = tempfile::tempdir().unwrap();
     let factory = Arc::new(MockSftpFactory::new(dir.path().to_path_buf()));
-    let mut cfg = TranslatorConfig::defaults_for(SocketAddr::new(
-        IpAddr::V6(Ipv6Addr::LOCALHOST),
-        0,
-    ));
+    let mut cfg =
+        TranslatorConfig::defaults_for(SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0));
     cfg.auth = AuthPolicy::Static {
         username: "alice".into(),
         password: "s3cret".into(),
@@ -294,12 +295,9 @@ async fn retr_streams_via_sftp() {
     let _ = recv_line(&mut br).await;
     let port = pasv(&mut br, &mut wr).await;
     send(&mut wr, "RETR greet.txt").await;
-    let mut dc = TcpStream::connect(SocketAddr::new(
-        IpAddr::V4(Ipv4Addr::LOCALHOST),
-        port,
-    ))
-    .await
-    .unwrap();
+    let mut dc = TcpStream::connect(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port))
+        .await
+        .unwrap();
     let mut got = Vec::new();
     dc.read_to_end(&mut got).await.unwrap();
     let r = recv_line(&mut br).await;
@@ -323,12 +321,9 @@ async fn list_and_mlsd_well_formed_listings() {
     // LIST.
     let port = pasv(&mut br, &mut wr).await;
     send(&mut wr, "LIST").await;
-    let mut dc = TcpStream::connect(SocketAddr::new(
-        IpAddr::V4(Ipv4Addr::LOCALHOST),
-        port,
-    ))
-    .await
-    .unwrap();
+    let mut dc = TcpStream::connect(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port))
+        .await
+        .unwrap();
     let mut body = String::new();
     dc.read_to_string(&mut body).await.unwrap();
     let r = recv_line(&mut br).await;
@@ -343,12 +338,9 @@ async fn list_and_mlsd_well_formed_listings() {
     // MLSD.
     let port = pasv(&mut br, &mut wr).await;
     send(&mut wr, "MLSD").await;
-    let mut dc = TcpStream::connect(SocketAddr::new(
-        IpAddr::V4(Ipv4Addr::LOCALHOST),
-        port,
-    ))
-    .await
-    .unwrap();
+    let mut dc = TcpStream::connect(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port))
+        .await
+        .unwrap();
     let mut body = String::new();
     dc.read_to_string(&mut body).await.unwrap();
     let r = recv_line(&mut br).await;
@@ -470,8 +462,8 @@ async fn idle_timeout_closes_control_channel() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn auth_tls_reply_and_handshake() {
     // Generate a self-signed cert via rcgen.
-    let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()])
-        .expect("rcgen self-signed");
+    let cert =
+        rcgen::generate_simple_self_signed(vec!["localhost".into()]).expect("rcgen self-signed");
     let dir = tempfile::tempdir().unwrap();
     let cert_path = dir.path().join("cert.pem");
     let key_path = dir.path().join("key.pem");
@@ -482,10 +474,8 @@ async fn auth_tls_reply_and_handshake() {
     let factory = Arc::new(MockSftpFactory::new(
         tempfile::tempdir().unwrap().path().to_path_buf(),
     ));
-    let mut cfg = TranslatorConfig::defaults_for(SocketAddr::new(
-        IpAddr::V4(Ipv4Addr::LOCALHOST),
-        0,
-    ));
+    let mut cfg =
+        TranslatorConfig::defaults_for(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0));
     cfg.tls = Some(TlsConfig {
         cert_file: cert_path.clone(),
         key_file: key_path.clone(),
@@ -634,8 +624,8 @@ async fn spawn_tls_translator() -> (
     TempDir,
     std::path::PathBuf,
 ) {
-    let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()])
-        .expect("rcgen self-signed");
+    let cert =
+        rcgen::generate_simple_self_signed(vec!["localhost".into()]).expect("rcgen self-signed");
     let cert_dir = tempfile::tempdir().expect("tempdir");
     let cert_path = cert_dir.path().join("cert.pem");
     let key_path = cert_dir.path().join("key.pem");
@@ -646,10 +636,8 @@ async fn spawn_tls_translator() -> (
     // returned tempdir — the caller can reuse `_dir.path()`.
     let dir = tempfile::tempdir().expect("sftp tempdir");
     let factory = Arc::new(MockSftpFactory::new(dir.path().to_path_buf()));
-    let mut cfg = TranslatorConfig::defaults_for(SocketAddr::new(
-        IpAddr::V4(Ipv4Addr::LOCALHOST),
-        0,
-    ));
+    let mut cfg =
+        TranslatorConfig::defaults_for(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0));
     cfg.tls = Some(TlsConfig {
         cert_file: cert_path.clone(),
         key_file: key_path,
@@ -709,7 +697,10 @@ async fn auth_tls_in_place_upgrade_continues_session() {
     let tcp = br.into_inner();
     let connector = build_client_tls_connector();
     let server_name = rustls::pki_types::ServerName::try_from("localhost").unwrap();
-    let tls = connector.connect(server_name, tcp).await.expect("tls connect");
+    let tls = connector
+        .connect(server_name, tcp)
+        .await
+        .expect("tls connect");
 
     // Now drive USER/PASS over the encrypted channel.
     let (rd, mut wr) = tokio::io::split(tls);
@@ -766,7 +757,10 @@ async fn pbsz_prot_p_wraps_data_channel_in_tls() {
     let tcp = br.into_inner();
     let connector = build_client_tls_connector();
     let server_name = rustls::pki_types::ServerName::try_from("localhost").unwrap();
-    let tls = connector.connect(server_name, tcp).await.expect("tls connect");
+    let tls = connector
+        .connect(server_name, tcp)
+        .await
+        .expect("tls connect");
     let (rd, mut wr) = tokio::io::split(tls);
     let mut br = BufReader::new(rd);
 
@@ -803,12 +797,9 @@ async fn pbsz_prot_p_wraps_data_channel_in_tls() {
     // and wraps the accepted socket with the same TlsAcceptor.
     line.clear();
     wr.write_all(b"RETR greet.txt\r\n").await.unwrap();
-    let dc_tcp = TcpStream::connect(SocketAddr::new(
-        IpAddr::V4(Ipv4Addr::LOCALHOST),
-        port,
-    ))
-    .await
-    .expect("data tcp connect");
+    let dc_tcp = TcpStream::connect(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port))
+        .await
+        .expect("data tcp connect");
     let server_name = rustls::pki_types::ServerName::try_from("localhost").unwrap();
     let mut dc_tls = connector
         .connect(server_name, dc_tcp)
@@ -816,10 +807,7 @@ async fn pbsz_prot_p_wraps_data_channel_in_tls() {
         .expect("data tls connect");
     let mut body = Vec::new();
     dc_tls.read_to_end(&mut body).await.expect("data read");
-    assert_eq!(
-        body, b"hello-tls",
-        "TLS-wrapped RETR diverged: {body:?}",
-    );
+    assert_eq!(body, b"hello-tls", "TLS-wrapped RETR diverged: {body:?}",);
 
     // 226 follows on the control channel.
     br.read_line(&mut line).await.unwrap();
@@ -922,8 +910,8 @@ async fn ssh2_sftp_factory_pools_sessions_across_open_for() {
 
     // 1) Start an embedded russh server with WinCNG-compatible algorithm
     //    pinning + SFTP subsystem bridge.
-    let key = KeyPair::generate_rsa(2048, russh_keys::key::SignatureHash::SHA2_256)
-        .expect("rsa keygen");
+    let key =
+        KeyPair::generate_rsa(2048, russh_keys::key::SignatureHash::SHA2_256).expect("rsa keygen");
     let preferred = spt_ssh2::testing::wincng_libssh2_compatible_preferred();
     let cfg = Arc::new(RusshConfig {
         inactivity_timeout: Some(Duration::from_secs(60)),
@@ -966,9 +954,7 @@ async fn ssh2_sftp_factory_pools_sessions_across_open_for() {
             auth: AuthConfig::new(
                 "tester",
                 vec![AuthMethod::Password {
-                    secret: spt_auth::SecretRef::Env(
-                        "SPT_FTP_SSH2_FACTORY_PW".into(),
-                    ),
+                    secret: spt_auth::SecretRef::Env("SPT_FTP_SSH2_FACTORY_PW".into()),
                 }],
             ),
             trust: TrustPolicy::default(),
@@ -993,7 +979,10 @@ async fn ssh2_sftp_factory_pools_sessions_across_open_for() {
         .await
         .expect("first open_for should connect");
     let after_first = tcp_accepts.load(std::sync::atomic::Ordering::Relaxed);
-    assert!(after_first >= 1, "expected ≥1 SSH accept, got {after_first}");
+    assert!(
+        after_first >= 1,
+        "expected ≥1 SSH accept, got {after_first}"
+    );
 
     // 4) Second open_for("alice"): pool returns the cached Arc; no new
     //    connection is made.

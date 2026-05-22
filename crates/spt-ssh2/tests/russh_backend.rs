@@ -23,9 +23,7 @@ async fn connect_russh_session() -> (
         .expect("start russh server");
 
     std::env::set_var("SPT_TEST_RUSSH_BACKEND_PW", "anything");
-    let proto = Ssh2Protocol::builder()
-        
-        .build();
+    let proto = Ssh2Protocol::builder().build();
     let endpoint = Endpoint::new("127.0.0.1", server.addr.port());
     let auth = AuthConfig::new(
         "tester",

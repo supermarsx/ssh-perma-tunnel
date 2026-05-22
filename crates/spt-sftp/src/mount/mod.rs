@@ -93,7 +93,7 @@ pub enum MountEvent {
 pub type AuditHook = Arc<dyn Fn(&MountEvent) + Send + Sync>;
 
 /// Cross-platform mount options. Constructed by the CLI from an
-/// [`SftpMount`](spt_config::schema::SftpMount) row or by tests directly.
+/// `SftpMount` (in `spt_config::schema`) row or by tests directly.
 pub struct MountOpts {
     /// Local mountpoint (Unix) or drive letter target (Windows). Must be
     /// non-empty and absolute on Unix.
@@ -271,9 +271,7 @@ pub trait SftpMounter: Send {
 // `unnecessary_wraps` is a false positive — the `cfg(not(...))` arm returns
 // `Err`; clippy lints from the configured arm only.
 #[allow(clippy::unnecessary_wraps)]
-pub fn mounter_for_current_os(
-    sftp: Arc<SftpClient>,
-) -> Result<Box<dyn SftpMounter>, SftpError> {
+pub fn mounter_for_current_os(sftp: Arc<SftpClient>) -> Result<Box<dyn SftpMounter>, SftpError> {
     #[cfg(target_os = "linux")]
     {
         Ok(Box::new(linux_fuse::FuseMounter::new(sftp)))
@@ -419,13 +417,19 @@ mod tests {
     fn validate_rejects_relative_mountpoint_on_unix() {
         let o = opts("relative/path");
         let err = o.validate().unwrap_err();
-        assert!(matches!(err, SftpError::Local { detail, .. } if detail.contains("must be absolute")));
+        assert!(
+            matches!(err, SftpError::Local { detail, .. } if detail.contains("must be absolute"))
+        );
     }
 
     #[test]
     fn null_mounter_round_trips_mount_and_umount() {
         let mut m = NullMounter::default();
-        let target = if cfg!(windows) { "C:/mnt/data" } else { "/mnt/data" };
+        let target = if cfg!(windows) {
+            "C:/mnt/data"
+        } else {
+            "/mnt/data"
+        };
         let handle = m.mount(opts(target)).expect("mount");
         assert_eq!(handle.mountpoint, PathBuf::from(target));
         assert_eq!(m.live.len(), 1);
@@ -436,7 +440,11 @@ mod tests {
     #[test]
     fn null_mounter_umount_is_idempotent() {
         let mut m = NullMounter::default();
-        let target = if cfg!(windows) { "C:/mnt/data" } else { "/mnt/data" };
+        let target = if cfg!(windows) {
+            "C:/mnt/data"
+        } else {
+            "/mnt/data"
+        };
         let handle = m.mount(opts(target)).expect("mount");
         m.umount(handle.clone()).expect("umount-1");
         m.umount(handle).expect("umount-2");
@@ -447,7 +455,11 @@ mod tests {
     #[test]
     fn unsupported_mounter_returns_unsupported_platform_error() {
         let mut m = NullMounter::unsupported();
-        let target = if cfg!(windows) { "C:/mnt/data" } else { "/mnt/data" };
+        let target = if cfg!(windows) {
+            "C:/mnt/data"
+        } else {
+            "/mnt/data"
+        };
         let err = m.mount(opts(target)).unwrap_err();
         assert!(
             matches!(err, SftpError::UnsupportedPlatform { detail, .. } if detail.contains("not supported"))
@@ -462,7 +474,11 @@ mod tests {
             cap.lock().unwrap().push(ev.clone());
         });
         let mut m = NullMounter::default();
-        let target = if cfg!(windows) { "C:/mnt/data" } else { "/mnt/data" };
+        let target = if cfg!(windows) {
+            "C:/mnt/data"
+        } else {
+            "/mnt/data"
+        };
         let mut o = opts(target);
         o.audit_hook = Some(hook);
         let handle = m.mount(o).expect("mount");
@@ -500,7 +516,11 @@ mod tests {
 
     #[test]
     fn readonly_flag_round_trips_through_opts() {
-        let mut o = opts(if cfg!(windows) { "C:/mnt/data" } else { "/mnt/data" });
+        let mut o = opts(if cfg!(windows) {
+            "C:/mnt/data"
+        } else {
+            "/mnt/data"
+        });
         o.readonly = true;
         assert!(o.readonly);
         let cloned = o.clone();

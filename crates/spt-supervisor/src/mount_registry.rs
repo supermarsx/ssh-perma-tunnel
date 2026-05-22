@@ -13,13 +13,13 @@
 //!
 //! This module owns the supervisor-side registry. The CLI surface in
 //! `spt-bin::cli::sftp_ops` holds a process-global [`MountRegistry`] via
-//! `OnceLock` and threads each [`mount_start`] success through
+//! `OnceLock` and threads each `mount_start` success through
 //! [`MountRegistry::register`], so the live mounter survives until the
 //! matching [`MountRegistry::tear_down`] call (typically `mount stop`).
 //!
 //! ## Thread safety
 //!
-//! [`SftpMounter`](spt_sftp::mount::SftpMounter) requires only `Send`; the
+//! `SftpMounter` (in `spt_sftp::mount`) requires only `Send`; the
 //! registry stores each mounter behind a `parking_lot::Mutex` so
 //! `tear_down` can run from any thread. This is the correct contract for
 //! the current backends (`sshfs` shell-out is trivially `Send`; `fuser` and
@@ -33,7 +33,7 @@
 //!
 //! The registry is intentionally **silent**: it neither emits audit events
 //! nor touches `tracing`. The caller (`spt-bin::cli::sftp_ops::mount_stop`)
-//! continues to call [`crate::audit::emit_sftp_umount`] after a successful
+//! continues to call `crate::audit::emit_sftp_umount` after a successful
 //! tear-down. Keeping the registry pure makes it testable without the
 //! workspace audit sink.
 

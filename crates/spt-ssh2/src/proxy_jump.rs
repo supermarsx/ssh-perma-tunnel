@@ -114,17 +114,15 @@ where
         }
         0xff => {
             return Err(Error::auth_failed(
-                spt_core::Diagnostic::what(
-                    "SOCKS5 proxy rejected all advertised auth methods",
-                )
-                .why("server replied with NO_ACCEPTABLE_METHODS (0xff)")
-                .how_to_fix(
-                    "Check what auth methods the proxy requires (consult its docs or \
+                spt_core::Diagnostic::what("SOCKS5 proxy rejected all advertised auth methods")
+                    .why("server replied with NO_ACCEPTABLE_METHODS (0xff)")
+                    .how_to_fix(
+                        "Check what auth methods the proxy requires (consult its docs or \
                      server logs) and configure matching credentials. We currently \
                      advertise NO_AUTH and USERNAME/PASSWORD only.",
-                )
-                .retry_advice(spt_core::RetryAdvice::NotRetryable)
-                .build(),
+                    )
+                    .retry_advice(spt_core::RetryAdvice::NotRetryable)
+                    .build(),
             ));
         }
         other => {
@@ -225,20 +223,18 @@ where
     }
     if reply[1] != 0x00 {
         return Err(Error::auth_failed(
-            spt_core::Diagnostic::what(
-                "SOCKS5 proxy rejected the supplied username/password",
-            )
-            .why(format!(
-                "RFC 1929 sub-negotiation returned status 0x{:02x} (0x00 = success)",
-                reply[1]
-            ))
-            .how_to_fix(
-                "Verify `proxy.credentials.username` and `proxy.credentials.password` \
+            spt_core::Diagnostic::what("SOCKS5 proxy rejected the supplied username/password")
+                .why(format!(
+                    "RFC 1929 sub-negotiation returned status 0x{:02x} (0x00 = success)",
+                    reply[1]
+                ))
+                .how_to_fix(
+                    "Verify `proxy.credentials.username` and `proxy.credentials.password` \
                  match what the proxy expects. Consult the proxy's auth log if \
                  available.",
-            )
-            .retry_advice(spt_core::RetryAdvice::NotRetryable)
-            .build(),
+                )
+                .retry_advice(spt_core::RetryAdvice::NotRetryable)
+                .build(),
         ));
     }
     Ok(())

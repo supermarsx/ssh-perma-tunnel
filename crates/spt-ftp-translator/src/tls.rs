@@ -27,9 +27,8 @@ pub fn build_server_config(tls: &TlsConfig) -> Result<Arc<ServerConfig>, Transla
 }
 
 fn load_certs(path: &str) -> Result<Vec<CertificateDer<'static>>, TranslatorError> {
-    let file = File::open(path).map_err(|e| {
-        TranslatorError::Tls(format!("read cert file `{path}`: {e}"))
-    })?;
+    let file = File::open(path)
+        .map_err(|e| TranslatorError::Tls(format!("read cert file `{path}`: {e}")))?;
     let mut reader = BufReader::new(file);
     let mut out = Vec::new();
     for cert in rustls_pemfile::certs(&mut reader) {
@@ -37,17 +36,14 @@ fn load_certs(path: &str) -> Result<Vec<CertificateDer<'static>>, TranslatorErro
         out.push(cert);
     }
     if out.is_empty() {
-        return Err(TranslatorError::Tls(format!(
-            "no certificates in `{path}`"
-        )));
+        return Err(TranslatorError::Tls(format!("no certificates in `{path}`")));
     }
     Ok(out)
 }
 
 fn load_key(path: &str) -> Result<PrivateKeyDer<'static>, TranslatorError> {
-    let file = File::open(path).map_err(|e| {
-        TranslatorError::Tls(format!("read key file `{path}`: {e}"))
-    })?;
+    let file = File::open(path)
+        .map_err(|e| TranslatorError::Tls(format!("read key file `{path}`: {e}")))?;
     let mut reader = BufReader::new(file);
     // Try PKCS#8 first, then RSA, then SEC1.
     if let Some(k) = rustls_pemfile::pkcs8_private_keys(&mut reader).next() {
@@ -55,17 +51,15 @@ fn load_key(path: &str) -> Result<PrivateKeyDer<'static>, TranslatorError> {
         return Ok(PrivateKeyDer::Pkcs8(k));
     }
     // Re-open: pemfile iterators are single-pass.
-    let file = File::open(path).map_err(|e| {
-        TranslatorError::Tls(format!("re-read key file `{path}`: {e}"))
-    })?;
+    let file = File::open(path)
+        .map_err(|e| TranslatorError::Tls(format!("re-read key file `{path}`: {e}")))?;
     let mut reader = BufReader::new(file);
     if let Some(k) = rustls_pemfile::rsa_private_keys(&mut reader).next() {
         let k = k.map_err(|e| TranslatorError::Tls(format!("parse rsa key: {e}")))?;
         return Ok(PrivateKeyDer::Pkcs1(k));
     }
-    let file = File::open(path).map_err(|e| {
-        TranslatorError::Tls(format!("re-read key file `{path}`: {e}"))
-    })?;
+    let file = File::open(path)
+        .map_err(|e| TranslatorError::Tls(format!("re-read key file `{path}`: {e}")))?;
     let mut reader = BufReader::new(file);
     if let Some(k) = rustls_pemfile::ec_private_keys(&mut reader).next() {
         let k = k.map_err(|e| TranslatorError::Tls(format!("parse ec key: {e}")))?;

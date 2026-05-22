@@ -2340,13 +2340,20 @@ mod tests {
         "#;
         let (c, _) = load_str(raw, false).unwrap();
         let d = validate(&c);
-        assert!(d.errors.is_empty(), "old config must still load: {:?}", d.errors);
+        assert!(
+            d.errors.is_empty(),
+            "old config must still load: {:?}",
+            d.errors
+        );
         let count = d
             .warnings
             .iter()
             .filter(|w| w.code == "capabilities_ssh2_backend_deprecated_t7")
             .count();
-        assert!(count >= 2, "expected both deprecation warnings; got {count}");
+        assert!(
+            count >= 2,
+            "expected both deprecation warnings; got {count}"
+        );
     }
 
     #[test]

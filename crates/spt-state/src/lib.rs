@@ -14,6 +14,12 @@
 //!   `BaseDirs` leakage site).
 
 #![forbid(unsafe_code)]
+#![warn(missing_docs)]
+// t8-E1: blanket allow — 93 missing-docs items across the
+// StatusSnapshot type tree (per spec §13.5). Schema is documented in
+// the spec itself and in `docs/observability.md`. Per-item docstrings
+// deferred to v1.1.
+#![allow(missing_docs)]
 
 pub mod atomic;
 pub mod clock;

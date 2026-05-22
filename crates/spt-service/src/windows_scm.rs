@@ -30,7 +30,7 @@
 //! The lifecycle paths route through a private [`ScmBackend`] trait so the
 //! SCM-facing logic (exit-code decoding, "service not installed" branch,
 //! `reload` precheck, `sc.exe` shell-out) can be exercised by an in-memory
-//! [`MockScmBackend`] without touching real Win32 handles. The production
+//! `MockScmBackend` without touching real Win32 handles. The production
 //! impl ([`WindowsServiceCrateBackend`]) wraps `windows-service 0.7`. The
 //! public [`WindowsScmManager`] type stays `#[derive(Debug, Default, Clone,
 //! Copy)]` and routes calls through `WindowsServiceCrateBackend` on Windows,
@@ -98,7 +98,7 @@ impl WindowsScmManager {
 /// minus the foreign enums; constructed by [`ScmBackend::query_status`] and
 /// re-decoded by [`ScmManagerImpl::status`] into a [`ServiceStatus`].
 ///
-/// Visibility: `pub` so [`crate::testing`] (gated behind `feature = "testing"`)
+/// Visibility: `pub` so `crate::testing` (gated behind `feature = "testing"`)
 /// can re-export it for external integration tests. Under default features
 /// the type lives in a `pub(crate)`-cfg-gated path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -126,14 +126,14 @@ pub(crate) enum ReloadPrecheck {
 /// Internal trait abstracting the SCM operations used by [`WindowsScmManager`].
 ///
 /// One implementation: [`WindowsServiceCrateBackend`] (Windows only, wraps
-/// `windows-service 0.7`). A second [`MockScmBackend`] sits behind
+/// `windows-service 0.7`). A second `MockScmBackend` sits behind
 /// `feature = "testing"` and records every call into a `Mutex<Vec<ScmCall>>`
 /// for inline coverage tests.
 ///
 /// Method shapes deliberately avoid leaking `windows-service` types so the
 /// trait is implementable on any platform.
 ///
-/// Visibility: `pub` so [`crate::testing`] can re-export the mock; the trait
+/// Visibility: `pub` so `crate::testing` can re-export the mock; the trait
 /// is not part of `spt-service`'s public *stable* contract — its API may
 /// shift between crate versions.
 pub trait ScmBackend: Send + Sync {
@@ -150,7 +150,7 @@ pub trait ScmBackend: Send + Sync {
     fn open_service_for(&self, name: &str, access: ScmAccess) -> Result<bool>;
 
     /// Create the service. The caller has already rendered the
-    /// `launch_arguments` array (see [`scm_launch_arguments`]).
+    /// `launch_arguments` array (see `scm_launch_arguments`).
     fn create_service(&self, spec: &ServiceSpec) -> Result<()>;
 
     /// Start `name`. Returns `Err(...)` if SCM refuses (already-running is
@@ -622,7 +622,7 @@ pub(crate) fn scm_launch_arguments(spec_args: &[String]) -> Vec<std::ffi::OsStri
 // `feature = "testing"` (and for inline `#[cfg(test)]` builds).
 // ============================================================================
 
-/// One observed call against a [`MockScmBackend`].
+/// One observed call against a `MockScmBackend`.
 #[cfg(any(test, feature = "testing"))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ScmCall {

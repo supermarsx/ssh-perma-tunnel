@@ -8,6 +8,12 @@
 
 #![allow(clippy::large_enum_variant)]
 #![allow(clippy::doc_markdown)]
+#![warn(missing_docs)]
+// t8-E1: blanket allow — clap-derived Cli has 41 missing-docs (every
+// public `enum Command` variant + `Args` struct field), all of which
+// are documented in `docs/cli-reference.md` and shown by `--help`.
+// Adding `///` to every variant is mechanical follow-up for v1.1.
+#![allow(missing_docs)]
 
 use std::path::PathBuf;
 

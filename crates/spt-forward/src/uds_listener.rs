@@ -132,12 +132,11 @@ impl UdsListener {
     /// [`Self::unlink_existing_if_socket`] beforehand).
     pub async fn bind(path: &str) -> Result<Self> {
         let bind_path = std::path::PathBuf::from(path);
-        let inner = tokio::net::UnixListener::bind(&bind_path).map_err(|e| {
-            Error::LocalBindFailed {
+        let inner =
+            tokio::net::UnixListener::bind(&bind_path).map_err(|e| Error::LocalBindFailed {
                 address: path.to_owned(),
                 reason: format!("bind UNIX socket: {e}"),
-            }
-        })?;
+            })?;
         Ok(Self {
             inner,
             path: bind_path,

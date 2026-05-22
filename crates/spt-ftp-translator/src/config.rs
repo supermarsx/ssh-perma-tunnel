@@ -111,7 +111,10 @@ impl AuthPolicy {
     pub fn authorise(&self, user: &str, password: &str) -> bool {
         match self {
             Self::Deny => false,
-            Self::Static { username, password: p } => username == user && p == password,
+            Self::Static {
+                username,
+                password: p,
+            } => username == user && p == password,
             Self::Anonymous => {
                 user.eq_ignore_ascii_case("anonymous") || user.eq_ignore_ascii_case("ftp")
             }
@@ -140,19 +143,15 @@ mod tests {
 
     #[test]
     fn defaults_are_valid() {
-        let cfg = TranslatorConfig::defaults_for(SocketAddr::new(
-            IpAddr::V4(Ipv4Addr::LOCALHOST),
-            0,
-        ));
+        let cfg =
+            TranslatorConfig::defaults_for(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0));
         cfg.validate().unwrap();
     }
 
     #[test]
     fn inverted_range_rejected() {
-        let mut cfg = TranslatorConfig::defaults_for(SocketAddr::new(
-            IpAddr::V4(Ipv4Addr::LOCALHOST),
-            0,
-        ));
+        let mut cfg =
+            TranslatorConfig::defaults_for(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0));
         cfg.passive_port_range = (50100, 50000);
         assert!(cfg.validate().is_err());
     }

@@ -75,7 +75,11 @@ fn port_in_brackets_does_not_match_default_port() {
 fn ed25519_and_rsa_coexist_for_same_host() {
     let ed = ed25519_pub();
     let rsa = rsa_pub();
-    let text = format!("{}\n{}\n", line("multi.example", &ed), line("multi.example", &rsa));
+    let text = format!(
+        "{}\n{}\n",
+        line("multi.example", &ed),
+        line("multi.example", &rsa)
+    );
     let kh = KnownHosts::parse(&text).unwrap();
     assert_eq!(kh.entries.len(), 2);
     // Either algorithm matches when its corresponding key is presented.
@@ -130,7 +134,10 @@ fn cert_authority_marker_does_not_match_host_key_lookup() {
     // duplicate at integration-test level to catch accidental regressions
     // in the public verify() contract.
     let ca_key = ed25519_pub();
-    let text = format!("@cert-authority *.svc.example.com {}\n", ca_key.to_openssh().unwrap());
+    let text = format!(
+        "@cert-authority *.svc.example.com {}\n",
+        ca_key.to_openssh().unwrap()
+    );
     let kh = KnownHosts::parse(&text).unwrap();
     assert_eq!(
         kh.verify("host.svc.example.com", 22, &ca_key),

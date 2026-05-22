@@ -79,7 +79,11 @@ impl Comparator for LifecycleMock {
     }
     async fn measure_throughput(&mut self, bytes: usize) -> ComparatorResult<ThroughputSample> {
         // setup must already have set bit 0.
-        assert_ne!(self.bits.load(Ordering::SeqCst) & 1, 0, "throughput before setup");
+        assert_ne!(
+            self.bits.load(Ordering::SeqCst) & 1,
+            0,
+            "throughput before setup"
+        );
         self.bits.fetch_or(1 << 1, Ordering::SeqCst);
         Ok(ThroughputSample {
             bytes,
@@ -89,12 +93,20 @@ impl Comparator for LifecycleMock {
         })
     }
     async fn measure_reconnect_cost(&mut self) -> ComparatorResult<Duration> {
-        assert_ne!(self.bits.load(Ordering::SeqCst) & 2, 0, "reconnect before throughput");
+        assert_ne!(
+            self.bits.load(Ordering::SeqCst) & 2,
+            0,
+            "reconnect before throughput"
+        );
         self.bits.fetch_or(1 << 2, Ordering::SeqCst);
         Ok(Duration::from_millis(7))
     }
     async fn shutdown(self: Box<Self>) -> ComparatorResult<()> {
-        assert_ne!(self.bits.load(Ordering::SeqCst) & 4, 0, "shutdown before reconnect");
+        assert_ne!(
+            self.bits.load(Ordering::SeqCst) & 4,
+            0,
+            "shutdown before reconnect"
+        );
         self.bits.fetch_or(1 << 3, Ordering::SeqCst);
         Ok(())
     }

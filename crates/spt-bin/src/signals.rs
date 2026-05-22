@@ -79,7 +79,9 @@ async fn run_signal_task(tx: watch::Sender<Option<Signal>>) {
 /// 3. Returns `Ok(None)` if no source is configured — the caller treats this
 ///    as "leave the filter untouched".
 #[cfg(unix)]
-pub fn read_sighup_log_filter(state_dir: Option<&std::path::Path>) -> std::io::Result<Option<String>> {
+pub fn read_sighup_log_filter(
+    state_dir: Option<&std::path::Path>,
+) -> std::io::Result<Option<String>> {
     if let Some(raw) = std::env::var_os("SPT_LOG") {
         if let Some(s) = raw.to_str() {
             return Ok(Some(s.to_owned()));
@@ -191,7 +193,11 @@ mod tests {
         let prev = std::env::var_os("SPT_LOG");
         std::env::remove_var("SPT_LOG");
         let tmp = tempfile::tempdir().unwrap();
-        std::fs::write(tmp.path().join("log-filter"), "  info,spt_supervisor=debug \n").unwrap();
+        std::fs::write(
+            tmp.path().join("log-filter"),
+            "  info,spt_supervisor=debug \n",
+        )
+        .unwrap();
         let v = read_sighup_log_filter(Some(tmp.path())).unwrap();
         assert_eq!(v.as_deref(), Some("info,spt_supervisor=debug"));
         if let Some(p) = prev {

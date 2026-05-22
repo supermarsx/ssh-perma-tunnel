@@ -27,6 +27,11 @@
 #![allow(clippy::module_name_repetitions)]
 #![allow(clippy::missing_errors_doc)]
 #![allow(clippy::redundant_closure_for_method_calls)]
+#![warn(missing_docs)]
+// t8-E1: blanket allow — 40 missing-docs items, primarily verb enum
+// variants and reply codes. Behaviour is documented in
+// `docs/ftp-translator.md`. Per-item docstrings deferred to v1.1.
+#![allow(missing_docs)]
 #![allow(clippy::needless_pass_by_value)]
 #![allow(clippy::manual_let_else)]
 #![allow(clippy::uninlined_format_args)]

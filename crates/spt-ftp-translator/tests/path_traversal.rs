@@ -25,9 +25,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 
-use spt_ftp_translator::{
-    mock::MockSftpFactory, server::Server, AuthPolicy, TranslatorConfig,
-};
+use spt_ftp_translator::{mock::MockSftpFactory, server::Server, AuthPolicy, TranslatorConfig};
 use tempfile::TempDir;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
@@ -37,10 +35,8 @@ const TIMEOUT: Duration = Duration::from_secs(5);
 async fn spawn_translator() -> (SocketAddr, spt_ftp_translator::ServerHandle, TempDir) {
     let dir = tempfile::tempdir().expect("tempdir");
     let factory = Arc::new(MockSftpFactory::new(dir.path().to_path_buf()));
-    let mut cfg = TranslatorConfig::defaults_for(SocketAddr::new(
-        IpAddr::V4(Ipv4Addr::LOCALHOST),
-        0,
-    ));
+    let mut cfg =
+        TranslatorConfig::defaults_for(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0));
     cfg.auth = AuthPolicy::Static {
         username: "alice".into(),
         password: "s3cret".into(),
@@ -121,10 +117,7 @@ async fn cwd_dotdot_from_root_collapses_to_root() {
     // Verify we're still effectively at `/` by issuing PWD.
     send(&mut wr, "PWD").await;
     let pwd = recv_line(&mut br).await;
-    assert!(
-        pwd.contains('/'),
-        "PWD should report a path: `{pwd}`"
-    );
+    assert!(pwd.contains('/'), "PWD should report a path: `{pwd}`");
     handle.shutdown();
 }
 
@@ -155,8 +148,8 @@ async fn retr_dotdot_outside_root_yields_no_such_file() {
     send(&mut wr, "RETR ../evil.txt").await;
     // The server may issue a 150 mark + open the data connection. Open
     // and immediately close to unblock the server-side state.
-    if let Ok(mut dc) = TcpStream::connect(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port))
-        .await
+    if let Ok(mut dc) =
+        TcpStream::connect(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port)).await
     {
         let _ = dc.shutdown().await;
     }

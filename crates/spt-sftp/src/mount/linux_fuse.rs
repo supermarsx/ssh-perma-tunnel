@@ -3,8 +3,8 @@
 //! When the `mount-fuse` cargo feature is **enabled** *and* the build target
 //! is `linux`, this module wires [`SftpClient`] callbacks to the kernel via
 //! the `fuser` crate (0.15). The session is hosted by
-//! [`fuser::BackgroundSession`], which owns a dedicated [`std::thread`]
-//! driving the kernel IO loop. Each [`fuser::Filesystem`] callback is
+//! `fuser::BackgroundSession`, which owns a dedicated [`std::thread`]
+//! driving the kernel IO loop. Each `fuser::Filesystem` callback is
 //! synchronous; the backend captures a [`tokio::runtime::Handle`] at mount
 //! time and uses [`tokio::runtime::Handle::block_on`] to call back into the
 //! async [`SftpClient`].
@@ -29,7 +29,7 @@
 //! | `UnsupportedPlatform`     | `ENOSYS`                       |
 //!
 //! Stale handles surface `ESTALE`. The translation lives in
-//! [`errno_for`] for future audit.
+//! `errno_for` for future audit.
 
 use std::sync::Arc;
 
@@ -102,8 +102,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 #[cfg(all(target_os = "linux", feature = "mount-fuse"))]
 use fuser::{
     BackgroundSession, FileAttr, FileType, Filesystem, MountOption, ReplyAttr, ReplyCreate,
-    ReplyData, ReplyDirectory, ReplyEmpty, ReplyEntry, ReplyOpen, ReplyStatfs, ReplyWrite,
-    Request, TimeOrNow,
+    ReplyData, ReplyDirectory, ReplyEmpty, ReplyEntry, ReplyOpen, ReplyStatfs, ReplyWrite, Request,
+    TimeOrNow,
 };
 
 /// FUSE-backed mounter for Linux.
@@ -150,8 +150,7 @@ impl SftpMounter for FuseMounter {
             Err(_) => {
                 let err = SftpError::Local {
                     op: "mount",
-                    detail: "FuseMounter::mount must be called from inside a tokio runtime"
-                        .into(),
+                    detail: "FuseMounter::mount must be called from inside a tokio runtime".into(),
                 };
                 opts.emit(&MountEvent::MountFailed {
                     target: opts.mountpoint.clone(),
@@ -391,11 +390,7 @@ pub struct FuseFs {
 
 #[cfg(all(target_os = "linux", feature = "mount-fuse"))]
 impl FuseFs {
-    fn new(
-        sftp: Arc<SftpClient>,
-        handle: tokio::runtime::Handle,
-        opts: &MountOpts,
-    ) -> Self {
+    fn new(sftp: Arc<SftpClient>, handle: tokio::runtime::Handle, opts: &MountOpts) -> Self {
         let root = opts.remote_root.to_string_lossy().into_owned();
         // Normalise: SFTP servers expect `/foo`, not `/foo/`.
         let root_norm = if root.is_empty() {
@@ -481,11 +476,7 @@ impl FuseFs {
     }
 
     /// Build a [`FileAttr`] from a [`crate::client::SftpMetadata`].
-    fn attr_from_meta(
-        &self,
-        ino: u64,
-        meta: &crate::client::SftpMetadata,
-    ) -> FileAttr {
+    fn attr_from_meta(&self, ino: u64, meta: &crate::client::SftpMetadata) -> FileAttr {
         let kind = if meta.is_dir {
             FileType::Directory
         } else if meta.is_symlink {
@@ -498,11 +489,9 @@ impl FuseFs {
             .modified_unix
             .map(|s| UNIX_EPOCH + Duration::from_secs(u64::from(s)))
             .unwrap_or(UNIX_EPOCH);
-        let perm = meta.permissions.unwrap_or(if meta.is_dir {
-            0o755
-        } else {
-            0o644
-        }) as u16
+        let perm = meta
+            .permissions
+            .unwrap_or(if meta.is_dir { 0o755 } else { 0o644 }) as u16
             & 0o7777;
         FileAttr {
             ino,
@@ -710,7 +699,10 @@ impl Filesystem for FuseFs {
         let full = Self::join(&parent_path, name_str);
         let sftp = self.sftp.clone();
         let p = full.clone();
-        if let Err(e) = self.handle.block_on(async move { sftp.create_dir(p).await }) {
+        if let Err(e) = self
+            .handle
+            .block_on(async move { sftp.create_dir(p).await })
+        {
             reply.error(errno_for(&e));
             return;
         }

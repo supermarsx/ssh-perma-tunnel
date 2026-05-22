@@ -58,18 +58,16 @@ fn catch_sspi_ffi<T>(label: &str, f: impl FnOnce() -> T) -> Result<T> {
     catch_unwind(AssertUnwindSafe(f)).map_err(|panic| {
         let msg = panic_string(&panic);
         Error::auth_failed(
-            Diagnostic::what(format!(
-                "SSPI {label} panicked across the FFI boundary"
-            ))
-            .why(msg)
-            .how_to_fix(
-                "An sspi-rs call into pure-Rust SSPI panicked. Verify the SSPI \
+            Diagnostic::what(format!("SSPI {label} panicked across the FFI boundary"))
+                .why(msg)
+                .how_to_fix(
+                    "An sspi-rs call into pure-Rust SSPI panicked. Verify the SSPI \
                  package handle is valid and the credential/token buffers are not \
                  concurrently aliased. If reproducible, capture the offending \
                  token via SPT_LOG=spt_auth_sspi=trace and report at the \
                  spt-perma-tunnel repo.",
-            )
-            .build(),
+                )
+                .build(),
         )
     })
 }
@@ -96,7 +94,9 @@ impl SspiCredentials {
     pub fn from_env() -> Option<Self> {
         let username = env::var("SPT_SSPI_USER").ok().filter(|s| !s.is_empty())?;
         let password = env::var("SPT_SSPI_PASS").ok().filter(|s| !s.is_empty())?;
-        let kdc_url = env::var("SPT_SSPI_KDC_URL").ok().filter(|s| !s.is_empty())?;
+        let kdc_url = env::var("SPT_SSPI_KDC_URL")
+            .ok()
+            .filter(|s| !s.is_empty())?;
         Some(Self {
             username,
             password,
@@ -146,8 +146,7 @@ fn map_sspi_err(err: &sspi::Error) -> Error {
 }
 
 fn build_flags(cfg: &SspiConfig) -> ClientRequestFlags {
-    let mut flags =
-        ClientRequestFlags::MUTUAL_AUTH | ClientRequestFlags::ALLOCATE_MEMORY;
+    let mut flags = ClientRequestFlags::MUTUAL_AUTH | ClientRequestFlags::ALLOCATE_MEMORY;
     if cfg.delegate {
         flags |= ClientRequestFlags::DELEGATE;
     }
@@ -169,7 +168,8 @@ fn parse_identity(user: &str, password: &str) -> Result<AuthIdentity> {
 impl SspiProvider {
     fn new_kerberos(cfg: &SspiConfig, creds: &SspiCredentials) -> Result<Self> {
         let kerb_cfg = KerberosConfig::new(&creds.kdc_url, hostname_or_localhost());
-        let mut kerberos = Kerberos::new_client_from_config(kerb_cfg).map_err(|e| map_sspi_err(&e))?;
+        let mut kerberos =
+            Kerberos::new_client_from_config(kerb_cfg).map_err(|e| map_sspi_err(&e))?;
         let identity = parse_identity(&creds.username, &creds.password)?;
         let acq = kerberos
             .acquire_credentials_handle()
@@ -214,8 +214,7 @@ impl SspiProvider {
         } else {
             Some("kerberos".to_owned())
         };
-        let neg_cfg =
-            NegotiateConfig::new(Box::new(kerb_cfg), pkg_list, hostname_or_localhost());
+        let neg_cfg = NegotiateConfig::new(Box::new(kerb_cfg), pkg_list, hostname_or_localhost());
         let mut negotiate = Negotiate::new(neg_cfg).map_err(|e| map_sspi_err(&e))?;
         let identity = parse_identity(&creds.username, &creds.password)?;
         let acq = negotiate
@@ -266,71 +265,84 @@ impl GssProvider for SspiProvider {
             // `Error::AuthFailedDiagnostic` instead of aborting the process.
             // The `??` unwraps both layers: outer `Result` is the panic
             // catcher, inner is the sspi-rs result.
-            catch_sspi_ffi("initialize_security_context", || -> Result<SecurityStatus> {
-            Ok(match &mut *ctx {
-                SspiContext::Kerberos(boxed) => {
-                    let (k, creds) = (&mut boxed.0, &mut boxed.1);
-                    let mut builder = k
-                        .initialize_security_context()
-                        .with_credentials_handle(creds)
-                        .with_context_requirements(self.flags)
-                        .with_target_data_representation(DataRepresentation::Native)
-                        .with_target_name(&target_owned)
-                        .with_input(&mut input)
-                        .with_output(&mut output);
-                    let result = k
-                        .initialize_security_context_impl(&mut builder)
-                        .map_err(|e| map_sspi_err(&e))?
-                        .resolve_to_result()
-                        .map_err(|e| map_sspi_err(&e))?;
-                    result.status
-                }
-                SspiContext::Negotiate(boxed) => {
-                    let (n, creds) = (&mut boxed.0, &mut boxed.1);
-                    let mut builder = n
-                        .initialize_security_context()
-                        .with_credentials_handle(creds)
-                        .with_context_requirements(self.flags)
-                        .with_target_data_representation(DataRepresentation::Native)
-                        .with_target_name(&target_owned)
-                        .with_input(&mut input)
-                        .with_output(&mut output);
-                    let result = n
-                        .initialize_security_context_impl(&mut builder)
-                        .map_err(|e| map_sspi_err(&e))?
-                        .resolve_to_result()
-                        .map_err(|e| map_sspi_err(&e))?;
-                    result.status
-                }
-                SspiContext::Ntlm(boxed) => {
-                    let (n, creds) = (&mut boxed.0, &mut boxed.1);
-                    let mut builder = n
-                        .initialize_security_context()
-                        .with_credentials_handle(creds)
-                        .with_context_requirements(self.flags)
-                        .with_target_data_representation(DataRepresentation::Native)
-                        .with_target_name(&target_owned)
-                        .with_input(&mut input)
-                        .with_output(&mut output);
-                    let result = n
-                        .initialize_security_context_impl(&mut builder)
-                        .map_err(|e| map_sspi_err(&e))?
-                        .resolve_to_result()
-                        .map_err(|e| map_sspi_err(&e))?;
-                    result.status
-                }
-            })
-            })??
+            catch_sspi_ffi(
+                "initialize_security_context",
+                || -> Result<SecurityStatus> {
+                    Ok(match &mut *ctx {
+                        SspiContext::Kerberos(boxed) => {
+                            let (k, creds) = (&mut boxed.0, &mut boxed.1);
+                            let mut builder = k
+                                .initialize_security_context()
+                                .with_credentials_handle(creds)
+                                .with_context_requirements(self.flags)
+                                .with_target_data_representation(DataRepresentation::Native)
+                                .with_target_name(&target_owned)
+                                .with_input(&mut input)
+                                .with_output(&mut output);
+                            let result = k
+                                .initialize_security_context_impl(&mut builder)
+                                .map_err(|e| map_sspi_err(&e))?
+                                .resolve_to_result()
+                                .map_err(|e| map_sspi_err(&e))?;
+                            result.status
+                        }
+                        SspiContext::Negotiate(boxed) => {
+                            let (n, creds) = (&mut boxed.0, &mut boxed.1);
+                            let mut builder = n
+                                .initialize_security_context()
+                                .with_credentials_handle(creds)
+                                .with_context_requirements(self.flags)
+                                .with_target_data_representation(DataRepresentation::Native)
+                                .with_target_name(&target_owned)
+                                .with_input(&mut input)
+                                .with_output(&mut output);
+                            let result = n
+                                .initialize_security_context_impl(&mut builder)
+                                .map_err(|e| map_sspi_err(&e))?
+                                .resolve_to_result()
+                                .map_err(|e| map_sspi_err(&e))?;
+                            result.status
+                        }
+                        SspiContext::Ntlm(boxed) => {
+                            let (n, creds) = (&mut boxed.0, &mut boxed.1);
+                            let mut builder = n
+                                .initialize_security_context()
+                                .with_credentials_handle(creds)
+                                .with_context_requirements(self.flags)
+                                .with_target_data_representation(DataRepresentation::Native)
+                                .with_target_name(&target_owned)
+                                .with_input(&mut input)
+                                .with_output(&mut output);
+                            let result = n
+                                .initialize_security_context_impl(&mut builder)
+                                .map_err(|e| map_sspi_err(&e))?
+                                .resolve_to_result()
+                                .map_err(|e| map_sspi_err(&e))?;
+                            result.status
+                        }
+                    })
+                },
+            )??
         };
 
         let complete = matches!(
             status,
-            SecurityStatus::Ok | SecurityStatus::CompleteNeeded | SecurityStatus::CompleteAndContinue
+            SecurityStatus::Ok
+                | SecurityStatus::CompleteNeeded
+                | SecurityStatus::CompleteAndContinue
         );
 
         let token = {
-            let buf = output.into_iter().next().map(|b| b.buffer).unwrap_or_default();
-            if buf.is_empty() { None } else { Some(buf) }
+            let buf = output
+                .into_iter()
+                .next()
+                .map(|b| b.buffer)
+                .unwrap_or_default();
+            if buf.is_empty() {
+                None
+            } else {
+                Some(buf)
+            }
         };
 
         let round = {
@@ -366,12 +378,10 @@ impl GssProvider for SspiProvider {
             // the sspi-rs HMAC verify path is otherwise an integrity-check
             // bypass risk — we want a hard `auth_failed` diagnostic, not a
             // process abort that the supervisor may interpret as a crash.
-            catch_sspi_ffi("verify_signature", || {
-                match &mut *ctx {
-                    SspiContext::Kerberos(boxed) => boxed.0.verify_signature(&mut bufs, 0),
-                    SspiContext::Negotiate(boxed) => boxed.0.verify_signature(&mut bufs, 0),
-                    SspiContext::Ntlm(boxed) => boxed.0.verify_signature(&mut bufs, 0),
-                }
+            catch_sspi_ffi("verify_signature", || match &mut *ctx {
+                SspiContext::Kerberos(boxed) => boxed.0.verify_signature(&mut bufs, 0),
+                SspiContext::Negotiate(boxed) => boxed.0.verify_signature(&mut bufs, 0),
+                SspiContext::Ntlm(boxed) => boxed.0.verify_signature(&mut bufs, 0),
             })?
         };
         match result {
@@ -410,12 +420,10 @@ impl GssProvider for SspiProvider {
             // t8-A2: catch_unwind across `make_signature`. Same rationale
             // as `verify_signature` — a panic here must not abort the
             // process; surface a clean auth-failed diagnostic instead.
-            catch_sspi_ffi("make_signature", || {
-                match &mut *ctx {
-                    SspiContext::Kerberos(boxed) => boxed.0.make_signature(0, &mut bufs, 0),
-                    SspiContext::Negotiate(boxed) => boxed.0.make_signature(0, &mut bufs, 0),
-                    SspiContext::Ntlm(boxed) => boxed.0.make_signature(0, &mut bufs, 0),
-                }
+            catch_sspi_ffi("make_signature", || match &mut *ctx {
+                SspiContext::Kerberos(boxed) => boxed.0.make_signature(0, &mut bufs, 0),
+                SspiContext::Negotiate(boxed) => boxed.0.make_signature(0, &mut bufs, 0),
+                SspiContext::Ntlm(boxed) => boxed.0.make_signature(0, &mut bufs, 0),
             })?
         };
         result.map_err(|e| map_sspi_err(&e))?;
@@ -495,8 +503,7 @@ mod boundary_tests {
     /// payloads; anything else falls through to a stable marker.
     #[test]
     fn panic_string_handles_common_payloads() {
-        let s_payload: Box<dyn std::any::Any + Send> =
-            Box::new(String::from("sspi exploded"));
+        let s_payload: Box<dyn std::any::Any + Send> = Box::new(String::from("sspi exploded"));
         assert_eq!(panic_string(&s_payload), "sspi exploded");
         let static_payload: Box<dyn std::any::Any + Send> = Box::new("literal");
         assert_eq!(panic_string(&static_payload), "literal");
@@ -545,8 +552,8 @@ mod boundary_tests {
     /// knows which sspi call site exploded.
     #[test]
     fn catch_sspi_ffi_label_appears_in_diagnostic() {
-        let err = catch_sspi_ffi("verify_signature", || -> u8 { panic!("hmac") })
-            .expect_err("panic");
+        let err =
+            catch_sspi_ffi("verify_signature", || -> u8 { panic!("hmac") }).expect_err("panic");
         let d = err.diagnostic().expect("structured");
         assert!(d.what.contains("verify_signature"));
     }

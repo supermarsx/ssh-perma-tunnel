@@ -37,9 +37,7 @@ use std::path::PathBuf;
 
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
-use spt_obfs::obfs4::{
-    ntor_handshake, ntor_kdf, open_frame, seal_frame, NtorKeys, OBFS4_PROTOID,
-};
+use spt_obfs::obfs4::{ntor_handshake, ntor_kdf, open_frame, seal_frame, NtorKeys, OBFS4_PROTOID};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use x25519_dalek::{PublicKey, StaticSecret};
@@ -117,7 +115,11 @@ fn ntor_kdf_known_vector() {
         let b: [u8; 32] = from_hex(&case.b_pub_hex).try_into().unwrap();
         let x: [u8; 32] = from_hex(&case.x_pub_hex).try_into().unwrap();
         let y: [u8; 32] = from_hex(&case.y_pub_hex).try_into().unwrap();
-        let NtorKeys { c2s_key, s2c_key, auth } = ntor_kdf(&secret, &nid, &b, &x, &y);
+        let NtorKeys {
+            c2s_key,
+            s2c_key,
+            auth,
+        } = ntor_kdf(&secret, &nid, &b, &x, &y);
 
         // Locked-in property: the three sub-keys differ.
         assert_ne!(c2s_key, s2c_key, "case {} c2s/s2c collision", case.name);
@@ -323,13 +325,15 @@ fn frame_decode_known_vector() {
         tampered[off] ^= 0xFF;
         assert!(
             open_frame(&key, case.nonce_ctr, &tampered).is_err(),
-            "case {} tamper-detect", case.name
+            "case {} tamper-detect",
+            case.name
         );
 
         // Nonce desync: open with wrong counter must fail.
         assert!(
             open_frame(&key, case.nonce_ctr.wrapping_add(1), &framed).is_err(),
-            "case {} nonce-desync", case.name
+            "case {} nonce-desync",
+            case.name
         );
 
         // If the fixture has been backfilled, lock the byte string.

@@ -35,9 +35,7 @@ use tokio_rustls::TlsAcceptor;
 use tracing::{debug, info, warn};
 
 use crate::config::TranslatorConfig;
-use crate::data::{
-    advertise_ip, as_ipv4, bind_passive, format_epsv_reply, format_pasv_reply,
-};
+use crate::data::{advertise_ip, as_ipv4, bind_passive, format_epsv_reply, format_pasv_reply};
 use crate::error::TranslatorError;
 use crate::factory::SftpFactory;
 use crate::reply::{feat_block, Reply};
@@ -79,13 +77,16 @@ impl Server {
     /// Bind the listener but don't accept yet. Returns the listener and
     /// resolved local address for tests that need to know the port.
     pub async fn bind(&self) -> Result<(TcpListener, SocketAddr), TranslatorError> {
-        self.cfg.validate().map_err(TranslatorError::InvalidConfig)?;
-        let listener = TcpListener::bind(self.cfg.bind_addr).await.map_err(|e| {
-            TranslatorError::Bind {
-                addr: self.cfg.bind_addr.to_string(),
-                source: e,
-            }
-        })?;
+        self.cfg
+            .validate()
+            .map_err(TranslatorError::InvalidConfig)?;
+        let listener =
+            TcpListener::bind(self.cfg.bind_addr)
+                .await
+                .map_err(|e| TranslatorError::Bind {
+                    addr: self.cfg.bind_addr.to_string(),
+                    source: e,
+                })?;
         let local = listener.local_addr()?;
         Ok((listener, local))
     }
@@ -140,7 +141,10 @@ impl Server {
                 }
             }
         });
-        Ok(ServerHandle { local_addr, shutdown: tx })
+        Ok(ServerHandle {
+            local_addr,
+            shutdown: tx,
+        })
     }
 }
 
@@ -329,18 +333,21 @@ async fn run_session(
         }
         // Reject excessively long lines defensively (8 KiB).
         if n > 8 * 1024 {
-            write_reply(
-                &mut control,
-                &Reply::new(500, "Command line too long."),
-            )
-            .await?;
+            write_reply(&mut control, &Reply::new(500, "Command line too long.")).await?;
             continue;
         }
         let verb = parse_command(&line);
         debug!(peer = %peer, tag = verb.tag(), "ftp verb");
 
-        let (reply, want_quit, tls_upgrade) =
-            dispatch(&mut state, &cfg, &factory, &verb, local, tls_acceptor.as_ref()).await;
+        let (reply, want_quit, tls_upgrade) = dispatch(
+            &mut state,
+            &cfg,
+            &factory,
+            &verb,
+            local,
+            tls_acceptor.as_ref(),
+        )
+        .await;
 
         // Most replies are single Reply; FEAT is multi-line so we handle
         // it inline rather than re-tooling the Reply struct.
@@ -397,10 +404,7 @@ async fn run_session(
     }
 }
 
-async fn write_reply(
-    control: &mut ControlStream,
-    reply: &Reply,
-) -> Result<(), TranslatorError> {
+async fn write_reply(control: &mut ControlStream, reply: &Reply) -> Result<(), TranslatorError> {
     control.write_all(reply.wire().as_bytes()).await?;
     control.flush().await?;
     Ok(())
@@ -409,7 +413,16 @@ async fn write_reply(
 /// Stable list of features advertised in FEAT. Filtered by cfg (e.g. only
 /// list AUTH TLS when TLS is configured).
 fn advertised_features(cfg: &TranslatorConfig) -> Vec<&'static str> {
-    let mut feats = vec!["UTF8", "MLSD", "MLST type*;size*;modify*;perm*;", "SIZE", "MDTM", "EPSV", "PASV", "REST STREAM"];
+    let mut feats = vec![
+        "UTF8",
+        "MLSD",
+        "MLST type*;size*;modify*;perm*;",
+        "SIZE",
+        "MDTM",
+        "EPSV",
+        "PASV",
+        "REST STREAM",
+    ];
     if cfg.tls.is_some() {
         feats.push("AUTH TLS");
         feats.push("PBSZ");
@@ -461,7 +474,11 @@ async fn dispatch(
             }
             state.pending_user = Some(u.clone());
             state.login = LoginPhase::AwaitingPass;
-            (Reply::new(331, format!("Password required for {u}.")), false, false)
+            (
+                Reply::new(331, format!("Password required for {u}.")),
+                false,
+                false,
+            )
         }
         Verb::Pass(p) => {
             if state.login != LoginPhase::AwaitingPass {
@@ -493,7 +510,11 @@ async fn dispatch(
                     state.login = LoginPhase::LoggedIn;
                     state.user = Some(user.clone());
                     state.sftp = Some(sftp);
-                    (Reply::new(230, format!("User {user} logged in.")), false, false)
+                    (
+                        Reply::new(230, format!("User {user} logged in.")),
+                        false,
+                        false,
+                    )
                 }
                 Err(e) => {
                     state.login = LoginPhase::Anonymous;
@@ -519,7 +540,11 @@ async fn dispatch(
             if upper == "UTF8 ON" || upper == "UTF8" {
                 (Reply::ok_200("UTF8 set to on."), false, false)
             } else {
-                (Reply::err_502(format!("OPTS {args} unsupported.")), false, false)
+                (
+                    Reply::err_502(format!("OPTS {args} unsupported.")),
+                    false,
+                    false,
+                )
             }
         }
         Verb::Auth(mech) => {
@@ -527,18 +552,22 @@ async fn dispatch(
                 return (Reply::err_502("AUTH TLS not configured."), false, false);
             }
             if state.control == ControlState::Encrypted {
+                return (Reply::err_503("AUTH already negotiated."), false, false);
+            }
+            if mech != "TLS" && mech != "TLS-C" && mech != "SSL" {
                 return (
-                    Reply::err_503("AUTH already negotiated."),
+                    Reply::err_504(format!("AUTH {mech} unsupported.")),
                     false,
                     false,
                 );
             }
-            if mech != "TLS" && mech != "TLS-C" && mech != "SSL" {
-                return (Reply::err_504(format!("AUTH {mech} unsupported.")), false, false);
-            }
             // Reply with 234 — the server.rs caller observes
             // `tls_upgrade = true` and performs the handshake.
-            (Reply::new(234, "AUTH TLS OK; ready for handshake."), false, true)
+            (
+                Reply::new(234, "AUTH TLS OK; ready for handshake."),
+                false,
+                true,
+            )
         }
         Verb::Pbsz(v) => {
             if v.trim() != "0" {
@@ -547,29 +576,31 @@ async fn dispatch(
             state.pbsz_set = true;
             (Reply::ok_200("PBSZ=0"), false, false)
         }
-        Verb::Prot(level) => {
-            match level.as_str() {
-                "P" => {
-                    if !state.pbsz_set {
-                        return (Reply::err_503("PBSZ required before PROT."), false, false);
-                    }
-                    if state.control != ControlState::Encrypted {
-                        return (
-                            Reply::err_503("PROT P requires an encrypted control channel."),
-                            false,
-                            false,
-                        );
-                    }
-                    state.prot_private = true;
-                    (Reply::ok_200("PROT P accepted."), false, false)
+        Verb::Prot(level) => match level.as_str() {
+            "P" => {
+                if !state.pbsz_set {
+                    return (Reply::err_503("PBSZ required before PROT."), false, false);
                 }
-                "C" => {
-                    state.prot_private = false;
-                    (Reply::ok_200("PROT C accepted."), false, false)
+                if state.control != ControlState::Encrypted {
+                    return (
+                        Reply::err_503("PROT P requires an encrypted control channel."),
+                        false,
+                        false,
+                    );
                 }
-                other => (Reply::err_504(format!("PROT {other} unsupported.")), false, false),
+                state.prot_private = true;
+                (Reply::ok_200("PROT P accepted."), false, false)
             }
-        }
+            "C" => {
+                state.prot_private = false;
+                (Reply::ok_200("PROT C accepted."), false, false)
+            }
+            other => (
+                Reply::err_504(format!("PROT {other} unsupported.")),
+                false,
+                false,
+            ),
+        },
         Verb::Type(t) => match t.as_str() {
             "I" | "L 8" => {
                 state.ttype = TransferType::Image;
@@ -592,15 +623,27 @@ async fn dispatch(
                 state.ttype = TransferType::Ascii;
                 (Reply::ok_200("TYPE A."), false, false)
             }
-            other => (Reply::err_504(format!("TYPE {other} unsupported.")), false, false),
+            other => (
+                Reply::err_504(format!("TYPE {other} unsupported.")),
+                false,
+                false,
+            ),
         },
         Verb::Mode(m) => match m.as_str() {
             "S" => (Reply::ok_200("MODE S."), false, false),
-            other => (Reply::err_504(format!("MODE {other} unsupported.")), false, false),
+            other => (
+                Reply::err_504(format!("MODE {other} unsupported.")),
+                false,
+                false,
+            ),
         },
         Verb::Stru(s) => match s.as_str() {
             "F" => (Reply::ok_200("STRU F."), false, false),
-            other => (Reply::err_504(format!("STRU {other} unsupported.")), false, false),
+            other => (
+                Reply::err_504(format!("STRU {other} unsupported.")),
+                false,
+                false,
+            ),
         },
         Verb::Pwd => (
             Reply::new(257, format!("\"{}\" is current directory.", state.cwd)),
@@ -642,7 +685,11 @@ async fn dispatch(
             let target = join_cwd(&state.cwd, p);
             let sftp = state.sftp.as_ref().unwrap();
             match sftp.create_dir(target.clone()).await {
-                Ok(()) => (Reply::new(257, format!("\"{target}\" created.")), false, false),
+                Ok(()) => (
+                    Reply::new(257, format!("\"{target}\" created.")),
+                    false,
+                    false,
+                ),
                 Err(e) => (Reply::err_550(format!("MKD failed: {e}")), false, false),
             }
         }
@@ -676,13 +723,7 @@ async fn dispatch(
         Verb::Rnto(p) => {
             let from = match state.rnfr.take() {
                 Some(f) => f,
-                None => {
-                    return (
-                        Reply::err_503("RNFR required before RNTO."),
-                        false,
-                        false,
-                    )
-                }
+                None => return (Reply::err_503("RNFR required before RNTO."), false, false),
             };
             let to = join_cwd(&state.cwd, p);
             let sftp = state.sftp.as_ref().unwrap();
@@ -768,13 +809,7 @@ async fn dispatch(
             };
             let listener = match state_take_listener(state) {
                 Some(l) => l,
-                None => {
-                    return (
-                        Reply::err_503("Use PASV/EPSV before LIST."),
-                        false,
-                        false,
-                    )
-                }
+                None => return (Reply::err_503("Use PASV/EPSV before LIST."), false, false),
             };
             run_list_transfer(state, listener, target, ListMode::List, tls_acceptor).await
         }
@@ -785,13 +820,7 @@ async fn dispatch(
             };
             let listener = match state_take_listener(state) {
                 Some(l) => l,
-                None => {
-                    return (
-                        Reply::err_503("Use PASV/EPSV before NLST."),
-                        false,
-                        false,
-                    )
-                }
+                None => return (Reply::err_503("Use PASV/EPSV before NLST."), false, false),
             };
             run_list_transfer(state, listener, target, ListMode::Nlst, tls_acceptor).await
         }
@@ -802,13 +831,7 @@ async fn dispatch(
             };
             let listener = match state_take_listener(state) {
                 Some(l) => l,
-                None => {
-                    return (
-                        Reply::err_503("Use PASV/EPSV before MLSD."),
-                        false,
-                        false,
-                    )
-                }
+                None => return (Reply::err_503("Use PASV/EPSV before MLSD."), false, false),
             };
             run_list_transfer(state, listener, target, ListMode::Mlsd, tls_acceptor).await
         }
@@ -834,13 +857,7 @@ async fn dispatch(
             let target = join_cwd(&state.cwd, p);
             let listener = match state_take_listener(state) {
                 Some(l) => l,
-                None => {
-                    return (
-                        Reply::err_503("Use PASV/EPSV before RETR."),
-                        false,
-                        false,
-                    )
-                }
+                None => return (Reply::err_503("Use PASV/EPSV before RETR."), false, false),
             };
             run_retr_transfer(state, listener, target, tls_acceptor).await
         }
@@ -848,13 +865,7 @@ async fn dispatch(
             let target = join_cwd(&state.cwd, p);
             let listener = match state_take_listener(state) {
                 Some(l) => l,
-                None => {
-                    return (
-                        Reply::err_503("Use PASV/EPSV before STOR."),
-                        false,
-                        false,
-                    )
-                }
+                None => return (Reply::err_503("Use PASV/EPSV before STOR."), false, false),
             };
             run_stor_transfer(state, listener, target, false, tls_acceptor).await
         }
@@ -862,13 +873,7 @@ async fn dispatch(
             let target = join_cwd(&state.cwd, p);
             let listener = match state_take_listener(state) {
                 Some(l) => l,
-                None => {
-                    return (
-                        Reply::err_503("Use PASV/EPSV before APPE."),
-                        false,
-                        false,
-                    )
-                }
+                None => return (Reply::err_503("Use PASV/EPSV before APPE."), false, false),
             };
             run_stor_transfer(state, listener, target, true, tls_acceptor).await
         }
@@ -881,13 +886,7 @@ async fn dispatch(
             let target = format!("{}/.stou-{nanos}", state.cwd.trim_end_matches('/'));
             let listener = match state_take_listener(state) {
                 Some(l) => l,
-                None => {
-                    return (
-                        Reply::err_503("Use PASV/EPSV before STOU."),
-                        false,
-                        false,
-                    )
-                }
+                None => return (Reply::err_503("Use PASV/EPSV before STOU."), false, false),
             };
             run_stor_transfer(state, listener, target, false, tls_acceptor).await
         }
@@ -895,9 +894,11 @@ async fn dispatch(
             // Already handled at the top.
             unreachable!()
         }
-        Verb::Unknown { verb } => {
-            (Reply::new(500, format!("Unrecognised command: {verb}")), false, false)
-        }
+        Verb::Unknown { verb } => (
+            Reply::new(500, format!("Unrecognised command: {verb}")),
+            false,
+            false,
+        ),
     }
 }
 
@@ -929,13 +930,7 @@ async fn run_list_transfer(
                 false,
             )
         }
-        Err(_) => {
-            return (
-                Reply::new(425, "Data connection timed out."),
-                false,
-                false,
-            )
-        }
+        Err(_) => return (Reply::new(425, "Data connection timed out."), false, false),
     };
     let mut data = match wrap_data(data, state, tls_acceptor).await {
         Ok(d) => d,
@@ -994,13 +989,7 @@ async fn run_retr_transfer(
                 false,
             )
         }
-        Err(_) => {
-            return (
-                Reply::new(425, "Data connection timed out."),
-                false,
-                false,
-            )
-        }
+        Err(_) => return (Reply::new(425, "Data connection timed out."), false, false),
     };
     let mut data = match wrap_data(data, state, tls_acceptor).await {
         Ok(d) => d,
@@ -1041,13 +1030,7 @@ async fn run_stor_transfer(
                 false,
             )
         }
-        Err(_) => {
-            return (
-                Reply::new(425, "Data connection timed out."),
-                false,
-                false,
-            )
-        }
+        Err(_) => return (Reply::new(425, "Data connection timed out."), false, false),
     };
     let mut data = match wrap_data(data, state, tls_acceptor).await {
         Ok(d) => d,
@@ -1074,7 +1057,9 @@ async fn run_stor_transfer(
 /// own Reply struct (the data-channel helpers in `data.rs` return full
 /// lines for testability).
 fn strip_leading_code(s: &str) -> String {
-    s.split_once(' ').map(|(_, rest)| rest.to_string()).unwrap_or_else(|| s.to_string())
+    s.split_once(' ')
+        .map(|(_, rest)| rest.to_string())
+        .unwrap_or_else(|| s.to_string())
 }
 
 /// Format `LIST` as a quasi-POSIX `ls -l` line.
@@ -1129,7 +1114,11 @@ fn mlsx_fact_line(name: &str, md: &spt_sftp::SftpMetadata) -> String {
     let perm = md.permissions.unwrap_or(0o644);
     format!(
         "type={};size={};modify={};perm={:o}; {}",
-        type_fact, size, modify, perm & 0o777, name
+        type_fact,
+        size,
+        modify,
+        perm & 0o777,
+        name
     )
 }
 

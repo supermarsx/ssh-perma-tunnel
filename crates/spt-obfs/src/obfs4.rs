@@ -155,7 +155,9 @@ impl HandshakeState {
     fn advance(self, _byte: u8, _idx: usize) -> Self {
         match self {
             HandshakeState::ClientHello => HandshakeState::ServerHello,
-            HandshakeState::ServerHello | HandshakeState::KexComplete => HandshakeState::KexComplete,
+            HandshakeState::ServerHello | HandshakeState::KexComplete => {
+                HandshakeState::KexComplete
+            }
         }
     }
 }
@@ -225,7 +227,11 @@ pub fn ntor_kdf(
     c2s.copy_from_slice(&okm[..32]);
     s2c.copy_from_slice(&okm[32..64]);
     auth.copy_from_slice(&okm[64..96]);
-    NtorKeys { c2s_key: c2s, s2c_key: s2c, auth }
+    NtorKeys {
+        c2s_key: c2s,
+        s2c_key: s2c,
+        auth,
+    }
 }
 
 /// Perform the client side of the NTOR handshake over an already-open
@@ -266,10 +272,7 @@ where
     hello.extend_from_slice(node_id);
     hello.extend_from_slice(b_pub);
     hello.extend_from_slice(x_pub.as_bytes());
-    stream
-        .write_all(&hello)
-        .await
-        .map_err(ObfsError::Io)?;
+    stream.write_all(&hello).await.map_err(ObfsError::Io)?;
 
     // Receive ServerHello.
     let mut srv = [0u8; 64];
@@ -396,7 +399,13 @@ pub fn seal_frame(
     n[..8].copy_from_slice(&nonce_ctr.to_le_bytes());
     let nonce = Nonce::from_slice(&n);
     let ct = cipher
-        .encrypt(nonce, Payload { msg: plaintext, aad: b"obfs4-frame" })
+        .encrypt(
+            nonce,
+            Payload {
+                msg: plaintext,
+                aad: b"obfs4-frame",
+            },
+        )
         .map_err(|e| ObfsError::Handshake(format!("seal: {e}")))?;
     let mut out = Vec::with_capacity(2 + ct.len());
     out.extend_from_slice(&(plaintext.len() as u16).to_be_bytes());
@@ -430,7 +439,13 @@ pub fn open_frame(
     n[..8].copy_from_slice(&nonce_ctr.to_le_bytes());
     let nonce = Nonce::from_slice(&n);
     let pt = cipher
-        .decrypt(nonce, Payload { msg: &framed[2..], aad: b"obfs4-frame" })
+        .decrypt(
+            nonce,
+            Payload {
+                msg: &framed[2..],
+                aad: b"obfs4-frame",
+            },
+        )
         .map_err(|e| ObfsError::Handshake(format!("open: {e}")))?;
     if pt.len() != plen {
         return Err(ObfsError::Handshake("obfs4: plen != decrypted".into()));
@@ -483,7 +498,9 @@ impl AsyncRead for Obfs4Stream {
                             "obfs4: bad plen",
                         )));
                     }
-                    self.rx_state = RxState::Body { plaintext_len: plen };
+                    self.rx_state = RxState::Body {
+                        plaintext_len: plen,
+                    };
                 }
                 RxState::Body { plaintext_len } => {
                     let needed = plaintext_len + 16;

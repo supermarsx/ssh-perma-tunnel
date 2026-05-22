@@ -57,7 +57,7 @@ pub enum InitError {
 /// Handle for SIGHUP / MCP-driven live log filter reload.
 ///
 /// The handle is cheap to clone (it wraps `tracing_subscriber::reload::Handle`
-/// internally). [`signals::install_sighup_log_reload`] takes one of these and
+/// internally). `signals::install_sighup_log_reload` takes one of these and
 /// re-applies a parsed [`EnvFilter`] on every SIGHUP; the MCP `log.set_level`
 /// tool likewise calls [`LogReloadHandle::reload`] for a per-target override.
 #[derive(Clone)]

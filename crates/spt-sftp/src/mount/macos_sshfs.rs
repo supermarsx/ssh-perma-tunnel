@@ -86,11 +86,10 @@ impl SshfsMounter {
             // macFUSE present but no sshfs — still actionable.
             Some(SftpError::UnsupportedPlatform {
                 op: "mount",
-                detail:
-                    "macFUSE found but `sshfs` is not on PATH — install sshfs \
+                detail: "macFUSE found but `sshfs` is not on PATH — install sshfs \
                      (`brew install gromgit/fuse/sshfs-mac`) to enable the \
                      macOS mount backend"
-                        .into(),
+                    .into(),
             })
         } else {
             None

@@ -283,13 +283,7 @@ async fn connect_inner(
             }
         })?;
         let final_shared = Arc::new(AsyncMutex::new(final_handle));
-        run_auth(
-            Arc::clone(&final_shared),
-            auth_cfg,
-            backends,
-            gss_audit,
-        )
-        .await?;
+        run_auth(Arc::clone(&final_shared), auth_cfg, backends, gss_audit).await?;
         let info = SessionInfo {
             backend: "ssh2-russh".into(),
             peer_version: None,
@@ -319,31 +313,30 @@ async fn connect_inner(
         remote_forwards: Arc::clone(&remote_forwards),
     };
 
-    let handle =
-        match client::connect(cfg, (endpoint.host.clone(), endpoint.port), handler).await {
-            Ok(handle) => handle,
-            Err(e) => {
-                if let Some(reason) = trust_failure.lock().clone() {
-                    return Err(Error::TrustFailed(reason));
-                }
-                return Err(Error::network_unreachable(
-                    spt_core::Diagnostic::what(format!(
-                        "Failed to connect to `{}:{}`",
-                        endpoint.host, endpoint.port
-                    ))
-                    .why(format!("{e}"))
-                    .how_to_fix(
-                        "Verify the target host is reachable from this network, that \
+    let handle = match client::connect(cfg, (endpoint.host.clone(), endpoint.port), handler).await {
+        Ok(handle) => handle,
+        Err(e) => {
+            if let Some(reason) = trust_failure.lock().clone() {
+                return Err(Error::TrustFailed(reason));
+            }
+            return Err(Error::network_unreachable(
+                spt_core::Diagnostic::what(format!(
+                    "Failed to connect to `{}:{}`",
+                    endpoint.host, endpoint.port
+                ))
+                .why(format!("{e}"))
+                .how_to_fix(
+                    "Verify the target host is reachable from this network, that \
                          the configured port is correct, and that DNS resolves the \
                          hostname. Common causes: server down, firewall block, \
                          stale `~/.ssh/known_hosts` entry pointing to wrong IP.",
-                    )
-                    .endpoint(format!("{}:{}", endpoint.host, endpoint.port))
-                    .retry_advice(spt_core::RetryAdvice::RetryWithBackoff)
-                    .build(),
-                ));
-            }
-        };
+                )
+                .endpoint(format!("{}:{}", endpoint.host, endpoint.port))
+                .retry_advice(spt_core::RetryAdvice::RetryWithBackoff)
+                .build(),
+            ));
+        }
+    };
 
     // Wrap the handle in `Arc<AsyncMutex>` *before* `run_auth` so the agent
     // arm can `tokio::spawn` `authenticate_future` with `'static` ownership —
@@ -409,10 +402,7 @@ impl RusshSsh2Session {
     /// Attach an optional scripting engine. Returns `self` for builder-style
     /// chaining at the protocol layer.
     #[must_use]
-    pub fn with_script_engine(
-        mut self,
-        engine: Option<Arc<spt_scripting::ScriptEngine>>,
-    ) -> Self {
+    pub fn with_script_engine(mut self, engine: Option<Arc<spt_scripting::ScriptEngine>>) -> Self {
         self.script_engine = engine;
         self
     }
@@ -629,37 +619,37 @@ async fn try_auth_method(
                 std::str::from_utf8(bytes.expose_secret())
                     .map_err(|_| {
                         Error::auth_failed(
-                            spt_core::Diagnostic::what(
-                                "Password secret is not valid UTF-8",
-                            )
-                            .why("the referenced secret resolves to non-UTF-8 bytes")
-                            .how_to_fix(
-                                "Re-store the password as a UTF-8 string (`spt secret set`), \
+                            spt_core::Diagnostic::what("Password secret is not valid UTF-8")
+                                .why("the referenced secret resolves to non-UTF-8 bytes")
+                                .how_to_fix(
+                                    "Re-store the password as a UTF-8 string (`spt secret set`), \
                                  or switch this endpoint to public-key / agent auth.",
-                            )
-                            .retry_advice(spt_core::RetryAdvice::NotRetryable)
-                            .build(),
+                                )
+                                .retry_advice(spt_core::RetryAdvice::NotRetryable)
+                                .build(),
                         )
                     })?
                     .to_owned()
             };
             let mut h = handle.lock().await;
             let user_for_msg = username.clone();
-            h.authenticate_password(username, password).await.map_err(|e| {
-                Error::auth_failed(
-                    spt_core::Diagnostic::what(format!(
-                        "Password authentication failed for user `{user_for_msg}`"
-                    ))
-                    .why(format!("russh password auth returned: {e}"))
-                    .how_to_fix(
-                        "Verify the password is correct, that the server allows \
+            h.authenticate_password(username, password)
+                .await
+                .map_err(|e| {
+                    Error::auth_failed(
+                        spt_core::Diagnostic::what(format!(
+                            "Password authentication failed for user `{user_for_msg}`"
+                        ))
+                        .why(format!("russh password auth returned: {e}"))
+                        .how_to_fix(
+                            "Verify the password is correct, that the server allows \
                          `PasswordAuthentication yes`, and that the account is not \
                          locked. Consider switching to public-key or agent auth.",
+                        )
+                        .retry_advice(spt_core::RetryAdvice::NotRetryable)
+                        .build(),
                     )
-                    .retry_advice(spt_core::RetryAdvice::NotRetryable)
-                    .build(),
-                )
-            })
+                })
         }
         AuthMethod::PublicKey {
             identity_file,
@@ -671,21 +661,23 @@ async fn try_auth_method(
                 .map_err(|e| Error::KeyFailure(format!("load private key: {e}")))?;
             let mut h = handle.lock().await;
             let user_for_msg = username.clone();
-            h.authenticate_publickey(username, Arc::new(key)).await.map_err(|e| {
-                Error::auth_failed(
-                    spt_core::Diagnostic::what(format!(
-                        "Public-key authentication failed for user `{user_for_msg}`"
-                    ))
-                    .why(format!("russh publickey auth returned: {e}"))
-                    .how_to_fix(
-                        "Verify the public half of this key is in the server's \
+            h.authenticate_publickey(username, Arc::new(key))
+                .await
+                .map_err(|e| {
+                    Error::auth_failed(
+                        spt_core::Diagnostic::what(format!(
+                            "Public-key authentication failed for user `{user_for_msg}`"
+                        ))
+                        .why(format!("russh publickey auth returned: {e}"))
+                        .how_to_fix(
+                            "Verify the public half of this key is in the server's \
                          `~/.ssh/authorized_keys`, that its `mode` is `600`, and that \
                          the key algorithm is allowed by sshd_config `PubkeyAcceptedAlgorithms`.",
+                        )
+                        .retry_advice(spt_core::RetryAdvice::NotRetryable)
+                        .build(),
                     )
-                    .retry_advice(spt_core::RetryAdvice::NotRetryable)
-                    .build(),
-                )
-            })
+                })
         }
         AuthMethod::Certificate {
             cert,
@@ -699,22 +691,24 @@ async fn try_auth_method(
                 .map_err(|e| Error::KeyFailure(format!("load OpenSSH certificate: {e}")))?;
             let mut h = handle.lock().await;
             let user_for_msg = username.clone();
-            h.authenticate_openssh_cert(username, Arc::new(key), cert).await.map_err(|e| {
-                Error::auth_failed(
-                    spt_core::Diagnostic::what(format!(
-                        "OpenSSH-certificate authentication failed for user `{user_for_msg}`"
-                    ))
-                    .why(format!("russh certificate auth returned: {e}"))
-                    .how_to_fix(
-                        "Verify the certificate's CA is in the server's TrustedUserCAKeys, \
+            h.authenticate_openssh_cert(username, Arc::new(key), cert)
+                .await
+                .map_err(|e| {
+                    Error::auth_failed(
+                        spt_core::Diagnostic::what(format!(
+                            "OpenSSH-certificate authentication failed for user `{user_for_msg}`"
+                        ))
+                        .why(format!("russh certificate auth returned: {e}"))
+                        .how_to_fix(
+                            "Verify the certificate's CA is in the server's TrustedUserCAKeys, \
                          that the cert is not expired, that its principals list includes \
                          this username, and that the underlying key has the matching public \
                          half registered.",
+                        )
+                        .retry_advice(spt_core::RetryAdvice::NotRetryable)
+                        .build(),
                     )
-                    .retry_advice(spt_core::RetryAdvice::NotRetryable)
-                    .build(),
-                )
-            })
+                })
         }
         AuthMethod::Agent { socket } => try_agent_auth(handle, username, socket).await,
         AuthMethod::KeyboardInteractive { responder } => {
@@ -834,9 +828,10 @@ async fn try_agent_auth(
     let identities = {
         // Reuse the listing connection just for `request_identities`.
         let mut client = listing_client;
-        client.request_identities().await.map_err(|e| {
-            Error::AuthFailed(format!("ssh-agent: request_identities: {e}"))
-        })?
+        client
+            .request_identities()
+            .await
+            .map_err(|e| Error::AuthFailed(format!("ssh-agent: request_identities: {e}")))?
     };
 
     if identities.is_empty() {
@@ -1574,14 +1569,11 @@ mod tests {
 
     #[test]
     fn auth_method_rejected_by_server_diagnostic_suggests_authlog_check() {
-        let d = Diagnostic::what(format!(
-            "Auth method `{}` rejected by server",
-            "public-key"
-        ))
-        .why("the server returned an authentication-failure response")
-        .how_to_fix("Check the server-side `/var/log/auth.log`")
-        .retry_advice(spt_core::RetryAdvice::NotRetryable)
-        .build();
+        let d = Diagnostic::what(format!("Auth method `{}` rejected by server", "public-key"))
+            .why("the server returned an authentication-failure response")
+            .how_to_fix("Check the server-side `/var/log/auth.log`")
+            .retry_advice(spt_core::RetryAdvice::NotRetryable)
+            .build();
         let e = Error::auth_failed(d);
         spt_core::assert_diagnostic_contains!(e,
             what: "Auth method `public-key` rejected",

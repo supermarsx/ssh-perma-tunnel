@@ -133,9 +133,8 @@ impl std::fmt::Debug for KerberosProvider {
 impl KerberosProvider {
     fn new(cfg: &GssApiConfig, target: Name) -> Result<Self> {
         let cred = make_client_cred(cfg.principal.as_deref())?;
-        let mut flags = CtxFlags::GSS_C_MUTUAL_FLAG
-            | CtxFlags::GSS_C_REPLAY_FLAG
-            | CtxFlags::GSS_C_INTEG_FLAG;
+        let mut flags =
+            CtxFlags::GSS_C_MUTUAL_FLAG | CtxFlags::GSS_C_REPLAY_FLAG | CtxFlags::GSS_C_INTEG_FLAG;
         if cfg.delegate {
             flags |= CtxFlags::GSS_C_DELEG_FLAG;
         }
@@ -170,10 +169,8 @@ impl GssProvider for KerberosProvider {
             // dispatch or in libgssapi's `OM_uint32` minor-status decoding
             // must surface as a clean `Error::AuthFailedDiagnostic` rather
             // than aborting the supervisor.
-            let out = catch_gss_ffi("gss_init_sec_context", || {
-                ctx.step(input_token, None)
-            })?
-            .map_err(|e| map_gss_err("step", e))?;
+            let out = catch_gss_ffi("gss_init_sec_context", || ctx.step(input_token, None))?
+                .map_err(|e| map_gss_err("step", e))?;
             let token = out.map(|buf| buf.to_vec());
             let complete = ctx.is_complete();
             (token, complete)
@@ -315,8 +312,7 @@ mod tests {
         assert_eq!(err.exit_code(), ExitCode::AuthFailed);
         let d = err.diagnostic().expect("structured diagnostic");
         assert!(
-            d.what.contains("gss_get_mic")
-                && d.what.contains("panicked across the FFI boundary"),
+            d.what.contains("gss_get_mic") && d.what.contains("panicked across the FFI boundary"),
             "boundary marker missing from `what`: {}",
             d.what,
         );
@@ -326,10 +322,7 @@ mod tests {
             d.why,
         );
         assert!(
-            d.how_to_fix
-                .as_deref()
-                .unwrap()
-                .contains("libgssapi"),
+            d.how_to_fix.as_deref().unwrap().contains("libgssapi"),
             "fix-it text should mention libgssapi: {:?}",
             d.how_to_fix,
         );
@@ -349,10 +342,8 @@ mod tests {
     /// the diagnostic's `why` field unchanged.
     #[test]
     fn catch_gss_ffi_preserves_static_str_payload() {
-        let err = catch_gss_ffi("gss_init_sec_context", || -> u8 {
-            panic!("literal panic")
-        })
-        .expect_err("expected panic");
+        let err = catch_gss_ffi("gss_init_sec_context", || -> u8 { panic!("literal panic") })
+            .expect_err("expected panic");
         let d = err.diagnostic().expect("structured");
         assert_eq!(d.why.as_deref(), Some("literal panic"));
     }

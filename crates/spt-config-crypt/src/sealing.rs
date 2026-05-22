@@ -40,17 +40,17 @@ fn wrap_secret(v: Vec<u8>) -> SecretSlice {
 
 /// Source of the body-key for a [`seal`] / [`unseal`] call.
 pub enum KeySource {
-    /// Passphrase → Argon2id with the [`crate::envelope::Argon2idParams`]
+    /// Passphrase → Argon2id with the `crate::envelope::Argon2idParams`
     /// embedded in `[meta.argon2id]`.
     Passphrase(Passphrase),
     /// 32-byte vault master key (typically resolved from the OS keychain
-    /// via [`spt_secrets::VaultBackend`]). The on-disk meta records only
+    /// via `spt_secrets::VaultBackend`). The on-disk meta records only
     /// a random 16-byte salt; the master itself stays out-of-band.
     VaultMaster([u8; 32]),
     /// One or more X25519 recipient *public* keys. `seal` sets all of
     /// them; `unseal` uses the first entry's *private* key (the
     /// `StaticSecret` derived from raw bytes — see
-    /// [`x25519_recipients_from_secrets`]).
+    /// `x25519_recipients_from_secrets`).
     X25519Recipients(Vec<X25519PublicKey>),
     /// Convenience constructor for unsealing under X25519: the caller
     /// supplies one or more candidate static secrets (raw 32-byte

@@ -125,7 +125,7 @@ pub fn parse(text: &str) -> Vec<HostBlock> {
 /// * `ProxyJump` is processed left-to-right and recursively (the leftmost
 ///   element is itself looked up against `blocks`, then the next, etc.).
 ///
-/// Cycles are bounded by [`MAX_DEPTH`] to prevent pathological configs from
+/// Cycles are bounded by `MAX_DEPTH` to prevent pathological configs from
 /// blowing the stack.
 #[must_use]
 pub fn resolve_host(blocks: &[HostBlock], name: &str) -> Vec<HopHint> {

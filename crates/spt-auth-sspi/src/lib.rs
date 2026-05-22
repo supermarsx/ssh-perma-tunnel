@@ -29,7 +29,7 @@
 //! Real GSS / SSPI round-trips require an external KDC or Active Directory
 //! domain. The crate ships:
 //!
-//! * [`mock::MockGssProvider`] — an in-process, deterministic-token
+//! * `mock::MockGssProvider` — an in-process, deterministic-token
 //!   `GssProvider` for unit-level testing (`testing` feature).
 //! * `KERBEROS_LIVE=1` / `SSPI_KDC_URL=…` -gated integration tests that
 //!   exercise the real `libgssapi` / `sspi` code paths against a live
@@ -339,7 +339,6 @@ impl Principal {
             realm,
         })
     }
-
 }
 
 impl std::fmt::Display for Principal {

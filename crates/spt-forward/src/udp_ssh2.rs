@@ -10,8 +10,8 @@
 //! * **This module** (`spt-forward`) owns the local UDP socket, the peer
 //!   table (per `(src_ip, src_port)` flow identity), per-peer channel
 //!   allocation, idle TTL eviction, and oversized-datagram rejection.
-//! * **`spt-ssh2`** ([`spt_ssh2::udp_tcp_framed`] and
-//!   [`spt_ssh2::udp_uds_mode`]) owns the on-the-wire codec and the russh /
+//! * **`spt-ssh2`** (`spt_ssh2::udp_tcp_framed` and
+//!   `spt_ssh2::udp_uds_mode`) owns the on-the-wire codec and the russh /
 //!   libssh2 channel-open call.
 //!
 //! The split keeps spt-forward free of any libssh2 or russh build-time
@@ -22,9 +22,9 @@
 //!
 //! Per-`(src_ip, src_port)` flow: one channel allocated on first datagram,
 //! reused for subsequent datagrams from the same UDP peer, evicted after
-//! [`Self::idle_ttl`] of silence. Oversized frames (`> 64 KiB`) bump a
+//! `idle_ttl` of silence. Oversized frames (`> 64 KiB`) bump a
 //! drop counter and are not forwarded (matching the libssh2-side
-//! [`spt_ssh2::udp_tcp_framed::MAX_FRAME_BYTES`] cap).
+//! `spt_ssh2::udp_tcp_framed::MAX_FRAME_BYTES` cap).
 
 use std::net::SocketAddr;
 use std::sync::Arc;

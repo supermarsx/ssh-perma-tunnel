@@ -6,7 +6,7 @@
 //!
 //! * **Passphrase** — Argon2id (m=64 MiB, t=3, p=4) derives a 32-byte key.
 //! * **Vault master** — a 32-byte key resolved out-of-band (typically from
-//!   the OS keychain via [`spt_secrets::VaultBackend`]).
+//!   the OS keychain via `spt_secrets::VaultBackend`).
 //! * **X25519 recipients** — one or more X25519 public keys; the body key
 //!   is randomly generated and sealed per recipient via X25519 ECDH +
 //!   HKDF-SHA-256 (KEM-style). Any recipient holding a matching private

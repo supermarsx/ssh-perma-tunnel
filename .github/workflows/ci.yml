@@ -579,15 +579,14 @@ jobs:
   # ---------------------------------------------------------------------------
   # C1: doc-warnings — runs on every PR / push.
   #
-  # Gate scope: missing-docs only. The repo has ~78 pre-existing broken
-  # intra-doc-link errors that live in modules outside the t7-CCI write scope
-  # (spt-bin, spt-config, spt-supervisor, …) — gating on the full `-D warnings`
-  # would block the milestone on cleanup that belongs to a follow-up. Once
-  # those links are repaired, flip `RUSTDOCFLAGS` to `-D warnings` to widen
-  # the gate to cover broken-intra-doc-links and the other rustdoc lints.
+  # Gate scope: **full `-D warnings`** as of t8-E1. The ~78 pre-existing broken
+  # intra-doc-link errors that justified the narrow gate during t7 were swept
+  # in t8-E1 (links rewritten to literal-backtick form or correct paths). The
+  # 7 deferred `missing_docs` crates received `#![warn(missing_docs)] +
+  # #![allow(missing_docs)]` with a documented deferral.
   # ---------------------------------------------------------------------------
   doc-warnings:
-    name: doc-warnings (missing-docs)
+    name: doc-warnings (-D warnings)
     if: github.event_name != 'workflow_dispatch' || inputs.kind == 'full'
     runs-on: ubuntu-latest
     steps:
@@ -596,11 +595,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: doc-warnings
-      - name: cargo doc with missing-docs as errors
+      - name: cargo doc with all rustdoc warnings as errors
         env:
-          # Narrow gate: deny missing-docs, but allow other rustdoc lints
-          # (broken-intra-doc-links etc.) until a follow-up cleans them up.
-          RUSTDOCFLAGS: "-D rustdoc::missing-docs -A rustdoc::broken-intra-doc-links -A rustdoc::redundant-explicit-links"
+          RUSTDOCFLAGS: "-D warnings"
         run: cargo doc --workspace --no-deps --locked
 
   # ---------------------------------------------------------------------------

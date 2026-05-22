@@ -53,7 +53,7 @@ const MAX_PASSPHRASE_LEN: usize = 16 * 1024;
 /// bytes with any trailing `\r` / `\n` stripped.
 ///
 /// Returns [`Error::RuntimeFailure`] on I/O failure and
-/// [`Error::InvalidArgs`] when the input exceeds [`MAX_PASSPHRASE_LEN`].
+/// [`Error::InvalidArgs`] when the input exceeds `MAX_PASSPHRASE_LEN`.
 pub fn read_passphrase(prompt: &str) -> Result<SecretBox<String>> {
     let stdin = io::stdin();
     let is_tty = stdin.is_terminal();

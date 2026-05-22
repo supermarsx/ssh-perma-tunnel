@@ -38,7 +38,7 @@
 //! quality bar.
 //!
 //! **We bypass `h3` for the Extended-CONNECT bootstrap.** See
-//! [`crate::h3_raw`] for the minimal QPACK + HTTP/3-HEADERS implementation
+//! `crate::h3_raw` for the minimal QPACK + HTTP/3-HEADERS implementation
 //! that emits the `:protocol = ssh3` pseudo-header natively over a raw
 //! `quinn::Connection` bidi stream. The `h3` client driver still runs on
 //! the same QUIC connection so that the peer's HTTP/3 stack sees a normal
@@ -136,8 +136,8 @@ fn build_quinn_endpoint(remote: SocketAddr, cfg: &Ssh3Config) -> Result<Endpoint
 /// Construct the HTTP/3 Extended CONNECT [`Request`] for the SSH3 session.
 ///
 /// **Historical / reference path.** Since the
-/// [raw HTTP/3 bootstrap](crate::h3_raw) landed, the live wire request is
-/// emitted by [`crate::h3_raw::extended_connect_raw`] — not by feeding
+/// raw HTTP/3 bootstrap (`crate::h3_raw`) landed, the live wire request is
+/// emitted by `crate::h3_raw::extended_connect_raw` — not by feeding
 /// this `Request` to `h3::client::SendRequest::send_request`. This helper
 /// is retained because:
 ///

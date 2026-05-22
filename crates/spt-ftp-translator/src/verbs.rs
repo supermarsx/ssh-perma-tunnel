@@ -1,7 +1,7 @@
 //! RFC 959 / RFC 3659 verb dispatch.
 //!
 //! Verbs are parsed via [`parse_command`]; the higher-level
-//! [`crate::session`] module (inside `server.rs`) drives the actual SFTP
+//! `crate::session` module (inside `server.rs`) drives the actual SFTP
 //! calls. PORT and EPRT are explicitly recognised here so the rejection
 //! message stays stable across releases.
 //!

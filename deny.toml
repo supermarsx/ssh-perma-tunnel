@@ -14,6 +14,11 @@ ignore = [
     # was checked against Cargo.lock; affected versions remain locked, so the
     # ignore stays. Lifting will happen alongside the corresponding dep bump
     # in a follow-up milestone.
+    #
+    # Re-confirmed by t8-E1 2026-05-21 post-PQ-deps: ml-kem 0.3.2 (RustCrypto,
+    # added by t8-B1) introduces no new advisories. The sntrup761 path (t8-B2)
+    # ships as a skeleton with no new crate added. Zero advisories resolved,
+    # zero new advisories introduced since t7-CCI.
     { id = "RUSTSEC-2023-0071", reason = "rsa 0.9.10 still locked; no patched release upstream. Retained for SSH RSA key support and transitive consumers." },
     { id = "RUSTSEC-2024-0436", reason = "paste 1.0.15 still locked via ratatui 0.28.x; paste has no patched release." },
     { id = "RUSTSEC-2025-0134", reason = "rustls-pemfile 2.2.0 still locked; no patched release. Migrating to rustls-pki-types PemObject requires code changes outside dependency policy." },

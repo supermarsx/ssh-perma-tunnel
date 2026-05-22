@@ -219,9 +219,7 @@ where
             .channel_open_direct_streamlocal(socket_path)
             .await
             .map_err(|e| {
-                Error::RuntimeFailure(format!(
-                    "russh direct-streamlocal `{socket_path}`: {e}"
-                ))
+                Error::RuntimeFailure(format!("russh direct-streamlocal `{socket_path}`: {e}"))
             })?
     };
     audit_open("local_uds", socket_path);
@@ -264,12 +262,12 @@ where
         validate_socket_path(socket_path)?;
         {
             let mut g = handle.lock().await;
-            g.streamlocal_forward(socket_path).await.map_err(|e| {
-                Error::RemoteBindFailed {
+            g.streamlocal_forward(socket_path)
+                .await
+                .map_err(|e| Error::RemoteBindFailed {
                     address: socket_path.to_owned(),
                     reason: format!("russh streamlocal-forward: {e}"),
-                }
-            })?;
+                })?;
         }
         audit_open("remote_uds", socket_path);
         Ok(Self {
@@ -387,8 +385,8 @@ mod tests {
         let body = encode_direct_streamlocal_body("/run/foo.sock");
         let expected: [u8; 25] = [
             0x00, 0x00, 0x00, 0x0d, // length 13
-            0x2f, 0x72, 0x75, 0x6e, 0x2f, 0x66, 0x6f, 0x6f, 0x2e, 0x73, 0x6f, 0x63, 0x6b,
-            0x00, 0x00, 0x00, 0x00, // reserved string (empty)
+            0x2f, 0x72, 0x75, 0x6e, 0x2f, 0x66, 0x6f, 0x6f, 0x2e, 0x73, 0x6f, 0x63, 0x6b, 0x00,
+            0x00, 0x00, 0x00, // reserved string (empty)
             0x00, 0x00, 0x00, 0x00, // reserved uint32
         ];
         assert_eq!(

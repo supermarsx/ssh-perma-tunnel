@@ -8,7 +8,7 @@
 //! ## Failure modes
 //!
 //! - `ssh` not on `PATH` → [`ComparatorError::NotInstalled`].
-//! - Local forward port doesn't become connectable inside [`SETUP_TIMEOUT`]
+//! - Local forward port doesn't become connectable inside `SETUP_TIMEOUT`
 //!   → [`ComparatorError::Setup`].
 //! - Subprocess exits non-zero before shutdown → captured in stderr log.
 //!
@@ -272,7 +272,11 @@ pub(crate) async fn drive_throughput_via_forward(
         if samples.is_empty() {
             return 0;
         }
-        #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        #[allow(
+            clippy::cast_precision_loss,
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss
+        )]
         let idx = ((samples.len() as f64 - 1.0) * q).round() as usize;
         samples[idx.min(samples.len() - 1)]
     };
@@ -291,9 +295,8 @@ mod tests {
 
     #[tokio::test]
     async fn falls_back_when_binary_missing() {
-        let mut c = OpenSshClient::with_binary_name(
-            "definitely-not-a-real-ssh-binary-xyz-9c7a3b1f",
-        );
+        let mut c =
+            OpenSshClient::with_binary_name("definitely-not-a-real-ssh-binary-xyz-9c7a3b1f");
         let ctx = ComparatorContext::for_upstream(
             "127.0.0.1:22".parse().unwrap(),
             "127.0.0.1:80".parse().unwrap(),

@@ -324,9 +324,8 @@ impl ScriptEngine {
     /// scripts use the bounded [`rhai::packages::CorePackage`] only.
     #[cfg(test)]
     pub(crate) fn register_panic_fn_for_tests(&mut self, name: &str, msg: &'static str) {
-        self.engine.register_fn(name, move || -> rhai::Dynamic {
-            panic!("{msg}")
-        });
+        self.engine
+            .register_fn(name, move || -> rhai::Dynamic { panic!("{msg}") });
     }
 }
 

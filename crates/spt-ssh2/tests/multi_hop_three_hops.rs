@@ -107,7 +107,10 @@ async fn three_hop_russh_chain_handshakes_and_serves_channel_open() {
         .authenticate_password("u", "pw")
         .await
         .expect("auth B over chained session");
-    assert!(authed_b, "server B must accept password over chained channel");
+    assert!(
+        authed_b,
+        "server B must accept password over chained channel"
+    );
     let shared_b = Arc::new(AsyncMutex::new(handle_b));
 
     // -- Hop 3: open chained session B -> C. -------------------------------
@@ -125,7 +128,10 @@ async fn three_hop_russh_chain_handshakes_and_serves_channel_open() {
         .authenticate_password("u", "pw")
         .await
         .expect("auth C over chained session");
-    assert!(authed_c, "server C must accept password through 3-hop chain");
+    assert!(
+        authed_c,
+        "server C must accept password through 3-hop chain"
+    );
 
     // Smoke: open a session channel on the final hop to confirm the chain
     // carries real protocol traffic, not just the kex handshake.

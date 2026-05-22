@@ -111,8 +111,8 @@ impl WebsocketTransport {
         // crate fills from the URL) and Sec-WebSocket-Key (random,
         // tungstenite-generated). We can pre-build those though to
         // make the request fully concrete for tests.
-        let parsed = url::Url::parse(url)
-            .map_err(|e| ObfsError::InvalidConfig(format!("ws url: {e}")))?;
+        let parsed =
+            url::Url::parse(url).map_err(|e| ObfsError::InvalidConfig(format!("ws url: {e}")))?;
         let host = parsed
             .host_str()
             .ok_or_else(|| ObfsError::InvalidConfig("ws url has no host".into()))?;
@@ -166,11 +166,7 @@ pub fn encode_binary_frame(payload: &[u8]) -> Bytes {
 /// Decode a frame produced by [`encode_binary_frame`].
 pub fn decode_binary_frame(frame: &[u8]) -> Result<Vec<u8>> {
     if frame.len() < 5 {
-        return Err(ObfsError::Handshake(format!(
-            "ws frame too short: {}",
-            frame.len()
-        ))
-        .into());
+        return Err(ObfsError::Handshake(format!("ws frame too short: {}", frame.len())).into());
     }
     if frame[0] != 0x82 {
         return Err(ObfsError::Handshake(format!(
@@ -329,9 +325,7 @@ impl AsyncWrite for WebsocketStream {
 impl ObfsTransport for WebsocketTransport {
     async fn connect(&mut self, target: &str) -> Result<Box<dyn AsyncReadWrite>> {
         self.audit.on_connect(self.name(), target);
-        let req = self
-            .build_http_request()
-            .map_err(spt_core::Error::from)?;
+        let req = self.build_http_request().map_err(spt_core::Error::from)?;
         let cfg = WebSocketConfig::default();
         let (ws, _resp) = connect_async_with_config(req, Some(cfg), false)
             .await
@@ -377,7 +371,10 @@ mod tests {
         let req = t.build_http_request().unwrap();
         let hdrs = req.headers();
         assert_eq!(
-            hdrs.get("Sec-WebSocket-Protocol").unwrap().to_str().unwrap(),
+            hdrs.get("Sec-WebSocket-Protocol")
+                .unwrap()
+                .to_str()
+                .unwrap(),
             "ssh"
         );
         assert_eq!(hdrs.get("X-Auth").unwrap().to_str().unwrap(), "tok");

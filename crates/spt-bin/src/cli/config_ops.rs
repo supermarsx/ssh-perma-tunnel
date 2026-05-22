@@ -670,22 +670,23 @@ fn derive_sealed_path(input: &Path) -> PathBuf {
 fn write_bytes_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     use atomicwrites::{AtomicFile, OverwriteBehavior};
     let af = AtomicFile::new(path, OverwriteBehavior::AllowOverwrite);
-    af.write(|f| std::io::Write::write_all(f, bytes)).map_err(|e| {
-        Error::runtime_failure(
-            spt_core::Diagnostic::what(format!(
-                "Failed to atomically write `{}`",
-                path.display()
-            ))
-            .why(format!("{e}"))
-            .how_to_fix(
-                "Verify the parent directory is writable, has space, and that no other \
+    af.write(|f| std::io::Write::write_all(f, bytes))
+        .map_err(|e| {
+            Error::runtime_failure(
+                spt_core::Diagnostic::what(format!(
+                    "Failed to atomically write `{}`",
+                    path.display()
+                ))
+                .why(format!("{e}"))
+                .how_to_fix(
+                    "Verify the parent directory is writable, has space, and that no other \
                  process holds an exclusive lock on the target path.",
+                )
+                .file_path(path)
+                .retry_advice(spt_core::RetryAdvice::RetryWithBackoff)
+                .build(),
             )
-            .file_path(path)
-            .retry_advice(spt_core::RetryAdvice::RetryWithBackoff)
-            .build(),
-        )
-    })
+        })
 }
 
 /// Read a passphrase via a secret reference (`env:NAME` / `file:PATH`) or
@@ -1037,16 +1038,14 @@ impl EditSession {
             .status()
             .map_err(|e| {
                 Error::runtime_failure(
-                    spt_core::Diagnostic::what(format!(
-                        "Failed to spawn editor `{editor}`"
-                    ))
-                    .why(format!("{e}"))
-                    .how_to_fix(
-                        "Verify $EDITOR (or $VISUAL) points to an executable on $PATH. \
+                    spt_core::Diagnostic::what(format!("Failed to spawn editor `{editor}`"))
+                        .why(format!("{e}"))
+                        .how_to_fix(
+                            "Verify $EDITOR (or $VISUAL) points to an executable on $PATH. \
                          Falls back to `vi` on Unix and `notepad` on Windows.",
-                    )
-                    .retry_advice(spt_core::RetryAdvice::NotRetryable)
-                    .build(),
+                        )
+                        .retry_advice(spt_core::RetryAdvice::NotRetryable)
+                        .build(),
                 )
             })?;
         if !status.success() {

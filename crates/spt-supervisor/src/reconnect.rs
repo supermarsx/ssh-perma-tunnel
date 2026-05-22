@@ -233,17 +233,19 @@ static RECONNECT_OBSERVER: std::sync::Mutex<Option<Arc<dyn ReconnectObserver>>> 
 /// then drive multiple profiles without threading the observer through
 /// every config struct.
 #[cfg(any(test, feature = "testing"))]
-pub fn install_test_hook(
-    hook: Arc<dyn ReconnectObserver>,
-) -> Option<Arc<dyn ReconnectObserver>> {
-    let mut g = RECONNECT_OBSERVER.lock().expect("RECONNECT_OBSERVER poisoned");
+pub fn install_test_hook(hook: Arc<dyn ReconnectObserver>) -> Option<Arc<dyn ReconnectObserver>> {
+    let mut g = RECONNECT_OBSERVER
+        .lock()
+        .expect("RECONNECT_OBSERVER poisoned");
     g.replace(hook)
 }
 
 /// Remove the currently installed reconnect observer, if any.
 #[cfg(any(test, feature = "testing"))]
 pub fn clear_test_hook() -> Option<Arc<dyn ReconnectObserver>> {
-    let mut g = RECONNECT_OBSERVER.lock().expect("RECONNECT_OBSERVER poisoned");
+    let mut g = RECONNECT_OBSERVER
+        .lock()
+        .expect("RECONNECT_OBSERVER poisoned");
     g.take()
 }
 

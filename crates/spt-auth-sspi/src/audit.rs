@@ -5,7 +5,7 @@
 //! record per-step provenance: the package name (`"kerberos"`, `"ntlm"`,
 //! `"negotiate"`), the round-trip ordinal, and the `complete` flag.
 //!
-//! Mirrors the [`spt_obfs::audit`] surface (`AuditHook`, `NoopAuditHook`,
+//! Mirrors the `spt_obfs::audit` surface (`AuditHook`, `NoopAuditHook`,
 //! `MockAuditHook`) so subscribers can be written once and applied across
 //! the two crates.
 
@@ -121,7 +121,14 @@ mod tests {
         });
         let e = h.entries();
         assert_eq!(e.len(), 3);
-        assert!(matches!(e[1], AuditEvent::TokenExchange { round: 2, complete: true, .. }));
+        assert!(matches!(
+            e[1],
+            AuditEvent::TokenExchange {
+                round: 2,
+                complete: true,
+                ..
+            }
+        ));
         assert!(matches!(e[2], AuditEvent::MicIssued { mic_len: 32, .. }));
     }
 }

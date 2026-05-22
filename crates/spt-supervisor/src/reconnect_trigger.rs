@@ -129,18 +129,17 @@ mod tests {
     #[test]
     fn supervisor_stopped_diagnostic_carries_remediation() {
         // Mirrors the converted site in wait_session_up.
-        let d = spt_core::Diagnostic::what(
-            "Supervisor stopped before session reached Active state",
-        )
-        .why("the state channel was closed while waiting for reconnect")
-        .how_to_fix(
-            "Check the supervisor's recent log lines for the underlying \
+        let d =
+            spt_core::Diagnostic::what("Supervisor stopped before session reached Active state")
+                .why("the state channel was closed while waiting for reconnect")
+                .how_to_fix(
+                    "Check the supervisor's recent log lines for the underlying \
              shutdown cause (panic, signal, max-restart-budget exceeded). \
              If unexpected, re-run with `--verbose` to capture state \
              transitions.",
-        )
-        .retry_advice(spt_core::RetryAdvice::RetryWithBackoff)
-        .build();
+                )
+                .retry_advice(spt_core::RetryAdvice::RetryWithBackoff)
+                .build();
         let e = spt_core::Error::runtime_failure(d);
         spt_core::assert_diagnostic_contains!(e,
             what: "Supervisor stopped before session reached Active",

@@ -111,7 +111,10 @@ mod tests {
     fn as_ipv4_handles_v4_mapped_v6() {
         let mapped: Ipv6Addr = "::ffff:127.0.0.1".parse().unwrap();
         assert_eq!(as_ipv4(IpAddr::V6(mapped)), Some(Ipv4Addr::LOCALHOST));
-        assert_eq!(as_ipv4(IpAddr::V4(Ipv4Addr::LOCALHOST)), Some(Ipv4Addr::LOCALHOST));
+        assert_eq!(
+            as_ipv4(IpAddr::V4(Ipv4Addr::LOCALHOST)),
+            Some(Ipv4Addr::LOCALHOST)
+        );
         let pure_v6: Ipv6Addr = "::1".parse().unwrap();
         assert_eq!(as_ipv4(IpAddr::V6(pure_v6)), None);
     }

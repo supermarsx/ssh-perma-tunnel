@@ -19,8 +19,8 @@
 
 #![deny(missing_docs)]
 
-pub mod compare;
 pub mod comparators;
+pub mod compare;
 pub mod driver;
 pub mod drivers;
 pub mod report;

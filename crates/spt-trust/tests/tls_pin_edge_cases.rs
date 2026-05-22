@@ -90,9 +90,7 @@ fn three_level(leaf_cn: &str) -> ([Vec<u8>; 3], [[u8; 32]; 3]) {
     leaf_params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
     leaf_params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
     let leaf_kp = KeyPair::generate().unwrap();
-    let leaf = leaf_params
-        .signed_by(&leaf_kp, &int_cert, &int_kp)
-        .unwrap();
+    let leaf = leaf_params.signed_by(&leaf_kp, &int_cert, &int_kp).unwrap();
 
     let leaf_der = leaf.der().to_vec();
     let int_der = int_cert.der().to_vec();
@@ -273,7 +271,9 @@ fn san_mismatch_rejected_by_webpki_layer() {
     if roots.is_empty() {
         roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
     }
-    let inner = WebPkiServerVerifier::builder(Arc::new(roots)).build().unwrap();
+    let inner = WebPkiServerVerifier::builder(Arc::new(roots))
+        .build()
+        .unwrap();
     let cert = CertificateDer::from(c.der);
     let name = ServerName::try_from("other.test").unwrap();
     let r = inner.verify_server_cert(&cert, &[], &name, &[], UnixTime::now());
@@ -299,7 +299,9 @@ fn expired_cert_rejected_via_webpki_time_check() {
     if roots.is_empty() {
         roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
     }
-    let inner = WebPkiServerVerifier::builder(Arc::new(roots)).build().unwrap();
+    let inner = WebPkiServerVerifier::builder(Arc::new(roots))
+        .build()
+        .unwrap();
     let cert = CertificateDer::from(c.der);
     let name = ServerName::try_from("epoch.test").unwrap();
     let r = inner.verify_server_cert(
@@ -345,7 +347,9 @@ fn ed25519_self_signed_cert_pins_successfully() {
     let alg = &rcgen::PKCS_ED25519;
     let kp = KeyPair::generate_for(alg).unwrap();
     let mut params = CertificateParams::new(vec!["ed25519.test".to_string()]).unwrap();
-    params.distinguished_name.push(DnType::CommonName, "ed25519.test");
+    params
+        .distinguished_name
+        .push(DnType::CommonName, "ed25519.test");
     let cert = params.self_signed(&kp).unwrap();
     let der = cert.der().to_vec();
     let spki = spki_of(&der);

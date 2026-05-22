@@ -69,7 +69,7 @@ impl StateSnapshotSource for FileSnapshotSource {
 
 /// Foreground-host the status API. Loads the config, builds a
 /// [`FileSnapshotSource`] over the state dir, calls
-/// [`StatusApiServer::start`], and blocks until Ctrl-C / SIGTERM.
+/// [`spt_status_api::StatusApiServer::start`], and blocks until Ctrl-C / SIGTERM.
 pub async fn serve(global: &GlobalOpts, args: StatusServeArgs) -> Result<()> {
     let cfg_path = args
         .config

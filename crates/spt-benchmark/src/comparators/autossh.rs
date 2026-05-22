@@ -192,9 +192,8 @@ mod tests {
 
     #[tokio::test]
     async fn falls_back_when_binary_missing() {
-        let mut c = AutosshClient::with_binary_name(
-            "definitely-not-a-real-autossh-binary-xyz-4f1d7c0a",
-        );
+        let mut c =
+            AutosshClient::with_binary_name("definitely-not-a-real-autossh-binary-xyz-4f1d7c0a");
         let ctx = ComparatorContext::for_upstream(
             "127.0.0.1:22".parse().unwrap(),
             "127.0.0.1:80".parse().unwrap(),

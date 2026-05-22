@@ -645,7 +645,7 @@ impl ToolHandler for StatsSubscribe {
 }
 /// `log_set_level`: change the live tracing filter directive at runtime.
 ///
-/// Constructs an [`EnvFilter`]-style directive of the form `target=level` from
+/// Constructs an `EnvFilter`-style directive of the form `target=level` from
 /// the two arguments and hands it to the configured
 /// [`LogReloadBridge`] (wired by `spt-bin` against the process-wide
 /// subscriber). Pre-validates the level and target syntax so misuse fails
@@ -708,10 +708,9 @@ impl ToolHandler for LogSetLevel {
         let target = args.get("target").and_then(Value::as_str).ok_or_else(|| {
             crate::Error::InvalidParams("missing string field 'target'".to_owned())
         })?;
-        let level_raw = args
-            .get("level")
-            .and_then(Value::as_str)
-            .ok_or_else(|| crate::Error::InvalidParams("missing string field 'level'".to_owned()))?;
+        let level_raw = args.get("level").and_then(Value::as_str).ok_or_else(|| {
+            crate::Error::InvalidParams("missing string field 'level'".to_owned())
+        })?;
         let level = level_raw.to_ascii_lowercase();
         if !VALID_LEVELS.contains(&level.as_str()) {
             return Err(crate::Error::InvalidParams(format!(
@@ -1235,10 +1234,7 @@ mod log_set_level_tests {
         let bridge = Arc::new(RecordingReload::new());
         let ctx = ctx_with_bridge(bridge.clone());
         let v = LogSetLevel
-            .call(
-                &ctx,
-                json!({"target": "spt_supervisor", "level": "debug"}),
-            )
+            .call(&ctx, json!({"target": "spt_supervisor", "level": "debug"}))
             .await
             .expect("ok");
         assert_eq!(v["applied"], true);

@@ -43,11 +43,13 @@ impl From<ObfsError> for CoreError {
     fn from(e: ObfsError) -> Self {
         match e {
             ObfsError::InvalidConfig(s) => CoreError::InvalidConfig(s),
-            ObfsError::Unsupported { transport, crate_name, detail } => {
-                CoreError::UnsupportedPlatform(format!(
-                    "{transport}: missing `{crate_name}` in Cargo.lock ({detail})"
-                ))
-            }
+            ObfsError::Unsupported {
+                transport,
+                crate_name,
+                detail,
+            } => CoreError::UnsupportedPlatform(format!(
+                "{transport}: missing `{crate_name}` in Cargo.lock ({detail})"
+            )),
             ObfsError::Handshake(s) => CoreError::RuntimeFailure(format!("obfs handshake: {s}")),
             ObfsError::Io(e) => CoreError::RuntimeFailure(format!("obfs io: {e}")),
         }

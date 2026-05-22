@@ -38,7 +38,10 @@ use spt_chaos_proxy::{ChaosBehaviour, ChaosProxy};
 
 /// `matrix_cell` command-line interface.
 #[derive(Parser, Debug)]
-#[command(name = "matrix_cell", about = "Drive one cell of the comparative benchmark matrix")]
+#[command(
+    name = "matrix_cell",
+    about = "Drive one cell of the comparative benchmark matrix"
+)]
 struct Args {
     /// Comparator to drive (`spt`, `openssh`, `autossh`).
     #[arg(long)]

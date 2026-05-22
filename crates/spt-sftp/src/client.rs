@@ -2,7 +2,7 @@
 //!
 //! `SftpClient` wraps an established [`russh_sftp::client::SftpSession`]
 //! handle. Construct via [`SftpClient::from_russh`] from the spt-ssh2 backend
-//! (or from the [`mock`](crate::mock) test harness).
+//! (or from the `mock` test harness).
 
 use std::path::PathBuf;
 

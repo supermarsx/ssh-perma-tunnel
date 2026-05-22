@@ -77,7 +77,11 @@ impl ComparatorContext {
     /// Construct a context targeting `upstream` with a free OS-chosen
     /// forward port, `ssh_user = "spt"`, no binary override.
     #[must_use]
-    pub fn for_upstream(upstream: SocketAddr, forward_remote: SocketAddr, log_dir: PathBuf) -> Self {
+    pub fn for_upstream(
+        upstream: SocketAddr,
+        forward_remote: SocketAddr,
+        log_dir: PathBuf,
+    ) -> Self {
         Self {
             upstream_addr: upstream,
             forward_local: "127.0.0.1:0".parse().expect("hard-coded literal"),
@@ -416,10 +420,7 @@ mod tests {
             }
             Ok(())
         }
-        async fn measure_throughput(
-            &mut self,
-            bytes: usize,
-        ) -> ComparatorResult<ThroughputSample> {
+        async fn measure_throughput(&mut self, bytes: usize) -> ComparatorResult<ThroughputSample> {
             // Must happen AFTER setup bit was set.
             assert!(self.calls.load(Ordering::SeqCst) & 0b0001 != 0);
             self.calls.fetch_or(0b0010, Ordering::SeqCst);

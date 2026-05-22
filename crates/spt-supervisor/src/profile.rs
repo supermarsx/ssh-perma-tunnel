@@ -971,10 +971,7 @@ mod tests {
         ) -> Result<Box<dyn spt_protocol::TunnelSession>> {
             self.connect_count
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            if self
-                .connect_fail
-                .load(std::sync::atomic::Ordering::SeqCst)
-            {
+            if self.connect_fail.load(std::sync::atomic::Ordering::SeqCst) {
                 return Err(Error::NetworkUnreachable("toggle".into()));
             }
             Ok(Box::new(ToggleKeepaliveSession::new(Arc::clone(
@@ -1032,25 +1029,16 @@ mod tests {
         // for a short moment, then trip keepalive.
         connect_fail.store(true, std::sync::atomic::Ordering::SeqCst);
 
-        let sup = ProfileSupervisor::spawn(
-            "p",
-            proto.clone(),
-            auth(),
-            vec![endpoint("a")],
-            vec![],
-            cfg,
-        );
+        let sup =
+            ProfileSupervisor::spawn("p", proto.clone(), auth(), vec![endpoint("a")], vec![], cfg);
         let mut events = sup.take_events().unwrap();
 
         // Wait until at least 2 reconnect attempts have been scheduled.
         let mut seen_attempts = 0_u32;
         let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
         while tokio::time::Instant::now() < deadline && seen_attempts < 2 {
-            if let Some(a) = wait_for_reconnect_attempt(
-                &mut events,
-                Duration::from_millis(500),
-            )
-            .await
+            if let Some(a) =
+                wait_for_reconnect_attempt(&mut events, Duration::from_millis(500)).await
             {
                 seen_attempts = a;
             }
@@ -1070,10 +1058,9 @@ mod tests {
         // attempt counter.
         connect_fail.store(true, std::sync::atomic::Ordering::SeqCst);
 
-        let next_attempt =
-            wait_for_reconnect_attempt(&mut events, Duration::from_secs(2))
-                .await
-                .expect("expected a reconnect-scheduled event after keepalive failure");
+        let next_attempt = wait_for_reconnect_attempt(&mut events, Duration::from_secs(2))
+            .await
+            .expect("expected a reconnect-scheduled event after keepalive failure");
         assert!(
             next_attempt > 1,
             "short-uptime should NOT reset backoff; expected attempt > 1, got {next_attempt}"
@@ -1100,14 +1087,8 @@ mod tests {
         // Connect succeeds → session up.
         connect_fail.store(false, std::sync::atomic::Ordering::SeqCst);
 
-        let sup = ProfileSupervisor::spawn(
-            "p",
-            proto.clone(),
-            auth(),
-            vec![endpoint("a")],
-            vec![],
-            cfg,
-        );
+        let sup =
+            ProfileSupervisor::spawn("p", proto.clone(), auth(), vec![endpoint("a")], vec![], cfg);
         let mut events = sup.take_events().unwrap();
 
         // Drain events until ForwardsUp; that's when session_up_since
@@ -1154,16 +1135,14 @@ mod tests {
     fn failover_supervisor_not_running_diagnostic_renders_actionable_text() {
         // Mirrors the converted site for `failover_to` when the control
         // channel is closed.
-        let d = spt_core::Diagnostic::what(
-            "Cannot trigger failover: supervisor not running",
-        )
-        .why("the supervisor's control channel is closed — the task has exited")
-        .how_to_fix(
-            "Restart the profile (`spt profile restart <name>` or equivalent). \
+        let d = spt_core::Diagnostic::what("Cannot trigger failover: supervisor not running")
+            .why("the supervisor's control channel is closed — the task has exited")
+            .how_to_fix(
+                "Restart the profile (`spt profile restart <name>` or equivalent). \
              Check recent logs for the underlying exit reason.",
-        )
-        .retry_advice(spt_core::RetryAdvice::NotRetryable)
-        .build();
+            )
+            .retry_advice(spt_core::RetryAdvice::NotRetryable)
+            .build();
         let e = spt_core::Error::runtime_failure(d);
         spt_core::assert_diagnostic_contains!(e,
             what: "Cannot trigger failover",

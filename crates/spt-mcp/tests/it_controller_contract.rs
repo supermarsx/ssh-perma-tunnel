@@ -79,10 +79,7 @@ async fn default_run_benchmark_returns_not_implemented() {
 #[tokio::test]
 async fn noop_controller_six_required_methods_return_not_implemented() {
     let c = NoopController;
-    assert_not_implemented(
-        c.reload().await.expect_err("reload"),
-        "Controller::reload",
-    );
+    assert_not_implemented(c.reload().await.expect_err("reload"), "Controller::reload");
     assert_not_implemented(
         c.failover("p", None).await.expect_err("failover"),
         "Controller::failover",
@@ -101,7 +98,9 @@ async fn noop_controller_six_required_methods_return_not_implemented() {
         "Controller::forward_add",
     );
     assert_not_implemented(
-        c.forward_remove("p", "f").await.expect_err("forward_remove"),
+        c.forward_remove("p", "f")
+            .await
+            .expect_err("forward_remove"),
         "Controller::forward_remove",
     );
 }

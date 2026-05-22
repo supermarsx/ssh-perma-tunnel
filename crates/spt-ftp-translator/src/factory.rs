@@ -3,7 +3,7 @@
 //! Each authenticated FTP control session asks the factory to open an
 //! SFTP client on its behalf. Two implementations ship:
 //!
-//! * [`crate::mock::MockSftpFactory`] — a filesystem-backed mock used by
+//! * `crate::mock::MockSftpFactory` — a filesystem-backed mock used by
 //!   the integration test suite. Gated behind `feature = "testing"`.
 //! * [`Ssh2SftpFactory`] — production-grade factory that opens a real
 //!   russh SFTP session per FTP user via

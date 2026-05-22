@@ -86,7 +86,9 @@ impl MeekHttpTransport {
     #[must_use]
     pub fn host_header(&self) -> String {
         match &self.cfg {
-            ObfsConfig::MeekHttp { url, front_host, .. } => {
+            ObfsConfig::MeekHttp {
+                url, front_host, ..
+            } => {
                 if let Some(h) = front_host {
                     return h.clone();
                 }
@@ -184,10 +186,9 @@ impl ObfsTransport for MeekHttpTransport {
             .map_err(|e| ObfsError::Handshake(format!("meek probe: {e}")))?;
         let status = probe.status().as_u16();
         if !(200..300).contains(&status) {
-            return Err(ObfsError::Handshake(format!(
-                "meek-http front returned HTTP {status}"
-            ))
-            .into());
+            return Err(
+                ObfsError::Handshake(format!("meek-http front returned HTTP {status}")).into(),
+            );
         }
         let initial_body = probe
             .bytes()
@@ -226,8 +227,7 @@ pub struct MeekStream {
 }
 
 /// Boxed future yielded by an in-flight POST.
-pub type PostFuture =
-    Pin<Box<dyn std::future::Future<Output = std::io::Result<Vec<u8>>> + Send>>;
+pub type PostFuture = Pin<Box<dyn std::future::Future<Output = std::io::Result<Vec<u8>>> + Send>>;
 
 impl MeekStream {
     /// Construct a stream pre-loaded with the initial probe response body.

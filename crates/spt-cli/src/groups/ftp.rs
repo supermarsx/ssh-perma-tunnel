@@ -158,13 +158,7 @@ mod tests {
 
     #[test]
     fn tls_cert_requires_key() {
-        let r = Probe::try_parse_from([
-            "spt-ftp",
-            "translator",
-            "serve",
-            "--tls-cert",
-            "/tmp/c",
-        ]);
+        let r = Probe::try_parse_from(["spt-ftp", "translator", "serve", "--tls-cert", "/tmp/c"]);
         assert!(r.is_err());
     }
 }

@@ -20,7 +20,7 @@ use thiserror::Error;
 
 /// Categorised SFTP errors.
 ///
-/// Construct directly in tests, or via [`SftpError::from_op`] when wrapping
+/// Construct directly in tests, or via `SftpError::from_op` when wrapping
 /// a [`russh-sftp` client error](russh_sftp::client::error::Error).
 #[derive(Debug, Error, Clone)]
 pub enum SftpError {

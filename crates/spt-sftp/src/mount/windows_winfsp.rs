@@ -53,16 +53,16 @@
 //! The SFTP client is `tokio`-async. The handler captures a
 //! [`tokio::runtime::Handle`] at construction and uses
 //! [`tokio::runtime::Handle::block_on`] inside each callback (mirrors the
-//! pattern in [`super::linux_fuse::FuseFs`]).
+//! pattern in `super::linux_fuse::FuseFs`).
 //!
 //! [`dokan` 0.3.1+dokan206]: https://crates.io/crates/dokan/0.3.1+dokan206
 //! [crates.io link]: https://crates.io/crates/dokan
 
 use std::sync::Arc;
 
-use super::{MountEvent, MountHandle, MountOpts, SftpMounter};
 #[cfg(not(windows))]
 use super::unsupported_platform_error;
+use super::{MountEvent, MountHandle, MountOpts, SftpMounter};
 use crate::client::SftpClient;
 use crate::error::SftpError;
 
@@ -88,7 +88,9 @@ use winapi::shared::ntstatus::{
     STATUS_NOT_IMPLEMENTED, STATUS_OBJECT_NAME_COLLISION, STATUS_OBJECT_NAME_NOT_FOUND,
 };
 #[cfg(all(windows, feature = "mount-winfs"))]
-use winapi::um::winnt::{FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_REPARSE_POINT};
+use winapi::um::winnt::{
+    FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_REPARSE_POINT,
+};
 
 /// Dokan-backed mounter for Windows.
 ///
@@ -211,12 +213,7 @@ impl SftpMounter for WinFsMounter {
         let join = std::thread::Builder::new()
             .name("spt-sftp-dokan".into())
             .spawn(move || {
-                let handler = DokanSftpFs::new(
-                    sftp_for_thread,
-                    runtime,
-                    remote_root,
-                    readonly,
-                );
+                let handler = DokanSftpFs::new(sftp_for_thread, runtime, remote_root, readonly);
                 let mut flags = MountFlags::empty();
                 if readonly {
                     flags |= MountFlags::WRITE_PROTECT;
@@ -235,8 +232,7 @@ impl SftpMounter for WinFsMounter {
                 // and `options`) is dropped before `handler` / `options`
                 // themselves.
                 {
-                    let mut mounter =
-                        FileSystemMounter::new(&handler, &mp_for_thread, &options);
+                    let mut mounter = FileSystemMounter::new(&handler, &mp_for_thread, &options);
                     match mounter.mount() {
                         Ok(fs) => {
                             // Notify caller the mount is live, then block
@@ -589,14 +585,10 @@ impl DokanSftpFs {
         self.runtime.block_on(async move { sftp.lstat(p).await })
     }
 
-    fn file_info_from_meta(
-        &self,
-        path: &str,
-        meta: &crate::client::SftpMetadata,
-    ) -> FileInfo {
-        let mtime = meta
-            .modified_unix
-            .map_or(UNIX_EPOCH, |s| UNIX_EPOCH + Duration::from_secs(u64::from(s)));
+    fn file_info_from_meta(&self, path: &str, meta: &crate::client::SftpMetadata) -> FileInfo {
+        let mtime = meta.modified_unix.map_or(UNIX_EPOCH, |s| {
+            UNIX_EPOCH + Duration::from_secs(u64::from(s))
+        });
         let mut attributes = if meta.is_dir {
             FILE_ATTRIBUTE_DIRECTORY
         } else {
@@ -635,80 +627,84 @@ impl<'c, 'h: 'c> FileSystemHandler<'c, 'h> for DokanSftpFs {
         // t8-A2: chokepoint panic-recovery boundary.
         let is_dir_hint = info.is_dir();
         catch_dokan_callback("create_file", || {
-        // `dokan_sys::win32::FILE_CREATE` / `FILE_OPEN` / `FILE_OPEN_IF` /
-        // `FILE_OVERWRITE` / `FILE_OVERWRITE_IF` / `FILE_SUPERSEDE` map to
-        // the NT create dispositions. We care about three classes:
-        //   1. open-if-exists  (FILE_OPEN, FILE_OPEN_IF)
-        //   2. create-if-not   (FILE_CREATE, FILE_OPEN_IF, FILE_OVERWRITE_IF, FILE_SUPERSEDE)
-        //   3. truncate        (FILE_OVERWRITE*, FILE_SUPERSEDE)
-        const FILE_SUPERSEDE: u32 = 0;
-        const FILE_OPEN: u32 = 1;
-        const FILE_CREATE: u32 = 2;
-        const FILE_OPEN_IF: u32 = 3;
-        const FILE_OVERWRITE: u32 = 4;
-        const FILE_OVERWRITE_IF: u32 = 5;
+            // `dokan_sys::win32::FILE_CREATE` / `FILE_OPEN` / `FILE_OPEN_IF` /
+            // `FILE_OVERWRITE` / `FILE_OVERWRITE_IF` / `FILE_SUPERSEDE` map to
+            // the NT create dispositions. We care about three classes:
+            //   1. open-if-exists  (FILE_OPEN, FILE_OPEN_IF)
+            //   2. create-if-not   (FILE_CREATE, FILE_OPEN_IF, FILE_OVERWRITE_IF, FILE_SUPERSEDE)
+            //   3. truncate        (FILE_OVERWRITE*, FILE_SUPERSEDE)
+            const FILE_SUPERSEDE: u32 = 0;
+            const FILE_OPEN: u32 = 1;
+            const FILE_CREATE: u32 = 2;
+            const FILE_OPEN_IF: u32 = 3;
+            const FILE_OVERWRITE: u32 = 4;
+            const FILE_OVERWRITE_IF: u32 = 5;
 
-        let path = to_remote_path(&self.remote_root, file_name);
-        let meta = self.fetch_meta(&path);
+            let path = to_remote_path(&self.remote_root, file_name);
+            let meta = self.fetch_meta(&path);
 
-        let exists = meta.is_ok();
-        let actually_dir = meta.as_ref().map(|m| m.is_dir).unwrap_or(false);
+            let exists = meta.is_ok();
+            let actually_dir = meta.as_ref().map(|m| m.is_dir).unwrap_or(false);
 
-        // Validate dispositions.
-        match create_disposition {
-            FILE_OPEN if !exists => return Err(STATUS_OBJECT_NAME_NOT_FOUND),
-            FILE_CREATE if exists => return Err(STATUS_OBJECT_NAME_COLLISION),
-            _ => {}
-        }
-
-        let mut new_file_created = false;
-        if !exists && matches!(
-            create_disposition,
-            FILE_CREATE | FILE_OPEN_IF | FILE_OVERWRITE_IF | FILE_SUPERSEDE
-        ) {
-            if self.readonly {
-                return Err(STATUS_MEDIA_WRITE_PROTECTED);
+            // Validate dispositions.
+            match create_disposition {
+                FILE_OPEN if !exists => return Err(STATUS_OBJECT_NAME_NOT_FOUND),
+                FILE_CREATE if exists => return Err(STATUS_OBJECT_NAME_COLLISION),
+                _ => {}
             }
-            // Create the file (or directory).
-            let sftp = self.sftp.clone();
-            let p = path.clone();
-            let result = if is_dir_hint {
-                self.runtime.block_on(async move { sftp.create_dir_idem(p).await })
-            } else {
-                self.runtime.block_on(async move { sftp.write_file(p, &[]).await })
-            };
-            if let Err(e) = result {
-                return Err(ntstatus_for(&e));
-            }
-            new_file_created = true;
-        } else if exists
-            && matches!(
-                create_disposition,
-                FILE_OVERWRITE | FILE_OVERWRITE_IF | FILE_SUPERSEDE
-            )
-        {
-            if self.readonly {
-                return Err(STATUS_MEDIA_WRITE_PROTECTED);
-            }
-            if !actually_dir {
-                // Truncate by re-writing as empty.
+
+            let mut new_file_created = false;
+            if !exists
+                && matches!(
+                    create_disposition,
+                    FILE_CREATE | FILE_OPEN_IF | FILE_OVERWRITE_IF | FILE_SUPERSEDE
+                )
+            {
+                if self.readonly {
+                    return Err(STATUS_MEDIA_WRITE_PROTECTED);
+                }
+                // Create the file (or directory).
                 let sftp = self.sftp.clone();
                 let p = path.clone();
-                if let Err(e) = self
-                    .runtime
-                    .block_on(async move { sftp.write_file(p, &[]).await })
-                {
+                let result = if is_dir_hint {
+                    self.runtime
+                        .block_on(async move { sftp.create_dir_idem(p).await })
+                } else {
+                    self.runtime
+                        .block_on(async move { sftp.write_file(p, &[]).await })
+                };
+                if let Err(e) = result {
                     return Err(ntstatus_for(&e));
                 }
+                new_file_created = true;
+            } else if exists
+                && matches!(
+                    create_disposition,
+                    FILE_OVERWRITE | FILE_OVERWRITE_IF | FILE_SUPERSEDE
+                )
+            {
+                if self.readonly {
+                    return Err(STATUS_MEDIA_WRITE_PROTECTED);
+                }
+                if !actually_dir {
+                    // Truncate by re-writing as empty.
+                    let sftp = self.sftp.clone();
+                    let p = path.clone();
+                    if let Err(e) = self
+                        .runtime
+                        .block_on(async move { sftp.write_file(p, &[]).await })
+                    {
+                        return Err(ntstatus_for(&e));
+                    }
+                }
             }
-        }
 
-        let is_dir = if exists { actually_dir } else { is_dir_hint };
-        Ok(CreateFileInfo {
-            context: DokanFileContext { path, is_dir },
-            is_dir,
-            new_file_created,
-        })
+            let is_dir = if exists { actually_dir } else { is_dir_hint };
+            Ok(CreateFileInfo {
+                context: DokanFileContext { path, is_dir },
+                is_dir,
+                new_file_created,
+            })
         })
     }
 
@@ -756,50 +752,50 @@ impl<'c, 'h: 'c> FileSystemHandler<'c, 'h> for DokanSftpFs {
         // `STATUS_INTERNAL_ERROR` rather than aborting the Dokan
         // kernel-IO thread.
         catch_dokan_callback("read_file", || {
-        if offset < 0 {
-            return Err(STATUS_INVALID_PARAMETER);
-        }
-        let off = offset as u64;
-        let want = buffer.len();
-        let sftp = self.sftp.clone();
-        let p = context.path.clone();
-        let result: Result<Vec<u8>, SftpError> = self.runtime.block_on(async move {
-            use tokio::io::{AsyncReadExt, AsyncSeekExt};
-            let mut file = sftp.open_for_read(p).await?;
-            if off > 0 {
-                file.seek(std::io::SeekFrom::Start(off))
-                    .await
-                    .map_err(|e| SftpError::Local {
-                        op: "read-seek",
-                        detail: e.to_string(),
-                    })?;
+            if offset < 0 {
+                return Err(STATUS_INVALID_PARAMETER);
             }
-            let mut buf = vec![0u8; want];
-            let mut filled = 0;
-            while filled < want {
-                let n = file
-                    .read(&mut buf[filled..])
-                    .await
-                    .map_err(|e| SftpError::Local {
-                        op: "read",
-                        detail: e.to_string(),
-                    })?;
-                if n == 0 {
-                    break;
+            let off = offset as u64;
+            let want = buffer.len();
+            let sftp = self.sftp.clone();
+            let p = context.path.clone();
+            let result: Result<Vec<u8>, SftpError> = self.runtime.block_on(async move {
+                use tokio::io::{AsyncReadExt, AsyncSeekExt};
+                let mut file = sftp.open_for_read(p).await?;
+                if off > 0 {
+                    file.seek(std::io::SeekFrom::Start(off))
+                        .await
+                        .map_err(|e| SftpError::Local {
+                            op: "read-seek",
+                            detail: e.to_string(),
+                        })?;
                 }
-                filled += n;
+                let mut buf = vec![0u8; want];
+                let mut filled = 0;
+                while filled < want {
+                    let n = file
+                        .read(&mut buf[filled..])
+                        .await
+                        .map_err(|e| SftpError::Local {
+                            op: "read",
+                            detail: e.to_string(),
+                        })?;
+                    if n == 0 {
+                        break;
+                    }
+                    filled += n;
+                }
+                buf.truncate(filled);
+                Ok(buf)
+            });
+            match result {
+                Ok(data) => {
+                    let n = data.len().min(buffer.len());
+                    buffer[..n].copy_from_slice(&data[..n]);
+                    Ok(n as u32)
+                }
+                Err(e) => Err(ntstatus_for(&e)),
             }
-            buf.truncate(filled);
-            Ok(buf)
-        });
-        match result {
-            Ok(data) => {
-                let n = data.len().min(buffer.len());
-                buffer[..n].copy_from_slice(&data[..n]);
-                Ok(n as u32)
-            }
-            Err(e) => Err(ntstatus_for(&e)),
-        }
         })
     }
 
@@ -813,41 +809,41 @@ impl<'c, 'h: 'c> FileSystemHandler<'c, 'h> for DokanSftpFs {
     ) -> OperationResult<u32> {
         // t8-A2: chokepoint panic-recovery boundary; see `read_file`.
         catch_dokan_callback("write_file", || {
-        if self.readonly {
-            return Err(STATUS_MEDIA_WRITE_PROTECTED);
-        }
-        let off = if info.write_to_eof() {
-            // We don't track the current size in-handle; ask the server.
-            match self.fetch_meta(&context.path) {
-                Ok(m) => m.size.unwrap_or(0),
-                Err(e) => return Err(ntstatus_for(&e)),
+            if self.readonly {
+                return Err(STATUS_MEDIA_WRITE_PROTECTED);
             }
-        } else if offset < 0 {
-            return Err(STATUS_INVALID_PARAMETER);
-        } else {
-            offset as u64
-        };
-        let bytes = buffer.to_vec();
-        let written = bytes.len() as u32;
-        let sftp = self.sftp.clone();
-        let p = context.path.clone();
-        let result: Result<(), SftpError> = self.runtime.block_on(async move {
-            use tokio::io::AsyncWriteExt;
-            let mut file = sftp.open_for_resume_write(p, off).await?;
-            file.write_all(&bytes).await.map_err(|e| SftpError::Local {
-                op: "write",
-                detail: e.to_string(),
-            })?;
-            file.shutdown().await.map_err(|e| SftpError::Local {
-                op: "write-close",
-                detail: e.to_string(),
-            })?;
-            Ok(())
-        });
-        match result {
-            Ok(()) => Ok(written),
-            Err(e) => Err(ntstatus_for(&e)),
-        }
+            let off = if info.write_to_eof() {
+                // We don't track the current size in-handle; ask the server.
+                match self.fetch_meta(&context.path) {
+                    Ok(m) => m.size.unwrap_or(0),
+                    Err(e) => return Err(ntstatus_for(&e)),
+                }
+            } else if offset < 0 {
+                return Err(STATUS_INVALID_PARAMETER);
+            } else {
+                offset as u64
+            };
+            let bytes = buffer.to_vec();
+            let written = bytes.len() as u32;
+            let sftp = self.sftp.clone();
+            let p = context.path.clone();
+            let result: Result<(), SftpError> = self.runtime.block_on(async move {
+                use tokio::io::AsyncWriteExt;
+                let mut file = sftp.open_for_resume_write(p, off).await?;
+                file.write_all(&bytes).await.map_err(|e| SftpError::Local {
+                    op: "write",
+                    detail: e.to_string(),
+                })?;
+                file.shutdown().await.map_err(|e| SftpError::Local {
+                    op: "write-close",
+                    detail: e.to_string(),
+                })?;
+                Ok(())
+            });
+            match result {
+                Ok(()) => Ok(written),
+                Err(e) => Err(ntstatus_for(&e)),
+            }
         })
     }
 
@@ -870,7 +866,9 @@ impl<'c, 'h: 'c> FileSystemHandler<'c, 'h> for DokanSftpFs {
     ) -> OperationResult<FileInfo> {
         // t8-A2: panic-recovery boundary.
         catch_dokan_callback("get_file_information", || {
-            let meta = self.fetch_meta(&context.path).map_err(|e| ntstatus_for(&e))?;
+            let meta = self
+                .fetch_meta(&context.path)
+                .map_err(|e| ntstatus_for(&e))?;
             Ok(self.file_info_from_meta(&context.path, &meta))
         })
     }
@@ -885,45 +883,44 @@ impl<'c, 'h: 'c> FileSystemHandler<'c, 'h> for DokanSftpFs {
         // t8-A2: panic-recovery boundary; readdir codec panics surface
         // as `STATUS_INTERNAL_ERROR`, not a process abort.
         catch_dokan_callback("find_files", || {
-        if !context.is_dir {
-            return Err(STATUS_NOT_A_DIRECTORY);
-        }
-        let sftp = self.sftp.clone();
-        let p = context.path.clone();
-        let entries = self
-            .runtime
-            .block_on(async move { sftp.read_dir(p).await })
-            .map_err(|e| ntstatus_for(&e))?;
-        for entry in entries {
-            if entry.file_name == "." || entry.file_name == ".." {
-                continue;
+            if !context.is_dir {
+                return Err(STATUS_NOT_A_DIRECTORY);
             }
-            let mtime = entry
-                .metadata
-                .modified_unix
-                .map_or(UNIX_EPOCH, |s| UNIX_EPOCH + Duration::from_secs(u64::from(s)));
-            let attributes = if entry.metadata.is_dir {
-                FILE_ATTRIBUTE_DIRECTORY
-            } else {
-                FILE_ATTRIBUTE_NORMAL
-            };
-            let Ok(name) = U16CString::from_str(&entry.file_name) else {
-                continue;
-            };
-            let data = FindData {
-                attributes,
-                creation_time: mtime,
-                last_access_time: mtime,
-                last_write_time: mtime,
-                file_size: entry.metadata.size.unwrap_or(0),
-                file_name: name,
-            };
-            match fill_find_data(&data) {
-                Ok(()) => {}
-                Err(_) => break,
+            let sftp = self.sftp.clone();
+            let p = context.path.clone();
+            let entries = self
+                .runtime
+                .block_on(async move { sftp.read_dir(p).await })
+                .map_err(|e| ntstatus_for(&e))?;
+            for entry in entries {
+                if entry.file_name == "." || entry.file_name == ".." {
+                    continue;
+                }
+                let mtime = entry.metadata.modified_unix.map_or(UNIX_EPOCH, |s| {
+                    UNIX_EPOCH + Duration::from_secs(u64::from(s))
+                });
+                let attributes = if entry.metadata.is_dir {
+                    FILE_ATTRIBUTE_DIRECTORY
+                } else {
+                    FILE_ATTRIBUTE_NORMAL
+                };
+                let Ok(name) = U16CString::from_str(&entry.file_name) else {
+                    continue;
+                };
+                let data = FindData {
+                    attributes,
+                    creation_time: mtime,
+                    last_access_time: mtime,
+                    last_write_time: mtime,
+                    file_size: entry.metadata.size.unwrap_or(0),
+                    file_name: name,
+                };
+                match fill_find_data(&data) {
+                    Ok(()) => {}
+                    Err(_) => break,
+                }
             }
-        }
-        Ok(())
+            Ok(())
         })
     }
 
@@ -1028,10 +1025,10 @@ impl<'c, 'h: 'c> FileSystemHandler<'c, 'h> for DokanSftpFs {
         &'h self,
         _info: &OperationInfo<'c, 'h, Self>,
     ) -> OperationResult<VolumeInfo> {
-        let label = self.volume_label.lock().map_or_else(
-            |_| U16CString::from_str("spt-sftp").unwrap(),
-            |g| g.clone(),
-        );
+        let label = self
+            .volume_label
+            .lock()
+            .map_or_else(|_| U16CString::from_str("spt-sftp").unwrap(), |g| g.clone());
         let fs_name = U16CString::from_str("NTFS").expect("NTFS is valid utf-16");
         Ok(VolumeInfo {
             name: label,
@@ -1133,9 +1130,8 @@ mod tests {
     #[cfg(feature = "mount-winfs")]
     #[test]
     fn catch_dokan_callback_passes_through_err() {
-        let err =
-            catch_dokan_callback::<()>("create_file", || Err(STATUS_OBJECT_NAME_NOT_FOUND))
-                .expect_err("err");
+        let err = catch_dokan_callback::<()>("create_file", || Err(STATUS_OBJECT_NAME_NOT_FOUND))
+            .expect_err("err");
         assert_eq!(err, STATUS_OBJECT_NAME_NOT_FOUND);
     }
 
@@ -1161,8 +1157,8 @@ mod tests {
     #[cfg(feature = "mount-winfs")]
     #[test]
     fn dokan_read_file_panic_returns_internal_error() {
-        let err = catch_dokan_callback::<u32>("read_file", || panic!("offset oob"))
-            .expect_err("panic");
+        let err =
+            catch_dokan_callback::<u32>("read_file", || panic!("offset oob")).expect_err("panic");
         assert_eq!(err, STATUS_INTERNAL_ERROR);
     }
 
@@ -1185,7 +1181,10 @@ mod tests {
         let mp_root = U16CString::from_str("\\").unwrap();
         let mp_sub = U16CString::from_str("\\sub\\file.txt").unwrap();
         assert_eq!(to_remote_path("/srv/data", &mp_root), "/srv/data");
-        assert_eq!(to_remote_path("/srv/data", &mp_sub), "/srv/data/sub/file.txt");
+        assert_eq!(
+            to_remote_path("/srv/data", &mp_sub),
+            "/srv/data/sub/file.txt"
+        );
         assert_eq!(to_remote_path("/", &mp_sub), "/sub/file.txt");
     }
 }

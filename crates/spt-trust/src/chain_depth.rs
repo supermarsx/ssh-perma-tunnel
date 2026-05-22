@@ -11,7 +11,7 @@
 //! # Wire-up
 //!
 //! * [`ChainDepthCap`] is consumed by the SSH3 TLS validator
-//!   ([`spt_ssh3::tls`]) and by every pinned HTTPS connector built on
+//!   (`spt_ssh3::tls`) and by every pinned HTTPS connector built on
 //!   `PinnedTlsConnector` (owned by t5-e1).
 //! * Sink configs surface the cap as
 //!   `[profiles.tls].max_cert_chain_depth: Option<u32>` — see

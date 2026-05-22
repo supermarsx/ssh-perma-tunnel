@@ -55,8 +55,7 @@ impl SsMethod {
     #[must_use]
     pub fn key_len(self) -> usize {
         match self {
-            SsMethod::Aes128Gcm
-            | SsMethod::Aead2022Blake3Aes128Gcm => 16,
+            SsMethod::Aes128Gcm | SsMethod::Aead2022Blake3Aes128Gcm => 16,
             SsMethod::Aes256Gcm
             | SsMethod::ChaCha20Poly1305
             | SsMethod::Aead2022Blake3Aes256Gcm

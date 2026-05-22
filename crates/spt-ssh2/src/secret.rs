@@ -91,9 +91,8 @@ pub fn evaluate_kbi_answer(answer: &KbiAnswer, backends: &[&dyn SecretBackend]) 
         KbiAnswer::Static(s) => Ok(s.clone()),
         KbiAnswer::SecretRef(r) => {
             let bytes = resolve_secret(backends, r)?;
-            String::from_utf8(bytes.expose_secret().to_vec()).map_err(|_| {
-                Error::AuthFailed("keyboard-interactive secret is not utf-8".into())
-            })
+            String::from_utf8(bytes.expose_secret().to_vec())
+                .map_err(|_| Error::AuthFailed("keyboard-interactive secret is not utf-8".into()))
         }
         KbiAnswer::Totp {
             secret_ref,

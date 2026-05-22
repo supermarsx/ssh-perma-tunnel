@@ -2,7 +2,7 @@
 //!
 //! This crate exposes a sandboxed [`ScriptEngine`] driven by `rhai 1.19`+
 //! (pure-Rust, MSRV 1.66) which surfaces five hook entry-points wired into
-//! [`spt_ssh2::session::Ssh2Session`]:
+//! `spt_ssh2::session::Ssh2Session`:
 //!
 //! | Hook              | Trigger                                          | Event payload                |
 //! |-------------------|--------------------------------------------------|------------------------------|

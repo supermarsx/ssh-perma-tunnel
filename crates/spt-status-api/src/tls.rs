@@ -18,7 +18,7 @@
 //! `tokio_rustls::TlsAcceptor`, threads the verified peer subject into a
 //! request extension, and feeds the stream into `axum::serve` via
 //! `hyper_util::server::conn::auto`. The rustls config produced here is
-//! the input to that pipeline. See [`crate::lib`] top-level doc for the
+//! the input to that pipeline. See the crate-level docs for the
 //! supervisor-integration shape.
 
 use std::fs::File;

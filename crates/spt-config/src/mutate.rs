@@ -63,9 +63,7 @@ impl Document {
                     path.display()
                 ))
                 .why(format!("{e}"))
-                .how_to_fix(
-                    "Verify the file exists and the calling user has read access.",
-                )
+                .how_to_fix("Verify the file exists and the calling user has read access.")
                 .file_path(path)
                 .build(),
             )

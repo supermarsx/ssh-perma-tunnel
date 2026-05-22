@@ -200,10 +200,7 @@ impl Agent {
     }
 
     fn map_connect_err(path: &Path, e: &russh_keys::Error) -> Error {
-        Error::AuthFailed(format!(
-            "ssh-agent: connect `{}`: {e}",
-            path.display()
-        ))
+        Error::AuthFailed(format!("ssh-agent: connect `{}`: {e}", path.display()))
     }
 
     /// Human-readable label describing the transport used by this agent
@@ -234,9 +231,7 @@ impl Agent {
         })?;
         let (client, result) = f(client).await;
         *guard = Some(client);
-        result.map_err(|e| {
-            Error::AuthFailed(format!("ssh-agent ({}): {e}", self.transport))
-        })
+        result.map_err(|e| Error::AuthFailed(format!("ssh-agent ({}): {e}", self.transport)))
     }
 
     /// List identities (public keys) currently held by the agent.
@@ -296,7 +291,9 @@ impl Agent {
                 )
             })?;
             if var.is_empty() {
-                return Err(Error::AuthFailed("ssh-agent: SSH_AUTH_SOCK is empty".into()));
+                return Err(Error::AuthFailed(
+                    "ssh-agent: SSH_AUTH_SOCK is empty".into(),
+                ));
             }
             Self::open_signer_path(Path::new(&var)).await
         }

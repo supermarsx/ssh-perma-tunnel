@@ -114,7 +114,7 @@ pub enum RedactedFieldState {
     /// Secret visible until `deadline`. Renders the cleartext.
     Revealing {
         /// Absolute clock time at which the widget auto-transitions back to
-        /// [`Masked`]. Comparison done in [`RedactedField::tick`].
+        /// `Masked`. Comparison done in [`RedactedField::tick`].
         deadline: Instant,
     },
 }

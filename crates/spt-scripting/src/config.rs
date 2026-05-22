@@ -1,6 +1,6 @@
 //! Configuration types for the scripting engine.
 //!
-//! These mirror [`spt_config::schema::ScriptConfig`] one-for-one but in
+//! These mirror `spt_config::schema::ScriptConfig` one-for-one but in
 //! engine-facing terms (concrete `PathBuf`, `u64`/`usize` rather than
 //! optional strings). The runtime mapper in `spt-bin` (Bwire) converts
 //! between the two so `spt-config` need not depend on this crate.

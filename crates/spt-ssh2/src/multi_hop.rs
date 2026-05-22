@@ -83,22 +83,24 @@ where
     };
     let stream: ChannelStream<client::Msg> = channel.into_stream();
     let host_s = host.to_owned();
-    client::connect_stream(config, stream, next_handler).await.map_err(|e| {
-        Error::network_unreachable(
-            spt_core::Diagnostic::what(format!(
-                "Multi-hop SSH connect to `{host_s}:{port}` failed during handshake"
-            ))
-            .why(format!("{e:?}"))
-            .how_to_fix(
-                "Confirm the inner host accepts SSH on the chosen port, that its host key \
+    client::connect_stream(config, stream, next_handler)
+        .await
+        .map_err(|e| {
+            Error::network_unreachable(
+                spt_core::Diagnostic::what(format!(
+                    "Multi-hop SSH connect to `{host_s}:{port}` failed during handshake"
+                ))
+                .why(format!("{e:?}"))
+                .how_to_fix(
+                    "Confirm the inner host accepts SSH on the chosen port, that its host key \
                  matches the configured `known_hosts`, and that the bastion can reach \
                  it (test with `ssh -J <bastion> <user>@<inner>` from the bastion host).",
+                )
+                .endpoint(format!("{host_s}:{port}"))
+                .retry_advice(spt_core::RetryAdvice::RetryWithBackoff)
+                .build(),
             )
-            .endpoint(format!("{host_s}:{port}"))
-            .retry_advice(spt_core::RetryAdvice::RetryWithBackoff)
-            .build(),
-        )
-    })
+        })
 }
 
 /// Open a kind-aware chained connection through `outer` toward
@@ -152,29 +154,24 @@ where
     // handshake aimed at the real target across the channel stream.
     let channel = {
         let h = outer.lock().await;
-        h.channel_open_direct_tcpip(
-            proxy_host.to_owned(),
-            u32::from(proxy_port),
-            "127.0.0.1",
-            0,
-        )
-        .await
-        .map_err(|e| {
-            Error::runtime_failure(
-                spt_core::Diagnostic::what(format!(
-                    "Failed to open multi-hop proxy channel to `{proxy_host}:{proxy_port}`"
-                ))
-                .why(format!("{e}"))
-                .how_to_fix(
-                    "Verify the outer hop is still connected and the bastion permits \
+        h.channel_open_direct_tcpip(proxy_host.to_owned(), u32::from(proxy_port), "127.0.0.1", 0)
+            .await
+            .map_err(|e| {
+                Error::runtime_failure(
+                    spt_core::Diagnostic::what(format!(
+                        "Failed to open multi-hop proxy channel to `{proxy_host}:{proxy_port}`"
+                    ))
+                    .why(format!("{e}"))
+                    .how_to_fix(
+                        "Verify the outer hop is still connected and the bastion permits \
                      TCP forwarding to the proxy host. Check `AllowTcpForwarding` and \
                      any `PermitOpen` entries in sshd_config.",
+                    )
+                    .endpoint(format!("{proxy_host}:{proxy_port}"))
+                    .retry_advice(spt_core::RetryAdvice::RetryWithBackoff)
+                    .build(),
                 )
-                .endpoint(format!("{proxy_host}:{proxy_port}"))
-                .retry_advice(spt_core::RetryAdvice::RetryWithBackoff)
-                .build(),
-            )
-        })?
+            })?
     };
     let mut stream: ChannelStream<client::Msg> = channel.into_stream();
     match kind {

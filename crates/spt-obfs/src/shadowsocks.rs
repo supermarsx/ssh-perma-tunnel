@@ -222,14 +222,26 @@ fn aead_seal(
             let cipher = Aes128Gcm::new_from_slice(key)
                 .map_err(|e| ObfsError::Handshake(format!("aes-128: {e}")))?;
             cipher
-                .encrypt(n, Payload { msg: plaintext, aad })
+                .encrypt(
+                    n,
+                    Payload {
+                        msg: plaintext,
+                        aad,
+                    },
+                )
                 .map_err(|e| ObfsError::Handshake(format!("seal: {e}")).into())
         }
         SsMethod::Aes256Gcm | SsMethod::Aead2022Blake3Aes256Gcm => {
             let cipher = Aes256Gcm::new_from_slice(key)
                 .map_err(|e| ObfsError::Handshake(format!("aes-256: {e}")))?;
             cipher
-                .encrypt(n, Payload { msg: plaintext, aad })
+                .encrypt(
+                    n,
+                    Payload {
+                        msg: plaintext,
+                        aad,
+                    },
+                )
                 .map_err(|e| ObfsError::Handshake(format!("seal: {e}")).into())
         }
         SsMethod::ChaCha20Poly1305 | SsMethod::Aead2022Blake3ChaCha20Poly1305 => {
@@ -237,7 +249,13 @@ fn aead_seal(
             let cipher = ChaCha20Poly1305::new_from_slice(key)
                 .map_err(|e| ObfsError::Handshake(format!("chacha: {e}")))?;
             cipher
-                .encrypt(n, Payload { msg: plaintext, aad })
+                .encrypt(
+                    n,
+                    Payload {
+                        msg: plaintext,
+                        aad,
+                    },
+                )
                 .map_err(|e| ObfsError::Handshake(format!("seal: {e}")).into())
         }
     }
@@ -256,14 +274,26 @@ fn aead_open(
             let cipher = Aes128Gcm::new_from_slice(key)
                 .map_err(|e| ObfsError::Handshake(format!("aes-128: {e}")))?;
             cipher
-                .decrypt(n, Payload { msg: ciphertext, aad })
+                .decrypt(
+                    n,
+                    Payload {
+                        msg: ciphertext,
+                        aad,
+                    },
+                )
                 .map_err(|e| ObfsError::Handshake(format!("open: {e}")).into())
         }
         SsMethod::Aes256Gcm | SsMethod::Aead2022Blake3Aes256Gcm => {
             let cipher = Aes256Gcm::new_from_slice(key)
                 .map_err(|e| ObfsError::Handshake(format!("aes-256: {e}")))?;
             cipher
-                .decrypt(n, Payload { msg: ciphertext, aad })
+                .decrypt(
+                    n,
+                    Payload {
+                        msg: ciphertext,
+                        aad,
+                    },
+                )
                 .map_err(|e| ObfsError::Handshake(format!("open: {e}")).into())
         }
         SsMethod::ChaCha20Poly1305 | SsMethod::Aead2022Blake3ChaCha20Poly1305 => {
@@ -271,7 +301,13 @@ fn aead_open(
             let cipher = ChaCha20Poly1305::new_from_slice(key)
                 .map_err(|e| ObfsError::Handshake(format!("chacha: {e}")))?;
             cipher
-                .decrypt(n, Payload { msg: ciphertext, aad })
+                .decrypt(
+                    n,
+                    Payload {
+                        msg: ciphertext,
+                        aad,
+                    },
+                )
                 .map_err(|e| ObfsError::Handshake(format!("open: {e}")).into())
         }
     }
@@ -419,7 +455,9 @@ impl AsyncRead for AeadStream {
                             "ss: oversize frame",
                         )));
                     }
-                    self.rx = RxState::Body { plaintext_len: plen };
+                    self.rx = RxState::Body {
+                        plaintext_len: plen,
+                    };
                 }
                 RxState::Body { plaintext_len } => {
                     let nonce = match self.next_read_nonce() {
@@ -432,11 +470,10 @@ impl AsyncRead for AeadStream {
                         }
                     };
                     let chunk: Vec<u8> = self.rx_buf.drain(..target_len).collect();
-                    let pt =
-                        aead_open(self.method, &self.key, &nonce, &chunk, b"spt-obfs/ss/body")
-                            .map_err(|e| {
-                                std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string())
-                            })?;
+                    let pt = aead_open(self.method, &self.key, &nonce, &chunk, b"spt-obfs/ss/body")
+                        .map_err(|e| {
+                            std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string())
+                        })?;
                     if pt.len() != plaintext_len {
                         return Poll::Ready(Err(std::io::Error::new(
                             std::io::ErrorKind::InvalidData,

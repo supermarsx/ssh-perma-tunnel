@@ -20,8 +20,8 @@
 //! held inside a process-global [`OnceLock`]. The default backend is the
 //! platform-appropriate real impl (Win32 on Windows, no-op stub elsewhere);
 //! tests (or downstream callers using `feature = "testing"`) may install a
-//! [`testing::MockEventLogBackend`] **before any other call into this crate
-//! occurs** via [`testing::set_test_backend`]. Once the `OnceLock` is
+//! `testing::MockEventLogBackend` **before any other call into this crate
+//! occurs** via `testing::set_test_backend`. Once the `OnceLock` is
 //! initialized it cannot be replaced; `set_test_backend` returns `Err` if a
 //! backend is already installed (real or mock). This is by design and
 //! documented on that function.
@@ -69,16 +69,16 @@ pub const DEFAULT_CHANNEL: &str = "Application";
 ///
 /// Implementors:
 ///
-/// - [`imp::WindowsEventLogBackend`] (Windows only) — calls real Win32.
-/// - [`stub::StubEventLogBackend`] (non-Windows) — returns
+/// - `imp::WindowsEventLogBackend` (Windows only) — calls real Win32.
+/// - `stub::StubEventLogBackend` (non-Windows) — returns
 ///   `Error::UnsupportedPlatform`.
-/// - [`testing::MockEventLogBackend`] (when `feature = "testing"` or under
+/// - `testing::MockEventLogBackend` (when `feature = "testing"` or under
 ///   `cfg(test)`) — records every call into an in-memory `Vec`.
 ///
 /// `channel` is the **resolved** channel name (the free functions apply the
 /// `Option<&str> -> DEFAULT_CHANNEL` fallback before dispatching).
 ///
-/// This trait is `pub` so [`testing::set_test_backend`] can take a
+/// This trait is `pub` so `testing::set_test_backend` can take a
 /// `Box<dyn EventLogBackend>` parameter when the `testing` feature is
 /// enabled. The default trait impls (`WindowsEventLogBackend` /
 /// `StubEventLogBackend`) remain crate-private; only

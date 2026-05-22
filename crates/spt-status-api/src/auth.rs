@@ -6,7 +6,7 @@
 //! bytes). Per-request the middleware walks the active mode and either
 //! injects an [`AuthSubject`] extension or returns
 //! [`crate::error::StatusApiError::Unauthorized`] /
-//! [`StatusApiError::Forbidden`](crate::error::StatusApiError::Forbidden).
+//! [`crate::error::StatusApiError::Forbidden`].
 //!
 //! ## mTLS subject extraction
 //!

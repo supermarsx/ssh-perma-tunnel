@@ -122,9 +122,7 @@ pub fn load_with_key(
                 path.display()
             ))
             .why(format!("{e}"))
-            .how_to_fix(
-                "Re-save the file using a UTF-8 encoding (e.g. `iconv -f <enc> -t utf-8`).",
-            )
+            .how_to_fix("Re-save the file using a UTF-8 encoding (e.g. `iconv -f <enc> -t utf-8`).")
             .file_path(path)
             .build(),
         )
@@ -148,16 +146,14 @@ fn decrypt_sealed(bytes: &[u8], key: Option<&KeySource>) -> Result<spt_config_cr
             unseal(bytes, &KeySource::Passphrase(bytes_pp))
         }
         other => Err(Error::invalid_config(
-            spt_core::Diagnostic::what(format!(
-                "Sealed config uses an unsupported KDF `{other}`",
-            ))
-            .why("the interactive-passphrase path only handles `argon2id`-sealed envelopes")
-            .how_to_fix(
-                "Either re-seal with `spt config seal --kdf argon2id`, or call \
+            spt_core::Diagnostic::what(format!("Sealed config uses an unsupported KDF `{other}`",))
+                .why("the interactive-passphrase path only handles `argon2id`-sealed envelopes")
+                .how_to_fix(
+                    "Either re-seal with `spt config seal --kdf argon2id`, or call \
                  `load_with_key()` programmatically with the explicit KeySource for \
                  this KDF (vault, x25519, …).",
-            )
-            .build(),
+                )
+                .build(),
         )),
     }
 }
@@ -342,19 +338,16 @@ pub fn load_dir(dir: &Path, strict: bool) -> Result<(Config, Warnings)> {
                 .any(|existing| existing.name == p.name)
             {
                 return Err(Error::invalid_config(
-                    spt_core::Diagnostic::what(format!(
-                        "Duplicate profile name `{}`",
-                        p.name
-                    ))
-                    .why(format!(
-                        "file `{name}` re-defines a profile already present in an earlier \
+                    spt_core::Diagnostic::what(format!("Duplicate profile name `{}`", p.name))
+                        .why(format!(
+                            "file `{name}` re-defines a profile already present in an earlier \
                          file (lex order); the merge would be ambiguous",
-                    ))
-                    .how_to_fix(
-                        "Rename one of the conflicting profiles, or delete the duplicate \
+                        ))
+                        .how_to_fix(
+                            "Rename one of the conflicting profiles, or delete the duplicate \
                          from the later file.",
-                    )
-                    .build(),
+                        )
+                        .build(),
                 ));
             }
             merged.profiles.push(p);

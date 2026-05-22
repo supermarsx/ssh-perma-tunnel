@@ -253,9 +253,7 @@ fn audit_hook_fires_per_round_trip_on_mock() {
         round: 1,
         complete: o1.complete,
     });
-    let o2 = initiator
-        .initialize("host@x", o1.token.as_deref())
-        .unwrap();
+    let o2 = initiator.initialize("host@x", o1.token.as_deref()).unwrap();
     hook.on_event(&AuditEvent::TokenExchange {
         package: pkg,
         round: 2,
@@ -271,11 +269,19 @@ fn audit_hook_fires_per_round_trip_on_mock() {
     assert_eq!(entries.len(), 3);
     assert!(matches!(
         entries[0],
-        AuditEvent::TokenExchange { round: 1, complete: false, .. }
+        AuditEvent::TokenExchange {
+            round: 1,
+            complete: false,
+            ..
+        }
     ));
     assert!(matches!(
         entries[1],
-        AuditEvent::TokenExchange { round: 2, complete: true, .. }
+        AuditEvent::TokenExchange {
+            round: 2,
+            complete: true,
+            ..
+        }
     ));
     assert!(matches!(entries[2], AuditEvent::MicIssued { .. }));
 }
@@ -349,8 +355,14 @@ fn allow_ntlm_fallback_changes_package_selection() {
         // Without SPT_SSPI_* env vars, both branches surface the same
         // credentials-missing error path. With them set, the live tests
         // below exercise the real distinction.
-        assert!(err_k.contains("sspi") || err_k.contains("credentials"), "{err_k}");
-        assert!(err_n.contains("sspi") || err_n.contains("credentials"), "{err_n}");
+        assert!(
+            err_k.contains("sspi") || err_k.contains("credentials"),
+            "{err_k}"
+        );
+        assert!(
+            err_n.contains("sspi") || err_n.contains("credentials"),
+            "{err_n}"
+        );
     }
     #[cfg(not(target_os = "windows"))]
     {
@@ -456,18 +468,24 @@ fn live_kerberos_round_trip_unix() {
         );
     }
 
-    let mic = provider.get_mic(b"session-id-bound transcript").expect("get_mic");
+    let mic = provider
+        .get_mic(b"session-id-bound transcript")
+        .expect("get_mic");
     provider
         .verify_mic(b"session-id-bound transcript", &mic)
         .expect("verify_mic");
 
     let entries = hook.entries();
     assert!(
-        entries.iter().any(|e| matches!(e, AuditEvent::TokenExchange { complete: true, .. })),
+        entries
+            .iter()
+            .any(|e| matches!(e, AuditEvent::TokenExchange { complete: true, .. })),
         "expected a completed TokenExchange audit event"
     );
     assert!(
-        entries.iter().any(|e| matches!(e, AuditEvent::MicIssued { .. })),
+        entries
+            .iter()
+            .any(|e| matches!(e, AuditEvent::MicIssued { .. })),
         "expected MicIssued audit event"
     );
 }
@@ -483,8 +501,8 @@ fn live_sspi_negotiate_round_trip_windows() {
     if std::env::var("SSPI_LIVE").ok().as_deref() != Some("1") {
         return;
     }
-    let spn = std::env::var("SPT_GSS_TARGET_SPN")
-        .unwrap_or_else(|_| "host/test.example.com".to_owned());
+    let spn =
+        std::env::var("SPT_GSS_TARGET_SPN").unwrap_or_else(|_| "host/test.example.com".to_owned());
 
     let hook = Arc::new(MockAuditHook::new());
     let cfg = SspiConfig {
@@ -507,7 +525,9 @@ fn live_sspi_negotiate_round_trip_windows() {
         assert!(rounds <= 8, "SSPI exchange did not converge in 8 rounds");
     }
 
-    let mic = provider.get_mic(b"session-id-bound transcript").expect("get_mic");
+    let mic = provider
+        .get_mic(b"session-id-bound transcript")
+        .expect("get_mic");
     provider
         .verify_mic(b"session-id-bound transcript", &mic)
         .expect("verify_mic");

@@ -195,7 +195,7 @@ impl spt_scripting::AuditSink for ScriptAuditBridge {
 
 /// Emit a single `audit.sftp.umount` event. The `reason` field is one
 /// of the documented enum strings (`"operator_request"`,
-/// `"shutdown"`); the [`spt_bin::cli::sftp_ops::mount_stop`] CLI path
+/// `"shutdown"`); the `crate::cli::sftp_ops::mount_stop` CLI path
 /// calls this with `"operator_request"`.
 pub fn emit_sftp_umount(mountpoint: &Path, reason: &str) {
     record_audit(

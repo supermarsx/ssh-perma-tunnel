@@ -339,7 +339,10 @@ mod tests {
     #[test]
     fn retry_advice_display_variants() {
         assert_eq!(RetryAdvice::NotRetryable.to_string(), "not retryable");
-        assert_eq!(RetryAdvice::RetryImmediately.to_string(), "retry immediately");
+        assert_eq!(
+            RetryAdvice::RetryImmediately.to_string(),
+            "retry immediately"
+        );
         assert_eq!(
             RetryAdvice::RetryWithBackoff.to_string(),
             "retry with backoff"

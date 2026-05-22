@@ -14,8 +14,7 @@ use std::sync::{Arc, Mutex};
 use spt_sftp::error::SftpError;
 use spt_sftp::mock::MockSftpServer;
 use spt_sftp::mount::{
-    mounter_for_current_os, AuditHook, MountEvent, MountHandle, MountOpts, NullMounter,
-    SftpMounter,
+    mounter_for_current_os, AuditHook, MountEvent, MountHandle, MountOpts, NullMounter, SftpMounter,
 };
 use spt_sftp::SftpClient;
 
@@ -128,10 +127,8 @@ async fn macos_sshfs_missing_binary_returns_diagnostic_not_panic() {
     let mut m = SshfsMounter::new(Arc::new(client));
     let opts = MountOpts::new("/private/tmp/spt-int", "/srv/data");
     let err = m.mount(opts).expect_err("expected diagnostic");
-    assert!(
-        matches!(err, SftpError::UnsupportedPlatform { detail, .. }
-            if detail.contains("sshfs") || detail.contains("macFUSE"))
-    );
+    assert!(matches!(err, SftpError::UnsupportedPlatform { detail, .. }
+            if detail.contains("sshfs") || detail.contains("macFUSE")));
     std::env::remove_var("SPT_SSHFS_BIN");
     std::env::remove_var("SPT_MACFUSE_FS");
 }
@@ -156,9 +153,9 @@ async fn macos_sshfs_emits_mount_failed_when_detection_fails() {
     opts.audit_hook = Some(hook);
     let _ = m.mount(opts).expect_err("expected diagnostic");
     let events = captured.lock().unwrap();
-    let saw_attempt = events
-        .iter()
-        .any(|e| matches!(e, MountEvent::MountAttempt { backend, .. } if *backend == "macos-sshfs"));
+    let saw_attempt = events.iter().any(
+        |e| matches!(e, MountEvent::MountAttempt { backend, .. } if *backend == "macos-sshfs"),
+    );
     let saw_failed = events
         .iter()
         .any(|e| matches!(e, MountEvent::MountFailed { .. }));
@@ -272,7 +269,10 @@ async fn mount_with_unknown_remote_root_path_still_validates() {
     // mount-validate path doesn't accidentally swallow that error class.
     let mut m = NullMounter::default();
     let handle = m
-        .mount(MountOpts::new(unix_target("future"), "/srv/does-not-exist-yet"))
+        .mount(MountOpts::new(
+            unix_target("future"),
+            "/srv/does-not-exist-yet",
+        ))
         .expect("null mounter ignores remote_root");
     assert_eq!(handle.mountpoint, unix_target("future"));
 }
@@ -493,4 +493,3 @@ mod fuse_live {
 // They mirror the `fuse_live` block above 1-for-1 (paths normalised for
 // Windows drive letters / volume mountpoints).
 // ---------------------------------------------------------------------------
-

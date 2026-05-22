@@ -323,7 +323,7 @@ pub struct LoggingRemote {
     pub pin_spki_sha256: Vec<String>,
     /// Maximum permitted certificate-chain depth (intermediates between
     /// leaf and trust anchor). Omitted maps to
-    /// [`spt_trust::DEFAULT_CHAIN_DEPTH_CAP`] at the runtime via
+    /// `spt_trust::DEFAULT_CHAIN_DEPTH_CAP` at the runtime via
     /// `ChainDepthCap::from_option(...).or_default_if_unlimited_was_absent()`.
     /// t5-e2 / t5-e10.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1191,7 +1191,7 @@ pub enum ObfsConfig {
 
 /// `[profiles.script]` — Rhai scripting hook configuration. Spec t6-e7.
 ///
-/// Mirrors [`spt_scripting::ScriptConfig`] for the on-disk surface. The
+/// Mirrors `spt_scripting::ScriptConfig` for the on-disk surface. The
 /// runtime mapper in `spt-bin` (Bwire) converts this schema struct into the
 /// engine-facing struct so that `spt-config` remains free of a build-time
 /// dependency on the engine crate.
@@ -1231,7 +1231,7 @@ pub struct ScriptHooks {
 /// `[profiles.script.limits]` — Rhai sandbox bounds.
 ///
 /// Every field is `Option`-typed in the schema so absent keys take the
-/// `Default` values defined by [`spt_scripting::ScriptLimits`].
+/// `Default` values defined by `spt_scripting::ScriptLimits`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[allow(clippy::struct_field_names)] // every limit is `max_*` by spec.
 pub struct ScriptLimits {
@@ -1899,7 +1899,10 @@ mod udp_mode_tests {
 
     #[test]
     fn udp_mode_both_variants_round_trip_through_toml() {
-        for (variant, repr) in [(UdpMode::TcpFramed, "tcp-framed"), (UdpMode::UdsBridge, "uds-bridge")] {
+        for (variant, repr) in [
+            (UdpMode::TcpFramed, "tcp-framed"),
+            (UdpMode::UdsBridge, "uds-bridge"),
+        ] {
             let toml_str = format!(
                 "name = \"f\"\ntype = \"local\"\ntransport = \"udp\"\nudp_mode = \"{repr}\"\n",
             );

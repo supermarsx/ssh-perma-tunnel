@@ -17,7 +17,7 @@
 //! [`MockAuditSink`] recorder is used by integration tests to assert call
 //! sites without spinning up the full supervisor.
 //!
-//! Mirrors the [`spt_obfs::audit`] / [`spt_auth_sspi::audit`] surfaces so
+//! Mirrors the `spt_obfs::audit` / `spt_auth_sspi::audit` surfaces so
 //! subscribers can be written once and applied across the three crates.
 
 use std::path::{Path, PathBuf};

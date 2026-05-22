@@ -729,8 +729,8 @@ mod imp {
                 buf.push(0);
             }
             buf.push(0); // terminating empty string
-            // SAFETY: see production `set_multi_sz` — UTF-16 → byte slice over a
-            // stack-rooted `Vec<u16>` that outlives the slice.
+                         // SAFETY: see production `set_multi_sz` — UTF-16 → byte slice over a
+                         // stack-rooted `Vec<u16>` that outlives the slice.
             let bytes = unsafe {
                 std::slice::from_raw_parts(
                     buf.as_ptr().cast::<u8>(),

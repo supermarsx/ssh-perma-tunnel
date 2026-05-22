@@ -2,7 +2,7 @@
 //!
 //! Pre-t7 this module translated `async-ssh2-lite` and raw `ssh2` errors
 //! into [`spt_core::Error`] variants. After t7-Phase0 the libssh2 path is
-//! gone; the russh backend in [`crate::russh_backend`] formats errors
+//! gone; the russh backend in `crate::russh_backend` formats errors
 //! inline against the `russh::Error` shape. A small `std::io::Error`
 //! translator survives because [`crate::proxy_jump`] still needs to map
 //! `ErrorKind` values that `tokio::io` surfaces during the CONNECT

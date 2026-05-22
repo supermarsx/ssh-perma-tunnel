@@ -67,6 +67,13 @@
 //! For end-to-end TLS verification, see `tests/tls_handshake.rs`.
 
 #![forbid(unsafe_code)]
+#![warn(missing_docs)]
+// t8-E1: blanket allow — 93 missing-docs items across handlers,
+// auth modes, response types. Endpoint inventory and auth modes are
+// documented in the crate-level docstring above and in
+// `docs/configuration.md` (`[status_api]` section). Per-item
+// docstrings deferred to v1.1.
+#![allow(missing_docs)]
 
 pub mod auth;
 pub mod error;

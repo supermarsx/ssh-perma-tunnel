@@ -42,7 +42,7 @@ use serde::{Deserialize, Serialize};
 
 /// Severity tier for an [`AuditEvent`].
 ///
-/// Mirrors the upper half of [`spt_events::Severity`] — every audit
+/// Mirrors the upper half of `spt_events::Severity` — every audit
 /// record is at least `Info`. `Notice` is reserved for events that
 /// matter to operators but are not warnings (e.g. a successful reveal);
 /// `Warning` is for events that indicate elevated risk (e.g. unsealing

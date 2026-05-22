@@ -1,7 +1,7 @@
 //! [`Ssh2Protocol`] — the [`spt_protocol::TunnelProtocol`] implementation.
 //!
 //! Connect flow:
-//! 1. Resolve `endpoint.host:port`, hand off to [`crate::russh_backend::connect`].
+//! 1. Resolve `endpoint.host:port`, hand off to `crate::russh_backend::connect`.
 //! 2. russh applies the crypto policy via [`russh::Preferred`] (kex / cipher
 //!    / mac / hostkey / compression allow-lists).
 //! 3. russh drives the SSH2 handshake.
@@ -9,7 +9,8 @@
 //!    [`russh::client::Handler`] callback.
 //! 5. Auth dispatch drives password / publickey / agent / keyboard-interactive
 //!    / certificate / gssapi / sspi against the resolver chain.
-//! 6. A [`SessionInfo`] snapshot is wrapped in the russh-backed [`Ssh2Session`].
+//! 6. A `SessionInfo` snapshot is wrapped in the russh-backed
+//!    [`crate::session::Ssh2Session`].
 //!
 //! Multi-hop variant: open subsequent sessions through prior `direct-tcpip`
 //! channels via [`crate::multi_hop`] — every byte stream after the first hop
@@ -169,7 +170,7 @@ impl Ssh2ProtocolBuilder {
 
     // t7-A2:start
     /// Attach a scripting engine that will be cloned into every
-    /// [`Ssh2Session`] produced by [`Ssh2Protocol::connect`]. `None`
+    /// [`crate::session::Ssh2Session`] produced by [`Ssh2Protocol::connect`]. `None`
     /// (the default) keeps every hook a no-op.
     #[must_use]
     pub fn script_engine(mut self, engine: Option<Arc<ScriptEngine>>) -> Self {

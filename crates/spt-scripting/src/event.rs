@@ -9,7 +9,7 @@
 //! * [`Generic`]     → `on_event`
 //!
 //! Events are constructed by `spt-ssh2` (the hook call sites) and serialise
-//! into a Rhai-friendly value via [`Event::into_dynamic`] (under the
+//! into a Rhai-friendly value via `Event::into_dynamic` (under the
 //! `engine` feature) or [`Event::to_json`] (always available — used by
 //! the no-op stub interpreter and for audit logging).
 

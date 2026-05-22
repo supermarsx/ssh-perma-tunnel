@@ -8,6 +8,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use rand::RngCore;
 use spt_core::Error;
 use spt_obfs::audit::{MockAuditHook, NoopAuditHook};
 use spt_obfs::config::{ObfsConfig, SsMethod};
@@ -25,7 +26,6 @@ use spt_obfs::websocket::{
 };
 use spt_obfs::{transport_for, transport_for_with_audit};
 use spt_secrets::SecretRef;
-use rand::RngCore;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use x25519_dalek::{PublicKey, StaticSecret};
@@ -206,7 +206,11 @@ fn obfs4_ntor_kdf_known_inputs_stable() {
     let b = [2u8; 32];
     let x = [3u8; 32];
     let y = [4u8; 32];
-    let NtorKeys { c2s_key, s2c_key, auth } = ntor_kdf(&secret, &nid, &b, &x, &y);
+    let NtorKeys {
+        c2s_key,
+        s2c_key,
+        auth,
+    } = ntor_kdf(&secret, &nid, &b, &x, &y);
     // Distinctness: c2s != s2c != auth.
     assert_ne!(c2s_key, s2c_key);
     assert_ne!(s2c_key, auth);
@@ -274,7 +278,13 @@ async fn obfs4_ntor_handshake_against_mock_acceptor() {
         let mut combined = Vec::with_capacity(64);
         combined.extend_from_slice(shared.as_bytes());
         combined.extend_from_slice(id_shared.as_bytes());
-        let keys = ntor_kdf(&combined, &node_id, &b_pub_bytes, x_pub_pk.as_bytes(), y_pub.as_bytes());
+        let keys = ntor_kdf(
+            &combined,
+            &node_id,
+            &b_pub_bytes,
+            x_pub_pk.as_bytes(),
+            y_pub.as_bytes(),
+        );
 
         // ServerHello: [32 y_pub][32 auth]
         let mut resp = [0u8; 64];
@@ -320,8 +330,13 @@ async fn obfs4_ntor_bad_node_id_rejected() {
         let mut combined = Vec::new();
         combined.extend_from_slice(shared.as_bytes());
         combined.extend_from_slice(id_shared.as_bytes());
-        let keys =
-            ntor_kdf(&combined, &server_node_id, &b_pub_bytes, x_pub_pk.as_bytes(), y_pub.as_bytes());
+        let keys = ntor_kdf(
+            &combined,
+            &server_node_id,
+            &b_pub_bytes,
+            x_pub_pk.as_bytes(),
+            y_pub.as_bytes(),
+        );
         let mut resp = [0u8; 64];
         resp[..32].copy_from_slice(y_pub.as_bytes());
         resp[32..].copy_from_slice(&keys.auth);
@@ -415,8 +430,7 @@ async fn meek_http_keepalive_pattern_audit_fires() {
     };
     let rec = Arc::new(MockAuditHook::new());
     let mut t = MeekHttpTransport::new(cfg, rec.clone()).unwrap();
-    let _ =
-        tokio::time::timeout(Duration::from_millis(100), t.connect("ssh.example:22")).await;
+    let _ = tokio::time::timeout(Duration::from_millis(100), t.connect("ssh.example:22")).await;
     let e = rec.entries();
     assert_eq!(e.len(), 1);
     assert_eq!(e[0].0, "meek-http");
@@ -456,7 +470,10 @@ fn websocket_custom_headers_propagate_to_http_request() {
     let h = req.headers();
     assert_eq!(h.get("X-Auth-Token").unwrap().to_str().unwrap(), "abc");
     assert_eq!(h.get("X-Spt-Run").unwrap().to_str().unwrap(), "1");
-    assert_eq!(h.get("Sec-WebSocket-Protocol").unwrap().to_str().unwrap(), "ssh");
+    assert_eq!(
+        h.get("Sec-WebSocket-Protocol").unwrap().to_str().unwrap(),
+        "ssh"
+    );
     // Sec-WebSocket-Key must be present (random per request).
     assert!(h.get("Sec-WebSocket-Key").is_some());
 }
@@ -499,8 +516,7 @@ async fn websocket_connect_failure_fires_audit() {
     };
     let rec = Arc::new(MockAuditHook::new());
     let mut t = WebsocketTransport::new(cfg, rec.clone()).unwrap();
-    let _ =
-        tokio::time::timeout(Duration::from_millis(200), t.connect("x:22")).await;
+    let _ = tokio::time::timeout(Duration::from_millis(200), t.connect("x:22")).await;
     let e = rec.entries();
     assert_eq!(e.len(), 1);
     assert_eq!(e[0].0, "ssh-over-websocket");
@@ -714,9 +730,7 @@ async fn obfs4_frame_streaming_bidirectional() {
     // receive in order, verify counter progression.
     use spt_obfs::obfs4::{open_frame, seal_frame};
     let key = [0x42u8; 32];
-    let payloads: Vec<Vec<u8>> = (0..16u8)
-        .map(|i| vec![i; (i as usize + 1) * 7])
-        .collect();
+    let payloads: Vec<Vec<u8>> = (0..16u8).map(|i| vec![i; (i as usize + 1) * 7]).collect();
     let mut wire = Vec::new();
     for (i, pl) in payloads.iter().enumerate() {
         let f = seal_frame(&key, i as u64, pl).unwrap();
