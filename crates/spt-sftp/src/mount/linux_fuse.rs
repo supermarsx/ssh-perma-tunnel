@@ -408,11 +408,20 @@ impl FuseFs {
         } else {
             root_norm.clone()
         };
-        // SAFETY: getuid/getgid are always defined and return the caller's
-        // identity. The kernel will only call back with permissions we can
-        // honour.
-        // SAFETY: getuid/getgid are pure reads with no side effects.
+        // t8-D2: standalone libc FFI — not inside the fuser callback
+        // chokepoint, so `catch_fuse_callback` does not wrap it. The two
+        // calls below are POSIX-mandated pure reads with no input pointers
+        // and no Rust-level invariants to violate. They are placed in
+        // separate `unsafe { … }` blocks so each carries its own adjacent
+        // SAFETY comment (clippy::undocumented_unsafe_blocks).
+        //
+        // SAFETY: `libc::getuid()` is a POSIX-defined syscall that returns
+        // the caller's real UID. It takes no arguments, performs no
+        // pointer dereference, and cannot fail per POSIX.1-2024.
         let uid = opts.uid.unwrap_or_else(|| unsafe { libc::getuid() });
+        // SAFETY: `libc::getgid()` is a POSIX-defined syscall that returns
+        // the caller's real GID. Same contract as `getuid` above — no
+        // arguments, no failure mode.
         let gid = opts.gid.unwrap_or_else(|| unsafe { libc::getgid() });
         Self {
             sftp,

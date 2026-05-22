@@ -57,6 +57,30 @@ mod platform {
     }
 
     fn is_elevated() -> Option<bool> {
+        // SAFETY: t8-D2 single FFI block covering 4 Win32 calls. Combined
+        // into one block because (1) `is_elevated` is not an `unsafe fn`,
+        // so `unsafe_op_in_unsafe_fn` does not require per-call nesting,
+        // and (2) the token-close invariant reads more cleanly as a single
+        // linear block. Per-call invariants:
+        //   * `GetCurrentProcess()` returns a pseudo-handle to the calling
+        //     process — always valid, does not require closing (Win32 spec).
+        //   * `OpenProcessToken` writes the opened access-token handle into
+        //     `&mut token` on success. On failure it leaves `token` at its
+        //     default (null) value and we early-return; the subsequent
+        //     `CloseHandle` is therefore never reached on a null handle.
+        //   * `elevation_ptr` is a unique mutable pointer into local stack
+        //     `elevation`. `GetTokenInformation` writes
+        //     `size_of::<TOKEN_ELEVATION>()` bytes through it; the length
+        //     argument matches the type size exactly. `ret_len` is also a
+        //     stack-local out-parameter.
+        //   * `CloseHandle(token)` runs unconditionally before evaluating
+        //     the `GetTokenInformation` result. If `OpenProcessToken`
+        //     failed we returned earlier; otherwise `token` is the live
+        //     handle just opened, and no use of `token` occurs after close.
+        //   * On `GetTokenInformation` failure we discard `elevation`,
+        //     which was initialised by `TOKEN_ELEVATION::default()` even
+        //     if Windows did not write into it — no UB from reading
+        //     uninitialised memory.
         unsafe {
             let mut token: HANDLE = HANDLE::default();
             OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token).ok()?;

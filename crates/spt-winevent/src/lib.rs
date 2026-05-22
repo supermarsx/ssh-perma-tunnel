@@ -27,6 +27,11 @@
 //! documented on that function.
 
 #![warn(missing_docs)]
+// t8-D2: harden the unsafe boundary. Any `unsafe fn` body that calls another
+// unsafe operation without its own `unsafe { … }` block is a compile error.
+// All FFI in `imp.rs` is wrapped in explicit blocks with adjacent SAFETY
+// comments documented per `clippy::undocumented_unsafe_blocks`.
+#![deny(unsafe_op_in_unsafe_fn)]
 
 use std::path::Path;
 use std::sync::OnceLock;

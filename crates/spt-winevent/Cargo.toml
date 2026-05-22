@@ -31,6 +31,9 @@ windows = { version = "0.58", features = [
     "Win32_Foundation",
     "Win32_Security",
 ] }
+# t8-D2: replace two `slice::from_raw_parts(_.cast::<u8>(), …)` unsafe blocks
+# in `imp.rs` (registry payload encoding) with safe `IntoBytes` calls.
+zerocopy = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

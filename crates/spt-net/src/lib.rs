@@ -17,6 +17,10 @@
 // posture enforced via clippy's `undocumented_unsafe_blocks` (workspace lints).
 #![warn(missing_docs)]
 #![cfg_attr(not(windows), forbid(unsafe_code))]
+// t8-D2: every unsafe operation inside an `unsafe fn` body must be wrapped
+// in its own explicit `unsafe { … }` block. Promotes the workspace-level
+// `warn` to a hard error for this crate, in line with the audit posture.
+#![deny(unsafe_op_in_unsafe_fn)]
 
 pub mod bind;
 pub mod cidr;
