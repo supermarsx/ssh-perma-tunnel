@@ -757,3 +757,146 @@ jobs:
         with:
           nix_path: nixpkgs=channel:nixos-unstable
       - run: bash scripts/package/test-nix.sh
+
+  # ===========================================================================
+  # t8-C5: Perf comparators — one runner per OS/arch, total 6 runners.
+  # ===========================================================================
+  # Verifies C3's `OpenSshClient` / `AutosshClient` comparators compile and
+  # run on every (OS, arch) target. Each job:
+  #
+  #   1. Installs the comparator binaries the harness shells out to:
+  #        - openssh-client (`ssh`) — preinstalled on every GitHub-hosted
+  #          runner; no install step needed.
+  #        - autossh — `apt-get install` on Linux, `brew install` on macOS,
+  #          NOT AVAILABLE on Windows (no Win32 port). On Windows runners
+  #          the `AutosshClient::setup` path returns `Err(NotInstalled)`
+  #          and C3's harness records `skipped = true` for those cells.
+  #   2. Runs the `comparators` integration test (mock comparator + missing-
+  #      binary fallback, no real `ssh`/`autossh` invocation required).
+  #   3. Builds the `matrix_cell` binary — a per-platform smoke that C3's
+  #      driver compiles on this target. This is a *build* check only; we
+  #      do NOT execute it because matrix_cell needs a real SSH server
+  #      upstream and we do not stand one up in CI yet.
+  #
+  # Expected skipped-cell list (Windows, both x86_64 and aarch64):
+  #   - All cells where `--tool autossh` is requested: the
+  #     `AutosshClient::setup` path returns `Err(ComparatorError::
+  #     NotInstalled)`, the matrix driver writes `{skipped: true,
+  #     skip_reason: "autossh not installed"}` to the cell JSON, and the
+  #     dashboard renderer marks the cell N/A.
+  #   - The `spt` comparator is currently a stub (see C3 hand-off note);
+  #     it skips on every platform until a later executor wires it in.
+  # MSRV 1.85 toolchain pin matches the rest of the t7-CCI / t8 perf jobs.
+  # ===========================================================================
+
+  perf-comparators-linux:
+    name: Perf comparators (Linux x86_64)
+    if: github.event_name != 'workflow_dispatch' || inputs.kind == 'full'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.85.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: perf-comparators-linux
+      - name: Install comparator binaries (OpenSSH + autossh)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y openssh-client autossh
+      - name: cargo test comparators
+        run: cargo test -p spt-benchmark --locked --test comparators
+      - name: cargo build matrix_cell (smoke)
+        run: cargo build -p spt-benchmark --locked --bin matrix_cell
+
+  perf-comparators-linux-arm:
+    name: Perf comparators (Linux aarch64)
+    if: github.event_name != 'workflow_dispatch' || inputs.kind == 'full'
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.85.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: perf-comparators-linux-arm
+      - name: Install comparator binaries (OpenSSH + autossh)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y openssh-client autossh
+      - name: cargo test comparators
+        run: cargo test -p spt-benchmark --locked --test comparators
+      - name: cargo build matrix_cell (smoke)
+        run: cargo build -p spt-benchmark --locked --bin matrix_cell
+
+  perf-comparators-macos:
+    name: Perf comparators (macOS aarch64)
+    if: github.event_name != 'workflow_dispatch' || inputs.kind == 'full'
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.85.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: perf-comparators-macos
+      # `ssh` ships preinstalled on macos-14; only autossh needs Homebrew.
+      - name: Install autossh
+        run: brew install autossh
+      - name: cargo test comparators
+        run: cargo test -p spt-benchmark --locked --test comparators
+      - name: cargo build matrix_cell (smoke)
+        run: cargo build -p spt-benchmark --locked --bin matrix_cell
+
+  perf-comparators-macos-intel:
+    name: Perf comparators (macOS x86_64)
+    if: github.event_name != 'workflow_dispatch' || inputs.kind == 'full'
+    runs-on: macos-13
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.85.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: perf-comparators-macos-intel
+      - name: Install autossh
+        run: brew install autossh
+      - name: cargo test comparators
+        run: cargo test -p spt-benchmark --locked --test comparators
+      - name: cargo build matrix_cell (smoke)
+        run: cargo build -p spt-benchmark --locked --bin matrix_cell
+
+  perf-comparators-windows:
+    name: Perf comparators (Windows x86_64)
+    if: github.event_name != 'workflow_dispatch' || inputs.kind == 'full'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.85.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: perf-comparators-windows
+      # `ssh` (Windows OpenSSH) ships preinstalled on windows-latest.
+      # autossh has no Windows port — AutosshClient::setup will return
+      # Err(NotInstalled) and the matrix driver records skipped cells.
+      - name: cargo test comparators
+        shell: bash
+        run: cargo test -p spt-benchmark --locked --test comparators
+      - name: cargo build matrix_cell (smoke)
+        shell: bash
+        run: cargo build -p spt-benchmark --locked --bin matrix_cell
+
+  perf-comparators-windows-arm:
+    name: Perf comparators (Windows aarch64)
+    if: github.event_name != 'workflow_dispatch' || inputs.kind == 'full'
+    runs-on: windows-11-arm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.85.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: perf-comparators-windows-arm
+      # Same Windows posture as windows-latest: ssh preinstalled,
+      # autossh unavailable, AutosshClient cells will be skipped.
+      - name: cargo test comparators
+        shell: bash
+        run: cargo test -p spt-benchmark --locked --test comparators
+      - name: cargo build matrix_cell (smoke)
+        shell: bash
+        run: cargo build -p spt-benchmark --locked --bin matrix_cell
