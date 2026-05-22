@@ -473,6 +473,66 @@ host = "h"
         assert_eq!(after.profiles[0].name, "after-reload");
     }
 
+    // ---------------------------------------------------------------------
+    // Contract: OrchestratorController overrides EVERY default-impl method
+    // on `spt_mcp::Controller`. Each test calls the override on an empty
+    // orchestrator and asserts the result is NOT `McpError::NotImplemented`
+    // — production must never fall through to the trait default. Companion
+    // tests in `crates/spt-mcp/tests/it_controller_contract.rs` pin the
+    // default behavior; the integration file
+    // `tests/it_orchestrator_controller_contract.rs` pins the underlying
+    // supervisor APIs the overrides delegate to.
+    // ---------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn override_contract_session_close_not_default() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ctl = fixture(tmp.path());
+        let result = ctl
+            .session_close(&spt_core::SessionId::new_v4().to_string())
+            .await;
+        assert!(
+            !matches!(result, Err(McpError::NotImplemented(_))),
+            "session_close override must not return NotImplemented, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn override_contract_session_drain_not_default() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ctl = fixture(tmp.path());
+        let result = ctl.session_drain("ghost-profile", 0).await;
+        assert!(
+            !matches!(result, Err(McpError::NotImplemented(_))),
+            "session_drain override must not return NotImplemented, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn override_contract_stats_subscribe_not_default() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ctl = fixture(tmp.path());
+        let (tx, _rx) = tokio::sync::mpsc::channel::<serde_json::Value>(8);
+        let result = ctl.stats_subscribe(1_000, tx).await;
+        assert!(
+            !matches!(result, Err(McpError::NotImplemented(_))),
+            "stats_subscribe override must not return NotImplemented, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn override_contract_run_benchmark_not_default() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ctl = fixture(tmp.path());
+        // Missing `driver` → InvalidParams (not NotImplemented). That's the
+        // override exercising its own argument parser.
+        let result = ctl.run_benchmark(serde_json::json!({})).await;
+        assert!(
+            !matches!(result, Err(McpError::NotImplemented(_))),
+            "run_benchmark override must not return NotImplemented, got {result:?}"
+        );
+    }
+
     #[tokio::test]
     async fn forward_remove_after_add_round_trips() {
         let tmp = tempfile::tempdir().unwrap();

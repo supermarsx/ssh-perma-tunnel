@@ -32,6 +32,24 @@ use tokio::sync::mpsc;
 /// Methods are ordered "least-to-most invasive". Implementations must be
 /// `Send + Sync + 'static` so the server can hand them out to spawned
 /// per-connection tasks under the loopback transport.
+///
+/// # Default behavior
+///
+/// Four methods have default implementations that return
+/// [`crate::Error::NotImplemented`]: [`Controller::session_close`],
+/// [`Controller::session_drain`], [`Controller::stats_subscribe`], and
+/// [`Controller::run_benchmark`]. The defaults exist so embedders that only
+/// need the read-only surface (or only the six required mutators) can adopt
+/// the trait without breaking changes. Embedders SHOULD override every
+/// method before exposing the controller over MCP — operators connecting a
+/// stock client will otherwise see `-32003 not implemented` for the four
+/// session/stats/benchmark tools.
+///
+/// The `it_controller_contract.rs` integration test in this crate pins the
+/// default behavior (one assertion per default-impl method). The
+/// `it_orchestrator_controller_contract.rs` test in `spt-bin` ensures the
+/// production `OrchestratorController` overrides every default. Adding a
+/// new defaulted method to this trait requires updating both tests.
 #[async_trait]
 pub trait Controller: Send + Sync + 'static {
     /// Reload configuration from disk and reconcile profile state.
