@@ -5549,6 +5549,7 @@ dependencies = [
  "spt-core",
  "spt-forward",
  "spt-protocol",
+ "spt-sftp",
  "spt-state",
  "spt-stats",
  "tempfile",
