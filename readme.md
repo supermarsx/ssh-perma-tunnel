@@ -117,7 +117,8 @@ backend, and split-horizon DNS.
 - [Service Integration](docs/service-integration.md),
   [DNS](docs/dns.md), [Firewall](docs/firewall.md),
   [Observability](docs/observability.md), [Events](docs/events.md).
-- [Diagnostics](docs/diagnostics.md), [Benchmarking](docs/benchmarking.md),
+- [Diagnostics](docs/diagnostics.md), [Benchmarking](docs/benchmarking.md)
+  (live [perf dashboard](https://Mariana.github.io/ssh-perma-tunnel/perf/dashboard.html)),
   [MCP](docs/mcp.md), [TUI](docs/tui.md), [SSH3](docs/ssh3.md),
   [Remote Config](docs/remote-config.md).
 - [Security](docs/security.md), [Troubleshooting](docs/troubleshooting.md),
