@@ -71,6 +71,8 @@ pub const WRITE_TOOLS: &[&str] = &[
     "session_close",
     "session_drain",
     "stats_subscribe",
+    // Observability live-control (t8-A3): mutates process-wide tracing filter.
+    "log_set_level",
 ];
 
 /// Runtime policy wrapper that applies `enabled`, `allow_write_tools`, and

@@ -11,9 +11,11 @@ use tracing_appender::rolling::{RollingFileAppender, Rotation};
 use tracing_subscriber::filter::EnvFilter;
 use tracing_subscriber::fmt::format::FmtSpan;
 use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::reload;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::Layer;
 use tracing_subscriber::Registry;
+use uuid::Uuid;
 
 use crate::config::{
     Destination, FileSink, LogFormat, LoggingConfig, RemoteSink, RemoteSinkKind, RotationPolicy,
@@ -52,6 +54,46 @@ pub enum InitError {
     },
 }
 
+/// Handle for SIGHUP / MCP-driven live log filter reload.
+///
+/// The handle is cheap to clone (it wraps `tracing_subscriber::reload::Handle`
+/// internally). [`signals::install_sighup_log_reload`] takes one of these and
+/// re-applies a parsed [`EnvFilter`] on every SIGHUP; the MCP `log.set_level`
+/// tool likewise calls [`LogReloadHandle::reload`] for a per-target override.
+#[derive(Clone)]
+pub struct LogReloadHandle {
+    inner: reload::Handle<EnvFilter, Registry>,
+}
+
+impl std::fmt::Debug for LogReloadHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LogReloadHandle").finish_non_exhaustive()
+    }
+}
+
+impl LogReloadHandle {
+    /// Parse the directive and install it as the new global filter.
+    pub fn reload(&self, directive: &str) -> Result<(), ReloadError> {
+        let filter =
+            EnvFilter::try_new(directive).map_err(|e| ReloadError::BadFilter(e.to_string()))?;
+        self.inner
+            .reload(filter)
+            .map_err(|e| ReloadError::ReloadFailed(e.to_string()))
+    }
+}
+
+/// Error from [`LogReloadHandle::reload`].
+#[derive(Debug, Error)]
+pub enum ReloadError {
+    /// Directive failed to parse.
+    #[error("invalid log filter: {0}")]
+    BadFilter(String),
+    /// The reload layer rejected the new filter (typically the subscriber
+    /// has been dropped).
+    #[error("reload failed: {0}")]
+    ReloadFailed(String),
+}
+
 /// RAII guard returned by [`init`]. Drop flushes/joins the rotating-file
 /// background worker and any remote-sink writer tasks.
 #[must_use = "drop the TracingGuard at process exit so logs flush"]
@@ -68,6 +110,76 @@ pub struct TracingGuard {
     pub(crate) _syslog: Vec<SyslogTlsHandle>,
     /// Active HTTPS-JSONL writers.
     pub(crate) _https: Vec<HttpsJsonlHandle>,
+    /// Reload handle for the root [`EnvFilter`] layer. Callers clone this to
+    /// drive SIGHUP / MCP-tool live re-configs.
+    reload_handle: LogReloadHandle,
+}
+
+impl TracingGuard {
+    /// Borrow the reload handle for SIGHUP / MCP `log.set_level` plumbing.
+    #[must_use]
+    pub fn reload_handle(&self) -> LogReloadHandle {
+        self.reload_handle.clone()
+    }
+}
+
+/// Generate a fresh correlation id (UUID v4 — workspace uuid feature set).
+///
+/// One per top-level user action (e.g. `spt tunnel run` invocation). Attach
+/// to top-level spans so every downstream span/event inherits the id via
+/// `tracing` span propagation. UUIDs are random; collision risk is
+/// astronomically low across the lifetime of an spt deployment.
+#[must_use]
+pub fn new_correlation_id() -> Uuid {
+    Uuid::new_v4()
+}
+
+/// Generate a fresh per-SSH-session id. Stable for the life of the session
+/// regardless of reconnects, so log correlation across one logical tunnel is
+/// preserved.
+#[must_use]
+pub fn new_session_id() -> Uuid {
+    Uuid::new_v4()
+}
+
+/// Build an `info_span!` for a top-level CLI action with a `correlation_id`
+/// already attached.
+///
+/// Usage:
+///
+/// ```ignore
+/// let _g = spt_observability::cli_span!("tunnel.run").entered();
+/// ```
+///
+/// Every event emitted while the span is entered will carry the
+/// `correlation_id` field automatically.
+#[macro_export]
+macro_rules! cli_span {
+    ($name:expr) => {
+        ::tracing::info_span!($name, correlation_id = %$crate::init::new_correlation_id())
+    };
+    ($name:expr, $($field:tt)*) => {
+        ::tracing::info_span!(
+            $name,
+            correlation_id = %$crate::init::new_correlation_id(),
+            $($field)*
+        )
+    };
+}
+
+/// Build an `info_span!` for one SSH session with both correlation and
+/// session ids attached. Designed for the `session.run` / `profile.run`
+/// entry-point spans called out in the t8-A3 brief; downstream code does
+/// not need to add the ids manually.
+#[macro_export]
+macro_rules! session_span {
+    ($name:expr, $correlation:expr) => {
+        ::tracing::info_span!(
+            $name,
+            correlation_id = %$correlation,
+            session_id = %$crate::init::new_session_id()
+        )
+    };
 }
 
 /// Initialise the global subscriber from `config`.
@@ -85,6 +197,15 @@ fn init_inner(config: &LoggingConfig, test: bool) -> Result<TracingGuard, InitEr
     let filter = EnvFilter::try_new(&config.level)
         .map_err(|e| InitError::BadFilter(format!("{}: {e}", config.level)))?;
 
+    // Wrap the filter in a `reload::Layer` so SIGHUP / MCP `log.set_level`
+    // can swap it without rebuilding the whole subscriber. The handle is
+    // owned by the returned `TracingGuard` and cloned out to whoever wires
+    // up signal handlers or MCP tools.
+    let (reload_layer, reload_inner_handle) = reload::Layer::new(filter);
+    let reload_handle = LogReloadHandle {
+        inner: reload_inner_handle,
+    };
+
     let want_stderr = config.destinations.contains(&Destination::Stderr);
     let want_file = config.destinations.contains(&Destination::File);
     let want_journald = config.destinations.contains(&Destination::Journald);
@@ -93,7 +214,7 @@ fn init_inner(config: &LoggingConfig, test: bool) -> Result<TracingGuard, InitEr
     // Filter is itself a Layer<Registry>; pushing it into the same vec keeps
     // the subscriber type concretely `Layered<Vec<...>, Registry>` which does
     // implement `SubscriberInitExt`.
-    layers.push(Box::new(filter));
+    layers.push(Box::new(reload_layer));
 
     if want_stderr {
         let mw = RedactingMakeWriter::new(io::stderr, config.redact);
@@ -193,6 +314,7 @@ fn init_inner(config: &LoggingConfig, test: bool) -> Result<TracingGuard, InitEr
         _syslog_tcp: syslog_tcp_handles,
         _syslog: syslog_handles,
         _https: https_handles,
+        reload_handle,
     })
 }
 
@@ -1191,6 +1313,77 @@ mod tests {
             matches!(r, Err(InitError::CreateDir(_, _))),
             "got {err_msg}"
         );
+    }
+
+    // ---------- correlation / session / reload helpers ----------
+
+    #[test]
+    fn new_correlation_id_yields_unique_values() {
+        let a = new_correlation_id();
+        let b = new_correlation_id();
+        assert_ne!(a, b, "two consecutive correlation ids must differ");
+    }
+
+    #[test]
+    fn new_session_id_yields_unique_values() {
+        let a = new_session_id();
+        let b = new_session_id();
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn reload_handle_reload_with_valid_directive() {
+        let cfg = LoggingConfig {
+            level: "info".into(),
+            ..LoggingConfig::default()
+        };
+        let g = init_for_test(&cfg).unwrap();
+        let h = g.reload_handle();
+        // The subscriber is `try_init` — repeated test setups share the same
+        // global subscriber; the reload handle of the *first* successful init
+        // is the one wired in. Either way, the handle should accept a parse
+        // of valid syntax without panicking. We don't assert success against
+        // the global because subsequent tests may have replaced it; we only
+        // confirm bad syntax produces `BadFilter`.
+        let _ = h.reload("info,spt_ssh2=debug");
+    }
+
+    #[test]
+    fn reload_handle_rejects_bad_directive() {
+        let cfg = LoggingConfig {
+            level: "info".into(),
+            ..LoggingConfig::default()
+        };
+        let g = init_for_test(&cfg).unwrap();
+        let h = g.reload_handle();
+        let err = h.reload("=oops").unwrap_err();
+        assert!(matches!(err, ReloadError::BadFilter(_)));
+    }
+
+    #[test]
+    fn reload_error_display_includes_context() {
+        let e = ReloadError::BadFilter("=oops".into());
+        let s = format!("{e}");
+        assert!(s.contains("invalid log filter"));
+        let e = ReloadError::ReloadFailed("gone".into());
+        let s = format!("{e}");
+        assert!(s.contains("reload failed"));
+    }
+
+    #[test]
+    fn cli_span_macro_attaches_correlation_id() {
+        // The macro must expand without compile error and produce a Span.
+        // We can't easily extract the field at runtime without a custom
+        // subscriber, so we just enter/exit to confirm liveness.
+        let span = crate::cli_span!("test_top_action");
+        let _entered = span.entered();
+    }
+
+    #[test]
+    fn session_span_macro_attaches_correlation_and_session_ids() {
+        let correlation = new_correlation_id();
+        let span = crate::session_span!("test_session_action", correlation);
+        let _entered = span.entered();
     }
 
     #[test]

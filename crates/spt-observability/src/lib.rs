@@ -21,6 +21,7 @@ pub mod init;
 pub mod metrics;
 pub mod redaction;
 pub mod rotation;
+pub mod sampling;
 pub mod syslog_common;
 pub mod syslog_tcp;
 pub mod syslog_tls;
@@ -33,6 +34,10 @@ pub mod otlp;
 pub mod testing;
 
 pub use config::{LoggingConfig, RemoteSink, RemoteSinkKind, RotationPolicy};
-pub use init::{init, init_for_test, TracingGuard};
+pub use init::{
+    init, init_for_test, new_correlation_id, new_session_id, LogReloadHandle, ReloadError,
+    TracingGuard,
+};
 pub use metrics::{MetricsExporter, MetricsExporterConfig, MetricsExporterHandle};
 pub use redaction::{RedactingMakeWriter, RedactingWriter};
+pub use sampling::{RandSource, SamplingConfig, SamplingLayer};

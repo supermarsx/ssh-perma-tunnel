@@ -37,6 +37,8 @@ parking_lot = { workspace = true }
 once_cell = { workspace = true }
 chrono = { workspace = true }
 thiserror = { workspace = true }
+uuid = { workspace = true }
+rand = { workspace = true }
 
 # Remote sinks
 reqwest = { workspace = true }

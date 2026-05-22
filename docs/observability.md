@@ -56,6 +56,49 @@ OTLP export is feature-gated on the `otlp` cargo feature in
 `spt-observability`. Enable with `--features spt-observability/otlp` and
 configure under `[[logging.remote]]` with `type = "otlp"`.
 
+## Runtime log filter control (t8-A3)
+
+The tracing subscriber installed by `spt-bin` wraps its `EnvFilter` in a
+`tracing_subscriber::reload::Layer`, so the global filter directive can be
+swapped at runtime without rebuilding the subscriber. Three control paths
+share the same reload handle:
+
+1. **Boot-time selection** — `tracing_init::resolve_filter_directive` reads
+   `SPT_LOG` first (validated against `EnvFilter::try_new`), then falls back
+   to the verbosity flags on the CLI.
+2. **SIGHUP** — on Unix, `install_sighup_log_reload` re-reads
+   `<state_dir>/log-filter` and applies its contents on every `SIGHUP`. A
+   parse failure is logged and the previous filter is retained.
+3. **MCP `log_set_level` tool** — see below.
+
+### MCP `log_set_level` tool
+
+| Field   | Type   | Required | Notes |
+|---------|--------|----------|-------|
+| `target` | string | yes | Tracing target. Typically a Rust module path (e.g. `spt_supervisor` or `spt_mcp::server`). Pre-validated against `^[A-Za-z_][A-Za-z0-9_:.-]*$`. |
+| `level`  | string | yes | One of `trace`, `debug`, `info`, `warn`, `error`, `off`. Case-insensitive. |
+
+Example call (JSON-RPC body of `tools/call`):
+
+    {
+      "name": "log_set_level",
+      "arguments": { "target": "spt_supervisor", "level": "debug" }
+    }
+
+On success the tool returns `{ "applied": true, "target": ..., "level": ...,
+"directive": "target=level" }`. The applied directive replaces the global
+`EnvFilter`, so callers wanting per-module overrides must include every
+target in a single call (e.g. `target = "info,spt_supervisor=debug"` is
+*not* supported via this tool — use `SPT_LOG` / SIGHUP for compound
+directives).
+
+**Security note.** `log_set_level` mutates global process state and so
+appears in [`spt_mcp::policy::WRITE_TOOLS`]. It is denied unless its name
+is added explicitly to the operator's `[mcp].allow_write_tools` list. The
+tool also requires `spt-bin` to have wired a [`LogReloadBridge`] adapter
+into the MCP server; ad-hoc / smoke instances built via
+`build_noop_server` return `Error::Internal("log reload bridge not wired")`.
+
 ## Pinned TLS (t5-e2)
 
 Every HTTPS-bearing remote-log sink (`syslog_tls`, `https_jsonl`) carries

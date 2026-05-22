@@ -34,6 +34,27 @@ pub struct ToolContext {
     /// dispatching streaming tools (e.g. `stats_subscribe`); on stdio /
     /// non-streaming transports it remains `None`.
     pub notification_sender: Option<tokio::sync::mpsc::Sender<serde_json::Value>>,
+    /// Live tracing-filter reload bridge. Populated when the binary wires
+    /// the MCP server against the process-wide log subscriber; tests and
+    /// loopback paths typically leave this as `None`.
+    ///
+    /// Trait-object so this crate doesn't need a hard dep on
+    /// `spt-observability` — the binary supplies an adapter.
+    pub log_reload: Option<Arc<dyn LogReloadBridge>>,
+}
+
+/// Live-tracing reload adapter. The MCP `log_set_level` tool calls
+/// [`Self::reload`] with a parsed `EnvFilter`-style directive.
+///
+/// `spt-observability::LogReloadHandle` implements this trait via a thin
+/// wrapper in `spt-bin/src/mcp_server.rs` (the binary owns the cross-crate
+/// glue). Kept here as a trait so the MCP crate has zero observability deps.
+#[async_trait]
+pub trait LogReloadBridge: Send + Sync + 'static {
+    /// Apply `directive` as the new global log filter. Implementations
+    /// should validate syntax and return `Err` on failure so the tool can
+    /// surface a meaningful error to the MCP client.
+    async fn reload(&self, directive: &str) -> Result<(), String>;
 }
 
 /// One tool. Implementors describe themselves and execute a single async call.
@@ -50,9 +71,10 @@ pub trait ToolHandler: Send + Sync + 'static {
 /// The full canonical name list from spec §16, in spec order. Used by tests
 /// and the registry sanity-check.
 ///
-/// The original spec lists 31 tools; 4 additional live-bridge tools
-/// (`session_close`, `session_drain`, `stats_subscribe`, `benchmark_run`
-/// already counted) are appended for the loopback control surface.
+/// The original spec lists 31 tools; 3 additional live-bridge tools
+/// (`session_close`, `session_drain`, `stats_subscribe`; `benchmark_run`
+/// already counted) are appended for the loopback control surface, plus the
+/// observability live-control tool `log_set_level` (t8-A3) for a total of 35.
 pub const ALL_TOOL_NAMES: &[&str] = &[
     "config_validate",
     "config_doctor",
@@ -89,6 +111,8 @@ pub const ALL_TOOL_NAMES: &[&str] = &[
     "session_close",
     "session_drain",
     "stats_subscribe",
+    // Observability: runtime log filter override (t8-A3).
+    "log_set_level",
 ];
 
 /// Internal helper: build a no-arguments JSON-Schema.
@@ -619,6 +643,103 @@ impl ToolHandler for StatsSubscribe {
         }))
     }
 }
+/// `log_set_level`: change the live tracing filter directive at runtime.
+///
+/// Constructs an [`EnvFilter`]-style directive of the form `target=level` from
+/// the two arguments and hands it to the configured
+/// [`LogReloadBridge`] (wired by `spt-bin` against the process-wide
+/// subscriber). Pre-validates the level and target syntax so misuse fails
+/// before the bridge is invoked.
+///
+/// This is a **privileged** tool — it mutates global process state. The
+/// policy engine treats it as a write tool (see [`crate::policy::WRITE_TOOLS`]).
+pub struct LogSetLevel;
+
+/// Levels accepted by the `log_set_level` tool. Must match
+/// `tracing`'s level vocabulary (case-insensitive).
+const VALID_LEVELS: &[&str] = &["trace", "debug", "info", "warn", "error", "off"];
+
+/// Validate a target string. Tracing targets are typically Rust module paths
+/// (`my_crate::sub`) or simple identifiers (`my_crate`); we accept ASCII
+/// alphanumeric plus `_`, `:`, `-`, and `.` and require a leading letter or
+/// underscore.
+fn is_valid_target(s: &str) -> bool {
+    let mut chars = s.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !(first.is_ascii_alphabetic() || first == '_') {
+        return false;
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | ':' | '-' | '.'))
+}
+
+#[async_trait]
+impl ToolHandler for LogSetLevel {
+    fn name(&self) -> &'static str {
+        "log_set_level"
+    }
+    fn descriptor(&self) -> ToolDescriptor {
+        ToolDescriptor {
+            name: self.name().to_owned(),
+            description: "Set the tracing log filter for one target at runtime. \
+                 Example: target=\"spt_supervisor\", level=\"debug\". \
+                 Privileged — gated by `allow_write_tools`."
+                .to_owned(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "target": {
+                        "type": "string",
+                        "description": "Tracing target (Rust module path or identifier)."
+                    },
+                    "level": {
+                        "type": "string",
+                        "enum": ["trace", "debug", "info", "warn", "error", "off"],
+                        "description": "New level for the target."
+                    }
+                },
+                "required": ["target", "level"],
+                "additionalProperties": false,
+            }),
+        }
+    }
+    async fn call(&self, ctx: &ToolContext, args: Value) -> crate::Result<Value> {
+        let target = args.get("target").and_then(Value::as_str).ok_or_else(|| {
+            crate::Error::InvalidParams("missing string field 'target'".to_owned())
+        })?;
+        let level_raw = args
+            .get("level")
+            .and_then(Value::as_str)
+            .ok_or_else(|| crate::Error::InvalidParams("missing string field 'level'".to_owned()))?;
+        let level = level_raw.to_ascii_lowercase();
+        if !VALID_LEVELS.contains(&level.as_str()) {
+            return Err(crate::Error::InvalidParams(format!(
+                "invalid level '{level_raw}'; expected one of {VALID_LEVELS:?}"
+            )));
+        }
+        if !is_valid_target(target) {
+            return Err(crate::Error::InvalidParams(format!(
+                "invalid tracing target '{target}'"
+            )));
+        }
+        let bridge = ctx.log_reload.as_ref().ok_or_else(|| {
+            crate::Error::Internal("log reload bridge not wired into this MCP server".to_owned())
+        })?;
+        let directive = format!("{target}={level}");
+        bridge
+            .reload(&directive)
+            .await
+            .map_err(|e| crate::Error::Internal(format!("log reload failed: {e}")))?;
+        Ok(json!({
+            "applied": true,
+            "target": target,
+            "level": level,
+            "directive": directive,
+        }))
+    }
+}
+
 planned_tool!(
     DnsRecordAdd,
     "dns_record_add",
@@ -706,12 +827,14 @@ impl ToolRegistry {
         add!(SessionClose);
         add!(SessionDrain);
         add!(StatsSubscribe);
+        // Observability live-control (t8-A3):
+        add!(LogSetLevel);
 
         debug_assert_eq!(by_name.len(), ALL_TOOL_NAMES.len(), "tool count mismatch");
         Self { by_name }
     }
 
-    /// Number of registered tools (must be 34).
+    /// Number of registered tools (must be 35).
     #[must_use]
     pub fn len(&self) -> usize {
         self.by_name.len()
@@ -817,6 +940,7 @@ mod tests {
             state: sources as DynStateSource,
             controller: ctrl,
             notification_sender: None,
+            log_reload: None,
         }
     }
 
@@ -1006,6 +1130,7 @@ mod tests {
             state: sources as DynStateSource,
             controller: Arc::new(ctrl.clone()),
             notification_sender: Some(tx),
+            log_reload: None,
         };
         let v = StatsSubscribe
             .call(&ctx, json!({"interval_ms": 150}))
@@ -1041,5 +1166,221 @@ mod tests {
         assert_eq!(ForwardAdd.name(), "forward_add");
         assert_eq!(SessionDrain.name(), "session_drain");
         assert_eq!(BenchmarkRun.name(), "benchmark_run");
+        assert_eq!(LogSetLevel.name(), "log_set_level");
+    }
+}
+
+/// Tests for the `log_set_level` MCP tool (t8-A3).
+#[cfg(test)]
+mod log_set_level_tests {
+    use super::*;
+    use crate::controller::NoopController;
+    use crate::sources::NoopSources;
+    use parking_lot::Mutex;
+
+    /// Test reload bridge that records every directive it sees and can be
+    /// configured to fail on the next call.
+    struct RecordingReload {
+        calls: Mutex<Vec<String>>,
+        fail_with: Mutex<Option<String>>,
+    }
+
+    impl RecordingReload {
+        fn new() -> Self {
+            Self {
+                calls: Mutex::new(Vec::new()),
+                fail_with: Mutex::new(None),
+            }
+        }
+        fn snapshot(&self) -> Vec<String> {
+            self.calls.lock().clone()
+        }
+    }
+
+    #[async_trait]
+    impl LogReloadBridge for RecordingReload {
+        async fn reload(&self, directive: &str) -> Result<(), String> {
+            if let Some(reason) = self.fail_with.lock().take() {
+                return Err(reason);
+            }
+            self.calls.lock().push(directive.to_owned());
+            Ok(())
+        }
+    }
+
+    fn ctx_with_bridge(bridge: Arc<RecordingReload>) -> ToolContext {
+        let sources = Arc::new(NoopSources);
+        ToolContext {
+            config: sources.clone() as DynConfigSource,
+            state: sources as DynStateSource,
+            controller: Arc::new(NoopController),
+            notification_sender: None,
+            log_reload: Some(bridge as Arc<dyn LogReloadBridge>),
+        }
+    }
+
+    fn ctx_without_bridge() -> ToolContext {
+        let sources = Arc::new(NoopSources);
+        ToolContext {
+            config: sources.clone() as DynConfigSource,
+            state: sources as DynStateSource,
+            controller: Arc::new(NoopController),
+            notification_sender: None,
+            log_reload: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn log_set_level_changes_filter_directive() {
+        let bridge = Arc::new(RecordingReload::new());
+        let ctx = ctx_with_bridge(bridge.clone());
+        let v = LogSetLevel
+            .call(
+                &ctx,
+                json!({"target": "spt_supervisor", "level": "debug"}),
+            )
+            .await
+            .expect("ok");
+        assert_eq!(v["applied"], true);
+        assert_eq!(v["target"], "spt_supervisor");
+        assert_eq!(v["level"], "debug");
+        assert_eq!(v["directive"], "spt_supervisor=debug");
+        assert_eq!(bridge.snapshot(), vec!["spt_supervisor=debug".to_owned()]);
+    }
+
+    #[tokio::test]
+    async fn log_set_level_rejects_invalid_level() {
+        let bridge = Arc::new(RecordingReload::new());
+        let ctx = ctx_with_bridge(bridge.clone());
+        let err = LogSetLevel
+            .call(&ctx, json!({"target": "spt_supervisor", "level": "loud"}))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, crate::Error::InvalidParams(_)));
+        assert!(
+            bridge.snapshot().is_empty(),
+            "bridge must not be called when validation fails"
+        );
+    }
+
+    #[tokio::test]
+    async fn log_set_level_rejects_invalid_target_syntax() {
+        let bridge = Arc::new(RecordingReload::new());
+        let ctx = ctx_with_bridge(bridge.clone());
+        // Leading digit, internal whitespace, and empty are all rejected.
+        for bad in ["9bad", "has space", "", "with=equals"] {
+            let err = LogSetLevel
+                .call(&ctx, json!({"target": bad, "level": "info"}))
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(err, crate::Error::InvalidParams(_)),
+                "target '{bad}' should be rejected"
+            );
+        }
+        assert!(bridge.snapshot().is_empty());
+    }
+
+    #[tokio::test]
+    async fn log_set_level_persists_across_calls() {
+        let bridge = Arc::new(RecordingReload::new());
+        let ctx = ctx_with_bridge(bridge.clone());
+        LogSetLevel
+            .call(&ctx, json!({"target": "spt_core", "level": "trace"}))
+            .await
+            .expect("first ok");
+        LogSetLevel
+            .call(&ctx, json!({"target": "spt_mcp", "level": "warn"}))
+            .await
+            .expect("second ok");
+        LogSetLevel
+            .call(&ctx, json!({"target": "spt_supervisor", "level": "info"}))
+            .await
+            .expect("third ok");
+        assert_eq!(
+            bridge.snapshot(),
+            vec![
+                "spt_core=trace".to_owned(),
+                "spt_mcp=warn".to_owned(),
+                "spt_supervisor=info".to_owned(),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn log_set_level_requires_bridge_to_be_wired() {
+        let ctx = ctx_without_bridge();
+        let err = LogSetLevel
+            .call(&ctx, json!({"target": "spt_core", "level": "info"}))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, crate::Error::Internal(_)));
+    }
+
+    #[tokio::test]
+    async fn log_set_level_surfaces_bridge_failure_as_internal() {
+        let bridge = Arc::new(RecordingReload::new());
+        *bridge.fail_with.lock() = Some("subscriber gone".to_owned());
+        let ctx = ctx_with_bridge(bridge.clone());
+        let err = LogSetLevel
+            .call(&ctx, json!({"target": "spt_core", "level": "info"}))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, crate::Error::Internal(ref msg) if msg.contains("subscriber gone")));
+    }
+
+    #[tokio::test]
+    async fn log_set_level_missing_target_errors() {
+        let bridge = Arc::new(RecordingReload::new());
+        let ctx = ctx_with_bridge(bridge);
+        let err = LogSetLevel
+            .call(&ctx, json!({"level": "info"}))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, crate::Error::InvalidParams(_)));
+    }
+
+    #[tokio::test]
+    async fn log_set_level_missing_level_errors() {
+        let bridge = Arc::new(RecordingReload::new());
+        let ctx = ctx_with_bridge(bridge);
+        let err = LogSetLevel
+            .call(&ctx, json!({"target": "spt_core"}))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, crate::Error::InvalidParams(_)));
+    }
+
+    #[tokio::test]
+    async fn log_set_level_level_is_case_insensitive() {
+        let bridge = Arc::new(RecordingReload::new());
+        let ctx = ctx_with_bridge(bridge.clone());
+        let v = LogSetLevel
+            .call(&ctx, json!({"target": "spt_core", "level": "DEBUG"}))
+            .await
+            .expect("ok");
+        assert_eq!(v["level"], "debug");
+        assert_eq!(bridge.snapshot(), vec!["spt_core=debug".to_owned()]);
+    }
+
+    #[test]
+    fn log_set_level_is_in_all_tool_names() {
+        assert!(ALL_TOOL_NAMES.contains(&"log_set_level"));
+    }
+
+    #[test]
+    fn log_set_level_is_a_write_tool() {
+        assert!(crate::policy::WRITE_TOOLS.contains(&"log_set_level"));
+    }
+
+    #[test]
+    fn log_set_level_descriptor_schema_is_well_formed() {
+        let d = LogSetLevel.descriptor();
+        assert_eq!(d.name, "log_set_level");
+        let schema = &d.input_schema;
+        assert_eq!(schema["type"], "object");
+        let required = schema["required"].as_array().expect("required");
+        assert!(required.iter().any(|v| v == "target"));
+        assert!(required.iter().any(|v| v == "level"));
     }
 }

@@ -30,7 +30,7 @@ use crate::policy::{McpPolicy, Policy};
 use crate::protocol::{Id, Request, Response};
 use crate::resources::ResourceRegistry;
 use crate::sources::{DynConfigSource, DynStateSource, NoopSources};
-use crate::tools::{ToolContext, ToolRegistry};
+use crate::tools::{LogReloadBridge, ToolContext, ToolRegistry};
 use crate::transport::{stdio::StdioTransport, Transport, TransportKind};
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -76,6 +76,10 @@ pub struct McpServerInner {
     /// `params.token` string. Per-connection `authenticated` flag is enforced
     /// by the transport runner.
     auth_token: Option<String>,
+    /// Optional adapter for live log-filter reload. Wired by `spt-bin` to
+    /// the process-wide tracing subscriber. The `log_set_level` tool fails
+    /// gracefully when this is `None`.
+    log_reload: Option<Arc<dyn LogReloadBridge>>,
 }
 
 impl McpServerInner {
@@ -268,6 +272,7 @@ impl McpServerInner {
             state: self.state.clone(),
             controller: self.controller.clone(),
             notification_sender: notify,
+            log_reload: self.log_reload.clone(),
         };
         handler.call(&ctx, arguments).await
     }
@@ -354,8 +359,35 @@ impl McpServer {
                 resources: Arc::new(ResourceRegistry::new()),
                 tools: Arc::new(ToolRegistry::new()),
                 auth_token: None,
+                log_reload: None,
             }),
         }
+    }
+
+    /// Attach a [`LogReloadBridge`] so the `log_set_level` MCP tool can drive
+    /// live filter changes. `spt-bin` calls this once at startup.
+    #[must_use]
+    pub fn with_log_reload(mut self, bridge: Arc<dyn LogReloadBridge>) -> Self {
+        let inner = match Arc::try_unwrap(self.inner) {
+            Ok(mut i) => {
+                i.log_reload = Some(bridge);
+                i
+            }
+            Err(arc) => McpServerInner {
+                capabilities: arc.capabilities.clone(),
+                policy: arc.policy.clone(),
+                audit: arc.audit.clone(),
+                controller: arc.controller.clone(),
+                config: arc.config.clone(),
+                state: arc.state.clone(),
+                resources: arc.resources.clone(),
+                tools: arc.tools.clone(),
+                auth_token: arc.auth_token.clone(),
+                log_reload: Some(bridge),
+            },
+        };
+        self.inner = Arc::new(inner);
+        self
     }
 
     /// Require `initialize` to carry `params.token` matching the supplied
@@ -380,6 +412,7 @@ impl McpServer {
                 resources: arc.resources.clone(),
                 tools: arc.tools.clone(),
                 auth_token: Some(token.into()),
+                log_reload: arc.log_reload.clone(),
             },
         };
         self.inner = Arc::new(inner);
@@ -421,6 +454,7 @@ impl McpServer {
                 resources: arc.resources.clone(),
                 tools: arc.tools.clone(),
                 auth_token: arc.auth_token.clone(),
+                log_reload: arc.log_reload.clone(),
             },
         };
         self.inner = Arc::new(inner);

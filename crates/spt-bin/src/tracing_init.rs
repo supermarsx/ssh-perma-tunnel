@@ -12,10 +12,120 @@ use spt_observability::{
     init, init_for_test, TracingGuard,
 };
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn defaults() -> GlobalOpts {
+        // Parse an empty arg list through clap to get a GlobalOpts populated
+        // with every default. This avoids hard-coding all global field names
+        // here (the struct surface is owned by `spt-cli`).
+        use clap::Parser;
+        #[derive(clap::Parser)]
+        struct Wrap {
+            #[command(flatten)]
+            g: GlobalOpts,
+        }
+        Wrap::parse_from(["test"]).g
+    }
+
+    fn set_env(key: &str, value: Option<&str>) {
+        // Tests in this module run sequentially and only mutate `SPT_LOG`,
+        // which the wider observability/test surface does not read.
+        match value {
+            Some(v) => std::env::set_var(key, v),
+            None => std::env::remove_var(key),
+        }
+    }
+
+    #[test]
+    fn resolve_filter_falls_back_to_cli_when_env_unset() {
+        set_env("SPT_LOG", None);
+        let g = defaults();
+        assert_eq!(resolve_filter_directive(&g), "info");
+    }
+
+    #[test]
+    fn resolve_filter_uses_env_per_module_syntax() {
+        set_env("SPT_LOG", Some("warn,spt_ssh2=trace,spt_supervisor=debug"));
+        let g = defaults();
+        let d = resolve_filter_directive(&g);
+        assert!(d.contains("spt_ssh2=trace"));
+        assert!(d.contains("spt_supervisor=debug"));
+        set_env("SPT_LOG", None);
+    }
+
+    #[test]
+    fn resolve_filter_ignores_bad_env_value() {
+        // `=garbage` is rejected by EnvFilter; we fall back to CLI defaults.
+        set_env("SPT_LOG", Some("=garbage"));
+        let mut g = defaults();
+        g.verbose = 1;
+        assert_eq!(resolve_filter_directive(&g), "debug");
+        set_env("SPT_LOG", None);
+    }
+
+    #[test]
+    fn resolve_filter_simple_module_level() {
+        set_env("SPT_LOG", Some("spt_supervisor=debug"));
+        let g = defaults();
+        let d = resolve_filter_directive(&g);
+        assert_eq!(d, "spt_supervisor=debug");
+        set_env("SPT_LOG", None);
+    }
+
+    #[test]
+    fn resolve_filter_global_off_then_per_module_on() {
+        set_env("SPT_LOG", Some("off,spt_ssh2=info"));
+        let g = defaults();
+        let d = resolve_filter_directive(&g);
+        assert!(d.starts_with("off"));
+        assert!(d.contains("spt_ssh2=info"));
+        set_env("SPT_LOG", None);
+    }
+
+    #[test]
+    fn resolve_filter_three_module_combination() {
+        set_env(
+            "SPT_LOG",
+            Some("info,spt_ssh2=trace,spt_supervisor=debug,spt_mcp=warn"),
+        );
+        let g = defaults();
+        let d = resolve_filter_directive(&g);
+        assert!(d.contains("spt_mcp=warn"));
+        set_env("SPT_LOG", None);
+    }
+
+    #[test]
+    fn resolve_filter_with_verbose_two_flag_only() {
+        set_env("SPT_LOG", None);
+        let mut g = defaults();
+        g.verbose = 2;
+        assert_eq!(resolve_filter_directive(&g), "trace");
+    }
+
+    #[test]
+    fn resolve_filter_env_takes_precedence_over_verbose() {
+        set_env("SPT_LOG", Some("warn"));
+        let mut g = defaults();
+        g.verbose = 2;
+        assert_eq!(resolve_filter_directive(&g), "warn");
+        set_env("SPT_LOG", None);
+    }
+}
+
 /// Initialise a stderr-only tracing subscriber. Returns the guard owned by
 /// `main` for lifetime control.
+///
+/// Filter directive precedence (highest first):
+///
+/// 1. `SPT_LOG` env var — accepted by `EnvFilter` natively, so per-module
+///    syntax like `SPT_LOG=info,spt_ssh2=debug,spt_supervisor=trace` works
+///    out of the box.
+/// 2. `--log-level` / `--verbose` CLI flags translated via
+///    [`crate::log_level_directive`].
 pub fn init_minimal(global: &GlobalOpts) -> Option<TracingGuard> {
-    let level = crate::log_level_directive(global.log_level, global.verbose);
+    let level = resolve_filter_directive(global);
     let cfg = LoggingConfig {
         level,
         format: if global.json {
@@ -49,7 +159,7 @@ pub fn init_from_config(
     let logging = cfg.logging.as_ref();
     let level = logging
         .and_then(|l| l.level.clone())
-        .unwrap_or_else(|| crate::log_level_directive(global.log_level, global.verbose));
+        .unwrap_or_else(|| resolve_filter_directive(global));
     let format = logging
         .and_then(|l| l.format.as_deref())
         .map(parse_log_format)
@@ -151,6 +261,24 @@ fn parse_rotation(value: &str, max_size: Option<&str>) -> spt_core::Result<Rotat
             "logging.rotate `{other}` is invalid"
         ))),
     }
+}
+
+/// Pick the filter directive: `SPT_LOG` env var wins if it parses; otherwise
+/// fall back to the CLI flags. Validation happens inside
+/// `spt-observability`'s init (`EnvFilter::try_new`), so bad `SPT_LOG`
+/// values cause the CLI to fall back to flag-derived defaults rather than
+/// failing the whole process.
+pub(crate) fn resolve_filter_directive(global: &GlobalOpts) -> String {
+    if let Some(raw) = std::env::var_os("SPT_LOG") {
+        if let Some(s) = raw.to_str() {
+            // Probe the directive without retaining the result: bad values
+            // shouldn't blow up the binary; we silently fall through.
+            if tracing_subscriber::filter::EnvFilter::try_new(s).is_ok() {
+                return s.to_owned();
+            }
+        }
+    }
+    crate::log_level_directive(global.log_level, global.verbose)
 }
 
 fn convert_remote_sink(
