@@ -181,8 +181,13 @@ Releases are signed; verify before installing — see
 toolchain so current RustSec advisory formats, including CVSS 4.0, are parsed
 even though the workspace itself keeps an MSRV of Rust 1.83. Reviewed advisory
 exceptions live in `deny.toml` and are mirrored in `.github/workflows/audit.yml`.
-`cargo update` is forbidden in this repo (the pinned lockfile is part of
-reproducibility).
+
+The workspace's earlier "no `cargo update`" policy was lifted for the t7
+milestone so the t6 stub features (`rhai`, `sspi`, `libgssapi`, `obfs4`,
+`tokio-tungstenite`, `blake3`, `fuser`, `dokan`) could land as real
+implementations. Each new dep is documented in the corresponding
+`.orchestration/logs/t7-*.md` log; `Cargo.lock` is still checked in and
+gates `cargo test --workspace --locked` in CI.
 
 ## Reporting vulnerabilities
 

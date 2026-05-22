@@ -1,9 +1,11 @@
 # Forwards
 
 A forward is a single accept-and-relay rule attached to a profile. `spt`
-supports local TCP, remote TCP, and UDP forwards (UDP only via SSH3 since
-SSH2 has no UDP channel type). SSH2/russh also supports dynamic TCP proxy
-listeners for SOCKS4, SOCKS4A, SOCKS5, and HTTP CONNECT.
+supports local TCP, remote TCP, UDP, UNIX-domain-socket, and dynamic
+proxy forwards. Every forward kind runs uniformly on the pure-Rust
+`russh` backend — there is no longer a backend split (libssh2 was
+removed in t7). SSH3 over QUIC is available as an experimental
+alternative transport that natively supports UDP datagrams.
 
 ## Local TCP (`type = "local"`)
 
@@ -57,7 +59,7 @@ supported dynamic proxy protocol. Use a subset when compatibility policy
 requires it. SOCKS4A and SOCKS5 domain-name requests are forwarded by hostname
 so the SSH server side performs target DNS resolution.
 
-## UDP (SSH3 only)
+## UDP forwarding
 
     [[profiles.forwards]]
     name = "syslog"
@@ -65,9 +67,57 @@ so the SSH server side performs target DNS resolution.
     transport = "udp"
     bind = "127.0.0.1:5514"
     target = "logger.internal:514"
+    udp_mode = "tcp-framed"     # tcp-framed (default) | uds-bridge
 
-UDP datagrams are mapped onto QUIC datagrams. Oversized datagrams are
-dropped and counted in `udp_oversize_drops` (status snapshot).
+Over SSH2/russh, UDP is tunnelled by framing datagrams over a regular
+`direct-tcpip` channel. Two modes are available:
+
+- `tcp-framed` (default) — each datagram is length-prefixed (16-bit
+  big-endian) and shipped over a single `direct-tcpip` channel. 64 KiB
+  per-frame cap; oversized datagrams are dropped and counted in
+  `udp_oversize_drops` (status snapshot). Works on every russh build,
+  Linux / macOS / Windows.
+- `uds-bridge` — opens a `direct-streamlocal@openssh.com` channel to a
+  remote UNIX socket that already speaks the SSH-UDP framing protocol.
+  Useful for OpenSSH 8.4+ servers configured with `StreamLocalBindUnlink`
+  + a userspace UDP relay. Unix-only on both ends.
+
+Over SSH3, UDP datagrams are mapped directly onto QUIC datagrams. The
+same `udp_oversize_drops` counter applies.
+
+## UNIX-domain-socket forwarding (`type = "local_uds"` / `"remote_uds"`)
+
+`spt` supports forwarding UNIX-domain sockets in both directions via the
+SSH `direct-streamlocal@openssh.com` channel type:
+
+    [[profiles.forwards]]
+    name = "docker"
+    type = "local_uds"
+    bind = "/run/user/1000/spt-docker.sock"
+    target = "/var/run/docker.sock"
+
+    [[profiles.forwards]]
+    name = "expose-prom"
+    type = "remote_uds"
+    bind = "/run/user/1000/prom.sock"      # remote path on the server
+    target = "127.0.0.1:9090"              # local TCP backend
+
+UDS forwards are validated at config-load time against the configured
+profile's backend capability. `Forward.link_kind` semantics: the
+validator rejects UDS link kinds on Windows and on any SSH3 profile;
+russh on Unix accepts them.
+
+## Multi-hop / jump-proxy chains (`-J`)
+
+Multi-hop chains stack `direct-tcpip` channels through one or more
+intermediate SSH peers. The native russh path opens nested channels
+end-to-end — there is no loopback socketpair indirection.
+
+    spt tunnel run -J alice@bastion1.example.com,bob@bastion2.example.com ...
+
+`-J` accepts comma-separated `[user@]host[:port]` entries; `~/.ssh/config`
+host aliases are honoured (unless `--portable` is active, which skips
+`~/.ssh/config` resolution).
 
 ## Bind modes
 

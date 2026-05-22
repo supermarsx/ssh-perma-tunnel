@@ -328,7 +328,7 @@ autossh leaves a pid file in `/var/run` (or wherever you point
 
 | Dimension                       | autossh                                  | spt                                                |
 |---------------------------------|------------------------------------------|----------------------------------------------------|
-| Cold-start to first byte        | ~1× ssh handshake                        | ~1× ssh handshake (same `libssh2` path)            |
+| Cold-start to first byte        | ~1× ssh handshake                        | ~1× ssh handshake (pure-Rust `russh` backend)      |
 | Resident memory (single tunnel) | ~3–5 MiB (autossh + ssh)                 | ~6–10 MiB (one supervisor for N profiles)          |
 | Reconnect latency after drop    | `ServerAliveInterval × ServerAliveCountMax` (often 30s × 3 = 90s) | `keepalive.interval × max_missed`, then `[reconnect].initial_delay` (typically <1s after detection) |
 | Reconnect backoff               | None — immediate restart                 | Full-jitter exponential, capped at `max_delay`     |

@@ -10,7 +10,7 @@ backends, their lifecycle behaviour, and the platform-support matrix.
 | OS      | Backend                                       | Status        | Caveats                                                                                                              |
 |---------|-----------------------------------------------|---------------|----------------------------------------------------------------------------------------------------------------------|
 | Linux   | `fuser 0.15` (`mount-fuse` feature)           | Production    | Requires `/dev/fuse` readable by the runtime user; needs `fusermount` (libfuse) on `$PATH`, or root.                 |
-| Windows | `winfsp 0.10` (`mount-winfsp` feature)        | Production    | WinFsp runtime must be installed (Chocolatey: `choco install winfsp`). Without the feature, falls back to launcher.  |
+| Windows | `dokan 0.3.1` / Dokany2 (`mount-winfsp` feature) | Production | Dokany2 runtime must be installed (Chocolatey: `choco install dokany2 -y`). Without the feature, falls back to launcher. Selected over `winfsp` because the latter is GPL-3.0 (rejected by `deny.toml`). |
 | macOS   | `sshfs` shell-out + macFUSE                   | **Deprecated**| macFUSE upstream is unstable; FSKit-based replacement is post-1.0. SSH connection is **not shared** with spt sessions.|
 | Other   | n/a                                           | Unsupported   | Returns `ExitCode::UnsupportedPlatform` (10).                                                                        |
 
@@ -95,17 +95,31 @@ translation table.
 Live FUSE tests run with `SPT_FUSE_LIVE=1` on a Linux runner with
 `/dev/fuse` accessible and `libfuse-dev` installed.
 
-## Windows: WinFsp
+## Windows: Dokany2
 
-The Windows backend uses the `winfsp 0.10` Rust binding. Without the
-`mount-winfsp` cargo feature the build falls back to a launcher shell-out
-that surfaces a clean `UnsupportedPlatform` diagnostic if the WinFsp
-launcher isn't present.
+The Windows backend uses the `dokan 0.3.1+dokan206` Rust crate (MIT) over
+the Dokany2 native runtime (LGPL-3.0, distributed as a separate DLL —
+LGPL-compatible). The cargo feature is still named `mount-winfsp` for
+historical reasons; the implementation moved from WinFsp to Dokany2 in
+t7-P2 after `cargo deny` rejected the GPL-3.0-licensed `winfsp` and
+`winfsp-sys` crates.
 
-Install WinFsp via Chocolatey (`choco install winfsp`) on CI runners or
-operator hosts. The Windows backend behaves identically to Linux from
-the `SftpMounter` trait's perspective — handle lifecycle, audit hooks,
-and error categorisation are uniform.
+Without the `mount-winfsp` cargo feature the build falls back to a
+launcher shell-out that surfaces a clean `UnsupportedPlatform`
+diagnostic if no userspace-filesystem runtime is present.
+
+Install the Dokany2 runtime via Chocolatey:
+
+```powershell
+choco install dokany2 -y
+```
+
+This drops `dokan2.dll` plus the kernel-mode driver into the system path
+and sets `DokanLibrary2_LibraryPath_x64` so `dokan-sys/build.rs` links
+the pre-built DLL rather than rebuilding the bundled C source. The
+Windows backend behaves identically to Linux from the `SftpMounter`
+trait's perspective — handle lifecycle, audit hooks, and error
+categorisation are uniform.
 
 ## Audit events
 

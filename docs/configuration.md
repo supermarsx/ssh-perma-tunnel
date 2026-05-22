@@ -293,7 +293,8 @@ validation can warn early; the runtime never produces a PQ-KEX match.
 
 ## `[profiles.auth]` GSSAPI And SSPI
 
-GSSAPI/Kerberos and Windows SSPI/Negotiate auth are explicit config surfaces:
+GSSAPI/Kerberos and Windows SSPI/Negotiate auth are explicit config surfaces
+and are real, end-to-end auth paths over russh as of t7:
 
     [capabilities]
     allow_gssapi = true
@@ -317,10 +318,15 @@ Or on Windows:
     sspi_delegate = false
     sspi_allow_ntlm_fallback = false
 
-Validation enforces the capability gates, delegation policy, and NTLM fallback
-policy. Runtime support is still bounded by backend implementation and returns
-an explicit unsupported-feature diagnostic until Kerberos/SSPI negotiation is
-implemented.
+Validation enforces the capability gates, delegation policy, and NTLM
+fallback policy. Runtime support: Unix uses the vendored `libgssapi 0.9`
+fork at [`vendor/libgssapi-fork/`](../vendor/libgssapi-fork/) which adds
+the missing `gss_get_mic` / `gss_verify_mic` bindings for RFC 4462 §3.5
+MIC-token compatibility with OpenSSH peers. Windows uses the pure-Rust
+`sspi 0.15` Negotiate / Kerberos / NTLM initiator (no ambient SSO —
+credentials must be threaded explicitly or via the
+`SPT_SSPI_USER` / `SPT_SSPI_PASS` / `SPT_SSPI_KDC_URL` environment
+variables). See [Authentication](auth.md) for the runtime details.
 
 ## Profile basics
 
@@ -362,6 +368,46 @@ Dynamic proxy listener:
 
 See [Profiles](profiles.md), [Forwards](forwards.md), and
 [Authentication](auth.md) for the per-profile sub-tables.
+
+### `Forward.link_kind` validation
+
+Each `[[profiles.forwards]]` carries an effective link-kind discriminator
+(derived from `type` + `transport` + `udp_mode`, or set explicitly via
+`link_kind = "local_tcp" | "remote_tcp" | "dynamic_tcp" | "local_uds" |
+"remote_uds" | "local_udp" | "remote_udp"`). `spt config validate`
+rejects link-kind / backend combinations the backend cannot fulfil:
+UDS link kinds on Windows or on SSH3 profiles fail with
+`forward_link_kind_unsupported`. UDP `uds-bridge` mode also requires
+Unix on both ends and is rejected by the validator otherwise. See
+t7-B4 in `.orchestration/plans/t7.md`.
+
+## `[profiles.script]` — scripting hooks
+
+    [profiles.script]
+    path = "/etc/spt/hooks.rhai"
+
+    [profiles.script.hooks]
+    pre_connect      = "before_dial"
+    post_connect     = "after_auth"
+    on_forward_state = "on_forward"
+    on_disconnect    = "after_disconnect"
+    on_event         = "any_event"
+
+    [profiles.script.limits]
+    max_operations  = 1_000_000   # default
+    max_call_levels = 32          # default
+    max_string_size = 65_536      # default
+    max_array_size  = 4_096       # default
+    max_modules     = 0           # default (import disabled)
+
+See [Scripting](scripting.md) for the sandbox semantics, available hook
+event shapes, and a worked example.
+
+## `[profiles.transport.obfuscation]` — obfuscation transports
+
+    [profiles.transport.obfuscation]
+    kind = "obfs4"               # obfs4 | meek-http | websocket | shadowsocks
+    # plus kind-specific fields — see docs/obfuscation.md
 
 ## Reload semantics
 

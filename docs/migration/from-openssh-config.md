@@ -300,7 +300,7 @@ honors it.
 
 | Dimension                          | OpenSSH `ssh -N`                            | spt                                              |
 |------------------------------------|---------------------------------------------|--------------------------------------------------|
-| Cold-start                         | One handshake                                | One handshake (same `libssh2` path)             |
+| Cold-start                         | One handshake                                | One handshake (pure-Rust `russh` backend)       |
 | Memory (single tunnel)             | ~5–8 MiB                                     | ~6–10 MiB (one supervisor for many profiles)    |
 | Reconnect on drop                  | Manual or via `Restart=always`               | Built-in, with backoff                          |
 | Multi-tunnel cost                  | One ssh process per `Host`                   | One supervisor across all profiles              |

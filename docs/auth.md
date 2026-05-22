@@ -45,8 +45,8 @@ failure.
 
 ### Supported signature algorithms
 
-`spt` accepts the modern SSH public-key signature algorithms across both the
-`ssh-key` 0.6 and `russh-keys` 0.46 backends (see
+`spt` accepts the modern SSH public-key signature algorithms via the
+`ssh-key` 0.6 + `russh-keys` 0.46 stack (see
 [`crates/spt-key/docs/algorithms.md`](../crates/spt-key/docs/algorithms.md)
 for the full crypto rationale and implementation matrix):
 
@@ -144,11 +144,26 @@ sspi_delegate = false
 sspi_allow_ntlm_fallback = false
 ```
 
-These methods are now first-class config and diagnostic shapes. They are gated
-by `[capabilities]`; delegation and NTLM fallback require their own explicit
-policy flags. Runtime negotiation is still pending in the SSH2 backend, so a
-profile using these methods returns a clear unsupported-feature error rather
-than falling through to an empty auth method list.
+These methods are real, end-to-end auth paths over russh as of t7. They are
+gated by `[capabilities]`; delegation and NTLM fallback require their own
+explicit policy flags.
+
+* **Unix (`method = "kerberos"` / `"gssapi"`)** — driven by the vendored
+  `libgssapi 0.9` fork under [`vendor/libgssapi-fork/`](../vendor/libgssapi-fork/),
+  which adds `gss_get_mic` / `gss_verify_mic` bindings on top of upstream so
+  the integrity tokens are real RFC 2743 `MIC` tokens (wire-compatible with
+  RFC 4462 §3.5 OpenSSH peers). The Kerberos ticket cache is taken from the
+  ambient KRB5 environment; `KRB5CCNAME` / `gssapi_principal` honoured per
+  MIT KRB5 / Heimdal conventions.
+* **Windows (`method = "sspi"` / `"negotiate"`)** — driven by `sspi 0.15`
+  (pure-Rust Negotiate / Kerberos / NTLM). Because `sspi-rs` does **not**
+  call the OS SSPI subsystem, ambient current-user SSO is not available;
+  thread explicit credentials via supervisor inputs, or via the
+  `SPT_SSPI_USER` / `SPT_SSPI_PASS` / `SPT_SSPI_KDC_URL` environment
+  variables.
+* Token issuance, MIC sign, and MIC verify each fire structured audit
+  events via the optional `AuditHook` (see
+  [Events](events.md) and `crates/spt-auth-sspi/src/audit.rs`).
 
 ## SSH3 bearer token
 

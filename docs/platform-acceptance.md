@@ -38,9 +38,8 @@ Required checks:
   test event writes through `spt observe windows-event install-source`,
   `uninstall-source`, and `test`; non-Windows hosts must return clean
   `UnsupportedPlatform` diagnostics.
-- SSH2 acceptance uses the pure-Rust `russh` backend as the production target.
-  Any `libssh2` run is a legacy migration lane and must be marked separately
-  in reports.
+- SSH2 acceptance uses the pure-Rust `russh` backend — the only SSH2
+  backend (`libssh2` was removed in t7).
 - GSSAPI/Kerberos/SSPI, ML-KEM/PQ KEX,
   SOCKS4/SOCKS4A/SOCKS5/HTTP CONNECT, SFTP, filesystem
   mounts, and Windows drive-letter mounts must each have positive, negative,

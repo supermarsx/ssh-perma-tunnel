@@ -8,7 +8,9 @@
 - macOS x86_64 / aarch64
 - Windows x86_64
 
-The minimum supported Rust version (MSRV) for source builds is 1.83.
+The minimum supported Rust version (MSRV) for source builds is 1.85 (bumped
+from 1.83 during the t7 milestone — see
+[t7 → t8 migration](migration/t7-to-t8.md)).
 
 ## Linux packages
 
@@ -54,22 +56,28 @@ The installer registers the service via SCM. Open an elevated PowerShell:
 
 ### System dependencies
 
-The production SSH2 runtime uses the pure-Rust `russh` backend. The workspace
-still builds the legacy `libssh2` compatibility lane via `libssh2-sys`, so the
-legacy crypto backend is selected per platform:
+The SSH2 runtime is the pure-Rust `russh` crate (the legacy `libssh2`
+compatibility lane was removed in t7). `spt` itself therefore has **no
+native crypto dependency** — Strawberry Perl, libssl-dev, openssl-devel,
+and Homebrew `openssl@3` are **not** required to build `spt` from source.
 
-- **Windows** — uses **WinCNG** (Windows native crypto, BCryptPrimitives).
-  No native dependencies required. In particular, **Strawberry Perl /
-  OpenSSL are not needed**: the workspace deliberately disables the
-  `vendored-openssl` feature on `ssh2` / `async-ssh2-lite` so
-  `libssh2-sys` falls back to its WinCNG path.
-- **Linux** — requires the system **OpenSSL development headers**:
-  - Debian / Ubuntu: `sudo apt install libssl-dev pkg-config`
-  - Fedora / RHEL: `sudo dnf install openssl-devel pkgconfig`
-  - Alpine (musl): `apk add openssl-dev pkgconfig`
-- **macOS** — requires OpenSSL via Homebrew:
-  `brew install openssl@3 pkg-config`. If `cargo build` cannot find
-  OpenSSL, set `OPENSSL_DIR=$(brew --prefix openssl@3)` before building.
+Per-platform notes for optional features:
+
+- **Windows** — the `mount-winfsp` build feature pulls the `dokan` crate
+  (MIT) which links against the system `dokan2.dll`. Install via
+  Chocolatey: `choco install dokany2 -y`. Default builds (without
+  `mount-winfsp`) have no native dependency.
+- **Linux** — the `mount-fuse` build feature pulls `fuser 0.15`, which
+  needs `libfuse` headers at build time (`sudo apt install libfuse-dev`
+  on Debian/Ubuntu; `libfuse3-devel` on Fedora). At runtime the `spt`
+  user needs read access to `/dev/fuse` and `fusermount` on `$PATH`.
+- **macOS** — SFTP mounts shell out to `sshfs` + macFUSE (deprecation
+  warned, see [SFTP](sftp.md)). `brew install --cask macfuse` then
+  `brew install gromgit/fuse/sshfs-mac`.
+- **Unix Kerberos / GSSAPI** — the `gssapi` build feature pulls the
+  vendored `libgssapi` fork (`vendor/libgssapi-fork/`) and links against
+  the system MIT KRB5 or Heimdal GSSAPI library (`libgssapi_krb5` on
+  Linux, the GSS framework on macOS).
 
 The TLS layer used by the SSH3 backend, the remote-config fetcher, and
 all HTTPS event sinks is **rustls** end-to-end (no OpenSSL involvement),

@@ -81,22 +81,24 @@ surfaces, completion support, and exit-code contract.
   SOCKS4/SOCKS4A/SOCKS5/HTTP CONNECT, SFTP, filesystem and Windows drive
   mounts, Windows Event Log, and GPO writes.
 - `[profiles.auth] method = "gssapi" | "kerberos" | "sspi" | "negotiate"`
-  is validated and translated into explicit auth methods. The current SSH2
-  backends return unsupported-feature diagnostics for Kerberos/SSPI runtime
-  negotiation until that transport work is complete.
+  is validated and translated into explicit auth methods. Runtime
+  negotiation is real as of t7 (Unix via vendored `libgssapi`, Windows
+  via `sspi 0.15`); see [Authentication](auth.md).
 - PQ/ML-KEM KEX names in `[profiles.crypto].kex_algorithms` are validated
   behind `allow_post_quantum_kex` and `allow_ml_kem`. Current SSH2 backends
   return explicit unsupported-feature diagnostics for ML-KEM/SNTRUP runtime
   negotiation rather than silently falling back.
 - `spt sftp` requires SSH2 profiles with `[capabilities].allow_sftp = true`.
-  `spt sftp mount|drive` manages `[[profiles.sftp_mounts]]` entries and
-  validates the filesystem/drive/writeback capability gates. The current mount
-  commands store and plan platform helper usage; they do not claim to ship a
-  kernel/FUSE/WinFsp driver.
-- `ssh2_backend = "russh"` is the runtime default. Use
-  `ssh2_backend = "libssh2"` with `allow_libssh2 = true` only for legacy
-  migration cases such as SSH agent auth or multi-hop chains until their russh
-  actor path is complete.
+  `spt sftp mount|drive` manages `[[profiles.sftp_mounts]]` entries and runs
+  the platform helper directly: Linux via `fuser`, Windows via Dokany2,
+  macOS via shell-out to `sshfs` + macFUSE (deprecation-warned). See
+  [SFTP](sftp.md) for the per-OS matrix.
+- The SSH2 backend is the pure-Rust `russh` crate; libssh2 was removed
+  in t7. The deprecated `[capabilities].ssh2_backend` and
+  `[capabilities].allow_libssh2` keys are accepted at load with a
+  one-shot warning and silently ignored at runtime. Run
+  `spt config migrate --to 2` to strip them. See
+  [t7 → t8 migration](migration/t7-to-t8.md).
 - Remote logging supports `syslog_udp`, `syslog_tcp`, `syslog_tls`,
   `https_jsonl`, and `otlp` config kinds. The live writer implementation
   covers the syslog transports and CLI testing/status/drain paths.

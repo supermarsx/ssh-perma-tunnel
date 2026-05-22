@@ -57,23 +57,30 @@ ChaCha20-Poly1305, AES-GCM, AES-CTR, legacy AES-CBC/3DES, and HMAC SHA-2/SHA-1.
 
 1. Config allow-lists for ciphers, KEX, MACs, host keys, and compression.
 2. Deprecated-algorithm warnings in validation, diagnostics, status, and docs.
-3. Explicit unsupported errors for requested PQ KEX and Kerberos/SSPI runtime
-   auth/KEX until the transport backend implements them.
+3. Explicit unsupported errors for requested PQ KEX (ML-KEM / sntrup761)
+   until russh ships the matching engines. Kerberos/SSPI runtime auth is
+   real as of t7.
 
 That means `spt` should not claim Bitvise crypto parity yet. The production
-acceptance item is an algorithm-by-algorithm negotiation suite against a known
-server matrix, split by backend (`russh` production target, `libssh2` legacy).
+acceptance item is an algorithm-by-algorithm negotiation suite against a
+known server matrix on the pure-Rust `russh` backend (the only SSH2 backend
+since t7).
 
 ## Highest-Value Gaps
 
 These are the gaps that matter most if the target is "Bitvise-class tunneling
-and secure file operations" rather than GUI parity:
+and secure file operations" rather than GUI parity. Items struck through were
+delivered in t7:
 
-1. Runtime GSSAPI/Kerberos/SSPI auth and GSSAPI KEX.
+1. ~~Runtime GSSAPI/Kerberos/SSPI auth~~ — landed in t7-A3 / t7-P3.
+   GSSAPI KEX (`gss-group14-sha256` etc.) remains absent in russh 0.46.
 2. Runtime ML-KEM hybrid KEX support in the pure-Rust SSH2 backend.
-3. SFTP recursive/resume/mirror/check-file operations.
-4. Real SFTP mount/drive execution through platform helpers.
-5. FTP-to-SFTP bridge if legacy FTP client support is in scope.
+3. ~~SFTP recursive/resume/mirror/check-file operations~~ — landed in t6-e4.
+4. ~~Real SFTP mount/drive execution through platform helpers~~ — landed in
+   t7-A5 (Linux FUSE), t7-P2 (Windows Dokany2). macOS sshfs remains the
+   deprecation-warned path; FSKit deferred.
+5. ~~FTP-to-SFTP bridge if legacy FTP client support is in scope~~ — landed
+   in t6-e6; AUTH-TLS in-place upgrade landed in t7-A8.
 6. Algorithm-by-algorithm SSH2 crypto acceptance tests.
 
 ## Deliberate Non-Goals Unless Scope Changes

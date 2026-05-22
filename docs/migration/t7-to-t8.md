@@ -30,6 +30,23 @@ deprecated keys, and leaves every other field untouched.
 * SFTP, multi-hop, UDS forwarding, and dynamic SOCKS/HTTP proxy listeners
   all run on russh. Multi-hop no longer needs the loopback socketpair
   trick (russh accepts any `AsyncRead+AsyncWrite` transport).
+* `rhai` scripting, `obfs4` / meek-http / ssh-over-websocket transports,
+  SFTP mount session loops (Linux FUSE, Windows Dokany2, macOS sshfs),
+  and the FTP→SFTP translator's RFC 4217 AUTH TLS in-place upgrade are
+  all real (no longer contract-enforcing stubs).
+
+## MSRV bump
+
+The workspace MSRV moved from Rust 1.83 to **Rust 1.85** during t7 to
+accommodate `sspi 0.15.12` and a handful of `cargo update` transitives
+that the lifted "no `cargo update`" policy pulled in. Source builds now
+require:
+
+    rustup install 1.85.0
+    rustup default 1.85.0
+
+`rust-toolchain.toml` is pinned to channel `1.85` so toolchain-managed
+builds pick the right version automatically.
 
 ## Algorithm parity
 

@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/Mariana/ssh-perma-tunnel/actions/workflows/ci.yml/badge.svg?style=flat-square)](https://github.com/Mariana/ssh-perma-tunnel/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg?style=flat-square)](license.md)
-[![Built with Rust 1.83+](https://img.shields.io/badge/built_with-Rust_1.83+-dea584?logo=rust&logoColor=white&style=flat-square)](rust-toolchain.toml)
+[![Built with Rust 1.85+](https://img.shields.io/badge/built_with-Rust_1.85+-dea584?logo=rust&logoColor=white&style=flat-square)](rust-toolchain.toml)
 
 A single Rust command-line tool, `spt`, that establishes and maintains
 **permanent SSH tunnels** — local and reverse port forwards that survive
@@ -11,9 +11,36 @@ operational drift.
 
 `spt` ships:
 
-- SSH2 transport via the pure-Rust `russh` backend by default, with a legacy
-  `libssh2` compatibility lane, plus experimental SSH3 over QUIC + HTTP/3.
-- Local and remote TCP forwards everywhere; UDP forwards over SSH3.
+- SSH2 transport via the pure-Rust `russh` backend — the only SSH2
+  implementation (`libssh2` was removed in t7). Experimental SSH3 over
+  QUIC + HTTP/3 also available.
+- Local TCP, remote TCP, and dynamic (SOCKS4 / SOCKS4A / SOCKS5 / HTTP
+  CONNECT) forwards.
+- UDP forwarding with `tcp-framed` (default) and `uds-bridge` modes.
+- Server-side UNIX-socket forwarding (`direct-streamlocal@openssh.com`).
+- Multi-hop jump-proxy chains (`-J user@host[,...]`) over native russh
+  channels — no socketpair indirection.
+- Full **SFTP** suite: `cat`, `tail`, `chmod`, `symlink`, `readlink`,
+  `realpath`, recursive `put` / `get` with `--resume`, BPS cap, and
+  SHA-256 checksum verification.
+- **SFTP-as-drive mount** — Linux via `fuser` (FUSE), Windows via Dokany2,
+  macOS via the deprecation-warned `sshfs` + macFUSE shell-out.
+- **FTP→SFTP translator** with real RFC 4217 AUTH TLS in-place upgrade.
+- **Scripting hooks** via the sandboxed `rhai 1.19` engine — five
+  entry-points (`pre_connect`, `post_connect`, `on_forward_state`,
+  `on_disconnect`, `on_event`), `eval`/`import` disabled, fresh `Scope`
+  per invocation.
+- **Portable mode** (`--portable`): single-binary, no OS install, no
+  user-directory or keychain side-effects.
+- **SSPI / GSSAPI / Kerberos / NTLM** authentication — Windows via
+  `sspi 0.15`, Unix via the vendored `libgssapi 0.9` fork (RFC 4462
+  `gssapi-with-mic`).
+- Full public-key matrix: Ed25519, ECDSA P-256/P-384/P-521,
+  RSA-SHA2-256/512 (legacy `ssh-rsa` SHA-1 rejected by default).
+- **TOTP / 2FA** keyboard-interactive auth (RFC 6238 SHA-1/256/512).
+- **Obfuscation transports**: obfs4 (NTOR-style X25519 handshake),
+  meek-http (HTTPS domain-fronting), ssh-over-websocket (RFC 6455),
+  ssh-over-shadowsocks (AEAD-2022 + BLAKE3 KDF).
 - A built-in transparent **DNS resolver** with split-horizon, SRV
   synthesis, and managed-block hosts-file integration.
 - An encrypted **secret vault** (AES-256-GCM + Argon2id) and OS keychain
@@ -49,7 +76,7 @@ per-OS notes.
 
 ### From source
 
-Requires Rust 1.83 (pinned by `rust-toolchain.toml`).
+Requires Rust 1.85 (pinned by `rust-toolchain.toml`).
 
 ```sh
 cargo build --release -p spt-bin
@@ -85,13 +112,17 @@ backend, and split-horizon DNS.
 - [Profiles](docs/profiles.md), [Forwards](docs/forwards.md),
   [Authentication](docs/auth.md), [Trust](docs/trust.md),
   [Secrets](docs/secrets.md).
+- [SFTP](docs/sftp.md), [Obfuscation](docs/obfuscation.md),
+  [Scripting](docs/scripting.md).
 - [Service Integration](docs/service-integration.md),
   [DNS](docs/dns.md), [Firewall](docs/firewall.md),
   [Observability](docs/observability.md), [Events](docs/events.md).
 - [Diagnostics](docs/diagnostics.md), [Benchmarking](docs/benchmarking.md),
   [MCP](docs/mcp.md), [TUI](docs/tui.md), [SSH3](docs/ssh3.md),
   [Remote Config](docs/remote-config.md).
-- [Security](docs/security.md), [Troubleshooting](docs/troubleshooting.md).
+- [Security](docs/security.md), [Troubleshooting](docs/troubleshooting.md),
+  [Production Readiness](docs/production_readiness.md).
+- Migration: [t7 → t8](docs/migration/t7-to-t8.md).
 
 The full specification lives at [`spec.md`](spec.md).
 
