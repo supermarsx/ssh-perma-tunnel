@@ -1,0 +1,6 @@
+{
+  "_comment": "t8-A4 placeholder for RFC 4462 §3.5 GSSAPI MIC vectors. Currently EMPTY because no live KDC was available to the executor. Populate from a real `KRB5_TRACE` capture (see vendor/libgssapi-fork/libgssapi/tests/mic_vectors.rs for the capture procedure).",
+  "_schema_version": 1,
+  "_source": "RFC 4462 §3.5 + RFC 2743 §1.2.1.2 (gss_get_mic / gss_verify_mic)",
+  "vectors": []
+}

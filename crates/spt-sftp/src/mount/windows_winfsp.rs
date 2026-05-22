@@ -424,6 +424,54 @@ impl SftpMounter for WinFsMounter {
 #[cfg(all(windows, feature = "mount-winfs"))]
 const DEFAULT_FILE_INDEX: u64 = 1;
 
+/// t8-A2: render a `catch_unwind` payload as a human-readable string.
+///
+/// Shared utility for the Dokan callback panic-recovery boundary. The
+/// `Box<dyn Any + Send>` returned by [`std::panic::catch_unwind`] is the
+/// raw panic payload — almost always `String` or `&'static str`; anything
+/// else falls through to a stable marker.
+#[cfg(all(windows, feature = "mount-winfs"))]
+fn panic_string(p: &Box<dyn std::any::Any + Send>) -> String {
+    if let Some(s) = p.downcast_ref::<String>() {
+        return s.clone();
+    }
+    if let Some(s) = p.downcast_ref::<&'static str>() {
+        return (*s).to_string();
+    }
+    "(non-string panic payload)".to_string()
+}
+
+/// t8-A2: catch a panic crossing the Dokan callback boundary.
+///
+/// Dokan callbacks run on the kernel-driver IPC threads. The
+/// `runtime.block_on(async {…})` futures they call into are user-supplied
+/// (`russh-sftp` + `Arc<SftpClient>`); a panic inside one of those would
+/// otherwise unwind through Dokan's C callback dispatcher and abort the
+/// mount thread (and depending on workspace `panic` setting, the whole
+/// process). We catch here, log via `tracing::error!`, and surface as
+/// `STATUS_INTERNAL_ERROR` — Windows applications see a clean I/O failure
+/// on the mounted path and the supervisor stays up.
+#[cfg(all(windows, feature = "mount-winfs"))]
+fn catch_dokan_callback<T>(
+    label: &'static str,
+    f: impl FnOnce() -> OperationResult<T>,
+) -> OperationResult<T> {
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+    match catch_unwind(AssertUnwindSafe(f)) {
+        Ok(r) => r,
+        Err(panic) => {
+            let msg = panic_string(&panic);
+            tracing::error!(
+                target = "spt_sftp::mount::dokan",
+                callback = label,
+                panic = %msg,
+                "dokan callback panicked across the FFI boundary; replying STATUS_INTERNAL_ERROR",
+            );
+            Err(STATUS_INTERNAL_ERROR)
+        }
+    }
+}
+
 #[cfg(all(windows, feature = "mount-winfs"))]
 fn ntstatus_for(err: &SftpError) -> i32 {
     match err {
@@ -584,6 +632,9 @@ impl<'c, 'h: 'c> FileSystemHandler<'c, 'h> for DokanSftpFs {
         _create_options: u32,
         info: &mut OperationInfo<'c, 'h, Self>,
     ) -> OperationResult<CreateFileInfo<Self::Context>> {
+        // t8-A2: chokepoint panic-recovery boundary.
+        let is_dir_hint = info.is_dir();
+        catch_dokan_callback("create_file", || {
         // `dokan_sys::win32::FILE_CREATE` / `FILE_OPEN` / `FILE_OPEN_IF` /
         // `FILE_OVERWRITE` / `FILE_OVERWRITE_IF` / `FILE_SUPERSEDE` map to
         // the NT create dispositions. We care about three classes:
@@ -598,7 +649,6 @@ impl<'c, 'h: 'c> FileSystemHandler<'c, 'h> for DokanSftpFs {
         const FILE_OVERWRITE_IF: u32 = 5;
 
         let path = to_remote_path(&self.remote_root, file_name);
-        let is_dir_hint = info.is_dir();
         let meta = self.fetch_meta(&path);
 
         let exists = meta.is_ok();
@@ -659,6 +709,7 @@ impl<'c, 'h: 'c> FileSystemHandler<'c, 'h> for DokanSftpFs {
             is_dir,
             new_file_created,
         })
+        })
     }
 
     fn cleanup(
@@ -700,6 +751,11 @@ impl<'c, 'h: 'c> FileSystemHandler<'c, 'h> for DokanSftpFs {
         _info: &OperationInfo<'c, 'h, Self>,
         context: &'c Self::Context,
     ) -> OperationResult<u32> {
+        // t8-A2: chokepoint panic-recovery boundary. A panic inside the
+        // SFTP read future (codec, transport, …) surfaces as
+        // `STATUS_INTERNAL_ERROR` rather than aborting the Dokan
+        // kernel-IO thread.
+        catch_dokan_callback("read_file", || {
         if offset < 0 {
             return Err(STATUS_INVALID_PARAMETER);
         }
@@ -744,6 +800,7 @@ impl<'c, 'h: 'c> FileSystemHandler<'c, 'h> for DokanSftpFs {
             }
             Err(e) => Err(ntstatus_for(&e)),
         }
+        })
     }
 
     fn write_file(
@@ -754,6 +811,8 @@ impl<'c, 'h: 'c> FileSystemHandler<'c, 'h> for DokanSftpFs {
         info: &OperationInfo<'c, 'h, Self>,
         context: &'c Self::Context,
     ) -> OperationResult<u32> {
+        // t8-A2: chokepoint panic-recovery boundary; see `read_file`.
+        catch_dokan_callback("write_file", || {
         if self.readonly {
             return Err(STATUS_MEDIA_WRITE_PROTECTED);
         }
@@ -789,6 +848,7 @@ impl<'c, 'h: 'c> FileSystemHandler<'c, 'h> for DokanSftpFs {
             Ok(()) => Ok(written),
             Err(e) => Err(ntstatus_for(&e)),
         }
+        })
     }
 
     fn flush_file_buffers(
@@ -808,8 +868,11 @@ impl<'c, 'h: 'c> FileSystemHandler<'c, 'h> for DokanSftpFs {
         _info: &OperationInfo<'c, 'h, Self>,
         context: &'c Self::Context,
     ) -> OperationResult<FileInfo> {
-        let meta = self.fetch_meta(&context.path).map_err(|e| ntstatus_for(&e))?;
-        Ok(self.file_info_from_meta(&context.path, &meta))
+        // t8-A2: panic-recovery boundary.
+        catch_dokan_callback("get_file_information", || {
+            let meta = self.fetch_meta(&context.path).map_err(|e| ntstatus_for(&e))?;
+            Ok(self.file_info_from_meta(&context.path, &meta))
+        })
     }
 
     fn find_files(
@@ -819,6 +882,9 @@ impl<'c, 'h: 'c> FileSystemHandler<'c, 'h> for DokanSftpFs {
         _info: &OperationInfo<'c, 'h, Self>,
         context: &'c Self::Context,
     ) -> OperationResult<()> {
+        // t8-A2: panic-recovery boundary; readdir codec panics surface
+        // as `STATUS_INTERNAL_ERROR`, not a process abort.
+        catch_dokan_callback("find_files", || {
         if !context.is_dir {
             return Err(STATUS_NOT_A_DIRECTORY);
         }
@@ -858,6 +924,7 @@ impl<'c, 'h: 'c> FileSystemHandler<'c, 'h> for DokanSftpFs {
             }
         }
         Ok(())
+        })
     }
 
     fn delete_file(
@@ -907,15 +974,18 @@ impl<'c, 'h: 'c> FileSystemHandler<'c, 'h> for DokanSftpFs {
         _info: &OperationInfo<'c, 'h, Self>,
         context: &'c Self::Context,
     ) -> OperationResult<()> {
-        if self.readonly {
-            return Err(STATUS_MEDIA_WRITE_PROTECTED);
-        }
-        let to = to_remote_path(&self.remote_root, new_file_name);
-        let from = context.path.clone();
-        let sftp = self.sftp.clone();
-        self.runtime
-            .block_on(async move { sftp.rename(from, to).await })
-            .map_err(|e| ntstatus_for(&e))
+        // t8-A2: panic-recovery boundary.
+        catch_dokan_callback("move_file", || {
+            if self.readonly {
+                return Err(STATUS_MEDIA_WRITE_PROTECTED);
+            }
+            let to = to_remote_path(&self.remote_root, new_file_name);
+            let from = context.path.clone();
+            let sftp = self.sftp.clone();
+            self.runtime
+                .block_on(async move { sftp.rename(from, to).await })
+                .map_err(|e| ntstatus_for(&e))
+        })
     }
 
     fn set_end_of_file(
@@ -1028,6 +1098,82 @@ mod tests {
         let handle = MountHandle::new("C:/mnt/spt-test".into(), "windows-dokan");
         mounter.umount(handle.clone()).expect("umount-1");
         mounter.umount(handle).expect("umount-2");
+    }
+
+    // ─────── t8-A2: panic-recovery boundary tests (Dokan callbacks) ───
+    //
+    // Exercises `catch_dokan_callback` directly — spinning up a live
+    // Dokan session to panic from inside a kernel-attached callback is
+    // impractical, so we verify the helper contract in isolation and
+    // trust the wrap (used at six sites: create_file, read_file,
+    // write_file, get_file_information, find_files, move_file).
+    //
+    /// `panic_string` extracts both `String` and `&'static str` payloads.
+    #[cfg(feature = "mount-winfs")]
+    #[test]
+    fn panic_string_handles_common_payloads() {
+        let s_payload: Box<dyn std::any::Any + Send> = Box::new(String::from("dokan boom"));
+        assert_eq!(panic_string(&s_payload), "dokan boom");
+        let static_payload: Box<dyn std::any::Any + Send> = Box::new("static dokan");
+        assert_eq!(panic_string(&static_payload), "static dokan");
+        let other: Box<dyn std::any::Any + Send> = Box::new(0_i64);
+        assert_eq!(panic_string(&other), "(non-string panic payload)");
+    }
+
+    /// Normal returns pass through unchanged.
+    #[cfg(feature = "mount-winfs")]
+    #[test]
+    fn catch_dokan_callback_passes_through_ok() {
+        let v = catch_dokan_callback("get_file_information", || Ok::<u32, i32>(7)).expect("ok");
+        assert_eq!(v, 7);
+    }
+
+    /// Structured `OperationResult::Err` values pass through unchanged —
+    /// no false positives on real NTSTATUS failures.
+    #[cfg(feature = "mount-winfs")]
+    #[test]
+    fn catch_dokan_callback_passes_through_err() {
+        let err =
+            catch_dokan_callback::<()>("create_file", || Err(STATUS_OBJECT_NAME_NOT_FOUND))
+                .expect_err("err");
+        assert_eq!(err, STATUS_OBJECT_NAME_NOT_FOUND);
+    }
+
+    /// A panic inside the wrapped closure surfaces as
+    /// `STATUS_INTERNAL_ERROR` — the documented "I/O error" NTSTATUS the
+    /// Dokan kernel passes back to userspace, never an abort.
+    #[cfg(feature = "mount-winfs")]
+    #[test]
+    fn dokan_get_file_info_panic_returns_internal_error_not_abort() {
+        let err = catch_dokan_callback::<FileInfo>("get_file_information", || {
+            panic!("simulated codec panic")
+        })
+        .expect_err("panic must surface as Err");
+        assert_eq!(
+            err, STATUS_INTERNAL_ERROR,
+            "panic must surface as STATUS_INTERNAL_ERROR, got {err:#x}",
+        );
+    }
+
+    /// `read_file` callback panic-recovery — same contract, different
+    /// label. The label is logged via `tracing::error!`; this test
+    /// verifies the NTSTATUS contract.
+    #[cfg(feature = "mount-winfs")]
+    #[test]
+    fn dokan_read_file_panic_returns_internal_error() {
+        let err = catch_dokan_callback::<u32>("read_file", || panic!("offset oob"))
+            .expect_err("panic");
+        assert_eq!(err, STATUS_INTERNAL_ERROR);
+    }
+
+    /// Static-literal panic payloads are extracted and logged (the log
+    /// is best-effort; here we just confirm the NTSTATUS surface).
+    #[cfg(feature = "mount-winfs")]
+    #[test]
+    fn dokan_callback_static_str_panic_returns_internal_error() {
+        let err = catch_dokan_callback::<()>("write_file", || panic!("literal write panic"))
+            .expect_err("panic");
+        assert_eq!(err, STATUS_INTERNAL_ERROR);
     }
 
     /// Path translation: ensures Win-style separators reach the SFTP

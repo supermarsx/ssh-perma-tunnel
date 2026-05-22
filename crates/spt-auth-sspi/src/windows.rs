@@ -13,6 +13,7 @@
 //! one common to every real RFC 4462 implementation.
 
 use std::env;
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::{Arc, Mutex};
 
 use sspi::ntlm::NtlmConfig;
@@ -22,10 +23,56 @@ use sspi::{
     SecurityStatus, Sspi, SspiImpl, Username,
 };
 
-use spt_core::{Error, Result};
+use spt_core::{Diagnostic, Error, Result};
 
 use crate::audit::AuditEvent;
 use crate::{AuditHook, GssOutput, GssProvider, SspiConfig};
+
+/// t8-A2: render a `catch_unwind` payload as a human-readable string.
+///
+/// The `Box<dyn Any + Send>` returned by [`std::panic::catch_unwind`] is the
+/// raw panic payload — usually a `String` (from `panic!("{}", …)`) or a
+/// `&'static str` (from `panic!("literal")`). Custom panic types fall
+/// through to a stable marker. Kept private so each FFI module owns its
+/// own helper.
+fn panic_string(p: &Box<dyn std::any::Any + Send>) -> String {
+    if let Some(s) = p.downcast_ref::<String>() {
+        return s.clone();
+    }
+    if let Some(s) = p.downcast_ref::<&'static str>() {
+        return (*s).to_string();
+    }
+    "(non-string panic payload)".to_string()
+}
+
+/// t8-A2: run `f` and convert a panic crossing the SSPI FFI boundary into a
+/// structured [`Error::AuthFailedDiagnostic`].
+///
+/// The pure-Rust `sspi` crate is *mostly* memory-safe, but it parses
+/// untrusted-but-server-blessed token bytes from the wire and contains
+/// `unwrap` paths in deeper helpers (`SecurityStatus` conversion, ASN.1
+/// decoders, …). A panic from one of those would otherwise unwind through
+/// the calling task and — depending on the workspace's `panic = "abort"`
+/// setting — kill the supervisor. We catch here.
+fn catch_sspi_ffi<T>(label: &str, f: impl FnOnce() -> T) -> Result<T> {
+    catch_unwind(AssertUnwindSafe(f)).map_err(|panic| {
+        let msg = panic_string(&panic);
+        Error::auth_failed(
+            Diagnostic::what(format!(
+                "SSPI {label} panicked across the FFI boundary"
+            ))
+            .why(msg)
+            .how_to_fix(
+                "An sspi-rs call into pure-Rust SSPI panicked. Verify the SSPI \
+                 package handle is valid and the credential/token buffers are not \
+                 concurrently aliased. If reproducible, capture the offending \
+                 token via SPT_LOG=spt_auth_sspi=trace and report at the \
+                 spt-perma-tunnel repo.",
+            )
+            .build(),
+        )
+    })
+}
 
 /// Explicit credentials threaded into the SSPI initiator.
 ///
@@ -213,7 +260,14 @@ impl GssProvider for SspiProvider {
                 .lock()
                 .map_err(|_| Error::AuthFailed("sspi: context mutex poisoned".into()))?;
             let target_owned = target.to_owned();
-            match &mut *ctx {
+            // t8-A2: wrap the SSPI `initialize_security_context` call(s) in
+            // `catch_unwind` so a panic inside `sspi-rs` (e.g. malformed
+            // KRB5 token blob from a hostile peer) returns a clean
+            // `Error::AuthFailedDiagnostic` instead of aborting the process.
+            // The `??` unwraps both layers: outer `Result` is the panic
+            // catcher, inner is the sspi-rs result.
+            catch_sspi_ffi("initialize_security_context", || -> Result<SecurityStatus> {
+            Ok(match &mut *ctx {
                 SspiContext::Kerberos(boxed) => {
                     let (k, creds) = (&mut boxed.0, &mut boxed.1);
                     let mut builder = k
@@ -265,7 +319,8 @@ impl GssProvider for SspiProvider {
                         .map_err(|e| map_sspi_err(&e))?;
                     result.status
                 }
-            }
+            })
+            })??
         };
 
         let complete = matches!(
@@ -307,11 +362,17 @@ impl GssProvider for SspiProvider {
                 SecurityBufferRef::data_buf(&mut msg),
                 SecurityBufferRef::token_buf(&mut tok),
             ];
-            match &mut *ctx {
-                SspiContext::Kerberos(boxed) => boxed.0.verify_signature(&mut bufs, 0),
-                SspiContext::Negotiate(boxed) => boxed.0.verify_signature(&mut bufs, 0),
-                SspiContext::Ntlm(boxed) => boxed.0.verify_signature(&mut bufs, 0),
-            }
+            // t8-A2: wrap `verify_signature` in `catch_unwind`. A panic in
+            // the sspi-rs HMAC verify path is otherwise an integrity-check
+            // bypass risk — we want a hard `auth_failed` diagnostic, not a
+            // process abort that the supervisor may interpret as a crash.
+            catch_sspi_ffi("verify_signature", || {
+                match &mut *ctx {
+                    SspiContext::Kerberos(boxed) => boxed.0.verify_signature(&mut bufs, 0),
+                    SspiContext::Negotiate(boxed) => boxed.0.verify_signature(&mut bufs, 0),
+                    SspiContext::Ntlm(boxed) => boxed.0.verify_signature(&mut bufs, 0),
+                }
+            })?
         };
         match result {
             Ok(_) => {
@@ -346,11 +407,16 @@ impl GssProvider for SspiProvider {
                 SecurityBufferRef::data_buf(&mut msg),
                 SecurityBufferRef::token_buf(&mut tok),
             ];
-            match &mut *ctx {
-                SspiContext::Kerberos(boxed) => boxed.0.make_signature(0, &mut bufs, 0),
-                SspiContext::Negotiate(boxed) => boxed.0.make_signature(0, &mut bufs, 0),
-                SspiContext::Ntlm(boxed) => boxed.0.make_signature(0, &mut bufs, 0),
-            }
+            // t8-A2: catch_unwind across `make_signature`. Same rationale
+            // as `verify_signature` — a panic here must not abort the
+            // process; surface a clean auth-failed diagnostic instead.
+            catch_sspi_ffi("make_signature", || {
+                match &mut *ctx {
+                    SspiContext::Kerberos(boxed) => boxed.0.make_signature(0, &mut bufs, 0),
+                    SspiContext::Negotiate(boxed) => boxed.0.make_signature(0, &mut bufs, 0),
+                    SspiContext::Ntlm(boxed) => boxed.0.make_signature(0, &mut bufs, 0),
+                }
+            })?
         };
         result.map_err(|e| map_sspi_err(&e))?;
         // `tok` may be over-allocated; trim any all-zero trailing padding
@@ -410,4 +476,78 @@ pub fn build_ntlm(cfg: &SspiConfig) -> Result<Box<dyn GssProvider>> {
         )
     })?;
     Ok(Box::new(SspiProvider::new_ntlm(cfg, &creds)?))
+}
+
+// ============================================================================
+// t8-A2: panic-recovery boundary tests for the SSPI FFI helper.
+//
+// Exercises the boundary contract directly — a panic crossing the
+// `catch_sspi_ffi` wrapper surfaces as `Error::AuthFailedDiagnostic`,
+// never as a process abort. Doesn't require a live SSPI handle.
+// ============================================================================
+
+#[cfg(test)]
+mod boundary_tests {
+    use super::*;
+    use spt_core::ExitCode;
+
+    /// `panic_string` extracts both `String` and `&'static str` panic
+    /// payloads; anything else falls through to a stable marker.
+    #[test]
+    fn panic_string_handles_common_payloads() {
+        let s_payload: Box<dyn std::any::Any + Send> =
+            Box::new(String::from("sspi exploded"));
+        assert_eq!(panic_string(&s_payload), "sspi exploded");
+        let static_payload: Box<dyn std::any::Any + Send> = Box::new("literal");
+        assert_eq!(panic_string(&static_payload), "literal");
+        let weird: Box<dyn std::any::Any + Send> = Box::new(123_i32);
+        assert_eq!(panic_string(&weird), "(non-string panic payload)");
+    }
+
+    /// Normal returns pass through unchanged — no false-positive auth
+    /// failures.
+    #[test]
+    fn catch_sspi_ffi_passes_through_normal_returns() {
+        let v = catch_sspi_ffi("initialize_security_context", || "ok").expect("no panic");
+        assert_eq!(v, "ok");
+    }
+
+    /// A panic inside the wrapped closure surfaces as
+    /// `Error::AuthFailedDiagnostic` carrying the panic payload — never an
+    /// abort.
+    #[test]
+    fn sspi_initialize_panic_surfaces_as_auth_failed_diagnostic() {
+        let err = catch_sspi_ffi("initialize_security_context", || -> u32 {
+            panic!("malformed KRB5 AP_REP token")
+        })
+        .expect_err("panic must surface as Error");
+        assert_eq!(err.exit_code(), ExitCode::AuthFailed);
+        let d = err.diagnostic().expect("structured diagnostic");
+        assert!(
+            d.what.contains("initialize_security_context")
+                && d.what.contains("panicked across the FFI boundary"),
+            "boundary marker missing: {}",
+            d.what,
+        );
+        assert!(
+            d.why.as_deref().unwrap().contains("malformed KRB5"),
+            "panic payload not carried: {:?}",
+            d.why,
+        );
+        assert!(
+            d.how_to_fix.as_deref().unwrap().contains("sspi"),
+            "fix-it should mention sspi: {:?}",
+            d.how_to_fix,
+        );
+    }
+
+    /// The label is interpolated into the `what` field so the operator
+    /// knows which sspi call site exploded.
+    #[test]
+    fn catch_sspi_ffi_label_appears_in_diagnostic() {
+        let err = catch_sspi_ffi("verify_signature", || -> u8 { panic!("hmac") })
+            .expect_err("panic");
+        let d = err.diagnostic().expect("structured");
+        assert!(d.what.contains("verify_signature"));
+    }
 }

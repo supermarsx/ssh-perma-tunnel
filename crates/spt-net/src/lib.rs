@@ -8,6 +8,9 @@
 //! * [`sockopts`] — `socket2`/Tokio TCP listener with per-platform options.
 //! * [`uds`] — Unix domain socket listener helper (errors on Windows).
 //! * [`privileged`] — best-effort privileged-port capability check.
+//! * [`diag`] — t8-A2 network-error enrichment helpers (build
+//!   [`spt_core::Error::NetworkUnreachableDiagnostic`] values that carry
+//!   endpoint + retry advice via the A1 `Diagnostic` type).
 
 // Most code is safe; the Windows privileged-port check uses FFI in
 // `privileged::platform`. Allow unsafe at the crate root with a deny-by-default
@@ -17,6 +20,7 @@
 
 pub mod bind;
 pub mod cidr;
+pub mod diag;
 pub mod interfaces;
 pub mod privileged;
 pub mod sockopts;
@@ -27,6 +31,10 @@ pub mod testing;
 
 pub use bind::{resolve_bind, AutoPrefer, BindMode, Family};
 pub use cidr::CidrAcl;
+pub use diag::{
+    classify_io_error, dns_failure, network_unreachable_from_io, network_unreachable_with,
+    NetworkErrorKind,
+};
 pub use interfaces::{list as list_interfaces, Interface};
 pub use privileged::can_bind_privileged_port;
 pub use sockopts::{apply as apply_tcp_options, apply_v6_only, bind_tcp, TcpOptions};

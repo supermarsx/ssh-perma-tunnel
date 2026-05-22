@@ -24,6 +24,7 @@
 //! [`ScriptError::ScriptUnreadable`].
 
 use std::collections::HashSet;
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -233,9 +234,39 @@ impl ScriptEngine {
         // Fresh scope per call. Anything the previous invocation pushed is
         // gone; the only thing in scope is the `event` payload itself.
         let mut scope = rhai::Scope::new();
-        let result: Result<rhai::Dynamic, _> =
-            self.engine
-                .call_fn(&mut scope, &self.ast, fn_name, (payload,));
+        // t8-A2: wrap the rhai FFI boundary in `catch_unwind`. rhai handles
+        // most script-level errors via `Result<…, EvalAltResult>`, but
+        // host-registered callbacks (the operator-supplied `register_fn`
+        // surface — exposed in this engine only at compile-time as the Core
+        // package, but extensible via future audit hooks) can panic. A
+        // panic that crosses the rhai call boundary aborts the process when
+        // the host opts into `-C panic=abort`; we catch it here and surface
+        // a clean `ScriptError::HookFailed` so the supervisor stays up.
+        let result: Result<Result<rhai::Dynamic, Box<rhai::EvalAltResult>>, _> =
+            catch_unwind(AssertUnwindSafe(|| {
+                self.engine
+                    .call_fn(&mut scope, &self.ast, fn_name, (payload,))
+            }));
+        let result: Result<rhai::Dynamic, _> = match result {
+            Ok(r) => r,
+            Err(panic) => {
+                let elapsed = started.elapsed();
+                let msg = panic_string(&panic);
+                let err = ScriptError::HookFailed {
+                    hook: hook.to_string(),
+                    reason: format!(
+                        "panic across the rhai FFI boundary: {msg}. \
+                         Investigate any host-registered functions invoked \
+                         from this hook for stray `unwrap`/`expect`."
+                    ),
+                };
+                if let Ok(mut rec) = self.recorder.lock() {
+                    rec.aborts.push((hook, err.to_string()));
+                }
+                self.audit_sink.on_invoked(hook, elapsed, HookOutcome::Err);
+                return Err(err);
+            }
+        };
 
         match result {
             Ok(_) => {
@@ -281,6 +312,21 @@ impl ScriptEngine {
     #[must_use]
     pub fn limits(&self) -> ScriptLimits {
         self.limits
+    }
+
+    /// Test-only: register a host-side function that, when called from a
+    /// loaded script, panics with the supplied message.
+    ///
+    /// Exists to let `t8-A2` exercise the `catch_unwind` panic-recovery
+    /// boundary inside [`Self::invoke`] without piping a real FFI surface
+    /// (libgssapi / sspi / Dokan / fuser) through the test harness. The
+    /// production engine never registers panicking functions — production
+    /// scripts use the bounded [`rhai::packages::CorePackage`] only.
+    #[cfg(test)]
+    pub(crate) fn register_panic_fn_for_tests(&mut self, name: &str, msg: &'static str) {
+        self.engine.register_fn(name, move || -> rhai::Dynamic {
+            panic!("{msg}")
+        });
     }
 }
 
@@ -344,6 +390,24 @@ fn classify_compile_error(path: &Path, err: &rhai::ParseError) -> ScriptError {
         path: path.to_path_buf(),
         reason: msg,
     }
+}
+
+/// t8-A2: extract a human-readable string from a `catch_unwind` payload.
+///
+/// `std::panic::catch_unwind` returns `Box<dyn Any + Send>` whose concrete
+/// type is either `String` (when the user panicked with `panic!("{}", …)`),
+/// `&'static str` (when the user panicked with a string literal), or
+/// something more exotic (custom panic types). We render the first two
+/// shapes verbatim; everything else falls through to a stable marker
+/// string so the operator-facing diagnostic isn't truncated.
+fn panic_string(p: &Box<dyn std::any::Any + Send>) -> String {
+    if let Some(s) = p.downcast_ref::<String>() {
+        return s.clone();
+    }
+    if let Some(s) = p.downcast_ref::<&'static str>() {
+        return (*s).to_string();
+    }
+    "(non-string panic payload)".to_string()
 }
 
 fn classify_runtime_error(hook: HookName, err: &rhai::EvalAltResult) -> ScriptError {
@@ -521,6 +585,87 @@ mod tests {
         assert!(matches!(err, ScriptError::HookFailed { .. }));
 
         let entries = sink.entries();
+        assert_eq!(entries.len(), 2);
+        match &entries[1] {
+            AuditEntry::Invoked { outcome, .. } => {
+                assert_eq!(*outcome, HookOutcome::Err);
+            }
+            AuditEntry::Loaded { .. } => panic!("expected Invoked entry"),
+        }
+    }
+
+    // ──────── t8-A2: panic-recovery across the rhai FFI boundary ──────
+
+    /// `panic_string` extracts both `String` and `&'static str` payloads.
+    #[test]
+    fn panic_string_handles_common_payloads() {
+        let s_payload: Box<dyn std::any::Any + Send> = Box::new(String::from("boom"));
+        assert_eq!(panic_string(&s_payload), "boom");
+        let static_payload: Box<dyn std::any::Any + Send> = Box::new("static");
+        assert_eq!(panic_string(&static_payload), "static");
+        // Anything else falls through to the placeholder so the operator
+        // diagnostic isn't truncated.
+        let other: Box<dyn std::any::Any + Send> = Box::new(42_u64);
+        assert_eq!(panic_string(&other), "(non-string panic payload)");
+    }
+
+    /// A host-registered callback that panics inside `rhai::Engine::call_fn`
+    /// surfaces as `ScriptError::HookFailed` carrying the panic message —
+    /// the panic does **not** unwind past the engine boundary and abort the
+    /// process.
+    #[test]
+    fn rhai_panic_in_callback_surfaces_as_runtime_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write(&dir, "fn pre(ev) { boom() }\n");
+        let mut eng = ScriptEngine::load(&ScriptConfig {
+            path,
+            hooks: hooks_pre("pre"),
+            limits: ScriptLimits::default(),
+        })
+        .unwrap();
+        eng.register_panic_fn_for_tests("boom", "host callback exploded");
+
+        let err = eng
+            .invoke(HookName::PreConnect, &sample_event())
+            .expect_err("panic must surface as ScriptError");
+        match err {
+            ScriptError::HookFailed { hook, reason } => {
+                assert_eq!(hook, "pre_connect");
+                assert!(
+                    reason.contains("panic across the rhai FFI boundary"),
+                    "expected panic-boundary marker; got: {reason}",
+                );
+                assert!(
+                    reason.contains("host callback exploded"),
+                    "expected panic payload to be carried; got: {reason}",
+                );
+            }
+            other => panic!("expected HookFailed, got {other:?}"),
+        }
+    }
+
+    /// The panicking callback's outcome is reported through the audit sink
+    /// as `HookOutcome::Err` (mirrors the throw-from-script path) — that
+    /// is the operator-visible signal the supervisor uses to count hook
+    /// failures.
+    #[test]
+    fn rhai_panic_records_err_outcome_through_audit_sink() {
+        use crate::audit::{AuditEntry, HookOutcome};
+        let dir = tempfile::tempdir().unwrap();
+        let path = write(&dir, "fn pre(ev) { boom() }\n");
+        let sink = Arc::new(crate::audit::MockAuditSink::new());
+        let mut eng = ScriptEngine::load(&ScriptConfig {
+            path,
+            hooks: hooks_pre("pre"),
+            limits: ScriptLimits::default(),
+        })
+        .unwrap()
+        .with_audit_sink(sink.clone());
+        eng.register_panic_fn_for_tests("boom", "kaboom");
+        let _ = eng.invoke(HookName::PreConnect, &sample_event());
+
+        let entries = sink.entries();
+        // 1 load + 1 invoke.
         assert_eq!(entries.len(), 2);
         match &entries[1] {
             AuditEntry::Invoked { outcome, .. } => {

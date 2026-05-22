@@ -37,6 +37,59 @@ use super::{MountEvent, MountHandle, MountOpts, SftpMounter};
 use crate::client::SftpClient;
 use crate::error::SftpError;
 
+/// t8-A2: render a `catch_unwind` payload as a human-readable string.
+///
+/// Shared utility for the panic-recovery boundary helpers below. The
+/// `Box<dyn Any + Send>` returned by [`std::panic::catch_unwind`] is the
+/// raw panic payload — almost always `String` or `&'static str`; anything
+/// else falls through to a stable marker.
+#[cfg(all(target_os = "linux", feature = "mount-fuse"))]
+fn panic_string(p: &Box<dyn std::any::Any + Send>) -> String {
+    if let Some(s) = p.downcast_ref::<String>() {
+        return s.clone();
+    }
+    if let Some(s) = p.downcast_ref::<&'static str>() {
+        return (*s).to_string();
+    }
+    "(non-string panic payload)".to_string()
+}
+
+/// t8-A2: catch a panic crossing the fuser callback boundary and return a
+/// fallback errno so the kernel sees `EIO` (the documented "I/O error"
+/// reply) rather than the supervisor process aborting.
+///
+/// fuser callbacks run on a dedicated kernel-IO thread. The SFTP futures
+/// they call into are user-supplied (`russh-sftp` + `Arc<SftpClient>`);
+/// a panic inside `block_on(async { … })` would otherwise unwind through
+/// the fuser dispatch loop and tear down the mount. We catch here, log
+/// via `tracing::error!`, and surface as `EIO` — operators see a clean
+/// I/O failure on the mounted path and the supervisor stays up.
+///
+/// The closure takes no arguments; capture whatever it needs by move.
+#[cfg(all(target_os = "linux", feature = "mount-fuse"))]
+fn catch_fuse_callback<T>(
+    label: &'static str,
+    f: impl FnOnce() -> Result<T, SftpError>,
+) -> Result<T, SftpError> {
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+    match catch_unwind(AssertUnwindSafe(f)) {
+        Ok(r) => r,
+        Err(panic) => {
+            let msg = panic_string(&panic);
+            tracing::error!(
+                target = "spt_sftp::mount::fuse",
+                callback = label,
+                panic = %msg,
+                "fuser callback panicked across the FFI boundary; replying EIO",
+            );
+            Err(SftpError::Local {
+                op: "fuse-callback",
+                detail: format!("fuser `{label}` callback panicked: {msg}"),
+            })
+        }
+    }
+}
+
 #[cfg(all(target_os = "linux", feature = "mount-fuse"))]
 use std::collections::HashMap;
 #[cfg(all(target_os = "linux", feature = "mount-fuse"))]
@@ -481,33 +534,44 @@ impl FuseFs {
 #[cfg(all(target_os = "linux", feature = "mount-fuse"))]
 impl Filesystem for FuseFs {
     fn lookup(&mut self, _req: &Request<'_>, parent: u64, name: &OsStr, reply: ReplyEntry) {
-        let Some(parent_path) = self.ino_to_path(parent) else {
-            reply.error(libc::ESTALE);
-            return;
-        };
-        let name_str = match name.to_str() {
-            Some(s) => s,
-            None => {
-                reply.error(libc::EINVAL);
-                return;
+        // t8-A2: chokepoint panic-recovery wrapper. Anything that panics
+        // inside the closure (`block_on(async {…})`, an attribute-cache
+        // double-lock, …) surfaces as `EIO` to the kernel instead of
+        // aborting the FUSE thread.
+        let result = catch_fuse_callback("lookup", || {
+            let parent_path = self.ino_to_path(parent).ok_or(SftpError::NoSuchFile {
+                op: "lookup",
+                path: format!("ino={parent}"),
+            })?;
+            let name_str = name.to_str().ok_or(SftpError::Local {
+                op: "lookup",
+                detail: "non-utf8 name".into(),
+            })?;
+            let full = Self::join(&parent_path, name_str);
+            let sftp = self.sftp.clone();
+            let p = full.clone();
+            let meta = self.handle.block_on(async move { sftp.lstat(p).await })?;
+            let ino = self.alloc_ino(&full);
+            let attr = self.attr_from_meta(ino, &meta);
+            if let Ok(mut c) = self.attr_cache.lock() {
+                c.put(ino, attr);
             }
-        };
-        let full = Self::join(&parent_path, name_str);
-        let sftp = self.sftp.clone();
-        let p = full.clone();
-        let meta = match self.handle.block_on(async move { sftp.lstat(p).await }) {
-            Ok(m) => m,
+            Ok(attr)
+        });
+        match result {
+            Ok(attr) => reply.entry(&ATTR_TTL, &attr, 0),
             Err(e) => {
-                reply.error(errno_for(&e));
-                return;
+                // Map ESTALE back for the inode-table-miss case so the
+                // kernel retries the lookup via the parent — preserves the
+                // pre-t8 semantics.
+                let errno = match &e {
+                    SftpError::NoSuchFile { op, .. } if *op == "lookup" => libc::ESTALE,
+                    SftpError::Local { op, .. } if *op == "lookup" => libc::EINVAL,
+                    other => errno_for(other),
+                };
+                reply.error(errno);
             }
-        };
-        let ino = self.alloc_ino(&full);
-        let attr = self.attr_from_meta(ino, &meta);
-        if let Ok(mut c) = self.attr_cache.lock() {
-            c.put(ino, attr);
         }
-        reply.entry(&ATTR_TTL, &attr, 0);
     }
 
     fn forget(&mut self, _req: &Request<'_>, ino: u64, _nlookup: u64) {
@@ -527,7 +591,11 @@ impl Filesystem for FuseFs {
             reply.error(libc::ESTALE);
             return;
         };
-        match self.cached_or_fetch_attr(ino, &path) {
+        // t8-A2: panic-recovery boundary. A panic inside the cached_or_fetch
+        // path (locked-mutex poison, block_on future panic) surfaces as
+        // `EIO` rather than aborting the fuser thread.
+        let result = catch_fuse_callback("getattr", || self.cached_or_fetch_attr(ino, &path));
+        match result {
             Ok(attr) => reply.attr(&ATTR_TTL, &attr),
             Err(e) => reply.error(errno_for(&e)),
         }
@@ -860,36 +928,41 @@ impl Filesystem for FuseFs {
         let off = offset as u64;
         let want = size as usize;
         let sftp = self.sftp.clone();
-        let result = self.handle.block_on(async move {
-            // Read a window via seek + read. The russh-sftp client gives
-            // us an `AsyncRead + AsyncSeek` file handle.
-            use tokio::io::{AsyncReadExt, AsyncSeekExt};
-            let mut file = sftp.open_for_read(path).await?;
-            if off > 0 {
-                file.seek(std::io::SeekFrom::Start(off))
-                    .await
-                    .map_err(|e| SftpError::Local {
-                        op: "read-seek",
-                        detail: e.to_string(),
-                    })?;
-            }
-            let mut buf = vec![0u8; want];
-            let mut filled = 0;
-            while filled < want {
-                let n = file
-                    .read(&mut buf[filled..])
-                    .await
-                    .map_err(|e| SftpError::Local {
-                        op: "read",
-                        detail: e.to_string(),
-                    })?;
-                if n == 0 {
-                    break;
+        // t8-A2: chokepoint panic-recovery. Any panic inside the SFTP
+        // future (russh transport, codec parser, …) surfaces as `EIO`
+        // instead of aborting the fuser thread.
+        let result = catch_fuse_callback("read", || {
+            self.handle.block_on(async move {
+                // Read a window via seek + read. The russh-sftp client
+                // gives us an `AsyncRead + AsyncSeek` file handle.
+                use tokio::io::{AsyncReadExt, AsyncSeekExt};
+                let mut file = sftp.open_for_read(path).await?;
+                if off > 0 {
+                    file.seek(std::io::SeekFrom::Start(off))
+                        .await
+                        .map_err(|e| SftpError::Local {
+                            op: "read-seek",
+                            detail: e.to_string(),
+                        })?;
                 }
-                filled += n;
-            }
-            buf.truncate(filled);
-            Ok::<_, SftpError>(buf)
+                let mut buf = vec![0u8; want];
+                let mut filled = 0;
+                while filled < want {
+                    let n = file
+                        .read(&mut buf[filled..])
+                        .await
+                        .map_err(|e| SftpError::Local {
+                            op: "read",
+                            detail: e.to_string(),
+                        })?;
+                    if n == 0 {
+                        break;
+                    }
+                    filled += n;
+                }
+                buf.truncate(filled);
+                Ok::<_, SftpError>(buf)
+            })
         });
         match result {
             Ok(data) => reply.data(&data),
@@ -925,18 +998,23 @@ impl Filesystem for FuseFs {
         let bytes = data.to_vec();
         let written = bytes.len() as u32;
         let sftp = self.sftp.clone();
-        let result = self.handle.block_on(async move {
-            use tokio::io::AsyncWriteExt;
-            let mut file = sftp.open_for_resume_write(path, off).await?;
-            file.write_all(&bytes).await.map_err(|e| SftpError::Local {
-                op: "write",
-                detail: e.to_string(),
-            })?;
-            file.shutdown().await.map_err(|e| SftpError::Local {
-                op: "write-close",
-                detail: e.to_string(),
-            })?;
-            Ok::<_, SftpError>(())
+        // t8-A2: chokepoint panic-recovery — see the `read` callback for
+        // the full rationale. A panic in the write-path future never
+        // aborts the fuser thread.
+        let result = catch_fuse_callback("write", || {
+            self.handle.block_on(async move {
+                use tokio::io::AsyncWriteExt;
+                let mut file = sftp.open_for_resume_write(path, off).await?;
+                file.write_all(&bytes).await.map_err(|e| SftpError::Local {
+                    op: "write",
+                    detail: e.to_string(),
+                })?;
+                file.shutdown().await.map_err(|e| SftpError::Local {
+                    op: "write-close",
+                    detail: e.to_string(),
+                })?;
+                Ok::<_, SftpError>(())
+            })
         });
         if let Ok(mut c) = self.attr_cache.lock() {
             c.invalidate(ino);
@@ -998,7 +1076,12 @@ impl Filesystem for FuseFs {
         };
         let sftp = self.sftp.clone();
         let p = path.clone();
-        let entries = match self.handle.block_on(async move { sftp.read_dir(p).await }) {
+        // t8-A2: chokepoint panic-recovery around `read_dir`. A codec
+        // panic on a malformed `SSH_FXP_NAME` packet must not abort the
+        // fuser thread.
+        let entries = match catch_fuse_callback("readdir", || {
+            self.handle.block_on(async move { sftp.read_dir(p).await })
+        }) {
             Ok(e) => e,
             Err(e) => {
                 reply.error(errno_for(&e));
@@ -1081,6 +1164,109 @@ impl FuseFs {
     /// Borrow the configured remote root. Exposed for tests and audit hooks.
     pub fn remote_root(&self) -> &str {
         &self.remote_root
+    }
+}
+
+// ============================================================================
+// t8-A2: panic-recovery boundary tests for the fuser callback helper.
+//
+// We exercise the helper directly because spinning up a live fuser
+// session to provoke a panic in a callback requires the kernel
+// `/dev/fuse` device, root or `user_allow_other`, and a real mountpoint.
+// The helper test verifies the contract — panics surface as
+// `SftpError::Local` (which `errno_for` maps to `EIO`), never abort.
+// ============================================================================
+
+#[cfg(all(test, target_os = "linux", feature = "mount-fuse"))]
+mod boundary_tests {
+    use super::*;
+
+    /// `panic_string` extracts both `String` and `&'static str` payloads.
+    #[test]
+    fn panic_string_handles_common_payloads() {
+        let s_payload: Box<dyn std::any::Any + Send> = Box::new(String::from("fuse panic"));
+        assert_eq!(panic_string(&s_payload), "fuse panic");
+        let static_payload: Box<dyn std::any::Any + Send> = Box::new("static fuse");
+        assert_eq!(panic_string(&static_payload), "static fuse");
+        let other: Box<dyn std::any::Any + Send> = Box::new(99_u8);
+        assert_eq!(panic_string(&other), "(non-string panic payload)");
+    }
+
+    /// `catch_fuse_callback` passes through `Ok` returns unchanged.
+    #[test]
+    fn catch_fuse_callback_passes_through_ok() {
+        let v = catch_fuse_callback("getattr", || Ok::<i32, SftpError>(42)).expect("ok");
+        assert_eq!(v, 42);
+    }
+
+    /// `catch_fuse_callback` passes through structured errors unchanged
+    /// — no false-positive `Local` wrapping for legitimate SFTP errors.
+    #[test]
+    fn catch_fuse_callback_passes_through_structured_err() {
+        let err = catch_fuse_callback("lookup", || {
+            Err::<(), _>(SftpError::NoSuchFile {
+                op: "lookup",
+                path: "/missing".into(),
+            })
+        })
+        .expect_err("err");
+        assert_eq!(errno_for(&err), libc::ENOENT);
+    }
+
+    /// A panic inside the wrapped closure surfaces as `SftpError::Local`
+    /// — `errno_for` maps it to `EIO` which is what the kernel sees on
+    /// the FUSE reply.
+    #[test]
+    fn fuse_lookup_panic_returns_eio_not_abort() {
+        let err = catch_fuse_callback("lookup", || -> Result<(), SftpError> {
+            panic!("simulated codec panic")
+        })
+        .expect_err("panic must surface as Err");
+        // The kernel-facing errno must be EIO so the I/O bubbles up to
+        // userspace, not a process abort.
+        assert_eq!(errno_for(&err), libc::EIO);
+        match err {
+            SftpError::Local { op, detail } => {
+                assert_eq!(op, "fuse-callback");
+                assert!(detail.contains("lookup"), "label missing: {detail}");
+                assert!(
+                    detail.contains("simulated codec panic"),
+                    "panic payload missing: {detail}",
+                );
+            }
+            other => panic!("expected SftpError::Local, got {other:?}"),
+        }
+    }
+
+    /// `read` callback panic-recovery: same contract, different label.
+    #[test]
+    fn fuse_read_panic_returns_eio_not_abort() {
+        let err = catch_fuse_callback("read", || -> Result<Vec<u8>, SftpError> {
+            panic!("offset out of range")
+        })
+        .expect_err("panic");
+        assert_eq!(errno_for(&err), libc::EIO);
+        match err {
+            SftpError::Local { op, detail } => {
+                assert_eq!(op, "fuse-callback");
+                assert!(detail.contains("read"));
+            }
+            other => panic!("expected Local, got {other:?}"),
+        }
+    }
+
+    /// Static-string-literal panics carry through to the diagnostic
+    /// untouched.
+    #[test]
+    fn fuse_callback_preserves_static_str_payload() {
+        let err = catch_fuse_callback("readdir", || -> Result<(), SftpError> {
+            panic!("static-string panic")
+        })
+        .expect_err("panic");
+        let SftpError::Local { detail, .. } = err else {
+            panic!("expected Local");
+        };
+        assert!(detail.contains("static-string panic"), "{detail}");
     }
 }
 

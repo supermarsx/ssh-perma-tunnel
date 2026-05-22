@@ -1,0 +1,30 @@
+{
+  "_comment": "t8-A4 obfs4 self-vectors. The values below are GOLDEN OUTPUTS of crates/spt-obfs/src/obfs4.rs, NOT obfs4proxy-derived. They lock the current implementation's KDF + framing layer against silent regression. See `.orchestration/logs/t8-A4.md` for the wire-compat caveat. To regenerate, see crates/spt-obfs/tests/README.md.",
+  "_schema_version": 1,
+  "ntor_kdf_vectors": [
+    {
+      "name": "kdf_all_ones",
+      "secret_hex": "0909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909090909",
+      "node_id_hex": "0101010101010101010101010101010101010101",
+      "b_pub_hex": "0202020202020202020202020202020202020202020202020202020202020202",
+      "x_pub_hex": "0303030303030303030303030303030303030303030303030303030303030303",
+      "y_pub_hex": "0404040404040404040404040404040404040404040404040404040404040404",
+      "expected_c2s_hex": "627b4c8b3cecca987c5b81a7452ae7567156559a3d04ff3681823e83763cab8c",
+      "expected_s2c_hex": "0443c628bd915248f0d877be0ea5a411e98397abf4632c04172ba2cab9a4656b",
+      "expected_auth_hex": "5c6a00ffa3ba0cd23d0a76b37041dda3dcd3302d466226385d711e962f65e9df"
+    }
+  ],
+  "frame_vectors": [
+    {
+      "name": "frame_zero_nonce_short_payload",
+      "key_hex": "0707070707070707070707070707070707070707070707070707070707070707",
+      "nonce_ctr": 0,
+      "plaintext_hex": "6f626673342073736820706b74",
+      "expected_framed_hex": "000d58e64f7f544b778ea852746bbd97db59e0fca08089d46a1f700ba2f509"
+    }
+  ],
+  "obfs4proxy_interop_vectors": {
+    "_comment": "Reserved for future obfs4proxy-derived vectors. Currently empty because obfs4proxy and our minimal client subset are NOT wire-compatible (see obfs4.rs:17-21). Populate from `obfs4proxy -enableLogging -unsafeLogging` once a capture harness exists.",
+    "vectors": []
+  }
+}
