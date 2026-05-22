@@ -353,20 +353,32 @@ jobs:
           prev_tag=$(git tag --list 'v*' --sort=-version:refname | grep -v "^${TAG}$" | head -n1 || true)
           mkdir -p "dist/${TAG}"
           frag="dist/${TAG}/CHANGELOG-fragment.md"
-          {
-            echo "# spt ${VERSION}"
-            echo
-            if [[ -n "${prev_tag}" ]]; then
-              echo "## Changes since ${prev_tag}"
+          curated="docs/releases/${VERSION}.md"
+          # Prefer a curated docs/releases/<VERSION>.md (dropped by the
+          # close-out commit) over an auto-generated git-log fragment.
+          # Falls back to a synthesised fragment when no curated file
+          # exists. This matches docs/releases/readme.md's authoring
+          # contract.
+          if [[ -f "${curated}" ]]; then
+            echo "::notice::using curated release notes from ${curated}"
+            cp "${curated}" "${frag}"
+          else
+            echo "::warning::no curated docs/releases/${VERSION}.md; synthesising from git log"
+            {
+              echo "# spt ${VERSION}"
               echo
-              git log --pretty=format:"- %s (%h)" "${prev_tag}..HEAD"
-            else
-              echo "## Initial rolling release"
+              if [[ -n "${prev_tag}" ]]; then
+                echo "## Changes since ${prev_tag}"
+                echo
+                git log --pretty=format:"- %s (%h)" "${prev_tag}..HEAD"
+              else
+                echo "## Initial rolling release"
+                echo
+                git log --pretty=format:"- %s (%h)" -n 50
+              fi
               echo
-              git log --pretty=format:"- %s (%h)" -n 50
-            fi
-            echo
-          } >"${frag}"
+            } >"${frag}"
+          fi
           if [[ -f changelog.md ]]; then
             today=$(date -u +%Y-%m-%d)
             { echo "## [${VERSION}] - ${today}"; echo; cat "${frag}"; echo; cat changelog.md; } >changelog.md.new

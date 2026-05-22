@@ -62,7 +62,7 @@ impl ObservabilityDiagnostic {
 
 #[async_trait]
 impl Diagnostic for ObservabilityDiagnostic {
-    fn group(&self) -> &str {
+    fn group(&self) -> &'static str {
         "observability"
     }
 

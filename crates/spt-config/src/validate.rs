@@ -632,13 +632,11 @@ fn check_capabilities(d: &mut Diagnostics, c: &Config) {
         // t7-Phase0: the libssh2 backend was removed; russh is the only
         // SSH2 backend. Old configs continue to load — we emit a single
         // structured deprecation warning and ignore the value at runtime.
-        if !matches!(backend, "russh" | "libssh2") {
+        if matches!(backend, "russh" | "libssh2") {
             d.push(
                 Diagnostic::warning(
                     "capabilities_ssh2_backend_deprecated_t7",
-                    format!(
-                        "capabilities.ssh2_backend `{backend}` is deprecated since t7-Phase0; libssh2 was removed, russh is the only backend (value ignored)"
-                    ),
+                    "capabilities.ssh2_backend is deprecated since t7-Phase0; libssh2 was removed, russh is the only backend (value ignored)",
                 )
                 .at("capabilities.ssh2_backend"),
             );
@@ -646,7 +644,9 @@ fn check_capabilities(d: &mut Diagnostics, c: &Config) {
             d.push(
                 Diagnostic::warning(
                     "capabilities_ssh2_backend_deprecated_t7",
-                    "capabilities.ssh2_backend is deprecated since t7-Phase0; libssh2 was removed, russh is the only backend (value ignored)",
+                    format!(
+                        "capabilities.ssh2_backend `{backend}` is deprecated since t7-Phase0; libssh2 was removed, russh is the only backend (value ignored)"
+                    ),
                 )
                 .at("capabilities.ssh2_backend"),
             );
@@ -1853,7 +1853,7 @@ fn check_forward_link_kind(d: &mut Diagnostics, f: &Forward, prefix: &str) {
 
     // (4) remote_uds — needs the local socket path AND it must be absolute.
     if matches!(link_kind, Some("remote_uds")) {
-        let local = f.local_socket_path.as_deref().map(str::trim).unwrap_or("");
+        let local = f.local_socket_path.as_deref().map_or("", str::trim);
         if local.is_empty() {
             d.push(
                 Diagnostic::error(

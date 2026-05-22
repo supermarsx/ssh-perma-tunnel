@@ -14,7 +14,7 @@
 <package xmlns="http://schemas.microsoft.com/packaging/2015/06/nuspec.xsd">
   <metadata>
     <id>spt</id>
-    <version>0.1.0</version>
+    <version>26.1</version>
     <packageSourceUrl>https://github.com/Mariana/ssh-perma-tunnel/tree/main/packaging/choco</packageSourceUrl>
     <owners>Mariana</owners>
 

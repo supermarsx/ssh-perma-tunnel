@@ -44,7 +44,7 @@ mod tests {
     struct Synth;
     #[async_trait]
     impl BenchmarkDriver for Synth {
-        fn name(&self) -> &str {
+        fn name(&self) -> &'static str {
             "synth"
         }
         fn impact(&self) -> ImpactLevel {
@@ -58,7 +58,7 @@ mod tests {
     struct Prod;
     #[async_trait]
     impl BenchmarkDriver for Prod {
-        fn name(&self) -> &str {
+        fn name(&self) -> &'static str {
             "prod"
         }
         fn impact(&self) -> ImpactLevel {

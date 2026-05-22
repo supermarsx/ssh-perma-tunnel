@@ -10,7 +10,7 @@ param()
 
 $ErrorActionPreference = 'Stop'
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
-$dir = Join-Path $root 'packaging\winget\manifests\m\Mariana\spt\0.1.0'
+$dir = Join-Path $root 'packaging\winget\manifests\m\Mariana\spt\26.1'
 
 if (-not (Test-Path $dir)) {
     Write-Error "missing manifest directory $dir"

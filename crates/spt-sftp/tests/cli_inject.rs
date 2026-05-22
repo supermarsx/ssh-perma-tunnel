@@ -10,7 +10,7 @@
 //! injection could happen.
 //!
 //! What we DO test:
-//!   * NUL bytes in paths are surfaced as protocol errors (russh_sftp
+//!   * NUL bytes in paths are surfaced as protocol errors (`russh_sftp`
 //!     rejects or the backend NoSuchFile-s them).
 //!   * CR/LF in paths are passed through opaquely (not shell-injected).
 //!   * Backslashes / quotes / dollar-signs are treated as literal path
@@ -51,7 +51,7 @@ async fn shell_metachar_in_path_treated_as_literal() {
         // and Err only for protocol failures. Adversarial paths must not
         // panic.
         match res {
-            Ok(false) | Ok(true) => {}
+            Ok(false | true) => {}
             Err(e) => {
                 // SftpError is fine here; we're proving no shell happened.
                 let _ = e;

@@ -28,7 +28,11 @@ also document why the wire shape needed to move.
 
 The `ntor_handshake_obfs4proxy_reference_vector` test is currently
 `#[ignore]`'d because our minimal client is not wire-compatible with
-Yawning Angel's reference. To enable real interop:
+Yawning Angel's reference. `t8-FixObfs4` corrected the framing
+primitive (ChaCha20-Poly1305 → XSalsa20-Poly1305 / NaCl secretbox)
+but the NTOR construction still folds `B` into the HKDF salt rather
+than producing two ECDH outputs and concatenating per spec, so the
+client-hello bytes will still diverge. To enable real interop:
 
 1. Install `obfs4proxy` (`apt install obfs4proxy` on Debian/Ubuntu, or
    `go install gitlab.com/yawning/obfs4.git/obfs4proxy@latest`).
@@ -61,9 +65,10 @@ Yawning Angel's reference. To enable real interop:
 
 Note: enabling this test will fail against the current
 `crates/spt-obfs/src/obfs4.rs` implementation. A wire-compatible
-rewrite of the NTOR construction (full `EXP(B,x) || EXP(Y,x)` mix and
-NaCl `crypto_secretbox` framing) is a prerequisite. That work is **not
-in scope for t8-A4** — see the log for the reported gap.
+rewrite of the NTOR construction (full `EXP(B,x) || EXP(Y,x)` mix —
+the framing now matches per `t8-FixObfs4`) is the remaining
+prerequisite. That work is **not in scope for t8-A4 or t8-FixObfs4** —
+see the logs for the reported gap.
 
 ## libgssapi MIC vectors
 

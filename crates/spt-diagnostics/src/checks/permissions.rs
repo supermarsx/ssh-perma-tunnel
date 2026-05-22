@@ -12,7 +12,7 @@ pub struct PermissionsDiagnostic;
 
 #[async_trait]
 impl Diagnostic for PermissionsDiagnostic {
-    fn group(&self) -> &str {
+    fn group(&self) -> &'static str {
         "permissions"
     }
     async fn run(&self, ctx: &DiagnosticContext) -> Vec<Check> {

@@ -40,7 +40,7 @@ impl Default for McpDiagnostic {
 
 #[async_trait]
 impl Diagnostic for McpDiagnostic {
-    fn group(&self) -> &str {
+    fn group(&self) -> &'static str {
         "mcp"
     }
     async fn run(&self, ctx: &DiagnosticContext) -> Vec<Check> {

@@ -75,7 +75,7 @@ impl DnsDriver {
 
 #[async_trait]
 impl BenchmarkDriver for DnsDriver {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "dns"
     }
     fn impact(&self) -> ImpactLevel {

@@ -46,9 +46,9 @@ curl -fsS http://127.0.0.1:8080/
 Release images are published to GitHub Container Registry:
 
 ```bash
-docker pull ghcr.io/mariana/spt:0.1.0     # pinned (recommended for prod)
+docker pull ghcr.io/mariana/spt:26.1     # pinned (recommended for prod)
 docker pull ghcr.io/mariana/spt:latest    # rolling
-docker pull ghcr.io/mariana/spt:0.1.0-alpine
+docker pull ghcr.io/mariana/spt:26.1-alpine
 ```
 
 Multi-arch manifests cover `linux/amd64` and `linux/arm64`.

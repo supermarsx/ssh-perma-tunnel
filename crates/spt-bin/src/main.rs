@@ -150,8 +150,7 @@ fn map_exit(r: Result<()>) -> ProcExitCode {
             // format via `SPT_DIAGNOSTIC_STYLE=plain`. Legacy `String`-payload
             // variants always keep their original one-line format.
             let style_plain = std::env::var_os("SPT_DIAGNOSTIC_STYLE")
-                .map(|v| v.eq_ignore_ascii_case("plain"))
-                .unwrap_or(false);
+                .is_some_and(|v| v.eq_ignore_ascii_case("plain"));
             if let (false, Some(diag)) = (style_plain, e.diagnostic()) {
                 // Clone the Diagnostic into a miette::Report; this routes
                 // the Display + help() output through miette's

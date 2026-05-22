@@ -71,8 +71,10 @@ operational drift.
 | Windows  | `spt-<version>.msi`                     |
 | Docker   | `ghcr.io/mariana/spt:<version>` (linux/amd64, linux/arm64) — see [`packaging/docker/readme.md`](packaging/docker/readme.md) |
 
-See [`docs/installation.md`](docs/installation.md) for verification and
-per-OS notes.
+`<version>` is the rolling-release `YY.N` string (e.g. `26.1`, `26.2`,
+… `27.1`); the current release is `26.1`. See [Versioning](#versioning)
+below and [`docs/installation.md`](docs/installation.md) for
+verification and per-OS notes.
 
 ### From source
 
@@ -126,6 +128,24 @@ backend, and split-horizon DNS.
 - Migration: [t7 → t8](docs/migration/t7-to-t8.md).
 
 The full specification lives at [`spec.md`](spec.md).
+
+## Versioning
+
+`spt` ships on a **rolling release** model. Versions take the shape
+`YY.N` — two-digit UTC year plus a monotonic counter that resets each
+January 1st (UTC). The current release is `26.1`; the next one will be
+`26.2`, then `26.3`, … rolling into `27.1` when the year ticks over.
+The workspace `Cargo.toml` carries the SemVer-compatible encoding
+`0.YY.N` (e.g. `0.26.1`) because Cargo's TOML parser rejects the bare
+`YY.N` shape; user-facing tags, release titles, docker tags, and
+packaging recipes drop the leading `0.`.
+
+A new release is cut automatically by `.github/workflows/ci.yml`
+whenever the full CI matrix (fmt, clippy, test × 6 platforms, build ×
+6 platforms) and the security audit (cargo-deny + RustSec) are green
+on a push to `main`. See [`releasing.md`](releasing.md) and
+[`docs/releases/`](docs/releases/) for the full automation and per-
+release notes.
 
 ## Security model in brief
 

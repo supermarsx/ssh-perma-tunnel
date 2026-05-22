@@ -20,7 +20,7 @@ pub struct RuntimeDiagnostic;
 
 #[async_trait]
 impl Diagnostic for RuntimeDiagnostic {
-    fn group(&self) -> &str {
+    fn group(&self) -> &'static str {
         "runtime"
     }
     async fn run(&self, ctx: &DiagnosticContext) -> Vec<Check> {

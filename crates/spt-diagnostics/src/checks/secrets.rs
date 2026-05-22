@@ -22,7 +22,7 @@ pub struct SecretsDiagnostic;
 
 #[async_trait]
 impl Diagnostic for SecretsDiagnostic {
-    fn group(&self) -> &str {
+    fn group(&self) -> &'static str {
         "secrets"
     }
     async fn run(&self, ctx: &DiagnosticContext) -> Vec<Check> {

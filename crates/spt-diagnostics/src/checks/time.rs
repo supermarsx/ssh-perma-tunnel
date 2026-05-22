@@ -13,7 +13,7 @@ pub struct TimeDiagnostic;
 
 #[async_trait]
 impl Diagnostic for TimeDiagnostic {
-    fn group(&self) -> &str {
+    fn group(&self) -> &'static str {
         "time"
     }
     async fn run(&self, _ctx: &DiagnosticContext) -> Vec<Check> {

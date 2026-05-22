@@ -17,7 +17,7 @@ pub struct LatencyDriver;
 
 #[async_trait]
 impl BenchmarkDriver for LatencyDriver {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "latency"
     }
     fn impact(&self) -> ImpactLevel {

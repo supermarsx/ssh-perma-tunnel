@@ -131,7 +131,7 @@
       </description>
       <url>https://github.com/Mariana/ssh-perma-tunnel/releases/tag/v@VERSION@</url>
     </release>
-    <release version="0.1.0" date="2025-11-12">
+    <release version="26.1" date="2026-05-22">
       <description>
         <p>Initial public release.</p>
         <ul>
@@ -143,7 +143,7 @@
           <li>TUI configurator and embedded MCP server.</li>
         </ul>
       </description>
-      <url>https://github.com/Mariana/ssh-perma-tunnel/releases/tag/v0.1.0</url>
+      <url>https://github.com/Mariana/ssh-perma-tunnel/releases/tag/v26.1</url>
     </release>
   </releases>
 </component>

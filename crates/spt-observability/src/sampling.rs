@@ -65,9 +65,7 @@ impl SamplingConfig {
         let mut best: Option<f64> = None;
         for key in self.entries.keys() {
             if is_dotted_prefix(target, key)
-                && best
-                    .map(|_| best_len_lt_key(target, key, &self.entries))
-                    .unwrap_or(true)
+                && best.is_none_or(|_| best_len_lt_key(target, key, &self.entries))
             {
                 best = Some(self.entries[key]);
             }

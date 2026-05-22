@@ -12,7 +12,7 @@ pub struct OsDiagnostic;
 
 #[async_trait]
 impl Diagnostic for OsDiagnostic {
-    fn group(&self) -> &str {
+    fn group(&self) -> &'static str {
         "os"
     }
     async fn run(&self, _ctx: &DiagnosticContext) -> Vec<Check> {

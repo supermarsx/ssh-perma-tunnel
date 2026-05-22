@@ -21,7 +21,7 @@ pub struct ServiceDiagnostic;
 
 #[async_trait]
 impl Diagnostic for ServiceDiagnostic {
-    fn group(&self) -> &str {
+    fn group(&self) -> &'static str {
         "service"
     }
     async fn run(&self, ctx: &DiagnosticContext) -> Vec<Check> {

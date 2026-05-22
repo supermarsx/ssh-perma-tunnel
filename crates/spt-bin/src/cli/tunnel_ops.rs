@@ -704,7 +704,7 @@ fn collect_recent_events(snap: &StatusSnapshot, now: DateTime<Utc>) -> Vec<Healt
     let mut evs: Vec<&LastError> = snap
         .last_errors
         .iter()
-        .filter(|e| e.at.map_or(false, |t| t >= cutoff))
+        .filter(|e| e.at.is_some_and(|t| t >= cutoff))
         .collect();
     evs.sort_by_key(|e| e.at);
     evs.into_iter()

@@ -224,7 +224,7 @@ fn sspi_provider_dispatch_surfaces_unsupported_backend() {
     // because the legacy fallback path remains the only one available on
     // non-Windows hosts that lack a Kerberos credentials cache.
     match result {
-        Err(Error::AuthFailed(_)) | Err(Error::UnsupportedPlatform(_)) => {}
+        Err(Error::AuthFailed(_) | Error::UnsupportedPlatform(_)) => {}
         Err(other) => panic!("expected AuthFailed or UnsupportedPlatform, got {other:?}"),
         Ok(_) => panic!("provider must error without configured credentials"),
     }

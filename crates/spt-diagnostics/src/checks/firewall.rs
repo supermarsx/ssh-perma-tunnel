@@ -31,7 +31,7 @@ pub struct FirewallDiagnostic {
 
 #[async_trait]
 impl Diagnostic for FirewallDiagnostic {
-    fn group(&self) -> &str {
+    fn group(&self) -> &'static str {
         "firewall"
     }
     async fn run(&self, ctx: &DiagnosticContext) -> Vec<Check> {

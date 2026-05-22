@@ -87,7 +87,7 @@ fn parse_duration(s: &str) -> std::result::Result<Duration, String> {
         return Err("empty duration".into());
     }
     let (num, unit) = match s.chars().last().unwrap() {
-        c if c.is_ascii_digit() => (&s[..], "s"),
+        c if c.is_ascii_digit() => (s, "s"),
         _ => {
             let (num, unit) = s.split_at(s.len() - 1);
             (num, unit)

@@ -109,11 +109,7 @@ mod tests {
         let high = (target as f64 * 1.15) as u64;
         assert!(
             delivered >= low && delivered <= high,
-            "delivered {} not within [{}, {}] for target {}",
-            delivered,
-            low,
-            high,
-            target,
+            "delivered {delivered} not within [{low}, {high}] for target {target}",
         );
     }
 }

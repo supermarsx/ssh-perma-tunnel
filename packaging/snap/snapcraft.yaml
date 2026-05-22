@@ -1,6 +1,6 @@
 name: spt
 base: core22
-version: '0.1.0'
+version: '26.1'
 summary: Permanent SSH/SSH3 tunnels — survives drops
 title: spt
 icon: ../snapcraft/icon-256.png

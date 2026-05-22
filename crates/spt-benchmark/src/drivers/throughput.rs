@@ -14,7 +14,7 @@ pub struct ThroughputDriver;
 
 #[async_trait]
 impl BenchmarkDriver for ThroughputDriver {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "throughput"
     }
     fn impact(&self) -> ImpactLevel {

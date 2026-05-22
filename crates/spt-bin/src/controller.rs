@@ -489,7 +489,7 @@ host = "h"
         let tmp = tempfile::tempdir().unwrap();
         let ctl = fixture(tmp.path());
         let result = ctl
-            .session_close(&spt_core::SessionId::new_v4().to_string())
+            .session_close(spt_core::SessionId::new_v4().as_ref())
             .await;
         assert!(
             !matches!(result, Err(McpError::NotImplemented(_))),

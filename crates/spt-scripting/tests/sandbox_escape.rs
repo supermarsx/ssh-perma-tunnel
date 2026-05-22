@@ -239,10 +239,10 @@ fn escape_network_via_http_api_rejected() {
 // 6. Infinite recursion must trip `max_call_levels`.
 #[test]
 fn escape_infinite_recursion_aborts() {
-    let body = r#"
+    let body = r"
         fn deep(n) { deep(n + 1) }
         fn pre(ev) { deep(0) }
-    "#;
+    ";
     // Generous max_operations so we hit call-level cap, not op cap.
     let limits = ScriptLimits {
         max_call_levels: 32,
@@ -296,12 +296,12 @@ fn escape_oom_via_array_fill_rejected() {
     // Construct a 4-element array literal under a 2-element cap. Rhai's
     // parser enforces `max_array_size` against literal lengths at parse
     // time.
-    let body = r#"
+    let body = r"
         fn pre(ev) {
             let a = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17];
             a
         }
-    "#;
+    ";
     let limits = ScriptLimits {
         max_array_size: 2,
         max_operations: 10_000_000,
@@ -310,6 +310,10 @@ fn escape_oom_via_array_fill_rejected() {
     let run = run_attack(body, "pre", limits);
     // Either compile rejects the oversized literal or invoke aborts —
     // both are acceptable sandbox outcomes.
+    // SAFETY: arms have identical empty bodies but enumerate distinct
+    // ScriptError variants we want documented as acceptable; merging via
+    // `|` would lose the per-variant rationale.
+    #[allow(clippy::match_same_arms)]
     match (run.load, run.invoke) {
         (Err(ScriptError::CompileFailed { .. }), None) => {}
         (Ok(_), Some(Err(ScriptError::LimitExceeded { .. }))) => {}
@@ -324,7 +328,7 @@ fn escape_oom_via_array_fill_rejected() {
 // 9. `max_operations` enforced — tight CPU loop.
 #[test]
 fn escape_cpu_via_tight_loop_aborts() {
-    let body = r#"
+    let body = r"
         fn pre(ev) {
             let n = 0;
             for i in 0..100000000 {
@@ -332,7 +336,7 @@ fn escape_cpu_via_tight_loop_aborts() {
             }
             n
         }
-    "#;
+    ";
     let limits = ScriptLimits {
         max_operations: 5_000,
         ..ScriptLimits::default()
@@ -350,12 +354,12 @@ fn escape_cpu_via_tight_loop_aborts() {
 //     `EvalAltResult::ErrorArithmetic`, classified into `HookFailed`.
 #[test]
 fn escape_panic_via_arithmetic_overflow_caught() {
-    let body = r#"
+    let body = r"
         fn pre(ev) {
             let a = 9223372036854775807;  // i64::MAX
             a + 1
         }
-    "#;
+    ";
     let run = run_attack(body, "pre", ScriptLimits::default());
     assert!(run.load.is_ok());
     // Rhai's default arithmetic detects overflow and returns an
@@ -388,6 +392,10 @@ fn escape_panic_via_invalid_unicode_caught() {
     // Whatever happens, no panic should reach the test (the
     // `catch_unwind` shim would have caught it). We assert the engine
     // either ran cleanly or surfaced a HookFailed/CompileFailed.
+    // SAFETY: arms have identical empty bodies but enumerate the three
+    // distinct acceptable outcomes (clean run, runtime contained error,
+    // compile rejection); keeping them separate documents intent.
+    #[allow(clippy::match_same_arms)]
     match (run.load, run.invoke) {
         (Ok(_), Some(Ok(()))) => {}
         (Ok(_), Some(Err(ScriptError::HookFailed { .. }))) => {}
@@ -404,7 +412,7 @@ fn escape_panic_via_invalid_unicode_caught() {
 //     hardening pass can verify the constant-time work.
 #[test]
 fn escape_timing_sidechannel_observable() {
-    let body = r#"
+    let body = r"
         fn pre(ev) {
             let n = 0;
             for i in 0..1000 {
@@ -412,7 +420,7 @@ fn escape_timing_sidechannel_observable() {
             }
             n
         }
-    "#;
+    ";
     let run = run_attack(body, "pre", ScriptLimits::default());
     assert!(run.load.is_ok());
     assert!(run.invoke.as_ref().unwrap().is_ok());
@@ -434,12 +442,12 @@ fn escape_timing_sidechannel_observable() {
 // 13 (bonus). `max_call_levels` enforced explicitly with a tiny budget.
 #[test]
 fn escape_max_call_levels_enforced() {
-    let body = r#"
+    let body = r"
         fn a(n) { b(n) }
         fn b(n) { c(n) }
         fn c(n) { a(n) }
         fn pre(ev) { a(0) }
-    "#;
+    ";
     let limits = ScriptLimits {
         max_call_levels: 8,
         max_operations: 10_000_000,

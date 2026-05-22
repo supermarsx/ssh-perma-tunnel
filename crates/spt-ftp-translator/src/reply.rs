@@ -56,6 +56,9 @@ impl Reply {
     pub fn err_550(text: impl Into<String>) -> Self {
         Self::new(550, text)
     }
+    pub fn err_553(text: impl Into<String>) -> Self {
+        Self::new(553, text)
+    }
 }
 
 impl fmt::Display for Reply {

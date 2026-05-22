@@ -54,7 +54,7 @@ impl AuthDiagnostic {
 
 #[async_trait]
 impl Diagnostic for AuthDiagnostic {
-    fn group(&self) -> &str {
+    fn group(&self) -> &'static str {
         "auth"
     }
 

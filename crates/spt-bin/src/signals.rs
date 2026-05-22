@@ -172,6 +172,7 @@ pub fn install_sighup_log_reload(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
     use super::*;
 
     #[cfg(unix)]

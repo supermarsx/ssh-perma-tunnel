@@ -651,6 +651,9 @@ async fn dispatch(
             false,
         ),
         Verb::Cwd(target) => {
+            if let Err(r) = validate_path_argument(target) {
+                return (r, false, false);
+            }
             let new = join_cwd(&state.cwd, target);
             // Validate by stat'ing the path through SFTP.
             let sftp = match state.sftp.as_ref() {
@@ -682,6 +685,9 @@ async fn dispatch(
             (Reply::new(250, "CDUP ok."), false, false)
         }
         Verb::Mkd(p) => {
+            if let Err(r) = validate_path_argument(p) {
+                return (r, false, false);
+            }
             let target = join_cwd(&state.cwd, p);
             let sftp = state.sftp.as_ref().unwrap();
             match sftp.create_dir(target.clone()).await {
@@ -694,6 +700,9 @@ async fn dispatch(
             }
         }
         Verb::Rmd(p) => {
+            if let Err(r) = validate_path_argument(p) {
+                return (r, false, false);
+            }
             let target = join_cwd(&state.cwd, p);
             let sftp = state.sftp.as_ref().unwrap();
             match sftp.remove_dir(target).await {
@@ -702,6 +711,9 @@ async fn dispatch(
             }
         }
         Verb::Dele(p) => {
+            if let Err(r) = validate_path_argument(p) {
+                return (r, false, false);
+            }
             let target = join_cwd(&state.cwd, p);
             let sftp = state.sftp.as_ref().unwrap();
             match sftp.remove_file(target).await {
@@ -710,6 +722,9 @@ async fn dispatch(
             }
         }
         Verb::Rnfr(p) => {
+            if let Err(r) = validate_path_argument(p) {
+                return (r, false, false);
+            }
             let target = join_cwd(&state.cwd, p);
             let sftp = state.sftp.as_ref().unwrap();
             match sftp.metadata(target.clone()).await {
@@ -721,6 +736,9 @@ async fn dispatch(
             }
         }
         Verb::Rnto(p) => {
+            if let Err(r) = validate_path_argument(p) {
+                return (r, false, false);
+            }
             let from = match state.rnfr.take() {
                 Some(f) => f,
                 None => return (Reply::err_503("RNFR required before RNTO."), false, false),
@@ -733,6 +751,9 @@ async fn dispatch(
             }
         }
         Verb::Mdtm(p) => {
+            if let Err(r) = validate_path_argument(p) {
+                return (r, false, false);
+            }
             let target = join_cwd(&state.cwd, p);
             let sftp = state.sftp.as_ref().unwrap();
             match sftp.metadata(target).await {
@@ -745,6 +766,9 @@ async fn dispatch(
             }
         }
         Verb::Size(p) => {
+            if let Err(r) = validate_path_argument(p) {
+                return (r, false, false);
+            }
             let target = join_cwd(&state.cwd, p);
             let sftp = state.sftp.as_ref().unwrap();
             match sftp.metadata(target).await {
@@ -803,6 +827,11 @@ async fn dispatch(
             }
         }
         Verb::List(path) => {
+            if let Some(p) = path.as_deref() {
+                if let Err(r) = validate_path_argument(p) {
+                    return (r, false, false);
+                }
+            }
             let target = match path {
                 Some(p) if !p.is_empty() => join_cwd(&state.cwd, p),
                 _ => state.cwd.clone(),
@@ -814,6 +843,11 @@ async fn dispatch(
             run_list_transfer(state, listener, target, ListMode::List, tls_acceptor).await
         }
         Verb::Nlst(path) => {
+            if let Some(p) = path.as_deref() {
+                if let Err(r) = validate_path_argument(p) {
+                    return (r, false, false);
+                }
+            }
             let target = match path {
                 Some(p) if !p.is_empty() => join_cwd(&state.cwd, p),
                 _ => state.cwd.clone(),
@@ -825,6 +859,11 @@ async fn dispatch(
             run_list_transfer(state, listener, target, ListMode::Nlst, tls_acceptor).await
         }
         Verb::Mlsd(path) => {
+            if let Some(p) = path.as_deref() {
+                if let Err(r) = validate_path_argument(p) {
+                    return (r, false, false);
+                }
+            }
             let target = match path {
                 Some(p) if !p.is_empty() => join_cwd(&state.cwd, p),
                 _ => state.cwd.clone(),
@@ -836,6 +875,11 @@ async fn dispatch(
             run_list_transfer(state, listener, target, ListMode::Mlsd, tls_acceptor).await
         }
         Verb::Mlst(path) => {
+            if let Some(p) = path.as_deref() {
+                if let Err(r) = validate_path_argument(p) {
+                    return (r, false, false);
+                }
+            }
             let target = match path {
                 Some(p) if !p.is_empty() => join_cwd(&state.cwd, p),
                 _ => state.cwd.clone(),
@@ -854,6 +898,9 @@ async fn dispatch(
             }
         }
         Verb::Retr(p) => {
+            if let Err(r) = validate_path_argument(p) {
+                return (r, false, false);
+            }
             let target = join_cwd(&state.cwd, p);
             let listener = match state_take_listener(state) {
                 Some(l) => l,
@@ -862,6 +909,9 @@ async fn dispatch(
             run_retr_transfer(state, listener, target, tls_acceptor).await
         }
         Verb::Stor(p) => {
+            if let Err(r) = validate_path_argument(p) {
+                return (r, false, false);
+            }
             let target = join_cwd(&state.cwd, p);
             let listener = match state_take_listener(state) {
                 Some(l) => l,
@@ -870,6 +920,9 @@ async fn dispatch(
             run_stor_transfer(state, listener, target, false, tls_acceptor).await
         }
         Verb::Appe(p) => {
+            if let Err(r) = validate_path_argument(p) {
+                return (r, false, false);
+            }
             let target = join_cwd(&state.cwd, p);
             let listener = match state_take_listener(state) {
                 Some(l) => l,
@@ -1209,6 +1262,44 @@ fn join_cwd(cwd: &str, target: &str) -> String {
     }
 }
 
+/// Defense-in-depth path-argument validation for FTP verbs that take a
+/// user-supplied path (CWD, RETR, STOR, APPE, DELE, MKD, RMD, RNFR, RNTO,
+/// MDTM, SIZE, LIST, NLST, MLSD, MLST).
+///
+/// The translator MUST reject `..` segments at the FTP layer rather than
+/// silently collapsing them via [`normalise`]. The backing SFTP server is
+/// *also* expected to jail the session (chroot or per-user root), but
+/// relying solely on that is a single-layer defense — some SFTP servers
+/// do not enforce a jail, and operators can misconfigure one. This
+/// validator is the FTP-side layer.
+///
+/// Returns `Err` with a pre-formed [`Reply`] if the argument contains:
+///   * a `..` path segment (after splitting on `/` or `\`), or
+///   * an embedded NUL byte (`\0`).
+///
+/// Empty segments (e.g. `foo//bar`) and `.` segments are tolerated; the
+/// downstream [`normalise`] collapses them.
+///
+/// Unicode-confusable codepoints (e.g. U+FF0E FULLWIDTH FULL STOP) are
+/// **not** currently normalised to NFC before splitting — adding a
+/// `unicode-normalization` workspace dep is deferred. Such inputs are
+/// rejected by the SFTP backend as nonexistent paths.
+fn validate_path_argument(arg: &str) -> Result<(), Reply> {
+    for segment in arg.split(|c| c == '/' || c == '\\') {
+        if segment == ".." {
+            return Err(Reply::err_550(
+                "Path traversal `..` is not permitted.",
+            ));
+        }
+        if segment.contains('\0') {
+            return Err(Reply::err_553(
+                "File name not allowed (embedded NUL).",
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn normalise(p: &str) -> String {
     let mut out: Vec<&str> = Vec::new();
     for part in p.split('/') {
@@ -1252,6 +1343,63 @@ mod tests {
             strip_leading_code("227 Entering Passive Mode (1,2,3,4,5,6)."),
             "Entering Passive Mode (1,2,3,4,5,6)."
         );
+    }
+
+    #[test]
+    fn validate_rejects_dotdot_segment() {
+        assert!(validate_path_argument("..").is_err());
+        assert!(validate_path_argument("../etc").is_err());
+        assert!(validate_path_argument("foo/../bar").is_err());
+        assert!(validate_path_argument("/a/b/..").is_err());
+    }
+
+    #[test]
+    fn validate_rejects_backslash_dotdot_segment() {
+        // Mixed-separator path (a Windows-style attack vector).
+        assert!(validate_path_argument("foo\\..\\bar").is_err());
+        assert!(validate_path_argument("..\\evil").is_err());
+    }
+
+    #[test]
+    fn validate_rejects_nul_byte() {
+        let err = validate_path_argument("foo\0bar").expect_err("NUL must reject");
+        assert_eq!(err.code, 553);
+    }
+
+    #[test]
+    fn validate_accepts_dot_and_empty_segments() {
+        // `.` and empty segments (from `foo//bar`) are tolerated;
+        // `normalise()` collapses them downstream.
+        assert!(validate_path_argument("./foo").is_ok());
+        assert!(validate_path_argument("foo/./bar").is_ok());
+        assert!(validate_path_argument("foo//bar").is_ok());
+        assert!(validate_path_argument("/absolute/path").is_ok());
+        assert!(validate_path_argument("").is_ok());
+    }
+
+    #[test]
+    fn validate_accepts_filenames_containing_double_dot_but_not_as_segment() {
+        // `..hidden` is a filename starting with two dots, NOT a parent
+        // navigation segment — must be accepted.
+        assert!(validate_path_argument("..hidden").is_ok());
+        assert!(validate_path_argument("foo/..hidden").is_ok());
+        assert!(validate_path_argument("file..bak").is_ok());
+    }
+
+    #[test]
+    fn validate_unicode_dot_alternates_pass_through() {
+        // U+FF0E FULLWIDTH FULL STOP is NOT collapsed to ASCII `.`. The
+        // validator does not perform Unicode normalisation (deferred —
+        // see fn-level docs). Such inputs reach the SFTP backend which
+        // returns NoSuchFile.
+        assert!(validate_path_argument("\u{FF0E}\u{FF0E}").is_ok());
+        assert!(validate_path_argument("\u{FF0E}\u{FF0E}/etc").is_ok());
+    }
+
+    #[test]
+    fn validate_550_reply_for_dotdot() {
+        let err = validate_path_argument("../x").expect_err("must reject");
+        assert_eq!(err.code, 550);
     }
 
     #[test]

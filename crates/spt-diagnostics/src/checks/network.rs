@@ -28,7 +28,7 @@ impl Default for NetworkDiagnostic {
 
 #[async_trait]
 impl Diagnostic for NetworkDiagnostic {
-    fn group(&self) -> &str {
+    fn group(&self) -> &'static str {
         "network"
     }
     async fn run(&self, _ctx: &DiagnosticContext) -> Vec<Check> {

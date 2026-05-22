@@ -3,7 +3,7 @@
 # Default-locale (en-US) manifest for Mariana.spt.
 
 PackageIdentifier: Mariana.spt
-PackageVersion: 0.1.0
+PackageVersion: 26.1
 PackageLocale: en-US
 Publisher: Mariana
 PublisherUrl: https://github.com/Mariana
@@ -33,6 +33,6 @@ Tags:
   - security
   - cli
 ReleaseNotes: <RELEASE_NOTES>
-ReleaseNotesUrl: https://github.com/Mariana/ssh-perma-tunnel/releases/tag/v0.1.0
+ReleaseNotesUrl: https://github.com/Mariana/ssh-perma-tunnel/releases/tag/v26.1
 ManifestType: defaultLocale
 ManifestVersion: 1.6.0

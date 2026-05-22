@@ -38,7 +38,7 @@ pub fn resolve_state_root(explicit: Option<&std::path::Path>) -> Option<std::pat
 
 /// `true` when `--portable` was supplied. Long-running commands consult
 /// this to suppress journald (Linux) and the Windows Event Log writer,
-/// and to skip AppArmor / SELinux profile loading.
+/// and to skip `AppArmor` / `SELinux` profile loading.
 #[must_use]
 pub fn is_portable() -> bool {
     spt_state::portable::current().is_some()

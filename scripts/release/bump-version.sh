@@ -2,9 +2,15 @@
 # bump-version.sh — compute the next YY.N rolling version and (in CI) commit
 # the workspace Cargo.toml + tag the release.
 #
-#   YY  = two-digit year (UTC)        — e.g. "26" for 2026
-#   N   = monotonic counter, resets   — first release of the year is N=1
-#   Tag = "v<YY>.<N>"                 — e.g. "v26.1", "v26.2", ..., "v26.314"
+#   YY        = two-digit year (UTC)    — e.g. "26" for 2026
+#   N         = monotonic counter,      — first release of the year is N=1
+#               resets each year
+#   Tag       = "v<YY>.<N>"             — e.g. "v26.1", "v26.2", ..., "v26.314"
+#   Cargo TOML = "0.<YY>.<N>"           — Cargo's TOML parser requires full
+#                                         SemVer X.Y.Z, so the workspace
+#                                         `version` field carries a leading
+#                                         `0.` (e.g. "0.26.1"). The user-
+#                                         facing tag drops it.
 #
 # Usage:
 #   bash scripts/release/bump-version.sh             # CI mode: writes
@@ -49,6 +55,11 @@ fi
 
 VERSION="${YY}.${N}"
 TAG="v${VERSION}"
+# Cargo's TOML parser rejects the bare `YY.N` form (it expects full SemVer
+# X.Y.Z and emits `unexpected end of input while parsing minor version
+# number`). The workspace manifest therefore carries `0.YY.N` — a SemVer-
+# valid prefix that still encodes the rolling year + counter unambiguously.
+CARGO_VERSION="0.${VERSION}"
 
 # Refuse to clobber a tag that somehow already exists locally.
 if git rev-parse --quiet --verify "refs/tags/${TAG}" >/dev/null 2>&1; then
@@ -58,12 +69,14 @@ fi
 
 echo "version=${VERSION}"
 echo "tag=${TAG}"
+echo "cargo_version=${CARGO_VERSION}"
 echo "prev_tag=${PREV_TAG}"
 
 if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
   {
     echo "version=${VERSION}"
     echo "tag=${TAG}"
+    echo "cargo_version=${CARGO_VERSION}"
     echo "prev_tag=${PREV_TAG}"
   } >>"${GITHUB_OUTPUT}"
 fi
@@ -79,7 +92,7 @@ CARGO_TOML="${ROOT}/Cargo.toml"
 if grep -qE '^version = "[^"]*"[[:space:]]*#[[:space:]]*rolling' "${CARGO_TOML}"; then
   # Portable in-place edit (BSD/GNU sed compatible).
   tmp=$(mktemp)
-  sed -E "s/^version = \"[^\"]*\"([[:space:]]*#[[:space:]]*rolling.*)$/version = \"${VERSION}\"\\1/" \
+  sed -E "s/^version = \"[^\"]*\"([[:space:]]*#[[:space:]]*rolling.*)$/version = \"${CARGO_VERSION}\"\\1/" \
     "${CARGO_TOML}" >"${tmp}"
   mv "${tmp}" "${CARGO_TOML}"
 else

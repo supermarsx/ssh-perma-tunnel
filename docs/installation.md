@@ -12,11 +12,16 @@ The minimum supported Rust version (MSRV) for source builds is 1.85 (bumped
 from 1.83 during the t7 milestone — see
 [t7 → t8 migration](migration/t7-to-t8.md)).
 
+Releases use the rolling `YY.N` scheme (current: `26.1`; e.g. `26.2`
+next, then `27.1` on the year roll-over). Examples below reference
+`26.1`; substitute the latest tag from the
+[releases page](../docs/releases/) when installing.
+
 ## Linux packages
 
 ### deb
 
-    sudo apt install ./spt_0.1.0_amd64.deb
+    sudo apt install ./spt_26.1_amd64.deb
 
 The package installs `/usr/bin/spt`, `/lib/systemd/system/spt.service`, and
 seeds `/etc/spt/spt.toml` from the bundled minimal example. Review the config
@@ -26,11 +31,11 @@ first, then enable the unit:
 
 ### rpm
 
-    sudo dnf install ./spt-0.1.0-1.x86_64.rpm
+    sudo dnf install ./spt-26.1-1.x86_64.rpm
 
 ### musl static, no package
 
-    curl -L -o spt https://example.invalid/releases/spt-0.1.0-x86_64-linux-musl
+    curl -L -o spt https://example.invalid/releases/spt-26.1-x86_64-linux-musl
     chmod +x spt && sudo install -m 0755 spt /usr/local/bin/spt
 
 ## macOS (pkg)
@@ -87,10 +92,10 @@ per the spec's "single TLS stack" mandate.
 
 Releases are signed. Each artifact has an accompanying signature:
 
-    sha256sum --check spt-0.1.0.SHA256
+    sha256sum --check spt-26.1.SHA256
 
 ## Uninstalling
 
     sudo apt remove spt
     sudo dnf remove spt
-    msiexec /x spt-0.1.0.msi
+    msiexec /x spt-26.1.msi

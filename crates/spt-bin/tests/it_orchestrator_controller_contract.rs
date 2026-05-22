@@ -107,9 +107,9 @@ async fn orchestrator_session_drain_happy_path_returns_report() {
         .expect("drain must succeed on a running profile");
     // Pin the field shape used by OrchestratorController::session_drain
     // (`drained` + `force_closed` + `already_closed` ints).
-    let _drained: u32 = report.drained;
-    let _force_closed: u32 = report.force_closed;
-    let _already_closed: u32 = report.already_closed;
+    let _: u32 = report.drained;
+    let _: u32 = report.force_closed;
+    let _: u32 = report.already_closed;
 
     orch.stop_profile("p").await;
 }

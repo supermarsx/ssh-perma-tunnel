@@ -1056,12 +1056,12 @@ target = "internal:5432"
         let mut f = NamedTempFile::new().unwrap();
         writeln!(
             f,
-            r#"
+            r"
 version = 1
 
 [capabilities]
 allow_gpo_policy_writes = false
-"#
+"
         )
         .unwrap();
         let g = opts(Some(f.path().to_path_buf()));

@@ -71,7 +71,7 @@ fn russh_supported(kind: &str) -> Vec<&'static str> {
 
 #[async_trait]
 impl Diagnostic for Ssh2Diagnostic {
-    fn group(&self) -> &str {
+    fn group(&self) -> &'static str {
         "ssh2"
     }
     async fn run(&self, ctx: &DiagnosticContext) -> Vec<Check> {

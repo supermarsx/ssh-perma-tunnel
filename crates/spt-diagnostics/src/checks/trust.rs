@@ -59,7 +59,7 @@ impl TrustDiagnostic {
 
 #[async_trait]
 impl Diagnostic for TrustDiagnostic {
-    fn group(&self) -> &str {
+    fn group(&self) -> &'static str {
         "trust"
     }
 

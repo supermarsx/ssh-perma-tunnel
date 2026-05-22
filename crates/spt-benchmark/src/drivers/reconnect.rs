@@ -57,7 +57,7 @@ impl ReconnectDriver {
 
 #[async_trait]
 impl BenchmarkDriver for ReconnectDriver {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "reconnect"
     }
     fn impact(&self) -> ImpactLevel {

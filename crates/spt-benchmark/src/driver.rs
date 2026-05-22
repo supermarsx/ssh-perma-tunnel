@@ -120,7 +120,7 @@ impl std::fmt::Debug for BenchContext {
 #[async_trait]
 pub trait BenchmarkDriver: Send + Sync {
     /// Stable, kebab-case identifier (`latency`, `throughput`, `reconnect`).
-    fn name(&self) -> &str;
+    fn name(&self) -> &'static str;
     /// Whether the driver targets a real production system.
     fn impact(&self) -> ImpactLevel;
     /// Run the driver. Errors are reported in the [`BenchResult::errors`]

@@ -83,7 +83,7 @@ impl UdpDriver {
 
 #[async_trait]
 impl BenchmarkDriver for UdpDriver {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "udp"
     }
     fn impact(&self) -> ImpactLevel {

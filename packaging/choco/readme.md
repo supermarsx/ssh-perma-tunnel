@@ -56,8 +56,8 @@ choco uninstall spt -y
 Upgrade test (requires two builds with different `<version>`):
 
 ```powershell
-choco install spt -s . --version 0.1.0 -y
-choco upgrade spt -s . --version 0.1.1 -y
+choco install spt -s . --version 26.1 -y
+choco upgrade spt -s . --version 26.2 -y
 ```
 
 `chocolateybeforemodify.ps1` will stop the `spt` Windows service (if

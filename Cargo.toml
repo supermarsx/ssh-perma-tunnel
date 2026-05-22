@@ -103,7 +103,17 @@ libgssapi = { path = "vendor/libgssapi-fork/libgssapi" }
 libgssapi-sys = { path = "vendor/libgssapi-fork/libgssapi-sys" }
 
 [workspace.package]
-version = "0.1.0"
+# Rolling release: 0.YY.N (SemVer-compatible encoding of YY.N — two-digit
+# UTC year + monotonic counter that resets each year). The leading `0.` is
+# required because Cargo's TOML parser enforces full SemVer X.Y.Z and
+# rejects the bare `YY.N` form (`error: unexpected end of input while
+# parsing minor version number`). Public-facing tags drop the `0.` prefix
+# (`v26.1`, not `v0.26.1`).
+#
+# The `# rolling` marker is load-bearing — `scripts/release/bump-version.sh`
+# greps for it to perform an unambiguous in-place rewrite. See
+# `releasing.md` and `docs/releases/readme.md`.
+version = "0.26.1"  # rolling
 edition = "2021"
 rust-version = "1.85"
 license = "MIT"
@@ -115,48 +125,48 @@ readme = "readme.md"
 
 [workspace.dependencies]
 # Internal crates
-spt-core = { path = "crates/spt-core", version = "0.1.0" }
-spt-config = { path = "crates/spt-config", version = "0.1.0" }
-spt-secrets = { path = "crates/spt-secrets", version = "0.1.0" }
-spt-protocol = { path = "crates/spt-protocol", version = "0.1.0" }
-spt-ssh2 = { path = "crates/spt-ssh2", version = "0.1.0" }
-spt-ssh3 = { path = "crates/spt-ssh3", version = "0.1.0" }
-spt-sftp = { path = "crates/spt-sftp", version = "0.1.0" }
-spt-forward = { path = "crates/spt-forward", version = "0.1.0" }
-spt-supervisor = { path = "crates/spt-supervisor", version = "0.1.0" }
-spt-state = { path = "crates/spt-state", version = "0.1.0" }
-spt-net = { path = "crates/spt-net", version = "0.1.0" }
-spt-firewall = { path = "crates/spt-firewall", version = "0.1.0" }
-spt-dns = { path = "crates/spt-dns", version = "0.1.0" }
-spt-events = { path = "crates/spt-events", version = "0.1.0" }
-spt-observability = { path = "crates/spt-observability", version = "0.1.0" }
-spt-snmp = { path = "crates/spt-snmp", version = "0.1.0" }
-spt-winevent = { path = "crates/spt-winevent", version = "0.1.0" }
-spt-service = { path = "crates/spt-service", version = "0.1.0" }
-spt-key = { path = "crates/spt-key", version = "0.1.0" }
-spt-trust = { path = "crates/spt-trust", version = "0.1.0" }
-spt-auth = { path = "crates/spt-auth", version = "0.1.0" }
-spt-auth-sspi = { path = "crates/spt-auth-sspi", version = "0.1.0" }
-spt-scripting = { path = "crates/spt-scripting", version = "0.1.0" }
+spt-core = { path = "crates/spt-core", version = "0.26.1" }
+spt-config = { path = "crates/spt-config", version = "0.26.1" }
+spt-secrets = { path = "crates/spt-secrets", version = "0.26.1" }
+spt-protocol = { path = "crates/spt-protocol", version = "0.26.1" }
+spt-ssh2 = { path = "crates/spt-ssh2", version = "0.26.1" }
+spt-ssh3 = { path = "crates/spt-ssh3", version = "0.26.1" }
+spt-sftp = { path = "crates/spt-sftp", version = "0.26.1" }
+spt-forward = { path = "crates/spt-forward", version = "0.26.1" }
+spt-supervisor = { path = "crates/spt-supervisor", version = "0.26.1" }
+spt-state = { path = "crates/spt-state", version = "0.26.1" }
+spt-net = { path = "crates/spt-net", version = "0.26.1" }
+spt-firewall = { path = "crates/spt-firewall", version = "0.26.1" }
+spt-dns = { path = "crates/spt-dns", version = "0.26.1" }
+spt-events = { path = "crates/spt-events", version = "0.26.1" }
+spt-observability = { path = "crates/spt-observability", version = "0.26.1" }
+spt-snmp = { path = "crates/spt-snmp", version = "0.26.1" }
+spt-winevent = { path = "crates/spt-winevent", version = "0.26.1" }
+spt-service = { path = "crates/spt-service", version = "0.26.1" }
+spt-key = { path = "crates/spt-key", version = "0.26.1" }
+spt-trust = { path = "crates/spt-trust", version = "0.26.1" }
+spt-auth = { path = "crates/spt-auth", version = "0.26.1" }
+spt-auth-sspi = { path = "crates/spt-auth-sspi", version = "0.26.1" }
+spt-scripting = { path = "crates/spt-scripting", version = "0.26.1" }
 # t6-e13 — obfuscation transports crate. NOT in `[workspace.members]`
 # yet; t6-Bwire owns that edit per the t6.md phasing table.
-spt-obfs = { path = "crates/spt-obfs", version = "0.1.0" }
+spt-obfs = { path = "crates/spt-obfs", version = "0.26.1" }
 # t6-e6 — new FTP-to-SFTP translator crate. NOT in `[workspace.members]`
 # yet; t6-Bwire owns that edit per the t6.md phasing table.
-spt-ftp-translator = { path = "crates/spt-ftp-translator", version = "0.1.0" }
-spt-stats = { path = "crates/spt-stats", version = "0.1.0" }
-spt-diagnostics = { path = "crates/spt-diagnostics", version = "0.1.0" }
-spt-benchmark = { path = "crates/spt-benchmark", version = "0.1.0" }
-spt-mcp = { path = "crates/spt-mcp", version = "0.1.0" }
-spt-tui = { path = "crates/spt-tui", version = "0.1.0" }
-spt-cli = { path = "crates/spt-cli", version = "0.1.0" }
-spt-remote-config = { path = "crates/spt-remote-config", version = "0.1.0" }
-spt-status-api = { path = "crates/spt-status-api", version = "0.1.0" }
-spt-mem-hygiene = { path = "crates/spt-mem-hygiene", version = "0.1.0" }
-spt-config-crypt = { path = "crates/spt-config-crypt", version = "0.1.0" }
+spt-ftp-translator = { path = "crates/spt-ftp-translator", version = "0.26.1" }
+spt-stats = { path = "crates/spt-stats", version = "0.26.1" }
+spt-diagnostics = { path = "crates/spt-diagnostics", version = "0.26.1" }
+spt-benchmark = { path = "crates/spt-benchmark", version = "0.26.1" }
+spt-mcp = { path = "crates/spt-mcp", version = "0.26.1" }
+spt-tui = { path = "crates/spt-tui", version = "0.26.1" }
+spt-cli = { path = "crates/spt-cli", version = "0.26.1" }
+spt-remote-config = { path = "crates/spt-remote-config", version = "0.26.1" }
+spt-status-api = { path = "crates/spt-status-api", version = "0.26.1" }
+spt-mem-hygiene = { path = "crates/spt-mem-hygiene", version = "0.26.1" }
+spt-config-crypt = { path = "crates/spt-config-crypt", version = "0.26.1" }
 # t8-C1 — chaos TCP proxy library, consumed by `tests/chaos` (which is its
 # own decoupled workspace) and any future in-process chaos test.
-spt-chaos-proxy = { path = "crates/spt-chaos-proxy", version = "0.1.0" }
+spt-chaos-proxy = { path = "crates/spt-chaos-proxy", version = "0.26.1" }
 
 # Async runtime
 tokio = { version = "1.40", features = ["full"] }

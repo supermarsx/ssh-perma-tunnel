@@ -6,7 +6,7 @@ client and the upstream server, configured via
 
 | `kind` | Backing crate(s) | Notes |
 |---|---|---|
-| `obfs4` | hand-rolled (X25519 + HMAC-SHA256 + ChaCha20-Poly1305) | "obfs4 client subset" — see caveats below |
+| `obfs4` | hand-rolled (X25519 + HMAC-SHA256 + XSalsa20-Poly1305 / NaCl secretbox) | "obfs4 client subset" — see caveats below |
 | `meek-http` | `reqwest` (rustls TLS) | HTTPS POST/POST domain-fronting |
 | `websocket` | `tokio-tungstenite 0.24` | RFC 6455, advertises `Sec-WebSocket-Protocol: ssh` |
 | `shadowsocks` | `aes-gcm` + `chacha20poly1305` + `blake3` | AEAD-2022 with `blake3::derive_key` KDF |
@@ -23,7 +23,10 @@ shell-out to `obfs4proxy`). It implements:
   key and a fresh ephemeral key.
 * HKDF-like KDF over the combined ECDH output, keyed by the obfs4
   PROTOID (`"ntor-curve25519-sha256-1"`) and the server `node_id`.
-* ChaCha20-Poly1305 frame layer with per-frame counter nonce.
+* **XSalsa20-Poly1305** (NaCl `crypto_secretbox`) frame layer with a
+  24-byte per-direction counter nonce starting at 0. The 2-byte length
+  prefix is XOR-obfuscated against a SHA-256 keystream so the prefix
+  is not visible to a passive observer.
 * IAT modes 0 (off), 1 (paranoid, 5 ms inter-frame), 2 (normal, 1 ms).
 
 ### Wire-incompatibility caveats vs `obfs4proxy`
@@ -37,6 +40,19 @@ shell-out to `obfs4proxy`). It implements:
 * **IAT distributions**: the heavy probabilistic packet-timing
   distributions from the obfs4-spec are not implemented. Mode 1 = fixed
   5 ms delay, mode 2 = fixed 1 ms delay.
+
+### `t8-FixObfs4` — framing primitive change (operator action: reconnect)
+
+The framing layer was migrated from **ChaCha20-Poly1305 with a 12-byte
+nonce + AAD `b"obfs4-frame"`** to **XSalsa20-Poly1305 (NaCl secretbox)
+with a 24-byte counter nonce + obfuscated length prefix**. This brings
+the primitive in line with obfs4-spec §6 (the spec mandates
+`crypto_secretbox`). **This is a wire change**: operators running the
+old spt-flavored obfs4 against another spt peer must reconnect once
+both ends pick up the fix — frames produced by the old code will fail
+authentication on the new code, and vice-versa. **This is not a
+security issue**, just compatibility with the reference primitive; the
+NTOR handshake itself is unchanged.
 
 For interop with a real obfs4 bridge, run an `obfs4proxy` sidecar and
 point `spt` at the local proxy via the plain TCP path.
@@ -80,12 +96,45 @@ upstream `meek-server`** without server-side adjustments.
   subkey", key || salt)` per SIP022 §2.2.
 * Legacy KDF (pre-2022): HMAC-SHA256 counter mode.
 
-### Caveats vs reference `shadowsocks-rust`
+### Wire-format reconciliation with SIP022
 
-The session subkey derivation matches SIP022 exactly. However, the
-per-frame AAD strings (`b"spt-obfs/ss/len"`, `b"spt-obfs/ss/body"`,
-`b"spt-obfs/ss"`) are **spt-specific** and not part of the SIP022 wire
-spec. A reference `shadowsocks-rust` server doing standard
-length-AEAD framing will reject these frames. **Interop is
-spt-server-to-spt-client only** at the framing layer; the KDF and
-cipher choices match upstream.
+The AEAD layer now passes an **empty** additional-authenticated-data
+byte string to every `encrypt` / `decrypt` call (length-prefix and
+body chunks alike) per SIP022 §3.3.2. Earlier revisions used
+spt-specific AAD strings (`b"spt-obfs/ss/len"`, `b"spt-obfs/ss/body"`,
+`b"spt-obfs/ss"`) which made it impossible to interoperate with
+reference `shadowsocks-rust` `ssserver`; those strings have been
+removed.
+
+#### Breaking change for operators
+
+Existing tunnels using the older `spt-obfs`-flavoured Shadowsocks
+frames will fail to decrypt against the current build. Operators
+must **restart both endpoints** to pick up the SIP022-compliant
+framing. The change is **not** a security issue — the old
+non-standard AAD did not provide a security property; it merely
+prevented interop. Session subkey derivation
+(`blake3::derive_key("shadowsocks 2022 session subkey", key || salt)`)
+and cipher choices are unchanged.
+
+#### Remaining framing gaps versus full ssserver interop
+
+After the AAD fix the framing layer matches SIP022 for the per-chunk
+AEAD shape, but a complete `ssserver` round-trip still requires:
+
+* **Dual-salt handshake** — client sends REQUEST_SALT, server replies
+  with a separate RESPONSE_SALT; client→server and server→client
+  subkeys are derived from different salts. The current code uses a
+  single client-supplied salt for both directions.
+* **Fixed-length header chunk** — the first AEAD chunk per direction
+  carries a type byte + u64 BE timestamp + variable length / padding
+  fields per SIP022 §3.2.
+* **Per-direction nonce counters** — separate length / body counters
+  per direction (the current AeadStream uses one read counter and one
+  write counter, no length/body separation).
+
+These are tracked for a follow-up; the existing interop tests in
+`tests/openssh-interop/shadowsocks/` remain `#[ignore]`'d with their
+ignore reasons updated to point at these gaps. KDF wire-shape
+(`ss_2022_kdf_known_vector_matches_reference`) is byte-exact-correct
+and runs unconditionally.

@@ -12,108 +12,6 @@ use spt_observability::{
     init, init_for_test, TracingGuard,
 };
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn defaults() -> GlobalOpts {
-        // Parse an empty arg list through clap to get a GlobalOpts populated
-        // with every default. This avoids hard-coding all global field names
-        // here (the struct surface is owned by `spt-cli`).
-        use clap::Parser;
-        #[derive(clap::Parser)]
-        struct Wrap {
-            #[command(flatten)]
-            g: GlobalOpts,
-        }
-        Wrap::parse_from(["test"]).g
-    }
-
-    fn set_env(key: &str, value: Option<&str>) {
-        // Tests in this module run sequentially and only mutate `SPT_LOG`,
-        // which the wider observability/test surface does not read.
-        match value {
-            Some(v) => std::env::set_var(key, v),
-            None => std::env::remove_var(key),
-        }
-    }
-
-    #[test]
-    fn resolve_filter_falls_back_to_cli_when_env_unset() {
-        set_env("SPT_LOG", None);
-        let g = defaults();
-        assert_eq!(resolve_filter_directive(&g), "info");
-    }
-
-    #[test]
-    fn resolve_filter_uses_env_per_module_syntax() {
-        set_env("SPT_LOG", Some("warn,spt_ssh2=trace,spt_supervisor=debug"));
-        let g = defaults();
-        let d = resolve_filter_directive(&g);
-        assert!(d.contains("spt_ssh2=trace"));
-        assert!(d.contains("spt_supervisor=debug"));
-        set_env("SPT_LOG", None);
-    }
-
-    #[test]
-    fn resolve_filter_ignores_bad_env_value() {
-        // `=garbage` is rejected by EnvFilter; we fall back to CLI defaults.
-        set_env("SPT_LOG", Some("=garbage"));
-        let mut g = defaults();
-        g.verbose = 1;
-        assert_eq!(resolve_filter_directive(&g), "debug");
-        set_env("SPT_LOG", None);
-    }
-
-    #[test]
-    fn resolve_filter_simple_module_level() {
-        set_env("SPT_LOG", Some("spt_supervisor=debug"));
-        let g = defaults();
-        let d = resolve_filter_directive(&g);
-        assert_eq!(d, "spt_supervisor=debug");
-        set_env("SPT_LOG", None);
-    }
-
-    #[test]
-    fn resolve_filter_global_off_then_per_module_on() {
-        set_env("SPT_LOG", Some("off,spt_ssh2=info"));
-        let g = defaults();
-        let d = resolve_filter_directive(&g);
-        assert!(d.starts_with("off"));
-        assert!(d.contains("spt_ssh2=info"));
-        set_env("SPT_LOG", None);
-    }
-
-    #[test]
-    fn resolve_filter_three_module_combination() {
-        set_env(
-            "SPT_LOG",
-            Some("info,spt_ssh2=trace,spt_supervisor=debug,spt_mcp=warn"),
-        );
-        let g = defaults();
-        let d = resolve_filter_directive(&g);
-        assert!(d.contains("spt_mcp=warn"));
-        set_env("SPT_LOG", None);
-    }
-
-    #[test]
-    fn resolve_filter_with_verbose_two_flag_only() {
-        set_env("SPT_LOG", None);
-        let mut g = defaults();
-        g.verbose = 2;
-        assert_eq!(resolve_filter_directive(&g), "trace");
-    }
-
-    #[test]
-    fn resolve_filter_env_takes_precedence_over_verbose() {
-        set_env("SPT_LOG", Some("warn"));
-        let mut g = defaults();
-        g.verbose = 2;
-        assert_eq!(resolve_filter_directive(&g), "warn");
-        set_env("SPT_LOG", None);
-    }
-}
-
 /// Initialise a stderr-only tracing subscriber. Returns the guard owned by
 /// `main` for lifetime control.
 ///
@@ -343,4 +241,106 @@ fn convert_remote_sink(
         batch_size: sink.batch_size.unwrap_or(100),
         required: sink.required.unwrap_or(false),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{resolve_filter_directive, GlobalOpts};
+
+    fn defaults() -> GlobalOpts {
+        // Parse an empty arg list through clap to get a GlobalOpts populated
+        // with every default. This avoids hard-coding all global field names
+        // here (the struct surface is owned by `spt-cli`).
+        use clap::Parser;
+        #[derive(clap::Parser)]
+        struct Wrap {
+            #[command(flatten)]
+            g: GlobalOpts,
+        }
+        Wrap::parse_from(["test"]).g
+    }
+
+    fn set_env(key: &str, value: Option<&str>) {
+        // Tests in this module run sequentially and only mutate `SPT_LOG`,
+        // which the wider observability/test surface does not read.
+        match value {
+            Some(v) => std::env::set_var(key, v),
+            None => std::env::remove_var(key),
+        }
+    }
+
+    #[test]
+    fn resolve_filter_falls_back_to_cli_when_env_unset() {
+        set_env("SPT_LOG", None);
+        let g = defaults();
+        assert_eq!(resolve_filter_directive(&g), "info");
+    }
+
+    #[test]
+    fn resolve_filter_uses_env_per_module_syntax() {
+        set_env("SPT_LOG", Some("warn,spt_ssh2=trace,spt_supervisor=debug"));
+        let g = defaults();
+        let d = resolve_filter_directive(&g);
+        assert!(d.contains("spt_ssh2=trace"));
+        assert!(d.contains("spt_supervisor=debug"));
+        set_env("SPT_LOG", None);
+    }
+
+    #[test]
+    fn resolve_filter_ignores_bad_env_value() {
+        // `=garbage` is rejected by EnvFilter; we fall back to CLI defaults.
+        set_env("SPT_LOG", Some("=garbage"));
+        let mut g = defaults();
+        g.verbose = 1;
+        assert_eq!(resolve_filter_directive(&g), "debug");
+        set_env("SPT_LOG", None);
+    }
+
+    #[test]
+    fn resolve_filter_simple_module_level() {
+        set_env("SPT_LOG", Some("spt_supervisor=debug"));
+        let g = defaults();
+        let d = resolve_filter_directive(&g);
+        assert_eq!(d, "spt_supervisor=debug");
+        set_env("SPT_LOG", None);
+    }
+
+    #[test]
+    fn resolve_filter_global_off_then_per_module_on() {
+        set_env("SPT_LOG", Some("off,spt_ssh2=info"));
+        let g = defaults();
+        let d = resolve_filter_directive(&g);
+        assert!(d.starts_with("off"));
+        assert!(d.contains("spt_ssh2=info"));
+        set_env("SPT_LOG", None);
+    }
+
+    #[test]
+    fn resolve_filter_three_module_combination() {
+        set_env(
+            "SPT_LOG",
+            Some("info,spt_ssh2=trace,spt_supervisor=debug,spt_mcp=warn"),
+        );
+        let g = defaults();
+        let d = resolve_filter_directive(&g);
+        assert!(d.contains("spt_mcp=warn"));
+        set_env("SPT_LOG", None);
+    }
+
+    #[test]
+    fn resolve_filter_with_verbose_two_flag_only() {
+        set_env("SPT_LOG", None);
+        let mut g = defaults();
+        g.verbose = 2;
+        assert_eq!(resolve_filter_directive(&g), "trace");
+    }
+
+    #[test]
+    fn resolve_filter_env_takes_precedence_over_verbose() {
+        set_env("SPT_LOG", Some("warn"));
+        let mut g = defaults();
+        g.verbose = 2;
+        assert_eq!(resolve_filter_directive(&g), "warn");
+        set_env("SPT_LOG", None);
+    }
 }

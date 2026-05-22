@@ -18,11 +18,11 @@
 //! re-send a frame inside the same session causes AEAD decrypt failure
 //! at the next frame boundary (counter desync).
 //!
-//! ## ReplayWindow status (per t8-A6 brief)
+//! ## `ReplayWindow` status (per t8-A6 brief)
 //!
-//! `ReplayWindow` (BTreeSet) **exists** — see `shadowsocks.rs:298`.
+//! `ReplayWindow` (`BTreeSet`) **exists** — see `shadowsocks.rs:298`.
 //! Capacity: 1024 (`REPLAY_WINDOW` const). Implementation: bounded
-//! BTreeSet, oldest-entry eviction.
+//! `BTreeSet`, oldest-entry eviction.
 
 use std::sync::Arc;
 

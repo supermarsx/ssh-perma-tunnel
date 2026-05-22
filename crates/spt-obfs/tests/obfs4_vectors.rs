@@ -4,26 +4,29 @@
 //!
 //! The obfs4 client in `crates/spt-obfs/src/obfs4.rs` is **a minimal
 //! subset** that is NOT wire-compatible with Yawning Angel's reference
-//! `obfs4proxy` (see the module doc-comment, lines 17-21). In particular:
+//! `obfs4proxy` (see the module doc-comment). In particular:
 //!
 //! * The NTOR construction folds the bridge identity (`B`) into the salt
 //!   alone rather than producing two ECDH outputs and concatenating;
 //!   `obfs4proxy` follows the full NTOR-curve25519-sha256 spec.
-//! * The framing layer uses ChaCha20-Poly1305 with our own 2-byte
-//!   length prefix + AAD `b"obfs4-frame"`, which differs from the
-//!   obfs4-spec's NaCl `crypto_secretbox` + scrambled length field.
+//! * The framing layer **now** uses **XSalsa20-Poly1305** (`NaCl`
+//!   `crypto_secretbox`) with a 24-byte per-direction counter nonce, per
+//!   obfs4-spec §6. This was fixed in `t8-FixObfs4` (previously
+//!   ChaCha20-Poly1305). Length prefixes are XOR-obfuscated by a
+//!   SHA-256 keystream derived from the secretbox key + nonce.
 //!
 //! As a consequence, **published `obfs4proxy` reference vectors will not
-//! reproduce against this implementation**. The vectors pinned in this
-//! file are *self-vectors*: byte-exact outputs of `ntor_kdf` and
-//! `seal_frame` for fixed inputs. They guard against silent regressions
-//! within our implementation. The four named tests in the task spec are
+//! reproduce against this implementation** until the NTOR construction
+//! is also realigned with the spec. The vectors pinned in this file are
+//! *self-vectors*: byte-exact outputs of `ntor_kdf` and `seal_frame`
+//! for fixed inputs. They guard against silent regressions within our
+//! implementation. The four named tests in the task spec are
 //! satisfied by:
 //!
 //! | task spec name                          | role                                   |
 //! |-----------------------------------------|----------------------------------------|
 //! | `ntor_handshake_known_vector`           | byte-exact client hello + auth digest  |
-//! | `ntor_handshake_rejects_bad_node_id`    | server vs. client node_id divergence   |
+//! | `ntor_handshake_rejects_bad_node_id`    | server vs. client `node_id` divergence |
 //! | `ntor_kdf_known_vector`                 | HKDF-style expansion fingerprint       |
 //! | `frame_decode_known_vector`             | framing round-trip + tamper rejection  |
 //!
@@ -134,16 +137,7 @@ fn ntor_kdf_known_vector() {
 
         // If the fixture has been backfilled (operator ran the helper
         // below), assert byte-exact equality.
-        if case.expected_c2s_hex != PLACEHOLDER {
-            assert_eq!(
-                hex::encode(c2s_key),
-                case.expected_c2s_hex,
-                "case {} c2s diverged",
-                case.name
-            );
-            assert_eq!(hex::encode(s2c_key), case.expected_s2c_hex);
-            assert_eq!(hex::encode(auth), case.expected_auth_hex);
-        } else {
+        if case.expected_c2s_hex == PLACEHOLDER {
             eprintln!(
                 "[t8-A4] KDF vector `{}`: expected fields are placeholders. \
                  Computed: c2s={}, s2c={}, auth={}.\n\
@@ -154,6 +148,15 @@ fn ntor_kdf_known_vector() {
                 hex::encode(s2c_key),
                 hex::encode(auth)
             );
+        } else {
+            assert_eq!(
+                hex::encode(c2s_key),
+                case.expected_c2s_hex,
+                "case {} c2s diverged",
+                case.name
+            );
+            assert_eq!(hex::encode(s2c_key), case.expected_s2c_hex);
+            assert_eq!(hex::encode(auth), case.expected_auth_hex);
         }
 
         // Independent of the placeholder: the OBFS4_PROTOID constant is
@@ -303,7 +306,7 @@ async fn ntor_handshake_rejects_bad_node_id() {
 }
 
 // ---------------------------------------------------------------------------
-// 4. frame_decode_known_vector (ChaCha20-Poly1305 framing)
+// 4. frame_decode_known_vector (XSalsa20-Poly1305 framing, t8-FixObfs4)
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -337,20 +340,20 @@ fn frame_decode_known_vector() {
         );
 
         // If the fixture has been backfilled, lock the byte string.
-        if case.expected_framed_hex != PLACEHOLDER {
-            assert_eq!(
-                hex::encode(&framed),
-                case.expected_framed_hex,
-                "case {} sealed bytes diverged from fixture",
-                case.name
-            );
-        } else {
+        if case.expected_framed_hex == PLACEHOLDER {
             eprintln!(
                 "[t8-A4] frame vector `{}`: expected bytes are a \
                  placeholder. Computed framed = {}. Backfill fixture to \
                  convert into a regression lock.",
                 case.name,
                 hex::encode(&framed)
+            );
+        } else {
+            assert_eq!(
+                hex::encode(&framed),
+                case.expected_framed_hex,
+                "case {} sealed bytes diverged from fixture",
+                case.name
             );
         }
     }

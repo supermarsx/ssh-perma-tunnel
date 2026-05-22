@@ -76,7 +76,7 @@ impl std::fmt::Debug for DiagnosticContext {
 #[async_trait]
 pub trait Diagnostic: Send + Sync {
     /// Stable group id (e.g. `network`, `os`). Logged at INFO.
-    fn group(&self) -> &str;
+    fn group(&self) -> &'static str;
     /// Run the diagnostic and return zero or more checks.
     async fn run(&self, ctx: &DiagnosticContext) -> Vec<Check>;
 }
@@ -175,7 +175,7 @@ mod tests {
     }
     #[async_trait]
     impl Diagnostic for Always {
-        fn group(&self) -> &str {
+        fn group(&self) -> &'static str {
             "always"
         }
         async fn run(&self, _ctx: &DiagnosticContext) -> Vec<Check> {

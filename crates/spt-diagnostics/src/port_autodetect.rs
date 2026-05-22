@@ -94,7 +94,7 @@ pub struct DetectedService {
 #[async_trait]
 pub trait Detector: Send + Sync {
     /// Stable, lowercase identifier (used in tracing).
-    fn name(&self) -> &str;
+    fn name(&self) -> &'static str;
     /// Try to detect. `None` means "this protocol isn't here, fall through";
     /// `Some(_)` ends the chain.
     async fn try_detect(&self, addr: SocketAddr, budget: Duration) -> Option<DetectedService>;
@@ -158,7 +158,7 @@ pub struct BannerDetector;
 
 #[async_trait]
 impl Detector for BannerDetector {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "banner"
     }
     async fn try_detect(&self, addr: SocketAddr, budget: Duration) -> Option<DetectedService> {
@@ -247,7 +247,7 @@ pub struct HttpDetector;
 
 #[async_trait]
 impl Detector for HttpDetector {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "http"
     }
     async fn try_detect(&self, addr: SocketAddr, budget: Duration) -> Option<DetectedService> {
@@ -279,7 +279,7 @@ pub struct PostgresDetector;
 
 #[async_trait]
 impl Detector for PostgresDetector {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "postgres"
     }
     async fn try_detect(&self, addr: SocketAddr, budget: Duration) -> Option<DetectedService> {
@@ -318,7 +318,7 @@ pub struct RedisDetector;
 
 #[async_trait]
 impl Detector for RedisDetector {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "redis"
     }
     async fn try_detect(&self, addr: SocketAddr, budget: Duration) -> Option<DetectedService> {
@@ -349,7 +349,7 @@ pub struct MqttDetector;
 
 #[async_trait]
 impl Detector for MqttDetector {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "mqtt"
     }
     async fn try_detect(&self, addr: SocketAddr, budget: Duration) -> Option<DetectedService> {
@@ -415,7 +415,7 @@ pub struct AmqpDetector;
 
 #[async_trait]
 impl Detector for AmqpDetector {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "amqp"
     }
     async fn try_detect(&self, addr: SocketAddr, budget: Duration) -> Option<DetectedService> {
@@ -460,7 +460,7 @@ pub struct LdapDetector;
 
 #[async_trait]
 impl Detector for LdapDetector {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "ldap"
     }
     async fn try_detect(&self, addr: SocketAddr, budget: Duration) -> Option<DetectedService> {
@@ -502,7 +502,7 @@ pub struct TlsDetector;
 
 #[async_trait]
 impl Detector for TlsDetector {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "tls"
     }
     async fn try_detect(&self, addr: SocketAddr, budget: Duration) -> Option<DetectedService> {
@@ -539,7 +539,7 @@ fn lossy(b: &[u8]) -> String {
 #[async_trait]
 pub trait UdpDetector: Send + Sync {
     /// Stable, lowercase identifier (used in tracing).
-    fn name(&self) -> &str;
+    fn name(&self) -> &'static str;
     /// Try to detect by sending a probe packet and reading the response.
     /// `None` means "this protocol isn't here, fall through"; `Some(_)`
     /// ends the chain.
@@ -602,7 +602,7 @@ pub struct DnsUdpDetector;
 
 #[async_trait]
 impl UdpDetector for DnsUdpDetector {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "dns"
     }
     async fn try_detect(&self, addr: SocketAddr, budget: Duration) -> Option<DetectedService> {
@@ -640,7 +640,7 @@ pub struct NtpUdpDetector;
 
 #[async_trait]
 impl UdpDetector for NtpUdpDetector {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "ntp"
     }
     async fn try_detect(&self, addr: SocketAddr, budget: Duration) -> Option<DetectedService> {
@@ -671,7 +671,7 @@ pub struct QuicUdpDetector;
 
 #[async_trait]
 impl UdpDetector for QuicUdpDetector {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "quic"
     }
     async fn try_detect(&self, addr: SocketAddr, budget: Duration) -> Option<DetectedService> {
@@ -714,7 +714,7 @@ pub struct SnmpUdpDetector;
 
 #[async_trait]
 impl UdpDetector for SnmpUdpDetector {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "snmp"
     }
     async fn try_detect(&self, addr: SocketAddr, budget: Duration) -> Option<DetectedService> {

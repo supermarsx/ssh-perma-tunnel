@@ -289,7 +289,7 @@ pub(crate) fn write_envelope(
 ) -> Result<Vec<u8>, Error> {
     if meta_bytes.len() > MAX_SECTION_LEN
         || body_bytes.len() > MAX_SECTION_LEN
-        || sig_bytes.map_or(false, |s| s.len() > MAX_SECTION_LEN)
+        || sig_bytes.is_some_and(|s| s.len() > MAX_SECTION_LEN)
     {
         return Err(Error::SecretCryptoFailed(
             "envelope section exceeds 16 MiB cap".into(),

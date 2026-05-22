@@ -87,7 +87,7 @@ impl LimitsDriver {
 
 #[async_trait]
 impl BenchmarkDriver for LimitsDriver {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "limits"
     }
     fn impact(&self) -> ImpactLevel {

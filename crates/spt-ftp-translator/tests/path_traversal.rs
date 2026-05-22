@@ -1,20 +1,26 @@
 //! t8-A6 path-traversal / injection tests for the FTP→SFTP translator.
 //!
-//! The translator normalises paths via `server::normalise` (private) before
-//! handing them to SFTP. Our policy:
+//! Policy (post-A6 fix, defense-in-depth at the FTP layer):
 //!
-//! * `..` segments are COLLAPSED by `normalise`, not rejected. Whether this
-//!   constitutes a vulnerability depends on the backend SFTP server's
-//!   chroot/jail. With the `MockSftpFactory` (used by tests + by the
-//!   `--in-process` CLI mode), the SFTP server is rooted at a tempdir — any
-//!   path that resolves outside that root will simply not exist and the
-//!   backend returns NoSuchFile.
-//! * NUL bytes and CR/LF in command lines are rejected at the framing layer
-//!   (each command is a single CRLF-terminated line; embedded NUL bytes
-//!   travel as-is into the SFTP request, which will reject them per the
-//!   SFTP wire format).
+//! * `..` path segments in any verb argument are REJECTED with `550
+//!   Permission denied` by [`validate_path_argument`] before being passed
+//!   to the SFTP backend. The backend SFTP server is *also* expected to
+//!   jail the session (chroot or per-user root), but the FTP-layer
+//!   rejection is the primary defense and does not rely on backend
+//!   configuration.
+//! * Embedded NUL bytes (`\0`) in path arguments are rejected with `553
+//!   File name not allowed`.
+//! * Mixed `/` and `\` separators are both honoured for segment splitting
+//!   (so a `foo\..\bar` payload cannot bypass the check on Windows-style
+//!   inputs).
+//! * Unicode-confusable codepoints (e.g. U+FF0E FULLWIDTH FULL STOP) are
+//!   currently NOT normalised to NFC before splitting. Such inputs do
+//!   not match the literal `..` filter; they instead reach the SFTP
+//!   backend, which returns `NoSuchFile`. Adding a
+//!   `unicode-normalization` workspace dep is deferred.
+//! * CR/LF in command lines is split by the framing layer per RFC 959.
 //!
-//! These tests assert the observed behavior and surface gaps in the log.
+//! These tests assert the post-fix behavior.
 
 #![cfg(feature = "testing")]
 #![allow(clippy::too_many_lines)]
@@ -97,21 +103,19 @@ async fn login(
 }
 
 // ---------------------------------------------------------------------------
-// 1. CWD `..` from `/` stays at `/` (normalisation absorbs parent-dir).
+// 1. CWD `..` is REJECTED at the FTP layer with 550.
 // ---------------------------------------------------------------------------
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn cwd_dotdot_from_root_collapses_to_root() {
+async fn cwd_dotdot_rejected_with_550() {
     let (addr, handle, _dir) = spawn_translator().await;
     let (mut br, mut wr) = connect(addr).await;
     login(&mut br, &mut wr).await;
 
     send(&mut wr, "CWD ..").await;
     let r = recv_line(&mut br).await;
-    // 250 = OK (CWD succeeded — normalised to `/`). The behavior is "no-op
-    // when at root". A strict-jail backend would 550 here.
     assert!(
-        r.starts_with("250") || r.starts_with("550"),
-        "CWD .. response unexpected: `{r}`"
+        r.starts_with("550"),
+        "CWD .. must be rejected with 550, got: `{r}`"
     );
 
     // Verify we're still effectively at `/` by issuing PWD.
@@ -122,13 +126,12 @@ async fn cwd_dotdot_from_root_collapses_to_root() {
 }
 
 // ---------------------------------------------------------------------------
-// 2. RETR with `..` segments resolves below root → NoSuchFile / 550.
+// 2. RETR with `..` segments is REJECTED at the FTP layer with 550 before
+//    the data channel is touched.
 // ---------------------------------------------------------------------------
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn retr_dotdot_outside_root_yields_no_such_file() {
+async fn retr_dotdot_rejected_at_ftp_layer() {
     let (addr, handle, dir) = spawn_translator().await;
-    // Place a file in the tempdir root.
-    std::fs::write(dir.path().join("safe.txt"), b"safe").unwrap();
     // Place a sibling file OUTSIDE the tempdir to ensure the `..` traversal
     // would land on it if not contained.
     let outside_dir = tempfile::tempdir().unwrap();
@@ -139,35 +142,19 @@ async fn retr_dotdot_outside_root_yields_no_such_file() {
     send(&mut wr, "TYPE I").await;
     let _ = recv_line(&mut br).await;
 
-    // RETR with a `..` segment that would (if unchecked) escape the
-    // tempdir. The translator normalises this to `/evil.txt`, which the
-    // mock SFTP rooted at `dir.path()` doesn't have → NoSuchFile.
     send(&mut wr, "PASV").await;
-    let pasv = recv_line(&mut br).await;
-    let port = parse_pasv_port(&pasv).expect("pasv port");
+    let _pasv = recv_line(&mut br).await;
     send(&mut wr, "RETR ../evil.txt").await;
-    // The server may issue a 150 mark + open the data connection. Open
-    // and immediately close to unblock the server-side state.
-    if let Ok(mut dc) =
-        TcpStream::connect(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port)).await
-    {
-        let _ = dc.shutdown().await;
-    }
-    // Read responses until we see a 5xx final or accumulate two responses.
-    let r1 = recv_line(&mut br).await;
-    let r2 = if r1.starts_with("150") {
-        recv_line(&mut br).await
-    } else {
-        r1.clone()
-    };
-    // At least one of the responses must be a failure.
+    let r = recv_line(&mut br).await;
     assert!(
-        r1.starts_with('5') || r2.starts_with('5'),
-        "../evil.txt traversal must not succeed; got `{r1}` then `{r2}`"
+        r.starts_with("550"),
+        "RETR ../evil.txt must be rejected with 550, got: `{r}`"
     );
+
     // Critically: the OUTSIDE file is intact and was NOT served.
     let outside_content = std::fs::read(outside_dir.path().join("evil.txt")).unwrap();
     assert_eq!(outside_content, b"evil");
+    let _ = dir; // keep tempdir alive
     handle.shutdown();
 }
 
@@ -226,9 +213,10 @@ async fn rename_dotdot_does_not_escape_root() {
     assert!(r.starts_with("350") || r.starts_with('5'), "RNFR: {r}");
     send(&mut wr, "RNTO ../../evil.txt").await;
     let r2 = recv_line(&mut br).await;
-    // 250 (rename ok, normalised) or 5xx (rejected). Either way, the
-    // system filesystem outside tempdir must be unaffected.
-    let _ = r2;
+    assert!(
+        r2.starts_with("550"),
+        "RNTO with `..` must be rejected with 550, got: `{r2}`"
+    );
     let outside_root = std::path::Path::new("/evil.txt");
     if outside_root.exists() {
         panic!("rename escaped to /evil.txt");
@@ -312,6 +300,77 @@ async fn crlf_in_arg_splits_into_two_verbs() {
     assert!(
         r2.chars().next().is_some_and(|c| c.is_ascii_digit()),
         "second response wasn't structured: `{r2}`"
+    );
+    handle.shutdown();
+}
+
+// ---------------------------------------------------------------------------
+// 8. Mixed-separator traversal: `foo\..\bar` must be rejected too. The
+//    validator splits on BOTH `/` and `\` so a Windows-style backslash
+//    payload cannot smuggle a `..` segment past the check.
+// ---------------------------------------------------------------------------
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cwd_backslash_dotdot_rejected() {
+    let (addr, handle, _dir) = spawn_translator().await;
+    let (mut br, mut wr) = connect(addr).await;
+    login(&mut br, &mut wr).await;
+
+    send(&mut wr, "CWD foo\\..\\bar").await;
+    let r = recv_line(&mut br).await;
+    assert!(
+        r.starts_with("550"),
+        "CWD foo\\..\\bar must be rejected with 550, got: `{r}`"
+    );
+    handle.shutdown();
+}
+
+// ---------------------------------------------------------------------------
+// 9. Unicode-confusable dot (U+FF0E FULLWIDTH FULL STOP) is NOT collapsed
+//    to ASCII `..` — it passes the validator (deferred) but reaches the
+//    SFTP backend, which has no such directory. The legitimate file
+//    outside the root must remain unread/unwritten.
+// ---------------------------------------------------------------------------
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cwd_fullwidth_dot_does_not_traverse() {
+    let (addr, handle, _dir) = spawn_translator().await;
+    let (mut br, mut wr) = connect(addr).await;
+    login(&mut br, &mut wr).await;
+
+    // U+FF0E twice — NFC would normalise to ASCII `.` but we don't NFC.
+    let cmd = "CWD \u{FF0E}\u{FF0E}";
+    send(&mut wr, cmd).await;
+    let r = recv_line(&mut br).await;
+    // Either the FTP validator passes it through and the backend returns
+    // 5xx (NoSuchFile), or the validator catches it. Either way the
+    // result must NOT be a successful CWD that puts us above root.
+    assert!(
+        r.starts_with('5'),
+        "fullwidth-dot CWD must not succeed, got: `{r}`"
+    );
+    handle.shutdown();
+}
+
+// ---------------------------------------------------------------------------
+// 10. Empty path segments (e.g. `foo//bar`) are allowed — they collapse
+//     to `foo/bar` via `normalise()`. Confirms the validator is not
+//     over-aggressive: only `..` segments are blocked.
+// ---------------------------------------------------------------------------
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cwd_empty_segments_allowed() {
+    let (addr, handle, dir) = spawn_translator().await;
+    // Create a `sub/` dir in the rooted tempdir.
+    std::fs::create_dir(dir.path().join("sub")).unwrap();
+
+    let (mut br, mut wr) = connect(addr).await;
+    login(&mut br, &mut wr).await;
+
+    // `//sub` and `/sub//` and `sub//` should all be accepted by the
+    // validator (empty segments → collapse to `/sub`).
+    send(&mut wr, "CWD //sub").await;
+    let r = recv_line(&mut br).await;
+    assert!(
+        r.starts_with("250"),
+        "CWD //sub must succeed (empty seg ok), got: `{r}`"
     );
     handle.shutdown();
 }

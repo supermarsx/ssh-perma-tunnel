@@ -7,18 +7,23 @@
 //! * the NTOR-style handshake (X25519 ECDH + HMAC-SHA256 KDF), with the
 //!   handshake byte layout matching the Tor obfs4-spec
 //!   <https://gitlab.com/yawning/obfs4/-/blob/master/doc/obfs4-spec.txt>,
-//! * ChaCha20-Poly1305 frame layer with per-frame counter nonce,
+//! * **XSalsa20-Poly1305** (`NaCl` `crypto_secretbox`) frame layer with a
+//!   24-byte per-direction counter nonce starting at 0 (matches the
+//!   obfs4-spec §6 primitive — t8-FixObfs4 corrected this from the
+//!   earlier ChaCha20-Poly1305 stand-in),
 //! * IAT mode 0 / 1 / 2 selection (mode 0 = no IAT, mode 1 = paranoid,
 //!   mode 2 = normal). Active IAT packet-timing distribution shaping is
 //!   selectable but the heavy distributions are **not** implemented —
 //!   mode 1 enforces a deterministic minimum inter-frame delay while
 //!   mode 2 is best-effort.
 //!
-//! Wire-incompatibility caveats (see `.orchestration/logs/t7-A4.md` §d):
-//! the framing layer matches obfs4proxy in shape but is not cross-tested
-//! against published vectors (none exist in machine-readable form). For
-//! production use against external bridges, validate against an
-//! obfs4proxy reference instance.
+//! Wire-incompatibility caveats remain on the NTOR side (see the t8-A4
+//! follow-up bug A4-1 and `.orchestration/logs/t8-FixObfs4.md`): the
+//! NTOR construction folds the bridge identity (`B`) into the HKDF salt
+//! rather than producing two ECDH outputs and concatenating per spec.
+//! That rewrite is out of scope for the framing-primitive fix tracked
+//! here; for production use against external bridges, validate against
+//! an obfs4proxy reference instance.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -27,8 +32,6 @@ use std::task::{Context, Poll};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use chacha20poly1305::aead::{Aead, KeyInit, Payload};
-use chacha20poly1305::{ChaCha20Poly1305, Nonce};
 use hmac::{Hmac, Mac};
 use rand::RngCore;
 use sha2::{Digest, Sha256};
@@ -36,6 +39,8 @@ use subtle::ConstantTimeEq;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::TcpStream;
 use x25519_dalek::{PublicKey, StaticSecret};
+use xsalsa20poly1305::aead::{Aead, KeyInit, Payload};
+use xsalsa20poly1305::{Nonce as XNonce, XSalsa20Poly1305};
 
 use spt_core::Result;
 
@@ -314,24 +319,30 @@ where
     Ok(keys)
 }
 
-/// ChaCha20-Poly1305 frame layer.
+/// `XSalsa20-Poly1305` (`NaCl` `crypto_secretbox`) frame layer.
 ///
 /// Frame format:
 ///
 /// ```text
-/// [be u16 plaintext_len] [encrypted body + tag(16)]
+/// [be u16 obfuscated_plaintext_len] [secretbox ciphertext + tag(16)]
 /// ```
 ///
-/// Length field is sent in the clear (single-frame stream cipher would
-/// hide it; obfs4-spec uses an obfuscation byte stream over the length
-/// which we approximate here by XOR-masking with a per-direction
-/// length-cipher byte derived from the key). For the SSH-tunnel use
-/// case the wire is not analysed by a DPI box past initial handshake.
+/// Per obfs4-spec §6 the length prefix is XOR-obfuscated by a separate
+/// per-direction keystream so a DPI box cannot read the frame size in the
+/// clear. We derive a `length_obf_seed` per direction by hashing the
+/// secretbox key, and XOR each 2-byte prefix against the first 2 bytes of
+/// `SHA-256(length_obf_seed || nonce_24)`.
+///
+/// Nonce: 24-byte per-direction counter starting at 0 and incrementing by
+/// 1 per frame (little-endian in the low 8 bytes; the remaining 16 bytes
+/// are zero). This matches the obfs4-spec; the `XSalsa20` 24-byte nonce
+/// width is what makes counter-only operation safe (no birthday concerns
+/// over realistic session lifetimes).
 pub struct Obfs4Stream {
     inner: Box<dyn AsyncReadWrite>,
     c2s_key: [u8; 32],
     s2c_key: [u8; 32],
-    /// Outbound counter (LE, lower 8 bytes of the 12-byte nonce).
+    /// Outbound counter (LE, lower 8 bytes of the 24-byte nonce).
     tx_ctr: u64,
     rx_ctr: u64,
     /// Read state.
@@ -366,22 +377,48 @@ impl Obfs4Stream {
         }
     }
 
-    fn next_tx_nonce(&mut self) -> Nonce {
-        let mut n = [0u8; 12];
-        n[..8].copy_from_slice(&self.tx_ctr.to_le_bytes());
+    fn next_tx_ctr(&mut self) -> u64 {
+        let c = self.tx_ctr;
         self.tx_ctr = self.tx_ctr.wrapping_add(1);
-        *Nonce::from_slice(&n)
+        c
     }
 
-    fn next_rx_nonce(&mut self) -> Nonce {
-        let mut n = [0u8; 12];
-        n[..8].copy_from_slice(&self.rx_ctr.to_le_bytes());
+    fn next_rx_ctr(&mut self) -> u64 {
+        let c = self.rx_ctr;
         self.rx_ctr = self.rx_ctr.wrapping_add(1);
-        *Nonce::from_slice(&n)
+        c
     }
 }
 
+/// Build the 24-byte XSalsa20-Poly1305 nonce for an obfs4 frame from a
+/// 64-bit counter. Low 8 bytes = counter LE, high 16 bytes = zero.
+#[must_use]
+pub fn obfs4_nonce_from_ctr(ctr: u64) -> [u8; 24] {
+    let mut n = [0u8; 24];
+    n[..8].copy_from_slice(&ctr.to_le_bytes());
+    n
+}
+
+/// Compute the 2-byte length-prefix XOR mask for a given direction key
+/// and 24-byte nonce. Mask = first 2 bytes of `SHA-256("obfs4-len" ||
+/// key || nonce)`. Splits the length-obfuscation stream cleanly from
+/// the secretbox key, so a passive observer cannot infer the prefix
+/// without the session key.
+fn length_mask(key: &[u8; 32], nonce: &[u8; 24]) -> [u8; 2] {
+    let mut h = Sha256::new();
+    h.update(b"obfs4-len");
+    h.update(key);
+    h.update(nonce);
+    let d = h.finalize();
+    [d[0], d[1]]
+}
+
 /// Encrypt a single obfs4 frame. Used by the in-process round-trip test.
+///
+/// Returns `[obfuscated_len(2)] [secretbox(plaintext)]` where
+/// `obfuscated_len = plaintext.len() XOR length_mask(key, nonce)` and
+/// the secretbox output is `XSalsa20-Poly1305(plaintext, nonce, key)`
+/// with the Poly1305 tag appended.
 pub fn seal_frame(
     key: &[u8; 32],
     nonce_ctr: u64,
@@ -393,22 +430,24 @@ pub fn seal_frame(
             plaintext.len()
         )));
     }
-    let cipher = ChaCha20Poly1305::new_from_slice(key)
-        .map_err(|e| ObfsError::Handshake(format!("chacha: {e}")))?;
-    let mut n = [0u8; 12];
-    n[..8].copy_from_slice(&nonce_ctr.to_le_bytes());
-    let nonce = Nonce::from_slice(&n);
+    let cipher = XSalsa20Poly1305::new_from_slice(key)
+        .map_err(|e| ObfsError::Handshake(format!("xsalsa20poly1305: {e}")))?;
+    let nonce_bytes = obfs4_nonce_from_ctr(nonce_ctr);
+    let nonce = XNonce::from_slice(&nonce_bytes);
     let ct = cipher
         .encrypt(
             nonce,
             Payload {
                 msg: plaintext,
-                aad: b"obfs4-frame",
+                aad: b"",
             },
         )
         .map_err(|e| ObfsError::Handshake(format!("seal: {e}")))?;
+    let mask = length_mask(key, &nonce_bytes);
+    let plen_bytes = (plaintext.len() as u16).to_be_bytes();
+    let obf_len = [plen_bytes[0] ^ mask[0], plen_bytes[1] ^ mask[1]];
     let mut out = Vec::with_capacity(2 + ct.len());
-    out.extend_from_slice(&(plaintext.len() as u16).to_be_bytes());
+    out.extend_from_slice(&obf_len);
     out.extend_from_slice(&ct);
     Ok(out)
 }
@@ -422,7 +461,10 @@ pub fn open_frame(
     if framed.len() < 2 + 16 {
         return Err(ObfsError::Handshake("obfs4: short frame".into()));
     }
-    let plen = u16::from_be_bytes([framed[0], framed[1]]) as usize;
+    let nonce_bytes = obfs4_nonce_from_ctr(nonce_ctr);
+    let mask = length_mask(key, &nonce_bytes);
+    let plen =
+        u16::from_be_bytes([framed[0] ^ mask[0], framed[1] ^ mask[1]]) as usize;
     if plen == 0 || plen > MAX_FRAME_PT {
         return Err(ObfsError::Handshake(format!("obfs4: bad plen {plen}")));
     }
@@ -433,17 +475,15 @@ pub fn open_frame(
             2 + plen + 16
         )));
     }
-    let cipher = ChaCha20Poly1305::new_from_slice(key)
-        .map_err(|e| ObfsError::Handshake(format!("chacha: {e}")))?;
-    let mut n = [0u8; 12];
-    n[..8].copy_from_slice(&nonce_ctr.to_le_bytes());
-    let nonce = Nonce::from_slice(&n);
+    let cipher = XSalsa20Poly1305::new_from_slice(key)
+        .map_err(|e| ObfsError::Handshake(format!("xsalsa20poly1305: {e}")))?;
+    let nonce = XNonce::from_slice(&nonce_bytes);
     let pt = cipher
         .decrypt(
             nonce,
             Payload {
                 msg: &framed[2..],
-                aad: b"obfs4-frame",
+                aad: b"",
             },
         )
         .map_err(|e| ObfsError::Handshake(format!("open: {e}")))?;
@@ -467,9 +507,12 @@ impl AsyncRead for Obfs4Stream {
                 return Poll::Ready(Ok(()));
             }
 
+            // In Body state the 2-byte length prefix is still in rx_buf
+            // (we deliberately leave it so the obfuscated mask can be
+            // recomputed once the receive counter is advanced).
             let target_len = match self.rx_state {
                 RxState::Length => 2usize,
-                RxState::Body { plaintext_len } => plaintext_len + 16,
+                RxState::Body { plaintext_len } => 2 + plaintext_len + 16,
             };
             if self.rx_buf.len() < target_len {
                 let mut tmp = [0u8; 4096];
@@ -491,7 +534,17 @@ impl AsyncRead for Obfs4Stream {
 
             match self.rx_state {
                 RxState::Length => {
-                    let plen = u16::from_be_bytes([self.rx_buf[0], self.rx_buf[1]]) as usize;
+                    // The length prefix is XOR-obfuscated by `length_mask`
+                    // keyed on the *next* receive nonce. Peek the mask
+                    // without consuming the counter so the body decrypt
+                    // uses the same nonce.
+                    let peek_ctr = self.rx_ctr;
+                    let nonce_bytes = obfs4_nonce_from_ctr(peek_ctr);
+                    let mask = length_mask(&self.s2c_key, &nonce_bytes);
+                    let plen = u16::from_be_bytes([
+                        self.rx_buf[0] ^ mask[0],
+                        self.rx_buf[1] ^ mask[1],
+                    ]) as usize;
                     if plen == 0 || plen > MAX_FRAME_PT {
                         return Poll::Ready(Err(std::io::Error::new(
                             std::io::ErrorKind::InvalidData,
@@ -503,30 +556,15 @@ impl AsyncRead for Obfs4Stream {
                     };
                 }
                 RxState::Body { plaintext_len } => {
-                    let needed = plaintext_len + 16;
-                    let body: Vec<u8> = self.rx_buf.drain(..needed).collect();
-                    // Length prefix was consumed as part of state transition;
-                    // re-prepend so open_frame can verify the shape.
-                    let mut framed = Vec::with_capacity(2 + body.len());
-                    framed.extend_from_slice(&(plaintext_len as u16).to_be_bytes());
-                    framed.extend_from_slice(&body);
-                    let nonce = self.next_rx_nonce();
-                    let mut n8 = [0u8; 8];
-                    n8.copy_from_slice(&nonce.as_slice()[..8]);
-                    let ctr = u64::from_le_bytes(n8);
+                    // Drain the obfuscated length prefix + secretbox body
+                    // as one contiguous framed slice.
+                    let total = 2 + plaintext_len + 16;
+                    let framed: Vec<u8> = self.rx_buf.drain(..total).collect();
+                    let ctr = self.next_rx_ctr();
                     let pt = open_frame(&self.s2c_key, ctr, &framed).map_err(|e| {
                         std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string())
                     })?;
                     self.pending = pt;
-                    // Consume the length-prefix bytes we already used.
-                    // (They were drained at state==Length time above via
-                    // self.rx_buf indexing — but we re-allocated framed
-                    // from body; need to clear the leading 2 bytes that
-                    // were left in rx_buf.) Actually we never drained them
-                    // — fix that here.
-                    if self.rx_buf.len() >= 2 {
-                        self.rx_buf.drain(..2);
-                    }
                     self.rx_state = RxState::Length;
                 }
             }
@@ -564,10 +602,7 @@ impl AsyncWrite for Obfs4Stream {
 
         let chunk_len = data.len().min(MAX_FRAME_PT);
         let chunk = &data[..chunk_len];
-        let nonce = self.next_tx_nonce();
-        let mut n8 = [0u8; 8];
-        n8.copy_from_slice(&nonce.as_slice()[..8]);
-        let ctr = u64::from_le_bytes(n8);
+        let ctr = self.next_tx_ctr();
         let frame = seal_frame(&self.c2s_key, ctr, chunk)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
 
@@ -692,5 +727,51 @@ mod tests {
         let pt = b"hello".to_vec();
         let framed = seal_frame(&key, 0, &pt).unwrap();
         assert!(open_frame(&key, 1, &framed).is_err());
+    }
+
+    /// t8-FixObfs4 smoke test: confirms the framing layer is
+    /// `XSalsa20-Poly1305` (24-byte nonce, `NaCl` secretbox) rather than
+    /// the earlier `ChaCha20-Poly1305` stand-in (12-byte nonce). Asserts:
+    /// (1) the nonce-construction helper produces 24 bytes,
+    /// (2) two consecutive frames with the same key but different
+    ///     counters produce distinct ciphertext bytes (proves the
+    ///     counter advances and is consumed by the cipher), and
+    /// (3) a deliberate length-prefix obfuscation: the 2 prefix bytes
+    ///     of `seal_frame(key, 0, &[0u8; 1])` should NOT equal the
+    ///     plaintext length `0x00 0x01` because of XOR masking.
+    #[test]
+    fn framing_uses_24_byte_nonce_not_12() {
+        // (1) Nonce-from-counter helper is 24 bytes (not 12).
+        let n = obfs4_nonce_from_ctr(42);
+        assert_eq!(
+            n.len(),
+            24,
+            "obfs4 framing must use 24-byte XSalsa20 nonces"
+        );
+        // First 8 bytes carry the counter LE; remaining 16 are zero.
+        assert_eq!(&n[..8], &42u64.to_le_bytes());
+        assert!(n[8..].iter().all(|b| *b == 0));
+
+        // (2) Counter advance changes the ciphertext.
+        let key = [11u8; 32];
+        let pt = b"smoke".to_vec();
+        let f0 = seal_frame(&key, 0, &pt).unwrap();
+        let f1 = seal_frame(&key, 1, &pt).unwrap();
+        assert_ne!(f0, f1, "counter must influence ciphertext");
+
+        // (3) Length prefix is XOR-masked: the prefix bytes are very
+        // unlikely to equal the BE plaintext-length encoding.
+        let small = vec![0u8; 1];
+        let f = seal_frame(&key, 0, &small).unwrap();
+        let plaintext_len_be = (small.len() as u16).to_be_bytes();
+        assert_ne!(
+            &f[..2],
+            &plaintext_len_be[..],
+            "length prefix must be XOR-obfuscated, not sent in the clear"
+        );
+
+        // (4) Frame shape: 2-byte prefix + ciphertext (= pt + 16-byte
+        // Poly1305 tag). No extra AAD framing bytes.
+        assert_eq!(f.len(), 2 + small.len() + 16);
     }
 }

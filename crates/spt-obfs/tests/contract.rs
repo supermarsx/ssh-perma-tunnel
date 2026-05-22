@@ -727,8 +727,21 @@ fn unsupported_variant_round_trip_via_error() {
 #[tokio::test]
 async fn obfs4_frame_streaming_bidirectional() {
     // Self-loop using the obfs4 frame primitives — send N frames,
-    // receive in order, verify counter progression.
-    use spt_obfs::obfs4::{open_frame, seal_frame};
+    // receive in order, verify counter progression. As of t8-FixObfs4
+    // the length prefix is XOR-obfuscated by the secretbox key + nonce,
+    // so we recover plen via `obfs4_nonce_from_ctr` + SHA-256
+    // length-mask (mirrored from `obfs4.rs::length_mask`).
+    use sha2::{Digest, Sha256};
+    use spt_obfs::obfs4::{obfs4_nonce_from_ctr, open_frame, seal_frame};
+    fn unmask_len(key: &[u8; 32], ctr: u64, framed: &[u8]) -> usize {
+        let nonce = obfs4_nonce_from_ctr(ctr);
+        let mut h = Sha256::new();
+        h.update(b"obfs4-len");
+        h.update(key);
+        h.update(nonce);
+        let d = h.finalize();
+        u16::from_be_bytes([framed[0] ^ d[0], framed[1] ^ d[1]]) as usize
+    }
     let key = [0x42u8; 32];
     let payloads: Vec<Vec<u8>> = (0..16u8).map(|i| vec![i; (i as usize + 1) * 7]).collect();
     let mut wire = Vec::new();
@@ -736,12 +749,13 @@ async fn obfs4_frame_streaming_bidirectional() {
         let f = seal_frame(&key, i as u64, pl).unwrap();
         wire.extend_from_slice(&f);
     }
-    // Parse back. Length is be u16; each frame is 2 + plen + 16.
+    // Parse back. Each frame is 2-byte (obfuscated) len + plen + 16
+    // tag.
     let mut cursor = 0;
     let mut got: Vec<Vec<u8>> = Vec::new();
     let mut ctr = 0u64;
     while cursor < wire.len() {
-        let plen = u16::from_be_bytes([wire[cursor], wire[cursor + 1]]) as usize;
+        let plen = unmask_len(&key, ctr, &wire[cursor..cursor + 2]);
         let end = cursor + 2 + plen + 16;
         let frame = &wire[cursor..end];
         let pt = open_frame(&key, ctr, frame).unwrap();
