@@ -1774,6 +1774,110 @@ fn check_forward(
         f.udp_idle_timeout.as_deref(),
         format!("{prefix}.udp_idle_timeout"),
     );
+    check_forward_link_kind(d, f, &prefix);
+}
+
+/// Validate the optional `Forward::link_kind` field and its coupling with
+/// the `udp_mode`/`remote_socket_path`/`local_socket_path` siblings (t7-B4).
+///
+/// Recognised `link_kind` values: `tcp` | `local_uds` | `remote_uds` | `udp`.
+/// When `link_kind` is absent the forward defaults to TCP/UDP per the
+/// existing `transport` field — only an explicit value is policed here.
+///
+/// UDS paths are POSIX (server-side `direct-streamlocal@openssh.com`
+/// / `streamlocal-forward@openssh.com`), so absoluteness is checked by
+/// the leading `/` rather than `Path::is_absolute` (which is platform
+/// dependent on Windows).
+fn check_forward_link_kind(d: &mut Diagnostics, f: &Forward, prefix: &str) {
+    let link_kind = f.link_kind.as_deref();
+
+    // (1) Vocabulary.
+    if let Some(kind) = link_kind {
+        if !matches!(kind, "tcp" | "local_uds" | "remote_uds" | "udp") {
+            d.push(
+                Diagnostic::error(
+                    "forward_link_kind_invalid",
+                    format!("forward `{}` has unknown link kind `{kind}`", f.name),
+                )
+                .at(format!("{prefix}.kind")),
+            );
+        }
+    }
+
+    // (2) udp_mode <-> udp link_kind coupling.
+    let link_is_udp = matches!(link_kind, Some("udp"));
+    if link_is_udp && f.udp_mode.is_none() {
+        d.push(
+            Diagnostic::error(
+                "forward_udp_link_requires_udp_mode",
+                format!(
+                    "forward `{}` has link kind `udp` but no `udp_mode` set",
+                    f.name
+                ),
+            )
+            .at(format!("{prefix}.udp_mode")),
+        );
+    }
+    if f.udp_mode.is_some() && !link_is_udp {
+        d.push(
+            Diagnostic::error(
+                "forward_udp_mode_requires_udp_link_kind",
+                format!(
+                    "forward `{}` sets `udp_mode` but link kind is not `udp`",
+                    f.name
+                ),
+            )
+            .at(format!("{prefix}.udp_mode")),
+        );
+    }
+
+    // (3) local_uds — needs the server-side socket path.
+    if matches!(link_kind, Some("local_uds")) {
+        let remote_empty = f
+            .remote_socket_path
+            .as_deref()
+            .is_none_or(|s| s.trim().is_empty());
+        if remote_empty {
+            d.push(
+                Diagnostic::error(
+                    "forward_local_uds_requires_remote_socket_path",
+                    format!(
+                        "forward `{}` has link kind `local_uds` but `remote_socket_path` is missing or empty",
+                        f.name
+                    ),
+                )
+                .at(format!("{prefix}.remote_socket_path")),
+            );
+        }
+    }
+
+    // (4) remote_uds — needs the local socket path AND it must be absolute.
+    if matches!(link_kind, Some("remote_uds")) {
+        let local = f.local_socket_path.as_deref().map(str::trim).unwrap_or("");
+        if local.is_empty() {
+            d.push(
+                Diagnostic::error(
+                    "forward_remote_uds_requires_local_socket_path",
+                    format!(
+                        "forward `{}` has link kind `remote_uds` but `local_socket_path` is missing or empty",
+                        f.name
+                    ),
+                )
+                .at(format!("{prefix}.local_socket_path")),
+            );
+        } else if !local.starts_with('/') {
+            d.push(
+                Diagnostic::error(
+                    "forward_remote_uds_local_socket_path_relative",
+                    format!(
+                        "forward `{}` `local_socket_path` `{local}` must be an absolute POSIX path (start with `/`)",
+                        f.name
+                    ),
+                )
+                .at(format!("{prefix}.local_socket_path")),
+            );
+        }
+    }
 }
 
 fn check_secret_ref_shape(d: &mut Diagnostics, value: &str, path: String) {
@@ -2711,5 +2815,284 @@ mod tests {
             .warnings
             .iter()
             .any(|w| w.code == "snmp_enterprise_id_documentation"));
+    }
+
+    // ---------------------------------------------------------------------
+    // t7-B4: Forward.link_kind validation (6 diagnostics) and the
+    // "experimental_*" warning audit (3 regression tests + 1 Phase 0
+    // preservation test). See `.orchestration/logs/t7-B4-retry.md`.
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn forward_link_kind_invalid_emits_diagnostic_t7_b4() {
+        let raw = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            [[profiles.forwards]]
+            name = "f"
+            type = "local"
+            transport = "tcp"
+            bind = "127.0.0.1:9000"
+            target = "127.0.0.1:22"
+            kind = "bogus"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(
+            d.errors
+                .iter()
+                .any(|e| e.code == "forward_link_kind_invalid"),
+            "errors = {:?}",
+            d.errors
+        );
+    }
+
+    #[test]
+    fn forward_udp_link_requires_udp_mode_t7_b4() {
+        // `link_kind = "udp"` but no `udp_mode` set.
+        let raw = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh3"
+            endpoint = "https://x.example.com:443/ssh3"
+            experimental_ack = "i_accept_ssh3_experimental"
+            [[profiles.forwards]]
+            name = "f"
+            type = "local"
+            transport = "udp"
+            bind = "127.0.0.1:9000"
+            target = "127.0.0.1:53"
+            kind = "udp"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(
+            d.errors
+                .iter()
+                .any(|e| e.code == "forward_udp_link_requires_udp_mode"),
+            "errors = {:?}",
+            d.errors
+        );
+    }
+
+    #[test]
+    fn forward_udp_mode_requires_udp_link_kind_t7_b4() {
+        // `udp_mode` set but `link_kind` is absent (i.e. not "udp").
+        let raw = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            [[profiles.forwards]]
+            name = "f"
+            type = "local"
+            transport = "tcp"
+            bind = "127.0.0.1:9000"
+            target = "127.0.0.1:22"
+            udp_mode = "tcp-framed"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(
+            d.errors
+                .iter()
+                .any(|e| e.code == "forward_udp_mode_requires_udp_link_kind"),
+            "errors = {:?}",
+            d.errors
+        );
+    }
+
+    #[test]
+    fn forward_local_uds_requires_remote_socket_path_t7_b4() {
+        let raw = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            [[profiles.forwards]]
+            name = "f"
+            type = "local"
+            transport = "tcp"
+            bind = "127.0.0.1:9000"
+            target = "127.0.0.1:22"
+            kind = "local_uds"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(
+            d.errors
+                .iter()
+                .any(|e| e.code == "forward_local_uds_requires_remote_socket_path"),
+            "errors = {:?}",
+            d.errors
+        );
+    }
+
+    #[test]
+    fn forward_remote_uds_requires_local_socket_path_t7_b4() {
+        let raw = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            [[profiles.forwards]]
+            name = "f"
+            type = "remote"
+            transport = "tcp"
+            bind = "127.0.0.1:9000"
+            target = "127.0.0.1:22"
+            kind = "remote_uds"
+            remote_socket_path = "/run/db.sock"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(
+            d.errors
+                .iter()
+                .any(|e| e.code == "forward_remote_uds_requires_local_socket_path"),
+            "errors = {:?}",
+            d.errors
+        );
+    }
+
+    #[test]
+    fn forward_remote_uds_local_socket_path_relative_t7_b4() {
+        let raw = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            [[profiles.forwards]]
+            name = "f"
+            type = "remote"
+            transport = "tcp"
+            bind = "127.0.0.1:9000"
+            target = "127.0.0.1:22"
+            kind = "remote_uds"
+            remote_socket_path = "/run/db.sock"
+            local_socket_path = "relative/path.sock"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(
+            d.errors
+                .iter()
+                .any(|e| e.code == "forward_remote_uds_local_socket_path_relative"),
+            "errors = {:?}",
+            d.errors
+        );
+    }
+
+    // ---- Regression tests: no `experimental_*` warning is emitted on t6
+    // surfaces that were stubbed in t6 but promoted to real implementations
+    // in Phase A. See audit in `.orchestration/logs/t7-B4-retry.md`.
+
+    #[test]
+    fn profile_script_present_emits_no_experimental_warning_t7_b4() {
+        let raw = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            [profiles.script]
+            path = "/opt/scripts/hooks.rhai"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(
+            d.warnings
+                .iter()
+                .all(|w| !w.code.starts_with("experimental_")),
+            "unexpected experimental warning: {:?}",
+            d.warnings
+        );
+    }
+
+    #[test]
+    fn profile_transport_obfuscation_emits_no_experimental_warning_t7_b4() {
+        // Build a minimal obfs4 obfuscation block; the loader needs hex
+        // node_id (20 bytes) and public_key (32 bytes) to deserialise, but
+        // validate() does not police obfuscation contents — it must simply
+        // not emit any `experimental_*` warning for the presence of the
+        // table.
+        let raw = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            [profiles.transport.obfuscation]
+            kind = "obfs4"
+            node_id = "0000000000000000000000000000000000000000"
+            public_key = "0000000000000000000000000000000000000000000000000000000000000000"
+            iat_mode = 0
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(
+            d.warnings
+                .iter()
+                .all(|w| !w.code.starts_with("experimental_")),
+            "unexpected experimental warning: {:?}",
+            d.warnings
+        );
+    }
+
+    #[test]
+    fn profile_auth_sspi_emits_no_experimental_warning_t7_b4() {
+        let raw = r#"
+            version = 1
+            [capabilities]
+            allow_sspi = true
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            [profiles.auth]
+            method = "sspi"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(
+            d.warnings
+                .iter()
+                .all(|w| !w.code.starts_with("experimental_")),
+            "unexpected experimental warning: {:?}",
+            d.warnings
+        );
+    }
+
+    #[test]
+    fn libssh2_backend_deprecation_warning_preserved_in_t7_b4() {
+        // Phase 0 owns `capabilities_ssh2_backend_deprecated_t7`. Pin its
+        // presence so a future config-validate refactor cannot silently
+        // drop the warning while libssh2 is still removed.
+        let raw = r#"
+            version = 1
+            [capabilities]
+            ssh2_backend = "libssh2"
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(
+            d.warnings
+                .iter()
+                .any(|w| w.code == "capabilities_ssh2_backend_deprecated_t7"),
+            "missing libssh2 deprecation warning: warnings = {:?}",
+            d.warnings
+        );
     }
 }
