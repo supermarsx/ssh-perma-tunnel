@@ -1,0 +1,6 @@
+# A comment line
+Host  empty
+    # Indented comment
+
+Host minimal
+    HostName m.invalid

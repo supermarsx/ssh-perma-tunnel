@@ -620,7 +620,8 @@ jobs:
       - run: cargo check --workspace --locked
 
   # ---------------------------------------------------------------------------
-  # C3b: PR-gating fuzz dry-run — 60s per target, runs every target
+  # C3b: PR-gating fuzz dry-run — 90s per target (t8-A5; bumped from 60s
+  # after adding six new targets in fuzz_targets/), runs every target
   # discovered by `cargo fuzz list`. Promoted from dispatch-only to PR.
   # ---------------------------------------------------------------------------
   fuzz-dryrun:
@@ -638,7 +639,7 @@ jobs:
           workspaces: fuzz
       - name: Install cargo-fuzz
         run: cargo install cargo-fuzz --locked
-      - name: Run each fuzz target for 60s
+      - name: Run each fuzz target for 90s
         shell: bash
         run: |
           cd fuzz
@@ -651,7 +652,7 @@ jobs:
           echo "${targets}"
           for t in ${targets}; do
             echo "::group::fuzz ${t}"
-            cargo fuzz run "${t}" -- -max_total_time=60
+            cargo fuzz run "${t}" -- -max_total_time=90
             echo "::endgroup::"
           done
 
