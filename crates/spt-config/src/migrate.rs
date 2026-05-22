@@ -35,15 +35,31 @@ pub fn migrate(raw: &str) -> Result<String> {
 /// Bumps `version = 1` to `version = 2`. If the input is already v2 the
 /// function is the identity (an empty capabilities table is left alone).
 pub fn migrate_to_2(raw: &str) -> Result<String> {
-    let mut doc: toml_edit::DocumentMut = raw
-        .parse()
-        .map_err(|e| Error::InvalidConfig(format!("toml parse: {e}")))?;
+    let mut doc: toml_edit::DocumentMut = raw.parse().map_err(|e| {
+        Error::invalid_config(
+            spt_core::Diagnostic::what("Failed to parse config for migration")
+                .why(format!("toml_edit could not parse the document: {e}"))
+                .how_to_fix(
+                    "Fix any TOML syntax errors before running `spt config migrate`. \
+                     Use `taplo lint` or revert to a known-good config and re-apply changes.",
+                )
+                .build(),
+        )
+    })?;
 
     let current = doc
         .get("version")
         .and_then(toml_edit::Item::as_integer)
         .ok_or_else(|| {
-            Error::InvalidConfig("config is missing a `version = <int>` field".into())
+            Error::invalid_config(
+                spt_core::Diagnostic::what("Config has no `version` field")
+                    .why("migration requires a top-level `version = <int>` declaration")
+                    .how_to_fix(
+                        "Add `version = 1` (or your target schema version) at the top \
+                         of the config file before running `spt config migrate`.",
+                    )
+                    .build(),
+            )
         })?;
     if current == 2 {
         return Ok(doc.to_string());
@@ -66,13 +82,27 @@ pub fn migrate_to_2(raw: &str) -> Result<String> {
 }
 
 fn parse_version(raw: &str) -> Result<u64> {
-    let table: toml::Value = raw
-        .parse()
-        .map_err(|e| Error::InvalidConfig(format!("toml parse: {e}")))?;
+    let table: toml::Value = raw.parse().map_err(|e| {
+        Error::invalid_config(
+            spt_core::Diagnostic::what("Failed to parse config when reading schema version")
+                .why(format!("toml parse error: {e}"))
+                .how_to_fix(
+                    "Fix the TOML syntax (mismatched quotes, brackets, indentation), then \
+                     re-run the command.",
+                )
+                .build(),
+        )
+    })?;
     match table.get("version").and_then(toml::Value::as_integer) {
         Some(v) if v >= 0 => Ok(v as u64),
-        _ => Err(Error::InvalidConfig(
-            "config is missing a `version = <int>` field".into(),
+        _ => Err(Error::invalid_config(
+            spt_core::Diagnostic::what("Config has no `version` field")
+                .why("the schema-version detector could not find a top-level non-negative integer")
+                .how_to_fix(
+                    "Add `version = 1` (or a higher integer matching your schema) at the \
+                     top of the config file.",
+                )
+                .build(),
         )),
     }
 }

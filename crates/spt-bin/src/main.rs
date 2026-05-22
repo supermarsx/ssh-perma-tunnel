@@ -143,10 +143,26 @@ fn map_exit(r: Result<()>) -> ProcExitCode {
     match r {
         Ok(()) => ProcExitCode::from(0),
         Err(e) => {
-            // Emit a one-line human summary to stderr. Detailed diagnostics
-            // are produced by the per-command handlers (which use miette
-            // where useful).
-            eprintln!("spt: {e}");
+            // t8-A1: when the error carries a structured `Diagnostic`, render
+            // it through miette's graphical reporter (the workspace enables
+            // miette's `fancy` feature) so the operator sees help text and
+            // file/line context. Operator can force the legacy one-line
+            // format via `SPT_DIAGNOSTIC_STYLE=plain`. Legacy `String`-payload
+            // variants always keep their original one-line format.
+            let style_plain = std::env::var_os("SPT_DIAGNOSTIC_STYLE")
+                .map(|v| v.eq_ignore_ascii_case("plain"))
+                .unwrap_or(false);
+            if let (false, Some(diag)) = (style_plain, e.diagnostic()) {
+                // Clone the Diagnostic into a miette::Report; this routes
+                // the Display + help() output through miette's
+                // GraphicalReportHandler. The `{:?}` formatter on Report
+                // invokes the configured handler (NOT std Debug).
+                let report = miette::Report::new(diag.clone());
+                eprintln!("spt error (exit {}):", e.exit_code().as_i32());
+                eprintln!("{report:?}");
+            } else {
+                eprintln!("spt: {e}");
+            }
             ProcExitCode::from(e.exit_code().as_i32() as u8)
         }
     }
@@ -209,10 +225,18 @@ pub(crate) fn color_enabled(global: &GlobalOpts) -> bool {
 /// Used by `cli_dispatch` for commands tracked in a later milestone so the
 /// process exits cleanly with exit code `RuntimeFailure` rather than panicking.
 pub(crate) fn stub_err(cmd: &str, milestone: &str) -> Error {
-    Error::RuntimeFailure(format!(
-        "`{cmd}` is not yet implemented in this milestone (tracked in {milestone}). \
-         See docs/milestones.md."
-    ))
+    Error::runtime_failure(
+        spt_core::Diagnostic::what(format!(
+            "Subcommand `{cmd}` is not yet implemented in this build"
+        ))
+        .why(format!("scheduled for milestone {milestone}"))
+        .how_to_fix(
+            "Check `docs/milestones.md` for the planned ship date, or pin to a \
+             release that includes the feature.",
+        )
+        .retry_advice(spt_core::RetryAdvice::NotRetryable)
+        .build(),
+    )
 }
 
 /// Strip the global `--portable` flag from a raw argv. Returns the

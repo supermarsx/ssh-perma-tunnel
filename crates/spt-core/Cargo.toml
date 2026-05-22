@@ -19,6 +19,10 @@ testing = ["dep:rand", "dep:rand_chacha"]
 [dependencies]
 serde = { workspace = true }
 thiserror = { workspace = true }
+# t8-A1: structured diagnostics carrying what/why/how_to_fix on top-level errors.
+# Library code stays terminal-agnostic — only spt-bin's top-level error printer
+# uses miette's `fancy` formatter (already enabled at the workspace level).
+miette = { workspace = true }
 uuid = { workspace = true }
 humantime = { workspace = true }
 humantime-serde = { workspace = true }

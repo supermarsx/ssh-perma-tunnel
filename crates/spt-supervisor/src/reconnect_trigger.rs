@@ -55,8 +55,19 @@ impl ReconnectTrigger for LiveReconnectTrigger {
         }
         loop {
             if rx.changed().await.is_err() {
-                return Err(Error::RuntimeFailure(
-                    "supervisor stopped before session came up".into(),
+                return Err(Error::runtime_failure(
+                    spt_core::Diagnostic::what(
+                        "Supervisor stopped before session reached Active state",
+                    )
+                    .why("the state channel was closed while waiting for reconnect")
+                    .how_to_fix(
+                        "Check the supervisor's recent log lines for the underlying \
+                         shutdown cause (panic, signal, max-restart-budget exceeded). \
+                         If unexpected, re-run with `--verbose` to capture state \
+                         transitions.",
+                    )
+                    .retry_advice(spt_core::RetryAdvice::RetryWithBackoff)
+                    .build(),
                 ));
             }
             if *rx.borrow() == ProfileStateName::Active {
@@ -111,5 +122,30 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
         sup.stop().await;
+    }
+
+    // ──────── t8-A1: diagnostic regression tests ──────────────────────
+
+    #[test]
+    fn supervisor_stopped_diagnostic_carries_remediation() {
+        // Mirrors the converted site in wait_session_up.
+        let d = spt_core::Diagnostic::what(
+            "Supervisor stopped before session reached Active state",
+        )
+        .why("the state channel was closed while waiting for reconnect")
+        .how_to_fix(
+            "Check the supervisor's recent log lines for the underlying \
+             shutdown cause (panic, signal, max-restart-budget exceeded). \
+             If unexpected, re-run with `--verbose` to capture state \
+             transitions.",
+        )
+        .retry_advice(spt_core::RetryAdvice::RetryWithBackoff)
+        .build();
+        let e = spt_core::Error::runtime_failure(d);
+        spt_core::assert_diagnostic_contains!(e,
+            what: "Supervisor stopped before session reached Active",
+            how_to_fix: "max-restart-budget",
+        );
+        assert_eq!(e.exit_code(), spt_core::ExitCode::RuntimeFailure);
     }
 }

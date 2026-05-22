@@ -670,8 +670,22 @@ fn derive_sealed_path(input: &Path) -> PathBuf {
 fn write_bytes_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     use atomicwrites::{AtomicFile, OverwriteBehavior};
     let af = AtomicFile::new(path, OverwriteBehavior::AllowOverwrite);
-    af.write(|f| std::io::Write::write_all(f, bytes))
-        .map_err(|e| Error::RuntimeFailure(format!("atomic write `{}`: {e}", path.display())))
+    af.write(|f| std::io::Write::write_all(f, bytes)).map_err(|e| {
+        Error::runtime_failure(
+            spt_core::Diagnostic::what(format!(
+                "Failed to atomically write `{}`",
+                path.display()
+            ))
+            .why(format!("{e}"))
+            .how_to_fix(
+                "Verify the parent directory is writable, has space, and that no other \
+                 process holds an exclusive lock on the target path.",
+            )
+            .file_path(path)
+            .retry_advice(spt_core::RetryAdvice::RetryWithBackoff)
+            .build(),
+        )
+    })
 }
 
 /// Read a passphrase via a secret reference (`env:NAME` / `file:PATH`) or
@@ -1021,11 +1035,33 @@ impl EditSession {
         let status = std::process::Command::new(&editor)
             .arg(self.path())
             .status()
-            .map_err(|e| Error::RuntimeFailure(format!("spawn editor `{editor}`: {e}")))?;
+            .map_err(|e| {
+                Error::runtime_failure(
+                    spt_core::Diagnostic::what(format!(
+                        "Failed to spawn editor `{editor}`"
+                    ))
+                    .why(format!("{e}"))
+                    .how_to_fix(
+                        "Verify $EDITOR (or $VISUAL) points to an executable on $PATH. \
+                         Falls back to `vi` on Unix and `notepad` on Windows.",
+                    )
+                    .retry_advice(spt_core::RetryAdvice::NotRetryable)
+                    .build(),
+                )
+            })?;
         if !status.success() {
-            return Err(Error::RuntimeFailure(format!(
-                "editor `{editor}` exited with status {status}; original sealed file untouched"
-            )));
+            return Err(Error::runtime_failure(
+                spt_core::Diagnostic::what(format!(
+                    "Editor `{editor}` exited with non-zero status"
+                ))
+                .why(format!("editor exit status: {status}"))
+                .how_to_fix(
+                    "Re-run the edit. The original sealed file is untouched; only the \
+                     in-memory plaintext is discarded.",
+                )
+                .retry_advice(spt_core::RetryAdvice::RetryImmediately)
+                .build(),
+            ));
         }
         let bytes = std::fs::read(self.path())
             .map_err(|e| Error::RuntimeFailure(format!("re-read edit tmpfile: {e}")))?;

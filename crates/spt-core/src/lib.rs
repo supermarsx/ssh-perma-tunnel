@@ -19,6 +19,7 @@
 
 pub mod address;
 pub mod audit;
+pub mod diagnostic;
 pub mod duration;
 pub mod error;
 pub mod exit_code;
@@ -33,6 +34,7 @@ pub mod testing;
 
 pub use address::BindAddr;
 pub use audit::{record_audit, register_audit_sink, AuditEvent, AuditSeverity, AuditSink};
+pub use diagnostic::{Diagnostic, DiagnosticBuilder, RetryAdvice};
 pub use error::{Error, Result};
 pub use exit_code::ExitCode;
 pub use id::{ConnectionId, EventId, ForwardId, ProfileId, RunId, SessionId};

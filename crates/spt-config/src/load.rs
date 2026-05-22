@@ -77,8 +77,19 @@ pub fn load_with_key(
     strict: bool,
     key: Option<&KeySource>,
 ) -> Result<(Config, Warnings)> {
-    let bytes = std::fs::read(path)
-        .map_err(|e| Error::InvalidConfig(format!("read `{}`: {e}", path.display())))?;
+    let bytes = std::fs::read(path).map_err(|e| {
+        // t8-A1: operator-facing read failure → structured diagnostic.
+        Error::invalid_config(
+            spt_core::Diagnostic::what(format!("Failed to read config file `{}`", path.display()))
+                .why(format!("{e}"))
+                .how_to_fix(
+                    "Verify the path exists, is readable by this user, and the parent \
+                     directory has the expected permissions (e.g. `chmod 600` on Unix).",
+                )
+                .file_path(path)
+                .build(),
+        )
+    })?;
     if is_sealed(&bytes) {
         let cleartext = decrypt_sealed(&bytes, key)?;
         // The plaintext is held only inside the SecretBox; we view it as
@@ -88,15 +99,36 @@ pub fn load_with_key(
         // newtype (t5-e7) when materialised.
         let pt = cleartext.expose_secret();
         let raw = std::str::from_utf8(pt).map_err(|e| {
-            Error::InvalidConfig(format!(
-                "sealed config `{}` is not UTF-8: {e}",
-                path.display()
-            ))
+            Error::invalid_config(
+                spt_core::Diagnostic::what(format!(
+                    "Sealed config `{}` decrypted to non-UTF-8 bytes",
+                    path.display()
+                ))
+                .why(format!("{e}"))
+                .how_to_fix(
+                    "Re-seal the config from a UTF-8 source. If you encrypted a binary file \
+                     by mistake, restore the original TOML and run `spt config seal` again.",
+                )
+                .file_path(path)
+                .build(),
+            )
         })?;
         return load_str(raw, strict);
     }
-    let raw = std::str::from_utf8(&bytes)
-        .map_err(|e| Error::InvalidConfig(format!("read `{}`: {e}", path.display())))?;
+    let raw = std::str::from_utf8(&bytes).map_err(|e| {
+        Error::invalid_config(
+            spt_core::Diagnostic::what(format!(
+                "Config file `{}` is not valid UTF-8",
+                path.display()
+            ))
+            .why(format!("{e}"))
+            .how_to_fix(
+                "Re-save the file using a UTF-8 encoding (e.g. `iconv -f <enc> -t utf-8`).",
+            )
+            .file_path(path)
+            .build(),
+        )
+    })?;
     load_str(raw, strict)
 }
 
@@ -115,9 +147,18 @@ fn decrypt_sealed(bytes: &[u8], key: Option<&KeySource>) -> Result<spt_config_cr
                 pp.expose_secret().as_bytes().to_vec().into();
             unseal(bytes, &KeySource::Passphrase(bytes_pp))
         }
-        other => Err(Error::InvalidConfig(format!(
-            "sealed config uses kdf `{other}` — pass an explicit key via load_with_key()"
-        ))),
+        other => Err(Error::invalid_config(
+            spt_core::Diagnostic::what(format!(
+                "Sealed config uses an unsupported KDF `{other}`",
+            ))
+            .why("the interactive-passphrase path only handles `argon2id`-sealed envelopes")
+            .how_to_fix(
+                "Either re-seal with `spt config seal --kdf argon2id`, or call \
+                 `load_with_key()` programmatically with the explicit KeySource for \
+                 this KDF (vault, x25519, …).",
+            )
+            .build(),
+        )),
     }
 }
 
@@ -129,13 +170,34 @@ pub fn load_str(raw: &str, strict: bool) -> Result<(Config, Warnings)> {
     let config: Config = serde_ignored::deserialize(de, |path| {
         warnings.push(path.to_string());
     })
-    .map_err(|e| Error::InvalidConfig(format!("toml parse: {e}")))?;
+    .map_err(|e| {
+        // t8-A1: TOML parse failures are by far the most common operator-facing
+        // config error. Surface what / why / how_to_fix so they don't have to
+        // squint at a raw serde error message.
+        let line_no = extract_toml_line(&e);
+        let mut b = spt_core::Diagnostic::what("Failed to parse config as TOML")
+            .why(format!("{e}"))
+            .how_to_fix(
+                "Run the config through a TOML validator (e.g. `taplo lint`) or revert \
+                 the most recent change. Common causes: missing quotes around string values, \
+                 mismatched table headers, or a trailing comma in an inline array.",
+            );
+        if let Some(l) = line_no {
+            b = b.line_no(l);
+        }
+        Error::invalid_config(b.build())
+    })?;
 
     if strict && !warnings.is_empty() {
-        return Err(Error::InvalidConfig(format!(
-            "unknown keys in strict mode: {}",
-            warnings.join(", ")
-        )));
+        return Err(Error::invalid_config(
+            spt_core::Diagnostic::what("Unknown keys present in strict-mode config")
+                .why(format!("unrecognised keys: {}", warnings.join(", ")))
+                .how_to_fix(
+                    "Delete the keys, fix any typos against the spec §5 schema, or drop \
+                     the `--strict` flag if the keys are intentional vendor extensions.",
+                )
+                .build(),
+        ));
     }
 
     if !warnings.is_empty() {
@@ -170,19 +232,48 @@ pub fn load_str(raw: &str, strict: bool) -> Result<(Config, Warnings)> {
 /// `*.toml` files is rejected with [`Error::InvalidConfig`].
 pub fn load_dir(dir: &Path, strict: bool) -> Result<(Config, Warnings)> {
     if !dir.exists() {
-        return Err(Error::InvalidConfig(format!(
-            "config dir `{}` does not exist",
-            dir.display()
-        )));
+        return Err(Error::invalid_config(
+            spt_core::Diagnostic::what(format!(
+                "Config directory `{}` does not exist",
+                dir.display()
+            ))
+            .how_to_fix(
+                "Create the directory (`mkdir -p <path>`) and populate it with at least \
+                 one `*.toml` config file, or pass `--config <file>` to use a single file.",
+            )
+            .file_path(dir)
+            .build(),
+        ));
     }
     if !dir.is_dir() {
-        return Err(Error::InvalidConfig(format!(
-            "config dir `{}` is not a directory",
-            dir.display()
-        )));
+        return Err(Error::invalid_config(
+            spt_core::Diagnostic::what(format!(
+                "Config dir path `{}` exists but is not a directory",
+                dir.display()
+            ))
+            .how_to_fix(
+                "Pass a directory path to `--config-dir`, or use `--config <file>` for \
+                 single-file configs.",
+            )
+            .file_path(dir)
+            .build(),
+        ));
     }
-    let read = std::fs::read_dir(dir)
-        .map_err(|e| Error::InvalidConfig(format!("read_dir `{}`: {e}", dir.display())))?;
+    let read = std::fs::read_dir(dir).map_err(|e| {
+        Error::invalid_config(
+            spt_core::Diagnostic::what(format!(
+                "Failed to enumerate config dir `{}`",
+                dir.display()
+            ))
+            .why(format!("{e}"))
+            .how_to_fix(
+                "Verify the calling user has read+execute permission on the directory \
+                 (`chmod +rx`).",
+            )
+            .file_path(dir)
+            .build(),
+        )
+    })?;
     let mut files: Vec<std::path::PathBuf> = Vec::new();
     for entry in read {
         let entry = entry.map_err(|e| {
@@ -197,10 +288,18 @@ pub fn load_dir(dir: &Path, strict: bool) -> Result<(Config, Warnings)> {
         }
     }
     if files.is_empty() {
-        return Err(Error::InvalidConfig(format!(
-            "no `*.toml` files in config dir `{}`",
-            dir.display()
-        )));
+        return Err(Error::invalid_config(
+            spt_core::Diagnostic::what(format!(
+                "Config dir `{}` contains no `*.toml` files",
+                dir.display()
+            ))
+            .how_to_fix(
+                "Place at least one `<name>.toml` file in the directory. The first file \
+                 (lex order) is the base; later files may only add `[[profiles]]`.",
+            )
+            .file_path(dir)
+            .build(),
+        ));
     }
     files.sort();
 
@@ -217,10 +316,20 @@ pub fn load_dir(dir: &Path, strict: bool) -> Result<(Config, Warnings)> {
         warnings.extend(w.into_iter().map(|p| format!("{name}: {p}")));
 
         if overlay.version != merged.version {
-            return Err(Error::InvalidConfig(format!(
-                "{name}: version `{}` does not match base `{}`",
-                overlay.version, merged.version
-            )));
+            return Err(Error::invalid_config(
+                spt_core::Diagnostic::what(format!(
+                    "Config dir merge: file `{name}` declares a different schema version"
+                ))
+                .why(format!(
+                    "overlay `version = {}` does not match base `version = {}`",
+                    overlay.version, merged.version
+                ))
+                .how_to_fix(
+                    "Update every `*.toml` file in the config directory to declare the \
+                     same `version = <int>`. Run `spt config migrate` to bump older files.",
+                )
+                .build(),
+            ));
         }
         reject_singleton_overrides(&overlay, &name)?;
 
@@ -232,10 +341,21 @@ pub fn load_dir(dir: &Path, strict: bool) -> Result<(Config, Warnings)> {
                 .iter()
                 .any(|existing| existing.name == p.name)
             {
-                return Err(Error::InvalidConfig(format!(
-                    "{name}: duplicate profile name `{}` (already defined in an earlier file)",
-                    p.name
-                )));
+                return Err(Error::invalid_config(
+                    spt_core::Diagnostic::what(format!(
+                        "Duplicate profile name `{}`",
+                        p.name
+                    ))
+                    .why(format!(
+                        "file `{name}` re-defines a profile already present in an earlier \
+                         file (lex order); the merge would be ambiguous",
+                    ))
+                    .how_to_fix(
+                        "Rename one of the conflicting profiles, or delete the duplicate \
+                         from the later file.",
+                    )
+                    .build(),
+                ));
             }
             merged.profiles.push(p);
         }
@@ -263,12 +383,43 @@ fn reject_singleton_overrides(overlay: &Config, file: &str) -> Result<()> {
         ("benchmark", overlay.benchmark.is_some()),
     ];
     if let Some((name, _)) = conflicts.iter().find(|(_, set)| *set) {
-        return Err(Error::InvalidConfig(format!(
-            "{file}: only the first file in `--config-dir` may define top-level table \
-             `[{name}]`; later files may only contribute `[[profiles]]`"
-        )));
+        return Err(Error::invalid_config(
+            spt_core::Diagnostic::what(format!(
+                "Singleton table `[{name}]` redefined in non-base config file `{file}`"
+            ))
+            .why(
+                "only the first file (lex order) in a `--config-dir` may set singleton \
+                 top-level tables; later files may only contribute `[[profiles]]`",
+            )
+            .how_to_fix(format!(
+                "Move the `[{name}]` block into the lex-first `*.toml` file, or delete \
+                 it from `{file}`.",
+            ))
+            .build(),
+        ));
     }
     Ok(())
+}
+
+/// Heuristic: scrape a `(line N, column M)` or `at line N` span out of a
+/// [`toml::de::Error`]'s Display so we can populate `Diagnostic::line_no`.
+/// We deliberately don't depend on `toml::de::Error::span()` which returns
+/// byte offsets — the regex-free scan is cheap and robust to minor message
+/// format changes between toml versions.
+fn extract_toml_line(e: &toml::de::Error) -> Option<u32> {
+    let msg = e.to_string();
+    // Common toml-rs phrasings: "TOML parse error at line 5, column 3" or
+    // "at line 5". We look for the first "line " + integer that follows.
+    for (i, _) in msg.char_indices() {
+        if msg.get(i..).is_some_and(|s| s.starts_with("line ")) {
+            let rest = &msg[i + 5..];
+            let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+            if let Ok(n) = digits.parse::<u32>() {
+                return Some(n);
+            }
+        }
+    }
+    None
 }
 
 /// Build [`Diagnostics`] entries for warnings from [`load_str`].
@@ -286,7 +437,7 @@ pub fn warnings_to_diagnostics(warnings: &[String]) -> Diagnostics {
 
 #[cfg(test)]
 mod tests {
-    use super::{load_str, warnings_to_diagnostics};
+    use super::{extract_toml_line, load_str, warnings_to_diagnostics};
 
     const MIN: &str = r#"
         version = 1
@@ -363,7 +514,13 @@ mod tests {
     #[test]
     fn rejects_malformed_toml() {
         let err = load_str("not [valid", false).unwrap_err();
-        assert!(format!("{err}").contains("toml parse"));
+        // t8-A1: error text was upgraded to a structured diagnostic;
+        // assert against the new operator-facing phrasing.
+        let s = format!("{err}");
+        assert!(
+            s.contains("Failed to parse config as TOML") || s.contains("toml parse"),
+            "got: {s}"
+        );
     }
 
     #[test]
@@ -523,7 +680,12 @@ mod tests {
             "#,
         );
         let err = load_dir(tmp.path(), false).unwrap_err();
-        assert!(format!("{err}").contains("duplicate profile name"));
+        // t8-A1: phrasing upgraded to structured diagnostic.
+        let s = format!("{err}");
+        assert!(
+            s.contains("Duplicate profile name") || s.contains("duplicate profile name"),
+            "got: {s}"
+        );
     }
 
     #[test]
@@ -544,5 +706,149 @@ mod tests {
         fs::write(tmp.path().join("02-mismatch.toml"), "version = 2\n").unwrap();
         let err = load_dir(tmp.path(), false).unwrap_err();
         assert!(format!("{err}").contains("does not match base"));
+    }
+
+    // ──────── t8-A1: diagnostic regression tests ────────────────────
+    // Each `Error::*Diagnostic` site converted in this file gets a
+    // companion test asserting the rendered Display contains the
+    // operator-facing what / why / how_to_fix substrings.
+
+    #[test]
+    fn toml_parse_failure_emits_structured_diagnostic() {
+        let err = load_str("version = bad-bareword", false).unwrap_err();
+        spt_core::assert_diagnostic_contains!(err,
+            what: "Failed to parse config as TOML",
+            how_to_fix: "taplo lint",
+        );
+    }
+
+    #[test]
+    fn strict_unknown_keys_diagnostic_lists_offending_paths() {
+        let raw = r"
+            version = 1
+            mystery_top_level = true
+        ";
+        let err = load_str(raw, true).unwrap_err();
+        spt_core::assert_diagnostic_contains!(err,
+            what: "Unknown keys present in strict-mode config",
+            why: "mystery_top_level",
+            how_to_fix: "--strict",
+        );
+    }
+
+    #[test]
+    fn load_dir_missing_diagnostic_shows_fix_step() {
+        use std::path::Path;
+        let err = load_dir(Path::new("/definitely/does/not/exist/spt-cfg"), false).unwrap_err();
+        spt_core::assert_diagnostic_contains!(err,
+            what: "does not exist",
+            how_to_fix: "mkdir -p",
+        );
+    }
+
+    #[test]
+    fn load_dir_not_a_directory_diagnostic_suggests_single_file_flag() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file_path = tmp.path().join("not-a-dir.toml");
+        fs::write(&file_path, "version = 1\n").unwrap();
+        let err = load_dir(&file_path, false).unwrap_err();
+        spt_core::assert_diagnostic_contains!(err,
+            what: "is not a directory",
+            how_to_fix: "--config <file>",
+        );
+    }
+
+    #[test]
+    fn load_dir_empty_diagnostic_explains_base_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let err = load_dir(tmp.path(), false).unwrap_err();
+        spt_core::assert_diagnostic_contains!(err,
+            what: "contains no `*.toml`",
+            how_to_fix: "lex order",
+        );
+    }
+
+    #[test]
+    fn load_dir_version_mismatch_diagnostic_suggests_migrate() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_toml(
+            tmp.path(),
+            "01-base.toml",
+            r#"
+                version = 1
+                [[profiles]]
+                name = "p1"
+                protocol = "ssh2"
+                host = "h1"
+            "#,
+        );
+        fs::write(tmp.path().join("02-mismatch.toml"), "version = 2\n").unwrap();
+        let err = load_dir(tmp.path(), false).unwrap_err();
+        spt_core::assert_diagnostic_contains!(err,
+            what: "different schema version",
+            how_to_fix: "spt config migrate",
+        );
+    }
+
+    #[test]
+    fn load_dir_duplicate_profile_diagnostic_names_offender() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = r#"
+            version = 1
+            [[profiles]]
+            name = "dup"
+            protocol = "ssh2"
+            host = "h"
+        "#;
+        write_toml(tmp.path(), "01-base.toml", base);
+        write_toml(
+            tmp.path(),
+            "02-second.toml",
+            r#"
+                version = 1
+                [[profiles]]
+                name = "dup"
+                protocol = "ssh2"
+                host = "h"
+            "#,
+        );
+        let err = load_dir(tmp.path(), false).unwrap_err();
+        spt_core::assert_diagnostic_contains!(err,
+            what: "Duplicate profile name",
+            why: "already present",
+            how_to_fix: "Rename",
+        );
+    }
+
+    #[test]
+    fn extract_toml_line_pulls_line_number() {
+        // Smoke-test the line-extraction helper used by the load_str diagnostic.
+        let err = "version = ".parse::<toml::Value>().unwrap_err();
+        let line = extract_toml_line(&err);
+        // Either the toml message carries a line number or it doesn't —
+        // both shapes are acceptable depending on toml version, but the
+        // helper must not panic.
+        if let Some(n) = line {
+            assert!(n >= 1);
+        }
+    }
+
+    #[test]
+    fn diagnostic_variants_keep_invalid_config_exit_code() {
+        // Regression: the new InvalidConfigDiagnostic variant must share
+        // ExitCode::InvalidConfig with the legacy String-payload sibling
+        // so downstream tooling (CI, systemd) treats them identically.
+        let err = load_str("not valid toml = = =", false).unwrap_err();
+        assert_eq!(err.exit_code(), spt_core::ExitCode::InvalidConfig);
+    }
+
+    #[test]
+    fn diagnostic_what_is_present_for_every_converted_load_site() {
+        // The Diagnostic accessor must surface a non-empty `what` field
+        // for converted sites — this is the contract callers depend on.
+        let err = load_str("not valid toml = = =", false).unwrap_err();
+        let d = err.diagnostic().expect("converted site has Diagnostic");
+        assert!(!d.what.is_empty());
+        assert!(d.how_to_fix.is_some());
     }
 }

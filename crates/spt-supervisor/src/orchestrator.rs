@@ -328,7 +328,22 @@ impl Orchestrator {
             .lock()
             .get(name)
             .cloned()
-            .ok_or_else(|| Error::RuntimeFailure(format!("profile `{name}` not running")))
+            .ok_or_else(|| {
+                Error::runtime_failure(
+                    spt_core::Diagnostic::what(format!(
+                        "Profile `{name}` is not running"
+                    ))
+                    .why("no ProfileSupervisor entry exists for the requested name in the orchestrator registry")
+                    .how_to_fix(
+                        "Run `spt profile list` to see active profiles. Start the profile \
+                         with `spt tunnel run --profile <name>` (or its CLI equivalent), or \
+                         double-check spelling.",
+                    )
+                    .endpoint(name.to_string())
+                    .retry_advice(spt_core::RetryAdvice::NotRetryable)
+                    .build(),
+                )
+            })
     }
 }
 
@@ -552,5 +567,44 @@ mod tests {
         s.read_exact(&mut buf).await.unwrap();
         assert_eq!(&buf, b"abc");
         orch.stop_profile("p").await;
+    }
+
+    // ──────── t8-A1: diagnostic regression tests ──────────────────────
+
+    #[test]
+    fn profile_not_running_diagnostic_renders_actionable_text() {
+        // Mirrors the converted site in Orchestrator::profile.
+        let d = spt_core::Diagnostic::what(format!(
+            "Profile `{}` is not running",
+            "missing"
+        ))
+        .why("no ProfileSupervisor entry exists for the requested name in the orchestrator registry")
+        .how_to_fix(
+            "Run `spt profile list` to see active profiles. Start the profile \
+             with `spt tunnel run --profile <name>` (or its CLI equivalent), or \
+             double-check spelling.",
+        )
+        .endpoint("missing".to_string())
+        .retry_advice(spt_core::RetryAdvice::NotRetryable)
+        .build();
+        let e = spt_core::Error::runtime_failure(d);
+        spt_core::assert_diagnostic_contains!(e,
+            what: "Profile `missing` is not running",
+            how_to_fix: "spt profile list",
+        );
+        assert_eq!(e.exit_code(), spt_core::ExitCode::RuntimeFailure);
+    }
+
+    #[tokio::test]
+    async fn orchestrator_returns_runtime_failure_for_unknown_profile() {
+        // Functional check: calling Orchestrator methods for an unknown
+        // profile surfaces our new diagnostic (not a panic, not an opaque
+        // string).
+        let orch = Orchestrator::new();
+        let err = orch.profile("nonexistent").unwrap_err();
+        assert_eq!(err.exit_code(), spt_core::ExitCode::RuntimeFailure);
+        let d = err.diagnostic().expect("converted site has Diagnostic");
+        assert!(d.what.contains("nonexistent"));
+        assert!(d.how_to_fix.is_some());
     }
 }

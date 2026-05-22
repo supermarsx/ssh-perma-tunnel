@@ -130,7 +130,18 @@ pub fn try_render(c: &Config, redact: RedactionMode) -> Result<String> {
             redact_doc(doc.as_table_mut(), redact);
             doc.to_string()
         })
-        .map_err(|e| Error::InvalidConfig(format!("render: {e}")))
+        .map_err(|e| {
+            Error::invalid_config(
+                spt_core::Diagnostic::what("Failed to render config to TOML")
+                    .why(format!("toml serializer reported: {e}"))
+                    .how_to_fix(
+                        "This usually indicates a non-serialisable value in the in-memory \
+                         config (e.g. a `NaN` float). Inspect the failing field and replace \
+                         with a representable value.",
+                    )
+                    .build(),
+            )
+        })
 }
 
 #[cfg(test)]

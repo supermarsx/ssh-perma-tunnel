@@ -8,6 +8,7 @@ use std::path::PathBuf;
 
 use thiserror::Error;
 
+use crate::diagnostic::Diagnostic;
 use crate::exit_code::ExitCode;
 
 /// Convenience [`Result`] alias bound to [`enum@Error`].
@@ -219,6 +220,60 @@ pub enum Error {
     /// 37 — Session close or drain failed.
     #[error("session close failed: {0}")]
     SessionCloseFailed(String),
+
+    // ────────────────────────────────────────────────────────────────────
+    // t8-A1: structured-diagnostic companions to the variants above.
+    //
+    // Each `*Diagnostic` variant maps to the same `ExitCode` as its
+    // `String`-payload sibling but carries a richer [`Diagnostic`] payload
+    // (what / why / how_to_fix / file_path / line_no / endpoint / retry).
+    // Old variants are kept verbatim so existing pattern-matching and
+    // construction sites do not need to change.
+    // ────────────────────────────────────────────────────────────────────
+    /// 2 — Configuration invalid (rich diagnostic).
+    ///
+    /// Boxed so the [`Diagnostic`] payload does not bloat the `Error` enum
+    /// (which is hot in `Result` returns across the workspace).
+    #[error("invalid configuration: {0}")]
+    InvalidConfigDiagnostic(Box<Diagnostic>),
+
+    /// 3 — Generic runtime failure (rich diagnostic).
+    #[error("runtime failure: {0}")]
+    RuntimeFailureDiagnostic(Box<Diagnostic>),
+
+    /// 5 — Authentication failure to a remote endpoint (rich diagnostic).
+    #[error("authentication failed: {0}")]
+    AuthFailedDiagnostic(Box<Diagnostic>),
+
+    /// 12 — Network unreachable / connection refused (rich diagnostic).
+    #[error("network unreachable: {0}")]
+    NetworkUnreachableDiagnostic(Box<Diagnostic>),
+}
+
+impl Error {
+    /// Construct a [`Self::InvalidConfigDiagnostic`] from a [`Diagnostic`].
+    ///
+    /// Preferred over the legacy [`Self::InvalidConfig`] variant because the
+    /// rendered display carries actionable `what` / `why` / `how_to_fix`
+    /// text for the operator.
+    pub fn invalid_config(d: Diagnostic) -> Self {
+        Self::InvalidConfigDiagnostic(Box::new(d))
+    }
+
+    /// Construct a [`Self::RuntimeFailureDiagnostic`] from a [`Diagnostic`].
+    pub fn runtime_failure(d: Diagnostic) -> Self {
+        Self::RuntimeFailureDiagnostic(Box::new(d))
+    }
+
+    /// Construct a [`Self::AuthFailedDiagnostic`] from a [`Diagnostic`].
+    pub fn auth_failed(d: Diagnostic) -> Self {
+        Self::AuthFailedDiagnostic(Box::new(d))
+    }
+
+    /// Construct a [`Self::NetworkUnreachableDiagnostic`] from a [`Diagnostic`].
+    pub fn network_unreachable(d: Diagnostic) -> Self {
+        Self::NetworkUnreachableDiagnostic(Box::new(d))
+    }
 }
 
 impl Error {
@@ -227,17 +282,20 @@ impl Error {
     pub fn exit_code(&self) -> ExitCode {
         match self {
             Self::InvalidArgs(_) => ExitCode::InvalidArgs,
-            Self::InvalidConfig(_) => ExitCode::InvalidConfig,
-            Self::RuntimeFailure(_) => ExitCode::RuntimeFailure,
+            // t8-A1: legacy + diagnostic variants share the spec §7.4 exit code.
+            Self::InvalidConfig(_) | Self::InvalidConfigDiagnostic(_) => ExitCode::InvalidConfig,
+            Self::RuntimeFailure(_) | Self::RuntimeFailureDiagnostic(_) => ExitCode::RuntimeFailure,
             Self::RequiredProfileFailed { .. } => ExitCode::RequiredProfileFailed,
-            Self::AuthFailed(_) => ExitCode::AuthFailed,
+            Self::AuthFailed(_) | Self::AuthFailedDiagnostic(_) => ExitCode::AuthFailed,
             Self::TrustFailed(_) => ExitCode::TrustFailed,
             Self::LocalBindFailed { .. } => ExitCode::LocalBindFailed,
             Self::RemoteBindFailed { .. } => ExitCode::RemoteBindFailed,
             Self::ServiceManagerFailed(_) => ExitCode::ServiceManagerFailed,
             Self::UnsupportedPlatform(_) => ExitCode::UnsupportedPlatform,
             Self::DnsFailed(_) => ExitCode::DnsFailed,
-            Self::NetworkUnreachable(_) => ExitCode::NetworkUnreachable,
+            Self::NetworkUnreachable(_) | Self::NetworkUnreachableDiagnostic(_) => {
+                ExitCode::NetworkUnreachable
+            }
             Self::KeepaliveTimeout { .. } => ExitCode::KeepaliveTimeout,
             Self::ReloadFailed(_) => ExitCode::ReloadFailed,
             Self::LoggingSinkUnavailable { .. } => ExitCode::LoggingSinkUnavailable,
@@ -263,6 +321,20 @@ impl Error {
             Self::BenchmarkRefused(_) => ExitCode::BenchmarkRefused,
             Self::SessionNotFound(_) => ExitCode::SessionNotFound,
             Self::SessionCloseFailed(_) => ExitCode::SessionCloseFailed,
+        }
+    }
+
+    /// If this error variant carries a structured [`Diagnostic`] payload,
+    /// return a reference to it. Returns `None` for legacy String-payload
+    /// variants and variants that don't yet have a diagnostic sibling.
+    #[must_use]
+    pub fn diagnostic(&self) -> Option<&Diagnostic> {
+        match self {
+            Self::InvalidConfigDiagnostic(d)
+            | Self::RuntimeFailureDiagnostic(d)
+            | Self::AuthFailedDiagnostic(d)
+            | Self::NetworkUnreachableDiagnostic(d) => Some(d.as_ref()),
+            _ => None,
         }
     }
 }
@@ -445,5 +517,76 @@ mod tests {
         assert_eq!(r.unwrap(), 7);
         let r: Result<u32> = Err(Error::InternalError("nope".into()));
         assert_eq!(r.unwrap_err().exit_code(), ExitCode::InternalError);
+    }
+
+    // ──────── t8-A1: diagnostic-variant tests ─────────────────────────
+
+    use crate::diagnostic::{Diagnostic, RetryAdvice};
+
+    #[test]
+    fn diagnostic_variants_inherit_exit_codes() {
+        let d = Diagnostic::what("X").build();
+        assert_eq!(
+            Error::invalid_config(d.clone()).exit_code(),
+            ExitCode::InvalidConfig,
+        );
+        assert_eq!(
+            Error::runtime_failure(d.clone()).exit_code(),
+            ExitCode::RuntimeFailure,
+        );
+        assert_eq!(
+            Error::auth_failed(d.clone()).exit_code(),
+            ExitCode::AuthFailed,
+        );
+        assert_eq!(
+            Error::network_unreachable(d).exit_code(),
+            ExitCode::NetworkUnreachable,
+        );
+    }
+
+    #[test]
+    fn diagnostic_accessor_returns_some_for_diagnostic_variants() {
+        let d = Diagnostic::what("X").build();
+        assert!(Error::invalid_config(d.clone()).diagnostic().is_some());
+        assert!(Error::runtime_failure(d.clone()).diagnostic().is_some());
+        assert!(Error::auth_failed(d.clone()).diagnostic().is_some());
+        assert!(Error::network_unreachable(d).diagnostic().is_some());
+    }
+
+    #[test]
+    fn diagnostic_accessor_returns_none_for_legacy_variants() {
+        assert!(Error::InvalidConfig("x".into()).diagnostic().is_none());
+        assert!(Error::RuntimeFailure("x".into()).diagnostic().is_none());
+        assert!(Error::AuthFailed("x".into()).diagnostic().is_none());
+        assert!(Error::NetworkUnreachable("x".into()).diagnostic().is_none());
+        assert!(Error::InternalError("x".into()).diagnostic().is_none());
+    }
+
+    #[test]
+    fn invalid_config_diagnostic_renders_what_why_how() {
+        let d = Diagnostic::what("Failed to validate `bastion.host`")
+            .why("value is empty")
+            .how_to_fix("Set `bastion.host = \"<fqdn>\"`")
+            .build();
+        let e = Error::invalid_config(d);
+        let s = format!("{e}");
+        assert!(s.contains("invalid configuration"));
+        assert!(s.contains("Failed to validate `bastion.host`"));
+        assert!(s.contains("why: value is empty"));
+        assert!(s.contains("how to fix: Set `bastion.host"));
+    }
+
+    #[test]
+    fn network_unreachable_diagnostic_carries_endpoint_and_retry() {
+        let d = Diagnostic::what("Failed to connect")
+            .why("TCP RST during handshake")
+            .how_to_fix("Verify the server's sshd_config")
+            .endpoint("bastion.example.com:22")
+            .retry_advice(RetryAdvice::RetryWithBackoff)
+            .build();
+        let e = Error::network_unreachable(d);
+        let s = format!("{e}");
+        assert!(s.contains("endpoint: bastion.example.com:22"));
+        assert!(s.contains("retry: retry with backoff"));
     }
 }

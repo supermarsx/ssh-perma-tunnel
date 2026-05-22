@@ -97,15 +97,34 @@ where
         0x02 => {
             // Server picked USERNAME/PASSWORD; we'd better have creds.
             let c = creds.ok_or_else(|| {
-                Error::AuthFailed(
-                    "socks5: proxy demands username/password but none were configured".into(),
+                Error::auth_failed(
+                    spt_core::Diagnostic::what(
+                        "SOCKS5 proxy requires username/password but none configured",
+                    )
+                    .why("server replied with method 0x02 (USERNAME/PASSWORD); we advertised no creds")
+                    .how_to_fix(
+                        "Set `proxy.credentials.username` and `proxy.credentials.password` \
+                         in your config, or change the proxy to allow NO_AUTH (0x00).",
+                    )
+                    .retry_advice(spt_core::RetryAdvice::NotRetryable)
+                    .build(),
                 )
             })?;
             socks5_userpass_auth(stream, c).await?;
         }
         0xff => {
-            return Err(Error::AuthFailed(
-                "socks5: proxy rejected all advertised auth methods".into(),
+            return Err(Error::auth_failed(
+                spt_core::Diagnostic::what(
+                    "SOCKS5 proxy rejected all advertised auth methods",
+                )
+                .why("server replied with NO_ACCEPTABLE_METHODS (0xff)")
+                .how_to_fix(
+                    "Check what auth methods the proxy requires (consult its docs or \
+                     server logs) and configure matching credentials. We currently \
+                     advertise NO_AUTH and USERNAME/PASSWORD only.",
+                )
+                .retry_advice(spt_core::RetryAdvice::NotRetryable)
+                .build(),
             ));
         }
         other => {
@@ -205,10 +224,22 @@ where
         )));
     }
     if reply[1] != 0x00 {
-        return Err(Error::AuthFailed(format!(
-            "socks5: proxy rejected username/password (status 0x{:02x})",
-            reply[1]
-        )));
+        return Err(Error::auth_failed(
+            spt_core::Diagnostic::what(
+                "SOCKS5 proxy rejected the supplied username/password",
+            )
+            .why(format!(
+                "RFC 1929 sub-negotiation returned status 0x{:02x} (0x00 = success)",
+                reply[1]
+            ))
+            .how_to_fix(
+                "Verify `proxy.credentials.username` and `proxy.credentials.password` \
+                 match what the proxy expects. Consult the proxy's auth log if \
+                 available.",
+            )
+            .retry_advice(spt_core::RetryAdvice::NotRetryable)
+            .build(),
+        ));
     }
     Ok(())
 }
@@ -476,10 +507,10 @@ mod tests {
             })
         })
         .await;
-        match res.unwrap_err() {
-            Error::AuthFailed(_) => {}
-            other => panic!("expected AuthFailed, got {other:?}"),
-        }
+        // t8-A1: site was converted to AuthFailedDiagnostic; the spec
+        // still requires ExitCode::AuthFailed so we assert at that layer.
+        let err = res.unwrap_err();
+        assert_eq!(err.exit_code(), spt_core::ExitCode::AuthFailed);
     }
 
     #[tokio::test]
@@ -492,10 +523,9 @@ mod tests {
             })
         })
         .await;
-        match res.unwrap_err() {
-            Error::AuthFailed(_) => {}
-            other => panic!("expected AuthFailed, got {other:?}"),
-        }
+        // t8-A1: see above; assert at the stable ExitCode layer.
+        let err = res.unwrap_err();
+        assert_eq!(err.exit_code(), spt_core::ExitCode::AuthFailed);
     }
 
     // --- HTTP CONNECT ----------------------------------------------------
@@ -611,5 +641,71 @@ mod tests {
             Error::RuntimeFailure(msg) => assert!(msg.contains("502"), "got: {msg}"),
             other => panic!("expected RuntimeFailure, got {other:?}"),
         }
+    }
+
+    // ──────── t8-A1: diagnostic regression tests ──────────────────────
+
+    #[tokio::test]
+    async fn socks5_userpass_rejection_renders_structured_diagnostic() {
+        let creds = ProxyCredentials {
+            username: "alice".into(),
+            password: "wrong".into(),
+        };
+        let res = run_socks5("h", 1, Some(creds), |mut sv| {
+            Box::pin(async move {
+                let mut hello = [0u8; 4];
+                sv.read_exact(&mut hello).await.unwrap();
+                sv.write_all(&[0x05, 0x02]).await.unwrap();
+                let mut p = [0u8; 13];
+                sv.read_exact(&mut p).await.unwrap();
+                sv.write_all(&[0x01, 0x01]).await.unwrap();
+            })
+        })
+        .await;
+        let err = res.unwrap_err();
+        spt_core::assert_diagnostic_contains!(err,
+            what: "SOCKS5 proxy rejected the supplied username/password",
+            why: "0x01",
+            how_to_fix: "proxy.credentials",
+        );
+    }
+
+    #[tokio::test]
+    async fn socks5_no_acceptable_methods_renders_structured_diagnostic() {
+        let res = run_socks5("h", 1, None, |mut sv| {
+            Box::pin(async move {
+                let mut hello = [0u8; 3];
+                sv.read_exact(&mut hello).await.unwrap();
+                sv.write_all(&[0x05, 0xff]).await.unwrap();
+            })
+        })
+        .await;
+        let err = res.unwrap_err();
+        spt_core::assert_diagnostic_contains!(err,
+            what: "rejected all advertised auth methods",
+            why: "NO_ACCEPTABLE_METHODS",
+            how_to_fix: "NO_AUTH and USERNAME/PASSWORD",
+        );
+    }
+
+    #[tokio::test]
+    async fn socks5_demands_userpass_without_creds_renders_diagnostic() {
+        // With creds=None the client hello is 3 bytes (VER, NMETHODS=1, NO_AUTH).
+        let res = run_socks5("h", 1, None, |mut sv| {
+            Box::pin(async move {
+                let mut hello = [0u8; 3];
+                sv.read_exact(&mut hello).await.unwrap();
+                // Server picks USERNAME/PASSWORD despite the client only
+                // advertising NO_AUTH — exercises the diagnostic path.
+                sv.write_all(&[0x05, 0x02]).await.unwrap();
+            })
+        })
+        .await;
+        let err = res.unwrap_err();
+        spt_core::assert_diagnostic_contains!(err,
+            what: "SOCKS5 proxy requires username/password",
+            why: "method 0x02",
+            how_to_fix: "proxy.credentials.username",
+        );
     }
 }

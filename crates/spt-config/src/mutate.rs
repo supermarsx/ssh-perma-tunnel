@@ -40,16 +40,36 @@ pub struct SftpMountMutation<'a> {
 impl Document {
     /// Parse TOML text into a [`Document`].
     pub fn parse(raw: &str) -> Result<Self> {
-        let inner: DocumentMut = raw
-            .parse()
-            .map_err(|e| Error::InvalidConfig(format!("toml_edit parse: {e}")))?;
+        let inner: DocumentMut = raw.parse().map_err(|e| {
+            Error::invalid_config(
+                spt_core::Diagnostic::what("Failed to parse config for in-place edit")
+                    .why(format!("toml_edit could not parse the document: {e}"))
+                    .how_to_fix(
+                        "Fix TOML syntax errors before running mutating subcommands like \
+                         `spt config set`, `spt profile add`, etc.",
+                    )
+                    .build(),
+            )
+        })?;
         Ok(Self { inner })
     }
 
     /// Read a config file from disk.
     pub fn read(path: &Path) -> Result<Self> {
-        let raw = std::fs::read_to_string(path)
-            .map_err(|e| Error::InvalidConfig(format!("read `{}`: {e}", path.display())))?;
+        let raw = std::fs::read_to_string(path).map_err(|e| {
+            Error::invalid_config(
+                spt_core::Diagnostic::what(format!(
+                    "Failed to read config file `{}` for in-place edit",
+                    path.display()
+                ))
+                .why(format!("{e}"))
+                .how_to_fix(
+                    "Verify the file exists and the calling user has read access.",
+                )
+                .file_path(path)
+                .build(),
+            )
+        })?;
         Self::parse(&raw)
     }
 
@@ -69,7 +89,19 @@ impl Document {
             let io = match e {
                 atomicwrites::Error::Internal(io) | atomicwrites::Error::User(io) => io,
             };
-            Error::InvalidConfig(format!("atomic write `{}`: {io}", path.display()))
+            Error::invalid_config(
+                spt_core::Diagnostic::what(format!(
+                    "Failed to atomically write config to `{}`",
+                    path.display()
+                ))
+                .why(format!("{io}"))
+                .how_to_fix(
+                    "Check disk space, the file's permissions, and that the parent \
+                     directory is writable (atomic writes rename a sibling tempfile).",
+                )
+                .file_path(path)
+                .build(),
+            )
         })
     }
 
@@ -79,9 +111,17 @@ impl Document {
     /// profile with that name already exists.
     pub fn add_profile(&mut self, name: &str, protocol: &str) -> Result<()> {
         if self.find_profile_index(name).is_some() {
-            return Err(Error::InvalidConfig(format!(
-                "profile `{name}` already exists"
-            )));
+            return Err(Error::invalid_config(
+                spt_core::Diagnostic::what(format!(
+                    "Profile `{name}` already exists in config"
+                ))
+                .why("profile names must be unique within a single config file or merged config dir")
+                .how_to_fix(format!(
+                    "Pick a different name, or delete the existing profile first \
+                     (`spt profile remove {name}`).",
+                ))
+                .build(),
+            ));
         }
         let arr = self.profiles_array_mut();
         let mut tbl = Table::new();
@@ -103,13 +143,31 @@ impl Document {
 
     /// Set a top-level profile field to a string value.
     pub fn set_profile_field(&mut self, profile: &str, field: &str, val: &str) -> Result<()> {
-        let idx = self
-            .find_profile_index(profile)
-            .ok_or_else(|| Error::InvalidConfig(format!("profile `{profile}` does not exist")))?;
+        let idx = self.find_profile_index(profile).ok_or_else(|| {
+            Error::invalid_config(
+                spt_core::Diagnostic::what(format!(
+                    "Profile `{profile}` does not exist"
+                ))
+                .why(format!("no `[[profiles]]` entry has `name = \"{profile}\"`"))
+                .how_to_fix(
+                    "Run `spt profile list` to see the available profiles, or `spt profile add` \
+                     to create one first.",
+                )
+                .build(),
+            )
+        })?;
         let arr = self.profiles_array_mut();
-        let tbl = arr
-            .get_mut(idx)
-            .ok_or_else(|| Error::InvalidConfig("profile index disappeared".into()))?;
+        let tbl = arr.get_mut(idx).ok_or_else(|| {
+            Error::invalid_config(
+                spt_core::Diagnostic::what("Internal: profile index disappeared mid-edit")
+                    .why("the profile was found but the underlying ArrayOfTables shrank")
+                    .how_to_fix(
+                        "Retry the command. If the failure persists, file a bug — this \
+                         indicates a concurrent mutation of the in-memory document.",
+                    )
+                    .build(),
+            )
+        })?;
         tbl[field] = value(val);
         Ok(())
     }
@@ -142,9 +200,17 @@ impl Document {
                     .and_then(|v| v.as_str())
                     .is_some_and(|s| s == name)
                 {
-                    return Err(Error::InvalidConfig(format!(
-                        "forward `{name}` already exists in profile `{profile}`"
-                    )));
+                    return Err(Error::invalid_config(
+                        spt_core::Diagnostic::what(format!(
+                            "Forward `{name}` already exists in profile `{profile}`"
+                        ))
+                        .why("forward names must be unique within a profile")
+                        .how_to_fix(format!(
+                            "Pick a different forward name, or remove the existing one with \
+                             `spt forward remove --profile {profile} --name {name}`.",
+                        ))
+                        .build(),
+                    ));
                 }
             }
         }

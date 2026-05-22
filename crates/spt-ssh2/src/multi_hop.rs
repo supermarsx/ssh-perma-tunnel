@@ -65,12 +65,40 @@ where
         let h = outer.lock().await;
         h.channel_open_direct_tcpip(host.to_owned(), u32::from(port), "127.0.0.1", 0)
             .await
-            .map_err(|e| Error::RuntimeFailure(format!("multi-hop direct-tcpip: {e}")))?
+            .map_err(|e| {
+                Error::runtime_failure(
+                    spt_core::Diagnostic::what(format!(
+                        "Failed to open direct-tcpip channel to `{host}:{port}` via multi-hop"
+                    ))
+                    .why(format!("{e}"))
+                    .how_to_fix(
+                        "Verify the outer SSH session is still alive and that the bastion \
+                         has `AllowTcpForwarding yes` in sshd_config.",
+                    )
+                    .endpoint(format!("{host}:{port}"))
+                    .retry_advice(spt_core::RetryAdvice::RetryWithBackoff)
+                    .build(),
+                )
+            })?
     };
     let stream: ChannelStream<client::Msg> = channel.into_stream();
-    client::connect_stream(config, stream, next_handler)
-        .await
-        .map_err(|e| Error::NetworkUnreachable(format!("russh multi-hop connect: {e:?}")))
+    let host_s = host.to_owned();
+    client::connect_stream(config, stream, next_handler).await.map_err(|e| {
+        Error::network_unreachable(
+            spt_core::Diagnostic::what(format!(
+                "Multi-hop SSH connect to `{host_s}:{port}` failed during handshake"
+            ))
+            .why(format!("{e:?}"))
+            .how_to_fix(
+                "Confirm the inner host accepts SSH on the chosen port, that its host key \
+                 matches the configured `known_hosts`, and that the bastion can reach \
+                 it (test with `ssh -J <bastion> <user>@<inner>` from the bastion host).",
+            )
+            .endpoint(format!("{host_s}:{port}"))
+            .retry_advice(spt_core::RetryAdvice::RetryWithBackoff)
+            .build(),
+        )
+    })
 }
 
 /// Open a kind-aware chained connection through `outer` toward
@@ -131,7 +159,22 @@ where
             0,
         )
         .await
-        .map_err(|e| Error::RuntimeFailure(format!("multi-hop proxy direct-tcpip: {e}")))?
+        .map_err(|e| {
+            Error::runtime_failure(
+                spt_core::Diagnostic::what(format!(
+                    "Failed to open multi-hop proxy channel to `{proxy_host}:{proxy_port}`"
+                ))
+                .why(format!("{e}"))
+                .how_to_fix(
+                    "Verify the outer hop is still connected and the bastion permits \
+                     TCP forwarding to the proxy host. Check `AllowTcpForwarding` and \
+                     any `PermitOpen` entries in sshd_config.",
+                )
+                .endpoint(format!("{proxy_host}:{proxy_port}"))
+                .retry_advice(spt_core::RetryAdvice::RetryWithBackoff)
+                .build(),
+            )
+        })?
     };
     let mut stream: ChannelStream<client::Msg> = channel.into_stream();
     match kind {
@@ -157,7 +200,20 @@ where
                 error = %msg,
                 "russh handshake over proxy-jump tunnel failed"
             );
-            Error::NetworkUnreachable(msg)
+            Error::network_unreachable(
+                spt_core::Diagnostic::what(format!(
+                    "SSH handshake over proxy-jump tunnel to `{target_host}:{target_port}` failed"
+                ))
+                .why(msg)
+                .how_to_fix(
+                    "Verify the inner SSH server is reachable through the proxy (test with \
+                     a direct `curl` / `nc` to confirm the CONNECT tunnel works), and that \
+                     its host key matches the configured `known_hosts`.",
+                )
+                .endpoint(format!("{target_host}:{target_port}"))
+                .retry_advice(spt_core::RetryAdvice::RetryWithBackoff)
+                .build(),
+            )
         })
 }
 
@@ -229,6 +285,75 @@ mod tests {
         assert!(
             evs.iter().any(|k| k == "audit.ssh.hop_transition"),
             "expected hop_transition in {evs:?}"
+        );
+    }
+
+    // ──────── t8-A1: diagnostic regression tests ──────────────────────
+
+    #[test]
+    fn direct_tcpip_channel_failure_diagnostic_mentions_allow_tcp_forwarding() {
+        // Mirrors the literal site in open_chained_session for the
+        // channel_open_direct_tcpip error path.
+        let d = spt_core::Diagnostic::what(format!(
+            "Failed to open direct-tcpip channel to `{}:{}` via multi-hop",
+            "internal", 22u16
+        ))
+        .why("channel-open-failed: administratively prohibited")
+        .how_to_fix(
+            "Verify the outer SSH session is still alive and that the bastion \
+             has `AllowTcpForwarding yes` in sshd_config.",
+        )
+        .endpoint("internal:22")
+        .retry_advice(spt_core::RetryAdvice::RetryWithBackoff)
+        .build();
+        let e = spt_core::Error::runtime_failure(d);
+        spt_core::assert_diagnostic_contains!(e,
+            what: "direct-tcpip channel",
+            how_to_fix: "AllowTcpForwarding",
+        );
+    }
+
+    #[test]
+    fn multi_hop_connect_failure_carries_endpoint_diagnostic() {
+        let d = spt_core::Diagnostic::what(format!(
+            "Multi-hop SSH connect to `{}:{}` failed during handshake",
+            "inner", 22u16
+        ))
+        .why("kex algorithm mismatch")
+        .how_to_fix(
+            "Confirm the inner host accepts SSH on the chosen port, that its host key \
+             matches the configured `known_hosts`, and that the bastion can reach \
+             it (test with `ssh -J <bastion> <user>@<inner>` from the bastion host).",
+        )
+        .endpoint("inner:22")
+        .retry_advice(spt_core::RetryAdvice::RetryWithBackoff)
+        .build();
+        let e = spt_core::Error::network_unreachable(d);
+        let s = format!("{e}");
+        assert!(s.contains("inner:22"));
+        assert!(s.contains("kex algorithm mismatch"));
+        assert!(s.contains("ssh -J"));
+    }
+
+    #[test]
+    fn multi_hop_proxy_channel_failure_diagnostic_mentions_permit_open() {
+        let d = spt_core::Diagnostic::what(format!(
+            "Failed to open multi-hop proxy channel to `{}:{}`",
+            "proxy", 1080u16
+        ))
+        .why("channel-open: rejected by host firewall")
+        .how_to_fix(
+            "Verify the outer hop is still connected and the bastion permits \
+             TCP forwarding to the proxy host. Check `AllowTcpForwarding` and \
+             any `PermitOpen` entries in sshd_config.",
+        )
+        .endpoint("proxy:1080")
+        .retry_advice(spt_core::RetryAdvice::RetryWithBackoff)
+        .build();
+        let e = spt_core::Error::runtime_failure(d);
+        spt_core::assert_diagnostic_contains!(e,
+            what: "proxy channel",
+            how_to_fix: "PermitOpen",
         );
     }
 }

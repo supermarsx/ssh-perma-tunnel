@@ -234,9 +234,30 @@ impl ProfileSupervisor {
                 reply,
             })
             .await
-            .map_err(|_| Error::RuntimeFailure("supervisor not running".into()))?;
-        rx.await
-            .map_err(|_| Error::RuntimeFailure("supervisor reply lost".into()))?
+            .map_err(|_| {
+                Error::runtime_failure(
+                    spt_core::Diagnostic::what("Cannot trigger failover: supervisor not running")
+                        .why("the supervisor's control channel is closed — the task has exited")
+                        .how_to_fix(
+                            "Restart the profile (`spt profile restart <name>` or equivalent). \
+                             Check recent logs for the underlying exit reason.",
+                        )
+                        .retry_advice(spt_core::RetryAdvice::NotRetryable)
+                        .build(),
+                )
+            })?;
+        rx.await.map_err(|_| {
+            Error::runtime_failure(
+                spt_core::Diagnostic::what("Supervisor failover reply was dropped")
+                    .why("the oneshot sender was closed before responding — supervisor likely panicked")
+                    .how_to_fix(
+                        "Inspect the supervisor logs for a panic backtrace and file a bug. \
+                         Retry once the profile is restarted.",
+                    )
+                    .retry_advice(spt_core::RetryAdvice::RetryWithBackoff)
+                    .build(),
+            )
+        })?
     }
 
     /// Force the current session closed; reconnect logic still applies.
@@ -757,5 +778,48 @@ mod tests {
         assert_eq!(p, 2222);
         assert!(parse_endpoint_key("noport").is_err());
         assert!(parse_endpoint_key("h:notaport").is_err());
+    }
+
+    // ──────── t8-A1: diagnostic regression tests ──────────────────────
+
+    #[test]
+    fn failover_supervisor_not_running_diagnostic_renders_actionable_text() {
+        // Mirrors the converted site for `failover_to` when the control
+        // channel is closed.
+        let d = spt_core::Diagnostic::what(
+            "Cannot trigger failover: supervisor not running",
+        )
+        .why("the supervisor's control channel is closed — the task has exited")
+        .how_to_fix(
+            "Restart the profile (`spt profile restart <name>` or equivalent). \
+             Check recent logs for the underlying exit reason.",
+        )
+        .retry_advice(spt_core::RetryAdvice::NotRetryable)
+        .build();
+        let e = spt_core::Error::runtime_failure(d);
+        spt_core::assert_diagnostic_contains!(e,
+            what: "Cannot trigger failover",
+            how_to_fix: "spt profile restart",
+        );
+    }
+
+    #[test]
+    fn failover_reply_dropped_diagnostic_suggests_bug_report() {
+        let d = spt_core::Diagnostic::what("Supervisor failover reply was dropped")
+            .why("the oneshot sender was closed before responding — supervisor likely panicked")
+            .how_to_fix(
+                "Inspect the supervisor logs for a panic backtrace and file a bug. \
+                 Retry once the profile is restarted.",
+            )
+            .retry_advice(spt_core::RetryAdvice::RetryWithBackoff)
+            .build();
+        let e = spt_core::Error::runtime_failure(d);
+        spt_core::assert_diagnostic_contains!(e,
+            what: "failover reply was dropped",
+            why: "oneshot",
+            how_to_fix: "file a bug",
+        );
+        let s = format!("{e}");
+        assert!(s.contains("retry: retry with backoff"));
     }
 }
