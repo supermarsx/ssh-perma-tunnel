@@ -36,10 +36,12 @@ const DEPRECATED: &[&str] = &[
 /// Post-quantum or hybrid post-quantum SSH KEX method names recognized by
 /// config validation and diagnostics.
 ///
-/// **t7-Phase0 note:** russh 0.46 does **not** ship any of these KEXes.
-/// Profiles that select a PQ KEX will fail negotiation. The recognition
-/// list survives so config validation can warn early; runtime negotiation
-/// will never produce a match.
+/// **t8-B1 update:** the vendored russh fork (`vendor/russh-fork`) now
+/// implements `mlkem768x25519-sha256` natively (see
+/// `russh::kex::MLKEM768X25519_SHA256`). Profiles selecting that algorithm
+/// will negotiate successfully against any peer that also speaks it
+/// (OpenSSH ≥ 9.9). Other entries in this list remain config-recognized
+/// but not yet wired in russh; selecting them still fails negotiation.
 pub const POST_QUANTUM_KEX: &[&str] = &[
     "mlkem768x25519-sha256",
     "mlkem768x25519-sha256@openssh.com",

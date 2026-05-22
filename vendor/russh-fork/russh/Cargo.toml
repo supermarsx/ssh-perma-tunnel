@@ -10,7 +10,11 @@ name = "russh"
 readme = "../README.md"
 repository = "https://github.com/warp-tech/russh"
 version = "0.46.0"
-rust-version = "1.65"
+# t8-B1: bumped from upstream 1.65 because the `ml-kem` 0.3 crate (used for
+# the mlkem768x25519-sha256 hybrid PQ KEX) declares rust-version 1.85. The
+# outer workspace already requires 1.85 (Cargo.toml workspace.package.rust-
+# version), so this brings the fork's local MSRV in sync with the consumer.
+rust-version = "1.85"
 
 [features]
 default = ["flate2"]
@@ -55,6 +59,7 @@ thiserror = { workspace = true }
 russh-util = { version = "0.46.0", path = "../russh-util" }
 des = "0.8.1"
 tokio = { workspace = true, features = ["io-util", "sync", "time"] }
+ml-kem = { version = "0.3.2", default-features = false, features = ["getrandom"] }
 
 [dev-dependencies]
 anyhow = "1.0"
@@ -71,6 +76,12 @@ tokio = { version = "1.17.0", features = [
 ] }
 rand = "0.8.5"
 shell-escape = "0.1"
+# t8-B1: termion + tokio-fd are Unix-only TTY helpers used by the
+# `interactive` example binary. Gating them to `cfg(unix)` lets the
+# library test suite compile on Windows (the example itself remains
+# Unix-only). No production dependency is affected.
+
+[target.'cfg(unix)'.dev-dependencies]
 tokio-fd = "0.3"
 termion = "2"
 ratatui = "0.26.0"

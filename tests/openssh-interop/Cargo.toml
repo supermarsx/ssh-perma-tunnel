@@ -59,6 +59,10 @@ path = "tests/keepalive.rs"
 name = "proxy_jump"
 path = "tests/proxy_jump.rs"
 
+[[test]]
+name = "pq_mlkem"
+path = "tests/pq_mlkem.rs"
+
 [dependencies]
 # Runtime: full features for spawn + I/O + time.
 tokio = { version = "1.40", features = ["full"] }

@@ -222,6 +222,7 @@ impl<D: Digest> KexAlgorithm for DhGroupKex<D> {
             remote_to_local_mac,
             local_to_remote_mac,
             is_server,
+            /* secret_as_string */ false,
         )
     }
 }

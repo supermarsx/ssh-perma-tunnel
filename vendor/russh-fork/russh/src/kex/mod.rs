@@ -18,6 +18,7 @@
 mod curve25519;
 mod dh;
 mod ecdh_nistp;
+mod mlkem;
 mod none;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -30,6 +31,7 @@ use dh::{
 };
 use digest::Digest;
 use ecdh_nistp::{EcdhNistP256KexType, EcdhNistP384KexType, EcdhNistP521KexType};
+use mlkem::MlKem768X25519Sha256KexType;
 use once_cell::sync::Lazy;
 
 use crate::cipher::CIPHERS;
@@ -113,6 +115,10 @@ pub const ECDH_SHA2_NISTP256: Name = Name("ecdh-sha2-nistp256");
 pub const ECDH_SHA2_NISTP384: Name = Name("ecdh-sha2-nistp384");
 /// `ecdh-sha2-nistp521`
 pub const ECDH_SHA2_NISTP521: Name = Name("ecdh-sha2-nistp521");
+/// `mlkem768x25519-sha256` — NIST FIPS 203 ML-KEM-768 hybridized with
+/// classical Curve25519, per OpenSSH 9.9 `kexmlkem768x25519.c` and
+/// `draft-kampanakis-curdle-ssh-pq-ke`.
+pub const MLKEM768X25519_SHA256: Name = Name("mlkem768x25519-sha256");
 /// `none`
 pub const NONE: Name = Name("none");
 /// `ext-info-c`
@@ -132,6 +138,7 @@ const _DH_G16_SHA512: DhGroup16Sha512KexType = DhGroup16Sha512KexType {};
 const _ECDH_SHA2_NISTP256: EcdhNistP256KexType = EcdhNistP256KexType {};
 const _ECDH_SHA2_NISTP384: EcdhNistP384KexType = EcdhNistP384KexType {};
 const _ECDH_SHA2_NISTP521: EcdhNistP521KexType = EcdhNistP521KexType {};
+const _MLKEM768X25519_SHA256: MlKem768X25519Sha256KexType = MlKem768X25519Sha256KexType {};
 const _NONE: none::NoneKexType = none::NoneKexType {};
 
 pub const ALL_KEX_ALGORITHMS: &[&Name] = &[
@@ -144,6 +151,7 @@ pub const ALL_KEX_ALGORITHMS: &[&Name] = &[
     &ECDH_SHA2_NISTP256,
     &ECDH_SHA2_NISTP384,
     &ECDH_SHA2_NISTP521,
+    &MLKEM768X25519_SHA256,
     &NONE,
 ];
 
@@ -159,6 +167,7 @@ pub(crate) static KEXES: Lazy<HashMap<&'static Name, &(dyn KexType + Send + Sync
         h.insert(&ECDH_SHA2_NISTP256, &_ECDH_SHA2_NISTP256);
         h.insert(&ECDH_SHA2_NISTP384, &_ECDH_SHA2_NISTP384);
         h.insert(&ECDH_SHA2_NISTP521, &_ECDH_SHA2_NISTP521);
+        h.insert(&MLKEM768X25519_SHA256, &_MLKEM768X25519_SHA256);
         h.insert(&NONE, &_NONE);
         assert_eq!(ALL_KEX_ALGORITHMS.len(), h.len());
         h
@@ -171,6 +180,15 @@ thread_local! {
     static BUFFER: RefCell<CryptoVec> = RefCell::new(CryptoVec::new());
 }
 
+/// Derive per-direction cipher / nonce / MAC keys from the KEX shared
+/// secret K, per RFC 4253 §7.2.
+///
+/// `secret_as_string` selects the encoding applied to `shared_secret`:
+/// * `false` — encode as SSH `mpint` (classical KEXes: RFC 4253 default).
+/// * `true`  — encode as SSH `string` (post-quantum / hybrid KEXes that
+///   feed an already-hashed K of fixed length, per
+///   `draft-kampanakis-curdle-ssh-pq-ke` and OpenSSH 9.9
+///   `kexmlkem768x25519.c`).
 pub(crate) fn compute_keys<D: Digest>(
     shared_secret: Option<&[u8]>,
     session_id: &CryptoVec,
@@ -179,6 +197,7 @@ pub(crate) fn compute_keys<D: Digest>(
     remote_to_local_mac: mac::Name,
     local_to_remote_mac: mac::Name,
     is_server: bool,
+    secret_as_string: bool,
 ) -> Result<super::cipher::CipherPair, crate::Error> {
     let cipher = CIPHERS.get(&cipher).ok_or(crate::Error::UnknownAlgo)?;
     let remote_to_local_mac = MACS
@@ -199,7 +218,11 @@ pub(crate) fn compute_keys<D: Digest>(
                         key.clear();
 
                         if let Some(shared) = shared_secret {
-                            buffer.extend_ssh_mpint(shared);
+                            if secret_as_string {
+                                buffer.extend_ssh_string(shared);
+                            } else {
+                                buffer.extend_ssh_mpint(shared);
+                            }
                         }
 
                         buffer.extend(exchange_hash.as_ref());
@@ -216,7 +239,11 @@ pub(crate) fn compute_keys<D: Digest>(
                             // extend.
                             buffer.clear();
                             if let Some(shared) = shared_secret {
-                                buffer.extend_ssh_mpint(shared);
+                                if secret_as_string {
+                                    buffer.extend_ssh_string(shared);
+                                } else {
+                                    buffer.extend_ssh_mpint(shared);
+                                }
                             }
                             buffer.extend(exchange_hash.as_ref());
                             buffer.extend(key);

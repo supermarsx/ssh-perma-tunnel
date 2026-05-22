@@ -157,6 +157,7 @@ impl KexAlgorithm for Curve25519Kex {
             remote_to_local_mac,
             local_to_remote_mac,
             is_server,
+            /* secret_as_string */ false,
         )
     }
 }
