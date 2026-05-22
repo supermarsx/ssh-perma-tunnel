@@ -552,50 +552,39 @@ async fn try_agent_auth(
     Ok(false)
 }
 
-/// Helper that boxes the `authenticate_future` call so the higher-ranked
-/// lifetime introduced by russh's `Signer::Future` (which omits an explicit
-/// `'static` bound) is contained at this call site instead of bubbling up
-/// to the outer `ConnectFuture` coercion. Returning a typed
-/// `Pin<Box<dyn Future + Send + 'h>>` forces the compiler to commit the
-/// lifetime relationship here.
 /// Drive russh's `Signer`-based publickey userauth path.
 ///
-/// **Currently disabled.** russh 0.46's `auth::Signer` trait declares
-/// `type Future: futures::Future<Output = (Self, ...)> + Send` *without*
-/// a `'static` bound on the future. The auto-trait `Send` check on
-/// `Handle::authenticate_future(...)` then fails the higher-ranked
-/// generalisation when this dispatcher is coerced into the outer
-/// `Pin<Box<dyn Future + Send + 'static>>` returned by `connect`. The
-/// rejected goal is `Send-for-all-lifetimes` on a future that captures
-/// the `Signer` and a borrow of the SSH-public-key blob inside russh's
-/// own internal sign-request reply path — even when every value we pass
-/// in is `Send + 'static`, the upstream trait shape leaks a non-`'static`
-/// borrow into the HRT inference.
+/// Calls [`russh::client::Handle::authenticate_future`] with the supplied
+/// agent-client signer. The russh `AgentClient<R>` itself implements
+/// `russh::auth::Signer` — each `Reply::SignRequest` from the server is
+/// dispatched back through the agent's `sign_request` round trip.
 ///
-/// `Agent::list_identities` and `Agent::sign` still work — the russh
-/// agent client itself is fine as a standalone actor — but feeding it
-/// through `authenticate_future` requires either an upstream russh change
-/// (add `+ 'static` to `Signer::Future`) or a manual reimplementation of
-/// the `publickey` userauth state machine outside russh's `Method` enum.
-/// Both are out of scope for t7-A1; tracking issue lives in
-/// `.orchestration/logs/t7-A1.md`.
-// Async signature retained so the call site's `.await` continues to compile
-// without flipping every dispatch arm. When the upstream russh fix lands,
-// the body becomes async-meaningful again.
-#[allow(clippy::unused_async)]
+/// # Send-HRT and the upstream patch
+///
+/// In upstream russh-v0.46.0 this call site does not type-check: the outer
+/// `ConnectFuture` (`Pin<Box<dyn Future + Send + 'static>>`) `CoerceUnsized`
+/// proof fails on a higher-ranked-lifetime obligation from the generic
+/// `S: auth::Signer` state machine. We vendored russh under
+/// `vendor/russh-fork/` with the minimum patch set that fixes this:
+///
+/// 1. `auth::Signer: Sized + Send + 'static` (was `Sized`).
+/// 2. `Signer::Error: ... + Send + 'static`, `Signer::Future: ... + Send + 'static`.
+/// 3. `client::Handle::authenticate_future` rewritten from `async fn` to
+///    return an explicit `Pin<Box<dyn Future + Send + 'a>>`, hoisting the
+///    `self.sender.clone()` and `&mut self.receiver` reborrows into the
+///    sync prelude so the boxed future captures only owned/reborrowed state.
+///
+/// Behaviour is identical to upstream. See `.orchestration/logs/t7-P1.md`
+/// for the full unified diff and the upstream-PR follow-up plan.
 async fn drive_authenticate_future(
-    _handle: SharedHandle,
-    _user: String,
+    handle: SharedHandle,
+    user: String,
     key: russh_keys::key::PublicKey,
-    _signer: crate::agent::DynAgentClient,
+    signer: crate::agent::DynAgentClient,
 ) -> std::result::Result<bool, String> {
-    Err(format!(
-        "UnsupportedBackend: russh 0.46 `authenticate_future` is not Send-general across the \
-         `ConnectFuture` coercion; agent auth for identity `{}` cannot be driven through this \
-         backend until upstream russh adds `+ 'static` to `auth::Signer::Future` (or exposes a \
-         lower-level publickey userauth hook)",
-        Agent::fingerprint(&key)
-    ))
+    let mut h = handle.lock().await;
+    let (_signer_back, result) = h.authenticate_future(user, key, signer).await;
+    result.map_err(|e| format!("russh authenticate_future: {e}"))
 }
 
 /// SSH2/russh GSSAPI (`gssapi-with-mic` per RFC 4462) userauth dispatch.

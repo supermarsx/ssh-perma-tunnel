@@ -239,17 +239,19 @@ async fn sspi_dispatch_surfaces_unsupported_backend_marker() {
 
 // ---------- End-to-end auth via mock russh server + agent ----------
 
-/// End-to-end driver coverage. The actor connects to a real in-process
-/// SSH-agent server, enumerates identities, and feeds them into the
-/// russh-backend dispatch. The current pipeline blocks on the upstream
-/// russh 0.46 `Signer::Future` Send-bound regression (see
-/// `drive_authenticate_future` doc); the dispatcher therefore surfaces a
-/// stable `UnsupportedBackend:` marker that's observable end-to-end. When
-/// upstream russh adds `+ 'static` to the trait future, this test flips
-/// to assert `Ok` without changing the construction shape.
+/// End-to-end driver coverage (t7-P1 happy path). The actor connects to a
+/// real in-process SSH-agent server, enumerates identities, and drives
+/// `publickey` auth through `Handle::authenticate_future` against an
+/// embedded russh test server that authorises the same Ed25519 key. The
+/// session must establish (`Ok(_)`).
+///
+/// Pre-t7-P1 this test asserted the `UnsupportedBackend:` upstream-block
+/// marker. After the local russh-fork patch (`+ 'static` on `Signer::Future`
+/// and friends, plus an explicit `Box::pin` return on `authenticate_future`)
+/// the dispatcher is wired through and the connection succeeds.
 #[cfg(unix)]
 #[tokio::test]
-async fn end_to_end_publickey_auth_via_agent_surfaces_upstream_block() {
+async fn authenticate_via_agent_succeeds() {
     use spt_auth::{AuthConfig, AuthMethod};
     use spt_protocol::{Endpoint, TunnelProtocol as _};
     use spt_ssh2::testing::RusshTestServer;
@@ -276,17 +278,68 @@ async fn end_to_end_publickey_auth_via_agent_surfaces_upstream_block() {
             socket: Some(path.clone()),
         }],
     );
+    let session = proto
+        .connect(&endpoint, &auth)
+        .await
+        .expect("publickey-via-agent auth succeeds against embedded russh server");
+    // Drop the session cleanly so the server's accept loop exits before
+    // we shut it down.
+    drop(session);
+    server.shutdown().await;
+}
+
+/// Negative t7-P1 test: agent holds *only* key X, server authorises
+/// *only* key Y → auth must fail. We assert that the resulting error
+/// chain mentions the authentication failure (no `UnsupportedBackend`
+/// fallback path can survive here, since the dispatch is now wired
+/// through to a real wire round trip).
+#[cfg(unix)]
+#[tokio::test]
+async fn authenticate_via_agent_rejects_unknown_key() {
+    use spt_auth::{AuthConfig, AuthMethod};
+    use spt_protocol::{Endpoint, TunnelProtocol as _};
+    use spt_ssh2::testing::RusshTestServer;
+    use spt_ssh2::{Ssh2BackendKind, Ssh2Protocol};
+
+    // X = the agent-held key; Y = the server-authorised key. They must
+    // differ for the negative path to be meaningful.
+    let agent_key = russh_keys::key::KeyPair::generate_ed25519();
+    let server_key = russh_keys::key::KeyPair::generate_ed25519();
+    let server_pub = server_key.clone_public_key().expect("derive pubkey");
+
+    let server = RusshTestServer::new()
+        .with_authorized_pubkey(server_pub)
+        .start()
+        .await
+        .expect("start russh server");
+
+    // Only the unauthorised key lives in the agent.
+    let (_dir, path) = unix_agent::spawn_agent(vec![agent_key]).await;
+
+    let proto = Ssh2Protocol::builder()
+        .backend_kind(Ssh2BackendKind::Russh)
+        .build();
+    let endpoint = Endpoint::new("127.0.0.1", server.addr.port());
+    let auth = AuthConfig::new(
+        "anyone",
+        vec![AuthMethod::Agent {
+            socket: Some(path.clone()),
+        }],
+    );
     let res = proto.connect(&endpoint, &auth).await;
-    let err = match res {
-        Ok(_) => panic!(
-            "agent auth currently surfaces UnsupportedBackend due to russh 0.46 Signer Future Send-bound"
-        ),
-        Err(e) => e,
-    };
+    let err = res.expect_err("auth must fail when the agent has no authorised key");
+    // The dispatcher returns an `AuthFailed` family error after exhausting
+    // identities; the message must clearly indicate the auth failure path
+    // and must NOT contain the legacy `UnsupportedBackend:` marker (which
+    // would indicate the t7-P1 wiring regressed).
     let msg = format!("{err}");
     assert!(
-        msg.contains("UnsupportedBackend") || msg.contains("authenticate_future"),
-        "expected upstream-block marker; got {msg}"
+        !msg.contains("UnsupportedBackend"),
+        "post-t7-P1 dispatch must not surface UnsupportedBackend; got {msg}"
+    );
+    assert!(
+        matches!(err, spt_core::Error::AuthFailed(_)),
+        "expected AuthFailed, got {err:?}"
     );
     server.shutdown().await;
 }
