@@ -1408,6 +1408,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "dokan"
+version = "0.3.1+dokan206"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c2559899e13c4d1c2ad38fa09be2daf9cde88ff4b70495a70ce4aa371b3b3b1a"
+dependencies = [
+ "bitflags 1.3.2",
+ "dokan-sys",
+ "widestring 0.4.3",
+ "winapi",
+]
+
+[[package]]
+name = "dokan-sys"
+version = "0.3.1+dokan206"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eb7e49e8ac8b6867cd04fc1869a54d4bb32b680180ff2f86d695ef1955534668"
+dependencies = [
+ "cc",
+ "libc",
+ "winapi",
+]
+
+[[package]]
 name = "dunce"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2359,7 +2382,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4d40460c0ce33d6ce4b0630ad68ff63d6661961c48b6dba35e5a4d81cfb48222"
 dependencies = [
  "socket2 0.6.3",
- "widestring",
+ "widestring 1.2.1",
  "windows-registry 0.6.1",
  "windows-result 0.4.1",
  "windows-sys 0.61.2",
@@ -2569,8 +2592,6 @@ dependencies = [
 [[package]]
 name = "libgssapi"
 version = "0.9.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "834339e86b2561169d45d3b01741967fee3e5716c7d0b6e33cd4e3b34c9558cd"
 dependencies = [
  "bitflags 2.11.1",
  "bytes",
@@ -2581,8 +2602,6 @@ dependencies = [
 [[package]]
 name = "libgssapi-sys"
 version = "0.3.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7518e6902e94f92e7c7271232684b60988b4bd813529b4ef9d97aead96956ae8"
 dependencies = [
  "bindgen",
  "pkg-config",
@@ -3251,9 +3270,7 @@ dependencies = [
 
 [[package]]
 name = "pageant"
-version = "0.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "032d6201d2fb765158455ae0d5a510c016bb6da7232e5040e39e9c8db12b0afc"
+version = "0.0.1-beta.3"
 dependencies = [
  "bytes",
  "delegate",
@@ -3406,7 +3423,7 @@ dependencies = [
  "picky-asn1",
  "picky-asn1-der",
  "serde",
- "widestring",
+ "widestring 1.2.1",
  "zeroize",
 ]
 
@@ -4106,8 +4123,6 @@ dependencies = [
 [[package]]
 name = "russh"
 version = "0.46.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c536b90d8e2468d8dedc8de2369383c101325e23fffa3a30de713032862a11d4"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -4151,8 +4166,6 @@ dependencies = [
 [[package]]
 name = "russh-cryptovec"
 version = "0.7.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fadd2c0ab350e21c66556f94ee06f766d8bdae3213857ba7610bfd8e10e51880"
 dependencies = [
  "libc",
  "winapi",
@@ -4161,8 +4174,6 @@ dependencies = [
 [[package]]
 name = "russh-keys"
 version = "0.46.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6e3db166c8678c824627c2c46f619ed5ce4ae33f38a35403c62f6ab8f3985867"
 dependencies = [
  "aes",
  "async-trait",
@@ -4233,8 +4244,6 @@ dependencies = [
 [[package]]
 name = "russh-util"
 version = "0.46.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "63aeb9d2b74f8f38befdc0c5172d5ffcf58f3d2ffcb423f3b6cdfe2c2d747b80"
 dependencies = [
  "chrono",
  "tokio",
@@ -5402,6 +5411,8 @@ dependencies = [
 name = "spt-sftp"
 version = "0.1.0"
 dependencies = [
+ "dokan",
+ "dokan-sys",
  "fuser",
  "futures",
  "hex",
@@ -5414,6 +5425,8 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "tracing",
+ "widestring 0.4.3",
+ "winapi",
 ]
 
 [[package]]
@@ -6839,6 +6852,12 @@ dependencies = [
 
 [[package]]
 name = "widestring"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c168940144dd21fd8046987c16a46a33d5fc84eec29ef9dcddc2ac9e31526b7c"
+
+[[package]]
+name = "widestring"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72069c3113ab32ab29e5584db3c6ec55d416895e60715417b5b883a357c3e471"
@@ -7078,7 +7097,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d24d6bcc7f734a4091ecf8d7a64c5f7d7066f45585c1861eba06449909609c8a"
 dependencies = [
  "bitflags 2.11.1",
- "widestring",
+ "widestring 1.2.1",
  "windows-sys 0.52.0",
 ]
 

@@ -384,6 +384,39 @@ fn unix_no_spn_yields_auth_failed() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// (14b) Known-vector MIC compatibility — t7-P3.
+//
+// Verifies that the vendored libgssapi-fork's real `gss_verify_mic`
+// binding accepts a MIC byte-for-byte identical to the one OpenSSH /
+// MIT-KRB5 produces against a captured session. Without a captured
+// KRB5_TRACE session and matching ticket cache the static vector is
+// not reconstructible at test time — vector capture is deferred until a
+// configured KDC is wired into CI. The `#[ignore]`-gated live test
+// (15) exercises the same real `gss_get_mic` / `gss_verify_mic`
+// round-trip against a live KDC and is therefore the authoritative
+// wire-compat gate. Documented in `.orchestration/logs/t7-P3.md`.
+//
+// This stub keeps the test slot reserved so that a future CI lane with
+// a real KDC fixture can drop in the captured (message, mic) tuple and
+// the assertion below will become live.
+#[cfg(unix)]
+#[test]
+#[ignore = "deferred: requires captured KRB5_TRACE MIC vector against an MIT KRB5 KDC; t7-P3"]
+fn known_vector_mic_round_trip_unix() {
+    // Placeholder — see comment above. When the captured vector is
+    // available, replace the early return with:
+    //
+    //   let cfg = GssApiConfig { service: Some(SPN.into()), .. };
+    //   let mut provider = provider_for(&cfg).unwrap();
+    //   /* drive `provider.initialize(..)` to completion against a
+    //      replayable acceptor */
+    //   provider.verify_mic(MESSAGE, MIC).expect("captured MIC verifies");
+    //
+    // and remove the `#[ignore]`.
+    eprintln!("known_vector_mic_round_trip_unix: vector capture deferred to t7-P3 follow-up");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // (15) Live Kerberos round-trip against a Heimdal/MIT KDC.
 //      Opt-in: requires `KERBEROS_LIVE=1` + `SPT_GSS_TARGET_SPN=…` and a
 //      valid ticket in the cache (e.g. via `kinit user@REALM`).

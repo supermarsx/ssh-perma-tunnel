@@ -52,7 +52,45 @@ default-members = ["crates/spt-bin"]
 # versions of `arbitrary`/`tempfile` independent of the root resolver
 # (per t2-e7 and t2-e2 executor logs). They are exercised standalone via
 # `cargo test --manifest-path tests/<name>/Cargo.toml`.
-exclude = ["fuzz", "tests/property", "tests/openssh-interop"]
+exclude = [
+    "fuzz",
+    "tests/property",
+    "tests/openssh-interop",
+    # t7-P1: vendored russh fork (carries a single-line `+ 'static` trait-bound
+    # patch on `russh::auth::Signer::Future` so we can drive agent userauth
+    # through the russh backend). The fork ships its own `[workspace]` table —
+    # excluding it here keeps the outer resolver from absorbing its members.
+    "vendor/russh-fork",
+    # t7-P3: vendored libgssapi fork (carries additive `gss_get_mic` /
+    # `gss_verify_mic` bindings on top of upstream 0.9.1 so the Unix backend
+    # can produce real RFC 4462 §3.5 MIC tokens, wire-compatible with strict
+    # OpenSSH peers). The fork ships its own `[workspace]` table — excluding
+    # it here keeps the outer resolver from absorbing its members. The patch
+    # entries below route the registry names to the vendored paths.
+    "vendor/libgssapi-fork",
+]
+
+# t7-P1: route registry russh / russh-keys / russh-cryptovec to the local
+# vendored fork. The only material change vs. upstream russh-v0.46.0 is two
+# lines in `vendor/russh-fork/russh/src/auth.rs` adding `+ 'static` to the
+# `auth::Signer::Future` trait bound (and the matching `type Future` alias on
+# the AgentClient impl). See `.orchestration/logs/t7-P1.md` for the full
+# rationale and the upstream-PR path.
+[patch.crates-io]
+russh = { path = "vendor/russh-fork/russh" }
+russh-keys = { path = "vendor/russh-fork/russh-keys" }
+russh-cryptovec = { path = "vendor/russh-fork/cryptovec" }
+# t7-P3: route the registry `libgssapi` and `libgssapi-sys` names to the
+# vendored fork under `vendor/libgssapi-fork/`. The fork is identical to
+# upstream 0.9.1 / 0.3.3 except for additive `gss_get_mic` / `gss_verify_mic`
+# bindings on `libgssapi::context::SecurityContext`, needed to produce real
+# RFC 4462 §3.5 MIC tokens (wire-compatible with strict OpenSSH peers). See
+# `.orchestration/logs/t7-P3.md` for the diff. `libgssapi-sys` is patched
+# too even though no source changes are required, so that path resolution
+# in the vendored sibling reference matches the registry name spt-auth-sspi
+# resolves transitively.
+libgssapi = { path = "vendor/libgssapi-fork/libgssapi" }
+libgssapi-sys = { path = "vendor/libgssapi-fork/libgssapi-sys" }
 
 [workspace.package]
 version = "0.1.0"

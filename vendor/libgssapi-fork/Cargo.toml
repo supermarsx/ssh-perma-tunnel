@@ -1,0 +1,3 @@
+[workspace]
+members = ["libgssapi", "libgssapi-sys"]
+resolver = "2"

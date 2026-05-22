@@ -1,4 +1,4 @@
-//! Unix GSSAPI backend (`libgssapi 0.9`).
+//! Unix GSSAPI backend (`libgssapi 0.9` — vendored fork).
 //!
 //! Drives `gss_init_sec_context` directly via `libgssapi::context::ClientCtx`.
 //! Uses the caller's krb5 ticket cache (`/tmp/krb5cc_$UID` or whatever
@@ -9,28 +9,18 @@
 //! callers requesting NTLM via [`crate::sspi_provider_for`] receive
 //! [`spt_core::Error::AuthFailed`] with the `UnsupportedOnUnix` marker.
 //!
-//! # MIC implementation note
+//! # MIC implementation
 //!
-//! `libgssapi 0.9` (and `libgssapi-sys` it wraps) does **not** expose
-//! `gss_get_mic` / `gss_verify_mic` in its public Rust API — only
-//! `gss_wrap` / `gss_unwrap` via the [`libgssapi::context::SecurityContext`]
-//! trait. We therefore implement [`GssProvider::get_mic`] via
-//! `wrap(encrypt=false, msg)` and [`GssProvider::verify_mic`] via
-//! `unwrap(mic)` + constant-time comparison against `msg`.
+//! [`GssProvider::get_mic`] and [`GssProvider::verify_mic`] call real
+//! `gss_get_mic` / `gss_verify_mic` via the vendored
+//! `libgssapi`-fork extension at `vendor/libgssapi-fork/`. The fork adds
+//! these two methods to the `SecurityContext` trait — upstream
+//! `libgssapi 0.9.1` only exposes `gss_wrap` / `gss_unwrap`. Routed
+//! through the workspace `[patch.crates-io]` table.
 //!
-//! `gss_wrap` with `conf_req_flag = 0` and `gss_get_mic` both protect
-//! integrity, but the on-the-wire tokens are different RFC 2743 types
-//! (`Wrap` vs `MIC`). Strict RFC 4462 §3.5 interop with OpenSSH requires
-//! the `MIC` form — this is a known upstream limitation of the
-//! `libgssapi` binding. The next executor that needs strict RFC 4462
-//! interop should either:
-//!
-//! 1. Add `gss_get_mic` / `gss_verify_mic` upstream and bump the dep, or
-//! 2. Drop one further level of abstraction to `libgssapi-sys` and call
-//!    the C symbols directly.
-//!
-//! Tracked in `.orchestration/logs/t7-A3.md` under the
-//! "Out of scope (deferred)" section.
+//! This produces an RFC 2743 `MIC` token (wire-distinct from a
+//! non-encrypting `Wrap` token), wire-compatible with strict RFC 4462
+//! §3.5 OpenSSH peers. See `.orchestration/logs/t7-P3.md`.
 
 use std::sync::{Arc, Mutex};
 
@@ -153,21 +143,17 @@ impl GssProvider for KerberosProvider {
     }
 
     fn get_mic(&self, message: &[u8]) -> Result<Vec<u8>> {
-        // See module-level doc: `libgssapi 0.9` does not expose
-        // `gss_get_mic`, so we fall back to `gss_wrap(conf=false, msg)`
-        // which provides integrity (matching the gssapi-with-mic security
-        // requirement) but produces a different RFC 2743 token type than
-        // a true MIC. Acceptable for libgssapi-talking-to-libgssapi
-        // peers (notably: any `cross-krb5` server); not strictly RFC
-        // 4462-compliant against OpenSSH.
+        // Real `gss_get_mic` via the vendored libgssapi-fork (t7-P3).
+        // Produces an RFC 2743 `MIC` token wire-compatible with strict
+        // RFC 4462 §3.5 OpenSSH peers.
         let bytes = {
             let mut ctx = self
                 .ctx
                 .lock()
                 .map_err(|_| Error::AuthFailed("libgssapi: ctx mutex poisoned".into()))?;
             let buf = ctx
-                .wrap(false, message)
-                .map_err(|e| map_gss_err("wrap-as-mic", e))?;
+                .get_mic(message)
+                .map_err(|e| map_gss_err("get_mic", e))?;
             buf.to_vec()
         };
         self.emit(&AuditEvent::MicIssued {
@@ -178,25 +164,16 @@ impl GssProvider for KerberosProvider {
     }
 
     fn verify_mic(&self, message: &[u8], mic: &[u8]) -> Result<()> {
-        // Mirror `get_mic`: unwrap the Wrap token, then constant-time
-        // compare against the expected plaintext.
+        // Real `gss_verify_mic` via the vendored libgssapi-fork (t7-P3).
+        // The underlying `gss_verify_mic` performs the constant-time
+        // integrity check internally; we no longer compare in Rust.
         let result = {
             let mut ctx = self
                 .ctx
                 .lock()
                 .map_err(|_| Error::AuthFailed("libgssapi: ctx mutex poisoned".into()))?;
-            let unwrapped = ctx
-                .unwrap(mic)
-                .map_err(|e| map_gss_err("unwrap-as-verify-mic", e))?;
-            let recovered: &[u8] = &unwrapped;
-            if constant_time_eq(recovered, message) {
-                Ok(())
-            } else {
-                Err(Error::AuthFailed(
-                    "libgssapi verify_mic: unwrapped payload did not match expected message"
-                        .into(),
-                ))
-            }
+            ctx.verify_mic(message, mic)
+                .map_err(|e| map_gss_err("verify_mic", e))
         };
         match &result {
             Ok(()) => self.emit(&AuditEvent::MicVerified {
@@ -210,17 +187,6 @@ impl GssProvider for KerberosProvider {
         }
         result
     }
-}
-
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    let mut diff = 0u8;
-    for i in 0..a.len() {
-        diff |= a[i] ^ b[i];
-    }
-    diff == 0
 }
 
 /// Real-backend entry point for [`crate::provider_for`].
