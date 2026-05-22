@@ -5291,9 +5291,11 @@ dependencies = [
 name = "spt-scripting"
 version = "0.1.0"
 dependencies = [
+ "parking_lot",
  "rhai",
  "serde",
  "serde_json",
+ "sha2",
  "spt-core",
  "tempfile",
  "thiserror 1.0.69",

@@ -26,6 +26,13 @@ tracing = { workspace = true }
 # `serde::Serialize` event payloads to `rhai::Dynamic` via
 # `rhai::serde::to_dynamic`). No filesystem / module-loading features.
 rhai = { version = "1.19", default-features = false, features = ["std", "sync", "serde"] }
+# t7-B1: SHA-256 of the source bytes is stamped into the `ScriptLoaded`
+# audit event so subscribers can pin script provenance across on-disk
+# renames. Workspace dep (already in the lockfile).
+sha2 = { workspace = true }
+# t7-B1: `MockAuditSink` recorder holds a `parking_lot::Mutex` for cheap
+# read/write without poisoning. Workspace dep.
+parking_lot = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }

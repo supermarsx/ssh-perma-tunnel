@@ -73,6 +73,11 @@ spt-remote-config = { workspace = true }
 spt-status-api = { workspace = true }
 spt-snmp = { workspace = true, features = ["testing"], optional = true }
 spt-winevent = { workspace = true }
+# t7-B1: audit-event bridges in `crates/spt-bin/src/audit.rs` impl
+# `spt_obfs::AuditHook` and `spt_auth_sspi::AuditHook` to forward
+# crate-local hook events into the workspace audit sink.
+spt-obfs = { workspace = true }
+spt-auth-sspi = { workspace = true }
 
 # Async + std
 tokio = { workspace = true }
@@ -144,6 +149,9 @@ windows = { version = "0.58", features = [
 [dev-dependencies]
 tempfile = { workspace = true }
 async-trait = { workspace = true }
+# t7-B1: `spt-core/testing` exposes `clear_audit_sink_for_test` so the
+# audit bridge unit tests can isolate the process-global sink slot.
+spt-core = { workspace = true, features = ["testing"] }
 base64 = { workspace = true }
 futures = { workspace = true }
 rand = { workspace = true }

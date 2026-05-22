@@ -159,12 +159,20 @@ fn build_with_capabilities(
 ///
 /// Errors at this site are mapped to `Error::InvalidConfig` so an invalid
 /// script aborts profile registration rather than silently disabling hooks.
+///
+/// t7-B1: the engine is wired to a [`crate::audit::ScriptAuditBridge`]
+/// so every script load and hook invocation lands in the workspace
+/// audit sink. Tests that need to assert against a captured sink go
+/// through `spt_core::audit::register_audit_sink` (see
+/// `crates/spt-bin/src/audit.rs::tests`).
 pub(crate) fn build_script_engine(profile: &Profile) -> Result<Option<Arc<ScriptEngine>>> {
     let Some(script) = profile.script.as_ref() else {
         return Ok(None);
     };
     let cfg = translate_script_config(script);
-    let engine = ScriptEngine::load(&cfg).map_err(Error::from)?;
+    let engine = ScriptEngine::load(&cfg)
+        .map_err(Error::from)?
+        .with_audit_sink(crate::audit::ScriptAuditBridge::arc());
     Ok(Some(Arc::new(engine)))
 }
 

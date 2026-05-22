@@ -25,12 +25,14 @@
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use rhai::packages::Package as _;
+use sha2::{Digest as _, Sha256};
 use tracing::{debug, warn};
 
+use crate::audit::{AuditSink, HookOutcome, NoopAuditSink};
 use crate::config::{HookName, ScriptConfig, ScriptLimits};
 use crate::error::ScriptError;
 use crate::event::Event;
@@ -54,6 +56,19 @@ pub struct ScriptEngine {
     /// drains this; tests use [`Self::recorder_snapshot`] to assert call
     /// sites without spinning up a full session.
     recorder: Mutex<HookRecorder>,
+    /// SHA-256 of the source bytes at load time. Carried into the
+    /// `ScriptLoaded` audit event so subscribers can pin provenance
+    /// across on-disk renames.
+    source_sha256: [u8; 32],
+    /// Audit subscriber. Defaults to [`NoopAuditSink`]; replaced via
+    /// [`Self::with_audit_sink`]. The sink is fired:
+    ///
+    /// * Once at [`Self::with_audit_sink`] attach — retro-active
+    ///   `on_loaded(path, sha256)` so subscribers added after load
+    ///   still observe the load event.
+    /// * Once at every [`Self::invoke`] call — `on_invoked(hook,
+    ///   duration, outcome)`.
+    audit_sink: Arc<dyn AuditSink>,
 }
 
 /// In-process record of hook invocations. Used by integration tests and
@@ -80,6 +95,11 @@ impl ScriptEngine {
                 path: cfg.path.clone(),
                 reason: e.to_string(),
             })?;
+        let source_sha256: [u8; 32] = {
+            let mut hasher = Sha256::new();
+            hasher.update(source.as_bytes());
+            hasher.finalize().into()
+        };
 
         // `Engine::new_raw` registers ZERO packages by default — no
         // filesystem, no network, no print, no debug. We then layer the
@@ -128,7 +148,33 @@ impl ScriptEngine {
             hooks: cfg.hooks.clone(),
             limits: cfg.limits,
             recorder: Mutex::new(HookRecorder::default()),
+            source_sha256,
+            audit_sink: Arc::new(NoopAuditSink),
         })
+    }
+
+    /// Attach an audit subscriber. Default is [`NoopAuditSink`].
+    ///
+    /// The sink is consumed by [`Self::load`] and [`Self::invoke`] — both
+    /// fire through the sink so the audit layer (Phase B1 of t7) can
+    /// record per-script provenance and per-hook duration / outcome.
+    ///
+    /// The `on_loaded` event is fired retro-actively at the moment the
+    /// sink is attached so a subscriber added after the engine is
+    /// constructed still observes the load event with the correct SHA.
+    #[must_use]
+    pub fn with_audit_sink(mut self, sink: Arc<dyn AuditSink>) -> Self {
+        sink.on_loaded(&self.path, &self.source_sha256);
+        self.audit_sink = sink;
+        self
+    }
+
+    /// SHA-256 of the source bytes captured at load time. Exposed for
+    /// tests and for downstream audit subscribers that want to
+    /// re-correlate load events.
+    #[must_use]
+    pub fn source_sha256(&self) -> [u8; 32] {
+        self.source_sha256
     }
 
     /// Dispatch a single hook invocation.
@@ -149,7 +195,10 @@ impl ScriptEngine {
     /// `Ssh2Session::dispatch_script_event` logs and *continues* (a script
     /// failure must not bring down the supervisor).
     pub fn invoke(&self, hook: HookName, event: &Event) -> Result<(), ScriptError> {
+        let started = Instant::now();
         let Some(fn_name) = self.hooks.function_for(hook) else {
+            self.audit_sink
+                .on_invoked(hook, started.elapsed(), HookOutcome::Skipped);
             return Ok(());
         };
         if !self.declared_functions.contains(fn_name) {
@@ -159,6 +208,8 @@ impl ScriptEngine {
                 script = %self.path.display(),
                 "spt-scripting: function declared in config is missing from script"
             );
+            self.audit_sink
+                .on_invoked(hook, started.elapsed(), HookOutcome::Skipped);
             return Ok(());
         }
 
@@ -166,12 +217,19 @@ impl ScriptEngine {
         // event payloads implement `serde::Serialize`, so we route via
         // `rhai::serde::to_dynamic` rather than hand-rolling a `CustomType`
         // impl for each payload.
-        let payload = rhai::serde::to_dynamic(event).map_err(|e| ScriptError::HookFailed {
-            hook: hook.to_string(),
-            reason: format!("event serialisation: {e}"),
-        })?;
+        let payload = match rhai::serde::to_dynamic(event) {
+            Ok(p) => p,
+            Err(e) => {
+                let err = ScriptError::HookFailed {
+                    hook: hook.to_string(),
+                    reason: format!("event serialisation: {e}"),
+                };
+                self.audit_sink
+                    .on_invoked(hook, started.elapsed(), HookOutcome::Err);
+                return Err(err);
+            }
+        };
 
-        let started = Instant::now();
         // Fresh scope per call. Anything the previous invocation pushed is
         // gone; the only thing in scope is the `event` payload itself.
         let mut scope = rhai::Scope::new();
@@ -181,23 +239,27 @@ impl ScriptEngine {
 
         match result {
             Ok(_) => {
+                let elapsed = started.elapsed();
                 let json = event.to_json();
                 debug!(
                     hook = %hook,
                     function = fn_name,
-                    elapsed_us = started.elapsed().as_micros() as u64,
+                    elapsed_us = elapsed.as_micros() as u64,
                     "spt-scripting: invoked hook"
                 );
                 if let Ok(mut rec) = self.recorder.lock() {
                     rec.calls.push((hook, json));
                 }
+                self.audit_sink.on_invoked(hook, elapsed, HookOutcome::Ok);
                 Ok(())
             }
             Err(e) => {
+                let elapsed = started.elapsed();
                 let err = classify_runtime_error(hook, &e);
                 if let Ok(mut rec) = self.recorder.lock() {
                     rec.aborts.push((hook, err.to_string()));
                 }
+                self.audit_sink.on_invoked(hook, elapsed, HookOutcome::Err);
                 Err(err)
             }
         }
@@ -234,8 +296,21 @@ impl std::fmt::Debug for ScriptEngine {
             .field("hooks", &self.hooks)
             .field("limits", &self.limits)
             .field("recorder", &"<Mutex>")
+            .field("source_sha256", &hex_short(&self.source_sha256))
+            .field("audit_sink", &self.audit_sink)
             .finish_non_exhaustive()
     }
+}
+
+fn hex_short(bytes: &[u8; 32]) -> String {
+    // Render the first 8 bytes as hex; full digest is available via
+    // `source_sha256()`. The shortened form keeps log lines compact.
+    let mut s = String::with_capacity(16);
+    for b in &bytes[..8] {
+        use std::fmt::Write as _;
+        let _ = write!(&mut s, "{b:02x}");
+    }
+    s
 }
 
 // ---------------------------------------------------------------------------
@@ -347,5 +422,137 @@ mod tests {
         // Missing fn → soft skip, no error, no recorder entry.
         eng.invoke(HookName::PreConnect, &ev).unwrap();
         assert!(eng.recorder_snapshot().calls.is_empty());
+    }
+
+    // t7-B1: audit-sink integration ----------------------------------------
+
+    fn sample_event() -> Event {
+        Event::PreConnect(PreConnect {
+            profile: "p".into(),
+            host: "h".into(),
+            port: 22,
+            attempt: 1,
+        })
+    }
+
+    /// `ScriptEngine::load` computes a SHA-256 of the source bytes and
+    /// surfaces it via the public accessor. Attaching a sink fires a
+    /// retro-active `on_loaded` with the captured hash.
+    #[test]
+    fn load_captures_sha256_of_source() {
+        use crate::audit::AuditEntry;
+        let dir = tempfile::tempdir().unwrap();
+        let body = "fn pre(ev) { ev }\n";
+        let path = write(&dir, body);
+        let eng = ScriptEngine::load(&ScriptConfig {
+            path: path.clone(),
+            hooks: ScriptHooks::default(),
+            limits: ScriptLimits::default(),
+        })
+        .unwrap();
+        let expected: [u8; 32] = {
+            let mut hasher = Sha256::new();
+            hasher.update(body.as_bytes());
+            hasher.finalize().into()
+        };
+        assert_eq!(eng.source_sha256(), expected);
+
+        let sink = Arc::new(crate::audit::MockAuditSink::new());
+        let eng = eng.with_audit_sink(sink.clone());
+        let entries = sink.entries();
+        assert_eq!(entries.len(), 1);
+        match &entries[0] {
+            AuditEntry::Loaded { path: p, sha256 } => {
+                assert_eq!(p, &path);
+                assert_eq!(sha256, &expected);
+            }
+            AuditEntry::Invoked { .. } => panic!("expected Loaded entry"),
+        }
+        drop(eng);
+    }
+
+    /// `invoke` fires `on_invoked` with `HookOutcome::Ok` when the hook
+    /// runs cleanly.
+    #[test]
+    fn invoke_records_duration_and_ok_outcome() {
+        use crate::audit::{AuditEntry, HookOutcome};
+        let dir = tempfile::tempdir().unwrap();
+        let path = write(&dir, "fn pre(ev) { ev }\n");
+        let sink = Arc::new(crate::audit::MockAuditSink::new());
+        let eng = ScriptEngine::load(&ScriptConfig {
+            path,
+            hooks: hooks_pre("pre"),
+            limits: ScriptLimits::default(),
+        })
+        .unwrap()
+        .with_audit_sink(sink.clone());
+        eng.invoke(HookName::PreConnect, &sample_event()).unwrap();
+
+        // 1 load + 1 invoke.
+        let entries = sink.entries();
+        assert_eq!(entries.len(), 2);
+        match &entries[1] {
+            AuditEntry::Invoked { hook, outcome, .. } => {
+                assert_eq!(*hook, HookName::PreConnect);
+                assert_eq!(*outcome, HookOutcome::Ok);
+            }
+            AuditEntry::Loaded { .. } => panic!("expected Invoked entry"),
+        }
+    }
+
+    /// A hook that throws surfaces as `HookOutcome::Err` through the
+    /// audit sink.
+    #[test]
+    fn invoke_records_err_outcome_when_hook_throws() {
+        use crate::audit::{AuditEntry, HookOutcome};
+        let dir = tempfile::tempdir().unwrap();
+        let path = write(&dir, "fn pre(ev) { throw \"boom\"; }\n");
+        let sink = Arc::new(crate::audit::MockAuditSink::new());
+        let eng = ScriptEngine::load(&ScriptConfig {
+            path,
+            hooks: hooks_pre("pre"),
+            limits: ScriptLimits::default(),
+        })
+        .unwrap()
+        .with_audit_sink(sink.clone());
+        let err = eng
+            .invoke(HookName::PreConnect, &sample_event())
+            .expect_err("hook throws");
+        assert!(matches!(err, ScriptError::HookFailed { .. }));
+
+        let entries = sink.entries();
+        assert_eq!(entries.len(), 2);
+        match &entries[1] {
+            AuditEntry::Invoked { outcome, .. } => {
+                assert_eq!(*outcome, HookOutcome::Err);
+            }
+            AuditEntry::Loaded { .. } => panic!("expected Invoked entry"),
+        }
+    }
+
+    /// Soft-skip path (configured hook with no function body) reports
+    /// `HookOutcome::Skipped`.
+    #[test]
+    fn invoke_records_skipped_when_function_missing() {
+        use crate::audit::{AuditEntry, HookOutcome};
+        let dir = tempfile::tempdir().unwrap();
+        let path = write(&dir, "fn other(ev) { ev }\n");
+        let sink = Arc::new(crate::audit::MockAuditSink::new());
+        let eng = ScriptEngine::load(&ScriptConfig {
+            path,
+            hooks: hooks_pre("not_present"),
+            limits: ScriptLimits::default(),
+        })
+        .unwrap()
+        .with_audit_sink(sink.clone());
+        eng.invoke(HookName::PreConnect, &sample_event()).unwrap();
+        let entries = sink.entries();
+        assert_eq!(entries.len(), 2);
+        match &entries[1] {
+            AuditEntry::Invoked { outcome, .. } => {
+                assert_eq!(*outcome, HookOutcome::Skipped);
+            }
+            AuditEntry::Loaded { .. } => panic!("expected Invoked entry"),
+        }
     }
 }

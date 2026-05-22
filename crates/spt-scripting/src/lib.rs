@@ -39,11 +39,13 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 #![warn(missing_docs)]
 
+pub mod audit;
 pub mod config;
 pub mod engine;
 pub mod error;
 pub mod event;
 
+pub use audit::{AuditEntry, AuditSink, HookOutcome, MockAuditSink, NoopAuditSink};
 pub use config::{HookName, ScriptConfig, ScriptHooks, ScriptLimits};
 pub use engine::ScriptEngine;
 pub use error::ScriptError;

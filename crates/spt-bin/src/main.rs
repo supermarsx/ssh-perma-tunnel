@@ -11,6 +11,7 @@
 // orchestrator controller hookup). Suppress the dead-code warnings.
 #![allow(dead_code)]
 
+mod audit;
 mod benchmark_bridge;
 mod cli;
 mod cli_dispatch;

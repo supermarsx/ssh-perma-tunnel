@@ -557,10 +557,15 @@ pub async fn mount_start(global: &GlobalOpts, args: SftpMountStartArgs) -> Resul
 }
 
 /// Tear down an SFTP-backed filesystem mount.
+///
+/// On successful umount, fires `audit.sftp.umount` through the workspace
+/// audit sink (t7-B1, Bwire follow-up #3) with `mountpoint` /
+/// `reason = "operator_request"` fields. The audit event is *not* fired
+/// when the umount itself fails — the operator sees the error directly.
 pub async fn mount_stop(global: &GlobalOpts, args: SftpMountStopArgs) -> Result<()> {
     use std::sync::Arc;
 
-    use spt_sftp::mount::{AuditHook, MountEvent, MountHandle};
+    use spt_sftp::mount::MountHandle;
 
     // We don't keep a runtime registry of live mounts in t6-e5 — t6-Bwire
     // adds the supervisor wire. Construct a synthetic handle whose
@@ -577,12 +582,6 @@ pub async fn mount_stop(global: &GlobalOpts, args: SftpMountStopArgs) -> Result<
     };
     let mut mounter = spt_sftp::mounter_for_current_os(sftp).map_err(Error::from)?;
 
-    let hook: AuditHook = Arc::new(|event: &MountEvent| {
-        if let MountEvent::UmountSucceeded { target } = event {
-            tracing::info!(?target, "sftp.umount.succeeded");
-        }
-    });
-
     let backend = if cfg!(target_os = "linux") {
         "linux-fuse"
     } else if cfg!(target_os = "macos") {
@@ -594,8 +593,11 @@ pub async fn mount_stop(global: &GlobalOpts, args: SftpMountStopArgs) -> Result<
     };
 
     let handle = MountHandle::new(args.path.clone(), backend);
-    let _ = hook;
     mounter.umount(handle).map_err(Error::from)?;
+    // t7-B1: only emit the audit event after the umount call has
+    // completed successfully so the trail reflects realised state, not
+    // intent.
+    crate::audit::emit_sftp_umount(&args.path, "operator_request");
     if wants_json(global, args.json) {
         print_json(&json!({ "umounted": args.path }))?;
     } else {
