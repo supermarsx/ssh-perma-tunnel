@@ -2421,8 +2421,13 @@ dependencies = [
 name = "spt-chaos-tests"
 version = "0.0.0"
 dependencies = [
+ "async-trait",
  "parking_lot",
+ "spt-auth",
  "spt-chaos-proxy",
+ "spt-core",
+ "spt-forward",
+ "spt-protocol",
  "spt-supervisor",
  "tokio",
  "tracing",

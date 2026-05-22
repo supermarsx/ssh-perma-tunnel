@@ -32,6 +32,14 @@ spt-chaos-proxy = { path = "../../crates/spt-chaos-proxy" }
 # feature; we depend on it for in-process scenarios that don't need a
 # separately-spawned `spt` binary.
 spt-supervisor = { path = "../../crates/spt-supervisor", features = ["testing"] }
+# C2: scenarios build their own ProfileSupervisor pointed at the chaos
+# proxy, using a TCP-probe `TunnelProtocol` shipped in
+# `src/scenarios/common.rs`.  These deps unlock that wiring.
+spt-protocol = { path = "../../crates/spt-protocol" }
+spt-auth = { path = "../../crates/spt-auth" }
+spt-core = { path = "../../crates/spt-core" }
+spt-forward = { path = "../../crates/spt-forward", features = ["testing"] }
+async-trait = "0.1"
 
 tokio = { version = "1.40", features = ["full"] }
 parking_lot = "0.12"
