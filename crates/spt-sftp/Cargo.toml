@@ -24,17 +24,29 @@ testing = []
 # `cfg(target_os = "linux")` so enabling the feature on non-Linux hosts
 # is a no-op (the stub `Filesystem` impl is selected instead).
 mount-fuse = ["dep:fuser", "dep:libc"]
-# Windows WinFsp backend. Reserved for the in-process `winfsp` Rust
-# binding the operator selected in t7-A6. The binding is currently
-# blocked: `winfsp = "=0.10"` ships under GPL-3.0 and the workspace's
-# `deny.toml` allow-list does not include GPL-3.0 (see
-# `crates/spt-sftp/src/mount/windows_winfsp.rs` and
-# `.orchestration/logs/t7-A6.md`). Until that policy gap closes, this
-# feature is a no-op — the Windows mounter surfaces a structured
-# `UnsupportedPlatform` diagnostic naming the blocker either way. The
-# feature stays declared so config / CLI / packaging surfaces that
-# reference it keep compiling without churn.
-mount-winfsp = []
+# Windows userspace-filesystem backend, wired to the **Dokan** (Dokany2)
+# Rust binding. t7-A6 originally targeted `winfsp 0.10` but that crate is
+# GPL-3.0 and the workspace `deny.toml` allow-list rejects it. t7-P2
+# replaced the stub with a real implementation backed by the MIT-licensed
+# `dokan` / `dokan-sys` crates (the bundled Dokany2 C source is LGPL-3.0
+# and built into `dokan2.dll`; LGPL allows dynamic linking from non-LGPL
+# code, and cargo-deny inspects the Rust crate's declared license, not the
+# bundled C source).
+#
+# Runtime requirement: install the Dokany2 driver and userspace library
+# (`choco install dokany2 -y`). The `dokan-sys` build script picks up the
+# `DokanLibrary2_LibraryPath_x64` env var the installer sets and links
+# against the installed DLL; without that env var the build script falls
+# back to compiling the vendored LGPL source itself.
+#
+# Build requirement: a C compiler is needed even when Dokany is
+# pre-installed — `dokan-sys/build.rs` always compiles a tiny version
+# probe (`generate_version.c`). Install MSVC build tools on the CI host.
+mount-winfs = ["dep:dokan", "dep:dokan-sys", "dep:widestring", "dep:winapi"]
+# Back-compat alias for the original t7-A6 feature name. Pre-existing
+# CLI / packaging surfaces that referenced `mount-winfsp` keep working
+# without churn; the new code lives behind `mount-winfs`.
+mount-winfsp = ["mount-winfs"]
 
 [dependencies]
 spt-core = { workspace = true }
@@ -53,6 +65,26 @@ futures = { workspace = true }
 [target.'cfg(target_os = "linux")'.dependencies]
 fuser = { version = "0.15", optional = true }
 libc = { version = "0.2", optional = true }
+
+# Windows Dokan / Dokany2 backend (t7-P2). MIT-licensed Rust crates; the
+# bundled Dokany C source is LGPL-3.0 and built into `dokan2.dll`. The
+# platform `cfg` keeps these deps off non-Windows targets entirely — the
+# `dokan-sys` build script rejects non-x86/x86_64 architectures with a
+# panic, and the C-toolchain probe is Windows-only. `dokan-sys` and
+# `dokan` both declare `rust-version: unknown` but build cleanly on
+# stable Rust 1.85 (workspace MSRV); their only build-time prereq is a C
+# compiler (MSVC build tools) plus optionally a pre-installed Dokany2
+# (set `DokanLibrary2_LibraryPath_x64` to skip the in-tree LGPL build).
+[target.'cfg(all(target_os = "windows", any(target_arch = "x86", target_arch = "x86_64")))'.dependencies]
+dokan = { version = "0.3", optional = true }
+dokan-sys = { version = "0.3", optional = true }
+widestring = { version = "0.4", optional = true }
+winapi = { version = "0.3", optional = true, features = [
+    "minwinbase",
+    "ntdef",
+    "ntstatus",
+    "winnt",
+] }
 
 [dev-dependencies]
 tokio = { workspace = true }
