@@ -63,6 +63,10 @@ path = "tests/proxy_jump.rs"
 name = "pq_mlkem"
 path = "tests/pq_mlkem.rs"
 
+[[test]]
+name = "pq_sntrup761"
+path = "tests/pq_sntrup761.rs"
+
 [dependencies]
 # Runtime: full features for spawn + I/O + time.
 tokio = { version = "1.40", features = ["full"] }

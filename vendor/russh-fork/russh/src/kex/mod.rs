@@ -20,6 +20,7 @@ mod dh;
 mod ecdh_nistp;
 mod mlkem;
 mod none;
+mod sntrup761;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::convert::TryFrom;
@@ -33,6 +34,7 @@ use digest::Digest;
 use ecdh_nistp::{EcdhNistP256KexType, EcdhNistP384KexType, EcdhNistP521KexType};
 use mlkem::MlKem768X25519Sha256KexType;
 use once_cell::sync::Lazy;
+use sntrup761::SntruP761X25519Sha512KexType;
 
 use crate::cipher::CIPHERS;
 use crate::keys::encoding::Encoding;
@@ -119,6 +121,22 @@ pub const ECDH_SHA2_NISTP521: Name = Name("ecdh-sha2-nistp521");
 /// classical Curve25519, per OpenSSH 9.9 `kexmlkem768x25519.c` and
 /// `draft-kampanakis-curdle-ssh-pq-ke`.
 pub const MLKEM768X25519_SHA256: Name = Name("mlkem768x25519-sha256");
+/// `sntrup761x25519-sha512` — canonical IETF name for the Streamlined
+/// NTRU Prime sntrup761 / Curve25519 hybrid PQ KEX (OpenSSH 9.9
+/// `kex-sntrup761x25519.c`, `KEX_SNTRUP761X25519_SHA512`).
+///
+/// **t8-B2 status:** registered + wire-format wired, but the KEM
+/// primitive itself is **not yet implemented** — see
+/// [`sntrup761`] module doc-comment for the three operator-decidable
+/// resume paths. Negotiating this algorithm today produces
+/// [`crate::Error::Kex`] at the `client_dh`/`server_dh` step.
+pub const SNTRUP761X25519_SHA512: Name = Name("sntrup761x25519-sha512");
+/// `sntrup761x25519-sha512@openssh.com` — legacy `@openssh.com`-
+/// suffixed alias for the same hybrid KEX, still emitted by OpenSSH 9.9
+/// (`KEX_SNTRUP761X25519_SHA512_OLD`) for backwards compatibility with
+/// pre-IETF-name peers. Mirrors how `curve25519-sha256[@libssh.org]`
+/// registers both forms.
+pub const SNTRUP761X25519_SHA512_OPENSSH: Name = Name("sntrup761x25519-sha512@openssh.com");
 /// `none`
 pub const NONE: Name = Name("none");
 /// `ext-info-c`
@@ -139,6 +157,7 @@ const _ECDH_SHA2_NISTP256: EcdhNistP256KexType = EcdhNistP256KexType {};
 const _ECDH_SHA2_NISTP384: EcdhNistP384KexType = EcdhNistP384KexType {};
 const _ECDH_SHA2_NISTP521: EcdhNistP521KexType = EcdhNistP521KexType {};
 const _MLKEM768X25519_SHA256: MlKem768X25519Sha256KexType = MlKem768X25519Sha256KexType {};
+const _SNTRUP761X25519_SHA512: SntruP761X25519Sha512KexType = SntruP761X25519Sha512KexType {};
 const _NONE: none::NoneKexType = none::NoneKexType {};
 
 pub const ALL_KEX_ALGORITHMS: &[&Name] = &[
@@ -152,6 +171,8 @@ pub const ALL_KEX_ALGORITHMS: &[&Name] = &[
     &ECDH_SHA2_NISTP384,
     &ECDH_SHA2_NISTP521,
     &MLKEM768X25519_SHA256,
+    &SNTRUP761X25519_SHA512,
+    &SNTRUP761X25519_SHA512_OPENSSH,
     &NONE,
 ];
 
@@ -168,6 +189,8 @@ pub(crate) static KEXES: Lazy<HashMap<&'static Name, &(dyn KexType + Send + Sync
         h.insert(&ECDH_SHA2_NISTP384, &_ECDH_SHA2_NISTP384);
         h.insert(&ECDH_SHA2_NISTP521, &_ECDH_SHA2_NISTP521);
         h.insert(&MLKEM768X25519_SHA256, &_MLKEM768X25519_SHA256);
+        h.insert(&SNTRUP761X25519_SHA512, &_SNTRUP761X25519_SHA512);
+        h.insert(&SNTRUP761X25519_SHA512_OPENSSH, &_SNTRUP761X25519_SHA512);
         h.insert(&NONE, &_NONE);
         assert_eq!(ALL_KEX_ALGORITHMS.len(), h.len());
         h

@@ -40,8 +40,20 @@ const DEPRECATED: &[&str] = &[
 /// implements `mlkem768x25519-sha256` natively (see
 /// `russh::kex::MLKEM768X25519_SHA256`). Profiles selecting that algorithm
 /// will negotiate successfully against any peer that also speaks it
-/// (OpenSSH ≥ 9.9). Other entries in this list remain config-recognized
-/// but not yet wired in russh; selecting them still fails negotiation.
+/// (OpenSSH ≥ 9.9).
+///
+/// **t8-B2 update (partial):** `sntrup761x25519-sha512` and its legacy
+/// `@openssh.com`-suffixed alias are now registered in the russh fork's
+/// `KEXES` table (see `russh::kex::SNTRUP761X25519_SHA512`) and the wire-
+/// format / hybrid-KDF skeleton is in place — but the sntrup761 KEM
+/// primitive itself is **not yet wired**. Negotiating either sntrup name
+/// today succeeds at the algorithm-list step but fails at `client_dh` /
+/// `server_dh` with `russh::Error::Kex`. Three operator-decidable resume
+/// paths are documented in `vendor/russh-fork/russh/src/kex/sntrup761.rs`
+/// and `.orchestration/logs/t8-B2.md`.
+///
+/// Other entries in this list remain config-recognized but not yet wired
+/// in russh; selecting them still fails negotiation.
 pub const POST_QUANTUM_KEX: &[&str] = &[
     "mlkem768x25519-sha256",
     "mlkem768x25519-sha256@openssh.com",
