@@ -235,7 +235,11 @@ fn build_ssh2(
         .trust(build_trust_policy(profile.trust.as_ref(), &final_hosts)?)
         // t7-A2: thread the scripting engine through the builder so the
         // protocol can attach it to every freshly-handshaked `Ssh2Session`.
-        .script_engine(script_engine);
+        .script_engine(script_engine)
+        // t7-Bwire: install the workspace audit bridge for GSSAPI/SSPI token
+        // exchanges (closes t7-B1 follow-up #1). The bridge is zero-sized
+        // and fans every event out through `spt_core::audit::record_audit`.
+        .gssapi_audit_hook(Some(crate::audit::GssapiAuditBridge::arc()));
     for b in resolver.backend_arcs() {
         builder = builder.backend(Arc::clone(b));
     }

@@ -45,7 +45,7 @@ pub use diagnostic::{Diagnostic, Diagnostics as ValidationDiagnostics, Severity}
 pub use diff::{diff, Change, ChangeKind};
 pub use fingerprint::fingerprint;
 pub use load::{load, load_dir, load_str, load_with_key, Warnings};
-pub use migrate::migrate;
+pub use migrate::{migrate, migrate_to_2};
 pub use policy::{
     find_binding, ApplyMode, Binding, BindingKind, OverlayReport, PolicyBundle, PolicyOverlay,
     PolicyValue, BINDINGS,

@@ -289,19 +289,27 @@ async fn config_init(global: &GlobalOpts, args: groups::config::ConfigInit) -> R
 }
 
 fn config_migrate(global: &GlobalOpts, args: groups::config::ConfigMigrate) -> Result<()> {
-    // `spt_config::migrate` is a single entry point that reads the current
-    // schema version and emits the next-version TOML. We don't strictly
-    // honour `from-version`/`to-version` because the migrator does that
-    // automatically; we surface their values in a sanity check only.
+    // The library exposes two migration entry points:
+    //   * [`spt_config::migrate`]      — version-detect identity for v1.
+    //   * [`spt_config::migrate_to_2`] — v1 -> v2 (strips the deprecated
+    //                                    `capabilities.ssh2_backend` /
+    //                                    `capabilities.allow_libssh2` keys).
+    // Route on `--to-version`: `2` invokes `migrate_to_2`, anything else
+    // falls through to the version-detect path so prior CLI behaviour is
+    // preserved.
     let path = require_config_path(global)?;
     let raw = std::fs::read_to_string(&path)
         .map_err(|e| Error::InvalidConfig(format!("read `{}`: {e}", path.display())))?;
-    let migrated =
-        spt_config::migrate(&raw).map_err(|e| Error::InvalidConfig(format!("migrate: {e}")))?;
-    let _ = (args.from_version, args.to_version);
+    let migrated = if args.to_version == 2 {
+        spt_config::migrate_to_2(&raw)
+            .map_err(|e| Error::InvalidConfig(format!("migrate to v2: {e}")))?
+    } else {
+        spt_config::migrate(&raw).map_err(|e| Error::InvalidConfig(format!("migrate: {e}")))?
+    };
+    let _ = args.from_version;
     spt_state::write_atomic_string(&path, &migrated)
         .map_err(|e| Error::InvalidConfig(format!("write `{}`: {e}", path.display())))?;
-    println!("migrated {}", path.display());
+    println!("migrated {} to v{}", path.display(), args.to_version);
     Ok(())
 }
 
@@ -3926,6 +3934,53 @@ mod tests {
             "1",
         ]);
         dispatch_ok(cli).await;
+    }
+
+    /// `spt config migrate --to-version 2` over a v1 config strips the
+    /// deprecated `capabilities.ssh2_backend` / `capabilities.allow_libssh2`
+    /// keys and bumps `version` to `2`.
+    #[tokio::test]
+    async fn config_migrate_to_v2_strips_deprecated_ssh2_backend_keys() {
+        let td = tempfile::tempdir().unwrap();
+        let cfg = td.path().join("legacy.toml");
+        std::fs::write(
+            &cfg,
+            "version = 1\n\
+             [capabilities]\n\
+             ssh2_backend = \"libssh2\"\n\
+             allow_libssh2 = true\n\
+             \n\
+             [[profiles]]\n\
+             name = \"p\"\n\
+             protocol = \"ssh2\"\n\
+             host = \"h\"\n",
+        )
+        .unwrap();
+        let cli = parse(&[
+            "spt",
+            "--config",
+            cfg.to_str().unwrap(),
+            "config",
+            "migrate",
+            "--from-version",
+            "1",
+            "--to-version",
+            "2",
+        ]);
+        dispatch_ok(cli).await;
+        let migrated = std::fs::read_to_string(&cfg).unwrap();
+        assert!(
+            migrated.contains("version = 2"),
+            "version should bump to 2, got:\n{migrated}"
+        );
+        assert!(
+            !migrated.contains("ssh2_backend"),
+            "ssh2_backend should be stripped, got:\n{migrated}"
+        );
+        assert!(
+            !migrated.contains("allow_libssh2"),
+            "allow_libssh2 should be stripped, got:\n{migrated}"
+        );
     }
 
     #[tokio::test]

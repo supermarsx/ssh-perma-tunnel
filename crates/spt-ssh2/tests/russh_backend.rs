@@ -317,3 +317,112 @@ async fn connect_with_retry(port: u16) -> TcpStream {
         }
     }
 }
+
+// -----------------------------------------------------------------------------
+// t7-Bwire: end-to-end multi-hop dispatch through `Ssh2Protocol::connect`.
+// Phase 0 left the russh backend rejecting `has_hops`; Bwire wires
+// `multi_hop::open_chained_session` into the connect path so a profile with a
+// non-empty `[[profiles.hops]]` table now walks the chain end-to-end.
+// -----------------------------------------------------------------------------
+
+#[tokio::test]
+async fn ssh2_protocol_connect_walks_two_hop_chain() {
+    // Bastion (hops[0]) -> endpoint. The endpoint server hosts the final
+    // SSH session that the supervisor talks to.
+    let bastion = RusshTestServer::new()
+        .with_password("u", "pw")
+        .start()
+        .await
+        .expect("bastion start");
+    let endpoint_server = RusshTestServer::new()
+        .with_password("u", "pw")
+        .start()
+        .await
+        .expect("endpoint start");
+
+    std::env::set_var("SPT_TEST_HOP_PW", "pw");
+    let auth = AuthConfig::new(
+        "u",
+        vec![AuthMethod::Password {
+            secret: spt_auth::SecretRef::Env("SPT_TEST_HOP_PW".into()),
+        }],
+    );
+    let proto = Ssh2Protocol::builder()
+        .hop(bastion.addr.ip().to_string(), bastion.addr.port())
+        .build();
+    let endpoint = Endpoint::new("127.0.0.1", endpoint_server.addr.port());
+    let session = proto
+        .connect(&endpoint, &auth)
+        .await
+        .expect("connect through 2-hop chain");
+
+    assert_eq!(session.session_info().backend, "ssh2-russh");
+    assert!(
+        session
+            .session_info()
+            .negotiated
+            .as_deref()
+            .unwrap_or("")
+            .contains("multi-hop"),
+        "session_info should mark multi-hop"
+    );
+    assert!(bastion.connection_count() >= 1);
+    assert!(endpoint_server.connection_count() >= 1);
+    assert!(
+        bastion.channel_opens_direct_tcpip() >= 1,
+        "bastion should host the direct-tcpip channel to the endpoint"
+    );
+
+    session.close().await.expect("close");
+    bastion.shutdown().await;
+    endpoint_server.shutdown().await;
+}
+
+#[tokio::test]
+async fn ssh2_protocol_connect_walks_three_hop_chain() {
+    // hops[0] -> hops[1] -> endpoint.
+    let bastion_a = RusshTestServer::new()
+        .with_password("u", "pw")
+        .start()
+        .await
+        .expect("bastion A start");
+    let bastion_b = RusshTestServer::new()
+        .with_password("u", "pw")
+        .start()
+        .await
+        .expect("bastion B start");
+    let endpoint_server = RusshTestServer::new()
+        .with_password("u", "pw")
+        .start()
+        .await
+        .expect("endpoint start");
+
+    std::env::set_var("SPT_TEST_HOP3_PW", "pw");
+    let auth = AuthConfig::new(
+        "u",
+        vec![AuthMethod::Password {
+            secret: spt_auth::SecretRef::Env("SPT_TEST_HOP3_PW".into()),
+        }],
+    );
+    let proto = Ssh2Protocol::builder()
+        .hop(bastion_a.addr.ip().to_string(), bastion_a.addr.port())
+        .hop(bastion_b.addr.ip().to_string(), bastion_b.addr.port())
+        .build();
+    let endpoint = Endpoint::new("127.0.0.1", endpoint_server.addr.port());
+    let session = proto
+        .connect(&endpoint, &auth)
+        .await
+        .expect("connect through 3-hop chain");
+
+    assert_eq!(session.session_info().backend, "ssh2-russh");
+    assert!(bastion_a.connection_count() >= 1);
+    assert!(bastion_b.connection_count() >= 1);
+    assert!(endpoint_server.connection_count() >= 1);
+    assert!(bastion_a.channel_opens_direct_tcpip() >= 1);
+    assert!(bastion_b.channel_opens_direct_tcpip() >= 1);
+
+    session.close().await.expect("close");
+    bastion_a.shutdown().await;
+    bastion_b.shutdown().await;
+    endpoint_server.shutdown().await;
+}

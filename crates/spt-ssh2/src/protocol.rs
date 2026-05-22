@@ -33,6 +33,11 @@ use crate::sftp::SftpClient;
 // the owning profile, so the engine is loaded once and reused.
 use spt_scripting::ScriptEngine;
 // t7-A2:end
+// t7-Bwire:start — GSSAPI/SSPI audit hook threaded through to the russh
+// backend's `try_gssapi_auth` / `try_sspi_auth` dispatchers (closes B1
+// follow-up #1).
+use spt_auth_sspi::AuditHook as GssAuditHook;
+// t7-Bwire:end
 
 /// Trust-verification policy attached to one [`Ssh2Protocol`] instance.
 ///
@@ -66,6 +71,11 @@ pub struct Ssh2Protocol {
     /// [`Ssh2ProtocolBuilder::script_engine`].
     script_engine: Option<Arc<ScriptEngine>>,
     // t7-A2:end
+    // t7-Bwire:start — installed into [`spt_auth_sspi::GssApiConfig::audit_hook`]
+    // and [`spt_auth_sspi::SspiConfig::audit_hook`] for every GSSAPI/SSPI
+    // userauth attempt run through this protocol.
+    gssapi_audit_hook: Option<Arc<dyn GssAuditHook>>,
+    // t7-Bwire:end
 }
 
 /// Builder for [`Ssh2Protocol`].
@@ -77,6 +87,9 @@ pub struct Ssh2ProtocolBuilder {
     // t7-A2:start
     script_engine: Option<Arc<ScriptEngine>>,
     // t7-A2:end
+    // t7-Bwire:start
+    gssapi_audit_hook: Option<Arc<dyn GssAuditHook>>,
+    // t7-Bwire:end
 }
 
 impl Default for Ssh2ProtocolBuilder {
@@ -97,6 +110,9 @@ impl Ssh2ProtocolBuilder {
             // t7-A2:start
             script_engine: None,
             // t7-A2:end
+            // t7-Bwire:start
+            gssapi_audit_hook: None,
+            // t7-Bwire:end
         }
     }
 
@@ -162,6 +178,20 @@ impl Ssh2ProtocolBuilder {
     }
     // t7-A2:end
 
+    // t7-Bwire:start
+    /// Attach a GSSAPI/SSPI audit hook. Installed into the
+    /// [`spt_auth_sspi::GssApiConfig::audit_hook`] /
+    /// [`spt_auth_sspi::SspiConfig::audit_hook`] of every GSSAPI/SSPI auth
+    /// attempt run through this protocol. `None` (the default) leaves the
+    /// hook unset (the spt-auth-sspi provider falls back to its built-in
+    /// no-op).
+    #[must_use]
+    pub fn gssapi_audit_hook(mut self, hook: Option<Arc<dyn GssAuditHook>>) -> Self {
+        self.gssapi_audit_hook = hook;
+        self
+    }
+    // t7-Bwire:end
+
     /// Finalize the builder.
     #[must_use]
     pub fn build(self) -> Ssh2Protocol {
@@ -173,6 +203,9 @@ impl Ssh2ProtocolBuilder {
             // t7-A2:start
             script_engine: self.script_engine,
             // t7-A2:end
+            // t7-Bwire:start
+            gssapi_audit_hook: self.gssapi_audit_hook,
+            // t7-Bwire:end
         }
     }
 }
@@ -203,10 +236,25 @@ impl Ssh2Protocol {
             self.crypto.clone(),
             self.trust.clone(),
             self.backends.clone(),
-            !self.hops.is_empty(),
+            self.hop_specs(),
+            self.gssapi_audit_hook.clone(),
         )
         .await?;
         session.open_sftp_client().await
+    }
+
+    /// Snapshot the hop chain as (host, port, hop-local auth, hop-local trust)
+    /// tuples — the russh backend needs all four for the per-hop walk.
+    fn hop_specs(&self) -> Vec<crate::russh_backend::HopSpec> {
+        self.hops
+            .iter()
+            .map(|h| crate::russh_backend::HopSpec {
+                host: h.host.clone(),
+                port: h.port,
+                auth: h.auth.clone(),
+                trust: h.trust.clone(),
+            })
+            .collect()
     }
 
     /// Hop count — exposed for diagnostics.
@@ -241,9 +289,10 @@ impl TunnelProtocol for Ssh2Protocol {
         let crypto = self.crypto.clone();
         let trust = self.trust.clone();
         let backends = self.backends.clone();
-        let has_hops = !self.hops.is_empty();
+        let hops = self.hop_specs();
+        let gss_audit = self.gssapi_audit_hook.clone();
         let mut session = crate::russh_backend::connect(
-            endpoint, auth_cfg, crypto, trust, backends, has_hops,
+            endpoint, auth_cfg, crypto, trust, backends, hops, gss_audit,
         )
         .await?;
         // t7-A2: attach scripting engine (if any) before boxing.
@@ -288,5 +337,48 @@ impl Ssh2ProtocolBuilder {
     )]
     pub fn backend_kind(self, _kind: Ssh2BackendKind) -> Self {
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// t7-Bwire: the audit-hook builder setter accepts a hook and the value
+    /// survives through `build()`. Pins the surface that
+    /// `profile_factory::build_ssh2` depends on for GSSAPI/SSPI audit
+    /// instrumentation.
+    #[test]
+    fn gssapi_audit_hook_setter_round_trips_through_builder() {
+        #[derive(Debug)]
+        struct DummyHook;
+        impl spt_auth_sspi::AuditHook for DummyHook {
+            fn on_event(&self, _: &spt_auth_sspi::AuditEvent) {}
+        }
+        let hook: Arc<dyn spt_auth_sspi::AuditHook> = Arc::new(DummyHook);
+        let proto = Ssh2Protocol::builder()
+            .gssapi_audit_hook(Some(Arc::clone(&hook)))
+            .build();
+        assert!(
+            proto.gssapi_audit_hook.is_some(),
+            "builder must propagate gssapi_audit_hook"
+        );
+        // Round-trip via `None` clears.
+        let proto = Ssh2Protocol::builder().gssapi_audit_hook(None).build();
+        assert!(proto.gssapi_audit_hook.is_none());
+    }
+
+    /// `hop_count` reflects each hop pushed through the builder. Indirectly
+    /// pins the multi-hop dispatch precondition (`!hops.is_empty()`) used by
+    /// `russh_backend::connect_inner`.
+    #[test]
+    fn hop_count_matches_pushed_hops() {
+        let p = Ssh2Protocol::new();
+        assert_eq!(p.hop_count(), 0);
+        let p = Ssh2Protocol::builder()
+            .hop("bastion-a", 22)
+            .hop("bastion-b", 2222)
+            .build();
+        assert_eq!(p.hop_count(), 2);
     }
 }

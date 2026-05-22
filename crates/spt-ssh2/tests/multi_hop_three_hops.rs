@@ -45,17 +45,16 @@ impl client::Handler for PassThroughHandler {
 }
 
 #[tokio::test]
-#[ignore = "russh-channel-as-transport handshake fails with `Inconsistent` against \
-            the embedded RusshTestServer. The fixture's WinCNG-pinned KEX subset is \
-            the workaround for russh#245 (libssh2 ↔ russh) and does not appear to be \
-            the cause here; the failure reproduces with the default Preferred too. \
-            Root-cause investigation (likely a strict-kex / channel-buffer interaction \
-            inside the russh stream wrapper) deferred — outside the t7-Phase0 lock scope. \
-            The structural deliverable is met: the 3-hop chain compiles, the public \
-            `open_chained_session` API drives the russh-native channel-stream path, \
-            and the test exercises every level of the chain. Production multi-hop \
-            against real OpenSSH peers is unaffected by this fixture-only blocker."]
 async fn three_hop_russh_chain_handshakes_and_serves_channel_open() {
+    // t7-Bwire: closed t7-Phase0 deferred item #1. The pre-fix
+    // `russh::Error::Inconsistent` reproduced because the embedded
+    // `RusshTestServer::channel_open_direct_tcpip` handler accepted the
+    // channel but never connected to the requested backend — the client's
+    // `connect_stream` consequently read its own data echoed by the
+    // server's `data` callback and aborted handshake. The fixture was
+    // patched to actually proxy loopback `direct-tcpip` targets (real
+    // OpenSSH-style behaviour), and this test now runs live without
+    // touching the public `open_chained_session` surface.
     // Bring up three independent russh test servers.
     let a = RusshTestServer::new()
         .with_password("u", "pw")
@@ -159,4 +158,65 @@ async fn three_hop_russh_chain_handshakes_and_serves_channel_open() {
     a.shutdown().await;
     b.shutdown().await;
     c.shutdown().await;
+}
+
+/// 2-hop coverage: a single intermediate hop reaching the endpoint. Mirrors
+/// the structure of the 3-hop test but with one less link in the chain —
+/// the most common production multi-hop topology (bastion -> target).
+#[tokio::test]
+async fn two_hop_russh_chain_handshakes_and_serves_channel_open() {
+    let a = RusshTestServer::new()
+        .with_password("u", "pw")
+        .with_algorithm_pinning(wincng_libssh2_compatible_preferred())
+        .start()
+        .await
+        .expect("start server A");
+    let b = RusshTestServer::new()
+        .with_password("u", "pw")
+        .with_algorithm_pinning(wincng_libssh2_compatible_preferred())
+        .start()
+        .await
+        .expect("start server B");
+
+    let cfg = Arc::new(client::Config {
+        preferred: wincng_libssh2_compatible_preferred(),
+        ..Default::default()
+    });
+
+    let mut handle_a = client::connect(cfg.clone(), a.addr, PassThroughHandler)
+        .await
+        .expect("connect A");
+    assert!(handle_a
+        .authenticate_password("u", "pw")
+        .await
+        .expect("auth A"));
+    let shared_a = Arc::new(AsyncMutex::new(handle_a));
+
+    let mut handle_b = open_chained_session(
+        Arc::clone(&shared_a),
+        &b.addr.ip().to_string(),
+        b.addr.port(),
+        cfg,
+        PassThroughHandler,
+    )
+    .await
+    .expect("chained session A -> B");
+    assert!(handle_b
+        .authenticate_password("u", "pw")
+        .await
+        .expect("auth B over chained session"));
+
+    let _channel = handle_b
+        .channel_open_session()
+        .await
+        .expect("session channel on hop B");
+
+    assert!(a.connection_count() >= 1);
+    assert!(b.connection_count() >= 1);
+    assert!(a.channel_opens_direct_tcpip() >= 1);
+
+    drop(handle_b);
+    drop(shared_a);
+    a.shutdown().await;
+    b.shutdown().await;
 }

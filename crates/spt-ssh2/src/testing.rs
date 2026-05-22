@@ -454,6 +454,7 @@ async fn spawn_accept_loop(
                         any_pubkey,
                         authorized_pubkeys: pubkeys.clone(),
                         inner: Arc::clone(&inner_for_task),
+                        piped_channels: parking_lot::Mutex::new(std::collections::HashSet::new()),
                     };
                     tokio::spawn(russh::server::run_stream(cfg, sock, h));
                 }
@@ -477,6 +478,15 @@ struct TestHandler {
     any_pubkey: bool,
     authorized_pubkeys: Vec<russh_keys::key::PublicKey>,
     inner: Arc<ServerInner>,
+    /// Channel IDs whose data should *not* be echoed by the `data`
+    /// handler. Populated by `channel_open_direct_tcpip` when a loopback
+    /// direct-tcpip channel is connected to a real backend and piped via
+    /// `channel.into_stream()` — the stream owns the channel's data queue,
+    /// so a parallel `session.data(...)` echo would corrupt the wire
+    /// (multi-hop SSH KEX over the channel would see the client's own
+    /// bytes echoed back). See the multi-hop fix narrative in the
+    /// `channel_open_direct_tcpip` doc comment.
+    piped_channels: parking_lot::Mutex<std::collections::HashSet<u32>>,
 }
 
 #[cfg(feature = "testing")]
@@ -537,19 +547,88 @@ impl russh::server::Handler for TestHandler {
 
     async fn channel_open_direct_tcpip(
         &mut self,
-        _channel: russh::Channel<russh::server::Msg>,
-        _host_to_connect: &str,
-        _port_to_connect: u32,
+        channel: russh::Channel<russh::server::Msg>,
+        host_to_connect: &str,
+        port_to_connect: u32,
         _originator_address: &str,
         _originator_port: u32,
         _session: &mut russh::server::Session,
     ) -> std::result::Result<bool, Self::Error> {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
         self.inner
             .channel_opens_direct_tcpip
             .fetch_add(1, Ordering::Relaxed);
-        // The accepted channel is plumbed through the session by russh; our
-        // `data` impl below echoes regardless of whether the channel was
-        // opened via `session` or `direct-tcpip`.
+
+        // Real OpenSSH-style behaviour: when the requested target is a
+        // loopback address (`127.0.0.0/8` or `::1`), dial it and pipe bytes
+        // bidirectionally between the channel and the TCP socket.
+        // Multi-hop integration tests (`multi_hop_three_hops.rs`) rely on
+        // this: each hop has to actually proxy the next SSH handshake to
+        // the next-hop loopback `sshd`. Pre-fix, this handler accepted the
+        // channel but never connected to the backend, so the client's
+        // `connect_stream` (which expects an SSH banner from the next hop)
+        // instead read its own data echoed by the `data` callback and
+        // failed with `russh::Error::Inconsistent`.
+        //
+        // When the target is *not* a loopback IP — the convention used by
+        // older single-hop forward tests, which dial sentinel targets like
+        // `server-side-echo:7` — fall back to the historical echo behaviour
+        // by accepting the channel and letting the `data` callback echo
+        // anything received. This preserves the
+        // `russh_backend_local_forward_bridges_to_direct_tcpip` / SOCKS /
+        // HTTP-CONNECT regression contracts.
+        let is_loopback_target = host_to_connect
+            .parse::<std::net::IpAddr>()
+            .map(|ip| ip.is_loopback())
+            .unwrap_or(false);
+        if !is_loopback_target {
+            return Ok(true);
+        }
+
+        let target = format!("{host_to_connect}:{port_to_connect}");
+        let Ok(stream) = tokio::net::TcpStream::connect(&target).await else {
+            // Reject the channel open so the client surfaces a clean
+            // `direct-tcpip` failure instead of stranding the channel.
+            return Ok(false);
+        };
+
+        // Mark this channel ID as "owned by the pipe" so the `data`
+        // callback won't fire a parallel echo (russh dispatches each
+        // CHANNEL_DATA both to the channel's MPSC and to `handler.data`).
+        // The channel's MPSC is consumed via `channel.into_stream()`;
+        // skipping the echo is the only thing standing between the
+        // multi-hop client's SSH KEX and a corrupted byte stream.
+        let chan_id_u32: u32 = channel.id().into();
+        self.piped_channels.lock().insert(chan_id_u32);
+
+        tokio::spawn(async move {
+            let mut chan_stream = channel.into_stream();
+            let (mut rd, mut wr) = tokio::io::split(stream);
+            let mut buf_a = vec![0u8; 8 * 1024];
+            let mut buf_b = vec![0u8; 8 * 1024];
+            loop {
+                tokio::select! {
+                    res = rd.read(&mut buf_a) => match res {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => {
+                            if chan_stream.write_all(&buf_a[..n]).await.is_err() {
+                                break;
+                            }
+                        }
+                    },
+                    res = chan_stream.read(&mut buf_b) => match res {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => {
+                            if wr.write_all(&buf_b[..n]).await.is_err() {
+                                break;
+                            }
+                        }
+                    },
+                }
+            }
+        });
+
         Ok(true)
     }
 
@@ -633,7 +712,17 @@ impl russh::server::Handler for TestHandler {
         session: &mut russh::server::Session,
     ) -> std::result::Result<(), Self::Error> {
         self.inner.data_callbacks.fetch_add(1, Ordering::Relaxed);
-        session.data(channel, russh::CryptoVec::from(data.to_vec()));
+        // Skip the echo for channels piped to an external backend via
+        // `channel_open_direct_tcpip` — those bytes are already being
+        // forwarded by the spawned pipe task. Echoing here would double-
+        // dispatch the data and corrupt the byte stream (visible to
+        // multi-hop SSH consumers as KEX-time `PacketSize(...)` decoding
+        // garbage on the next-hop banner).
+        let chan_id: u32 = channel.into();
+        let is_piped = self.piped_channels.lock().contains(&chan_id);
+        if !is_piped {
+            session.data(channel, russh::CryptoVec::from(data.to_vec()));
+        }
         Ok(())
     }
 }

@@ -116,17 +116,27 @@ impl client::Handler for ClientHandler {
     }
 }
 
+/// One hop in the multi-hop chain. Constructed from `Ssh2Protocol::hops`.
+#[derive(Clone)]
+pub(crate) struct HopSpec {
+    pub host: String,
+    pub port: u16,
+    pub auth: Option<AuthConfig>,
+    pub trust: Option<TrustVerifier>,
+}
+
 pub(crate) fn connect(
     endpoint: Endpoint,
     auth_cfg: AuthConfig,
     crypto: CryptoPolicy,
     trust: TrustVerifier,
     backends: Vec<Arc<dyn SecretBackend>>,
-    has_hops: bool,
+    hops: Vec<HopSpec>,
+    gss_audit: Option<Arc<dyn spt_auth_sspi::AuditHook>>,
 ) -> ConnectFuture {
-    Box::pin(
-        async move { connect_inner(endpoint, auth_cfg, crypto, trust, backends, has_hops).await },
-    )
+    Box::pin(async move {
+        connect_inner(endpoint, auth_cfg, crypto, trust, backends, hops, gss_audit).await
+    })
 }
 
 async fn connect_inner(
@@ -135,18 +145,158 @@ async fn connect_inner(
     crypto: CryptoPolicy,
     trust: TrustVerifier,
     backends: Vec<Arc<dyn SecretBackend>>,
-    has_hops: bool,
+    hops: Vec<HopSpec>,
+    gss_audit: Option<Arc<dyn spt_auth_sspi::AuditHook>>,
 ) -> Result<RusshSsh2Session> {
-    if has_hops {
-        return Err(Error::UnsupportedPlatform(
-            "russh SSH2 backend does not yet support multi-hop profiles; use ssh2_backend = \"libssh2\" for this profile while migration continues".into(),
-        ));
-    }
-
     let cfg = Arc::new(client::Config {
         preferred: build_preferred(&crypto)?,
         ..Default::default()
     });
+
+    // Multi-hop dispatch: walk `hops` end-to-end. Each hop opens a
+    // `direct-tcpip` channel through the previous session and handshakes a
+    // fresh russh session over the resulting `ChannelStream`. The final hop
+    // is `endpoint` itself.
+    //
+    // Each hop authenticates with either its own `HopSpec::auth` (when
+    // present) or — for the final hop — the endpoint's `auth_cfg`. Hop trust
+    // policy falls back to the endpoint's `trust` when unset.
+    if !hops.is_empty() {
+        // First hop: plain TCP connect to hops[0].host:port.
+        let first = &hops[0];
+        let first_trust = first.trust.clone().unwrap_or_else(|| trust.clone());
+        let first_trust_failure = Arc::new(parking_lot::Mutex::new(None));
+        let first_handler = ClientHandler {
+            host: first.host.clone(),
+            port: first.port,
+            trust: first_trust,
+            trust_failure: Arc::clone(&first_trust_failure),
+            remote_forwards: RemoteForwardMap::default(),
+        };
+        let first_handle =
+            match client::connect(cfg.clone(), (first.host.clone(), first.port), first_handler)
+                .await
+            {
+                Ok(h) => h,
+                Err(e) => {
+                    if let Some(reason) = first_trust_failure.lock().clone() {
+                        return Err(Error::TrustFailed(reason));
+                    }
+                    return Err(Error::NetworkUnreachable(format!(
+                        "russh connect to {}:{}: {e}",
+                        first.host, first.port
+                    )));
+                }
+            };
+        let first_shared = Arc::new(AsyncMutex::new(first_handle));
+        let first_auth = first.auth.clone().unwrap_or_else(|| auth_cfg.clone());
+        run_auth(
+            Arc::clone(&first_shared),
+            first_auth,
+            backends.clone(),
+            gss_audit.clone(),
+        )
+        .await?;
+
+        // Walk intermediate hops [1..]: each opens a direct-tcpip channel
+        // through the prior session and handshakes a fresh russh client
+        // over the channel stream.
+        let mut prev_shared = first_shared;
+        for hop in &hops[1..] {
+            let hop_trust = hop.trust.clone().unwrap_or_else(|| trust.clone());
+            let hop_trust_failure = Arc::new(parking_lot::Mutex::new(None));
+            let hop_handler = ClientHandler {
+                host: hop.host.clone(),
+                port: hop.port,
+                trust: hop_trust,
+                trust_failure: Arc::clone(&hop_trust_failure),
+                remote_forwards: RemoteForwardMap::default(),
+            };
+            let hop_handle = crate::multi_hop::open_chained_session(
+                Arc::clone(&prev_shared),
+                &hop.host,
+                hop.port,
+                cfg.clone(),
+                hop_handler,
+            )
+            .await
+            .map_err(|e| match e {
+                Error::TrustFailed(_) => e,
+                _ => {
+                    if let Some(reason) = hop_trust_failure.lock().clone() {
+                        Error::TrustFailed(reason)
+                    } else {
+                        e
+                    }
+                }
+            })?;
+            let hop_shared = Arc::new(AsyncMutex::new(hop_handle));
+            let hop_auth = hop.auth.clone().unwrap_or_else(|| auth_cfg.clone());
+            run_auth(
+                Arc::clone(&hop_shared),
+                hop_auth,
+                backends.clone(),
+                gss_audit.clone(),
+            )
+            .await?;
+            prev_shared = hop_shared;
+        }
+
+        // Final hop: tunnel through the last bastion to `endpoint`.
+        let final_trust_failure = Arc::new(parking_lot::Mutex::new(None));
+        let final_remote_forwards = RemoteForwardMap::default();
+        let final_handler = ClientHandler {
+            host: endpoint.host.clone(),
+            port: endpoint.port,
+            trust,
+            trust_failure: Arc::clone(&final_trust_failure),
+            remote_forwards: Arc::clone(&final_remote_forwards),
+        };
+        let final_handle = crate::multi_hop::open_chained_session(
+            Arc::clone(&prev_shared),
+            &endpoint.host,
+            endpoint.port,
+            cfg.clone(),
+            final_handler,
+        )
+        .await
+        .map_err(|e| match e {
+            Error::TrustFailed(_) => e,
+            _ => {
+                if let Some(reason) = final_trust_failure.lock().clone() {
+                    Error::TrustFailed(reason)
+                } else {
+                    e
+                }
+            }
+        })?;
+        let final_shared = Arc::new(AsyncMutex::new(final_handle));
+        run_auth(
+            Arc::clone(&final_shared),
+            auth_cfg,
+            backends,
+            gss_audit,
+        )
+        .await?;
+        let info = SessionInfo {
+            backend: "ssh2-russh".into(),
+            peer_version: None,
+            negotiated: Some("russh negotiated algorithms (multi-hop)".into()),
+            established_at: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0),
+        };
+        return Ok(RusshSsh2Session {
+            handle: final_shared,
+            remote_forwards: final_remote_forwards,
+            info,
+            script_engine: None,
+            obfs_transport_name: None,
+            obfs_audit: None,
+        });
+    }
+
     let trust_failure = Arc::new(parking_lot::Mutex::new(None));
     let remote_forwards = RemoteForwardMap::default();
     let handler = ClientHandler {
@@ -177,7 +327,7 @@ async fn connect_inner(
     // and only the spawn boundary contains the resulting auto-trait Send
     // inference. The other arms gain a single `.lock().await` per call.
     let shared = Arc::new(AsyncMutex::new(handle));
-    run_auth(Arc::clone(&shared), auth_cfg, backends).await?;
+    run_auth(Arc::clone(&shared), auth_cfg, backends, gss_audit).await?;
     let info = SessionInfo {
         backend: "ssh2-russh".into(),
         peer_version: None,
@@ -367,6 +517,7 @@ async fn run_auth(
     handle: SharedHandle,
     auth_cfg: AuthConfig,
     backends: Vec<Arc<dyn SecretBackend>>,
+    gss_audit: Option<Arc<dyn spt_auth_sspi::AuditHook>>,
 ) -> Result<()> {
     if auth_cfg.methods.is_empty() {
         return Err(Error::AuthFailed("no auth methods configured".into()));
@@ -379,6 +530,7 @@ async fn run_auth(
             auth_cfg.username.clone(),
             method.clone(),
             backends.clone(),
+            gss_audit.clone(),
         )
         .await
         {
@@ -408,6 +560,7 @@ async fn try_auth_method(
     username: String,
     method: AuthMethod,
     backends: Vec<Arc<dyn SecretBackend>>,
+    gss_audit: Option<Arc<dyn spt_auth_sspi::AuditHook>>,
 ) -> Result<bool> {
     match method {
         AuthMethod::Password { secret: secret_ref } => {
@@ -459,7 +612,7 @@ async fn try_auth_method(
             service,
             principal,
             delegate,
-        } => try_gssapi_auth(handle, username, service, principal, delegate).await,
+        } => try_gssapi_auth(handle, username, service, principal, delegate, gss_audit).await,
         AuthMethod::Sspi {
             service,
             principal,
@@ -473,6 +626,7 @@ async fn try_auth_method(
                 principal,
                 delegate,
                 allow_ntlm_fallback,
+                gss_audit,
             )
             .await
         }
@@ -683,12 +837,14 @@ async fn try_gssapi_auth(
     service: Option<String>,
     principal: Option<String>,
     delegate: bool,
+    audit_hook: Option<Arc<dyn spt_auth_sspi::AuditHook>>,
 ) -> Result<bool> {
     let _ = (handle, username);
     let cfg = spt_auth_sspi::GssApiConfig {
         service,
         principal,
         delegate,
+        audit_hook,
         ..Default::default()
     };
     // Build the provider to exercise the spt-auth-sspi A3 hook. The result
@@ -709,6 +865,7 @@ async fn try_gssapi_auth(
 /// notes — the SSPI path uses the same wire shape and the same `russh 0.46`
 /// gap.
 #[allow(clippy::unused_async)]
+#[allow(clippy::too_many_arguments)]
 async fn try_sspi_auth(
     handle: SharedHandle,
     username: String,
@@ -716,6 +873,7 @@ async fn try_sspi_auth(
     principal: Option<String>,
     delegate: bool,
     allow_ntlm_fallback: bool,
+    audit_hook: Option<Arc<dyn spt_auth_sspi::AuditHook>>,
 ) -> Result<bool> {
     let _ = (handle, username);
     let cfg = spt_auth_sspi::SspiConfig {
@@ -723,6 +881,7 @@ async fn try_sspi_auth(
         principal,
         delegate,
         allow_ntlm_fallback,
+        audit_hook,
         ..Default::default()
     };
     let _provider = spt_auth_sspi::sspi_provider_for(&cfg);
