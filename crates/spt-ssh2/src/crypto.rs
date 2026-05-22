@@ -1,14 +1,14 @@
-//! Crypto policy: cipher / KEX / MAC / host-key allow-lists translated to
-//! libssh2 `method_pref` strings.
+//! Crypto policy: cipher / KEX / MAC / host-key allow-lists.
 //!
 //! Spec §9.13.1 mandates that a profile's `crypto` table acts as an
-//! allow-list. This module renders allow-lists into the comma-separated
-//! algorithm strings libssh2 expects (no order change — first preference is
-//! first listed) and emits a `tracing::warn!` when a deprecated algorithm is
-//! present.
+//! allow-list. Pre-t7 this module rendered the allow-lists into libssh2
+//! `method_pref` comma-strings; the russh backend now consumes the typed
+//! [`russh::Preferred`] struct directly (see
+//! [`crate::russh_backend::build_preferred`]). What survives in this file
+//! is the typed [`CryptoPolicy`] config struct plus the
+//! deprecated-algorithm warning helper that fires once per profile load.
 
 use serde::{Deserialize, Serialize};
-use ssh2::MethodType;
 
 /// Algorithms classified as "deprecated" by spec §9.13.1; we emit a warning
 /// when any of these are seen on the wire.
@@ -35,6 +35,11 @@ const DEPRECATED: &[&str] = &[
 
 /// Post-quantum or hybrid post-quantum SSH KEX method names recognized by
 /// config validation and diagnostics.
+///
+/// **t7-Phase0 note:** russh 0.46 does **not** ship any of these KEXes.
+/// Profiles that select a PQ KEX will fail negotiation. The recognition
+/// list survives so config validation can warn early; runtime negotiation
+/// will never produce a match.
 pub const POST_QUANTUM_KEX: &[&str] = &[
     "mlkem768x25519-sha256",
     "mlkem768x25519-sha256@openssh.com",
@@ -45,7 +50,7 @@ pub const POST_QUANTUM_KEX: &[&str] = &[
 ];
 
 /// ML-KEM hybrid SSH KEX method names recognized by config validation and
-/// diagnostics.
+/// diagnostics. See [`POST_QUANTUM_KEX`] for the russh 0.46 caveat.
 pub const ML_KEM_KEX: &[&str] = &[
     "mlkem768x25519-sha256",
     "mlkem768x25519-sha256@openssh.com",
@@ -74,35 +79,6 @@ pub struct CryptoPolicy {
 }
 
 impl CryptoPolicy {
-    /// Translate the policy into a list of `(MethodType, comma-string)`
-    /// suitable for `Session::method_pref`. Empty categories are omitted.
-    #[must_use]
-    pub fn to_method_prefs(&self) -> Vec<(MethodType, String)> {
-        let mut out = Vec::new();
-        let cipher_csv = comma(&self.ciphers);
-        if !cipher_csv.is_empty() {
-            out.push((MethodType::CryptCs, cipher_csv.clone()));
-            out.push((MethodType::CryptSc, cipher_csv));
-        }
-        if !self.kex.is_empty() {
-            out.push((MethodType::Kex, comma(&self.kex)));
-        }
-        let mac_csv = comma(&self.macs);
-        if !mac_csv.is_empty() {
-            out.push((MethodType::MacCs, mac_csv.clone()));
-            out.push((MethodType::MacSc, mac_csv));
-        }
-        if !self.host_keys.is_empty() {
-            out.push((MethodType::HostKey, comma(&self.host_keys)));
-        }
-        let comp_csv = comma(&self.compression);
-        if !comp_csv.is_empty() {
-            out.push((MethodType::CompCs, comp_csv.clone()));
-            out.push((MethodType::CompSc, comp_csv));
-        }
-        out
-    }
-
     /// Yield warnings for any deprecated algorithm present in the policy.
     pub fn deprecated_warnings(&self) -> Vec<String> {
         let mut warnings = Vec::new();
@@ -141,10 +117,6 @@ impl CryptoPolicy {
     }
 }
 
-fn comma(v: &[String]) -> String {
-    v.join(",")
-}
-
 fn contains_ignore_ascii_case(values: &[&str], needle: &str) -> bool {
     values
         .iter()
@@ -156,59 +128,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn empty_policy_emits_no_prefs() {
+    fn empty_policy_warnings_empty() {
         let p = CryptoPolicy::default();
-        assert!(p.to_method_prefs().is_empty());
         assert!(p.deprecated_warnings().is_empty());
-    }
-
-    #[test]
-    fn ciphers_split_into_cs_and_sc() {
-        let p = CryptoPolicy {
-            ciphers: vec![
-                "aes256-gcm@openssh.com".into(),
-                "chacha20-poly1305@openssh.com".into(),
-            ],
-            ..Default::default()
-        };
-        let prefs = p.to_method_prefs();
-        // Both directions present.
-        assert_eq!(prefs.len(), 2);
-        assert!(prefs.iter().any(|(t, _)| matches!(t, MethodType::CryptCs)));
-        assert!(prefs.iter().any(|(t, _)| matches!(t, MethodType::CryptSc)));
-        for (_, s) in &prefs {
-            assert_eq!(s, "aes256-gcm@openssh.com,chacha20-poly1305@openssh.com");
-        }
-    }
-
-    #[test]
-    fn kex_and_macs_and_hostkeys_render() {
-        let p = CryptoPolicy {
-            kex: vec![
-                "curve25519-sha256".into(),
-                "diffie-hellman-group14-sha256".into(),
-            ],
-            macs: vec!["hmac-sha2-256-etm@openssh.com".into()],
-            host_keys: vec!["ssh-ed25519".into(), "rsa-sha2-512".into()],
-            ..Default::default()
-        };
-        let prefs = p.to_method_prefs();
-        let kex = prefs
-            .iter()
-            .find(|(t, _)| matches!(t, MethodType::Kex))
-            .unwrap();
-        assert_eq!(kex.1, "curve25519-sha256,diffie-hellman-group14-sha256");
-        let hk = prefs
-            .iter()
-            .find(|(t, _)| matches!(t, MethodType::HostKey))
-            .unwrap();
-        assert_eq!(hk.1, "ssh-ed25519,rsa-sha2-512");
-        // Both MAC directions:
-        let mac_cnt = prefs
-            .iter()
-            .filter(|(t, _)| matches!(t, MethodType::MacCs | MethodType::MacSc))
-            .count();
-        assert_eq!(mac_cnt, 2);
     }
 
     #[test]

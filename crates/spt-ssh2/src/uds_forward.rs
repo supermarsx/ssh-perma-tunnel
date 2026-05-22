@@ -16,15 +16,11 @@
 //! the `direct-streamlocal` channel-open and the `streamlocal-forward`
 //! global-request packets. See [`encode_direct_streamlocal_body`].
 //!
-//! Backend constraints (codified by the planner — see `t6.md` plan
-//! corrections):
+//! Backend constraints:
 //!
-//! * `libssh2` 0.9 has no `channel_direct_streamlocal` and no streamlocal
-//!   global-request helpers. The libssh2 path therefore surfaces
-//!   [`spt_core::Error::UnsupportedPlatform`] cleanly via
-//!   [`libssh2_unsupported`]. (Exit code 10 — there is no
-//!   `UnsupportedBackend` variant in `spt-core`; `UnsupportedPlatform`
-//!   covers backend-feature gaps semantically.)
+//! * The libssh2 path was removed in t7-Phase0. Pre-t7 it surfaced
+//!   [`spt_core::Error::UnsupportedPlatform`] via a `libssh2_unsupported`
+//!   helper; russh is now the only backend and the helper is gone.
 //! * The listener side of `local_uds` requires `AF_UNIX` sockets, so the
 //!   listener half is gated `#[cfg(unix)]`. Outbound channel opens (the
 //!   `direct-streamlocal` channel itself) work cross-platform; only the
@@ -156,23 +152,6 @@ pub fn validate_socket_path(path: &str) -> Result<()> {
 // ---------------------------------------------------------------------------
 // Backend gating
 // ---------------------------------------------------------------------------
-
-/// Canonical "libssh2 cannot do this" error for both UDS link kinds.
-///
-/// Returned by every entry point on this module when the protocol is
-/// running on the legacy libssh2 backend (`ssh2` 0.9 lacks the
-/// `channel_direct_streamlocal` and streamlocal global-request APIs
-/// entirely). Uses [`Error::UnsupportedPlatform`] (exit code 10) — there
-/// is no `Error::UnsupportedBackend` variant in `spt-core` and adding
-/// one is out of this executor's lock scope.
-#[must_use]
-pub fn libssh2_unsupported() -> Error {
-    Error::UnsupportedPlatform(
-        "UDS forwarding (direct-streamlocal / streamlocal-forward) is unavailable on the \
-         libssh2 backend; switch to ssh2_backend = \"russh\" for this profile"
-            .into(),
-    )
-}
 
 /// Canonical platform-gated error for `local_uds` when running on a
 /// non-Unix target (Windows has no `AF_UNIX` listener path here).
@@ -469,19 +448,6 @@ mod tests {
         let huge = format!("/{}", "a".repeat(4096));
         let e = validate_socket_path(&huge).unwrap_err();
         assert!(matches!(e, Error::InvalidConfig(ref s) if s.contains("4096")));
-    }
-
-    #[test]
-    fn libssh2_unsupported_yields_unsupported_platform() {
-        let e = libssh2_unsupported();
-        match e {
-            Error::UnsupportedPlatform(msg) => {
-                assert!(msg.contains("libssh2"), "msg: {msg}");
-                assert!(msg.contains("UDS"), "msg: {msg}");
-                assert!(msg.contains("russh"), "msg: {msg}");
-            }
-            other => panic!("expected UnsupportedPlatform, got {other:?}"),
-        }
     }
 
     #[test]

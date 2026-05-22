@@ -165,7 +165,7 @@ async fn gssapi_dispatch_surfaces_unsupported_backend_marker() {
     use spt_auth::{AuthConfig, AuthMethod};
     use spt_protocol::{Endpoint, TunnelProtocol as _};
     use spt_ssh2::testing::RusshTestServer;
-    use spt_ssh2::{Ssh2BackendKind, Ssh2Protocol};
+    use spt_ssh2::Ssh2Protocol;
 
     let server = RusshTestServer::new()
         .with_password("anyone", "x")
@@ -174,7 +174,7 @@ async fn gssapi_dispatch_surfaces_unsupported_backend_marker() {
         .expect("start russh server");
 
     let proto = Ssh2Protocol::builder()
-        .backend_kind(Ssh2BackendKind::Russh)
+        
         .build();
     let endpoint = Endpoint::new("127.0.0.1", server.addr.port());
     let auth = AuthConfig::new(
@@ -203,7 +203,7 @@ async fn sspi_dispatch_surfaces_unsupported_backend_marker() {
     use spt_auth::{AuthConfig, AuthMethod};
     use spt_protocol::{Endpoint, TunnelProtocol as _};
     use spt_ssh2::testing::RusshTestServer;
-    use spt_ssh2::{Ssh2BackendKind, Ssh2Protocol};
+    use spt_ssh2::Ssh2Protocol;
 
     let server = RusshTestServer::new()
         .with_password("anyone", "x")
@@ -212,7 +212,7 @@ async fn sspi_dispatch_surfaces_unsupported_backend_marker() {
         .expect("start russh server");
 
     let proto = Ssh2Protocol::builder()
-        .backend_kind(Ssh2BackendKind::Russh)
+        
         .build();
     let endpoint = Endpoint::new("127.0.0.1", server.addr.port());
     let auth = AuthConfig::new(
@@ -255,7 +255,7 @@ async fn authenticate_via_agent_succeeds() {
     use spt_auth::{AuthConfig, AuthMethod};
     use spt_protocol::{Endpoint, TunnelProtocol as _};
     use spt_ssh2::testing::RusshTestServer;
-    use spt_ssh2::{Ssh2BackendKind, Ssh2Protocol};
+    use spt_ssh2::Ssh2Protocol;
 
     let key = russh_keys::key::KeyPair::generate_ed25519();
     let pubkey = key.clone_public_key().expect("derive pubkey");
@@ -269,7 +269,7 @@ async fn authenticate_via_agent_succeeds() {
     let (_dir, path) = unix_agent::spawn_agent(vec![key]).await;
 
     let proto = Ssh2Protocol::builder()
-        .backend_kind(Ssh2BackendKind::Russh)
+        
         .build();
     let endpoint = Endpoint::new("127.0.0.1", server.addr.port());
     let auth = AuthConfig::new(
@@ -299,7 +299,7 @@ async fn authenticate_via_agent_rejects_unknown_key() {
     use spt_auth::{AuthConfig, AuthMethod};
     use spt_protocol::{Endpoint, TunnelProtocol as _};
     use spt_ssh2::testing::RusshTestServer;
-    use spt_ssh2::{Ssh2BackendKind, Ssh2Protocol};
+    use spt_ssh2::Ssh2Protocol;
 
     // X = the agent-held key; Y = the server-authorised key. They must
     // differ for the negative path to be meaningful.
@@ -317,7 +317,7 @@ async fn authenticate_via_agent_rejects_unknown_key() {
     let (_dir, path) = unix_agent::spawn_agent(vec![agent_key]).await;
 
     let proto = Ssh2Protocol::builder()
-        .backend_kind(Ssh2BackendKind::Russh)
+        
         .build();
     let endpoint = Endpoint::new("127.0.0.1", server.addr.port());
     let auth = AuthConfig::new(

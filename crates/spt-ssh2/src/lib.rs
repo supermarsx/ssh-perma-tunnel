@@ -1,41 +1,37 @@
-//! SSH2 backend for spt built on [`russh`] with a legacy libssh2 compatibility path.
+//! SSH2 backend for spt built on the pure-Rust [`russh`] crate.
 //!
 //! Implements [`spt_protocol::TunnelProtocol`] and [`spt_protocol::TunnelSession`]
-//! for the SSH2 transport mandated by spec §17.4.
+//! for the SSH2 transport mandated by spec §17.4. The legacy libssh2 path
+//! was removed in t7-Phase0; russh is the only backend.
 //!
 //! Highlights:
-//! * Pure-Rust `russh` transport for new runtime profiles.
-//! * Legacy non-blocking libssh2 wrapped by `async-ssh2-lite`'s Tokio
-//!   `AsyncFd` adapter for compatibility while the migration completes.
-//! * Public-key (memory + file fallback), agent, password, keyboard-interactive
-//!   and OpenSSH-certificate auth, tried in `AuthConfig.methods` order.
+//! * Public-key, agent, password, keyboard-interactive, OpenSSH-certificate,
+//!   GSSAPI/SSPI auth tried in `AuthConfig.methods` order.
 //! * Host-key verification via `spt-trust`'s [`spt_trust::KnownHosts`] and/or
-//!   [`spt_trust::Sha256HostPin`] (whichever the profile selects, both
-//!   supported).
+//!   [`spt_trust::Sha256HostPin`].
 //! * Local TCP forwards (`direct-tcpip`), remote TCP forwards
-//!   (`tcpip-forward` + `forwarded-tcpip`), dynamic SOCKS4/SOCKS4A/SOCKS5/HTTP CONNECT
-//!   proxy listeners, and multi-hop chains via per-hop `direct-tcpip`
-//!   channels promoted to the next session's transport.
-//! * Periodic keepalive driver (`keepalive_send`).
-//! * Crypto policy enforcement via libssh2 `method_pref` calls with warning
-//!   logs on deprecated algorithms.
+//!   (`tcpip-forward` + `forwarded-tcpip`), dynamic SOCKS4/SOCKS4A/SOCKS5/HTTP
+//!   CONNECT proxy listeners, and multi-hop chains via per-hop `direct-tcpip`
+//!   channels promoted to the next russh session's transport (no socketpair).
+//! * UDS forwarding (`direct-streamlocal@openssh.com` + `streamlocal-forward`).
+//! * Crypto policy enforcement via [`russh::Preferred`] (kex / cipher / mac
+//!   / hostkey / compression allow-lists) with warning logs on deprecated
+//!   algorithms.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
 pub mod agent;
-pub mod auth;
 pub mod connect;
 pub mod crypto;
 pub(crate) mod dynamic;
 pub mod errors;
-pub mod forward;
 pub mod hostkey;
-pub mod kbi_bridge;
 pub mod multi_hop;
 pub mod protocol;
 pub mod proxy_jump;
 pub(crate) mod russh_backend;
+pub(crate) mod secret;
 pub mod session;
 pub mod sftp;
 pub mod udp_tcp_framed;

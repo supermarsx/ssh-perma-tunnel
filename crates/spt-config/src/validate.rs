@@ -629,33 +629,37 @@ fn check_capabilities(d: &mut Diagnostics, c: &Config) {
     };
 
     if let Some(backend) = cap.ssh2_backend.as_deref() {
+        // t7-Phase0: the libssh2 backend was removed; russh is the only
+        // SSH2 backend. Old configs continue to load — we emit a single
+        // structured deprecation warning and ignore the value at runtime.
         if !matches!(backend, "russh" | "libssh2") {
             d.push(
-                Diagnostic::error(
-                    "capabilities_ssh2_backend_invalid",
-                    format!("capabilities.ssh2_backend `{backend}` is invalid"),
+                Diagnostic::warning(
+                    "capabilities_ssh2_backend_deprecated_t7",
+                    format!(
+                        "capabilities.ssh2_backend `{backend}` is deprecated since t7-Phase0; libssh2 was removed, russh is the only backend (value ignored)"
+                    ),
                 )
                 .at("capabilities.ssh2_backend"),
             );
-        }
-        if backend == "libssh2" {
+        } else {
             d.push(
                 Diagnostic::warning(
-                    "capabilities_ssh2_backend_libssh2_deprecated",
-                    "capabilities.ssh2_backend = \"libssh2\" is legacy; russh is the production SSH2 backend target",
+                    "capabilities_ssh2_backend_deprecated_t7",
+                    "capabilities.ssh2_backend is deprecated since t7-Phase0; libssh2 was removed, russh is the only backend (value ignored)",
                 )
                 .at("capabilities.ssh2_backend"),
             );
-            if matches!(cap.allow_libssh2, Some(false)) {
-                d.push(
-                    Diagnostic::error(
-                        "capabilities_libssh2_disallowed",
-                        "capabilities.allow_libssh2 = false conflicts with ssh2_backend = \"libssh2\"",
-                    )
-                    .at("capabilities.allow_libssh2"),
-                );
-            }
         }
+    }
+    if cap.allow_libssh2.is_some() {
+        d.push(
+            Diagnostic::warning(
+                "capabilities_ssh2_backend_deprecated_t7",
+                "capabilities.allow_libssh2 is deprecated since t7-Phase0; libssh2 was removed (value ignored)",
+            )
+            .at("capabilities.allow_libssh2"),
+        );
     }
 
     if matches!(cap.require_post_quantum_kex, Some(true))
@@ -2195,7 +2199,9 @@ mod tests {
     }
 
     #[test]
-    fn capabilities_invalid_backend_errors() {
+    fn capabilities_unknown_ssh2_backend_value_warns_deprecated_t7() {
+        // t7-Phase0: any value (including "magic" or "libssh2") triggers
+        // the single `capabilities_ssh2_backend_deprecated_t7` warning code.
         let raw = r#"
             version = 1
             [capabilities]
@@ -2208,13 +2214,16 @@ mod tests {
         let (c, _) = load_str(raw, false).unwrap();
         let d = validate(&c);
         assert!(d
-            .errors
+            .warnings
             .iter()
-            .any(|e| e.code == "capabilities_ssh2_backend_invalid"));
+            .any(|w| w.code == "capabilities_ssh2_backend_deprecated_t7"));
     }
 
     #[test]
-    fn capabilities_libssh2_is_warned_and_can_be_disallowed() {
+    fn capabilities_libssh2_backend_keys_accepted_at_load_with_deprecation_warning() {
+        // t7-Phase0: `ssh2_backend = "libssh2"` and `allow_libssh2 = false`
+        // both surface the deprecation warning but no longer fail the load
+        // (the migration path keeps old configs working).
         let raw = r#"
             version = 1
             [capabilities]
@@ -2227,14 +2236,13 @@ mod tests {
         "#;
         let (c, _) = load_str(raw, false).unwrap();
         let d = validate(&c);
-        assert!(d
+        assert!(d.errors.is_empty(), "old config must still load: {:?}", d.errors);
+        let count = d
             .warnings
             .iter()
-            .any(|w| w.code == "capabilities_ssh2_backend_libssh2_deprecated"));
-        assert!(d
-            .errors
-            .iter()
-            .any(|e| e.code == "capabilities_libssh2_disallowed"));
+            .filter(|w| w.code == "capabilities_ssh2_backend_deprecated_t7")
+            .count();
+        assert!(count >= 2, "expected both deprecation warnings; got {count}");
     }
 
     #[test]

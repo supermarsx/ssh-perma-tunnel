@@ -83,7 +83,7 @@ async fn connect_basic() {
     // SPT_TEST_PW must be set for resolve_secret to succeed.
     std::env::set_var("SPT_TEST_PW", "anything");
     match proto.connect(&endpoint, &auth).await {
-        Ok(session) => assert_eq!(session.session_info().backend, "ssh2"),
+        Ok(session) => assert_eq!(session.session_info().backend, "ssh2-russh"),
         Err(e) => panic!("connect failed: {e}"),
     }
     server.shutdown().await;

@@ -25,9 +25,9 @@ use tokio::sync::{mpsc, oneshot, watch, Mutex as AsyncMutex};
 use tracing::warn;
 
 use crate::agent::Agent;
-use crate::auth;
 use crate::crypto::CryptoPolicy;
 use crate::hostkey::TrustVerifier;
+use crate::secret;
 use crate::sftp::SftpClient;
 
 type RusshHandle = client::Handle<ClientHandler>;
@@ -192,17 +192,29 @@ async fn connect_inner(
         handle: shared,
         remote_forwards,
         info,
+        script_engine: None,
+        obfs_transport_name: None,
+        obfs_audit: None,
     })
 }
 
-pub(crate) struct RusshSsh2Session {
+/// russh-backed [`TunnelSession`] — the only SSH2 session type after
+/// t7-Phase0. Re-exported as [`crate::Ssh2Session`].
+pub struct RusshSsh2Session {
     handle: SharedHandle,
     remote_forwards: RemoteForwardMap,
     info: SessionInfo,
+    // t7-Phase0: scripting + obfs hooks ported from the deleted libssh2
+    // `Ssh2Session<S>` so downstream callers retain their builder ergonomics.
+    script_engine: Option<Arc<spt_scripting::ScriptEngine>>,
+    obfs_transport_name: Option<&'static str>,
+    obfs_audit: Option<Arc<dyn spt_obfs::AuditHook>>,
 }
 
 impl RusshSsh2Session {
-    pub(crate) async fn open_sftp_client(&self) -> Result<SftpClient> {
+    /// Open the SFTP subsystem on this session and return a wrapped
+    /// [`SftpClient`]. Errors map onto [`spt_core::Error::RuntimeFailure`].
+    pub async fn open_sftp_client(&self) -> Result<SftpClient> {
         let channel = {
             let handle = self.handle.lock().await;
             handle
@@ -218,6 +230,57 @@ impl RusshSsh2Session {
             .await
             .map_err(|e| Error::RuntimeFailure(format!("sftp init: {e}")))?;
         Ok(SftpClient::from_russh(sftp))
+    }
+
+    /// Attach an optional scripting engine. Returns `self` for builder-style
+    /// chaining at the protocol layer.
+    #[must_use]
+    pub fn with_script_engine(
+        mut self,
+        engine: Option<Arc<spt_scripting::ScriptEngine>>,
+    ) -> Self {
+        self.script_engine = engine;
+        self
+    }
+
+    /// Dispatch a structured event to the configured script hook. Returns
+    /// silently when no engine is attached.
+    pub fn dispatch_script_event(
+        &self,
+        hook: spt_scripting::config::HookName,
+        event: &spt_scripting::event::Event,
+    ) -> Result<()> {
+        let Some(engine) = self.script_engine.as_ref() else {
+            return Ok(());
+        };
+        match engine.invoke(hook, event) {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                tracing::warn!(hook = %hook, error = %e, "spt-ssh2: script hook failed");
+                Err(e.into())
+            }
+        }
+    }
+
+    /// Attach an obfuscation audit hook.
+    #[must_use]
+    pub fn with_obfs_audit(mut self, audit: Option<Arc<dyn spt_obfs::AuditHook>>) -> Self {
+        self.obfs_audit = audit;
+        self
+    }
+
+    /// Record the static name of the obfuscation transport that produced
+    /// the underlying byte stream.
+    #[must_use]
+    pub fn with_obfs_transport_name(mut self, name: Option<&'static str>) -> Self {
+        self.obfs_transport_name = name;
+        self
+    }
+
+    /// Borrow the obfuscation transport identifier (if any).
+    #[must_use]
+    pub fn obfs_transport_name(&self) -> Option<&'static str> {
+        self.obfs_transport_name
     }
 }
 
@@ -347,10 +410,10 @@ async fn try_auth_method(
     backends: Vec<Arc<dyn SecretBackend>>,
 ) -> Result<bool> {
     match method {
-        AuthMethod::Password { secret } => {
+        AuthMethod::Password { secret: secret_ref } => {
             let password = {
                 let refs = backend_refs(&backends);
-                let bytes = auth::resolve_secret(&refs, &secret)?;
+                let bytes = secret::resolve_secret(&refs, &secret_ref)?;
                 std::str::from_utf8(bytes.expose_secret())
                     .map_err(|_| Error::AuthFailed("password secret is not utf-8".into()))?
                     .to_owned()
@@ -467,7 +530,7 @@ async fn try_keyboard_interactive(
                     }
                     let value = {
                         let refs = backend_refs(&backends);
-                        crate::kbi_bridge::evaluate_answer(&r.answer, &refs)?
+                        secret::evaluate_kbi_answer(&r.answer, &refs)?
                     };
                     answers.push(value);
                 }
@@ -674,16 +737,7 @@ fn resolve_passphrase(
     backends: &[Arc<dyn SecretBackend>],
     passphrase: Option<&AuthSecretRef>,
 ) -> Result<Option<String>> {
-    match passphrase {
-        None => Ok(None),
-        Some(reference) => {
-            let refs = backend_refs(backends);
-            let bytes = auth::resolve_secret(&refs, reference)?;
-            let value = std::str::from_utf8(bytes.expose_secret())
-                .map_err(|_| Error::AuthFailed("passphrase secret is not utf-8".into()))?;
-            Ok(Some(value.to_owned()))
-        }
-    }
+    secret::resolve_passphrase(backends, passphrase)
 }
 
 fn backend_refs(backends: &[Arc<dyn SecretBackend>]) -> Vec<&dyn SecretBackend> {

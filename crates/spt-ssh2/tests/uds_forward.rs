@@ -34,7 +34,7 @@ use russh::server::{self, Auth, Handler as ServerHandler};
 use russh::{Channel, Disconnect, MethodSet, Preferred};
 use spt_core::Error;
 use spt_ssh2::uds_forward::{
-    encode_direct_streamlocal_body, libssh2_unsupported, open_local_uds, validate_socket_path,
+    encode_direct_streamlocal_body, open_local_uds, validate_socket_path,
     windows_local_uds_unsupported, RemoteUdsForward, SharedRusshHandle,
 };
 use tokio::sync::Mutex as AsyncMutex;
@@ -458,21 +458,6 @@ async fn malformed_remote_socket_path_rejected_without_wire_attempt() {
     match validate_socket_path("/run/has\0nul.sock") {
         Err(Error::InvalidConfig(ref s)) => assert!(s.contains("NUL")),
         other => panic!("expected InvalidConfig(NUL), got {other:?}"),
-    }
-}
-
-/// `libssh2_unsupported` returns the documented `UnsupportedPlatform`
-/// variant with a message naming both the failed feature and the
-/// remediation backend.
-#[test]
-fn libssh2_backend_returns_unsupported_platform() {
-    match libssh2_unsupported() {
-        Error::UnsupportedPlatform(msg) => {
-            assert!(msg.contains("libssh2"), "msg: {msg}");
-            assert!(msg.contains("russh"), "msg: {msg}");
-            assert!(msg.contains("UDS"), "msg: {msg}");
-        }
-        other => panic!("expected UnsupportedPlatform, got {other:?}"),
     }
 }
 

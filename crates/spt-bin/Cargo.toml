@@ -177,7 +177,6 @@ x25519-dalek = { version = "2", default-features = false, features = ["static_se
 [features]
 default = []
 snmp = ["dep:spt-snmp", "spt-cli/snmp"]
-ssh2-vendored-openssl = ["spt-ssh2/vendored-openssl"]
 
 [lints]
 workspace = true

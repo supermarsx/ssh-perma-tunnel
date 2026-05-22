@@ -1,37 +1,32 @@
 //! [`Ssh2Protocol`] — the [`spt_protocol::TunnelProtocol`] implementation.
 //!
-//! Connect flow (single-hop):
-//! 1. Resolve `endpoint.host:port`, open a `tokio::net::TcpStream`.
-//! 2. Hand the stream to `AsyncSession::new` (libssh2 in non-blocking mode).
-//! 3. Apply the crypto policy via `method_pref`.
-//! 4. `handshake()`.
-//! 5. Verify the host key against `TrustVerifier` (`known_hosts` + sha256 pin).
-//! 6. Run `auth::run` against the resolver chain.
-//! 7. Build a [`SessionInfo`] snapshot and wrap in [`Ssh2Session`].
+//! Connect flow:
+//! 1. Resolve `endpoint.host:port`, hand off to [`crate::russh_backend::connect`].
+//! 2. russh applies the crypto policy via [`russh::Preferred`] (kex / cipher
+//!    / mac / hostkey / compression allow-lists).
+//! 3. russh drives the SSH2 handshake.
+//! 4. Server host key verified against [`TrustVerifier`] inside the russh
+//!    [`russh::client::Handler`] callback.
+//! 5. Auth dispatch drives password / publickey / agent / keyboard-interactive
+//!    / certificate / gssapi / sspi against the resolver chain.
+//! 6. A [`SessionInfo`] snapshot is wrapped in the russh-backed [`Ssh2Session`].
 //!
 //! Multi-hop variant: open subsequent sessions through prior `direct-tcpip`
-//! channels via [`crate::multi_hop`].
+//! channels via [`crate::multi_hop`] — every byte stream after the first hop
+//! is a `russh::Channel::into_stream()` rather than an OS socket, so no
+//! socketpair trick is needed.
 
-use std::net::ToSocketAddrs as _;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
-use async_ssh2_lite::{AsyncSession, SessionConfiguration};
 use async_trait::async_trait;
 use spt_auth::AuthConfig;
-use spt_core::{Error, Result};
-use spt_protocol::session::SessionInfo;
+use spt_core::Result;
 use spt_protocol::{Endpoint, ProtocolCapabilities, TunnelProtocol, TunnelSession};
 use spt_secrets::SecretBackend;
-use ssh2::MethodType;
-use tokio::net::TcpStream;
-use tracing::{info, warn};
+use tracing::warn;
 
-use crate::auth;
 use crate::crypto::CryptoPolicy;
-use crate::errors::from_async_ssh;
-use crate::hostkey::{rebuild_public_key, TrustVerifier};
-use crate::session::Ssh2Session;
+use crate::hostkey::TrustVerifier;
 use crate::sftp::SftpClient;
 // t7-A2:start — scripting engine handle threaded into every session built
 // through this protocol. The Arc is shared across every connect attempt for
@@ -44,36 +39,8 @@ use spt_scripting::ScriptEngine;
 /// Re-export of [`crate::hostkey::TrustVerifier`] for the public API.
 pub type TrustPolicy = TrustVerifier;
 
-/// SSH2 implementation backend.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Ssh2BackendKind {
-    /// Pure-Rust SSH2 implementation built on `russh`.
-    Russh,
-    /// Legacy libssh2 implementation through `async-ssh2-lite`.
-    Libssh2,
-}
-
-impl Default for Ssh2BackendKind {
-    fn default() -> Self {
-        Self::Libssh2
-    }
-}
-
-impl std::str::FromStr for Ssh2BackendKind {
-    type Err = Error;
-
-    fn from_str(value: &str) -> Result<Self> {
-        match value {
-            "russh" => Ok(Self::Russh),
-            "libssh2" => Ok(Self::Libssh2),
-            other => Err(Error::InvalidConfig(format!(
-                "unknown SSH2 backend `{other}` (expected russh|libssh2)"
-            ))),
-        }
-    }
-}
-
 #[derive(Clone)]
+#[allow(dead_code)] // fields consulted only once the russh backend grows real multi-hop dispatch
 struct HopConfig {
     host: String,
     port: u16,
@@ -81,9 +48,8 @@ struct HopConfig {
     trust: Option<TrustPolicy>,
 }
 
-/// SSH2 transport adapter.
+/// SSH2 transport adapter (russh-only since t7-Phase0).
 pub struct Ssh2Protocol {
-    backend_kind: Ssh2BackendKind,
     crypto: CryptoPolicy,
     trust: TrustPolicy,
     /// Optional intermediate hops `(host, port)` traversed before reaching
@@ -93,9 +59,6 @@ pub struct Ssh2Protocol {
     /// Secret-backend chain owned by this protocol — the auth flow consults
     /// these to resolve `secret://`/`env:`/`file://` references.
     backends: Vec<Arc<dyn SecretBackend>>,
-    /// `SessionConfiguration` applied to every new `AsyncSession` (banner,
-    /// timeout, keepalive period).
-    config: SessionConfiguration,
     // t7-A2:start
     /// Optional scripting engine, cloned into every `Ssh2Session` produced
     /// by [`Self::connect`]. Built by `spt-bin` from the profile's
@@ -107,12 +70,10 @@ pub struct Ssh2Protocol {
 
 /// Builder for [`Ssh2Protocol`].
 pub struct Ssh2ProtocolBuilder {
-    backend_kind: Ssh2BackendKind,
     crypto: CryptoPolicy,
     trust: TrustPolicy,
     hops: Vec<HopConfig>,
     backends: Vec<Arc<dyn SecretBackend>>,
-    config: SessionConfiguration,
     // t7-A2:start
     script_engine: Option<Arc<ScriptEngine>>,
     // t7-A2:end
@@ -129,12 +90,10 @@ impl Ssh2ProtocolBuilder {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            backend_kind: Ssh2BackendKind::default(),
             crypto: CryptoPolicy::default(),
             trust: TrustPolicy::default(),
             hops: Vec::new(),
             backends: Vec::new(),
-            config: SessionConfiguration::default(),
             // t7-A2:start
             script_engine: None,
             // t7-A2:end
@@ -145,13 +104,6 @@ impl Ssh2ProtocolBuilder {
     #[must_use]
     pub fn crypto(mut self, c: CryptoPolicy) -> Self {
         self.crypto = c;
-        self
-    }
-
-    /// Select the concrete SSH2 backend.
-    #[must_use]
-    pub fn backend_kind(mut self, backend_kind: Ssh2BackendKind) -> Self {
-        self.backend_kind = backend_kind;
         self
     }
 
@@ -199,14 +151,6 @@ impl Ssh2ProtocolBuilder {
         self
     }
 
-    /// Override the underlying [`SessionConfiguration`] (banner, keepalive,
-    /// timeout, etc.).
-    #[must_use]
-    pub fn session_config(mut self, c: SessionConfiguration) -> Self {
-        self.config = c;
-        self
-    }
-
     // t7-A2:start
     /// Attach a scripting engine that will be cloned into every
     /// [`Ssh2Session`] produced by [`Ssh2Protocol::connect`]. `None`
@@ -222,12 +166,10 @@ impl Ssh2ProtocolBuilder {
     #[must_use]
     pub fn build(self) -> Ssh2Protocol {
         Ssh2Protocol {
-            backend_kind: self.backend_kind,
             crypto: self.crypto,
             trust: self.trust,
             hops: self.hops,
             backends: self.backends,
-            config: self.config,
             // t7-A2:start
             script_engine: self.script_engine,
             // t7-A2:end
@@ -249,29 +191,12 @@ impl Ssh2Protocol {
         Ssh2ProtocolBuilder::new()
     }
 
-    fn backend_refs(&self) -> Vec<&dyn SecretBackend> {
-        self.backends
-            .iter()
-            .map(std::convert::AsRef::as_ref)
-            .collect()
-    }
-
     /// Establish an SSH2 session and start the SFTP subsystem.
-    ///
-    /// This uses the pure-Rust `russh` backend. The legacy libssh2 backend
-    /// still supports forwards, but SFTP is intentionally exposed through the
-    /// production russh path first so CLI and policy surfaces do not grow a new
-    /// libssh2 dependency contract.
     pub async fn connect_sftp(
         &self,
         endpoint: &Endpoint,
         auth_cfg: &AuthConfig,
     ) -> Result<SftpClient> {
-        if self.backend_kind != Ssh2BackendKind::Russh {
-            return Err(Error::UnsupportedPlatform(
-                "SFTP over SSH2 is exposed through the russh backend; set capabilities.ssh2_backend = \"russh\"".into(),
-            ));
-        }
         let session = crate::russh_backend::connect(
             endpoint.clone(),
             auth_cfg.clone(),
@@ -282,6 +207,12 @@ impl Ssh2Protocol {
         )
         .await?;
         session.open_sftp_client().await
+    }
+
+    /// Hop count — exposed for diagnostics.
+    #[must_use]
+    pub fn hop_count(&self) -> usize {
+        self.hops.len()
     }
 }
 
@@ -298,86 +229,28 @@ impl TunnelProtocol for Ssh2Protocol {
         endpoint: &Endpoint,
         auth_cfg: &AuthConfig,
     ) -> Result<Box<dyn TunnelSession>> {
-        // Apply deprecated-algorithm warnings up-front.
+        // Apply deprecated-algorithm warnings up-front so the operator sees a
+        // single log line per profile load regardless of which configuration
+        // surfaced them.
         for w in self.crypto.deprecated_warnings() {
             warn!(target: "spt_ssh2::crypto", "{w}");
         }
 
-        if self.backend_kind == Ssh2BackendKind::Russh {
-            let endpoint = endpoint.clone();
-            let auth_cfg = auth_cfg.clone();
-            let crypto = self.crypto.clone();
-            let trust = self.trust.clone();
-            let backends = self.backends.clone();
-            let has_hops = !self.hops.is_empty();
-            let session = crate::russh_backend::connect(
-                endpoint, auth_cfg, crypto, trust, backends, has_hops,
-            )
-            .await?;
-            return Ok(Box::new(session));
-        }
-
-        // Single-hop case: open TCP, build session.
-        if self.hops.is_empty() {
-            let socket = open_tcp(&endpoint.host, endpoint.port).await?;
-            let session = AsyncSession::new(socket, self.config.clone())
-                .map_err(|e| from_async_ssh("AsyncSession::new", e))?;
-            let info = self
-                .finish_session(session, &endpoint.host, endpoint.port, auth_cfg)
-                .await?;
-            return Ok(info);
-        }
-
-        // Multi-hop chain: hop[0] is reached over a plain TCP socket;
-        // each subsequent hop tunnels through the previous session.
-        let first = &self.hops[0];
-        let socket = open_tcp(&first.host, first.port).await?;
-        let session = AsyncSession::new(socket, self.config.clone())
-            .map_err(|e| from_async_ssh("AsyncSession::new", e))?;
-        // For intermediate hops we still apply policy + handshake + auth +
-        // host-key verification as a single uniform flow.
-        let session = self
-            .handshake_and_verify(session, &first.host, first.port, first.trust.as_ref())
-            .await?;
-        auth::run(
-            &session,
-            first.auth.as_ref().unwrap_or(auth_cfg),
-            &self.backend_refs(),
+        let endpoint = endpoint.clone();
+        let auth_cfg = auth_cfg.clone();
+        let crypto = self.crypto.clone();
+        let trust = self.trust.clone();
+        let backends = self.backends.clone();
+        let has_hops = !self.hops.is_empty();
+        let mut session = crate::russh_backend::connect(
+            endpoint, auth_cfg, crypto, trust, backends, has_hops,
         )
         .await?;
-
-        let mut current = Arc::new(parking_lot::Mutex::new(session));
-        for hop in self.hops.iter().skip(1) {
-            let next = crate::multi_hop::open_chained_session(
-                current.clone(),
-                &hop.host,
-                hop.port,
-                self.config.clone(),
-            )
-            .await?;
-            let next = self
-                .handshake_and_verify(next, &hop.host, hop.port, hop.trust.as_ref())
-                .await?;
-            auth::run(
-                &next,
-                hop.auth.as_ref().unwrap_or(auth_cfg),
-                &self.backend_refs(),
-            )
-            .await?;
-            current = Arc::new(parking_lot::Mutex::new(next));
+        // t7-A2: attach scripting engine (if any) before boxing.
+        if let Some(engine) = self.script_engine.clone() {
+            session = session.with_script_engine(Some(engine));
         }
-        // Final leg to the endpoint.
-        let final_session = crate::multi_hop::open_chained_session(
-            current,
-            &endpoint.host,
-            endpoint.port,
-            self.config.clone(),
-        )
-        .await?;
-        let info = self
-            .finish_session(final_session, &endpoint.host, endpoint.port, auth_cfg)
-            .await?;
-        Ok(info)
+        Ok(Box::new(session))
     }
 
     fn capabilities(&self) -> ProtocolCapabilities {
@@ -389,149 +262,31 @@ impl TunnelProtocol for Ssh2Protocol {
     }
 }
 
-impl Ssh2Protocol {
-    async fn handshake_and_verify<S>(
-        &self,
-        mut session: AsyncSession<S>,
-        host: &str,
-        port: u16,
-        trust: Option<&TrustPolicy>,
-    ) -> Result<AsyncSession<S>>
-    where
-        S: async_ssh2_lite::session_stream::AsyncSessionStream + Send + Sync + 'static,
-    {
-        // Crypto policy
-        for (m, prefs) in self.crypto.to_method_prefs() {
-            apply_method_pref(&session, m, &prefs).await?;
-        }
-        session
-            .handshake()
-            .await
-            .map_err(|e| from_async_ssh("handshake", e))?;
-        // Verify host key
-        let (blob, ty) = session
-            .host_key()
-            .ok_or_else(|| Error::TrustFailed("peer did not present a host key".into()))?;
-        let pubkey = rebuild_public_key(blob, ty)?;
-        trust.unwrap_or(&self.trust).verify(host, port, &pubkey)?;
-        Ok(session)
-    }
-
-    async fn finish_session<S>(
-        &self,
-        mut session: AsyncSession<S>,
-        host: &str,
-        port: u16,
-        auth_cfg: &AuthConfig,
-    ) -> Result<Box<dyn TunnelSession>>
-    where
-        S: async_ssh2_lite::session_stream::AsyncSessionStream + Send + Sync + 'static,
-    {
-        // Crypto policy on the final session
-        for (m, prefs) in self.crypto.to_method_prefs() {
-            apply_method_pref(&session, m, &prefs).await?;
-        }
-        session
-            .handshake()
-            .await
-            .map_err(|e| from_async_ssh("handshake", e))?;
-        let (blob, ty) = session
-            .host_key()
-            .ok_or_else(|| Error::TrustFailed("peer did not present a host key".into()))?;
-        let pubkey = rebuild_public_key(blob, ty)?;
-        self.trust.verify(host, port, &pubkey)?;
-
-        // Auth
-        auth::run(&session, auth_cfg, &self.backend_refs()).await?;
-        info!(target: "spt_ssh2", host, port, "session established");
-
-        let info = SessionInfo {
-            backend: "ssh2".into(),
-            peer_version: session.banner().map(str::to_owned),
-            negotiated: describe_negotiated(&session),
-            established_at: SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or(0),
-        };
-        // t7-A2:start — attach the scripting engine (if any) before boxing.
-        let session =
-            Ssh2Session::new(session, info).with_script_engine(self.script_engine.clone());
-        // t7-A2:end
-        Ok(Box::new(session))
-    }
+#[doc(hidden)]
+/// Backwards-compatible re-export name. The pre-t7 builder exposed a
+/// `Ssh2BackendKind` enum to switch between russh and libssh2; russh is now
+/// the only backend, but downstream callers still pass the (ignored) value
+/// to `backend_kind()`. We keep the type as a stub so calling sites continue
+/// to compile during the migration window.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Ssh2BackendKind {
+    /// Pure-Rust SSH2 implementation built on `russh`. The only remaining
+    /// variant.
+    #[default]
+    Russh,
 }
 
-async fn apply_method_pref<S>(session: &AsyncSession<S>, m: MethodType, prefs: &str) -> Result<()>
-where
-    S: async_ssh2_lite::session_stream::AsyncSessionStream + Send + Sync + 'static,
-{
-    session
-        .method_pref(m, prefs)
-        .await
-        .map_err(|e| from_async_ssh("method_pref", e))
-}
-
-fn describe_negotiated<S>(session: &AsyncSession<S>) -> Option<String>
-where
-    S: async_ssh2_lite::session_stream::AsyncSessionStream + Send + Sync + 'static,
-{
-    let mut parts = Vec::new();
-    for (label, m) in [
-        ("kex", MethodType::Kex),
-        ("hostkey", MethodType::HostKey),
-        ("cipher_cs", MethodType::CryptCs),
-        ("mac_cs", MethodType::MacCs),
-    ] {
-        if let Some(v) = session.methods(m) {
-            parts.push(format!("{label}={v}"));
-        }
-    }
-    if parts.is_empty() {
-        None
-    } else {
-        Some(parts.join(" "))
-    }
-}
-
-async fn open_tcp(host: &str, port: u16) -> Result<TcpStream> {
-    // Resolve DNS off the hot path — `tokio::net::lookup_host` would also
-    // work, but we accept a sync resolution here because libssh2 still calls
-    // this on a per-connection basis.
-    let mut last_err: Option<std::io::Error> = None;
-    let addrs = match (host, port).to_socket_addrs() {
-        Ok(it) => it.collect::<Vec<_>>(),
-        Err(e) => {
-            return Err(Error::DnsFailed(format!("resolve {host}:{port}: {e}")));
-        }
-    };
-    for a in addrs {
-        match TcpStream::connect(a).await {
-            Ok(s) => return Ok(s),
-            Err(e) => last_err = Some(e),
-        }
-    }
-    Err(Error::NetworkUnreachable(format!(
-        "connect to {host}:{port}: {}",
-        last_err.map_or_else(|| "no addresses".into(), |e| e.to_string())
-    )))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn sftp_requires_russh_backend() {
-        let proto = Ssh2Protocol::builder()
-            .backend_kind(Ssh2BackendKind::Libssh2)
-            .build();
-        let endpoint = Endpoint::new("127.0.0.1", 22);
-        let auth = AuthConfig::new("alice", Vec::new());
-
-        match proto.connect_sftp(&endpoint, &auth).await {
-            Err(Error::UnsupportedPlatform(message)) => assert!(message.contains("russh")),
-            other => panic!("expected unsupported platform, got {:?}", other.map(|_| ())),
-        }
+impl Ssh2ProtocolBuilder {
+    /// Deprecated no-op preserved so callers that still spell
+    /// `.backend_kind(Ssh2BackendKind::Russh)` continue to compile during the
+    /// t7-to-t8 migration. The libssh2 variant was removed in t7-Phase0.
+    #[must_use]
+    #[doc(hidden)]
+    #[deprecated(
+        since = "0.1.0",
+        note = "libssh2 backend removed in t7-Phase0; russh is the only SSH2 backend"
+    )]
+    pub fn backend_kind(self, _kind: Ssh2BackendKind) -> Self {
+        self
     }
 }

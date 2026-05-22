@@ -209,16 +209,7 @@ rand_chacha = "0.3"
 subtle = "2"
 bytes = "1"
 
-# SSH / networking transports
-# async-ssh2-lite wraps libssh2 via Tokio AsyncFd; ssh2 crate is the underlying FFI binding.
-# NOTE: `vendored-openssl` is deliberately NOT enabled. On Windows
-# libssh2-sys's build script falls back to LIBSSH2_WINCNG (Windows native
-# crypto) when no openssl feature is set — so we avoid the Strawberry-Perl
-# build dependency entirely. On Linux/macOS the build still requires system
-# libssl/libcrypto headers (libssl-dev / openssl@3 from Homebrew); see
-# docs/installation.md.
-ssh2 = { version = "0.9", default-features = false }
-async-ssh2-lite = { version = "0.5", default-features = false, features = ["tokio"] }
+# SSH / networking transports — pure-Rust russh stack (libssh2 was removed in t7-Phase0).
 russh-keys = "0.46"
 russh-sftp = "=2.1.2"
 ssh-key = { version = "0.6", default-features = false, features = ["std", "alloc", "ed25519", "p256", "rsa", "encryption", "rand_core", "ecdsa", "getrandom"] }

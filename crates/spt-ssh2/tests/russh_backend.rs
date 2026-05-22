@@ -8,7 +8,7 @@ use spt_protocol::{
     DynamicForwardSpec, Endpoint, LocalForwardSpec, RemoteForwardSpec, TargetAddr, TunnelProtocol,
 };
 use spt_ssh2::testing::RusshTestServer;
-use spt_ssh2::{Ssh2BackendKind, Ssh2Protocol};
+use spt_ssh2::Ssh2Protocol;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::net::{TcpListener, TcpStream};
 
@@ -24,7 +24,7 @@ async fn connect_russh_session() -> (
 
     std::env::set_var("SPT_TEST_RUSSH_BACKEND_PW", "anything");
     let proto = Ssh2Protocol::builder()
-        .backend_kind(Ssh2BackendKind::Russh)
+        
         .build();
     let endpoint = Endpoint::new("127.0.0.1", server.addr.port());
     let auth = AuthConfig::new(

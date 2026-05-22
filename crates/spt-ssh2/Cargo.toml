@@ -7,17 +7,13 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 authors.workspace = true
-description = "SSH2 backend for spt built on russh with a legacy libssh2 compatibility path."
+description = "SSH2 backend for spt — pure-Rust russh transport."
 
 [lints]
 workspace = true
 
 [features]
 default = []
-# Uses libssh2's vendored OpenSSL backend. This enables ED25519 host-key
-# interop on Windows, but stays opt-in so default Windows builds can use
-# WinCNG without requiring a native Perl/OpenSSL toolchain.
-vendored-openssl = ["async-ssh2-lite/vendored-openssl", "ssh2/vendored-openssl"]
 # Exposes the `testing` module: MockSsh2Session, RusshTestServer, fake_session().
 testing = []
 
@@ -36,11 +32,7 @@ spt-obfs = { workspace = true }
 
 tokio = { workspace = true }
 async-trait = { workspace = true }
-async-ssh2-lite = { workspace = true }
-ssh2 = { workspace = true }
 ssh-key = { workspace = true }
-ed25519-dalek = { version = "2", default-features = false, features = ["pem", "pkcs8"] }
-rsa = { version = "0.9", default-features = false, features = ["pem", "std"] }
 secrecy = { workspace = true }
 zeroize = { workspace = true }
 tracing = { workspace = true }
@@ -68,9 +60,7 @@ tempfile = { workspace = true }
 rand = { workspace = true }
 async-trait = { workspace = true }
 
-# Agent + GSSAPI / SSPI dispatch integration tests (t7-A1). Uses the
-# `testing` feature to import `RusshTestServer` and the `Agent::from_stream`
-# test-only injection point.
+# Agent + GSSAPI / SSPI dispatch integration tests (t7-A1).
 [[test]]
 name = "agent"
 required-features = ["testing"]
@@ -83,24 +73,17 @@ required-features = ["testing"]
 name = "russh_backend"
 required-features = ["testing"]
 
-# OpenSSH-against-libssh2 interop tests (Unix-only at runtime; Windows compiles
-# but every test no-ops via `cfg_attr(target_os = "windows", ignore)`). Sidesteps
-# the upstream russh-0.46 ↔ libssh2-WinCNG `-8 KEY_EXCHANGE_FAILURE` bug.
+# OpenSSH-against-russh interop tests (Unix-only at runtime).
 [[test]]
 name = "openssh_interop"
 required-features = ["testing"]
 
-# Real-libssh2 interop tests against `RusshTestServer`. Requires
-# `vendored-openssl` so libssh2 uses OpenSSL (which negotiates correctly with
-# russh 0.46) instead of WinCNG. **Linux-only**; needs Perl + NASM on `PATH`
-# to build the vendored OpenSSL. Do not run on Windows.
-[[test]]
-name = "russh_interop"
-required-features = ["testing", "vendored-openssl"]
-
-# UDS forwarding (t6-e2). Inline russh server with streamlocal-forward
-# hooks. `testing` feature provides RusshTestServer counterparts and
-# satisfies the `--features testing` gate used by sibling test files.
+# UDS forwarding integration tests.
 [[test]]
 name = "uds_forward"
+required-features = ["testing"]
+
+# t7-Phase0: 3-hop russh-native multi-hop chain integration test.
+[[test]]
+name = "multi_hop_three_hops"
 required-features = ["testing"]

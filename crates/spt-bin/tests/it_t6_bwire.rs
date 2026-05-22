@@ -214,19 +214,19 @@ fn sspi_provider_dispatch_surfaces_unsupported_backend() {
         principal: None,
         delegate: true,
         allow_ntlm_fallback: false,
+        ..Default::default()
     });
 
+    // t7-A3 made the SSPI provider real (sspi 0.15 / cross-krb5 0.4 in the
+    // lockfile). The provider now constructs and reports a configuration
+    // error when no credentials are wired (`AuthFailed`) — the
+    // `UnsupportedBackend` stub is gone. Both shapes are accepted here
+    // because the legacy fallback path remains the only one available on
+    // non-Windows hosts that lack a Kerberos credentials cache.
     match result {
-        Err(Error::UnsupportedPlatform(msg)) => {
-            assert!(
-                msg.contains("UnsupportedBackend"),
-                "expected UnsupportedBackend marker, got {msg}"
-            );
-        }
-        // On non-Windows with allow_ntlm_fallback=false, `sspi_provider_for`
-        // degrades to `provider_for` which also returns UnsupportedBackend.
-        Err(other) => panic!("expected UnsupportedPlatform, got {other:?}"),
-        Ok(_) => panic!("provider must error until sspi/cross-krb5 land in Cargo.lock"),
+        Err(Error::AuthFailed(_)) | Err(Error::UnsupportedPlatform(_)) => {}
+        Err(other) => panic!("expected AuthFailed or UnsupportedPlatform, got {other:?}"),
+        Ok(_) => panic!("provider must error without configured credentials"),
     }
 }
 

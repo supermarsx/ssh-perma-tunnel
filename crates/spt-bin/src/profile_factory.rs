@@ -29,7 +29,7 @@ use spt_scripting::{
     ScriptEngine,
 };
 use spt_secrets::Resolver;
-use spt_ssh2::{CryptoPolicy, Ssh2BackendKind, Ssh2Protocol, TrustPolicy};
+use spt_ssh2::{CryptoPolicy, Ssh2Protocol, TrustPolicy};
 use spt_ssh3::{Ssh3Config, Ssh3Protocol};
 use spt_supervisor::{BackoffConfig, FailoverMode, ProfileSupervisorConfig};
 use spt_trust::{KnownHosts, Sha256HostPin};
@@ -219,11 +219,10 @@ fn build_ssh2(
         .iter()
         .map(|endpoint| (endpoint.host.clone(), endpoint.port))
         .collect::<Vec<_>>();
-    let backend_kind = select_ssh2_backend(capabilities)?;
+    warn_legacy_ssh2_backend_capability(capabilities);
     let crypto = build_crypto_policy(profile.crypto.as_ref());
     reject_unsupported_post_quantum_runtime(profile, capabilities, &crypto)?;
     let mut builder = Ssh2Protocol::builder()
-        .backend_kind(backend_kind)
         .crypto(crypto)
         .trust(build_trust_policy(profile.trust.as_ref(), &final_hosts)?)
         // t7-A2: thread the scripting engine through the builder so the
@@ -266,19 +265,27 @@ fn reject_unsupported_post_quantum_runtime(
     Ok(())
 }
 
-fn select_ssh2_backend(capabilities: Option<&Capabilities>) -> Result<Ssh2BackendKind> {
-    let requested = capabilities
-        .and_then(|capabilities| capabilities.ssh2_backend.as_deref())
-        .unwrap_or("russh");
-    let backend = requested.parse::<Ssh2BackendKind>()?;
-    if backend == Ssh2BackendKind::Libssh2
-        && capabilities.and_then(|cap| cap.allow_libssh2) == Some(false)
-    {
-        return Err(Error::PermissionDenied(
-            "capabilities.allow_libssh2 = false blocks ssh2_backend = \"libssh2\"".into(),
-        ));
+/// t7-Phase0: surface a one-shot deprecation warning when a profile still
+/// pins `capabilities.ssh2_backend` or `capabilities.allow_libssh2`. Both
+/// keys are accepted at load (so old configs continue to work) and
+/// silently ignored at runtime — russh is the only SSH2 backend.
+fn warn_legacy_ssh2_backend_capability(capabilities: Option<&Capabilities>) {
+    let Some(cap) = capabilities else { return };
+    if let Some(value) = cap.ssh2_backend.as_deref() {
+        tracing::warn!(
+            target: "spt_bin::profile_factory",
+            ssh2_backend = value,
+            warning_code = "capabilities_ssh2_backend_deprecated_t7",
+            "capabilities.ssh2_backend is deprecated since t7-Phase0; libssh2 was removed, russh is the only backend"
+        );
     }
-    Ok(backend)
+    if cap.allow_libssh2.is_some() {
+        tracing::warn!(
+            target: "spt_bin::profile_factory",
+            warning_code = "capabilities_ssh2_backend_deprecated_t7",
+            "capabilities.allow_libssh2 is deprecated since t7-Phase0; the field is ignored"
+        );
+    }
 }
 
 fn build_ssh3(profile: &Profile) -> Ssh3Protocol {
@@ -850,34 +857,20 @@ mod tests {
     }
 
     #[test]
-    fn ssh2_backend_selector_defaults_to_russh() {
-        assert_eq!(select_ssh2_backend(None).unwrap(), Ssh2BackendKind::Russh);
-    }
-
-    #[test]
-    fn ssh2_backend_selector_honors_legacy_libssh2_policy() {
-        let caps = Capabilities {
-            ssh2_backend: Some("libssh2".into()),
-            allow_libssh2: Some(true),
-            ..Default::default()
-        };
-        assert_eq!(
-            select_ssh2_backend(Some(&caps)).unwrap(),
-            Ssh2BackendKind::Libssh2
-        );
-    }
-
-    #[test]
-    fn ssh2_backend_selector_blocks_libssh2_when_policy_denies_it() {
+    fn legacy_capabilities_ssh2_backend_key_is_accepted_at_load_with_warning() {
+        // t7-Phase0: the libssh2 backend was removed. Old configs that pin
+        // `capabilities.ssh2_backend` and/or `capabilities.allow_libssh2`
+        // still load — the helper emits a structured warning and the
+        // values are ignored at runtime.
         let caps = Capabilities {
             ssh2_backend: Some("libssh2".into()),
             allow_libssh2: Some(false),
             ..Default::default()
         };
-        assert!(matches!(
-            select_ssh2_backend(Some(&caps)),
-            Err(Error::PermissionDenied(_))
-        ));
+        // Smoke: no panic, no return value to assert against — the warning
+        // is observable via tracing subscribers.
+        warn_legacy_ssh2_backend_capability(Some(&caps));
+        warn_legacy_ssh2_backend_capability(None);
     }
 
     #[test]

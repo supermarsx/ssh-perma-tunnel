@@ -1,16 +1,15 @@
-//! Host-key verification wiring.
+//! Host-key verification wiring (russh-only since t7-Phase0).
 //!
-//! libssh2 surfaces the peer's host key as an SSH public-key blob plus a
-//! "key type" hint (`HostKeyType`). We rebuild an `ssh_key::PublicKey` and
-//! delegate to the verifier configured by the profile (`KnownHosts` and/or
-//! `Sha256HostPin`).
+//! russh hands the host key directly as a `russh_keys::key::PublicKey` —
+//! the russh-backend converts it to `ssh_key::PublicKey` via
+//! [`russh_keys::PublicKeyBase64`] before calling [`TrustVerifier::verify`].
+//! The libssh2 `HostKeyType`-tagged blob path was removed alongside the
+//! `async-ssh2-lite` dispatch.
 
 use spt_core::{Error, Result};
 use spt_trust::known_hosts::KnownHostsResult;
 use spt_trust::{KnownHosts, Sha256HostPin};
-use ssh2::HostKeyType;
-use ssh_key::public::{Ed25519PublicKey, KeyData, RsaPublicKey};
-use ssh_key::{EcdsaCurve, Mpint, PublicKey};
+use ssh_key::PublicKey;
 
 /// Trust verification policy carried by a profile.
 #[derive(Debug, Clone, Default)]
@@ -83,86 +82,15 @@ impl TrustVerifier {
     }
 }
 
-/// Convert libssh2's `(blob, host_key_type)` tuple into an `ssh_key::PublicKey`.
-///
-/// `libssh2_session_hostkey()` returns the RFC4253 public-key blob (algorithm
-/// string plus key data). Older libssh2 integrations have been observed to
-/// expose just the algorithm-specific payload, so we keep a typed fallback for
-/// those raw payloads.
-pub fn rebuild_public_key(blob: &[u8], ty: HostKeyType) -> Result<PublicKey> {
-    if let Ok(key) = PublicKey::from_bytes(blob) {
-        return Ok(key);
-    }
-
-    let key_data = match ty {
-        HostKeyType::Rsa => {
-            // libssh2 RSA host key blob: ssh string `e` || ssh string `n`.
-            let (e, rest) = read_ssh_string(blob)?;
-            let (n, _) = read_ssh_string(rest)?;
-            KeyData::Rsa(RsaPublicKey {
-                e: Mpint::from_bytes(e).map_err(map_err)?,
-                n: Mpint::from_bytes(n).map_err(map_err)?,
-            })
-        }
-        HostKeyType::Ed25519 => {
-            if blob.len() != 32 {
-                return Err(Error::TrustFailed(format!(
-                    "ed25519 host key blob length {} != 32",
-                    blob.len()
-                )));
-            }
-            let mut arr = [0u8; 32];
-            arr.copy_from_slice(blob);
-            KeyData::Ed25519(Ed25519PublicKey(arr))
-        }
-        HostKeyType::Ecdsa256 | HostKeyType::Ecdsa384 | HostKeyType::Ecdsa521 => {
-            let _curve = match ty {
-                HostKeyType::Ecdsa256 => EcdsaCurve::NistP256,
-                HostKeyType::Ecdsa384 => EcdsaCurve::NistP384,
-                _ => EcdsaCurve::NistP521,
-            };
-            // libssh2 returns the raw uncompressed EC point (leading 0x04).
-            let pk = ssh_key::public::EcdsaPublicKey::from_sec1_bytes(blob).map_err(map_err)?;
-            KeyData::Ecdsa(pk)
-        }
-        HostKeyType::Dss => {
-            return Err(Error::TrustFailed(
-                "DSS host keys are not supported (deprecated)".into(),
-            ));
-        }
-        HostKeyType::Unknown => {
-            return Err(Error::TrustFailed(
-                "peer presented an unknown host-key type".into(),
-            ));
-        }
-    };
-    Ok(PublicKey::new(key_data, ""))
-}
-
-fn read_ssh_string(buf: &[u8]) -> Result<(&[u8], &[u8])> {
-    if buf.len() < 4 {
-        return Err(Error::TrustFailed("truncated host-key blob".into()));
-    }
-    let len = u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
-    if buf.len() < 4 + len {
-        return Err(Error::TrustFailed("host-key field overruns blob".into()));
-    }
-    Ok((&buf[4..4 + len], &buf[4 + len..]))
-}
-
-#[allow(clippy::needless_pass_by_value)]
-fn map_err(e: ssh_key::Error) -> Error {
-    Error::TrustFailed(format!("ssh-key: {e}"))
-}
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rand::rngs::OsRng;
     use ssh_key::{Algorithm as SkAlgorithm, PrivateKey};
 
     fn fresh_pub() -> PublicKey {
-        PrivateKey::random(&mut OsRng, SkAlgorithm::Ed25519)
+        let mut rng = ssh_key::rand_core::OsRng;
+        PrivateKey::random(&mut rng, SkAlgorithm::Ed25519)
             .unwrap()
             .public_key()
             .clone()
@@ -237,31 +165,4 @@ mod tests {
         );
     }
 
-    #[test]
-    fn rebuild_ed25519_full_blob_roundtrip() {
-        use ssh_key::HashAlg;
-        let key = fresh_pub();
-        let blob = key.to_bytes().unwrap();
-        let rebuilt = rebuild_public_key(&blob, HostKeyType::Ed25519).unwrap();
-        // Compare via fingerprint
-        assert_eq!(
-            rebuilt.fingerprint(HashAlg::Sha256).to_string(),
-            key.fingerprint(HashAlg::Sha256).to_string()
-        );
-    }
-
-    #[test]
-    fn rebuild_ed25519_raw_payload_fallback() {
-        use ssh_key::HashAlg;
-        let key = fresh_pub();
-        let bytes = match key.key_data() {
-            KeyData::Ed25519(b) => b.0,
-            _ => unreachable!(),
-        };
-        let rebuilt = rebuild_public_key(&bytes, HostKeyType::Ed25519).unwrap();
-        assert_eq!(
-            rebuilt.fingerprint(HashAlg::Sha256).to_string(),
-            key.fingerprint(HashAlg::Sha256).to_string()
-        );
-    }
 }

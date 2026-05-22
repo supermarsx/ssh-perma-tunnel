@@ -272,19 +272,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "async-ssh2-lite"
-version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e00ee230bcd18bf15547e674950ace76b13fcda3ea1a33acca27e2eab245b58a"
-dependencies = [
- "async-trait",
- "futures-util",
- "libssh2-sys",
- "ssh2",
- "tokio",
-]
-
-[[package]]
 name = "async-stream"
 version = "0.3.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2636,32 +2623,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "libssh2-sys"
-version = "0.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "220e4f05ad4a218192533b300327f5150e809b54c4ec83b5a1d91833601811b9"
-dependencies = [
- "cc",
- "libc",
- "libz-sys",
- "openssl-sys",
- "pkg-config",
- "vcpkg",
-]
-
-[[package]]
-name = "libz-sys"
-version = "1.1.28"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fc3a226e576f50782b3305c5ccf458698f92798987f551c6a02efe8276721e22"
-dependencies = [
- "cc",
- "libc",
- "pkg-config",
- "vcpkg",
-]
-
-[[package]]
 name = "linked-hash-map"
 version = "0.5.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3120,28 +3081,6 @@ name = "openssl-probe"
 version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d05e27ee213611ffe7d6348b942e8f942b37114c00cc03cec254295a4a17852e"
-
-[[package]]
-name = "openssl-src"
-version = "300.6.0+3.6.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a8e8cbfd3a4a8c8f089147fd7aaa33cf8c7450c4d09f8f80698a0cf093abeff4"
-dependencies = [
- "cc",
-]
-
-[[package]]
-name = "openssl-sys"
-version = "0.9.115"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "158fe5b292746440aa6e7a7e690e55aeb72d41505e2804c23c6973ad0e9c9781"
-dependencies = [
- "cc",
- "libc",
- "openssl-src",
- "pkg-config",
- "vcpkg",
-]
 
 [[package]]
 name = "opentelemetry"
@@ -5029,7 +4968,6 @@ dependencies = [
  "spt-ssh2",
  "spt-state",
  "spt-trust",
- "ssh2",
  "tar",
  "tempfile",
  "thiserror 1.0.69",
@@ -5458,16 +5396,13 @@ dependencies = [
 name = "spt-ssh2"
 version = "0.1.0"
 dependencies = [
- "async-ssh2-lite",
  "async-trait",
  "base64",
  "bytes",
- "ed25519-dalek",
  "futures",
  "parking_lot",
  "rand 0.8.6",
  "regex",
- "rsa",
  "russh",
  "russh-cryptovec",
  "russh-keys",
@@ -5486,7 +5421,6 @@ dependencies = [
  "spt-sftp",
  "spt-trust",
  "ssh-key",
- "ssh2",
  "tempfile",
  "thiserror 1.0.69",
  "tokio",
@@ -5739,18 +5673,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ssh2"
-version = "0.9.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2f84d13b3b8a0d4e91a2629911e951db1bb8671512f5c09d7d4ba34500ba68c8"
-dependencies = [
- "bitflags 2.11.1",
- "libc",
- "libssh2-sys",
- "parking_lot",
-]
-
-[[package]]
 name = "sspi"
 version = "0.15.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5816,7 +5738,6 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 name = "stress"
 version = "0.0.0"
 dependencies = [
- "async-ssh2-lite",
  "nix",
  "rand 0.8.6",
  "rand_chacha 0.3.1",
@@ -5825,7 +5746,6 @@ dependencies = [
  "spt-core",
  "spt-protocol",
  "spt-ssh2",
- "ssh2",
  "tokio",
  "windows 0.58.0",
 ]
@@ -6620,12 +6540,6 @@ name = "valuable"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ba73ea9cf16a25df0c8caa16c51acb937d5712a8429db78a3ee29d5dcacd3a65"
-
-[[package]]
-name = "vcpkg"
-version = "0.2.15"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
 
 [[package]]
 name = "version_check"

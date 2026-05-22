@@ -1,8 +1,13 @@
 //! Schema migration framework.
 //!
-//! The current schema is `version = 1`; [`migrate`] is therefore an identity
-//! function that confirms the version is supported. The framework is in place
-//! so future schema bumps can be added without changing the public surface.
+//! The active schema is `version = 1`. [`migrate`] is the identity for that
+//! version and the rejection-on-unknown gate for everything else.
+//!
+//! t7-Phase0 introduces a forward migration to **schema v2** that strips the
+//! deprecated `capabilities.ssh2_backend` and `capabilities.allow_libssh2`
+//! keys (libssh2 was removed; russh is the only SSH2 backend). The v2
+//! migration is the body of [`migrate_to_2`] and is invoked by
+//! `spt config migrate --to 2` in the CLI surface.
 
 use spt_core::{Error, Result};
 
@@ -21,6 +26,45 @@ pub fn migrate(raw: &str) -> Result<String> {
     }
 }
 
+/// Migrate a v1 config to v2 by stripping deprecated t7-Phase0 keys.
+///
+/// Drops:
+/// * `capabilities.ssh2_backend`
+/// * `capabilities.allow_libssh2`
+///
+/// Bumps `version = 1` to `version = 2`. If the input is already v2 the
+/// function is the identity (an empty capabilities table is left alone).
+pub fn migrate_to_2(raw: &str) -> Result<String> {
+    let mut doc: toml_edit::DocumentMut = raw
+        .parse()
+        .map_err(|e| Error::InvalidConfig(format!("toml parse: {e}")))?;
+
+    let current = doc
+        .get("version")
+        .and_then(toml_edit::Item::as_integer)
+        .ok_or_else(|| {
+            Error::InvalidConfig("config is missing a `version = <int>` field".into())
+        })?;
+    if current == 2 {
+        return Ok(doc.to_string());
+    }
+    if current != 1 {
+        return Err(Error::VersionOrMigrationFailed(format!(
+            "cannot migrate from version `{current}` to `2` (only `1 -> 2` is supported)"
+        )));
+    }
+
+    if let Some(cap_item) = doc.get_mut("capabilities") {
+        if let Some(table) = cap_item.as_table_like_mut() {
+            table.remove("ssh2_backend");
+            table.remove("allow_libssh2");
+        }
+    }
+
+    doc["version"] = toml_edit::value(2);
+    Ok(doc.to_string())
+}
+
 fn parse_version(raw: &str) -> Result<u64> {
     let table: toml::Value = raw
         .parse()
@@ -35,7 +79,7 @@ fn parse_version(raw: &str) -> Result<u64> {
 
 #[cfg(test)]
 mod tests {
-    use super::migrate;
+    use super::*;
 
     #[test]
     fn identity_for_v1() {
@@ -53,5 +97,50 @@ mod tests {
     fn rejects_missing_version() {
         let raw = "[[profiles]]\nname = \"p\"\nprotocol = \"ssh2\"\n";
         assert!(migrate(raw).is_err());
+    }
+
+    #[test]
+    fn migrate_to_2_strips_deprecated_ssh2_backend_and_allow_libssh2() {
+        // t7-Phase0: v1 -> v2 migration drops the deprecated keys, bumps
+        // version, and leaves the rest of the config untouched.
+        let raw = r#"version = 1
+
+[capabilities]
+ssh2_backend = "libssh2"
+allow_libssh2 = false
+require_post_quantum_kex = false
+
+[[profiles]]
+name = "p"
+protocol = "ssh2"
+host = "h"
+"#;
+        let migrated = migrate_to_2(raw).unwrap();
+        assert!(migrated.contains("version = 2"));
+        assert!(!migrated.contains("ssh2_backend"));
+        assert!(!migrated.contains("allow_libssh2"));
+        assert!(migrated.contains("require_post_quantum_kex"));
+        assert!(migrated.contains("name = \"p\""));
+    }
+
+    #[test]
+    fn migrate_to_2_is_identity_when_keys_absent() {
+        let raw = r#"version = 1
+
+[[profiles]]
+name = "p"
+protocol = "ssh2"
+host = "h"
+"#;
+        let migrated = migrate_to_2(raw).unwrap();
+        assert!(migrated.contains("version = 2"));
+        assert!(migrated.contains("name = \"p\""));
+    }
+
+    #[test]
+    fn migrate_to_2_idempotent_on_v2_input() {
+        let raw = "version = 2\n[[profiles]]\nname = \"p\"\nprotocol = \"ssh2\"\nhost = \"h\"\n";
+        let out = migrate_to_2(raw).unwrap();
+        assert!(out.contains("version = 2"));
     }
 }

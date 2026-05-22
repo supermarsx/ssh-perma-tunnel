@@ -17,7 +17,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use spt_auth::AuthConfig;
 use spt_protocol::Endpoint;
-use spt_ssh2::{CryptoPolicy, Ssh2BackendKind, Ssh2Protocol, TrustPolicy};
+use spt_ssh2::{CryptoPolicy, Ssh2Protocol, TrustPolicy};
 use tokio::sync::Mutex;
 
 use crate::error::TranslatorError;
@@ -111,7 +111,6 @@ impl SftpFactory for Ssh2SftpFactory {
         })?;
 
         let protocol = Ssh2Protocol::builder()
-            .backend_kind(Ssh2BackendKind::Russh)
             .crypto(binding.crypto)
             .trust(binding.trust)
             .build();

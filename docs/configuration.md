@@ -201,8 +201,11 @@ feature families. It can be set in config or enforced through Windows GPO
 bindings.
 
     [capabilities]
-    ssh2_backend = "russh"          # russh | libssh2 (legacy)
-    allow_libssh2 = false
+    # `ssh2_backend` and `allow_libssh2` are deprecated since t7-Phase0.
+    # libssh2 was removed; russh is the only SSH2 backend. Old configs
+    # continue to load — `spt config validate` emits the deprecation
+    # warning `capabilities_ssh2_backend_deprecated_t7`. Run
+    # `spt config migrate --to 2` to strip the keys.
     allow_gssapi = true
     allow_sspi = true
     allow_gssapi_delegation = false
@@ -218,15 +221,16 @@ bindings.
     allow_windows_event_log = true
     allow_gpo_policy_writes = true
 
-The production SSH2 target is the pure-Rust `russh` backend. `libssh2` is kept
-as a legacy migration value only and validation warns when it is selected.
-The current `russh` runtime supports password, public-key, certificate, and
-keyboard-interactive auth plus local TCP, remote TCP, and dynamic
-SOCKS4/SOCKS4A/SOCKS5/HTTP CONNECT proxy forwarding. SSH agent auth and
-multi-hop chains still return explicit unsupported-feature diagnostics on the
-`russh` path; select
-`ssh2_backend = "libssh2"` only for those migration cases and keep
-`allow_libssh2 = true`.
+Since t7-Phase0 the SSH2 backend is the pure-Rust `russh` crate. libssh2 and
+`async-ssh2-lite` are no longer compiled. The `russh` runtime supports
+password, public-key, certificate, keyboard-interactive, agent (Unix +
+Windows), and GSSAPI/SSPI auth, plus local TCP, remote TCP, dynamic
+SOCKS4/SOCKS4A/SOCKS5/HTTP CONNECT proxy forwarding, UDS forwarding
+(`direct-streamlocal@openssh.com`), and multi-hop chains via nested
+`direct-tcpip` channels (no socketpair indirection). PQ-KEX (`mlkem*`,
+`sntrup761*`) is not yet exposed through russh 0.46 — configuring one will
+fail negotiation at runtime; `spt config validate` warns when the policy
+recognizes a PQ-KEX algorithm.
 `require_post_quantum_kex` requires `allow_post_quantum_kex = true`; Windows
 drive-letter mounts and writeback caching require filesystem mounts to be
 enabled explicitly.
@@ -238,7 +242,6 @@ entries are stored under the owning profile and are managed by
 `spt sftp mount ...` and `spt sftp drive ...`.
 
     [capabilities]
-    ssh2_backend = "russh"
     allow_sftp = true
     allow_filesystem_mounts = true
     allow_windows_drive_mounts = true
@@ -284,9 +287,9 @@ Recognized post-quantum SSH KEX names are validated behind
 `allow_post_quantum_kex`; ML-KEM names additionally require `allow_ml_kem`.
 `require_post_quantum_kex = true` rejects explicit classical-only KEX lists and
 warns when a profile relies on backend defaults. Runtime support is still
-bounded by the SSH backend: the current russh/libssh2 paths return an explicit
-unsupported-feature diagnostic for requested ML-KEM/SNTRUP KEX until those KEX
-engines are implemented in the transport.
+bounded by the SSH backend: russh 0.46 does not yet ship ML-KEM/SNTRUP KEX —
+configuring one will fail negotiation. The recognition list survives so
+validation can warn early; the runtime never produces a PQ-KEX match.
 
 ## `[profiles.auth]` GSSAPI And SSPI
 
