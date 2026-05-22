@@ -29,6 +29,7 @@
 // `unsafe` is permitted in `mlock` and `secret_alloc` for OS-level memory
 // locking and `memfd_secret`/`mmap` FFI. Every `unsafe` block carries a
 // `// SAFETY:` comment.
+#![warn(missing_docs)]
 #![deny(unsafe_op_in_unsafe_fn)]
 
 pub mod backend;

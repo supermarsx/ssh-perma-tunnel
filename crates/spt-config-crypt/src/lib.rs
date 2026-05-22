@@ -43,6 +43,7 @@
 //!
 //! **Signature input** = `magic || meta_toml_bytes || body_toml_bytes`.
 
+#![warn(missing_docs)]
 #![forbid(unsafe_code)]
 #![deny(unsafe_op_in_unsafe_fn)]
 

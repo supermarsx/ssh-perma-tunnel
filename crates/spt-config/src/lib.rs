@@ -20,6 +20,7 @@
 //! crate). Network I/O for remote config lives in `spt-remote-config`; only the
 //! [`remote::RemoteConfigSpec`] descriptor lives here.
 
+#![warn(missing_docs)]
 #![forbid(unsafe_code)]
 
 pub mod diagnostic;

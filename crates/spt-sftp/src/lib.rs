@@ -9,6 +9,7 @@
 //! [`russh_sftp::client::SftpSession`] via [`SftpClient::from_russh`] and
 //! exposes a stable, transport-agnostic API to the rest of the workspace.
 
+#![warn(missing_docs)]
 #![deny(unsafe_op_in_unsafe_fn)]
 
 pub mod bw;

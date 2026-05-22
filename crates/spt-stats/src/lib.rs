@@ -10,12 +10,14 @@
 //! All time-aware structures take a `Clock` trait so tests can inject fake
 //! clocks.
 
+#![warn(missing_docs)]
 #![forbid(unsafe_code)]
 
 pub mod clock;
 pub mod counters;
 pub mod ewma;
 pub mod instability;
+#[allow(missing_docs)] // t7-CCI: deferred — 20 items in tables.rs to be documented in follow-up.
 pub mod tables;
 pub mod windows;
 

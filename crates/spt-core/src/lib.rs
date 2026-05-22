@@ -14,6 +14,7 @@
 //! * [Path expansion][path] for `~`, `${VAR}`, `%VAR%`.
 //! * [Redaction][redaction] primitives used before any log/event/MCP sink.
 
+#![warn(missing_docs)]
 #![forbid(unsafe_code)]
 
 pub mod address;

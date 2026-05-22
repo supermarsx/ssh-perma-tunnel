@@ -12,6 +12,7 @@
 // Most code is safe; the Windows privileged-port check uses FFI in
 // `privileged::platform`. Allow unsafe at the crate root with a deny-by-default
 // posture enforced via clippy's `undocumented_unsafe_blocks` (workspace lints).
+#![warn(missing_docs)]
 #![cfg_attr(not(windows), forbid(unsafe_code))]
 
 pub mod bind;

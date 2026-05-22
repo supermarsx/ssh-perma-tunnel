@@ -21,6 +21,7 @@
 //! [`run`] opens the configurator on a config file. It wires up the terminal,
 //! enters the alternate screen, runs the event loop, and restores the
 //! terminal on exit.
+#![warn(missing_docs)]
 #![forbid(unsafe_code)]
 // Pedantic lints we deliberately allow in this TUI crate. Forms code is
 // inherently boilerplate-heavy; the categories below would force noise
