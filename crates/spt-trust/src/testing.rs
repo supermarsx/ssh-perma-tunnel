@@ -151,6 +151,7 @@ pub mod fixtures {
 /// Convenience re-export at the module root for the most common helper.
 pub use fixtures::mismatched_pin;
 
+
 #[cfg(test)]
 mod tests {
     use super::*;

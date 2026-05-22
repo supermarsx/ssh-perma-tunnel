@@ -39,6 +39,15 @@ webpki-roots = { workspace = true }
 tokio-rustls = { workspace = true }
 atomicwrites = { workspace = true }
 subtle = { workspace = true }
+# Used by the CRL prefetch helper to download distribution-point bytes
+# before they reach the (sync) `ServerCertVerifier`. The verifier itself
+# never performs I/O — fetches happen up-front via
+# `PinnedTlsConnectorBuilder::prefetch_crls`.
+reqwest = { workspace = true }
+# Already a transitive dep via tokio-rustls; named directly so the
+# prefetch helper can run blocking HTTP if a caller has no async runtime
+# available. Uses `rt` (single-thread current_thread) only.
+tokio = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
@@ -46,6 +55,10 @@ spt-key = { workspace = true, features = ["testing"] }
 # Already in workspace Cargo.lock via spt-observability/spt-remote-config; reused
 # here in tests to mint self-signed certs for `TlsPin::verify` coverage.
 rcgen = { version = "0.13", default-features = false, features = ["aws_lc_rs", "pem"] }
+# `time` already lands in the lockfile via rcgen; named directly here so
+# the CRL-generation tests can build `OffsetDateTime` values without an
+# implicit transitive path.
+time = { version = "0.3", default-features = false, features = ["std"] }
 criterion = { workspace = true }
 # Used by `chain_depth` tests to round-trip the cap through TOML.
 toml = { workspace = true }

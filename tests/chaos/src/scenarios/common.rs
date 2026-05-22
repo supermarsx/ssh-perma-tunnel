@@ -118,11 +118,30 @@ pub struct TcpProbeProtocol {
 }
 
 impl TcpProbeProtocol {
+    /// Default per-probe timeout (**500 ms**). Kept tight so scenarios
+    /// whose assertion mode is "probe MUST time out and trigger
+    /// reconnect" — `network_partition_during_keepalive`,
+    /// `kill_server_mid_handshake`, … — still surface a failure within
+    /// the few-seconds wall-clock budget each scenario sleeps for.
+    ///
+    /// Scenarios whose assertion is the *opposite* shape — "probe must
+    /// tolerate slow-but-alive transport without reconnecting", e.g.
+    /// `latency_spike_10ms_to_500ms` — need a *larger* per-probe
+    /// budget than the injected latency. They override via
+    /// [`TcpProbeProtocol::with_timeout`] or construct the supervisor
+    /// directly with [`spawn_supervisor_with_probe_timeout`].
+    ///
+    /// This is a *test-harness* knob — production tunnel sessions own
+    /// their own keepalive timeouts inside their `TunnelSession::keepalive`
+    /// implementations. See `.orchestration/logs/t8-FixLatency.md` for
+    /// the rationale behind keeping this as a per-scenario decision.
+    pub const DEFAULT_PROBE_TIMEOUT: Duration = Duration::from_millis(500);
+
     #[must_use]
     pub fn new(target: SocketAddr) -> Self {
         Self {
             target,
-            timeout: Duration::from_millis(500),
+            timeout: Self::DEFAULT_PROBE_TIMEOUT,
         }
     }
     #[must_use]
@@ -372,7 +391,29 @@ pub fn spawn_supervisor_with_keepalive(
     backoff: BackoffConfig,
     keepalive_interval: Duration,
 ) -> ProfileSupervisor {
-    let proto = Arc::new(TcpProbeProtocol::new(proxy_addr));
+    spawn_supervisor_with_probe_timeout(
+        name,
+        proxy_addr,
+        backoff,
+        keepalive_interval,
+        TcpProbeProtocol::DEFAULT_PROBE_TIMEOUT,
+    )
+}
+
+/// Most flexible spawn helper: a scenario picks its own keepalive
+/// interval *and* per-probe timeout. Used by scenarios whose assertion
+/// is "probe MUST tolerate harmless slowness without reconnecting"
+/// — `latency_spike_10ms_to_500ms` — where the default 500 ms probe
+/// budget would alias an injected latency spike as a real failure.
+#[must_use]
+pub fn spawn_supervisor_with_probe_timeout(
+    name: &str,
+    proxy_addr: SocketAddr,
+    backoff: BackoffConfig,
+    keepalive_interval: Duration,
+    probe_timeout: Duration,
+) -> ProfileSupervisor {
+    let proto = Arc::new(TcpProbeProtocol::new(proxy_addr).with_timeout(probe_timeout));
     let mut cfg = ProfileSupervisorConfig::default();
     cfg.backoff = backoff;
     cfg.keepalive_interval = keepalive_interval;

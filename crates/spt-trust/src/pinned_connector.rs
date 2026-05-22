@@ -43,7 +43,12 @@ use rustls::{
 use spt_core::{Error, Result};
 
 use crate::chain_depth::{check_chain_depth, ChainDepthCap};
+use crate::crl::{
+    extract_crl_distribution_points, fetch_crl_bytes, CrlCache, CrlCacheHandle, CrlPolicy,
+    RevocationStatus,
+};
 use crate::tls_pin::TlsPin;
+use x509_parser::prelude::*;
 
 /// Source of root certificates for the connector.
 #[derive(Debug, Clone)]
@@ -75,6 +80,17 @@ pub struct PinnedTlsConnectorBuilder {
     allow_self_signed: bool,
     chain_depth_cap: ChainDepthCap,
     alpn: Vec<Vec<u8>>,
+    /// CRL consultation policy. Defaults to [`CrlPolicy::Disabled`] so
+    /// adopting CRL checking is explicit per the A6 follow-up. When
+    /// non-disabled, `crl_cache` is consulted from inside the
+    /// (synchronous) `ServerCertVerifier` callback.
+    crl_policy: CrlPolicy,
+    /// Shared CRL store. Set via [`Self::crl_cache`]; populated either
+    /// directly through `CrlCache::insert_der` or async via
+    /// [`Self::prefetch_crls`]. Always present (default `new()`) so
+    /// the verifier can be wired uniformly; ignored when
+    /// `crl_policy == Disabled`.
+    crl_cache: Arc<CrlCache>,
 }
 
 impl Default for PinnedTlsConnectorBuilder {
@@ -90,6 +106,8 @@ impl Default for PinnedTlsConnectorBuilder {
             // `.chain_depth_cap(ChainDepthCap::default())`.
             chain_depth_cap: ChainDepthCap::unlimited(),
             alpn: Vec::new(),
+            crl_policy: CrlPolicy::Disabled,
+            crl_cache: Arc::new(CrlCache::new()),
         }
     }
 }
@@ -151,6 +169,53 @@ impl PinnedTlsConnectorBuilder {
     /// Set ALPN protocol identifiers. Empty by default.
     pub fn alpn_protocols(mut self, alpn: Vec<Vec<u8>>) -> Self {
         self.alpn = alpn;
+        self
+    }
+
+    /// Set the CRL consultation policy.
+    ///
+    /// - [`CrlPolicy::Disabled`] (default) — preserves the pre-CRL
+    ///   behaviour exactly. Pin / `WebPKI` / chain-depth checks are the
+    ///   only authorities.
+    /// - [`CrlPolicy::Soft`] — consult cached CRLs; on a missing or
+    ///   stale CRL for an issuer the leaf names, log a warning and
+    ///   accept.
+    /// - [`CrlPolicy::Hard`] — consult cached CRLs; on missing or
+    ///   stale CRL, reject (fail closed).
+    pub fn crl_policy(mut self, policy: CrlPolicy) -> Self {
+        self.crl_policy = policy;
+        self
+    }
+
+    /// Swap in a pre-built [`CrlCache`]. Useful when the same cache is
+    /// shared across multiple connectors so a single prefetch run
+    /// services every TLS surface in the process.
+    pub fn crl_cache(mut self, cache: Arc<CrlCache>) -> Self {
+        self.crl_cache = cache;
+        self
+    }
+
+    /// Asynchronously fetch every URL in `urls` and ingest each into
+    /// the configured CRL cache. Non-fatal on individual fetch
+    /// failures — they are logged and the caller's policy
+    /// ([`CrlPolicy::Hard`] vs [`CrlPolicy::Soft`]) decides the
+    /// downstream effect at verify time.
+    ///
+    /// Returns the number of CRLs successfully ingested.
+    ///
+    /// `reqwest` is already a workspace dep (used by remote-config /
+    /// OTLP / event sinks); this method does not add any new
+    /// transitive crates.
+    pub async fn prefetch_crls(self, urls: &[String]) -> Self {
+        for url in urls {
+            match fetch_crl_bytes(url).await {
+                Ok(bytes) => match self.crl_cache.insert_der(&bytes) {
+                    Ok(_) => tracing::debug!("spt-trust: ingested CRL from {url}"),
+                    Err(e) => tracing::warn!("spt-trust: parse CRL from {url}: {e}"),
+                },
+                Err(e) => tracing::warn!("spt-trust: fetch CRL {url}: {e}"),
+            }
+        }
         self
     }
 
@@ -238,11 +303,24 @@ impl PinnedTlsConnectorBuilder {
             )
         };
 
+        let crl_handle = if self.crl_policy.enabled() {
+            Some(CrlCacheHandle {
+                cache: self.crl_cache,
+                policy: self.crl_policy,
+            })
+        } else {
+            // `Disabled` policy => keep the verifier path bit-identical
+            // to pre-A6 behaviour: no Mutex lock, no DER parse of the
+            // leaf for the CRL DP extension.
+            None
+        };
+
         let verifier = Arc::new(PinnedVerifier {
             inner,
             pin: self.pin,
             allow_self_signed: self.allow_self_signed,
             chain_depth_cap: self.chain_depth_cap,
+            crl: crl_handle,
         });
 
         let mut cfg = ClientConfig::builder()
@@ -312,6 +390,37 @@ pub(crate) struct PinnedVerifier {
     pin: TlsPin,
     allow_self_signed: bool,
     chain_depth_cap: ChainDepthCap,
+    /// `Some` when [`CrlPolicy`] is non-disabled; `None` keeps the
+    /// pre-A6 fast path. Held as a small clone-on-construct handle so
+    /// the verifier does not need to grab the cache `Arc` on every
+    /// handshake when CRL is off.
+    crl: Option<CrlCacheHandle>,
+}
+
+/// Test-only helper that surfaces `PinnedVerifier` to integration
+/// tests (which can't reach `pub(crate)` types). Doc-hidden so it
+/// doesn't pollute the public surface.
+///
+/// `crl` is `Some((cache, policy))` to enable CRL consultation;
+/// `None` for the legacy fast path. Always builds with
+/// `inner = None` — intended for `allow_self_signed = true` flows
+/// where no `WebPKI` underlying verifier is required.
+#[doc(hidden)]
+#[must_use]
+pub fn build_pinned_verifier_for_test(
+    pin: TlsPin,
+    allow_self_signed: bool,
+    chain_depth_cap: ChainDepthCap,
+    crl: Option<(Arc<CrlCache>, CrlPolicy)>,
+) -> Arc<dyn ServerCertVerifier> {
+    let crl_handle = crl.map(|(cache, policy)| CrlCacheHandle { cache, policy });
+    Arc::new(PinnedVerifier {
+        inner: None,
+        pin,
+        allow_self_signed,
+        chain_depth_cap,
+        crl: crl_handle,
+    })
 }
 
 impl PinnedVerifier {
@@ -337,6 +446,81 @@ impl PinnedVerifier {
         }
         Ok(())
     }
+
+    /// Consult the configured CRL cache for `leaf`'s serial. Returns
+    /// `Ok(())` on accept and `Err(TlsError)` on reject; the
+    /// [`CrlPolicy`] field decides what to do with `NoCrl` / `Stale`
+    /// statuses.
+    ///
+    /// Cheap when `self.crl` is `None` — returns immediately without
+    /// parsing the leaf. With `Some(handle)`, the leaf is DER-parsed
+    /// once, its issuer DN is taken from the first intermediate (or
+    /// the leaf itself for self-signed pin-only chains), and the
+    /// cache is queried synchronously.
+    fn check_crl(
+        &self,
+        leaf: &CertificateDer<'_>,
+        intermediates: &[CertificateDer<'_>],
+    ) -> std::result::Result<(), TlsError> {
+        let Some(handle) = &self.crl else {
+            return Ok(());
+        };
+        // Parse the leaf to read both the CRL DP extension and the
+        // serial number.
+        let (_, leaf_parsed) = X509Certificate::from_der(leaf.as_ref()).map_err(|e| {
+            TlsError::General(format!("spt-trust CRL: parse leaf: {e}"))
+        })?;
+        let dps = extract_crl_distribution_points(&leaf_parsed);
+        if dps.is_empty() {
+            // No DP extension => issuer didn't tell us to look anywhere.
+            // RFC 5280 leaves this case to local policy; the spec
+            // decision here is "no DP == nothing to check", consistent
+            // with how WebPKI ignores absent OCSP responses.
+            return Ok(());
+        }
+
+        // Issuer DN to key the cache lookup. For a real chain the
+        // first intermediate is the issuer; for a pin-only chain with
+        // just the leaf, fall back to the leaf's own issuer DN (which
+        // also matches the cache key the parser populates when the
+        // CRL was minted by that same CA).
+        let issuer_dn_owned: Vec<u8> = if let Some(int) = intermediates.first() {
+            match X509Certificate::from_der(int.as_ref()) {
+                Ok((_, parsed)) => parsed.subject().as_raw().to_vec(),
+                Err(_) => leaf_parsed.issuer().as_raw().to_vec(),
+            }
+        } else {
+            leaf_parsed.issuer().as_raw().to_vec()
+        };
+
+        let serial_be = leaf_parsed.tbs_certificate.serial.to_bytes_be();
+        let status = handle
+            .cache
+            .is_revoked(&issuer_dn_owned, &serial_be)
+            .map_err(|e| TlsError::General(format!("spt-trust CRL lookup: {e}")))?;
+        match status {
+            RevocationStatus::Revoked => Err(TlsError::General(
+                "spt-trust: certificate revoked via CRL".into(),
+            )),
+            RevocationStatus::NotRevoked => Ok(()),
+            RevocationStatus::NoCrl | RevocationStatus::Stale => match handle.policy {
+                CrlPolicy::Hard => Err(TlsError::General(format!(
+                    "spt-trust CRL: no fresh CRL for issuer ({status:?}); fail-closed"
+                ))),
+                CrlPolicy::Soft => {
+                    tracing::warn!(
+                        "spt-trust CRL: no fresh CRL for leaf-named DP ({:?}); \
+                         soft policy allows chain",
+                        status
+                    );
+                    Ok(())
+                }
+                // Unreachable: when Disabled, self.crl is None, so
+                // check_crl exited at the top.
+                CrlPolicy::Disabled => Ok(()),
+            },
+        }
+    }
 }
 
 impl ServerCertVerifier for PinnedVerifier {
@@ -361,6 +545,11 @@ impl ServerCertVerifier for PinnedVerifier {
         // (3) + (4): chain-depth cap and pin check share a single
         // helper so the wire-order vector is built exactly once.
         self.check_depth_and_pin(end_entity, intermediates)?;
+
+        // (5) CRL consultation (A6). No-op when `crl_policy` is the
+        // default `Disabled`; otherwise consults the pre-fetched
+        // cache. Synchronous — fetches happened at builder time.
+        self.check_crl(end_entity, intermediates)?;
 
         Ok(ServerCertVerified::assertion())
     }
@@ -512,6 +701,7 @@ mod tests {
             pin,
             allow_self_signed,
             chain_depth_cap: ChainDepthCap::from_option(cap),
+            crl: None,
         }
     }
 
@@ -698,6 +888,7 @@ mod tests {
             pin: TlsPin::default(),
             allow_self_signed: false,
             chain_depth_cap: ChainDepthCap::unlimited(),
+            crl: None,
         };
         let leaf = CertificateDer::from(c.der);
         let name = ServerName::try_from("rogue.example").unwrap();

@@ -2383,7 +2383,7 @@ dependencies = [
 
 [[package]]
 name = "spt-auth"
-version = "0.1.0"
+version = "0.26.1"
 dependencies = [
  "hmac",
  "rand 0.8.6",
@@ -2407,7 +2407,7 @@ dependencies = [
 
 [[package]]
 name = "spt-chaos-proxy"
-version = "0.1.0"
+version = "0.26.1"
 dependencies = [
  "parking_lot",
  "rand 0.8.6",
@@ -2435,7 +2435,7 @@ dependencies = [
 
 [[package]]
 name = "spt-config"
-version = "0.1.0"
+version = "0.26.1"
 dependencies = [
  "atomicwrites",
  "directories",
@@ -2456,7 +2456,7 @@ dependencies = [
 
 [[package]]
 name = "spt-config-crypt"
-version = "0.1.0"
+version = "0.26.1"
 dependencies = [
  "aes-gcm",
  "argon2",
@@ -2476,7 +2476,7 @@ dependencies = [
 
 [[package]]
 name = "spt-core"
-version = "0.1.0"
+version = "0.26.1"
 dependencies = [
  "bytesize",
  "chrono",
@@ -2495,7 +2495,7 @@ dependencies = [
 
 [[package]]
 name = "spt-forward"
-version = "0.1.0"
+version = "0.26.1"
 dependencies = [
  "async-trait",
  "bytes",
@@ -2519,7 +2519,7 @@ dependencies = [
 
 [[package]]
 name = "spt-key"
-version = "0.1.0"
+version = "0.26.1"
 dependencies = [
  "atomicwrites",
  "base64",
@@ -2536,7 +2536,7 @@ dependencies = [
 
 [[package]]
 name = "spt-net"
-version = "0.1.0"
+version = "0.26.1"
 dependencies = [
  "caps",
  "if-addrs",
@@ -2552,7 +2552,7 @@ dependencies = [
 
 [[package]]
 name = "spt-protocol"
-version = "0.1.0"
+version = "0.26.1"
 dependencies = [
  "async-trait",
  "serde",
@@ -2565,7 +2565,7 @@ dependencies = [
 
 [[package]]
 name = "spt-secrets"
-version = "0.1.0"
+version = "0.26.1"
 dependencies = [
  "aes-gcm",
  "argon2",
@@ -2590,7 +2590,7 @@ dependencies = [
 
 [[package]]
 name = "spt-sftp"
-version = "0.1.0"
+version = "0.26.1"
 dependencies = [
  "futures",
  "hex",
@@ -2604,7 +2604,7 @@ dependencies = [
 
 [[package]]
 name = "spt-state"
-version = "0.1.0"
+version = "0.26.1"
 dependencies = [
  "atomicwrites",
  "chrono",
@@ -2621,7 +2621,7 @@ dependencies = [
 
 [[package]]
 name = "spt-stats"
-version = "0.1.0"
+version = "0.26.1"
 dependencies = [
  "chrono",
  "dashmap",
@@ -2633,7 +2633,7 @@ dependencies = [
 
 [[package]]
 name = "spt-supervisor"
-version = "0.1.0"
+version = "0.26.1"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2657,12 +2657,13 @@ dependencies = [
 
 [[package]]
 name = "spt-trust"
-version = "0.1.0"
+version = "0.26.1"
 dependencies = [
  "atomicwrites",
  "base64",
  "hmac",
  "rand 0.8.6",
+ "reqwest",
  "rustls",
  "rustls-native-certs",
  "rustls-pemfile",
@@ -2675,6 +2676,7 @@ dependencies = [
  "ssh-key",
  "subtle",
  "thiserror 1.0.69",
+ "tokio",
  "tokio-rustls",
  "tracing",
  "webpki-roots 0.26.11",
