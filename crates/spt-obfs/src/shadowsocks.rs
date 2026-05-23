@@ -220,12 +220,7 @@ pub fn salt_len(m: SsMethod) -> usize {
 
 /// AEAD seal under SIP022 §3.3 wire shape: empty additional-authenticated-data,
 /// 12-byte nonce, method-specific cipher. Returns `ciphertext || tag`.
-fn aead_seal(
-    method: SsMethod,
-    key: &[u8],
-    nonce: &[u8; 12],
-    plaintext: &[u8],
-) -> Result<Vec<u8>> {
+fn aead_seal(method: SsMethod, key: &[u8], nonce: &[u8; 12], plaintext: &[u8]) -> Result<Vec<u8>> {
     // SIP022 specifies the AEAD additional-authenticated-data as the empty
     // byte string for every chunk (length-prefix AND body). Do NOT pass any
     // protocol-specific AAD here — `shadowsocks-rust` interop depends on it.
@@ -277,12 +272,7 @@ fn aead_seal(
 
 /// AEAD open: inverse of [`aead_seal`]. AAD is empty per SIP022 — see
 /// the security note on `aead_seal`.
-fn aead_open(
-    method: SsMethod,
-    key: &[u8],
-    nonce: &[u8; 12],
-    ciphertext: &[u8],
-) -> Result<Vec<u8>> {
+fn aead_open(method: SsMethod, key: &[u8], nonce: &[u8; 12], ciphertext: &[u8]) -> Result<Vec<u8>> {
     let aad: &[u8] = b"";
     let n = aes_gcm::Nonce::from_slice(nonce);
     match method {

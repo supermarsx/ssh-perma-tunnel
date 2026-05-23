@@ -465,9 +465,8 @@ impl PinnedVerifier {
         };
         // Parse the leaf to read both the CRL DP extension and the
         // serial number.
-        let (_, leaf_parsed) = X509Certificate::from_der(leaf.as_ref()).map_err(|e| {
-            TlsError::General(format!("spt-trust CRL: parse leaf: {e}"))
-        })?;
+        let (_, leaf_parsed) = X509Certificate::from_der(leaf.as_ref())
+            .map_err(|e| TlsError::General(format!("spt-trust CRL: parse leaf: {e}")))?;
         let dps = extract_crl_distribution_points(&leaf_parsed);
         if dps.is_empty() {
             // No DP extension => issuer didn't tell us to look anywhere.

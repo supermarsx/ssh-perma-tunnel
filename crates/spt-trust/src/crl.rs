@@ -2,14 +2,14 @@
 //!
 //! Surfaces the missing piece called out by A6 in
 //! `pinned_connector.rs:232-238`: today, operators must rotate pinned
-//! SPKIs to revoke a leaf. This module gives the [`PinnedVerifier`]
+//! SPKIs to revoke a leaf. This module gives the `PinnedVerifier`
 //! (see `pinned_connector`) an offline lookup against pre-fetched CRLs
 //! so a revoked-but-still-pinned cert can be rejected before the
 //! handshake completes.
 //!
 //! ## Design
 //!
-//! `rustls`' [`ServerCertVerifier`] callback is **synchronous**. Doing
+//! `rustls`' `ServerCertVerifier` callback is **synchronous**. Doing
 //! network I/O from inside it is either unsafe (`block_on` inside an
 //! async runtime panics or deadlocks) or expensive (a fresh blocking
 //! runtime per handshake). The cache therefore holds *already-parsed*
@@ -47,9 +47,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
 use subtle::ConstantTimeEq;
-use x509_parser::extensions::{
-    DistributionPointName, GeneralName, ParsedExtension,
-};
+use x509_parser::extensions::{DistributionPointName, GeneralName, ParsedExtension};
 use x509_parser::oid_registry::OID_X509_EXT_CRL_DISTRIBUTION_POINTS;
 use x509_parser::prelude::*;
 
@@ -365,7 +363,10 @@ mod tests {
     #[test]
     fn normalize_serial_strips_leading_pad() {
         assert_eq!(normalize_serial(&[0x00, 0x01, 0x02]), vec![0x01, 0x02]);
-        assert_eq!(normalize_serial(&[0x01, 0x02, 0x03]), vec![0x01, 0x02, 0x03]);
+        assert_eq!(
+            normalize_serial(&[0x01, 0x02, 0x03]),
+            vec![0x01, 0x02, 0x03]
+        );
         assert_eq!(normalize_serial(&[0x00]), vec![0x00]);
         assert_eq!(normalize_serial(&[]), Vec::<u8>::new());
     }

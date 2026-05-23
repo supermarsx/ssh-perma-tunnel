@@ -61,9 +61,9 @@ pub async fn health(State(state): State<AppState>) -> Response {
         if !matches!(state_str.as_str(), "failed" | "reconnecting") {
             continue;
         }
-        let stale = p.last_successful_connection_at.is_none_or(|t| {
-            (now - t).num_seconds() > state.failed_threshold_secs
-        });
+        let stale = p
+            .last_successful_connection_at
+            .is_none_or(|t| (now - t).num_seconds() > state.failed_threshold_secs);
         if stale {
             degraded_reason = Some(format!("profile {} in state `{}`", p.id, p.state));
             break;

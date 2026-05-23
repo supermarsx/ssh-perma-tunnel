@@ -518,9 +518,7 @@ fn mint_crl_fixture(crl_uri: &str, leaf_serial: u64) -> CrlFixture {
         uris: vec![crl_uri.to_string()],
     }];
     let leaf_kp = KeyPair::generate().unwrap();
-    let leaf_cert = leaf_params
-        .signed_by(&leaf_kp, &ca_cert, &ca_kp)
-        .unwrap();
+    let leaf_cert = leaf_params.signed_by(&leaf_kp, &ca_cert, &ca_kp).unwrap();
     let leaf_der = leaf_cert.der().to_vec();
     let leaf_spki = spki_of(&leaf_der);
 
@@ -563,9 +561,7 @@ fn intermediate_revocation_via_crl_rejected() {
     let fixture = mint_crl_fixture("http://crl.spt-test/leaf.crl", 0xDEAD_BEEF);
 
     let cache = Arc::new(CrlCache::new());
-    cache
-        .insert_der(&fixture.crl_der)
-        .expect("CRL must parse");
+    cache.insert_der(&fixture.crl_der).expect("CRL must parse");
     assert_eq!(cache.issuer_count(), 1, "CRL ingested");
 
     let cfg = PinnedTlsConnector::builder()
@@ -610,11 +606,14 @@ fn intermediate_revocation_via_crl_rejected() {
         build_pin(&[fixture.leaf_spki]),
         /* allow_self_signed */ true,
         /* chain_depth_cap */ ChainDepthCap::default(),
-        Some((Arc::new({
-            let c = CrlCache::new();
-            c.insert_der(&fixture.crl_der).unwrap();
-            c
-        }), CrlPolicy::Hard)),
+        Some((
+            Arc::new({
+                let c = CrlCache::new();
+                c.insert_der(&fixture.crl_der).unwrap();
+                c
+            }),
+            CrlPolicy::Hard,
+        )),
     );
 
     let leaf = CertificateDer::from(fixture.leaf_der.clone());

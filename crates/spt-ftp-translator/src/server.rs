@@ -1287,14 +1287,10 @@ fn join_cwd(cwd: &str, target: &str) -> String {
 fn validate_path_argument(arg: &str) -> Result<(), Reply> {
     for segment in arg.split(['/', '\\']) {
         if segment == ".." {
-            return Err(Reply::err_550(
-                "Path traversal `..` is not permitted.",
-            ));
+            return Err(Reply::err_550("Path traversal `..` is not permitted."));
         }
         if segment.contains('\0') {
-            return Err(Reply::err_553(
-                "File name not allowed (embedded NUL).",
-            ));
+            return Err(Reply::err_553("File name not allowed (embedded NUL)."));
         }
     }
     Ok(())

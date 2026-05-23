@@ -463,8 +463,7 @@ pub fn open_frame(
     }
     let nonce_bytes = obfs4_nonce_from_ctr(nonce_ctr);
     let mask = length_mask(key, &nonce_bytes);
-    let plen =
-        u16::from_be_bytes([framed[0] ^ mask[0], framed[1] ^ mask[1]]) as usize;
+    let plen = u16::from_be_bytes([framed[0] ^ mask[0], framed[1] ^ mask[1]]) as usize;
     if plen == 0 || plen > MAX_FRAME_PT {
         return Err(ObfsError::Handshake(format!("obfs4: bad plen {plen}")));
     }
@@ -541,10 +540,9 @@ impl AsyncRead for Obfs4Stream {
                     let peek_ctr = self.rx_ctr;
                     let nonce_bytes = obfs4_nonce_from_ctr(peek_ctr);
                     let mask = length_mask(&self.s2c_key, &nonce_bytes);
-                    let plen = u16::from_be_bytes([
-                        self.rx_buf[0] ^ mask[0],
-                        self.rx_buf[1] ^ mask[1],
-                    ]) as usize;
+                    let plen =
+                        u16::from_be_bytes([self.rx_buf[0] ^ mask[0], self.rx_buf[1] ^ mask[1]])
+                            as usize;
                     if plen == 0 || plen > MAX_FRAME_PT {
                         return Poll::Ready(Err(std::io::Error::new(
                             std::io::ErrorKind::InvalidData,
