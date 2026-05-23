@@ -28,7 +28,12 @@ $ids = @()
 foreach ($f in $files) {
     $path = Join-Path $dir $f
     if (-not (Test-Path $path)) { Write-Error "missing $path" }
-    $line = Select-String -Path $path -Pattern '^PackageIdentifier:' -SimpleMatch | Select-Object -First 1
+    # NB: regex anchor (no -SimpleMatch). `^PackageIdentifier:` interpreted
+    # as a literal substring never matches — every PackageIdentifier line in
+    # the generated manifests begins at column 0 but contains no `^` char.
+    # The earlier `-SimpleMatch` form silently matched nothing on every CI
+    # run and tripped the `no PackageIdentifier` error path.
+    $line = Select-String -Path $path -Pattern '^PackageIdentifier:' | Select-Object -First 1
     if (-not $line) { Write-Error "$f has no PackageIdentifier" }
     $ids += $line.Line.Trim()
 }
