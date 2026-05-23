@@ -2,7 +2,7 @@
 name = "spt-e2e-tests"
 version = "0.0.0"
 edition = "2021"
-rust-version = "1.83"
+rust-version = "1.85"
 publish = false
 license = "MIT"
 description = "Workspace-level end-to-end integration tests for spt."

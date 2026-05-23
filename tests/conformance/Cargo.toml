@@ -2,7 +2,7 @@
 name = "spt-conformance-tests"
 version = "0.0.0"
 edition = "2021"
-rust-version = "1.83"
+rust-version = "1.85"
 publish = false
 license = "MIT"
 description = "Server-impl conformance matrix for spt: dropbear/openssh/libssh-server x forward-kind x auth-method."

@@ -39,6 +39,13 @@ parking_lot = { workspace = true }
 # on 1.85, so we pin to the `0.15` major. `cross-krb5 0.4.x` declares no
 # MSRV and is the current latest. Both pinned with `=` per the t7
 # milestone's "documented dep" policy.
+#
+# t9-Bump: tried sspi 0.16.1 — pulls `picky-krb 0.11.2` which fails to
+# compile against the resolver-selected `crypto-bigint 0.7.3` (missing
+# `TryRng` impl on the generic rng path; `BoxedMontyForm::new` borrow
+# mismatch). `picky-krb 0.11.3` would require `inout 0.4`, conflicting with
+# `picky 7.0.0-rc.23 → inout 0.2`. Sspi 0.16+ is held until the upstream
+# graph stabilizes; 0.15.12 remains the workable pin.
 
 [target.'cfg(windows)'.dependencies]
 sspi = { version = "=0.15.12", default-features = false }

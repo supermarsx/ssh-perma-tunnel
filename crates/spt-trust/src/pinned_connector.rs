@@ -228,21 +228,19 @@ impl PinnedTlsConnectorBuilder {
         let mut roots = RootCertStore::empty();
         match &self.roots {
             RootSource::System => {
-                match rustls_native_certs::load_native_certs() {
-                    Ok(certs) => {
-                        for cert in certs {
-                            // Ignore individual load failures — we'll
-                            // catch "store is empty" downstream when
-                            // building the webpki verifier.
-                            let _ = roots.add(cert);
-                        }
-                    }
-                    Err(e) => {
-                        tracing::debug!(
-                            "spt-trust: load_native_certs failed: {e}; \
-                             falling back to webpki-roots"
-                        );
-                    }
+                // t9-Bump: rustls-native-certs 0.8 returns CertificateResult
+                // { certs, errors } instead of Result<Vec<_>>.
+                let result = rustls_native_certs::load_native_certs();
+                for cert in result.certs {
+                    // Ignore individual load failures — we'll catch "store is
+                    // empty" downstream when building the webpki verifier.
+                    let _ = roots.add(cert);
+                }
+                for e in result.errors {
+                    tracing::debug!(
+                        "spt-trust: load_native_certs partial failure: {e}; \
+                         remainder will fall back to webpki-roots if needed"
+                    );
                 }
                 if roots.is_empty() {
                     // Final fallback: webpki-roots' bundled Mozilla set.
@@ -872,10 +870,9 @@ mod tests {
         // Build a webpki verifier with the system roots so we exercise
         // the inner-verifier path.
         let mut roots = RootCertStore::empty();
-        if let Ok(certs) = rustls_native_certs::load_native_certs() {
-            for cert in certs {
-                let _ = roots.add(cert);
-            }
+        // t9-Bump: rustls-native-certs 0.8 returns CertificateResult.
+        for cert in rustls_native_certs::load_native_certs().certs {
+            let _ = roots.add(cert);
         }
         if roots.is_empty() {
             roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());

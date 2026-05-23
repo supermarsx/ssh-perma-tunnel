@@ -45,8 +45,11 @@ impl TcpOptions {
 /// Best-effort: options not supported on the running OS are silently ignored
 /// (e.g. `IP_FREEBIND` on Windows). Hard failures bubble up.
 pub fn apply(socket: &Socket, opts: &TcpOptions) -> Result<()> {
+    // t9-Bump: socket2 0.6 renamed `set_nodelay` → `set_tcp_nodelay` so it
+    // does not shadow `std::net::TcpStream::set_nodelay` (which has a
+    // different signature). Same behaviour, new name.
     socket
-        .set_nodelay(opts.nodelay)
+        .set_tcp_nodelay(opts.nodelay)
         .map_err(|e| Error::RuntimeFailure(format!("set TCP_NODELAY: {e}")))?;
 
     let mut keepalive = TcpKeepalive::new();
@@ -168,7 +171,7 @@ mod tests {
         let std = listener.into_std().unwrap();
         std.set_nonblocking(false).unwrap();
         let s = Socket::from(std);
-        assert!(s.nodelay().unwrap());
+        assert!(s.tcp_nodelay().unwrap());
     }
 
     #[tokio::test(flavor = "current_thread")]

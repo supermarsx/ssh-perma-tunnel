@@ -41,16 +41,16 @@ pub fn build_client_config(tls: &Ssh3TlsConfig) -> Result<ClientConfig> {
             })?;
         }
     } else {
-        // System trust roots (rustls-native-certs 0.7 returns Result<Vec<_>>).
-        match rustls_native_certs::load_native_certs() {
-            Ok(certs) => {
-                for cert in certs {
-                    let _ = roots.add(cert);
-                }
-            }
-            Err(e) => {
-                tracing::debug!("ssh3: load_native_certs failed: {e}");
-            }
+        // System trust roots. t9-Bump: rustls-native-certs 0.8 returns
+        // `CertificateResult { certs, errors }` instead of `Result<Vec<_>>`
+        // — load is always best-effort and surfaces per-cert failures
+        // through `errors`.
+        let result = rustls_native_certs::load_native_certs();
+        for cert in result.certs {
+            let _ = roots.add(cert);
+        }
+        for e in result.errors {
+            tracing::debug!("ssh3: load_native_certs partial failure: {e}");
         }
     }
 

@@ -1285,7 +1285,7 @@ fn join_cwd(cwd: &str, target: &str) -> String {
 /// `unicode-normalization` workspace dep is deferred. Such inputs are
 /// rejected by the SFTP backend as nonexistent paths.
 fn validate_path_argument(arg: &str) -> Result<(), Reply> {
-    for segment in arg.split(|c| c == '/' || c == '\\') {
+    for segment in arg.split(['/', '\\']) {
         if segment == ".." {
             return Err(Reply::err_550(
                 "Path traversal `..` is not permitted.",

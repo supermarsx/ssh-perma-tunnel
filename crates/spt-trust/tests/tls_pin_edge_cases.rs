@@ -264,10 +264,9 @@ fn san_mismatch_rejected_by_webpki_layer() {
     // but we pass "other.test" as server name) and chain validation.
     let c = gen_self_signed("leaf.test");
     let mut roots = RootCertStore::empty();
-    if let Ok(certs) = rustls_native_certs::load_native_certs() {
-        for c in certs {
-            let _ = roots.add(c);
-        }
+    // t9-Bump: rustls-native-certs 0.8 returns CertificateResult.
+    for c in rustls_native_certs::load_native_certs().certs {
+        let _ = roots.add(c);
     }
     if roots.is_empty() {
         roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
@@ -292,10 +291,9 @@ fn expired_cert_rejected_via_webpki_time_check() {
     install_provider();
     let c = gen_self_signed("epoch.test");
     let mut roots = RootCertStore::empty();
-    if let Ok(certs) = rustls_native_certs::load_native_certs() {
-        for c in certs {
-            let _ = roots.add(c);
-        }
+    // t9-Bump: rustls-native-certs 0.8 returns CertificateResult.
+    for c in rustls_native_certs::load_native_certs().certs {
+        let _ = roots.add(c);
     }
     if roots.is_empty() {
         roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());

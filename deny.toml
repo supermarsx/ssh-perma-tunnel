@@ -9,23 +9,19 @@ no-default-features = false
 version = 2
 yanked = "warn"
 ignore = [
-    # Re-evaluated by t7-CCI 2026-05-21. Workspace MSRV is now 1.85, but
-    # Cargo.toml edits are out of scope for this milestone — each entry below
-    # was checked against Cargo.lock; affected versions remain locked, so the
-    # ignore stays. Lifting will happen alongside the corresponding dep bump
-    # in a follow-up milestone.
-    #
-    # Re-confirmed by t8-E1 2026-05-21 post-PQ-deps: ml-kem 0.3.2 (RustCrypto,
-    # added by t8-B1) introduces no new advisories. The sntrup761 path (t8-B2)
-    # ships as a skeleton with no new crate added. Zero advisories resolved,
-    # zero new advisories introduced since t7-CCI.
-    { id = "RUSTSEC-2023-0071", reason = "rsa 0.9.10 still locked; no patched release upstream. Retained for SSH RSA key support and transitive consumers." },
-    { id = "RUSTSEC-2024-0436", reason = "paste 1.0.15 still locked via ratatui 0.28.x; paste has no patched release." },
-    { id = "RUSTSEC-2025-0134", reason = "rustls-pemfile 2.2.0 still locked; no patched release. Migrating to rustls-pki-types PemObject requires code changes outside dependency policy." },
-    { id = "RUSTSEC-2026-0002", reason = "lru 0.12.5 transitive through ratatui 0.28.x; spt does not call lru::IterMut directly. Ratatui releases that move past this dependency require a coordinated dep refresh." },
-    { id = "RUSTSEC-2026-0009", reason = "time 0.3.36 locked; fixed in 0.3.47, but that release requires Cargo edition2024 (Rust 1.85+ Cargo). Deferred pending workspace-wide Cargo bump." },
-    { id = "RUSTSEC-2026-0119", reason = "hickory-proto 0.24.4 locked; fixed in Hickory 0.26.1 but Hickory 0.26 requires Rust 1.88, exceeds workspace MSRV 1.85." },
-    { id = "RUSTSEC-2026-0141", reason = "lettre 0.11.19 locked; spt enables the rustls backend, not the affected Boring TLS backend. MSRV is now 1.85, but lettre 0.11.20+ bump is a Cargo.toml change deferred outside the t7-CCI scope (lockfile freeze)." },
+    # Re-evaluated by t9-Bump 2026-05-23. Each entry was re-checked against
+    # the post-bump Cargo.lock; remaining ignores all have one of:
+    #   * No patched stable release (upstream still on RC/pre-release only).
+    #   * Patched release requires Rust > 1.85 (workspace MSRV).
+    #   * Patched release is in a transitive whose direct consumer is itself
+    #     MSRV-blocked (e.g. ratatui 0.30+ → Rust 1.86).
+    # RUSTSEC-2026-0141 (lettre) is removed — t9-Bump bump of lettre to 0.11.22.
+    { id = "RUSTSEC-2023-0071", reason = "rsa 0.9.10 still locked; only fix is rsa 0.10.x which is RC-only (0.10.0-rc.18). Retained for SSH RSA key support and transitive consumers." },
+    { id = "RUSTSEC-2024-0436", reason = "paste 1.0.15 still locked via ratatui 0.28.x; paste has no patched release. Ratatui 0.30 requires Rust 1.86 (> workspace MSRV 1.85), so the upstream-side chain that drops paste is itself MSRV-blocked." },
+    { id = "RUSTSEC-2025-0134", reason = "rustls-pemfile 2.2.0 still locked; latest stable release on crates.io and no patched version published. Migrating to rustls-pki-types PemObject requires code changes outside dependency policy." },
+    { id = "RUSTSEC-2026-0002", reason = "lru 0.12.5 transitive through ratatui 0.28.x; spt does not call lru::IterMut directly. Ratatui 0.30 (which would update lru) requires Rust 1.86 (> workspace MSRV 1.85)." },
+    { id = "RUSTSEC-2026-0009", reason = "time 0.3.36 locked; fixed in 0.3.47, but that release declares rust-version 1.88 (> workspace MSRV 1.85). Re-evaluated by t9-Bump." },
+    { id = "RUSTSEC-2026-0119", reason = "hickory-proto 0.24.4 locked; fixed in Hickory 0.26.1 but Hickory 0.26 requires Rust 1.88 (> workspace MSRV 1.85). Hickory 0.25.x compiles on 1.85 but the migration is >50 LOC across spt-dns and was deferred by t9-Bump." },
 ]
 
 [licenses]

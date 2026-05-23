@@ -15,7 +15,12 @@ use std::fs::{File, OpenOptions};
 use std::io;
 use std::path::{Path, PathBuf};
 
-use fs4::fs_std::FileExt;
+// t9-Bump: fs4 1.x moved the sync `FileExt` trait to the crate root,
+// removed `fs4::fs_std`, renamed `try_lock_exclusive` → `try_lock`, and
+// switched the try-lock error type from `io::Error` to a dedicated
+// `TryLockError` enum (`WouldBlock` for contention, `Error(io::Error)`
+// for real I/O failures).
+use fs4::{FileExt, TryLockError};
 use spt_core::{Error, Result};
 
 use crate::atomic;
@@ -53,15 +58,21 @@ impl StateLock {
                 reason: format!("open lock file: {e}"),
             })?;
 
-        match FileExt::try_lock_exclusive(&file) {
+        match FileExt::try_lock(&file) {
             Ok(()) => {}
-            Err(e) if is_contention_error(&e) => {
+            Err(TryLockError::WouldBlock) => {
                 return Err(Error::StateLockFailed {
                     path: lock_path,
                     reason: "another spt instance is already running".into(),
                 });
             }
-            Err(e) => {
+            Err(TryLockError::Error(e)) if is_contention_error(&e) => {
+                return Err(Error::StateLockFailed {
+                    path: lock_path,
+                    reason: "another spt instance is already running".into(),
+                });
+            }
+            Err(TryLockError::Error(e)) => {
                 return Err(Error::StateLockFailed {
                     path: lock_path,
                     reason: format!("file lock failed: {e}"),

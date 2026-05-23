@@ -2,7 +2,7 @@
 name = "spt-config-crypt"
 version = "0.26.1"
 edition = "2021"
-rust-version = "1.83"
+rust-version = "1.85"
 license = "MIT"
 repository = "https://github.com/Mariana/ssh-perma-tunnel"
 homepage = "https://github.com/Mariana/ssh-perma-tunnel"
@@ -37,7 +37,7 @@ secrecy = "0.10"
 serde = { version = "1", features = ["derive"] }
 sha2 = "0.10"
 subtle = "2"
-thiserror = "1"
+thiserror = "2"
 toml = "0.8"
 # x25519-dalek 2.x — sealed-recipient KDF.
 # Pinned to 2.0 (MSRV 1.60). curve25519-dalek 4.x is already in the lockfile via

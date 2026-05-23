@@ -171,15 +171,13 @@ pub enum SyslogTlsError {
 /// Build a default root store from platform roots plus `webpki-roots`.
 fn default_roots() -> RootCertStore {
     let mut roots = RootCertStore::empty();
-    match rustls_native_certs::load_native_certs() {
-        Ok(certs) => {
-            for cert in certs {
-                let _ = roots.add(cert);
-            }
-        }
-        Err(e) => {
-            tracing::debug!(error = %e, "loading native root certificates failed; using webpki roots");
-        }
+    // t9-Bump: rustls-native-certs 0.8 returns CertificateResult { certs, errors }.
+    let result = rustls_native_certs::load_native_certs();
+    for cert in result.certs {
+        let _ = roots.add(cert);
+    }
+    for e in result.errors {
+        tracing::debug!(error = %e, "loading native root certificates partial failure; falling back where missing");
     }
     roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
     roots
