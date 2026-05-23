@@ -54,6 +54,30 @@ surfaces, completion support, and exit-code contract.
 | `mcp` | `serve`, `inspect`, `policy show`, `policy set` |
 | `status` | `serve`, `status`, `token rotate` |
 | `completion` | `generate bash`, `generate zsh`, `generate fish`, `generate powershell`, `generate elvish` |
+| `about` | (overview), `list`, `show <crate>`, `licenses`, `export <path>` |
+
+### `about` — bundled-library attribution
+
+`spt about` surfaces every library linked into the binary. The data is
+captured at build time from `cargo metadata`, so there is no runtime
+dependency on cargo and no network access — the inventory is baked into the
+binary.
+
+```
+spt about                              # overview: spt version + top 20 deps
+spt about list                         # full list, one line per crate
+spt about list --format=json           # structured array (jq-friendly)
+spt about list --format=markdown       # distribution-friendly attribution
+spt about list --license=MIT           # filter by SPDX substring (case-insensitive)
+spt about list --include-dev           # include dev/test deps (default: runtime-only)
+spt about show clap                    # detailed view for one library
+spt about licenses                     # SPDX-grouped histogram (compliance audits)
+spt about export attribution.md        # write attribution.{md,json,txt}
+```
+
+Vendored forks (`vendor/russh-fork`, `vendor/libgssapi-fork`) are flagged as
+locally patched. Workspace crates are flagged as part of the binary itself
+and excluded from the "bundled libraries" overview count.
 
 ## Capability Notes
 

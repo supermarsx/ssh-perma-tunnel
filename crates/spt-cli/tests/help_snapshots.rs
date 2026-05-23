@@ -47,3 +47,4 @@ help_snapshot!(help_benchmark, ["benchmark"]);
 help_snapshot!(help_mcp, ["mcp"]);
 help_snapshot!(help_status, ["status"]);
 help_snapshot!(help_completion, ["completion"]);
+help_snapshot!(help_about, ["about"]);

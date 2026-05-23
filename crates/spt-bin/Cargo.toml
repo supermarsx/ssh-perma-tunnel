@@ -11,10 +11,17 @@ repository.workspace = true
 homepage.workspace = true
 authors.workspace = true
 description = "spt — permanent SSH2/SSH3 tunnel CLI binary."
+build = "build.rs"
 
 [[bin]]
 name = "spt"
 path = "src/main.rs"
+
+# t10-About: build-only dep — `build.rs` snapshots `cargo metadata` into
+# `$OUT_DIR/about_data.rs`, which the `spt about` command embeds via
+# `include!`. Nothing in the runtime binary links cargo_metadata.
+[build-dependencies]
+cargo_metadata = "0.18"
 
 # Auxiliary regenerator for committed man pages under /packaging/man/.
 # Run via `cargo run --bin spt-mangen -- --out packaging/man` (or with no args to
@@ -211,6 +218,7 @@ assets = [
     ["target/release/spt", "usr/bin/", "755"],
     ["../../packaging/systemd/spt.service", "lib/systemd/system/", "644"],
     ["../../packaging/man/spt.1", "usr/share/man/man1/spt.1", "644"],
+    ["../../packaging/man/spt-about.1", "usr/share/man/man1/spt-about.1", "644"],
     ["../../packaging/man/spt-auth.1", "usr/share/man/man1/spt-auth.1", "644"],
     ["../../packaging/man/spt-benchmark.1", "usr/share/man/man1/spt-benchmark.1", "644"],
     ["../../packaging/man/spt-completion.1", "usr/share/man/man1/spt-completion.1", "644"],
@@ -253,6 +261,7 @@ assets = [
     { source = "target/release/spt", dest = "/usr/bin/spt", mode = "755" },
     { source = "packaging/systemd/spt.service", dest = "/lib/systemd/system/spt.service", mode = "644" },
     { source = "packaging/man/spt.1", dest = "/usr/share/man/man1/spt.1", mode = "644", doc = true },
+    { source = "packaging/man/spt-about.1", dest = "/usr/share/man/man1/spt-about.1", mode = "644", doc = true },
     { source = "packaging/man/spt-auth.1", dest = "/usr/share/man/man1/spt-auth.1", mode = "644", doc = true },
     { source = "packaging/man/spt-benchmark.1", dest = "/usr/share/man/man1/spt-benchmark.1", mode = "644", doc = true },
     { source = "packaging/man/spt-completion.1", dest = "/usr/share/man/man1/spt-completion.1", mode = "644", doc = true },

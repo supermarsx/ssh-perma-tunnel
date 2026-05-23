@@ -60,6 +60,7 @@ set edit:completion:arg-completer[spt] = {|@words|
             cand mcp 'Built-in MCP server controls'
             cand status 'Read-only status API controls (plan §t4-e5)'
             cand completion 'Generate shell completions'
+            cand about 'List bundled libraries and their licenses'
             cand help 'Print this message or the help of the given subcommand(s)'
         }
         &'spt;config'= {
@@ -6081,6 +6082,141 @@ set edit:completion:arg-completer[spt] = {|@words|
         }
         &'spt;completion;help;help'= {
         }
+        &'spt;about'= {
+            cand --config 'Path to a single config file'
+            cand --config-dir 'Path to a directory of `*.toml` configs (loaded in lexical order)'
+            cand --config-url 'HTTPS URL of a remote config to fetch'
+            cand --config-fingerprint 'SHA-256 fingerprint pin for `--config-url`'
+            cand --state-dir 'Override the runtime state directory'
+            cand --profile 'Restrict operations to the named profile'
+            cand --output 'Output format for command results'
+            cand --log-level 'Tracing log level'
+            cand --color 'Color policy for human output'
+            cand --json 'Convenience alias for `--output json`'
+            cand -q 'Suppress non-essential output'
+            cand --quiet 'Suppress non-essential output'
+            cand -v 'Increase verbosity (repeat for more)'
+            cand --verbose 'Increase verbosity (repeat for more)'
+            cand --no-color 'Disable color (legacy convenience flag; use `--color never`)'
+            cand --dry-run 'Show what would happen without making changes'
+            cand -h 'Print help (see more with ''--help'')'
+            cand --help 'Print help (see more with ''--help'')'
+            cand -V 'Print version'
+            cand --version 'Print version'
+            cand list 'List every bundled library, one line per entry'
+            cand show 'Show detailed information for a single library'
+            cand licenses 'Group bundled libraries by SPDX license, with counts'
+            cand export 'Write attribution data to a file (format inferred from extension)'
+            cand help 'Print this message or the help of the given subcommand(s)'
+        }
+        &'spt;about;list'= {
+            cand --format 'Output format'
+            cand --license 'Filter by SPDX license substring (case-insensitive)'
+            cand --config 'Path to a single config file'
+            cand --config-dir 'Path to a directory of `*.toml` configs (loaded in lexical order)'
+            cand --config-url 'HTTPS URL of a remote config to fetch'
+            cand --config-fingerprint 'SHA-256 fingerprint pin for `--config-url`'
+            cand --state-dir 'Override the runtime state directory'
+            cand --profile 'Restrict operations to the named profile'
+            cand --output 'Output format for command results'
+            cand --log-level 'Tracing log level'
+            cand --color 'Color policy for human output'
+            cand --include-dev 'Include dev / test dependencies (default: runtime-only)'
+            cand --json 'Convenience alias for `--output json`'
+            cand -q 'Suppress non-essential output'
+            cand --quiet 'Suppress non-essential output'
+            cand -v 'Increase verbosity (repeat for more)'
+            cand --verbose 'Increase verbosity (repeat for more)'
+            cand --no-color 'Disable color (legacy convenience flag; use `--color never`)'
+            cand --dry-run 'Show what would happen without making changes'
+            cand -h 'Print help (see more with ''--help'')'
+            cand --help 'Print help (see more with ''--help'')'
+            cand -V 'Print version'
+            cand --version 'Print version'
+        }
+        &'spt;about;show'= {
+            cand --config 'Path to a single config file'
+            cand --config-dir 'Path to a directory of `*.toml` configs (loaded in lexical order)'
+            cand --config-url 'HTTPS URL of a remote config to fetch'
+            cand --config-fingerprint 'SHA-256 fingerprint pin for `--config-url`'
+            cand --state-dir 'Override the runtime state directory'
+            cand --profile 'Restrict operations to the named profile'
+            cand --output 'Output format for command results'
+            cand --log-level 'Tracing log level'
+            cand --color 'Color policy for human output'
+            cand --json 'Convenience alias for `--output json`'
+            cand -q 'Suppress non-essential output'
+            cand --quiet 'Suppress non-essential output'
+            cand -v 'Increase verbosity (repeat for more)'
+            cand --verbose 'Increase verbosity (repeat for more)'
+            cand --no-color 'Disable color (legacy convenience flag; use `--color never`)'
+            cand --dry-run 'Show what would happen without making changes'
+            cand -h 'Print help (see more with ''--help'')'
+            cand --help 'Print help (see more with ''--help'')'
+            cand -V 'Print version'
+            cand --version 'Print version'
+        }
+        &'spt;about;licenses'= {
+            cand --config 'Path to a single config file'
+            cand --config-dir 'Path to a directory of `*.toml` configs (loaded in lexical order)'
+            cand --config-url 'HTTPS URL of a remote config to fetch'
+            cand --config-fingerprint 'SHA-256 fingerprint pin for `--config-url`'
+            cand --state-dir 'Override the runtime state directory'
+            cand --profile 'Restrict operations to the named profile'
+            cand --output 'Output format for command results'
+            cand --log-level 'Tracing log level'
+            cand --color 'Color policy for human output'
+            cand --json 'Convenience alias for `--output json`'
+            cand -q 'Suppress non-essential output'
+            cand --quiet 'Suppress non-essential output'
+            cand -v 'Increase verbosity (repeat for more)'
+            cand --verbose 'Increase verbosity (repeat for more)'
+            cand --no-color 'Disable color (legacy convenience flag; use `--color never`)'
+            cand --dry-run 'Show what would happen without making changes'
+            cand -h 'Print help (see more with ''--help'')'
+            cand --help 'Print help (see more with ''--help'')'
+            cand -V 'Print version'
+            cand --version 'Print version'
+        }
+        &'spt;about;export'= {
+            cand --config 'Path to a single config file'
+            cand --config-dir 'Path to a directory of `*.toml` configs (loaded in lexical order)'
+            cand --config-url 'HTTPS URL of a remote config to fetch'
+            cand --config-fingerprint 'SHA-256 fingerprint pin for `--config-url`'
+            cand --state-dir 'Override the runtime state directory'
+            cand --profile 'Restrict operations to the named profile'
+            cand --output 'Output format for command results'
+            cand --log-level 'Tracing log level'
+            cand --color 'Color policy for human output'
+            cand --json 'Convenience alias for `--output json`'
+            cand -q 'Suppress non-essential output'
+            cand --quiet 'Suppress non-essential output'
+            cand -v 'Increase verbosity (repeat for more)'
+            cand --verbose 'Increase verbosity (repeat for more)'
+            cand --no-color 'Disable color (legacy convenience flag; use `--color never`)'
+            cand --dry-run 'Show what would happen without making changes'
+            cand -h 'Print help (see more with ''--help'')'
+            cand --help 'Print help (see more with ''--help'')'
+            cand -V 'Print version'
+            cand --version 'Print version'
+        }
+        &'spt;about;help'= {
+            cand list 'List every bundled library, one line per entry'
+            cand show 'Show detailed information for a single library'
+            cand licenses 'Group bundled libraries by SPDX license, with counts'
+            cand export 'Write attribution data to a file (format inferred from extension)'
+            cand help 'Print this message or the help of the given subcommand(s)'
+        }
+        &'spt;about;help;list'= {
+        }
+        &'spt;about;help;show'= {
+        }
+        &'spt;about;help;licenses'= {
+        }
+        &'spt;about;help;export'= {
+        }
+        &'spt;about;help;help'= {
+        }
         &'spt;help'= {
             cand config 'Manage configuration files (init, validate, diff, render, reload)'
             cand profile 'Manage SSH/SSH3 tunnel profiles'
@@ -6104,6 +6240,7 @@ set edit:completion:arg-completer[spt] = {|@words|
             cand mcp 'Built-in MCP server controls'
             cand status 'Read-only status API controls (plan §t4-e5)'
             cand completion 'Generate shell completions'
+            cand about 'List bundled libraries and their licenses'
             cand help 'Print this message or the help of the given subcommand(s)'
         }
         &'spt;help;config'= {
@@ -6707,6 +6844,20 @@ set edit:completion:arg-completer[spt] = {|@words|
             cand generate 'Print completions for a shell to stdout'
         }
         &'spt;help;completion;generate'= {
+        }
+        &'spt;help;about'= {
+            cand list 'List every bundled library, one line per entry'
+            cand show 'Show detailed information for a single library'
+            cand licenses 'Group bundled libraries by SPDX license, with counts'
+            cand export 'Write attribution data to a file (format inferred from extension)'
+        }
+        &'spt;help;about;list'= {
+        }
+        &'spt;help;about;show'= {
+        }
+        &'spt;help;about;licenses'= {
+        }
+        &'spt;help;about;export'= {
         }
         &'spt;help;help'= {
         }

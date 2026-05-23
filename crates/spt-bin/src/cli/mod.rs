@@ -39,6 +39,7 @@
 #![allow(clippy::unnested_or_patterns)]
 #![allow(clippy::ignored_unit_patterns)]
 
+pub mod about_ops;
 pub mod bench_ops;
 pub mod config_ops;
 pub mod diag_ops;

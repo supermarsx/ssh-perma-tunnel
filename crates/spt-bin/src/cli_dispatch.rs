@@ -89,6 +89,22 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
         Command::Mcp(c) => mcp_dispatch(&global, c).await,
         Command::Status(c) => status_dispatch(&global, c).await,
         Command::Completion(c) => completion_dispatch(&global, c),
+        Command::About(c) => about_dispatch(&global, c).await,
+    }
+}
+
+// ============================================================================
+// about — t10
+// ============================================================================
+
+async fn about_dispatch(_global: &GlobalOpts, c: groups::about::AboutCmd) -> Result<()> {
+    use groups::about::AboutSub;
+    match c.command {
+        None => crate::cli::about_ops::overview(),
+        Some(AboutSub::List(args)) => crate::cli::about_ops::list(args),
+        Some(AboutSub::Show(args)) => crate::cli::about_ops::show(args),
+        Some(AboutSub::Licenses) => crate::cli::about_ops::licenses(),
+        Some(AboutSub::Export(args)) => crate::cli::about_ops::export(args),
     }
 }
 

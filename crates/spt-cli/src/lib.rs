@@ -195,6 +195,8 @@ pub enum Command {
     Status(groups::status::StatusCmd),
     /// Generate shell completions.
     Completion(groups::completion::CompletionCmd),
+    /// List bundled libraries and their licenses.
+    About(groups::about::AboutCmd),
 }
 
 #[cfg(test)]

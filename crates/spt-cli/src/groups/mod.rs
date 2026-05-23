@@ -1,5 +1,6 @@
 //! One module per top-level command group from spec §7.
 
+pub mod about;
 pub mod auth;
 pub mod benchmark;
 pub mod completion;

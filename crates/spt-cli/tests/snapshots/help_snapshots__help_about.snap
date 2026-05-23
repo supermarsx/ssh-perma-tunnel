@@ -2,35 +2,16 @@
 source: crates/spt-cli/tests/help_snapshots.rs
 expression: out
 ---
-Permanent SSH2/SSH3 tunnels with reconnect, observability, and service integration.
+List bundled libraries and their licenses
 
-Usage: spt [OPTIONS] <COMMAND>
+Usage: spt about [OPTIONS] [COMMAND]
 
 Commands:
-  config      Manage configuration files (init, validate, diff, render, reload)
-  profile     Manage SSH/SSH3 tunnel profiles
-  forward     Manage forwards (local/remote TCP, UDP)
-  tunnel      Run, inspect, and control tunnels
-  service     Install and control native services
-  key         Generate, inspect, and install SSH keys
-  secret      Manage the secret vault and OS keychain references
-  auth        Authentication helpers
-  dns         Built-in DNS resolver and hosts-file management
-  firewall    Inspect and manage OS firewall / packet-filter rules
-  log         Log tailing, sink testing, and export
-  observe     Metrics and Windows Event Log helpers
-  event       Event bindings and sinks
-  stats       Statistics summaries and live counters
-  session     Inspect and manage active sessions
-  ftp         FTP→SFTP translator service
-  sftp        SFTP file operations and mount planning
-  diagnose    Targeted diagnostics and support bundles
-  benchmark   Controlled benchmarking against forwards
-  mcp         Built-in MCP server controls
-  status      Read-only status API controls (plan §t4-e5)
-  completion  Generate shell completions
-  about       List bundled libraries and their licenses
-  help        Print this message or the help of the given subcommand(s)
+  list      List every bundled library, one line per entry
+  show      Show detailed information for a single library
+  licenses  Group bundled libraries by SPDX license, with counts
+  export    Write attribution data to a file (format inferred from extension)
+  help      Print this message or the help of the given subcommand(s)
 
 Options:
       --config <PATH>
