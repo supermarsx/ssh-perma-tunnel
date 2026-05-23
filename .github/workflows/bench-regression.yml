@@ -32,6 +32,13 @@ on:
       - '.github/workflows/bench-regression.yml'
   workflow_dispatch:
 
+# Cancel any in-progress bench on the same PR ref when a new push arrives.
+# `main` is never cancelled (publish-to-gh-pages must complete on whichever
+# commit triggered it).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
 permissions:
   contents: read
 
