@@ -216,19 +216,25 @@ async fn writer_reconnects_after_server_drops_connection() {
     // then enqueue a second message that triggers the reconnect path.
     tokio::time::sleep(Duration::from_millis(100)).await;
     let second = b"<134>1 2024-01-01T00:00:00.000Z host spt 1 - - second".to_vec();
-    // The send may briefly fail if the queue is being drained, so try a few
-    // times with a small delay.
-    for _ in 0..20 {
-        if layer.try_send_raw(second.clone()).is_ok() {
-            break;
+    // Keep feeding the second frame while we wait for the reconnect. A single
+    // send is not portable: on macOS a write to a peer-closed TLS socket can
+    // succeed once before the drop surfaces (delayed RST), so one frame is
+    // lost into the void and the writer never re-dials. Repeated sends
+    // guarantee it notices the drop and reconnects; the generous timeout
+    // tolerates slow CI runners.
+    let received_second = {
+        let mut rx2 = rx2;
+        let deadline = tokio::time::sleep(Duration::from_secs(30));
+        tokio::pin!(deadline);
+        let mut tick = tokio::time::interval(Duration::from_millis(50));
+        loop {
+            tokio::select! {
+                r = &mut rx2 => break r.unwrap(),
+                () = &mut deadline => panic!("second frame timed out (no reconnect?)"),
+                _ = tick.tick() => { let _ = layer.try_send_raw(second.clone()); }
+            }
         }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-
-    let received_second = tokio::time::timeout(Duration::from_secs(8), rx2)
-        .await
-        .expect("second frame timed out (no reconnect?)")
-        .unwrap();
+    };
     assert!(
         received_second
             .windows(second.len())
