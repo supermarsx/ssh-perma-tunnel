@@ -508,6 +508,14 @@ jobs:
       SPT_PKG_RELEASE_MODE: ${{ github.event_name == 'release' && '1' || '0' }}
     steps:
       - uses: actions/checkout@v6
+        with:
+          # Only the scoop manifest + test script are needed; sparse/blobless
+          # checkout avoids pulling the vendored crates (the ~36s checkout was
+          # the job's dominant cost).
+          sparse-checkout: |
+            packaging/scoop
+            scripts/package
+          filter: blob:none
       - run: ./scripts/package/test-scoop.ps1
         shell: pwsh
 
@@ -519,6 +527,11 @@ jobs:
       SPT_PKG_RELEASE_MODE: ${{ github.event_name == 'release' && '1' || '0' }}
     steps:
       - uses: actions/checkout@v6
+        with:
+          sparse-checkout: |
+            packaging/choco
+            scripts/package
+          filter: blob:none
       - run: ./scripts/package/test-choco.ps1
         shell: pwsh
 
@@ -530,6 +543,11 @@ jobs:
       SPT_PKG_RELEASE_MODE: ${{ github.event_name == 'release' && '1' || '0' }}
     steps:
       - uses: actions/checkout@v6
+        with:
+          sparse-checkout: |
+            packaging/snap
+            scripts/package
+          filter: blob:none
       - name: Install PyYAML
         run: python3 -m pip install --user pyyaml
       - run: bash scripts/package/test-snap.sh
@@ -562,6 +580,11 @@ jobs:
       SPT_PKG_RELEASE_MODE: ${{ github.event_name == 'release' && '1' || '0' }}
     steps:
       - uses: actions/checkout@v6
+        with:
+          sparse-checkout: |
+            packaging/aur
+            scripts/package
+          filter: blob:none
       - run: bash scripts/package/test-aur.sh
 
   pkg-winget:
@@ -574,6 +597,11 @@ jobs:
       SPT_PKG_RELEASE_MODE: ${{ github.event_name == 'release' && '1' || '0' }}
     steps:
       - uses: actions/checkout@v6
+        with:
+          sparse-checkout: |
+            packaging/winget
+            scripts/package
+          filter: blob:none
       - run: ./scripts/package/test-winget.ps1
         shell: pwsh
 
@@ -585,6 +613,11 @@ jobs:
       SPT_PKG_RELEASE_MODE: ${{ github.event_name == 'release' && '1' || '0' }}
     steps:
       - uses: actions/checkout@v6
+        with:
+          sparse-checkout: |
+            packaging/nix
+            scripts/package
+          filter: blob:none
       - uses: cachix/install-nix-action@v31
         with:
           nix_path: nixpkgs=channel:nixos-unstable
