@@ -104,16 +104,34 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
         with:
-          key: clippy-msrv
+          # Bumped to invalidate a stale target/ cache that was replaying
+          # pre-fix clippy results (a fresh 1.85.0 build lints clean).
+          key: clippy-msrv-v2
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
   # ---------------------------------------------------------------------------
-  # test — full matrix, all 6 OS×arch combos. Runs after fmt + clippy.
+  # typecheck — fast `cargo check` gate. Runs in parallel with fmt + clippy and
+  # gives quicker type-error feedback than the full test matrix.
+  # ---------------------------------------------------------------------------
+  typecheck:
+    name: typecheck
+    if: github.event_name != 'workflow_dispatch' || inputs.kind == 'full'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@1.85.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: typecheck
+      - run: cargo check --workspace --locked
+
+  # ---------------------------------------------------------------------------
+  # test — full matrix, all 6 OS×arch combos. Runs after fmt + clippy + typecheck.
   # ---------------------------------------------------------------------------
   test:
     name: test (${{ matrix.target }})
     if: github.event_name != 'workflow_dispatch' || inputs.kind == 'full'
-    needs: [fmt, clippy]
+    needs: [fmt, clippy, typecheck]
     strategy:
       fail-fast: false
       matrix:
@@ -440,12 +458,20 @@ jobs:
   pkg-homebrew:
     name: pkg-homebrew
     if: github.event_name != 'workflow_dispatch' || inputs.kind == 'full'
-    runs-on: macos-13
+    # Local-mode validation is `ruby -c` + placeholder lint, which needs no
+    # macOS — run on ubuntu so the job isn't stuck waiting for a scarce macOS
+    # runner. The real `brew install` smoke (SPT_PKG_RELEASE_MODE=1) only fires
+    # on `release` events and would need a macOS runner.
+    runs-on: ubuntu-latest
     env:
-      # Release-gated: real `brew install` against the published tarball.
       SPT_PKG_RELEASE_MODE: ${{ github.event_name == 'release' && '1' || '0' }}
     steps:
       - uses: actions/checkout@v6
+        with:
+          sparse-checkout: |
+            packaging/homebrew
+            scripts/package
+          filter: blob:none
       - run: bash scripts/package/test-homebrew.sh
 
   pkg-scoop:
@@ -490,6 +516,14 @@ jobs:
       SPT_PKG_RELEASE_MODE: ${{ github.event_name == 'release' && '1' || '0' }}
     steps:
       - uses: actions/checkout@v6
+        with:
+          # The flatpak smoke only reads packaging/flatpak + its test script, so
+          # a sparse, blobless checkout skips the vendored crates and cuts the
+          # ~24s full checkout (the job's dominant cost) to a couple seconds.
+          sparse-checkout: |
+            packaging/flatpak
+            scripts/package
+          filter: blob:none
       - name: Install PyYAML
         run: python3 -m pip install --user pyyaml
       - run: bash scripts/package/test-flatpak.sh
