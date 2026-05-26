@@ -1,0 +1,13 @@
+{
+  "extras": {},
+  "latency_ms": 500,
+  "load": "saturated",
+  "loss_pct": 5,
+  "p50_us": null,
+  "p99_us": null,
+  "reconnect_ms": null,
+  "skip_reason": "spt comparator not yet implemented (C5)",
+  "skipped": true,
+  "throughput_bps": null,
+  "tool": "spt"
+}
