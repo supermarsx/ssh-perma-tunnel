@@ -323,7 +323,7 @@ mod tests {
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     fn env_guard() -> std::sync::MutexGuard<'static, ()> {
-        ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+        ENV_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// Detection helper returns `None` when `sshfs` isn't on `$PATH`.
