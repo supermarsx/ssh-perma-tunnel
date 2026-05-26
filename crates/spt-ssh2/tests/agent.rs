@@ -335,8 +335,11 @@ async fn authenticate_via_agent_rejects_unknown_key() {
         "post-t7-P1 dispatch must not surface UnsupportedBackend; got {msg}"
     );
     assert!(
-        matches!(err, spt_core::Error::AuthFailed(_)),
-        "expected AuthFailed, got {err:?}"
+        matches!(
+            err,
+            spt_core::Error::AuthFailed(_) | spt_core::Error::AuthFailedDiagnostic(_)
+        ),
+        "expected an AuthFailed-family error, got {err:?}"
     );
     server.shutdown().await;
 }

@@ -313,11 +313,24 @@ impl Drop for SshfsMounter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    // Serialize env-mutating tests. cargo runs tests in parallel threads, and
+    // set_var/remove_var on the same variable race: e.g. the `_false_`
+    // override test could clobber `SPT_MACFUSE_FS` while the `_true_` test is
+    // mid-assertion. Hold this lock for the duration of any test that touches
+    // SPT_MACFUSE_FS / SPT_SSHFS_BIN.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn env_guard() -> std::sync::MutexGuard<'static, ()> {
+        ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
 
     /// Detection helper returns `None` when `sshfs` isn't on `$PATH`.
     /// Forced via `SPT_SSHFS_BIN` pointing at a nonexistent file.
     #[test]
     fn sshfs_path_returns_none_when_explicit_override_missing() {
+        let _env = env_guard();
         // Save & restore so we don't leak into sibling tests.
         let prev = std::env::var("SPT_SSHFS_BIN").ok();
         std::env::set_var("SPT_SSHFS_BIN", "/does/not/exist/sshfs-nope");
@@ -335,6 +348,7 @@ mod tests {
     /// executability or content.
     #[test]
     fn sshfs_path_returns_some_when_explicit_override_exists() {
+        let _env = env_guard();
         let exe = std::env::current_exe().expect("current_exe");
         let prev = std::env::var("SPT_SSHFS_BIN").ok();
         std::env::set_var("SPT_SSHFS_BIN", &exe);
@@ -350,6 +364,7 @@ mod tests {
     /// nonexistent path means "absent".
     #[test]
     fn macfuse_installed_false_when_override_missing() {
+        let _env = env_guard();
         let prev = std::env::var("SPT_MACFUSE_FS").ok();
         std::env::set_var("SPT_MACFUSE_FS", "/does/not/exist/macfuse.fs");
         assert!(!macfuse_installed());
@@ -363,6 +378,7 @@ mod tests {
     /// existing path (test binary, again, just checks existence).
     #[test]
     fn macfuse_installed_true_when_override_exists() {
+        let _env = env_guard();
         let exe = std::env::current_exe().expect("current_exe");
         let prev = std::env::var("SPT_MACFUSE_FS").ok();
         std::env::set_var("SPT_MACFUSE_FS", &exe);
