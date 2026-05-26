@@ -104,9 +104,13 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
         with:
-          # Bumped to invalidate a stale target/ cache that was replaying
-          # pre-fix clippy results (a fresh 1.85.0 build lints clean).
-          key: clippy-msrv-v2
+          key: clippy-msrv
+      - name: Install Linux system deps
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libssl-dev libdbus-1-dev clang libclang-dev
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
   # ---------------------------------------------------------------------------
@@ -123,6 +127,12 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: typecheck
+      - name: Install Linux system deps
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libssl-dev libdbus-1-dev clang libclang-dev
       - run: cargo check --workspace --locked
 
   # ---------------------------------------------------------------------------
@@ -170,6 +180,12 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: test-${{ matrix.target }}
+      - name: Install Linux system deps
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libssl-dev libdbus-1-dev clang libclang-dev
       - name: Install cross (QEMU path)
         if: ${{ matrix.cross || env.SPT_FORCE_CROSS == '1' }}
         shell: bash
@@ -231,6 +247,12 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: build-${{ matrix.target }}
+      - name: Install Linux system deps
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libssl-dev libdbus-1-dev clang libclang-dev
       - name: Install cross (QEMU path)
         if: ${{ matrix.cross || env.SPT_FORCE_CROSS == '1' }}
         shell: bash
