@@ -187,6 +187,16 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y pkg-config libssl-dev libdbus-1-dev libkrb5-dev clang libclang-dev
+      - name: Free disk space (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          # The workspace links many large debug test/release binaries; the
+          # runner's ~14 GB root fs ran out of space during linking ("No space
+          # left on device"). Reclaim ~20 GB of preinstalled SDKs we don't use.
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/boost || true
+          df -h /
       - name: Install cross (QEMU path)
         if: ${{ matrix.cross || env.SPT_FORCE_CROSS == '1' }}
         shell: bash
@@ -257,6 +267,16 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y pkg-config libssl-dev libdbus-1-dev libkrb5-dev clang libclang-dev
+      - name: Free disk space (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          # The workspace links many large debug test/release binaries; the
+          # runner's ~14 GB root fs ran out of space during linking ("No space
+          # left on device"). Reclaim ~20 GB of preinstalled SDKs we don't use.
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/boost || true
+          df -h /
       - name: Install cross (QEMU path)
         if: ${{ matrix.cross || env.SPT_FORCE_CROSS == '1' }}
         shell: bash
