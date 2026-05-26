@@ -67,8 +67,8 @@ mod tests {
     async fn bind_unix_replaces_stale_socket() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("spt.sock");
-        let _l1 = bind_unix(&path).unwrap();
-        drop(_l1);
+        let l1 = bind_unix(&path).unwrap();
+        drop(l1);
         let _l2 = bind_unix(&path).unwrap();
         assert!(path.exists());
     }

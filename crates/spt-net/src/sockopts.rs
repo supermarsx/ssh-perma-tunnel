@@ -86,7 +86,7 @@ pub fn apply(socket: &Socket, opts: &TcpOptions) -> Result<()> {
     #[cfg(target_os = "linux")]
     if opts.freebind {
         socket
-            .set_freebind(true)
+            .set_freebind_v4(true)
             .map_err(|e| Error::RuntimeFailure(format!("set IP_FREEBIND: {e}")))?;
     }
     #[cfg(not(target_os = "linux"))]

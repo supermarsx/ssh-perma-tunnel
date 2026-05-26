@@ -5,9 +5,9 @@
 //! for hosts where Windows SCM registration isn't desired (e.g. user-scope
 //! tasks, logon triggers).
 //!
-//! All shell-outs go through a [`CommandRunner`] so tests can inject a
+//! All shell-outs go through a `CommandRunner` so tests can inject a
 //! `MockRunner` and assert on exact argument lists. Production code uses
-//! [`TokioRunner`] with a 30-second per-call timeout.
+//! `TokioRunner` with a 30-second per-call timeout.
 //!
 //! Task Scheduler has no native "reload" concept — the closest equivalent
 //! is `schtasks /Change`, which means re-rendering the task definition
@@ -471,7 +471,7 @@ fn schtasks_args(spec: &ServiceSpec, trigger: Trigger) -> Vec<String> {
 
 /// Task Scheduler service manager (non-Windows stub).
 ///
-/// Every lifecycle method returns [`Error::UnsupportedPlatform`]. Exists so
+/// Every lifecycle method returns `Error::UnsupportedPlatform`. Exists so
 /// downstream code can name the type unconditionally; only the Windows
 /// build actually shells out to `schtasks.exe`.
 #[cfg(not(target_os = "windows"))]
@@ -485,7 +485,7 @@ pub struct TaskSchedulerManager {
 #[cfg(not(target_os = "windows"))]
 impl TaskSchedulerManager {
     /// Construct a stub manager. All methods return
-    /// [`Error::UnsupportedPlatform`].
+    /// `Error::UnsupportedPlatform`.
     #[must_use]
     pub const fn new() -> Self {
         Self {
@@ -493,10 +493,23 @@ impl TaskSchedulerManager {
         }
     }
 
+    /// Override the trigger after construction. Mirrors the Windows builder
+    /// so cross-platform golden tests can configure the trigger uniformly.
+    #[must_use]
+    pub fn with_trigger(mut self, trigger: Trigger) -> Self {
+        self.trigger = trigger;
+        self
+    }
+
     /// Render the `schtasks.exe /Create` command line for `spec` — the
     /// rendering itself is platform-independent and useful for golden
     /// tests on non-Windows CI.
+    //
+    // Takes `&self` to keep signature parity with the Windows manager (which
+    // is not `Copy`); on this stub the struct is `Copy`, so clippy would
+    // otherwise nag to pass by value.
     #[must_use]
+    #[allow(clippy::trivially_copy_pass_by_ref)]
     pub fn render(&self, spec: &ServiceSpec) -> String {
         render_schtasks(spec, self.trigger)
     }

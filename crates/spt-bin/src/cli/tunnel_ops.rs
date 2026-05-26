@@ -25,6 +25,9 @@ use std::path::{Path, PathBuf};
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use serde::Serialize;
 
+// The `json!` shorthand is only used by the Windows standalone stop path;
+// the cross-platform code paths use fully-qualified `serde_json::json!`.
+#[cfg(windows)]
 use serde_json::json;
 use spt_cli::groups::tunnel::{TunnelHealth, TunnelSessions, TunnelStats};
 use spt_cli::GlobalOpts;
@@ -109,7 +112,7 @@ pub async fn health(global: &GlobalOpts, args: TunnelHealthArgs) -> Result<()> {
 /// Used when no MCP loopback is reachable (the supervisor is running outside
 /// a service host with the MCP listener disabled). We read the recorded PID
 /// from `<state_dir>/spt.pid` and signal it via the Win32
-/// `OpenProcess` + `TerminateProcess` pair, then wait up to [`STOP_GRACE`]
+/// `OpenProcess` + `TerminateProcess` pair, then wait up to `STOP_GRACE`
 /// for the process to exit before reporting a timeout.
 ///
 /// On non-Windows targets this is a no-op that returns

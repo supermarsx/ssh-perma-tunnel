@@ -606,6 +606,12 @@ where
 /// snapshots) do **not** use this helper; they keep `spec.args` verbatim.
 ///
 /// Pure / sync so it's unit-testable without round-tripping SCM.
+///
+/// Only the Windows SCM registration path (`super::scm_launch_arguments`
+/// caller, gated on `cfg(windows)`) consumes this in non-test builds; the
+/// cross-platform unit tests below also exercise it. Hence it reads as dead
+/// code in a non-Windows, non-test `lib` build.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 pub(crate) fn scm_launch_arguments(spec_args: &[String]) -> Vec<std::ffi::OsString> {
     const SCM_DISPATCH_FLAG: &str = "--scm-dispatch";
     let mut out: Vec<std::ffi::OsString> = Vec::with_capacity(spec_args.len() + 1);

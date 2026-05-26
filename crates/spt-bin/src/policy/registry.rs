@@ -49,6 +49,11 @@ pub enum Error {
 
 /// Load the bundle from both HKLM and HKCU. On non-Windows targets returns
 /// `Ok(PolicyBundle::empty())`.
+//
+// The Windows `imp::load()` arm is genuinely fallible, so the `Result` is part
+// of the cross-platform contract; on non-Windows it is always `Ok`, which
+// clippy would otherwise flag as `unnecessary_wraps`.
+#[allow(clippy::unnecessary_wraps)]
 pub fn load() -> Result<PolicyBundle, Error> {
     #[cfg(windows)]
     {

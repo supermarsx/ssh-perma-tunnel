@@ -973,9 +973,9 @@ impl OpenSshTestServer {
 
         // Optional authorized-keys file.
         let authorized_keys_path = if let Some(pubkey) = &self.authorized_keys_pem {
+            use std::os::unix::fs::PermissionsExt;
             let p = dir_path.join("authorized_keys");
             std::fs::write(&p, pubkey)?;
-            use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o600))?;
             Some(p)
         } else {

@@ -31,15 +31,22 @@ if ! grep -qE 'cargo(Lock|Hash)' "${NIXFILE}"; then
   exit 1
 fi
 
-# 3. Nix eval (if available).
+# 3. Nix eval (if available). default.nix is a callPackage-style derivation
+#    (its argument set has no `...`), so it must be invoked via callPackage:
+#    `import ${NIXFILE} (import <nixpkgs> {})` passes the whole nixpkgs set and
+#    Nix rejects it with "called with unexpected argument". callPackage selects
+#    only the matching args. `--eval` (lazy) avoids forcing the src fetch, so
+#    the unresolved <NIX_HASH> placeholder does not error here.
 if command -v nix-instantiate >/dev/null 2>&1; then
-  nix-instantiate --eval --expr "import ${NIXFILE} (import <nixpkgs> {})" \
+  nix-instantiate --eval --expr "(import <nixpkgs> {}).callPackage ${NIXFILE} {}" \
     >/dev/null
 fi
 
-# 4. Full build only in release mode + Nix installed.
+# 4. Full build only in release mode + Nix installed. Same callPackage
+#    requirement as the eval above (nix-build on the raw function would hit the
+#    "called with unexpected argument" error).
 if [[ "${SPT_PKG_RELEASE_MODE:-0}" == "1" ]] && command -v nix-build >/dev/null 2>&1; then
-  nix-build "${NIXFILE}"
+  nix-build -E "(import <nixpkgs> {}).callPackage ${NIXFILE} {}"
 fi
 
 echo "OK: nix smoke (mode=${SPT_PKG_RELEASE_MODE:-local})"

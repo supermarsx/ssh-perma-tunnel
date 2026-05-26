@@ -16,6 +16,7 @@ ignore = [
     #   * Patched release is in a transitive whose direct consumer is itself
     #     MSRV-blocked (e.g. ratatui 0.30+ → Rust 1.86).
     # RUSTSEC-2026-0141 (lettre) is removed — t9-Bump bump of lettre to 0.11.22.
+    { id = "RUSTSEC-2023-0037", reason = "xsalsa20poly1305 0.9.1 unmaintained (renamed to crypto_secretbox); pulled transitively via spt-obfs -> spt-ssh2. The advisory states no safe upgrade is available — the only path is migrating to the crypto_secretbox crate, which is a code change outside dependency policy. Tracked for spt-obfs follow-up." },
     { id = "RUSTSEC-2023-0071", reason = "rsa 0.9.10 still locked; only fix is rsa 0.10.x which is RC-only (0.10.0-rc.18). Retained for SSH RSA key support and transitive consumers." },
     { id = "RUSTSEC-2024-0436", reason = "paste 1.0.15 still locked via ratatui 0.28.x; paste has no patched release. Ratatui 0.30 requires Rust 1.86 (> workspace MSRV 1.85), so the upstream-side chain that drops paste is itself MSRV-blocked." },
     { id = "RUSTSEC-2025-0134", reason = "rustls-pemfile 2.2.0 still locked; latest stable release on crates.io and no patched version published. Migrating to rustls-pki-types PemObject requires code changes outside dependency policy." },

@@ -13,14 +13,40 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 check_pkgbuild() {
   local f="$1"
   [[ -f "${f}" ]] || { echo "ERROR: missing ${f}" >&2; exit 1; }
-  # bash -n catches gross syntax errors; PKGBUILDs are valid bash.
-  bash -n "${f}"
-  for field in pkgname pkgver pkgdesc arch license source; do
+  # PKGBUILDs ship <PLACEHOLDER> tokens (e.g. <VERSION>, <SHA256_*>) that the
+  # release pipeline substitutes at tag time. A bare `pkgver=<VERSION>` is not
+  # valid bash, so `bash -n` on the raw template is a guaranteed syntax error.
+  # Substitute dummy-but-syntactically-valid values into a temp copy and run
+  # `bash -n` on that to catch real syntax mistakes.
+  local tmp
+  tmp="$(mktemp)"
+  sed -e 's|<VERSION>|0.0.0|g' \
+      -e 's|<SHA256[A-Z0-9_]*>|0000000000000000000000000000000000000000000000000000000000000000|g' \
+      "${f}" >"${tmp}"
+  bash -n "${tmp}"
+  rm -f "${tmp}"
+  # Required metadata fields. `source` may be a plain array (`source=`) or
+  # per-arch (`source_x86_64=` / `source_aarch64=` in the -bin recipe).
+  for field in pkgname pkgver pkgdesc arch license; do
     if ! grep -qE "^${field}=" "${f}"; then
       echo "ERROR: ${f} missing field ${field}" >&2
       exit 1
     fi
   done
+  if ! grep -qE "^source(_[a-z0-9_]+)?=" "${f}"; then
+    echo "ERROR: ${f} missing field source" >&2
+    exit 1
+  fi
+  # Placeholder-integrity check (mirrors test-homebrew.sh): every <PLACEHOLDER>
+  # in the template must be one of the documented set, so a typo can't survive
+  # into the release substitution step.
+  local known_placeholders="<VERSION> <SHA256_SRC_TAR> <SHA256_LINUX_AMD64> <SHA256_LINUX_ARM64>"
+  while IFS= read -r p; do
+    case " ${known_placeholders} " in
+      *" ${p} "*) ;;
+      *) echo "ERROR: ${f} has unknown placeholder ${p}" >&2; exit 1 ;;
+    esac
+  done < <(grep -oE '<[A-Z0-9_]+>' "${f}" | sort -u)
   echo "PKGBUILD ok: ${f}"
 }
 

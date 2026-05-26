@@ -78,10 +78,10 @@ async fn realpath_of_relative_produces_absolute_path() {
 #[cfg(unix)]
 #[tokio::test]
 async fn chmod_on_directory_persists_mode() {
+    use std::os::unix::fs::PermissionsExt;
     let (dir, _server, client) = setup().await;
     std::fs::create_dir(dir.path().join("subdir")).unwrap();
     client.chmod("/subdir", 0o750).await.unwrap();
-    use std::os::unix::fs::PermissionsExt;
     let mode = std::fs::metadata(dir.path().join("subdir"))
         .unwrap()
         .permissions()
@@ -257,7 +257,7 @@ async fn symlink_loop_detected_during_recursive_walk() {
         .await
         .unwrap_err();
     assert!(
-        matches!(err, SftpError::Local { op, detail, .. }
+        matches!(err, SftpError::Local { op, ref detail, .. }
             if op == "put-walk" && detail.contains("symlink loop")),
         "got {err:?}",
     );

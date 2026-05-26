@@ -76,13 +76,17 @@ env:
   RUST_BACKTRACE: 1
   MSRV: 1.85
 
-# Cancel any in-progress run on the same ref when a new push arrives.
-# `main` and tag refs are NEVER cancelled (release job is downstream and
-# must complete on whichever commit triggered it); PR refs are cancelled
-# so a rapid push cycle stops eating runner minutes.
+# Always cancel any in-progress run on the same ref when a new push arrives
+# (operator override, 2026-05-25 — "always cancel previous CI jobs").
+# Trade-off: this now applies to `main` and tag refs too, so a rapid sequence
+# of pushes to main can abort an in-flight `release` run (it is downstream of
+# build+security). Accept that the latest commit wins; the superseded release
+# simply does not publish. Revert to the ref-scoped expression below if a
+# release must always run to completion:
+#   cancel-in-progress: ${{ github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/tags/') }}
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/tags/') }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -293,12 +297,16 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: security
-      # Install cargo-deny explicitly so we control the version. The
-      # bundled EmbarkStudios/cargo-deny-action@v2 binary historically
-      # pinned to 0.17.0, which fails to parse CVSS 4.0 advisories such
-      # as RUSTSEC-2026-0146. 0.18+ ships the upgraded parser.
-      - name: Install cargo-deny
-        run: cargo install cargo-deny --locked --version ^0.18
+      # Install cargo-deny as a PREBUILT binary. We need >=0.18 because 0.17.0
+      # cannot parse CVSS 4.0 advisories such as RUSTSEC-2026-0146 (0.18+ ships
+      # the upgraded parser). Compiling it from source with `cargo install
+      # --locked` on the pinned 1.85.0 toolchain is fragile: cargo-deny's
+      # locked transitive deps drift past MSRV 1.85 and the build fails. A
+      # prebuilt release binary sidesteps the toolchain entirely.
+      - name: Install cargo-deny (prebuilt)
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
       - name: cargo-deny check
         run: cargo deny check
       - name: RustSec audit

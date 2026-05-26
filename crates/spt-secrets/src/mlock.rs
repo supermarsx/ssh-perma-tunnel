@@ -93,7 +93,7 @@ pub unsafe fn try_munlock_raw(ptr: *const u8, len: usize) -> Result<bool> {
 #[cfg(unix)]
 fn do_mlock(buf: &[u8]) -> Result<bool> {
     use std::ffi::c_void;
-    let ptr = buf.as_ptr() as *const c_void;
+    let ptr = buf.as_ptr().cast::<c_void>();
     // SAFETY: `nix::sys::mman::mlock` wraps `mlock(2)`. We hold `buf:
     // &[u8]` for the entire syscall duration, so:
     // * The pointer is non-null and aligned for `u8` (trivially).
@@ -122,7 +122,7 @@ fn do_mlock(buf: &[u8]) -> Result<bool> {
 #[cfg(unix)]
 fn do_munlock(buf: &[u8]) -> Result<bool> {
     use std::ffi::c_void;
-    let ptr = buf.as_ptr() as *const c_void;
+    let ptr = buf.as_ptr().cast::<c_void>();
     // SAFETY: `nix::sys::mman::munlock` wraps `munlock(2)`. Invariants
     // identical to `do_mlock`: live `&[u8]` borrow means a valid,
     // readable, in-range region. `munlock` only updates page residency

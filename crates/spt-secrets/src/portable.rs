@@ -172,7 +172,7 @@ fn write_master_key(path: &Path, key: &[u8]) -> Result<()> {
             reference: format!("portable-vault://{}", path.display()),
             reason: format!("rename master key into place: {e}"),
         })?;
-        return Ok(());
+        Ok(())
     }
     #[cfg(not(unix))]
     {

@@ -130,6 +130,11 @@ impl UdsListener {
     /// will fail with `AddrInUse`; callers must arrange for a clean
     /// path (typically by unlinking it via
     /// [`Self::unlink_existing_if_socket`] beforehand).
+    //
+    // `async` with no internal await is deliberate: it mirrors the TCP
+    // listener's async `bind` and lets the public async `open_listener`
+    // wrapper `.await` it uniformly across platforms.
+    #[allow(clippy::unused_async)]
     pub async fn bind(path: &str) -> Result<Self> {
         let bind_path = std::path::PathBuf::from(path);
         let inner =

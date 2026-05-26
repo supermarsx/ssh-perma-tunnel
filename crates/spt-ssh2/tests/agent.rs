@@ -115,6 +115,7 @@ pub mod unix_agent {
 
     #[tokio::test]
     async fn list_identities_returns_seeded_key() {
+        use russh_keys::PublicKeyBase64 as _;
         let key = KeyPair::generate_ed25519();
         let pub_a = key.clone_public_key().unwrap();
         let (_dir, path) = spawn_agent(vec![key]).await;
@@ -122,7 +123,6 @@ pub mod unix_agent {
         let agent = Agent::connect_path(&path).await.expect("connect");
         let listed = agent.list_identities().await.expect("list identities");
         assert_eq!(listed.len(), 1, "exactly one identity expected");
-        use russh_keys::PublicKeyBase64 as _;
         assert_eq!(
             listed[0].public_key_bytes(),
             pub_a.public_key_bytes(),
@@ -319,7 +319,12 @@ async fn authenticate_via_agent_rejects_unknown_key() {
         }],
     );
     let res = proto.connect(&endpoint, &auth).await;
-    let err = res.expect_err("auth must fail when the agent has no authorised key");
+    // `.err().expect(..)` rather than `expect_err`: the `Ok` payload is a
+    // `Box<dyn TunnelSession>`, which is not `Debug`, so `expect_err` won't
+    // compile. `.err()` drops the Ok value before we unwrap the error.
+    let err = res
+        .err()
+        .expect("auth must fail when the agent has no authorised key");
     // The dispatcher returns an `AuthFailed` family error after exhausting
     // identities; the message must clearly indicate the auth failure path
     // and must NOT contain the legacy `UnsupportedBackend:` marker (which
