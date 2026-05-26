@@ -154,10 +154,11 @@ jobs:
             runner: ubuntu-24.04-arm
             cross: false
             can_test: true
-          - target: x86_64-apple-darwin
-            runner: macos-13
-            cross: false
-            can_test: true
+          # x86_64-apple-darwin (macos-13 / Intel) dropped: GitHub's Intel-Mac
+          # runner is being retired and was hanging the run indefinitely
+          # (queued with no runner assigned). macos-latest is ARM, so there is
+          # no native substitute. Re-add via cross-compile on macos-14 if Intel
+          # coverage is needed.
           - target: aarch64-apple-darwin
             runner: macos-14
             cross: false
@@ -190,14 +191,18 @@ jobs:
         if: ${{ matrix.cross || env.SPT_FORCE_CROSS == '1' }}
         shell: bash
         run: cargo install cross --locked --version 0.2.5
+      # `--test-threads=1`: many tests mutate process-global env vars
+      # (SPT_*, EDITOR overrides, etc.) across ~20 modules; running them in
+      # parallel races (a sibling test clobbers another's env mid-assertion).
+      # Serializing is the pragmatic fix vs. a mutex in every such test.
       - name: cargo test (native)
         if: ${{ matrix.can_test && !matrix.cross && env.SPT_FORCE_CROSS != '1' }}
         shell: bash
-        run: cargo test --workspace --locked --no-fail-fast --target ${{ matrix.target }}
+        run: cargo test --workspace --locked --no-fail-fast --target ${{ matrix.target }} -- --test-threads=1
       - name: cargo test (cross / QEMU)
         if: ${{ matrix.can_test && (matrix.cross || env.SPT_FORCE_CROSS == '1') }}
         shell: bash
-        run: cross test --workspace --locked --no-fail-fast --target ${{ matrix.target }}
+        run: cross test --workspace --locked --no-fail-fast --target ${{ matrix.target }} -- --test-threads=1
       - name: cargo check (no-run target)
         if: ${{ !matrix.can_test }}
         shell: bash
@@ -222,10 +227,9 @@ jobs:
             runner: ubuntu-24.04-arm
             cross: false
             os: linux
-          - target: x86_64-apple-darwin
-            runner: macos-13
-            cross: false
-            os: macos
+          # x86_64-apple-darwin (macos-13 / Intel) dropped — see the test
+          # matrix note; the Intel-Mac runner is being retired and stalls the
+          # run. No Intel release artifact is produced until it's re-added.
           - target: aarch64-apple-darwin
             runner: macos-14
             cross: false
