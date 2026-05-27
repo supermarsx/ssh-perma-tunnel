@@ -274,7 +274,7 @@ jobs:
       - name: Upload release binary
         uses: actions/upload-artifact@v7
         with:
-          name: spt-binary-${{ matrix.target }}
+          name: binary-${{ matrix.target }}
           path: |
             target/${{ matrix.target }}/release/spt
             target/${{ matrix.target }}/release/spt.exe
@@ -309,7 +309,7 @@ jobs:
       - name: Download release binary
         uses: actions/download-artifact@v8
         with:
-          name: spt-binary-${{ matrix.target }}
+          name: binary-${{ matrix.target }}
           path: target/${{ matrix.target }}/release
       - name: Make binary executable (Unix)
         if: runner.os != 'Windows'
@@ -503,11 +503,21 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ steps.bump.outputs.tag }}
         run: |
+          # Gather every distributable from dist/ regardless of the version
+          # string in its path: packages embed the Cargo version (0.YY.N) while
+          # the release/changelog dir uses the bare tag (YY.N). Also pick up the
+          # generated checksums / SBOM / manifest / signatures.
+          mapfile -t assets < <(find dist -type f \( \
+              -name '*.tar.gz' -o -name '*.deb' -o -name '*.rpm' -o -name '*.pkg' \
+              -o -name '*.msi' -o -name '*.zip' -o -name '*.sha256' \
+              -o -name '*.sha256sums' -o -name '*.sbom.*' -o -name '*.spdx.*' \
+              -o -name '*.minisig' -o -name 'manifest*.json' \) | sort -u)
+          echo "release assets:"; printf '  %s\n' "${assets[@]}"
           gh release create "${TAG}" \
             --target main \
             --title  "spt ${TAG}" \
             --notes-file "dist/${TAG}/CHANGELOG-fragment.md" \
-            dist/"${TAG}"/*
+            "${assets[@]}"
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
       - name: Log in to GHCR
