@@ -320,10 +320,20 @@ jobs:
         uses: taiki-e/install-action@v2
         with:
           tool: cargo-deb,cargo-generate-rpm
-      - name: Install cargo-wix (Windows)
+      - name: Install cargo-wix + WiX Toolset (Windows)
         if: ${{ matrix.os == 'windows' }}
         shell: pwsh
-        run: cargo install cargo-wix --locked
+        run: |
+          cargo install cargo-wix --locked
+          # cargo-wix shells out to WiX 3's `candle`/`light`. It is preinstalled
+          # on the x64 image but not on windows-11-arm — install it there and
+          # put its bin on PATH for the Pack MSI step.
+          if (-not (Get-Command candle -ErrorAction SilentlyContinue)) {
+            choco install wixtoolset --version=3.14.1 --no-progress -y
+            $wixbin = Get-ChildItem 'C:\Program Files (x86)\WiX Toolset *\bin\candle.exe' -ErrorAction SilentlyContinue |
+                      Select-Object -First 1
+            if ($wixbin) { Split-Path $wixbin.FullName | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8 }
+          }
       - name: Pack tarball (Linux/macOS)
         if: ${{ matrix.os != 'windows' }}
         shell: bash

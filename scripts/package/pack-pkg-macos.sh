@@ -125,10 +125,14 @@ cmd_component=(pkgbuild
   --install-location /
   "$component")
 
+# Flat distribution built straight from the component pkg. `productbuild`
+# rejects `--distribution` together with `--package` ("use --package-path"),
+# and the committed distribution.xml is empty, so we synthesise a default
+# distribution from the component instead of a custom welcome/Resources flow.
+# (Re-add a custom installer UI later via a populated distribution.xml +
+# `--package-path`, verified on a real macOS host.)
 cmd_product=(productbuild
   --package "$component"
-  --resources "$resources_dir"
-  --distribution "$distribution_xml"
   "$final")
 
 info "pkgbuild: ${cmd_component[*]}"

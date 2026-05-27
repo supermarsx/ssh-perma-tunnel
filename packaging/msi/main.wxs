@@ -1,11 +1,10 @@
 <?xml version='1.0' encoding='windows-1252'?>
 <!--
-  WiX template consumed by `cargo wix`. Replaces tokens via the
-  `[package.metadata.wix]` table in `crates/spt-bin/Cargo.toml`.
-
-  CI flow:
-      cargo build --release -p spt-bin
-      cargo wix -p spt-bin
+  WiX template consumed by `cargo wix`. Tokens come from the
+  [package.metadata.wix] table in crates/spt-bin/Cargo.toml. Build the
+  release binary first, then run `cargo wix` for the spt-bin package.
+  (XML comments may not contain a double hyphen, so command flags are
+  described in prose rather than shown literally here.)
 -->
 <Wix xmlns='http://schemas.microsoft.com/wix/2006/wi'>
   <Product
@@ -34,7 +33,7 @@
       <Directory Id='ProgramFiles64Folder'>
         <Directory Id='APPLICATIONFOLDER' Name='spt'>
           <Component Id='SptExe' Guid='*'>
-            <File Id='SptExe' Source='target\release\spt.exe' KeyPath='yes' />
+            <File Id='SptExe' Source='$(var.CargoTargetBinDir)\spt.exe' KeyPath='yes' />
           </Component>
         </Directory>
       </Directory>
