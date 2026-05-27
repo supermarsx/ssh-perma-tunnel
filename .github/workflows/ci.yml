@@ -348,7 +348,9 @@ jobs:
       - name: Pack pkg (macOS)
         if: ${{ matrix.os == 'macos' }}
         shell: bash
-        run: bash scripts/package/pack-pkg-macos.sh ${{ matrix.target }}
+        # pack-pkg-macos.sh takes no target arg — it always uses the staged
+        # universal binary (target/universal-apple-darwin/release/spt).
+        run: bash scripts/package/pack-pkg-macos.sh
       - name: Pack zip (Windows)
         if: ${{ matrix.os == 'windows' }}
         shell: pwsh
