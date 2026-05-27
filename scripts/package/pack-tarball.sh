@@ -117,24 +117,25 @@ if (( dry_run )); then
   exit 0
 fi
 
-# Reproducible tar: GNU tar with --sort, fixed owner/group, mtime from epoch.
-# BSD tar (macOS) supports --uid 0 --gid 0 --mtime instead; auto-detect.
-if tar --version 2>/dev/null | grep -q 'GNU tar'; then
-  tar --sort=name \
+# Reproducible tar where the toolchain supports it. GNU tar (Linux, or `gtar`
+# from Homebrew on macOS) supports --sort/--mtime/--owner. Apple's bsdtar does
+# NOT accept --mtime, so fall back to a plain (non-byte-reproducible) archive
+# there rather than failing the build.
+gnutar=
+if command -v gtar >/dev/null 2>&1; then
+  gnutar=gtar
+elif tar --version 2>/dev/null | grep -q 'GNU tar'; then
+  gnutar=tar
+fi
+if [[ -n "$gnutar" ]]; then
+  "$gnutar" --sort=name \
       --owner=0 --group=0 --numeric-owner \
       --mtime="@$epoch" \
       -C "$stage" -cf - "$name" \
     | gzip -n -9 > "$archive"
-elif tar --version 2>/dev/null | grep -qi 'bsdtar'; then
-  iso=$(date -u -r "$epoch" +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null \
-        || date -u -d "@$epoch" +"%Y-%m-%dT%H:%M:%SZ")
-  tar --uid 0 --gid 0 --numeric-owner \
-      --mtime "$iso" \
-      -C "$stage" -cf - "$name" \
-    | gzip -n -9 > "$archive"
 else
-  warn "unknown tar implementation; archive will not be byte-reproducible"
-  tar -C "$stage" -czf "$archive" "$name"
+  warn "no GNU tar (gtar) available; archive will not be byte-reproducible"
+  tar -C "$stage" -cf - "$name" | gzip -n -9 > "$archive"
 fi
 
 info "packed: $archive"

@@ -50,7 +50,9 @@ bin=$(binary_for_target "$target")
 root=$(repo_root)
 dist=$(ensure_dist_dir)
 
-cmd=(cargo generate-rpm --target "$target" -p spt-bin --output "$dist/")
+# cargo-generate-rpm's -p/--package is the package *directory* (it reads
+# <dir>/Cargo.toml), not a cargo package name — so it must be the real path.
+cmd=(cargo generate-rpm --target "$target" -p crates/spt-bin --output "$dist/")
 
 info "command: ${cmd[*]}"
 if (( dry_run )); then exit 0; fi

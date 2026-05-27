@@ -52,10 +52,17 @@ if (-not (Test-Path -LiteralPath $bin)) {
 $dist = New-DistDir
 $out  = Join-Path $dist "spt-$version-$Target.msi"
 
+# Point cargo-wix at the committed source under packaging/msi/. Without an
+# explicit INPUT, cargo-wix looks only in the default `wix/` dir and fails with
+# "There are no WXS files to create an installer".
+$wxs = Join-Path $root 'packaging/msi/main.wxs'
+if (-not (Test-Path -LiteralPath $wxs)) { Stop-Die "missing WiX source: $wxs" }
+
 $cmd = @('wix', '-p', 'spt-bin',
          '--target', $Target,
          '--no-build', '--nocapture',
-         '--output', $out)
+         '--output', $out,
+         $wxs)
 
 Write-Info ("command: cargo " + ($cmd -join ' '))
 if ($DryRun) { exit 0 }
