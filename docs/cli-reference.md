@@ -121,8 +121,7 @@ and excluded from the "bundled libraries" overview count.
   in t7. The deprecated `[capabilities].ssh2_backend` and
   `[capabilities].allow_libssh2` keys are accepted at load with a
   one-shot warning and silently ignored at runtime. Run
-  `spt config migrate --to 2` to strip them. See
-  [t7 → t8 migration](migration/t7-to-t8.md).
+  `spt config migrate --to 2` to strip them.
 - Remote logging supports `syslog_udp`, `syslog_tcp`, `syslog_tls`,
   `https_jsonl`, and `otlp` config kinds. The live writer implementation
   covers the syslog transports and CLI testing/status/drain paths.

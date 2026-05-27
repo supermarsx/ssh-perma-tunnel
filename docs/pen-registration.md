@@ -75,7 +75,7 @@ contact details.
 In the free-text "Purpose" or "Brief description" field (the form's exact
 label has varied over the years), use the following text verbatim:
 
-> The spt project (https://github.com/Mariana/ssh-perma-tunnel) is an
+> The spt project (https://github.com/supermarsx/ssh-perma-tunnel) is an
 > open-source SSH permanent-tunnel daemon. We require an IANA Private
 > Enterprise Number to publish an SNMPv2 MIB module (SPT-MIB) under a
 > globally unique OID arc, and to generate RFC 3411 §5.1 format-5 SNMP

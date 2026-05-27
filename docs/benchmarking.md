@@ -128,19 +128,10 @@ Exit codes:
       --current  docs/perf/runs/local/matrix.json \
       --threshold 10
 
-CI gates PRs on this check via `.github/workflows/bench-regression.yml`.
-
-### Dashboard publication
-
-On push to `main`, the `bench-regression` workflow renders the
-dashboard and pushes it to the `gh-pages` branch under `/perf/`.
-Stable URL:
-
-    https://Mariana.github.io/ssh-perma-tunnel/perf/dashboard.html
-
-Alongside the dashboard, the workflow copies the active
-`baseline-v1.0.json` to `https://Mariana.github.io/ssh-perma-tunnel/perf/baseline-v1.0.json`
-so consumers can fetch both without cloning.
+> **Note:** perf benchmarking is a local/manual tool. The automated
+> `bench-regression` workflow and the published gh-pages perf dashboard have
+> been removed; run `render_html.py` and `regression_check.py` locally as
+> shown above.
 
 ### Baseline maintenance
 

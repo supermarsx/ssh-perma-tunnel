@@ -33,12 +33,7 @@ Index of user-facing documentation for `spt` (SSH Permanent Tunnel).
 - [Bitvise Comparison](bitvise-comparison.md) — parity and gap matrix against
   Bitvise SSH Client
 - [Production Readiness](production_readiness.md) — full audit report and ship gate
-
-## Migration guides
-
-- [Migration guides](migration/index.md) — move existing tunnel setups
-  onto `spt` from autossh, sshuttle, OpenSSH `~/.ssh/config`,
-  systemd-resolved, or corkscrew.
+- [Versioning](versioning.md) — the rolling `YY.N` scheme and Cargo encoding
 
 For implementation status of individual subcommands, see
 [CLI Reference](cli-reference.md).

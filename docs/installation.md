@@ -8,9 +8,7 @@
 - macOS x86_64 / aarch64
 - Windows x86_64
 
-The minimum supported Rust version (MSRV) for source builds is 1.85 (bumped
-from 1.83 during the t7 milestone — see
-[t7 → t8 migration](migration/t7-to-t8.md)).
+The minimum supported Rust version (MSRV) for source builds is 1.85.
 
 Releases use the rolling `YY.N` scheme (current: `26.1`; e.g. `26.2`
 next, then `27.1` on the year roll-over). Examples below reference
