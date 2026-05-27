@@ -219,7 +219,9 @@ jobs:
         run: cargo check --workspace --locked --target ${{ matrix.target }}
 
   # ---------------------------------------------------------------------------
-  # build — release builds for all 6 targets, uploads per-platform artifacts.
+  # build — release compile per target. Uploads the raw binary for `package`.
+  # Packaging lives in a separate job so a packaging failure is isolated from
+  # the compile and reruns cheaply.
   # ---------------------------------------------------------------------------
   build:
     name: build (${{ matrix.target }})
@@ -229,29 +231,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - target: x86_64-unknown-linux-gnu
-            runner: ubuntu-latest
-            cross: false
-            os: linux
-          - target: aarch64-unknown-linux-gnu
-            runner: ubuntu-24.04-arm
-            cross: false
-            os: linux
-          # x86_64-apple-darwin (macos-13 / Intel) dropped — see the test
-          # matrix note; the Intel-Mac runner is being retired and stalls the
-          # run. No Intel release artifact is produced until it's re-added.
-          - target: aarch64-apple-darwin
-            runner: macos-14
-            cross: false
-            os: macos
-          - target: x86_64-pc-windows-msvc
-            runner: windows-2025-vs2026
-            cross: false
-            os: windows
-          - target: aarch64-pc-windows-msvc
-            runner: windows-11-arm
-            cross: false
-            os: windows
+          - { target: x86_64-unknown-linux-gnu, runner: ubuntu-latest, cross: false, os: linux }
+          - { target: aarch64-unknown-linux-gnu, runner: ubuntu-24.04-arm, cross: false, os: linux }
+          # x86_64-apple-darwin (macos-13 / Intel) dropped — retired runner.
+          - { target: aarch64-apple-darwin, runner: macos-14, cross: false, os: macos }
+          - { target: x86_64-pc-windows-msvc, runner: windows-2025-vs2026, cross: false, os: windows }
+          - { target: aarch64-pc-windows-msvc, runner: windows-11-arm, cross: false, os: windows }
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v6
@@ -271,9 +256,6 @@ jobs:
         if: runner.os == 'Linux'
         shell: bash
         run: |
-          # The workspace links many large debug test/release binaries; the
-          # runner's ~14 GB root fs ran out of space during linking ("No space
-          # left on device"). Reclaim ~20 GB of preinstalled SDKs we don't use.
           sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
             /opt/hostedtoolcache/CodeQL /usr/local/share/boost || true
           df -h /
@@ -281,16 +263,6 @@ jobs:
         if: ${{ matrix.cross || env.SPT_FORCE_CROSS == '1' }}
         shell: bash
         run: cargo install cross --locked --version 0.2.5
-      - name: Install cargo-deb / cargo-generate-rpm (Linux GNU)
-        if: ${{ matrix.os == 'linux' && endsWith(matrix.target, '-linux-gnu') }}
-        shell: bash
-        run: |
-          cargo install cargo-deb --locked
-          cargo install cargo-generate-rpm --locked
-      - name: Install cargo-wix (Windows)
-        if: ${{ matrix.os == 'windows' }}
-        shell: pwsh
-        run: cargo install cargo-wix --locked
       - name: Build release
         shell: bash
         run: |
@@ -299,6 +271,59 @@ jobs:
           else
             cargo build --workspace --locked --release --target ${{ matrix.target }}
           fi
+      - name: Upload release binary
+        uses: actions/upload-artifact@v7
+        with:
+          name: spt-binary-${{ matrix.target }}
+          path: |
+            target/${{ matrix.target }}/release/spt
+            target/${{ matrix.target }}/release/spt.exe
+          retention-days: 7
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # package — turn each built binary into distributable artifacts (tarball,
+  # deb/rpm, pkg, zip/msi). Downstream of `build`; consumes the uploaded binary
+  # so it never recompiles. Packaging tools that don't build on MSRV 1.85
+  # (cargo-deb) are installed as prebuilt binaries.
+  # ---------------------------------------------------------------------------
+  package:
+    name: package (${{ matrix.target }})
+    if: github.event_name != 'workflow_dispatch' || inputs.kind == 'full'
+    needs: [build]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: x86_64-unknown-linux-gnu, runner: ubuntu-latest, os: linux }
+          - { target: aarch64-unknown-linux-gnu, runner: ubuntu-24.04-arm, os: linux }
+          - { target: aarch64-apple-darwin, runner: macos-14, os: macos }
+          - { target: x86_64-pc-windows-msvc, runner: windows-2025-vs2026, os: windows }
+          - { target: aarch64-pc-windows-msvc, runner: windows-11-arm, os: windows }
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@1.85.0
+        with:
+          targets: ${{ matrix.target }}
+      - name: Download release binary
+        uses: actions/download-artifact@v8
+        with:
+          name: spt-binary-${{ matrix.target }}
+          path: target/${{ matrix.target }}/release
+      - name: Make binary executable (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: chmod +x "target/${{ matrix.target }}/release/spt"
+      - name: Install cargo-deb / cargo-generate-rpm (Linux GNU, prebuilt)
+        if: ${{ matrix.os == 'linux' && endsWith(matrix.target, '-linux-gnu') }}
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deb,cargo-generate-rpm
+      - name: Install cargo-wix (Windows)
+        if: ${{ matrix.os == 'windows' }}
+        shell: pwsh
+        run: cargo install cargo-wix --locked
       - name: Pack tarball (Linux/macOS)
         if: ${{ matrix.os != 'windows' }}
         shell: bash
@@ -311,6 +336,15 @@ jobs:
         if: ${{ matrix.os == 'linux' && endsWith(matrix.target, '-linux-gnu') }}
         shell: bash
         run: bash scripts/package/pack-rpm.sh ${{ matrix.target }}
+      - name: Stage universal macOS binary
+        if: ${{ matrix.os == 'macos' }}
+        shell: bash
+        run: |
+          # Only arm64 is built (Intel runner dropped). A single-arch Mach-O is
+          # a valid "universal"; pack-pkg-macos.sh expects this path.
+          mkdir -p target/universal-apple-darwin/release
+          lipo -create -output target/universal-apple-darwin/release/spt \
+            "target/${{ matrix.target }}/release/spt"
       - name: Pack pkg (macOS)
         if: ${{ matrix.os == 'macos' }}
         shell: bash
@@ -337,7 +371,7 @@ jobs:
   # ---------------------------------------------------------------------------
   release:
     name: release
-    needs: [build]
+    needs: [package]
     if: >-
       ${{ github.event_name == 'push'
           && github.ref == 'refs/heads/main'
