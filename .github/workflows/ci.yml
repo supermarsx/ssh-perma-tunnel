@@ -491,7 +491,10 @@ jobs:
           git config user.email "ci@spt.local"
           git config user.name  "spt-ci"
           git add Cargo.toml changelog.md 2>/dev/null || true
-          git commit -m "release: ${TAG}" || true
+          # [skip ci] is REQUIRED: this bump commit is pushed back to main, and
+          # without it the new push would re-run CI and cut another release —
+          # an infinite release loop.
+          git commit -m "release: ${TAG} [skip ci]" || true
           git tag -a "${TAG}" -m "spt ${TAG}"
           git push origin HEAD:main --follow-tags
       - name: Publish GitHub release
