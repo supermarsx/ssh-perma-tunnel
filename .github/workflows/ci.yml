@@ -510,8 +510,8 @@ jobs:
           mapfile -t assets < <(find dist -type f \( \
               -name '*.tar.gz' -o -name '*.deb' -o -name '*.rpm' -o -name '*.pkg' \
               -o -name '*.msi' -o -name '*.zip' -o -name '*.sha256' \
-              -o -name '*.sha256sums' -o -name '*.sbom.*' -o -name '*.spdx.*' \
-              -o -name '*.minisig' -o -name 'manifest*.json' \) | sort -u)
+              -o -name '*.sha256sums' -o -name '*sbom*' -o -name '*.spdx.*' \
+              -o -name '*.minisig' -o -name '*manifest*.json' \) | sort -u)
           echo "release assets:"; printf '  %s\n' "${assets[@]}"
           gh release create "${TAG}" \
             --target main \

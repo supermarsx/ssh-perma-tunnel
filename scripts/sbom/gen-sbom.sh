@@ -55,14 +55,14 @@ dist=$(ensure_dist_dir)
 # We run from repo root and move the resulting files into dist/.
 cd "$root"
 
-(cd "$root" && cargo cyclonedx --format json --output-pattern bom -p spt-bin)
+(cd "$root" && cargo cyclonedx --format json --override-filename bom --manifest-path crates/spt-bin/Cargo.toml)
 if [[ -f "$root/crates/spt-bin/bom.json" ]]; then
   mv -f "$root/crates/spt-bin/bom.json" "$dist/sbom.json"
 elif [[ -f "$root/bom.json" ]]; then
   mv -f "$root/bom.json" "$dist/sbom.json"
 fi
 
-(cd "$root" && cargo cyclonedx --format xml --output-pattern bom -p spt-bin)
+(cd "$root" && cargo cyclonedx --format xml --override-filename bom --manifest-path crates/spt-bin/Cargo.toml)
 if [[ -f "$root/crates/spt-bin/bom.xml" ]]; then
   mv -f "$root/crates/spt-bin/bom.xml" "$dist/sbom.xml"
 elif [[ -f "$root/bom.xml" ]]; then
