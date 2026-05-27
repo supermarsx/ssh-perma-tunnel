@@ -5,7 +5,8 @@
 #   YY        = two-digit year (UTC)    — e.g. "26" for 2026
 #   N         = monotonic counter,      — first release of the year is N=1
 #               resets each year
-#   Tag       = "v<YY>.<N>"             — e.g. "v26.1", "v26.2", ..., "v26.314"
+#   Tag       = "<YY>.<N>"              — e.g. "26.1", "26.2", ..., "26.314"
+#                                         (no "v" prefix)
 #   Cargo TOML = "0.<YY>.<N>"           — Cargo's TOML parser requires full
 #                                         SemVer X.Y.Z, so the workspace
 #                                         `version` field carries a leading
@@ -20,8 +21,8 @@
 #
 # Outputs (when GITHUB_OUTPUT is set):
 #   version=<YY.N>
-#   tag=v<YY.N>
-#   prev_tag=v<YY.PREV> (or empty if first of year)
+#   tag=<YY.N>
+#   prev_tag=<YY.PREV> (or empty if first of year)
 
 set -euo pipefail
 
@@ -37,13 +38,13 @@ done
 
 YY=$(date -u +%y)
 
-# Find the highest existing tag for this year.
-LAST=$(git tag --list "v${YY}.*" --sort=-version:refname 2>/dev/null | head -n1 || true)
+# Find the highest existing tag for this year (bare YY.N, no "v" prefix).
+LAST=$(git tag --list "${YY}.*" --sort=-version:refname 2>/dev/null | head -n1 || true)
 if [[ -z "${LAST}" ]]; then
   N=1
   PREV_TAG=""
 else
-  # Strip "v${YY}." prefix; what remains is the N counter.
+  # Strip "${YY}." prefix; what remains is the N counter.
   PREV_N=${LAST##*.}
   if ! [[ "${PREV_N}" =~ ^[0-9]+$ ]]; then
     echo "::error::cannot parse counter from previous tag: ${LAST}" >&2
@@ -54,7 +55,7 @@ else
 fi
 
 VERSION="${YY}.${N}"
-TAG="v${VERSION}"
+TAG="${VERSION}"   # no "v" prefix — user-facing tag is the bare YY.N
 # Cargo's TOML parser rejects the bare `YY.N` form (it expects full SemVer
 # X.Y.Z and emits `unexpected end of input while parsing minor version
 # number`). The workspace manifest therefore carries `0.YY.N` — a SemVer-

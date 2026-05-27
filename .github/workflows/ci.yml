@@ -429,7 +429,7 @@ jobs:
           VERSION: ${{ steps.bump.outputs.version }}
           TAG: ${{ steps.bump.outputs.tag }}
         run: |
-          prev_tag=$(git tag --list 'v*' --sort=-version:refname | grep -v "^${TAG}$" | head -n1 || true)
+          prev_tag=$(git tag --list '[0-9]*' --sort=-version:refname | grep -v "^${TAG}$" | head -n1 || true)
           mkdir -p "dist/${TAG}"
           frag="dist/${TAG}/CHANGELOG-fragment.md"
           curated="docs/releases/${VERSION}.md"
