@@ -7,8 +7,3 @@
 # Shell scripts must keep LF line endings for Bash.
 scripts/*.sh text eol=lf
 scripts/**/*.sh text eol=lf
-tests/openssh-interop/fixtures/**/*.sh text eol=lf
-
-# OpenSSH fixture material must keep LF line endings or sshd/keygen may reject it.
-tests/openssh-interop/fixtures/keys/* text eol=lf
-tests/openssh-interop/fixtures/host_keys/* text eol=lf

@@ -33,9 +33,6 @@ package has not yet been accepted by the upstream registry. "Community-
 maintained" means a tap/bucket/AUR entry exists but is not part of the
 canonical core distro repos.
 
-Production acceptance for every installer/service-manager combination is
-tracked in [`docs/platform-acceptance.md`](../docs/platform-acceptance.md).
-
 ## End-user installation
 
 ```bash

@@ -128,12 +128,6 @@ The consolidated `ci.yml` also exposes four `workflow_dispatch.kind`
 options, each running exclusively (not as part of the standard
 fmt→clippy→test→build pipeline):
 
-| `kind`              | Replaces                | What it does                                                |
-|---------------------|-------------------------|-------------------------------------------------------------|
-| `full` (default)    | n/a                     | The standard pipeline (also runs on every push and PR).     |
-| `coverage`          | `coverage.yml`          | `cargo llvm-cov` + Codecov upload.                          |
-| `fuzz`              | `fuzz.yml`              | All 10 cargo-fuzz targets, 60 s each, in parallel.          |
-| `openssh-interop`   | `openssh-interop.yml`   | docker-compose interop fixture against the standalone crate.|
-| `bench-regression`  | `bench-regression.yml`  | Criterion compare against `main` baseline.                  |
-
-Trigger from the Actions tab or with `gh workflow run ci.yml -f kind=fuzz`.
+Only `full` remains (it's the default and just runs the standard pipeline).
+The previous dispatch-only kinds (`coverage`, `fuzz`, `openssh-interop`,
+`bench-regression`) were removed along with their jobs.

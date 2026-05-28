@@ -81,10 +81,9 @@
 /// [`mibs/SPT-MIB.txt`](../../../mibs/SPT-MIB.txt) and parallels
 /// [`DOCUMENTATION_ENTERPRISE_PEN`] (the same number expressed as a scalar).
 ///
-/// The actual PEN must be requested via IANA -- see
-/// [`docs/pen-registration.md`](../../../docs/pen-registration.md). After
-/// assignment, run `scripts/swap-pen.sh <NEW_PEN>` (or the `.ps1` variant) to
-/// update both the MIB and this constant in one motion.
+/// The actual PEN must be requested from IANA (Private Enterprise Numbers
+/// registry). After assignment, run `scripts/swap-pen.sh <NEW_PEN>` (or the
+/// `.ps1` variant) to update both the MIB and this constant in one motion.
 pub const SPT_ENTERPRISE_OID_ARCS: &[u32] = &[1, 3, 6, 1, 4, 1, 32_473];
 
 /// Deprecated alias for [`SPT_ENTERPRISE_OID_ARCS`].
