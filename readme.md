@@ -118,8 +118,7 @@ backend, and split-horizon DNS.
   [MCP](docs/mcp.md), [TUI](docs/tui.md), [SSH3](docs/ssh3.md),
   [Remote Config](docs/remote-config.md).
 - [Security](docs/security.md), [Versioning](docs/versioning.md),
-  [Troubleshooting](docs/troubleshooting.md),
-  [Production Readiness](docs/production_readiness.md).
+  [Troubleshooting](docs/troubleshooting.md).
 
 The full specification lives at [`spec.md`](spec.md).
 

@@ -1,2 +1,0 @@
------BEGIN PRIVATE KEY-----
-no end marker

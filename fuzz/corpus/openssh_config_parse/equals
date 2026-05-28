@@ -1,4 +1,0 @@
-Host = a
-HostName = host.invalid
-Port = 22
-ProxyJump = user@hop1.example:22,user@hop2.example:22

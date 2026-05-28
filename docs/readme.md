@@ -23,16 +23,12 @@ Index of user-facing documentation for `spt` (SSH Permanent Tunnel).
 - [Events](events.md) — bindings, sinks, templating
 - [Diagnostics](diagnostics.md) — `spt diagnose`, bundles, redaction
 - [Benchmarking](benchmarking.md) — drivers, safety, comparing runs
-- [Test Coverage](test-coverage.md) — feature coverage and acceptance gaps
 - [MCP](mcp.md) — MCP server, resources, tools, policy
 - [TUI](tui.md) — interactive profile configurator
 - [SSH3](ssh3.md) — experimental SSH3 support and limitations
 - [Remote Config](remote-config.md) — HTTPS config, fingerprint pinning
 - [Security](security.md) — threat model, redaction, secret handling
 - [Troubleshooting](troubleshooting.md) — common issues and exit codes
-- [Bitvise Comparison](bitvise-comparison.md) — parity and gap matrix against
-  Bitvise SSH Client
-- [Production Readiness](production_readiness.md) — full audit report and ship gate
 - [Versioning](versioning.md) — the rolling `YY.N` scheme and Cargo encoding
 
 For implementation status of individual subcommands, see

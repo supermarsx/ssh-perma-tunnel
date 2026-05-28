@@ -1,3 +1,0 @@
------BEGIN OPENSSH PRIVATE KEY-----
-b3BlbnNzaC1rZXktdjEAAA==
------END OPENSSH PRIVATE KEY-----

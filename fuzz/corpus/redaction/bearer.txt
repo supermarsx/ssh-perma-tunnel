@@ -1,1 +1,0 @@
-Authorization: Bearer abc123.token-XYZ_456

@@ -1,1 +1,0 @@
-authorization: bearer abc.def.ghi
