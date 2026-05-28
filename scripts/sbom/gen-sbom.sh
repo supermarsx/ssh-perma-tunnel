@@ -69,5 +69,12 @@ elif [[ -f "$root/bom.xml" ]]; then
   mv -f "$root/bom.xml" "$dist/sbom.xml"
 fi
 
+# cargo-cyclonedx 0.5 walks the workspace and writes `bom.{json,xml}` next to
+# *every* member's Cargo.toml, not just the one we asked for. We've moved
+# spt-bin's already; sweep the rest so the repo stays clean (the CI runner's
+# ephemeral checkout doesn't care, but a local run would pollute the tree).
+find "$root/crates" "$root/tests" -maxdepth 2 \
+  \( -name 'bom.json' -o -name 'bom.xml' \) -delete 2>/dev/null || true
+
 [[ -f "$dist/sbom.json" ]] && info "wrote $dist/sbom.json" || warn "sbom.json missing"
 [[ -f "$dist/sbom.xml"  ]] && info "wrote $dist/sbom.xml"  || warn "sbom.xml missing"
