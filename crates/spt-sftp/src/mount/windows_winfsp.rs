@@ -2,12 +2,11 @@
 //!
 //! ## Background (t7-P2)
 //!
-//! t7-A6 originally targeted the in-process `winfsp` Rust binding, but
-//! `winfsp 0.10` and `winfsp-sys 0.12` are both GPL-3.0 — the workspace
-//! `deny.toml` license allow-list rejects them. The operator decision for
-//! t7-P2 was to find a **non-GPL** Rust binding and replace the stub with a
-//! real implementation (not switch to launcher shell-out, not add a GPL
-//! exception to `deny.toml`).
+//! The in-process `winfsp` Rust binding was initially considered, but
+//! `winfsp 0.10` and `winfsp-sys 0.12` are both GPL-3.0 — incompatible with
+//! the workspace's non-GPL license policy. A **non-GPL** Rust binding was
+//! sourced instead, replacing the stub with a real implementation (rather
+//! than a launcher shell-out or a GPL exception in policy).
 //!
 //! The chosen binding is **[`dokan` 0.3.1+dokan206]** ([crates.io link]):
 //!

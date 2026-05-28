@@ -9,7 +9,7 @@
     crates/spt-snmp/src/lib.rs. Leaves .bak copies. PowerShell equivalent of
     scripts/swap-pen.sh.
 
-    See docs/pen-registration.md for the registration packet.
+    Request a Private Enterprise Number from IANA before using this script.
 
 .PARAMETER NewPen
     The IANA-assigned Private Enterprise Number (positive integer).
@@ -71,6 +71,6 @@ Write-Host "  - $Lib"
 Write-Host ""
 Write-Host "Next steps:"
 Write-Host "  1) Bump the MIB REVISION line in $Mib (LAST-UPDATED + new REVISION entry)."
-Write-Host "  2) Review docs/pen-registration.md and mark it as 'assigned PEN: $NewPen'."
+Write-Host "  2) Record the assigned PEN ($NewPen) in your project notes."
 Write-Host "  3) Run: cargo build --workspace --locked && cargo test -p spt-snmp --locked"
 Write-Host "  4) Commit the change and the .bak files' deletion."

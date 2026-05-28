@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # swap-pen.sh -- replace the placeholder IANA Private Enterprise Number
 # (RFC 5612 / RFC 9371 documentation PEN 32473) with the production PEN
-# returned by IANA. See docs/pen-registration.md for the registration packet.
+# returned by IANA's Private Enterprise Numbers registry.
 #
 # Effect:
 #   * Rewrites the single `{ enterprises 32473 }` line in mibs/SPT-MIB.txt.
@@ -62,6 +62,6 @@ echo "  - ${LIB}"
 echo
 echo "Next steps:"
 echo "  1) Bump the MIB REVISION line in ${MIB} (LAST-UPDATED + new REVISION entry)."
-echo "  2) Review docs/pen-registration.md and mark it as 'assigned PEN: ${NEW_PEN}'."
+echo "  2) Record the assigned PEN (${NEW_PEN}) in your project notes."
 echo "  3) Run: cargo build --workspace --locked && cargo test -p spt-snmp --locked"
 echo "  4) Commit the change and the .bak files' deletion."

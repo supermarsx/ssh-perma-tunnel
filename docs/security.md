@@ -177,10 +177,9 @@ parser (`apparmor_parser`, `checkmodule`) is absent.
 
 Releases are signed; verify before installing — see
 [Installation](installation.md). The Rust dependency tree is audited via
-`cargo deny` and `cargo audit` in CI; `cargo-audit` is installed on the stable
-toolchain so current RustSec advisory formats, including CVSS 4.0, are parsed
-even though the workspace itself keeps an MSRV of Rust 1.83. Reviewed advisory
-exceptions live in `deny.toml` and are mirrored in `.github/workflows/audit.yml`.
+`cargo deny` and `cargo audit` can be run locally against the current
+RustSec advisory database (CVSS 4.0 formats included) when an audit pass is
+needed; CI no longer runs them as a gating job.
 
 The workspace's earlier "no `cargo update`" policy was lifted for the t7
 milestone so the t6 stub features (`rhai`, `sspi`, `libgssapi`, `obfs4`,

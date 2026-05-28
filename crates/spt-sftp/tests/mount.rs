@@ -101,10 +101,10 @@ async fn windows_winfsp_backend_surfaces_unsupported_with_named_blocker() {
     let mut m = WinFspMounter::new(Arc::new(client));
     let opts = MountOpts::new("C:/mnt/spt-int", "/srv/data");
     let err = m.mount(opts).expect_err("expected diagnostic");
-    // t7-A6 ships the WinFsp backend as a documented `UnsupportedPlatform`
-    // stub pending a `deny.toml` exception for the GPL-3.0 `winfsp 0.10`
-    // Rust binding (operator chose binding, not launcher shell-out). The
-    // diagnostic must name the blocker so a future executor can find it.
+    // The WinFsp backend ships as a documented `UnsupportedPlatform` stub
+    // because the `winfsp 0.10` Rust binding is GPL-3.0 (incompatible with
+    // the workspace's non-GPL license policy). The diagnostic must name the
+    // blocker so a future fix can find it.
     match err {
         SftpError::UnsupportedPlatform { detail, .. } => {
             assert!(
@@ -467,13 +467,12 @@ mod fuse_live {
 //
 // **DEFERRED — see `.orchestration/logs/t7-A6.md`.** The t7-A6 spec required
 // 6+ live WinFsp tests gated on `SPT_WINFSP_LIVE=1`. They are not present
-// here because the `winfsp 0.10` Rust binding (GPL-3.0) cannot be added to
-// the workspace until `deny.toml` accepts GPL-3.0. The t7-A6 fallback ships
-// `WinFspMounter::mount` as a structured `UnsupportedPlatform` stub naming
-// the blocker.
+// here because the `winfsp 0.10` Rust binding is GPL-3.0 (incompatible with
+// the workspace's non-GPL license policy). `WinFspMounter::mount` ships as
+// a structured `UnsupportedPlatform` stub naming the blocker.
 //
-// When the `deny.toml` GPL-3.0 exception lands (or a non-GPL fork of the
-// binding becomes available), the following CI gate would run them:
+// When a non-GPL fork of the binding becomes available (or the project's
+// license policy changes), the following CI gate would run them:
 //
 //   choco install winfsp -y
 //   $env:SPT_WINFSP_LIVE = '1'

@@ -4,9 +4,9 @@ SPT-MIB DEFINITIONS ::= BEGIN
 -- spt -- SSH permanent tunnel -- Project enterprise MIB.
 --
 -- This checked-in MIB uses the RFC 5612 / RFC 9371 documentation PEN 32473
--- as a deliberate placeholder. The official IANA PEN registration packet
--- is documented in docs/pen-registration.md. To swap in the assigned PEN
--- once IANA returns it, run:
+-- as a deliberate placeholder. Request a real PEN from IANA (Private
+-- Enterprise Numbers registry). To swap in the assigned PEN once IANA
+-- returns it, run:
 --
 --     scripts/swap-pen.sh <NEW_PEN>          (POSIX)
 --     scripts/swap-pen.ps1 <NEW_PEN>         (Windows / PowerShell)
@@ -34,7 +34,7 @@ IMPORTS
 -- This MODULE-IDENTITY assignment carries the project's IANA Private
 -- Enterprise Number. The current value (32473) is the RFC 5612 / RFC 9371
 -- documentation PEN, used here as a PLACEHOLDER until IANA returns a
--- production PEN. The registration packet is at docs/pen-registration.md.
+-- production PEN.
 --
 -- To swap in the assigned PEN once IANA returns it, run:
 --     scripts/swap-pen.sh <NEW_PEN>

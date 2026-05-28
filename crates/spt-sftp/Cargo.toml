@@ -25,13 +25,11 @@ testing = []
 # is a no-op (the stub `Filesystem` impl is selected instead).
 mount-fuse = ["dep:fuser", "dep:libc"]
 # Windows userspace-filesystem backend, wired to the **Dokan** (Dokany2)
-# Rust binding. t7-A6 originally targeted `winfsp 0.10` but that crate is
-# GPL-3.0 and the workspace `deny.toml` allow-list rejects it. t7-P2
-# replaced the stub with a real implementation backed by the MIT-licensed
-# `dokan` / `dokan-sys` crates (the bundled Dokany2 C source is LGPL-3.0
-# and built into `dokan2.dll`; LGPL allows dynamic linking from non-LGPL
-# code, and cargo-deny inspects the Rust crate's declared license, not the
-# bundled C source).
+# Rust binding. `winfsp 0.10` was initially considered but that crate is
+# GPL-3.0, which the workspace's non-GPL license policy rejects. The
+# implementation uses the MIT-licensed `dokan` / `dokan-sys` crates
+# instead (the bundled Dokany2 C source is LGPL-3.0 and built into
+# `dokan2.dll`; LGPL allows dynamic linking from non-LGPL code).
 #
 # Runtime requirement: install the Dokany2 driver and userspace library
 # (`choco install dokany2 -y`). The `dokan-sys` build script picks up the

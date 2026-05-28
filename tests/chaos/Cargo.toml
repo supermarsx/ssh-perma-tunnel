@@ -11,8 +11,7 @@ description = "Chaos / reconnect scenario harness driving the `spt` binary again
 # workspace. It (a) spawns the real `spt` binary as a subprocess, (b) brings
 # up stub SSH / DNS servers, and (c) drives long-running multi-second
 # scenarios — none of which we want kicking off under a default
-# `cargo test --workspace`. Mirrors the `tests/property` and
-# `tests/openssh-interop` escape-hatch pattern.
+# `cargo test --workspace`. Mirrors the `tests/property` escape-hatch pattern.
 #
 # Exercise standalone with:
 #     cargo test --manifest-path tests/chaos/Cargo.toml

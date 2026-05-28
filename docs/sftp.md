@@ -10,7 +10,7 @@ backends, their lifecycle behaviour, and the platform-support matrix.
 | OS      | Backend                                       | Status        | Caveats                                                                                                              |
 |---------|-----------------------------------------------|---------------|----------------------------------------------------------------------------------------------------------------------|
 | Linux   | `fuser 0.15` (`mount-fuse` feature)           | Production    | Requires `/dev/fuse` readable by the runtime user; needs `fusermount` (libfuse) on `$PATH`, or root.                 |
-| Windows | `dokan 0.3.1` / Dokany2 (`mount-winfsp` feature) | Production | Dokany2 runtime must be installed (Chocolatey: `choco install dokany2 -y`). Without the feature, falls back to launcher. Selected over `winfsp` because the latter is GPL-3.0 (rejected by `deny.toml`). |
+| Windows | `dokan 0.3.1` / Dokany2 (`mount-winfsp` feature) | Production | Dokany2 runtime must be installed (Chocolatey: `choco install dokany2 -y`). Without the feature, falls back to launcher. Selected over `winfsp` because the latter is GPL-3.0 (incompatible with the project's non-GPL license policy). |
 | macOS   | `sshfs` shell-out + macFUSE                   | **Deprecated**| macFUSE upstream is unstable; FSKit-based replacement is post-1.0. SSH connection is **not shared** with spt sessions.|
 | Other   | n/a                                           | Unsupported   | Returns `ExitCode::UnsupportedPlatform` (10).                                                                        |
 

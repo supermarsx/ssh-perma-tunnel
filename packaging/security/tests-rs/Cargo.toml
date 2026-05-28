@@ -13,8 +13,8 @@ description = "Parse/compile smoke tests for spt's AppArmor, SELinux and seccomp
 #
 #     cargo test --manifest-path packaging/security/tests-rs/Cargo.toml
 #
-# Same standalone-crate pattern as `tests/property` and
-# `tests/openssh-interop` (see workspace `exclude` list in root Cargo.toml).
+# Same standalone-crate pattern as `tests/property` (see workspace
+# `exclude` list in root Cargo.toml).
 [workspace]
 
 [lib]

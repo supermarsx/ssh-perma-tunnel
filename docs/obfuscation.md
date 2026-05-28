@@ -133,8 +133,6 @@ AEAD shape, but a complete `ssserver` round-trip still requires:
   per direction (the current AeadStream uses one read counter and one
   write counter, no length/body separation).
 
-These are tracked for a follow-up; the existing interop tests in
-`tests/openssh-interop/shadowsocks/` remain `#[ignore]`'d with their
-ignore reasons updated to point at these gaps. KDF wire-shape
-(`ss_2022_kdf_known_vector_matches_reference`) is byte-exact-correct
-and runs unconditionally.
+These are tracked for a follow-up; full shadowsocks-rust end-to-end interop
+is deferred. KDF wire-shape (`ss_2022_kdf_known_vector_matches_reference`)
+is byte-exact-correct and runs unconditionally.

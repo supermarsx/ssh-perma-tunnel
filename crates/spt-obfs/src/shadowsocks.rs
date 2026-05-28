@@ -676,11 +676,10 @@ mod tests {
     /// This is a *self-derived* vector: it pins the output of our
     /// implementation to a fixed value so a future regression (e.g.
     /// re-introducing non-empty AAD) shows up as a byte-mismatch. Once
-    /// `shadowsocks-rust` end-to-end interop lands (see
-    /// `tests/openssh-interop/shadowsocks/`), the same `(psk, salt,
-    /// nonce=0, plaintext)` tuple can be cross-validated against a
-    /// real `ssserver` capture and the expected bytes here updated to
-    /// the captured value.
+    /// `shadowsocks-rust` end-to-end interop lands, the same
+    /// `(psk, salt, nonce=0, plaintext)` tuple can be cross-validated
+    /// against a real `ssserver` capture and the expected bytes here
+    /// updated to the captured value.
     ///
     /// Capture procedure for a true reference vector:
     /// 1. `ssserver -s 127.0.0.1:18388 -k <pw> -m 2022-blake3-aes-256-gcm --debug`
