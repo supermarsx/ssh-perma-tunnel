@@ -1,9 +1,9 @@
 # ssh-perma-tunnel (`spt`)
 
-[![CI](https://github.com/supermarsx/ssh-perma-tunnel/actions/workflows/ci.yml/badge.svg)](https://github.com/supermarsx/ssh-perma-tunnel/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](license.md)
-[![Rust 1.85+](https://img.shields.io/badge/rust-1.85%2B-dea584?logo=rust&logoColor=white)](rust-toolchain.toml)
-[![Release](https://img.shields.io/github/v/release/supermarsx/ssh-perma-tunnel?sort=semver)](https://github.com/supermarsx/ssh-perma-tunnel/releases)
+[![CI](https://github.com/supermarsx/ssh-perma-tunnel/actions/workflows/ci.yml/badge.svg?style=flat-square)](https://github.com/supermarsx/ssh-perma-tunnel/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg?style=flat-square)](license.md)
+[![Rust 1.85+](https://img.shields.io/badge/rust-1.85%2B-dea584?logo=rust&logoColor=white&style=flat-square)](rust-toolchain.toml)
+[![Release](https://img.shields.io/github/v/release/supermarsx/ssh-perma-tunnel?sort=semver&style=flat-square)](https://github.com/supermarsx/ssh-perma-tunnel/releases)
 
 A single Rust command-line tool, `spt`, that establishes and maintains
 **permanent SSH tunnels** — local and reverse port forwards that survive
