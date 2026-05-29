@@ -90,12 +90,29 @@ fi
 # `# rolling` marker so this sed is unambiguous; see contributing.md.
 ROOT="$(git rev-parse --show-toplevel)"
 CARGO_TOML="${ROOT}/Cargo.toml"
+CARGO_LOCK="${ROOT}/Cargo.lock"
 if grep -qE '^version = "[^"]*"[[:space:]]*#[[:space:]]*rolling' "${CARGO_TOML}"; then
   # Portable in-place edit (BSD/GNU sed compatible).
   tmp=$(mktemp)
   sed -E "s/^version = \"[^\"]*\"([[:space:]]*#[[:space:]]*rolling.*)$/version = \"${CARGO_VERSION}\"\\1/" \
     "${CARGO_TOML}" >"${tmp}"
   mv "${tmp}" "${CARGO_TOML}"
+
+  # Refresh Cargo.lock against the new workspace version. Without this,
+  # the very next `cargo --locked` invocation on main (the package matrix
+  # is the immediate consumer) fails with `the lock file ... needs to be
+  # updated but --locked was passed to prevent this`. `cargo update -w`
+  # touches only workspace members — it does not silently bump third-
+  # party deps. `--offline` keeps the runner from hitting crates.io for
+  # what is purely a version-string refresh of locally-owned entries.
+  if [[ -f "${CARGO_LOCK}" ]]; then
+    if command -v cargo >/dev/null 2>&1; then
+      (cd "${ROOT}" && cargo update --workspace --offline) || \
+        (cd "${ROOT}" && cargo update --workspace)
+    else
+      echo "::warning::cargo not on PATH; skipping Cargo.lock refresh"
+    fi
+  fi
 else
   echo "::warning::Cargo.toml version line missing '# rolling' marker; skipping in-place bump"
 fi

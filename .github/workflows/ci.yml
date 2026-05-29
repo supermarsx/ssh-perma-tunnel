@@ -525,7 +525,11 @@ jobs:
         run: |
           git config user.email "ci@spt.local"
           git config user.name  "spt-ci"
-          git add Cargo.toml changelog.md 2>/dev/null || true
+          # Cargo.lock is refreshed by bump-version.sh (`cargo update -w`)
+          # so its workspace-member version entries match Cargo.toml. Include
+          # it in the bump commit — without it, the next push's `cargo
+          # --locked` gates fail with "the lock file needs to be updated".
+          git add Cargo.toml Cargo.lock changelog.md 2>/dev/null || true
           # [skip ci] is REQUIRED: this bump commit is pushed back to main, and
           # without it the new push would re-run CI and cut another release —
           # an infinite release loop.
