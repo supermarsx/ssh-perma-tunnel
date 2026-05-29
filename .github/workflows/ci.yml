@@ -415,6 +415,41 @@ jobs:
         id: bump
         shell: bash
         run: bash scripts/release/bump-version.sh
+      - name: Align dist/<version>/ with the bumped Cargo version
+        shell: bash
+        env:
+          NEW_CARGO_VERSION: ${{ steps.bump.outputs.cargo_version }}
+        run: |
+          # The package matrix built artifacts under dist/<Cargo-version-at-
+          # build-time>/ — e.g. dist/0.26.1/. `bump-version.sh` then edited
+          # Cargo.toml to the *next* version (e.g. 0.26.2) before any
+          # downstream script ran. checksum-all.sh, manifest.sh, and the
+          # release-asset upload all derive their target dir from the *new*
+          # Cargo version via `dist_dir()` → `dist/0.26.2/` — which doesn't
+          # exist yet. Rename the single existing version-dir under dist/ to
+          # match. The first release of the year is a no-op (Cargo.toml was
+          # already at 0.YY.1 going into the bump).
+          set -e
+          target="dist/${NEW_CARGO_VERSION}"
+          if [[ -d "$target" ]]; then
+            echo "::notice::$target already exists; nothing to align"
+            exit 0
+          fi
+          shopt -s nullglob
+          mapfile -t existing < <(find dist -maxdepth 1 -mindepth 1 -type d \
+              -regextype posix-extended -regex 'dist/0\.[0-9]+\.[0-9]+' | sort)
+          if (( ${#existing[@]} == 0 )); then
+            echo "::error::no dist/<version>/ subdirectory found to align with ${NEW_CARGO_VERSION}"
+            ls -la dist/
+            exit 1
+          fi
+          if (( ${#existing[@]} > 1 )); then
+            echo "::error::multiple version dirs under dist/, refusing to guess: ${existing[*]}"
+            exit 1
+          fi
+          src="${existing[0]}"
+          echo "::notice::renaming ${src} → ${target}"
+          mv "$src" "$target"
       - name: Abort if tag already exists
         shell: bash
         run: |
