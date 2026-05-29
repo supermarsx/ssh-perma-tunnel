@@ -1,3 +1,12 @@
+## [26.2] - 2026-05-29
+
+# spt 26.2
+
+## Changes since 26.1
+
+- ci: rename dist/<old_cargo_version>/ to match the bumped version (9d29ce8)
+- ci: stage Linux binaries for the Docker buildx context (fe24c86)
+
 ## [26.1] - 2026-05-29
 
 # spt 26.1 — Release Notes
