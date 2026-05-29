@@ -22,7 +22,7 @@ use spt_config::schema::{
     Auth as AuthCfg, Capabilities, Config, Crypto as CryptoCfg, Profile,
     ScriptConfig as SchemaScriptConfig, Trust as TrustCfg,
 };
-use spt_core::{Error, Result};
+use spt_core::{Diagnostic, Error, Result};
 use spt_protocol::{Endpoint, TunnelProtocol};
 use spt_scripting::{
     config::{ScriptConfig, ScriptHooks, ScriptLimits},
@@ -232,7 +232,12 @@ fn build_ssh2(
     reject_unsupported_post_quantum_runtime(profile, capabilities, &crypto)?;
     let mut builder = Ssh2Protocol::builder()
         .crypto(crypto)
-        .trust(build_trust_policy(profile.trust.as_ref(), &final_hosts)?)
+        .trust(build_trust_policy(
+            profile.trust.as_ref(),
+            &final_hosts,
+            &profile.name,
+            "profiles.trust",
+        )?)
         // t7-A2: thread the scripting engine through the builder so the
         // protocol can attach it to every freshly-handshaked `Ssh2Session`.
         .script_engine(script_engine)
@@ -252,6 +257,12 @@ fn build_ssh2(
         let hop_trust = build_trust_policy(
             hop.trust.as_ref().or(profile.trust.as_ref()),
             &[(hop.host.clone(), hop.port)],
+            &profile.name,
+            if hop.trust.is_some() {
+                "hops.trust"
+            } else {
+                "profiles.trust"
+            },
         )?;
         builder = builder.hop_with_auth_trust(&hop.host, hop.port, hop_auth, hop_trust);
     }
@@ -560,15 +571,133 @@ fn normalize_auth_method(method: &str) -> String {
     }
 }
 
-fn build_trust_policy(trust: Option<&TrustCfg>, hosts: &[(String, u16)]) -> Result<TrustPolicy> {
+fn build_trust_policy(
+    trust: Option<&TrustCfg>,
+    hosts: &[(String, u16)],
+    profile_name: &str,
+    context: &str,
+) -> Result<TrustPolicy> {
+    // Refuse profiles that ship no trust source whatsoever. The historical
+    // `TrustPolicy::default()` fallback (no known_hosts + no pins + strict=false)
+    // accepted any server key on first connect — a silent TOFU with no audit
+    // trail. Operators must either configure a real source or explicitly opt
+    // in to TOFU via `accept_new = true` with a `known_hosts_file` path.
     let Some(trust) = trust else {
-        return Ok(TrustPolicy::default());
+        return Err(Error::invalid_config(
+            Diagnostic::what(format!(
+                "profile `{profile_name}` has no `[{context}]` block",
+            ))
+            .why(
+                "without any trust source spt would accept any host key on first \
+                 connect, defeating the whole point of host-key verification",
+            )
+            .how_to_fix(
+                "add a `[profiles.<name>.trust]` block with either \
+                 `known_hosts_file = \"...\"`, `pin_sha256 = [\"...\"]`, or \
+                 `mode = \"known_hosts\"` + `accept_new = true` (TOFU)",
+            )
+            .build(),
+        ));
     };
-    let known_hosts = trust
+
+    // `mode` is operator-facing documentation; cross-validate it against the
+    // actual sources to catch contradictory configs early.
+    if let Some(mode) = trust.mode.as_deref() {
+        let normalized = mode.trim().to_ascii_lowercase();
+        match normalized.as_str() {
+            "known_hosts" => {
+                if trust.known_hosts_file.is_none() && !trust.accept_new.unwrap_or(false) {
+                    return Err(Error::invalid_config(
+                        Diagnostic::what(format!(
+                            "profile `{profile_name}`: `{context}.mode = \"known_hosts\"` \
+                             but no `known_hosts_file` and `accept_new = false`",
+                        ))
+                        .why(
+                            "known_hosts mode requires either a populated file or \
+                             explicit trust-on-first-use to obtain any host keys",
+                        )
+                        .how_to_fix(
+                            "set `known_hosts_file = \"...\"` and/or \
+                             `accept_new = true` (TOFU)",
+                        )
+                        .build(),
+                    ));
+                }
+            }
+            "pinned" => {
+                if trust.pin_sha256.as_ref().is_none_or(Vec::is_empty) {
+                    return Err(Error::invalid_config(
+                        Diagnostic::what(format!(
+                            "profile `{profile_name}`: `{context}.mode = \"pinned\"` \
+                             but `pin_sha256` is empty or missing",
+                        ))
+                        .why("pinned mode rejects every host unless a pin matches")
+                        .how_to_fix(
+                            "set `pin_sha256 = [\"SHA256:...\"]` with at least one \
+                             entry, or switch `mode` to `known_hosts`",
+                        )
+                        .build(),
+                    ));
+                }
+                if trust.accept_new.unwrap_or(false) {
+                    return Err(Error::invalid_config(
+                        Diagnostic::what(format!(
+                            "profile `{profile_name}`: `{context}.mode = \"pinned\"` is \
+                             incompatible with `accept_new = true`",
+                        ))
+                        .why(
+                            "TOFU is a known_hosts-only mode; pinned mode rejects \
+                             every unknown key by design",
+                        )
+                        .how_to_fix("remove `accept_new`, or change `mode` to `known_hosts`")
+                        .build(),
+                    ));
+                }
+            }
+            other => {
+                return Err(Error::invalid_config(
+                    Diagnostic::what(format!(
+                        "profile `{profile_name}`: `{context}.mode = \"{other}\"` is not recognised",
+                    ))
+                    .why("only `known_hosts` and `pinned` are accepted")
+                    .how_to_fix("set `mode` to either `known_hosts` or `pinned`")
+                    .build(),
+                ));
+            }
+        }
+    }
+
+    let accept_new = trust.accept_new.unwrap_or(false);
+    let known_hosts_path = trust
         .known_hosts_file
         .as_ref()
-        .map(|path| KnownHosts::load(std::path::Path::new(path)))
-        .transpose()?;
+        .map(std::path::PathBuf::from);
+
+    if accept_new && known_hosts_path.is_none() {
+        return Err(Error::invalid_config(
+            Diagnostic::what(format!(
+                "profile `{profile_name}`: `{context}.accept_new = true` requires \
+                 `known_hosts_file`",
+            ))
+            .why(
+                "TOFU has nowhere to persist the first-seen key without a target \
+                 path — subsequent connects would re-prompt forever",
+            )
+            .how_to_fix(
+                "set `known_hosts_file = \"/path/to/known_hosts\"` (the file will \
+                 be created if missing)",
+            )
+            .build(),
+        ));
+    }
+
+    // Empty file is fine — it materialises an empty `KnownHosts` and lets TOFU
+    // populate it. A missing path with `accept_new = true` is also fine: the
+    // first verify() will create it via O_APPEND.
+    let known_hosts = match &known_hosts_path {
+        Some(p) if p.exists() => Some(KnownHosts::load(p)?),
+        _ => None,
+    };
 
     let sha256_pins = trust.pin_sha256.as_ref().map(|pins| {
         let mut pin_map = Sha256HostPin::new();
@@ -580,10 +709,32 @@ fn build_trust_policy(trust: Option<&TrustCfg>, hosts: &[(String, u16)]) -> Resu
         pin_map
     });
 
+    // Refuse a fully-empty policy (no sources, no TOFU) even when `[trust]`
+    // is present — same reasoning as the missing-block branch above.
+    if known_hosts.is_none() && sha256_pins.is_none() && !accept_new && known_hosts_path.is_none() {
+        return Err(Error::invalid_config(
+            Diagnostic::what(format!(
+                "profile `{profile_name}`: `[{context}]` is present but configures \
+                 no trust source",
+            ))
+            .why(
+                "without `known_hosts_file`, `pin_sha256`, or `accept_new = true` \
+                 (TOFU) there is nothing to verify the server key against",
+            )
+            .how_to_fix(
+                "set at least one of `known_hosts_file`, `pin_sha256`, or \
+                 `accept_new = true` (with a `known_hosts_file` target)",
+            )
+            .build(),
+        ));
+    }
+
     Ok(TrustPolicy {
         known_hosts,
         sha256_pins,
+        known_hosts_path,
         strict: trust.strict.unwrap_or(false),
+        accept_new,
     })
 }
 
@@ -638,6 +789,8 @@ mod tests {
             protocol = "ssh2"
             host = "example.com"
             user = "alice"
+            [profiles.trust]
+            pin_sha256 = ["SHA256:dummy"]
         "#;
         let (c, _) = load_str(cfg, false).unwrap();
         let bundle = build(&c.profiles[0], &empty_resolver()).unwrap();
@@ -672,6 +825,8 @@ mod tests {
             [[profiles]]
             name = "p"
             protocol = "ssh2"
+            [profiles.trust]
+            pin_sha256 = ["SHA256:dummy"]
         "#;
         let (c, _) = load_str(cfg, false).unwrap();
         let bundle = build(&c.profiles[0], &empty_resolver()).unwrap();
@@ -689,6 +844,8 @@ mod tests {
             user = "alice"
             [profiles.auth]
             method = "agent"
+            [profiles.trust]
+            pin_sha256 = ["SHA256:dummy"]
         "#;
         let (c, _) = load_str(cfg, false).unwrap();
         let bundle = build(&c.profiles[0], &empty_resolver()).unwrap();
@@ -710,6 +867,8 @@ mod tests {
             method = "kerberos"
             gssapi_service = "host/edge.example.com"
             gssapi_delegate = true
+            [profiles.trust]
+            pin_sha256 = ["SHA256:dummy"]
         "#;
         let (c, _) = load_str(cfg, false).unwrap();
         let bundle = build_with_config(&c.profiles[0], &empty_resolver(), &c).unwrap();
@@ -745,6 +904,9 @@ mod tests {
             mode = "weighted"
             fail_after = 3
             restore_after = "30s"
+
+            [profiles.trust]
+            pin_sha256 = ["SHA256:dummy"]
         "#;
         let (c, _) = load_str(cfg, false).unwrap();
         let bundle = build(&c.profiles[0], &empty_resolver()).unwrap();
@@ -847,6 +1009,8 @@ mod tests {
             name = "backup"
             host = "ep2.example"
             port = 22
+            [profiles.trust]
+            pin_sha256 = ["SHA256:dummy"]
         "#;
         let (c, _) = load_str(cfg, false).unwrap();
         let bundle = build(&c.profiles[0], &empty_resolver()).unwrap();
@@ -902,6 +1066,8 @@ mod tests {
             host = "h"
             [profiles.failover]
             mode = "round-robin"
+            [profiles.trust]
+            pin_sha256 = ["SHA256:dummy"]
         "#;
         let (c, _) = load_str(cfg, false).unwrap();
         match build(&c.profiles[0], &empty_resolver()) {
@@ -922,6 +1088,8 @@ mod tests {
             [profiles.failover]
             mode = "priority"
             fail_after = 0
+            [profiles.trust]
+            pin_sha256 = ["SHA256:dummy"]
         "#;
         let (c, _) = load_str(cfg, false).unwrap();
         match build(&c.profiles[0], &empty_resolver()) {
@@ -1001,6 +1169,8 @@ mod tests {
             path = {path:?}
             [profiles.script.hooks]
             pre_connect = "before"
+            [profiles.trust]
+            pin_sha256 = ["SHA256:dummy"]
             "#,
             path = script_path.to_string_lossy()
         );
@@ -1036,6 +1206,8 @@ mod tests {
             name = "p"
             protocol = "ssh2"
             host = "h"
+            [profiles.trust]
+            pin_sha256 = ["SHA256:dummy"]
         "#;
         let (c, _) = load_str(cfg, false).unwrap();
         let bundle = build(&c.profiles[0], &empty_resolver()).unwrap();
@@ -1063,6 +1235,8 @@ mod tests {
             sspi_service = "host/edge.example.com"
             sspi_delegate = true
             sspi_allow_ntlm_fallback = false
+            [profiles.trust]
+            pin_sha256 = ["SHA256:dummy"]
         "#;
         let (c, _) = load_str(cfg, false).unwrap();
         let bundle = build_with_config(&c.profiles[0], &empty_resolver(), &c).unwrap();
@@ -1081,4 +1255,171 @@ mod tests {
         }
     }
     // t6-Bwire:end
+
+    // ---- trust wire-up (security audit fix #2 / #4) ------------------------
+    //
+    // These tests pin the load-time invariants enforced by
+    // `build_trust_policy`. Each profile **must** declare a trust source;
+    // historically `TrustPolicy::default()` was silently accepted, which
+    // produced TOFU on first connect without any operator opt-in.
+
+    #[test]
+    fn missing_trust_block_errors_with_diagnostic() {
+        let cfg = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+        "#;
+        let (c, _) = load_str(cfg, false).unwrap();
+        let msg = match build(&c.profiles[0], &empty_resolver()) {
+            Err(Error::InvalidConfigDiagnostic(d)) => d.render(),
+            Ok(_) => panic!("expected InvalidConfigDiagnostic, got Ok"),
+            Err(other) => panic!("expected InvalidConfigDiagnostic, got {other:?}"),
+        };
+        assert!(msg.contains("no `[profiles.trust]` block"), "got: {msg}");
+        assert!(msg.contains("how to fix"), "missing remediation: {msg}");
+    }
+
+    #[test]
+    fn mode_known_hosts_requires_file_or_accept_new() {
+        let cfg = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            [profiles.trust]
+            mode = "known_hosts"
+            strict = true
+        "#;
+        let (c, _) = load_str(cfg, false).unwrap();
+        let msg = match build(&c.profiles[0], &empty_resolver()) {
+            Err(Error::InvalidConfigDiagnostic(d)) => d.render(),
+            Ok(_) => panic!("expected InvalidConfigDiagnostic, got Ok"),
+            Err(other) => panic!("expected InvalidConfigDiagnostic, got {other:?}"),
+        };
+        assert!(
+            msg.contains("\"known_hosts\"") && msg.contains("no `known_hosts_file`"),
+            "got: {msg}"
+        );
+    }
+
+    #[test]
+    fn mode_pinned_requires_non_empty_pins() {
+        let cfg = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            [profiles.trust]
+            mode = "pinned"
+        "#;
+        let (c, _) = load_str(cfg, false).unwrap();
+        match build(&c.profiles[0], &empty_resolver()) {
+            Err(Error::InvalidConfigDiagnostic(_)) => {}
+            Ok(_) => panic!("expected InvalidConfigDiagnostic, got Ok"),
+            Err(other) => panic!("expected InvalidConfigDiagnostic, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn mode_pinned_rejects_accept_new() {
+        let cfg = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            [profiles.trust]
+            mode = "pinned"
+            pin_sha256 = ["SHA256:dummy"]
+            accept_new = true
+        "#;
+        let (c, _) = load_str(cfg, false).unwrap();
+        let msg = match build(&c.profiles[0], &empty_resolver()) {
+            Err(Error::InvalidConfigDiagnostic(d)) => d.render(),
+            Ok(_) => panic!("expected InvalidConfigDiagnostic, got Ok"),
+            Err(other) => panic!("expected InvalidConfigDiagnostic, got {other:?}"),
+        };
+        assert!(
+            msg.contains("incompatible with `accept_new = true`"),
+            "got: {msg}"
+        );
+    }
+
+    #[test]
+    fn accept_new_without_path_errors() {
+        let cfg = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            [profiles.trust]
+            accept_new = true
+        "#;
+        let (c, _) = load_str(cfg, false).unwrap();
+        let msg = match build(&c.profiles[0], &empty_resolver()) {
+            Err(Error::InvalidConfigDiagnostic(d)) => d.render(),
+            Ok(_) => panic!("expected InvalidConfigDiagnostic, got Ok"),
+            Err(other) => panic!("expected InvalidConfigDiagnostic, got {other:?}"),
+        };
+        assert!(
+            msg.contains("accept_new = true") && msg.contains("requires `known_hosts_file`"),
+            "got: {msg}"
+        );
+    }
+
+    #[test]
+    fn accept_new_with_path_propagates_into_trust_policy() {
+        let dir = tempfile::tempdir().unwrap();
+        let kh = dir.path().join("known_hosts");
+        // Note: file does NOT exist yet — the verifier will create it on
+        // first append. The build must still succeed.
+        let cfg = format!(
+            r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            [profiles.trust]
+            mode = "known_hosts"
+            accept_new = true
+            known_hosts_file = {path:?}
+            "#,
+            path = kh.to_string_lossy()
+        );
+        let (c, _) = load_str(&cfg, false).unwrap();
+        // Build must succeed — we can't assert on the TrustPolicy field
+        // directly without exposing internals, but a successful build with
+        // accept_new + a path proves the wire-up loop closed.
+        let _bundle = build(&c.profiles[0], &empty_resolver()).expect("build");
+    }
+
+    #[test]
+    fn unknown_mode_errors() {
+        let cfg = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            [profiles.trust]
+            mode = "yolo"
+        "#;
+        let (c, _) = load_str(cfg, false).unwrap();
+        let msg = match build(&c.profiles[0], &empty_resolver()) {
+            Err(Error::InvalidConfigDiagnostic(d)) => d.render(),
+            Ok(_) => panic!("expected InvalidConfigDiagnostic, got Ok"),
+            Err(other) => panic!("expected InvalidConfigDiagnostic, got {other:?}"),
+        };
+        assert!(
+            msg.contains("\"yolo\"") && msg.contains("not recognised"),
+            "got: {msg}"
+        );
+    }
 }

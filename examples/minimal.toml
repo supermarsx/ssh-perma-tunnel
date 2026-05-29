@@ -15,7 +15,11 @@ method = "agent"
 
 [profiles.trust]
 mode = "known_hosts"
+# Point at an existing OpenSSH known_hosts. On Unix the standard location is
+# `~/.ssh/known_hosts`; on Windows it's `%USERPROFILE%\.ssh\known_hosts`.
+known_hosts_file = "~/.ssh/known_hosts"
 strict = true
+# accept_new = true   # uncomment for trust-on-first-use against the file above
 
 [[profiles.forwards]]
 name = "web"

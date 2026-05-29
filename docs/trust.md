@@ -97,8 +97,39 @@ DER-encoded `SubjectPublicKeyInfo`.
 Replace the pin in config and reload (`spt config reload`). Both the old
 and new pin can be listed simultaneously during a rotation window.
 
-## TOFU
+## TOFU (trust-on-first-use)
 
-`spt` does **not** offer trust-on-first-use prompts in service mode. Use
-`spt key inspect <ssh-host:port>` (M3) to capture and pin a host key
-explicitly.
+Service mode does not prompt interactively. Operators can still opt into
+non-interactive TOFU by setting `accept_new = true` against a
+`known_hosts_file`:
+
+    [profiles.trust]
+    mode = "known_hosts"
+    known_hosts_file = "/var/lib/spt/known_hosts"
+    accept_new = true              # first-seen key is appended to the file
+    strict = false
+
+Semantics:
+
+- The first server key for a `(host, port)` not already in
+  `known_hosts_file` is appended (POSIX `O_APPEND` / Windows
+  `FILE_APPEND_DATA`; atomic for a single line) and the connection is
+  allowed. A `WARN`-level audit record is emitted with the SHA-256
+  fingerprint and the file path.
+- A **mismatch** against an existing entry is *never* TOFU-accepted —
+  the connection is refused with `TrustFailed`. `accept_new` controls
+  only the absent-entry path.
+- `accept_new = true` without `known_hosts_file` is a load-time error:
+  TOFU has nowhere to persist the first-seen key.
+- `mode = "pinned"` is incompatible with `accept_new = true`; pinned
+  mode rejects every unknown key by design.
+
+The historical workflow — `spt key inspect <ssh-host:port>` to capture +
+explicitly pin a host key out-of-band — remains the recommended path for
+high-trust deployments. TOFU is intended for ephemeral / lab
+environments where prompting is impossible but operator review of the
+populated `known_hosts_file` is acceptable.
+
+A profile that omits `[profiles.trust]` entirely now fails to load with
+a structured diagnostic — the previous silent default accepted any host
+key on first connect.

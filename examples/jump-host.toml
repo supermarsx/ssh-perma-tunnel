@@ -14,6 +14,7 @@ method = "agent"
 
 [profiles.trust]
 mode = "known_hosts"
+known_hosts_file = "~/.ssh/known_hosts"
 strict = true
 
 [[profiles.hops]]

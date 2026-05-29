@@ -61,12 +61,29 @@ impl client::Handler for ClientHandler {
         &mut self,
         server_public_key: &russh_keys::key::PublicKey,
     ) -> std::result::Result<bool, Self::Error> {
-        match russh_key_to_ssh_key(server_public_key)
-            .and_then(|key| self.trust.verify(&self.host, self.port, &key).map(|_| ()))
+        // Map the russh-typed key into our `ssh_key::PublicKey` and run the
+        // configured trust policy. We must NOT collapse every `Ok(_)` to
+        // accept — `HostKeyOutcome::NotFound` means no source recorded the
+        // host (non-strict + no TOFU) and the supervisor must refuse the
+        // connection rather than silently trust an unknown server.
+        let outcome = match russh_key_to_ssh_key(server_public_key)
+            .and_then(|key| self.trust.verify(&self.host, self.port, &key))
         {
-            Ok(()) => Ok(true),
+            Ok(o) => o,
             Err(e) => {
                 *self.trust_failure.lock() = Some(e.to_string());
+                return Ok(false);
+            }
+        };
+        match outcome {
+            crate::hostkey::HostKeyOutcome::Match | crate::hostkey::HostKeyOutcome::TofuAdded => {
+                Ok(true)
+            }
+            crate::hostkey::HostKeyOutcome::NotFound => {
+                *self.trust_failure.lock() = Some(format!(
+                    "host {}:{} not found in any trust source and accept_new is disabled",
+                    self.host, self.port
+                ));
                 Ok(false)
             }
         }
