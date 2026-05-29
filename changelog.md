@@ -1,3 +1,12 @@
+## [26.3] - 2026-05-29
+
+# spt 26.3
+
+## Changes since 26.2
+
+- ci: refresh Cargo.lock during version bump and include it in bump commit (fc638f0)
+- ci: locate Linux binaries via find rather than a hard-coded artifact path (ed1251d)
+
 ## [26.2] - 2026-05-29
 
 # spt 26.2
