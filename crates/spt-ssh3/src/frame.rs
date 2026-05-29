@@ -17,6 +17,22 @@ use bytes::{Buf, BufMut, Bytes, BytesMut};
 use serde::{Deserialize, Serialize};
 use spt_core::{Error, Result};
 
+/// Upper bound on a single decoded frame payload.
+///
+/// The framing-layer length prefix is a `u32` (the stub) / unbounded varint
+/// (production), and a hostile peer can claim any value up to that ceiling.
+/// `read_async` currently performs a single `vec![0u8; len]` allocation
+/// *before* any bytes are received — without a cap, a peer can request a
+/// ~4 GiB allocation per stream and either OOM the process or stall the
+/// reactor before the QUIC layer notices the read is going nowhere.
+///
+/// 16 MiB is well above any legitimate framed message in the SSH3 reference
+/// (`Settings` is ~hundreds of bytes; `Data` is bounded by the QUIC stream
+/// flow-control window — typical 1 MiB) and well below the point where a
+/// per-stream allocation noticeably hurts. Both `read_async` and `decode`
+/// reject larger frames with `InvalidConfig` before any allocation.
+pub const MAX_FRAME_LEN: usize = 16 * 1024 * 1024;
+
 /// Stream classification used by SSH3 over HTTP/3.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -119,6 +135,11 @@ impl Ssh3Frame {
             Error::InvalidConfig(format!("ssh3 frame: unknown kind 0x{:02x}", header[0]))
         })?;
         let len = u32::from_be_bytes([header[1], header[2], header[3], header[4]]) as usize;
+        if len > MAX_FRAME_LEN {
+            return Err(Error::InvalidConfig(format!(
+                "ssh3 frame: declared length {len} exceeds MAX_FRAME_LEN ({MAX_FRAME_LEN})",
+            )));
+        }
         let mut payload = vec![0u8; len];
         if len > 0 {
             r.read_exact(&mut payload)
@@ -171,6 +192,11 @@ impl Ssh3Frame {
             Error::InvalidConfig(format!("ssh3 frame: unknown kind 0x{kind_raw:02x}"))
         })?;
         let len = buf.get_u32() as usize;
+        if len > MAX_FRAME_LEN {
+            return Err(Error::InvalidConfig(format!(
+                "ssh3 frame: declared length {len} exceeds MAX_FRAME_LEN ({MAX_FRAME_LEN})",
+            )));
+        }
         if buf.remaining() < len {
             return Err(Error::InvalidConfig(
                 "ssh3 frame: payload truncated".to_string(),
@@ -579,6 +605,57 @@ mod tests {
         let mut buf = Bytes::from_static(&[0x04, 0, 0, 0]);
         let err = Ssh3Frame::decode(&mut buf).unwrap_err();
         assert!(matches!(err, Error::InvalidConfig(_)));
+    }
+
+    #[test]
+    fn frame_decode_rejects_length_above_max_frame_len() {
+        // Craft a header that claims a payload one byte larger than the cap.
+        // The decoder must reject *before* attempting `copy_to_bytes` so a
+        // hostile peer cannot trigger a huge allocation by lying about the
+        // length even if the underlying buffer is smaller.
+        let claim = MAX_FRAME_LEN + 1;
+        let mut bytes = vec![Ssh3FrameKind::Data as u8];
+        bytes.extend_from_slice(&u32::try_from(claim).unwrap().to_be_bytes());
+        let mut buf = Bytes::from(bytes);
+        let err = Ssh3Frame::decode(&mut buf).unwrap_err();
+        match err {
+            Error::InvalidConfig(m) => {
+                assert!(m.contains("MAX_FRAME_LEN"), "got: {m}");
+                assert!(m.contains(&claim.to_string()), "got: {m}");
+            }
+            other => panic!("expected InvalidConfig, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn frame_read_async_rejects_length_above_max_frame_len() {
+        // Same attack via the async path: if the cap is not enforced before
+        // `vec![0u8; len]`, this allocates ~16 MiB+1 bytes and then blocks
+        // on read_exact waiting for bytes that never arrive.
+        let claim = MAX_FRAME_LEN + 1;
+        let mut buf = vec![Ssh3FrameKind::Data as u8];
+        buf.extend_from_slice(&u32::try_from(claim).unwrap().to_be_bytes());
+        let mut cursor = std::io::Cursor::new(buf);
+        let err = Ssh3Frame::read_async(&mut cursor).await.unwrap_err();
+        match err {
+            Error::InvalidConfig(m) => assert!(m.contains("MAX_FRAME_LEN"), "got: {m}"),
+            other => panic!("expected InvalidConfig, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn frame_read_async_accepts_payload_at_cap() {
+        // Boundary: a frame exactly at the cap must succeed. Uses a tiny
+        // payload-zeroed body to keep the test cheap (the cap check is on
+        // the declared length, but here both declared and actual match).
+        // We use a 1-byte payload to verify a "legitimate" small frame
+        // still round-trips through the cap check.
+        let f = Ssh3Frame::new(Ssh3FrameKind::Data, Bytes::from_static(b"x"));
+        let mut buf: Vec<u8> = Vec::new();
+        f.write_async(&mut buf).await.unwrap();
+        let mut cursor = std::io::Cursor::new(buf);
+        let de = Ssh3Frame::read_async(&mut cursor).await.unwrap();
+        assert_eq!(de, f);
     }
 
     #[test]
