@@ -72,6 +72,7 @@ async fn connect_basic() {
             host_keys: vec!["rsa-sha2-256".into(), "rsa-sha2-512".into()],
             compression: vec![],
         })
+        .trust(spt_ssh2::testing::tofu_trust_verifier())
         .build();
     let endpoint = Endpoint::new("127.0.0.1", server.addr.port());
     let auth = AuthConfig::new(
@@ -129,6 +130,7 @@ async fn try_connect(preferred: russh::Preferred) -> std::result::Result<(), Str
             host_keys: vec!["rsa-sha2-256".into(), "rsa-sha2-512".into()],
             compression: vec![],
         })
+        .trust(spt_ssh2::testing::tofu_trust_verifier())
         .build();
     let endpoint = Endpoint::new("127.0.0.1", server.addr.port());
     let auth = AuthConfig::new(

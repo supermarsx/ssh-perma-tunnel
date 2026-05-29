@@ -23,7 +23,9 @@ async fn connect_russh_session() -> (
         .expect("start russh server");
 
     std::env::set_var("SPT_TEST_RUSSH_BACKEND_PW", "anything");
-    let proto = Ssh2Protocol::builder().build();
+    let proto = Ssh2Protocol::builder()
+        .trust(spt_ssh2::testing::tofu_trust_verifier())
+        .build();
     let endpoint = Endpoint::new("127.0.0.1", server.addr.port());
     let auth = AuthConfig::new(
         "tester",
@@ -346,6 +348,7 @@ async fn ssh2_protocol_connect_walks_two_hop_chain() {
         }],
     );
     let proto = Ssh2Protocol::builder()
+        .trust(spt_ssh2::testing::tofu_trust_verifier())
         .hop(bastion.addr.ip().to_string(), bastion.addr.port())
         .build();
     let endpoint = Endpoint::new("127.0.0.1", endpoint_server.addr.port());
@@ -403,6 +406,7 @@ async fn ssh2_protocol_connect_walks_three_hop_chain() {
         }],
     );
     let proto = Ssh2Protocol::builder()
+        .trust(spt_ssh2::testing::tofu_trust_verifier())
         .hop(bastion_a.addr.ip().to_string(), bastion_a.addr.port())
         .hop(bastion_b.addr.ip().to_string(), bastion_b.addr.port())
         .build();

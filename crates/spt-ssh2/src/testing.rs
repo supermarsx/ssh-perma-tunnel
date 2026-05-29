@@ -247,6 +247,36 @@ pub fn wincng_libssh2_compatible_preferred() -> russh::Preferred {
     }
 }
 
+/// Construct a permissive [`TrustVerifier`] suitable for in-process tests
+/// where the server's host key is ephemeral and unknown ahead of time.
+///
+/// The verifier has `accept_new = true` and a fresh `tempfile::NamedTempFile`
+/// for `known_hosts_path` — the first connect persists the server's key and
+/// subsequent verifies match against the populated file. The temp file is
+/// leaked (path-only) for the duration of the process, which is fine for
+/// per-test fixtures.
+///
+/// Without this helper, every integration test that builds an
+/// `Ssh2Protocol` against a fresh [`RusshTestServer`] would fail the
+/// load-time invariant added in the t8 security-audit pass — production
+/// callers must always declare a trust source.
+#[cfg(feature = "testing")]
+#[must_use]
+pub fn tofu_trust_verifier() -> crate::TrustPolicy {
+    let tmp = tempfile::Builder::new()
+        .prefix("spt-test-known_hosts-")
+        .tempfile()
+        .expect("create temp known_hosts");
+    // Keep the file alive for the process; tests never collide because each
+    // call mints a fresh path under the OS temp dir.
+    let (_, path) = tmp.keep().expect("persist temp known_hosts");
+    crate::TrustPolicy {
+        accept_new: true,
+        known_hosts_path: Some(path),
+        ..crate::TrustPolicy::default()
+    }
+}
+
 /// Per-server shared counters and state. Cloneable Arc handle so tests can
 /// observe wire events while the server keeps running.
 #[cfg(feature = "testing")]

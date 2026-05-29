@@ -173,7 +173,9 @@ async fn gssapi_dispatch_surfaces_unsupported_backend_marker() {
         .await
         .expect("start russh server");
 
-    let proto = Ssh2Protocol::builder().build();
+    let proto = Ssh2Protocol::builder()
+        .trust(spt_ssh2::testing::tofu_trust_verifier())
+        .build();
     let endpoint = Endpoint::new("127.0.0.1", server.addr.port());
     let auth = AuthConfig::new(
         "anyone",
@@ -209,7 +211,9 @@ async fn sspi_dispatch_surfaces_unsupported_backend_marker() {
         .await
         .expect("start russh server");
 
-    let proto = Ssh2Protocol::builder().build();
+    let proto = Ssh2Protocol::builder()
+        .trust(spt_ssh2::testing::tofu_trust_verifier())
+        .build();
     let endpoint = Endpoint::new("127.0.0.1", server.addr.port());
     let auth = AuthConfig::new(
         "anyone",
@@ -264,7 +268,9 @@ async fn authenticate_via_agent_succeeds() {
 
     let (_dir, path) = unix_agent::spawn_agent(vec![key]).await;
 
-    let proto = Ssh2Protocol::builder().build();
+    let proto = Ssh2Protocol::builder()
+        .trust(spt_ssh2::testing::tofu_trust_verifier())
+        .build();
     let endpoint = Endpoint::new("127.0.0.1", server.addr.port());
     let auth = AuthConfig::new(
         "anyone",
@@ -310,7 +316,9 @@ async fn authenticate_via_agent_rejects_unknown_key() {
     // Only the unauthorised key lives in the agent.
     let (_dir, path) = unix_agent::spawn_agent(vec![agent_key]).await;
 
-    let proto = Ssh2Protocol::builder().build();
+    let proto = Ssh2Protocol::builder()
+        .trust(spt_ssh2::testing::tofu_trust_verifier())
+        .build();
     let endpoint = Endpoint::new("127.0.0.1", server.addr.port());
     let auth = AuthConfig::new(
         "anyone",
