@@ -558,15 +558,24 @@ jobs:
         run: |
           # scripts/docker/Dockerfile COPYs `dist/spt-${TARGETARCH}` where
           # TARGETARCH is buildx's per-platform variable (amd64|arm64). The
-          # `binary-*` artifacts uploaded by the `build` matrix carry the raw
-          # binary at `target/<triple>/release/spt`; download-artifact lands
-          # each artifact under `artifacts/<artifact-name>/<original-paths>`.
-          # Stage them under the names the Dockerfile expects, then chmod so
-          # the COPY produces an executable file inside the scratch image.
+          # `binary-*` artifacts uploaded by the `build` matrix were uploaded
+          # with a single path matching one file, so upload-artifact v4+
+          # places the file at the artifact root rather than preserving the
+          # `target/<triple>/release/` prefix. Use `find` to locate the
+          # binary regardless of how the artifact happens to be laid out.
           set -e
-          cp artifacts/binary-x86_64-unknown-linux-gnu/target/x86_64-unknown-linux-gnu/release/spt dist/spt-amd64
-          cp artifacts/binary-aarch64-unknown-linux-gnu/target/aarch64-unknown-linux-gnu/release/spt dist/spt-arm64
-          chmod +x dist/spt-amd64 dist/spt-arm64
+          for triple_arch in "x86_64-unknown-linux-gnu:amd64" "aarch64-unknown-linux-gnu:arm64"; do
+            triple="${triple_arch%:*}"
+            arch="${triple_arch#*:}"
+            src=$(find "artifacts/binary-${triple}" -type f -name spt -print -quit || true)
+            if [[ -z "$src" ]]; then
+              echo "::error::no spt binary found under artifacts/binary-${triple}"
+              find "artifacts/binary-${triple}" -maxdepth 4 -ls || true
+              exit 1
+            fi
+            cp "$src" "dist/spt-${arch}"
+            chmod +x "dist/spt-${arch}"
+          done
           ls -l dist/spt-amd64 dist/spt-arm64
       - name: Set up QEMU (arm64 emulation for buildx)
         uses: docker/setup-qemu-action@v3
