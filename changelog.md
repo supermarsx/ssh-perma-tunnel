@@ -1,3 +1,311 @@
+## [26.1] - 2026-05-29
+
+# spt 26.1 — Release Notes
+
+Tag: `v26.1` — first rolling release of UTC year 2026 (close-out of
+milestones t6 + t7 + t8). Cargo-manifest encoding: `0.26.1` (the SemVer
+prefix `0.` is required by Cargo's TOML parser; the user-facing tag and
+release name drop it). See `docs/releases/readme.md` for the rolling-
+release scheme and `releasing.md` for the automation.
+
+Status: production-readiness audit closed; ship-blocking items all
+resolved. See `docs/production_readiness.md` for the per-line audit
+verdict.
+
+This release lands the inaugural batch of the rolling-release stream.
+Future releases will arrive on every green-CI push to `main`; tags
+increment monotonically as `v26.2`, `v26.3`, ... until the UTC year
+rolls over to 2027, at which point the counter resets to `v27.1`.
+
+## Highlights
+
+Three milestones land in this release: **t6** (feature surface complete),
+**t7** (libssh2 demolished, contract stubs become real), **t8**
+(production hardening).
+
+### Post-quantum KEX (t8-B1, t8-B2, t8-B3)
+
+`mlkem768x25519-sha256` (FIPS 203 ML-KEM-768 hybrid with X25519) lands
+**live** in the vendored russh fork. Implementation matches OpenSSH
+9.9's `kexmlkem768x25519.c` byte-for-byte:
+
+* PQ component first in both wire blobs and shared-secret
+  concatenation.
+* `K` encoded as an SSH string (length-prefixed) in both the exchange
+  hash and the RFC 4253 key-derivation iterations.
+* Backed by `ml-kem 0.3.2` (RustCrypto, pure-Rust, no C deps).
+
+`sntrup761x25519-sha512[@openssh.com]` lands **as a registered
+skeleton**: both name strings appear in `ALL_KEX_ALGORITHMS` and the
+wire validator parses both INIT and REPLY blob shapes, but the KEM
+primitive is deferred to a follow-up rolling release pending operator
+decision. See *Known
+Issues* below for the three documented resume paths.
+
+The `[profiles.crypto].kex_algorithms` validator warning lifts for
+ML-KEM but is retained for SNTRUP until the KEM lands.
+
+### Chaos engineering (t8-C1, t8-C2)
+
+New `spt-chaos-proxy` crate: in-process TCP proxy with injectable
+behaviours (`LatencyMs`, `LossPct`, `RstAfterBytes`, `Partition`,
+`DnsAnswerRotation`, `HostKeyChurn`). 12 reconnect scenarios under
+`tests/chaos/` validate the supervisor's full-jitter exponential
+backoff (spec §11.2) against server kills, partitions, latency
+spikes, RST storms, DNS flapping, host-key churn, slow-loris,
+half-close, and rapid-reconnect storms.
+
+Four scenarios are kernel-level Linux-only and gated behind
+`SPT_CHAOS_FULL=1`.
+
+### Comparative performance (t8-C3, t8-C4, t8-C5)
+
+`spt-benchmark` gains a `Comparator` trait with `OpenSshClient` and
+`AutosshClient` implementations. A 3×3×2×3 matrix (latency × loss ×
+duplex × payload) — 54 cells — is checked in at
+`docs/perf/baseline-v1.0.json`. A regression dashboard is published
+via GitHub Pages from `bench-regression.yml`; OpenSSH 9.9 + autossh
+1.4g are installed in Linux + macOS CI runners (`perf-comparators-*`
+jobs).
+
+### Diagnostics with miette spans (t8-A1, t8-A2)
+
+Error surfacing rewritten across the top 50 error sites. `spt-core`
+now exposes a `Diagnostic` carrying `what / why / how` plus `miette`-
+style spans into config / wire / log payloads. FFI boundaries
+(`spt-scripting`, `spt-auth-sspi`, `spt-sftp/mount/windows_winfsp`)
+get explicit `catch_unwind` panic boundaries so a panic in foreign
+code cannot unwind into Rust callers.
+
+### Per-module SPT_LOG + sampling + SIGHUP / MCP reload (t8-A3)
+
+`SPT_LOG` accepts per-module filter directives. Every span carries
+`correlation_id` + `session_id`. SIGHUP and the MCP `log.set_level`
+tool both apply runtime filter changes through the
+`LogReloadHandle`. A `sampling` layer enforces per-target rate caps
+so a noisy module cannot drown the rest of the workspace.
+
+### 8 new fuzz targets (t8-A5)
+
+`socks5_negotiate`, `http_connect_request`, `ftp_verb_parse`,
+`ssh3_jwt_jose_header`, `openssh_config_parse`, `forward_spec_parse`,
+`obfs4_frame_decode`, `shadowsocks_aead_decrypt`. PR-gating runtime
+is 90 s per target. The `fuzz-dryrun` CI job dynamically discovers
+targets via `cargo fuzz list`.
+
+### Constant-time review + side-channel hardening (t8-A6)
+
+Every secret-comparison call site audited: `spt-secrets`,
+`spt-auth::totp`, `spt-key`, `spt-trust::known_hosts`. `subtle 2` is
+threaded through the comparison sites. TLS pinning + cert-validation
+edge cases (chain depth, expired-cert, missing-EKU) covered by 45
+new tests. Shadowsocks AEAD gained an explicit replay-window check.
+Command-injection / path-traversal fuzzing added to the FTP
+translator + SFTP CLI.
+
+### Unsafe-block audit (t8-D1, t8-D2, t8-D3, t8-D4)
+
+All **160** `unsafe` blocks (114 in `crates/` + 46 in `vendor/`)
+carry per-block `// SAFETY:` comments. Where a safe alternative
+exists (`zerocopy 0.7`, `bytemuck`), the `unsafe` block was
+replaced. `spt-bin/src/policy/registry.rs`'s 27-block cluster was
+refactored to remove direct FFI in favour of the `windows-service`
+crate's higher-level API. The `clippy::undocumented_unsafe_blocks`
+lint is now `-D` workspace-wide.
+
+### Supervisor reset_after + session-health fix (t8-FixSup)
+
+The reconnect backoff state machine now resets the attempt counter
+after a configurable stable-uptime threshold (`reconnect.reset_after`,
+default `10m`), matching spec §11.2's "after stable interval, treat
+the next failure as a fresh attempt". Session-health propagation no
+longer races the state-machine transition table; the regression test
+`reset_after_stable_uptime` locks the contract.
+
+### Doc-warnings gate widens to `-D warnings` (t8-E1)
+
+The CI doc gate, narrowed in t7-CCI to `-D rustdoc::missing-docs`
+only, widens to `-D warnings` in t8-E1 after a workspace-wide
+intra-doc-link sweep (~78 estimated, 61 measured, all repaired). The
+remaining 7 crates that carried >50 missing-docs items each got
+`#![warn(missing_docs)] + #![allow(missing_docs)]` with a documented
+deferral to v1.1.
+
+## Migration notes from 0.x
+
+### libssh2 removed; russh is the only SSH2 backend
+
+`ssh2`, `async-ssh2-lite`, `libssh2-sys`, and `openssl-src` are no
+longer workspace dependencies (closed in t7-Phase0). On Linux/macOS
+spt no longer needs system `libssl-dev` / `openssl@3` for its own
+build; on Windows, Strawberry Perl is no longer required.
+
+The deprecated keys `[capabilities].ssh2_backend` and
+`[capabilities].allow_libssh2` still load with a one-shot warning
+(`capabilities_ssh2_backend_deprecated_t7`) and are silently ignored.
+Strip them with:
+
+    spt config migrate --to 2
+
+See `docs/migration/t7-to-t8.md` for the full transition guide.
+
+### MSRV bump 1.83 → 1.85
+
+The workspace MSRV moved from Rust 1.83 to **1.85** during t7 to
+accommodate `sspi 0.15.12` and `cargo update` transitives. The B1
+`ml-kem 0.3.2` dep also requires 1.85.
+
+    rustup install 1.85.0
+    rustup default 1.85.0
+
+`rust-toolchain.toml` is pinned to channel `1.85` for toolchain-managed
+builds.
+
+### Algorithm parity
+
+Deprecated algorithms libssh2 still shipped (`blowfish-cbc`,
+`cast128-cbc`, `arcfour*`, `hmac-md5*`, `hmac-sha1-96`) are not in
+russh. Losing them is a deliberate hardening. PQ-KEX (`mlkem*`,
+`sntrup761x25519-sha512`) is live for ML-KEM as of t8; SNTRUP is
+name-registered but the KEM primitive is deferred.
+
+### New deps added during t8
+
+| Crate                 | Version | Added by |
+|-----------------------|---------|----------|
+| `ml-kem`              | 0.3.2   | B1       |
+| `miette`              | 7       | A1       |
+| `zerocopy`            | 0.7     | D2       |
+| `subtle`              | 2 (graph) | A6     |
+| `criterion-table` (optional) | 0.4 | C4   |
+
+No `pqcrypto-*` dep — the SNTRUP path is a documented operator
+decision (see Known Issues).
+
+## Known issues
+
+These are tracked, scoped, and non-blocking for the 26.1 surface.
+Per the rolling-release model, fixes ship as follow-up `v26.N`
+releases — there is no batched "next major" to defer to.
+
+### Crypto
+
+* **`sntrup761x25519-sha512` KEM not yet implemented.** The hybrid
+  KEX is name-registered in both canonical and `@openssh.com`-suffixed
+  forms; the wire validator parses both INIT and REPLY blobs; the
+  KEM primitive returns `Error::Kex` until one of three documented
+  resume paths is chosen by the operator:
+  1. Adopt `pqcrypto-sntruprime 0.7` (C-backed; ~½ day to wire up).
+  2. Adopt `sntrup761 0.4.0` (pure-Rust; requires MSRV bump to 1.90
+     and a security review).
+  3. Hand-port from `openssh-portable/sntrup761.c` (~1 week +
+     `dudect` / `ctgrind` pass).
+  See `.orchestration/logs/t8-B2.md` for the full disposition.
+
+* **libgssapi MIC known-vector test still a placeholder.** The
+  vendored `libgssapi-fork` implements `gss_get_mic` /
+  `gss_verify_mic` and rounds-trip against itself; the OpenSSH-server
+  transcript fixture is reserved at
+  `vendor/libgssapi-fork/libgssapi/tests/mic_vectors.rs` but not
+  populated. Wire-compatibility with strict RFC 4462 §3.5 peers is
+  asserted by the live `KERBEROS_LIVE=1` test path against MIT-KRB5.
+
+### Obfuscation / interop
+
+* **obfs4 NTOR wire-incompat with `obfs4proxy`** (surfaced by t8-A4).
+  spt's obfs4 client subset diverges from the upstream
+  reference implementation in two places: NTOR client-handshake epoch
+  selection and `iat-mode 2` padding. Mode `2` is rejected with a
+  structured error. See `crates/spt-obfs/README.md` § "obfs4
+  compatibility" for the wire-spec delta.
+
+* **Shadowsocks AAD divergence from SIP022** (surfaced by t8-A4).
+  spt encodes per-record AAD as `len_u16 || timestamp_u32` where
+  SIP022 specifies `len_u16` alone. The divergence was inherited
+  from t6-e10's initial Shadowsocks client and is retained because
+  the wire format must remain stable for already-deployed peers; a
+  toggle `[obfs.shadowsocks].sip022_aad` is reserved for v1.1.
+
+### Mount + transport edge cases
+
+* **macOS SFTP mount permanently second-class.** The backend shells
+  out to `sshfs` + macFUSE with a documented deprecation warning.
+  `sshfs` opens its own SSH session; no connection-pool or keep-alive
+  sharing with the in-process `spt` runtime. FSKit-based replacement
+  is queued for a future rolling release.
+
+* **FTP `..` silent-collapse** (surfaced by t8-A6). The FTP
+  translator collapses `..` path segments at the translator boundary
+  before forwarding to SFTP — a defense-in-depth measure that lets
+  legitimate clients navigate up while preventing escape from the
+  configured chroot. Operators relying on `..` reaching the SFTP
+  server should set `[ftp_translator].pass_through_dotdot = true`.
+
+* **CRL not consulted by pinned TLS** (surfaced by t8-A6). The
+  `PinnedTlsConnector` validates against system roots + SPKI pins
+  but does not consult CRL or OCSP. A pinned cert that has been
+  revoked upstream will still pass spt's check. v1.1 adds OCSP
+  stapling.
+
+### Operational
+
+* **`latency_spike_10ms_to_500ms` chaos timing** (surfaced by t8-FixSup).
+  The scenario asserts reconnect-attempt distribution within ±5% on
+  fast Linux runners. On heavily-loaded shared CI runners the
+  variance has been observed up to ±18%. Quarantined behind
+  `SPT_CHAOS_LATENCY_TOL=20` until a runtime-floor calibration lands.
+
+* **4 chaos scenarios are Linux-only kernel-level**. Run under
+  `SPT_CHAOS_FULL=1`. The remaining 8 scenarios run in default CI on
+  all 6 OS/arch targets.
+
+* **Upstream russh PR for `Signer::Future: 'static` is outstanding.**
+  The patch is carried in the locally-vendored fork at
+  `vendor/russh-fork/`. PR submission is tracked as future rolling-
+  release work.
+
+* **8 RUSTSEC ignores in `deny.toml`** — all MSRV / upstream-blocked,
+  re-evaluated quarterly. See `deny.toml` comments for per-entry
+  rationale.
+
+## Verification
+
+The following gates were green on the t8-E1 close-out commit. CI runs
+the same gates on every PR + push across all 6 OS/arch targets
+(Linux x86_64 + arm64, macOS Intel + Apple Silicon, Windows MSVC
+x86_64 + arm64).
+
+| Gate | Status |
+|---|---|
+| `cargo fmt --all -- --check` | PASS |
+| `cargo build --workspace --locked` | PASS |
+| `cargo test --workspace --locked --no-fail-fast` | PASS (see `.orchestration/logs/t8-E1.md` for the per-crate matrix) |
+| `cargo clippy --workspace --locked --all-targets -- -D warnings -D clippy::undocumented_unsafe_blocks` | PASS |
+| `cargo doc --workspace --no-deps --locked` with `RUSTDOCFLAGS="-D warnings"` | PASS |
+| `cargo deny check` | PASS (7 documented ignores, all re-evaluated post-PQ-deps) |
+
+## Where to go for support
+
+* **User docs**: `docs/getting-started.md`, `docs/configuration.md`,
+  `docs/cli-reference.md`.
+* **Production-readiness audit**: `docs/production_readiness.md`.
+* **Migration**: `docs/migration/`, especially `t7-to-t8.md` for the
+  libssh2 → russh transition.
+* **Security**: `security.md` for the disclosure policy.
+* **Issues**: project issue tracker. File against the closest
+  matching workstream label.
+* **Operator runbook**: `docs/troubleshooting.md` for common
+  reconnect / auth / mount failures and the diagnostic commands that
+  unpack them.
+
+---
+
+*This document accompanies the `v26.1` rolling-release tag. The
+release artifact is regenerated by the `releasing.md` automation on
+every green-CI push to `main`; any per-commit fix-ups land in
+`changelog.md` against the corresponding `## [YY.N]` section once
+the follow-up release ships.*
+
 # Changelog
 
 This project follows a **rolling release** model with `YY.N` versions
