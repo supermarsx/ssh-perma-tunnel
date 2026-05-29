@@ -105,21 +105,50 @@ impl SecretBackend for FileBackend {
                 reason: format!("mkdir `{}`: {e}", parent.display()),
             })?;
         }
-        atomicwrites::AtomicFile::new(&path, atomicwrites::AllowOverwrite)
-            .write(|f| std::io::Write::write_all(f, value))
-            .map_err(|e| Error::SecretUnavailable {
-                reference: r.to_string(),
-                reason: format!("write `{}`: {e}", path.display()),
-            })?;
-        // Tighten permissions to 0600 on Unix.
+        // Open + write + rename ourselves rather than going through
+        // `atomicwrites::AtomicFile`. The historical path used the helper
+        // and then `set_permissions(0600)` *after* the rename, which left a
+        // window where the secret was readable under the default umask
+        // (typically 0644). Mirrors `portable.rs::write_master_key`.
         #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt;
-            let perm = fs::Permissions::from_mode(0o600);
-            fs::set_permissions(&path, perm).map_err(|e| Error::SecretUnavailable {
+            use std::io::Write;
+            use std::os::unix::fs::OpenOptionsExt;
+            let tmp = path.with_extension("secret.tmp");
+            let mut f = std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o600)
+                .open(&tmp)
+                .map_err(|e| Error::SecretUnavailable {
+                    reference: r.to_string(),
+                    reason: format!("open temp `{}`: {e}", tmp.display()),
+                })?;
+            f.write_all(value).map_err(|e| Error::SecretUnavailable {
                 reference: r.to_string(),
-                reason: format!("chmod `{}`: {e}", path.display()),
+                reason: format!("write temp `{}`: {e}", tmp.display()),
             })?;
+            f.sync_all().ok();
+            drop(f);
+            std::fs::rename(&tmp, &path).map_err(|e| Error::SecretUnavailable {
+                reference: r.to_string(),
+                reason: format!("rename `{}` -> `{}`: {e}", tmp.display(), path.display()),
+            })?;
+        }
+        #[cfg(not(unix))]
+        {
+            // Windows: NTFS ACLs default to inheriting the parent directory's
+            // DACL. `atomicwrites` is fine here — no permission-window concern
+            // because the file inherits the (operator-controlled) parent ACL
+            // both before and after the rename. A stricter ACL pass is in
+            // scope for `spt secret doctor`; see check_mode().
+            atomicwrites::AtomicFile::new(&path, atomicwrites::AllowOverwrite)
+                .write(|f| std::io::Write::write_all(f, value))
+                .map_err(|e| Error::SecretUnavailable {
+                    reference: r.to_string(),
+                    reason: format!("write `{}`: {e}", path.display()),
+                })?;
         }
         Ok(())
     }

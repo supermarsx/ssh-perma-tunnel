@@ -41,8 +41,10 @@ pub mod fixtures {
     /// A permissive [`Ssh3Config`] suitable for in-process tests.
     ///
     /// `acknowledge_experimental = true` and `tls.allow_self_signed = true`
-    /// so [`Ssh3Config::validate`] passes. `keepalive_secs` is the upstream
-    /// default.
+    /// so [`Ssh3Config::validate`] passes. A dummy SPKI pin satisfies the
+    /// load-time requirement that self-signed mode must still anchor on
+    /// either a pin set or a `ca_file` (security audit fix #4).
+    /// `keepalive_secs` is the upstream default.
     ///
     /// ```
     /// use spt_ssh3::testing::fixtures::default_test_config;
@@ -56,6 +58,9 @@ pub mod fixtures {
             acknowledge_experimental: true,
             tls: Ssh3TlsConfig {
                 allow_self_signed: true,
+                pin: spt_trust::TlsPin {
+                    spki_sha256: vec![[0u8; 32]],
+                },
                 ..Ssh3TlsConfig::default()
             },
             ..Ssh3Config::default()

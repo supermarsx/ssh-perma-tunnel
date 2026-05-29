@@ -160,12 +160,30 @@ impl Ssh3Config {
                 self.url_path
             )));
         }
-        if self.tls.allow_self_signed && !self.acknowledge_experimental {
-            return Err(Error::InvalidConfig(
-                "ssh3.tls.allow_self_signed=true requires \
-                 ssh3.acknowledge_experimental=true"
-                    .to_string(),
-            ));
+        if self.tls.allow_self_signed {
+            // `acknowledge_experimental` keeps the "I know what I'm doing"
+            // gate, but on its own it does NOT make `allow_self_signed`
+            // safe: WebPKI is skipped, so without either an explicit pin
+            // set or a `ca_file` the only trust check is "the server
+            // presented *some* certificate." That collapses TLS to a
+            // hostname-confirmation no-op. Require at least one of:
+            //   - `tls.pin.spki_sha256` is non-empty (pinned), or
+            //   - `tls.ca_file` is set (private CA bundle).
+            if !self.acknowledge_experimental {
+                return Err(Error::InvalidConfig(
+                    "ssh3.tls.allow_self_signed=true requires \
+                     ssh3.acknowledge_experimental=true"
+                        .to_string(),
+                ));
+            }
+            if self.tls.pin.spki_sha256.is_empty() && self.tls.ca_file.is_none() {
+                return Err(Error::InvalidConfig(
+                    "ssh3.tls.allow_self_signed=true requires either a non-empty \
+                     `tls.pin.spki_sha256` pin set or a `tls.ca_file` private CA \
+                     bundle — otherwise no trust anchor is enforced"
+                        .to_string(),
+                ));
+            }
         }
         if self.keepalive_secs == 0 {
             return Err(Error::InvalidConfig(
@@ -203,9 +221,50 @@ mod tests {
             },
             ..Ssh3Config::default()
         };
+        // Without `acknowledge_experimental` → fail.
         let err = c.validate().unwrap_err();
         assert!(matches!(err, Error::InvalidConfig(_)));
+        // With `acknowledge_experimental` but no pin/ca_file → still fail.
         c.acknowledge_experimental = true;
+        let err = c.validate().unwrap_err();
+        match err {
+            Error::InvalidConfig(m) => {
+                assert!(
+                    m.contains("`tls.pin.spki_sha256`") || m.contains("`tls.ca_file`"),
+                    "got: {m}"
+                );
+            }
+            other => panic!("expected InvalidConfig, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn allow_self_signed_with_pin_validates() {
+        let c = Ssh3Config {
+            tls: Ssh3TlsConfig {
+                allow_self_signed: true,
+                pin: TlsPin {
+                    spki_sha256: vec![[0xABu8; 32]],
+                },
+                ..Ssh3TlsConfig::default()
+            },
+            acknowledge_experimental: true,
+            ..Ssh3Config::default()
+        };
+        assert!(c.validate().is_ok());
+    }
+
+    #[test]
+    fn allow_self_signed_with_ca_file_validates() {
+        let c = Ssh3Config {
+            tls: Ssh3TlsConfig {
+                allow_self_signed: true,
+                ca_file: Some(std::path::PathBuf::from("/etc/spt/private-ca.pem")),
+                ..Ssh3TlsConfig::default()
+            },
+            acknowledge_experimental: true,
+            ..Ssh3Config::default()
+        };
         assert!(c.validate().is_ok());
     }
 
