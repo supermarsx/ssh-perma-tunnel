@@ -29,6 +29,18 @@
     <MajorUpgrade DowngradeErrorMessage='A newer version of [ProductName] is already installed.' />
     <Media Id='1' Cabinet='media1.cab' EmbedCab='yes' />
 
+    <!--
+      Branding. The icon path is relative to the wxs file's directory; light.exe
+      resolves it at link time. assets/icon.ico is generated from assets/icon.svg
+      by tools/icon-build (see assets/readme.md).
+    -->
+    <Icon Id='SptIcon.ico' SourceFile='..\..\assets\icon.ico' />
+    <Property Id='ARPPRODUCTICON' Value='SptIcon.ico' />
+    <Property Id='ARPHELPLINK' Value='https://github.com/supermarsx/ssh-perma-tunnel' />
+    <Property Id='ARPURLINFOABOUT' Value='https://github.com/supermarsx/ssh-perma-tunnel' />
+    <Property Id='ARPURLUPDATEINFO' Value='https://github.com/supermarsx/ssh-perma-tunnel/releases' />
+    <Property Id='ARPCONTACT' Value='https://github.com/supermarsx/ssh-perma-tunnel/issues' />
+
     <Directory Id='TARGETDIR' Name='SourceDir'>
       <Directory Id='ProgramFiles64Folder'>
         <Directory Id='APPLICATIONFOLDER' Name='spt'>

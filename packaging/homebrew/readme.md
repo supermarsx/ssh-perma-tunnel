@@ -43,7 +43,7 @@ To build from the `main` branch instead of the published tarballs:
 brew install --HEAD --build-from-source ./packaging/homebrew/spt.rb
 ```
 
-The `head do` block in the formula pulls `https://github.com/Mariana/ssh-perma-tunnel.git`
+The `head do` block in the formula pulls `https://github.com/supermarsx/ssh-perma-tunnel.git`
 and runs `cargo install` against `crates/spt-bin`. That path requires a
 Rust toolchain (`depends_on "rust" => :build`); Homebrew will install one
 automatically if needed.
@@ -75,7 +75,7 @@ homebrew-core.
 
 ### Per-release tap update (operator)
 
-After each tagged release on `Mariana/ssh-perma-tunnel`:
+After each tagged release on `supermarsx/ssh-perma-tunnel`:
 
 1. Compute the four release-artifact SHAs (see *Placeholder substitution*
    below).
@@ -148,7 +148,7 @@ maintainers can either copy the file by hand or use `brew bump-formula-pr`:
 
 ```bash
 brew bump-formula-pr \
-    --url https://github.com/Mariana/ssh-perma-tunnel/releases/download/v<version>/spt-<version>-x86_64-apple-darwin.tar.gz \
+    --url https://github.com/supermarsx/ssh-perma-tunnel/releases/download/v<version>/spt-<version>-x86_64-apple-darwin.tar.gz \
     --sha256 <sha_macos_intel> \
     spt
 ```
@@ -177,7 +177,7 @@ The SHAs are pre-computed by CI and published in the release's
 
 ```bash
 VERSION=0.1.0
-BASE=https://github.com/Mariana/ssh-perma-tunnel/releases/download/v${VERSION}
+BASE=https://github.com/supermarsx/ssh-perma-tunnel/releases/download/v${VERSION}
 curl -fsSL "$BASE/SHA256SUMS" | awk '
   /aarch64-apple-darwin\.tar\.gz$/        { print "macos_arm   = " $1 }
   /x86_64-apple-darwin\.tar\.gz$/         { print "macos_intel = " $1 }

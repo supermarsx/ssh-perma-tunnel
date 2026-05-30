@@ -15,18 +15,18 @@
   <metadata>
     <id>spt</id>
     <version>26.1</version>
-    <packageSourceUrl>https://github.com/Mariana/ssh-perma-tunnel/tree/main/packaging/choco</packageSourceUrl>
+    <packageSourceUrl>https://github.com/supermarsx/ssh-perma-tunnel/tree/main/packaging/choco</packageSourceUrl>
     <owners>Mariana</owners>
 
     <title>spt (SSH Permanent Tunnel)</title>
     <authors>Mariana</authors>
-    <projectUrl>https://github.com/Mariana/ssh-perma-tunnel</projectUrl>
-    <projectSourceUrl>https://github.com/Mariana/ssh-perma-tunnel</projectSourceUrl>
-    <docsUrl>https://github.com/Mariana/ssh-perma-tunnel#readme</docsUrl>
-    <bugTrackerUrl>https://github.com/Mariana/ssh-perma-tunnel/issues</bugTrackerUrl>
-    <mailingListUrl>https://github.com/Mariana/ssh-perma-tunnel/discussions</mailingListUrl>
-    <licenseUrl>https://github.com/Mariana/ssh-perma-tunnel/blob/main/license.md</licenseUrl>
-    <iconUrl>https://raw.githubusercontent.com/Mariana/ssh-perma-tunnel/main/packaging/choco/icon.png</iconUrl>
+    <projectUrl>https://github.com/supermarsx/ssh-perma-tunnel</projectUrl>
+    <projectSourceUrl>https://github.com/supermarsx/ssh-perma-tunnel</projectSourceUrl>
+    <docsUrl>https://github.com/supermarsx/ssh-perma-tunnel#readme</docsUrl>
+    <bugTrackerUrl>https://github.com/supermarsx/ssh-perma-tunnel/issues</bugTrackerUrl>
+    <mailingListUrl>https://github.com/supermarsx/ssh-perma-tunnel/discussions</mailingListUrl>
+    <licenseUrl>https://github.com/supermarsx/ssh-perma-tunnel/blob/main/license.md</licenseUrl>
+    <iconUrl>https://raw.githubusercontent.com/supermarsx/ssh-perma-tunnel/main/packaging/choco/icon.png</iconUrl>
     <requireLicenseAcceptance>false</requireLicenseAcceptance>
 
     <tags>spt ssh ssh3 tunnel networking security cli windows admin</tags>
@@ -60,7 +60,7 @@ spt service install --config %USERPROFILE%\.spt\spt.toml
 
 See the project README for the full configuration reference and operator runbooks.
 ]]></description>
-    <releaseNotes>See https://github.com/Mariana/ssh-perma-tunnel/releases for full release notes.</releaseNotes>
+    <releaseNotes>See https://github.com/supermarsx/ssh-perma-tunnel/releases for full release notes.</releaseNotes>
 
     <copyright>Copyright (c) 2026 Mariana</copyright>
   </metadata>

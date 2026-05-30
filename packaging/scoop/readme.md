@@ -21,7 +21,7 @@ scoop install .\spt.json
 
 # or by raw URL once the release tag is published
 scoop install `
-    https://raw.githubusercontent.com/Mariana/ssh-perma-tunnel/v<VERSION>/packaging/scoop/spt.json
+    https://raw.githubusercontent.com/supermarsx/ssh-perma-tunnel/v<VERSION>/packaging/scoop/spt.json
 ```
 
 Scoop will:

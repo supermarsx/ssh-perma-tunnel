@@ -1,17 +1,56 @@
-<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<?xml version="1.0" encoding="UTF-8"?>
 <!--
-  Placeholder icon for spt. A flat blue square with the "spt" wordmark
-  centered in white. Replace with the final brand mark before the first
-  Flathub submission lands; the file name (io.spt.spt.svg) and the
-  installation paths in modules/spt-build.yaml must stay in sync.
+  spt — ssh-perma-tunnel.
+  Canonical app icon. All other raster forms (PNG, ICO, ICNS) are generated
+  from this SVG by `tools/icon-build`. Do not hand-edit the rasters; rerun
+  the generator instead.
+
+  Design notes:
+   * 1024×1024 logical canvas, viewBox normalised.
+   * Slate background (#1f2933) with a soft inner gradient for depth at
+     large sizes; collapses to flat slate at 16×16.
+   * Monochrome terminal-prompt block on the left (the "local" end of the
+     tunnel) and a teal accent stroke (#5eead4) tracing a tunnel arrow that
+     exits toward the bottom-right corner (the "remote" end).
+   * Stroke geometry is octagonal / 45° so it stays crisp at 16/32 px
+     without sub-pixel artefacts.
+   * No text. Wordmark variants live in `assets/wordmark.svg` (TBD).
 -->
-<svg xmlns="http://www.w3.org/2000/svg"
-     width="256" height="256" viewBox="0 0 256 256"
-     role="img" aria-label="spt">
-  <title>spt</title>
-  <rect width="256" height="256" rx="40" ry="40" fill="#1f6feb"/>
-  <text x="128" y="160"
-        font-family="DejaVu Sans, Liberation Sans, sans-serif"
-        font-size="120" font-weight="700"
-        text-anchor="middle" fill="#ffffff">spt</text>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-label="spt — ssh-perma-tunnel">
+  <title>spt — ssh-perma-tunnel</title>
+  <desc>A teal tunnel arrow exiting a terminal-prompt mark on a slate background.</desc>
+
+  <defs>
+    <!-- Subtle radial gradient for depth at larger sizes. -->
+    <radialGradient id="bg" cx="50%" cy="35%" r="75%">
+      <stop offset="0%" stop-color="#2a3744"/>
+      <stop offset="100%" stop-color="#1f2933"/>
+    </radialGradient>
+    <!-- Tunnel-arrow gradient: brighter at the entry (left), dimmer at exit. -->
+    <linearGradient id="tunnel" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#5eead4"/>
+      <stop offset="100%" stop-color="#34d399"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Rounded slate plate. 12.5% corner radius (= 128/1024). -->
+  <rect x="0" y="0" width="1024" height="1024" rx="128" ry="128" fill="url(#bg)"/>
+
+  <!-- Terminal-prompt block (the "local" end). Solid stroke, no fill. -->
+  <g stroke="#cbd5e1" stroke-width="48" stroke-linejoin="round" stroke-linecap="round" fill="none">
+    <!-- Outer terminal frame. -->
+    <rect x="176" y="288" width="304" height="448" rx="32" ry="32"/>
+    <!-- Prompt chevron (>) inside the terminal. -->
+    <polyline points="248,440 320,512 248,584"/>
+    <!-- Cursor/underscore. -->
+    <line x1="360" y1="608" x2="408" y2="608"/>
+  </g>
+
+  <!-- Tunnel arrow exiting toward the bottom-right corner. -->
+  <g fill="none" stroke="url(#tunnel)" stroke-width="72" stroke-linecap="round" stroke-linejoin="round">
+    <!-- Shaft: from the terminal's right edge, dipping then exiting at 45°. -->
+    <path d="M 480 512 L 640 512 L 880 752"/>
+    <!-- Arrowhead at the exit (45° pair). -->
+    <polyline points="816,752 880,752 880,688"/>
+  </g>
 </svg>

@@ -5,8 +5,8 @@ their reviews. This Chocolatey package is a thin wrapper: it does not bundle
 any binaries. Instead, it downloads the official spt MSI installers from the
 upstream GitHub Releases page at install time.
 
-Upstream:    https://github.com/Mariana/ssh-perma-tunnel
-Releases:    https://github.com/Mariana/ssh-perma-tunnel/releases
+Upstream:    https://github.com/supermarsx/ssh-perma-tunnel
+Releases:    https://github.com/supermarsx/ssh-perma-tunnel/releases
 Maintainer:  Mariana <see project page>
 License:     MIT (see LICENSE.txt next to this file)
 
@@ -27,7 +27,7 @@ To verify the integrity of the artifacts this package will install:
 
 5. Cross-check the same hash against the upstream SHA256SUMS file shipped
    with the matching GitHub release:
-       https://github.com/Mariana/ssh-perma-tunnel/releases/download/v<VERSION>/SHA256SUMS
+       https://github.com/supermarsx/ssh-perma-tunnel/releases/download/v<VERSION>/SHA256SUMS
 
    The MSI filename and its SHA-256 must appear in that file. SHA256SUMS is
    signed with the project's minisign key (see packaging\signing.md upstream)

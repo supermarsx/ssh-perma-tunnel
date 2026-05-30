@@ -48,7 +48,7 @@ IMPORTS
 spt MODULE-IDENTITY
     LAST-UPDATED "202605050000Z"
     ORGANIZATION "spt project"
-    CONTACT-INFO "https://github.com/Mariana/ssh-perma-tunnel"
+    CONTACT-INFO "https://github.com/supermarsx/ssh-perma-tunnel"
     DESCRIPTION
         "Enterprise MIB for the spt SSH permanent tunnel daemon.
 

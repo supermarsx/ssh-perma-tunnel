@@ -81,8 +81,8 @@ short version:
    ```powershell
    wingetcreate update Mariana.spt `
      --version 0.1.0 `
-     --urls https://github.com/Mariana/ssh-perma-tunnel/releases/download/v0.1.0/spt-0.1.0-x86_64-pc-windows-msvc.msi `
-            https://github.com/Mariana/ssh-perma-tunnel/releases/download/v0.1.0/spt-0.1.0-aarch64-pc-windows-msvc.msi `
+     --urls https://github.com/supermarsx/ssh-perma-tunnel/releases/download/0.1.0/spt-0.1.0-x86_64-pc-windows-msvc.msi `
+            https://github.com/supermarsx/ssh-perma-tunnel/releases/download/0.1.0/spt-0.1.0-aarch64-pc-windows-msvc.msi `
      --submit
    ```
    `wingetcreate` pulls the latest manifests, swaps in the new URLs/hashes,

@@ -3,7 +3,7 @@ base: core22
 version: '26.1'
 summary: Permanent SSH/SSH3 tunnels — survives drops
 title: spt
-icon: ../snapcraft/icon-256.png
+icon: ../../assets/icon-256.png
 description: |
   spt establishes and maintains permanent SSH/SSH3 tunnels — local and
   reverse port forwards that survive network drops, host restarts,
@@ -24,10 +24,10 @@ description: |
 
   spt is client-only: bring your own SSH/SSH3 server.
 license: MIT
-contact: https://github.com/Mariana/ssh-perma-tunnel/issues
-issues: https://github.com/Mariana/ssh-perma-tunnel/issues
-source-code: https://github.com/Mariana/ssh-perma-tunnel
-website: https://github.com/Mariana/ssh-perma-tunnel
+contact: https://github.com/supermarsx/ssh-perma-tunnel/issues
+issues: https://github.com/supermarsx/ssh-perma-tunnel/issues
+source-code: https://github.com/supermarsx/ssh-perma-tunnel
+website: https://github.com/supermarsx/ssh-perma-tunnel
 
 grade: stable
 # Confinement rationale (see packaging/snapcraft/store-listing.md "Confinement

@@ -6,7 +6,7 @@ pkgbase = spt
 	pkgdesc = Permanent SSH/SSH3 tunnels — local/remote port forwards that survive drops
 	pkgver = <VERSION>
 	pkgrel = 1
-	url = https://github.com/Mariana/ssh-perma-tunnel
+	url = https://github.com/supermarsx/ssh-perma-tunnel
 	arch = x86_64
 	arch = aarch64
 	license = MIT
@@ -18,7 +18,7 @@ pkgbase = spt
 	provides = spt
 	conflicts = spt-bin
 	conflicts = spt-git
-	source = spt-<VERSION>.tar.gz::https://github.com/Mariana/ssh-perma-tunnel/archive/refs/tags/v<VERSION>.tar.gz
+	source = spt-<VERSION>.tar.gz::https://github.com/supermarsx/ssh-perma-tunnel/archive/refs/tags/v<VERSION>.tar.gz
 	sha256sums = <SHA256_SRC_TAR>
 
 pkgname = spt

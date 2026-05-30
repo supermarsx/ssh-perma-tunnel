@@ -4,8 +4,8 @@ version = "0.26.1"
 edition = "2021"
 rust-version = "1.85"
 license = "MIT"
-repository = "https://github.com/Mariana/ssh-perma-tunnel"
-homepage = "https://github.com/Mariana/ssh-perma-tunnel"
+repository = "https://github.com/supermarsx/ssh-perma-tunnel"
+homepage = "https://github.com/supermarsx/ssh-perma-tunnel"
 authors = ["Mariana"]
 description = "Sealed-config envelope (SPTENC1) — AES-256-GCM body with Argon2id / vault-master / X25519-recipient KDF and optional Ed25519 signature."
 

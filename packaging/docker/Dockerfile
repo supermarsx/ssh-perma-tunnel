@@ -108,5 +108,5 @@ CMD ["tunnel", "run", "--foreground", \
 LABEL org.opencontainers.image.title="spt" \
       org.opencontainers.image.description="Permanent SSH2/SSH3 tunnels with reconnect, observability, and service integration." \
       org.opencontainers.image.licenses="MIT" \
-      org.opencontainers.image.source="https://github.com/Mariana/ssh-perma-tunnel" \
-      org.opencontainers.image.documentation="https://github.com/Mariana/ssh-perma-tunnel/blob/main/packaging/docker/readme.md"
+      org.opencontainers.image.source="https://github.com/supermarsx/ssh-perma-tunnel" \
+      org.opencontainers.image.documentation="https://github.com/supermarsx/ssh-perma-tunnel/blob/main/packaging/docker/readme.md"

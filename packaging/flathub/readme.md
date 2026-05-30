@@ -186,7 +186,7 @@ A starter PR description template:
 
 - Source tarball SHA256: `<SHA256_SRC_TAR>`
 - Vendor tarball SHA256: `<SHA256_VENDOR_TAR>`
-- Release notes: https://github.com/Mariana/ssh-perma-tunnel/releases/tag/v<VERSION>
+- Release notes: https://github.com/supermarsx/ssh-perma-tunnel/releases/tag/v<VERSION>
 
 The manifest builds against `org.freedesktop.Platform//23.08`. All
 crates resolve offline from the vendored sources tarball.

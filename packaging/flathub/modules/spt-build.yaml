@@ -13,11 +13,11 @@ name: spt
 buildsystem: simple
 sources:
   - type: archive
-    url: https://github.com/Mariana/ssh-perma-tunnel/archive/refs/tags/v<VERSION>.tar.gz
+    url: https://github.com/supermarsx/ssh-perma-tunnel/archive/refs/tags/v<VERSION>.tar.gz
     sha256: <SHA256_SRC_TAR>
     dest-filename: spt-source.tar.gz
   - type: archive
-    url: https://github.com/Mariana/ssh-perma-tunnel/releases/download/v<VERSION>/spt-<VERSION>-vendor.tar.xz
+    url: https://github.com/supermarsx/ssh-perma-tunnel/releases/download/v<VERSION>/spt-<VERSION>-vendor.tar.xz
     sha256: <SHA256_VENDOR_TAR>
     dest-filename: spt-vendor.tar.xz
     strip-components: 0

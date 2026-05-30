@@ -12,7 +12,7 @@ pkgver=<VERSION>
 pkgrel=1
 pkgdesc="Permanent SSH/SSH3 tunnels — local/remote port forwards that survive drops (pre-built)"
 arch=('x86_64' 'aarch64')
-url="https://github.com/Mariana/ssh-perma-tunnel"
+url="https://github.com/supermarsx/ssh-perma-tunnel"
 license=('MIT')
 depends=('gcc-libs' 'openssl')
 optdepends=(
@@ -21,8 +21,8 @@ optdepends=(
 provides=('spt')
 conflicts=('spt' 'spt-git')
 
-source_x86_64=("${_relname}-${pkgver}-x86_64.tar.gz::https://github.com/Mariana/ssh-perma-tunnel/releases/download/v${pkgver}/spt-${pkgver}-x86_64-unknown-linux-gnu.tar.gz")
-source_aarch64=("${_relname}-${pkgver}-aarch64.tar.gz::https://github.com/Mariana/ssh-perma-tunnel/releases/download/v${pkgver}/spt-${pkgver}-aarch64-unknown-linux-gnu.tar.gz")
+source_x86_64=("${_relname}-${pkgver}-x86_64.tar.gz::https://github.com/supermarsx/ssh-perma-tunnel/releases/download/v${pkgver}/spt-${pkgver}-x86_64-unknown-linux-gnu.tar.gz")
+source_aarch64=("${_relname}-${pkgver}-aarch64.tar.gz::https://github.com/supermarsx/ssh-perma-tunnel/releases/download/v${pkgver}/spt-${pkgver}-aarch64-unknown-linux-gnu.tar.gz")
 sha256sums_x86_64=('<SHA256_LINUX_AMD64>')
 sha256sums_aarch64=('<SHA256_LINUX_ARM64>')
 

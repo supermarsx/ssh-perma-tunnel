@@ -6,16 +6,16 @@ PackageIdentifier: Mariana.spt
 PackageVersion: 26.1
 PackageLocale: en-US
 Publisher: Mariana
-PublisherUrl: https://github.com/Mariana
-PublisherSupportUrl: https://github.com/Mariana/ssh-perma-tunnel/issues
-PrivacyUrl: https://github.com/Mariana/ssh-perma-tunnel/blob/main/docs/privacy.md
+PublisherUrl: https://github.com/supermarsx
+PublisherSupportUrl: https://github.com/supermarsx/ssh-perma-tunnel/issues
+PrivacyUrl: https://github.com/supermarsx/ssh-perma-tunnel/blob/main/docs/privacy.md
 Author: Mariana
 PackageName: spt
-PackageUrl: https://github.com/Mariana/ssh-perma-tunnel
+PackageUrl: https://github.com/supermarsx/ssh-perma-tunnel
 License: MIT
-LicenseUrl: https://github.com/Mariana/ssh-perma-tunnel/blob/main/license.md
+LicenseUrl: https://github.com/supermarsx/ssh-perma-tunnel/blob/main/license.md
 Copyright: Copyright (c) 2026 Mariana
-CopyrightUrl: https://github.com/Mariana/ssh-perma-tunnel/blob/main/license.md
+CopyrightUrl: https://github.com/supermarsx/ssh-perma-tunnel/blob/main/license.md
 ShortDescription: Permanent SSH/SSH3 tunnels with reconnect and service integration
 Description: |-
   spt establishes and maintains permanent SSH tunnels — local and reverse
@@ -33,6 +33,6 @@ Tags:
   - security
   - cli
 ReleaseNotes: <RELEASE_NOTES>
-ReleaseNotesUrl: https://github.com/Mariana/ssh-perma-tunnel/releases/tag/v26.1
+ReleaseNotesUrl: https://github.com/supermarsx/ssh-perma-tunnel/releases/tag/26.1
 ManifestType: defaultLocale
 ManifestVersion: 1.6.0

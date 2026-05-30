@@ -57,7 +57,7 @@ Full per-channel promotion criteria are in
 | `icon-256.png` (1×1 placeholder PNG)         | Real 256×256 brand icon, transparent background allowed.                                  |
 | `version: '0.1.0'` in snapcraft.yaml         | The new semver string for this release.                                                   |
 | `<REVISION>` in store-listing.md examples    | The integer revision printed by `snapcraft upload`.                                       |
-| `Mariana/ssh-perma-tunnel` in contact URLs   | Whatever the canonical GitHub org/repo ends up being at publication time.                 |
+| `supermarsx/ssh-perma-tunnel` in contact URLs   | Whatever the canonical GitHub org/repo ends up being at publication time.                 |
 | Banner image (uploaded via web UI)           | A 1920×1080 banner; not stored in the repo.                                               |
 
 ## Why the icon is a placeholder

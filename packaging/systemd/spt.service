@@ -1,6 +1,6 @@
 [Unit]
 Description=SSH permanent tunnel (spt)
-Documentation=https://github.com/Mariana/ssh-perma-tunnel
+Documentation=https://github.com/supermarsx/ssh-perma-tunnel
 After=network-online.target
 Wants=network-online.target
 

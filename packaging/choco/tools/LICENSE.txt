@@ -1,4 +1,4 @@
-From: https://github.com/Mariana/ssh-perma-tunnel/blob/main/license.md
+From: https://github.com/supermarsx/ssh-perma-tunnel/blob/main/license.md
 
 LICENSE
 

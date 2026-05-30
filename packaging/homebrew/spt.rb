@@ -13,7 +13,7 @@
 # See packaging/homebrew/readme.md for the full release/submission flow.
 class Spt < Formula
   desc "Permanent SSH/SSH3 tunnels - local/remote port forwards that survive drops"
-  homepage "https://github.com/Mariana/ssh-perma-tunnel"
+  homepage "https://github.com/supermarsx/ssh-perma-tunnel"
   version "<VERSION>"
   license "MIT"
 
@@ -23,28 +23,28 @@ class Spt < Formula
   end
 
   head do
-    url "https://github.com/Mariana/ssh-perma-tunnel.git", branch: "main"
+    url "https://github.com/supermarsx/ssh-perma-tunnel.git", branch: "main"
     depends_on "rust" => :build
   end
 
   on_macos do
     on_arm do
-      url "https://github.com/Mariana/ssh-perma-tunnel/releases/download/v#{version}/spt-#{version}-aarch64-apple-darwin.tar.gz"
+      url "https://github.com/supermarsx/ssh-perma-tunnel/releases/download/v#{version}/spt-#{version}-aarch64-apple-darwin.tar.gz"
       sha256 "<SHA256_MACOS_ARM64>"
     end
     on_intel do
-      url "https://github.com/Mariana/ssh-perma-tunnel/releases/download/v#{version}/spt-#{version}-x86_64-apple-darwin.tar.gz"
+      url "https://github.com/supermarsx/ssh-perma-tunnel/releases/download/v#{version}/spt-#{version}-x86_64-apple-darwin.tar.gz"
       sha256 "<SHA256_MACOS_AMD64>"
     end
   end
 
   on_linux do
     on_arm do
-      url "https://github.com/Mariana/ssh-perma-tunnel/releases/download/v#{version}/spt-#{version}-aarch64-unknown-linux-gnu.tar.gz"
+      url "https://github.com/supermarsx/ssh-perma-tunnel/releases/download/v#{version}/spt-#{version}-aarch64-unknown-linux-gnu.tar.gz"
       sha256 "<SHA256_LINUX_ARM64>"
     end
     on_intel do
-      url "https://github.com/Mariana/ssh-perma-tunnel/releases/download/v#{version}/spt-#{version}-x86_64-unknown-linux-gnu.tar.gz"
+      url "https://github.com/supermarsx/ssh-perma-tunnel/releases/download/v#{version}/spt-#{version}-x86_64-unknown-linux-gnu.tar.gz"
       sha256 "<SHA256_LINUX_AMD64>"
     end
   end

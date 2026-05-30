@@ -11,7 +11,7 @@ pkgver=<VERSION>
 pkgrel=1
 pkgdesc="Permanent SSH/SSH3 tunnels — local/remote port forwards that survive drops"
 arch=('x86_64' 'aarch64')
-url="https://github.com/Mariana/ssh-perma-tunnel"
+url="https://github.com/supermarsx/ssh-perma-tunnel"
 license=('MIT')
 depends=('gcc-libs' 'openssl')
 makedepends=('cargo' 'pkgconf')
@@ -20,7 +20,7 @@ optdepends=(
 )
 provides=('spt')
 conflicts=('spt-bin' 'spt-git')
-source=("$pkgname-$pkgver.tar.gz::https://github.com/Mariana/ssh-perma-tunnel/archive/refs/tags/v${pkgver}.tar.gz")
+source=("$pkgname-$pkgver.tar.gz::https://github.com/supermarsx/ssh-perma-tunnel/archive/refs/tags/v${pkgver}.tar.gz")
 sha256sums=('<SHA256_SRC_TAR>')
 
 prepare() {

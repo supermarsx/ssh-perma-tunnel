@@ -25,11 +25,11 @@ UpgradeBehavior: install
 ReleaseDate: 2026-05-22
 Installers:
   - Architecture: x64
-    InstallerUrl: https://github.com/Mariana/ssh-perma-tunnel/releases/download/v26.1/spt-26.1-x86_64-pc-windows-msvc.msi
+    InstallerUrl: https://github.com/supermarsx/ssh-perma-tunnel/releases/download/26.1/spt-26.1-x86_64-pc-windows-msvc.msi
     InstallerSha256: <SHA256_WIN_AMD64>
     ProductCode: <PRODUCT_CODE_X64>
   - Architecture: arm64
-    InstallerUrl: https://github.com/Mariana/ssh-perma-tunnel/releases/download/v26.1/spt-26.1-aarch64-pc-windows-msvc.msi
+    InstallerUrl: https://github.com/supermarsx/ssh-perma-tunnel/releases/download/26.1/spt-26.1-aarch64-pc-windows-msvc.msi
     InstallerSha256: <SHA256_WIN_ARM64>
     ProductCode: <PRODUCT_CODE_ARM64>
 ManifestType: installer

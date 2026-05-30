@@ -33,7 +33,7 @@ modules:
     buildsystem: simple
     sources:
       - type: archive
-        url: https://github.com/Mariana/ssh-perma-tunnel/archive/refs/tags/v<VERSION>.tar.gz
+        url: https://github.com/supermarsx/ssh-perma-tunnel/archive/refs/tags/v<VERSION>.tar.gz
         sha256: <SHA256_SRC_TAR>
         dest-filename: spt-source.tar.gz
     build-commands:

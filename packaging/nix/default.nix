@@ -79,8 +79,8 @@ rustPlatform.buildRustPackage rec {
 
   meta = with lib; {
     description = "Permanent SSH/SSH3 tunnels — local/remote port forwards that survive drops";
-    homepage = "https://github.com/Mariana/ssh-perma-tunnel";
-    changelog = "https://github.com/Mariana/ssh-perma-tunnel/blob/v${version}/changelog.md";
+    homepage = "https://github.com/supermarsx/ssh-perma-tunnel";
+    changelog = "https://github.com/supermarsx/ssh-perma-tunnel/blob/v${version}/changelog.md";
     license = licenses.mit;
     maintainers = with maintainers; [ ];
     mainProgram = "spt";

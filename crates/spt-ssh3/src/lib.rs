@@ -22,7 +22,7 @@
 //!   unless the operator sets `acknowledge_experimental = true` on the
 //!   [`Ssh3Config`]. This satisfies the spec §4.2 requirement.
 //!
-//! See [`crates/spt-ssh3/readme.md`](https://github.com/Mariana/ssh-perma-tunnel/blob/main/crates/spt-ssh3/readme.md)
+//! See [`crates/spt-ssh3/readme.md`](https://github.com/supermarsx/ssh-perma-tunnel/blob/main/crates/spt-ssh3/readme.md)
 //! for the full rationale and the path to a non-stub implementation.
 
 #![forbid(unsafe_code)]

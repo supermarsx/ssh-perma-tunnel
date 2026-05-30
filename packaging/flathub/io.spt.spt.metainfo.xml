@@ -52,10 +52,10 @@
 
   <launchable type="desktop-id">io.spt.spt.desktop</launchable>
 
-  <url type="homepage">https://github.com/Mariana/ssh-perma-tunnel</url>
-  <url type="bugtracker">https://github.com/Mariana/ssh-perma-tunnel/issues</url>
-  <url type="vcs-browser">https://github.com/Mariana/ssh-perma-tunnel</url>
-  <url type="help">https://github.com/Mariana/ssh-perma-tunnel/tree/main/docs</url>
+  <url type="homepage">https://github.com/supermarsx/ssh-perma-tunnel</url>
+  <url type="bugtracker">https://github.com/supermarsx/ssh-perma-tunnel/issues</url>
+  <url type="vcs-browser">https://github.com/supermarsx/ssh-perma-tunnel</url>
+  <url type="help">https://github.com/supermarsx/ssh-perma-tunnel/tree/main/docs</url>
 
   <provides>
     <binary>spt</binary>
@@ -116,11 +116,11 @@
   <screenshots>
     <screenshot type="default">
       <caption>spt status overview in the TUI</caption>
-      <image>https://raw.githubusercontent.com/Mariana/ssh-perma-tunnel/main/docs/screenshots/tui-status.png</image>
+      <image>https://raw.githubusercontent.com/supermarsx/ssh-perma-tunnel/main/docs/screenshots/tui-status.png</image>
     </screenshot>
     <screenshot>
       <caption>spt diag output for a failing forward</caption>
-      <image>https://raw.githubusercontent.com/Mariana/ssh-perma-tunnel/main/docs/screenshots/diag-forward.png</image>
+      <image>https://raw.githubusercontent.com/supermarsx/ssh-perma-tunnel/main/docs/screenshots/diag-forward.png</image>
     </screenshot>
   </screenshots>
 
@@ -129,7 +129,7 @@
       <description>
         <p>See changelog.md in the source repository for the detailed change log.</p>
       </description>
-      <url>https://github.com/Mariana/ssh-perma-tunnel/releases/tag/v@VERSION@</url>
+      <url>https://github.com/supermarsx/ssh-perma-tunnel/releases/tag/v@VERSION@</url>
     </release>
     <release version="26.1" date="2026-05-22">
       <description>
@@ -143,7 +143,7 @@
           <li>TUI configurator and embedded MCP server.</li>
         </ul>
       </description>
-      <url>https://github.com/Mariana/ssh-perma-tunnel/releases/tag/v26.1</url>
+      <url>https://github.com/supermarsx/ssh-perma-tunnel/releases/tag/26.1</url>
     </release>
   </releases>
 </component>

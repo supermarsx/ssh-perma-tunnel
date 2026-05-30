@@ -40,7 +40,7 @@ canonical core distro repos.
 brew install Mariana/tap/spt
 
 # Scoop (Windows)
-scoop bucket add spt https://github.com/Mariana/scoop-spt
+scoop bucket add spt https://github.com/supermarsx/scoop-spt
 scoop install spt
 
 # AUR (Arch Linux)

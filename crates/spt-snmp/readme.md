@@ -10,7 +10,7 @@ the relevant RFCs:
 - **RFC 3826** — AES-128-CFB privacy
 - **RFC 7860** — HMAC-SHA-2 authentication for USM
 
-`spt-snmp` was built for the [spt](https://github.com/Mariana/ssh-perma-tunnel)
+`spt-snmp` was built for the [spt](https://github.com/supermarsx/ssh-perma-tunnel)
 SSH permanent tunnel daemon, but it has **no `spt-*` dependencies** and is
 intended to be usable on its own.
 

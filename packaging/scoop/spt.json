@@ -1,7 +1,7 @@
 {
     "version": "<VERSION>",
     "description": "Permanent SSH/SSH3 tunnels — local/remote port forwards that survive drops",
-    "homepage": "https://github.com/Mariana/ssh-perma-tunnel",
+    "homepage": "https://github.com/supermarsx/ssh-perma-tunnel",
     "license": "MIT",
     "notes": [
         "spt is a client-only SSH/SSH3 tunnel supervisor.",
@@ -21,7 +21,7 @@
         "and registered as a PowerShell module. Run 'Import-Module spt' (or restart your shell)",
         "to pick them up.",
         "",
-        "Docs: https://github.com/Mariana/ssh-perma-tunnel#readme"
+        "Docs: https://github.com/supermarsx/ssh-perma-tunnel#readme"
     ],
     "depends": [],
     "suggest": {
@@ -29,12 +29,12 @@
     },
     "architecture": {
         "64bit": {
-            "url": "https://github.com/Mariana/ssh-perma-tunnel/releases/download/v<VERSION>/spt-<VERSION>-x86_64-pc-windows-msvc.zip",
+            "url": "https://github.com/supermarsx/ssh-perma-tunnel/releases/download/v<VERSION>/spt-<VERSION>-x86_64-pc-windows-msvc.zip",
             "hash": "<SHA256_WIN_AMD64>",
             "extract_dir": "spt-<VERSION>-x86_64-pc-windows-msvc"
         },
         "arm64": {
-            "url": "https://github.com/Mariana/ssh-perma-tunnel/releases/download/v<VERSION>/spt-<VERSION>-aarch64-pc-windows-msvc.zip",
+            "url": "https://github.com/supermarsx/ssh-perma-tunnel/releases/download/v<VERSION>/spt-<VERSION>-aarch64-pc-windows-msvc.zip",
             "hash": "<SHA256_WIN_ARM64>",
             "extract_dir": "spt-<VERSION>-aarch64-pc-windows-msvc"
         }
@@ -70,21 +70,21 @@
         "}"
     ],
     "checkver": {
-        "github": "https://github.com/Mariana/ssh-perma-tunnel"
+        "github": "https://github.com/supermarsx/ssh-perma-tunnel"
     },
     "autoupdate": {
         "architecture": {
             "64bit": {
-                "url": "https://github.com/Mariana/ssh-perma-tunnel/releases/download/v$version/spt-$version-x86_64-pc-windows-msvc.zip",
+                "url": "https://github.com/supermarsx/ssh-perma-tunnel/releases/download/v$version/spt-$version-x86_64-pc-windows-msvc.zip",
                 "extract_dir": "spt-$version-x86_64-pc-windows-msvc"
             },
             "arm64": {
-                "url": "https://github.com/Mariana/ssh-perma-tunnel/releases/download/v$version/spt-$version-aarch64-pc-windows-msvc.zip",
+                "url": "https://github.com/supermarsx/ssh-perma-tunnel/releases/download/v$version/spt-$version-aarch64-pc-windows-msvc.zip",
                 "extract_dir": "spt-$version-aarch64-pc-windows-msvc"
             }
         },
         "hash": {
-            "url": "https://github.com/Mariana/ssh-perma-tunnel/releases/download/v$version/SHA256SUMS",
+            "url": "https://github.com/supermarsx/ssh-perma-tunnel/releases/download/v$version/SHA256SUMS",
             "regex": "(?<sha>[A-Fa-f0-9]{64})\\s+\\*?$basename"
         }
     }
