@@ -272,34 +272,21 @@ async fn config_init(global: &GlobalOpts, args: groups::config::ConfigInit) -> R
         .clone()
         .or_else(|| global.config.clone())
         .ok_or_else(|| Error::InvalidArgs("provide --path or set --config / $SPT_CONFIG".into()))?;
-    // `--example observability` writes the canned multi-sink template
-    // shipped at `examples/observability.toml`.
-    if matches!(
-        args.example,
-        Some(groups::config::ConfigExample::Observability)
-    ) {
-        crate::cli::config_ops::init_observability_example(&path).await?;
-        println!("wrote {}", path.display());
+    // `--example <variant>` writes the matching canned template from
+    // `examples/`. The previous implementation only handled
+    // `Observability` and silently fell through to a near-empty
+    // `Config::default()` for every other variant — every preset other
+    // than observability was ignored. Route through `init_example` for
+    // every variant so the user gets the preset they asked for.
+    if let Some(which) = args.example {
+        crate::cli::config_ops::init_example(which, &path).await?;
+        println!("wrote {} (--example {:?})", path.display(), which);
         return Ok(());
     }
-    if path.exists() {
-        return Err(Error::InvalidArgs(format!(
-            "refusing to overwrite existing file at `{}`",
-            path.display()
-        )));
-    }
-    let _ = args.example;
-    let mut cfg = spt_config::schema::Config::default();
-    cfg.version = 1;
-    let body = spt_config::render(&cfg, RedactionMode::None);
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| Error::InvalidConfig(format!("mkdir `{}`: {e}", parent.display())))?;
-        }
-    }
-    std::fs::write(&path, body)
-        .map_err(|e| Error::InvalidConfig(format!("write `{}`: {e}", path.display())))?;
+    // No `--example`: seed with the canonical minimal config so the user
+    // gets a runnable starter (single profile, one local forward) instead
+    // of the near-empty `version = 1` stub the prior default produced.
+    crate::cli::config_ops::init_minimal(&path).await?;
     println!("wrote {}", path.display());
     Ok(())
 }

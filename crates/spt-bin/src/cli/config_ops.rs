@@ -26,9 +26,11 @@
 //!   missing, returns [`spt_core::Error::ReloadFailed`] (exit 14) with the
 //!   exact hint string from the brief.
 //!
-//! - `init_observability_example` writes the contents of
-//!   `examples/observability.toml` to a target path. The example body is
-//!   embedded at compile time via `include_str!`.
+//! - `init_example` writes the contents of one of the bundled example TOML
+//!   files (selected by [`spt_cli::groups::config::ConfigExample`]) to a
+//!   target path. Bodies are embedded at compile time via `include_str!`.
+//! - `init_minimal` writes the canonical `examples/minimal.toml` (used as
+//!   the default when `spt config init` is invoked without `--example`).
 
 use std::path::{Path, PathBuf};
 
@@ -46,10 +48,33 @@ use spt_secrets::{KeychainBackend, SecretBackend, SecretRef as VaultSecretRef, V
 
 use crate::mcp_client::McpClient;
 
-/// Embedded contents of `examples/observability.toml`.
-///
-/// Produced by `spt config init --example observability`.
+// Bundled example bodies, embedded at compile time. Single source of truth
+// for `spt config init` — keep these in lockstep with the files in
+// `examples/`. The integration test `init_examples_cover_every_enum_variant`
+// enforces that every variant of `ConfigExample` maps to a non-empty body.
+const MINIMAL_EXAMPLE: &str = include_str!("../../../../examples/minimal.toml");
+const SMTP_EXAMPLE: &str = include_str!("../../../../examples/smtp-relay.toml");
+const JUMP_EXAMPLE: &str = include_str!("../../../../examples/jump-host.toml");
+const REVERSE_EXAMPLE: &str = include_str!("../../../../examples/reverse.toml");
+const SSH3_EXAMPLE: &str = include_str!("../../../../examples/ssh3.toml");
+const DNS_EXAMPLE: &str = include_str!("../../../../examples/dns-split-horizon.toml");
 const OBSERVABILITY_EXAMPLE: &str = include_str!("../../../../examples/observability.toml");
+const MCP_EXAMPLE: &str = include_str!("../../../../examples/mcp.toml");
+
+/// Map a [`ConfigExample`] enum variant to the embedded TOML body that
+/// `spt config init --example <name>` should write.
+fn example_body(which: groups::config::ConfigExample) -> &'static str {
+    use groups::config::ConfigExample as E;
+    match which {
+        E::Smtp => SMTP_EXAMPLE,
+        E::Jump => JUMP_EXAMPLE,
+        E::Reverse => REVERSE_EXAMPLE,
+        E::Ssh3 => SSH3_EXAMPLE,
+        E::Dns => DNS_EXAMPLE,
+        E::Observability => OBSERVABILITY_EXAMPLE,
+        E::Mcp => MCP_EXAMPLE,
+    }
+}
 
 /// `spt config doctor`.
 ///
@@ -134,12 +159,33 @@ pub async fn reload(global: &GlobalOpts, args: groups::config::ConfigReload) -> 
     Ok(())
 }
 
-/// `spt config init --example observability`.
+/// `spt config init --example <variant>`.
 ///
-/// Writes the canned observability TOML body (embedded at build time) to
-/// `target_path`. Refuses to overwrite an existing file. Creates parent
-/// directories as needed.
+/// Writes the embedded TOML body for the requested example to `target_path`.
+/// Refuses to overwrite an existing file. Creates parent directories as
+/// needed.
+pub async fn init_example(which: groups::config::ConfigExample, target_path: &Path) -> Result<()> {
+    write_template(target_path, example_body(which)).await
+}
+
+/// `spt config init` (no `--example`). Writes the canonical
+/// `examples/minimal.toml` so the user gets a runnable starter config
+/// instead of a near-empty stub. The earlier behaviour rendered a
+/// `Config::default()` (just `version = 1`), which was technically valid
+/// but not actually useful as a seed.
+pub async fn init_minimal(target_path: &Path) -> Result<()> {
+    write_template(target_path, MINIMAL_EXAMPLE).await
+}
+
+/// Back-compat wrapper kept so external callers (and the integration test
+/// suite) that reach for the observability-specific entry point keep
+/// compiling. New code should call [`init_example`] instead.
+#[doc(hidden)]
 pub async fn init_observability_example(target_path: &Path) -> Result<()> {
+    init_example(groups::config::ConfigExample::Observability, target_path).await
+}
+
+async fn write_template(target_path: &Path, body: &str) -> Result<()> {
     if target_path.exists() {
         return Err(Error::InvalidArgs(format!(
             "refusing to overwrite existing file at `{}`",
@@ -152,7 +198,7 @@ pub async fn init_observability_example(target_path: &Path) -> Result<()> {
                 .map_err(|e| Error::InvalidConfig(format!("mkdir `{}`: {e}", parent.display())))?;
         }
     }
-    std::fs::write(target_path, OBSERVABILITY_EXAMPLE)
+    std::fs::write(target_path, body)
         .map_err(|e| Error::InvalidConfig(format!("write `{}`: {e}", target_path.display())))?;
     Ok(())
 }
@@ -1323,6 +1369,79 @@ mod tests {
         let out = tmp.path().join("nested/deep/o.toml");
         init_observability_example(&out).await.unwrap();
         assert!(out.exists());
+    }
+
+    /// Every variant of [`ConfigExample`] must (a) map to a non-empty body,
+    /// (b) write that exact body to disk verbatim, and (c) produce a file
+    /// that validates clean under `spt_config::load(strict=true)`.
+    ///
+    /// Regression: prior to this commit only the `Observability` variant
+    /// was routed through `init_example`. Every other preset (smtp, jump,
+    /// reverse, ssh3, dns, mcp) silently fell through to a near-empty
+    /// `Config::default()` write — `spt config init --example smtp` would
+    /// produce a file containing only `version = 1`.
+    #[tokio::test]
+    async fn init_examples_cover_every_enum_variant() {
+        use groups::config::ConfigExample as E;
+        let cases = [
+            (E::Smtp, "smtp-relay"),
+            (E::Jump, "jump-host"),
+            (E::Reverse, "reverse"),
+            (E::Ssh3, "ssh3"),
+            (E::Dns, "dns-split-horizon"),
+            (E::Observability, "observability"),
+            (E::Mcp, "mcp"),
+        ];
+        for (which, label) in cases {
+            let tmp = tempfile::tempdir().unwrap();
+            let out = tmp.path().join(format!("{label}.toml"));
+            init_example(which, &out).await.expect("init_example");
+            let body = std::fs::read_to_string(&out).unwrap();
+            assert!(!body.trim().is_empty(), "{label:?}: wrote an empty body");
+            assert_eq!(
+                body,
+                example_body(which),
+                "{label:?}: written body differs from the embedded const"
+            );
+            // The bundled examples must validate clean — strict load + no
+            // schema-level errors.
+            let (cfg, w) = spt_config::load(&out, true)
+                .unwrap_or_else(|e| panic!("{label:?}: strict load failed: {e}"));
+            assert!(w.is_empty(), "{label:?}: unknown fields: {w:?}");
+            let diag = spt_config::validate(&cfg);
+            assert!(
+                diag.errors.is_empty(),
+                "{label:?}: validation errors: {:?}",
+                diag.errors
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn init_example_refuses_overwrite() {
+        let tmp = tempfile::tempdir().unwrap();
+        let out = tmp.path().join("c.toml");
+        std::fs::write(&out, "old").unwrap();
+        let r = init_example(groups::config::ConfigExample::Smtp, &out).await;
+        assert!(matches!(r, Err(Error::InvalidArgs(_))));
+        // The pre-existing file must be untouched.
+        assert_eq!(std::fs::read_to_string(&out).unwrap(), "old");
+    }
+
+    #[tokio::test]
+    async fn init_minimal_writes_runnable_starter() {
+        let tmp = tempfile::tempdir().unwrap();
+        let out = tmp.path().join("m.toml");
+        init_minimal(&out).await.unwrap();
+        let (cfg, w) = spt_config::load(&out, true).expect("strict load");
+        assert!(w.is_empty(), "unknown keys: {w:?}");
+        // Minimal must declare at least one profile (the whole point of
+        // shipping it as the default is that the user gets something
+        // runnable, not just `version = 1`).
+        assert!(
+            !cfg.profiles.is_empty(),
+            "minimal must seed at least one profile"
+        );
     }
 
     #[test]
