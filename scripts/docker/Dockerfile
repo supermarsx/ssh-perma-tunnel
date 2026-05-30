@@ -12,6 +12,28 @@
 FROM scratch
 
 ARG TARGETARCH
+ARG VERSION=unknown
+ARG REVISION=unknown
+ARG BUILD_DATE=unknown
+
 COPY dist/spt-${TARGETARCH} /spt
+
+# OCI image annotations (https://github.com/opencontainers/image-spec).
+# These surface on ghcr.io's web UI and are consumed by tools like
+# `docker inspect`, `crane`, `cosign`. Keep title/description short —
+# rendered inline on the registry page. The dynamic values are populated
+# from the release workflow's `docker buildx build --build-arg ...`.
+LABEL org.opencontainers.image.title="spt"
+LABEL org.opencontainers.image.description="Permanent SSH2/SSH3 tunnels with reconnect, observability, and service integration."
+LABEL org.opencontainers.image.url="https://github.com/supermarsx/ssh-perma-tunnel"
+LABEL org.opencontainers.image.source="https://github.com/supermarsx/ssh-perma-tunnel"
+LABEL org.opencontainers.image.documentation="https://github.com/supermarsx/ssh-perma-tunnel/tree/main/docs"
+LABEL org.opencontainers.image.licenses="MIT"
+LABEL org.opencontainers.image.authors="Mariana"
+LABEL org.opencontainers.image.vendor="supermarsx"
+LABEL org.opencontainers.image.version="${VERSION}"
+LABEL org.opencontainers.image.revision="${REVISION}"
+LABEL org.opencontainers.image.created="${BUILD_DATE}"
+LABEL org.opencontainers.image.base.name="scratch"
 
 ENTRYPOINT ["/spt"]

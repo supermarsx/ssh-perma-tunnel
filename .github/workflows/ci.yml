@@ -599,9 +599,16 @@ jobs:
         run: |
           owner=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
           image="ghcr.io/${owner}/spt"
+          build_date=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          # Pass version / revision / date through as build-args so the
+          # `org.opencontainers.image.*` LABELs in scripts/docker/Dockerfile
+          # carry the right values on the published image.
           docker buildx build \
             --platform linux/amd64,linux/arm64 \
             --file scripts/docker/Dockerfile \
+            --build-arg VERSION="${TAG}" \
+            --build-arg REVISION="${GITHUB_SHA}" \
+            --build-arg BUILD_DATE="${build_date}" \
             --tag "${image}:${VERSION}" \
             --tag "${image}:latest" \
             --push \

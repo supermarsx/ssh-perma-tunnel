@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/supermarsx/ssh-perma-tunnel/blob/main/scripts/release/manifest.schema.json",
+  "title": "spt release manifest",
+  "description": "Authoritative listing of every artifact in a single spt rolling release.",
+  "type": "object",
+  "required": ["schema", "schema_version", "release", "checksums", "signatures", "sbom", "artifacts"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": { "const": "release-manifest" },
+    "schema_version": { "type": "integer", "minimum": 1 },
+    "release": {
+      "type": "object",
+      "required": ["tag", "cargo_version", "git_sha", "git_short_sha", "build_date", "repository", "release_url"],
+      "additionalProperties": false,
+      "properties": {
+        "tag":           { "type": "string", "pattern": "^[0-9]{2}\\.[0-9]+$",   "description": "User-facing rolling tag, bare YY.N." },
+        "cargo_version": { "type": "string", "pattern": "^0\\.[0-9]{2}\\.[0-9]+$","description": "Cargo workspace version, 0.YY.N." },
+        "git_sha":       { "type": "string", "pattern": "^[0-9a-f]{7,40}$" },
+        "git_short_sha": { "type": "string", "pattern": "^[0-9a-f]{7,12}$" },
+        "build_date":    { "type": "string", "format": "date-time" },
+        "repository":    { "type": "string", "format": "uri" },
+        "release_url":   { "type": "string", "format": "uri" }
+      }
+    },
+    "checksums": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sha256sums": { "type": ["string", "null"] },
+        "sha512sums": { "type": ["string", "null"] },
+        "b3sums":     { "type": ["string", "null"] }
+      }
+    },
+    "signatures": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "gpg_sha256sums":  { "type": ["string", "null"] },
+        "minisign_pubkey": { "type": ["string", "null"] }
+      }
+    },
+    "sbom": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "cyclonedx_json": { "type": ["string", "null"] },
+        "cyclonedx_xml":  { "type": ["string", "null"] },
+        "spdx_json":      { "type": ["string", "null"] }
+      }
+    },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "kind", "format", "size", "sha256"],
+        "additionalProperties": false,
+        "properties": {
+          "name":   { "type": "string", "minLength": 1 },
+          "kind":   { "enum": ["package", "binary", "checksum", "signature", "sbom", "notes", "other"] },
+          "format": { "type": "string", "minLength": 1 },
+          "target": { "type": ["string", "null"], "description": "Rust target triple if applicable." },
+          "os":     { "type": ["string", "null"], "enum": ["linux", "macos", "windows", null] },
+          "arch":   { "type": ["string", "null"], "enum": ["amd64", "arm64", "universal", null] },
+          "size":   { "type": "integer", "minimum": 0 },
+          "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+          "sha512": { "anyOf": [{ "type": "null" }, { "type": "string", "pattern": "^[0-9a-f]{128}$" }] },
+          "blake3": { "anyOf": [{ "type": "null" }, { "type": "string", "pattern": "^[0-9a-f]{64}$" }] },
+          "minisign":  { "type": ["string", "null"] },
+          "media_type": { "type": ["string", "null"] }
+        }
+      }
+    }
+  }
+}

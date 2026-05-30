@@ -116,9 +116,20 @@ rust-version = "1.85"
 license = "MIT"
 repository = "https://github.com/supermarsx/ssh-perma-tunnel"
 homepage = "https://github.com/supermarsx/ssh-perma-tunnel"
+documentation = "https://github.com/supermarsx/ssh-perma-tunnel/tree/main/docs"
 authors = ["Mariana"]
 description = "Permanent SSH2/SSH3 tunnels with reconnect, observability, and service integration."
 readme = "readme.md"
+# crates.io taxonomy — see https://crates.io/category_slugs for the full list.
+# Picked the four most representative slugs; each must be present in the
+# registry-side enum or `cargo publish` rejects.
+categories = [
+    "command-line-utilities",
+    "network-programming",
+    "authentication",
+    "config",
+]
+keywords = ["ssh", "tunnel", "ssh3", "port-forward", "networking"]
 
 [workspace.dependencies]
 # Internal crates
