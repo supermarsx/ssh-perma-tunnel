@@ -1,0 +1,25 @@
+[package]
+name = "icon-build"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Rasterise assets/icon.svg into every per-platform format the packaging recipes need."
+
+# Standalone — explicitly NOT a member of the main workspace so this tool's
+# deps (resvg, ico, icns) don't bloat the workspace lockfile or CI build
+# matrix. Regenerate icons with:
+#   cargo run --manifest-path tools/icon-build/Cargo.toml
+[workspace]
+
+[[bin]]
+name = "icon-build"
+path = "src/main.rs"
+
+[dependencies]
+resvg = "0.45"
+tiny-skia = "0.11"
+usvg = "0.45"
+ico = "0.4"
+icns = "0.3"
+png = "0.17"
+anyhow = "1"

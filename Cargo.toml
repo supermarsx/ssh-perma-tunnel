@@ -70,6 +70,11 @@ exclude = [
     # it here keeps the outer resolver from absorbing its members. The patch
     # entries below route the registry names to the vendored paths.
     "vendor/libgssapi-fork",
+    # Standalone icon-rasterisation tool (resvg + ico + icns). Run via
+    # `cargo run --manifest-path tools/icon-build/Cargo.toml`. Kept outside
+    # the main workspace so its image-codec dependency tree doesn't bloat
+    # `cargo {check,test,clippy} --workspace`.
+    "tools/icon-build",
 ]
 
 # t7-P1: route registry russh / russh-keys / russh-cryptovec to the local
