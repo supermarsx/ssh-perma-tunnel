@@ -21,7 +21,7 @@
 
 use std::time::Duration;
 
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::backend::Backend;
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -92,11 +92,9 @@ impl App {
             {
                 let ev = event::read()
                     .map_err(|e| spt_core::Error::RuntimeFailure(format!("read: {e}")))?;
-                if let Event::Key(key) = ev {
-                    match self.on_key(key) {
-                        AppEvent::Quit | AppEvent::QuitSaved => return Ok(()),
-                        AppEvent::Continue => {}
-                    }
+                match self.dispatch_event(ev) {
+                    AppEvent::Quit | AppEvent::QuitSaved => return Ok(()),
+                    AppEvent::Continue => {}
                 }
             }
         }
@@ -164,6 +162,29 @@ impl App {
     }
 
     /// Handle a key event. Returns whether the loop should continue.
+    /// Dispatch a single terminal event. Filters out non-`Press` key events
+    /// before calling [`Self::on_key`].
+    ///
+    /// **Why the kind filter is here, not at `event::read`'s call site:**
+    /// crossterm on Windows emits `KeyEventKind::Press` AND
+    /// `KeyEventKind::Release` (and sometimes `Repeat`) for every keystroke.
+    /// Linux and macOS only emit `Press`. A naive `if let Event::Key(k) = ev`
+    /// handler fires the page-level action twice per press on Windows
+    /// (visible as "every key duplicates"). Routing every event through
+    /// this method keeps the filter authoritative and unit-testable.
+    pub fn dispatch_event(&mut self, ev: Event) -> AppEvent {
+        if let Event::Key(key) = ev {
+            if key.kind != KeyEventKind::Press {
+                return AppEvent::Continue;
+            }
+            return self.on_key(key);
+        }
+        AppEvent::Continue
+    }
+
+    /// Apply one key event to the model. Tests construct `KeyEvent` values
+    /// directly and call this; runtime code goes through
+    /// [`Self::dispatch_event`] so the kind filter applies.
     pub fn on_key(&mut self, key: KeyEvent) -> AppEvent {
         // Global Ctrl-C: force-quit.
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
@@ -345,6 +366,56 @@ host = "h.example.com"
         assert_eq!(app.current, PageKind::Basics);
         app.on_key(k(KeyCode::BackTab));
         assert_eq!(app.current, PageKind::Review);
+    }
+
+    /// Windows-style key duplication regression. crossterm 0.27+ on Windows
+    /// emits a `Release` event for every `Press`; routing both through the
+    /// page handler fires every action twice. `dispatch_event` must swallow
+    /// `Release` and `Repeat` so each physical press advances the state
+    /// machine exactly once.
+    #[test]
+    fn dispatch_event_ignores_release_and_repeat() {
+        let mut app = App::new(sample());
+        let press = Event::Key(KeyEvent {
+            code: KeyCode::Tab,
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: crossterm::event::KeyEventState::NONE,
+        });
+        let release = Event::Key(KeyEvent {
+            code: KeyCode::Tab,
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Release,
+            state: crossterm::event::KeyEventState::NONE,
+        });
+        let repeat = Event::Key(KeyEvent {
+            code: KeyCode::Tab,
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Repeat,
+            state: crossterm::event::KeyEventState::NONE,
+        });
+
+        assert_eq!(app.current, PageKind::Basics);
+        // The full Windows event triple for one Tab press: Press → Release.
+        // Only Press should advance pages.
+        app.dispatch_event(press.clone());
+        app.dispatch_event(release.clone());
+        assert_eq!(
+            app.current,
+            PageKind::Connection,
+            "Tab Press+Release must advance one page, not two"
+        );
+
+        // Holding Tab on Windows generates Repeat events while the key is
+        // held; we treat those as no-ops too (the supervisor's autorepeat
+        // semantics differ from a TUI's; users are typically holding by
+        // accident).
+        app.dispatch_event(repeat);
+        assert_eq!(
+            app.current,
+            PageKind::Connection,
+            "Repeat events must not advance pages"
+        );
     }
 
     #[test]
