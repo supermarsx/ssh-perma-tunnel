@@ -1,3 +1,17 @@
+## [26.4] - 2026-05-30
+
+# spt 26.4
+
+## Changes since 26.3
+
+- fix(cli): `spt config init --example <name>` wires every preset (47454ee)
+- ci: prepare-release job — bump Cargo.toml once, overlay everywhere (4e45711)
+- test(spt-service): refresh systemd snapshots for the supermarsx URL fix (5292e0c)
+- fix(tui): swallow KeyEventKind::Release / Repeat — fixes 2x key duplication on Windows (264f72b)
+- manifests: typed release manifest + Cargo crates.io metadata + OCI labels (8eac04c)
+- packaging: rewrite stale URLs + wire icon through MSI / snap / flathub (0407869)
+- assets: canonical icon.svg + multi-format raster export tool (f0fbe17)
+
 ## [26.3] - 2026-05-29
 
 # spt 26.3
