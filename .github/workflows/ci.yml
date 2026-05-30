@@ -136,12 +136,58 @@ jobs:
       - run: cargo check --workspace --locked
 
   # ---------------------------------------------------------------------------
+  # prepare-release — compute the next YY.N once, share the bumped Cargo.toml
+  # + Cargo.lock with every downstream job via the `prepared-source` artifact.
+  #
+  # Why this exists: `cargo build` / `cargo-deb` / `cargo-generate-rpm` /
+  # `cargo-wix` all read the workspace version from Cargo.toml at the moment
+  # they run, and bake it into their output filenames (`spt_0.26.3_amd64.deb`,
+  # `spt-26.3.msi`, …). Historically the release job did the bump AFTER the
+  # package matrix had already finished, so a release tagged 26.4 carried
+  # artifacts named 26.3. The dist-dir rename step closed the directory-name
+  # gap but not the filename gap.
+  #
+  # Solution: bump once, up front, and have every job consume the same
+  # bumped source. Idempotent — bump-version.sh computes a deterministic next
+  # version from the existing tag set, regardless of how many times it runs.
+  # ---------------------------------------------------------------------------
+  prepare-release:
+    name: prepare-release
+    if: github.event_name != 'workflow_dispatch' || inputs.kind == 'full'
+    runs-on: ubuntu-latest
+    outputs:
+      version:       ${{ steps.bump.outputs.version }}
+      tag:           ${{ steps.bump.outputs.tag }}
+      cargo_version: ${{ steps.bump.outputs.cargo_version }}
+      prev_tag:      ${{ steps.bump.outputs.prev_tag }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # bump-version.sh inspects `git tag --list "${YY}.*"` to compute N;
+          # shallow checkout has no tag refs.
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@1.85.0
+      - name: Compute next YY.N and bump Cargo.toml + Cargo.lock
+        id: bump
+        shell: bash
+        run: bash scripts/release/bump-version.sh
+      - name: Upload prepared-source (Cargo.toml + Cargo.lock)
+        uses: actions/upload-artifact@v7
+        with:
+          name: prepared-source
+          path: |
+            Cargo.toml
+            Cargo.lock
+          retention-days: 7
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
   # test — full matrix, all 6 OS×arch combos. Runs after fmt + clippy + typecheck.
   # ---------------------------------------------------------------------------
   test:
     name: test (${{ matrix.target }})
     if: github.event_name != 'workflow_dispatch' || inputs.kind == 'full'
-    needs: [fmt, clippy, typecheck]
+    needs: [fmt, clippy, typecheck, prepare-release]
     strategy:
       fail-fast: false
       matrix:
@@ -174,6 +220,14 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v6
+      - name: Overlay prepared-source (bumped Cargo.toml + Cargo.lock)
+        uses: actions/download-artifact@v8
+        with:
+          name: prepared-source
+          # Extract at repo root, overwriting the as-checked-out Cargo.toml +
+          # Cargo.lock with the prepare-release bumped copies so every cargo
+          # invocation in this job sees the to-be-released version.
+          path: .
       - uses: dtolnay/rust-toolchain@1.85.0
         with:
           targets: ${{ matrix.target }}
@@ -226,7 +280,7 @@ jobs:
   build:
     name: build (${{ matrix.target }})
     if: github.event_name != 'workflow_dispatch' || inputs.kind == 'full'
-    needs: [test]
+    needs: [test, prepare-release]
     strategy:
       fail-fast: false
       matrix:
@@ -240,6 +294,11 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v6
+      - name: Overlay prepared-source (bumped Cargo.toml + Cargo.lock)
+        uses: actions/download-artifact@v8
+        with:
+          name: prepared-source
+          path: .
       - uses: dtolnay/rust-toolchain@1.85.0
         with:
           targets: ${{ matrix.target }}
@@ -290,7 +349,7 @@ jobs:
   package:
     name: package (${{ matrix.target }})
     if: github.event_name != 'workflow_dispatch' || inputs.kind == 'full'
-    needs: [build]
+    needs: [build, prepare-release]
     strategy:
       fail-fast: false
       matrix:
@@ -303,6 +362,11 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v6
+      - name: Overlay prepared-source (bumped Cargo.toml + Cargo.lock)
+        uses: actions/download-artifact@v8
+        with:
+          name: prepared-source
+          path: .
       - uses: dtolnay/rust-toolchain@1.85.0
         with:
           targets: ${{ matrix.target }}
@@ -383,7 +447,7 @@ jobs:
   # ---------------------------------------------------------------------------
   release:
     name: release
-    needs: [package]
+    needs: [package, prepare-release]
     if: >-
       ${{ github.event_name == 'push'
           && github.ref == 'refs/heads/main'
@@ -393,11 +457,30 @@ jobs:
     permissions:
       contents: write
       packages: write
+    # Re-export prepare-release outputs under the legacy `steps.bump.outputs`
+    # names this job's downstream steps used to read. Saves a sweep through
+    # every `${{ steps.bump.outputs.X }}` reference below.
+    env:
+      RELEASE_VERSION:       ${{ needs.prepare-release.outputs.version }}
+      RELEASE_TAG:           ${{ needs.prepare-release.outputs.tag }}
+      RELEASE_CARGO_VERSION: ${{ needs.prepare-release.outputs.cargo_version }}
+      RELEASE_PREV_TAG:      ${{ needs.prepare-release.outputs.prev_tag }}
     steps:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Overlay prepared-source (bumped Cargo.toml + Cargo.lock)
+        uses: actions/download-artifact@v8
+        with:
+          name: prepared-source
+          # NB: target a non-conflicting subdirectory below the workspace and
+          # then copy in — `path: .` would extract alongside the rest of the
+          # artifacts download below. Order matters: overlay must happen
+          # before any cargo invocation, BUT after checkout, BUT before the
+          # all-artifacts download (which lands at artifacts/, never touching
+          # the workspace root). Doing it here is safe.
+          path: .
       - name: Download all platform artifacts
         uses: actions/download-artifact@v8
         with:
@@ -411,24 +494,30 @@ jobs:
           for d in artifacts/spt-*; do
             if [[ -d "$d" ]]; then cp -r "$d"/. dist/; fi
           done
-      - name: Compute next YY.N version
+      - name: Re-emit bump outputs (consumed by legacy step references)
         id: bump
         shell: bash
-        run: bash scripts/release/bump-version.sh
+        run: |
+          # prepare-release already bumped Cargo.toml + Cargo.lock and emitted
+          # the version values as job outputs. Re-publish those values under
+          # the `steps.bump.outputs.*` names every downstream step in this
+          # job uses, so we don't have to sweep the rest of the YAML.
+          {
+            echo "version=${RELEASE_VERSION}"
+            echo "tag=${RELEASE_TAG}"
+            echo "cargo_version=${RELEASE_CARGO_VERSION}"
+            echo "prev_tag=${RELEASE_PREV_TAG}"
+          } >> "${GITHUB_OUTPUT}"
+          echo "::notice::release ${RELEASE_TAG} (cargo ${RELEASE_CARGO_VERSION}); prev: ${RELEASE_PREV_TAG:-<none>}"
       - name: Align dist/<version>/ with the bumped Cargo version
         shell: bash
         env:
           NEW_CARGO_VERSION: ${{ steps.bump.outputs.cargo_version }}
         run: |
-          # The package matrix built artifacts under dist/<Cargo-version-at-
-          # build-time>/ — e.g. dist/0.26.1/. `bump-version.sh` then edited
-          # Cargo.toml to the *next* version (e.g. 0.26.2) before any
-          # downstream script ran. checksum-all.sh, manifest.sh, and the
-          # release-asset upload all derive their target dir from the *new*
-          # Cargo version via `dist_dir()` → `dist/0.26.2/` — which doesn't
-          # exist yet. Rename the single existing version-dir under dist/ to
-          # match. The first release of the year is a no-op (Cargo.toml was
-          # already at 0.YY.1 going into the bump).
+          # Now mostly defensive: the package matrix overlays the prepared
+          # source up front, so dist/<NEW_CARGO_VERSION>/ should already
+          # exist. Kept for backwards-compatibility with operator-triggered
+          # workflow_dispatch runs that bypass prepare-release.
           set -e
           target="dist/${NEW_CARGO_VERSION}"
           if [[ -d "$target" ]]; then
