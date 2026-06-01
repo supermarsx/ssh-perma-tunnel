@@ -1017,6 +1017,38 @@ mod tests {
     }
 
     #[test]
+    fn choice_left_right_rotates_via_on_edit_key() {
+        // RC2 integration through on_edit_key: Right should rotate the
+        // cursor without committing.
+        const OPTS: &[&str] = &["ssh2", "ssh3"];
+        let def = FieldDef {
+            label: "protocol",
+            help: "",
+            get: Box::new(|p: &Profile| FieldValue::Choice {
+                value: p.protocol.clone(),
+                options: OPTS,
+            }),
+            set: Box::new(|p, v| {
+                if let FieldValue::Choice { value, .. } = v {
+                    p.protocol = value;
+                }
+            }),
+            validate: None,
+        };
+        let mut list = FieldList::new(vec![def]);
+        let mut p = sample_profile();
+        p.protocol = "ssh2".into();
+        list.begin_edit(&p);
+        // Right -> cursor moves to ssh3 but no commit yet.
+        list.on_edit_key(key(crossterm::event::KeyCode::Right), &mut p);
+        assert_eq!(list.fields[0].select.index, 1);
+        assert_eq!(p.protocol, "ssh2", "Right alone must not commit");
+        // Enter commits.
+        list.on_edit_key(key(crossterm::event::KeyCode::Enter), &mut p);
+        assert_eq!(p.protocol, "ssh3");
+    }
+
+    #[test]
     fn bool_field_space_flips_without_commit() {
         // Documents the actual semantics: Space flips the toggle inside
         // the edit buffer but does NOT commit. (Enter commits.)

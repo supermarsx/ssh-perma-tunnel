@@ -148,3 +148,58 @@ fn snapshot_review_page() {
     let snap = snapshot_page(PageKind::Review, 100, 30);
     insta::assert_snapshot!("review_page_100x30", snap);
 }
+
+// -----------------------------------------------------------------
+// Phase 1 reproducers — t-tui-rotate. New snapshots only.
+// -----------------------------------------------------------------
+
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+fn key_press(c: KeyCode) -> KeyEvent {
+    KeyEvent::new(c, KeyModifiers::NONE)
+}
+
+/// Drive the page at `kind` with a sequence of key events against a fresh
+/// model, then render via `Page::render`. This matches the existing
+/// snapshot tests (page-level render, no App chrome).
+fn snapshot_page_with_keys(
+    kind: PageKind,
+    keys: &[KeyCode],
+    sample: &str,
+    w: u16,
+    h: u16,
+) -> String {
+    let mut model = Model::from_str(sample);
+    let mut pages = build_pages();
+    let page = &mut pages[kind.index()];
+    for k in keys {
+        page.on_key(key_press(*k), &mut model);
+    }
+    let backend = TestBackend::new(w, h);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|f| page.render(f.area(), f.buffer_mut(), &model))
+        .unwrap();
+    buffer_text(terminal.backend().buffer())
+}
+
+/// Render the Basics page after entering edit on `protocol` and
+/// pressing Right twice (which under wrap semantics returns to the
+/// start). Pins the rotate-rendering behavior.
+#[test]
+fn snapshot_basics_page_editing_protocol_after_rotate_80x20() {
+    let snap = snapshot_page_with_keys(
+        PageKind::Basics,
+        &[
+            KeyCode::Down,
+            KeyCode::Down,
+            KeyCode::Enter,
+            KeyCode::Right,
+            KeyCode::Right,
+        ],
+        SAMPLE,
+        80,
+        20,
+    );
+    insta::assert_snapshot!("basics_page_editing_protocol_after_rotate_80x20", snap);
+}

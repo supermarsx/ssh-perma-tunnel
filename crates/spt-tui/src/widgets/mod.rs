@@ -199,18 +199,26 @@ pub struct Select {
 impl Select {
     /// Apply a key against an options slice; mutates `index` and writes the
     /// chosen value into `out` on Enter. Returns `true` on selection change.
+    ///
+    /// Cursor keys (Up/Down/Left/Right) **wrap** at the boundaries — they
+    /// never commit. Enter and Space write the cursor's option into `out`.
     pub fn on_key(&mut self, options: &[&str], out: &mut String, key: KeyEvent) -> bool {
+        // Wrap-aware cursor moves. Guard against empty option lists so
+        // the modulus below never sees `% 0`.
+        if options.is_empty() {
+            return false;
+        }
         match key.code {
-            KeyCode::Up => {
-                if self.index > 0 {
+            KeyCode::Up | KeyCode::Left => {
+                if self.index == 0 {
+                    self.index = options.len() - 1;
+                } else {
                     self.index -= 1;
                 }
                 false
             }
-            KeyCode::Down => {
-                if self.index + 1 < options.len() {
-                    self.index += 1;
-                }
+            KeyCode::Down | KeyCode::Right => {
+                self.index = (self.index + 1) % options.len();
                 false
             }
             KeyCode::Enter | KeyCode::Char(' ') => {
@@ -275,16 +283,26 @@ pub struct MultiSelect {
 
 impl MultiSelect {
     /// Apply a key. Toggles membership of the cursor's option in `selected`.
+    ///
+    /// Cursor keys (Up/Down/Left/Right) **wrap** at the boundaries.
+    /// Enter/Space toggle the cursor's option in `selected`. (Commit of
+    /// the whole multi-selection is performed by the parent on `s`/Esc.)
     pub fn on_key(&mut self, options: &[&str], selected: &mut Vec<String>, key: KeyEvent) -> bool {
+        if options.is_empty() {
+            // Still allow Enter/Space to no-op cleanly.
+            return false;
+        }
         match key.code {
-            KeyCode::Up => {
-                self.index = self.index.saturating_sub(1);
+            KeyCode::Up | KeyCode::Left => {
+                if self.index == 0 {
+                    self.index = options.len() - 1;
+                } else {
+                    self.index -= 1;
+                }
                 false
             }
-            KeyCode::Down => {
-                if self.index + 1 < options.len() {
-                    self.index += 1;
-                }
+            KeyCode::Down | KeyCode::Right => {
+                self.index = (self.index + 1) % options.len();
                 false
             }
             KeyCode::Char(' ') | KeyCode::Enter => {
@@ -627,22 +645,24 @@ mod tests {
     }
 
     #[test]
-    fn select_up_at_zero_is_noop() {
+    fn select_up_at_zero_wraps() {
+        // Wrap semantics: Up at 0 jumps to the last option.
         let mut s = Select::default();
         let mut out = String::new();
         let opts = ["a", "b"];
         s.on_key(&opts, &mut out, key(KeyCode::Up));
-        assert_eq!(s.index, 0);
+        assert_eq!(s.index, 1);
     }
 
     #[test]
-    fn select_down_past_end_clamps() {
+    fn select_down_past_end_wraps() {
+        // Wrap semantics: Down at last wraps back to 0.
         let mut s = Select::default();
         let mut out = String::new();
         let opts = ["a", "b"];
         s.on_key(&opts, &mut out, key(KeyCode::Down));
-        s.on_key(&opts, &mut out, key(KeyCode::Down)); // would go to 2
-        assert_eq!(s.index, 1);
+        s.on_key(&opts, &mut out, key(KeyCode::Down)); // wraps to 0
+        assert_eq!(s.index, 0);
     }
 
     #[test]
@@ -670,22 +690,24 @@ mod tests {
     }
 
     #[test]
-    fn multi_select_up_saturates() {
+    fn multi_select_up_wraps() {
+        // Wrap semantics: Up at 0 jumps to last.
         let mut m = MultiSelect::default();
         let mut sel: Vec<String> = vec![];
         let opts = ["a", "b"];
         m.on_key(&opts, &mut sel, key(KeyCode::Up));
-        assert_eq!(m.index, 0);
+        assert_eq!(m.index, 1);
     }
 
     #[test]
-    fn multi_select_down_clamps_at_end() {
+    fn multi_select_down_past_end_wraps() {
+        // Wrap semantics: Down at last wraps to 0.
         let mut m = MultiSelect::default();
         let mut sel: Vec<String> = vec![];
         let opts = ["a", "b"];
         m.on_key(&opts, &mut sel, key(KeyCode::Down));
-        m.on_key(&opts, &mut sel, key(KeyCode::Down)); // would push to 2
-        assert_eq!(m.index, 1);
+        m.on_key(&opts, &mut sel, key(KeyCode::Down)); // wraps to 0
+        assert_eq!(m.index, 0);
     }
 
     #[test]
@@ -749,5 +771,97 @@ mod tests {
         // Left arrow should pass through.
         assert!(!n.on_key(&mut v, key(KeyCode::Left)));
         assert_eq!(n.text.cursor, 1);
+    }
+
+    // -----------------------------------------------------------------
+    // Phase 1 reproducers — t-tui-rotate (RC2, RC3).
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn select_left_right_rotate_value() {
+        // RC2 reproducer: Left/Right should rotate the cursor through
+        // the option list, with wrap.
+        let mut s = Select {
+            index: 1,
+            focused: true,
+        };
+        let mut out = String::new();
+        let opts = ["a", "b", "c"];
+        // Left from 1 -> 0.
+        s.on_key(&opts, &mut out, key(KeyCode::Left));
+        assert_eq!(s.index, 0, "Left should decrement");
+        // Right from 0 -> 1, then 1 -> 2, then 2 wraps to 0.
+        s.on_key(&opts, &mut out, key(KeyCode::Right));
+        assert_eq!(s.index, 1);
+        s.on_key(&opts, &mut out, key(KeyCode::Right));
+        assert_eq!(s.index, 2);
+        s.on_key(&opts, &mut out, key(KeyCode::Right));
+        assert_eq!(s.index, 0, "Right past end should wrap");
+        // Left at 0 -> wraps to last.
+        s.on_key(&opts, &mut out, key(KeyCode::Left));
+        assert_eq!(s.index, 2, "Left at 0 should wrap to last");
+    }
+
+    #[test]
+    fn select_up_at_zero_wraps_to_last() {
+        // RC3 reproducer.
+        let mut s = Select::default();
+        let mut out = String::new();
+        let opts = ["a", "b", "c"];
+        s.on_key(&opts, &mut out, key(KeyCode::Up));
+        assert_eq!(s.index, 2, "Up at index 0 wraps to last");
+    }
+
+    #[test]
+    fn select_down_at_end_wraps_to_zero() {
+        // RC3 reproducer.
+        let mut s = Select {
+            index: 2,
+            focused: true,
+        };
+        let mut out = String::new();
+        let opts = ["a", "b", "c"];
+        s.on_key(&opts, &mut out, key(KeyCode::Down));
+        assert_eq!(s.index, 0, "Down at last index wraps to zero");
+    }
+
+    #[test]
+    fn multi_select_up_at_zero_wraps_to_last() {
+        // RC3 reproducer for MultiSelect.
+        let mut m = MultiSelect::default();
+        let mut sel: Vec<String> = vec![];
+        let opts = ["a", "b", "c"];
+        m.on_key(&opts, &mut sel, key(KeyCode::Up));
+        assert_eq!(m.index, 2, "MultiSelect Up at 0 wraps to last");
+    }
+
+    #[test]
+    fn multi_select_down_at_end_wraps_to_zero() {
+        // RC3 reproducer for MultiSelect.
+        let mut m = MultiSelect {
+            index: 2,
+            focused: true,
+        };
+        let mut sel: Vec<String> = vec![];
+        let opts = ["a", "b", "c"];
+        m.on_key(&opts, &mut sel, key(KeyCode::Down));
+        assert_eq!(m.index, 0, "MultiSelect Down at last wraps to zero");
+    }
+
+    #[test]
+    fn multi_select_space_toggles_at_focused_index() {
+        // Regression guard: Space must still toggle membership at the
+        // cursor's option, independent of wrap behavior.
+        let mut m = MultiSelect::default();
+        let mut sel: Vec<String> = vec![];
+        let opts = ["a", "b", "c"];
+        // Move to index 1 via Down then toggle.
+        m.on_key(&opts, &mut sel, key(KeyCode::Down));
+        assert_eq!(m.index, 1);
+        m.on_key(&opts, &mut sel, key(KeyCode::Char(' ')));
+        assert_eq!(sel, vec!["b".to_string()]);
+        // Toggle again removes.
+        m.on_key(&opts, &mut sel, key(KeyCode::Char(' ')));
+        assert!(sel.is_empty());
     }
 }
