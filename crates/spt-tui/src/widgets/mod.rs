@@ -128,10 +128,7 @@ impl TextInput {
         // visibly distinguished cursor (the lone ▏ glyph against an
         // otherwise blank background was being lost on some terminals).
         // Gated on `self.focused` so nav-mode rendering is unchanged.
-        if self.focused
-            && area.width > 2
-            && area.height > 2
-            && self.cursor <= value.chars().count()
+        if self.focused && area.width > 2 && area.height > 2 && self.cursor <= value.chars().count()
         {
             // Content origin is one cell inside each border edge.
             let inner_w = area.width.saturating_sub(2);
