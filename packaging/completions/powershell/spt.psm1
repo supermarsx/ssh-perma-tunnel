@@ -64,6 +64,7 @@ Register-ArgumentCompleter -Native -CommandName 'spt' -ScriptBlock {
             [CompletionResult]::new('status', 'status', [CompletionResultType]::ParameterValue, 'Read-only status API controls (plan §t4-e5)')
             [CompletionResult]::new('completion', 'completion', [CompletionResultType]::ParameterValue, 'Generate shell completions')
             [CompletionResult]::new('about', 'about', [CompletionResultType]::ParameterValue, 'List bundled libraries and their licenses')
+            [CompletionResult]::new('kill', 'kill', [CompletionResultType]::ParameterValue, 'Kill every running `spt` process on this host (cross-platform)')
             [CompletionResult]::new('help', 'help', [CompletionResultType]::ParameterValue, 'Print this message or the help of the given subcommand(s)')
             break
         }
@@ -6749,6 +6750,33 @@ Register-ArgumentCompleter -Native -CommandName 'spt' -ScriptBlock {
         'spt;about;help;help' {
             break
         }
+        'spt;kill' {
+            [CompletionResult]::new('--name', '--name', [CompletionResultType]::ParameterName, 'Override the basename matched against running processes. Plain substring match; case-insensitive. Defaults to `spt` (Unix) / `spt.exe` (Windows)')
+            [CompletionResult]::new('--timeout', '--timeout', [CompletionResultType]::ParameterName, 'Per-process grace window before the platform terminate returns. Defaults to 5 seconds. Honoured on Windows (`WaitForSingleObject`); informational on Unix where `SIGTERM` is asynchronous')
+            [CompletionResult]::new('--config', '--config', [CompletionResultType]::ParameterName, 'Path to a single config file')
+            [CompletionResult]::new('--config-dir', '--config-dir', [CompletionResultType]::ParameterName, 'Path to a directory of `*.toml` configs (loaded in lexical order)')
+            [CompletionResult]::new('--config-url', '--config-url', [CompletionResultType]::ParameterName, 'HTTPS URL of a remote config to fetch')
+            [CompletionResult]::new('--config-fingerprint', '--config-fingerprint', [CompletionResultType]::ParameterName, 'SHA-256 fingerprint pin for `--config-url`')
+            [CompletionResult]::new('--state-dir', '--state-dir', [CompletionResultType]::ParameterName, 'Override the runtime state directory')
+            [CompletionResult]::new('--profile', '--profile', [CompletionResultType]::ParameterName, 'Restrict operations to the named profile')
+            [CompletionResult]::new('--output', '--output', [CompletionResultType]::ParameterName, 'Output format for command results')
+            [CompletionResult]::new('--log-level', '--log-level', [CompletionResultType]::ParameterName, 'Tracing log level')
+            [CompletionResult]::new('--color', '--color', [CompletionResultType]::ParameterName, 'Color policy for human output')
+            [CompletionResult]::new('--force', '--force', [CompletionResultType]::ParameterName, 'Skip the graceful signal and go straight to a hard kill (`SIGKILL` / `TerminateProcess`). Default: send a graceful signal (`SIGTERM` / `TerminateProcess` with grace window) first')
+            [CompletionResult]::new('--include-self', '--include-self', [CompletionResultType]::ParameterName, 'Include the current process in the kill list (the calling `spt` itself). Off by default — typical use is "kill all the other ones."')
+            [CompletionResult]::new('--dry-run', '--dry-run', [CompletionResultType]::ParameterName, 'Print what would be killed without actually signalling anything')
+            [CompletionResult]::new('--json', '--json', [CompletionResultType]::ParameterName, 'Convenience alias for `--output json`')
+            [CompletionResult]::new('-q', '-q', [CompletionResultType]::ParameterName, 'Suppress non-essential output')
+            [CompletionResult]::new('--quiet', '--quiet', [CompletionResultType]::ParameterName, 'Suppress non-essential output')
+            [CompletionResult]::new('-v', '-v', [CompletionResultType]::ParameterName, 'Increase verbosity (repeat for more)')
+            [CompletionResult]::new('--verbose', '--verbose', [CompletionResultType]::ParameterName, 'Increase verbosity (repeat for more)')
+            [CompletionResult]::new('--no-color', '--no-color', [CompletionResultType]::ParameterName, 'Disable color (legacy convenience flag; use `--color never`)')
+            [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help (see more with ''--help'')')
+            [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help (see more with ''--help'')')
+            [CompletionResult]::new('-V', '-V ', [CompletionResultType]::ParameterName, 'Print version')
+            [CompletionResult]::new('--version', '--version', [CompletionResultType]::ParameterName, 'Print version')
+            break
+        }
         'spt;help' {
             [CompletionResult]::new('config', 'config', [CompletionResultType]::ParameterValue, 'Manage configuration files (init, validate, diff, render, reload)')
             [CompletionResult]::new('profile', 'profile', [CompletionResultType]::ParameterValue, 'Manage SSH/SSH3 tunnel profiles')
@@ -6773,6 +6801,7 @@ Register-ArgumentCompleter -Native -CommandName 'spt' -ScriptBlock {
             [CompletionResult]::new('status', 'status', [CompletionResultType]::ParameterValue, 'Read-only status API controls (plan §t4-e5)')
             [CompletionResult]::new('completion', 'completion', [CompletionResultType]::ParameterValue, 'Generate shell completions')
             [CompletionResult]::new('about', 'about', [CompletionResultType]::ParameterValue, 'List bundled libraries and their licenses')
+            [CompletionResult]::new('kill', 'kill', [CompletionResultType]::ParameterValue, 'Kill every running `spt` process on this host (cross-platform)')
             [CompletionResult]::new('help', 'help', [CompletionResultType]::ParameterValue, 'Print this message or the help of the given subcommand(s)')
             break
         }
@@ -7603,6 +7632,9 @@ Register-ArgumentCompleter -Native -CommandName 'spt' -ScriptBlock {
             break
         }
         'spt;help;about;export' {
+            break
+        }
+        'spt;help;kill' {
             break
         }
         'spt;help;help' {

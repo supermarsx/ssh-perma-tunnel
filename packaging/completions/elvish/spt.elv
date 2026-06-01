@@ -61,6 +61,7 @@ set edit:completion:arg-completer[spt] = {|@words|
             cand status 'Read-only status API controls (plan §t4-e5)'
             cand completion 'Generate shell completions'
             cand about 'List bundled libraries and their licenses'
+            cand kill 'Kill every running `spt` process on this host (cross-platform)'
             cand help 'Print this message or the help of the given subcommand(s)'
         }
         &'spt;config'= {
@@ -6217,6 +6218,32 @@ set edit:completion:arg-completer[spt] = {|@words|
         }
         &'spt;about;help;help'= {
         }
+        &'spt;kill'= {
+            cand --name 'Override the basename matched against running processes. Plain substring match; case-insensitive. Defaults to `spt` (Unix) / `spt.exe` (Windows)'
+            cand --timeout 'Per-process grace window before the platform terminate returns. Defaults to 5 seconds. Honoured on Windows (`WaitForSingleObject`); informational on Unix where `SIGTERM` is asynchronous'
+            cand --config 'Path to a single config file'
+            cand --config-dir 'Path to a directory of `*.toml` configs (loaded in lexical order)'
+            cand --config-url 'HTTPS URL of a remote config to fetch'
+            cand --config-fingerprint 'SHA-256 fingerprint pin for `--config-url`'
+            cand --state-dir 'Override the runtime state directory'
+            cand --profile 'Restrict operations to the named profile'
+            cand --output 'Output format for command results'
+            cand --log-level 'Tracing log level'
+            cand --color 'Color policy for human output'
+            cand --force 'Skip the graceful signal and go straight to a hard kill (`SIGKILL` / `TerminateProcess`). Default: send a graceful signal (`SIGTERM` / `TerminateProcess` with grace window) first'
+            cand --include-self 'Include the current process in the kill list (the calling `spt` itself). Off by default — typical use is "kill all the other ones."'
+            cand --dry-run 'Print what would be killed without actually signalling anything'
+            cand --json 'Convenience alias for `--output json`'
+            cand -q 'Suppress non-essential output'
+            cand --quiet 'Suppress non-essential output'
+            cand -v 'Increase verbosity (repeat for more)'
+            cand --verbose 'Increase verbosity (repeat for more)'
+            cand --no-color 'Disable color (legacy convenience flag; use `--color never`)'
+            cand -h 'Print help (see more with ''--help'')'
+            cand --help 'Print help (see more with ''--help'')'
+            cand -V 'Print version'
+            cand --version 'Print version'
+        }
         &'spt;help'= {
             cand config 'Manage configuration files (init, validate, diff, render, reload)'
             cand profile 'Manage SSH/SSH3 tunnel profiles'
@@ -6241,6 +6268,7 @@ set edit:completion:arg-completer[spt] = {|@words|
             cand status 'Read-only status API controls (plan §t4-e5)'
             cand completion 'Generate shell completions'
             cand about 'List bundled libraries and their licenses'
+            cand kill 'Kill every running `spt` process on this host (cross-platform)'
             cand help 'Print this message or the help of the given subcommand(s)'
         }
         &'spt;help;config'= {
@@ -6858,6 +6886,8 @@ set edit:completion:arg-completer[spt] = {|@words|
         &'spt;help;about;licenses'= {
         }
         &'spt;help;about;export'= {
+        }
+        &'spt;help;kill'= {
         }
         &'spt;help;help'= {
         }
