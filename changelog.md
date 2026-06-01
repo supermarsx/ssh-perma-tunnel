@@ -1,3 +1,14 @@
+## [26.6] - 2026-06-01
+
+# spt 26.6
+
+## Changes since 26.5
+
+- ci: WiX 3 binary cache + shared rust-cache across test+build (≈30–40min saved) (8ce6d42)
+- feat(tui): `▶` selector, focused-field help footer, position counter, context-aware status (5a5f487)
+- cli: scrub plan refs + "(cross-platform)" tag from help text (46aa9f4)
+- fix(packaging): Windows VERSIONINFO mojibake + redundant ProductName prefix (b69a276)
+
 ## [26.5] - 2026-06-01
 
 # spt 26.5
