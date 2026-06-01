@@ -324,7 +324,7 @@ BEGIN
         BLOCK "040904b0"
         BEGIN
             VALUE "CompanyName",      "supermarsx"
-            VALUE "FileDescription",  "spt — permanent SSH2/SSH3 tunnels with reconnect, observability, and service integration"
+            VALUE "FileDescription",  "Permanent SSH2/SSH3 tunnels with reconnect, observability, and service integration"
             VALUE "FileVersion",      "{semver}"
             VALUE "InternalName",     "spt"
             VALUE "LegalCopyright",   "Copyright (c) 2026 Mariana"
