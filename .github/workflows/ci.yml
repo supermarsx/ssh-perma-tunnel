@@ -259,9 +259,20 @@ jobs:
       # (SPT_*, EDITOR overrides, etc.) across ~20 modules; running them in
       # parallel races (a sibling test clobbers another's env mid-assertion).
       # Serializing is the pragmatic fix vs. a mutex in every such test.
+      #
+      # aarch64-unknown-linux-gnu memory cap: the free ARM runner ships with
+      # 7 GB RAM. The workspace's ~50 crates with full debuginfo on a fresh
+      # cache miss have repeatedly OOM-killed the runner during linking
+      # (exit code 143 mid-compile, no test ever ran). Cap `cargo build`
+      # parallelism to 2 rustc workers on aarch64-linux only — peak memory
+      # drops by ~half, wall time goes up ~25%. Other runners (x86_64-linux
+      # 16 GB, macos-14 14 GB, windows 16 GB) keep the default `nproc`
+      # parallelism since they don't hit the ceiling.
       - name: cargo test (native)
         if: ${{ matrix.can_test && !matrix.cross && env.SPT_FORCE_CROSS != '1' }}
         shell: bash
+        env:
+          CARGO_BUILD_JOBS: ${{ matrix.target == 'aarch64-unknown-linux-gnu' && '2' || '' }}
         run: cargo test --workspace --locked --no-fail-fast --target ${{ matrix.target }} -- --test-threads=1
       - name: cargo test (cross / QEMU)
         if: ${{ matrix.can_test && (matrix.cross || env.SPT_FORCE_CROSS == '1') }}
@@ -324,6 +335,10 @@ jobs:
         run: cargo install cross --locked --version 0.2.5
       - name: Build release
         shell: bash
+        env:
+          # Same OOM mitigation as the `test` step — aarch64-linux free
+          # runner OOMs during release linking otherwise.
+          CARGO_BUILD_JOBS: ${{ matrix.target == 'aarch64-unknown-linux-gnu' && '2' || '' }}
         run: |
           if [[ "${{ matrix.cross }}" == "true" || "${SPT_FORCE_CROSS:-0}" == "1" ]]; then
             cross build --workspace --locked --release --target ${{ matrix.target }}
