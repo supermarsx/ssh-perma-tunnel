@@ -132,6 +132,36 @@ port `514` for UDP/TCP and `6514` for TLS. Reliable transports support
 
 See [Secrets](secrets.md) for the resolver-priority rules.
 
+## `[updater]`
+
+Embedded auto-updater. **Off by default** — omit the block entirely (or
+set `enabled = false`) for no autonomous action. Full reference + the
+schedule grammar + verification policy + maintenance window + operations
+playbook are in [Updater](updater.md). The minimal opt-in shape:
+
+    [updater]
+    enabled  = true
+    mode     = "warn"             # off | check | warn | auto
+    schedule = "0 6 * * *"        # 5-field cron, OR `interval = "24h"`
+    source   = "github"           # github | url | static
+
+    [updater.verify]
+    require_minisign = true       # default; required when enabled
+    minisign_pubkey  = "/etc/spt/minisign.pub"
+
+Sub-tables:
+
+| Sub-table            | Purpose                                            |
+|----------------------|----------------------------------------------------|
+| `[updater.window]`   | Maintenance window for `mode = "auto"`.            |
+| `[updater.staging]`  | Where staged artifacts land + retention.           |
+| `[updater.verify]`   | Signature / hash floor (minisign required by default). |
+| `[updater.action]`   | Post-install actions (restart, audit, hook).       |
+
+Manual `spt update check / status / download / apply / now / history`
+commands work regardless of `enabled` — the master switch only gates the
+background polling thread the supervisor would spawn.
+
 ## `[observability]`
 
 Metrics, SNMP, Windows Event Log, and OTLP/syslog details are covered in

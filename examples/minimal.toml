@@ -2,6 +2,23 @@
 # See spec.md §8.1 for the canonical layout.
 version = 1
 
+# -----------------------------------------------------------------------------
+# Embedded auto-updater — OFF BY DEFAULT.
+# -----------------------------------------------------------------------------
+# Uncomment the block below to enable. See `docs/updater.md` for the full
+# schema reference and `examples/updater.toml` for a fully annotated config.
+# Manual `spt update check / status` still work without the block; the
+# background polling thread is only spawned when `[updater].enabled = true`.
+#
+# [updater]
+# enabled  = true
+# mode     = "warn"             # off | check | warn | auto
+# schedule = "0 6 * * *"        # 5-field cron (UTC); or `interval = "24h"`
+# source   = "github"           # github | url | static
+# [updater.verify]
+# require_minisign = true
+# minisign_pubkey  = "/etc/spt/minisign.pub"
+
 [[profiles]]
 name = "minimal"
 enabled = true

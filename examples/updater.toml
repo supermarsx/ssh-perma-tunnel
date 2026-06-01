@@ -1,0 +1,91 @@
+# Example: spt configured with the embedded auto-updater enabled.
+#
+# spt's auto-updater is off by default; this file demonstrates a
+# `warn-only` configuration (poll the GitHub Releases API daily, emit a
+# tracing-warn + audit event when a newer release is available, do NOT
+# install automatically). Promote to `mode = "auto"` once you've
+# validated the upgrade path against your environment.
+#
+# Full reference: docs/updater.md
+version = 1
+
+# -----------------------------------------------------------------------------
+# [updater]
+# -----------------------------------------------------------------------------
+#
+# Master switch + behaviour mode. `enabled = false` means the supervisor
+# never spawns the polling thread. Manual `spt update check / apply /
+# status / now` commands work regardless — `enabled` only gates the
+# background.
+[updater]
+enabled  = true
+mode     = "warn"             # off | check | warn | auto
+schedule = "0 6 * * *"        # daily at 06:00 UTC (5-field cron)
+# interval = "12h"            # alternative: humantime duration
+
+# Release source. Three backends:
+#   github  - GitHub Releases API for <owner>/<repo>  (default)
+#   url     - HTTPS GET against a release-manifest.json with an SHA-256 pin
+#   static  - file:// directory laid out like dist/<version>/ for mirrors
+source         = "github"
+github_repo    = "supermarsx/ssh-perma-tunnel"
+github_channel = "stable"     # "stable" skips pre-releases
+
+# Where staged artifacts land before swap. {state_dir} is expanded by
+# the runtime to the resolved state-dir for this spt instance.
+[updater.staging]
+dir       = "{state_dir}/updates"
+keep_last = 3                 # how many past staged builds to retain
+
+# Verification floor. Required by default — flip require_minisign = false
+# only when consuming a private mirror that does not replay signatures.
+[updater.verify]
+require_minisign   = true
+minisign_pubkey    = "/etc/spt/minisign.pub"
+require_sha256sums = true
+# gpg_pubkey       = "/etc/spt/sha256sums-gpg.pub"
+
+# Maintenance window — auto-install only fires inside this window. Comment
+# out the block for "any time". `mode = "warn"` ignores it (warn-only doesn't
+# install), but the block is still parsed so promotion to `mode = "auto"`
+# Just Works.
+[updater.window]
+allow_from = "02:00"
+allow_to   = "06:00"
+timezone   = "UTC"
+
+# Post-install actions. Restart the supervisor so the new binary takes
+# effect immediately; audit every install so SIEM can correlate.
+[updater.action]
+restart_supervisor = true
+notify_audit       = true
+# post_install_hook = "/usr/local/bin/spt-post-install.sh"
+
+# -----------------------------------------------------------------------------
+# Minimal SSH2 profile so this config is runnable. Borrowed from
+# examples/minimal.toml.
+# -----------------------------------------------------------------------------
+[[profiles]]
+name = "edge"
+enabled = true
+protocol = "ssh2"
+host = "bastion.example.com"
+port = 22
+user = "alice"
+
+[profiles.auth]
+method = "agent"
+
+[profiles.trust]
+mode             = "known_hosts"
+known_hosts_file = "~/.ssh/known_hosts"
+strict           = true
+
+[[profiles.forwards]]
+name = "web"
+type = "local"
+transport = "tcp"
+bind = "127.0.0.1:8080"
+target = "service.internal:80"
+target_resolve = "remote"
+required = true

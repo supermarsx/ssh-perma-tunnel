@@ -121,7 +121,7 @@ backend, and split-horizon DNS.
   [Observability](docs/observability.md), [Events](docs/events.md).
 - [Diagnostics](docs/diagnostics.md), [Benchmarking](docs/benchmarking.md),
   [MCP](docs/mcp.md), [TUI](docs/tui.md), [SSH3](docs/ssh3.md),
-  [Remote Config](docs/remote-config.md).
+  [Remote Config](docs/remote-config.md), [Updater](docs/updater.md).
 - [Security](docs/security.md), [Versioning](docs/versioning.md),
   [Troubleshooting](docs/troubleshooting.md).
 
