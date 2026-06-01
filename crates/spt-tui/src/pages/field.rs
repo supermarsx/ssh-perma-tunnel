@@ -184,6 +184,20 @@ impl FieldList {
                 field.text.focused = true;
                 field.numeric.text = field.text.clone();
             }
+            // Seed Select / MultiSelect cursor from the current value so
+            // the highlight lands on the active option (not always 0).
+            // Without this seeding, Enter on a Choice field overwrites
+            // the profile with `options[0]` even when the user did not
+            // intend a change.
+            if let FieldValue::Choice { ref value, options } = cur {
+                field.select.index = options.iter().position(|o| *o == value).unwrap_or(0);
+            }
+            if let FieldValue::Multi { ref value, options } = cur {
+                field.multi.index = value
+                    .first()
+                    .and_then(|v| options.iter().position(|o| *o == v.as_str()))
+                    .unwrap_or(0);
+            }
             field.edit_buf = Some(cur);
             self.editing = true;
         }
@@ -917,5 +931,116 @@ mod tests {
         let s = format!("{def:?}");
         assert!(s.contains("FieldDef"));
         assert!(s.contains('x'));
+    }
+
+    // -----------------------------------------------------------------
+    // Phase 1 reproducers — t-tui-rotate (RC1).
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn begin_edit_seeds_select_index_from_current_value() {
+        // RC1 reproducer: when a Choice field's current value is the
+        // second option, opening edit mode must seed the select cursor
+        // to that index rather than defaulting to 0.
+        const OPTS: &[&str] = &["ssh2", "ssh3"];
+        let def = FieldDef {
+            label: "protocol",
+            help: "",
+            get: Box::new(|p: &Profile| FieldValue::Choice {
+                value: p.protocol.clone(),
+                options: OPTS,
+            }),
+            set: Box::new(|p, v| {
+                if let FieldValue::Choice { value, .. } = v {
+                    p.protocol = value;
+                }
+            }),
+            validate: None,
+        };
+        let mut list = FieldList::new(vec![def]);
+        let mut p = sample_profile();
+        p.protocol = "ssh3".into();
+        list.begin_edit(&p);
+        assert_eq!(
+            list.fields[0].select.index, 1,
+            "Select.index must be seeded from current value position"
+        );
+    }
+
+    #[test]
+    fn begin_edit_seeds_multi_index_from_first_selected() {
+        // RC1 reproducer for Multi: seed the cursor at the first
+        // currently-selected option's index (or 0 if none).
+        const OPTS: &[&str] = &["a", "b", "c"];
+        let def = FieldDef {
+            label: "list",
+            help: "",
+            get: Box::new(|p: &Profile| FieldValue::Multi {
+                value: p.tags.clone().unwrap_or_default(),
+                options: OPTS,
+            }),
+            set: Box::new(|p, v| {
+                if let FieldValue::Multi { value, .. } = v {
+                    p.tags = if value.is_empty() { None } else { Some(value) };
+                }
+            }),
+            validate: None,
+        };
+        let mut list = FieldList::new(vec![def]);
+        let mut p = sample_profile();
+        p.tags = Some(vec!["c".into()]);
+        list.begin_edit(&p);
+        assert_eq!(
+            list.fields[0].multi.index, 2,
+            "MultiSelect.index must be seeded from first selected option's position"
+        );
+    }
+
+    #[test]
+    fn begin_edit_seeds_multi_index_zero_when_empty() {
+        // RC1: with no selected value, fall back to 0.
+        const OPTS: &[&str] = &["a", "b", "c"];
+        let def = FieldDef {
+            label: "list",
+            help: "",
+            get: Box::new(|_p: &Profile| FieldValue::Multi {
+                value: Vec::new(),
+                options: OPTS,
+            }),
+            set: Box::new(|_p, _v| {}),
+            validate: None,
+        };
+        let mut list = FieldList::new(vec![def]);
+        let p = sample_profile();
+        list.begin_edit(&p);
+        assert_eq!(list.fields[0].multi.index, 0);
+    }
+
+    #[test]
+    fn bool_field_space_flips_without_commit() {
+        // Documents the actual semantics: Space flips the toggle inside
+        // the edit buffer but does NOT commit. (Enter commits.)
+        let def = opt_bool(
+            "agent",
+            "",
+            |p: &Profile| p.auth.as_ref().and_then(|a| a.agent),
+            |p, v| p.auth.get_or_insert_with(Default::default).agent = v,
+        );
+        let mut list = FieldList::new(vec![def]);
+        let mut p = sample_profile();
+        list.begin_edit(&p);
+        // Initial profile value: agent is None (-> false via get).
+        list.on_edit_key(key(crossterm::event::KeyCode::Char(' ')), &mut p);
+        // After Space: edit buffer flipped, profile unchanged.
+        assert!(
+            p.auth.as_ref().and_then(|a| a.agent).is_none(),
+            "Space must not commit to profile"
+        );
+        // edit_buf reflects the flip.
+        match list.fields[0].edit_buf.as_ref() {
+            Some(FieldValue::Bool(b)) => assert!(*b, "edit_buf should be flipped to true"),
+            other => panic!("expected Bool edit_buf, got {other:?}"),
+        }
+        assert!(list.editing, "still editing — Space did not commit");
     }
 }
