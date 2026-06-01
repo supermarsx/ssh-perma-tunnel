@@ -1,8 +1,9 @@
 ---
 source: crates/spt-cli/tests/help_snapshots.rs
+assertion_line: 48
 expression: out
 ---
-Read-only status API controls (plan §t4-e5)
+Read-only status API controls
 
 Usage: spt status [OPTIONS] <COMMAND>
 

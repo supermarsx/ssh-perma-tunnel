@@ -61,10 +61,10 @@ Register-ArgumentCompleter -Native -CommandName 'spt' -ScriptBlock {
             [CompletionResult]::new('diagnose', 'diagnose', [CompletionResultType]::ParameterValue, 'Targeted diagnostics and support bundles')
             [CompletionResult]::new('benchmark', 'benchmark', [CompletionResultType]::ParameterValue, 'Controlled benchmarking against forwards')
             [CompletionResult]::new('mcp', 'mcp', [CompletionResultType]::ParameterValue, 'Built-in MCP server controls')
-            [CompletionResult]::new('status', 'status', [CompletionResultType]::ParameterValue, 'Read-only status API controls (plan §t4-e5)')
+            [CompletionResult]::new('status', 'status', [CompletionResultType]::ParameterValue, 'Read-only status API controls')
             [CompletionResult]::new('completion', 'completion', [CompletionResultType]::ParameterValue, 'Generate shell completions')
             [CompletionResult]::new('about', 'about', [CompletionResultType]::ParameterValue, 'List bundled libraries and their licenses')
-            [CompletionResult]::new('kill', 'kill', [CompletionResultType]::ParameterValue, 'Kill every running `spt` process on this host (cross-platform)')
+            [CompletionResult]::new('kill', 'kill', [CompletionResultType]::ParameterValue, 'Terminate every running `spt` instance on this host')
             [CompletionResult]::new('update', 'update', [CompletionResultType]::ParameterValue, 'Embedded auto-updater (off by default). Manual commands work regardless of the `[updater].enabled` flag; the background polling thread is only spawned when explicitly enabled')
             [CompletionResult]::new('help', 'help', [CompletionResultType]::ParameterValue, 'Print this message or the help of the given subcommand(s)')
             break
@@ -1265,8 +1265,8 @@ Register-ArgumentCompleter -Native -CommandName 'spt' -ScriptBlock {
         }
         'spt;tunnel;run' {
             [CompletionResult]::new('--profiles', '--profiles', [CompletionResultType]::ParameterName, 'Comma-separated profile filter')
-            [CompletionResult]::new('-J', '-J ', [CompletionResultType]::ParameterName, 'Proxy-jump chain `user@host[:port][,user@host…]`. When set, the chain is splatted into every selected profile''s `hops` table at startup (CLI values take precedence over profile-file hops). Mirrors the OpenSSH `-J` flag (t6-e3)')
-            [CompletionResult]::new('--jump', '--jump', [CompletionResultType]::ParameterName, 'Proxy-jump chain `user@host[:port][,user@host…]`. When set, the chain is splatted into every selected profile''s `hops` table at startup (CLI values take precedence over profile-file hops). Mirrors the OpenSSH `-J` flag (t6-e3)')
+            [CompletionResult]::new('-J', '-J ', [CompletionResultType]::ParameterName, 'Proxy-jump chain `user@host[:port][,user@host…]`. When set, the chain is splatted into every selected profile''s `hops` table at startup (CLI values take precedence over profile-file hops). Mirrors the OpenSSH `-J` flag')
+            [CompletionResult]::new('--jump', '--jump', [CompletionResultType]::ParameterName, 'Proxy-jump chain `user@host[:port][,user@host…]`. When set, the chain is splatted into every selected profile''s `hops` table at startup (CLI values take precedence over profile-file hops). Mirrors the OpenSSH `-J` flag')
             [CompletionResult]::new('--config', '--config', [CompletionResultType]::ParameterName, 'Path to a single config file')
             [CompletionResult]::new('--config-dir', '--config-dir', [CompletionResultType]::ParameterName, 'Path to a directory of `*.toml` configs (loaded in lexical order)')
             [CompletionResult]::new('--config-url', '--config-url', [CompletionResultType]::ParameterName, 'HTTPS URL of a remote config to fetch')
@@ -7003,10 +7003,10 @@ Register-ArgumentCompleter -Native -CommandName 'spt' -ScriptBlock {
             [CompletionResult]::new('diagnose', 'diagnose', [CompletionResultType]::ParameterValue, 'Targeted diagnostics and support bundles')
             [CompletionResult]::new('benchmark', 'benchmark', [CompletionResultType]::ParameterValue, 'Controlled benchmarking against forwards')
             [CompletionResult]::new('mcp', 'mcp', [CompletionResultType]::ParameterValue, 'Built-in MCP server controls')
-            [CompletionResult]::new('status', 'status', [CompletionResultType]::ParameterValue, 'Read-only status API controls (plan §t4-e5)')
+            [CompletionResult]::new('status', 'status', [CompletionResultType]::ParameterValue, 'Read-only status API controls')
             [CompletionResult]::new('completion', 'completion', [CompletionResultType]::ParameterValue, 'Generate shell completions')
             [CompletionResult]::new('about', 'about', [CompletionResultType]::ParameterValue, 'List bundled libraries and their licenses')
-            [CompletionResult]::new('kill', 'kill', [CompletionResultType]::ParameterValue, 'Kill every running `spt` process on this host (cross-platform)')
+            [CompletionResult]::new('kill', 'kill', [CompletionResultType]::ParameterValue, 'Terminate every running `spt` instance on this host')
             [CompletionResult]::new('update', 'update', [CompletionResultType]::ParameterValue, 'Embedded auto-updater (off by default). Manual commands work regardless of the `[updater].enabled` flag; the background polling thread is only spawned when explicitly enabled')
             [CompletionResult]::new('help', 'help', [CompletionResultType]::ParameterValue, 'Print this message or the help of the given subcommand(s)')
             break

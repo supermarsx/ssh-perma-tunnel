@@ -58,10 +58,10 @@ set edit:completion:arg-completer[spt] = {|@words|
             cand diagnose 'Targeted diagnostics and support bundles'
             cand benchmark 'Controlled benchmarking against forwards'
             cand mcp 'Built-in MCP server controls'
-            cand status 'Read-only status API controls (plan §t4-e5)'
+            cand status 'Read-only status API controls'
             cand completion 'Generate shell completions'
             cand about 'List bundled libraries and their licenses'
-            cand kill 'Kill every running `spt` process on this host (cross-platform)'
+            cand kill 'Terminate every running `spt` instance on this host'
             cand update 'Embedded auto-updater (off by default). Manual commands work regardless of the `[updater].enabled` flag; the background polling thread is only spawned when explicitly enabled'
             cand help 'Print this message or the help of the given subcommand(s)'
         }
@@ -1172,8 +1172,8 @@ set edit:completion:arg-completer[spt] = {|@words|
         }
         &'spt;tunnel;run'= {
             cand --profiles 'Comma-separated profile filter'
-            cand -J 'Proxy-jump chain `user@host[:port][,user@host…]`. When set, the chain is splatted into every selected profile''s `hops` table at startup (CLI values take precedence over profile-file hops). Mirrors the OpenSSH `-J` flag (t6-e3)'
-            cand --jump 'Proxy-jump chain `user@host[:port][,user@host…]`. When set, the chain is splatted into every selected profile''s `hops` table at startup (CLI values take precedence over profile-file hops). Mirrors the OpenSSH `-J` flag (t6-e3)'
+            cand -J 'Proxy-jump chain `user@host[:port][,user@host…]`. When set, the chain is splatted into every selected profile''s `hops` table at startup (CLI values take precedence over profile-file hops). Mirrors the OpenSSH `-J` flag'
+            cand --jump 'Proxy-jump chain `user@host[:port][,user@host…]`. When set, the chain is splatted into every selected profile''s `hops` table at startup (CLI values take precedence over profile-file hops). Mirrors the OpenSSH `-J` flag'
             cand --config 'Path to a single config file'
             cand --config-dir 'Path to a directory of `*.toml` configs (loaded in lexical order)'
             cand --config-url 'HTTPS URL of a remote config to fetch'
@@ -6455,10 +6455,10 @@ set edit:completion:arg-completer[spt] = {|@words|
             cand diagnose 'Targeted diagnostics and support bundles'
             cand benchmark 'Controlled benchmarking against forwards'
             cand mcp 'Built-in MCP server controls'
-            cand status 'Read-only status API controls (plan §t4-e5)'
+            cand status 'Read-only status API controls'
             cand completion 'Generate shell completions'
             cand about 'List bundled libraries and their licenses'
-            cand kill 'Kill every running `spt` process on this host (cross-platform)'
+            cand kill 'Terminate every running `spt` instance on this host'
             cand update 'Embedded auto-updater (off by default). Manual commands work regardless of the `[updater].enabled` flag; the background polling thread is only spawned when explicitly enabled'
             cand help 'Print this message or the help of the given subcommand(s)'
         }

@@ -191,13 +191,13 @@ pub enum Command {
     Benchmark(groups::benchmark::BenchmarkCmd),
     /// Built-in MCP server controls.
     Mcp(groups::mcp::McpCmd),
-    /// Read-only status API controls (plan §t4-e5).
+    /// Read-only status API controls.
     Status(groups::status::StatusCmd),
     /// Generate shell completions.
     Completion(groups::completion::CompletionCmd),
     /// List bundled libraries and their licenses.
     About(groups::about::AboutCmd),
-    /// Kill every running `spt` process on this host (cross-platform).
+    /// Terminate every running `spt` instance on this host.
     Kill(groups::kill::KillCmd),
     /// Embedded auto-updater (off by default). Manual commands work
     /// regardless of the `[updater].enabled` flag; the background

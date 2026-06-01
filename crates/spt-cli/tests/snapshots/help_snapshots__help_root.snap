@@ -28,10 +28,10 @@ Commands:
   diagnose    Targeted diagnostics and support bundles
   benchmark   Controlled benchmarking against forwards
   mcp         Built-in MCP server controls
-  status      Read-only status API controls (plan §t4-e5)
+  status      Read-only status API controls
   completion  Generate shell completions
   about       List bundled libraries and their licenses
-  kill        Kill every running `spt` process on this host (cross-platform)
+  kill        Terminate every running `spt` instance on this host
   update      Embedded auto-updater (off by default). Manual commands work regardless of the
               `[updater].enabled` flag; the background polling thread is only spawned when
               explicitly enabled
