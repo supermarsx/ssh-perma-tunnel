@@ -1,0 +1,17 @@
+[Desktop Entry]
+Name=spt
+GenericName=SSH Tunnel Manager
+Comment=Permanent SSH2/SSH3 tunnels with reconnect, observability, and service integration
+# CLI tool — `Terminal=true` means the launcher spawns a terminal and runs
+# `spt` inside it. Same shape as `htop.desktop`, `nano.desktop`, etc.
+Exec=spt
+Terminal=true
+Type=Application
+# `Icon=spt` resolves against /usr/share/icons/hicolor/<size>/apps/spt.{png,svg}
+# in size-then-theme order. The cargo-deb / cargo-generate-rpm asset lists
+# install exactly that hicolor layout so this resolution succeeds out of
+# the box on every standard freedesktop-compliant DE.
+Icon=spt
+Categories=Network;Security;ConsoleOnly;
+Keywords=ssh;ssh3;tunnel;port-forward;networking;
+StartupNotify=false

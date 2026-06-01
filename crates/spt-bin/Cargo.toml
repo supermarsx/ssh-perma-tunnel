@@ -22,6 +22,13 @@ path = "src/main.rs"
 # `include!`. Nothing in the runtime binary links cargo_metadata.
 [build-dependencies]
 cargo_metadata = "0.18"
+# Windows-only: compile + link `packaging/msi/spt.rc` so the .exe carries
+# the icon (Explorer / Taskbar / Alt-Tab) and a real VERSIONINFO block
+# (right-click → Properties → Details). `embed-resource` detects MSVC vs.
+# MinGW toolchain at build time and shells out to `rc.exe` / `windres`
+# transparently. No-op on non-Windows targets; build.rs gates the call
+# on CARGO_CFG_TARGET_OS so the link graph stays clean on Unix.
+embed-resource = "3"
 
 # Auxiliary regenerator for committed man pages under /packaging/man/.
 # Run via `cargo run --bin spt-mangen -- --out packaging/man` (or with no args to
@@ -255,6 +262,18 @@ assets = [
     ["../../docs/configuration.md", "usr/share/doc/spt/configuration.md", "644"],
     ["../../docs/cli-reference.md", "usr/share/doc/spt/cli-reference.md", "644"],
     ["../../examples/minimal.toml", "usr/share/doc/spt/examples/minimal.toml", "644"],
+    # freedesktop hicolor icon set + .desktop launcher. Resolves `Icon=spt`
+    # in spt.desktop against /usr/share/icons/hicolor/<size>/apps/spt.* in
+    # the standard size-then-theme order. PNG sizes are the ones every
+    # mainstream DE caches; scalable SVG covers HiDPI.
+    ["../../packaging/spt.desktop",      "usr/share/applications/spt.desktop", "644"],
+    ["../../assets/icon.svg",            "usr/share/icons/hicolor/scalable/apps/spt.svg", "644"],
+    ["../../assets/icon-32.png",         "usr/share/icons/hicolor/32x32/apps/spt.png", "644"],
+    ["../../assets/icon-48.png",         "usr/share/icons/hicolor/48x48/apps/spt.png", "644"],
+    ["../../assets/icon-64.png",         "usr/share/icons/hicolor/64x64/apps/spt.png", "644"],
+    ["../../assets/icon-128.png",        "usr/share/icons/hicolor/128x128/apps/spt.png", "644"],
+    ["../../assets/icon-256.png",        "usr/share/icons/hicolor/256x256/apps/spt.png", "644"],
+    ["../../assets/icon-512.png",        "usr/share/icons/hicolor/512x512/apps/spt.png", "644"],
 ]
 maintainer-scripts = "../../packaging/deb/"
 conf-files = ["/etc/spt/spt.toml"]
@@ -296,6 +315,17 @@ assets = [
     { source = "packaging/completions/elvish/spt.elv", dest = "/usr/share/elvish/lib/spt.elv", mode = "644", doc = true },
     { source = "docs/getting-started.md", dest = "/usr/share/doc/spt/getting-started.md", mode = "644", doc = true },
     { source = "examples/minimal.toml", dest = "/usr/share/doc/spt/examples/minimal.toml", mode = "644" },
+    # freedesktop hicolor icon set + .desktop launcher (see Debian assets
+    # block above for the rationale; cargo-generate-rpm needs each entry
+    # listed verbatim with the workspace-relative source).
+    { source = "packaging/spt.desktop",  dest = "/usr/share/applications/spt.desktop", mode = "644" },
+    { source = "assets/icon.svg",        dest = "/usr/share/icons/hicolor/scalable/apps/spt.svg", mode = "644" },
+    { source = "assets/icon-32.png",     dest = "/usr/share/icons/hicolor/32x32/apps/spt.png", mode = "644" },
+    { source = "assets/icon-48.png",     dest = "/usr/share/icons/hicolor/48x48/apps/spt.png", mode = "644" },
+    { source = "assets/icon-64.png",     dest = "/usr/share/icons/hicolor/64x64/apps/spt.png", mode = "644" },
+    { source = "assets/icon-128.png",    dest = "/usr/share/icons/hicolor/128x128/apps/spt.png", mode = "644" },
+    { source = "assets/icon-256.png",    dest = "/usr/share/icons/hicolor/256x256/apps/spt.png", mode = "644" },
+    { source = "assets/icon-512.png",    dest = "/usr/share/icons/hicolor/512x512/apps/spt.png", mode = "644" },
 ]
 
 [package.metadata.generate-rpm.requires]

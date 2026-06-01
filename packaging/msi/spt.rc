@@ -1,0 +1,58 @@
+// SPDX-License-Identifier: MIT
+//
+// Windows resource script for the spt.exe binary. Compiled + linked into
+// the executable at build time via `embed-resource` (build.rs).
+//
+// Carries:
+//   * The application icon (assets/icon.ico) — surfaces in Explorer,
+//     the Taskbar, Alt-Tab, and the default shortcut.
+//   * A VERSIONINFO block — populates the Details tab of File Properties
+//     and the strings that installers (cargo-wix, choco, scoop, winget)
+//     expect to read from the binary at packaging time.
+//
+// The .ico path is resolved relative to *this* file (packaging/msi/),
+// hence the `../../assets/icon.ico` traversal. The MSI manifest at
+// packaging/msi/main.wxs uses the same relative reference for its own
+// ARPPRODUCTICON registration.
+
+#include <winver.h>
+
+#define IDI_ICON_APP 1
+
+// Embed the icon as RT_ICON resource id 1, which Explorer + the shell pick
+// up as the default app icon. id=1 is the conventional choice that lets
+// downstream installers (cargo-wix) reference the same resource.
+IDI_ICON_APP ICON "..\\..\\assets\\icon.ico"
+
+1 VERSIONINFO
+// FILEVERSION / PRODUCTVERSION are four u16 fields. We can only reliably
+// fill the first two from build-time data; spt's rolling YY.N maps to
+// (0, YY, N, 0). The literal here is a safe floor — the real version is
+// always available via `spt --version` from the const propagated by Cargo.
+FILEVERSION     0,26,4,0
+PRODUCTVERSION  0,26,4,0
+FILEFLAGSMASK   0x3fL
+FILEFLAGS       0x0L
+FILEOS          VOS_NT_WINDOWS32
+FILETYPE        VFT_APP
+FILESUBTYPE     0x0L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904b0"  // U.S. English, Unicode
+        BEGIN
+            VALUE "CompanyName",      "supermarsx"
+            VALUE "FileDescription",  "spt — permanent SSH2/SSH3 tunnels with reconnect, observability, and service integration"
+            VALUE "FileVersion",      "0.26.4"
+            VALUE "InternalName",     "spt"
+            VALUE "LegalCopyright",   "Copyright (c) 2026 Mariana"
+            VALUE "OriginalFilename", "spt.exe"
+            VALUE "ProductName",      "spt"
+            VALUE "ProductVersion",   "0.26.4"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0409, 0x04B0
+    END
+END
