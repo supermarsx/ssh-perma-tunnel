@@ -199,6 +199,10 @@ pub enum Command {
     About(groups::about::AboutCmd),
     /// Kill every running `spt` process on this host (cross-platform).
     Kill(groups::kill::KillCmd),
+    /// Embedded auto-updater (off by default). Manual commands work
+    /// regardless of the `[updater].enabled` flag; the background
+    /// polling thread is only spawned when explicitly enabled.
+    Update(groups::update::UpdateCmd),
 }
 
 #[cfg(test)]

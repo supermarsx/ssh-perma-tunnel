@@ -91,6 +91,7 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
         Command::Completion(c) => completion_dispatch(&global, c),
         Command::About(c) => about_dispatch(&global, c).await,
         Command::Kill(c) => crate::cli::kill_ops::run(c).await,
+        Command::Update(c) => crate::cli::update_ops::dispatch(&global, c).await,
     }
 }
 

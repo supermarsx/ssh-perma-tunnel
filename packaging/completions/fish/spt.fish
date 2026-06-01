@@ -73,6 +73,7 @@ complete -c spt -n "__fish_spt_needs_command" -f -a "status" -d 'Read-only statu
 complete -c spt -n "__fish_spt_needs_command" -f -a "completion" -d 'Generate shell completions'
 complete -c spt -n "__fish_spt_needs_command" -f -a "about" -d 'List bundled libraries and their licenses'
 complete -c spt -n "__fish_spt_needs_command" -f -a "kill" -d 'Kill every running `spt` process on this host (cross-platform)'
+complete -c spt -n "__fish_spt_needs_command" -f -a "update" -d 'Embedded auto-updater (off by default). Manual commands work regardless of the `[updater].enabled` flag; the background polling thread is only spawned when explicitly enabled'
 complete -c spt -n "__fish_spt_needs_command" -f -a "help" -d 'Print this message or the help of the given subcommand(s)'
 complete -c spt -n "__fish_spt_using_subcommand config; and not __fish_seen_subcommand_from init validate doctor render diff migrate reload pull trust encrypt decrypt edit crypt help" -l config -d 'Path to a single config file' -r -F
 complete -c spt -n "__fish_spt_using_subcommand config; and not __fish_seen_subcommand_from init validate doctor render diff migrate reload pull trust encrypt decrypt edit crypt help" -l config-dir -d 'Path to a directory of `*.toml` configs (loaded in lexical order)' -r -F
@@ -5007,31 +5008,226 @@ complete -c spt -n "__fish_spt_using_subcommand kill" -s v -l verbose -d 'Increa
 complete -c spt -n "__fish_spt_using_subcommand kill" -l no-color -d 'Disable color (legacy convenience flag; use `--color never`)'
 complete -c spt -n "__fish_spt_using_subcommand kill" -s h -l help -d 'Print help (see more with \'--help\')'
 complete -c spt -n "__fish_spt_using_subcommand kill" -s V -l version -d 'Print version'
-complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status completion about kill help" -f -a "config" -d 'Manage configuration files (init, validate, diff, render, reload)'
-complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status completion about kill help" -f -a "profile" -d 'Manage SSH/SSH3 tunnel profiles'
-complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status completion about kill help" -f -a "forward" -d 'Manage forwards (local/remote TCP, UDP)'
-complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status completion about kill help" -f -a "tunnel" -d 'Run, inspect, and control tunnels'
-complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status completion about kill help" -f -a "service" -d 'Install and control native services'
-complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status completion about kill help" -f -a "key" -d 'Generate, inspect, and install SSH keys'
-complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status completion about kill help" -f -a "secret" -d 'Manage the secret vault and OS keychain references'
-complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status completion about kill help" -f -a "auth" -d 'Authentication helpers'
-complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status completion about kill help" -f -a "dns" -d 'Built-in DNS resolver and hosts-file management'
-complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status completion about kill help" -f -a "firewall" -d 'Inspect and manage OS firewall / packet-filter rules'
-complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status completion about kill help" -f -a "log" -d 'Log tailing, sink testing, and export'
-complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status completion about kill help" -f -a "observe" -d 'Metrics and Windows Event Log helpers'
-complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status completion about kill help" -f -a "event" -d 'Event bindings and sinks'
-complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status completion about kill help" -f -a "stats" -d 'Statistics summaries and live counters'
-complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status completion about kill help" -f -a "session" -d 'Inspect and manage active sessions'
-complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status completion about kill help" -f -a "ftp" -d 'FTP→SFTP translator service'
-complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status completion about kill help" -f -a "sftp" -d 'SFTP file operations and mount planning'
-complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status completion about kill help" -f -a "diagnose" -d 'Targeted diagnostics and support bundles'
-complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status completion about kill help" -f -a "benchmark" -d 'Controlled benchmarking against forwards'
-complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status completion about kill help" -f -a "mcp" -d 'Built-in MCP server controls'
-complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status completion about kill help" -f -a "status" -d 'Read-only status API controls (plan §t4-e5)'
-complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status completion about kill help" -f -a "completion" -d 'Generate shell completions'
-complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status completion about kill help" -f -a "about" -d 'List bundled libraries and their licenses'
-complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status completion about kill help" -f -a "kill" -d 'Kill every running `spt` process on this host (cross-platform)'
-complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status completion about kill help" -f -a "help" -d 'Print this message or the help of the given subcommand(s)'
+complete -c spt -n "__fish_spt_using_subcommand update; and not __fish_seen_subcommand_from check download apply now status history help" -l config -d 'Path to a single config file' -r -F
+complete -c spt -n "__fish_spt_using_subcommand update; and not __fish_seen_subcommand_from check download apply now status history help" -l config-dir -d 'Path to a directory of `*.toml` configs (loaded in lexical order)' -r -F
+complete -c spt -n "__fish_spt_using_subcommand update; and not __fish_seen_subcommand_from check download apply now status history help" -l config-url -d 'HTTPS URL of a remote config to fetch' -r
+complete -c spt -n "__fish_spt_using_subcommand update; and not __fish_seen_subcommand_from check download apply now status history help" -l config-fingerprint -d 'SHA-256 fingerprint pin for `--config-url`' -r
+complete -c spt -n "__fish_spt_using_subcommand update; and not __fish_seen_subcommand_from check download apply now status history help" -l state-dir -d 'Override the runtime state directory' -r -F
+complete -c spt -n "__fish_spt_using_subcommand update; and not __fish_seen_subcommand_from check download apply now status history help" -l profile -d 'Restrict operations to the named profile' -r
+complete -c spt -n "__fish_spt_using_subcommand update; and not __fish_seen_subcommand_from check download apply now status history help" -l output -d 'Output format for command results' -r -f -a "human\t'Human-readable text (default)'
+json\t'Structured JSON'
+jsonl\t'JSON Lines (one record per line)'
+yaml\t'YAML'"
+complete -c spt -n "__fish_spt_using_subcommand update; and not __fish_seen_subcommand_from check download apply now status history help" -l log-level -d 'Tracing log level' -r -f -a "error\t'Only errors'
+warn\t'Warnings and above'
+info\t'Informational and above (default)'
+debug\t'Debug and above'
+trace\t'Trace and above (very verbose)'"
+complete -c spt -n "__fish_spt_using_subcommand update; and not __fish_seen_subcommand_from check download apply now status history help" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
+always\t'Always emit color escapes'
+never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand update; and not __fish_seen_subcommand_from check download apply now status history help" -l json -d 'Convenience alias for `--output json`'
+complete -c spt -n "__fish_spt_using_subcommand update; and not __fish_seen_subcommand_from check download apply now status history help" -s q -l quiet -d 'Suppress non-essential output'
+complete -c spt -n "__fish_spt_using_subcommand update; and not __fish_seen_subcommand_from check download apply now status history help" -s v -l verbose -d 'Increase verbosity (repeat for more)'
+complete -c spt -n "__fish_spt_using_subcommand update; and not __fish_seen_subcommand_from check download apply now status history help" -l no-color -d 'Disable color (legacy convenience flag; use `--color never`)'
+complete -c spt -n "__fish_spt_using_subcommand update; and not __fish_seen_subcommand_from check download apply now status history help" -l dry-run -d 'Show what would happen without making changes'
+complete -c spt -n "__fish_spt_using_subcommand update; and not __fish_seen_subcommand_from check download apply now status history help" -s h -l help -d 'Print help (see more with \'--help\')'
+complete -c spt -n "__fish_spt_using_subcommand update; and not __fish_seen_subcommand_from check download apply now status history help" -s V -l version -d 'Print version'
+complete -c spt -n "__fish_spt_using_subcommand update; and not __fish_seen_subcommand_from check download apply now status history help" -f -a "check" -d 'One-shot poll: print whether a newer release is available'
+complete -c spt -n "__fish_spt_using_subcommand update; and not __fish_seen_subcommand_from check download apply now status history help" -f -a "download" -d 'Download the latest artifact to the staging directory without installing'
+complete -c spt -n "__fish_spt_using_subcommand update; and not __fish_seen_subcommand_from check download apply now status history help" -f -a "apply" -d 'Install the staged artifact (atomic swap, then optional restart)'
+complete -c spt -n "__fish_spt_using_subcommand update; and not __fish_seen_subcommand_from check download apply now status history help" -f -a "now" -d 'Run `check` + `download` + `apply` in one go'
+complete -c spt -n "__fish_spt_using_subcommand update; and not __fish_seen_subcommand_from check download apply now status history help" -f -a "status" -d 'Print current status: enabled flag, last check, latest version, next-scheduled tick, staged artifact'
+complete -c spt -n "__fish_spt_using_subcommand update; and not __fish_seen_subcommand_from check download apply now status history help" -f -a "history" -d 'Past update events from the audit log'
+complete -c spt -n "__fish_spt_using_subcommand update; and not __fish_seen_subcommand_from check download apply now status history help" -f -a "help" -d 'Print this message or the help of the given subcommand(s)'
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from check" -l source -d 'Bypass `[updater].source` and consult the named source kind. One of `github|url|static`. Optional override for one-off probes' -r
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from check" -l config -d 'Path to a single config file' -r -F
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from check" -l config-dir -d 'Path to a directory of `*.toml` configs (loaded in lexical order)' -r -F
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from check" -l config-url -d 'HTTPS URL of a remote config to fetch' -r
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from check" -l config-fingerprint -d 'SHA-256 fingerprint pin for `--config-url`' -r
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from check" -l state-dir -d 'Override the runtime state directory' -r -F
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from check" -l profile -d 'Restrict operations to the named profile' -r
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from check" -l output -d 'Output format for command results' -r -f -a "human\t'Human-readable text (default)'
+json\t'Structured JSON'
+jsonl\t'JSON Lines (one record per line)'
+yaml\t'YAML'"
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from check" -l log-level -d 'Tracing log level' -r -f -a "error\t'Only errors'
+warn\t'Warnings and above'
+info\t'Informational and above (default)'
+debug\t'Debug and above'
+trace\t'Trace and above (very verbose)'"
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from check" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
+always\t'Always emit color escapes'
+never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from check" -l json -d 'Convenience alias for `--output json`'
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from check" -s q -l quiet -d 'Suppress non-essential output'
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from check" -s v -l verbose -d 'Increase verbosity (repeat for more)'
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from check" -l no-color -d 'Disable color (legacy convenience flag; use `--color never`)'
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from check" -l dry-run -d 'Show what would happen without making changes'
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from check" -s h -l help -d 'Print help (see more with \'--help\')'
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from check" -s V -l version -d 'Print version'
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from download" -l target -d 'Target triple to fetch. Defaults to the running spt\'s target' -r
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from download" -l config -d 'Path to a single config file' -r -F
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from download" -l config-dir -d 'Path to a directory of `*.toml` configs (loaded in lexical order)' -r -F
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from download" -l config-url -d 'HTTPS URL of a remote config to fetch' -r
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from download" -l config-fingerprint -d 'SHA-256 fingerprint pin for `--config-url`' -r
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from download" -l state-dir -d 'Override the runtime state directory' -r -F
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from download" -l profile -d 'Restrict operations to the named profile' -r
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from download" -l output -d 'Output format for command results' -r -f -a "human\t'Human-readable text (default)'
+json\t'Structured JSON'
+jsonl\t'JSON Lines (one record per line)'
+yaml\t'YAML'"
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from download" -l log-level -d 'Tracing log level' -r -f -a "error\t'Only errors'
+warn\t'Warnings and above'
+info\t'Informational and above (default)'
+debug\t'Debug and above'
+trace\t'Trace and above (very verbose)'"
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from download" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
+always\t'Always emit color escapes'
+never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from download" -l json -d 'Convenience alias for `--output json`'
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from download" -s q -l quiet -d 'Suppress non-essential output'
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from download" -s v -l verbose -d 'Increase verbosity (repeat for more)'
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from download" -l no-color -d 'Disable color (legacy convenience flag; use `--color never`)'
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from download" -l dry-run -d 'Show what would happen without making changes'
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from download" -s h -l help -d 'Print help (see more with \'--help\')'
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from download" -s V -l version -d 'Print version'
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from apply" -l config -d 'Path to a single config file' -r -F
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from apply" -l config-dir -d 'Path to a directory of `*.toml` configs (loaded in lexical order)' -r -F
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from apply" -l config-url -d 'HTTPS URL of a remote config to fetch' -r
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from apply" -l config-fingerprint -d 'SHA-256 fingerprint pin for `--config-url`' -r
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from apply" -l state-dir -d 'Override the runtime state directory' -r -F
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from apply" -l profile -d 'Restrict operations to the named profile' -r
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from apply" -l output -d 'Output format for command results' -r -f -a "human\t'Human-readable text (default)'
+json\t'Structured JSON'
+jsonl\t'JSON Lines (one record per line)'
+yaml\t'YAML'"
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from apply" -l log-level -d 'Tracing log level' -r -f -a "error\t'Only errors'
+warn\t'Warnings and above'
+info\t'Informational and above (default)'
+debug\t'Debug and above'
+trace\t'Trace and above (very verbose)'"
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from apply" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
+always\t'Always emit color escapes'
+never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from apply" -l no-restart -d 'Skip the post-install restart even when `[updater.action].restart_supervisor = true`'
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from apply" -l json -d 'Convenience alias for `--output json`'
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from apply" -s q -l quiet -d 'Suppress non-essential output'
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from apply" -s v -l verbose -d 'Increase verbosity (repeat for more)'
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from apply" -l no-color -d 'Disable color (legacy convenience flag; use `--color never`)'
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from apply" -l dry-run -d 'Show what would happen without making changes'
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from apply" -s h -l help -d 'Print help (see more with \'--help\')'
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from apply" -s V -l version -d 'Print version'
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from now" -l config -d 'Path to a single config file' -r -F
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from now" -l config-dir -d 'Path to a directory of `*.toml` configs (loaded in lexical order)' -r -F
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from now" -l config-url -d 'HTTPS URL of a remote config to fetch' -r
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from now" -l config-fingerprint -d 'SHA-256 fingerprint pin for `--config-url`' -r
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from now" -l state-dir -d 'Override the runtime state directory' -r -F
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from now" -l profile -d 'Restrict operations to the named profile' -r
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from now" -l output -d 'Output format for command results' -r -f -a "human\t'Human-readable text (default)'
+json\t'Structured JSON'
+jsonl\t'JSON Lines (one record per line)'
+yaml\t'YAML'"
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from now" -l log-level -d 'Tracing log level' -r -f -a "error\t'Only errors'
+warn\t'Warnings and above'
+info\t'Informational and above (default)'
+debug\t'Debug and above'
+trace\t'Trace and above (very verbose)'"
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from now" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
+always\t'Always emit color escapes'
+never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from now" -l no-restart -d 'Skip the post-install restart'
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from now" -l json -d 'Convenience alias for `--output json`'
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from now" -s q -l quiet -d 'Suppress non-essential output'
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from now" -s v -l verbose -d 'Increase verbosity (repeat for more)'
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from now" -l no-color -d 'Disable color (legacy convenience flag; use `--color never`)'
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from now" -l dry-run -d 'Show what would happen without making changes'
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from now" -s h -l help -d 'Print help (see more with \'--help\')'
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from now" -s V -l version -d 'Print version'
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from status" -l config -d 'Path to a single config file' -r -F
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from status" -l config-dir -d 'Path to a directory of `*.toml` configs (loaded in lexical order)' -r -F
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from status" -l config-url -d 'HTTPS URL of a remote config to fetch' -r
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from status" -l config-fingerprint -d 'SHA-256 fingerprint pin for `--config-url`' -r
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from status" -l state-dir -d 'Override the runtime state directory' -r -F
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from status" -l profile -d 'Restrict operations to the named profile' -r
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from status" -l output -d 'Output format for command results' -r -f -a "human\t'Human-readable text (default)'
+json\t'Structured JSON'
+jsonl\t'JSON Lines (one record per line)'
+yaml\t'YAML'"
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from status" -l log-level -d 'Tracing log level' -r -f -a "error\t'Only errors'
+warn\t'Warnings and above'
+info\t'Informational and above (default)'
+debug\t'Debug and above'
+trace\t'Trace and above (very verbose)'"
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from status" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
+always\t'Always emit color escapes'
+never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from status" -l json -d 'Emit JSON instead of the human table'
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from status" -s q -l quiet -d 'Suppress non-essential output'
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from status" -s v -l verbose -d 'Increase verbosity (repeat for more)'
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from status" -l no-color -d 'Disable color (legacy convenience flag; use `--color never`)'
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from status" -l dry-run -d 'Show what would happen without making changes'
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from status" -s h -l help -d 'Print help (see more with \'--help\')'
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from status" -s V -l version -d 'Print version'
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from history" -l limit -d 'How many past events to display. Default 10' -r
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from history" -l config -d 'Path to a single config file' -r -F
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from history" -l config-dir -d 'Path to a directory of `*.toml` configs (loaded in lexical order)' -r -F
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from history" -l config-url -d 'HTTPS URL of a remote config to fetch' -r
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from history" -l config-fingerprint -d 'SHA-256 fingerprint pin for `--config-url`' -r
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from history" -l state-dir -d 'Override the runtime state directory' -r -F
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from history" -l profile -d 'Restrict operations to the named profile' -r
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from history" -l output -d 'Output format for command results' -r -f -a "human\t'Human-readable text (default)'
+json\t'Structured JSON'
+jsonl\t'JSON Lines (one record per line)'
+yaml\t'YAML'"
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from history" -l log-level -d 'Tracing log level' -r -f -a "error\t'Only errors'
+warn\t'Warnings and above'
+info\t'Informational and above (default)'
+debug\t'Debug and above'
+trace\t'Trace and above (very verbose)'"
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from history" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
+always\t'Always emit color escapes'
+never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from history" -l json -d 'Convenience alias for `--output json`'
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from history" -s q -l quiet -d 'Suppress non-essential output'
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from history" -s v -l verbose -d 'Increase verbosity (repeat for more)'
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from history" -l no-color -d 'Disable color (legacy convenience flag; use `--color never`)'
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from history" -l dry-run -d 'Show what would happen without making changes'
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from history" -s h -l help -d 'Print help (see more with \'--help\')'
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from history" -s V -l version -d 'Print version'
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from help" -f -a "check" -d 'One-shot poll: print whether a newer release is available'
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from help" -f -a "download" -d 'Download the latest artifact to the staging directory without installing'
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from help" -f -a "apply" -d 'Install the staged artifact (atomic swap, then optional restart)'
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from help" -f -a "now" -d 'Run `check` + `download` + `apply` in one go'
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from help" -f -a "status" -d 'Print current status: enabled flag, last check, latest version, next-scheduled tick, staged artifact'
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from help" -f -a "history" -d 'Past update events from the audit log'
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from help" -f -a "help" -d 'Print this message or the help of the given subcommand(s)'
+complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status completion about kill update help" -f -a "config" -d 'Manage configuration files (init, validate, diff, render, reload)'
+complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status completion about kill update help" -f -a "profile" -d 'Manage SSH/SSH3 tunnel profiles'
+complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status completion about kill update help" -f -a "forward" -d 'Manage forwards (local/remote TCP, UDP)'
+complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status completion about kill update help" -f -a "tunnel" -d 'Run, inspect, and control tunnels'
+complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status completion about kill update help" -f -a "service" -d 'Install and control native services'
+complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status completion about kill update help" -f -a "key" -d 'Generate, inspect, and install SSH keys'
+complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status completion about kill update help" -f -a "secret" -d 'Manage the secret vault and OS keychain references'
+complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status completion about kill update help" -f -a "auth" -d 'Authentication helpers'
+complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status completion about kill update help" -f -a "dns" -d 'Built-in DNS resolver and hosts-file management'
+complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status completion about kill update help" -f -a "firewall" -d 'Inspect and manage OS firewall / packet-filter rules'
+complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status completion about kill update help" -f -a "log" -d 'Log tailing, sink testing, and export'
+complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status completion about kill update help" -f -a "observe" -d 'Metrics and Windows Event Log helpers'
+complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status completion about kill update help" -f -a "event" -d 'Event bindings and sinks'
+complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status completion about kill update help" -f -a "stats" -d 'Statistics summaries and live counters'
+complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status completion about kill update help" -f -a "session" -d 'Inspect and manage active sessions'
+complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status completion about kill update help" -f -a "ftp" -d 'FTP→SFTP translator service'
+complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status completion about kill update help" -f -a "sftp" -d 'SFTP file operations and mount planning'
+complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status completion about kill update help" -f -a "diagnose" -d 'Targeted diagnostics and support bundles'
+complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status completion about kill update help" -f -a "benchmark" -d 'Controlled benchmarking against forwards'
+complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status completion about kill update help" -f -a "mcp" -d 'Built-in MCP server controls'
+complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status completion about kill update help" -f -a "status" -d 'Read-only status API controls (plan §t4-e5)'
+complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status completion about kill update help" -f -a "completion" -d 'Generate shell completions'
+complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status completion about kill update help" -f -a "about" -d 'List bundled libraries and their licenses'
+complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status completion about kill update help" -f -a "kill" -d 'Kill every running `spt` process on this host (cross-platform)'
+complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status completion about kill update help" -f -a "update" -d 'Embedded auto-updater (off by default). Manual commands work regardless of the `[updater].enabled` flag; the background polling thread is only spawned when explicitly enabled'
+complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status completion about kill update help" -f -a "help" -d 'Print this message or the help of the given subcommand(s)'
 complete -c spt -n "__fish_spt_using_subcommand help; and __fish_seen_subcommand_from config" -f -a "init" -d 'Initialize a new config file from a template'
 complete -c spt -n "__fish_spt_using_subcommand help; and __fish_seen_subcommand_from config" -f -a "validate" -d 'Validate config syntax, schema, and obvious mistakes'
 complete -c spt -n "__fish_spt_using_subcommand help; and __fish_seen_subcommand_from config" -f -a "doctor" -d 'Run environment checks against the loaded config'
@@ -5179,3 +5375,9 @@ complete -c spt -n "__fish_spt_using_subcommand help; and __fish_seen_subcommand
 complete -c spt -n "__fish_spt_using_subcommand help; and __fish_seen_subcommand_from about" -f -a "show" -d 'Show detailed information for a single library'
 complete -c spt -n "__fish_spt_using_subcommand help; and __fish_seen_subcommand_from about" -f -a "licenses" -d 'Group bundled libraries by SPDX license, with counts'
 complete -c spt -n "__fish_spt_using_subcommand help; and __fish_seen_subcommand_from about" -f -a "export" -d 'Write attribution data to a file (format inferred from extension)'
+complete -c spt -n "__fish_spt_using_subcommand help; and __fish_seen_subcommand_from update" -f -a "check" -d 'One-shot poll: print whether a newer release is available'
+complete -c spt -n "__fish_spt_using_subcommand help; and __fish_seen_subcommand_from update" -f -a "download" -d 'Download the latest artifact to the staging directory without installing'
+complete -c spt -n "__fish_spt_using_subcommand help; and __fish_seen_subcommand_from update" -f -a "apply" -d 'Install the staged artifact (atomic swap, then optional restart)'
+complete -c spt -n "__fish_spt_using_subcommand help; and __fish_seen_subcommand_from update" -f -a "now" -d 'Run `check` + `download` + `apply` in one go'
+complete -c spt -n "__fish_spt_using_subcommand help; and __fish_seen_subcommand_from update" -f -a "status" -d 'Print current status: enabled flag, last check, latest version, next-scheduled tick, staged artifact'
+complete -c spt -n "__fish_spt_using_subcommand help; and __fish_seen_subcommand_from update" -f -a "history" -d 'Past update events from the audit log'

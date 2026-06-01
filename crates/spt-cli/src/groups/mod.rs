@@ -27,3 +27,4 @@ pub mod sftp;
 pub mod stats;
 pub mod status;
 pub mod tunnel;
+pub mod update;

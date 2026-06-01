@@ -10003,6 +10003,298 @@ never\:"Never emit color escapes"))' \
 '--version[Print version]' \
 && ret=0
 ;;
+(update)
+_arguments "${_arguments_options[@]}" : \
+'--config=[Path to a single config file]:PATH:_files' \
+'--config-dir=[Path to a directory of \`*.toml\` configs (loaded in lexical order)]:PATH:_files' \
+'--config-url=[HTTPS URL of a remote config to fetch]:URL:_default' \
+'--config-fingerprint=[SHA-256 fingerprint pin for \`--config-url\`]:SHA256:_default' \
+'--state-dir=[Override the runtime state directory]:PATH:_files' \
+'--profile=[Restrict operations to the named profile]:NAME:_default' \
+'--output=[Output format for command results]:OUTPUT:((human\:"Human-readable text (default)"
+json\:"Structured JSON"
+jsonl\:"JSON Lines (one record per line)"
+yaml\:"YAML"))' \
+'--log-level=[Tracing log level]:LOG_LEVEL:((error\:"Only errors"
+warn\:"Warnings and above"
+info\:"Informational and above (default)"
+debug\:"Debug and above"
+trace\:"Trace and above (very verbose)"))' \
+'--color=[Color policy for human output]:COLOR:((auto\:"Auto-detect based on tty"
+always\:"Always emit color escapes"
+never\:"Never emit color escapes"))' \
+'--json[Convenience alias for \`--output json\`]' \
+'-q[Suppress non-essential output]' \
+'--quiet[Suppress non-essential output]' \
+'*-v[Increase verbosity (repeat for more)]' \
+'*--verbose[Increase verbosity (repeat for more)]' \
+'--no-color[Disable color (legacy convenience flag; use \`--color never\`)]' \
+'--dry-run[Show what would happen without making changes]' \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+'-V[Print version]' \
+'--version[Print version]' \
+":: :_spt__subcmd__update_commands" \
+"*::: :->update" \
+&& ret=0
+
+    case $state in
+    (update)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:spt-update-command-$line[1]:"
+        case $line[1] in
+            (check)
+_arguments "${_arguments_options[@]}" : \
+'--source=[Bypass \`\[updater\].source\` and consult the named source kind. One of \`github|url|static\`. Optional override for one-off probes]:KIND:_default' \
+'--config=[Path to a single config file]:PATH:_files' \
+'--config-dir=[Path to a directory of \`*.toml\` configs (loaded in lexical order)]:PATH:_files' \
+'--config-url=[HTTPS URL of a remote config to fetch]:URL:_default' \
+'--config-fingerprint=[SHA-256 fingerprint pin for \`--config-url\`]:SHA256:_default' \
+'--state-dir=[Override the runtime state directory]:PATH:_files' \
+'--profile=[Restrict operations to the named profile]:NAME:_default' \
+'--output=[Output format for command results]:OUTPUT:((human\:"Human-readable text (default)"
+json\:"Structured JSON"
+jsonl\:"JSON Lines (one record per line)"
+yaml\:"YAML"))' \
+'--log-level=[Tracing log level]:LOG_LEVEL:((error\:"Only errors"
+warn\:"Warnings and above"
+info\:"Informational and above (default)"
+debug\:"Debug and above"
+trace\:"Trace and above (very verbose)"))' \
+'--color=[Color policy for human output]:COLOR:((auto\:"Auto-detect based on tty"
+always\:"Always emit color escapes"
+never\:"Never emit color escapes"))' \
+'--json[Convenience alias for \`--output json\`]' \
+'-q[Suppress non-essential output]' \
+'--quiet[Suppress non-essential output]' \
+'*-v[Increase verbosity (repeat for more)]' \
+'*--verbose[Increase verbosity (repeat for more)]' \
+'--no-color[Disable color (legacy convenience flag; use \`--color never\`)]' \
+'--dry-run[Show what would happen without making changes]' \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+'-V[Print version]' \
+'--version[Print version]' \
+&& ret=0
+;;
+(download)
+_arguments "${_arguments_options[@]}" : \
+'--target=[Target triple to fetch. Defaults to the running spt'\''s target]:TRIPLE:_default' \
+'--config=[Path to a single config file]:PATH:_files' \
+'--config-dir=[Path to a directory of \`*.toml\` configs (loaded in lexical order)]:PATH:_files' \
+'--config-url=[HTTPS URL of a remote config to fetch]:URL:_default' \
+'--config-fingerprint=[SHA-256 fingerprint pin for \`--config-url\`]:SHA256:_default' \
+'--state-dir=[Override the runtime state directory]:PATH:_files' \
+'--profile=[Restrict operations to the named profile]:NAME:_default' \
+'--output=[Output format for command results]:OUTPUT:((human\:"Human-readable text (default)"
+json\:"Structured JSON"
+jsonl\:"JSON Lines (one record per line)"
+yaml\:"YAML"))' \
+'--log-level=[Tracing log level]:LOG_LEVEL:((error\:"Only errors"
+warn\:"Warnings and above"
+info\:"Informational and above (default)"
+debug\:"Debug and above"
+trace\:"Trace and above (very verbose)"))' \
+'--color=[Color policy for human output]:COLOR:((auto\:"Auto-detect based on tty"
+always\:"Always emit color escapes"
+never\:"Never emit color escapes"))' \
+'--json[Convenience alias for \`--output json\`]' \
+'-q[Suppress non-essential output]' \
+'--quiet[Suppress non-essential output]' \
+'*-v[Increase verbosity (repeat for more)]' \
+'*--verbose[Increase verbosity (repeat for more)]' \
+'--no-color[Disable color (legacy convenience flag; use \`--color never\`)]' \
+'--dry-run[Show what would happen without making changes]' \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+'-V[Print version]' \
+'--version[Print version]' \
+&& ret=0
+;;
+(apply)
+_arguments "${_arguments_options[@]}" : \
+'--config=[Path to a single config file]:PATH:_files' \
+'--config-dir=[Path to a directory of \`*.toml\` configs (loaded in lexical order)]:PATH:_files' \
+'--config-url=[HTTPS URL of a remote config to fetch]:URL:_default' \
+'--config-fingerprint=[SHA-256 fingerprint pin for \`--config-url\`]:SHA256:_default' \
+'--state-dir=[Override the runtime state directory]:PATH:_files' \
+'--profile=[Restrict operations to the named profile]:NAME:_default' \
+'--output=[Output format for command results]:OUTPUT:((human\:"Human-readable text (default)"
+json\:"Structured JSON"
+jsonl\:"JSON Lines (one record per line)"
+yaml\:"YAML"))' \
+'--log-level=[Tracing log level]:LOG_LEVEL:((error\:"Only errors"
+warn\:"Warnings and above"
+info\:"Informational and above (default)"
+debug\:"Debug and above"
+trace\:"Trace and above (very verbose)"))' \
+'--color=[Color policy for human output]:COLOR:((auto\:"Auto-detect based on tty"
+always\:"Always emit color escapes"
+never\:"Never emit color escapes"))' \
+'--no-restart[Skip the post-install restart even when \`\[updater.action\].restart_supervisor = true\`]' \
+'--json[Convenience alias for \`--output json\`]' \
+'-q[Suppress non-essential output]' \
+'--quiet[Suppress non-essential output]' \
+'*-v[Increase verbosity (repeat for more)]' \
+'*--verbose[Increase verbosity (repeat for more)]' \
+'--no-color[Disable color (legacy convenience flag; use \`--color never\`)]' \
+'--dry-run[Show what would happen without making changes]' \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+'-V[Print version]' \
+'--version[Print version]' \
+&& ret=0
+;;
+(now)
+_arguments "${_arguments_options[@]}" : \
+'--config=[Path to a single config file]:PATH:_files' \
+'--config-dir=[Path to a directory of \`*.toml\` configs (loaded in lexical order)]:PATH:_files' \
+'--config-url=[HTTPS URL of a remote config to fetch]:URL:_default' \
+'--config-fingerprint=[SHA-256 fingerprint pin for \`--config-url\`]:SHA256:_default' \
+'--state-dir=[Override the runtime state directory]:PATH:_files' \
+'--profile=[Restrict operations to the named profile]:NAME:_default' \
+'--output=[Output format for command results]:OUTPUT:((human\:"Human-readable text (default)"
+json\:"Structured JSON"
+jsonl\:"JSON Lines (one record per line)"
+yaml\:"YAML"))' \
+'--log-level=[Tracing log level]:LOG_LEVEL:((error\:"Only errors"
+warn\:"Warnings and above"
+info\:"Informational and above (default)"
+debug\:"Debug and above"
+trace\:"Trace and above (very verbose)"))' \
+'--color=[Color policy for human output]:COLOR:((auto\:"Auto-detect based on tty"
+always\:"Always emit color escapes"
+never\:"Never emit color escapes"))' \
+'--no-restart[Skip the post-install restart]' \
+'--json[Convenience alias for \`--output json\`]' \
+'-q[Suppress non-essential output]' \
+'--quiet[Suppress non-essential output]' \
+'*-v[Increase verbosity (repeat for more)]' \
+'*--verbose[Increase verbosity (repeat for more)]' \
+'--no-color[Disable color (legacy convenience flag; use \`--color never\`)]' \
+'--dry-run[Show what would happen without making changes]' \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+'-V[Print version]' \
+'--version[Print version]' \
+&& ret=0
+;;
+(status)
+_arguments "${_arguments_options[@]}" : \
+'--config=[Path to a single config file]:PATH:_files' \
+'--config-dir=[Path to a directory of \`*.toml\` configs (loaded in lexical order)]:PATH:_files' \
+'--config-url=[HTTPS URL of a remote config to fetch]:URL:_default' \
+'--config-fingerprint=[SHA-256 fingerprint pin for \`--config-url\`]:SHA256:_default' \
+'--state-dir=[Override the runtime state directory]:PATH:_files' \
+'--profile=[Restrict operations to the named profile]:NAME:_default' \
+'--output=[Output format for command results]:OUTPUT:((human\:"Human-readable text (default)"
+json\:"Structured JSON"
+jsonl\:"JSON Lines (one record per line)"
+yaml\:"YAML"))' \
+'--log-level=[Tracing log level]:LOG_LEVEL:((error\:"Only errors"
+warn\:"Warnings and above"
+info\:"Informational and above (default)"
+debug\:"Debug and above"
+trace\:"Trace and above (very verbose)"))' \
+'--color=[Color policy for human output]:COLOR:((auto\:"Auto-detect based on tty"
+always\:"Always emit color escapes"
+never\:"Never emit color escapes"))' \
+'--json[Emit JSON instead of the human table]' \
+'-q[Suppress non-essential output]' \
+'--quiet[Suppress non-essential output]' \
+'*-v[Increase verbosity (repeat for more)]' \
+'*--verbose[Increase verbosity (repeat for more)]' \
+'--no-color[Disable color (legacy convenience flag; use \`--color never\`)]' \
+'--dry-run[Show what would happen without making changes]' \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+'-V[Print version]' \
+'--version[Print version]' \
+&& ret=0
+;;
+(history)
+_arguments "${_arguments_options[@]}" : \
+'--limit=[How many past events to display. Default 10]:N:_default' \
+'--config=[Path to a single config file]:PATH:_files' \
+'--config-dir=[Path to a directory of \`*.toml\` configs (loaded in lexical order)]:PATH:_files' \
+'--config-url=[HTTPS URL of a remote config to fetch]:URL:_default' \
+'--config-fingerprint=[SHA-256 fingerprint pin for \`--config-url\`]:SHA256:_default' \
+'--state-dir=[Override the runtime state directory]:PATH:_files' \
+'--profile=[Restrict operations to the named profile]:NAME:_default' \
+'--output=[Output format for command results]:OUTPUT:((human\:"Human-readable text (default)"
+json\:"Structured JSON"
+jsonl\:"JSON Lines (one record per line)"
+yaml\:"YAML"))' \
+'--log-level=[Tracing log level]:LOG_LEVEL:((error\:"Only errors"
+warn\:"Warnings and above"
+info\:"Informational and above (default)"
+debug\:"Debug and above"
+trace\:"Trace and above (very verbose)"))' \
+'--color=[Color policy for human output]:COLOR:((auto\:"Auto-detect based on tty"
+always\:"Always emit color escapes"
+never\:"Never emit color escapes"))' \
+'--json[Convenience alias for \`--output json\`]' \
+'-q[Suppress non-essential output]' \
+'--quiet[Suppress non-essential output]' \
+'*-v[Increase verbosity (repeat for more)]' \
+'*--verbose[Increase verbosity (repeat for more)]' \
+'--no-color[Disable color (legacy convenience flag; use \`--color never\`)]' \
+'--dry-run[Show what would happen without making changes]' \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+'-V[Print version]' \
+'--version[Print version]' \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+":: :_spt__subcmd__update__subcmd__help_commands" \
+"*::: :->help" \
+&& ret=0
+
+    case $state in
+    (help)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:spt-update-help-command-$line[1]:"
+        case $line[1] in
+            (check)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(download)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(apply)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(now)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(status)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(history)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+        esac
+    ;;
+esac
+;;
 (help)
 _arguments "${_arguments_options[@]}" : \
 ":: :_spt__subcmd__help_commands" \
@@ -11363,6 +11655,46 @@ esac
 _arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
+(update)
+_arguments "${_arguments_options[@]}" : \
+":: :_spt__subcmd__help__subcmd__update_commands" \
+"*::: :->update" \
+&& ret=0
+
+    case $state in
+    (update)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:spt-help-update-command-$line[1]:"
+        case $line[1] in
+            (check)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(download)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(apply)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(now)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(status)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(history)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
 (help)
 _arguments "${_arguments_options[@]}" : \
 && ret=0
@@ -11403,6 +11735,7 @@ _spt_commands() {
 'completion:Generate shell completions' \
 'about:List bundled libraries and their licenses' \
 'kill:Kill every running \`spt\` process on this host (cross-platform)' \
+'update:Embedded auto-updater (off by default). Manual commands work regardless of the \`\[updater\].enabled\` flag; the background polling thread is only spawned when explicitly enabled' \
 'help:Print this message or the help of the given subcommand(s)' \
     )
     _describe -t commands 'spt commands' commands "$@"
@@ -12996,6 +13329,7 @@ _spt__subcmd__help_commands() {
 'completion:Generate shell completions' \
 'about:List bundled libraries and their licenses' \
 'kill:Kill every running \`spt\` process on this host (cross-platform)' \
+'update:Embedded auto-updater (off by default). Manual commands work regardless of the \`\[updater\].enabled\` flag; the background polling thread is only spawned when explicitly enabled' \
 'help:Print this message or the help of the given subcommand(s)' \
     )
     _describe -t commands 'spt help commands' commands "$@"
@@ -14305,6 +14639,48 @@ _spt__subcmd__help__subcmd__tunnel__subcmd__status_commands() {
 _spt__subcmd__help__subcmd__tunnel__subcmd__stop_commands() {
     local commands; commands=()
     _describe -t commands 'spt help tunnel stop commands' commands "$@"
+}
+(( $+functions[_spt__subcmd__help__subcmd__update_commands] )) ||
+_spt__subcmd__help__subcmd__update_commands() {
+    local commands; commands=(
+'check:One-shot poll\: print whether a newer release is available' \
+'download:Download the latest artifact to the staging directory without installing' \
+'apply:Install the staged artifact (atomic swap, then optional restart)' \
+'now:Run \`check\` + \`download\` + \`apply\` in one go' \
+'status:Print current status\: enabled flag, last check, latest version, next-scheduled tick, staged artifact' \
+'history:Past update events from the audit log' \
+    )
+    _describe -t commands 'spt help update commands' commands "$@"
+}
+(( $+functions[_spt__subcmd__help__subcmd__update__subcmd__apply_commands] )) ||
+_spt__subcmd__help__subcmd__update__subcmd__apply_commands() {
+    local commands; commands=()
+    _describe -t commands 'spt help update apply commands' commands "$@"
+}
+(( $+functions[_spt__subcmd__help__subcmd__update__subcmd__check_commands] )) ||
+_spt__subcmd__help__subcmd__update__subcmd__check_commands() {
+    local commands; commands=()
+    _describe -t commands 'spt help update check commands' commands "$@"
+}
+(( $+functions[_spt__subcmd__help__subcmd__update__subcmd__download_commands] )) ||
+_spt__subcmd__help__subcmd__update__subcmd__download_commands() {
+    local commands; commands=()
+    _describe -t commands 'spt help update download commands' commands "$@"
+}
+(( $+functions[_spt__subcmd__help__subcmd__update__subcmd__history_commands] )) ||
+_spt__subcmd__help__subcmd__update__subcmd__history_commands() {
+    local commands; commands=()
+    _describe -t commands 'spt help update history commands' commands "$@"
+}
+(( $+functions[_spt__subcmd__help__subcmd__update__subcmd__now_commands] )) ||
+_spt__subcmd__help__subcmd__update__subcmd__now_commands() {
+    local commands; commands=()
+    _describe -t commands 'spt help update now commands' commands "$@"
+}
+(( $+functions[_spt__subcmd__help__subcmd__update__subcmd__status_commands] )) ||
+_spt__subcmd__help__subcmd__update__subcmd__status_commands() {
+    local commands; commands=()
+    _describe -t commands 'spt help update status commands' commands "$@"
 }
 (( $+functions[_spt__subcmd__key_commands] )) ||
 _spt__subcmd__key_commands() {
@@ -15993,6 +16369,97 @@ _spt__subcmd__tunnel__subcmd__status_commands() {
 _spt__subcmd__tunnel__subcmd__stop_commands() {
     local commands; commands=()
     _describe -t commands 'spt tunnel stop commands' commands "$@"
+}
+(( $+functions[_spt__subcmd__update_commands] )) ||
+_spt__subcmd__update_commands() {
+    local commands; commands=(
+'check:One-shot poll\: print whether a newer release is available' \
+'download:Download the latest artifact to the staging directory without installing' \
+'apply:Install the staged artifact (atomic swap, then optional restart)' \
+'now:Run \`check\` + \`download\` + \`apply\` in one go' \
+'status:Print current status\: enabled flag, last check, latest version, next-scheduled tick, staged artifact' \
+'history:Past update events from the audit log' \
+'help:Print this message or the help of the given subcommand(s)' \
+    )
+    _describe -t commands 'spt update commands' commands "$@"
+}
+(( $+functions[_spt__subcmd__update__subcmd__apply_commands] )) ||
+_spt__subcmd__update__subcmd__apply_commands() {
+    local commands; commands=()
+    _describe -t commands 'spt update apply commands' commands "$@"
+}
+(( $+functions[_spt__subcmd__update__subcmd__check_commands] )) ||
+_spt__subcmd__update__subcmd__check_commands() {
+    local commands; commands=()
+    _describe -t commands 'spt update check commands' commands "$@"
+}
+(( $+functions[_spt__subcmd__update__subcmd__download_commands] )) ||
+_spt__subcmd__update__subcmd__download_commands() {
+    local commands; commands=()
+    _describe -t commands 'spt update download commands' commands "$@"
+}
+(( $+functions[_spt__subcmd__update__subcmd__help_commands] )) ||
+_spt__subcmd__update__subcmd__help_commands() {
+    local commands; commands=(
+'check:One-shot poll\: print whether a newer release is available' \
+'download:Download the latest artifact to the staging directory without installing' \
+'apply:Install the staged artifact (atomic swap, then optional restart)' \
+'now:Run \`check\` + \`download\` + \`apply\` in one go' \
+'status:Print current status\: enabled flag, last check, latest version, next-scheduled tick, staged artifact' \
+'history:Past update events from the audit log' \
+'help:Print this message or the help of the given subcommand(s)' \
+    )
+    _describe -t commands 'spt update help commands' commands "$@"
+}
+(( $+functions[_spt__subcmd__update__subcmd__help__subcmd__apply_commands] )) ||
+_spt__subcmd__update__subcmd__help__subcmd__apply_commands() {
+    local commands; commands=()
+    _describe -t commands 'spt update help apply commands' commands "$@"
+}
+(( $+functions[_spt__subcmd__update__subcmd__help__subcmd__check_commands] )) ||
+_spt__subcmd__update__subcmd__help__subcmd__check_commands() {
+    local commands; commands=()
+    _describe -t commands 'spt update help check commands' commands "$@"
+}
+(( $+functions[_spt__subcmd__update__subcmd__help__subcmd__download_commands] )) ||
+_spt__subcmd__update__subcmd__help__subcmd__download_commands() {
+    local commands; commands=()
+    _describe -t commands 'spt update help download commands' commands "$@"
+}
+(( $+functions[_spt__subcmd__update__subcmd__help__subcmd__help_commands] )) ||
+_spt__subcmd__update__subcmd__help__subcmd__help_commands() {
+    local commands; commands=()
+    _describe -t commands 'spt update help help commands' commands "$@"
+}
+(( $+functions[_spt__subcmd__update__subcmd__help__subcmd__history_commands] )) ||
+_spt__subcmd__update__subcmd__help__subcmd__history_commands() {
+    local commands; commands=()
+    _describe -t commands 'spt update help history commands' commands "$@"
+}
+(( $+functions[_spt__subcmd__update__subcmd__help__subcmd__now_commands] )) ||
+_spt__subcmd__update__subcmd__help__subcmd__now_commands() {
+    local commands; commands=()
+    _describe -t commands 'spt update help now commands' commands "$@"
+}
+(( $+functions[_spt__subcmd__update__subcmd__help__subcmd__status_commands] )) ||
+_spt__subcmd__update__subcmd__help__subcmd__status_commands() {
+    local commands; commands=()
+    _describe -t commands 'spt update help status commands' commands "$@"
+}
+(( $+functions[_spt__subcmd__update__subcmd__history_commands] )) ||
+_spt__subcmd__update__subcmd__history_commands() {
+    local commands; commands=()
+    _describe -t commands 'spt update history commands' commands "$@"
+}
+(( $+functions[_spt__subcmd__update__subcmd__now_commands] )) ||
+_spt__subcmd__update__subcmd__now_commands() {
+    local commands; commands=()
+    _describe -t commands 'spt update now commands' commands "$@"
+}
+(( $+functions[_spt__subcmd__update__subcmd__status_commands] )) ||
+_spt__subcmd__update__subcmd__status_commands() {
+    local commands; commands=()
+    _describe -t commands 'spt update status commands' commands "$@"
 }
 
 if [ "$funcstack[1]" = "_spt" ]; then

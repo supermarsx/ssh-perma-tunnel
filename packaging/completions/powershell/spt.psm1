@@ -65,6 +65,7 @@ Register-ArgumentCompleter -Native -CommandName 'spt' -ScriptBlock {
             [CompletionResult]::new('completion', 'completion', [CompletionResultType]::ParameterValue, 'Generate shell completions')
             [CompletionResult]::new('about', 'about', [CompletionResultType]::ParameterValue, 'List bundled libraries and their licenses')
             [CompletionResult]::new('kill', 'kill', [CompletionResultType]::ParameterValue, 'Kill every running `spt` process on this host (cross-platform)')
+            [CompletionResult]::new('update', 'update', [CompletionResultType]::ParameterValue, 'Embedded auto-updater (off by default). Manual commands work regardless of the `[updater].enabled` flag; the background polling thread is only spawned when explicitly enabled')
             [CompletionResult]::new('help', 'help', [CompletionResultType]::ParameterValue, 'Print this message or the help of the given subcommand(s)')
             break
         }
@@ -6777,6 +6778,210 @@ Register-ArgumentCompleter -Native -CommandName 'spt' -ScriptBlock {
             [CompletionResult]::new('--version', '--version', [CompletionResultType]::ParameterName, 'Print version')
             break
         }
+        'spt;update' {
+            [CompletionResult]::new('--config', '--config', [CompletionResultType]::ParameterName, 'Path to a single config file')
+            [CompletionResult]::new('--config-dir', '--config-dir', [CompletionResultType]::ParameterName, 'Path to a directory of `*.toml` configs (loaded in lexical order)')
+            [CompletionResult]::new('--config-url', '--config-url', [CompletionResultType]::ParameterName, 'HTTPS URL of a remote config to fetch')
+            [CompletionResult]::new('--config-fingerprint', '--config-fingerprint', [CompletionResultType]::ParameterName, 'SHA-256 fingerprint pin for `--config-url`')
+            [CompletionResult]::new('--state-dir', '--state-dir', [CompletionResultType]::ParameterName, 'Override the runtime state directory')
+            [CompletionResult]::new('--profile', '--profile', [CompletionResultType]::ParameterName, 'Restrict operations to the named profile')
+            [CompletionResult]::new('--output', '--output', [CompletionResultType]::ParameterName, 'Output format for command results')
+            [CompletionResult]::new('--log-level', '--log-level', [CompletionResultType]::ParameterName, 'Tracing log level')
+            [CompletionResult]::new('--color', '--color', [CompletionResultType]::ParameterName, 'Color policy for human output')
+            [CompletionResult]::new('--json', '--json', [CompletionResultType]::ParameterName, 'Convenience alias for `--output json`')
+            [CompletionResult]::new('-q', '-q', [CompletionResultType]::ParameterName, 'Suppress non-essential output')
+            [CompletionResult]::new('--quiet', '--quiet', [CompletionResultType]::ParameterName, 'Suppress non-essential output')
+            [CompletionResult]::new('-v', '-v', [CompletionResultType]::ParameterName, 'Increase verbosity (repeat for more)')
+            [CompletionResult]::new('--verbose', '--verbose', [CompletionResultType]::ParameterName, 'Increase verbosity (repeat for more)')
+            [CompletionResult]::new('--no-color', '--no-color', [CompletionResultType]::ParameterName, 'Disable color (legacy convenience flag; use `--color never`)')
+            [CompletionResult]::new('--dry-run', '--dry-run', [CompletionResultType]::ParameterName, 'Show what would happen without making changes')
+            [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help (see more with ''--help'')')
+            [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help (see more with ''--help'')')
+            [CompletionResult]::new('-V', '-V ', [CompletionResultType]::ParameterName, 'Print version')
+            [CompletionResult]::new('--version', '--version', [CompletionResultType]::ParameterName, 'Print version')
+            [CompletionResult]::new('check', 'check', [CompletionResultType]::ParameterValue, 'One-shot poll: print whether a newer release is available')
+            [CompletionResult]::new('download', 'download', [CompletionResultType]::ParameterValue, 'Download the latest artifact to the staging directory without installing')
+            [CompletionResult]::new('apply', 'apply', [CompletionResultType]::ParameterValue, 'Install the staged artifact (atomic swap, then optional restart)')
+            [CompletionResult]::new('now', 'now', [CompletionResultType]::ParameterValue, 'Run `check` + `download` + `apply` in one go')
+            [CompletionResult]::new('status', 'status', [CompletionResultType]::ParameterValue, 'Print current status: enabled flag, last check, latest version, next-scheduled tick, staged artifact')
+            [CompletionResult]::new('history', 'history', [CompletionResultType]::ParameterValue, 'Past update events from the audit log')
+            [CompletionResult]::new('help', 'help', [CompletionResultType]::ParameterValue, 'Print this message or the help of the given subcommand(s)')
+            break
+        }
+        'spt;update;check' {
+            [CompletionResult]::new('--source', '--source', [CompletionResultType]::ParameterName, 'Bypass `[updater].source` and consult the named source kind. One of `github|url|static`. Optional override for one-off probes')
+            [CompletionResult]::new('--config', '--config', [CompletionResultType]::ParameterName, 'Path to a single config file')
+            [CompletionResult]::new('--config-dir', '--config-dir', [CompletionResultType]::ParameterName, 'Path to a directory of `*.toml` configs (loaded in lexical order)')
+            [CompletionResult]::new('--config-url', '--config-url', [CompletionResultType]::ParameterName, 'HTTPS URL of a remote config to fetch')
+            [CompletionResult]::new('--config-fingerprint', '--config-fingerprint', [CompletionResultType]::ParameterName, 'SHA-256 fingerprint pin for `--config-url`')
+            [CompletionResult]::new('--state-dir', '--state-dir', [CompletionResultType]::ParameterName, 'Override the runtime state directory')
+            [CompletionResult]::new('--profile', '--profile', [CompletionResultType]::ParameterName, 'Restrict operations to the named profile')
+            [CompletionResult]::new('--output', '--output', [CompletionResultType]::ParameterName, 'Output format for command results')
+            [CompletionResult]::new('--log-level', '--log-level', [CompletionResultType]::ParameterName, 'Tracing log level')
+            [CompletionResult]::new('--color', '--color', [CompletionResultType]::ParameterName, 'Color policy for human output')
+            [CompletionResult]::new('--json', '--json', [CompletionResultType]::ParameterName, 'Convenience alias for `--output json`')
+            [CompletionResult]::new('-q', '-q', [CompletionResultType]::ParameterName, 'Suppress non-essential output')
+            [CompletionResult]::new('--quiet', '--quiet', [CompletionResultType]::ParameterName, 'Suppress non-essential output')
+            [CompletionResult]::new('-v', '-v', [CompletionResultType]::ParameterName, 'Increase verbosity (repeat for more)')
+            [CompletionResult]::new('--verbose', '--verbose', [CompletionResultType]::ParameterName, 'Increase verbosity (repeat for more)')
+            [CompletionResult]::new('--no-color', '--no-color', [CompletionResultType]::ParameterName, 'Disable color (legacy convenience flag; use `--color never`)')
+            [CompletionResult]::new('--dry-run', '--dry-run', [CompletionResultType]::ParameterName, 'Show what would happen without making changes')
+            [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help (see more with ''--help'')')
+            [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help (see more with ''--help'')')
+            [CompletionResult]::new('-V', '-V ', [CompletionResultType]::ParameterName, 'Print version')
+            [CompletionResult]::new('--version', '--version', [CompletionResultType]::ParameterName, 'Print version')
+            break
+        }
+        'spt;update;download' {
+            [CompletionResult]::new('--target', '--target', [CompletionResultType]::ParameterName, 'Target triple to fetch. Defaults to the running spt''s target')
+            [CompletionResult]::new('--config', '--config', [CompletionResultType]::ParameterName, 'Path to a single config file')
+            [CompletionResult]::new('--config-dir', '--config-dir', [CompletionResultType]::ParameterName, 'Path to a directory of `*.toml` configs (loaded in lexical order)')
+            [CompletionResult]::new('--config-url', '--config-url', [CompletionResultType]::ParameterName, 'HTTPS URL of a remote config to fetch')
+            [CompletionResult]::new('--config-fingerprint', '--config-fingerprint', [CompletionResultType]::ParameterName, 'SHA-256 fingerprint pin for `--config-url`')
+            [CompletionResult]::new('--state-dir', '--state-dir', [CompletionResultType]::ParameterName, 'Override the runtime state directory')
+            [CompletionResult]::new('--profile', '--profile', [CompletionResultType]::ParameterName, 'Restrict operations to the named profile')
+            [CompletionResult]::new('--output', '--output', [CompletionResultType]::ParameterName, 'Output format for command results')
+            [CompletionResult]::new('--log-level', '--log-level', [CompletionResultType]::ParameterName, 'Tracing log level')
+            [CompletionResult]::new('--color', '--color', [CompletionResultType]::ParameterName, 'Color policy for human output')
+            [CompletionResult]::new('--json', '--json', [CompletionResultType]::ParameterName, 'Convenience alias for `--output json`')
+            [CompletionResult]::new('-q', '-q', [CompletionResultType]::ParameterName, 'Suppress non-essential output')
+            [CompletionResult]::new('--quiet', '--quiet', [CompletionResultType]::ParameterName, 'Suppress non-essential output')
+            [CompletionResult]::new('-v', '-v', [CompletionResultType]::ParameterName, 'Increase verbosity (repeat for more)')
+            [CompletionResult]::new('--verbose', '--verbose', [CompletionResultType]::ParameterName, 'Increase verbosity (repeat for more)')
+            [CompletionResult]::new('--no-color', '--no-color', [CompletionResultType]::ParameterName, 'Disable color (legacy convenience flag; use `--color never`)')
+            [CompletionResult]::new('--dry-run', '--dry-run', [CompletionResultType]::ParameterName, 'Show what would happen without making changes')
+            [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help (see more with ''--help'')')
+            [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help (see more with ''--help'')')
+            [CompletionResult]::new('-V', '-V ', [CompletionResultType]::ParameterName, 'Print version')
+            [CompletionResult]::new('--version', '--version', [CompletionResultType]::ParameterName, 'Print version')
+            break
+        }
+        'spt;update;apply' {
+            [CompletionResult]::new('--config', '--config', [CompletionResultType]::ParameterName, 'Path to a single config file')
+            [CompletionResult]::new('--config-dir', '--config-dir', [CompletionResultType]::ParameterName, 'Path to a directory of `*.toml` configs (loaded in lexical order)')
+            [CompletionResult]::new('--config-url', '--config-url', [CompletionResultType]::ParameterName, 'HTTPS URL of a remote config to fetch')
+            [CompletionResult]::new('--config-fingerprint', '--config-fingerprint', [CompletionResultType]::ParameterName, 'SHA-256 fingerprint pin for `--config-url`')
+            [CompletionResult]::new('--state-dir', '--state-dir', [CompletionResultType]::ParameterName, 'Override the runtime state directory')
+            [CompletionResult]::new('--profile', '--profile', [CompletionResultType]::ParameterName, 'Restrict operations to the named profile')
+            [CompletionResult]::new('--output', '--output', [CompletionResultType]::ParameterName, 'Output format for command results')
+            [CompletionResult]::new('--log-level', '--log-level', [CompletionResultType]::ParameterName, 'Tracing log level')
+            [CompletionResult]::new('--color', '--color', [CompletionResultType]::ParameterName, 'Color policy for human output')
+            [CompletionResult]::new('--no-restart', '--no-restart', [CompletionResultType]::ParameterName, 'Skip the post-install restart even when `[updater.action].restart_supervisor = true`')
+            [CompletionResult]::new('--json', '--json', [CompletionResultType]::ParameterName, 'Convenience alias for `--output json`')
+            [CompletionResult]::new('-q', '-q', [CompletionResultType]::ParameterName, 'Suppress non-essential output')
+            [CompletionResult]::new('--quiet', '--quiet', [CompletionResultType]::ParameterName, 'Suppress non-essential output')
+            [CompletionResult]::new('-v', '-v', [CompletionResultType]::ParameterName, 'Increase verbosity (repeat for more)')
+            [CompletionResult]::new('--verbose', '--verbose', [CompletionResultType]::ParameterName, 'Increase verbosity (repeat for more)')
+            [CompletionResult]::new('--no-color', '--no-color', [CompletionResultType]::ParameterName, 'Disable color (legacy convenience flag; use `--color never`)')
+            [CompletionResult]::new('--dry-run', '--dry-run', [CompletionResultType]::ParameterName, 'Show what would happen without making changes')
+            [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help (see more with ''--help'')')
+            [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help (see more with ''--help'')')
+            [CompletionResult]::new('-V', '-V ', [CompletionResultType]::ParameterName, 'Print version')
+            [CompletionResult]::new('--version', '--version', [CompletionResultType]::ParameterName, 'Print version')
+            break
+        }
+        'spt;update;now' {
+            [CompletionResult]::new('--config', '--config', [CompletionResultType]::ParameterName, 'Path to a single config file')
+            [CompletionResult]::new('--config-dir', '--config-dir', [CompletionResultType]::ParameterName, 'Path to a directory of `*.toml` configs (loaded in lexical order)')
+            [CompletionResult]::new('--config-url', '--config-url', [CompletionResultType]::ParameterName, 'HTTPS URL of a remote config to fetch')
+            [CompletionResult]::new('--config-fingerprint', '--config-fingerprint', [CompletionResultType]::ParameterName, 'SHA-256 fingerprint pin for `--config-url`')
+            [CompletionResult]::new('--state-dir', '--state-dir', [CompletionResultType]::ParameterName, 'Override the runtime state directory')
+            [CompletionResult]::new('--profile', '--profile', [CompletionResultType]::ParameterName, 'Restrict operations to the named profile')
+            [CompletionResult]::new('--output', '--output', [CompletionResultType]::ParameterName, 'Output format for command results')
+            [CompletionResult]::new('--log-level', '--log-level', [CompletionResultType]::ParameterName, 'Tracing log level')
+            [CompletionResult]::new('--color', '--color', [CompletionResultType]::ParameterName, 'Color policy for human output')
+            [CompletionResult]::new('--no-restart', '--no-restart', [CompletionResultType]::ParameterName, 'Skip the post-install restart')
+            [CompletionResult]::new('--json', '--json', [CompletionResultType]::ParameterName, 'Convenience alias for `--output json`')
+            [CompletionResult]::new('-q', '-q', [CompletionResultType]::ParameterName, 'Suppress non-essential output')
+            [CompletionResult]::new('--quiet', '--quiet', [CompletionResultType]::ParameterName, 'Suppress non-essential output')
+            [CompletionResult]::new('-v', '-v', [CompletionResultType]::ParameterName, 'Increase verbosity (repeat for more)')
+            [CompletionResult]::new('--verbose', '--verbose', [CompletionResultType]::ParameterName, 'Increase verbosity (repeat for more)')
+            [CompletionResult]::new('--no-color', '--no-color', [CompletionResultType]::ParameterName, 'Disable color (legacy convenience flag; use `--color never`)')
+            [CompletionResult]::new('--dry-run', '--dry-run', [CompletionResultType]::ParameterName, 'Show what would happen without making changes')
+            [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help (see more with ''--help'')')
+            [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help (see more with ''--help'')')
+            [CompletionResult]::new('-V', '-V ', [CompletionResultType]::ParameterName, 'Print version')
+            [CompletionResult]::new('--version', '--version', [CompletionResultType]::ParameterName, 'Print version')
+            break
+        }
+        'spt;update;status' {
+            [CompletionResult]::new('--config', '--config', [CompletionResultType]::ParameterName, 'Path to a single config file')
+            [CompletionResult]::new('--config-dir', '--config-dir', [CompletionResultType]::ParameterName, 'Path to a directory of `*.toml` configs (loaded in lexical order)')
+            [CompletionResult]::new('--config-url', '--config-url', [CompletionResultType]::ParameterName, 'HTTPS URL of a remote config to fetch')
+            [CompletionResult]::new('--config-fingerprint', '--config-fingerprint', [CompletionResultType]::ParameterName, 'SHA-256 fingerprint pin for `--config-url`')
+            [CompletionResult]::new('--state-dir', '--state-dir', [CompletionResultType]::ParameterName, 'Override the runtime state directory')
+            [CompletionResult]::new('--profile', '--profile', [CompletionResultType]::ParameterName, 'Restrict operations to the named profile')
+            [CompletionResult]::new('--output', '--output', [CompletionResultType]::ParameterName, 'Output format for command results')
+            [CompletionResult]::new('--log-level', '--log-level', [CompletionResultType]::ParameterName, 'Tracing log level')
+            [CompletionResult]::new('--color', '--color', [CompletionResultType]::ParameterName, 'Color policy for human output')
+            [CompletionResult]::new('--json', '--json', [CompletionResultType]::ParameterName, 'Emit JSON instead of the human table')
+            [CompletionResult]::new('-q', '-q', [CompletionResultType]::ParameterName, 'Suppress non-essential output')
+            [CompletionResult]::new('--quiet', '--quiet', [CompletionResultType]::ParameterName, 'Suppress non-essential output')
+            [CompletionResult]::new('-v', '-v', [CompletionResultType]::ParameterName, 'Increase verbosity (repeat for more)')
+            [CompletionResult]::new('--verbose', '--verbose', [CompletionResultType]::ParameterName, 'Increase verbosity (repeat for more)')
+            [CompletionResult]::new('--no-color', '--no-color', [CompletionResultType]::ParameterName, 'Disable color (legacy convenience flag; use `--color never`)')
+            [CompletionResult]::new('--dry-run', '--dry-run', [CompletionResultType]::ParameterName, 'Show what would happen without making changes')
+            [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help (see more with ''--help'')')
+            [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help (see more with ''--help'')')
+            [CompletionResult]::new('-V', '-V ', [CompletionResultType]::ParameterName, 'Print version')
+            [CompletionResult]::new('--version', '--version', [CompletionResultType]::ParameterName, 'Print version')
+            break
+        }
+        'spt;update;history' {
+            [CompletionResult]::new('--limit', '--limit', [CompletionResultType]::ParameterName, 'How many past events to display. Default 10')
+            [CompletionResult]::new('--config', '--config', [CompletionResultType]::ParameterName, 'Path to a single config file')
+            [CompletionResult]::new('--config-dir', '--config-dir', [CompletionResultType]::ParameterName, 'Path to a directory of `*.toml` configs (loaded in lexical order)')
+            [CompletionResult]::new('--config-url', '--config-url', [CompletionResultType]::ParameterName, 'HTTPS URL of a remote config to fetch')
+            [CompletionResult]::new('--config-fingerprint', '--config-fingerprint', [CompletionResultType]::ParameterName, 'SHA-256 fingerprint pin for `--config-url`')
+            [CompletionResult]::new('--state-dir', '--state-dir', [CompletionResultType]::ParameterName, 'Override the runtime state directory')
+            [CompletionResult]::new('--profile', '--profile', [CompletionResultType]::ParameterName, 'Restrict operations to the named profile')
+            [CompletionResult]::new('--output', '--output', [CompletionResultType]::ParameterName, 'Output format for command results')
+            [CompletionResult]::new('--log-level', '--log-level', [CompletionResultType]::ParameterName, 'Tracing log level')
+            [CompletionResult]::new('--color', '--color', [CompletionResultType]::ParameterName, 'Color policy for human output')
+            [CompletionResult]::new('--json', '--json', [CompletionResultType]::ParameterName, 'Convenience alias for `--output json`')
+            [CompletionResult]::new('-q', '-q', [CompletionResultType]::ParameterName, 'Suppress non-essential output')
+            [CompletionResult]::new('--quiet', '--quiet', [CompletionResultType]::ParameterName, 'Suppress non-essential output')
+            [CompletionResult]::new('-v', '-v', [CompletionResultType]::ParameterName, 'Increase verbosity (repeat for more)')
+            [CompletionResult]::new('--verbose', '--verbose', [CompletionResultType]::ParameterName, 'Increase verbosity (repeat for more)')
+            [CompletionResult]::new('--no-color', '--no-color', [CompletionResultType]::ParameterName, 'Disable color (legacy convenience flag; use `--color never`)')
+            [CompletionResult]::new('--dry-run', '--dry-run', [CompletionResultType]::ParameterName, 'Show what would happen without making changes')
+            [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help (see more with ''--help'')')
+            [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help (see more with ''--help'')')
+            [CompletionResult]::new('-V', '-V ', [CompletionResultType]::ParameterName, 'Print version')
+            [CompletionResult]::new('--version', '--version', [CompletionResultType]::ParameterName, 'Print version')
+            break
+        }
+        'spt;update;help' {
+            [CompletionResult]::new('check', 'check', [CompletionResultType]::ParameterValue, 'One-shot poll: print whether a newer release is available')
+            [CompletionResult]::new('download', 'download', [CompletionResultType]::ParameterValue, 'Download the latest artifact to the staging directory without installing')
+            [CompletionResult]::new('apply', 'apply', [CompletionResultType]::ParameterValue, 'Install the staged artifact (atomic swap, then optional restart)')
+            [CompletionResult]::new('now', 'now', [CompletionResultType]::ParameterValue, 'Run `check` + `download` + `apply` in one go')
+            [CompletionResult]::new('status', 'status', [CompletionResultType]::ParameterValue, 'Print current status: enabled flag, last check, latest version, next-scheduled tick, staged artifact')
+            [CompletionResult]::new('history', 'history', [CompletionResultType]::ParameterValue, 'Past update events from the audit log')
+            [CompletionResult]::new('help', 'help', [CompletionResultType]::ParameterValue, 'Print this message or the help of the given subcommand(s)')
+            break
+        }
+        'spt;update;help;check' {
+            break
+        }
+        'spt;update;help;download' {
+            break
+        }
+        'spt;update;help;apply' {
+            break
+        }
+        'spt;update;help;now' {
+            break
+        }
+        'spt;update;help;status' {
+            break
+        }
+        'spt;update;help;history' {
+            break
+        }
+        'spt;update;help;help' {
+            break
+        }
         'spt;help' {
             [CompletionResult]::new('config', 'config', [CompletionResultType]::ParameterValue, 'Manage configuration files (init, validate, diff, render, reload)')
             [CompletionResult]::new('profile', 'profile', [CompletionResultType]::ParameterValue, 'Manage SSH/SSH3 tunnel profiles')
@@ -6802,6 +7007,7 @@ Register-ArgumentCompleter -Native -CommandName 'spt' -ScriptBlock {
             [CompletionResult]::new('completion', 'completion', [CompletionResultType]::ParameterValue, 'Generate shell completions')
             [CompletionResult]::new('about', 'about', [CompletionResultType]::ParameterValue, 'List bundled libraries and their licenses')
             [CompletionResult]::new('kill', 'kill', [CompletionResultType]::ParameterValue, 'Kill every running `spt` process on this host (cross-platform)')
+            [CompletionResult]::new('update', 'update', [CompletionResultType]::ParameterValue, 'Embedded auto-updater (off by default). Manual commands work regardless of the `[updater].enabled` flag; the background polling thread is only spawned when explicitly enabled')
             [CompletionResult]::new('help', 'help', [CompletionResultType]::ParameterValue, 'Print this message or the help of the given subcommand(s)')
             break
         }
@@ -7635,6 +7841,33 @@ Register-ArgumentCompleter -Native -CommandName 'spt' -ScriptBlock {
             break
         }
         'spt;help;kill' {
+            break
+        }
+        'spt;help;update' {
+            [CompletionResult]::new('check', 'check', [CompletionResultType]::ParameterValue, 'One-shot poll: print whether a newer release is available')
+            [CompletionResult]::new('download', 'download', [CompletionResultType]::ParameterValue, 'Download the latest artifact to the staging directory without installing')
+            [CompletionResult]::new('apply', 'apply', [CompletionResultType]::ParameterValue, 'Install the staged artifact (atomic swap, then optional restart)')
+            [CompletionResult]::new('now', 'now', [CompletionResultType]::ParameterValue, 'Run `check` + `download` + `apply` in one go')
+            [CompletionResult]::new('status', 'status', [CompletionResultType]::ParameterValue, 'Print current status: enabled flag, last check, latest version, next-scheduled tick, staged artifact')
+            [CompletionResult]::new('history', 'history', [CompletionResultType]::ParameterValue, 'Past update events from the audit log')
+            break
+        }
+        'spt;help;update;check' {
+            break
+        }
+        'spt;help;update;download' {
+            break
+        }
+        'spt;help;update;apply' {
+            break
+        }
+        'spt;help;update;now' {
+            break
+        }
+        'spt;help;update;status' {
+            break
+        }
+        'spt;help;update;history' {
             break
         }
         'spt;help;help' {

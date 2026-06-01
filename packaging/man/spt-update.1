@@ -1,0 +1,35 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH SPT-UPDATE 1  "update " 
+.SH NAME
+update \- Embedded auto\-updater (off by default). Manual commands work regardless of the `[updater].enabled` flag; the background polling thread is only spawned when explicitly enabled
+.SH SYNOPSIS
+\fBupdate\fR [\fB\-h\fR|\fB\-\-help\fR] [\fIsubcommands\fR]
+.SH DESCRIPTION
+Embedded auto\-updater (off by default). Manual commands work regardless of the `[updater].enabled` flag; the background polling thread is only spawned when explicitly enabled
+.SH OPTIONS
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help
+.SH SUBCOMMANDS
+.TP
+update\-check(1)
+One\-shot poll: print whether a newer release is available
+.TP
+update\-download(1)
+Download the latest artifact to the staging directory without installing
+.TP
+update\-apply(1)
+Install the staged artifact (atomic swap, then optional restart)
+.TP
+update\-now(1)
+Run `check` + `download` + `apply` in one go
+.TP
+update\-status(1)
+Print current status: enabled flag, last check, latest version, next\-scheduled tick, staged artifact
+.TP
+update\-history(1)
+Past update events from the audit log
+.TP
+update\-help(1)
+Print this message or the help of the given subcommand(s)

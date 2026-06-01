@@ -3290,7 +3290,8 @@ mod tests {
             d.errors
                 .iter()
                 .any(|e| e.code == "updater_schedule_and_interval"),
-            "errors: {:?}", d.errors
+            "errors: {:?}",
+            d.errors
         );
     }
 
@@ -3312,7 +3313,8 @@ mod tests {
             d.errors
                 .iter()
                 .any(|e| e.code == "updater_url_fingerprint_required"),
-            "errors: {:?}", d.errors
+            "errors: {:?}",
+            d.errors
         );
     }
 
@@ -3333,7 +3335,8 @@ mod tests {
             d.errors
                 .iter()
                 .any(|e| e.code == "updater_minisign_pubkey_required"),
-            "errors: {:?}", d.errors
+            "errors: {:?}",
+            d.errors
         );
     }
 

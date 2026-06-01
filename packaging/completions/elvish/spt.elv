@@ -62,6 +62,7 @@ set edit:completion:arg-completer[spt] = {|@words|
             cand completion 'Generate shell completions'
             cand about 'List bundled libraries and their licenses'
             cand kill 'Kill every running `spt` process on this host (cross-platform)'
+            cand update 'Embedded auto-updater (off by default). Manual commands work regardless of the `[updater].enabled` flag; the background polling thread is only spawned when explicitly enabled'
             cand help 'Print this message or the help of the given subcommand(s)'
         }
         &'spt;config'= {
@@ -6244,6 +6245,195 @@ set edit:completion:arg-completer[spt] = {|@words|
             cand -V 'Print version'
             cand --version 'Print version'
         }
+        &'spt;update'= {
+            cand --config 'Path to a single config file'
+            cand --config-dir 'Path to a directory of `*.toml` configs (loaded in lexical order)'
+            cand --config-url 'HTTPS URL of a remote config to fetch'
+            cand --config-fingerprint 'SHA-256 fingerprint pin for `--config-url`'
+            cand --state-dir 'Override the runtime state directory'
+            cand --profile 'Restrict operations to the named profile'
+            cand --output 'Output format for command results'
+            cand --log-level 'Tracing log level'
+            cand --color 'Color policy for human output'
+            cand --json 'Convenience alias for `--output json`'
+            cand -q 'Suppress non-essential output'
+            cand --quiet 'Suppress non-essential output'
+            cand -v 'Increase verbosity (repeat for more)'
+            cand --verbose 'Increase verbosity (repeat for more)'
+            cand --no-color 'Disable color (legacy convenience flag; use `--color never`)'
+            cand --dry-run 'Show what would happen without making changes'
+            cand -h 'Print help (see more with ''--help'')'
+            cand --help 'Print help (see more with ''--help'')'
+            cand -V 'Print version'
+            cand --version 'Print version'
+            cand check 'One-shot poll: print whether a newer release is available'
+            cand download 'Download the latest artifact to the staging directory without installing'
+            cand apply 'Install the staged artifact (atomic swap, then optional restart)'
+            cand now 'Run `check` + `download` + `apply` in one go'
+            cand status 'Print current status: enabled flag, last check, latest version, next-scheduled tick, staged artifact'
+            cand history 'Past update events from the audit log'
+            cand help 'Print this message or the help of the given subcommand(s)'
+        }
+        &'spt;update;check'= {
+            cand --source 'Bypass `[updater].source` and consult the named source kind. One of `github|url|static`. Optional override for one-off probes'
+            cand --config 'Path to a single config file'
+            cand --config-dir 'Path to a directory of `*.toml` configs (loaded in lexical order)'
+            cand --config-url 'HTTPS URL of a remote config to fetch'
+            cand --config-fingerprint 'SHA-256 fingerprint pin for `--config-url`'
+            cand --state-dir 'Override the runtime state directory'
+            cand --profile 'Restrict operations to the named profile'
+            cand --output 'Output format for command results'
+            cand --log-level 'Tracing log level'
+            cand --color 'Color policy for human output'
+            cand --json 'Convenience alias for `--output json`'
+            cand -q 'Suppress non-essential output'
+            cand --quiet 'Suppress non-essential output'
+            cand -v 'Increase verbosity (repeat for more)'
+            cand --verbose 'Increase verbosity (repeat for more)'
+            cand --no-color 'Disable color (legacy convenience flag; use `--color never`)'
+            cand --dry-run 'Show what would happen without making changes'
+            cand -h 'Print help (see more with ''--help'')'
+            cand --help 'Print help (see more with ''--help'')'
+            cand -V 'Print version'
+            cand --version 'Print version'
+        }
+        &'spt;update;download'= {
+            cand --target 'Target triple to fetch. Defaults to the running spt''s target'
+            cand --config 'Path to a single config file'
+            cand --config-dir 'Path to a directory of `*.toml` configs (loaded in lexical order)'
+            cand --config-url 'HTTPS URL of a remote config to fetch'
+            cand --config-fingerprint 'SHA-256 fingerprint pin for `--config-url`'
+            cand --state-dir 'Override the runtime state directory'
+            cand --profile 'Restrict operations to the named profile'
+            cand --output 'Output format for command results'
+            cand --log-level 'Tracing log level'
+            cand --color 'Color policy for human output'
+            cand --json 'Convenience alias for `--output json`'
+            cand -q 'Suppress non-essential output'
+            cand --quiet 'Suppress non-essential output'
+            cand -v 'Increase verbosity (repeat for more)'
+            cand --verbose 'Increase verbosity (repeat for more)'
+            cand --no-color 'Disable color (legacy convenience flag; use `--color never`)'
+            cand --dry-run 'Show what would happen without making changes'
+            cand -h 'Print help (see more with ''--help'')'
+            cand --help 'Print help (see more with ''--help'')'
+            cand -V 'Print version'
+            cand --version 'Print version'
+        }
+        &'spt;update;apply'= {
+            cand --config 'Path to a single config file'
+            cand --config-dir 'Path to a directory of `*.toml` configs (loaded in lexical order)'
+            cand --config-url 'HTTPS URL of a remote config to fetch'
+            cand --config-fingerprint 'SHA-256 fingerprint pin for `--config-url`'
+            cand --state-dir 'Override the runtime state directory'
+            cand --profile 'Restrict operations to the named profile'
+            cand --output 'Output format for command results'
+            cand --log-level 'Tracing log level'
+            cand --color 'Color policy for human output'
+            cand --no-restart 'Skip the post-install restart even when `[updater.action].restart_supervisor = true`'
+            cand --json 'Convenience alias for `--output json`'
+            cand -q 'Suppress non-essential output'
+            cand --quiet 'Suppress non-essential output'
+            cand -v 'Increase verbosity (repeat for more)'
+            cand --verbose 'Increase verbosity (repeat for more)'
+            cand --no-color 'Disable color (legacy convenience flag; use `--color never`)'
+            cand --dry-run 'Show what would happen without making changes'
+            cand -h 'Print help (see more with ''--help'')'
+            cand --help 'Print help (see more with ''--help'')'
+            cand -V 'Print version'
+            cand --version 'Print version'
+        }
+        &'spt;update;now'= {
+            cand --config 'Path to a single config file'
+            cand --config-dir 'Path to a directory of `*.toml` configs (loaded in lexical order)'
+            cand --config-url 'HTTPS URL of a remote config to fetch'
+            cand --config-fingerprint 'SHA-256 fingerprint pin for `--config-url`'
+            cand --state-dir 'Override the runtime state directory'
+            cand --profile 'Restrict operations to the named profile'
+            cand --output 'Output format for command results'
+            cand --log-level 'Tracing log level'
+            cand --color 'Color policy for human output'
+            cand --no-restart 'Skip the post-install restart'
+            cand --json 'Convenience alias for `--output json`'
+            cand -q 'Suppress non-essential output'
+            cand --quiet 'Suppress non-essential output'
+            cand -v 'Increase verbosity (repeat for more)'
+            cand --verbose 'Increase verbosity (repeat for more)'
+            cand --no-color 'Disable color (legacy convenience flag; use `--color never`)'
+            cand --dry-run 'Show what would happen without making changes'
+            cand -h 'Print help (see more with ''--help'')'
+            cand --help 'Print help (see more with ''--help'')'
+            cand -V 'Print version'
+            cand --version 'Print version'
+        }
+        &'spt;update;status'= {
+            cand --config 'Path to a single config file'
+            cand --config-dir 'Path to a directory of `*.toml` configs (loaded in lexical order)'
+            cand --config-url 'HTTPS URL of a remote config to fetch'
+            cand --config-fingerprint 'SHA-256 fingerprint pin for `--config-url`'
+            cand --state-dir 'Override the runtime state directory'
+            cand --profile 'Restrict operations to the named profile'
+            cand --output 'Output format for command results'
+            cand --log-level 'Tracing log level'
+            cand --color 'Color policy for human output'
+            cand --json 'Emit JSON instead of the human table'
+            cand -q 'Suppress non-essential output'
+            cand --quiet 'Suppress non-essential output'
+            cand -v 'Increase verbosity (repeat for more)'
+            cand --verbose 'Increase verbosity (repeat for more)'
+            cand --no-color 'Disable color (legacy convenience flag; use `--color never`)'
+            cand --dry-run 'Show what would happen without making changes'
+            cand -h 'Print help (see more with ''--help'')'
+            cand --help 'Print help (see more with ''--help'')'
+            cand -V 'Print version'
+            cand --version 'Print version'
+        }
+        &'spt;update;history'= {
+            cand --limit 'How many past events to display. Default 10'
+            cand --config 'Path to a single config file'
+            cand --config-dir 'Path to a directory of `*.toml` configs (loaded in lexical order)'
+            cand --config-url 'HTTPS URL of a remote config to fetch'
+            cand --config-fingerprint 'SHA-256 fingerprint pin for `--config-url`'
+            cand --state-dir 'Override the runtime state directory'
+            cand --profile 'Restrict operations to the named profile'
+            cand --output 'Output format for command results'
+            cand --log-level 'Tracing log level'
+            cand --color 'Color policy for human output'
+            cand --json 'Convenience alias for `--output json`'
+            cand -q 'Suppress non-essential output'
+            cand --quiet 'Suppress non-essential output'
+            cand -v 'Increase verbosity (repeat for more)'
+            cand --verbose 'Increase verbosity (repeat for more)'
+            cand --no-color 'Disable color (legacy convenience flag; use `--color never`)'
+            cand --dry-run 'Show what would happen without making changes'
+            cand -h 'Print help (see more with ''--help'')'
+            cand --help 'Print help (see more with ''--help'')'
+            cand -V 'Print version'
+            cand --version 'Print version'
+        }
+        &'spt;update;help'= {
+            cand check 'One-shot poll: print whether a newer release is available'
+            cand download 'Download the latest artifact to the staging directory without installing'
+            cand apply 'Install the staged artifact (atomic swap, then optional restart)'
+            cand now 'Run `check` + `download` + `apply` in one go'
+            cand status 'Print current status: enabled flag, last check, latest version, next-scheduled tick, staged artifact'
+            cand history 'Past update events from the audit log'
+            cand help 'Print this message or the help of the given subcommand(s)'
+        }
+        &'spt;update;help;check'= {
+        }
+        &'spt;update;help;download'= {
+        }
+        &'spt;update;help;apply'= {
+        }
+        &'spt;update;help;now'= {
+        }
+        &'spt;update;help;status'= {
+        }
+        &'spt;update;help;history'= {
+        }
+        &'spt;update;help;help'= {
+        }
         &'spt;help'= {
             cand config 'Manage configuration files (init, validate, diff, render, reload)'
             cand profile 'Manage SSH/SSH3 tunnel profiles'
@@ -6269,6 +6459,7 @@ set edit:completion:arg-completer[spt] = {|@words|
             cand completion 'Generate shell completions'
             cand about 'List bundled libraries and their licenses'
             cand kill 'Kill every running `spt` process on this host (cross-platform)'
+            cand update 'Embedded auto-updater (off by default). Manual commands work regardless of the `[updater].enabled` flag; the background polling thread is only spawned when explicitly enabled'
             cand help 'Print this message or the help of the given subcommand(s)'
         }
         &'spt;help;config'= {
@@ -6888,6 +7079,26 @@ set edit:completion:arg-completer[spt] = {|@words|
         &'spt;help;about;export'= {
         }
         &'spt;help;kill'= {
+        }
+        &'spt;help;update'= {
+            cand check 'One-shot poll: print whether a newer release is available'
+            cand download 'Download the latest artifact to the staging directory without installing'
+            cand apply 'Install the staged artifact (atomic swap, then optional restart)'
+            cand now 'Run `check` + `download` + `apply` in one go'
+            cand status 'Print current status: enabled flag, last check, latest version, next-scheduled tick, staged artifact'
+            cand history 'Past update events from the audit log'
+        }
+        &'spt;help;update;check'= {
+        }
+        &'spt;help;update;download'= {
+        }
+        &'spt;help;update;apply'= {
+        }
+        &'spt;help;update;now'= {
+        }
+        &'spt;help;update;status'= {
+        }
+        &'spt;help;update;history'= {
         }
         &'spt;help;help'= {
         }

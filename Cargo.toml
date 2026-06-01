@@ -44,6 +44,10 @@ members = [
     # Pure library crate, no integration infra needed — safe as a workspace
     # member so `cargo test --workspace` exercises its behaviour suite.
     "crates/spt-chaos-proxy",
+    # t11-Aupd: embedded auto-updater (off by default). Provides the
+    # `spt update *` CLI surface and the supervisor-spawned polling
+    # thread. Schema lives in spt-config; this crate owns the driver.
+    "crates/spt-updater",
     "tests",
     "tests/conformance",
     "tests/stress",
@@ -175,6 +179,7 @@ spt-config-crypt = { path = "crates/spt-config-crypt", version = "0.26.1" }
 # t8-C1 — chaos TCP proxy library, consumed by `tests/chaos` (which is its
 # own decoupled workspace) and any future in-process chaos test.
 spt-chaos-proxy = { path = "crates/spt-chaos-proxy", version = "0.26.1" }
+spt-updater = { path = "crates/spt-updater", version = "0.26.1" }
 
 # Async runtime
 tokio = { version = "1.40", features = ["full"] }

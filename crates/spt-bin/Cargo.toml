@@ -53,6 +53,7 @@ spt-config-crypt = { workspace = true }
 spt-mem-hygiene = { workspace = true }
 spt-secrets = { workspace = true }
 spt-state = { workspace = true }
+spt-updater = { workspace = true }
 spt-cli = { workspace = true }
 spt-net = { workspace = true }
 spt-protocol = { workspace = true }

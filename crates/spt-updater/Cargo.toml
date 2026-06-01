@@ -1,0 +1,49 @@
+[package]
+name = "spt-updater"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+description = "Embedded auto-updater for spt — disabled by default, configurable source / verification / schedule."
+
+[lints]
+workspace = true
+
+[features]
+default = []
+# Build-time toggle that exposes mock source backends to integration tests
+# without bloating the production crate.
+testing = []
+
+[dependencies]
+spt-core = { workspace = true }
+spt-config = { workspace = true }
+spt-trust = { workspace = true }
+spt-state = { workspace = true }
+
+tokio = { workspace = true }
+async-trait = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+humantime = { workspace = true }
+semver = "1"
+sha2 = { workspace = true }
+hex = { workspace = true }
+parking_lot = { workspace = true }
+# Cron expression parser + next-tick computation. `cron` is the
+# de-facto Rust crate, MIT-licensed, no transitive surprises.
+cron = "0.12"
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+# Minisign signature verification. Pure Rust, no external libsodium.
+minisign-verify = "0.2"
+url = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }

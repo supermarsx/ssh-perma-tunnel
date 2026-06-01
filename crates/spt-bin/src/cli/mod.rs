@@ -59,3 +59,4 @@ pub mod secret_ops;
 pub mod sftp_ops;
 pub mod status_ops;
 pub mod tunnel_ops;
+pub mod update_ops;
