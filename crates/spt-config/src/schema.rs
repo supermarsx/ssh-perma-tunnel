@@ -73,6 +73,13 @@ pub struct Config {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mcp: Option<Mcp>,
 
+    /// `[updater]` table. Embedded auto-updater (`spt update` + optional
+    /// background polling thread). **Disabled by default** — every field
+    /// has a sensible default that only matters once `enabled = true`.
+    /// See `docs/updater.md` for the full schema reference.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updater: Option<Updater>,
+
     /// `[diagnostics]` table. Spec §9.9.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub diagnostics: Option<Diagnostics>,
@@ -891,6 +898,180 @@ pub struct Mcp {
     /// `DEFAULT_CHAIN_DEPTH_CAP` (`Some(5)`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_cert_chain_depth: Option<u32>,
+}
+
+// ---------------------------------------------------------------------------
+// [updater] — embedded auto-updater (off by default)
+// ---------------------------------------------------------------------------
+
+/// `[updater]` table. Drives the `spt update` CLI surface and the optional
+/// background polling thread that the supervisor spawns when
+/// `enabled = true`. Both the background thread and the auto-install path
+/// are **off by default**: a fresh config file with no `[updater]` block
+/// (or an empty one) gets zero update activity. The operator must
+/// explicitly opt in.
+///
+/// See `docs/updater.md` for the full reference.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Updater {
+    /// Master switch for the background polling thread. **Default: `false`**.
+    /// When false, the supervisor does not spawn the updater task at all,
+    /// but manual `spt update *` commands still work — they read this
+    /// block for source/verification settings only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+
+    /// What the background thread does when it ticks. **Default: `"off"`**.
+    /// One of:
+    ///
+    /// * `"off"`    — supervisor refuses to spawn the thread even if
+    ///                `enabled = true` (belt-and-braces).
+    /// * `"check"`  — poll for new versions, expose via `spt update status`.
+    /// * `"warn"`   — `check` + emit a `tracing::warn!` and an audit event
+    ///                so operators see a banner in their log pipeline.
+    /// * `"auto"`   — `warn` + download + verify + atomic install +
+    ///                supervisor restart.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+
+    /// 5-field cron expression for the polling schedule. Mutually exclusive
+    /// with [`Self::interval`]. **Default: `"0 6 * * *"`** (06:00 UTC daily).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schedule: Option<String>,
+
+    /// `humantime`-parsed interval (e.g. `"24h"`, `"7d"`). Mutually
+    /// exclusive with [`Self::schedule`]. When both are set, the
+    /// load-time validator rejects the config.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interval: Option<String>,
+
+    /// Release source kind. **Default: `"github"`**.
+    ///
+    /// * `"github"` — query `api.github.com/repos/{repo}/releases/latest`.
+    /// * `"url"`    — HTTPS GET on a configured release-manifest URL with
+    ///                an SHA-256 pin (`url_fingerprint`).
+    /// * `"static"` — `file://` directory (offline mirrors, smoke tests).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+
+    /// `<owner>/<repo>` for `source = "github"`. **Default:
+    /// `"supermarsx/ssh-perma-tunnel"`**.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub github_repo: Option<String>,
+
+    /// `"stable"` (skip pre-releases) or `"prerelease"` (include them).
+    /// **Default: `"stable"`**.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub github_channel: Option<String>,
+
+    /// HTTPS URL of the release manifest for `source = "url"`. Must include
+    /// the literal `{version}` and `{target}` placeholders so the updater
+    /// can synthesise per-artifact URLs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+
+    /// HTTPS URL of the release-manifest.json sibling for `source = "url"`.
+    /// Defaults to deriving from [`Self::url`] by stripping the artifact
+    /// pattern and appending `release-manifest.json`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url_index: Option<String>,
+
+    /// Required SHA-256 pin for the `release-manifest.json` body when
+    /// `source = "url"`. Mirrors `[remote_config].fingerprint_sha256`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url_fingerprint: Option<String>,
+
+    /// Local directory of release artifacts for `source = "static"`.
+    /// Layout matches `dist/<version>/`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub static_dir: Option<String>,
+
+    /// `[updater.window]` — auto-install maintenance window.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window: Option<UpdaterWindow>,
+
+    /// `[updater.staging]` — where staged artifacts land + retention.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub staging: Option<UpdaterStaging>,
+
+    /// `[updater.verify]` — artifact-verification policy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verify: Option<UpdaterVerify>,
+
+    /// `[updater.action]` — post-install actions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action: Option<UpdaterAction>,
+}
+
+/// `[updater.window]`. Auto-install only fires inside this window. Omit
+/// the whole block (or set both `allow_from` and `allow_to` to `None`) to
+/// allow install at any tick.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct UpdaterWindow {
+    /// HH:MM start (24-hour). Default: unset (any time).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow_from: Option<String>,
+    /// HH:MM end (24-hour). Default: unset (any time).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow_to: Option<String>,
+    /// IANA timezone for the window (`"UTC"`, `"America/Los_Angeles"`).
+    /// **Default: `"UTC"`**.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timezone: Option<String>,
+}
+
+/// `[updater.staging]`. Where downloaded artifacts land before swap.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct UpdaterStaging {
+    /// Staging directory. **Default: `<state_dir>/updates`**.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dir: Option<String>,
+    /// How many past staged builds to keep. **Default: `3`**.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keep_last: Option<u32>,
+}
+
+/// `[updater.verify]`. Signature + checksum requirements. Defaults are
+/// strict — the operator can opt out for private mirrors that don't
+/// replay signatures (the runtime emits a `tracing::warn!` whenever a
+/// downloaded artifact is installed without a minisign check).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct UpdaterVerify {
+    /// Refuse to install without a valid minisign signature.
+    /// **Default: `true`**. Operator can flip to `false` for mirrors that
+    /// don't replay signatures, accepting weaker provenance.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub require_minisign: Option<bool>,
+    /// Path to the minisign public key the operator trusts.
+    /// Required when `require_minisign = true`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub minisign_pubkey: Option<String>,
+    /// Refuse to install if the artifact's SHA-256 doesn't match
+    /// `SHA256SUMS`. **Default: `true`**.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub require_sha256sums: Option<bool>,
+    /// Optional GPG public key for the `SHA256SUMS.asc` detached
+    /// signature. When present, GPG verification becomes mandatory too.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpg_pubkey: Option<String>,
+}
+
+/// `[updater.action]`. What happens after a successful install.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct UpdaterAction {
+    /// Send the supervisor a `tunnel reload` (SIGHUP / MCP RPC) after a
+    /// successful install so the new binary takes effect without manual
+    /// intervention. **Default: `true`**.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restart_supervisor: Option<bool>,
+    /// Emit a structured audit event on every install. **Default: `true`**.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notify_audit: Option<bool>,
+    /// Optional executable run after install + restart. Receives the new
+    /// version in `$SPT_UPDATE_VERSION` and the staged artifact path in
+    /// `$SPT_UPDATE_ARTIFACT`. Default: unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub post_install_hook: Option<String>,
 }
 
 // ---------------------------------------------------------------------------

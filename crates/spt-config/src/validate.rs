@@ -60,10 +60,142 @@ pub fn validate(c: &Config) -> Diagnostics {
     check_network(&mut d, c);
     check_observability(&mut d, c);
     check_mcp(&mut d, c);
+    check_updater(&mut d, c);
     check_capabilities(&mut d, c);
     check_profiles(&mut d, c);
 
     d
+}
+
+/// Cross-validate the `[updater]` block. The runtime is permissive when
+/// the block is absent or `enabled = false` (no thread is ever spawned, so
+/// most fields are inert), but obvious inconsistencies are surfaced at
+/// load time so operators don't discover them at the first scheduled tick.
+fn check_updater(d: &mut Diagnostics, c: &Config) {
+    let Some(u) = c.updater.as_ref() else {
+        return;
+    };
+
+    // Mode must be one of the documented variants.
+    if let Some(m) = u.mode.as_deref() {
+        if !matches!(m, "off" | "check" | "warn" | "auto") {
+            d.push(
+                Diagnostic::error(
+                    "updater_unknown_mode",
+                    format!(
+                        "updater.mode `{m}` is not recognised; one of \
+                         off|check|warn|auto"
+                    ),
+                )
+                .at("updater.mode"),
+            );
+        }
+    }
+
+    // Source must be one of the documented variants.
+    if let Some(s) = u.source.as_deref() {
+        if !matches!(s, "github" | "url" | "static") {
+            d.push(
+                Diagnostic::error(
+                    "updater_unknown_source",
+                    format!(
+                        "updater.source `{s}` is not recognised; one of \
+                         github|url|static"
+                    ),
+                )
+                .at("updater.source"),
+            );
+        }
+    }
+
+    // `schedule` and `interval` are mutually exclusive.
+    if u.schedule.is_some() && u.interval.is_some() {
+        d.push(
+            Diagnostic::error(
+                "updater_schedule_and_interval",
+                "updater.schedule and updater.interval are mutually exclusive \
+                 — pick exactly one",
+            )
+            .at("updater.schedule"),
+        );
+    }
+
+    // `source = "url"` requires url + url_fingerprint. The pin is a hard
+    // requirement: an unauthenticated HTTPS GET against a release manifest
+    // would let any TLS-MITM-capable adversary swap the artifact set.
+    if u.source.as_deref() == Some("url") {
+        if u.url.is_none() {
+            d.push(
+                Diagnostic::error(
+                    "updater_url_required",
+                    "updater.source = \"url\" requires updater.url",
+                )
+                .at("updater.url"),
+            );
+        }
+        if u.url_fingerprint.is_none() {
+            d.push(
+                Diagnostic::error(
+                    "updater_url_fingerprint_required",
+                    "updater.source = \"url\" requires updater.url_fingerprint \
+                     (SHA-256 pin on the release-manifest body)",
+                )
+                .at("updater.url_fingerprint"),
+            );
+        }
+    }
+
+    // `source = "static"` requires static_dir.
+    if u.source.as_deref() == Some("static") && u.static_dir.is_none() {
+        d.push(
+            Diagnostic::error(
+                "updater_static_dir_required",
+                "updater.source = \"static\" requires updater.static_dir",
+            )
+            .at("updater.static_dir"),
+        );
+    }
+
+    // Minisign required + pubkey unset is a misconfiguration: the runtime
+    // would refuse every artifact.
+    if let Some(v) = u.verify.as_ref() {
+        let require = v.require_minisign.unwrap_or(true);
+        if require && v.minisign_pubkey.is_none() {
+            d.push(
+                Diagnostic::error(
+                    "updater_minisign_pubkey_required",
+                    "updater.verify.require_minisign = true requires \
+                     updater.verify.minisign_pubkey",
+                )
+                .at("updater.verify.minisign_pubkey"),
+            );
+        }
+        if v.require_minisign == Some(false) {
+            d.push(
+                Diagnostic::warning(
+                    "updater_minisign_disabled",
+                    "updater.verify.require_minisign = false disables \
+                     signature checks on downloaded artifacts — only do this \
+                     for private mirrors you fully control",
+                )
+                .at("updater.verify.require_minisign"),
+            );
+        }
+    }
+
+    // `mode = "auto"` without `enabled = true` is a no-op (background
+    // thread never runs); surface a warning so operators notice.
+    if u.mode.as_deref() == Some("auto") && u.enabled != Some(true) {
+        d.push(
+            Diagnostic::warning(
+                "updater_auto_but_disabled",
+                "updater.mode = \"auto\" has no effect while \
+                 updater.enabled = false — the background thread that \
+                 would install isn't spawned",
+            )
+            .at("updater.enabled"),
+        );
+    }
 }
 
 fn check_logging(d: &mut Diagnostics, c: &Config) {
@@ -3100,6 +3232,130 @@ mod tests {
                 .any(|w| w.code == "capabilities_ssh2_backend_deprecated_t7"),
             "missing libssh2 deprecation warning: warnings = {:?}",
             d.warnings
+        );
+    }
+
+    // ----- [updater] block ---------------------------------------------------
+    //
+    // Defaults are intentionally permissive — a missing block or an empty
+    // block is a clean config. The validator only fires on misconfigurations
+    // that would silently misbehave at runtime (unknown enum, mutually-
+    // exclusive fields, signature policy with no key).
+
+    #[test]
+    fn updater_absent_is_ok() {
+        let raw = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h.example.com"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(d.is_ok(), "errors: {:?}", d.errors);
+    }
+
+    #[test]
+    fn updater_unknown_mode_errors() {
+        let raw = r#"
+            version = 1
+            [updater]
+            mode = "yolo"
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h.example.com"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(d.errors.iter().any(|e| e.code == "updater_unknown_mode"));
+    }
+
+    #[test]
+    fn updater_schedule_and_interval_mutually_exclusive() {
+        let raw = r#"
+            version = 1
+            [updater]
+            schedule = "0 6 * * *"
+            interval = "24h"
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h.example.com"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(
+            d.errors
+                .iter()
+                .any(|e| e.code == "updater_schedule_and_interval"),
+            "errors: {:?}", d.errors
+        );
+    }
+
+    #[test]
+    fn updater_url_source_requires_fingerprint() {
+        let raw = r#"
+            version = 1
+            [updater]
+            source = "url"
+            url = "https://mirror.example.com/spt/{version}/spt-{target}.tar.gz"
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h.example.com"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(
+            d.errors
+                .iter()
+                .any(|e| e.code == "updater_url_fingerprint_required"),
+            "errors: {:?}", d.errors
+        );
+    }
+
+    #[test]
+    fn updater_minisign_required_needs_pubkey() {
+        let raw = r#"
+            version = 1
+            [updater.verify]
+            require_minisign = true
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h.example.com"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(
+            d.errors
+                .iter()
+                .any(|e| e.code == "updater_minisign_pubkey_required"),
+            "errors: {:?}", d.errors
+        );
+    }
+
+    #[test]
+    fn updater_auto_without_enabled_warns_but_does_not_error() {
+        let raw = r#"
+            version = 1
+            [updater]
+            mode = "auto"
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h.example.com"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(d.is_ok(), "should not error: {:?}", d.errors);
+        assert!(
+            d.warnings
+                .iter()
+                .any(|w| w.code == "updater_auto_but_disabled"),
+            "missing auto-but-disabled warning"
         );
     }
 }
