@@ -123,6 +123,35 @@ impl TextInput {
             text.insert(caret_byte, '▏');
         }
         Paragraph::new(text).block(block).render(area, buf);
+        // After the Paragraph has drawn, paint a REVERSED style on the
+        // single caret cell so a focused empty/anywhere field shows a
+        // visibly distinguished cursor (the lone ▏ glyph against an
+        // otherwise blank background was being lost on some terminals).
+        // Gated on `self.focused` so nav-mode rendering is unchanged.
+        if self.focused
+            && area.width > 2
+            && area.height > 2
+            && self.cursor <= value.chars().count()
+        {
+            // Content origin is one cell inside each border edge.
+            let inner_w = area.width.saturating_sub(2);
+            // Cursor column inside the inner content area. Assumes
+            // single-cell-width chars (which the existing test suite
+            // already covers — full-width chars are out of scope).
+            let caret_col_u = self.cursor as u32;
+            if caret_col_u < u32::from(inner_w) {
+                #[allow(clippy::cast_possible_truncation)]
+                let caret_col = caret_col_u as u16;
+                let cx = area.x + 1 + caret_col;
+                let cy = area.y + 1;
+                let buf_area = buf.area();
+                if cx < buf_area.x + buf_area.width && cy < buf_area.y + buf_area.height {
+                    let cell = &mut buf[(cx, cy)];
+                    let merged = cell.style().add_modifier(Modifier::REVERSED);
+                    cell.set_style(merged);
+                }
+            }
+        }
     }
 }
 
@@ -863,5 +892,42 @@ mod tests {
         // Toggle again removes.
         m.on_key(&opts, &mut sel, key(KeyCode::Char(' ')));
         assert!(sel.is_empty());
+    }
+
+    #[test]
+    fn text_input_render_caret_visible_on_empty() {
+        // RC4 reproducer: an empty focused TextInput must render a
+        // visually distinguishable caret cell at the inner content
+        // origin (x=1, y=1 inside the bordered block).
+        //
+        // Distinguishing = REVERSED modifier specifically. The block
+        // border cells are styled BOLD/Yellow, so weaker checks would
+        // false-positive against neighboring borders. The REVERSED
+        // modifier is what makes the caret cell visibly stand out
+        // against an otherwise-default-styled content area.
+        use ratatui::style::Modifier;
+
+        let t = TextInput {
+            cursor: 0,
+            focused: true,
+        };
+        let area = Rect::new(0, 0, 30, 3);
+        let mut buf = Buffer::empty(area);
+        t.render(area, &mut buf, "label", "");
+
+        // The caret cell sits at (1, 1) — content origin inside borders.
+        let cell = &buf[(1, 1)];
+        let sym = cell.symbol();
+        assert!(
+            sym == "▏" || sym == "█",
+            "expected caret glyph at (1,1), got {sym:?}"
+        );
+        // REVERSED modifier on that cell so it stands out against an
+        // empty content area.
+        let style = cell.style();
+        assert!(
+            style.add_modifier.contains(Modifier::REVERSED),
+            "caret cell at (1,1) must have REVERSED modifier: {style:?}"
+        );
     }
 }

@@ -183,6 +183,30 @@ fn snapshot_page_with_keys(
     buffer_text(terminal.backend().buffer())
 }
 
+/// Render the Basics page while editing the empty `description` field.
+/// Pins the visible caret behavior for the empty-input case — the
+/// regression that motivates RC4. We render at 80x20 (same dimensions
+/// as the baseline `basics_page_80x20.snap`) so the diff is local to
+/// the focus / edit changes.
+#[test]
+fn snapshot_basics_page_editing_empty_description_80x20() {
+    // description = None ⇒ edit buffer is "".
+    let sample = r#"version = 1
+
+[[profiles]]
+name = "demo"
+protocol = "ssh2"
+"#;
+    let snap = snapshot_page_with_keys(
+        PageKind::Basics,
+        &[KeyCode::Down, KeyCode::Enter],
+        sample,
+        80,
+        20,
+    );
+    insta::assert_snapshot!("basics_page_editing_empty_description_80x20", snap);
+}
+
 /// Render the Basics page after entering edit on `protocol` and
 /// pressing Right twice (which under wrap semantics returns to the
 /// start). Pins the rotate-rendering behavior.
