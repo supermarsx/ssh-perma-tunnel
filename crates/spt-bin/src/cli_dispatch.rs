@@ -855,6 +855,43 @@ async fn tunnel_run(global: &GlobalOpts, args: groups::tunnel::TunnelRun) -> Res
 
     // Construct the orchestrator and start every enabled profile.
     let orchestrator = std::sync::Arc::new(spt_supervisor::Orchestrator::new());
+
+    // Embedded auto-updater. Off by default — `Updater::spawn` returns
+    // `Ok(None)` when `[updater].enabled = false` or `[updater].mode = "off"`,
+    // so the dedicated polling thread is only created when the operator has
+    // explicitly opted in. Manual `spt update *` commands work regardless.
+    let updater_handle = {
+        let schema = cfg.updater.clone().unwrap_or_default();
+        match spt_updater::UpdaterConfig::from_schema(&schema) {
+            Ok(ucfg) => match spt_updater::Updater::spawn(ucfg) {
+                Ok(Some(h)) => {
+                    tracing::info!(
+                        target: "spt_updater",
+                        "embedded auto-updater thread started (mode = {:?})",
+                        h.status().mode
+                    );
+                    Some(h)
+                }
+                Ok(None) => None,
+                Err(e) => {
+                    tracing::warn!(
+                        target: "spt_updater",
+                        error = %e,
+                        "failed to spawn the updater thread — supervisor continues without it"
+                    );
+                    None
+                }
+            },
+            Err(e) => {
+                tracing::warn!(
+                    target: "spt_updater",
+                    error = %e,
+                    "[updater] config did not resolve — feature off for this run"
+                );
+                None
+            }
+        }
+    };
     let mut started_profiles = Vec::new();
     let mut startup_errors = Vec::new();
     for profile in &cfg.profiles {
@@ -976,6 +1013,13 @@ async fn tunnel_run(global: &GlobalOpts, args: groups::tunnel::TunnelRun) -> Res
         if let Some(h) = status_api_handle {
             h.shutdown().await;
         }
+        if let Some(h) = updater_handle.as_ref() {
+            // Best-effort: errors here don't change the orchestrator's
+            // exit code. The thread joins on its own when the channel
+            // closes, even if the explicit Shutdown message races with
+            // the runtime shutting down.
+            let _ = h.shutdown().await;
+        }
         writer.flush().await?;
         writer_handle.stop().await;
         return once_result;
@@ -1017,6 +1061,9 @@ async fn tunnel_run(global: &GlobalOpts, args: groups::tunnel::TunnelRun) -> Res
     }
     if let Some(h) = status_api_handle {
         h.shutdown().await;
+    }
+    if let Some(h) = updater_handle.as_ref() {
+        let _ = h.shutdown().await;
     }
     writer.flush().await?;
     writer_handle.stop().await;
