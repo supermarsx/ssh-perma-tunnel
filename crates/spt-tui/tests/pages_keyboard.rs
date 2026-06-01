@@ -327,3 +327,335 @@ failure_policy = "fail_profile"
         "Basics page must display the actual failure_policy value:\n{text}"
     );
 }
+
+// -----------------------------------------------------------------
+// t-tui-e2e — App-level end-to-end coverage for the 6 TUI fixes
+// (commits 4be1e58 → 8a0115e). Drive `App::on_key` / `App::render_frame`
+// against `TestBackend` only — no widget internals.
+// -----------------------------------------------------------------
+
+/// Render the `App` into a buffer (rather than a flattened string).
+fn render_buffer(app: &mut App, w: u16, h: u16) -> ratatui::buffer::Buffer {
+    let backend = TestBackend::new(w, h);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|f| app.render_frame(f.area(), f.buffer_mut()))
+        .unwrap();
+    terminal.backend().buffer().clone()
+}
+
+/// True if any cell in the entire buffer carries the `Modifier::REVERSED`
+/// bit. Used by the caret test to assert visibly-distinguished caret
+/// painting without computing the focused field's rect. At the point this
+/// is called there is exactly one focused `TextInput` in edit mode, so
+/// REVERSED appears nowhere else (gutter glyph + borders use BOLD only).
+fn buffer_has_reversed_cell(buf: &ratatui::buffer::Buffer) -> bool {
+    use ratatui::style::Modifier;
+    for y in 0..buf.area.height {
+        for x in 0..buf.area.width {
+            if buf[(x, y)]
+                .style()
+                .add_modifier
+                .contains(Modifier::REVERSED)
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Tab from current page until `target` (with a hard cap to avoid loops).
+fn tab_to(app: &mut App, target: PageKind) {
+    for _ in 0..PageKind::COUNT {
+        if app.current == target {
+            return;
+        }
+        app.on_key(k(KeyCode::Tab));
+    }
+    assert_eq!(app.current, target, "failed to navigate to {target:?}");
+}
+
+// ---- Bool field — Enter/Space/t behavior (commit 8a0115e) ----
+
+/// Enter alone after begin-edit must commit the unflipped Bool value.
+/// End-to-end version of the inline `ack_experimental_enter_alone_does_not_flip`
+/// — this routes through `App::on_key` so the full dispatch stack is covered.
+#[test]
+fn bool_field_enter_alone_does_not_flip_via_app() {
+    let mut app = App::new(Model::from_str(SAMPLE));
+    tab_to(&mut app, PageKind::Diagnostics);
+    // Diagnostics fields: 0=tags, 1=acknowledge_experimental (Bool).
+    app.on_key(k(KeyCode::Down));
+    // Begin edit, then commit immediately without flipping.
+    app.on_key(k(KeyCode::Enter));
+    app.on_key(k(KeyCode::Enter));
+    // The Bool starts at None (-> false); Enter-alone commits Some(false).
+    // The user-visible boolean did not flip.
+    assert_eq!(
+        app.model.profile().acknowledge_experimental,
+        Some(false),
+        "Enter alone must commit the displayed value (false), not flip then commit"
+    );
+}
+
+/// Enter, Space, Enter flips the Bool exactly once and commits.
+#[test]
+fn bool_field_space_then_enter_flips_and_commits_via_app() {
+    let mut app = App::new(Model::from_str(SAMPLE));
+    tab_to(&mut app, PageKind::Diagnostics);
+    app.on_key(k(KeyCode::Down));
+    app.on_key(k(KeyCode::Enter)); // begin edit (false)
+    app.on_key(k(KeyCode::Char(' '))); // flip edit_buf -> true
+    app.on_key(k(KeyCode::Enter)); // commit
+    assert_eq!(
+        app.model.profile().acknowledge_experimental,
+        Some(true),
+        "Space-then-Enter must flip and commit"
+    );
+}
+
+/// `t` is an explicit Toggle key (mnemonic for "toggle"); identical to Space.
+#[test]
+fn bool_field_t_then_enter_flips_and_commits_via_app() {
+    let mut app = App::new(Model::from_str(SAMPLE));
+    tab_to(&mut app, PageKind::Diagnostics);
+    app.on_key(k(KeyCode::Down));
+    app.on_key(k(KeyCode::Enter));
+    app.on_key(k(KeyCode::Char('t')));
+    app.on_key(k(KeyCode::Enter));
+    assert_eq!(
+        app.model.profile().acknowledge_experimental,
+        Some(true),
+        "t-then-Enter must flip and commit"
+    );
+}
+
+/// Double `t` round-trips: false -> true -> false, committed as Some(false).
+#[test]
+fn bool_field_double_t_round_trips_via_app() {
+    let mut app = App::new(Model::from_str(SAMPLE));
+    tab_to(&mut app, PageKind::Diagnostics);
+    app.on_key(k(KeyCode::Down));
+    app.on_key(k(KeyCode::Enter));
+    app.on_key(k(KeyCode::Char('t')));
+    app.on_key(k(KeyCode::Char('t')));
+    app.on_key(k(KeyCode::Enter));
+    assert_eq!(
+        app.model.profile().acknowledge_experimental,
+        Some(false),
+        "t,t round-trip must leave value at original (false)"
+    );
+}
+
+/// Live render: Space must visibly flip the rendered toggle text before
+/// commit. Initial Bool is false (`[ ] no`); after Space, the still-uncommitted
+/// `edit_buf` must render as `[x] yes`. This proves the render uses
+/// `edit_buf`, not the committed profile value.
+#[test]
+fn bool_field_rendered_text_reflects_edit_buf_after_space() {
+    let mut app = App::new(Model::from_str(SAMPLE));
+    tab_to(&mut app, PageKind::Diagnostics);
+    app.on_key(k(KeyCode::Down));
+    // Render before begin-edit: should show the false/no rendering.
+    let before = render(&mut app, 100, 30);
+    assert!(
+        before.contains("[ ] no"),
+        "initial Bool should render `[ ] no`:\n{before}"
+    );
+    // Begin edit — still false.
+    app.on_key(k(KeyCode::Enter));
+    let begin = render(&mut app, 100, 30);
+    assert!(
+        begin.contains("[ ] no"),
+        "begin-edit must not flip the displayed value:\n{begin}"
+    );
+    // Space flips edit_buf to true; render must now show `[x] yes`.
+    app.on_key(k(KeyCode::Char(' ')));
+    let after = render(&mut app, 100, 30);
+    assert!(
+        after.contains("[x] yes"),
+        "Space must flip the live render to `[x] yes`:\n{after}"
+    );
+    // Profile must still be untouched until we Enter to commit.
+    assert!(
+        app.model.profile().acknowledge_experimental.is_none()
+            || app.model.profile().acknowledge_experimental == Some(false),
+        "Space must not have committed to profile yet"
+    );
+}
+
+// ---- Choice field — Left/Right rotation + live render (4f3baf9, b8e25db) ----
+
+/// Right-arrow during edit must rotate the visible choice AND repaint the
+/// spinner chrome. This pins the user-reported bug: "we still dont see
+/// values when using side keys".
+#[test]
+fn choice_right_arrow_updates_rendered_text_live() {
+    let mut app = App::new(Model::from_str(SAMPLE));
+    assert_eq!(app.current, PageKind::Basics);
+    // Focus protocol (index 2).
+    app.on_key(k(KeyCode::Down));
+    app.on_key(k(KeyCode::Down));
+    // Begin edit; before any rotation, the spinner must show the seeded
+    // value `ssh2`.
+    app.on_key(k(KeyCode::Enter));
+    let edit_initial = render(&mut app, 100, 30);
+    assert!(
+        edit_initial.contains("ssh2"),
+        "edit-mode initial render must show seeded value ssh2:\n{edit_initial}"
+    );
+    // Right rotates the cursor to ssh3. Live render must reflect that.
+    app.on_key(k(KeyCode::Right));
+    let rotated = render(&mut app, 100, 30);
+    assert!(
+        rotated.contains("ssh3"),
+        "Right must rotate the displayed value to ssh3:\n{rotated}"
+    );
+    assert!(
+        rotated.contains('◀') && rotated.contains('▶'),
+        "rotated render must include spinner chrome:\n{rotated}"
+    );
+}
+
+/// Left-arrow at index 0 wraps to the last option; the position counter
+/// `(2/2)` confirms we landed on the wrap-target.
+#[test]
+fn choice_left_arrow_wraps_to_last_via_app() {
+    let mut app = App::new(Model::from_str(SAMPLE));
+    app.on_key(k(KeyCode::Down));
+    app.on_key(k(KeyCode::Down));
+    app.on_key(k(KeyCode::Enter));
+    app.on_key(k(KeyCode::Left));
+    let rendered = render(&mut app, 100, 30);
+    assert!(
+        rendered.contains("ssh3"),
+        "Left at index 0 must wrap to ssh3:\n{rendered}"
+    );
+    assert!(
+        rendered.contains("(2/2)"),
+        "wrap target must show position counter (2/2):\n{rendered}"
+    );
+}
+
+/// Enter after Right commits the rotated cursor value (`ssh3`).
+#[test]
+fn choice_enter_commits_displayed_cursor_value() {
+    let mut app = App::new(Model::from_str(SAMPLE));
+    app.on_key(k(KeyCode::Down));
+    app.on_key(k(KeyCode::Down));
+    app.on_key(k(KeyCode::Enter));
+    app.on_key(k(KeyCode::Right));
+    app.on_key(k(KeyCode::Enter));
+    assert_eq!(app.model.profile().protocol, "ssh3");
+}
+
+/// Esc cancels: the rotated cursor must not be committed.
+#[test]
+fn choice_esc_cancels_without_committing_rotated_cursor() {
+    let mut app = App::new(Model::from_str(SAMPLE));
+    app.on_key(k(KeyCode::Down));
+    app.on_key(k(KeyCode::Down));
+    app.on_key(k(KeyCode::Enter));
+    app.on_key(k(KeyCode::Right)); // cursor → ssh3 (uncommitted)
+    app.on_key(k(KeyCode::Esc)); // cancel edit
+    assert_eq!(
+        app.model.profile().protocol,
+        "ssh2",
+        "Esc must discard the rotated cursor — protocol stays ssh2"
+    );
+}
+
+/// Killer demo of the spinner unfocused-mode fix: when the profile is
+/// `protocol = "ssh3"` and nothing has been pressed, the page must render
+/// the actual value `ssh3` (not `options[0] = ssh2`).
+#[test]
+fn nav_mode_choice_displays_actual_value_not_options_zero() {
+    const SAMPLE_SSH3: &str = r#"version = 1
+
+[[profiles]]
+name = "demo"
+protocol = "ssh3"
+host = "demo.example.com"
+user = "alice"
+"#;
+    let mut app = App::new(Model::from_str(SAMPLE_SSH3));
+    assert_eq!(app.current, PageKind::Basics);
+    let text = render(&mut app, 100, 30);
+    assert!(
+        text.contains("ssh3"),
+        "unfocused compact render must show actual profile value `ssh3`:\n{text}"
+    );
+}
+
+// ---- TextInput caret (commit cd12ff1) ----
+
+/// A focused empty text input must paint at least one cell with the
+/// `REVERSED` style modifier so the caret is visible on terminals where
+/// the lone ▏ glyph would otherwise blend in. We scan the entire buffer
+/// rather than the field rect — REVERSED appears nowhere else when one
+/// `TextInput` is in edit mode.
+#[test]
+fn text_field_empty_focused_shows_reversed_caret_cell_via_app() {
+    let mut app = App::new(Model::from_str(SAMPLE));
+    // Description is field index 1 on Basics and is unset in SAMPLE → empty.
+    assert_eq!(app.current, PageKind::Basics);
+    app.on_key(k(KeyCode::Down));
+    // Sanity: render without edit mode — there should be NO REVERSED cell.
+    let nav_buf = render_buffer(&mut app, 100, 30);
+    assert!(
+        !buffer_has_reversed_cell(&nav_buf),
+        "REVERSED must not appear in nav mode (would falsify the in-edit assertion)"
+    );
+    app.on_key(k(KeyCode::Enter)); // begin edit on empty description
+    let edit_buf = render_buffer(&mut app, 100, 30);
+    assert!(
+        buffer_has_reversed_cell(&edit_buf),
+        "focused empty text field must paint a REVERSED caret cell"
+    );
+}
+
+// ---- Multi field — Space toggles, `s` commits (no commit change) ----
+
+/// Crypto.ciphers is a Multi: Space toggles the cursor option into the
+/// selected list; `s` commits the multi-selection. End-to-end through App.
+#[test]
+fn multi_field_space_toggles_and_s_commits_via_app() {
+    let mut app = App::new(Model::from_str(SAMPLE));
+    tab_to(&mut app, PageKind::Crypto);
+    // Crypto field order: 0=policy, 1=allow_deprecated, 2=warn_on_deprecated,
+    // 3=ciphers (Multi). Down 3 times to focus ciphers.
+    for _ in 0..3 {
+        app.on_key(k(KeyCode::Down));
+    }
+    app.on_key(k(KeyCode::Enter)); // begin edit (Multi)
+    app.on_key(k(KeyCode::Char(' '))); // toggle cursor option
+    app.on_key(k(KeyCode::Char('s'))); // commit Multi
+    let ciphers = app
+        .model
+        .profile()
+        .crypto
+        .as_ref()
+        .and_then(|c| c.ciphers.clone())
+        .unwrap_or_default();
+    assert_eq!(
+        ciphers,
+        vec!["chacha20-poly1305@openssh.com".to_string()],
+        "Multi commit via `s` must persist the toggled cipher to the profile"
+    );
+}
+
+/// In nav mode (no edit), a Multi field with no selection must render the
+/// compact `(none)` placeholder; SAMPLE has no `[crypto]` so ciphers is
+/// empty and the unfocused compact path is hit.
+#[test]
+fn multi_field_unfocused_compact_shows_summary_or_none() {
+    let mut app = App::new(Model::from_str(SAMPLE));
+    tab_to(&mut app, PageKind::Crypto);
+    // Render in nav mode — do not press Enter on any Multi field.
+    let text = render(&mut app, 100, 50);
+    assert!(
+        text.contains("(none)"),
+        "empty Multi in nav mode must render `(none)`:\n{text}"
+    );
+}
