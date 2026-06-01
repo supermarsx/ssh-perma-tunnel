@@ -234,7 +234,20 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
         with:
-          key: test-${{ matrix.target }}
+          # Share a single cache namespace with the `build` job for the
+          # same target — cargo stores debug + release artifacts in
+          # separate `target/<triple>/{debug,release}/` subdirs, so the
+          # two jobs don't trample each other's outputs but DO share the
+          # populated dep registry + the slow third-party crates. The
+          # `build` job (release compile) used to pay a full cold compile
+          # because it keyed on `build-<target>` and missed the cache
+          # `test-<target>` had already populated. `shared-key` is the
+          # documented Swatinem mechanism for this scenario.
+          shared-key: workspace-${{ matrix.target }}
+          # cache-on-failure helps with iterative debugging — even a red
+          # run leaves enough warm artifacts that the next push restores
+          # quickly.
+          cache-on-failure: true
       - name: Install Linux system deps
         if: runner.os == 'Linux'
         shell: bash
@@ -318,7 +331,11 @@ jobs:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
         with:
-          key: build-${{ matrix.target }}
+          # Pair with the `test` job's shared-key so the release compile
+          # here resumes from the warm cache that job populated a few
+          # minutes earlier instead of starting cold.
+          shared-key: workspace-${{ matrix.target }}
+          cache-on-failure: true
       - name: Install Linux system deps
         if: runner.os == 'Linux'
         shell: bash
@@ -404,20 +421,57 @@ jobs:
         uses: taiki-e/install-action@v2
         with:
           tool: cargo-deb,cargo-generate-rpm
-      - name: Install cargo-wix + WiX Toolset (Windows)
+      - name: Install cargo-wix
         if: ${{ matrix.os == 'windows' }}
         shell: pwsh
+        run: cargo install cargo-wix --locked
+      # The windows-2025-vs2026 image ships WiX 3 preinstalled, but the
+      # windows-11-arm image does not. Historically we ran
+      # `choco install wixtoolset` on the ARM runner — that took ~19
+      # minutes per release because Chocolatey on ARM has to fetch +
+      # install + reboot-prep the full MSI installer. Replace it with a
+      # direct download of the WiX 3.14.1 binaries zip from upstream
+      # GitHub (the zip is ~30 MB, unzips in seconds) and cache it. After
+      # the first cache-miss run (~30s), every subsequent run resolves
+      # the WiX bin path from the cache in <2s.
+      - name: Cache WiX 3 binaries (windows-11-arm)
+        id: wix-cache
+        if: ${{ matrix.os == 'windows' && matrix.target == 'aarch64-pc-windows-msvc' }}
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}\wix314
+          # Bump the version suffix when WIX_VERSION below changes.
+          key: wix-3.14.1-${{ runner.os }}-${{ runner.arch }}-v1
+      - name: Download WiX 3 binaries (windows-11-arm, cache miss)
+        if: >-
+          ${{ matrix.os == 'windows'
+              && matrix.target == 'aarch64-pc-windows-msvc'
+              && steps.wix-cache.outputs.cache-hit != 'true' }}
+        shell: pwsh
         run: |
-          cargo install cargo-wix --locked
-          # cargo-wix shells out to WiX 3's `candle`/`light`. It is preinstalled
-          # on the x64 image but not on windows-11-arm — install it there and
-          # put its bin on PATH for the Pack MSI step.
-          if (-not (Get-Command candle -ErrorAction SilentlyContinue)) {
-            choco install wixtoolset --version=3.14.1 --no-progress -y
-            $wixbin = Get-ChildItem 'C:\Program Files (x86)\WiX Toolset *\bin\candle.exe' -ErrorAction SilentlyContinue |
-                      Select-Object -First 1
-            if ($wixbin) { Split-Path $wixbin.FullName | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8 }
+          $url = "https://github.com/wixtoolset/wix3/releases/download/wix3141rtm/wix314-binaries.zip"
+          $zip = Join-Path $env:RUNNER_TEMP "wix314.zip"
+          $dst = Join-Path $env:RUNNER_TEMP "wix314"
+          Write-Host "Downloading $url"
+          Invoke-WebRequest -Uri $url -OutFile $zip
+          New-Item -ItemType Directory -Path $dst -Force | Out-Null
+          Expand-Archive -Path $zip -DestinationPath $dst -Force
+          Remove-Item $zip
+          Write-Host "Extracted WiX 3 to $dst"
+      - name: Add WiX 3 to PATH (windows-11-arm)
+        if: ${{ matrix.os == 'windows' && matrix.target == 'aarch64-pc-windows-msvc' }}
+        shell: pwsh
+        run: |
+          # The bin/ subdir of the upstream zip carries candle.exe / light.exe /
+          # heat.exe — everything cargo-wix shells out to.
+          $dst = Join-Path $env:RUNNER_TEMP "wix314"
+          $dst | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+          # Sanity-check that candle.exe is reachable on the new PATH.
+          if (-not (Test-Path (Join-Path $dst "candle.exe"))) {
+            Write-Error "candle.exe not found under $dst after WiX install"
+            exit 1
           }
+          Write-Host "WiX 3 on PATH: $(Join-Path $dst 'candle.exe')"
       - name: Pack tarball (Linux/macOS)
         if: ${{ matrix.os != 'windows' }}
         shell: bash
