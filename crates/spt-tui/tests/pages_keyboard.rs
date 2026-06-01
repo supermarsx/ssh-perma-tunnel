@@ -298,3 +298,32 @@ fn crypto_multi_select_space_toggle_after_rotate() {
     app.on_key(k(KeyCode::Esc));
     let _ = render(&mut app, 100, 30);
 }
+
+// -----------------------------------------------------------------
+// Phase 1 reproducer — t-tui-spinner.
+// -----------------------------------------------------------------
+
+/// End-to-end regression for the user-reported bug: when a profile's
+/// `failure_policy` is `"fail_profile"`, the Basics page must render that
+/// value — not the first option (`retry`). The legacy compact rendering
+/// always showed `options[0]` because the 3-row field area clipped every
+/// option line past row 0.
+#[test]
+fn basics_failure_policy_visible_reflects_profile_value() {
+    let sample = r#"version = 1
+
+[[profiles]]
+name = "demo"
+protocol = "ssh2"
+host = "demo.example.com"
+user = "alice"
+failure_policy = "fail_profile"
+"#;
+    let mut app = App::new(Model::from_str(sample));
+    assert_eq!(app.current, PageKind::Basics);
+    let text = render(&mut app, 100, 30);
+    assert!(
+        text.contains("fail_profile"),
+        "Basics page must display the actual failure_policy value:\n{text}"
+    );
+}

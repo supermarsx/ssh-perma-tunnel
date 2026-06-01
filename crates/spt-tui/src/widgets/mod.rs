@@ -279,6 +279,33 @@ impl Select {
             .title(label)
             .border_style(style);
 
+        // Compact spinner path: when there's not enough vertical room to
+        // show every option on its own line, render a single line that
+        // reflects the actual value (or the cursor + chrome when focused).
+        // Every caller in `FieldList::render` hits this branch because
+        // `row_h = 3` leaves a single inner content line.
+        let inner_h = area.height.saturating_sub(2);
+        let inner_w = area.width.saturating_sub(2) as usize;
+        if (inner_h as usize) < options.len() {
+            let text = if self.focused && !options.is_empty() {
+                let idx = self.index.min(options.len() - 1);
+                let opt = options[idx];
+                // Chrome: "◀  ▶  (N/M)" ≈ 11 chars baseline; account for
+                // multi-digit counters by formatting first and measuring.
+                let suffix = format!("  ({}/{})", idx + 1, options.len());
+                let chrome = 4 + suffix.chars().count(); // "◀ " + " ▶" = 4 chars
+                let budget = inner_w.saturating_sub(chrome);
+                let opt_s = ellipsize(opt, budget);
+                format!("◀ {opt_s} ▶{suffix}")
+            } else {
+                // Unfocused (or empty options): render the actual current
+                // value, ellipsized to the inner width.
+                ellipsize(current, inner_w)
+            };
+            Paragraph::new(text).block(block).render(area, buf);
+            return;
+        }
+
         let lines: Vec<Line<'_>> = options
             .iter()
             .enumerate()
@@ -367,6 +394,33 @@ impl MultiSelect {
             .borders(Borders::ALL)
             .title(label)
             .border_style(style);
+
+        // Compact spinner path: mirror Select. Focused shows the cursor
+        // option with its current mark plus `◀ … ▶  (k/N)`; unfocused
+        // shows a comma-joined summary of `selected` with `, +K` overflow.
+        let inner_h = area.height.saturating_sub(2);
+        let inner_w = area.width.saturating_sub(2) as usize;
+        if (inner_h as usize) < options.len() {
+            let text = if self.focused && !options.is_empty() {
+                let idx = self.index.min(options.len() - 1);
+                let opt = options[idx];
+                let on = selected.iter().any(|s| s == opt);
+                let mark = if on { "[x]" } else { "[ ]" };
+                let suffix = format!("  ({}/{})", selected.len(), options.len());
+                // "◀ [x] " + " ▶" = 8 chars chrome.
+                let chrome = 8 + suffix.chars().count();
+                let budget = inner_w.saturating_sub(chrome);
+                let opt_s = ellipsize(opt, budget);
+                format!("◀ {mark} {opt_s} ▶{suffix}")
+            } else if selected.is_empty() {
+                "(none)".to_string()
+            } else {
+                multi_select_summary(selected, inner_w)
+            };
+            Paragraph::new(text).block(block).render(area, buf);
+            return;
+        }
+
         let lines: Vec<Line<'_>> = options
             .iter()
             .enumerate()
@@ -440,6 +494,66 @@ fn char_to_byte(s: &str, char_idx: usize) -> usize {
     s.char_indices()
         .nth(char_idx)
         .map_or_else(|| s.len(), |(b, _)| b)
+}
+
+/// Truncate `s` to at most `max_chars` *characters*, replacing the tail
+/// with `…` when truncation happens. Returns `s` unchanged if it already
+/// fits. If `max_chars == 0` returns an empty string.
+fn ellipsize(s: &str, max_chars: usize) -> String {
+    let len = s.chars().count();
+    if len <= max_chars {
+        return s.to_string();
+    }
+    if max_chars == 0 {
+        return String::new();
+    }
+    if max_chars == 1 {
+        return "…".to_string();
+    }
+    let mut out: String = s.chars().take(max_chars - 1).collect();
+    out.push('…');
+    out
+}
+
+/// Build the unfocused MultiSelect summary: comma-joined `selected`,
+/// trimmed to fit `inner_w` chars, with a trailing ` +K` indicator when
+/// items had to be dropped. Empty selection is handled by the caller.
+fn multi_select_summary(selected: &[String], inner_w: usize) -> String {
+    // Try the full join first — when it fits, return it verbatim.
+    let full: String = selected
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .join(", ");
+    if full.chars().count() <= inner_w {
+        return full;
+    }
+    // Otherwise, accumulate the longest prefix that fits leaving room for
+    // " +K" where K is the remaining count. We try every prefix length
+    // from len-1 down to 0 and pick the largest that still fits.
+    let n = selected.len();
+    for take in (0..n).rev() {
+        let remaining = n - take;
+        let suffix = format!(" +{remaining}");
+        let suffix_len = suffix.chars().count();
+        if take == 0 {
+            // Just the suffix, no prefix.
+            if suffix_len <= inner_w {
+                return suffix.trim_start().to_string();
+            }
+            continue;
+        }
+        let prefix: String = selected[..take]
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+            .join(", ");
+        if prefix.chars().count() + suffix_len <= inner_w {
+            return format!("{prefix}{suffix}");
+        }
+    }
+    // Pathological narrow width — last resort, ellipsize the join.
+    ellipsize(&full, inner_w)
 }
 
 #[cfg(test)]
@@ -889,6 +1003,138 @@ mod tests {
         // Toggle again removes.
         m.on_key(&opts, &mut sel, key(KeyCode::Char(' ')));
         assert!(sel.is_empty());
+    }
+
+    // -----------------------------------------------------------------
+    // Phase 1 reproducers — t-tui-spinner.
+    //
+    // These pin the compact-area render path for Select / MultiSelect.
+    // Field rows allocated by `FieldList::render` use `row_h = 3`, which
+    // leaves a single inner line after `Borders::ALL`. The legacy code
+    // path rendered each option on its own line — only row 0 was visible,
+    // and unfocused rows always showed `options[0]` rather than the
+    // configured value. The new compact-spinner path is selected when
+    // `inner_height < options.len()` and renders a single line that
+    // reflects the actual value (unfocused) or the cursor (focused, with
+    // chrome `◀ … ▶  (i/N)`).
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn select_compact_focused_shows_cursor_option_not_first() {
+        // Area 30x3 → inner height = 1, options.len() = 3 → compact path.
+        // Cursor on index 1 ("b") with focus: must render the cursor's
+        // option, not options[0]. Chrome `◀` / `▶` must be present.
+        let s = Select {
+            index: 1,
+            focused: true,
+        };
+        let area = Rect::new(0, 0, 30, 3);
+        let opts = ["a", "b", "c"];
+        let out = render_into(area, |buf| s.render(area, buf, "kind", &opts, "a"));
+        assert!(
+            out.contains('b'),
+            "compact focused render must show cursor option `b`:\n{out}"
+        );
+        assert!(
+            out.contains('◀') && out.contains('▶'),
+            "compact focused render must show rotate chrome:\n{out}"
+        );
+    }
+
+    #[test]
+    fn select_compact_unfocused_shows_current_not_options_zero() {
+        // Killer demo of the user-reported bug: unfocused row must show
+        // the actual `current` value, not the first option.
+        let s = Select {
+            index: 0,
+            focused: false,
+        };
+        let area = Rect::new(0, 0, 30, 3);
+        let opts = ["a", "b", "c"];
+        let out = render_into(area, |buf| s.render(area, buf, "kind", &opts, "c"));
+        assert!(
+            out.contains('c'),
+            "compact unfocused render must show current value `c`:\n{out}"
+        );
+        // The legacy code rendered `○ a` (options[0]) — guard against that.
+        assert!(
+            !out.contains("○ a"),
+            "compact unfocused render must not mislabel as options[0]:\n{out}"
+        );
+    }
+
+    #[test]
+    fn multi_select_compact_focused_shows_cursor_option_with_mark() {
+        // Focused multi at 30x3 with cursor on index 1 ("b"), already
+        // selected: must show `[x] b` plus the rotate chrome.
+        let m = MultiSelect {
+            index: 1,
+            focused: true,
+        };
+        let area = Rect::new(0, 0, 30, 3);
+        let opts = ["a", "b", "c"];
+        let sel = vec!["b".to_owned()];
+        let out = render_into(area, |buf| m.render(area, buf, "lst", &opts, &sel));
+        assert!(
+            out.contains("[x] b"),
+            "compact focused multi must show `[x] b`:\n{out}"
+        );
+        assert!(
+            out.contains('◀') && out.contains('▶'),
+            "compact focused multi must show rotate chrome:\n{out}"
+        );
+    }
+
+    #[test]
+    fn multi_select_compact_unfocused_shows_summary_with_overflow() {
+        // Narrow area + long item names so the joined summary overflows
+        // the inner width, forcing a `+K` indicator. inner_w = 18, joined
+        // `"alpha, bravo, charlie, delta, echo"` is 34 chars → overflow.
+        let m = MultiSelect {
+            index: 0,
+            focused: false,
+        };
+        let area = Rect::new(0, 0, 20, 3);
+        let opts = ["alpha", "bravo", "charlie", "delta", "echo"];
+        let sel = vec![
+            "alpha".to_owned(),
+            "bravo".to_owned(),
+            "charlie".to_owned(),
+            "delta".to_owned(),
+            "echo".to_owned(),
+        ];
+        let out = render_into(area, |buf| m.render(area, buf, "lst", &opts, &sel));
+        assert!(
+            out.contains('+'),
+            "compact unfocused multi must show overflow marker:\n{out}"
+        );
+        assert!(
+            out.contains("alpha"),
+            "compact unfocused multi must show at least the first item:\n{out}"
+        );
+    }
+
+    #[test]
+    fn select_tall_area_still_uses_list_render() {
+        // 30x6 → inner height = 4 ≥ options.len() = 3 → list path is
+        // used. Both the highlight marker (●) and the unfocused marker
+        // (○) must be present, demonstrating the multi-line fallback
+        // is preserved when there's room.
+        let s = Select {
+            index: 1,
+            focused: true,
+        };
+        let area = Rect::new(0, 0, 30, 6);
+        let opts = ["a", "b", "c"];
+        let out = render_into(area, |buf| s.render(area, buf, "kind", &opts, "b"));
+        assert!(
+            out.contains("● b"),
+            "tall area should still use multi-line list render:\n{out}"
+        );
+        assert!(
+            out.contains("○ a"),
+            "tall area should still show non-current options:\n{out}"
+        );
     }
 
     #[test]
