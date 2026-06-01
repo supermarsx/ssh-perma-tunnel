@@ -92,12 +92,26 @@ async fn run_status(global: &GlobalOpts, json: bool) -> Result<()> {
 
 async fn run_check(global: &GlobalOpts) -> Result<()> {
     let cfg = load_updater_config(global)?;
-    println!(
-        "spt update check (scaffold) — resolved source: {:?}, mode: {:?}",
-        cfg.source, cfg.mode
-    );
-    println!("note: the actual poll path lands in a follow-up commit; for now this");
-    println!("      command verifies the [updater] block parses and resolves cleanly.");
+    let outcome = spt_updater::poll_once(&cfg)
+        .await
+        .map_err(|e| Error::RuntimeFailure(format!("update check: {e}")))?;
+    if outcome.update_available {
+        println!(
+            "update available: {} -> {} (current/latest)",
+            outcome.current_version, outcome.latest_tag
+        );
+        println!("  checked at: {}", outcome.checked_at);
+        println!();
+        println!("Run `spt update download` to stage the artifact, then `spt update apply`.");
+        println!("(Download / apply are scaffolded — verification + install land in the");
+        println!(" next updater-series commit. The check + version-diff path above is live.)");
+    } else {
+        println!(
+            "current: spt {} is the latest from {:?}",
+            outcome.current_version, cfg.source
+        );
+        println!("  checked at: {}", outcome.checked_at);
+    }
     Ok(())
 }
 

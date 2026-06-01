@@ -243,15 +243,84 @@ impl Updater {
     /// One iteration of the poll/install cycle. Skipped when the body of
     /// the loop is unreachable in `Off` mode (we never spawn in that
     /// case), so this function assumes `mode != Off`.
-    async fn run_check(&self, _status: &Arc<RwLock<UpdaterStatus>>) {
-        // Subsequent commits flesh this out (Phase 3 / Phase 4 / Phase 5).
-        // For now the scaffold leaves `run_check` as a stub that just
-        // logs — every subsequent commit lands incrementally without
-        // changing the public API.
-        tracing::debug!(
-            target: "spt_updater",
-            mode = ?self.cfg.mode,
-            "updater tick — runtime is wired, full poll path lands in a later commit"
-        );
+    async fn run_check(&self, status: &Arc<RwLock<UpdaterStatus>>) {
+        match poll_once(&self.cfg).await {
+            Ok(outcome) => {
+                let mut s = status.write();
+                s.last_check = Some(outcome.checked_at.clone());
+                s.latest_version = Some(outcome.latest_tag.clone());
+                s.update_available = outcome.update_available;
+                s.last_error = None;
+
+                if outcome.update_available {
+                    match self.cfg.mode {
+                        UpdateMode::Warn | UpdateMode::Auto => {
+                            warn!(
+                                target: "spt_updater",
+                                latest = %outcome.latest_tag,
+                                current = %s.current_version,
+                                "spt: a newer release is available"
+                            );
+                        }
+                        _ => {
+                            info!(
+                                target: "spt_updater",
+                                latest = %outcome.latest_tag,
+                                current = %s.current_version,
+                                "spt update check: newer release detected"
+                            );
+                        }
+                    }
+                    if matches!(self.cfg.mode, UpdateMode::Auto) {
+                        // Auto install lands in a subsequent commit.
+                        info!(
+                            target: "spt_updater",
+                            "mode = auto but install path is scaffolded; \
+                             skipping until atomic-swap commit lands"
+                        );
+                    }
+                }
+            }
+            Err(e) => {
+                warn!(
+                    target: "spt_updater",
+                    error = %e,
+                    "updater poll failed"
+                );
+                status.write().last_error = Some(e.to_string());
+            }
+        }
     }
+}
+
+/// Outcome of a one-shot poll. Public so the `spt update check` CLI
+/// dispatcher can call into the same path the background loop uses.
+#[derive(Debug, Clone)]
+pub struct CheckOutcome {
+    /// ISO-8601 UTC timestamp.
+    pub checked_at: String,
+    /// Latest tag from the source.
+    pub latest_tag: String,
+    /// Current spt version (from `CARGO_PKG_VERSION`).
+    pub current_version: String,
+    /// Whether `latest_tag > current_version`.
+    pub update_available: bool,
+}
+
+/// Poll the configured source once. Used by both the background loop and
+/// the manual `spt update check` CLI command. Returns the outcome (does
+/// not mutate global state); the caller writes to whichever status
+/// mirror it owns.
+pub async fn poll_once(cfg: &UpdaterConfig) -> UpdaterResult<CheckOutcome> {
+    let backend = source::build_source(cfg)?;
+    let release = backend.latest().await?;
+    let latest = version::Version::parse_tag(&release.tag)?;
+    let current = version::CurrentVersion::from_build();
+    let update_available = latest.is_newer_than(&current.0);
+    Ok(CheckOutcome {
+        checked_at: chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+        latest_tag: latest.to_tag_string(),
+        current_version: current.0.to_tag_string(),
+        update_available,
+    })
 }
