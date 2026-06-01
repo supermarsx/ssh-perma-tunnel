@@ -139,7 +139,25 @@ protocol = "ssh2"
         let mut m = model();
         p.on_key(k(KeyCode::Down), &mut m); // focus index 1
         p.on_key(k(KeyCode::Enter), &mut m); // begin edit (Bool false)
-        p.on_key(k(KeyCode::Enter), &mut m); // flip+commit
+        p.on_key(k(KeyCode::Char(' ')), &mut m); // Space flips edit_buf false -> true
+        p.on_key(k(KeyCode::Enter), &mut m); // Enter commits the (now-true) value
         assert_eq!(m.profile().acknowledge_experimental, Some(true));
+    }
+
+    #[test]
+    fn ack_experimental_enter_alone_does_not_flip() {
+        // Regression guard for the old buggy semantics where Enter
+        // on a Bool field both flipped and committed: pressing Enter
+        // immediately after begin-edit must commit the unflipped value.
+        let mut p = DiagnosticsPage::new();
+        let mut m = model();
+        p.on_key(k(KeyCode::Down), &mut m); // focus index 1
+        p.on_key(k(KeyCode::Enter), &mut m); // begin edit (Bool false)
+        p.on_key(k(KeyCode::Enter), &mut m); // commit, MUST NOT flip
+        assert_eq!(
+            m.profile().acknowledge_experimental,
+            Some(false),
+            "Enter alone must commit the displayed value (false), not flip then commit"
+        );
     }
 }

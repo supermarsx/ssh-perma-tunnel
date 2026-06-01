@@ -756,7 +756,10 @@ mod tests {
         let mut list = FieldList::new(vec![def]);
         let mut p = sample_profile();
         list.begin_edit(&p);
-        // Enter: Toggle flips false → true and commits.
+        // Space flips edit_buf false → true (does not commit).
+        list.on_edit_key(key(crossterm::event::KeyCode::Char(' ')), &mut p);
+        // Enter commits the now-flipped value (Enter no longer flips —
+        // that contract was the user-reported "Enter just untoggles" bug).
         list.on_edit_key(key(crossterm::event::KeyCode::Enter), &mut p);
         assert_eq!(p.auth.as_ref().and_then(|a| a.agent), Some(true));
     }

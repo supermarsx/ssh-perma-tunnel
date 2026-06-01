@@ -233,7 +233,7 @@ protocol = "ssh2"
     }
 
     #[test]
-    fn instability_toggle_via_enter_then_enter() {
+    fn instability_toggle_via_space_then_enter() {
         let mut p = FailoverPage::new();
         let mut m = model();
         // instability.enabled is index 6.
@@ -241,8 +241,25 @@ protocol = "ssh2"
             p.on_key(k(KeyCode::Down), &mut m);
         }
         p.on_key(k(KeyCode::Enter), &mut m); // begin edit on a Bool (buf=false)
-                                             // Second Enter: Toggle flips false→true, then commits.
-        p.on_key(k(KeyCode::Enter), &mut m);
+        p.on_key(k(KeyCode::Char(' ')), &mut m); // Space flips edit_buf false -> true
+        p.on_key(k(KeyCode::Enter), &mut m); // Enter commits the (now-true) value
+        assert_eq!(
+            m.profile().instability.as_ref().and_then(|i| i.enabled),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn instability_toggle_via_t_then_enter() {
+        // `t` is the new mnemonic toggle key. Same end state as Space.
+        let mut p = FailoverPage::new();
+        let mut m = model();
+        for _ in 0..6 {
+            p.on_key(k(KeyCode::Down), &mut m);
+        }
+        p.on_key(k(KeyCode::Enter), &mut m); // begin edit
+        p.on_key(k(KeyCode::Char('t')), &mut m); // t flips
+        p.on_key(k(KeyCode::Enter), &mut m); // commit
         assert_eq!(
             m.profile().instability.as_ref().and_then(|i| i.enabled),
             Some(true)

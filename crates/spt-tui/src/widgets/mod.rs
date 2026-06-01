@@ -176,7 +176,13 @@ impl NumericInput {
     }
 }
 
-/// Boolean toggle. Space/Enter flips.
+/// Boolean toggle. Flips on Space / `t` / `y` / `n`.
+///
+/// Enter is intentionally **not** a flip key — it's reserved by the
+/// parent [`crate::pages::field::FieldList`] for commit-edit. Pressing
+/// Enter on a Bool field commits the current (unflipped) value, which
+/// matches the semantics of every other field type. To flip the value
+/// before committing, use Space, `t`, `y`, or `n`.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Toggle {
     /// Whether this widget currently owns focus.
@@ -185,9 +191,11 @@ pub struct Toggle {
 
 impl Toggle {
     /// Apply a key. Returns `true` if the value flipped.
+    ///
+    /// **Enter is not a flip key** — see the type-level doc comment.
     pub fn on_key(&self, value: &mut bool, key: KeyEvent) -> bool {
         match key.code {
-            KeyCode::Char(' ') | KeyCode::Enter | KeyCode::Char('y') | KeyCode::Char('n') => {
+            KeyCode::Char(' ') | KeyCode::Char('t') | KeyCode::Char('y') | KeyCode::Char('n') => {
                 *value = !*value;
                 true
             }
@@ -599,6 +607,30 @@ mod tests {
         assert!(v);
         t.on_key(&mut v, key(KeyCode::Char(' ')));
         assert!(!v);
+    }
+
+    #[test]
+    fn toggle_enter_does_not_flip() {
+        // Enter is reserved for commit by the parent FieldList; the
+        // Toggle widget must NOT flip on Enter or the user gets a value
+        // committed that's the inverse of what was displayed.
+        let t = Toggle::default();
+        let mut v = false;
+        let changed = t.on_key(&mut v, key(KeyCode::Enter));
+        assert!(!changed, "Enter must not report a value change");
+        assert!(!v, "Enter must not flip the underlying value");
+    }
+
+    #[test]
+    fn toggle_t_key_flips() {
+        // `t` is the explicit toggle key — a mnemonic alternative to
+        // Space that's discoverable in the focused-field help footer.
+        let t = Toggle::default();
+        let mut v = false;
+        assert!(t.on_key(&mut v, key(KeyCode::Char('t'))));
+        assert!(v, "t should flip false -> true");
+        assert!(t.on_key(&mut v, key(KeyCode::Char('t'))));
+        assert!(!v, "t should flip true -> false");
     }
 
     #[test]
