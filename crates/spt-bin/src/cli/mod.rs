@@ -51,6 +51,7 @@ pub mod forward_ops;
 pub mod ftp_ops;
 // t6-e6:end
 pub mod key_ops;
+pub mod kill_ops;
 pub mod log_ops;
 pub mod observe_ops;
 pub mod profile_ops;

@@ -1,5 +1,6 @@
 ---
 source: crates/spt-cli/tests/help_snapshots.rs
+assertion_line: 28
 expression: out
 ---
 Permanent SSH2/SSH3 tunnels with reconnect, observability, and service integration.
@@ -30,6 +31,7 @@ Commands:
   status      Read-only status API controls (plan §t4-e5)
   completion  Generate shell completions
   about       List bundled libraries and their licenses
+  kill        Kill every running `spt` process on this host (cross-platform)
   help        Print this message or the help of the given subcommand(s)
 
 Options:

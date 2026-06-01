@@ -17,6 +17,10 @@ testing = []
 [dependencies]
 clap = { workspace = true }
 clap_complete = { workspace = true }
+# `humantime::Duration` is used as the value type for `--timeout` on the
+# `spt kill` subcommand (and is the canonical duration parser elsewhere in
+# the workspace).
+humantime = { workspace = true }
 spt-core = { workspace = true }
 
 [dev-dependencies]

@@ -15,6 +15,7 @@ pub mod ftp;
 // t6-e6:end
 pub mod forward;
 pub mod key;
+pub mod kill;
 pub mod log;
 pub mod mcp;
 pub mod observe;

@@ -136,6 +136,8 @@ tower = { workspace = true }
 x509-parser = { workspace = true }
 hyper = { version = "1", features = ["http1", "server"] }
 hyper-util = { version = "0.1", features = ["http1", "server", "server-auto", "tokio", "service"] }
+# Cross-platform process enumeration for `spt kill`. Pure Rust; no shell-out.
+sysinfo = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 nix = { workspace = true }
@@ -157,6 +159,10 @@ windows = { version = "0.58", features = [
 [dev-dependencies]
 tempfile = { workspace = true }
 async-trait = { workspace = true }
+# `kill_ops::tests` constructs a `KillCmd` directly (humantime::Duration
+# value) instead of going through clap. The runtime path doesn't need the
+# crate directly — it goes through spt-cli's clap derive.
+humantime = { workspace = true }
 # t7-B1: `spt-core/testing` exposes `clear_audit_sink_for_test` so the
 # audit bridge unit tests can isolate the process-global sink slot.
 spt-core = { workspace = true, features = ["testing"] }

@@ -197,6 +197,8 @@ pub enum Command {
     Completion(groups::completion::CompletionCmd),
     /// List bundled libraries and their licenses.
     About(groups::about::AboutCmd),
+    /// Kill every running `spt` process on this host (cross-platform).
+    Kill(groups::kill::KillCmd),
 }
 
 #[cfg(test)]
