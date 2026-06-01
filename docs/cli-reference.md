@@ -55,6 +55,8 @@ surfaces, completion support, and exit-code contract.
 | `status` | `serve`, `status`, `token rotate` |
 | `completion` | `generate bash`, `generate zsh`, `generate fish`, `generate powershell`, `generate elvish` |
 | `about` | (overview), `list`, `show <crate>`, `licenses`, `export <path>` |
+| `kill` | (no subcommands) — terminate every running spt instance on this host |
+| `update` | `check`, `download`, `apply`, `now`, `status`, `history` (auto-updater; **off by default**) |
 
 ### `about` — bundled-library attribution
 
@@ -78,6 +80,60 @@ spt about export attribution.md        # write attribution.{md,json,txt}
 Vendored forks (`vendor/russh-fork`, `vendor/libgssapi-fork`) are flagged as
 locally patched. Workspace crates are flagged as part of the binary itself
 and excluded from the "bundled libraries" overview count.
+
+### `kill` — terminate every running spt instance
+
+`spt kill` enumerates running processes on the host (via `sysinfo`) and
+signals every one whose executable basename matches `spt` (Unix) or
+`spt.exe` (Windows). The current process is skipped by default so an
+operator running `spt kill` in a still-active session doesn't terminate
+their own shell.
+
+```
+spt kill                           # graceful SIGTERM / TerminateProcess, 5s grace
+spt kill --force                   # SIGKILL / unconditional TerminateProcess
+spt kill --dry-run                 # list would-be targets, signal nothing
+spt kill --include-self            # also kill the calling spt
+spt kill --name spt-bin            # substring override (case-insensitive)
+spt kill --timeout 30s             # extend the platform terminate grace window
+```
+
+Platform mechanism:
+
+| OS      | Signal | Wait |
+|---------|--------|------|
+| Unix    | `nix::sys::signal::kill(pid, SIGTERM \| SIGKILL)` | `kill -0` probe loop until ESRCH or timeout |
+| Windows | `OpenProcess(PROCESS_TERMINATE \| PROCESS_SYNCHRONIZE)` + `TerminateProcess` | `WaitForSingleObject(timeout)` |
+
+Per-process failures (permission denied, race-with-exit) are reported but
+don't abort the overall command — `spt kill` returns success if at least
+one target was signalled, error only if every targeted PID failed.
+
+### `update` — autonomous upgrade (off by default)
+
+`spt update` polls a configured release source, optionally downloads + verifies
++ installs new artifacts, and notifies the supervisor to restart. **Both the
+background polling thread and the auto-install path are disabled by default.**
+The operator opts in via `[updater]` in the config (see
+[`docs/updater.md`](updater.md) for the schema reference).
+
+| Command | Behavior |
+|---------|----------|
+| `spt update check` | One-shot poll; prints whether a newer version is available. Honours `[updater].source` but doesn't require `enabled = true`. |
+| `spt update download [--target X]` | Stage the artifact under `[updater.staging].dir`; does not install. |
+| `spt update apply` | Install the staged artifact (atomic swap). |
+| `spt update now` | check + download + apply in one go. |
+| `spt update status` | Last check, next-scheduled tick, current/latest version, staged artifact. |
+| `spt update history` | Past update events from the audit log. |
+
+Manual `spt update *` commands work even when `[updater].enabled = false` —
+`enabled` only gates the *background thread* the supervisor would otherwise
+spawn. Verification (minisign signature on the artifact) is **required by
+default**; the operator can opt out with `[updater.verify].require_minisign =
+false` for private mirrors that don't replay signatures.
+
+See [`docs/updater.md`](updater.md) for the full schedule grammar, source-
+backend matrix, and operational details.
 
 ## Capability Notes
 

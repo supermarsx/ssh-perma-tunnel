@@ -17,7 +17,12 @@ operational drift.
 ## Features
 
 **Transport & forwarding**
-- SSH2 over the pure-Rust `russh` backend; experimental SSH3 (QUIC + HTTP/3).
+- SSH2 over the pure-Rust `russh` backend; experimental SSH3 backend
+  implementing **RTH3** (Remote-Terminal-over-HTTP/3) per the
+  [francoismichel/ssh3](https://github.com/francoismichel/ssh3) reference.
+  Other SSH3 designs exist (notably the proposal from SSH Communications
+  Security, the original SSH1 / SSH2 lineage) — spt does **not** implement
+  those. See [docs/ssh3.md](docs/ssh3.md) for the disclaimer.
 - Local, remote, and dynamic (SOCKS4/4A/5, HTTP CONNECT) forwards; UDP
   (`tcp-framed` / `uds-bridge`); server-side UNIX-socket forwarding; multi-hop
   jump chains (`-J user@host[,...]`) over native russh channels.

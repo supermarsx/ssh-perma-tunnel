@@ -1,9 +1,23 @@
-# SSH3 (experimental)
+# SSH3 (experimental, RTH3-specific)
 
-SSH3 is a draft protocol that maps SSH semantics onto HTTP/3 (QUIC + TLS 1.3
-+ Extended CONNECT). `spt`'s SSH3 backend is **experimental** and compiled
-into default builds. It is no longer a build stub: the crate performs QUIC,
-TLS, HTTP/3 CONNECT bootstrap, and spt-to-spt forward channel setup.
+> **About spt's SSH3 backend.** spt implements **RTH3** — Remote-Terminal-
+> over-HTTP/3, the design tracked by IETF
+> [`draft-michel-remote-terminal-http3-00`](https://datatracker.ietf.org/doc/draft-michel-remote-terminal-http3/)
+> and the [francoismichel/ssh3](https://github.com/francoismichel/ssh3)
+> reference. RTH3 is **one of several SSH3 designs** under active
+> discussion; notably, **SSH Communications Security** (the company founded
+> by SSH1's original author and one of the parties behind SSH2
+> standardization) has proposed a separate SSH3 successor that is *not*
+> RTH3 and is *not* what spt implements.
+>
+> **The spt SSH3 backend is experimental** and tracks the RTH3 draft only.
+> Operators who need a non-experimental tunnel today should use the SSH2
+> backend.
+
+SSH3 (in the RTH3 sense) maps SSH semantics onto HTTP/3 (QUIC + TLS 1.3 +
+Extended CONNECT). spt's SSH3 backend is compiled into default builds. It is
+no longer a build stub: the crate performs QUIC, TLS, HTTP/3 CONNECT
+bootstrap, and spt-to-spt forward channel setup.
 
 ## Status
 

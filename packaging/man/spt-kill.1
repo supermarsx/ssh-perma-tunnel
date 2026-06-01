@@ -1,0 +1,28 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH SPT-KILL 1  "kill " 
+.SH NAME
+kill \- Kill every running `spt` process on this host (cross\-platform)
+.SH SYNOPSIS
+\fBkill\fR [\fB\-\-force\fR] [\fB\-\-include\-self\fR] [\fB\-\-dry\-run\fR] [\fB\-\-name\fR] [\fB\-\-timeout\fR] [\fB\-h\fR|\fB\-\-help\fR] 
+.SH DESCRIPTION
+Kill every running `spt` process on this host (cross\-platform)
+.SH OPTIONS
+.TP
+\fB\-\-force\fR
+Skip the graceful signal and go straight to a hard kill (`SIGKILL` / `TerminateProcess`). Default: send a graceful signal (`SIGTERM` / `TerminateProcess` with grace window) first
+.TP
+\fB\-\-include\-self\fR
+Include the current process in the kill list (the calling `spt` itself). Off by default — typical use is "kill all the other ones."
+.TP
+\fB\-\-dry\-run\fR
+Print what would be killed without actually signalling anything
+.TP
+\fB\-\-name\fR \fI<NAME>\fR
+Override the basename matched against running processes. Plain substring match; case\-insensitive. Defaults to `spt` (Unix) / `spt.exe` (Windows)
+.TP
+\fB\-\-timeout\fR \fI<DURATION>\fR [default: 5s]
+Per\-process grace window before the platform terminate returns. Defaults to 5 seconds. Honoured on Windows (`WaitForSingleObject`); informational on Unix where `SIGTERM` is asynchronous
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help
