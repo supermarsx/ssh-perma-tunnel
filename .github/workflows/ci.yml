@@ -272,7 +272,10 @@ jobs:
         if: ${{ matrix.can_test && !matrix.cross && env.SPT_FORCE_CROSS != '1' }}
         shell: bash
         env:
-          CARGO_BUILD_JOBS: ${{ matrix.target == 'aarch64-unknown-linux-gnu' && '2' || '' }}
+          # `default` (literal string) is cargo's accepted spelling for
+          # "use num_cpus". An empty string is rejected with
+          # "could not parse ``", so the conditional cannot collapse to ''.
+          CARGO_BUILD_JOBS: ${{ matrix.target == 'aarch64-unknown-linux-gnu' && '2' || 'default' }}
         run: cargo test --workspace --locked --no-fail-fast --target ${{ matrix.target }} -- --test-threads=1
       - name: cargo test (cross / QEMU)
         if: ${{ matrix.can_test && (matrix.cross || env.SPT_FORCE_CROSS == '1') }}
@@ -337,8 +340,10 @@ jobs:
         shell: bash
         env:
           # Same OOM mitigation as the `test` step — aarch64-linux free
-          # runner OOMs during release linking otherwise.
-          CARGO_BUILD_JOBS: ${{ matrix.target == 'aarch64-unknown-linux-gnu' && '2' || '' }}
+          # runner OOMs during release linking otherwise. `default` is
+          # cargo's spelling for "use num_cpus"; an empty string is a
+          # parse error.
+          CARGO_BUILD_JOBS: ${{ matrix.target == 'aarch64-unknown-linux-gnu' && '2' || 'default' }}
         run: |
           if [[ "${{ matrix.cross }}" == "true" || "${SPT_FORCE_CROSS:-0}" == "1" ]]; then
             cross build --workspace --locked --release --target ${{ matrix.target }}
