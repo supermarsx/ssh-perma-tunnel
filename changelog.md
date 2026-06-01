@@ -1,3 +1,21 @@
+## [26.5] - 2026-06-01
+
+# spt 26.5
+
+## Changes since 26.4
+
+- feat(updater): supervisor spawns the embedded updater thread when enabled (48ab609)
+- feat(updater): GitHub source backend + `spt update check` is now live (322ae79)
+- docs(updater): operator reference + annotated example + base-config note (af38ccf)
+- feat(updater): spt-updater crate skeleton + `spt update` CLI surface (6076ac5)
+- feat(config): [updater] schema + load-time validation, off by default (6022cd7)
+- docs: clarify SSH3 = RTH3-specific experimental, document `spt kill` (01714a8)
+- ci: fix CARGO_BUILD_JOBS conditional — empty string is a parse error (f46d452)
+- ci: cap rustc parallelism on aarch64-linux to avoid OOM during link (8ba29e3)
+- completions: regenerate for the new `spt kill` subcommand (d41a841)
+- build: embed app icon + VERSIONINFO into the binary, cross-platform-aware (e5e521c)
+- feat(cli): `spt kill` — terminate every running spt instance, cross-platform (c09b96a)
+
 ## [26.4] - 2026-05-30
 
 # spt 26.4
