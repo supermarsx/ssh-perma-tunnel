@@ -75,6 +75,16 @@ impl Page for EventsPage {
             false
         }
     }
+
+    fn focused_help(&self) -> Option<&str> {
+        self.list.focused_help()
+    }
+    fn focused_position(&self) -> Option<(usize, usize)> {
+        self.list.focus_position()
+    }
+    fn is_editing(&self) -> bool {
+        self.list.editing
+    }
 }
 
 #[cfg(test)]

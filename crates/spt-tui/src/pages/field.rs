@@ -126,6 +126,33 @@ impl FieldList {
         }
     }
 
+    /// Help text for the currently focused field. Surfaced by the App in
+    /// the page footer so operators always see a one-line description of
+    /// what the highlighted row controls.
+    #[must_use]
+    pub fn focused_help(&self) -> Option<&'static str> {
+        self.fields.get(self.focus).map(|f| f.def.help)
+    }
+
+    /// `(current_index, total)` for the focused row, 1-based. Surfaced by
+    /// the App as `[3/12]` in the page status line so the operator always
+    /// knows where they are.
+    #[must_use]
+    pub fn focus_position(&self) -> Option<(usize, usize)> {
+        if self.fields.is_empty() {
+            None
+        } else {
+            Some((self.focus + 1, self.fields.len()))
+        }
+    }
+
+    /// Label of the focused field, e.g. `"id"` or `"protocol"`. The App
+    /// pairs this with [`Self::focused_help`] to build the footer.
+    #[must_use]
+    pub fn focused_label(&self) -> Option<&'static str> {
+        self.fields.get(self.focus).map(|f| f.def.label)
+    }
+
     /// Move focus by `delta`, wrapping at the boundaries.
     pub fn move_focus(&mut self, delta: isize) {
         if self.fields.is_empty() {
@@ -293,10 +320,52 @@ impl FieldList {
         let n = self.fields.len().max(1);
         let row_h = 3u16;
         let constraints: Vec<Constraint> = (0..n).map(|_| Constraint::Length(row_h)).collect();
+
+        // Two-column outer layout: a 3-wide gutter on the left for the
+        // selector glyph (`▶`), and the remaining width for the field rows.
+        // The gutter is rendered at row 1 (middle of each 3-line block) so
+        // the glyph aligns with the field label inside its bordered box.
+        let outer = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Length(3), Constraint::Min(0)])
+            .split(area);
+        let gutter_area = outer[0];
+        let body_area = outer[1];
+
+        // Draw the selector glyph for the focused row before the field
+        // boxes overdraw their own region. Using `Cell::set_symbol` keeps
+        // this independent of widget styling.
+        let gutter_rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints(constraints.clone())
+            .split(gutter_area);
+        for (i, row) in gutter_rows.iter().enumerate() {
+            if i != self.focus {
+                continue;
+            }
+            // Anchor glyph at the middle row of each 3-line cell so it
+            // lines up with the bordered field label baseline.
+            let y = row.y + 1;
+            if y < gutter_area.y + gutter_area.height && row.x + 1 < buf.area().width {
+                let cell = &mut buf[(row.x + 1, y)];
+                cell.set_symbol("▶");
+                let style = if self.editing {
+                    Style::default()
+                        .fg(Color::Green)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD)
+                };
+                cell.set_style(style);
+            }
+        }
+
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints(constraints)
-            .split(area);
+            .split(body_area);
 
         for (i, field) in self.fields.iter_mut().enumerate() {
             let focused = i == self.focus;

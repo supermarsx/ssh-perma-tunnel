@@ -117,6 +117,30 @@ pub trait Page {
     fn render(&mut self, area: Rect, buf: &mut Buffer, model: &Model);
     /// Handle a key event. Returns `true` if the model was changed.
     fn on_key(&mut self, key: KeyEvent, model: &mut Model) -> bool;
+
+    /// One-line operator-facing description of the currently-focused
+    /// field/control on the page. The App renders this in the footer so
+    /// operators always see what the highlighted row does.
+    ///
+    /// Default: `None` — pages that don't have a field-style focus model
+    /// (e.g. the read-only Review page) opt out by leaving this default.
+    fn focused_help(&self) -> Option<&str> {
+        None
+    }
+
+    /// `(current_index_1based, total)` for the focused row within the
+    /// page. Surfaced by the App as `[3/12]` so the operator knows where
+    /// they are. `None` for pages with no item list.
+    fn focused_position(&self) -> Option<(usize, usize)> {
+        None
+    }
+
+    /// Whether the focused row is currently in edit mode. Drives the
+    /// status-line key-hint text (different keys are useful when
+    /// navigating vs. editing).
+    fn is_editing(&self) -> bool {
+        false
+    }
 }
 
 /// Construct one [`Page`] per [`PageKind`], with state ready for the first

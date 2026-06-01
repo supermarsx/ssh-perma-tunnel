@@ -100,18 +100,38 @@ impl App {
         }
     }
 
-    /// Render a complete frame (tabs + page + status line + optional help).
+    /// Render a complete frame.
+    ///
+    /// Layout (top→bottom):
+    ///
+    /// ```text
+    /// ┌─ tabs ────────────────────────────────────────────────┐  3 rows
+    /// │  spt profile configure — <profile>          [3/13]    │
+    /// │  1 Basics  2 Connection  3 Auth  4 Trust  …           │
+    /// └────────────────────────────────────────────────────────┘
+    /// │                                                        │
+    /// │  page body (one widget per FieldList row)              │  min(0)
+    /// │                                                        │
+    /// ┌─ help footer ─────────────────────────────────────────┐  3 rows
+    /// │ id [1/5]  — Profile identifier (must be unique)        │
+    /// └────────────────────────────────────────────────────────┘
+    /// ─── status ─────────────────────────────────────────────    2 rows
+    ///  ●  Basics  0E/0W  [ok]   ↑↓/jk: move  Enter: edit  ?: help  q: quit
+    /// ```
     pub fn render_frame(&mut self, area: Rect, buf: &mut Buffer) {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(3),
-                Constraint::Min(0),
-                Constraint::Length(2),
+                Constraint::Length(3), // tabs
+                Constraint::Min(0),    // page body
+                Constraint::Length(3), // help footer
+                Constraint::Length(2), // status line
             ])
             .split(area);
 
-        // Tabs.
+        // ----- Tabs ---------------------------------------------------------
+        let idx = self.current.index();
+        let n_pages = PageKind::all().len();
         let titles: Vec<Line<'_>> = PageKind::all()
             .iter()
             .enumerate()
@@ -122,12 +142,15 @@ impl App {
                 ))
             })
             .collect();
+        let tabs_title = format!(
+            "spt profile configure — {}    [{}/{}]",
+            self.model.profile().name,
+            idx + 1,
+            n_pages,
+        );
         let tabs = Tabs::new(titles)
-            .select(self.current.index())
-            .block(Block::default().borders(Borders::ALL).title(format!(
-                "spt profile configure — {}",
-                self.model.profile().name
-            )))
+            .select(idx)
+            .block(Block::default().borders(Borders::ALL).title(tabs_title))
             .highlight_style(
                 Style::default()
                     .fg(Color::Yellow)
@@ -135,27 +158,54 @@ impl App {
             );
         tabs.render(chunks[0], buf);
 
-        // Page body.
-        let idx = self.current.index();
+        // ----- Page body ----------------------------------------------------
         if let Some(page) = self.pages.get_mut(idx) {
             page.render(chunks[1], buf, &self.model);
         }
 
-        // Status line.
+        // ----- Help footer (focused field + description) -------------------
+        let (help_text, position) = if let Some(page) = self.pages.get(idx) {
+            (page.focused_help(), page.focused_position())
+        } else {
+            (None, None)
+        };
+        let footer = match (help_text, position) {
+            (Some(text), Some((cur, total))) => format!("[{cur}/{total}]  {text}"),
+            (Some(text), None) => text.to_string(),
+            // Read-only pages (e.g. Review) don't have a focused field —
+            // surface a stable hint so the footer never feels empty.
+            (None, _) => "(no field selected — read-only page)".into(),
+        };
+        let footer_block = Block::default()
+            .borders(Borders::ALL)
+            .title("field info")
+            .border_style(Style::default().fg(Color::DarkGray));
+        Paragraph::new(footer)
+            .block(footer_block)
+            .render(chunks[2], buf);
+
+        // ----- Status line --------------------------------------------------
         let dirty = if self.model.is_dirty() { "●" } else { " " };
         let diag = self.model.validate();
+        let editing = self.pages.get(idx).is_some_and(|p| p.is_editing());
+        let key_hints = if editing {
+            "Esc: cancel  Enter: commit  ←→: move cursor"
+        } else {
+            "↑↓/jk: move  Tab: next page  Enter: edit  ?: help  Ctrl-S: save  q: quit"
+        };
         let summary = format!(
-            "{}  {}  {}E/{}W  [{}]",
+            "{}  {}  {}E/{}W  [{}]   {}",
             dirty,
             self.current.title(),
             diag.errors.len(),
             diag.warnings.len(),
-            self.status
+            self.status,
+            key_hints,
         );
         let block = Block::default().borders(Borders::TOP);
-        Paragraph::new(summary).block(block).render(chunks[2], buf);
+        Paragraph::new(summary).block(block).render(chunks[3], buf);
 
-        // Help overlay.
+        // Help overlay (?) — drawn last so it overdraws everything else.
         if self.show_help {
             render_help(area, buf);
         }
@@ -273,21 +323,46 @@ fn render_help(area: Rect, buf: &mut Buffer) {
     let lines = vec![
         Line::from("Keyboard help"),
         Line::from(""),
-        Line::from("  Tab / ]       next page"),
-        Line::from("  BackTab / [   previous page"),
-        Line::from("  h / l         vim-style page nav"),
-        Line::from("  j / k         move focus within a page"),
-        Line::from("  Enter         start editing the focused field"),
+        Line::from(Span::styled(
+            "Navigation",
+            Style::default().add_modifier(Modifier::BOLD),
+        )),
+        Line::from("  ↑ / k         move focus up"),
+        Line::from("  ↓ / j         move focus down"),
+        Line::from("  Tab / ] / l   next page"),
+        Line::from("  BackTab / [/h previous page"),
+        Line::from("  1-9           jump to page by number"),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Editing",
+            Style::default().add_modifier(Modifier::BOLD),
+        )),
+        Line::from("  Enter         start editing focused field / commit edit"),
         Line::from("  Esc           cancel current edit"),
         Line::from("  Space         toggle / pick (selectors, multi-selects)"),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Indicators",
+            Style::default().add_modifier(Modifier::BOLD),
+        )),
+        Line::from("  ▶             cursor — focused row (yellow nav, green edit)"),
+        Line::from("  [N/M]         field position within the current page"),
+        Line::from("  field info    one-line description of the focused field"),
+        Line::from("  ●             unsaved changes"),
+        Line::from("  E / W         validation error / warning counts"),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Persistence",
+            Style::default().add_modifier(Modifier::BOLD),
+        )),
         Line::from("  Ctrl-S        save (atomic, comment-preserving)"),
-        Line::from("  q             quit (twice if dirty)"),
+        Line::from("  q             quit (twice if dirty to discard)"),
         Line::from("  ?             toggle this help"),
     ];
 
-    // Center a 60×16 box on screen.
-    let w = 60u16.min(area.width.saturating_sub(2));
-    let h = 16u16.min(area.height.saturating_sub(2));
+    // Centre a wider box now that there's more content.
+    let w = 64u16.min(area.width.saturating_sub(2));
+    let h = (lines.len() as u16 + 2).min(area.height.saturating_sub(2));
     let x = area.x + (area.width.saturating_sub(w)) / 2;
     let y = area.y + (area.height.saturating_sub(h)) / 2;
     let rect = Rect {
@@ -505,6 +580,52 @@ host = "h.example.com"
         terminal
             .draw(|f| app.render_frame(f.area(), f.buffer_mut()))
             .unwrap();
+    }
+
+    /// The page-position counter `[1/13]` shows in the tab title, the
+    /// field-position counter `[1/N]` + the focused field's help text
+    /// show in the footer, and the status line carries context-aware
+    /// key hints. All three are load-bearing for "I know where I am
+    /// and what this field does."
+    #[test]
+    fn render_includes_position_counter_and_field_help() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        let mut app = App::new(sample());
+        let backend = TestBackend::new(120, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| app.render_frame(f.area(), f.buffer_mut()))
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        let mut s = String::new();
+        for y in 0..buf.area().height {
+            for x in 0..buf.area().width {
+                s.push_str(buf[(x, y)].symbol());
+            }
+            s.push('\n');
+        }
+
+        // Page-position counter in the tab title.
+        assert!(
+            s.contains("[1/") && s.contains(&format!("/{}]", PageKind::all().len())),
+            "expected page position `[1/{}]` in tab title:\n{s}",
+            PageKind::all().len()
+        );
+        // Footer carries the focused field's help. The Basics page's
+        // first field is `id` with help "Profile identifier ...".
+        assert!(
+            s.contains("Profile identifier"),
+            "expected focused-field help in footer:\n{s}"
+        );
+        // Selector glyph on the focused row.
+        assert!(s.contains('▶'), "expected ▶ selector glyph:\n{s}");
+        // Context-aware status line — non-editing mode shows the move/
+        // edit hint.
+        assert!(
+            s.contains("Enter: edit"),
+            "expected `Enter: edit` hint in nav mode status line:\n{s}"
+        );
     }
 
     #[test]
