@@ -189,7 +189,7 @@ impl App {
         let diag = self.model.validate();
         let editing = self.pages.get(idx).is_some_and(|p| p.is_editing());
         let key_hints = if editing {
-            "Esc: cancel  Enter: commit  ←→: move cursor"
+            "Space/t: toggle  ←→: rotate  Enter: commit  Esc: cancel"
         } else {
             "↑↓/jk: move  Tab: next page  Enter: edit  ?: help  Ctrl-S: save  q: quit"
         };
@@ -334,12 +334,27 @@ fn render_help(area: Rect, buf: &mut Buffer) {
         Line::from("  1-9           jump to page by number"),
         Line::from(""),
         Line::from(Span::styled(
-            "Editing",
+            "Editing — universal",
             Style::default().add_modifier(Modifier::BOLD),
         )),
-        Line::from("  Enter         start editing focused field / commit edit"),
+        Line::from("  Enter         start edit / commit current edit"),
         Line::from("  Esc           cancel current edit"),
-        Line::from("  Space         toggle / pick (selectors, multi-selects)"),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Editing — tickboxes (Bool, Multi options)",
+            Style::default().add_modifier(Modifier::BOLD),
+        )),
+        Line::from("  Space         flip the focused tickbox"),
+        Line::from("  t             flip the focused tickbox (alt to Space)"),
+        Line::from("  Enter         commit (does NOT flip)"),
+        Line::from("  s             commit (Multi only — alt to Enter)"),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Editing — selectors (Choice, Multi cursor)",
+            Style::default().add_modifier(Modifier::BOLD),
+        )),
+        Line::from("  ← / →         rotate cursor through options (wraps)"),
+        Line::from("  ↑ / ↓         rotate cursor through options (wraps)"),
         Line::from(""),
         Line::from(Span::styled(
             "Indicators",
@@ -433,6 +448,84 @@ host = "h.example.com"
         assert!(app.show_help);
         app.on_key(k(KeyCode::Char('?')));
         assert!(!app.show_help);
+    }
+
+    /// The help overlay must document the tickbox keymap:
+    /// Space and `t` flip; Enter commits (does not flip).
+    #[test]
+    fn help_overlay_documents_space_t_enter_for_tickboxes() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        let mut app = App::new(sample());
+        app.on_key(k(KeyCode::Char('?')));
+        assert!(app.show_help);
+        let backend = TestBackend::new(120, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| app.render_frame(f.area(), f.buffer_mut()))
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        let mut text = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                text.push_str(buf[(x, y)].symbol());
+            }
+            text.push('\n');
+        }
+        // Tickbox section keys must all be present and discoverable.
+        assert!(
+            text.contains("Space"),
+            "help overlay must document Space as a tickbox flip key:\n{text}"
+        );
+        assert!(
+            text.contains(" t  "),
+            "help overlay must document `t` as a tickbox flip key:\n{text}"
+        );
+        assert!(
+            text.contains("Enter"),
+            "help overlay must document Enter:\n{text}"
+        );
+        assert!(
+            text.contains("flip") || text.contains("toggle"),
+            "help overlay must describe what Space/`t` do (flip/toggle):\n{text}"
+        );
+        assert!(
+            text.contains("commit"),
+            "help overlay must describe Enter as commit:\n{text}"
+        );
+    }
+
+    /// The status-line key-hints strip must surface Space/`t` while
+    /// the user is in edit mode — otherwise the new keymap is not
+    /// discoverable to operators who don't open the `?` overlay.
+    #[test]
+    fn status_line_advertises_space_and_t_when_editing() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        let mut app = App::new(sample());
+        // Enter edit mode on the focused field of Basics (id).
+        app.on_key(k(KeyCode::Enter));
+        let backend = TestBackend::new(120, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| app.render_frame(f.area(), f.buffer_mut()))
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        let mut text = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                text.push_str(buf[(x, y)].symbol());
+            }
+            text.push('\n');
+        }
+        assert!(
+            text.contains("Space/t"),
+            "edit-mode status hint must advertise Space/t as toggle:\n{text}"
+        );
+        assert!(
+            text.contains("Enter: commit"),
+            "edit-mode status hint must advertise Enter as commit:\n{text}"
+        );
     }
 
     #[test]
