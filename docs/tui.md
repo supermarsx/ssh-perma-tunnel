@@ -64,6 +64,21 @@ commit gesture (`Enter`) safe and predictable.
 | `Space` / `t`      | (Multi only) flip the cursor option's tickbox   |
 | `Enter`            | Commit the displayed cursor value               |
 
+### Review page (final preview)
+
+The Review page renders the canonical TOML and is **scrollable** when
+the content is taller than the viewport. The title bar shows the
+current line position (e.g. `line 12/87`) so you always know where
+you are.
+
+| Key                  | Action                                         |
+|----------------------|------------------------------------------------|
+| `↑` / `k`            | Scroll up one line                             |
+| `↓` / `j`            | Scroll down one line                           |
+| `PageUp` / `PageDown`| Scroll one screen                              |
+| `Home` / `End`       | Jump to start / end of preview                 |
+| `Ctrl-S`             | Save (atomic, comment-preserving)              |
+
 ## Output
 
 On save, the underlying TOML is round-tripped through `toml_edit` so

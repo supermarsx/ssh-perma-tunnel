@@ -1,8 +1,9 @@
 ---
 source: crates/spt-tui/tests/pages_snapshots.rs
+assertion_line: 149
 expression: snap
 ---
-┌Canonical TOML (redacted) — Ctrl-S to save────────────────────────────────────────────────────────┐
+┌Canonical TOML (redacted) — line 1/31  ↑↓/jk to scroll, Ctrl-S to save────────────────────────────┐
 │version = 1                                                                                       │
 │                                                                                                  │
 │[[dns.records]]                                                                                   │
