@@ -659,3 +659,119 @@ fn multi_field_unfocused_compact_shows_summary_or_none() {
         "empty Multi in nav mode must render `(none)`:\n{text}"
     );
 }
+
+// -----------------------------------------------------------------
+// Lockdown matrix: every plausible key the user might press while
+// editing a Bool field, routed through the full App dispatch stack.
+// Only Space and `t` may flip the value. Every other key must leave
+// the Bool unchanged. This guards against future regressions of the
+// "Enter still toggles" / "y still flips" complaints.
+// -----------------------------------------------------------------
+
+/// Drive App from `SAMPLE`, focus the diagnostics Bool field,
+/// begin-edit, send the given key, then commit via Enter. Returns the
+/// final committed value of `acknowledge_experimental`.
+fn drive_bool_with(midkey: KeyCode) -> Option<bool> {
+    let mut app = App::new(Model::from_str(SAMPLE));
+    tab_to(&mut app, PageKind::Diagnostics);
+    app.on_key(k(KeyCode::Down)); // focus the Bool field
+    app.on_key(k(KeyCode::Enter)); // begin edit (edit_buf = Bool(false))
+    app.on_key(k(midkey)); // the key under test
+                           // Note: if midkey was Enter, edit is already committed at this point
+                           // and the trailing Enter below begins a fresh edit + commit cycle.
+                           // For Esc, edit was cancelled and the trailing Enter begins a new edit.
+                           // For all other keys, this trailing Enter commits the (possibly flipped)
+                           // edit_buf. We then re-read the persisted value.
+    if !matches!(midkey, KeyCode::Enter | KeyCode::Esc) {
+        app.on_key(k(KeyCode::Enter)); // commit
+    }
+    app.model.profile().acknowledge_experimental
+}
+
+#[test]
+fn bool_app_dispatch_only_space_and_t_flip() {
+    // Initial value is None (-> false). After the test, the persisted
+    // value is:
+    //   - Some(true)  if `midkey` flipped the edit_buf and Enter committed
+    //   - Some(false) if `midkey` did NOT flip and Enter committed false
+    //   - None        if Esc cancelled before any commit
+    let cases: &[(KeyCode, Option<bool>, &'static str)] = &[
+        // Flip keys — must result in Some(true)
+        (KeyCode::Char(' '), Some(true), "Space"),
+        (KeyCode::Char('t'), Some(true), "t"),
+        // Non-flip keys — must result in Some(false) (committed unflipped)
+        (KeyCode::Char('y'), Some(false), "y"),
+        (KeyCode::Char('n'), Some(false), "n"),
+        (KeyCode::Char('T'), Some(false), "capital T"),
+        (KeyCode::Char('a'), Some(false), "a"),
+        (KeyCode::Char('1'), Some(false), "1"),
+        (KeyCode::Up, Some(false), "Up"),
+        (KeyCode::Down, Some(false), "Down (focus-move while editing)"),
+        (KeyCode::Left, Some(false), "Left"),
+        (KeyCode::Right, Some(false), "Right"),
+        (KeyCode::Home, Some(false), "Home"),
+        (KeyCode::End, Some(false), "End"),
+        (KeyCode::Backspace, Some(false), "Backspace"),
+        // Special: Enter as midkey IS the commit — should commit false
+        // (begin_edit set edit_buf to false; Enter does NOT flip; commits false).
+        (KeyCode::Enter, Some(false), "Enter (alone, post-begin-edit)"),
+        // Special: Esc cancels the edit — no commit, value stays None
+        (KeyCode::Esc, None, "Esc cancels edit"),
+    ];
+    for (code, expected, label) in cases {
+        let got = drive_bool_with(*code);
+        assert_eq!(
+            got, *expected,
+            "midkey={label} ({code:?}): expected {expected:?}, got {got:?}"
+        );
+    }
+}
+
+/// Repeated Enter presses on a Bool field must never flip the value,
+/// no matter how many times the user mashes Enter. Each Enter pair
+/// represents one (`begin_edit`, `commit`) cycle that should be
+/// value-stable.
+#[test]
+fn bool_repeated_enter_mashing_never_flips() {
+    let mut app = App::new(Model::from_str(SAMPLE));
+    tab_to(&mut app, PageKind::Diagnostics);
+    app.on_key(k(KeyCode::Down)); // focus Bool field
+    for _ in 0..10 {
+        app.on_key(k(KeyCode::Enter)); // begin edit
+        app.on_key(k(KeyCode::Enter)); // commit
+    }
+    assert_eq!(
+        app.model.profile().acknowledge_experimental,
+        Some(false),
+        "10 begin-edit + commit cycles must leave the value at the original false"
+    );
+}
+
+/// Rendered buffer assertion: after begin-edit on a Bool field, the
+/// rendered text must NOT change when Enter is pressed alone (no flip).
+/// This is the visual counterpart to
+/// `bool_repeated_enter_mashing_never_flips`.
+#[test]
+fn bool_enter_alone_does_not_change_rendered_text() {
+    let mut app = App::new(Model::from_str(SAMPLE));
+    tab_to(&mut app, PageKind::Diagnostics);
+    app.on_key(k(KeyCode::Down));
+    app.on_key(k(KeyCode::Enter)); // begin edit; renders [ ] no
+    let before = render(&mut app, 100, 30);
+    assert!(
+        before.contains("[ ] no"),
+        "after begin-edit, the Bool must render `[ ] no`:\n{before}"
+    );
+    // Pressing Enter commits. After commit, the field is no longer in
+    // edit mode but the value rendered must still be `[ ] no` (not flipped).
+    app.on_key(k(KeyCode::Enter));
+    let after = render(&mut app, 100, 30);
+    assert!(
+        after.contains("[ ] no"),
+        "after Enter-commits-alone, the Bool must still render `[ ] no`:\n{after}"
+    );
+    assert!(
+        !after.contains("[x] yes"),
+        "after Enter-commits-alone, the Bool must NOT render `[x] yes`:\n{after}"
+    );
+}

@@ -176,13 +176,14 @@ impl NumericInput {
     }
 }
 
-/// Boolean toggle. Flips on Space / `t` / `y` / `n`.
+/// Boolean toggle. Flips on **Space** or **`t`** — and only those.
 ///
-/// Enter is intentionally **not** a flip key — it's reserved by the
-/// parent [`crate::pages::field::FieldList`] for commit-edit. Pressing
-/// Enter on a Bool field commits the current (unflipped) value, which
-/// matches the semantics of every other field type. To flip the value
-/// before committing, use Space, `t`, `y`, or `n`.
+/// Other keys (Enter, `y`, `n`, arrows, etc.) are intentionally NOT
+/// flip keys. Enter is reserved by the parent
+/// [`crate::pages::field::FieldList`] for commit-edit; any other key
+/// passes through unchanged. This keeps the toggle keymap tight and
+/// predictable: pressing Enter on a Bool field commits the displayed
+/// value with no side-effects on the value itself.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Toggle {
     /// Whether this widget currently owns focus.
@@ -192,10 +193,10 @@ pub struct Toggle {
 impl Toggle {
     /// Apply a key. Returns `true` if the value flipped.
     ///
-    /// **Enter is not a flip key** — see the type-level doc comment.
+    /// Only **Space** and **`t`** flip — see the type-level doc.
     pub fn on_key(&self, value: &mut bool, key: KeyEvent) -> bool {
         match key.code {
-            KeyCode::Char(' ') | KeyCode::Char('t') | KeyCode::Char('y') | KeyCode::Char('n') => {
+            KeyCode::Char(' ') | KeyCode::Char('t') => {
                 *value = !*value;
                 true
             }
@@ -807,13 +808,72 @@ mod tests {
     }
 
     #[test]
-    fn toggle_yn_chars_flip() {
+    fn toggle_y_and_n_keys_no_longer_flip() {
+        // Per user contract: ONLY Space and `t` flip a Toggle. Every
+        // other key — including the historical y/n shortcuts — must
+        // leave the value untouched.
         let t = Toggle::default();
         let mut v = false;
-        t.on_key(&mut v, key(KeyCode::Char('y')));
-        assert!(v);
-        t.on_key(&mut v, key(KeyCode::Char('n')));
-        assert!(!v);
+        let changed_y = t.on_key(&mut v, key(KeyCode::Char('y')));
+        assert!(!changed_y, "y must not report a value change");
+        assert!(!v, "y must not flip the value");
+        let changed_n = t.on_key(&mut v, key(KeyCode::Char('n')));
+        assert!(!changed_n, "n must not report a value change");
+        assert!(!v, "n must not flip the value");
+    }
+
+    /// Exhaustive matrix: every plausible key the user might press
+    /// while focused on a Bool field. Only Space and `t` must flip;
+    /// every other entry must leave the value untouched.
+    #[test]
+    fn toggle_only_space_and_t_flip() {
+        use KeyCode::*;
+        // (keycode, expected_to_flip)
+        let cases: &[(KeyCode, bool)] = &[
+            // Allowed flip keys
+            (Char(' '), true),
+            (Char('t'), true),
+            // Disallowed — must NOT flip
+            (Enter, false),
+            (Char('y'), false),
+            (Char('n'), false),
+            (Char('T'), false), // case-sensitive: capital T not allowed
+            (Char('Y'), false),
+            (Char('N'), false),
+            (Tab, false),
+            (Esc, false),
+            (Up, false),
+            (Down, false),
+            (Left, false),
+            (Right, false),
+            (Home, false),
+            (End, false),
+            (PageUp, false),
+            (PageDown, false),
+            (Backspace, false),
+            (Delete, false),
+            (Insert, false),
+            (BackTab, false),
+            (Char('a'), false),
+            (Char('1'), false),
+            (Char('!'), false),
+            (Char('\u{1b}'), false),
+            (F(1), false),
+            (F(5), false),
+        ];
+        for (code, should_flip) in cases {
+            let t = Toggle::default();
+            let mut v = false;
+            let changed = t.on_key(&mut v, key(*code));
+            assert_eq!(
+                changed, *should_flip,
+                "key {code:?}: expected changed={should_flip}, got {changed}"
+            );
+            assert_eq!(
+                v, *should_flip,
+                "key {code:?}: expected value={should_flip}, got {v}"
+            );
+        }
     }
 
     #[test]
