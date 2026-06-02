@@ -27,7 +27,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Tabs, Widget};
+use ratatui::widgets::{Block, Borders, Paragraph, Widget};
 use ratatui::Terminal;
 use spt_core::Result;
 
@@ -130,17 +130,19 @@ impl App {
             .split(area);
 
         // ----- Tabs ---------------------------------------------------------
+        // ratatui's `Tabs` widget renders the full list left-to-right with
+        // no scroll — anything beyond the inner width gets clipped silently
+        // and the user can't even see which page they're on if it's past
+        // the cut. With 13 pages totalling ~145 cells of text, this happens
+        // routinely below 120-wide. We render a windowed view manually so
+        // the active tab is always visible, with `…` markers when there's
+        // overflow on either side.
         let idx = self.current.index();
         let n_pages = PageKind::all().len();
-        let titles: Vec<Line<'_>> = PageKind::all()
+        let labels: Vec<String> = PageKind::all()
             .iter()
             .enumerate()
-            .map(|(i, p)| {
-                Line::from(Span::styled(
-                    format!("{} {}", i + 1, p.title()),
-                    Style::default(),
-                ))
-            })
+            .map(|(i, p)| format!("{} {}", i + 1, p.title()))
             .collect();
         let tabs_title = format!(
             "spt profile configure — {}    [{}/{}]",
@@ -148,15 +150,11 @@ impl App {
             idx + 1,
             n_pages,
         );
-        let tabs = Tabs::new(titles)
-            .select(idx)
-            .block(Block::default().borders(Borders::ALL).title(tabs_title))
-            .highlight_style(
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD),
-            );
-        tabs.render(chunks[0], buf);
+        let block = Block::default().borders(Borders::ALL).title(tabs_title);
+        let inner = block.inner(chunks[0]);
+        block.render(chunks[0], buf);
+        let line = render_scrolling_tabs(&labels, idx, inner.width);
+        Paragraph::new(line).render(inner, buf);
 
         // ----- Page body ----------------------------------------------------
         if let Some(page) = self.pages.get_mut(idx) {
@@ -317,6 +315,140 @@ impl App {
         }
         AppEvent::Continue
     }
+}
+
+/// Build a single-line tab strip that fits in `width` cells, keeping
+/// `active` visible and inserting `…` markers when tabs are clipped at
+/// either end. Tabs are separated by ` │ `. The active tab is styled
+/// yellow+bold; others are unstyled.
+///
+/// Always renders at least the active tab (even if it has to be
+/// truncated with an ellipsis to fit). Returns a `Line` with one Span
+/// per segment ready to feed into a `Paragraph`.
+fn render_scrolling_tabs(labels: &[String], active: usize, width: u16) -> Line<'static> {
+    const SEP_W: usize = 3; // " │ "
+    const ELLIPSIS_W: usize = 2; // "… " or " …"
+
+    let n = labels.len();
+    if n == 0 || width == 0 {
+        return Line::from(String::new());
+    }
+    let active = active.min(n - 1);
+    let widths: Vec<usize> = labels.iter().map(|s| s.chars().count()).collect();
+    let avail = width as usize;
+
+    // Fast path: everything fits without ellipses.
+    let total_full: usize = widths.iter().sum::<usize>() + SEP_W * (n - 1);
+    if total_full <= avail {
+        return build_line(labels, active, 0, n - 1, false, false);
+    }
+
+    // First pass: reserve space for ellipses on both sides; expand greedily
+    // out from the active tab.
+    let budget_with_both_ellipses = avail.saturating_sub(2 * ELLIPSIS_W);
+    let mut used = widths[active].min(budget_with_both_ellipses.max(1));
+    let mut start = active;
+    let mut end = active;
+    grow_window(
+        &widths,
+        &mut start,
+        &mut end,
+        &mut used,
+        budget_with_both_ellipses,
+    );
+
+    // Second pass: if one or both sides no longer have hidden tabs, donate
+    // the reserved ellipsis budget back to the visible window so we don't
+    // waste cells. Subsequent expansion may discover yet more space.
+    loop {
+        let hidden_left = start > 0;
+        let hidden_right = end + 1 < n;
+        let donated = (if hidden_left { 0 } else { ELLIPSIS_W })
+            + (if hidden_right { 0 } else { ELLIPSIS_W });
+        if donated == 0 {
+            break;
+        }
+        let bigger = budget_with_both_ellipses + donated;
+        let grew_more = grow_window(&widths, &mut start, &mut end, &mut used, bigger);
+        if !grew_more {
+            break;
+        }
+    }
+
+    build_line(labels, active, start, end, start > 0, end + 1 < n)
+}
+
+/// Greedy bidirectional expansion. Returns `true` if at least one tab
+/// was added to either side. Prefers the right side first so users
+/// tabbing forward see new tabs appear naturally on the right.
+fn grow_window(
+    widths: &[usize],
+    start: &mut usize,
+    end: &mut usize,
+    used: &mut usize,
+    budget: usize,
+) -> bool {
+    const SEP_W: usize = 3;
+    let n = widths.len();
+    let mut any_grew = false;
+    loop {
+        let mut grew = false;
+        if *end + 1 < n {
+            let cost = SEP_W + widths[*end + 1];
+            if *used + cost <= budget {
+                *used += cost;
+                *end += 1;
+                grew = true;
+                any_grew = true;
+            }
+        }
+        if *start > 0 {
+            let cost = SEP_W + widths[*start - 1];
+            if *used + cost <= budget {
+                *used += cost;
+                *start -= 1;
+                grew = true;
+                any_grew = true;
+            }
+        }
+        if !grew {
+            break;
+        }
+    }
+    any_grew
+}
+
+/// Assemble the styled `Line` from a window `[start..=end]` plus
+/// optional `…` lead/trail markers. Pure rendering — no width math.
+fn build_line(
+    labels: &[String],
+    active: usize,
+    start: usize,
+    end: usize,
+    lead: bool,
+    trail: bool,
+) -> Line<'static> {
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    if lead {
+        spans.push(Span::raw("… "));
+    }
+    for (i, label) in labels.iter().enumerate().take(end + 1).skip(start) {
+        if i > start {
+            spans.push(Span::raw(" │ "));
+        }
+        let style = if i == active {
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+        };
+        spans.push(Span::styled(label.clone(), style));
+    }
+    if trail {
+        spans.push(Span::raw(" …"));
+    }
+    Line::from(spans)
 }
 
 fn render_help(area: Rect, buf: &mut Buffer) {
@@ -525,6 +657,161 @@ host = "h.example.com"
         assert!(
             text.contains("Enter: commit"),
             "edit-mode status hint must advertise Enter as commit:\n{text}"
+        );
+    }
+
+    // ---- Tab-bar scroll/overflow tests ------------------------------
+
+    /// Convert a Line into a plain string (joining all spans).
+    fn line_to_string(line: &Line<'_>) -> String {
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    #[test]
+    fn scroll_tabs_all_fit_no_ellipses() {
+        let labels: Vec<String> = ["1 a", "2 b", "3 c"]
+            .iter()
+            .map(|&s| s.to_string())
+            .collect();
+        // "1 a │ 2 b │ 3 c" = 3+3+3+3+3 = 15 cells
+        let line = super::render_scrolling_tabs(&labels, 1, 30);
+        let s = line_to_string(&line);
+        assert!(!s.contains('…'), "no ellipses when all fit: {s:?}");
+        assert!(s.contains("1 a"));
+        assert!(s.contains("2 b"));
+        assert!(s.contains("3 c"));
+    }
+
+    #[test]
+    fn scroll_tabs_trail_ellipsis_when_active_near_start() {
+        // Many tabs, active = 0, narrow width → right side overflows.
+        let labels: Vec<String> = (0..10).map(|i| format!("{i} title")).collect();
+        let line = super::render_scrolling_tabs(&labels, 0, 30);
+        let s = line_to_string(&line);
+        assert!(
+            s.starts_with("0 title"),
+            "active tab at index 0 must be visible at start: {s:?}"
+        );
+        assert!(
+            s.trim_end().ends_with('…'),
+            "must show trailing ellipsis when right side is clipped: {s:?}"
+        );
+        assert!(
+            !s.starts_with("…"),
+            "must not show leading ellipsis when active is at start: {s:?}"
+        );
+    }
+
+    #[test]
+    fn scroll_tabs_lead_ellipsis_when_active_near_end() {
+        let labels: Vec<String> = (0..10).map(|i| format!("{i} title")).collect();
+        let line = super::render_scrolling_tabs(&labels, 9, 30);
+        let s = line_to_string(&line);
+        assert!(
+            s.contains("9 title"),
+            "active tab at index 9 must be visible: {s:?}"
+        );
+        assert!(
+            s.starts_with('…'),
+            "must show leading ellipsis when left side is clipped: {s:?}"
+        );
+        assert!(
+            !s.trim_end().ends_with('…'),
+            "must not show trailing ellipsis when active is at end: {s:?}"
+        );
+    }
+
+    #[test]
+    fn scroll_tabs_both_ellipses_when_active_in_middle() {
+        let labels: Vec<String> = (0..10).map(|i| format!("{i} title")).collect();
+        let line = super::render_scrolling_tabs(&labels, 5, 25);
+        let s = line_to_string(&line);
+        assert!(
+            s.contains("5 title"),
+            "active tab at index 5 must be visible: {s:?}"
+        );
+        assert!(s.starts_with('…'), "must show leading ellipsis: {s:?}");
+        assert!(
+            s.trim_end().ends_with('…'),
+            "must show trailing ellipsis: {s:?}"
+        );
+    }
+
+    #[test]
+    fn scroll_tabs_active_always_visible_at_extreme_narrow_width() {
+        let labels: Vec<String> = (0..13).map(|i| format!("{} Title{i}", i + 1)).collect();
+        for active in 0..labels.len() {
+            for width in [10u16, 15, 20, 30, 50] {
+                let line = super::render_scrolling_tabs(&labels, active, width);
+                let s = line_to_string(&line);
+                let expected = format!("{} Title{active}", active + 1);
+                assert!(
+                    s.contains(&expected),
+                    "active label {expected:?} must appear at width={width}, got: {s:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn scroll_tabs_active_span_carries_highlight_style() {
+        let labels: Vec<String> = (0..5).map(|i| format!("{i} t")).collect();
+        let line = super::render_scrolling_tabs(&labels, 2, 80);
+        // Find the span matching the active label exactly.
+        let active_span = line
+            .spans
+            .iter()
+            .find(|s| s.content == "2 t")
+            .expect("active label must be a span");
+        assert!(
+            active_span.style.add_modifier.contains(Modifier::BOLD),
+            "active tab span must be BOLD"
+        );
+        assert_eq!(
+            active_span.style.fg,
+            Some(Color::Yellow),
+            "active tab span must be Yellow"
+        );
+    }
+
+    /// End-to-end: render the full App frame at a narrow width (60).
+    /// The 13 spt pages total ~145 cells of tab content, so a 60-wide
+    /// terminal MUST overflow. The currently-active tab title must
+    /// appear in the rendered buffer despite the overflow.
+    #[test]
+    fn app_renders_active_tab_at_narrow_terminal() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        let mut app = App::new(sample());
+        // Move to a page that's likely near the right edge of the tab
+        // bar so we exercise the leading-ellipsis path.
+        for _ in 0..7 {
+            app.on_key(k(KeyCode::Tab));
+        }
+        let backend = TestBackend::new(60, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| app.render_frame(f.area(), f.buffer_mut()))
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        let mut text = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                text.push_str(buf[(x, y)].symbol());
+            }
+            text.push('\n');
+        }
+        // Whatever page we're on, its title must be in the rendered
+        // frame even at 60 cells wide.
+        let title = app.current.title();
+        assert!(
+            text.contains(title),
+            "active page title {title:?} must be visible in narrow 60-wide frame:\n{text}"
+        );
+        // And there must be at least one ellipsis indicating overflow.
+        assert!(
+            text.contains('…'),
+            "narrow frame with 13 pages must show overflow ellipsis:\n{text}"
         );
     }
 
