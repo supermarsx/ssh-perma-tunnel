@@ -83,7 +83,12 @@ impl Page for ReviewPage {
             "Canonical TOML (redacted) — Ctrl-S to save".to_string()
         };
         let block = Block::default().borders(Borders::ALL).title(title);
-        Paragraph::new(toml)
+        // Highlight each logical line into styled Spans. The line count
+        // we use for `total_lines` / scroll arithmetic still matches the
+        // number of logical lines (one Line per input line) so scroll
+        // math is unaffected.
+        let highlighted: Vec<Line<'static>> = toml.lines().map(highlight_toml_line).collect();
+        Paragraph::new(highlighted)
             .block(block)
             .wrap(Wrap { trim: false })
             .scroll((self.scroll, 0))
@@ -134,6 +139,151 @@ impl Page for ReviewPage {
         // Scroll doesn't mutate the model.
         false
     }
+}
+
+/// Style a single TOML line into coloured spans.
+///
+/// The highlighter is deliberately simple — we don't fully parse TOML,
+/// we just classify the visible structure that operators care about:
+///
+///   * `# comment`       → dark grey
+///   * `[section]`       → cyan + bold
+///   * `[[array.of.tables]]` → magenta + bold
+///   * `key = value`     → key in yellow, `=` plain, value styled by kind:
+///       - `"…"` strings → green
+///       - `true`/`false` → blue
+///       - numeric / hex / size / duration / ip-port → red
+///   * leading whitespace and unrecognised text pass through unstyled.
+///
+/// Inline arrays / inline tables / multi-line strings are rendered with
+/// only the key+`=` styled and the rest plain — full TOML tokenisation
+/// is out of scope; the canonical writer we feed in doesn't emit them.
+fn highlight_toml_line(raw: &str) -> Line<'static> {
+    let trimmed_start = raw.trim_start();
+    let indent_len = raw.len() - trimmed_start.len();
+    let indent = &raw[..indent_len];
+
+    // Empty line.
+    if trimmed_start.is_empty() {
+        return Line::from(Span::raw(raw.to_string()));
+    }
+
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    if !indent.is_empty() {
+        spans.push(Span::raw(indent.to_string()));
+    }
+
+    // Comment line.
+    if trimmed_start.starts_with('#') {
+        spans.push(Span::styled(
+            trimmed_start.to_string(),
+            Style::default().fg(Color::DarkGray),
+        ));
+        return Line::from(spans);
+    }
+
+    // [[array of tables]]
+    if let Some(rest) = trimmed_start.strip_prefix("[[") {
+        if let Some(inner) = rest.strip_suffix("]]") {
+            spans.push(Span::styled(
+                "[[".to_string(),
+                Style::default()
+                    .fg(Color::Magenta)
+                    .add_modifier(ratatui::style::Modifier::BOLD),
+            ));
+            spans.push(Span::styled(
+                inner.to_string(),
+                Style::default()
+                    .fg(Color::Magenta)
+                    .add_modifier(ratatui::style::Modifier::BOLD),
+            ));
+            spans.push(Span::styled(
+                "]]".to_string(),
+                Style::default()
+                    .fg(Color::Magenta)
+                    .add_modifier(ratatui::style::Modifier::BOLD),
+            ));
+            return Line::from(spans);
+        }
+    }
+    // [section]
+    if let Some(rest) = trimmed_start.strip_prefix('[') {
+        if let Some(inner) = rest.strip_suffix(']') {
+            spans.push(Span::styled(
+                "[".to_string(),
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(ratatui::style::Modifier::BOLD),
+            ));
+            spans.push(Span::styled(
+                inner.to_string(),
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(ratatui::style::Modifier::BOLD),
+            ));
+            spans.push(Span::styled(
+                "]".to_string(),
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(ratatui::style::Modifier::BOLD),
+            ));
+            return Line::from(spans);
+        }
+    }
+
+    // key = value
+    if let Some((key, value)) = split_key_value(trimmed_start) {
+        spans.push(Span::styled(
+            key.to_string(),
+            Style::default().fg(Color::Yellow),
+        ));
+        spans.push(Span::raw(" = ".to_string()));
+        spans.push(style_value(value));
+        return Line::from(spans);
+    }
+
+    // Fallback: unstyled.
+    spans.push(Span::raw(trimmed_start.to_string()));
+    Line::from(spans)
+}
+
+/// Split a `key = value` line, returning `(key, value)` trimmed.
+/// Returns `None` if there's no top-level `=` (the `=` must occur
+/// outside any quoted string at the leading position).
+fn split_key_value(s: &str) -> Option<(&str, &str)> {
+    let mut in_str = false;
+    let mut prev = '\0';
+    for (i, c) in s.char_indices() {
+        match c {
+            '"' if prev != '\\' => in_str = !in_str,
+            '=' if !in_str => {
+                let key = s[..i].trim_end();
+                let value = s[i + 1..].trim_start();
+                if !key.is_empty() {
+                    return Some((key, value));
+                }
+            }
+            _ => {}
+        }
+        prev = c;
+    }
+    None
+}
+
+fn style_value(v: &str) -> Span<'static> {
+    let v_trim = v.trim();
+    if v_trim.starts_with('"') && v_trim.ends_with('"') && v_trim.len() >= 2 {
+        return Span::styled(v.to_string(), Style::default().fg(Color::Green));
+    }
+    if v_trim == "true" || v_trim == "false" {
+        return Span::styled(v.to_string(), Style::default().fg(Color::Blue));
+    }
+    if v_trim.chars().next().is_some_and(|c| c.is_ascii_digit())
+        || v_trim.starts_with('-') && v_trim[1..].starts_with(|c: char| c.is_ascii_digit())
+    {
+        return Span::styled(v.to_string(), Style::default().fg(Color::Red));
+    }
+    Span::raw(v.to_string())
 }
 
 fn diagnostics_to_lines(d: &ValidationDiagnostics) -> Vec<Line<'static>> {
@@ -314,7 +464,9 @@ protocol = "ssh2"
         for _ in 0..10_000 {
             page.on_key(k(KeyCode::Down), &mut m);
         }
-        let max = page.last_total_lines.saturating_sub(page.last_visible_height);
+        let max = page
+            .last_total_lines
+            .saturating_sub(page.last_visible_height);
         assert_eq!(
             page.scroll_offset(),
             max,
@@ -364,7 +516,9 @@ protocol = "ssh2"
         let mut m = long_model();
         let _ = rendered_text(&mut page, &m);
         page.on_key(k(KeyCode::End), &mut m);
-        let max = page.last_total_lines.saturating_sub(page.last_visible_height);
+        let max = page
+            .last_total_lines
+            .saturating_sub(page.last_visible_height);
         assert_eq!(page.scroll_offset(), max);
     }
 
@@ -400,6 +554,133 @@ protocol = "ssh2"
         assert!(
             s.contains("scroll"),
             "title must advertise the scroll keys:\n{s}"
+        );
+    }
+
+    // ---- Syntax highlighting -----------------------------------------
+
+    fn span_at(line: &Line<'_>, content: &str) -> Option<Style> {
+        line.spans
+            .iter()
+            .find(|s| s.content.contains(content))
+            .map(|s| s.style)
+    }
+
+    #[test]
+    fn highlight_section_header_styled_cyan_bold() {
+        let line = highlight_toml_line("[profile]");
+        let style = span_at(&line, "profile").expect("section name must be a span");
+        assert_eq!(style.fg, Some(Color::Cyan));
+        assert!(style.add_modifier.contains(ratatui::style::Modifier::BOLD));
+    }
+
+    #[test]
+    fn highlight_array_of_tables_styled_magenta_bold() {
+        let line = highlight_toml_line("[[profiles.forwards]]");
+        let style = span_at(&line, "profiles.forwards").expect("array name must be a span");
+        assert_eq!(style.fg, Some(Color::Magenta));
+        assert!(style.add_modifier.contains(ratatui::style::Modifier::BOLD));
+    }
+
+    #[test]
+    fn highlight_comment_styled_dark_gray() {
+        let line = highlight_toml_line("# this is a comment");
+        let style = span_at(&line, "comment").expect("comment must be a span");
+        assert_eq!(style.fg, Some(Color::DarkGray));
+    }
+
+    #[test]
+    fn highlight_string_value_styled_green() {
+        let line = highlight_toml_line(r#"host = "h.example.com""#);
+        let key_style = span_at(&line, "host").expect("key must be a span");
+        assert_eq!(key_style.fg, Some(Color::Yellow));
+        let value_style = span_at(&line, "h.example.com").expect("value must be a span");
+        assert_eq!(value_style.fg, Some(Color::Green));
+    }
+
+    #[test]
+    fn highlight_bool_value_styled_blue() {
+        let line = highlight_toml_line("agent = true");
+        let style = span_at(&line, "true").expect("bool value must be a span");
+        assert_eq!(style.fg, Some(Color::Blue));
+    }
+
+    #[test]
+    fn highlight_numeric_value_styled_red() {
+        let line = highlight_toml_line("port = 22");
+        let style = span_at(&line, "22").expect("numeric value must be a span");
+        assert_eq!(style.fg, Some(Color::Red));
+    }
+
+    #[test]
+    fn highlight_indented_line_preserves_indent() {
+        // Canonical TOML rarely indents, but if it ever does, the
+        // indent prefix must be preserved as plain spans (no panic, no
+        // re-trim) and the key starts where the non-whitespace begins.
+        let line = highlight_toml_line("    nested = 1");
+        // Reconstruct the rendered text from the spans.
+        let s: String = line.spans.iter().map(|sp| sp.content.as_ref()).collect();
+        assert_eq!(s, "    nested = 1");
+    }
+
+    #[test]
+    fn highlight_empty_line_returns_empty_span() {
+        let line = highlight_toml_line("");
+        let s: String = line.spans.iter().map(|sp| sp.content.as_ref()).collect();
+        assert_eq!(s, "");
+    }
+
+    #[test]
+    fn highlight_falls_back_on_unparseable_line() {
+        // A line that's neither a comment, section, nor key=value
+        // should pass through without panicking.
+        let line = highlight_toml_line("just some text");
+        let s: String = line.spans.iter().map(|sp| sp.content.as_ref()).collect();
+        assert_eq!(s, "just some text");
+    }
+
+    #[test]
+    fn rendered_preview_contains_styled_section_header() {
+        // End-to-end: render a real profile and assert at least one
+        // cell inside the section-header text has Cyan + Bold styling.
+        use ratatui::buffer::Buffer;
+        use ratatui::layout::Rect;
+        let m = Model::from_str(
+            r#"version = 1
+[[profiles]]
+name = "p"
+protocol = "ssh2"
+host = "h.example.com"
+"#,
+        );
+        let mut page = ReviewPage::new();
+        let area = Rect::new(0, 0, 100, 20);
+        let mut buf = Buffer::empty(area);
+        page.render(area, &mut buf, &m);
+        // Scan every cell for one that's part of a section header and
+        // has the expected style.
+        let mut found = false;
+        for y in 0..area.height {
+            for x in 0..area.width {
+                let cell = &buf[(x, y)];
+                if cell.symbol() == "[" || cell.symbol() == "]" {
+                    let style = cell.style();
+                    if style.fg == Some(Color::Cyan)
+                        && style.add_modifier.contains(ratatui::style::Modifier::BOLD)
+                    {
+                        found = true;
+                    }
+                    if style.fg == Some(Color::Magenta)
+                        && style.add_modifier.contains(ratatui::style::Modifier::BOLD)
+                    {
+                        found = true;
+                    }
+                }
+            }
+        }
+        assert!(
+            found,
+            "rendered preview must contain at least one bracket cell styled Cyan-or-Magenta + BOLD"
         );
     }
 
