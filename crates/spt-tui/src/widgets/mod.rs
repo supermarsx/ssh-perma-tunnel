@@ -344,14 +344,18 @@ pub struct MultiSelect {
 }
 
 impl MultiSelect {
-    /// Apply a key. Toggles membership of the cursor's option in `selected`.
+    /// Apply a key. Toggles membership of the cursor's option in `selected`
+    /// only on **Space** or **`t`** — Enter is reserved for parent commit.
     ///
     /// Cursor keys (Up/Down/Left/Right) **wrap** at the boundaries.
-    /// Enter/Space toggle the cursor's option in `selected`. (Commit of
-    /// the whole multi-selection is performed by the parent on `s`/Esc.)
+    /// Each `[x]`/`[ ]` checkbox in this widget flips ONLY on Space or
+    /// `t`, matching the [`Toggle`] keymap. Enter passes through unchanged
+    /// so the parent [`crate::pages::field::FieldList`] can handle commit
+    /// (alongside `s` and Esc, which are also treated as commit by the
+    /// parent for multi-selection workflows).
     pub fn on_key(&mut self, options: &[&str], selected: &mut Vec<String>, key: KeyEvent) -> bool {
         if options.is_empty() {
-            // Still allow Enter/Space to no-op cleanly.
+            // Still allow Space/`t` to no-op cleanly.
             return false;
         }
         match key.code {
@@ -367,7 +371,7 @@ impl MultiSelect {
                 self.index = (self.index + 1) % options.len();
                 false
             }
-            KeyCode::Char(' ') | KeyCode::Enter => {
+            KeyCode::Char(' ') | KeyCode::Char('t') => {
                 if let Some(opt) = options.get(self.index) {
                     let s = (*opt).to_owned();
                     if let Some(pos) = selected.iter().position(|x| x == &s) {
@@ -1095,6 +1099,79 @@ mod tests {
         // Toggle again removes.
         m.on_key(&opts, &mut sel, key(KeyCode::Char(' ')));
         assert!(sel.is_empty());
+    }
+
+    #[test]
+    fn multi_select_t_key_toggles_at_focused_index() {
+        // `t` is the new mnemonic toggle key — must work identically
+        // to Space for Multi checkboxes.
+        let mut m = MultiSelect::default();
+        let mut sel: Vec<String> = vec![];
+        let opts = ["a", "b", "c"];
+        m.on_key(&opts, &mut sel, key(KeyCode::Char('t')));
+        assert_eq!(sel, vec!["a".to_string()]);
+        m.on_key(&opts, &mut sel, key(KeyCode::Char('t')));
+        assert!(sel.is_empty());
+    }
+
+    #[test]
+    fn multi_select_enter_no_longer_toggles() {
+        // User contract: Enter never toggles a tickbox. Pressing Enter
+        // on a MultiSelect must leave `selected` unchanged so the
+        // parent FieldList can use Enter for commit unambiguously.
+        let mut m = MultiSelect::default();
+        let mut sel: Vec<String> = vec![];
+        let opts = ["a", "b", "c"];
+        let changed = m.on_key(&opts, &mut sel, key(KeyCode::Enter));
+        assert!(!changed, "Enter must not report a selection change");
+        assert!(sel.is_empty(), "Enter must not toggle membership");
+    }
+
+    /// Exhaustive lockdown matrix for MultiSelect checkboxes. Mirrors
+    /// the Toggle widget's matrix: only Space and `t` flip; every
+    /// other key including Enter is a no-op for membership state.
+    /// Cursor keys (arrows) move the cursor but must not mutate
+    /// `selected`.
+    #[test]
+    fn multi_select_only_space_and_t_toggle_membership() {
+        use KeyCode::*;
+        // (keycode, should_toggle_membership)
+        let cases: &[(KeyCode, bool)] = &[
+            (Char(' '), true),
+            (Char('t'), true),
+            (Enter, false),
+            (Char('y'), false),
+            (Char('n'), false),
+            (Char('T'), false),
+            (Char('a'), false),
+            (Char('1'), false),
+            (Up, false),
+            (Down, false),
+            (Left, false),
+            (Right, false),
+            (Home, false),
+            (End, false),
+            (Tab, false),
+            (Esc, false),
+            (Backspace, false),
+            (Delete, false),
+            (F(1), false),
+        ];
+        for (code, should_toggle) in cases {
+            let mut m = MultiSelect::default();
+            let mut sel: Vec<String> = vec![];
+            let opts = ["a", "b", "c"];
+            let changed = m.on_key(&opts, &mut sel, key(*code));
+            assert_eq!(
+                changed, *should_toggle,
+                "key {code:?}: expected changed={should_toggle}"
+            );
+            if *should_toggle {
+                assert_eq!(sel, vec!["a".to_string()], "key {code:?} must toggle in");
+            } else {
+                assert!(sel.is_empty(), "key {code:?} must not touch selected");
+            }
+        }
     }
 
     // -----------------------------------------------------------------

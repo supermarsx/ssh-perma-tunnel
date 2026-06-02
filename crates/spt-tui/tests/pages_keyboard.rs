@@ -706,7 +706,11 @@ fn bool_app_dispatch_only_space_and_t_flip() {
         (KeyCode::Char('a'), Some(false), "a"),
         (KeyCode::Char('1'), Some(false), "1"),
         (KeyCode::Up, Some(false), "Up"),
-        (KeyCode::Down, Some(false), "Down (focus-move while editing)"),
+        (
+            KeyCode::Down,
+            Some(false),
+            "Down (focus-move while editing)",
+        ),
         (KeyCode::Left, Some(false), "Left"),
         (KeyCode::Right, Some(false), "Right"),
         (KeyCode::Home, Some(false), "Home"),
@@ -714,7 +718,11 @@ fn bool_app_dispatch_only_space_and_t_flip() {
         (KeyCode::Backspace, Some(false), "Backspace"),
         // Special: Enter as midkey IS the commit — should commit false
         // (begin_edit set edit_buf to false; Enter does NOT flip; commits false).
-        (KeyCode::Enter, Some(false), "Enter (alone, post-begin-edit)"),
+        (
+            KeyCode::Enter,
+            Some(false),
+            "Enter (alone, post-begin-edit)",
+        ),
         // Special: Esc cancels the edit — no commit, value stays None
         (KeyCode::Esc, None, "Esc cancels edit"),
     ];
@@ -773,5 +781,115 @@ fn bool_enter_alone_does_not_change_rendered_text() {
     assert!(
         !after.contains("[x] yes"),
         "after Enter-commits-alone, the Bool must NOT render `[x] yes`:\n{after}"
+    );
+}
+
+// -----------------------------------------------------------------
+// Multi-field tickbox lockdown. The user reported "the enter key
+// is not just limited to committing, it also toggles tickboxes".
+// On a Multi field, each option has a [x]/[ ] checkbox. Per the
+// updated keymap, those checkboxes flip ONLY on Space or `t` —
+// Enter is the universal commit and must not toggle.
+// -----------------------------------------------------------------
+
+/// Enter on a Multi field's cursor option must NOT toggle membership.
+/// It must commit the (untoggled) selection. End-to-end via App.
+#[test]
+fn multi_field_enter_does_not_toggle_then_commits() {
+    let mut app = App::new(Model::from_str(SAMPLE));
+    tab_to(&mut app, PageKind::Crypto);
+    // Same field path as multi_field_space_toggles_and_s_commits_via_app.
+    for _ in 0..3 {
+        app.on_key(k(KeyCode::Down));
+    }
+    app.on_key(k(KeyCode::Enter)); // begin edit (Multi). edit_buf seeded from profile.
+    app.on_key(k(KeyCode::Enter)); // MUST NOT toggle; MUST commit unchanged.
+    let ciphers = app
+        .model
+        .profile()
+        .crypto
+        .as_ref()
+        .and_then(|c| c.ciphers.clone())
+        .unwrap_or_default();
+    assert!(
+        ciphers.is_empty(),
+        "Enter on Multi must NOT toggle a cipher in; got {ciphers:?}"
+    );
+}
+
+/// `t` toggles a Multi checkbox, mirroring Space. Commit via Enter.
+#[test]
+fn multi_field_t_toggles_and_enter_commits() {
+    let mut app = App::new(Model::from_str(SAMPLE));
+    tab_to(&mut app, PageKind::Crypto);
+    for _ in 0..3 {
+        app.on_key(k(KeyCode::Down));
+    }
+    app.on_key(k(KeyCode::Enter)); // begin edit
+    app.on_key(k(KeyCode::Char('t'))); // t toggles
+    app.on_key(k(KeyCode::Enter)); // Enter commits (no further toggle)
+    let ciphers = app
+        .model
+        .profile()
+        .crypto
+        .as_ref()
+        .and_then(|c| c.ciphers.clone())
+        .unwrap_or_default();
+    assert_eq!(
+        ciphers,
+        vec!["chacha20-poly1305@openssh.com".to_string()],
+        "`t` then Enter must persist exactly one cipher (toggled by t, not by Enter)"
+    );
+}
+
+/// Repeated Enter on a Multi field must never toggle. Each pair of
+/// Enters is a (begin-edit, commit) cycle; after N cycles the selection
+/// state is the original empty one.
+#[test]
+fn multi_field_repeated_enter_mashing_never_toggles() {
+    let mut app = App::new(Model::from_str(SAMPLE));
+    tab_to(&mut app, PageKind::Crypto);
+    for _ in 0..3 {
+        app.on_key(k(KeyCode::Down));
+    }
+    for _ in 0..10 {
+        app.on_key(k(KeyCode::Enter)); // begin edit
+        app.on_key(k(KeyCode::Enter)); // commit
+    }
+    let ciphers = app
+        .model
+        .profile()
+        .crypto
+        .as_ref()
+        .and_then(|c| c.ciphers.clone())
+        .unwrap_or_default();
+    assert!(
+        ciphers.is_empty(),
+        "10 begin-edit/commit cycles must leave Multi untouched; got {ciphers:?}"
+    );
+}
+
+/// Rendered-buffer assertion: pressing Enter on a Multi field must NOT
+/// flip the visible `[x]`/`[ ]` marker. After Enter commits, the compact
+/// nav-mode render does not include the cursor checkbox at all; this
+/// asserts no cipher leaked into the selected list.
+#[test]
+fn multi_field_enter_does_not_change_rendered_summary() {
+    let mut app = App::new(Model::from_str(SAMPLE));
+    tab_to(&mut app, PageKind::Crypto);
+    let before = render(&mut app, 100, 50);
+    assert!(
+        before.contains("(none)"),
+        "before edit, Crypto ciphers must render `(none)`:\n{before}"
+    );
+    for _ in 0..3 {
+        app.on_key(k(KeyCode::Down));
+    }
+    app.on_key(k(KeyCode::Enter)); // begin edit
+    app.on_key(k(KeyCode::Enter)); // commit, MUST NOT toggle
+    let after = render(&mut app, 100, 50);
+    assert!(
+        after.contains("(none)"),
+        "after Enter-Enter on Multi, ciphers must STILL render `(none)`:\n{after}"
     );
 }

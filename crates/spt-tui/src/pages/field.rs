@@ -310,8 +310,12 @@ impl FieldList {
             }
             FieldValue::Multi { value, options } => {
                 let changed = field.multi.on_key(options, value, key);
-                if matches!(key.code, KeyCode::Char('s')) || matches!(key.code, KeyCode::Esc) {
-                    self.commit_edit(profile);
+                // Enter is the universal commit key across every field
+                // type. `s` is kept as an alternate commit shortcut for
+                // operators used to that keystroke. Esc is handled at
+                // the top of this function and cancels the edit.
+                if matches!(key.code, KeyCode::Enter | KeyCode::Char('s')) {
+                    return self.commit_edit(profile);
                 }
                 changed
             }
