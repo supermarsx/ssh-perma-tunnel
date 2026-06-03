@@ -1,3 +1,23 @@
+## [26.7] - 2026-06-03
+
+# spt 26.7
+
+## Changes since 26.6
+
+- feat(tui): syntax-highlight the Review TOML preview (761d661)
+- fix(tui): make Review page scrollable with arrows / jk / PgUp / PgDn / Home / End (94b05b3)
+- fix(tui): scroll tab bar so the active page is always visible (4a8a5e4)
+- docs(tui): document Space/`t` as tickbox toggles in help overlay + status + docs/tui.md (fb1c532)
+- fix(tui): MultiSelect tickboxes also lock to Space/`t` — Enter now commits (016ee78)
+- fix(tui): Toggle accepts only Space and `t`; lock down with key matrix (c63f1a6)
+- test(tui): 13 App-level end-to-end tests covering every TUI fix shipped today (43fa892)
+- fix(tui): Enter on Bool commits without flipping; add `t` toggle key (8a0115e)
+- fix(tui): compact spinner render for Select/MultiSelect in small areas (b8e25db)
+- style(tui): collapse 4-line if-condition to satisfy rustfmt (2778e8d)
+- fix(tui): show visible REVERSED caret cell on focused text fields (cd12ff1)
+- fix(tui): rotate Select/MultiSelect with Left/Right and wrap at boundaries (4f3baf9)
+- fix(tui): seed Select/MultiSelect cursor from current value on edit entry (4be1e58)
+
 ## [26.6] - 2026-06-01
 
 # spt 26.6
