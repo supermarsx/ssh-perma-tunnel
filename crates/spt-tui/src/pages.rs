@@ -11,6 +11,7 @@ mod connection;
 mod crypto;
 mod diagnostics;
 mod dns;
+mod endpoints;
 mod events;
 mod failover;
 mod field;
@@ -36,33 +37,35 @@ pub enum PageKind {
     Basics,
     /// `2. Connection` — endpoints, hops, timings.
     Connection,
-    /// `3. Auth` — auth method + secret refs.
+    /// `3. Endpoints` — multi-target failover list. §9.11.
+    Endpoints,
+    /// `4. Auth` — auth method + secret refs.
     Auth,
-    /// `4. Trust` — known_hosts, SHA-256 pins, TLS pins.
+    /// `5. Trust` — known_hosts, SHA-256 pins, TLS pins.
     Trust,
-    /// `5. Crypto` — cipher / kex / mac / hostkey allow-lists.
+    /// `6. Crypto` — cipher / kex / mac / hostkey allow-lists.
     Crypto,
-    /// `6. Keepalive`.
+    /// `7. Keepalive`.
     Keepalive,
-    /// `7. Reconnect / instability / failover`.
+    /// `8. Reconnect / instability / failover`.
     Failover,
-    /// `8. Limits` — connection caps, throttles.
+    /// `9. Limits` — connection caps, throttles.
     Limits,
-    /// `9. Forwards` — local / remote / udp forward entries.
+    /// `10. Forwards` — local / remote / udp forward entries.
     Forwards,
-    /// `10. DNS` — managed records bound to this profile.
+    /// `11. DNS` — managed records bound to this profile.
     Dns,
-    /// `11. Events` — per-profile binding tags.
+    /// `12. Events` — per-profile binding tags.
     Events,
-    /// `12. Diagnostics / observability` — tags + metrics labels.
+    /// `13. Diagnostics / observability` — tags + metrics labels.
     Diagnostics,
-    /// `13. Review & save`.
+    /// `14. Review & save`.
     Review,
 }
 
 impl PageKind {
     /// Total number of pages in the wizard.
-    pub const COUNT: usize = 13;
+    pub const COUNT: usize = 14;
 
     /// Ordered list, in the order shown in the navigation tabs.
     #[must_use]
@@ -70,6 +73,7 @@ impl PageKind {
         [
             PageKind::Basics,
             PageKind::Connection,
+            PageKind::Endpoints,
             PageKind::Auth,
             PageKind::Trust,
             PageKind::Crypto,
@@ -90,6 +94,7 @@ impl PageKind {
         match self {
             PageKind::Basics => "Basics",
             PageKind::Connection => "Connection",
+            PageKind::Endpoints => "Endpoints",
             PageKind::Auth => "Auth",
             PageKind::Trust => "Trust",
             PageKind::Crypto => "Crypto",
@@ -151,6 +156,7 @@ pub fn build_pages() -> Vec<Box<dyn Page>> {
     vec![
         Box::new(basics::BasicsPage::new()),
         Box::new(connection::ConnectionPage::new()),
+        Box::new(endpoints::EndpointsPage::new()),
         Box::new(auth::AuthPage::new()),
         Box::new(trust::TrustPage::new()),
         Box::new(crypto::CryptoPage::new()),

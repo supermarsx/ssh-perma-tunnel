@@ -120,17 +120,6 @@ impl ConnectionPage {
                         .keepalive_retries = v;
                 },
             ),
-            // Endpoints summary (read-only here).
-            crate::pages::field::FieldDef {
-                label: "endpoints (count)",
-                help:
-                    "Number of [[profiles.endpoints]] entries — edit via the Forwards page sub-list",
-                get: Box::new(|p: &Profile| {
-                    crate::pages::FieldValue::Text(p.endpoints.len().to_string())
-                }),
-                set: Box::new(|_p, _v| {}),
-                validate: None,
-            },
             // Hops summary.
             crate::pages::field::FieldDef {
                 label: "hops (count)",
@@ -259,10 +248,16 @@ protocol = "ssh2"
     }
 
     #[test]
-    fn endpoints_and_hops_count_fields_present() {
+    fn hops_count_field_present_endpoints_migrated() {
         let p = ConnectionPage::new();
         let labels: Vec<&str> = p.list.fields.iter().map(|f| f.def.label).collect();
-        assert!(labels.contains(&"endpoints (count)"));
+        // `hops (count)` is still a read-only summary on the Connection page.
         assert!(labels.contains(&"hops (count)"));
+        // The `endpoints (count)` summary moved out to the dedicated
+        // Endpoints page. Guard against re-introduction during refactors.
+        assert!(
+            !labels.contains(&"endpoints (count)"),
+            "endpoints field must be migrated to the dedicated Endpoints page"
+        );
     }
 }

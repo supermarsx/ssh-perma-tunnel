@@ -893,3 +893,41 @@ fn multi_field_enter_does_not_change_rendered_summary() {
         "after Enter-Enter on Multi, ciphers must STILL render `(none)`:\n{after}"
     );
 }
+
+// -----------------------------------------------------------------
+// t-endpoints — dedicated Endpoints page IT coverage.
+// -----------------------------------------------------------------
+
+/// Tab to the Endpoints page, add two entries (`a` Esc `a` Esc), and assert
+/// the model picked up both with the expected default names.
+#[test]
+fn navigate_to_endpoints_and_add_two_entries() {
+    let mut app = App::new(Model::from_str(SAMPLE));
+    tab_to(&mut app, PageKind::Endpoints);
+    app.on_key(k(KeyCode::Char('a'))); // add #1 + open editor
+    app.on_key(k(KeyCode::Esc)); // close editor
+    app.on_key(k(KeyCode::Char('a'))); // add #2 + open editor
+    app.on_key(k(KeyCode::Esc)); // close editor
+    let eps = &app.model.profile().endpoints;
+    assert_eq!(eps.len(), 2);
+    assert_eq!(eps[0].name, "endpoint-1");
+    assert_eq!(eps[1].name, "endpoint-2");
+}
+
+/// Add one endpoint, navigate down to the priority field (index 3), type 5,
+/// and commit. Verifies the editor's Numeric round-trip end-to-end.
+#[test]
+fn endpoints_page_priority_round_trip() {
+    let mut app = App::new(Model::from_str(SAMPLE));
+    tab_to(&mut app, PageKind::Endpoints);
+    app.on_key(k(KeyCode::Char('a'))); // add + open editor at focus 0 (name)
+                                       // Move focus to priority (index 3) via nav-mode Down x3.
+    for _ in 0..3 {
+        app.on_key(k(KeyCode::Down));
+    }
+    app.on_key(k(KeyCode::Enter)); // begin edit on priority
+    app.on_key(k(KeyCode::Char('5')));
+    app.on_key(k(KeyCode::Enter)); // commit
+    app.on_key(k(KeyCode::Esc)); // close editor
+    assert_eq!(app.model.profile().endpoints[0].priority, Some(5));
+}

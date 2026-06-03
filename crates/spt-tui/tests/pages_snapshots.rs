@@ -227,3 +227,40 @@ fn snapshot_basics_page_editing_protocol_after_rotate_80x20() {
     );
     insta::assert_snapshot!("basics_page_editing_protocol_after_rotate_80x20", snap);
 }
+
+// -----------------------------------------------------------------
+// t-endpoints — snapshot for the dedicated Endpoints page rendering
+// two entries (one with priority only, one with priority + weight).
+// -----------------------------------------------------------------
+
+#[test]
+fn snapshot_endpoints_page() {
+    let sample = r#"version = 1
+[[profiles]]
+name = "demo"
+protocol = "ssh2"
+
+[[profiles.endpoints]]
+name = "primary"
+host = "edge-1.example.com"
+port = 22
+priority = 0
+
+[[profiles.endpoints]]
+name = "backup"
+host = "edge-2.example.com"
+port = 22
+priority = 1
+weight = 5
+"#;
+    let model = Model::from_str(sample);
+    let mut pages = build_pages();
+    let page = &mut pages[PageKind::Endpoints.index()];
+    let backend = TestBackend::new(100, 20);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|f| page.render(f.area(), f.buffer_mut(), &model))
+        .unwrap();
+    let snap = buffer_text(terminal.backend().buffer());
+    insta::assert_snapshot!("endpoints_page_100x20", snap);
+}
