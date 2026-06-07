@@ -342,7 +342,11 @@ impl Page for ForwardsPage {
                 }
                 _ => {
                     if ed.fields.editing {
-                        return ed.fields.on_edit_key(key, model.profile_mut());
+                        let changed = ed.fields.on_edit_key(key, model.profile_mut_silent());
+                        if changed {
+                            model.mark_dirty();
+                        }
+                        return changed;
                     }
                     let p = model.profile().clone();
                     ed.fields.on_nav_key(key, &p);

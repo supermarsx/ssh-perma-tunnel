@@ -98,9 +98,39 @@ impl Model {
     }
 
     /// Mutably borrow the selected profile and mark the model dirty.
+    ///
+    /// Use this for unconditional mutations (e.g. `push`/`remove` on a
+    /// `Vec`, direct field assignment from outside the edit-buffer
+    /// flow). For the `Page::on_key` → `FieldList::on_edit_key` path
+    /// where the mutation is conditional on the user's keystroke,
+    /// prefer [`Self::profile_mut_silent`] so cursor moves and other
+    /// no-op keys don't flip the dirty bit on every press.
     pub fn profile_mut(&mut self) -> &mut Profile {
         self.dirty = true;
         &mut self.config.profiles[self.selected]
+    }
+
+    /// Mutably borrow the selected profile **without** marking the
+    /// model dirty. The caller is responsible for calling
+    /// [`Self::mark_dirty`] (typically based on a `bool changed`
+    /// return value) if and only if the keystroke actually mutated
+    /// the profile.
+    ///
+    /// Background: the TUI's edit-mode dispatch routes every key
+    /// (Up/Down/Left/Right, Esc, …) through `on_edit_key`, but only
+    /// commit-style keys (Enter/Space/typing) actually mutate the
+    /// profile. Auto-dirtying on every borrow turned navigation into
+    /// "unsaved changes" — see the rotate-cursor cycle test in
+    /// `tests/pages_keyboard.rs`.
+    pub fn profile_mut_silent(&mut self) -> &mut Profile {
+        &mut self.config.profiles[self.selected]
+    }
+
+    /// Mark the model as having unsaved changes. Pages should call
+    /// this after a `on_edit_key` (or other handler) returns `true`,
+    /// indicating an actual profile mutation took place.
+    pub fn mark_dirty(&mut self) {
+        self.dirty = true;
     }
 
     /// Select a profile by index. No-op if out of range.

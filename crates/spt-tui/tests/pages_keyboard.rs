@@ -931,3 +931,186 @@ fn endpoints_page_priority_round_trip() {
     app.on_key(k(KeyCode::Esc)); // close editor
     assert_eq!(app.model.profile().endpoints[0].priority, Some(5));
 }
+
+// -----------------------------------------------------------------
+// Choice-radio cycle through 3+ options. The user reported the
+// radio spinner not cycling visible options when they press the
+// rotate key. The existing `choice_right_arrow_updates_rendered_text_live`
+// only covers a 2-option Choice (protocol: ssh2/ssh3) which can't
+// distinguish "cycle works" from "single-flip works". These tests
+// pin every visible step of a 3-option rotation through the App-
+// level dispatch + render path.
+// -----------------------------------------------------------------
+
+/// `failure_policy` is a 3-option Choice (`retry`, `fail_profile`,
+/// `fail_process`). Beginning edit, then pressing Right three times,
+/// must walk through every option and wrap back to the first one,
+/// with each step **visible in the rendered buffer**.
+#[test]
+fn basics_failure_policy_cycles_three_options_in_viewport_via_right() {
+    let mut app = App::new(Model::from_str(SAMPLE));
+    assert_eq!(app.current, PageKind::Basics);
+    // Basics field order: 0=id, 1=description, 2=protocol, 3=startup,
+    // 4=failure_policy. Down four times to focus failure_policy.
+    for _ in 0..4 {
+        app.on_key(k(KeyCode::Down));
+    }
+    app.on_key(k(KeyCode::Enter)); // begin edit
+    let s0 = render(&mut app, 100, 30);
+    assert!(
+        s0.contains("retry"),
+        "before any rotation, spinner must show options[0] `retry`:\n{s0}"
+    );
+    assert!(
+        s0.contains("(1/3)"),
+        "position counter must show 1/3 at the start:\n{s0}"
+    );
+
+    app.on_key(k(KeyCode::Right));
+    let s1 = render(&mut app, 100, 30);
+    assert!(
+        s1.contains("fail_profile"),
+        "after 1× Right, viewport must show `fail_profile`:\n{s1}"
+    );
+    assert!(
+        s1.contains("(2/3)"),
+        "position counter must update to 2/3 after 1× Right:\n{s1}"
+    );
+
+    app.on_key(k(KeyCode::Right));
+    let s2 = render(&mut app, 100, 30);
+    assert!(
+        s2.contains("fail_process"),
+        "after 2× Right, viewport must show `fail_process`:\n{s2}"
+    );
+    assert!(
+        s2.contains("(3/3)"),
+        "position counter must update to 3/3 after 2× Right:\n{s2}"
+    );
+
+    app.on_key(k(KeyCode::Right));
+    let s3 = render(&mut app, 100, 30);
+    assert!(
+        s3.contains("retry"),
+        "after 3× Right (wrap), viewport must show `retry` again:\n{s3}"
+    );
+    assert!(
+        s3.contains("(1/3)"),
+        "position counter must wrap to 1/3 after 3× Right:\n{s3}"
+    );
+
+    // Each consecutive frame must differ from the prior — proves the
+    // cycle is empirically visible, not just internally tracked.
+    assert_ne!(s0, s1, "Right #1 must visibly change the frame");
+    assert_ne!(s1, s2, "Right #2 must visibly change the frame");
+    assert_ne!(s2, s3, "Right #3 must visibly change the frame (wrap)");
+}
+
+/// Same cycle, but driven by **Left** — must walk backwards through
+/// the three options with proper wrap from index 0 → last.
+#[test]
+fn basics_failure_policy_cycles_three_options_in_viewport_via_left() {
+    let mut app = App::new(Model::from_str(SAMPLE));
+    for _ in 0..4 {
+        app.on_key(k(KeyCode::Down));
+    }
+    app.on_key(k(KeyCode::Enter)); // begin edit, cursor at options[0]=retry
+    let s0 = render(&mut app, 100, 30);
+    assert!(s0.contains("retry"), "{s0}");
+
+    app.on_key(k(KeyCode::Left)); // wrap to last = fail_process
+    let s_back = render(&mut app, 100, 30);
+    assert!(
+        s_back.contains("fail_process"),
+        "Left at index 0 must wrap to `fail_process`:\n{s_back}"
+    );
+    assert!(s_back.contains("(3/3)"), "position must be 3/3:\n{s_back}");
+
+    app.on_key(k(KeyCode::Left)); // → fail_profile
+    let s_mid = render(&mut app, 100, 30);
+    assert!(
+        s_mid.contains("fail_profile") && s_mid.contains("(2/3)"),
+        "2× Left must show `fail_profile` at 2/3:\n{s_mid}"
+    );
+
+    app.on_key(k(KeyCode::Left)); // → retry
+    let s_start = render(&mut app, 100, 30);
+    assert!(
+        s_start.contains("retry") && s_start.contains("(1/3)"),
+        "3× Left must wrap back to `retry` at 1/3:\n{s_start}"
+    );
+}
+
+/// Up / Down must cycle identically to Left / Right per the wrap
+/// fix in commit 4f3baf9. Verify on the same 3-option field.
+#[test]
+fn basics_failure_policy_cycles_three_options_in_viewport_via_down() {
+    let mut app = App::new(Model::from_str(SAMPLE));
+    for _ in 0..4 {
+        app.on_key(k(KeyCode::Down));
+    }
+    app.on_key(k(KeyCode::Enter)); // begin edit
+
+    app.on_key(k(KeyCode::Down)); // forward = same as Right
+    let s = render(&mut app, 100, 30);
+    assert!(
+        s.contains("fail_profile") && s.contains("(2/3)"),
+        "Down during edit must rotate to options[1]:\n{s}"
+    );
+
+    app.on_key(k(KeyCode::Up)); // reverse = same as Left
+    let s = render(&mut app, 100, 30);
+    assert!(
+        s.contains("retry") && s.contains("(1/3)"),
+        "Up during edit must rotate back to options[0]:\n{s}"
+    );
+}
+
+/// Crypto.policy is another 3-option Choice (`modern`, `interop`,
+/// `legacy`). Verify the same cycle behavior on a different page so
+/// we know the bug isn't basics-page-specific.
+#[test]
+fn crypto_policy_cycles_three_options_in_viewport() {
+    let mut app = App::new(Model::from_str(SAMPLE));
+    tab_to(&mut app, PageKind::Crypto);
+    // Crypto field 0 is `policy`; no Down required.
+    app.on_key(k(KeyCode::Enter)); // begin edit
+    let s0 = render(&mut app, 100, 30);
+    assert!(
+        s0.contains("modern") && s0.contains("(1/3)"),
+        "initial render must show `modern` at 1/3:\n{s0}"
+    );
+    app.on_key(k(KeyCode::Right));
+    let s1 = render(&mut app, 100, 30);
+    assert!(
+        s1.contains("interop") && s1.contains("(2/3)"),
+        "1× Right must rotate to `interop` at 2/3:\n{s1}"
+    );
+    app.on_key(k(KeyCode::Right));
+    let s2 = render(&mut app, 100, 30);
+    assert!(
+        s2.contains("legacy") && s2.contains("(3/3)"),
+        "2× Right must rotate to `legacy` at 3/3:\n{s2}"
+    );
+}
+
+/// After a full forward cycle (N × Right with wrap), the rendered
+/// frame must be byte-identical to the starting frame — proves the
+/// cycle is closed and repeatable, not drifting.
+#[test]
+fn failure_policy_full_cycle_returns_to_identical_viewport() {
+    let mut app = App::new(Model::from_str(SAMPLE));
+    for _ in 0..4 {
+        app.on_key(k(KeyCode::Down));
+    }
+    app.on_key(k(KeyCode::Enter));
+    let initial = render(&mut app, 100, 30);
+    for _ in 0..3 {
+        app.on_key(k(KeyCode::Right));
+    }
+    let after_full_cycle = render(&mut app, 100, 30);
+    assert_eq!(
+        initial, after_full_cycle,
+        "after a full N=3 cycle, the rendered frame must match the start exactly"
+    );
+}

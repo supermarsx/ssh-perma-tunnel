@@ -69,7 +69,11 @@ impl Page for EventsPage {
     }
     fn on_key(&mut self, key: KeyEvent, model: &mut Model) -> bool {
         if self.list.editing {
-            self.list.on_edit_key(key, model.profile_mut())
+            let changed = self.list.on_edit_key(key, model.profile_mut_silent());
+            if changed {
+                model.mark_dirty();
+            }
+            changed
         } else {
             self.list.on_nav_key(key, model.profile());
             false
