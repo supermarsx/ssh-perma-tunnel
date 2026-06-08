@@ -5,10 +5,16 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 
 use crate::model::Model;
-use crate::pages::field::{opt_choice, opt_text, FieldList};
+use crate::pages::field::{opt_choice, opt_choice_with_display, opt_text, FieldList};
 use crate::pages::Page;
 
 const PROTOCOLS: &[&str] = &["ssh2", "ssh3"];
+/// Display labels parallel to [`PROTOCOLS`]. The on-disk value remains
+/// `"ssh3"` (canonical) but the UI clarifies that our implementation
+/// targets the [francoismichel/ssh3](https://github.com/francoismichel/ssh3)
+/// reference — a research/proposal implementation over QUIC + HTTP/3,
+/// not the future IETF SSH3 standard.
+const PROTOCOL_DISPLAY: &[&str] = &["ssh2", "ssh3 (francoismichel)"];
 const STARTUP: &[&str] = &["eager", "lazy"];
 const FAILURE: &[&str] = &["retry", "fail_profile", "fail_process"];
 
@@ -54,23 +60,29 @@ impl BasicsPage {
                 |p| p.description.clone(),
                 |p, v| p.description = v,
             ),
-            // Protocol is required, not Option<String>; serialize-as-text.
-            crate::pages::field::FieldDef {
-                label: "protocol",
-                help: "Transport protocol — ssh2 (libssh2) or ssh3 (HTTP/3)",
-                get: Box::new(|p| crate::pages::FieldValue::Choice {
-                    value: p.protocol.clone(),
-                    options: PROTOCOLS,
-                }),
-                set: Box::new(|p, v| {
-                    if let crate::pages::FieldValue::Choice { value, .. } = v {
-                        if !value.is_empty() {
-                            p.protocol = value;
+            // Protocol is required, not Option<String>; serialize as a
+            // canonical String. The `ssh3` option targets the
+            // francoismichel/ssh3 research implementation (QUIC +
+            // HTTP/3), not the future IETF SSH3 standard. The on-disk
+            // value stays `"ssh3"` for config-file compatibility; the
+            // spinner shows the friendlier `"ssh3 (francoismichel)"`
+            // label. `opt_choice_with_display` does the display-vs-
+            // canonical mapping; we wrap `String` in `Some(...)` to
+            // satisfy its `Option<String>` get/set signature.
+            opt_choice_with_display(
+                "protocol",
+                "Transport — ssh2 (libssh2) or ssh3 (francoismichel/ssh3 over QUIC)",
+                PROTOCOLS,
+                PROTOCOL_DISPLAY,
+                |p| Some(p.protocol.clone()),
+                |p, v| {
+                    if let Some(s) = v {
+                        if !s.is_empty() {
+                            p.protocol = s;
                         }
                     }
-                }),
-                validate: None,
-            },
+                },
+            ),
             opt_choice(
                 "startup",
                 "When to start: eager (boot) or lazy (on demand)",

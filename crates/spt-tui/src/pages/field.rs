@@ -26,10 +26,18 @@ pub enum FieldValue {
     Numeric(String),
     /// Single-choice from a fixed slice of options.
     Choice {
-        /// Current value.
+        /// Current value (canonical, written to TOML on commit).
         value: String,
-        /// Static option list shown to the user.
+        /// Static option list used both for cursor rotation and as the
+        /// canonical values written on commit.
         options: &'static [&'static str],
+        /// Optional parallel list of **display labels** shown to the
+        /// user in place of `options[i]`. If `None`, the canonical
+        /// option string is shown. Mapped by index, so it must match
+        /// `options.len()` when provided. Used to give friendlier UX
+        /// names (e.g. `"ssh3 (francoismichel)"` for the canonical
+        /// `"ssh3"`) without breaking config file compatibility.
+        display: Option<&'static [&'static str]>,
     },
     /// Many-of-N choices.
     Multi {
@@ -189,7 +197,10 @@ impl FieldList {
             // Without this seeding, Enter on a Choice field overwrites
             // the profile with `options[0]` even when the user did not
             // intend a change.
-            if let FieldValue::Choice { ref value, options } = cur {
+            if let FieldValue::Choice {
+                ref value, options, ..
+            } = cur
+            {
                 field.select.index = options.iter().position(|o| *o == value).unwrap_or(0);
             }
             if let FieldValue::Multi { ref value, options } = cur {
@@ -301,7 +312,7 @@ impl FieldList {
                 }
                 changed
             }
-            FieldValue::Choice { value, options } => {
+            FieldValue::Choice { value, options, .. } => {
                 let changed = field.select.on_key(options, value, key);
                 if matches!(key.code, KeyCode::Enter) {
                     return self.commit_edit(profile);
@@ -413,10 +424,31 @@ impl FieldList {
                     let t = Toggle { focused: editing };
                     t.render(area, buf, field.def.label, b);
                 }
-                FieldValue::Choice { ref value, options } => {
+                FieldValue::Choice {
+                    ref value,
+                    options,
+                    display,
+                } => {
+                    // If the FieldDef supplied display labels, use those
+                    // for rendering only — the underlying option list and
+                    // committed value stay canonical. This lets us show
+                    // "ssh3 (francoismichel)" while still writing
+                    // `protocol = "ssh3"` to TOML.
+                    let render_options: &[&str] = display.unwrap_or(options);
+                    // The current value is the canonical option; map it
+                    // back to its display label when one exists.
+                    let render_current = display
+                        .and_then(|d| {
+                            options
+                                .iter()
+                                .position(|o| *o == value)
+                                .and_then(|i| d.get(i))
+                                .copied()
+                        })
+                        .unwrap_or(value.as_str());
                     field
                         .select
-                        .render(area, buf, field.def.label, options, value);
+                        .render(area, buf, field.def.label, render_options, render_current);
                 }
                 FieldValue::Multi { ref value, options } => {
                     field
@@ -443,6 +475,61 @@ impl FieldList {
                         Paragraph::new(line).block(block).render(area, buf);
                     }
                 }
+            }
+        }
+
+        // Nav-mode focus highlight. Each widget already paints its own
+        // bordered Block; in NAV mode (not actively editing) the widget
+        // is drawn unstyled (default fg/bg) which makes "which field is
+        // pre-selected" hard to see from the box alone — the operator
+        // had to find the ▶ gutter glyph. Overlay a soft Yellow fg on
+        // the focused row's border cells so the box itself stands out.
+        // Edit mode is left untouched: the widget already paints the
+        // border in bright Yellow + BOLD, and the gutter ▶ flips to
+        // Green to mark the active edit.
+        if !self.editing {
+            if let Some(focus_chunk) = chunks.get(self.focus) {
+                paint_nav_focus_border(buf, *focus_chunk);
+            }
+        }
+    }
+}
+
+/// Tint the border cells of `area` Yellow (no BOLD) to indicate
+/// nav-mode focus on a field whose widget would otherwise render in
+/// the default style. Existing modifiers and bg are preserved.
+fn paint_nav_focus_border(buf: &mut Buffer, area: Rect) {
+    if area.width < 2 || area.height < 2 {
+        return;
+    }
+    let buf_area = buf.area();
+    let max_x = buf_area.x + buf_area.width;
+    let max_y = buf_area.y + buf_area.height;
+    let right = area.x + area.width - 1;
+    let bottom = area.y + area.height - 1;
+    // Top and bottom edges.
+    for x in area.x..=right {
+        if x < max_x {
+            if area.y < max_y {
+                let s = buf[(x, area.y)].style().fg(Color::Yellow);
+                buf[(x, area.y)].set_style(s);
+            }
+            if bottom < max_y && bottom != area.y {
+                let s = buf[(x, bottom)].style().fg(Color::Yellow);
+                buf[(x, bottom)].set_style(s);
+            }
+        }
+    }
+    // Left and right edges (skip the corners we already coloured).
+    for y in (area.y + 1)..bottom {
+        if y < max_y {
+            if area.x < max_x {
+                let s = buf[(area.x, y)].style().fg(Color::Yellow);
+                buf[(area.x, y)].set_style(s);
+            }
+            if right < max_x && right != area.x {
+                let s = buf[(right, y)].style().fg(Color::Yellow);
+                buf[(right, y)].set_style(s);
             }
         }
     }
@@ -557,6 +644,46 @@ where
         get: Box::new(move |p| FieldValue::Choice {
             value: get(p).unwrap_or_default(),
             options,
+            display: None,
+        }),
+        set: Box::new(move |p, v| {
+            if let FieldValue::Choice { value, .. } = v {
+                set(p, if value.is_empty() { None } else { Some(value) });
+            }
+        }),
+        validate: None,
+    }
+}
+
+/// Like [`opt_choice`] but renders `display[i]` instead of `options[i]`
+/// in the spinner. The stored value remains the canonical
+/// `options[i]`, so this is purely a presentation knob. `display.len()`
+/// must match `options.len()`; mismatches fall back to canonical
+/// option strings.
+pub fn opt_choice_with_display<F, G>(
+    label: &'static str,
+    help: &'static str,
+    options: &'static [&'static str],
+    display: &'static [&'static str],
+    get: G,
+    set: F,
+) -> FieldDef
+where
+    G: Fn(&Profile) -> Option<String> + 'static,
+    F: Fn(&mut Profile, Option<String>) + 'static,
+{
+    let display = if display.len() == options.len() {
+        Some(display)
+    } else {
+        None
+    };
+    FieldDef {
+        label,
+        help,
+        get: Box::new(move |p| FieldValue::Choice {
+            value: get(p).unwrap_or_default(),
+            options,
+            display,
         }),
         set: Box::new(move |p, v| {
             if let FieldValue::Choice { value, .. } = v {
@@ -956,6 +1083,7 @@ mod tests {
             get: Box::new(|p: &Profile| FieldValue::Choice {
                 value: p.protocol.clone(),
                 options: OPTS,
+                display: None,
             }),
             set: Box::new(|p, v| {
                 if let FieldValue::Choice { value, .. } = v {
@@ -1034,6 +1162,7 @@ mod tests {
             get: Box::new(|p: &Profile| FieldValue::Choice {
                 value: p.protocol.clone(),
                 options: OPTS,
+                display: None,
             }),
             set: Box::new(|p, v| {
                 if let FieldValue::Choice { value, .. } = v {

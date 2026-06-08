@@ -106,6 +106,7 @@ fn forward_fields(idx: usize) -> Vec<FieldDef> {
                     .map(|f| f.kind.clone())
                     .unwrap_or_default(),
                 options: KIND,
+                display: None,
             }),
             set: Box::new(move |p, v| {
                 if let FieldValue::Choice { value, .. } = v {
@@ -126,6 +127,7 @@ fn forward_fields(idx: usize) -> Vec<FieldDef> {
                     .map(|f| f.transport.clone())
                     .unwrap_or_default(),
                 options: TRANSPORT,
+                display: None,
             }),
             set: Box::new(move |p, v| {
                 if let FieldValue::Choice { value, .. } = v {

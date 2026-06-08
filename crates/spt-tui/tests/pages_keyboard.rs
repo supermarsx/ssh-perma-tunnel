@@ -1114,3 +1114,174 @@ fn failure_policy_full_cycle_returns_to_identical_viewport() {
         "after a full N=3 cycle, the rendered frame must match the start exactly"
     );
 }
+
+// -----------------------------------------------------------------
+// Protocol display label — the spinner shows "ssh3 (francoismichel)"
+// while the stored value remains the canonical "ssh3". This protects
+// users from believing our `ssh3` is the IETF SSH3 standard.
+// -----------------------------------------------------------------
+
+/// In nav mode, a profile with `protocol = "ssh3"` must render the
+/// friendly display label, not the bare canonical value.
+#[test]
+fn protocol_nav_mode_renders_friendly_display_label_for_ssh3() {
+    const SAMPLE_SSH3: &str = r#"version = 1
+
+[[profiles]]
+name = "demo"
+protocol = "ssh3"
+host = "demo.example.com"
+"#;
+    let mut app = App::new(Model::from_str(SAMPLE_SSH3));
+    let text = render(&mut app, 100, 30);
+    assert!(
+        text.contains("ssh3 (francoismichel)"),
+        "nav-mode protocol row must show friendly display label:\n{text}"
+    );
+}
+
+/// `protocol = "ssh2"` is canonical and friendly already; nav-mode
+/// must render plain `ssh2` (no parenthetical).
+#[test]
+fn protocol_nav_mode_renders_plain_ssh2_unchanged() {
+    let mut app = App::new(Model::from_str(SAMPLE));
+    let text = render(&mut app, 100, 30);
+    assert!(
+        text.contains("ssh2"),
+        "nav-mode protocol row must show ssh2:\n{text}"
+    );
+    assert!(
+        !text.contains("ssh2 ("),
+        "ssh2 must render plain — no parenthetical:\n{text}"
+    );
+}
+
+/// In edit mode, pressing Right to rotate to the second option must
+/// display the friendly label `ssh3 (francoismichel)` in the spinner.
+#[test]
+fn protocol_edit_rotate_to_ssh3_renders_friendly_label() {
+    let mut app = App::new(Model::from_str(SAMPLE));
+    // Focus protocol (index 2 on Basics).
+    app.on_key(k(KeyCode::Down));
+    app.on_key(k(KeyCode::Down));
+    app.on_key(k(KeyCode::Enter)); // begin edit
+    app.on_key(k(KeyCode::Right)); // rotate to ssh3
+    let text = render(&mut app, 100, 30);
+    assert!(
+        text.contains("◀ ssh3 (francoismichel) ▶"),
+        "rotated spinner must show friendly display label, not just `ssh3`:\n{text}"
+    );
+    assert!(
+        text.contains("(2/2)"),
+        "position counter must reflect index 2 of 2:\n{text}"
+    );
+}
+
+/// Critical compat guard: committing the friendly-labelled option
+/// must persist the **canonical** `"ssh3"` to the profile — not the
+/// display string. Existing configs with `protocol = "ssh3"` keep
+/// working because we never write `"ssh3 (francoismichel)"` to TOML.
+#[test]
+fn protocol_commit_writes_canonical_value_not_display_label() {
+    let mut app = App::new(Model::from_str(SAMPLE));
+    assert_eq!(app.model.profile().protocol, "ssh2");
+    app.on_key(k(KeyCode::Down));
+    app.on_key(k(KeyCode::Down));
+    app.on_key(k(KeyCode::Enter)); // begin edit
+    app.on_key(k(KeyCode::Right)); // rotate to ssh3
+    app.on_key(k(KeyCode::Enter)); // commit
+    assert_eq!(
+        app.model.profile().protocol,
+        "ssh3",
+        "committed value must be the canonical `ssh3`, NOT the display label"
+    );
+}
+
+// -----------------------------------------------------------------
+// Nav-mode focus border highlight — the field whose row is currently
+// pre-selected (but not yet in edit) must have its border tinted
+// Yellow so the operator can see which row will receive the next
+// Enter, beyond just the ▶ gutter glyph.
+// -----------------------------------------------------------------
+
+/// In nav mode, the focused field's border cells must carry a Yellow
+/// foreground style. Edit mode is a separate concern (widget paints
+/// bright Yellow + BOLD itself).
+#[test]
+fn nav_mode_focused_field_border_is_yellow() {
+    use ratatui::backend::TestBackend;
+    use ratatui::style::Color;
+    use ratatui::Terminal;
+
+    let mut app = App::new(Model::from_str(SAMPLE));
+    // Default focus is index 0 (id). Render and probe the field's
+    // border cells.
+    let backend = TestBackend::new(120, 30);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|f| app.render_frame(f.area(), f.buffer_mut()))
+        .unwrap();
+    let buf = terminal.backend().buffer();
+
+    // Scan rows for any cell whose symbol is one of the border glyphs
+    // AND whose fg is Yellow. There must be at least a handful — the
+    // top + bottom borders of the focused field row.
+    let mut yellow_border_cells = 0usize;
+    for y in 0..buf.area.height {
+        for x in 0..buf.area.width {
+            let cell = &buf[(x, y)];
+            let sym = cell.symbol();
+            let is_border = matches!(sym, "─" | "│" | "┌" | "┐" | "└" | "┘");
+            if is_border && cell.style().fg == Some(Color::Yellow) {
+                yellow_border_cells += 1;
+            }
+        }
+    }
+    assert!(
+        yellow_border_cells >= 4,
+        "nav-mode focused field must have at least 4 Yellow border cells, \
+         found {yellow_border_cells}"
+    );
+}
+
+/// When focus moves to a different row, the Yellow border tint must
+/// follow. This pins the "highlight follows focus" contract.
+#[test]
+fn nav_mode_yellow_border_follows_focus() {
+    use ratatui::backend::TestBackend;
+    use ratatui::style::Color;
+    use ratatui::Terminal;
+
+    let mut app = App::new(Model::from_str(SAMPLE));
+    let snapshot = |a: &mut App| -> Vec<(u16, u16)> {
+        let backend = TestBackend::new(120, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| a.render_frame(f.area(), f.buffer_mut()))
+            .unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let mut cells = Vec::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                let c = &buf[(x, y)];
+                let sym = c.symbol();
+                let is_border = matches!(sym, "─" | "│" | "┌" | "┐" | "└" | "┘");
+                if is_border && c.style().fg == Some(Color::Yellow) {
+                    cells.push((x, y));
+                }
+            }
+        }
+        cells
+    };
+
+    let before = snapshot(&mut app);
+    app.on_key(k(KeyCode::Down));
+    let after = snapshot(&mut app);
+
+    assert!(!before.is_empty(), "must have some yellow cells at focus 0");
+    assert!(!after.is_empty(), "must have some yellow cells at focus 1");
+    assert_ne!(
+        before, after,
+        "the yellow border cell set must shift when focus moves to a new row"
+    );
+}
