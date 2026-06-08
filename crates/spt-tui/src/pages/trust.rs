@@ -5,10 +5,16 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 
 use crate::model::Model;
-use crate::pages::field::{opt_bool, opt_choice, opt_list, opt_text, FieldList};
+use crate::pages::field::{
+    opt_bool_with_help, opt_choice_with_help, opt_list, opt_text, FieldList,
+};
 use crate::pages::Page;
 
 const TRUST_MODE: &[&str] = &["known_hosts", "pinned"];
+const TRUST_MODE_HELP: &[&str] = &[
+    "Verify host keys against OpenSSH `known_hosts` (TOFU when `accept_new = true`).",
+    "Verify host keys against the `pin_sha256` set only. No TOFU — strictest mode.",
+];
 
 /// Trust verification settings.
 pub struct TrustPage {
@@ -19,10 +25,11 @@ impl TrustPage {
     /// Build the page.
     pub fn new() -> Self {
         let fields = vec![
-            opt_choice(
+            opt_choice_with_help(
                 "trust.mode",
                 "How host identity is verified (§9.13)",
                 TRUST_MODE,
+                TRUST_MODE_HELP,
                 |p| p.trust.as_ref().and_then(|t| t.mode.clone()),
                 |p, v| p.trust.get_or_insert_with(Default::default).mode = v,
             ),
@@ -36,15 +43,19 @@ impl TrustPage {
                         .known_hosts_file = v;
                 },
             ),
-            opt_bool(
+            opt_bool_with_help(
                 "trust.strict",
                 "Strict verification (no TOFU)",
+                "Permissive: missing/unknown host keys may be accepted depending on `accept_new`.",
+                "Strict: unknown host keys cause the connection to fail loudly. No TOFU.",
                 |p| p.trust.as_ref().and_then(|t| t.strict),
                 |p, v| p.trust.get_or_insert_with(Default::default).strict = v,
             ),
-            opt_bool(
+            opt_bool_with_help(
                 "trust.accept_new",
                 "Trust-on-first-use for new keys",
+                "Refuse keys not already in known_hosts/pin set. Operator must seed trust out-of-band.",
+                "Trust new keys on first connection (TOFU). Convenient but vulnerable to active MitM.",
                 |p| p.trust.as_ref().and_then(|t| t.accept_new),
                 |p, v| p.trust.get_or_insert_with(Default::default).accept_new = v,
             ),
@@ -88,9 +99,11 @@ impl TrustPage {
                         if v.is_empty() { None } else { Some(v) };
                 },
             ),
-            opt_bool(
+            opt_bool_with_help(
                 "tls.allow_self_signed",
                 "Allow self-signed certs (requires pin or `ca_file`)",
+                "Reject self-signed certificates. System-roots verification applies.",
+                "Permit self-signed certs — requires a non-empty `pin_sha256` or `ca_file` to be safe.",
                 |p| p.tls.as_ref().and_then(|t| t.allow_self_signed),
                 |p, v| p.tls.get_or_insert_with(Default::default).allow_self_signed = v,
             ),
@@ -120,6 +133,9 @@ impl Page for TrustPage {
 
     fn focused_help(&self) -> Option<&str> {
         self.list.focused_help()
+    }
+    fn focused_help_dynamic(&self, model: &Model) -> Option<&str> {
+        self.list.focused_help_dynamic(model.profile())
     }
     fn focused_position(&self) -> Option<(usize, usize)> {
         self.list.focus_position()

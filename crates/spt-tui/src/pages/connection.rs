@@ -53,6 +53,7 @@ impl ConnectionPage {
                     }
                     None
                 })),
+                bool_option_help: None,
             },
             opt_text(
                 "endpoint",
@@ -129,6 +130,7 @@ impl ConnectionPage {
                 }),
                 set: Box::new(|_p, _v| {}),
                 validate: None,
+                bool_option_help: None,
             },
         ];
         Self {

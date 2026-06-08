@@ -100,6 +100,7 @@ fn endpoint_fields(idx: usize) -> Vec<FieldDef> {
                 }
                 None
             })),
+            bool_option_help: None,
         },
         // host — Text. Non-empty required.
         FieldDef {
@@ -128,6 +129,7 @@ fn endpoint_fields(idx: usize) -> Vec<FieldDef> {
                 }
                 None
             })),
+            bool_option_help: None,
         },
         // port — Numeric(u16). Required (struct field is u16, not Option).
         // Reject empty, parse failures, and 0.
@@ -163,6 +165,7 @@ fn endpoint_fields(idx: usize) -> Vec<FieldDef> {
                     None
                 }
             })),
+            bool_option_help: None,
         },
         // priority — Option<u32>.
         opt_u32(

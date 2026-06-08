@@ -5,7 +5,9 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 
 use crate::model::Model;
-use crate::pages::field::{opt_choice, opt_choice_with_display, opt_text, FieldList};
+use crate::pages::field::{
+    opt_choice_with_display_and_help, opt_choice_with_help, opt_text, FieldList,
+};
 use crate::pages::Page;
 
 const PROTOCOLS: &[&str] = &["ssh2", "ssh3"];
@@ -15,8 +17,21 @@ const PROTOCOLS: &[&str] = &["ssh2", "ssh3"];
 /// reference — a research/proposal implementation over QUIC + HTTP/3,
 /// not the future IETF SSH3 standard.
 const PROTOCOL_DISPLAY: &[&str] = &["ssh2", "ssh3 (francoismichel)"];
+const PROTOCOL_HELP: &[&str] = &[
+    "Classic SSH over TCP via libssh2/russh. Stable; full forward + agent support.",
+    "francoismichel/ssh3 research impl over QUIC/HTTP-3. Not the future IETF SSH3 standard.",
+];
 const STARTUP: &[&str] = &["eager", "lazy"];
+const STARTUP_HELP: &[&str] = &[
+    "Connect on boot / service start. Use for always-on tunnels.",
+    "Connect on first forward usage. Saves resources for rarely-used profiles.",
+];
 const FAILURE: &[&str] = &["retry", "fail_profile", "fail_process"];
+const FAILURE_HELP: &[&str] = &[
+    "Keep reconnecting forever within the backoff. Default for daemons.",
+    "Stop this profile but keep the daemon alive — other profiles keep running.",
+    "Exit the whole daemon process. Loudest signal — for one-shot or supervised scripts.",
+];
 
 /// Top-level identity + protocol.
 pub struct BasicsPage {
@@ -53,6 +68,7 @@ impl BasicsPage {
                     }
                     None
                 })),
+                bool_option_help: None,
             },
             opt_text(
                 "description",
@@ -69,11 +85,12 @@ impl BasicsPage {
             // label. `opt_choice_with_display` does the display-vs-
             // canonical mapping; we wrap `String` in `Some(...)` to
             // satisfy its `Option<String>` get/set signature.
-            opt_choice_with_display(
+            opt_choice_with_display_and_help(
                 "protocol",
                 "Transport — ssh2 (libssh2) or ssh3 (francoismichel/ssh3 over QUIC)",
                 PROTOCOLS,
                 PROTOCOL_DISPLAY,
+                PROTOCOL_HELP,
                 |p| Some(p.protocol.clone()),
                 |p, v| {
                     if let Some(s) = v {
@@ -83,17 +100,19 @@ impl BasicsPage {
                     }
                 },
             ),
-            opt_choice(
+            opt_choice_with_help(
                 "startup",
                 "When to start: eager (boot) or lazy (on demand)",
                 STARTUP,
+                STARTUP_HELP,
                 |p| p.startup.clone(),
                 |p, v| p.startup = v,
             ),
-            opt_choice(
+            opt_choice_with_help(
                 "failure_policy",
                 "Action when profile fails repeatedly",
                 FAILURE,
+                FAILURE_HELP,
                 |p| p.failure_policy.clone(),
                 |p, v| p.failure_policy = v,
             ),
@@ -124,6 +143,9 @@ impl Page for BasicsPage {
 
     fn focused_help(&self) -> Option<&str> {
         self.list.focused_help()
+    }
+    fn focused_help_dynamic(&self, model: &Model) -> Option<&str> {
+        self.list.focused_help_dynamic(model.profile())
     }
     fn focused_position(&self) -> Option<(usize, usize)> {
         self.list.focus_position()

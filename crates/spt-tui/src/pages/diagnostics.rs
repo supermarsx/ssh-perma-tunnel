@@ -8,7 +8,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 
 use crate::model::Model;
-use crate::pages::field::{opt_bool, opt_list, opt_text, FieldList};
+use crate::pages::field::{opt_bool_with_help, opt_list, opt_text, FieldList};
 use crate::pages::Page;
 
 /// Diagnostics / observability tags.
@@ -26,9 +26,11 @@ impl DiagnosticsPage {
                 |p| p.tags.clone().unwrap_or_default(),
                 |p, v| p.tags = if v.is_empty() { None } else { Some(v) },
             ),
-            opt_bool(
+            opt_bool_with_help(
                 "acknowledge_experimental",
                 "Required for SSH3 profiles to start without a warning",
+                "Required to be `true` to start an SSH3 profile — current value blocks startup.",
+                "You acknowledge SSH3 is research-grade and may break across releases.",
                 |p| p.acknowledge_experimental,
                 |p, v| p.acknowledge_experimental = v,
             ),
@@ -44,9 +46,11 @@ impl DiagnosticsPage {
                 |p| p.ssh3.as_ref().and_then(|s| s.keepalive.clone()),
                 |p, v| p.ssh3.get_or_insert_with(Default::default).keepalive = v,
             ),
-            opt_bool(
+            opt_bool_with_help(
                 "ssh3.enable_datagrams",
                 "QUIC datagrams (UDP forwarding) for SSH3",
+                "QUIC datagrams disabled. UDP forwards over this SSH3 profile are refused.",
+                "QUIC datagrams enabled. SSH3 profiles can carry UDP forwards as datagram frames.",
                 |p| p.ssh3.as_ref().and_then(|s| s.enable_datagrams),
                 |p, v| p.ssh3.get_or_insert_with(Default::default).enable_datagrams = v,
             ),
@@ -76,6 +80,9 @@ impl Page for DiagnosticsPage {
 
     fn focused_help(&self) -> Option<&str> {
         self.list.focused_help()
+    }
+    fn focused_help_dynamic(&self, model: &Model) -> Option<&str> {
+        self.list.focused_help_dynamic(model.profile())
     }
     fn focused_position(&self) -> Option<(usize, usize)> {
         self.list.focus_position()

@@ -5,10 +5,14 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 
 use crate::model::Model;
-use crate::pages::field::{opt_choice, opt_text, opt_u32, FieldList};
+use crate::pages::field::{opt_choice_with_help, opt_text, opt_u32, FieldList};
 use crate::pages::Page;
 
 const ALGORITHMS: &[&str] = &["token_bucket", "leaky_bucket"];
+const ALGORITHMS_HELP: &[&str] = &[
+    "Token bucket: bursts permitted up to the bucket capacity. Bursty workloads.",
+    "Leaky bucket: outflow rate is constant; bursts queue and trickle out. Smoothest.",
+];
 
 /// Per-profile limits.
 pub struct LimitsPage {
@@ -71,10 +75,11 @@ impl LimitsPage {
                         .max_bytes_per_second_out = v;
                 },
             ),
-            opt_choice(
+            opt_choice_with_help(
                 "limits.throttle_algorithm",
                 "Throttle algorithm",
                 ALGORITHMS,
+                ALGORITHMS_HELP,
                 |p| p.limits.as_ref().and_then(|l| l.throttle_algorithm.clone()),
                 |p, v| {
                     p.limits
@@ -122,6 +127,9 @@ impl Page for LimitsPage {
 
     fn focused_help(&self) -> Option<&str> {
         self.list.focused_help()
+    }
+    fn focused_help_dynamic(&self, model: &Model) -> Option<&str> {
+        self.list.focused_help_dynamic(model.profile())
     }
     fn focused_position(&self) -> Option<(usize, usize)> {
         self.list.focus_position()

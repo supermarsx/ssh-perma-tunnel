@@ -9,7 +9,9 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 
 use crate::model::Model;
-use crate::pages::field::{opt_bool, opt_choice, opt_secret, opt_text, FieldList};
+use crate::pages::field::{
+    opt_bool_with_help, opt_choice_with_help, opt_secret, opt_text, FieldList,
+};
 use crate::pages::Page;
 
 const METHODS: &[&str] = &[
@@ -22,6 +24,16 @@ const METHODS: &[&str] = &[
     "basic",
     "oidc_device_flow",
 ];
+const METHODS_HELP: &[&str] = &[
+    "OpenSSH public-key auth. Set `identity_file` and (optionally) `passphrase`.",
+    "Delegate to ssh-agent (SSH_AUTH_SOCK / Pageant). No private-key material needed here.",
+    "Password auth. Set `password` to a `secret://ns/name` reference.",
+    "Server-driven challenge prompts (PAM, OTP). Set `password` for the canned response.",
+    "OpenSSH user certificate. Set `identity_file` AND `certificate_file`.",
+    "SSH3 bearer token. Set `token` to a `secret://ns/name` reference.",
+    "HTTP Basic auth for SSH3. Set `user` + `password`. Avoid over plain HTTP.",
+    "OIDC device-code flow (SSH3). Set `oidc_issuer` + `oidc_client_id`.",
+];
 
 /// Auth method + secret refs.
 pub struct AuthPage {
@@ -32,10 +44,11 @@ impl AuthPage {
     /// Build the page.
     pub fn new() -> Self {
         let fields = vec![
-            opt_choice(
+            opt_choice_with_help(
                 "auth.method",
                 "Spec §9.12 auth method",
                 METHODS,
+                METHODS_HELP,
                 |p| p.auth.as_ref().map(|a| a.method.clone()),
                 |p, v| p.auth.get_or_insert_with(Default::default).method = v.unwrap_or_default(),
             ),
@@ -98,9 +111,11 @@ impl AuthPage {
                         v.map(spt_core::RedactedString::from);
                 },
             ),
-            opt_bool(
+            opt_bool_with_help(
                 "auth.agent",
                 "Try SSH agent (`SSH_AUTH_SOCK` / Pageant)",
+                "Skip the SSH agent. Use when the agent is untrusted or out of scope.",
+                "Try the SSH agent first, falling back to `identity_file`. Recommended.",
                 |p| p.auth.as_ref().and_then(|a| a.agent),
                 |p, v| p.auth.get_or_insert_with(Default::default).agent = v,
             ),
@@ -110,9 +125,11 @@ impl AuthPage {
                 |p| p.auth.as_ref().and_then(|a| a.identity_hint.clone()),
                 |p, v| p.auth.get_or_insert_with(Default::default).identity_hint = v,
             ),
-            opt_bool(
+            opt_bool_with_help(
                 "auth.keyboard_interactive",
                 "Allow SSH2 keyboard-interactive fallback",
+                "Keyboard-interactive challenges refused. Safer — no human-style prompts.",
+                "Permit keyboard-interactive prompts (PAM, OTP). Needed for some MFA setups.",
                 |p| p.auth.as_ref().and_then(|a| a.keyboard_interactive),
                 |p, v| {
                     p.auth
@@ -158,6 +175,9 @@ impl Page for AuthPage {
 
     fn focused_help(&self) -> Option<&str> {
         self.list.focused_help()
+    }
+    fn focused_help_dynamic(&self, model: &Model) -> Option<&str> {
+        self.list.focused_help_dynamic(model.profile())
     }
     fn focused_position(&self) -> Option<(usize, usize)> {
         self.list.focus_position()

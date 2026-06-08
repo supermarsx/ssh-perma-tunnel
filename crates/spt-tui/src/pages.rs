@@ -133,6 +133,19 @@ pub trait Page {
         None
     }
 
+    /// Like [`Page::focused_help`] but **option-aware**: when the
+    /// focused field is a Bool/Choice/Multi with a per-option help
+    /// table, the App surfaces the help string for the currently
+    /// selected option (in edit mode) or the profile's stored value
+    /// (in nav mode) rather than the field's static one-line help.
+    ///
+    /// Default impl delegates to [`Page::focused_help`] so pages
+    /// without dynamic help — Endpoints, Connection, DNS, Events,
+    /// Review — keep behaving exactly as before.
+    fn focused_help_dynamic(&self, _model: &Model) -> Option<&str> {
+        self.focused_help()
+    }
+
     /// `(current_index_1based, total)` for the focused row within the
     /// page. Surfaced by the App as `[3/12]` so the operator knows where
     /// they are. `None` for pages with no item list.

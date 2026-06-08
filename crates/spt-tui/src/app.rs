@@ -162,8 +162,15 @@ impl App {
         }
 
         // ----- Help footer (focused field + description) -------------------
+        // Use the dynamic-help variant so Bool/Choice/Multi fields with a
+        // per-option help table can swap the footer string as the operator
+        // rotates the cursor. Pages without dynamic help delegate to the
+        // static `focused_help()` via the trait default.
         let (help_text, position) = if let Some(page) = self.pages.get(idx) {
-            (page.focused_help(), page.focused_position())
+            (
+                page.focused_help_dynamic(&self.model),
+                page.focused_position(),
+            )
         } else {
             (None, None)
         };

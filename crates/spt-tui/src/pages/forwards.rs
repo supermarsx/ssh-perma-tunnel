@@ -17,12 +17,22 @@ use spt_config::schema::{Forward, Profile};
 
 use crate::model::Model;
 use crate::pages::field::{
-    opt_bool, opt_choice, opt_multi, opt_text, opt_u32, FieldDef, FieldList, FieldValue,
+    opt_bool_with_help, opt_choice_with_help, opt_multi_with_help, opt_text, opt_u32, FieldDef,
+    FieldList, FieldValue,
 };
 use crate::pages::Page;
 
 const KIND: &[&str] = &["local", "remote", "dynamic"];
+const KIND_HELP: &[&str] = &[
+    "local: listen here, forward to remote (SSH `-L`).",
+    "remote: listen on the SSH peer, forward back to here (SSH `-R`).",
+    "dynamic: local SOCKS / HTTP CONNECT proxy (SSH `-D`).",
+];
 const TRANSPORT: &[&str] = &["tcp", "udp"];
+const TRANSPORT_HELP: &[&str] = &[
+    "TCP forwarding. Available on every profile (SSH2 + SSH3).",
+    "UDP forwarding via QUIC datagrams. SSH3 profiles only.",
+];
 const BIND_MODE: &[&str] = &[
     "loopback",
     "specific_ip",
@@ -30,7 +40,20 @@ const BIND_MODE: &[&str] = &[
     "all_interfaces",
     "auto_interface",
 ];
+const BIND_MODE_HELP: &[&str] = &[
+    "Bind 127.0.0.1 / ::1 only. Safe default — local users only.",
+    "Bind a specific IP address. Set `bind` to e.g. `192.0.2.5:5432`.",
+    "Bind a specific named interface. Set `bind_interface`.",
+    "Wildcard bind (0.0.0.0 / ::). Requires `expose = true`.",
+    "Pick the first matching interface from `bind_interface_preference`.",
+];
 const PROXY_PROTOCOLS: &[&str] = &["socks4", "socks4a", "socks5", "http_connect"];
+const PROXY_PROTOCOLS_HELP: &[&str] = &[
+    "socks4: legacy SOCKS — IPv4 destination, no auth, no remote DNS.",
+    "socks4a: SOCKS4 + remote DNS resolution at the proxy.",
+    "socks5: RFC 1928 — IPv4/IPv6/hostname destinations, optional auth.",
+    "http_connect: HTTP CONNECT proxy. Standard for tunnelling HTTPS via web proxies.",
+];
 
 /// Forwards list page.
 pub struct ForwardsPage {
@@ -40,6 +63,10 @@ pub struct ForwardsPage {
     editor: Option<ForwardEditor>,
     /// Cached list state for rendering.
     list_state: ListState,
+    /// Cached `profile.forwards.len()` updated every render. Used by
+    /// `focused_position` (which takes `&self` and has no profile
+    /// reference) to surface the `[N/total]` counter in the footer.
+    forwards_count: usize,
 }
 
 struct ForwardEditor {
@@ -57,6 +84,7 @@ impl ForwardsPage {
             selected: 0,
             editor: None,
             list_state: ListState::default(),
+            forwards_count: 0,
         }
     }
 
@@ -95,10 +123,11 @@ fn forward_fields(idx: usize) -> Vec<FieldDef> {
                 }
             }),
             validate: None,
+            bool_option_help: None,
         },
         FieldDef {
             label: "type",
-            help: "`local` (listen here) or `remote` (listen on peer)",
+            help: "`local` (listen here), `remote` (listen on peer), or `dynamic` (SOCKS).",
             get: Box::new(move |p: &Profile| FieldValue::Choice {
                 value: p
                     .forwards
@@ -107,6 +136,7 @@ fn forward_fields(idx: usize) -> Vec<FieldDef> {
                     .unwrap_or_default(),
                 options: KIND,
                 display: None,
+                option_help: Some(KIND_HELP),
             }),
             set: Box::new(move |p, v| {
                 if let FieldValue::Choice { value, .. } = v {
@@ -116,10 +146,11 @@ fn forward_fields(idx: usize) -> Vec<FieldDef> {
                 }
             }),
             validate: None,
+            bool_option_help: None,
         },
         FieldDef {
             label: "transport",
-            help: "`tcp` always; `udp` only with SSH3",
+            help: "`tcp` always; `udp` only with SSH3.",
             get: Box::new(move |p: &Profile| FieldValue::Choice {
                 value: p
                     .forwards
@@ -128,6 +159,7 @@ fn forward_fields(idx: usize) -> Vec<FieldDef> {
                     .unwrap_or_default(),
                 options: TRANSPORT,
                 display: None,
+                option_help: Some(TRANSPORT_HELP),
             }),
             set: Box::new(move |p, v| {
                 if let FieldValue::Choice { value, .. } = v {
@@ -137,6 +169,7 @@ fn forward_fields(idx: usize) -> Vec<FieldDef> {
                 }
             }),
             validate: None,
+            bool_option_help: None,
         },
         opt_text(
             "bind",
@@ -158,10 +191,11 @@ fn forward_fields(idx: usize) -> Vec<FieldDef> {
                 }
             },
         ),
-        opt_choice(
+        opt_choice_with_help(
             "bind_mode",
             "Bind mode (loopback, specific_ip, ...)",
             BIND_MODE,
+            BIND_MODE_HELP,
             move |p| p.forwards.get(i).and_then(|f| f.bind_mode.clone()),
             move |p, v| {
                 if let Some(f) = p.forwards.get_mut(i) {
@@ -179,9 +213,11 @@ fn forward_fields(idx: usize) -> Vec<FieldDef> {
                 }
             },
         ),
-        opt_bool(
+        opt_bool_with_help(
             "expose",
-            "Required for non-loopback binds (§9.14)",
+            "Required acknowledgement for non-loopback binds (§9.14).",
+            "Loopback-only bind. Safe — no external acknowledgement required.",
+            "Acknowledge: this forward is intentionally reachable beyond loopback.",
             move |p| p.forwards.get(i).and_then(|f| f.expose),
             move |p, v| {
                 if let Some(f) = p.forwards.get_mut(i) {
@@ -209,10 +245,11 @@ fn forward_fields(idx: usize) -> Vec<FieldDef> {
                 }
             },
         ),
-        opt_multi(
+        opt_multi_with_help(
             "proxy_protocols",
             "Dynamic proxy protocols (empty = all)",
             PROXY_PROTOCOLS,
+            PROXY_PROTOCOLS_HELP,
             move |p| {
                 p.forwards
                     .get(i)
@@ -240,6 +277,9 @@ fn forward_fields(idx: usize) -> Vec<FieldDef> {
 
 impl Page for ForwardsPage {
     fn render(&mut self, area: Rect, buf: &mut Buffer, model: &Model) {
+        // Cache the count for `focused_position` (no `model` available
+        // in the trait signature).
+        self.forwards_count = model.profile().forwards.len();
         let chunks = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(35), Constraint::Percentage(65)])
@@ -332,6 +372,45 @@ impl Page for ForwardsPage {
                 .block(block)
                 .render(chunks[1], buf);
         }
+    }
+
+    fn focused_help(&self) -> Option<&str> {
+        // When the editor is open, surface the focused field's static
+        // help; in list mode show the keymap so operators don't see a
+        // blank footer.
+        if let Some(ed) = self.editor.as_ref() {
+            ed.fields.focused_help()
+        } else {
+            Some("Forwards list: a=add, d=del, Enter=edit")
+        }
+    }
+
+    fn focused_help_dynamic(&self, model: &Model) -> Option<&str> {
+        if let Some(ed) = self.editor.as_ref() {
+            ed.fields.focused_help_dynamic(model.profile())
+        } else {
+            Some("Forwards list: a=add, d=del, Enter=edit")
+        }
+    }
+
+    fn focused_position(&self) -> Option<(usize, usize)> {
+        // Editor mode → the editor field-list's position; list mode →
+        // forward index within the cached `forwards_count` (refreshed
+        // on every render).
+        if let Some(ed) = self.editor.as_ref() {
+            ed.fields.focus_position()
+        } else if self.forwards_count == 0 {
+            None
+        } else {
+            Some((
+                self.selected.min(self.forwards_count - 1) + 1,
+                self.forwards_count,
+            ))
+        }
+    }
+
+    fn is_editing(&self) -> bool {
+        self.editor.as_ref().is_some_and(|ed| ed.fields.editing)
     }
 
     fn on_key(&mut self, key: KeyEvent, model: &mut Model) -> bool {

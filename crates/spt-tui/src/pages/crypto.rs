@@ -7,10 +7,15 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 
 use crate::model::Model;
-use crate::pages::field::{opt_bool, opt_choice, opt_multi, FieldList};
+use crate::pages::field::{opt_bool_with_help, opt_choice_with_help, opt_multi, FieldList};
 use crate::pages::Page;
 
 const POLICIES: &[&str] = &["modern", "interop", "legacy"];
+const POLICIES_HELP: &[&str] = &[
+    "Modern only: aes-gcm, chacha20-poly1305, curve25519. Refuses anything weaker.",
+    "Modern + widely-deployed legacy. Compromise for older servers in mixed fleets.",
+    "Everything our libraries accept (incl. hmac-sha1, 3des). Last resort; avoid hostile nets.",
+];
 const CIPHERS: &[&str] = &[
     "chacha20-poly1305@openssh.com",
     "aes256-gcm@openssh.com",
@@ -48,16 +53,19 @@ impl CryptoPage {
     /// Build the page.
     pub fn new() -> Self {
         let fields = vec![
-            opt_choice(
+            opt_choice_with_help(
                 "crypto.policy",
                 "Named policy preset (`modern`, `interop`, `legacy`)",
                 POLICIES,
+                POLICIES_HELP,
                 |p| p.crypto.as_ref().and_then(|c| c.policy.clone()),
                 |p, v| p.crypto.get_or_insert_with(Default::default).policy = v,
             ),
-            opt_bool(
+            opt_bool_with_help(
                 "crypto.allow_deprecated",
                 "Permit deprecated algorithms in negotiation",
+                "Deprecated algorithms refused even if negotiated. Strict.",
+                "Deprecated algorithms permitted. Required for some legacy servers; do not use over untrusted networks.",
                 |p| p.crypto.as_ref().and_then(|c| c.allow_deprecated),
                 |p, v| {
                     p.crypto
@@ -65,9 +73,11 @@ impl CryptoPage {
                         .allow_deprecated = v;
                 },
             ),
-            opt_bool(
+            opt_bool_with_help(
                 "crypto.warn_on_deprecated",
                 "Warn when a deprecated algorithm is used",
+                "Silent on deprecated negotiation. Useful in deliberately-legacy fleets.",
+                "Emit a `crypto.deprecated_negotiated` warning. Recommended.",
                 |p| p.crypto.as_ref().and_then(|c| c.warn_on_deprecated),
                 |p, v| {
                     p.crypto
@@ -177,6 +187,9 @@ impl Page for CryptoPage {
 
     fn focused_help(&self) -> Option<&str> {
         self.list.focused_help()
+    }
+    fn focused_help_dynamic(&self, model: &Model) -> Option<&str> {
+        self.list.focused_help_dynamic(model.profile())
     }
     fn focused_position(&self) -> Option<(usize, usize)> {
         self.list.focus_position()

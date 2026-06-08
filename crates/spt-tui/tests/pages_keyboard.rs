@@ -1285,3 +1285,69 @@ fn nav_mode_yellow_border_follows_focus() {
         "the yellow border cell set must shift when focus moves to a new row"
     );
 }
+
+// ---------------------------------------------------------------------------
+// t-option-help — per-option dynamic help surfaces in the page footer.
+// ---------------------------------------------------------------------------
+
+/// Drive the App to the Failover page, focus `failover.mode`, enter edit
+/// mode, and confirm the footer string rotates through the documented
+/// per-option help as the cursor advances through `priority → weighted →
+/// manual`. The expected substrings are lowercase hyphenated/word
+/// phrases that appear inside each option's help string.
+#[test]
+fn footer_shows_per_option_help_on_failover_mode_rotate() {
+    let mut app = App::new(Model::from_str(SAMPLE));
+    // Jump to the Failover page (PageKind::Failover, index 7).
+    let target_idx = PageKind::Failover.index();
+    while app.current.index() != target_idx {
+        app.on_key(k(KeyCode::Tab));
+    }
+    // Move focus down until the focused label is "failover.mode". The
+    // page has 14 fields; failover.mode is at index 10.
+    for _ in 0..10 {
+        app.on_key(k(KeyCode::Down));
+    }
+    // Enter edit mode.
+    app.on_key(k(KeyCode::Enter));
+
+    let text = render(&mut app, 140, 40);
+    assert!(
+        text.contains("lowest-priority-number"),
+        "footer must surface `priority` per-option help on rotate-in:\n{text}"
+    );
+
+    // Right → weighted.
+    app.on_key(k(KeyCode::Right));
+    let text = render(&mut app, 140, 40);
+    assert!(
+        text.contains("Random-weighted"),
+        "footer must surface `weighted` per-option help after Right:\n{text}"
+    );
+
+    // Right → manual.
+    app.on_key(k(KeyCode::Right));
+    let text = render(&mut app, 140, 40);
+    assert!(
+        text.contains("pinned endpoint"),
+        "footer must surface `manual` per-option help after another Right:\n{text}"
+    );
+}
+
+/// Regression guard: pages with Text-only fields (no `option_help` table)
+/// must continue to surface their static `def.help` in the footer.
+/// Basics page, `description` field — a plain `opt_text` whose help is
+/// "Free-form profile description".
+#[test]
+fn footer_falls_back_to_static_help_for_text_field() {
+    let mut app = App::new(Model::from_str(SAMPLE));
+    // Basics is the default current page on startup.
+    assert_eq!(app.current, PageKind::Basics);
+    // Focus index 1 = description.
+    app.on_key(k(KeyCode::Down));
+    let text = render(&mut app, 140, 40);
+    assert!(
+        text.contains("Free-form profile description"),
+        "footer must still show static help for Text fields:\n{text}"
+    );
+}
