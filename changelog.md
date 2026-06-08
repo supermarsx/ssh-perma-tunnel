@@ -1,3 +1,14 @@
+## [26.8] - 2026-06-08
+
+# spt 26.8
+
+## Changes since 26.7
+
+- feat(tui): nav-mode focus highlight + ssh3 display label (`francoismichel`) (d05eff5)
+- Merge branch 'main' of https://github.com/supermarsx/ssh-perma-tunnel (87264b1)
+- fix(tui): cursor rotation no longer marks model dirty; add 3+ option cycle tests (8e5c93d)
+- feat(tui): add dedicated Endpoints page for [[profiles.endpoints]] list editing (c636198)
+
 ## [26.7] - 2026-06-03
 
 # spt 26.7
