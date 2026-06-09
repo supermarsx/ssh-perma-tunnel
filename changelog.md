@@ -1,3 +1,14 @@
+## [26.9] - 2026-06-09
+
+# spt 26.9
+
+## Changes since 26.8
+
+- fix(tui): pane-nav with Left/Right on Endpoints & Forwards two-pane pages (803df87)
+- refactor(tui): delete Connection page, migrate fields to Auth + Timings & Keepalive (dacd858)
+- Merge branch 'main' of https://github.com/supermarsx/ssh-perma-tunnel (1ce4c45)
+- feat(tui): per-option dynamic help in the field-info footer (666e11e)
+
 ## [26.8] - 2026-06-08
 
 # spt 26.8
