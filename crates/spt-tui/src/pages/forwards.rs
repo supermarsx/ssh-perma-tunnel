@@ -414,21 +414,31 @@ impl Page for ForwardsPage {
     }
 
     fn on_key(&mut self, key: KeyEvent, model: &mut Model) -> bool {
-        // Editor mode delegates everything except Esc.
+        // Two-pane navigation contract (mirrors EndpointsPage):
+        //
+        // * List mode (no editor open):
+        //   - ↑/k, ↓/j   move list cursor
+        //   - Enter, →   open editor on the focused entry (pane nav right)
+        //   - a / d      add / delete entries
+        // * Editor mode, NOT actively editing a field:
+        //   - Esc, ←     close editor and return to list (pane nav left)
+        //   - ↑/k, ↓/j   move field focus within the editor
+        // * Editor mode, actively editing a field (FieldList::editing):
+        //   - every key flows through so spinner ←/→ keep rotating
         if let Some(ed) = self.editor.as_mut() {
+            if ed.fields.editing {
+                let changed = ed.fields.on_edit_key(key, model.profile_mut_silent());
+                if changed {
+                    model.mark_dirty();
+                }
+                return changed;
+            }
             match key.code {
-                KeyCode::Esc if !ed.fields.editing => {
+                KeyCode::Esc | KeyCode::Left => {
                     self.editor = None;
                     return false;
                 }
                 _ => {
-                    if ed.fields.editing {
-                        let changed = ed.fields.on_edit_key(key, model.profile_mut_silent());
-                        if changed {
-                            model.mark_dirty();
-                        }
-                        return changed;
-                    }
                     let p = model.profile().clone();
                     ed.fields.on_nav_key(key, &p);
                     return false;
@@ -445,6 +455,15 @@ impl Page for ForwardsPage {
                 let n = model.profile().forwards.len();
                 if self.selected + 1 < n {
                     self.selected += 1;
+                }
+                false
+            }
+            KeyCode::Right => {
+                // Pane nav: → from the list opens the editor on the
+                // focused entry. Same semantic as Enter.
+                if self.selected < model.profile().forwards.len() {
+                    let p = model.profile().clone();
+                    self.open_editor(&p, self.selected);
                 }
                 false
             }
@@ -538,6 +557,58 @@ protocol = "ssh2"
         p.on_key(k(KeyCode::Char('a')), &mut m);
         assert!(p.editor.is_some());
         p.on_key(k(KeyCode::Esc), &mut m);
+        assert!(p.editor.is_none());
+    }
+
+    #[test]
+    fn left_arrow_closes_editor_when_not_field_editing() {
+        let mut p = ForwardsPage::new();
+        let mut m = model();
+        p.on_key(k(KeyCode::Char('a')), &mut m);
+        assert!(p.editor.is_some());
+        assert!(!p.editor.as_ref().unwrap().fields.editing);
+        p.on_key(k(KeyCode::Left), &mut m);
+        assert!(
+            p.editor.is_none(),
+            "Left while in editor (not field-editing) must close the editor"
+        );
+    }
+
+    #[test]
+    fn left_arrow_inside_field_edit_does_not_close_editor() {
+        let mut p = ForwardsPage::new();
+        let mut m = model();
+        p.on_key(k(KeyCode::Char('a')), &mut m);
+        p.on_key(k(KeyCode::Enter), &mut m); // begin editing field 0
+        assert!(p.editor.as_ref().unwrap().fields.editing);
+        p.on_key(k(KeyCode::Left), &mut m);
+        assert!(
+            p.editor.is_some(),
+            "Left while field-editing must NOT close the editor"
+        );
+        assert!(p.editor.as_ref().unwrap().fields.editing);
+    }
+
+    #[test]
+    fn right_arrow_opens_editor_from_list() {
+        let mut p = ForwardsPage::new();
+        let mut m = model();
+        p.on_key(k(KeyCode::Char('a')), &mut m);
+        p.on_key(k(KeyCode::Esc), &mut m);
+        assert!(p.editor.is_none());
+        p.on_key(k(KeyCode::Right), &mut m);
+        assert!(
+            p.editor.is_some(),
+            "Right from the list must open the editor"
+        );
+    }
+
+    #[test]
+    fn right_arrow_on_empty_list_does_not_panic() {
+        let mut p = ForwardsPage::new();
+        let mut m = model();
+        assert_eq!(m.profile().forwards.len(), 0);
+        p.on_key(k(KeyCode::Right), &mut m);
         assert!(p.editor.is_none());
     }
 

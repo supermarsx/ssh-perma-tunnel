@@ -256,21 +256,36 @@ impl Page for EndpointsPage {
     }
 
     fn on_key(&mut self, key: KeyEvent, model: &mut Model) -> bool {
-        // Editor mode delegates everything except Esc.
+        // Two-pane navigation contract:
+        //
+        // * List mode (no editor open):
+        //   - ↑/k, ↓/j   move list cursor
+        //   - Enter, →   open editor on the focused entry (pane nav right)
+        //   - a / d      add / delete entries
+        // * Editor mode (editor open), NOT actively editing a field:
+        //   - Esc, ←     close editor and return to list (pane nav left)
+        //   - ↑/k, ↓/j   move field focus within the editor
+        // * Editor mode, actively editing a field (FieldList::editing):
+        //   - every key flows through to FieldList::on_edit_key so
+        //     spinner-style ←/→ keep rotating Choice options
         if let Some(ed) = self.editor.as_mut() {
+            if ed.fields.editing {
+                // Actively typing or rotating a field — every key flows
+                // through. ←/→ are still consumed here for Choice rotate.
+                let changed = ed.fields.on_edit_key(key, model.profile_mut_silent());
+                if changed {
+                    model.mark_dirty();
+                }
+                return changed;
+            }
+            // Field-nav mode within the editor: ← closes the editor as
+            // the pane-nav counterpart to Right-opens-from-the-list.
             match key.code {
-                KeyCode::Esc if !ed.fields.editing => {
+                KeyCode::Esc | KeyCode::Left => {
                     self.editor = None;
                     return false;
                 }
                 _ => {
-                    if ed.fields.editing {
-                        let changed = ed.fields.on_edit_key(key, model.profile_mut_silent());
-                        if changed {
-                            model.mark_dirty();
-                        }
-                        return changed;
-                    }
                     let p = model.profile().clone();
                     ed.fields.on_nav_key(key, &p);
                     return false;
@@ -287,6 +302,15 @@ impl Page for EndpointsPage {
                 let n = model.profile().endpoints.len();
                 if self.selected + 1 < n {
                     self.selected += 1;
+                }
+                false
+            }
+            KeyCode::Right => {
+                // Pane nav: → from the list opens the editor on the
+                // focused entry. Same semantic as Enter.
+                if self.selected < model.profile().endpoints.len() {
+                    let p = model.profile().clone();
+                    self.open_editor(&p, self.selected);
                 }
                 false
             }
@@ -382,6 +406,65 @@ host = "h.example.com"
         p.on_key(k(KeyCode::Char('a')), &mut m);
         assert!(p.editor.is_some());
         p.on_key(k(KeyCode::Esc), &mut m);
+        assert!(p.editor.is_none());
+    }
+
+    #[test]
+    fn left_arrow_closes_editor_when_not_field_editing() {
+        // Pane-nav contract: ← closes the editor (returns to list).
+        let mut p = EndpointsPage::new();
+        let mut m = model();
+        p.on_key(k(KeyCode::Char('a')), &mut m); // add + open editor
+                                                 // The editor auto-opens but is NOT field-editing yet — fields.editing == false.
+        assert!(p.editor.is_some());
+        assert!(!p.editor.as_ref().unwrap().fields.editing);
+        p.on_key(k(KeyCode::Left), &mut m);
+        assert!(
+            p.editor.is_none(),
+            "Left while in editor (not field-editing) must close the editor"
+        );
+    }
+
+    #[test]
+    fn left_arrow_inside_field_edit_does_not_close_editor() {
+        // While actively editing a field, Left rotates the Choice spinner
+        // / moves text cursor — it MUST NOT close the editor.
+        let mut p = EndpointsPage::new();
+        let mut m = model();
+        p.on_key(k(KeyCode::Char('a')), &mut m); // add endpoint, editor open
+        p.on_key(k(KeyCode::Enter), &mut m); // begin editing field 0 (name = Text)
+        assert!(p.editor.as_ref().unwrap().fields.editing);
+        p.on_key(k(KeyCode::Left), &mut m);
+        assert!(
+            p.editor.is_some(),
+            "Left while field-editing must NOT close the editor (it moves text cursor)"
+        );
+        assert!(p.editor.as_ref().unwrap().fields.editing);
+    }
+
+    #[test]
+    fn right_arrow_opens_editor_from_list() {
+        // Pane-nav: → from the list opens the editor on the focused entry.
+        let mut p = EndpointsPage::new();
+        let mut m = model();
+        // Add an endpoint, then Esc out so we're in list mode with one entry.
+        p.on_key(k(KeyCode::Char('a')), &mut m);
+        p.on_key(k(KeyCode::Esc), &mut m);
+        assert!(p.editor.is_none());
+        p.on_key(k(KeyCode::Right), &mut m);
+        assert!(
+            p.editor.is_some(),
+            "Right from the list must open the editor on the focused entry"
+        );
+    }
+
+    #[test]
+    fn right_arrow_on_empty_list_does_not_panic() {
+        // Edge case: no endpoints, Right pressed → should be a no-op.
+        let mut p = EndpointsPage::new();
+        let mut m = model();
+        assert_eq!(m.profile().endpoints.len(), 0);
+        p.on_key(k(KeyCode::Right), &mut m);
         assert!(p.editor.is_none());
     }
 
