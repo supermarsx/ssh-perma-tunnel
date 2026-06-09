@@ -65,7 +65,7 @@ impl AppHarness {
     /// use spt_tui::testing::{AppHarness, fixtures};
     /// let mut h = AppHarness::with_profile(fixtures::test_profile());
     /// h.type_keys(&[KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)]);
-    /// assert_eq!(h.current_page(), "Connection");
+    /// assert_eq!(h.current_page(), "Endpoints");
     /// ```
     pub fn type_keys(&mut self, keys: &[KeyEvent]) {
         for k in keys {
@@ -227,7 +227,7 @@ mod tests {
         assert_eq!(h.current_page(), "Basics");
         h.type_keys(&[KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)]);
         let _ = h.render();
-        assert_eq!(h.current_page(), "Connection");
+        assert_eq!(h.current_page(), "Endpoints");
     }
 
     #[test]
@@ -251,7 +251,7 @@ mod tests {
         let mut h = AppHarness::with_profile(fixtures::test_profile());
         let _ = h.render();
         h.assert_buffer_contains("Basics");
-        h.assert_buffer_contains("Connection");
+        h.assert_buffer_contains("Endpoints");
     }
 
     #[test]

@@ -107,7 +107,7 @@ impl App {
     /// ```text
     /// ┌─ tabs ────────────────────────────────────────────────┐  3 rows
     /// │  spt profile configure — <profile>          [3/13]    │
-    /// │  1 Basics  2 Connection  3 Auth  4 Trust  …           │
+    /// │  1 Basics  2 Endpoints  3 Auth  4 Trust  …           │
     /// └────────────────────────────────────────────────────────┘
     /// │                                                        │
     /// │  page body (one widget per FieldList row)              │  min(0)
@@ -558,7 +558,7 @@ host = "h.example.com"
         let mut app = App::new(sample());
         assert_eq!(app.current, PageKind::Basics);
         app.on_key(k(KeyCode::Tab));
-        assert_eq!(app.current, PageKind::Connection);
+        assert_eq!(app.current, PageKind::Endpoints);
     }
 
     #[test]
@@ -864,7 +864,7 @@ host = "h.example.com"
         app.dispatch_event(release.clone());
         assert_eq!(
             app.current,
-            PageKind::Connection,
+            PageKind::Endpoints,
             "Tab Press+Release must advance one page, not two"
         );
 
@@ -875,7 +875,7 @@ host = "h.example.com"
         app.dispatch_event(repeat);
         assert_eq!(
             app.current,
-            PageKind::Connection,
+            PageKind::Endpoints,
             "Repeat events must not advance pages"
         );
     }
@@ -884,7 +884,7 @@ host = "h.example.com"
     fn bracket_keys_navigate() {
         let mut app = App::new(sample());
         app.on_key(k(KeyCode::Char(']')));
-        assert_eq!(app.current, PageKind::Connection);
+        assert_eq!(app.current, PageKind::Endpoints);
         app.on_key(k(KeyCode::Char('[')));
         assert_eq!(app.current, PageKind::Basics);
     }
@@ -893,7 +893,7 @@ host = "h.example.com"
     fn vim_keys_navigate() {
         let mut app = App::new(sample());
         app.on_key(k(KeyCode::Char('l')));
-        assert_eq!(app.current, PageKind::Connection);
+        assert_eq!(app.current, PageKind::Endpoints);
         app.on_key(k(KeyCode::Char('h')));
         assert_eq!(app.current, PageKind::Basics);
     }

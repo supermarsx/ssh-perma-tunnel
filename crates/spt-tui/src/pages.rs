@@ -7,7 +7,6 @@
 
 mod auth;
 mod basics;
-mod connection;
 mod crypto;
 mod diagnostics;
 mod dns;
@@ -35,44 +34,41 @@ use crate::model::Model;
 pub enum PageKind {
     /// `1. Profile basics` — id, description, protocol.
     Basics,
-    /// `2. Connection` — endpoints, hops, timings.
-    Connection,
-    /// `3. Endpoints` — multi-target failover list. §9.11.
+    /// `2. Endpoints` — multi-target failover list. §9.11.
     Endpoints,
-    /// `4. Auth` — auth method + secret refs.
+    /// `3. Auth` — auth method + secret refs.
     Auth,
-    /// `5. Trust` — known_hosts, SHA-256 pins, TLS pins.
+    /// `4. Trust` — known_hosts, SHA-256 pins, TLS pins.
     Trust,
-    /// `6. Crypto` — cipher / kex / mac / hostkey allow-lists.
+    /// `5. Crypto` — cipher / kex / mac / hostkey allow-lists.
     Crypto,
-    /// `7. Keepalive`.
+    /// `6. Timings & Keepalive` — connection-setup timings + session keepalive.
     Keepalive,
-    /// `8. Reconnect / instability / failover`.
+    /// `7. Reconnect / instability / failover`.
     Failover,
-    /// `9. Limits` — connection caps, throttles.
+    /// `8. Limits` — connection caps, throttles.
     Limits,
-    /// `10. Forwards` — local / remote / udp forward entries.
+    /// `9. Forwards` — local / remote / udp forward entries.
     Forwards,
-    /// `11. DNS` — managed records bound to this profile.
+    /// `10. DNS` — managed records bound to this profile.
     Dns,
-    /// `12. Events` — per-profile binding tags.
+    /// `11. Events` — per-profile binding tags.
     Events,
-    /// `13. Diagnostics / observability` — tags + metrics labels.
+    /// `12. Diagnostics / observability` — tags + metrics labels.
     Diagnostics,
-    /// `14. Review & save`.
+    /// `13. Review & save`.
     Review,
 }
 
 impl PageKind {
     /// Total number of pages in the wizard.
-    pub const COUNT: usize = 14;
+    pub const COUNT: usize = 13;
 
     /// Ordered list, in the order shown in the navigation tabs.
     #[must_use]
     pub fn all() -> [PageKind; Self::COUNT] {
         [
             PageKind::Basics,
-            PageKind::Connection,
             PageKind::Endpoints,
             PageKind::Auth,
             PageKind::Trust,
@@ -93,12 +89,11 @@ impl PageKind {
     pub fn title(self) -> &'static str {
         match self {
             PageKind::Basics => "Basics",
-            PageKind::Connection => "Connection",
             PageKind::Endpoints => "Endpoints",
             PageKind::Auth => "Auth",
             PageKind::Trust => "Trust",
             PageKind::Crypto => "Crypto",
-            PageKind::Keepalive => "Keepalive",
+            PageKind::Keepalive => "Timings & Keepalive",
             PageKind::Failover => "Reconnect/Failover",
             PageKind::Limits => "Limits",
             PageKind::Forwards => "Forwards",
@@ -140,8 +135,8 @@ pub trait Page {
     /// (in nav mode) rather than the field's static one-line help.
     ///
     /// Default impl delegates to [`Page::focused_help`] so pages
-    /// without dynamic help — Endpoints, Connection, DNS, Events,
-    /// Review — keep behaving exactly as before.
+    /// without dynamic help — Endpoints, DNS, Events, Review —
+    /// keep behaving exactly as before.
     fn focused_help_dynamic(&self, _model: &Model) -> Option<&str> {
         self.focused_help()
     }
@@ -168,7 +163,6 @@ pub trait Page {
 pub fn build_pages() -> Vec<Box<dyn Page>> {
     vec![
         Box::new(basics::BasicsPage::new()),
-        Box::new(connection::ConnectionPage::new()),
         Box::new(endpoints::EndpointsPage::new()),
         Box::new(auth::AuthPage::new()),
         Box::new(trust::TrustPage::new()),

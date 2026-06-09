@@ -78,12 +78,6 @@ fn snapshot_basics_page() {
 }
 
 #[test]
-fn snapshot_connection_page() {
-    let snap = snapshot_page(PageKind::Connection, 80, 40);
-    insta::assert_snapshot!("connection_page_80x40", snap);
-}
-
-#[test]
 fn snapshot_auth_page() {
     let snap = snapshot_page(PageKind::Auth, 80, 40);
     insta::assert_snapshot!("auth_page_80x40", snap);
@@ -103,8 +97,9 @@ fn snapshot_crypto_page() {
 
 #[test]
 fn snapshot_keepalive_page() {
-    let snap = snapshot_page(PageKind::Keepalive, 80, 12);
-    insta::assert_snapshot!("keepalive_page_80x12", snap);
+    // 7 fields × 3-row chunks = 21 rows — needs ≥20 to fit without truncation.
+    let snap = snapshot_page(PageKind::Keepalive, 80, 24);
+    insta::assert_snapshot!("keepalive_page_80x24", snap);
 }
 
 #[test]

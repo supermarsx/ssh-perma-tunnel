@@ -58,6 +58,13 @@ multiplexed over it.
     port = 22
     priority = 10
 
+**Legacy single-endpoint compat**: profiles may also set top-level `host` and
+`port` (and optionally `user`) directly. This is retained for v0 config-file
+compatibility; the runtime synthesizes a single `Endpoint` from these fields
+when `[[profiles.endpoints]]` is absent. New profiles should declare
+`[[profiles.endpoints]]` blocks directly so failover and per-endpoint
+priority/weight work.
+
     [[profiles.forwards]]
     name = "db"
     type = "local"

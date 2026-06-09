@@ -1,4 +1,4 @@
-//! "Keepalive" page (spec §11.3).
+//! "Timings & Keepalive" page (spec §11.3 + §9.11.connection).
 
 use crossterm::event::KeyEvent;
 use ratatui::buffer::Buffer;
@@ -8,7 +8,7 @@ use crate::model::Model;
 use crate::pages::field::{opt_text, opt_u32, FieldList};
 use crate::pages::Page;
 
-/// Keepalive timing.
+/// Connection-setup timings + keepalive timing.
 pub struct KeepalivePage {
     list: FieldList,
 }
@@ -17,6 +17,56 @@ impl KeepalivePage {
     /// Build the page.
     pub fn new() -> Self {
         let fields = vec![
+            // --- Connection-setup timings (moved from the deleted Connection page) ---
+            opt_text(
+                "connection.connect_timeout",
+                "TCP connect timeout (e.g. `10s`)",
+                |p| {
+                    p.connection
+                        .as_ref()
+                        .and_then(|c| c.connect_timeout.clone())
+                },
+                |p, v| {
+                    p.connection
+                        .get_or_insert_with(Default::default)
+                        .connect_timeout = v;
+                },
+            ),
+            opt_text(
+                "connection.handshake_timeout",
+                "Protocol handshake timeout",
+                |p| {
+                    p.connection
+                        .as_ref()
+                        .and_then(|c| c.handshake_timeout.clone())
+                },
+                |p, v| {
+                    p.connection
+                        .get_or_insert_with(Default::default)
+                        .handshake_timeout = v;
+                },
+            ),
+            opt_text(
+                "connection.auth_timeout",
+                "Auth round-trip timeout",
+                |p| p.connection.as_ref().and_then(|c| c.auth_timeout.clone()),
+                |p, v| {
+                    p.connection
+                        .get_or_insert_with(Default::default)
+                        .auth_timeout = v;
+                },
+            ),
+            opt_u32(
+                "connection.keepalive_retries",
+                "Socket-level keepalive retries (TCP-layer, distinct from session keepalive)",
+                |p| p.connection.as_ref().and_then(|c| c.keepalive_retries),
+                |p, v| {
+                    p.connection
+                        .get_or_insert_with(Default::default)
+                        .keepalive_retries = v;
+                },
+            ),
+            // --- Session keepalive (spec §11.3) ---
             opt_text(
                 "keepalive.interval",
                 "Time between keepalive probes (e.g. `30s`)",
@@ -92,16 +142,28 @@ protocol = "ssh2"
     }
 
     #[test]
-    fn three_fields_built() {
+    fn seven_fields_built() {
         let p = KeepalivePage::new();
-        assert_eq!(p.list.fields.len(), 3);
+        let labels: Vec<&str> = p.list.fields.iter().map(|f| f.def.label).collect();
+        assert_eq!(
+            labels,
+            vec![
+                "connection.connect_timeout",
+                "connection.handshake_timeout",
+                "connection.auth_timeout",
+                "connection.keepalive_retries",
+                "keepalive.interval",
+                "keepalive.timeout",
+                "keepalive.max_missed",
+            ]
+        );
     }
 
     #[test]
     fn renders() {
         let mut p = KeepalivePage::new();
         let m = model();
-        let area = Rect::new(0, 0, 80, 20);
+        let area = Rect::new(0, 0, 80, 24);
         let mut buf = Buffer::empty(area);
         p.render(area, &mut buf, &m);
     }
@@ -110,6 +172,10 @@ protocol = "ssh2"
     fn interval_round_trip() {
         let mut p = KeepalivePage::new();
         let mut m = model();
+        // `keepalive.interval` is index 4 after 4 connection.* timing fields.
+        for _ in 0..4 {
+            p.on_key(k(KeyCode::Down), &mut m);
+        }
         p.on_key(k(KeyCode::Enter), &mut m);
         for c in "30s".chars() {
             p.on_key(k(KeyCode::Char(c)), &mut m);
@@ -129,7 +195,8 @@ protocol = "ssh2"
     fn max_missed_numeric() {
         let mut p = KeepalivePage::new();
         let mut m = model();
-        for _ in 0..2 {
+        // `keepalive.max_missed` is index 6 after 4 connection.* + 2 keepalive.*.
+        for _ in 0..6 {
             p.on_key(k(KeyCode::Down), &mut m);
         }
         p.on_key(k(KeyCode::Enter), &mut m);

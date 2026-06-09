@@ -44,6 +44,12 @@ impl AuthPage {
     /// Build the page.
     pub fn new() -> Self {
         let fields = vec![
+            opt_text(
+                "user",
+                "Remote login user — applies to every auth method",
+                |p| p.user.clone(),
+                |p, v| p.user = v,
+            ),
             opt_choice_with_help(
                 "auth.method",
                 "Spec §9.12 auth method",
@@ -211,9 +217,11 @@ protocol = "ssh2"
     #[test]
     fn builds_with_expected_method_choices() {
         let p = AuthPage::new();
-        // First field is auth.method choice.
         let labels: Vec<&str> = p.list.fields.iter().map(|f| f.def.label).collect();
-        assert!(labels.contains(&"auth.method"));
+        // First field is `user` (moved from the deleted Connection page).
+        assert_eq!(labels[0], "user");
+        // Second field is auth.method choice.
+        assert_eq!(labels[1], "auth.method");
         assert!(labels.contains(&"auth.identity_file"));
         assert!(labels.contains(&"auth.passphrase"));
         assert!(labels.contains(&"auth.token"));
@@ -232,8 +240,9 @@ protocol = "ssh2"
     fn invalid_secret_ref_blocks_commit() {
         let mut p = AuthPage::new();
         let mut m = model();
-        // Move to auth.passphrase (index 3).
-        for _ in 0..3 {
+        // Move to auth.passphrase (index 4: user, auth.method,
+        // auth.identity_file, auth.certificate_file, auth.passphrase).
+        for _ in 0..4 {
             p.on_key(k(KeyCode::Down), &mut m);
         }
         p.on_key(k(KeyCode::Enter), &mut m);
@@ -241,7 +250,7 @@ protocol = "ssh2"
             p.on_key(k(KeyCode::Char(c)), &mut m);
         }
         p.on_key(k(KeyCode::Enter), &mut m);
-        assert!(p.list.fields[3].last_error().is_some());
+        assert!(p.list.fields[4].last_error().is_some());
         assert!(p.list.editing);
     }
 
@@ -249,8 +258,8 @@ protocol = "ssh2"
     fn valid_secret_ref_commits() {
         let mut p = AuthPage::new();
         let mut m = model();
-        // Move to auth.passphrase (index 3).
-        for _ in 0..3 {
+        // Move to auth.passphrase (index 4).
+        for _ in 0..4 {
             p.on_key(k(KeyCode::Down), &mut m);
         }
         p.on_key(k(KeyCode::Enter), &mut m);
@@ -267,8 +276,10 @@ protocol = "ssh2"
     fn method_choice_cycles_via_down_arrow() {
         let mut p = AuthPage::new();
         let mut m = model();
-        // Index 0 is auth.method (Choice).
-        p.on_key(k(KeyCode::Enter), &mut m); // edit
+        // Index 0 is `user` (Text); index 1 is auth.method (Choice). Skip past
+        // `user` to land on the method field before entering edit mode.
+        p.on_key(k(KeyCode::Down), &mut m);
+        p.on_key(k(KeyCode::Enter), &mut m); // edit auth.method
                                              // Press Down then Enter to pick the next option.
         p.on_key(k(KeyCode::Down), &mut m);
         p.on_key(k(KeyCode::Enter), &mut m); // commit selection

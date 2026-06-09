@@ -72,11 +72,11 @@ fn back_tab_wraps_backward() {
 fn bracket_and_vim_keys_advance() {
     let mut app = App::new(Model::from_str(SAMPLE));
     app.on_key(k(KeyCode::Char(']')));
-    assert_eq!(app.current, PageKind::Connection);
+    assert_eq!(app.current, PageKind::Endpoints);
     app.on_key(k(KeyCode::Char('[')));
     assert_eq!(app.current, PageKind::Basics);
     app.on_key(k(KeyCode::Char('l')));
-    assert_eq!(app.current, PageKind::Connection);
+    assert_eq!(app.current, PageKind::Endpoints);
     app.on_key(k(KeyCode::Char('h')));
     assert_eq!(app.current, PageKind::Basics);
 }

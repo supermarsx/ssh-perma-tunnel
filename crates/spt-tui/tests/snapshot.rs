@@ -68,7 +68,9 @@ fn auth_page_lists_methods() {
     let mut pages = build_pages();
     let page = &mut pages[PageKind::Auth.index()];
 
-    let backend = TestBackend::new(80, 30);
+    // 12 fields × 3-row chunks = 36 rows. Allocate a tall enough buffer so
+    // ratatui's Layout doesn't shrink each row and clip the value cells.
+    let backend = TestBackend::new(80, 40);
     let mut terminal = Terminal::new(backend).unwrap();
     terminal
         .draw(|f| page.render(f.area(), f.buffer_mut(), &model))
