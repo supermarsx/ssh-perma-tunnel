@@ -36,6 +36,14 @@ Options:
           
           [env: SPT_STATE_DIR=]
 
+      --portable
+          Portable mode: keep all runtime state next to the executable instead of OS-standard
+          locations (no OS install required).
+          
+          `main.rs` performs a raw pre-clap scan of the argv for this flag so portable paths are
+          resolved before the runtime is built; this declaration exists so the flag is visible to
+          `--help`, generated shell completions, and the man pages.
+
       --profile <NAME>
           Restrict operations to the named profile
 
@@ -97,5 +105,5 @@ EXAMPLES:
   spt session list --profile edge
   spt session show abc123 --json
   spt session close abc123 --grace 5s --reason "drain"
-  spt session drain --profile edge --timeout 30s
+  spt session drain edge --timeout 30s
   spt session top --sort bytes --limit 20

@@ -19,6 +19,8 @@ use async_trait::async_trait;
 use spt_core::error::{Error, Result};
 use tokio::sync::OnceCell;
 
+use crate::openrc::render_env_exports;
+use crate::task_scheduler::validate_service_name;
 use crate::{
     template, unsupported, CommandRunner, ServiceCapabilities, ServiceManager, ServiceSpec,
     ServiceState, ServiceStatus, TokioRunner,
@@ -158,6 +160,7 @@ impl ServiceManager for SysVManager {
     }
 
     async fn install(&self, spec: &ServiceSpec) -> Result<()> {
+        validate_service_name(&spec.name)?;
         let script = render_script(spec);
         let path = self.script_path(&spec.name);
 
@@ -225,6 +228,7 @@ impl ServiceManager for SysVManager {
     }
 
     async fn uninstall(&self, name: &str) -> Result<()> {
+        validate_service_name(name)?;
         match self.detect_distro_tool().await {
             DistroTool::Debian => {
                 let _ = self
@@ -255,6 +259,7 @@ impl ServiceManager for SysVManager {
     }
 
     async fn status(&self, name: &str) -> Result<ServiceStatus> {
+        validate_service_name(name)?;
         let out = self
             .runner
             .run("service", &[name, "status"], DEFAULT_TIMEOUT)
@@ -307,18 +312,22 @@ impl ServiceManager for SysVManager {
     }
 
     async fn start(&self, name: &str) -> Result<()> {
+        validate_service_name(name)?;
         run_service(self.runner.as_ref(), name, "start").await
     }
 
     async fn stop(&self, name: &str) -> Result<()> {
+        validate_service_name(name)?;
         run_service(self.runner.as_ref(), name, "stop").await
     }
 
     async fn restart(&self, name: &str) -> Result<()> {
+        validate_service_name(name)?;
         run_service(self.runner.as_ref(), name, "restart").await
     }
 
     async fn reload(&self, name: &str) -> Result<()> {
+        validate_service_name(name)?;
         let out = self
             .runner
             .run("service", &[name, "reload"], DEFAULT_TIMEOUT)
@@ -389,6 +398,11 @@ fn render_script(spec: &ServiceSpec) -> String {
     vars.insert("args", args);
     vars.insert("user", spec.user.clone().unwrap_or_else(|| "root".into()));
     vars.insert("working_dir", spec.working_dir.display().to_string());
+    // E7-F9: render `[profiles].env` as `export K="V"` lines so SysV honours
+    // ServiceSpec.env (previously dropped). Shares the OpenRC implementation.
+    // Rendered into the `{{env_exports}}` placeholder; the template is owned
+    // by p5-packaging-units and must add that placeholder.
+    vars.insert("env_exports", render_env_exports(spec));
     template::render(TEMPLATE, &vars)
 }
 
@@ -828,5 +842,40 @@ mod tests {
     fn parse_pid_handles_no_digits_after_pid() {
         // "pid" without trailing digits → None.
         assert_eq!(parse_pid_from_status("pid: ?"), None);
+    }
+
+    // ---- E7-F17: name validation -----------------------------------------
+
+    #[tokio::test]
+    async fn install_rejects_traversal_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mock = Arc::new(MockRunner::new());
+        let mgr =
+            SysVManager::new_with_runner(mock.clone()).with_script_root(tmp.path().to_path_buf());
+        let mut spec = sample_spec();
+        spec.name = "../../evil".into();
+        let err = mgr.install(&spec).await.expect_err("must reject");
+        assert!(format!("{err}").contains("invalid service name"));
+        assert!(mock.calls().is_empty(), "no shell-out on rejected name");
+    }
+
+    #[tokio::test]
+    async fn lifecycle_rejects_traversal_name() {
+        let mock = Arc::new(MockRunner::new());
+        let mgr = SysVManager::new_with_runner(mock.clone());
+        assert!(mgr.start("a/b").await.is_err());
+        assert!(mgr.stop("a/b").await.is_err());
+        assert!(mgr.status("a\\b").await.is_err());
+        assert!(mgr.reload("a/b").await.is_err());
+        assert!(mock.calls().is_empty());
+    }
+
+    // ---- E7-F9: env exports ----------------------------------------------
+
+    #[test]
+    fn render_env_exports_used_by_sysv() {
+        // sysv reuses openrc::render_env_exports; smoke-check the wiring.
+        let out = render_env_exports(&sample_spec());
+        assert!(out.contains("export RUST_LOG=\"info\""), "got: {out}");
     }
 }

@@ -21,8 +21,17 @@ ETag-based 304 responses are supported and reduce network load.
 
 ## Refresh
 
-The supervisor polls at `poll_interval`, sending `If-None-Match` from the
-last cached `ETag`. A `200` triggers fingerprint verification; a `304` is
+> **Not yet implemented: background polling.** Remote-config background
+> polling is not yet implemented; `[runtime.remote_config].poll_interval`
+> is currently **inert** — no supervisor-driven refresh loop consumes it.
+> Config is fetched **on demand only**, via `spt config pull` (see
+> [CLI](#cli) below). The `poll_interval` field is accepted by the schema
+> for forward compatibility but has no runtime effect today. The
+> automatic-refresh behaviour described in the rest of this section
+> applies to each on-demand fetch.
+
+On each on-demand fetch the client sends `If-None-Match` from the last
+cached `ETag`. A `200` triggers fingerprint verification; a `304` is
 served from cache. Fingerprint mismatches **never** replace the cache and
 emit a `remote_config.fingerprint_mismatch` event.
 

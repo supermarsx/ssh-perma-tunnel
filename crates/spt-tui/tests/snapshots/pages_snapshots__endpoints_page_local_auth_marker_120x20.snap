@@ -1,0 +1,25 @@
+---
+source: crates/spt-tui/tests/pages_snapshots.rs
+assertion_line: 377
+expression: snap
+---
+┌Endpoints (a=add, d=del, Enter=edit)────┐┌Detail──────────────────────────────────────────────────────────────────────┐
+│       primary edge-1.example.com:22  p=││name:     override                                                          │
+│▶     override edge-2.example.com:22  p=││host:     edge-2.example.com                                                │
+│                                        ││port:     22                                                                │
+│                                        ││priority:                                                                   │
+│                                        ││weight:                                                                     │
+│                                        ││user:     edge-user                                                         │
+│                                        ││auth:     auth=local(password)                                              │
+│                                        ││                                                                            │
+│                                        ││                                                                            │
+│                                        ││                                                                            │
+│                                        ││                                                                            │
+│                                        ││                                                                            │
+│                                        ││                                                                            │
+│                                        ││                                                                            │
+│                                        ││                                                                            │
+│                                        ││                                                                            │
+│                                        ││                                                                            │
+│                                        ││                                                                            │
+└────────────────────────────────────────┘└────────────────────────────────────────────────────────────────────────────┘

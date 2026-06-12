@@ -35,7 +35,10 @@ use tokio_rustls::TlsAcceptor;
 use tracing::{debug, info, warn};
 
 use crate::config::TranslatorConfig;
-use crate::data::{advertise_ip, as_ipv4, bind_passive, format_epsv_reply, format_pasv_reply};
+use crate::data::{
+    advertise_ip, as_ipv4, bind_passive, data_peer_matches_control, format_epsv_reply,
+    format_pasv_reply,
+};
 use crate::error::TranslatorError;
 use crate::factory::SftpFactory;
 use crate::reply::{feat_block, Reply};
@@ -345,6 +348,7 @@ async fn run_session(
             &factory,
             &verb,
             local,
+            peer.ip(),
             tls_acceptor.as_ref(),
         )
         .await;
@@ -438,6 +442,7 @@ async fn dispatch(
     factory: &Arc<dyn SftpFactory>,
     verb: &Verb,
     local_ip: IpAddr,
+    control_peer_ip: IpAddr,
     tls_acceptor: Option<&TlsAcceptor>,
 ) -> (Reply, bool, bool) {
     // PORT / EPRT — always 502, regardless of login state.
@@ -840,7 +845,15 @@ async fn dispatch(
                 Some(l) => l,
                 None => return (Reply::err_503("Use PASV/EPSV before LIST."), false, false),
             };
-            run_list_transfer(state, listener, target, ListMode::List, tls_acceptor).await
+            run_list_transfer(
+                state,
+                listener,
+                target,
+                ListMode::List,
+                control_peer_ip,
+                tls_acceptor,
+            )
+            .await
         }
         Verb::Nlst(path) => {
             if let Some(p) = path.as_deref() {
@@ -856,7 +869,15 @@ async fn dispatch(
                 Some(l) => l,
                 None => return (Reply::err_503("Use PASV/EPSV before NLST."), false, false),
             };
-            run_list_transfer(state, listener, target, ListMode::Nlst, tls_acceptor).await
+            run_list_transfer(
+                state,
+                listener,
+                target,
+                ListMode::Nlst,
+                control_peer_ip,
+                tls_acceptor,
+            )
+            .await
         }
         Verb::Mlsd(path) => {
             if let Some(p) = path.as_deref() {
@@ -872,7 +893,15 @@ async fn dispatch(
                 Some(l) => l,
                 None => return (Reply::err_503("Use PASV/EPSV before MLSD."), false, false),
             };
-            run_list_transfer(state, listener, target, ListMode::Mlsd, tls_acceptor).await
+            run_list_transfer(
+                state,
+                listener,
+                target,
+                ListMode::Mlsd,
+                control_peer_ip,
+                tls_acceptor,
+            )
+            .await
         }
         Verb::Mlst(path) => {
             if let Some(p) = path.as_deref() {
@@ -906,7 +935,7 @@ async fn dispatch(
                 Some(l) => l,
                 None => return (Reply::err_503("Use PASV/EPSV before RETR."), false, false),
             };
-            run_retr_transfer(state, listener, target, tls_acceptor).await
+            run_retr_transfer(state, listener, target, control_peer_ip, tls_acceptor).await
         }
         Verb::Stor(p) => {
             if let Err(r) = validate_path_argument(p) {
@@ -917,7 +946,15 @@ async fn dispatch(
                 Some(l) => l,
                 None => return (Reply::err_503("Use PASV/EPSV before STOR."), false, false),
             };
-            run_stor_transfer(state, listener, target, false, tls_acceptor).await
+            run_stor_transfer(
+                state,
+                listener,
+                target,
+                false,
+                control_peer_ip,
+                tls_acceptor,
+            )
+            .await
         }
         Verb::Appe(p) => {
             if let Err(r) = validate_path_argument(p) {
@@ -928,7 +965,7 @@ async fn dispatch(
                 Some(l) => l,
                 None => return (Reply::err_503("Use PASV/EPSV before APPE."), false, false),
             };
-            run_stor_transfer(state, listener, target, true, tls_acceptor).await
+            run_stor_transfer(state, listener, target, true, control_peer_ip, tls_acceptor).await
         }
         Verb::Stou(_) => {
             // Generate a unique name based on epoch nanos.
@@ -941,7 +978,15 @@ async fn dispatch(
                 Some(l) => l,
                 None => return (Reply::err_503("Use PASV/EPSV before STOU."), false, false),
             };
-            run_stor_transfer(state, listener, target, false, tls_acceptor).await
+            run_stor_transfer(
+                state,
+                listener,
+                target,
+                false,
+                control_peer_ip,
+                tls_acceptor,
+            )
+            .await
         }
         Verb::Port(_) | Verb::Eprt(_) => {
             // Already handled at the top.
@@ -962,28 +1007,59 @@ enum ListMode {
     Mlsd,
 }
 
+/// Accept a single passive data connection from `listener`, enforcing the
+/// passive-mode source-IP check: the host that opens the data connection
+/// MUST be the same host that owns the control connection (as vsftpd /
+/// proftpd do by default). This closes a classic passive-mode data-hijack
+/// where an attacker on a shared network races the legitimate client to
+/// the advertised (bounded, predictable) passive port.
+///
+/// Returns the accepted [`TcpStream`] on success, or a ready-to-send
+/// `425` [`Reply`] (data-connection refusal) on timeout / accept error /
+/// source-IP mismatch.
+async fn accept_data_connection(
+    listener: &tokio::net::TcpListener,
+    control_peer_ip: IpAddr,
+) -> Result<TcpStream, Reply> {
+    // No real client deadline here — the session-level idle timeout still
+    // applies via the surrounding select! once the transfer returns.
+    let accept = timeout(std::time::Duration::from_secs(60), listener.accept()).await;
+    let (data, peer) = match accept {
+        Ok(Ok(p)) => p,
+        Ok(Err(e)) => {
+            return Err(Reply::new(425, format!("Can't open data connection: {e}")));
+        }
+        Err(_) => return Err(Reply::new(425, "Data connection timed out.")),
+    };
+    if !data_peer_matches_control(control_peer_ip, peer.ip()) {
+        warn!(
+            control = %control_peer_ip,
+            data = %peer.ip(),
+            "rejecting passive data connection: source IP differs from control peer"
+        );
+        return Err(Reply::new(
+            425,
+            "Data connection source address does not match control connection.",
+        ));
+    }
+    Ok(data)
+}
+
 async fn run_list_transfer(
     state: &mut SessionState,
     listener: tokio::net::TcpListener,
     target: String,
     mode: ListMode,
+    control_peer_ip: IpAddr,
     tls_acceptor: Option<&TlsAcceptor>,
 ) -> (Reply, bool, bool) {
     let sftp = state.sftp.as_ref().unwrap().clone();
     // Accept the data connection (no real client deadline here — the
     // session-level idle timeout still applies via the surrounding
     // select! once we return).
-    let accept = timeout(std::time::Duration::from_secs(60), listener.accept()).await;
-    let (data, _peer) = match accept {
-        Ok(Ok(p)) => p,
-        Ok(Err(e)) => {
-            return (
-                Reply::new(425, format!("Can't open data connection: {e}")),
-                false,
-                false,
-            )
-        }
-        Err(_) => return (Reply::new(425, "Data connection timed out."), false, false),
+    let data = match accept_data_connection(&listener, control_peer_ip).await {
+        Ok(d) => d,
+        Err(reply) => return (reply, false, false),
     };
     let mut data = match wrap_data(data, state, tls_acceptor).await {
         Ok(d) => d,
@@ -1029,20 +1105,13 @@ async fn run_retr_transfer(
     state: &mut SessionState,
     listener: tokio::net::TcpListener,
     target: String,
+    control_peer_ip: IpAddr,
     tls_acceptor: Option<&TlsAcceptor>,
 ) -> (Reply, bool, bool) {
     let sftp = state.sftp.as_ref().unwrap().clone();
-    let accept = timeout(std::time::Duration::from_secs(60), listener.accept()).await;
-    let (data, _peer) = match accept {
-        Ok(Ok(p)) => p,
-        Ok(Err(e)) => {
-            return (
-                Reply::new(425, format!("Can't open data connection: {e}")),
-                false,
-                false,
-            )
-        }
-        Err(_) => return (Reply::new(425, "Data connection timed out."), false, false),
+    let data = match accept_data_connection(&listener, control_peer_ip).await {
+        Ok(d) => d,
+        Err(reply) => return (reply, false, false),
     };
     let mut data = match wrap_data(data, state, tls_acceptor).await {
         Ok(d) => d,
@@ -1070,20 +1139,13 @@ async fn run_stor_transfer(
     listener: tokio::net::TcpListener,
     target: String,
     _append: bool,
+    control_peer_ip: IpAddr,
     tls_acceptor: Option<&TlsAcceptor>,
 ) -> (Reply, bool, bool) {
     let sftp = state.sftp.as_ref().unwrap().clone();
-    let accept = timeout(std::time::Duration::from_secs(60), listener.accept()).await;
-    let (data, _peer) = match accept {
-        Ok(Ok(p)) => p,
-        Ok(Err(e)) => {
-            return (
-                Reply::new(425, format!("Can't open data connection: {e}")),
-                false,
-                false,
-            )
-        }
-        Err(_) => return (Reply::new(425, "Data connection timed out."), false, false),
+    let data = match accept_data_connection(&listener, control_peer_ip).await {
+        Ok(d) => d,
+        Err(reply) => return (reply, false, false),
     };
     let mut data = match wrap_data(data, state, tls_acceptor).await {
         Ok(d) => d,

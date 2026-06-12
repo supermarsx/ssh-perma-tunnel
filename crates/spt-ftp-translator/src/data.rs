@@ -89,6 +89,33 @@ pub fn as_ipv6(ip: IpAddr) -> Ipv6Addr {
     }
 }
 
+/// Normalise an IP to a canonical comparable form, unwrapping any
+/// `::ffff:a.b.c.d` v4-mapped IPv6 address to its plain IPv4 form so a
+/// control connection on `127.0.0.1` and a data connection accepted as
+/// `::ffff:127.0.0.1` (or vice-versa) compare equal.
+#[must_use]
+fn canonical_ip(ip: IpAddr) -> IpAddr {
+    match ip {
+        IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
+            Some(v4) => IpAddr::V4(v4),
+            None => IpAddr::V6(v6),
+        },
+        IpAddr::V4(_) => ip,
+    }
+}
+
+/// Whether a passive data connection's source IP is permitted given the
+/// control connection's peer IP.
+///
+/// Classic FTP passive-mode data-hijack defense (as vsftpd/proftpd do by
+/// default): the host that opens the passive data connection MUST be the
+/// same host that owns the control connection. v4-mapped IPv6 forms are
+/// canonicalised so the two are compared on equal footing.
+#[must_use]
+pub fn data_peer_matches_control(control_ip: IpAddr, data_ip: IpAddr) -> bool {
+    canonical_ip(control_ip) == canonical_ip(data_ip)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -117,5 +144,33 @@ mod tests {
         );
         let pure_v6: Ipv6Addr = "::1".parse().unwrap();
         assert_eq!(as_ipv4(IpAddr::V6(pure_v6)), None);
+    }
+
+    #[test]
+    fn data_peer_matches_when_same_ip() {
+        let ctrl = IpAddr::V4(Ipv4Addr::new(203, 0, 113, 7));
+        assert!(data_peer_matches_control(ctrl, ctrl));
+        let v6: IpAddr = "2001:db8::1".parse().unwrap();
+        assert!(data_peer_matches_control(v6, v6));
+    }
+
+    #[test]
+    fn data_peer_rejected_when_different_ip() {
+        let ctrl = IpAddr::V4(Ipv4Addr::new(203, 0, 113, 7));
+        let attacker = IpAddr::V4(Ipv4Addr::new(198, 51, 100, 9));
+        assert!(!data_peer_matches_control(ctrl, attacker));
+    }
+
+    #[test]
+    fn data_peer_matches_v4_mapped_v6_form() {
+        // Control seen as plain v4, data accepted as v4-mapped v6 (or the
+        // reverse) must still be treated as the same host.
+        let v4 = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 5));
+        let mapped: IpAddr = "::ffff:192.0.2.5".parse().unwrap();
+        assert!(data_peer_matches_control(v4, mapped));
+        assert!(data_peer_matches_control(mapped, v4));
+        // But a different mapped address is still rejected.
+        let other_mapped: IpAddr = "::ffff:192.0.2.6".parse().unwrap();
+        assert!(!data_peer_matches_control(v4, other_mapped));
     }
 }

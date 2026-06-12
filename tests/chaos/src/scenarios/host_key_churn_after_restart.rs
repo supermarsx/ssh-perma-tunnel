@@ -21,7 +21,7 @@ use crate::scenarios::common::{
 use spt_chaos_proxy::ChaosBehaviour;
 
 #[tokio::test]
-#[ignore = "FIXME(C1-deferred): HostKeyChurn / ChurningSshServer not implemented — see t8-C2.md"]
+#[ignore = "feature-gated: ChaosBehaviour::HostKeyChurn is a Pristine passthrough and the TCP-probe harness has no SSH host-key concept (no ChurningSshServer). Cannot be un-ignored until a real SSH chaos harness lands. See t8-C2.md"]
 async fn host_key_churn_after_restart() {
     let echo = EchoServer::spawn().await.expect("echo server");
     let (_proxy, proxy_addr, _proxy_task) = spawn_proxy_to(

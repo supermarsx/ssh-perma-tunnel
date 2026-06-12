@@ -118,9 +118,33 @@ impl Default for StatusApiTlsConfig {
 /// "basic" | "mtls"`). Bearer/basic credentials are resolved via the
 /// `spt-secrets` [`Resolver`](spt_secrets::Resolver) at server start time —
 /// never stored inline in the config.
+///
+/// ## Unknown-key detection limitation (E5-F13)
+///
+/// The [`mode`](Self::mode) field is `#[serde(flatten)]`ed onto an
+/// internally-tagged enum ([`StatusApiAuthMode`]). `serde_ignored` — the
+/// machinery that powers the unknown-key warning path and `--strict` mode —
+/// **cannot see keys consumed inside a flattened/buffered value**, because
+/// flattening routes deserialization through serde's internal `Content`
+/// buffer rather than the tracking deserializer. As a consequence a typo'd
+/// key inside `[status_api.auth]` (for example `allowed_subject = [...]`
+/// instead of `allowed_subjects`, while `mode = "mtls"` defaults apply) is
+/// silently dropped instead of being reported.
+///
+/// This is a structural hole in the safety net that replaced
+/// `deny_unknown_fields`. It is documented rather than fixed here to avoid
+/// reshaping the (shared) schema; the semantic checks added by
+/// `validate::check_status_api` recover *value*-level coverage (TLS/cert/mtls
+/// cross-field validation), but cannot recover unknown-*key* coverage for
+/// keys swallowed by the flatten. Operators relying on strict-mode typo
+/// detection for this table should treat that as a known gap.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct StatusApiAuthConfig {
     /// Active authentication mode.
+    ///
+    /// Note: because this is `#[serde(flatten)]`ed, unknown keys nested in
+    /// the same `[status_api.auth]` table escape `serde_ignored` detection —
+    /// see the type-level docs (E5-F13).
     #[serde(flatten)]
     pub mode: StatusApiAuthMode,
 }

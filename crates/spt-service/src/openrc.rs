@@ -17,6 +17,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use spt_core::error::{Error, Result};
 
+use crate::task_scheduler::validate_service_name;
 use crate::{
     template, unsupported, CommandRunner, ServiceCapabilities, ServiceManager, ServiceSpec,
     ServiceState, ServiceStatus, TokioRunner,
@@ -114,6 +115,7 @@ impl ServiceManager for OpenRcManager {
     }
 
     async fn install(&self, spec: &ServiceSpec) -> Result<()> {
+        validate_service_name(&spec.name)?;
         let script = render_script(spec);
         let path = self.script_path(&spec.name);
 
@@ -162,6 +164,7 @@ impl ServiceManager for OpenRcManager {
     }
 
     async fn uninstall(&self, name: &str) -> Result<()> {
+        validate_service_name(name)?;
         // Best-effort deregistration; ignore exit status.
         let _ = self
             .runner
@@ -180,6 +183,7 @@ impl ServiceManager for OpenRcManager {
     }
 
     async fn status(&self, name: &str) -> Result<ServiceStatus> {
+        validate_service_name(name)?;
         let out = self
             .runner
             .run("rc-service", &[name, "status"], DEFAULT_TIMEOUT)
@@ -226,18 +230,22 @@ impl ServiceManager for OpenRcManager {
     }
 
     async fn start(&self, name: &str) -> Result<()> {
+        validate_service_name(name)?;
         run_rc_service(self.runner.as_ref(), name, "start").await
     }
 
     async fn stop(&self, name: &str) -> Result<()> {
+        validate_service_name(name)?;
         run_rc_service(self.runner.as_ref(), name, "stop").await
     }
 
     async fn restart(&self, name: &str) -> Result<()> {
+        validate_service_name(name)?;
         run_rc_service(self.runner.as_ref(), name, "restart").await
     }
 
     async fn reload(&self, name: &str) -> Result<()> {
+        validate_service_name(name)?;
         let out = self
             .runner
             .run("rc-service", &[name, "reload"], DEFAULT_TIMEOUT)
@@ -299,7 +307,41 @@ fn render_script(spec: &ServiceSpec) -> String {
     vars.insert("user", spec.user.clone().unwrap_or_else(|| "root".into()));
     vars.insert("group", spec.group.clone().unwrap_or_else(|| "root".into()));
     vars.insert("working_dir", spec.working_dir.display().to_string());
+    // E7-F9: render `[profiles].env` as `export K="V"` lines so OpenRC honours
+    // ServiceSpec.env (previously dropped — only systemd/launchd applied env).
+    // Rendered into the `{{env_exports}}` template placeholder; the template
+    // is owned by p5-packaging-units and must add that placeholder for these
+    // exports to take effect.
+    vars.insert("env_exports", render_env_exports(spec));
     template::render(TEMPLATE, &vars)
+}
+
+/// Render `ServiceSpec.env` as POSIX `export KEY="VALUE"` lines for shell
+/// init scripts (`OpenRC` / `SysV`). Values are double-quoted with `"`, `$`,
+/// `` ` `` and `\` backslash-escaped so the shell treats them literally.
+/// Returns an empty string when there is no env (so the template line
+/// collapses).
+pub(crate) fn render_env_exports(spec: &ServiceSpec) -> String {
+    spec.env
+        .iter()
+        .map(|(k, v)| format!("export {k}=\"{}\"", shell_double_quote_escape(v)))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Escape a value for inclusion inside a POSIX double-quoted string.
+pub(crate) fn shell_double_quote_escape(v: &str) -> String {
+    let mut out = String::with_capacity(v.len());
+    for c in v.chars() {
+        match c {
+            '"' | '\\' | '$' | '`' => {
+                out.push('\\');
+                out.push(c);
+            }
+            _ => out.push(c),
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -517,5 +559,62 @@ mod tests {
         let mgr = OpenRcManager::new();
         // Only smoke: any well-formed result is acceptable.
         let _ = mgr.status("nonexistent-spt-test").await;
+    }
+
+    // ---- E7-F17: name validation -----------------------------------------
+
+    #[tokio::test]
+    async fn install_rejects_traversal_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mock = Arc::new(MockRunner::new());
+        let mgr =
+            OpenRcManager::new_with_runner(mock.clone()).with_script_root(tmp.path().to_path_buf());
+        let mut spec = sample_spec();
+        spec.name = "../../evil".into();
+        let err = mgr.install(&spec).await.expect_err("must reject");
+        assert!(format!("{err}").contains("invalid service name"));
+        assert!(mock.calls().is_empty(), "no rc-update on rejected name");
+    }
+
+    #[tokio::test]
+    async fn lifecycle_rejects_traversal_name() {
+        let mock = Arc::new(MockRunner::new());
+        let mgr = OpenRcManager::new_with_runner(mock.clone());
+        assert!(mgr.start("a/b").await.is_err());
+        assert!(mgr.stop("a/b").await.is_err());
+        assert!(mgr.status("a/b").await.is_err());
+        assert!(mgr.reload("a/b").await.is_err());
+        assert!(mock.calls().is_empty());
+    }
+
+    // ---- E7-F9: env exports ----------------------------------------------
+
+    #[test]
+    fn render_env_exports_emits_export_lines() {
+        let spec = sample_spec();
+        let out = render_env_exports(&spec);
+        // sample_spec has RUST_LOG=info and SPT_STATE_DIR=/var/lib/spt.
+        assert!(out.contains("export RUST_LOG=\"info\""), "got: {out}");
+        assert!(
+            out.contains("export SPT_STATE_DIR=\"/var/lib/spt\""),
+            "got: {out}"
+        );
+    }
+
+    #[test]
+    fn render_env_exports_escapes_special_chars() {
+        let mut spec = sample_spec();
+        spec.env.clear();
+        spec.env
+            .insert("K".into(), "a\"b$c`d\\e".into());
+        let out = render_env_exports(&spec);
+        assert_eq!(out, "export K=\"a\\\"b\\$c\\`d\\\\e\"");
+    }
+
+    #[test]
+    fn render_env_exports_empty_when_no_env() {
+        let mut spec = sample_spec();
+        spec.env.clear();
+        assert_eq!(render_env_exports(&spec), "");
     }
 }

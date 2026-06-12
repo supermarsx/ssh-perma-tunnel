@@ -504,13 +504,34 @@ pub struct ScmHandles {
     pub shutdown: tokio::sync::Notify,
     /// Signalled on `SERVICE_CONTROL_PARAMCHANGE` (parity with Unix SIGHUP).
     pub reload: tokio::sync::Notify,
+    /// Service-specific exit code the entry closure wants SCM to report
+    /// (E7-F1). Default `0` ⇒ clean exit (`ServiceExitCode::Win32(0)`). A
+    /// non-zero value set via [`ScmHandles::set_exit_code`] is reported as
+    /// `ServiceExitCode::ServiceSpecific(code)` so a startup/runtime failure
+    /// surfaces in SCM and the Event Log instead of looking like a clean stop.
+    exit_code: std::sync::atomic::AtomicI32,
 }
 
 impl ScmHandles {
-    /// Construct an empty `ScmHandles`. Both notifies start un-signalled.
+    /// Construct an empty `ScmHandles`. Both notifies start un-signalled and
+    /// the exit code is `0` (clean).
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Record the service-specific exit code the closure wants SCM to report
+    /// (E7-F1). `0` keeps the default clean (`Win32(0)`) mapping; any other
+    /// value is reported as `ServiceSpecific(code)`.
+    pub fn set_exit_code(&self, code: i32) {
+        self.exit_code
+            .store(code, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// The exit code recorded by the entry closure (`0` if none was set).
+    #[must_use]
+    pub fn exit_code(&self) -> i32 {
+        self.exit_code.load(std::sync::atomic::Ordering::SeqCst)
     }
 }
 
@@ -620,6 +641,63 @@ pub(crate) fn scm_launch_arguments(spec_args: &[String]) -> Vec<std::ffi::OsStri
     }
     out.extend(spec_args.iter().map(std::ffi::OsString::from));
     out
+}
+
+/// Render the full `launch_arguments` array from a [`ServiceSpec`] (E7-F5).
+///
+/// SCM's `ImagePath` is a flat command line — it carries **no** environment
+/// block, so `spec.env` (which on Unix backends propagates `SPT_STATE_DIR`)
+/// would otherwise be silently dropped: the `LocalSystem` service would resolve
+/// its state dir from `C:\Windows\System32\config\systemprofile\...` while an
+/// operator's interactive `spt tunnel status` reads *their* `%LOCALAPPDATA%`,
+/// so the two never see the same status/pid/log files.
+///
+/// To make service and CLI agree we re-materialise `SPT_STATE_DIR` from
+/// `spec.env` as an explicit `--state-dir <path>` argument (the SCM dispatch
+/// arg parser honours both `--state-dir` and `$SPT_STATE_DIR`). The flag is
+/// only appended when the spec actually carries a state dir and the args don't
+/// already specify one, so installs that embed `--state-dir` in `spec.args`
+/// stay idempotent.
+///
+/// Pure / sync so it's unit-testable without round-tripping SCM.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+pub(crate) fn scm_launch_arguments_for_spec(spec: &ServiceSpec) -> Vec<std::ffi::OsString> {
+    let mut out = scm_launch_arguments(&spec.args);
+    let already_has_state_dir = spec
+        .args
+        .iter()
+        .any(|a| a == "--state-dir" || a.starts_with("--state-dir="));
+    if !already_has_state_dir {
+        if let Some(state_dir) = spec.env.get("SPT_STATE_DIR") {
+            if !state_dir.is_empty() {
+                out.push(std::ffi::OsString::from("--state-dir"));
+                out.push(std::ffi::OsString::from(state_dir));
+            }
+        }
+    }
+    out
+}
+
+/// Map a [`RestartPolicy`] onto the SCM failure-actions plan (E7-F5).
+///
+/// SCM only restarts on **failure** (it has no "always" notion distinct from
+/// failure recovery and never re-runs a cleanly-exited service), so both
+/// `Always` and `OnFailure` map to a single `Restart` action; `Never` maps to
+/// an empty action list (no auto-restart). Returns the typed
+/// `(reset_period_secs, restart_delay_secs)` decision so the pure mapping is
+/// unit-testable on any host without minting a real `Service` handle.
+///
+/// `Some((reset_secs, delay_secs))` ⇒ install a single `Restart` action with
+/// the given per-attempt delay and failure-count reset window.
+/// `None` ⇒ no failure actions (policy `Never`).
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+pub(crate) fn scm_failure_action_plan(policy: crate::RestartPolicy) -> Option<(u64, u64)> {
+    match policy {
+        // 24h reset window, 5s restart delay — matches the systemd/launchd
+        // default crash-recovery cadence closely enough for parity.
+        crate::RestartPolicy::Always | crate::RestartPolicy::OnFailure => Some((86_400, 5)),
+        crate::RestartPolicy::Never => None,
+    }
 }
 
 // ============================================================================
@@ -868,9 +946,10 @@ mod windows_impl {
 
     use spt_core::error::{Error, Result};
     use windows_service::service::{
-        Service, ServiceAccess, ServiceControl, ServiceControlAccept, ServiceErrorControl,
-        ServiceExitCode, ServiceInfo, ServiceStartType, ServiceState as WinServiceState,
-        ServiceStatus as WinServiceStatus, ServiceType,
+        Service, ServiceAccess, ServiceAction, ServiceActionType, ServiceControl,
+        ServiceControlAccept, ServiceErrorControl, ServiceExitCode, ServiceFailureActions,
+        ServiceFailureResetPeriod, ServiceInfo, ServiceStartType,
+        ServiceState as WinServiceState, ServiceStatus as WinServiceStatus, ServiceType,
     };
     use windows_service::service_control_handler::{self, ServiceControlHandlerResult};
     use windows_service::service_dispatcher;
@@ -945,14 +1024,56 @@ mod windows_impl {
             start_type: ServiceStartType::AutoStart,
             error_control: ServiceErrorControl::Normal,
             executable_path: spec.exec_path.clone(),
-            launch_arguments: super::scm_launch_arguments(&spec.args),
+            // E7-F5: embed `--state-dir <resolved>` (from spec.env's
+            // SPT_STATE_DIR) into the ImagePath so the LocalSystem service and
+            // an operator's CLI resolve the *same* state dir. SCM ImagePaths
+            // carry no environment block, so this is the only channel.
+            launch_arguments: super::scm_launch_arguments_for_spec(spec),
             dependencies: vec![],
             account_name: None,
             account_password: None,
         };
-        scm.create_service(&info, ServiceAccess::START | ServiceAccess::CHANGE_CONFIG)
+        let service = scm
+            .create_service(&info, ServiceAccess::START | ServiceAccess::CHANGE_CONFIG)
             .map_err(|e| Error::ServiceManagerFailed(format!("create_service: {e}")))?;
+
+        // E7-F5: apply the restart policy via SERVICE_CONFIG_FAILURE_ACTIONS.
+        // Without this, `RestartPolicy::Always`/`OnFailure` has no effect on
+        // Windows (SCM never auto-restarts a crashed service), diverging from
+        // systemd/launchd/openrc which all restart. Best-effort: a failure here
+        // is logged but does not fail the whole install (the service is already
+        // created and startable).
+        apply_failure_actions(&service, spec.restart_policy);
         Ok(())
+    }
+
+    /// Configure SCM crash-recovery for a freshly created service (E7-F5).
+    ///
+    /// Translates the spec's [`crate::RestartPolicy`] into a
+    /// `SERVICE_CONFIG_FAILURE_ACTIONS` plan via
+    /// [`super::scm_failure_action_plan`] and pushes it with
+    /// `Service::update_failure_actions`. `RestartPolicy::Never` clears the
+    /// action list (no auto-restart).
+    fn apply_failure_actions(service: &Service, policy: crate::RestartPolicy) {
+        let (reset_secs, actions) = match super::scm_failure_action_plan(policy) {
+            Some((reset_secs, delay_secs)) => (
+                reset_secs,
+                Some(vec![ServiceAction {
+                    action_type: ServiceActionType::Restart,
+                    delay: Duration::from_secs(delay_secs),
+                }]),
+            ),
+            None => (0, Some(Vec::new())),
+        };
+        let failure_actions = ServiceFailureActions {
+            reset_period: ServiceFailureResetPeriod::After(Duration::from_secs(reset_secs)),
+            reboot_msg: None,
+            command: None,
+            actions,
+        };
+        if let Err(e) = service.update_failure_actions(failure_actions) {
+            tracing::warn!(error = %e, "create_service: failed to apply restart policy (failure actions)");
+        }
     }
 
     pub(super) fn do_start_service(name: &str) -> Result<()> {
@@ -1211,7 +1332,24 @@ mod windows_impl {
         // Wait for entry to return. This thread is the service-main thread
         // and SCM is happy as long as we keep it alive while the service
         // is `Running`.
-        let clean_exit = worker.join().unwrap_or(false);
+        let no_panic = worker.join().unwrap_or(false);
+
+        // Decide the exit code reported to SCM (E7-F1):
+        //   * worker panicked            → ServiceSpecific(99)
+        //   * worker set a non-zero code → ServiceSpecific(code) (startup or
+        //                                  runtime failure — visible, NOT a
+        //                                  clean stop)
+        //   * otherwise                  → Win32(0) (clean stop)
+        let exit_code = if no_panic {
+            let code = handles.exit_code();
+            if code == 0 {
+                ServiceExitCode::Win32(0)
+            } else {
+                ServiceExitCode::ServiceSpecific(u32::from_ne_bytes(code.to_ne_bytes()))
+            }
+        } else {
+            ServiceExitCode::ServiceSpecific(99)
+        };
 
         // Final status. `StopPending` first (best practice — gives SCM a
         // chance to update its UI) then `Stopped`.
@@ -1228,11 +1366,7 @@ mod windows_impl {
             service_type: SERVICE_TYPE,
             current_state: WinServiceState::Stopped,
             controls_accepted: ServiceControlAccept::empty(),
-            exit_code: if clean_exit {
-                ServiceExitCode::Win32(0)
-            } else {
-                ServiceExitCode::ServiceSpecific(99)
-            },
+            exit_code,
             checkpoint: 0,
             wait_hint: Duration::default(),
             process_id: None,
@@ -1368,6 +1502,17 @@ mod tests {
         let _ = format!("{h:?}");
     }
 
+    #[test]
+    fn scm_handles_exit_code_defaults_zero_and_round_trips() {
+        let h = ScmHandles::new();
+        assert_eq!(h.exit_code(), 0);
+        h.set_exit_code(7);
+        assert_eq!(h.exit_code(), 7);
+        // Last writer wins.
+        h.set_exit_code(0);
+        assert_eq!(h.exit_code(), 0);
+    }
+
     // ------------------------------------------------------------------
     // scm_launch_arguments — pure helper, cross-platform.
     // ------------------------------------------------------------------
@@ -1413,6 +1558,80 @@ mod tests {
         let rendered = scm_launch_arguments(&[]);
         assert_eq!(rendered.len(), 1);
         assert_eq!(rendered[0].to_str(), Some("--scm-dispatch"));
+    }
+
+    // ------------------------------------------------------------------
+    // E7-F5: state-dir injection + failure-action plan (pure, cross-platform).
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn launch_arguments_for_spec_injects_state_dir_from_env() {
+        let mut spec = sample_spec("svc");
+        spec.args = vec!["tunnel".into(), "run".into()];
+        spec.env
+            .insert("SPT_STATE_DIR".into(), "C:\\spt\\state".into());
+        let rendered: Vec<String> = scm_launch_arguments_for_spec(&spec)
+            .iter()
+            .map(|s| s.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(rendered[0], "--scm-dispatch");
+        // The state dir must be present as an explicit flag + value pair.
+        let idx = rendered
+            .iter()
+            .position(|a| a == "--state-dir")
+            .expect("--state-dir flag injected");
+        assert_eq!(rendered[idx + 1], "C:\\spt\\state");
+    }
+
+    #[test]
+    fn launch_arguments_for_spec_no_state_dir_when_env_absent() {
+        let mut spec = sample_spec("svc");
+        spec.args = vec!["tunnel".into(), "run".into()];
+        let rendered: Vec<String> = scm_launch_arguments_for_spec(&spec)
+            .iter()
+            .map(|s| s.to_string_lossy().into_owned())
+            .collect();
+        assert!(!rendered.iter().any(|a| a == "--state-dir"));
+    }
+
+    #[test]
+    fn launch_arguments_for_spec_does_not_double_state_dir() {
+        let mut spec = sample_spec("svc");
+        spec.args = vec![
+            "tunnel".into(),
+            "run".into(),
+            "--state-dir".into(),
+            "C:\\explicit".into(),
+        ];
+        spec.env
+            .insert("SPT_STATE_DIR".into(), "C:\\from-env".into());
+        let rendered: Vec<String> = scm_launch_arguments_for_spec(&spec)
+            .iter()
+            .map(|s| s.to_string_lossy().into_owned())
+            .collect();
+        let count = rendered.iter().filter(|a| *a == "--state-dir").count();
+        assert_eq!(count, 1, "must not duplicate an explicit --state-dir");
+        assert!(rendered.iter().any(|a| a == "C:\\explicit"));
+        assert!(!rendered.iter().any(|a| a == "C:\\from-env"));
+    }
+
+    #[test]
+    fn failure_action_plan_restarts_on_failure_and_always() {
+        use crate::RestartPolicy;
+        assert_eq!(
+            scm_failure_action_plan(RestartPolicy::OnFailure),
+            Some((86_400, 5))
+        );
+        assert_eq!(
+            scm_failure_action_plan(RestartPolicy::Always),
+            Some((86_400, 5))
+        );
+    }
+
+    #[test]
+    fn failure_action_plan_never_has_no_actions() {
+        use crate::RestartPolicy;
+        assert_eq!(scm_failure_action_plan(RestartPolicy::Never), None);
     }
 
     // ------------------------------------------------------------------

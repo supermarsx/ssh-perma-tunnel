@@ -318,6 +318,184 @@ async fn connect_with_retry(port: u16) -> TcpStream {
     }
 }
 
+// ──────── E3-F1: real keepalive liveness probe ────────────────────────
+
+/// A live SSH2 session's `keepalive()` is a real probe and succeeds while the
+/// session is healthy (previously it was an unconditional `Ok(())` no-op, so
+/// success carried no signal). The companion test below proves it returns
+/// `Err` once the session is dead.
+#[tokio::test]
+async fn russh_backend_keepalive_probe_succeeds_on_live_session() {
+    let (server, mut session) = connect_russh_session().await;
+    session
+        .keepalive()
+        .await
+        .expect("keepalive probe must succeed on a live session");
+    server.shutdown().await;
+}
+
+/// The core E3-F1 regression: after the transport is black-holed (NAT/idle
+/// drop, network partition, server crash), the SSH2 `keepalive()` probe must
+/// return `Err` so the supervisor's `run_active` loop can trigger session
+/// replacement (spec §11.3). Before the fix `keepalive()` always returned
+/// `Ok(())`, so a dead SSH2 session was detected only when real forward
+/// traffic happened to hit an I/O error.
+///
+/// We interpose a tiny TCP relay between the client and the russh test server
+/// so we can sever the established connection deterministically (the test
+/// server's `shutdown()` only stops its accept loop — already-established
+/// per-connection tasks survive, which does not model a dead link).
+#[tokio::test]
+async fn russh_backend_keepalive_probe_detects_dead_session() {
+    let server = RusshTestServer::new()
+        .with_password("tester", "anything")
+        .start()
+        .await
+        .expect("start russh server");
+    let server_port = server.addr.port();
+
+    // Killable TCP relay: client → relay → server. `kill_rx` drops every
+    // proxied connection, black-holing the SSH transport.
+    let relay = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind relay listener");
+    let relay_port = relay.local_addr().unwrap().port();
+    let (kill_tx, kill_rx) = tokio::sync::watch::channel(false);
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut client_side, _)) = relay.accept().await else {
+                break;
+            };
+            let mut kill_rx = kill_rx.clone();
+            tokio::spawn(async move {
+                let Ok(mut server_side) = TcpStream::connect(("127.0.0.1", server_port)).await
+                else {
+                    return;
+                };
+                tokio::select! {
+                    _ = tokio::io::copy_bidirectional(&mut client_side, &mut server_side) => {}
+                    _ = kill_rx.changed() => {
+                        // Drop both halves → RST/EOF on the client transport.
+                    }
+                }
+            });
+        }
+    });
+
+    std::env::set_var("SPT_TEST_RUSSH_BACKEND_PW", "anything");
+    let proto = Ssh2Protocol::builder()
+        .trust(spt_ssh2::testing::tofu_trust_verifier())
+        .build();
+    let endpoint = Endpoint::new("127.0.0.1", relay_port);
+    let auth = AuthConfig::new(
+        "tester",
+        vec![AuthMethod::Password {
+            secret: spt_auth::SecretRef::Env("SPT_TEST_RUSSH_BACKEND_PW".into()),
+        }],
+    );
+    let mut session = proto
+        .connect(&endpoint, &auth)
+        .await
+        .expect("connect through relay");
+
+    // Sanity: probe is healthy while the link is up.
+    session
+        .keepalive()
+        .await
+        .expect("keepalive healthy before the link is severed");
+
+    // Black-hole the transport.
+    kill_tx.send(true).expect("signal relay kill");
+
+    // Poll the probe until it reports the session is dead. The russh event
+    // loop may take a moment to notice the dropped socket, so retry within a
+    // bounded window rather than asserting on the first call.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        match session.keepalive().await {
+            Err(_) => break, // detected the dead session — success.
+            Ok(()) if tokio::time::Instant::now() < deadline => {
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+            Ok(()) => panic!(
+                "keepalive() still reported Ok after the link was severed — \
+                 dead SSH2 session went undetected (E3-F1 regression)"
+            ),
+        }
+    }
+
+    server.shutdown().await;
+}
+
+/// The transport-keepalive policy set via the builder reaches a real connect
+/// without breaking the handshake (E3-F1 config plumbing, end-to-end). With a
+/// short interval russh emits `keepalive@openssh.com` global requests; the
+/// session must still establish and probe healthy.
+#[tokio::test]
+async fn russh_backend_connects_with_transport_keepalive_policy() {
+    let server = RusshTestServer::new()
+        .with_password("tester", "anything")
+        .start()
+        .await
+        .expect("start russh server");
+
+    std::env::set_var("SPT_TEST_RUSSH_BACKEND_PW", "anything");
+    let proto = Ssh2Protocol::builder()
+        .trust(spt_ssh2::testing::tofu_trust_verifier())
+        .keepalive(Some(Duration::from_secs(1)), Some(3))
+        .build();
+    let endpoint = Endpoint::new("127.0.0.1", server.addr.port());
+    let auth = AuthConfig::new(
+        "tester",
+        vec![AuthMethod::Password {
+            secret: spt_auth::SecretRef::Env("SPT_TEST_RUSSH_BACKEND_PW".into()),
+        }],
+    );
+    let mut session = proto
+        .connect(&endpoint, &auth)
+        .await
+        .expect("connect with transport keepalive policy");
+    session
+        .keepalive()
+        .await
+        .expect("probe healthy with transport keepalive enabled");
+    server.shutdown().await;
+}
+
+/// E3-F9: a profile configured with `gssapi`/`sspi` must fail fast at connect
+/// (and `Ssh2Protocol::validate_auth` rejects it up-front) rather than after a
+/// wasted TCP connect + backoff cycle.
+#[tokio::test]
+async fn russh_backend_rejects_gssapi_before_connect() {
+    // No server needed — validation must fire before any socket is opened.
+    let proto = Ssh2Protocol::builder()
+        .trust(spt_ssh2::testing::tofu_trust_verifier())
+        .build();
+    let endpoint = Endpoint::new("127.0.0.1", 1);
+    let auth = AuthConfig::new(
+        "tester",
+        vec![AuthMethod::Gssapi {
+            service: None,
+            principal: None,
+            delegate: false,
+        }],
+    );
+
+    // Up-front validation surface used by config/profile build.
+    let pre = Ssh2Protocol::validate_auth(&auth);
+    assert!(
+        matches!(pre, Err(spt_core::Error::InvalidConfig(_))),
+        "validate_auth must reject gssapi: {pre:?}"
+    );
+
+    // The connect path enforces it too (fail fast, no connect attempt).
+    match proto.connect(&endpoint, &auth).await {
+        Err(spt_core::Error::InvalidConfig(_)) => {}
+        Err(other) => panic!("connect rejected gssapi with the wrong error: {other:?}"),
+        Ok(_) => panic!("connect must reject gssapi before dialing, but it succeeded"),
+    }
+}
+
 // -----------------------------------------------------------------------------
 // t7-Bwire: end-to-end multi-hop dispatch through `Ssh2Protocol::connect`.
 // Phase 0 left the russh backend rejecting `has_hops`; Bwire wires

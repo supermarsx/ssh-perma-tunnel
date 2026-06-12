@@ -1351,3 +1351,409 @@ fn footer_falls_back_to_static_help_for_text_field() {
         "footer must still show static help for Text fields:\n{text}"
     );
 }
+
+// -----------------------------------------------------------------
+// t-events-tui (E2) — Events page sink add → edit → close flow,
+// driven end-to-end through App so the full dispatch stack (page-nav
+// vs forwarded keys) is exercised.
+// -----------------------------------------------------------------
+
+const EVENTS_KB_SAMPLE: &str = r#"version = 1
+[[profiles]]
+name = "demo"
+protocol = "ssh2"
+
+[[events.sinks]]
+name = "webhook"
+type = "http"
+url = "https://example.com/hook"
+
+[[events.bindings]]
+name = "on-fail"
+on = ["profile.failed"]
+actions = ["webhook"]
+"#;
+
+/// Sink add → edit a field → close-editor, via App. The page starts in the
+/// Tags region; Down crosses into the Sinks region (App forwards Down to the
+/// page), `a` adds + opens the editor, Enter begins editing `name`, we retype
+/// it, Enter commits, then Left closes the editor back to list mode.
+#[test]
+fn events_sink_add_edit_close_via_app() {
+    let mut app = App::new(Model::from_str(EVENTS_KB_SAMPLE));
+    tab_to(&mut app, PageKind::Events);
+
+    // Cross from Tags into the Sinks region.
+    app.on_key(k(KeyCode::Down));
+
+    // Add a sink — pushes `sink-2` and opens its editor.
+    app.on_key(k(KeyCode::Char('a')));
+    assert_eq!(
+        app.model.events().map(|e| e.sinks.len()),
+        Some(2),
+        "`a` in the Sinks region must push a new sink"
+    );
+    assert_eq!(app.model.events().unwrap().sinks[1].name, "sink-2");
+
+    // Edit the `name` field (row 0): begin edit, clear, retype, commit.
+    // NOTE: avoid the characters `h`/`l`/`q`/`?`/`[`/`]` in the typed value —
+    // `App::on_key` treats those as global nav/commands even while a page
+    // field is being edited (a pre-existing App-level keymap behaviour), so
+    // they would not reach the text input. "buzzer" is safe.
+    app.on_key(k(KeyCode::Enter)); // begin editing `name`
+    app.on_key(k(KeyCode::End));
+    for _ in 0..20 {
+        app.on_key(k(KeyCode::Backspace));
+    }
+    for c in "buzzer".chars() {
+        app.on_key(k(KeyCode::Char(c)));
+    }
+    app.on_key(k(KeyCode::Enter)); // commit field edit
+    assert_eq!(
+        app.model.events().unwrap().sinks[1].name,
+        "buzzer",
+        "field edit must commit back into the sink"
+    );
+
+    // Close the editor (pane-nav left) — back to list mode.
+    app.on_key(k(KeyCode::Left));
+    // A subsequent `d` deletes the focused (newly added) sink, proving we are
+    // back in list mode (not field-edit mode where `d` would be a character).
+    app.on_key(k(KeyCode::Char('d')));
+    assert_eq!(
+        app.model.events().map(|e| e.sinks.len()),
+        Some(1),
+        "Left must close the editor so `d` deletes in list mode"
+    );
+}
+
+// -----------------------------------------------------------------
+// t-dns-forward-tui (E2) — DNS page record add → edit → close flow,
+// driven end-to-end through App so the full dispatch stack (region-nav
+// vs forwarded keys) is exercised, plus the all-forwards dns_names
+// reachability for forward index > 0.
+// -----------------------------------------------------------------
+
+const DNS_KB_SAMPLE: &str = r#"version = 1
+[[profiles]]
+name = "demo"
+protocol = "ssh2"
+
+[[profiles.forwards]]
+name = "alpha"
+type = "local"
+transport = "tcp"
+
+[[profiles.forwards]]
+name = "beta"
+type = "local"
+transport = "tcp"
+
+[[dns.records]]
+name = "service.local"
+type = "A"
+value = "127.0.0.1"
+"#;
+
+/// Record add → edit a field → close-editor, via App. The page starts in the
+/// Forwards region; Down crosses into the Records region, `a` adds + opens the
+/// editor, Enter begins editing `name`, we retype it, Enter commits, then Left
+/// closes the editor back to list mode (where `d` deletes).
+#[test]
+fn dns_record_add_edit_close_via_app() {
+    let mut app = App::new(Model::from_str(DNS_KB_SAMPLE));
+    tab_to(&mut app, PageKind::Dns);
+
+    // Cross from the Forwards region into the Records region.
+    app.on_key(k(KeyCode::Down));
+
+    // Add a record — pushes `record-2` and opens its editor.
+    app.on_key(k(KeyCode::Char('a')));
+    assert_eq!(
+        app.model.dns().map(|d| d.records.len()),
+        Some(2),
+        "`a` in the Records region must push a new record"
+    );
+    assert_eq!(app.model.dns().unwrap().records[1].name, "record-2");
+
+    // Edit the `name` field (row 0): begin edit, clear, retype, commit.
+    // NOTE: avoid the characters `h`/`l`/`q`/`?`/`[`/`]` in the typed value —
+    // `App::on_key` treats those as global nav/commands even while a page
+    // field is being edited, so they would not reach the text input.
+    app.on_key(k(KeyCode::Enter)); // begin editing `name`
+    app.on_key(k(KeyCode::End));
+    for _ in 0..20 {
+        app.on_key(k(KeyCode::Backspace));
+    }
+    for c in "www.zone".chars() {
+        app.on_key(k(KeyCode::Char(c)));
+    }
+    app.on_key(k(KeyCode::Enter)); // commit field edit
+    assert_eq!(
+        app.model.dns().unwrap().records[1].name,
+        "www.zone",
+        "field edit must commit back into the record"
+    );
+
+    // Close the editor (pane-nav left) — back to list mode.
+    app.on_key(k(KeyCode::Left));
+    // A subsequent `d` deletes the focused (newly added) record, proving we
+    // are back in list mode (not field-edit mode where `d` would be a char).
+    app.on_key(k(KeyCode::Char('d')));
+    assert_eq!(
+        app.model.dns().map(|d| d.records.len()),
+        Some(1),
+        "Left must close the editor so `d` deletes in list mode"
+    );
+}
+
+// -----------------------------------------------------------------
+// t-events-tui-complete — `[[events.commands]]` region add/edit/close
+// driven end-to-end through App so the region-nav (Tags→Sinks→Bindings→
+// Commands) and forwarded-key dispatch are exercised.
+// -----------------------------------------------------------------
+
+const EVENTS_CMD_SAMPLE: &str = r#"version = 1
+[[profiles]]
+name = "demo"
+protocol = "ssh2"
+
+[[events.sinks]]
+name = "webhook"
+type = "http"
+url = "https://example.com/hook"
+
+[[events.bindings]]
+name = "on-fail"
+on = ["profile.failed"]
+actions = ["runit"]
+"#;
+
+/// Tab to Events, Tab through Sinks/Bindings into the Commands region, add a
+/// command, edit its `command` field, commit, close, then delete. Proves the
+/// 4th region is reachable and round-trips through the model.
+#[test]
+fn events_command_add_edit_close_via_app() {
+    let mut app = App::new(Model::from_str(EVENTS_CMD_SAMPLE));
+    tab_to(&mut app, PageKind::Events);
+
+    // Region nav: Down crosses Tags→Sinks; Tab cycles Sinks→Bindings→Commands.
+    // App consumes Tab for page-nav, so use the at-boundary Down crossings.
+    app.on_key(k(KeyCode::Down)); // Tags → Sinks
+    app.on_key(k(KeyCode::Down)); // Sinks (bottom) → Bindings
+    app.on_key(k(KeyCode::Down)); // Bindings (bottom) → Commands
+
+    // Add a command — pushes `command-1` and opens its editor.
+    app.on_key(k(KeyCode::Char('a')));
+    assert_eq!(
+        app.model.events().map(|e| e.commands.len()),
+        Some(1),
+        "`a` in the Commands region must push a new command"
+    );
+    assert_eq!(app.model.events().unwrap().commands[0].name, "command-1");
+
+    // Edit `command` field (row 1): begin edit, type a value, commit.
+    // Avoid `h`/`l`/`q`/`?`/`[`/`]` (App intercepts those mid-edit).
+    app.on_key(k(KeyCode::Down)); // focus `command`
+    app.on_key(k(KeyCode::Enter)); // begin edit
+    for c in "/usr/bin/notify".chars() {
+        app.on_key(k(KeyCode::Char(c)));
+    }
+    app.on_key(k(KeyCode::Enter)); // commit
+    assert_eq!(
+        app.model.events().unwrap().commands[0].command,
+        "/usr/bin/notify"
+    );
+
+    // Close the editor (pane-nav left), then `d` deletes in list mode.
+    app.on_key(k(KeyCode::Left));
+    app.on_key(k(KeyCode::Char('d')));
+    assert_eq!(
+        app.model.events().map(|e| e.commands.len()),
+        Some(0),
+        "Left must close the editor so `d` deletes the command in list mode"
+    );
+}
+
+// -----------------------------------------------------------------
+// ma-tui (multi-auth Phase 4) — per-endpoint auth override end-to-end.
+//
+// Drive the Endpoints editor through App: the `auth.override` toggle
+// must install/remove a per-endpoint auth block and reveal the gated
+// shared credential rows; a per-endpoint secret must round-trip through
+// save→reparse while the global profile auth stays untouched.
+// -----------------------------------------------------------------
+
+const ENDPOINT_AUTH_SAMPLE: &str = r#"version = 1
+[[profiles]]
+name = "demo"
+protocol = "ssh2"
+
+[profiles.auth]
+method = "public_key"
+identity_file = "/home/global/.ssh/id_ed25519"
+
+[[profiles.endpoints]]
+name = "primary"
+host = "edge-1.example.com"
+port = 22
+"#;
+
+/// Toggling `auth.override` ON installs a per-endpoint `Auth` block and
+/// reveals the gated shared auth rows; toggling it OFF clears the block
+/// back to `None` (inherit global) and hides the rows again.
+#[test]
+fn endpoint_auth_override_toggle_installs_and_clears_block() {
+    let mut app = App::new(Model::from_str(ENDPOINT_AUTH_SAMPLE));
+    tab_to(&mut app, PageKind::Endpoints);
+    // Open the editor on endpoint 0.
+    app.on_key(k(KeyCode::Enter));
+    // Field order: name(0) host(1) port(2) priority(3) weight(4) user(5)
+    // auth.override(6). Move focus to the override toggle.
+    for _ in 0..6 {
+        app.on_key(k(KeyCode::Down));
+    }
+    // Begin edit, flip ON (Space), commit (Enter).
+    app.on_key(k(KeyCode::Enter));
+    app.on_key(k(KeyCode::Char(' ')));
+    app.on_key(k(KeyCode::Enter));
+    assert!(
+        app.model.profile().endpoints[0].auth.is_some(),
+        "override ON must install a per-endpoint auth block"
+    );
+    // The gated auth rows must now be visible in the editor render.
+    let text = render(&mut app, 120, 80);
+    assert!(
+        text.contains("auth.method"),
+        "override ON must reveal the gated shared auth.method row:\n{text}"
+    );
+    // Toggle OFF again: begin edit, flip (Space), commit.
+    app.on_key(k(KeyCode::Enter));
+    app.on_key(k(KeyCode::Char(' ')));
+    app.on_key(k(KeyCode::Enter));
+    assert!(
+        app.model.profile().endpoints[0].auth.is_none(),
+        "override OFF must clear the per-endpoint auth block back to None"
+    );
+}
+
+/// Round-trip: set a per-endpoint `password` secret via the TUI model
+/// path, save to a real file (Ctrl-S), reparse, and assert the endpoint
+/// carries its auth (password verbatim) while the GLOBAL profile auth is
+/// unchanged. Also asserts the nested `[profiles.endpoints.auth]`
+/// sub-table serialised correctly (the `toml_edit` array-of-tables splice
+/// concern from the plan).
+#[test]
+fn endpoint_auth_round_trips_through_save_without_touching_global() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("c.toml");
+    std::fs::write(&path, ENDPOINT_AUTH_SAMPLE).unwrap();
+    let mut app = App::new(Model::load(&path).unwrap());
+    tab_to(&mut app, PageKind::Endpoints);
+
+    // Open editor, flip override ON.
+    app.on_key(k(KeyCode::Enter));
+    for _ in 0..6 {
+        app.on_key(k(KeyCode::Down));
+    }
+    app.on_key(k(KeyCode::Enter)); // begin edit override
+    app.on_key(k(KeyCode::Char(' '))); // flip ON
+    app.on_key(k(KeyCode::Enter)); // commit (rebuilds rows with auth.*)
+
+    // Now focus auth.password and set a secret. Rows after rebuild:
+    // ...auth.override(6) auth.method(7) auth.identity_file(8)
+    // auth.certificate_file(9) auth.passphrase(10) auth.password(11)...
+    // Focus currently rests on auth.override (6); step down 5 → password.
+    for _ in 0..5 {
+        app.on_key(k(KeyCode::Down));
+    }
+    app.on_key(k(KeyCode::Enter)); // begin edit auth.password
+                                   // `secret://ns/k` contains no App-intercepted chars (h/l/q/?/[/]).
+    for c in "secret://ns/k".chars() {
+        app.on_key(k(KeyCode::Char(c)));
+    }
+    app.on_key(k(KeyCode::Enter)); // commit secret
+
+    // Sanity in-memory before save.
+    let ep_auth = app.model.profile().endpoints[0].auth.clone();
+    assert!(ep_auth.is_some(), "endpoint must carry an auth block");
+    assert_eq!(
+        ep_auth
+            .as_ref()
+            .and_then(|a| a.password.as_ref().map(|r| r.expose().to_owned()))
+            .as_deref(),
+        Some("secret://ns/k"),
+        "endpoint password must be set in the model"
+    );
+
+    // Save through the real path, then reparse from disk.
+    app.on_key(ctrl('s'));
+    assert!(
+        app.status.contains("saved"),
+        "Ctrl-S must report a successful save, got: {}",
+        app.status
+    );
+
+    let reloaded = Model::load(&path).unwrap();
+    let ep = &reloaded.profile().endpoints[0];
+    assert_eq!(
+        ep.auth
+            .as_ref()
+            .and_then(|a| a.password.as_ref().map(|r| r.expose().to_owned()))
+            .as_deref(),
+        Some("secret://ns/k"),
+        "per-endpoint password must round-trip through save→reparse \
+         (nested [profiles.endpoints.auth] must serialise)"
+    );
+    assert!(
+        ep.auth.is_some(),
+        "endpoint auth block must survive the round-trip"
+    );
+    // The GLOBAL profile auth must be unchanged — method + identity_file.
+    let global = reloaded.profile().auth.as_ref().expect("global auth kept");
+    assert_eq!(global.method, "public_key");
+    assert_eq!(
+        global.identity_file.as_deref(),
+        Some("/home/global/.ssh/id_ed25519")
+    );
+    // And the global auth must NOT have acquired the per-endpoint password.
+    assert!(
+        global.password.is_none(),
+        "the per-endpoint secret must NOT leak into the global profile auth"
+    );
+}
+
+/// PART B: the all-forwards `dns_names` editing must be reachable for a
+/// forward at index > 0. In the Forwards region, Right cycles the forward
+/// selector; Enter/edit/commit then writes `forwards[1].dns_names`.
+#[test]
+fn dns_names_reachable_for_second_forward_via_app() {
+    let mut app = App::new(Model::from_str(DNS_KB_SAMPLE));
+    tab_to(&mut app, PageKind::Dns);
+
+    // Right selects forward index 1 (the page starts on the Forwards region).
+    app.on_key(k(KeyCode::Right));
+
+    // Begin editing the dns_names list, type a CSV value, commit.
+    // NOTE: avoid `h`/`l`/`q`/`?`/`[`/`]` — `App::on_key` intercepts those as
+    // global nav/commands even mid-edit, so they never reach the text input.
+    // "beta.zone" is safe.
+    app.on_key(k(KeyCode::Enter)); // begin edit (List)
+    for c in "beta.zone".chars() {
+        app.on_key(k(KeyCode::Char(c)));
+    }
+    app.on_key(k(KeyCode::Enter)); // commit
+
+    assert_eq!(
+        app.model.profile().forwards[1]
+            .dns_names
+            .clone()
+            .unwrap_or_default(),
+        vec!["beta.zone"],
+        "Right + edit must write dns_names for the forward at index 1"
+    );
+    assert!(
+        app.model.profile().forwards[0].dns_names.is_none(),
+        "forwards[0] dns_names must be untouched"
+    );
+}

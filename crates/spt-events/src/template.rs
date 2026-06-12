@@ -3,16 +3,14 @@
 //! Two forms are supported:
 //!
 //! * `{{name}}` — replaced with the JSON-stringified value of the named
-//!   field on the [`Event`] (looked up via [`Event::lookup_field`]).
-//!   Strings are inserted verbatim (without surrounding quotes); other
-//!   types are JSON-encoded.
+//!   field on the [`Event`] (looked up via [`Event::lookup_field_str`], the
+//!   allocation-light borrowed-string accessor). Strings are inserted
+//!   verbatim (without surrounding quotes); other types are JSON-encoded.
 //! * `{{ name }}` — leading/trailing ASCII whitespace inside the braces is
 //!   ignored.
 //!
 //! Unknown fields render as the literal placeholder including the braces;
 //! callers receive a list of unresolved names so they can warn if needed.
-
-use serde_json::Value;
 
 use crate::event::Event;
 
@@ -54,8 +52,8 @@ pub fn render_template(template: &str, event: &Event) -> (String, Vec<String>) {
                 // SAFETY-equivalent: `template[i + 2..raw_end]` slices on
                 // ASCII boundaries, so this is always valid UTF-8.
                 let raw = template[i + 2..raw_end].trim();
-                match event.lookup_field(raw) {
-                    Some(v) => append_value(&mut out, &v),
+                match event.lookup_field_str(raw) {
+                    Some(v) => out.push_str(&v),
                     None => {
                         missing.push(raw.to_owned());
                         out.push_str("{{");
@@ -93,31 +91,6 @@ fn find_close(haystack: &[u8]) -> Option<usize> {
         i += 1;
     }
     None
-}
-
-/// Append a JSON [`Value`] to `out` using template rendering rules:
-/// strings push their UTF-8 bytes verbatim (no surrounding quotes), nulls
-/// render as the empty string, and every other type goes through
-/// `serde_json` formatting. The previous implementation returned a `String`
-/// per call (= one heap allocation per placeholder); appending in place
-/// reuses the `out` buffer and removes that allocation from the hot path.
-fn append_value(out: &mut String, v: &Value) {
-    match v {
-        Value::String(s) => out.push_str(s),
-        Value::Null => {}
-        Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
-        Value::Number(n) => {
-            use std::fmt::Write as _;
-            // `serde_json::Number` already implements `Display` without
-            // heap allocation; `write!` into the destination buffer.
-            // Writing to a `String` cannot fail.
-            let _ = write!(out, "{n}");
-        }
-        // Arrays and objects keep the original semantics: defer to
-        // `serde_json::to_string`. These paths are uncommon in practice
-        // (templates almost always reference scalars).
-        other => out.push_str(&other.to_string()),
-    }
 }
 
 #[cfg(test)]

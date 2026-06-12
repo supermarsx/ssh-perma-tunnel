@@ -19,6 +19,22 @@ use spt_config::ValidationDiagnostics;
 
 use crate::model::Model;
 use crate::pages::Page;
+use crate::save::{present_non_wizard_keys, unknown_keys};
+
+/// One-line description of each non-wizard table, shown in the read-only
+/// "Other settings" section so operators understand what is present but
+/// unreachable from the 13-page wizard (E4-F15).
+fn non_wizard_label(key: &str) -> &'static str {
+    match key {
+        "hops" => "hops — proxy-jump / multi-hop chain",
+        "sftp_mounts" => "sftp_mounts — SFTP-backed filesystem mounts",
+        "script" => "script — Rhai scripting hooks",
+        "transport" => "transport — obfuscation transport",
+        "enabled" => "enabled — profile start flag",
+        // Unreachable: callers only pass keys from NON_WIZARD_TABLE_KEYS.
+        _ => "(other)",
+    }
+}
 
 /// Review page — read-only TOML preview + diagnostics, with vertical scroll.
 pub struct ReviewPage {
@@ -52,10 +68,33 @@ impl ReviewPage {
 
 impl Page for ReviewPage {
     fn render(&mut self, area: Rect, buf: &mut Buffer, model: &Model) {
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Min(0), Constraint::Length(8)])
-            .split(area);
+        // Read-only "Other settings" section (E4-F15): list non-wizard tables
+        // present on the profile plus any schema-unknown keys that a save
+        // would silently drop. Built first so the layout can reserve space for
+        // it ONLY when there's something to show — when the profile uses only
+        // wizard-reachable settings the layout is identical to before, keeping
+        // the existing nav-mode snapshot byte-for-byte.
+        let other_lines = other_settings_lines(model);
+
+        let chunks = if other_lines.is_empty() {
+            Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Min(0), Constraint::Length(8)])
+                .split(area)
+        } else {
+            // Reserve up to one row per line (+2 borders), capped so the TOML
+            // preview keeps the majority of the screen.
+            #[allow(clippy::cast_possible_truncation)]
+            let other_height = (other_lines.len() as u16 + 2).min(10);
+            Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Min(0),
+                    Constraint::Length(8),
+                    Constraint::Length(other_height),
+                ])
+                .split(area)
+        };
 
         // Render the redacted canonical TOML.
         let toml = model.render_redacted();
@@ -104,6 +143,17 @@ impl Page for ReviewPage {
         );
         let block = Block::default().borders(Borders::ALL).title(title);
         Paragraph::new(lines).block(block).render(chunks[1], buf);
+
+        // Read-only "Other settings" section, only when there's content.
+        if let Some(area) = chunks.get(2) {
+            let block = Block::default()
+                .borders(Borders::ALL)
+                .title("Other settings (read-only — edit in the config file)");
+            Paragraph::new(other_lines)
+                .block(block)
+                .wrap(Wrap { trim: false })
+                .render(*area, buf);
+        }
     }
 
     fn on_key(&mut self, key: KeyEvent, _model: &mut Model) -> bool {
@@ -286,6 +336,37 @@ fn style_value(v: &str) -> Span<'static> {
     Span::raw(v.to_string())
 }
 
+/// Build the lines for the read-only "Other settings" section (E4-F15).
+///
+/// Returns an empty vec when the profile has no non-wizard tables and no
+/// schema-unknown keys, which keeps the section (and its layout slot) hidden
+/// so wizard-only profiles render byte-identically to before.
+fn other_settings_lines(model: &Model) -> Vec<Line<'static>> {
+    let present = present_non_wizard_keys(model);
+    let dropped = unknown_keys(model);
+    if present.is_empty() && dropped.is_empty() {
+        return Vec::new();
+    }
+
+    let mut out: Vec<Line<'static>> = Vec::new();
+    for key in present {
+        out.push(Line::from(vec![
+            Span::styled("• ", Style::default().fg(Color::Cyan)),
+            Span::styled(
+                non_wizard_label(key).to_string(),
+                Style::default().fg(Color::Cyan),
+            ),
+        ]));
+    }
+    for key in dropped {
+        out.push(Line::from(Span::styled(
+            format!("⚠ unknown key `{key}` — NOT understood by the schema; a TUI save will drop it"),
+            Style::default().fg(Color::Yellow),
+        )));
+    }
+    out
+}
+
 fn diagnostics_to_lines(d: &ValidationDiagnostics) -> Vec<Line<'static>> {
     let mut out = Vec::new();
     for e in &d.errors {
@@ -397,6 +478,89 @@ protocol = "ssh2"
             page.scroll_offset(),
             before,
             "unrelated keys must not change scroll"
+        );
+    }
+
+    // ---- Other-settings read-only section (E4-F15) -------------------
+
+    #[test]
+    fn other_settings_empty_for_wizard_only_profile() {
+        let m = Model::from_str(
+            r#"version = 1
+[[profiles]]
+name = "p"
+protocol = "ssh2"
+host = "h.example.com"
+"#,
+        );
+        assert!(
+            other_settings_lines(&m).is_empty(),
+            "wizard-only profile must not grow the Other-settings section"
+        );
+    }
+
+    #[test]
+    fn other_settings_lists_non_wizard_tables_and_unknown_keys() {
+        let m = Model::from_str(
+            r#"version = 1
+[[profiles]]
+name = "p"
+protocol = "ssh2"
+host = "h.example.com"
+enabled = true
+typo_key = "x"
+
+[profiles.transport]
+"#,
+        );
+        let lines = other_settings_lines(&m);
+        assert!(!lines.is_empty());
+        let text: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(text.contains("transport"), "must list transport table");
+        assert!(text.contains("enabled"), "must list enabled flag");
+        assert!(text.contains("typo_key"), "must warn about unknown key");
+        assert!(text.contains("drop it"), "must say the key will be dropped");
+    }
+
+    #[test]
+    fn rendered_review_shows_other_settings_section_when_present() {
+        let m = Model::from_str(
+            r#"version = 1
+[[profiles]]
+name = "p"
+protocol = "ssh2"
+host = "h.example.com"
+
+[profiles.transport]
+"#,
+        );
+        let mut page = ReviewPage::new();
+        let s = rendered_text(&mut page, &m);
+        assert!(
+            s.contains("Other settings"),
+            "section header must render when non-wizard tables are present:\n{s}"
+        );
+    }
+
+    #[test]
+    fn rendered_review_hides_other_settings_for_plain_profile() {
+        let m = Model::from_str(
+            r#"version = 1
+[[profiles]]
+name = "p"
+protocol = "ssh2"
+host = "h.example.com"
+"#,
+        );
+        let mut page = ReviewPage::new();
+        let s = rendered_text(&mut page, &m);
+        assert!(
+            !s.contains("Other settings"),
+            "section must be hidden for wizard-only profiles (snapshot parity):\n{s}"
         );
     }
 

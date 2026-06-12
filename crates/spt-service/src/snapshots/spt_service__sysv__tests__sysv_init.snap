@@ -19,6 +19,10 @@ DAEMON_USER="spt"
 PIDFILE="/var/run/${NAME}.pid"
 WORKDIR="/var/lib/spt"
 
+# Environment exports from [profiles].env (blank when none configured).
+export RUST_LOG="info"
+export SPT_STATE_DIR="/var/lib/spt"
+
 case "$1" in
     start)
         echo "Starting ${NAME}"

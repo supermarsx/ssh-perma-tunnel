@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use clap::{Args, Subcommand, ValueEnum};
 
-const EXAMPLES: &str = "EXAMPLES:
+pub(crate) const EXAMPLES: &str = "EXAMPLES:
   spt profile add edge --protocol ssh2 --host gw.example --user ubuntu
   spt profile configure --tui --name edge
   spt profile set edge keepalive.interval=30s reconnect.max_backoff=2m

@@ -11,6 +11,9 @@ command_background=true
 pidfile="/run/{{name}}.pid"
 directory="{{working_dir}}"
 
+# Environment exports from [profiles].env (blank when none configured).
+{{env_exports}}
+
 depend() {
     need net
     after firewall

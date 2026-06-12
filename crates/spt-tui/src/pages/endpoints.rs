@@ -21,7 +21,8 @@ use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wid
 use spt_config::schema::{Endpoint, Profile};
 
 use crate::model::Model;
-use crate::pages::field::{opt_u32, FieldDef, FieldList, FieldValue};
+use crate::pages::auth::auth_fields;
+use crate::pages::field::{opt_bool_with_help, opt_text, opt_u32, FieldDef, FieldList, FieldValue};
 use crate::pages::Page;
 
 /// Endpoints list page.
@@ -56,11 +57,37 @@ impl EndpointsPage {
         if idx >= profile.endpoints.len() {
             return;
         }
-        let fields = endpoint_fields(idx);
+        let fields = endpoint_fields(idx, profile);
         self.editor = Some(EndpointEditor {
             endpoint_index: idx,
             fields: FieldList::new(fields),
         });
+    }
+}
+
+/// `true` when endpoint `idx` carries a per-endpoint auth override.
+fn endpoint_override_on(profile: &Profile, idx: usize) -> bool {
+    profile
+        .endpoints
+        .get(idx)
+        .is_some_and(|e| e.auth.is_some())
+}
+
+/// Per-endpoint auth status marker for the list row / detail pane:
+/// `auth=global` when the endpoint inherits the profile-level
+/// `[profiles.auth]`, or `auth=local(<method>)` when it overrides with
+/// its own auth block (method shown, defaulting to `?` when blank).
+fn auth_marker(e: &Endpoint) -> String {
+    match e.auth.as_ref() {
+        None => "auth=global".to_owned(),
+        Some(a) => {
+            let m = if a.method.is_empty() {
+                "?"
+            } else {
+                a.method.as_str()
+            };
+            format!("auth=local({m})")
+        }
     }
 }
 
@@ -70,9 +97,19 @@ impl Default for EndpointsPage {
     }
 }
 
-fn endpoint_fields(idx: usize) -> Vec<FieldDef> {
+/// Build the editor field list for endpoint `idx`.
+///
+/// The base layout (name/host/port/priority/weight) is unconditional and
+/// byte-identical to the pre-feature page. After it come the per-endpoint
+/// `user` override and the `auth.override` toggle. The shared
+/// [`auth_fields`] credential rows are appended **only when the override
+/// is currently ON** (`endpoints[idx].auth.is_some()`), mirroring the
+/// way the Events page surfaces only the active sink kind's fields. The
+/// editor rebuilds this list when the toggle flips (see
+/// [`EndpointsPage::on_key`]).
+fn endpoint_fields(idx: usize, profile: &Profile) -> Vec<FieldDef> {
     let i = idx;
-    vec![
+    let mut fields = vec![
         // name — Text. Non-empty required; uniqueness deferred to validate.
         FieldDef {
             label: "name",
@@ -189,7 +226,63 @@ fn endpoint_fields(idx: usize) -> Vec<FieldDef> {
                 }
             },
         ),
-    ]
+        // user — per-endpoint login user. Overrides the profile-level
+        // (global) `user`; falls back to it when unset.
+        opt_text(
+            "user",
+            "Per-endpoint login user (overrides the global `user`; blank = inherit)",
+            move |p| p.endpoints.get(i).and_then(|e| e.user.clone()),
+            move |p, v| {
+                if let Some(e) = p.endpoints.get_mut(i) {
+                    e.user = v;
+                }
+            },
+        ),
+        // auth.override — toggle: ON installs a per-endpoint Auth block
+        // (Some(Auth::default())) that fully replaces the global
+        // `[profiles.auth]` for this endpoint; OFF clears it back to None
+        // so the endpoint inherits the global default again.
+        opt_bool_with_help(
+            "auth.override",
+            "Override the global auth for this endpoint",
+            "Inherit the global `[profiles.auth]` (auth=global).",
+            "Use a per-endpoint auth block (auth=local) — fully replaces the global one.",
+            move |p| Some(p.endpoints.get(i).is_some_and(|e| e.auth.is_some())),
+            move |p, v| {
+                if let Some(e) = p.endpoints.get_mut(i) {
+                    match v {
+                        Some(true) => {
+                            // Only install a fresh block if not already set,
+                            // so flipping ON never clobbers existing creds.
+                            if e.auth.is_none() {
+                                e.auth = Some(spt_config::schema::Auth::default());
+                            }
+                        }
+                        _ => e.auth = None,
+                    }
+                }
+            },
+        ),
+    ];
+
+    // Gate the shared credential rows behind the override being ON, so a
+    // no-override endpoint's editor stays exactly name/host/port/priority/
+    // weight/user/auth.override and never materialises an empty `[auth]`.
+    if endpoint_override_on(profile, idx) {
+        fields.extend(auth_fields(
+            "auth",
+            move |p: &Profile| p.endpoints.get(i).and_then(|e| e.auth.as_ref()),
+            move |p: &mut Profile| {
+                // The editor only reaches these setters while the override
+                // is ON, so the endpoint exists and its `auth` is `Some`;
+                // fall back to a leaked throwaway only in the impossible
+                // out-of-range case to satisfy the `&mut Option<Auth>` shape.
+                &mut p.endpoints[i].auth
+            },
+        ));
+    }
+
+    fields
 }
 
 impl Page for EndpointsPage {
@@ -207,9 +300,10 @@ impl Page for EndpointsPage {
             .map(|e| {
                 let priority = e.priority.map_or_else(|| "-".into(), |n| n.to_string());
                 let weight = e.weight.map_or_else(|| "-".into(), |n| n.to_string());
+                let auth = auth_marker(e);
                 ListItem::new(format!(
-                    "{:>12} {}:{}  p={} w={}",
-                    e.name, e.host, e.port, priority, weight
+                    "{:>12} {}:{}  p={} w={}  {}",
+                    e.name, e.host, e.port, priority, weight, auth
                 ))
             })
             .collect();
@@ -244,6 +338,8 @@ impl Page for EndpointsPage {
                     "weight:   {}",
                     e.weight.map(|n| n.to_string()).unwrap_or_default()
                 )),
+                Line::from(format!("user:     {}", e.user.clone().unwrap_or_default())),
+                Line::from(format!("auth:     {}", auth_marker(e))),
             ];
             let block = Block::default().borders(Borders::ALL).title("Detail");
             Paragraph::new(lines).block(block).render(chunks[1], buf);
@@ -272,9 +368,33 @@ impl Page for EndpointsPage {
             if ed.fields.editing {
                 // Actively typing or rotating a field — every key flows
                 // through. ←/→ are still consumed here for Choice rotate.
+                //
+                // Detect whether the focused field is the `auth.override`
+                // toggle *before* committing, so that if the commit flips
+                // it we can rebuild the editor rows to add/remove the
+                // gated auth credential fields (mirrors the Events page's
+                // rebuild-on-kind-change behaviour).
+                let override_focused = ed
+                    .fields
+                    .fields
+                    .get(ed.fields.focus)
+                    .is_some_and(|f| f.def.label == "auth.override");
+                let was_on = endpoint_override_on(model.profile(), ed.endpoint_index);
                 let changed = ed.fields.on_edit_key(key, model.profile_mut_silent());
                 if changed {
                     model.mark_dirty();
+                    if override_focused {
+                        let now_on = endpoint_override_on(model.profile(), ed.endpoint_index);
+                        if now_on != was_on {
+                            let idx = ed.endpoint_index;
+                            let p = model.profile().clone();
+                            let fields = endpoint_fields(idx, &p);
+                            let mut list = FieldList::new(fields);
+                            // Keep focus on the toggle row across the rebuild.
+                            list.focus = ed.fields.focus.min(list.fields.len().saturating_sub(1));
+                            ed.fields = list;
+                        }
+                    }
                 }
                 return changed;
             }
@@ -321,6 +441,8 @@ impl Page for EndpointsPage {
                     port: 22,
                     priority: None,
                     weight: None,
+                    user: None,
+                    auth: None,
                 };
                 model.profile_mut().endpoints.push(e);
                 let idx = model.profile().endpoints.len() - 1;
@@ -527,9 +649,57 @@ host = "h.example.com"
 
     #[test]
     fn editor_field_count() {
-        let fields = endpoint_fields(0);
-        // 5 fields: name, host, port, priority, weight.
-        assert_eq!(fields.len(), 5);
+        let p = Model::from_str(
+            r#"version = 1
+[[profiles]]
+name = "demo"
+protocol = "ssh2"
+
+[[profiles.endpoints]]
+name = "e1"
+host = "h"
+port = 22
+"#,
+        );
+        // No override → base layout only: name, host, port, priority,
+        // weight, user, auth.override (7 fields). The gated auth.* rows
+        // are absent until the override is toggled ON.
+        let fields = endpoint_fields(0, p.profile());
+        assert_eq!(fields.len(), 7);
+        let labels: Vec<&str> = fields.iter().map(|f| f.label).collect();
+        assert_eq!(
+            labels,
+            ["name", "host", "port", "priority", "weight", "user", "auth.override"]
+        );
+    }
+
+    #[test]
+    fn editor_field_count_with_override() {
+        let p = Model::from_str(
+            r#"version = 1
+[[profiles]]
+name = "demo"
+protocol = "ssh2"
+
+[[profiles.endpoints]]
+name = "e1"
+host = "h"
+port = 22
+
+[profiles.endpoints.auth]
+method = "password"
+"#,
+        );
+        // Override ON → base 7 + 11 shared auth rows (method,
+        // identity_file, certificate_file, passphrase, password, token,
+        // agent, identity_hint, keyboard_interactive, oidc_issuer,
+        // oidc_client_id) = 18.
+        let fields = endpoint_fields(0, p.profile());
+        assert_eq!(fields.len(), 18);
+        let labels: Vec<&str> = fields.iter().map(|f| f.label).collect();
+        assert!(labels.contains(&"auth.method"));
+        assert!(labels.contains(&"auth.password"));
+        assert!(labels.contains(&"auth.token"));
     }
 
     #[test]

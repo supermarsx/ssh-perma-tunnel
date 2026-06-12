@@ -3,6 +3,8 @@ source: crates/spt-firewall/src/lib.rs
 expression: plan.script
 ---
 # spt-firewall: nftables plan
+add table inet spt
+flush table inet spt
 table inet spt {
     chain input {
         type filter hook input priority 0; policy accept;

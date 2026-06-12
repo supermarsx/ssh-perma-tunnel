@@ -4,11 +4,28 @@
 
 ## Supported platforms
 
-- Linux x86_64 / aarch64 (glibc + musl)
-- macOS x86_64 / aarch64
-- Windows x86_64
+Release artifacts are produced by CI for exactly these five targets:
 
-The minimum supported Rust version (MSRV) for source builds is 1.85.
+| Target triple                  | Platform                  |
+|--------------------------------|---------------------------|
+| `x86_64-unknown-linux-gnu`     | Linux x86_64 (glibc)      |
+| `aarch64-unknown-linux-gnu`    | Linux aarch64 (glibc)     |
+| `aarch64-apple-darwin`         | macOS Apple Silicon       |
+| `x86_64-pc-windows-msvc`       | Windows x86_64            |
+| `aarch64-pc-windows-msvc`      | Windows arm64            |
+
+Notes:
+
+- **No musl** static build is produced by CI. The Cross.toml musl images
+  exist but only `scripts/build/build-target.sh` uses them; CI never
+  invokes that path, so there is no musl download.
+- **No macOS Intel (`x86_64`)** artifact — that runner was retired. macOS
+  ships as an arm64 single-arch Mach-O (packaged as a `universal` binary
+  for path stability, but containing arm64 only).
+- **Windows arm64 IS built** in addition to x86_64.
+
+The minimum supported Rust version (MSRV) for source builds is 1.85
+(pinned by [`rust-toolchain.toml`](../rust-toolchain.toml)).
 
 Releases use the rolling `YY.N` scheme (current: `26.1`; e.g. `26.2`
 next, then `27.1` on the year roll-over). Examples below reference
@@ -31,10 +48,12 @@ first, then enable the unit:
 
     sudo dnf install ./spt-26.1-1.x86_64.rpm
 
-### musl static, no package
+aarch64 packages (`arm64` deb / `aarch64` rpm) are also published.
 
-    curl -L -o spt https://example.invalid/releases/spt-26.1-x86_64-linux-musl
-    chmod +x spt && sudo install -m 0755 spt /usr/local/bin/spt
+> **No musl static build.** CI does not produce a musl-linked artifact.
+> If you need a static binary, build it yourself from source against a
+> musl target (`cargo build --release -p spt-bin --target
+> x86_64-unknown-linux-musl`), supplying the musl toolchain.
 
 ## macOS (pkg)
 

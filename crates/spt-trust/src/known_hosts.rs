@@ -5,6 +5,7 @@
 //! Markers (`@cert-authority`, `@revoked`) are recognised; revoked entries
 //! reject any matching key.
 
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -65,6 +66,27 @@ pub struct KnownHosts {
     pub path: Option<PathBuf>,
     /// Parsed entries, in original order.
     pub entries: Vec<Entry>,
+    /// Lookup acceleration for exact (plaintext, non-wildcard, non-hashed)
+    /// host fields: normalized lookup string → indices into `entries`.
+    ///
+    /// Built by [`KnownHosts::parse`]/[`KnownHosts::load`]/[`KnownHosts::add`].
+    /// `verify` consults it as a fast path for the common case (a large file of
+    /// plaintext hosts) and falls back to a linear scan for hashed and wildcard
+    /// entries. When `None` (e.g. the `entries` field was populated directly),
+    /// `verify` performs a full linear scan, so the index is purely an
+    /// optimization and never affects correctness.
+    index: Option<HostIndex>,
+}
+
+/// Exact-match index over plaintext entries.
+#[derive(Debug, Default, Clone)]
+struct HostIndex {
+    /// Normalized lookup key (`host` or `[host]:port`, lowercased) → entry
+    /// indices that contain an exact (non-wildcard) literal for that key.
+    exact: HashMap<String, Vec<usize>>,
+    /// Indices of entries that need a linear scan regardless: hashed hosts,
+    /// any comma-list containing a wildcard (`*`/`?`) or a negation (`!`).
+    needs_scan: Vec<usize>,
 }
 
 impl KnownHosts {
@@ -78,9 +100,11 @@ impl KnownHosts {
             }
             entries.push(parse_line(line, lineno + 1)?);
         }
+        let index = Some(build_index(&entries));
         Ok(Self {
             path: None,
             entries,
+            index,
         })
     }
 
@@ -98,28 +122,73 @@ impl KnownHosts {
     pub fn verify(&self, host: &str, port: u16, key: &PublicKey) -> KnownHostsResult {
         let mut found_host = false;
         let mut stored = Vec::new();
-        for e in &self.entries {
-            if !host_matches(&e.host_field, host, port) {
-                continue;
-            }
+
+        // Process one candidate entry. Returns `Some(result)` to short-circuit
+        // (Revoked/Match), or `None` to continue scanning.
+        let mut consider = |e: &Entry| -> Option<KnownHostsResult> {
             // Revoked entries take precedence: reject if the *key* matches.
             if matches!(e.marker, Some(Marker::Revoked)) {
                 if keys_equal(&e.key, key) {
-                    return KnownHostsResult::Revoked;
+                    return Some(KnownHostsResult::Revoked);
                 }
-                continue;
+                return None;
             }
             // Skip CA-marker entries for direct host-key verification —
             // certificate validation is handled in spt-key.
             if matches!(e.marker, Some(Marker::CertAuthority)) {
-                continue;
+                return None;
             }
             found_host = true;
             stored.push(e.key.clone());
             if keys_equal(&e.key, key) {
-                return KnownHostsResult::Match;
+                return Some(KnownHostsResult::Match);
+            }
+            None
+        };
+
+        match &self.index {
+            // Fast path: exact-match index for plaintext entries plus a linear
+            // pass over hashed/wildcard/negated entries only. The two candidate
+            // sets are disjoint by construction (an entry is either an exact
+            // plaintext literal or it requires a scan), so no entry is
+            // double-processed and the visited set is identical to the naive
+            // full scan — only the iteration order differs, which does not
+            // change the outcome (Revoked dominates; any key match is a Match;
+            // Mismatch is order-independent over the stored-key set).
+            Some(idx) => {
+                for keyform in [host.to_owned(), format!("[{host}]:{port}")] {
+                    if let Some(hits) = idx.exact.get(&keyform.to_ascii_lowercase()) {
+                        for &ei in hits {
+                            if let Some(r) = consider(&self.entries[ei]) {
+                                return r;
+                            }
+                        }
+                    }
+                }
+                for &ei in &idx.needs_scan {
+                    let e = &self.entries[ei];
+                    if !host_matches(&e.host_field, host, port) {
+                        continue;
+                    }
+                    if let Some(r) = consider(e) {
+                        return r;
+                    }
+                }
+            }
+            // Fallback: no index (entries populated directly). Full linear scan
+            // preserves exact original semantics.
+            None => {
+                for e in &self.entries {
+                    if !host_matches(&e.host_field, host, port) {
+                        continue;
+                    }
+                    if let Some(r) = consider(e) {
+                        return r;
+                    }
+                }
             }
         }
+
         if found_host {
             KnownHostsResult::Mismatch { stored }
         } else {
@@ -135,11 +204,18 @@ impl KnownHosts {
         } else {
             format_host(host, port)
         };
-        self.entries.push(Entry {
+        let new_idx = self.entries.len();
+        let entry = Entry {
             marker: None,
             host_field,
             key,
-        });
+        };
+        // Keep the index coherent if it exists; otherwise rebuild on next
+        // verify via the None fast-path fallback.
+        if let Some(idx) = self.index.as_mut() {
+            index_one(idx, new_idx, &entry.host_field);
+        }
+        self.entries.push(entry);
     }
 
     /// Render to `known_hosts` text form.
@@ -221,6 +297,43 @@ fn format_host(host: &str, port: u16) -> String {
     }
 }
 
+/// Build the exact-match acceleration index over a slice of entries.
+fn build_index(entries: &[Entry]) -> HostIndex {
+    let mut idx = HostIndex::default();
+    for (i, e) in entries.iter().enumerate() {
+        index_one(&mut idx, i, &e.host_field);
+    }
+    idx
+}
+
+/// Classify a single entry's host field and register it in `idx` at position
+/// `i`. Exact plaintext literals go into the lowercased `exact` map; hashed,
+/// wildcard, or negated fields go into `needs_scan`.
+fn index_one(idx: &mut HostIndex, i: usize, host_field: &str) {
+    // Hashed hosts always require the linear HMAC pass.
+    if host_field.starts_with("|1|") {
+        idx.needs_scan.push(i);
+        return;
+    }
+    // A field with any wildcard or negation cannot be resolved by exact lookup.
+    if host_field.contains('*') || host_field.contains('?') || host_field.contains('!') {
+        idx.needs_scan.push(i);
+        return;
+    }
+    // Pure plaintext comma-list: index every literal under its normalized,
+    // lowercased form so `verify` can look it up directly.
+    for raw in host_field.split(',') {
+        let pat = raw.trim().trim_matches('"');
+        if pat.is_empty() {
+            continue;
+        }
+        idx.exact
+            .entry(pat.to_ascii_lowercase())
+            .or_default()
+            .push(i);
+    }
+}
+
 fn host_matches(field: &str, host: &str, port: u16) -> bool {
     // Hashed host: `|1|salt-b64|hash-b64`
     if let Some(rest) = field.strip_prefix("|1|") {
@@ -229,28 +342,32 @@ fn host_matches(field: &str, host: &str, port: u16) -> bool {
             None => false,
         };
     }
-    // Comma-separated host list.
-    field.split(',').any(|h| literal_match(h, host, port))
-}
-
-fn literal_match(pat: &str, host: &str, port: u16) -> bool {
-    let pat = pat.trim();
-    if pat.is_empty() {
-        return false;
-    }
-    let mut neg = false;
-    let pat = pat.strip_prefix('!').map_or(pat, |r| {
-        neg = true;
-        r
-    });
-    let pat_norm = pat.trim_matches(|c| c == '"');
+    // Comma-separated host list, OpenSSH two-pass semantics: a negated pattern
+    // (`!pat`) that matches the host vetoes the *entire* field regardless of
+    // any positive matches; otherwise the field matches iff at least one
+    // positive (non-negated) pattern matches.
     let candidates = [host.to_owned(), format!("[{host}]:{port}")];
-    let m = candidates.iter().any(|c| glob_match(pat_norm, c));
-    if neg {
-        !m
-    } else {
-        m
+    let mut positive_hit = false;
+    for raw in field.split(',') {
+        let pat = raw.trim();
+        if pat.is_empty() {
+            continue;
+        }
+        let (neg, pat) = match pat.strip_prefix('!') {
+            Some(r) => (true, r),
+            None => (false, pat),
+        };
+        let pat_norm = pat.trim_matches('"');
+        let m = candidates.iter().any(|c| glob_match(pat_norm, c));
+        if m {
+            if neg {
+                // Negated match vetoes the whole field.
+                return false;
+            }
+            positive_hit = true;
+        }
     }
+    positive_hit
 }
 
 fn glob_match(pattern: &str, text: &str) -> bool {
@@ -469,23 +586,126 @@ mod tests {
     }
 
     #[test]
-    fn negated_pattern_alone_filters_match() {
-        // `!secret.example.com` alone: the negated literal_match returns true
-        // for everything *except* secret.example.com, so a host other than
-        // `secret` matches the field. Exercises the negation path explicitly.
+    fn negated_pattern_alone_never_matches() {
+        // OpenSSH semantics: a field consisting solely of a negation has no
+        // positive pattern, so it matches *nothing* — neither the excluded
+        // host nor any other host. (Previously this implementation incorrectly
+        // treated `!h` as "everything except h".)
         let key = one_key();
         let text = format!("!secret.example.com {}", key.to_openssh().unwrap());
         let kh = KnownHosts::parse(&text).unwrap();
-        // The negation excludes the exact host:
         assert_eq!(
             kh.verify("secret.example.com", 22, &key),
             KnownHostsResult::NotFound
         );
-        // ... but matches anything else.
         assert_eq!(
             kh.verify("other.example.com", 22, &key),
+            KnownHostsResult::NotFound
+        );
+    }
+
+    #[test]
+    fn negation_vetoes_wildcard_in_same_field() {
+        // E2-F3 regression: `*,!bad.example.com` must NOT trust `bad` even
+        // though `*` matches it — the negation vetoes the whole field. Any
+        // other host is still trusted via the `*` positive.
+        let key = one_key();
+        let text = format!("*,!bad.example.com {}", key.to_openssh().unwrap());
+        let kh = KnownHosts::parse(&text).unwrap();
+        // Negated host is vetoed -> not trusted.
+        assert_eq!(
+            kh.verify("bad.example.com", 22, &key),
+            KnownHostsResult::NotFound
+        );
+        // A different host still matches via the `*` positive pattern.
+        assert_eq!(
+            kh.verify("good.example.com", 22, &key),
             KnownHostsResult::Match
         );
+    }
+
+    #[test]
+    fn negation_order_independent_veto() {
+        // The veto must hold regardless of pattern order in the field
+        // (`!bad` listed before the wildcard).
+        let key = one_key();
+        let text = format!("!bad.example.com,*.example.com {}", key.to_openssh().unwrap());
+        let kh = KnownHosts::parse(&text).unwrap();
+        assert_eq!(
+            kh.verify("bad.example.com", 22, &key),
+            KnownHostsResult::NotFound
+        );
+        assert_eq!(
+            kh.verify("ok.example.com", 22, &key),
+            KnownHostsResult::Match
+        );
+    }
+
+    #[test]
+    fn indexed_lookup_matches_linear_scan() {
+        // E2-F4 regression: the exact-match index must produce byte-identical
+        // verify() outcomes to a forced full linear scan over the same entries,
+        // across plaintext, wildcard, hashed, and [host]:port forms.
+        let ka = one_key();
+        let kb = one_key();
+        let kc = one_key();
+        let kd = one_key();
+        let mut text = String::new();
+        text.push_str(&entry_text("alpha.example", &ka));
+        text.push('\n');
+        text.push_str(&entry_text("beta.example,gamma.example", &kb));
+        text.push('\n');
+        text.push_str(&entry_text("*.wild.example", &kc));
+        text.push('\n');
+        text.push_str(&entry_text("[svc.example]:2222", &kd));
+        text.push('\n');
+
+        let indexed = KnownHosts::parse(&text).unwrap();
+        // Force the linear fallback by clearing the index.
+        let mut linear = indexed.clone();
+        linear.index = None;
+
+        let cases: &[(&str, u16, &PublicKey)] = &[
+            ("alpha.example", 22, &ka),
+            ("alpha.example", 22, &kb), // mismatch
+            ("beta.example", 22, &kb),
+            ("gamma.example", 22, &kb),
+            ("host.wild.example", 22, &kc),
+            ("svc.example", 2222, &kd),
+            ("svc.example", 22, &kd), // wrong port -> not found
+            ("absent.example", 22, &ka),
+        ];
+        for (host, port, key) in cases {
+            assert_eq!(
+                indexed.verify(host, *port, key),
+                linear.verify(host, *port, key),
+                "indexed vs linear mismatch for {host}:{port}"
+            );
+        }
+        // And the exact entries are actually in the index (not all scanned).
+        let idx = indexed.index.as_ref().unwrap();
+        assert!(idx.exact.contains_key("alpha.example"));
+        assert!(idx.exact.contains_key("beta.example"));
+        assert!(idx.exact.contains_key("gamma.example"));
+        assert!(idx.exact.contains_key("[svc.example]:2222"));
+        // The wildcard entry is in needs_scan, not exact.
+        assert!(!idx.exact.contains_key("*.wild.example"));
+        assert!(!idx.needs_scan.is_empty());
+    }
+
+    #[test]
+    fn add_keeps_index_coherent() {
+        // Entries added via add() after parse() must be findable through the
+        // index fast path.
+        let k1 = one_key();
+        let k2 = one_key();
+        let text = entry_text("first.example", &k1);
+        let mut kh = KnownHosts::parse(&text).unwrap();
+        kh.add("second.example", 22, k2.clone(), false);
+        assert_eq!(kh.verify("first.example", 22, &k1), KnownHostsResult::Match);
+        assert_eq!(kh.verify("second.example", 22, &k2), KnownHostsResult::Match);
+        let idx = kh.index.as_ref().unwrap();
+        assert!(idx.exact.contains_key("second.example"));
     }
 
     #[test]
@@ -558,6 +778,7 @@ mod tests {
         let kh = KnownHosts {
             path: None,
             entries: vec![entry],
+            index: None,
         };
         let rendered = kh.render();
         assert!(rendered.starts_with("@cert-authority "));
@@ -577,6 +798,7 @@ mod tests {
                 host_field: "bad.example".into(),
                 key,
             }],
+            index: None,
         };
         let rendered = kh.render();
         assert!(rendered.starts_with("@revoked "));

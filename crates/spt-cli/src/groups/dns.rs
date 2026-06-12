@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use clap::{Args, Subcommand, ValueEnum};
 
-const EXAMPLES: &str = "EXAMPLES:
+pub(crate) const EXAMPLES: &str = "EXAMPLES:
   spt dns serve --foreground
   spt dns record add svc.local --addr 10.0.0.1 --ttl 5m
   spt dns hosts render --out /etc/hosts.spt

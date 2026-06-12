@@ -64,16 +64,34 @@ impl ForwardAcl {
     }
 
     /// Decide for a peer IP.
+    ///
+    /// Evaluation honors the forward-level default policy even when rules are
+    /// present (E1-F6):
+    ///
+    /// * `default_allow == true` — defer to [`CidrAcl::matches`] (deny wins;
+    ///   empty or matching allow ⇒ allow). This is the right behavior for
+    ///   private localhost listeners.
+    /// * `default_allow == false` — a peer is admitted only on a *positive*
+    ///   allow match. If no allow rules are configured at all, every unlisted
+    ///   peer is denied (the deny-by-default contract), so adding a lone deny
+    ///   rule no longer silently flips the forward to allow-everything-else.
     #[must_use]
     pub fn decide(&self, ip: IpAddr) -> AclDecision {
-        // No allow rules + no deny rules -> apply default policy.
-        if self.inner.allow.is_empty() && self.inner.deny.is_empty() {
-            return if self.default_allow {
+        if self.default_allow {
+            return if self.inner.matches(ip) {
                 AclDecision::Allow
             } else {
                 AclDecision::Deny
             };
         }
+
+        // default_allow == false: never open-by-default.
+        if self.inner.allow.is_empty() {
+            // No positive allow possible -> deny everything (E1-F6 core fix).
+            return AclDecision::Deny;
+        }
+        // Allow rules present: `matches` requires a positive allow match and
+        // honors deny-wins — exactly the deny-by-default behavior here.
         if self.inner.matches(ip) {
             AclDecision::Allow
         } else {
@@ -119,10 +137,34 @@ mod tests {
 
     #[test]
     fn deny_only_denies_listed() {
-        // No allow rules and no deny -> default applies.
-        // Deny rules without allow rules: deny matches, others allowed.
+        // default_allow=true: deny rules without allow rules ->
+        // deny matches are denied, everything else allowed.
         let acl = ForwardAcl::new(CidrAcl::new(vec![], vec![net("10.0.0.0/8")]), true);
         assert_eq!(acl.decide(ip("10.5.5.5")), AclDecision::Deny);
         assert_eq!(acl.decide(ip("8.8.8.8")), AclDecision::Allow);
+    }
+
+    #[test]
+    fn deny_only_with_default_deny_denies_everything() {
+        // E1-F6 regression: a default-deny forward with only a deny rule must
+        // NOT silently flip to allow-everything-else. Every unlisted peer is
+        // still denied because no positive allow match is possible.
+        let acl = ForwardAcl::new(CidrAcl::new(vec![], vec![net("10.0.0.0/8")]), false);
+        assert_eq!(acl.decide(ip("10.5.5.5")), AclDecision::Deny); // explicitly denied
+        assert_eq!(acl.decide(ip("8.8.8.8")), AclDecision::Deny); // unlisted -> deny by default
+        assert_eq!(acl.decide(ip("192.168.1.1")), AclDecision::Deny);
+    }
+
+    #[test]
+    fn allow_list_with_default_deny_requires_positive_match() {
+        // default_allow=false with an allow list: only listed peers admitted,
+        // deny still wins within the allow range.
+        let acl = ForwardAcl::new(
+            CidrAcl::new(vec![net("10.0.0.0/8")], vec![net("10.0.0.5/32")]),
+            false,
+        );
+        assert_eq!(acl.decide(ip("10.0.0.6")), AclDecision::Allow); // positive allow
+        assert_eq!(acl.decide(ip("10.0.0.5")), AclDecision::Deny); // deny wins
+        assert_eq!(acl.decide(ip("8.8.8.8")), AclDecision::Deny); // outside allow -> deny
     }
 }

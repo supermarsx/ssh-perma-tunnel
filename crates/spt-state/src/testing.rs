@@ -356,6 +356,27 @@ impl StatusSnapshotBuilder {
         self
     }
 
+    /// Pin `written_at` (the last-flush timestamp).
+    ///
+    /// Useful for building stale-snapshot fixtures that exercise
+    /// [`StatusSnapshot::is_stale`](crate::status::StatusSnapshot::is_stale).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use spt_state::testing::StatusSnapshotBuilder;
+    /// use chrono::{TimeZone, Utc};
+    /// let s = StatusSnapshotBuilder::new()
+    ///     .written_at(Utc.with_ymd_and_hms(2026, 5, 5, 12, 0, 0).unwrap())
+    ///     .build();
+    /// assert!(s.written_at.is_some());
+    /// ```
+    #[must_use]
+    pub fn written_at(mut self, t: DateTime<Utc>) -> Self {
+        self.inner.written_at = Some(t);
+        self
+    }
+
     /// Append a [`ProfileStatus`].
     ///
     /// # Examples

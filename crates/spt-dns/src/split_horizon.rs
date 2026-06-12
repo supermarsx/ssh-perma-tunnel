@@ -122,7 +122,8 @@ impl RequestHandler for SplitHorizonHandler {
                             .await;
                         }
                     };
-                    return send_answers(&mut response_handle, request, &answers).await;
+                    // Managed-zone answers are authoritative (AA=1).
+                    return send_answers(&mut response_handle, request, &answers, true).await;
                 }
                 debug!(name = %qname_str, ?kind, "managed zone match but no answers (after policy)");
                 return send_simple(&mut response_handle, request, ResponseCode::NXDomain).await;
@@ -157,20 +158,19 @@ async fn forward_to_upstream<R: ResponseHandler>(
     let lookup = upstream.lookup(qname_str, qtype).await;
     match lookup {
         Ok(answer) => {
-            let qname = match Name::from_utf8(qname_str) {
-                Ok(n) => n,
-                Err(e) => {
-                    warn!(error = %e, "bad upstream qname");
-                    return send_simple(response_handle, request, ResponseCode::ServFail).await;
-                }
-            };
             let mut records = Vec::new();
             for rec in answer.records() {
-                let mut r = ProtoRecord::with(qname.clone(), rec.record_type(), rec.ttl());
+                // Preserve each upstream record's real owner name (`rec.name()`)
+                // rather than forcing the query name onto every record. Forcing
+                // the qname flattens CNAME chains (e.g. `www -> cdn -> A`, where
+                // the A record's owner is `cdn`, not `www`).
+                let mut r = ProtoRecord::with(rec.name().clone(), rec.record_type(), rec.ttl());
                 r.set_data(rec.data().cloned());
                 records.push(r);
             }
-            send_answers(response_handle, request, &records).await
+            // Forwarded (recursive) answers are NOT authoritative: leave AA
+            // clear and set RA (recursion available) instead.
+            send_answers(response_handle, request, &records, false).await
         }
         Err(e) => {
             // Distinguish NXDOMAIN/no-records from real failures.
@@ -249,14 +249,27 @@ fn build_answers(qname: &Name, records: &[&Record]) -> crate::Result<Vec<ProtoRe
     Ok(out)
 }
 
+/// Send an answer set.
+///
+/// `authoritative` controls the AA / RA flags per RFC 1035:
+/// * managed-zone answers are authoritative — set AA=1.
+/// * forwarded (recursive) answers are NOT authoritative — leave AA clear and
+///   advertise RA=1 (recursion available), since this server recursed upstream
+///   on the client's behalf.
 async fn send_answers<R: ResponseHandler>(
     response_handle: &mut R,
     request: &Request,
     answers: &[ProtoRecord],
+    authoritative: bool,
 ) -> ResponseInfo {
     let builder = MessageResponseBuilder::from_message_request(request);
     let mut header = Header::response_from_request(request.header());
-    header.set_authoritative(true);
+    if authoritative {
+        header.set_authoritative(true);
+    } else {
+        header.set_authoritative(false);
+        header.set_recursion_available(true);
+    }
     let response = builder.build(header, answers, &[], &[], &[]);
     match response_handle.send_response(response).await {
         Ok(info) => info,
@@ -313,6 +326,167 @@ mod tests {
         opts.attempts = 1;
         opts.use_hosts_file = false;
         TokioAsyncResolver::tokio(cfg, opts)
+    }
+
+    // ---- Direct `send_answers` header/owner-name tests --------------------
+    //
+    // These exercise `send_answers` without a live upstream by capturing the
+    // serialized wire response through a mock `ResponseHandler` and re-parsing
+    // it with `hickory_proto::op::Message`, so we can inspect the AA/RA header
+    // flags and each answer record's real owner name.
+
+    use hickory_proto::op::{Message, MessageType as ProtoMsgType, OpCode as ProtoOpCode, Query};
+    use hickory_proto::serialize::binary::{BinDecodable, BinEncoder};
+    use hickory_server::authority::MessageRequest;
+    use hickory_server::server::{Protocol, ResponseHandler};
+    use std::sync::{Arc, Mutex};
+
+    /// Mock `ResponseHandler` that serializes the response to the DNS wire
+    /// format and stores the bytes for inspection.
+    #[derive(Clone)]
+    struct CapturingHandler {
+        bytes: Arc<Mutex<Option<Vec<u8>>>>,
+    }
+
+    impl CapturingHandler {
+        fn new() -> Self {
+            Self {
+                bytes: Arc::new(Mutex::new(None)),
+            }
+        }
+
+        /// Parse the captured wire response into a `Message`.
+        fn parsed(&self) -> Message {
+            let guard = self.bytes.lock().unwrap();
+            let buf = guard.as_ref().expect("a response was captured");
+            Message::from_vec(buf).expect("captured response is valid DNS wire data")
+        }
+    }
+
+    #[async_trait]
+    impl ResponseHandler for CapturingHandler {
+        async fn send_response<'a>(
+            &mut self,
+            response: hickory_server::authority::MessageResponse<
+                '_,
+                'a,
+                impl Iterator<Item = &'a ProtoRecord> + Send + 'a,
+                impl Iterator<Item = &'a ProtoRecord> + Send + 'a,
+                impl Iterator<Item = &'a ProtoRecord> + Send + 'a,
+                impl Iterator<Item = &'a ProtoRecord> + Send + 'a,
+            >,
+        ) -> std::io::Result<ResponseInfo> {
+            let mut buf = Vec::with_capacity(512);
+            let info = {
+                let mut encoder = BinEncoder::new(&mut buf);
+                response
+                    .destructive_emit(&mut encoder)
+                    .expect("encode response")
+            };
+            *self.bytes.lock().unwrap() = Some(buf);
+            Ok(info)
+        }
+    }
+
+    /// Build a minimal `Request` carrying a single `A` query for `qname`.
+    fn request_for(qname: &str) -> Request {
+        let mut msg = Message::new();
+        msg.set_id(0x1234)
+            .set_message_type(ProtoMsgType::Query)
+            .set_op_code(ProtoOpCode::Query)
+            .set_recursion_desired(true);
+        let name = Name::from_utf8(qname).unwrap();
+        msg.add_query(Query::query(name, RecordType::A));
+        let wire = msg.to_vec().unwrap();
+        let req = MessageRequest::from_bytes(&wire).unwrap();
+        Request::new(req, "127.0.0.1:5353".parse().unwrap(), Protocol::Udp)
+    }
+
+    fn a_record(owner: &str, ip: Ipv4Addr) -> ProtoRecord {
+        let mut r = ProtoRecord::with(Name::from_utf8(owner).unwrap(), RecordType::A, 60);
+        r.set_data(Some(RData::A(ARdata(ip))));
+        r
+    }
+
+    fn cname_record(owner: &str, target: &str) -> ProtoRecord {
+        use hickory_proto::rr::rdata::CNAME as CNAMErdata;
+        let mut r = ProtoRecord::with(Name::from_utf8(owner).unwrap(), RecordType::CNAME, 60);
+        r.set_data(Some(RData::CNAME(CNAMErdata(Name::from_utf8(target).unwrap()))));
+        r
+    }
+
+    #[test]
+    fn forwarded_answer_has_aa_clear_and_ra_set() {
+        rt().block_on(async {
+            // Forwarder path passes `authoritative = false`.
+            let mut handler = CapturingHandler::new();
+            let request = request_for("www.example.com.");
+            let answers = vec![a_record("www.example.com.", Ipv4Addr::new(93, 184, 216, 34))];
+            send_answers(&mut handler, &request, &answers, false).await;
+
+            let msg = handler.parsed();
+            assert!(
+                !msg.header().authoritative(),
+                "forwarded answer must NOT set AA"
+            );
+            assert!(
+                msg.header().recursion_available(),
+                "forwarded answer must set RA"
+            );
+        });
+    }
+
+    #[test]
+    fn authoritative_managed_answer_keeps_aa_set() {
+        rt().block_on(async {
+            // Managed-zone path passes `authoritative = true`; AA must stay set.
+            let mut handler = CapturingHandler::new();
+            let request = request_for("a.tunnel.local.");
+            let answers = vec![a_record("a.tunnel.local.", Ipv4Addr::new(10, 0, 0, 1))];
+            send_answers(&mut handler, &request, &answers, true).await;
+
+            let msg = handler.parsed();
+            assert!(
+                msg.header().authoritative(),
+                "managed-zone answer must set AA=1"
+            );
+        });
+    }
+
+    #[test]
+    fn forwarded_cname_chain_preserves_real_owner_names() {
+        rt().block_on(async {
+            // Simulate what the forwarder builds for a CNAME chain
+            // `www -> cdn -> A`: the A record's owner is `cdn`, not the qname
+            // `www`. The forwarder must preserve each record's real owner
+            // (E6-F6) rather than collapsing every record to the query name.
+            let mut handler = CapturingHandler::new();
+            let request = request_for("www.example.com.");
+            let answers = vec![
+                cname_record("www.example.com.", "cdn.example.net."),
+                a_record("cdn.example.net.", Ipv4Addr::new(203, 0, 113, 7)),
+            ];
+            send_answers(&mut handler, &request, &answers, false).await;
+
+            let msg = handler.parsed();
+            let owners: Vec<String> = msg
+                .answers()
+                .iter()
+                .map(|r| r.name().to_string())
+                .collect();
+            // The CNAME owner is the qname; the A record's owner is the CNAME
+            // target — NOT collapsed onto the qname.
+            assert!(
+                owners.iter().any(|o| o == "www.example.com."),
+                "expected CNAME owned by qname, got {owners:?}"
+            );
+            assert!(
+                owners.iter().any(|o| o == "cdn.example.net."),
+                "A record must keep its real owner (cdn.example.net.), not the \
+                 qname; got {owners:?}"
+            );
+            assert_eq!(owners.len(), 2, "exactly two answers expected, got {owners:?}");
+        });
     }
 
     #[test]

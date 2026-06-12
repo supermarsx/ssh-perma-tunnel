@@ -1,10 +1,18 @@
 //! MCP server stdio handshake check.
 //!
 //! When `[mcp].enabled = true` and a binary path is supplied, spawns
-//! `<binary> mcp serve --stdio`, sends `initialize`, `resources/list`, and
-//! `tools/list`, asserts the server reports the expected counts (16
-//! resources + 31 tools per spec §13.4). The subprocess is terminated as
-//! soon as the three responses are received.
+//! `<binary> mcp serve --stdio --enable`, sends `initialize`,
+//! `resources/list`, and `tools/list`, asserts the server reports the
+//! expected counts. The subprocess is terminated as soon as the three
+//! responses are received.
+//!
+//! The expected counts are **derived** from the canonical registries
+//! ([`spt_mcp::tools::ALL_TOOL_NAMES`] / [`spt_mcp::ResourceRegistry`]) rather
+//! than hardcoded, so the diagnostic can never drift from the actual server
+//! surface (E8-F6: the old `EXPECTED_TOOLS = 31` warned against a healthy
+//! 35-tool server). `--enable` is required because `mcp serve` refuses to
+//! start without it (E8-F6: the diagnostic previously spawned without it and
+//! always reported `EOF before response`).
 
 use async_trait::async_trait;
 use serde_json::{json, Value};
@@ -18,10 +26,18 @@ use tokio::time::timeout;
 use crate::check::{Check, Severity, Status};
 use crate::framework::{Diagnostic, DiagnosticContext};
 
-/// Expected resource count from spec §13.4.
-const EXPECTED_RESOURCES: usize = 16;
-/// Expected tool count from spec §13.4.
-const EXPECTED_TOOLS: usize = 31;
+/// Expected resource count, derived live from the canonical registry so it
+/// tracks the actual server surface (E8-F6).
+fn expected_resources() -> usize {
+    spt_mcp::resources::ResourceRegistry::new().len()
+}
+
+/// Expected tool count, derived live from the canonical tool-name table so it
+/// tracks the actual server surface (E8-F6: was a hardcoded 31 against a
+/// 35-tool server).
+fn expected_tools() -> usize {
+    spt_mcp::tools::ALL_TOOL_NAMES.len()
+}
 
 /// MCP diagnostic.
 #[derive(Debug)]
@@ -64,9 +80,9 @@ impl Diagnostic for McpDiagnostic {
                 out.push(check_count(
                     "mcp.resources_count",
                     resources,
-                    EXPECTED_RESOURCES,
+                    expected_resources(),
                 ));
-                out.push(check_count("mcp.tools_count", tools, EXPECTED_TOOLS));
+                out.push(check_count("mcp.tools_count", tools, expected_tools()));
                 out
             }
             Err(e) => vec![Check::new("mcp.handshake", Severity::Medium, Status::Fail)
@@ -94,7 +110,9 @@ fn check_count(id: &str, got: usize, want: usize) -> Check {
 /// `(resource_count, tool_count)`.
 async fn handshake(bin: &Path, per_req: Duration) -> Result<(usize, usize), String> {
     let mut child = Command::new(bin)
-        .args(["mcp", "serve", "--stdio"])
+        // `--enable` is mandatory: `mcp serve` refuses to start without it,
+        // which previously made this handshake always fail (E8-F6).
+        .args(["mcp", "serve", "--stdio", "--enable"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -281,6 +299,31 @@ mod tests {
         assert_eq!(r[0].severity, Severity::Medium);
         let evidence = r[0].evidence.join("\n");
         assert!(evidence.contains("no MCP binary"), "got: {evidence}");
+    }
+
+    // E8-F6: expected counts must be derived from the canonical registries,
+    // not frozen constants. These match the real server surface (35 tools,
+    // 16 resources today) and update automatically if the registry changes.
+    #[test]
+    fn expected_counts_are_derived_from_registries() {
+        assert_eq!(expected_tools(), spt_mcp::tools::ALL_TOOL_NAMES.len());
+        assert_eq!(
+            expected_resources(),
+            spt_mcp::resources::ResourceRegistry::new().len()
+        );
+        // Sanity: the live-bridge + log_set_level tools push the real count
+        // past the old hardcoded 31, which is exactly the drift E8-F6 caught.
+        assert!(
+            expected_tools() > 31,
+            "tool surface ({}) should exceed the retired constant",
+            expected_tools()
+        );
+        // A correct response matching the derived count passes (regression:
+        // the old code warned `expected 31, got 35` on a healthy server).
+        assert_eq!(
+            check_count("mcp.tools_count", expected_tools(), expected_tools()).status,
+            Status::Pass
+        );
     }
 
     #[tokio::test]

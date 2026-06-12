@@ -53,6 +53,18 @@ pub fn reconnect_trigger_from_supervisor(
 
 /// Drive `driver` against either a live tunnel (`live`) or a synthetic
 /// loopback echo connector (`live = None`). Returns the `BenchResult`.
+///
+/// # Production-impact gating
+///
+/// When neither a live [`LiveConnector`] nor a real [`ReconnectTrigger`] is
+/// supplied, the driver runs entirely against the in-process synthetic
+/// loopback connectors built below (a `tokio::io::duplex` echo for TCP/limits,
+/// a `127.0.0.1` UDP echo socket, and a no-op reconnect trigger). That path
+/// touches nothing outside this process, so — matching the documented
+/// "loopback / dry-run paths are never gated" contract — `check_safety` is
+/// skipped for it regardless of the driver's nominal `ImpactLevel`. The
+/// safety gate is enforced only when a real connector/trigger is wired in
+/// (i.e. when actually driving a running tunnel).
 pub async fn run_live_benchmark(
     driver: &str,
     live: Option<Arc<dyn LiveConnector>>,
@@ -137,6 +149,10 @@ pub async fn run_live_benchmark(
         })
     }
 
+    // A run is synthetic when it is backed solely by the in-process loopback
+    // connectors: no live tunnel connector and no real reconnect trigger.
+    let synthetic = live.is_none() && reconnect.is_none();
+
     let connector = tcp_connector(live.clone());
 
     let env = BenchEnv {
@@ -188,7 +204,11 @@ pub async fn run_live_benchmark(
         }
     };
 
-    check_safety(&*drv, allow_production_impact).map_err(|e| e.to_string())?;
+    // Synthetic loopback runs are never gated (they cannot impact production);
+    // only enforce the safety gate when a real connector/trigger is wired in.
+    if !synthetic {
+        check_safety(&*drv, allow_production_impact).map_err(|e| e.to_string())?;
+    }
 
     let ctx = BenchContext {
         iterations,
@@ -335,6 +355,63 @@ mod tests {
     async fn reconnect_with_no_trigger_uses_noop() {
         // No reconnect trigger supplied → falls back to the in-file Noop impl.
         let result = run_live_benchmark("reconnect", None, None, 1, 2, true)
+            .await
+            .unwrap();
+        assert_eq!(result.driver, "reconnect");
+    }
+
+    // ---- E8-F10: production-impact gating only applies to live runs ----
+
+    /// A production-impact driver (`udp`) run against the synthetic loopback
+    /// connector must NOT be gated, even without the unsafe flag — the
+    /// loopback path cannot impact production by construction.
+    #[tokio::test]
+    async fn synthetic_production_driver_runs_without_unsafe_flag() {
+        // udp/limits/reconnect all report ImpactLevel::Production.
+        for driver in ["udp", "limits"] {
+            let result = run_live_benchmark(driver, None, None, 2, 2, false)
+                .await
+                .unwrap_or_else(|e| panic!("synthetic {driver} should not be gated: {e}"));
+            assert_eq!(result.driver, driver);
+        }
+    }
+
+    /// `reconnect` with no real trigger is fully synthetic (Noop trigger), so
+    /// it too runs without the unsafe flag.
+    #[tokio::test]
+    async fn synthetic_reconnect_runs_without_unsafe_flag() {
+        let result = run_live_benchmark("reconnect", None, None, 1, 2, false)
+            .await
+            .unwrap();
+        assert_eq!(result.driver, "reconnect");
+    }
+
+    /// A production-impacting run (real reconnect trigger wired in) is still
+    /// refused unless `allow_production_impact` is set — the gate is only
+    /// skipped for the purely-synthetic path.
+    #[tokio::test]
+    async fn live_production_driver_requires_unsafe_flag() {
+        let reconnect: Arc<dyn ReconnectTrigger> = Arc::new(CountingReconnect {
+            waits: Arc::new(AtomicUsize::new(0)),
+            drops: Arc::new(AtomicUsize::new(0)),
+        });
+        let err = run_live_benchmark("reconnect", None, Some(reconnect), 1, 2, false)
+            .await
+            .unwrap_err();
+        assert!(
+            err.contains("impacts production") && err.contains("unsafe-allow-production-impact"),
+            "expected production-impact refusal, got `{err}`"
+        );
+    }
+
+    /// The same production-impacting run succeeds once the flag is supplied.
+    #[tokio::test]
+    async fn live_production_driver_runs_with_unsafe_flag() {
+        let reconnect: Arc<dyn ReconnectTrigger> = Arc::new(CountingReconnect {
+            waits: Arc::new(AtomicUsize::new(0)),
+            drops: Arc::new(AtomicUsize::new(0)),
+        });
+        let result = run_live_benchmark("reconnect", None, Some(reconnect), 1, 2, true)
             .await
             .unwrap();
         assert_eq!(result.driver, "reconnect");

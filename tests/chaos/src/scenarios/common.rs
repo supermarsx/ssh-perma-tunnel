@@ -417,6 +417,11 @@ pub fn spawn_supervisor_with_probe_timeout(
     let mut cfg = ProfileSupervisorConfig::default();
     cfg.backoff = backoff;
     cfg.keepalive_interval = keepalive_interval;
+    // E1-F11: the supervisor's per-probe timeout is decoupled from the probe
+    // cadence. Honour the scenario's chosen `probe_timeout` here so a healthy
+    // slow probe (≈1 s under the latency spike) governs the SessionLost
+    // decision instead of being aborted at the 250 ms keepalive interval.
+    cfg.keepalive_timeout = probe_timeout;
     ProfileSupervisor::spawn(
         name,
         proto,

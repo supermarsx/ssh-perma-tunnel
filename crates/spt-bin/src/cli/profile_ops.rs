@@ -826,6 +826,7 @@ connect_timeout = "5s"
             config_url: None,
             config_fingerprint: None,
             state_dir: None,
+            portable: false,
             profile: None,
             output: OF::Human,
             json: false,

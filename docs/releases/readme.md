@@ -11,29 +11,32 @@ CI run.
 ```
 YY  = two-digit UTC year         (e.g. 26 for 2026)
 N   = monotonic counter, resets  (first release of the year is N=1)
-Tag = v<YY>.<N>                  (e.g. v26.1, v26.2, ..., v26.314)
+Tag = <YY>.<N>                   (bare, no `v` prefix — e.g. 26.1, 26.2, ..., 26.314)
 ```
 
 Cargo encoding: the workspace manifest field carries the SemVer-
 compatible form `0.<YY>.<N>` (e.g. `0.26.1`) because Cargo's TOML
 parser rejects the bare `YY.N` shape (`unexpected end of input while
 parsing minor version number`). The user-facing tag, release title,
-docker image tag, and packaging recipes drop the leading `0.`.
+docker image tag, and packaging recipes drop the leading `0.` (tags are
+bare `26.1`, not `v26.1`).
 
 - The counter resets to `1` at the first release after the UTC year
-  rolls over. If the previous release was `v26.314` on 2026-12-31,
-  the next release on or after 2027-01-01 UTC will be `v27.1`.
+  rolls over. If the previous release was `26.314` on 2026-12-31,
+  the next release on or after 2027-01-01 UTC will be `27.1`.
 - Tags are **immutable**. A bad artifact is fixed by cutting a follow-
   up release, not by retagging.
 - The CI release job (`.github/workflows/ci.yml`, job `release`) gates
-  on `needs: [build, security]`, so a release only happens when the
-  full multi-platform matrix is green AND `cargo-deny` + RustSec
-  audit are green.
+  on `needs: [package, prepare-release]`, so a release only happens when
+  the full multi-platform matrix is green. There is **no** `security` /
+  cargo-deny gate in CI; advisory scanning runs out-of-band in the
+  non-gating scheduled `audit.yml` workflow.
 - Bypass for a single push: include `[skip release]` anywhere in the
   commit message, or title the commit `release: skip`.
 
 See [`../releasing.md`](../../releasing.md) for the full automation
-walkthrough including pre-releases, rollbacks, and signing setup.
+walkthrough including rollbacks and signing status (artifacts are
+currently unsigned).
 
 ## Per-release notes
 
@@ -41,7 +44,7 @@ Each release gets its own file in this directory, named `<YY>.<N>.md`:
 
 | Release | File           | Date       |
 |---------|----------------|------------|
-| `v26.1` | [`26.1.md`](26.1.md) | 2026-05-22 |
+| `26.1`  | [`26.1.md`](26.1.md) | 2026-05-22 |
 
 When the `release` CI job runs, it consults this directory for a
 matching `<version>.md`. If one exists (curated by the human author
@@ -67,7 +70,7 @@ Conventions:
 - Use `## Highlights`, `## Migration notes`, `## Known issues`, and
   `## Verification` headings to match `26.1.md`.
 - Migration sections only need to mention deltas since the *previous*
-  release (`vYY.N-1`), not since `0.1.0` — the rolling model assumes
+  release (`YY.N-1`), not since `0.1.0` — the rolling model assumes
   users update continuously.
 - Avoid promising future timelines. Use phrasing like "queued for a
   future rolling release" instead of "post-1.0" or "next major".

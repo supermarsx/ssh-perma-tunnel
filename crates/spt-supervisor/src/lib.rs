@@ -71,4 +71,7 @@ pub use session::{SessionRegistry, SessionRow, SessionState};
 pub use state_machine::{
     ForwardEvent, ProfileEvent as SmEvent, ProfileStateMachine, ProfileStateName,
 };
-pub use stats::{ProfileStats, StatsTick, StatsTickConfig};
+pub use stats::{
+    flush_metrics, profile_state_code, severity_for_state, state_change_kind, ProfileStats,
+    StatsTick, StatsTickConfig, SupervisorObservers,
+};

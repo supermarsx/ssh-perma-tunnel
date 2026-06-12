@@ -35,6 +35,14 @@ Options:
           
           [env: SPT_STATE_DIR=]
 
+      --portable
+          Portable mode: keep all runtime state next to the executable instead of OS-standard
+          locations (no OS install required).
+          
+          `main.rs` performs a raw pre-clap scan of the argv for this flag so portable paths are
+          resolved before the runtime is built; this declaration exists so the flag is visible to
+          `--help`, generated shell completions, and the man pages.
+
       --profile <NAME>
           Restrict operations to the named profile
 
@@ -99,4 +107,4 @@ EXAMPLES:
   spt log remote test --sink remote-syslog --send-test-record
   spt log export --format jsonl --since 24h
   spt log tail --since 1h --json
-  spt log export --format csv --since 7d
+  spt log export --format jsonl --since 7d

@@ -87,3 +87,8 @@ required-features = ["testing"]
 [[test]]
 name = "multi_hop_three_hops"
 required-features = ["testing"]
+
+# E8-F1: scripting lifecycle hooks fire on connect/forward/disconnect.
+[[test]]
+name = "scripting_hooks"
+required-features = ["testing"]

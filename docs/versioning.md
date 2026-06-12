@@ -23,9 +23,10 @@ so the workspace `Cargo.toml` carries the encoding **`0.YY.N`** — e.g. `0.26.1
 for release `26.1`. The leading `0.` is an implementation detail of the Cargo
 manifest only.
 
-User-facing surfaces drop the `0.`:
+User-facing surfaces drop the `0.`. Tags are **bare** (`26.1`), not
+`v`-prefixed:
 
-- git tags and GitHub release titles (`v26.1`)
+- git tags and GitHub release titles (`26.1`)
 - Docker image tags (`ghcr.io/supermarsx/spt:26.1`)
 - packaging recipes (deb/rpm/pkg/msi/scoop/choco/winget/…)
 

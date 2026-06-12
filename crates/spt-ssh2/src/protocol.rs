@@ -28,6 +28,7 @@ use tracing::warn;
 
 use crate::crypto::CryptoPolicy;
 use crate::hostkey::TrustVerifier;
+use crate::russh_backend::{validate_auth_methods, KeepalivePolicy, ObfsPolicy, ScriptContext};
 use crate::sftp::SftpClient;
 // t7-A2:start — scripting engine handle threaded into every session built
 // through this protocol. The Arc is shared across every connect attempt for
@@ -77,6 +78,19 @@ pub struct Ssh2Protocol {
     // userauth attempt run through this protocol.
     gssapi_audit_hook: Option<Arc<dyn GssAuditHook>>,
     // t7-Bwire:end
+    // E3-F1: transport-keepalive policy threaded into the russh `client::Config`
+    // (and consulted by the active liveness probe). Built from the profile's
+    // `[profiles.keepalive]` / `ProfileSupervisorConfig.keepalive_interval` by
+    // `profile_factory`. Default = russh defaults (no transport keepalives).
+    keepalive: KeepalivePolicy,
+    // E3-F2: obfuscation transport for the outermost dial. Built from the
+    // profile's `[profiles.transport.obfuscation]` by `profile_factory`.
+    // `None` keeps the legacy plain-TCP dial.
+    obfuscation: Option<ObfsPolicy>,
+    // E8-F1: profile name + obfs audit hook threaded into every session so
+    // the scripting lifecycle hooks can name the profile. `None` profile name
+    // (default) leaves the script `profile` field empty.
+    profile_name: Option<String>,
 }
 
 /// Builder for [`Ssh2Protocol`].
@@ -91,6 +105,12 @@ pub struct Ssh2ProtocolBuilder {
     // t7-Bwire:start
     gssapi_audit_hook: Option<Arc<dyn GssAuditHook>>,
     // t7-Bwire:end
+    // E3-F1
+    keepalive: KeepalivePolicy,
+    // E3-F2
+    obfuscation: Option<ObfsPolicy>,
+    // E8-F1
+    profile_name: Option<String>,
 }
 
 impl Default for Ssh2ProtocolBuilder {
@@ -114,6 +134,12 @@ impl Ssh2ProtocolBuilder {
             // t7-Bwire:start
             gssapi_audit_hook: None,
             // t7-Bwire:end
+            // E3-F1
+            keepalive: KeepalivePolicy::default(),
+            // E3-F2
+            obfuscation: None,
+            // E8-F1
+            profile_name: None,
         }
     }
 
@@ -193,6 +219,66 @@ impl Ssh2ProtocolBuilder {
     }
     // t7-Bwire:end
 
+    /// Set the SSH2 transport-keepalive policy (E3-F1).
+    ///
+    /// `interval` is the idle time before russh emits a transport
+    /// `keepalive@openssh.com` request (maps to russh
+    /// `Config::keepalive_interval`); `max_missed` is the number of unanswered
+    /// keepalives that closes the transport (maps to `Config::keepalive_max`).
+    /// `None` for either field preserves russh's defaults (no transport
+    /// keepalives; max 3). Wire this from `[profiles.keepalive]` /
+    /// `ProfileSupervisorConfig.keepalive_interval` in `profile_factory`.
+    ///
+    /// Independently of the transport keepalive, the supervisor's periodic
+    /// [`TunnelSession::keepalive`] call now performs a real channel-open
+    /// liveness probe, so a dead/black-holed session is detected even when no
+    /// transport keepalive interval is configured.
+    #[must_use]
+    pub fn keepalive(
+        mut self,
+        interval: Option<std::time::Duration>,
+        max_missed: Option<usize>,
+    ) -> Self {
+        self.keepalive = KeepalivePolicy {
+            interval,
+            max_missed,
+        };
+        self
+    }
+
+    /// Set the obfuscation transport for the outermost dial (E3-F2).
+    ///
+    /// When `config` is `Some`, the session's first TCP hop (or the single
+    /// direct endpoint when no multi-hop chain is configured) is dialed
+    /// through [`crate::connect_to_endpoint`] and the resulting
+    /// [`crate::ConnectStream::Obfuscated`] stream carries the SSH handshake —
+    /// instead of russh dialing plain TCP itself. `None` (the default) keeps
+    /// the legacy plain-TCP path. Wire this from
+    /// `[profiles.transport.obfuscation]` in `profile_factory`.
+    ///
+    /// `audit` is an optional hook fired from inside the obfuscation crate
+    /// when the transport handshake runs.
+    #[must_use]
+    pub fn obfuscation(
+        mut self,
+        config: Option<Arc<spt_obfs::ObfsConfig>>,
+        audit: Option<Arc<dyn spt_obfs::AuditHook>>,
+    ) -> Self {
+        self.obfuscation = config.map(|config| ObfsPolicy { config, audit });
+        self
+    }
+
+    /// Set the profile name carried into scripting lifecycle events (E8-F1).
+    ///
+    /// Populates the `profile` field of `pre_connect` / `post_connect` /
+    /// `on_disconnect` / `on_forward_state` event payloads. `None` (the
+    /// default) leaves it empty.
+    #[must_use]
+    pub fn profile_name(mut self, name: Option<String>) -> Self {
+        self.profile_name = name;
+        self
+    }
+
     /// Finalize the builder.
     #[must_use]
     pub fn build(self) -> Ssh2Protocol {
@@ -207,6 +293,12 @@ impl Ssh2ProtocolBuilder {
             // t7-Bwire:start
             gssapi_audit_hook: self.gssapi_audit_hook,
             // t7-Bwire:end
+            // E3-F1
+            keepalive: self.keepalive,
+            // E3-F2
+            obfuscation: self.obfuscation,
+            // E8-F1
+            profile_name: self.profile_name,
         }
     }
 }
@@ -239,6 +331,8 @@ impl Ssh2Protocol {
             self.backends.clone(),
             self.hop_specs(),
             self.gssapi_audit_hook.clone(),
+            self.keepalive,
+            self.obfuscation.clone(),
         )
         .await?;
         session.open_sftp_client().await
@@ -262,6 +356,23 @@ impl Ssh2Protocol {
     #[must_use]
     pub fn hop_count(&self) -> usize {
         self.hops.len()
+    }
+
+    /// Validate an endpoint [`AuthConfig`] against this backend's capabilities
+    /// *before* a connect is attempted (E3-F9).
+    ///
+    /// Returns [`spt_core::Error::InvalidConfig`] for auth methods that the
+    /// SSH2/russh backend can never satisfy (`gssapi`/`sspi` — russh 0.46 has
+    /// no `gssapi-with-mic` userauth primitive). `profile_factory` /
+    /// config-validation should call this at profile build time so an
+    /// unsupported method fails fast instead of only at the first connect,
+    /// wasting a connect attempt and a backoff cycle.
+    ///
+    /// Note: [`Self::connect`] also enforces this for direct callers and for
+    /// every configured hop, so the runtime path is safe even if a caller
+    /// skips this pre-check.
+    pub fn validate_auth(auth_cfg: &AuthConfig) -> Result<()> {
+        validate_auth_methods(auth_cfg)
     }
 }
 
@@ -292,13 +403,52 @@ impl TunnelProtocol for Ssh2Protocol {
         let backends = self.backends.clone();
         let hops = self.hop_specs();
         let gss_audit = self.gssapi_audit_hook.clone();
+        let keepalive = self.keepalive;
+        let obfuscation = self.obfuscation.clone();
+        let profile = self.profile_name.clone().unwrap_or_default();
+
+        // E8-F1: fire the `pre_connect` hook before the dial. The session does
+        // not exist yet, so we invoke the engine directly (offloaded to a
+        // blocking thread — rhai is synchronous). A hook failure is logged and
+        // swallowed so a misbehaving script never blocks the connect attempt.
+        // `attempt` is reported as 1: this protocol-level entry point sees one
+        // call per supervisor-driven connect; the supervisor owns retry
+        // counting at a higher layer.
+        if let Some(engine) = self.script_engine.clone() {
+            let event = spt_scripting::event::Event::PreConnect(spt_scripting::event::PreConnect {
+                profile: profile.clone(),
+                host: endpoint.host.clone(),
+                port: endpoint.port,
+                attempt: 1,
+            });
+            invoke_hook_blocking(engine, spt_scripting::config::HookName::PreConnect, event).await;
+        }
+
+        let auth_method = first_auth_method_tag(&auth_cfg);
         let mut session = crate::russh_backend::connect(
-            endpoint, auth_cfg, crypto, trust, backends, hops, gss_audit,
+            endpoint.clone(),
+            auth_cfg,
+            crypto,
+            trust,
+            backends,
+            hops,
+            gss_audit,
+            keepalive,
+            obfuscation,
         )
         .await?;
-        // t7-A2: attach scripting engine (if any) before boxing.
+        // t7-A2 / E8-F1: attach scripting engine + context (if any) before
+        // boxing, then fire the `post_connect` hook now that the session is
+        // authenticated.
         if let Some(engine) = self.script_engine.clone() {
-            session = session.with_script_engine(Some(engine));
+            session = session
+                .with_script_engine(Some(engine))
+                .with_script_context(ScriptContext {
+                    profile,
+                    host: endpoint.host.clone(),
+                    port: endpoint.port,
+                });
+            session.dispatch_post_connect(auth_method).await;
         }
         Ok(Box::new(session))
     }
@@ -338,6 +488,49 @@ impl Ssh2ProtocolBuilder {
     )]
     pub fn backend_kind(self, _kind: Ssh2BackendKind) -> Self {
         self
+    }
+}
+
+/// Invoke a script hook directly (no session yet) off the runtime by
+/// offloading the synchronous rhai call to `spawn_blocking` (E8-F1). Used for
+/// the `pre_connect` hook, which fires before the session exists. Failures are
+/// logged and swallowed — a script must never block the connect.
+async fn invoke_hook_blocking(
+    engine: Arc<ScriptEngine>,
+    hook: spt_scripting::config::HookName,
+    event: spt_scripting::event::Event,
+) {
+    match tokio::task::spawn_blocking(move || engine.invoke(hook, &event)).await {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => {
+            warn!(target: "spt_ssh2::scripting", hook = %hook, error = %e, "pre_connect script hook failed");
+        }
+        Err(join_err) => {
+            warn!(target: "spt_ssh2::scripting", hook = %hook, error = %join_err, "pre_connect script hook task panicked");
+        }
+    }
+}
+
+/// Best-effort `auth_method` tag for the `post_connect` event payload (E8-F1).
+///
+/// The session does not (yet) report which configured method actually
+/// succeeded, so we report the first configured method as the documented
+/// stable tag. Empty methods (rejected earlier by `run_auth`) report
+/// `"unknown"`.
+fn first_auth_method_tag(auth_cfg: &AuthConfig) -> &'static str {
+    use spt_auth::AuthMethod;
+    match auth_cfg.methods.first() {
+        Some(AuthMethod::PublicKey { .. }) => "publickey",
+        Some(AuthMethod::Agent { .. }) => "agent",
+        Some(AuthMethod::Password { .. }) => "password",
+        Some(AuthMethod::KeyboardInteractive { .. }) => "keyboard-interactive",
+        Some(AuthMethod::Certificate { .. }) => "openssh-cert",
+        Some(AuthMethod::Gssapi { .. }) => "gssapi-with-mic",
+        Some(AuthMethod::Sspi { .. }) => "sspi",
+        Some(AuthMethod::Bearer { .. }) => "bearer",
+        Some(AuthMethod::Basic { .. }) => "basic",
+        Some(AuthMethod::OidcDeviceFlow { .. }) => "oidc-device-flow",
+        None => "unknown",
     }
 }
 

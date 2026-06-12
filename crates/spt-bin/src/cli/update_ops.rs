@@ -50,11 +50,7 @@ async fn run_status(global: &GlobalOpts, json: bool) -> Result<()> {
         last_error: None,
     };
 
-    if json {
-        let s = serde_json::to_string_pretty(&status)
-            .map_err(|e| Error::RuntimeFailure(format!("status json: {e}")))?;
-        println!("{s}");
-    } else {
+    if !crate::cli::tunnel_ops::emit(global, json, &status)? {
         println!("spt update — status");
         println!("  enabled:         {}", status.enabled);
         println!("  mode:            {:?}", status.mode);

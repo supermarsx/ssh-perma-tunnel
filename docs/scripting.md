@@ -9,6 +9,12 @@ The engine is `rhai 1.19` (pure-Rust, MSRV 1.66) compiled with
 `default-features = false` + `std` + `sync` + `serde`. As of t7-A2 the
 engine is real — the t6 byte-count stub interpreter is gone.
 
+**The hooks now fire.** `dispatch_script_event(HookName::*)` is wired into
+the russh SSH2 connect / auth / forward / disconnect paths and invoked via
+`spawn_blocking`. Earlier builds loaded and attached the engine but never
+called it (the hook surface was inert); that is no longer the case — a
+configured hook slot is invoked at its lifecycle point.
+
 ## Configuration
 
 ```toml

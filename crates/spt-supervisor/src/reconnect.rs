@@ -22,8 +22,19 @@ pub struct BackoffConfig {
     pub max_delay: Duration,
     /// Reset attempt counter after this much continuous uptime.
     pub reset_after: Duration,
-    /// Jitter ratio (informational; full-jitter implementation always
-    /// samples in `[0, ceiling)` regardless of this value).
+    /// Jitter ratio in `[0.0, 1.0]` (E1-F16 — now honored). Controls how much
+    /// of the backoff ceiling is randomized:
+    ///
+    /// ```text
+    /// delay = ceiling*(1 - jitter) + uniform(0, ceiling*jitter)
+    /// ```
+    ///
+    /// * `jitter = 1.0` → full jitter, `uniform(0, ceiling)` (the classic
+    ///   AWS full-jitter backoff, and the default).
+    /// * `jitter = 0.0` → deterministic backoff, exactly `ceiling` (useful in
+    ///   tests/labs).
+    /// * intermediate values → a fixed `(1-jitter)` floor plus a `jitter`
+    ///   random component.
     pub jitter: f32,
     /// Maximum attempts (`0` = unlimited).
     pub max_attempts: u32,
@@ -79,7 +90,7 @@ impl Backoff {
         let n = self.attempt;
         self.attempt = self.attempt.saturating_add(1);
         ceiling_for_attempt(self.cfg.initial_delay, self.cfg.max_delay, n)
-            .map(|c| sample_jitter(c, rng))
+            .map(|c| sample_jitter(c, self.cfg.jitter, rng))
             .unwrap_or(Duration::ZERO)
     }
 
@@ -103,12 +114,28 @@ fn ceiling_for_attempt(initial: Duration, max: Duration, n: u32) -> Option<Durat
     Some(Duration::from_millis(ceiling_ms))
 }
 
-fn sample_jitter<R: Rng + ?Sized>(ceiling: Duration, rng: &mut R) -> Duration {
+/// Apply partial jitter to a backoff ceiling (E1-F16).
+///
+/// `delay = ceiling*(1 - j) + uniform(0, ceiling*j)` where `j` is clamped to
+/// `[0.0, 1.0]`. `j == 1.0` reproduces the classic full-jitter behavior;
+/// `j == 0.0` yields exactly `ceiling` (no randomization).
+fn sample_jitter<R: Rng + ?Sized>(ceiling: Duration, jitter: f32, rng: &mut R) -> Duration {
     let max_ms = ceiling.as_millis() as u64;
     if max_ms == 0 {
         return Duration::ZERO;
     }
-    Duration::from_millis(rng.gen_range(0..=max_ms))
+    let j = jitter.clamp(0.0, 1.0);
+    // Fixed (non-jittered) floor.
+    let fixed_ms = ((max_ms as f64) * (1.0 - j as f64)) as u64;
+    // Random span over the jittered fraction.
+    let span_ms = max_ms.saturating_sub(fixed_ms);
+    let rand_ms = if span_ms == 0 {
+        0
+    } else {
+        rng.gen_range(0..=span_ms)
+    };
+    // fixed + rand is bounded by max_ms by construction, but saturate defensively.
+    Duration::from_millis(fixed_ms.saturating_add(rand_ms).min(max_ms))
 }
 
 #[cfg(test)]
@@ -145,6 +172,62 @@ mod tests {
                 ceiling_for_attempt(Duration::from_secs(1), Duration::from_secs(8), n).unwrap();
             assert!(d <= cap, "attempt {n}: {d:?} > ceiling {cap:?}");
         }
+    }
+
+    #[test]
+    fn zero_jitter_is_deterministic() {
+        // E1-F16: jitter = 0% must yield exactly the ceiling (deterministic
+        // backoff), not behave like full jitter.
+        let mut rng = StdRng::seed_from_u64(123);
+        let mut b = Backoff::new(BackoffConfig {
+            initial_delay: Duration::from_secs(1),
+            max_delay: Duration::from_secs(60),
+            jitter: 0.0,
+            ..Default::default()
+        });
+        // attempt 0 -> ceiling 1s, attempt 1 -> 2s, attempt 2 -> 4s, exactly.
+        assert_eq!(b.next_delay(&mut rng), Duration::from_secs(1));
+        assert_eq!(b.next_delay(&mut rng), Duration::from_secs(2));
+        assert_eq!(b.next_delay(&mut rng), Duration::from_secs(4));
+    }
+
+    #[test]
+    fn partial_jitter_stays_within_floor_and_ceiling() {
+        // E1-F16: with jitter = 0.5 the delay is always in
+        // [ceiling*0.5, ceiling].
+        let mut rng = StdRng::seed_from_u64(7);
+        let init = Duration::from_secs(1);
+        let max = Duration::from_secs(64);
+        let mut b = Backoff::new(BackoffConfig {
+            initial_delay: init,
+            max_delay: max,
+            jitter: 0.5,
+            ..Default::default()
+        });
+        for n in 0..8 {
+            let cap = ceiling_for_attempt(init, max, n).unwrap();
+            let floor = Duration::from_millis((cap.as_millis() as u64) / 2);
+            let d = b.next_delay(&mut rng);
+            assert!(d <= cap, "attempt {n}: {d:?} > ceiling {cap:?}");
+            assert!(d >= floor, "attempt {n}: {d:?} < floor {floor:?}");
+        }
+    }
+
+    #[test]
+    fn full_jitter_can_go_below_half() {
+        // Sanity: with jitter = 1.0 the sample range includes values well below
+        // the ceiling (i.e. it is NOT pinned to the ceiling like zero-jitter).
+        let mut rng = StdRng::seed_from_u64(99);
+        let ceiling = Duration::from_secs(10);
+        let mut any_below_half = false;
+        for _ in 0..50 {
+            let d = sample_jitter(ceiling, 1.0, &mut rng);
+            if d < Duration::from_secs(5) {
+                any_below_half = true;
+            }
+            assert!(d <= ceiling);
+        }
+        assert!(any_below_half, "full jitter should produce sub-half samples");
     }
 
     #[test]

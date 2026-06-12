@@ -1,0 +1,17 @@
+---
+source: crates/spt-firewall/src/lib.rs
+expression: plan.script
+---
+# spt-firewall: nftables plan
+add table inet spt
+flush table inet spt
+table inet spt {
+    chain input {
+        type filter hook input priority 0; policy accept;
+        tcp dport 80 ip saddr 10.0.0.0/8 ip daddr 127.0.0.1/32 accept comment "spt:v4-in"
+        tcp dport 443 ip6 saddr 2001:db8::/32 ip6 daddr ::1/128 accept comment "spt:v6-in"
+    }
+    chain output {
+        type filter hook output priority 0; policy accept;
+    }
+}

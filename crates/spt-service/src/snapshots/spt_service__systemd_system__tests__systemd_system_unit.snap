@@ -12,6 +12,11 @@ Wants=network-online.target
 Type=notify
 ExecStart=/usr/local/bin/spt service run --config /etc/spt/relay.toml
 WorkingDirectory=/var/lib/spt
+# State dir must be writable under the sandbox below; StateDirectory
+# creates and binds /var/lib/spt (0700, owned by User=).
+StateDirectory=spt
+ReadWritePaths=/var/lib/spt /var/log/spt
+Environment="SPT_STATE_DIR=/var/lib/spt"
 Environment="RUST_LOG=info"
 Environment="SPT_STATE_DIR=/var/lib/spt"
 User=spt
@@ -23,6 +28,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=read-only
-
+# Allow binding privileged ports (<1024) for forwards under NoNewPrivileges=true.
+AmbientCapabilities=CAP_NET_BIND_SERVICE
 [Install]
 WantedBy=multi-user.target

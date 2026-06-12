@@ -57,6 +57,44 @@ const SCHTASKS_BIN: &str = "schtasks.exe";
 /// Backend identifier used in error messages and capability tables.
 const BACKEND_NAME: &str = "task-scheduler";
 
+/// Validate a service / unit name before it is interpolated into a path
+/// join or a shell-out argument.
+///
+/// Service backends derive on-disk paths (e.g. `/etc/init.d/<name>`,
+/// `~/Library/LaunchAgents/io.spt.<name>.plist`) by joining the operator
+/// supplied name. An unsanitised `../../evil` would let install/uninstall
+/// write or delete files outside the intended unit root. We restrict names
+/// to `[A-Za-z0-9_.@-]+` (the union of what systemd, launchd labels, and
+/// init-script filenames accept) and reject everything else — including the
+/// empty string and any path separator.
+///
+/// Lives in this always-compiled module so `launchd`/`openrc`/`sysv`
+/// (which are `cfg(unix)`-only on most hosts) can share one implementation
+/// without duplicating it per backend.
+///
+/// # Errors
+///
+/// Returns [`Error::ServiceManagerFailed`] when `name` is empty or contains
+/// a disallowed character.
+pub(crate) fn validate_service_name(name: &str) -> Result<()> {
+    use spt_core::error::Error;
+    if name.is_empty() {
+        return Err(Error::ServiceManagerFailed(
+            "service name must not be empty".into(),
+        ));
+    }
+    if let Some(bad) = name
+        .chars()
+        .find(|c| !(c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '@' | '-')))
+    {
+        return Err(Error::ServiceManagerFailed(format!(
+            "invalid service name {name:?}: character {bad:?} is not allowed \
+             (permitted: A-Z a-z 0-9 _ . @ -)"
+        )));
+    }
+    Ok(())
+}
+
 // ============================================================================
 // Windows implementation
 // ============================================================================
@@ -262,10 +300,22 @@ fn service_not_found(name: &str) -> Error {
     Error::ServiceManagerFailed(format!("scheduled task not found: {name}"))
 }
 
+/// Windows system error code `ERROR_FILE_NOT_FOUND` — schtasks surfaces
+/// this (rather than its generic exit 1) when the named task is absent on
+/// most Windows builds. Preferring it over message text keeps detection
+/// working on localized Windows where the English banner differs.
+#[cfg(target_os = "windows")]
+const ERROR_FILE_NOT_FOUND: i32 = 2;
+
 #[cfg(target_os = "windows")]
 fn is_not_found(out: &RunOutput) -> bool {
     if out.status == 0 {
         return false;
+    }
+    // Prefer the typed exit code (locale-independent); fall back to the
+    // English message banners for builds that collapse everything to exit 1.
+    if out.status == ERROR_FILE_NOT_FOUND {
+        return true;
     }
     let combined = format!("{} {}", out.stderr, out.stdout).to_ascii_lowercase();
     combined.contains("cannot find the file")
@@ -278,6 +328,11 @@ fn is_not_running(out: &RunOutput) -> bool {
     if out.status == 0 {
         return false;
     }
+    // schtasks `/End` on a not-running task and on a real failure (e.g.
+    // access denied) both exit 1, so the exit code alone cannot classify
+    // "not running" — we must consult the message banner. This stays
+    // English-biased; the not-found path above leads with the locale-
+    // independent ERROR_FILE_NOT_FOUND exit code where schtasks provides it.
     let combined = format!("{} {}", out.stderr, out.stdout).to_ascii_lowercase();
     combined.contains("not currently running")
 }
@@ -387,11 +442,12 @@ fn parse_status_csv(name: &str, csv_text: &str) -> Result<ServiceStatus> {
 /// * `N/A` (never run) — returns `None`.
 #[cfg(target_os = "windows")]
 fn parse_schtasks_timestamp(s: &str) -> Option<chrono::DateTime<chrono::Utc>> {
-    use chrono::{NaiveDateTime, TimeZone, Utc};
+    use chrono::{Local, NaiveDateTime, TimeZone};
 
-    // Try a few common formats. We treat the parsed naive time as UTC —
-    // schtasks reports local time, but the consumer of `since` only uses
-    // it for ordering; correctness across DST is best-effort.
+    // schtasks emits "Last Run Time" as a *local* wall clock with no zone
+    // token. Parse it as a naive datetime, interpret it in the host's local
+    // zone, then convert to UTC so `ServiceStatus.since` is an absolute
+    // instant rather than a UTC value skewed by the host offset (E7-F14).
     const FORMATS: &[&str] = &[
         "%m/%d/%Y %I:%M:%S %p",
         "%m/%d/%Y %H:%M:%S",
@@ -406,7 +462,18 @@ fn parse_schtasks_timestamp(s: &str) -> Option<chrono::DateTime<chrono::Utc>> {
 
     for fmt in FORMATS {
         if let Ok(naive) = NaiveDateTime::parse_from_str(s, fmt) {
-            return Some(Utc.from_utc_datetime(&naive));
+            // `from_local_datetime` is ambiguous across a DST fall-back and
+            // nonexistent across a spring-forward gap. Prefer the
+            // unambiguous mapping; on ambiguity take the earliest, and on a
+            // gap fall back to treating the wall clock as UTC (best-effort,
+            // ordering still holds).
+            return match Local.from_local_datetime(&naive) {
+                chrono::LocalResult::Single(dt) => Some(dt.with_timezone(&chrono::Utc)),
+                chrono::LocalResult::Ambiguous(earlier, _) => {
+                    Some(earlier.with_timezone(&chrono::Utc))
+                }
+                chrono::LocalResult::None => Some(chrono::Utc.from_utc_datetime(&naive)),
+            };
         }
     }
     None
@@ -623,6 +690,36 @@ mod tests {
         assert!(out.split_whitespace().any(|a| a == "/F"));
     }
 
+    // --- name validation (shared across launchd/openrc/sysv) ----------------
+
+    #[test]
+    fn validate_service_name_accepts_typical_names() {
+        for ok in ["spt", "spt-relay", "spt_relay", "io.spt.relay", "svc@1", "a.b-c_d"] {
+            assert!(validate_service_name(ok).is_ok(), "should accept {ok:?}");
+        }
+    }
+
+    #[test]
+    fn validate_service_name_rejects_path_traversal_and_separators() {
+        for bad in [
+            "",
+            "../../evil",
+            "../evil",
+            "a/b",
+            "a\\b",
+            "name with space",
+            "name;rm",
+            "name\nnewline",
+            "name*",
+        ] {
+            let err = validate_service_name(bad).expect_err("should reject");
+            assert!(
+                matches!(err, spt_core::error::Error::ServiceManagerFailed(_)),
+                "bad name {bad:?} should yield ServiceManagerFailed, got {err:?}"
+            );
+        }
+    }
+
     // --- Lifecycle tests (Windows-shaped, but driven via MockRunner) --------
 
     #[cfg(target_os = "windows")]
@@ -714,6 +811,36 @@ mod tests {
                 .await
                 .expect("missing task → Ok(())");
             mock.assert_called("schtasks.exe", &["/Delete", "/TN", "ghost-task", "/F"]);
+        }
+
+        #[tokio::test]
+        async fn uninstall_idempotent_on_error_file_not_found_exit_code() {
+            // Localized Windows may not emit the English "cannot find" banner;
+            // schtasks still surfaces ERROR_FILE_NOT_FOUND (2). Detection must
+            // succeed off the exit code alone.
+            let mock = MockRunner::new();
+            mock.push_output(RunOutput {
+                status: 2,
+                stdout: String::new(),
+                stderr: "<localized not-found message>".into(),
+            });
+            let mgr = manager(&mock);
+            mgr.uninstall("ghost-task")
+                .await
+                .expect("ERROR_FILE_NOT_FOUND → Ok(())");
+        }
+
+        #[tokio::test]
+        async fn status_not_found_via_exit_code_only() {
+            let mock = MockRunner::new();
+            mock.push_output(RunOutput {
+                status: 2,
+                stdout: String::new(),
+                stderr: "<localized>".into(),
+            });
+            let mgr = manager(&mock);
+            let err = mgr.status("ghost").await.expect_err("must error");
+            assert!(format!("{err}").contains("not found"));
         }
 
         #[tokio::test]
@@ -940,20 +1067,40 @@ mod tests {
 
         #[test]
         fn parse_timestamp_handles_us_locale() {
+            // The wall clock is interpreted in the host's local zone and
+            // converted to UTC, so the absolute instant depends on the host
+            // offset. Assert by round-tripping back to local time rather than
+            // hard-coding a UTC string (which would only hold on a UTC host).
+            use chrono::{Local, NaiveDateTime, TimeZone};
             let dt = parse_schtasks_timestamp("5/4/2026 3:24:21 PM").expect("parse");
-            assert_eq!(
-                dt.format("%Y-%m-%d %H:%M:%S").to_string(),
-                "2026-05-04 15:24:21"
-            );
+            let expected_local = NaiveDateTime::parse_from_str(
+                "2026-05-04 15:24:21",
+                "%Y-%m-%d %H:%M:%S",
+            )
+            .unwrap();
+            let want = Local
+                .from_local_datetime(&expected_local)
+                .earliest()
+                .unwrap()
+                .with_timezone(&chrono::Utc);
+            assert_eq!(dt, want);
         }
 
         #[test]
         fn parse_timestamp_handles_iso() {
+            use chrono::{Local, NaiveDateTime, TimeZone};
             let dt = parse_schtasks_timestamp("2026-05-04 15:24:21").expect("parse");
-            assert_eq!(
-                dt.format("%Y-%m-%d %H:%M:%S").to_string(),
-                "2026-05-04 15:24:21"
-            );
+            let expected_local = NaiveDateTime::parse_from_str(
+                "2026-05-04 15:24:21",
+                "%Y-%m-%d %H:%M:%S",
+            )
+            .unwrap();
+            let want = Local
+                .from_local_datetime(&expected_local)
+                .earliest()
+                .unwrap()
+                .with_timezone(&chrono::Utc);
+            assert_eq!(dt, want);
         }
 
         #[test]

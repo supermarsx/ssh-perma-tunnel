@@ -8,6 +8,7 @@ Wants=network-online.target
 Type={{service_type}}
 ExecStart={{exec_path}} {{args}}
 WorkingDirectory={{working_dir}}
+{{state_hardening}}
 {{env_lines}}
 {{user_line}}
 {{group_line}}
@@ -18,6 +19,6 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=read-only
-
+{{ambient_caps}}
 [Install]
 WantedBy={{wanted_by}}

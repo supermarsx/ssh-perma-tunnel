@@ -55,10 +55,13 @@ pub fn validate(c: &Config) -> Diagnostics {
     check_version(&mut d, c);
     check_runtime(&mut d, c);
     check_logging(&mut d, c);
+    check_secrets(&mut d, c);
+    check_events(&mut d, c);
     check_dns(&mut d, c);
     check_firewall(&mut d, c);
     check_network(&mut d, c);
     check_observability(&mut d, c);
+    check_status_api(&mut d, c);
     check_mcp(&mut d, c);
     check_updater(&mut d, c);
     check_capabilities(&mut d, c);
@@ -202,6 +205,119 @@ fn check_logging(d: &mut Diagnostics, c: &Config) {
     let Some(logging) = c.logging.as_ref() else {
         return;
     };
+
+    // Core (non-remote) logging fields. These previously had zero validation,
+    // so an invalid `rotate`/`format`/`level`/`destinations`/`max_size` passed
+    // `spt config validate` and then failed (or silently no-op'd) later inside
+    // `tracing_init` at daemon startup. Mirror the parser's expectations here
+    // (E5-F7).
+    if let Some(level) = logging.level.as_deref() {
+        // `level` is consumed as an `EnvFilter` directive; a bare level word
+        // must be one of the standard tracing levels. We do not police full
+        // directive grammar (e.g. `spt=debug,info`) — only an obviously bad
+        // bare token.
+        let bare = level.trim();
+        if !bare.is_empty()
+            && !bare.contains(['=', ',', ' '])
+            && !matches!(
+                bare.to_ascii_lowercase().as_str(),
+                "trace" | "debug" | "info" | "warn" | "error" | "off"
+            )
+        {
+            d.push(
+                Diagnostic::error(
+                    "logging_level_invalid",
+                    format!(
+                        "logging.level `{level}` is not a recognised level \
+                         (trace|debug|info|warn|error|off)"
+                    ),
+                )
+                .at("logging.level"),
+            );
+        }
+    }
+
+    if let Some(format) = logging.format.as_deref() {
+        if !matches!(format, "compact" | "text" | "pretty" | "json") {
+            d.push(
+                Diagnostic::error(
+                    "logging_format_invalid",
+                    format!(
+                        "logging.format `{format}` is invalid (compact|pretty|json)"
+                    ),
+                )
+                .at("logging.format"),
+            );
+        }
+    }
+
+    if let Some(destinations) = logging.destinations.as_ref() {
+        for (i, dest) in destinations.iter().enumerate() {
+            if !matches!(
+                dest.as_str(),
+                "stderr" | "console" | "file" | "journald"
+            ) {
+                d.push(
+                    Diagnostic::error(
+                        "logging_destination_invalid",
+                        format!(
+                            "logging.destinations[{i}] `{dest}` is invalid \
+                             (stderr|file|journald)"
+                        ),
+                    )
+                    .at(format!("logging.destinations[{i}]")),
+                );
+            }
+        }
+    }
+
+    if let Some(rotate) = logging.rotate.as_deref() {
+        if !matches!(rotate, "size" | "daily" | "hourly" | "none" | "never") {
+            d.push(
+                Diagnostic::error(
+                    "logging_rotate_invalid",
+                    format!(
+                        "logging.rotate `{rotate}` is invalid (size|daily|hourly|none)"
+                    ),
+                )
+                .at("logging.rotate"),
+            );
+        }
+    }
+
+    check_size_field(d, logging.max_size.as_deref(), "logging.max_size");
+    check_duration_field(d, logging.max_age.as_deref(), "logging.max_age");
+    check_duration_field(
+        d,
+        logging.rotation_check_interval.as_deref(),
+        "logging.rotation_check_interval",
+    );
+
+    // Duplicate spool_dir across reliable remote sinks corrupts seq accounting
+    // (two `DiskSpool::open`s on the same dir). E5-F14 (validate side).
+    let mut seen_spool_dirs: Vec<&str> = Vec::new();
+    for remote in &logging.remote {
+        if let Some(dir) = remote.spool_dir.as_deref() {
+            if !dir.is_empty() {
+                if seen_spool_dirs.contains(&dir) {
+                    d.push(
+                        Diagnostic::error(
+                            "remote_log_spool_dir_duplicate",
+                            format!(
+                                "remote log sink `{}` reuses spool_dir `{dir}` — each \
+                                 reliable sink needs its own directory or their queues \
+                                 corrupt each other",
+                                remote.name
+                            ),
+                        )
+                        .at("logging.remote.spool_dir"),
+                    );
+                } else {
+                    seen_spool_dirs.push(dir);
+                }
+            }
+        }
+    }
 
     let mut seen_names: Vec<&str> = Vec::with_capacity(logging.remote.len());
     for (i, remote) in logging.remote.iter().enumerate() {
@@ -351,6 +467,324 @@ fn check_logging(d: &mut Diagnostics, c: &Config) {
             remote.spool_max_bytes.as_deref(),
             format!("{prefix}.spool_max_bytes"),
         );
+    }
+}
+
+/// Validate the `[secrets]` table (E5-F7). `backend` and `memory_protection`
+/// are closed enums consumed by `spt-secrets`; an invalid value there silently
+/// falls back to defaults at runtime, so catch it at config time.
+fn check_secrets(d: &mut Diagnostics, c: &Config) {
+    let Some(secrets) = c.secrets.as_ref() else {
+        return;
+    };
+
+    if let Some(backend) = secrets.backend.as_deref() {
+        if !matches!(backend, "auto" | "keychain" | "vault" | "env") {
+            d.push(
+                Diagnostic::error(
+                    "secrets_backend_invalid",
+                    format!(
+                        "secrets.backend `{backend}` is invalid (auto|keychain|vault|env)"
+                    ),
+                )
+                .at("secrets.backend"),
+            );
+        }
+    }
+
+    if let Some(mp) = secrets.memory_protection.as_deref() {
+        if !matches!(mp, "best_effort" | "strict" | "none") {
+            d.push(
+                Diagnostic::error(
+                    "secrets_memory_protection_invalid",
+                    format!(
+                        "secrets.memory_protection `{mp}` is invalid (best_effort|strict|none)"
+                    ),
+                )
+                .at("secrets.memory_protection"),
+            );
+        }
+    }
+}
+
+/// Validate the `[events]` group (E5-F7): sink `type` enums, binding `actions`
+/// referencing real sinks/commands, `on` category shapes, throttle/timeout
+/// durations, and the `allow_exec` gate on commands. An event binding that
+/// points at a misspelled sink never fires — and previously passed validation.
+fn check_events(d: &mut Diagnostics, c: &Config) {
+    let Some(events) = c.events.as_ref() else {
+        return;
+    };
+
+    // Sink names + types.
+    let mut sink_names: Vec<&str> = Vec::with_capacity(events.sinks.len());
+    for (i, sink) in events.sinks.iter().enumerate() {
+        let prefix = format!("events.sinks[{i}]");
+        if sink_names.contains(&sink.name.as_str()) {
+            d.push(
+                Diagnostic::error(
+                    "duplicate_event_sink",
+                    format!("event sink name `{}` is not unique", sink.name),
+                )
+                .at(format!("{prefix}.name")),
+            );
+        } else {
+            sink_names.push(&sink.name);
+        }
+
+        if !matches!(
+            sink.kind.as_str(),
+            "email"
+                | "sms"
+                | "push"
+                | "webpush"
+                | "http"
+                | "webhook_post"
+                | "snmp_trap"
+                | "windows_event"
+                | "mcp_notify"
+                | "remote_log"
+        ) {
+            d.push(
+                Diagnostic::error(
+                    "event_sink_kind_invalid",
+                    format!(
+                        "event sink `{}` has unknown type `{}`",
+                        sink.name, sink.kind
+                    ),
+                )
+                .at(format!("{prefix}.type")),
+            );
+        }
+
+        check_duration_field(d, sink.timeout.as_deref(), format!("{prefix}.timeout"));
+    }
+
+    // Command names + the exec gate.
+    let mut command_names: Vec<&str> = Vec::with_capacity(events.commands.len());
+    for (i, cmd) in events.commands.iter().enumerate() {
+        let prefix = format!("events.commands[{i}]");
+        if command_names.contains(&cmd.name.as_str()) {
+            d.push(
+                Diagnostic::error(
+                    "duplicate_event_command",
+                    format!("event command name `{}` is not unique", cmd.name),
+                )
+                .at(format!("{prefix}.name")),
+            );
+        } else {
+            command_names.push(&cmd.name);
+        }
+        if cmd.command.trim().is_empty() {
+            d.push(
+                Diagnostic::error(
+                    "event_command_missing_path",
+                    format!("event command `{}` requires `command`", cmd.name),
+                )
+                .at(format!("{prefix}.command")),
+            );
+        }
+        if !matches!(cmd.allow_exec, Some(true)) {
+            d.push(
+                Diagnostic::warning(
+                    "event_command_exec_disabled",
+                    format!(
+                        "event command `{}` will not run until `allow_exec = true` \
+                         (spec §9.7) — bindings that fire it are inert",
+                        cmd.name
+                    ),
+                )
+                .at(format!("{prefix}.allow_exec")),
+            );
+        }
+        check_duration_field(d, cmd.timeout.as_deref(), format!("{prefix}.timeout"));
+    }
+
+    // Bindings: every `action` must name a defined sink or command; `on`
+    // categories must be non-empty.
+    let mut binding_names: Vec<&str> = Vec::with_capacity(events.bindings.len());
+    for (i, binding) in events.bindings.iter().enumerate() {
+        let prefix = format!("events.bindings[{i}]");
+        if binding_names.contains(&binding.name.as_str()) {
+            d.push(
+                Diagnostic::error(
+                    "duplicate_event_binding",
+                    format!("event binding name `{}` is not unique", binding.name),
+                )
+                .at(format!("{prefix}.name")),
+            );
+        } else {
+            binding_names.push(&binding.name);
+        }
+
+        if binding.on.is_empty() {
+            d.push(
+                Diagnostic::error(
+                    "event_binding_no_categories",
+                    format!("event binding `{}` subscribes to no `on` categories", binding.name),
+                )
+                .at(format!("{prefix}.on")),
+            );
+        }
+        for (j, category) in binding.on.iter().enumerate() {
+            if category.trim().is_empty() {
+                d.push(
+                    Diagnostic::error(
+                        "event_binding_empty_category",
+                        format!("event binding `{}` has an empty `on` category", binding.name),
+                    )
+                    .at(format!("{prefix}.on[{j}]")),
+                );
+            }
+        }
+
+        if binding.actions.is_empty() {
+            d.push(
+                Diagnostic::error(
+                    "event_binding_no_actions",
+                    format!("event binding `{}` fires no `actions`", binding.name),
+                )
+                .at(format!("{prefix}.actions")),
+            );
+        }
+        for (j, action) in binding.actions.iter().enumerate() {
+            let known = sink_names.iter().any(|n| *n == action.as_str())
+                || command_names.iter().any(|n| *n == action.as_str());
+            if !known {
+                d.push(
+                    Diagnostic::error(
+                        "event_binding_unknown_action",
+                        format!(
+                            "event binding `{}` action `{action}` does not match any \
+                             `[[events.sinks]]` or `[[events.commands]]` name — the \
+                             binding will never deliver",
+                            binding.name
+                        ),
+                    )
+                    .at(format!("{prefix}.actions[{j}]")),
+                );
+            }
+        }
+
+        check_duration_field(d, binding.throttle.as_deref(), format!("{prefix}.throttle"));
+    }
+}
+
+/// Validate the `[status_api]` table (E5-F7 + E6-F3 config-time side).
+///
+/// Cross-field checks the server crate enforces at start time are surfaced
+/// here so `spt config validate` catches them:
+/// * TLS enabled but cert/key paths empty.
+/// * mTLS auth mode without `tls.enabled = true`.
+/// * mTLS with an empty `allowed_subjects` list (rejects every client).
+/// * **E6-F3:** `auth.mode = "none"` on a non-loopback bind — mirrors the
+///   `non_loopback_bind_without_expose` forward warning. The server-side
+///   *enforcement* lives in spt-status-api (p2-status-api-guard); this is the
+///   config-time warning.
+fn check_status_api(d: &mut Diagnostics, c: &Config) {
+    use crate::status_api::StatusApiAuthMode;
+
+    let api = &c.status_api;
+    if !api.enabled {
+        return;
+    }
+
+    let is_loopback = api.bind.ip().is_loopback();
+
+    if api.tls.enabled {
+        if api.tls.cert_file.as_os_str().is_empty() {
+            d.push(
+                Diagnostic::error(
+                    "status_api_tls_missing_cert",
+                    "status_api.tls.enabled = true requires status_api.tls.cert_file",
+                )
+                .at("status_api.tls.cert_file"),
+            );
+        }
+        if api.tls.key_file.as_os_str().is_empty() {
+            d.push(
+                Diagnostic::error(
+                    "status_api_tls_missing_key",
+                    "status_api.tls.enabled = true requires status_api.tls.key_file",
+                )
+                .at("status_api.tls.key_file"),
+            );
+        }
+    }
+
+    match &api.auth.mode {
+        StatusApiAuthMode::None => {
+            if !is_loopback {
+                // E6-F3: documented "reject anonymous auth on non-loopback
+                // bind" guard. Warning at config time; the server crate turns
+                // this into a hard refusal (Error::InvalidConfig).
+                d.push(
+                    Diagnostic::warning(
+                        "status_api_anonymous_non_loopback",
+                        format!(
+                            "status_api.auth.mode = \"none\" with non-loopback bind `{}` \
+                             exposes an unauthenticated status API; the server refuses to \
+                             start unless explicitly overridden — set an auth mode or bind \
+                             to loopback",
+                            api.bind
+                        ),
+                    )
+                    .at("status_api.auth.mode"),
+                );
+            }
+            if !is_loopback && !api.tls.enabled {
+                d.push(
+                    Diagnostic::warning(
+                        "status_api_plaintext_non_loopback",
+                        format!(
+                            "status_api bind `{}` is non-loopback without TLS — the \
+                             snapshot (profiles, forwards, sessions) is served in \
+                             plaintext",
+                            api.bind
+                        ),
+                    )
+                    .at("status_api.tls.enabled"),
+                );
+            }
+        }
+        StatusApiAuthMode::MutualTls {
+            allowed_subjects, ..
+        } => {
+            if !api.tls.enabled {
+                d.push(
+                    Diagnostic::error(
+                        "status_api_mtls_requires_tls",
+                        "status_api.auth.mode = \"mtls\" requires status_api.tls.enabled = true",
+                    )
+                    .at("status_api.auth.mode"),
+                );
+            }
+            if allowed_subjects.is_empty() {
+                d.push(
+                    Diagnostic::error(
+                        "status_api_mtls_no_subjects",
+                        "status_api.auth mtls allowed_subjects is empty — every client \
+                         certificate would be rejected",
+                    )
+                    .at("status_api.auth.allowed_subjects"),
+                );
+            }
+        }
+        StatusApiAuthMode::Bearer { .. } | StatusApiAuthMode::Basic { .. } => {
+            if !is_loopback && !api.tls.enabled {
+                d.push(
+                    Diagnostic::warning(
+                        "status_api_credentials_plaintext",
+                        format!(
+                            "status_api bind `{}` carries bearer/basic credentials over \
+                             plaintext (TLS disabled) on a non-loopback address",
+                            api.bind
+                        ),
+                    )
+                    .at("status_api.tls.enabled"),
+                );
+            }
+        }
     }
 }
 
@@ -956,6 +1390,15 @@ fn check_profile(d: &mut Diagnostics, i: usize, p: &Profile, capabilities: Optio
                     format!("endpoint `{}` has empty host", ep.name),
                 )
                 .at(format!("{prefix}.endpoints[{j}].host")),
+            );
+        }
+        if let Some(auth) = ep.auth.as_ref() {
+            check_auth(
+                d,
+                auth,
+                &p.protocol,
+                capabilities,
+                &format!("{prefix}.endpoints[{j}].auth"),
             );
         }
     }
@@ -2640,6 +3083,85 @@ mod tests {
     }
 
     #[test]
+    fn endpoint_invalid_per_endpoint_auth_method_diagnoses_at_endpoint_path() {
+        let raw = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            [[profiles.endpoints]]
+            name = "e0"
+            host = "edge.example.com"
+            port = 22
+            [profiles.endpoints.auth]
+            method = "not-a-real-method"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(
+            d.errors.iter().any(|e| e.code == "auth_method_invalid"
+                && e.path.as_deref() == Some("profiles[0].endpoints[0].auth.method")),
+            "expected auth_method_invalid at profiles[0].endpoints[0].auth.method, got: {:?}",
+            d.errors
+        );
+    }
+
+    #[test]
+    fn endpoint_valid_per_endpoint_auth_override_passes() {
+        let raw = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            [profiles.auth]
+            method = "agent"
+            [[profiles.endpoints]]
+            name = "e0"
+            host = "edge.example.com"
+            port = 22
+            user = "override-user"
+            [profiles.endpoints.auth]
+            method = "public_key"
+            identity_file = "~/.ssh/id_ed25519"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(
+            d.is_ok(),
+            "errors: {:?} warnings: {:?}",
+            d.errors,
+            d.warnings
+        );
+    }
+
+    #[test]
+    fn endpoint_without_auth_still_validates_global_case() {
+        let raw = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            [profiles.auth]
+            method = "agent"
+            [[profiles.endpoints]]
+            name = "e0"
+            host = "edge.example.com"
+            port = 22
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(
+            d.is_ok(),
+            "errors: {:?} warnings: {:?}",
+            d.errors,
+            d.warnings
+        );
+    }
+
+    #[test]
     fn capabilities_reject_unsafe_combinations() {
         let raw = r#"
             version = 1
@@ -3359,6 +3881,310 @@ mod tests {
                 .iter()
                 .any(|w| w.code == "updater_auto_but_disabled"),
             "missing auto-but-disabled warning"
+        );
+    }
+
+    // -------------------------------------------------------------------
+    // E5-F7: [logging] core, [secrets], [events] coverage
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn logging_invalid_enums_error() {
+        let raw = r#"
+            version = 1
+            [logging]
+            level = "loud"
+            format = "fancy"
+            rotate = "weekly"
+            destinations = ["pigeon"]
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        for code in [
+            "logging_level_invalid",
+            "logging_format_invalid",
+            "logging_rotate_invalid",
+            "logging_destination_invalid",
+        ] {
+            assert!(
+                d.errors.iter().any(|e| e.code == code),
+                "missing {code}: {:?}",
+                d.errors
+            );
+        }
+    }
+
+    #[test]
+    fn logging_valid_core_ok() {
+        let raw = r#"
+            version = 1
+            [logging]
+            level = "info"
+            format = "json"
+            rotate = "daily"
+            destinations = ["stderr", "file"]
+            max_size = "10MiB"
+            max_age = "7d"
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(d.is_ok(), "errors: {:?}", d.errors);
+    }
+
+    #[test]
+    fn logging_duplicate_spool_dir_errors() {
+        let raw = r#"
+            version = 1
+            [logging]
+            [[logging.remote]]
+            name = "a"
+            type = "syslog_tcp"
+            endpoint = "10.0.0.1:514"
+            spool_dir = "/var/spool/spt"
+            [[logging.remote]]
+            name = "b"
+            type = "syslog_tcp"
+            endpoint = "10.0.0.2:514"
+            spool_dir = "/var/spool/spt"
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(d
+            .errors
+            .iter()
+            .any(|e| e.code == "remote_log_spool_dir_duplicate"));
+    }
+
+    #[test]
+    fn secrets_invalid_enums_error() {
+        let raw = r#"
+            version = 1
+            [secrets]
+            backend = "magic"
+            memory_protection = "paranoid"
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(d.errors.iter().any(|e| e.code == "secrets_backend_invalid"));
+        assert!(d
+            .errors
+            .iter()
+            .any(|e| e.code == "secrets_memory_protection_invalid"));
+    }
+
+    #[test]
+    fn events_binding_unknown_action_errors() {
+        let raw = r#"
+            version = 1
+            [events]
+            [[events.sinks]]
+            name = "pager"
+            type = "http"
+            url = "https://example/hook"
+            [[events.bindings]]
+            name = "alert"
+            on = ["profile.failed"]
+            actions = ["paegr"]
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(
+            d.errors
+                .iter()
+                .any(|e| e.code == "event_binding_unknown_action"),
+            "errors: {:?}",
+            d.errors
+        );
+    }
+
+    #[test]
+    fn events_unknown_sink_kind_errors() {
+        let raw = r#"
+            version = 1
+            [events]
+            [[events.sinks]]
+            name = "bad"
+            type = "carrier-pigeon"
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(d.errors.iter().any(|e| e.code == "event_sink_kind_invalid"));
+    }
+
+    #[test]
+    fn events_valid_binding_ok() {
+        let raw = r#"
+            version = 1
+            [events]
+            [[events.sinks]]
+            name = "pager"
+            type = "http"
+            url = "https://example/hook"
+            timeout = "5s"
+            [[events.bindings]]
+            name = "alert"
+            on = ["profile.failed"]
+            actions = ["pager"]
+            throttle = "30s"
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(d.is_ok(), "errors: {:?}", d.errors);
+    }
+
+    #[test]
+    fn events_command_without_allow_exec_warns() {
+        let raw = r#"
+            version = 1
+            [events]
+            [[events.commands]]
+            name = "notify"
+            command = "/usr/bin/notify"
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(d
+            .warnings
+            .iter()
+            .any(|w| w.code == "event_command_exec_disabled"));
+    }
+
+    // -------------------------------------------------------------------
+    // E5-F7 + E6-F3: [status_api] coverage
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn status_api_anonymous_non_loopback_warns() {
+        let raw = r#"
+            version = 1
+            [status_api]
+            enabled = true
+            bind = "0.0.0.0:9617"
+            [status_api.auth]
+            mode = "none"
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(
+            d.warnings
+                .iter()
+                .any(|w| w.code == "status_api_anonymous_non_loopback"),
+            "warnings: {:?}",
+            d.warnings
+        );
+        assert!(d
+            .warnings
+            .iter()
+            .any(|w| w.code == "status_api_plaintext_non_loopback"));
+    }
+
+    #[test]
+    fn status_api_loopback_anonymous_ok() {
+        let raw = r#"
+            version = 1
+            [status_api]
+            enabled = true
+            bind = "127.0.0.1:9617"
+            [status_api.auth]
+            mode = "none"
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(
+            !d.warnings
+                .iter()
+                .any(|w| w.code == "status_api_anonymous_non_loopback"),
+            "loopback anonymous bind must not warn: {:?}",
+            d.warnings
+        );
+    }
+
+    #[test]
+    fn status_api_mtls_without_tls_errors() {
+        let raw = r#"
+            version = 1
+            [status_api]
+            enabled = true
+            bind = "0.0.0.0:9617"
+            [status_api.auth]
+            mode = "mtls"
+            ca_bundle = "/etc/spt/ca.pem"
+            allowed_subjects = ["CN=prom"]
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(d
+            .errors
+            .iter()
+            .any(|e| e.code == "status_api_mtls_requires_tls"));
+    }
+
+    #[test]
+    fn status_api_disabled_is_not_checked() {
+        let raw = r#"
+            version = 1
+            [status_api]
+            enabled = false
+            bind = "0.0.0.0:9617"
+            [status_api.auth]
+            mode = "none"
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(
+            !d.warnings
+                .iter()
+                .any(|w| w.code.starts_with("status_api_")),
+            "disabled status_api must not warn: {:?}",
+            d.warnings
         );
     }
 }

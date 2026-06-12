@@ -163,7 +163,8 @@ impl EndpointSelector {
     }
 
     /// Set per-failure cooldown unit (seconds). The actual cooldown is
-    /// `consecutive_failures * cooldown_secs_per_failure` clamped to a minute.
+    /// `consecutive_failures * cooldown_secs_per_failure`, honoring the
+    /// configured duration exactly (no hardcoded floor or cap).
     pub fn with_cooldown(mut self, secs: u64) -> Self {
         self.cooldown_secs_per_failure = secs;
         self
@@ -212,15 +213,22 @@ impl EndpointSelector {
             return Err(SelectorError::Empty);
         }
         if let Some(m) = &self.manual {
-            return self
+            let pinned = self
                 .entries
                 .iter()
                 .find(|e| e.ep.host == m.host && e.ep.port == m.port)
-                .map(|e| &e.ep)
                 .ok_or_else(|| SelectorError::ManualUnknown {
                     host: m.host.clone(),
                     port: m.port,
-                });
+                })?;
+            // E1-F12: honor the pin only while the pinned endpoint is healthy.
+            // If it is currently cooling down, fall through to normal policy so
+            // a pinned-but-dead endpoint doesn't wedge the profile (the pin is
+            // still cleared on the next success per `record_success`).
+            let cooling = pinned.cooldown_until.map(|t| t > now).unwrap_or(false);
+            if !cooling {
+                return Ok(&pinned.ep);
+            }
         }
         // Delegate to round-robin policy when one is wired in.
         if let Some(result) = self.pick_via_policy() {
@@ -236,7 +244,25 @@ impl EndpointSelector {
             .filter(|e| e.cooldown_until.map(|t| t <= now).unwrap_or(true))
             .collect();
         if healthy.is_empty() {
-            return Err(SelectorError::AllCoolingDown);
+            // No endpoint is eligible right now — every one is still cooling.
+            // Rather than strand the profile (returning `AllCoolingDown` here
+            // blocks reconnect entirely for the whole cooldown, which wedges a
+            // single-endpoint profile), fall back to the LEAST-BAD endpoint:
+            // the one whose cooldown expires soonest. This preserves failover
+            // PREFERENCE (a non-cooling endpoint always wins above) while
+            // letting the normal backoff/reconnect path proceed against the
+            // most-recovered endpoint instead of being held off completely.
+            //
+            // `entries` is non-empty here (checked at the top), so the min
+            // always yields an endpoint. Endpoints with no cooldown set sort as
+            // soonest (treated as already eligible — though in practice that
+            // case is captured by the `healthy` filter above).
+            let soonest = self
+                .entries
+                .iter()
+                .min_by_key(|e| e.cooldown_until)
+                .expect("entries is non-empty");
+            return Ok(&soonest.ep);
         }
         // Pick the lowest priority cohort.
         let min_pri = healthy.iter().map(|e| e.ep.priority).min().unwrap();
@@ -267,6 +293,12 @@ impl EndpointSelector {
     }
 
     /// Record a successful connection — clears the failure counter.
+    ///
+    /// E1-F12: a manual failover override has *one-cycle* semantics (per the
+    /// `control.rs` / `orchestrator.rs` docs). Once a connection to the pinned
+    /// endpoint succeeds, the override is cleared so automatic priority/weighted
+    /// failover resumes — an operator pinning to endpoint B during an incident
+    /// is no longer left unable to fail over when B later dies.
     pub fn record_success(&mut self, host: &str, port: u16) {
         if let Some(e) = self
             .entries
@@ -275,6 +307,19 @@ impl EndpointSelector {
         {
             e.consecutive_failures = 0;
             e.cooldown_until = None;
+        }
+        // Clear a satisfied one-cycle manual override. We only clear when the
+        // succeeding endpoint is the pinned one (a success on a different
+        // endpoint shouldn't silently drop a still-pending pin).
+        let clear_pin = self
+            .manual
+            .as_ref()
+            .map(|m| m.host == host && m.port == port)
+            .unwrap_or(false);
+        if clear_pin {
+            // Route through set_manual(None) so the inner policy selector's
+            // override is cleared in lockstep.
+            self.set_manual(None);
         }
         if let Some(ps) = &self.policy_selector {
             ps.lock().record_success(&format!("{host}:{port}"));
@@ -292,8 +337,25 @@ impl EndpointSelector {
             if e.consecutive_failures >= self.fail_after {
                 let secs =
                     (e.consecutive_failures as u64).saturating_mul(self.cooldown_secs_per_failure);
-                let cap = secs.min(60);
-                e.cooldown_until = Some(now + Duration::from_secs(cap));
+                // Cooldown scales with consecutive failures:
+                // `consecutive_failures × cooldown_secs_per_failure`.
+                //
+                // E1-F15 history: the original code did `secs.min(60)`, which
+                // *capped* the cooldown at 60s — truncating a configured
+                // `restore_after = "5m"` (300s) down to 60s so a flapping
+                // endpoint re-entered rotation 5x sooner than asked. A later
+                // change over-corrected to `secs.max(60)`, imposing a hardcoded
+                // 60s *floor* that stranded short-cooldown profiles (a single
+                // failure with the default 5s unit cooled for a full minute,
+                // blocking single-endpoint reconnects for 60s).
+                //
+                // Fix: honor the CONFIGURED per-failure cooldown exactly — no
+                // hardcoded floor, no truncating cap. The duration is whatever
+                // the operator configured (scaled by consecutive failures).
+                // Stranding of all-cooling profiles is prevented separately in
+                // `pick` (the least-bad-endpoint fallback), not by clamping the
+                // cooldown here.
+                e.cooldown_until = Some(now + Duration::from_secs(secs));
             }
         }
         if let Some(ps) = &self.policy_selector {
@@ -392,6 +454,72 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn manual_override_cleared_after_success() {
+        // E1-F12: pinning to "b", then a successful connect to "b", clears the
+        // override so automatic failover resumes (next pick honors priority).
+        let mut rng = StdRng::seed_from_u64(0);
+        let mut s = EndpointSelector::new(
+            FailoverMode::Priority,
+            vec![ep("a", 22, 0, 1), ep("b", 22, 1, 1)],
+        );
+        s.set_manual(Some(ManualOverride {
+            host: "b".into(),
+            port: 22,
+        }));
+        assert_eq!(s.pick(&mut rng, Instant::now()).unwrap().host, "b");
+        // Successful connect to the pinned endpoint clears the one-cycle pin.
+        s.record_success("b", 22);
+        assert!(s.manual().is_none(), "pin should be cleared after success");
+        // Now automatic priority selection picks the lowest-priority "a".
+        assert_eq!(s.pick(&mut rng, Instant::now()).unwrap().host, "a");
+    }
+
+    #[tokio::test]
+    async fn manual_pin_falls_through_when_cooling() {
+        // E1-F12: a pinned endpoint that is cooling down does not wedge the
+        // profile — pick falls through to normal policy.
+        let mut rng = StdRng::seed_from_u64(0);
+        let mut s = EndpointSelector::new(
+            FailoverMode::Priority,
+            vec![ep("a", 22, 0, 1), ep("b", 22, 1, 1)],
+        )
+        .with_fail_after(1);
+        let now = Instant::now();
+        // Pin to "b", then drive "b" into cooldown.
+        s.set_manual(Some(ManualOverride {
+            host: "b".into(),
+            port: 22,
+        }));
+        s.record_failure("b", 22, now);
+        // While "b" cools, pick falls through to "a".
+        assert_eq!(s.pick(&mut rng, now).unwrap().host, "a");
+    }
+
+    #[tokio::test]
+    async fn cooldown_honors_configured_duration_over_60s() {
+        // E1-F15: a 5-minute per-failure cooldown must not be truncated to 60s.
+        let mut rng = StdRng::seed_from_u64(0);
+        let mut s = EndpointSelector::new(
+            FailoverMode::Priority,
+            vec![ep("a", 22, 0, 1), ep("b", 22, 1, 1)],
+        )
+        .with_fail_after(1)
+        .with_cooldown(300); // 5 minutes per failure
+        let now = Instant::now();
+        s.record_failure("a", 22, now);
+        // "a" is still cooling at +120s (would have been back with the old 60s cap).
+        assert_eq!(
+            s.pick(&mut rng, now + Duration::from_secs(120)).unwrap().host,
+            "b"
+        );
+        // After the full 5 minutes, "a" returns.
+        assert_eq!(
+            s.pick(&mut rng, now + Duration::from_secs(301)).unwrap().host,
+            "a"
+        );
+    }
+
+    #[tokio::test]
     async fn empty_selector_errors() {
         let mut rng = StdRng::seed_from_u64(0);
         let s = EndpointSelector::new(FailoverMode::Priority, vec![]);
@@ -403,13 +531,64 @@ mod tests {
 
     #[tokio::test]
     async fn record_success_clears_cooldown() {
+        // Two endpoints so the cooldown on "a" is observable as a *preference*
+        // shift to "b" (a single-endpoint selector never strands — see
+        // `single_endpoint_never_stranded_returns_least_bad`).
         let mut rng = StdRng::seed_from_u64(0);
-        let mut s = EndpointSelector::new(FailoverMode::Priority, vec![ep("a", 22, 0, 1)])
-            .with_fail_after(1);
+        let mut s = EndpointSelector::new(
+            FailoverMode::Priority,
+            vec![ep("a", 22, 0, 1), ep("b", 22, 1, 1)],
+        )
+        .with_fail_after(1);
         let now = Instant::now();
         s.record_failure("a", 22, now);
-        assert!(s.pick(&mut rng, now).is_err());
+        // While "a" cools, the healthy "b" is preferred.
+        assert_eq!(s.pick(&mut rng, now).unwrap().host, "b");
+        // A success on "a" clears its cooldown so it (lowest priority) returns.
         s.record_success("a", 22);
-        assert!(s.pick(&mut rng, now).is_ok());
+        assert_eq!(s.pick(&mut rng, now).unwrap().host, "a");
+    }
+
+    #[tokio::test]
+    async fn single_endpoint_never_stranded_returns_least_bad() {
+        // Regression (cooldown-floor / no-strand): a single-endpoint selector
+        // that fails must NOT be stranded — `pick` returns the (cooling)
+        // endpoint as the least-bad choice so reconnect proceeds via the normal
+        // backoff path rather than being blocked for the whole cooldown.
+        let mut rng = StdRng::seed_from_u64(0);
+        let mut s = EndpointSelector::new(FailoverMode::Priority, vec![ep("a", 22, 0, 1)])
+            .with_fail_after(1)
+            .with_cooldown(5);
+        let now = Instant::now();
+        s.record_failure("a", 22, now);
+        // Even though "a" is cooling, pick never returns None/Err for a single
+        // endpoint — it yields "a" (the least-bad / soonest-recovering choice).
+        assert_eq!(s.pick(&mut rng, now).unwrap().host, "a");
+        // And after the CONFIGURED 5s cooldown (NOT a 60s floor), it is fully
+        // eligible again.
+        assert_eq!(
+            s.pick(&mut rng, now + Duration::from_secs(5)).unwrap().host,
+            "a"
+        );
+    }
+
+    #[tokio::test]
+    async fn cooldown_respects_short_configured_duration_no_60s_floor() {
+        // Regression: a short configured cooldown (5s default) must NOT be
+        // forced up to a 60s minimum. With two endpoints, "a" cooling for 5s
+        // means it is back in rotation by +6s — long before any 60s floor.
+        let mut rng = StdRng::seed_from_u64(0);
+        let mut s = EndpointSelector::new(
+            FailoverMode::Priority,
+            vec![ep("a", 22, 0, 1), ep("b", 22, 1, 1)],
+        )
+        .with_fail_after(1)
+        .with_cooldown(5);
+        let now = Instant::now();
+        s.record_failure("a", 22, now);
+        // Still cooling immediately after the failure → "b" preferred.
+        assert_eq!(s.pick(&mut rng, now + Duration::from_secs(1)).unwrap().host, "b");
+        // By +6s (> configured 5s, far below any 60s floor) "a" is eligible.
+        assert_eq!(s.pick(&mut rng, now + Duration::from_secs(6)).unwrap().host, "a");
     }
 }

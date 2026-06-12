@@ -1,6 +1,6 @@
 ---
 source: crates/spt-tui/tests/pages_snapshots.rs
-assertion_line: 265
+assertion_line: 300
 expression: snap
 ---
 ┌Endpoints (a=add, d=del, Enter=ed┐┌Detail─────────────────────────────────────────────────────────┐
@@ -9,8 +9,8 @@ expression: snap
 │                                 ││port:     22                                                   │
 │                                 ││priority: 0                                                    │
 │                                 ││weight:                                                        │
-│                                 ││                                                               │
-│                                 ││                                                               │
+│                                 ││user:                                                          │
+│                                 ││auth:     auth=global                                          │
 │                                 ││                                                               │
 │                                 ││                                                               │
 │                                 ││                                                               │

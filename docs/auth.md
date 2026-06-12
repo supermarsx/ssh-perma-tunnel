@@ -6,6 +6,12 @@ declares one method in `[profiles.auth]` via the `method` field. The supervisor
 attempts the configured method on connect; persistent failures map to
 `AuthFailed` (exit code 5).
 
+`[profiles.auth]` is the profile-level (global) default, applied to every
+endpoint that does not declare its own credentials. An individual endpoint may
+override it with an inline `[profiles.endpoints.auth]` block and/or a `user`
+field (whole-block override, not a field merge) — see
+[Per-endpoint authentication](profiles.md#per-endpoint-authentication).
+
 The canonical method names accepted by the validator are listed in spec §9.12
 and reflected by [`crates/spt-config/src/schema.rs`](../crates/spt-config/src/schema.rs):
 

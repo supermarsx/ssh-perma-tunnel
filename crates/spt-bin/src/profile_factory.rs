@@ -22,6 +22,7 @@ use spt_config::schema::{
     Auth as AuthCfg, Capabilities, Config, Crypto as CryptoCfg, Profile,
     ScriptConfig as SchemaScriptConfig, Trust as TrustCfg,
 };
+use spt_config_crypt::KeySource;
 use spt_core::{Diagnostic, Error, Result};
 use spt_protocol::{Endpoint, TunnelProtocol};
 use spt_scripting::{
@@ -38,10 +39,20 @@ use spt_trust::{KnownHosts, Sha256HostPin};
 pub struct ProfileBundle {
     /// Protocol implementation, ready for `Orchestrator::start_profile`.
     pub protocol: Arc<dyn TunnelProtocol>,
-    /// Username + ordered auth methods.
+    /// Username + ordered auth methods. Profile-level / global default auth.
+    /// Retained as the fallback used by the SFTP one-shot path and by any
+    /// connect attempt for which no per-endpoint override resolves.
     pub auth: AuthConfig,
     /// Endpoints to try (priority/weight ordered downstream by the selector).
     pub endpoints: Vec<Endpoint>,
+    /// Per-endpoint resolved auth, index-aligned with `endpoints` (same length
+    /// and ordering). Each entry is built with the Hop-style fallback
+    /// `endpoint.user.or(profile.user)` / `endpoint.auth.or(profile.auth)`, so
+    /// an endpoint without its own `user`/`auth` inherits the profile-level
+    /// (global) credentials, while an endpoint that sets them carries its own.
+    /// The supervisor selects the right `AuthConfig` for the chosen endpoint by
+    /// index. Empty exactly when `endpoints` is empty.
+    pub endpoint_auth: Vec<AuthConfig>,
     /// Backoff/instability/failover/runner tuning. M0: defaults.
     pub supervisor_cfg: ProfileSupervisorConfig,
     // t6-Bwire: scripting hook engine built from `Profile::script`. `None`
@@ -65,7 +76,7 @@ pub struct SftpProfileBundle {
 
 /// Build a [`ProfileBundle`] for one profile.
 pub fn build(profile: &Profile, resolver: &Resolver) -> Result<ProfileBundle> {
-    build_with_capabilities(profile, resolver, None)
+    build_with_capabilities(profile, resolver, None, None)
 }
 
 /// Build a [`ProfileBundle`] for one profile using top-level config policy.
@@ -74,7 +85,51 @@ pub fn build_with_config(
     resolver: &Resolver,
     config: &Config,
 ) -> Result<ProfileBundle> {
-    build_with_capabilities(profile, resolver, config.capabilities.as_ref())
+    build_with_options(profile, resolver, config, &BuildOptions::default())
+}
+
+/// Optional knobs for [`build_with_config`]/[`build_with_options`]. Additive so
+/// existing call sites can keep using [`build_with_config`] unchanged while
+/// newer (Phase-2) call sites opt into the extra plumbing.
+///
+/// - `config_path` anchors a relative `[profiles.script].path` to the config
+///   file's parent directory (E8-F13). Under systemd/SCM the process CWD is
+///   typically `/` or `%SystemRoot%`, so resolving relative to CWD breaks
+///   service startup. When `None`, paths resolve against CWD (legacy
+///   behaviour).
+/// - `key_source` is the non-interactive [`KeySource`] used when a sealed
+///   (`SPTENC1`) config must be opened without a controlling TTY (E5-F10 prep).
+///   This factory does not itself load the config — the field is threaded so
+///   that Phase-2's `cli_dispatch` daemon/reload paths can plumb it into the
+///   `spt_config::load_with_key` call and avoid an interactive passphrase
+///   prompt under a service manager. It is intentionally inert here; consuming
+///   it is `p2-dispatch-security`'s job.
+#[derive(Default)]
+pub struct BuildOptions<'a> {
+    /// Path to the loading config file (its parent dir anchors relative
+    /// script paths). `None` ⇒ resolve relative to the process CWD.
+    pub config_path: Option<&'a std::path::Path>,
+    /// Non-interactive key source for sealed configs. Plumbed for Phase-2;
+    /// not consumed by the factory itself.
+    pub key_source: Option<&'a KeySource>,
+}
+
+/// Build a [`ProfileBundle`] honoring [`BuildOptions`] (config-file anchoring
+/// for relative script paths, and the non-interactive [`KeySource`] seam).
+pub fn build_with_options(
+    profile: &Profile,
+    resolver: &Resolver,
+    config: &Config,
+    options: &BuildOptions<'_>,
+) -> Result<ProfileBundle> {
+    // `key_source` is intentionally not consumed here — see `BuildOptions`.
+    let _ = options.key_source;
+    build_with_capabilities(
+        profile,
+        resolver,
+        config.capabilities.as_ref(),
+        options.config_path,
+    )
 }
 
 /// Build a one-shot SFTP bundle from an SSH2 profile.
@@ -114,15 +169,18 @@ fn build_with_capabilities(
     profile: &Profile,
     resolver: &Resolver,
     capabilities: Option<&Capabilities>,
+    config_path: Option<&std::path::Path>,
 ) -> Result<ProfileBundle> {
     let auth = build_auth_config(profile)?;
     let endpoints = build_endpoints(profile);
+    let endpoint_auth = build_endpoint_auths(profile)?;
 
     // t6-Bwire:start — build a `ScriptEngine` from `[profiles.script]` if
     // configured. Errors at load are surfaced as `Error::InvalidConfig` so
     // the startup path fails loudly (per t6-e7 contract). The engine is
     // wrapped in `Arc` so the supervisor can clone it cheaply per session.
-    let script_engine = build_script_engine(profile)?;
+    // E8-F13: anchor a relative script path to the config file's parent dir.
+    let script_engine = build_script_engine(profile, config_path)?;
     // t6-Bwire:end
 
     let protocol: Arc<dyn TunnelProtocol> = match profile.protocol.as_str() {
@@ -148,6 +206,7 @@ fn build_with_capabilities(
         protocol,
         auth,
         endpoints,
+        endpoint_auth,
         supervisor_cfg: build_supervisor_config(profile)?,
         script_engine,
     })
@@ -165,18 +224,41 @@ fn build_with_capabilities(
 /// audit sink. Tests that need to assert against a captured sink go
 /// through `spt_core::audit::register_audit_sink` (see
 /// `crates/spt-bin/src/audit.rs::tests`).
-pub(crate) fn build_script_engine(profile: &Profile) -> Result<Option<Arc<ScriptEngine>>> {
+pub(crate) fn build_script_engine(
+    profile: &Profile,
+    config_path: Option<&std::path::Path>,
+) -> Result<Option<Arc<ScriptEngine>>> {
     let Some(script) = profile.script.as_ref() else {
         return Ok(None);
     };
-    let cfg = translate_script_config(script);
+    let cfg = translate_script_config(script, config_path);
     let engine = ScriptEngine::load(&cfg)
         .map_err(Error::from)?
         .with_audit_sink(crate::audit::ScriptAuditBridge::arc());
     Ok(Some(Arc::new(engine)))
 }
 
-fn translate_script_config(schema: &SchemaScriptConfig) -> ScriptConfig {
+/// Resolve a `[profiles.script].path`. Absolute paths are used as-is. A
+/// relative path is anchored to the parent directory of the loading config
+/// file when `config_path` is known (E8-F13), matching docs/scripting.md
+/// ("path is resolved relative to the directory of the loading config
+/// file"). When the config path is unknown the path is left relative — it
+/// will resolve against the process CWD as before.
+fn resolve_script_path(raw: &str, config_path: Option<&std::path::Path>) -> std::path::PathBuf {
+    let candidate = std::path::PathBuf::from(raw);
+    if candidate.is_absolute() {
+        return candidate;
+    }
+    match config_path.and_then(std::path::Path::parent) {
+        Some(dir) => dir.join(candidate),
+        None => candidate,
+    }
+}
+
+fn translate_script_config(
+    schema: &SchemaScriptConfig,
+    config_path: Option<&std::path::Path>,
+) -> ScriptConfig {
     let hooks = schema
         .hooks
         .as_ref()
@@ -207,12 +289,79 @@ fn translate_script_config(schema: &SchemaScriptConfig) -> ScriptConfig {
         }
     }
     ScriptConfig {
-        path: std::path::PathBuf::from(&schema.path),
+        path: resolve_script_path(&schema.path, config_path),
         hooks,
         limits,
     }
 }
 // t6-Bwire:end
+
+/// Map the on-disk `[profiles.transport.obfuscation]` schema enum onto the
+/// engine-facing [`spt_obfs::ObfsConfig`] (E3-F2). The two enums share the
+/// `#[serde(tag = "kind", rename_all = "kebab-case")]` wire shape, but the
+/// schema carries hex-encoded `obfs4` key material as `String`s (parsed here)
+/// and the Shadowsocks `method` as a `String` (parsed via serde). Validated
+/// before it reaches the dial path.
+fn map_obfs_config(schema: &spt_config::schema::ObfsConfig) -> Result<spt_obfs::ObfsConfig> {
+    use spt_config::schema::ObfsConfig as S;
+    let mapped = match schema {
+        S::Obfs4 {
+            node_id,
+            public_key,
+            iat_mode,
+        } => {
+            let nid = hex::decode(node_id)
+                .map_err(|e| Error::InvalidConfig(format!("obfs4 node_id hex: {e}")))?;
+            let pk = hex::decode(public_key)
+                .map_err(|e| Error::InvalidConfig(format!("obfs4 public_key hex: {e}")))?;
+            let node_id: [u8; 20] = nid.try_into().map_err(|_| {
+                Error::InvalidConfig("obfs4 node_id must be 20 bytes (40 hex chars)".into())
+            })?;
+            let public_key: [u8; 32] = pk.try_into().map_err(|_| {
+                Error::InvalidConfig("obfs4 public_key must be 32 bytes (64 hex chars)".into())
+            })?;
+            spt_obfs::ObfsConfig::Obfs4 {
+                node_id,
+                public_key,
+                iat_mode: *iat_mode,
+            }
+        }
+        S::MeekHttp {
+            url,
+            front_host,
+            sni,
+        } => spt_obfs::ObfsConfig::MeekHttp {
+            url: url.clone(),
+            front_host: front_host.clone(),
+            sni: sni.clone(),
+        },
+        S::Websocket { url, headers } => spt_obfs::ObfsConfig::Websocket {
+            url: url.clone(),
+            headers: headers.clone(),
+        },
+        S::Shadowsocks { method, password } => {
+            let method: spt_obfs::SsMethod =
+                serde_json::from_value(serde_json::Value::String(method.clone())).map_err(|e| {
+                    Error::InvalidConfig(format!("shadowsocks method `{method}`: {e}"))
+                })?;
+            spt_obfs::ObfsConfig::Shadowsocks {
+                method,
+                password: password.clone(),
+            }
+        }
+        // `schema::ObfsConfig` is `#[non_exhaustive]`; reject any future
+        // variant we don't yet map rather than silently dialing plain TCP.
+        other => {
+            return Err(Error::InvalidConfig(format!(
+                "unsupported obfuscation kind in config: {other:?}"
+            )))
+        }
+    };
+    mapped
+        .validate()
+        .map_err(|e| Error::InvalidConfig(format!("obfuscation config: {e}")))?;
+    Ok(mapped)
+}
 
 fn build_ssh2(
     profile: &Profile,
@@ -244,7 +393,29 @@ fn build_ssh2(
         // t7-Bwire: install the workspace audit bridge for GSSAPI/SSPI token
         // exchanges (closes t7-B1 follow-up #1). The bridge is zero-sized
         // and fans every event out through `spt_core::audit::record_audit`.
-        .gssapi_audit_hook(Some(crate::audit::GssapiAuditBridge::arc()));
+        .gssapi_audit_hook(Some(crate::audit::GssapiAuditBridge::arc()))
+        // E8-F1: carry the profile name into scripting lifecycle events so the
+        // `profile` field of pre/post-connect / forward / disconnect payloads
+        // is populated (the script-hook dispatch path was wired in
+        // russh_backend but had no profile context until now).
+        .profile_name(Some(profile.name.clone()));
+
+    // E3-F2: map `[profiles.transport.obfuscation]` → `spt_obfs::ObfsConfig`
+    // and feed it to the builder so the obfuscated dial path
+    // (russh_backend::dial_outer) is actually reachable from config. Absent
+    // → plain TCP (no-op). An obfs audit bridge fans handshake events through
+    // the workspace audit seam.
+    if let Some(obfs) = profile
+        .transport
+        .as_ref()
+        .and_then(|t| t.obfuscation.as_ref())
+    {
+        let mapped = map_obfs_config(obfs)?;
+        builder = builder.obfuscation(
+            Some(Arc::new(mapped)),
+            Some(crate::audit::ObfsAuditBridge::arc()),
+        );
+    }
     for b in resolver.backend_arcs() {
         builder = builder.backend(Arc::clone(b));
     }
@@ -326,6 +497,46 @@ fn build_supervisor_config(profile: &Profile) -> Result<ProfileSupervisorConfig>
 
     if let Some(reconnect) = profile.reconnect.as_ref() {
         cfg.backoff = build_backoff_config(&profile.name, reconnect)?;
+    }
+
+    // E1-F8: wire `[profiles.keepalive].interval` into the supervisor's
+    // in-`run_active` health-poll cadence. Previously this stayed pinned to
+    // the hard-coded 30 s default regardless of config.
+    if let Some(keepalive) = profile.keepalive.as_ref() {
+        if let Some(raw) = keepalive.interval.as_deref() {
+            cfg.keepalive_interval =
+                parse_profile_duration(&profile.name, "keepalive.interval", raw)?;
+        }
+        // E1-F11: the per-probe timeout is independent of the probe cadence
+        // and must tolerate worst-case healthy round-trip latency, so a
+        // slow-but-alive link is not misclassified as `SessionLost`. Defaults
+        // to the `ProfileSupervisorConfig::default()` value (10 s) when unset.
+        if let Some(raw) = keepalive.timeout.as_deref() {
+            cfg.keepalive_timeout =
+                parse_profile_duration(&profile.name, "keepalive.timeout", raw)?;
+        }
+    }
+
+    // E1-F8: wire `[profiles.instability]` into the detector window so
+    // `InstabilityCleared`/`SmEvent::InstabilityClear` become reachable and
+    // the configured thresholds actually apply. The supervisor consumption
+    // side (calling `tick_healthy` on healthy keepalive ticks) is owned by
+    // p1-supervisor-core; this side maps the config fields.
+    if let Some(instability) = profile.instability.as_ref() {
+        if let Some(raw) = instability.window.as_deref() {
+            cfg.instability.window =
+                parse_profile_duration(&profile.name, "instability.window", raw)?;
+        }
+        if let Some(max_disconnects) = instability.max_disconnects {
+            cfg.instability.max_disconnects = max_disconnects;
+        }
+        // Schema field `min_successful_uptime` is the "continuous healthy
+        // time before the unstable flag clears" knob (InstabilityWindow's
+        // `clear_after`).
+        if let Some(raw) = instability.min_successful_uptime.as_deref() {
+            cfg.instability.clear_after =
+                parse_profile_duration(&profile.name, "instability.min_successful_uptime", raw)?;
+        }
     }
 
     if let Some(failover) = profile.failover.as_ref() {
@@ -763,6 +974,45 @@ fn build_endpoints(profile: &Profile) -> Vec<Endpoint> {
     vec![Endpoint::new(host, port)]
 }
 
+/// Resolve a per-endpoint [`AuthConfig`] for every endpoint, index-aligned with
+/// the vec returned by [`build_endpoints`] (same length and ordering).
+///
+/// Each entry uses the proven Hop-style whole-block fallback: an endpoint's own
+/// `user`/`auth` fully override the profile-level values for that endpoint, and
+/// an endpoint that sets neither inherits the profile-level (global) defaults —
+/// `build_auth_config_parts(ep.user.or(profile.user), ep.auth.or(profile.auth),
+/// "endpoints.auth")`.
+///
+/// The branching mirrors [`build_endpoints`] exactly so the two vecs stay
+/// index-aligned:
+/// - explicit `[[profiles.endpoints]]` → one entry per endpoint;
+/// - implicit single host-derived endpoint → one entry (= profile-level auth,
+///   since the synthesised endpoint has no per-endpoint override);
+/// - empty host (idle profile, no endpoints) → empty vec.
+fn build_endpoint_auths(profile: &Profile) -> Result<Vec<AuthConfig>> {
+    if !profile.endpoints.is_empty() {
+        return profile
+            .endpoints
+            .iter()
+            .map(|ep| {
+                build_auth_config_parts(
+                    ep.user.as_deref().or(profile.user.as_deref()),
+                    ep.auth.as_ref().or(profile.auth.as_ref()),
+                    "endpoints.auth",
+                )
+            })
+            .collect();
+    }
+    // No explicit endpoints: `build_endpoints` either synthesises a single
+    // endpoint from the profile host (→ one profile-level auth) or yields none
+    // (empty host). Match that shape so the index alignment holds.
+    let host = profile.host.clone().unwrap_or_default();
+    if host.is_empty() {
+        return Ok(Vec::new());
+    }
+    Ok(vec![build_auth_config(profile)?])
+}
+
 const fn default_port_for(protocol: &str) -> u16 {
     match protocol.as_bytes() {
         b"ssh3" => 443,
@@ -798,6 +1048,84 @@ mod tests {
         assert_eq!(bundle.endpoints[0].host, "example.com");
         assert_eq!(bundle.endpoints[0].port, 22);
         assert_eq!(bundle.auth.username, "alice");
+        assert_eq!(bundle.protocol.name(), "ssh2");
+    }
+
+    // E3-F2: `map_obfs_config` maps the schema enum onto the engine enum,
+    // hex-decoding obfs4 key material and validating it.
+    #[test]
+    fn map_obfs_websocket_and_meek() {
+        let ws = spt_config::schema::ObfsConfig::Websocket {
+            url: "wss://front.example/ssh".into(),
+            headers: vec![],
+        };
+        let mapped = map_obfs_config(&ws).unwrap();
+        assert!(matches!(mapped, spt_obfs::ObfsConfig::Websocket { .. }));
+
+        let meek = spt_config::schema::ObfsConfig::MeekHttp {
+            url: "https://front.example".into(),
+            front_host: None,
+            sni: None,
+        };
+        assert!(matches!(
+            map_obfs_config(&meek).unwrap(),
+            spt_obfs::ObfsConfig::MeekHttp { .. }
+        ));
+    }
+
+    #[test]
+    fn map_obfs4_hex_decodes_key_material() {
+        let obfs4 = spt_config::schema::ObfsConfig::Obfs4 {
+            node_id: "00".repeat(20),
+            public_key: "11".repeat(32),
+            iat_mode: 0,
+        };
+        let mapped = map_obfs_config(&obfs4).unwrap();
+        match mapped {
+            spt_obfs::ObfsConfig::Obfs4 {
+                node_id,
+                public_key,
+                iat_mode,
+            } => {
+                assert_eq!(node_id, [0u8; 20]);
+                assert_eq!(public_key, [0x11u8; 32]);
+                assert_eq!(iat_mode, 0);
+            }
+            other => panic!("expected Obfs4, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn map_obfs4_rejects_bad_length() {
+        let bad = spt_config::schema::ObfsConfig::Obfs4 {
+            node_id: "00".into(), // 1 byte, not 20
+            public_key: "11".repeat(32),
+            iat_mode: 0,
+        };
+        assert!(map_obfs_config(&bad).is_err());
+    }
+
+    // E3-F2 + E8-F1: a profile carrying `[profiles.transport.obfuscation]`
+    // builds successfully — proving the `.obfuscation(...)` + `.profile_name()`
+    // builder wiring is reachable from config.
+    #[test]
+    fn profile_with_obfuscation_builds() {
+        let cfg = r#"
+            version = 1
+            [[profiles]]
+            name = "edge"
+            protocol = "ssh2"
+            host = "example.com"
+            user = "alice"
+            [profiles.trust]
+            pin_sha256 = ["SHA256:dummy"]
+            [profiles.transport.obfuscation]
+            kind = "websocket"
+            url = "wss://front.example/ssh"
+            headers = []
+        "#;
+        let (c, _) = load_str(cfg, false).unwrap();
+        let bundle = build(&c.profiles[0], &empty_resolver()).unwrap();
         assert_eq!(bundle.protocol.name(), "ssh2");
     }
 
@@ -930,6 +1258,225 @@ mod tests {
             bundle.supervisor_cfg.failover_cooldown,
             std::time::Duration::from_secs(30)
         );
+    }
+
+    #[test]
+    fn keepalive_interval_feeds_supervisor_config() {
+        // E1-F8: `[profiles.keepalive].interval` overrides the 30 s default.
+        let cfg = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            user = "u"
+            [profiles.keepalive]
+            interval = "7s"
+            [profiles.trust]
+            pin_sha256 = ["SHA256:dummy"]
+        "#;
+        let (c, _) = load_str(cfg, false).unwrap();
+        let bundle = build(&c.profiles[0], &empty_resolver()).unwrap();
+        assert_eq!(
+            bundle.supervisor_cfg.keepalive_interval,
+            std::time::Duration::from_secs(7)
+        );
+    }
+
+    #[test]
+    fn keepalive_interval_defaults_to_thirty_seconds_when_absent() {
+        // E1-F8: with no `[profiles.keepalive]` the supervisor keeps the
+        // documented 30 s default.
+        let cfg = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            user = "u"
+            [profiles.trust]
+            pin_sha256 = ["SHA256:dummy"]
+        "#;
+        let (c, _) = load_str(cfg, false).unwrap();
+        let bundle = build(&c.profiles[0], &empty_resolver()).unwrap();
+        assert_eq!(
+            bundle.supervisor_cfg.keepalive_interval,
+            std::time::Duration::from_secs(30)
+        );
+    }
+
+    #[test]
+    fn instability_table_feeds_supervisor_window() {
+        // E1-F8: `[profiles.instability]` maps window / max_disconnects /
+        // min_successful_uptime onto the detector's `InstabilityWindow`.
+        let cfg = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            user = "u"
+            [profiles.instability]
+            window = "45s"
+            max_disconnects = 9
+            min_successful_uptime = "3m"
+            [profiles.trust]
+            pin_sha256 = ["SHA256:dummy"]
+        "#;
+        let (c, _) = load_str(cfg, false).unwrap();
+        let bundle = build(&c.profiles[0], &empty_resolver()).unwrap();
+        assert_eq!(
+            bundle.supervisor_cfg.instability.window,
+            std::time::Duration::from_secs(45)
+        );
+        assert_eq!(bundle.supervisor_cfg.instability.max_disconnects, 9);
+        assert_eq!(
+            bundle.supervisor_cfg.instability.clear_after,
+            std::time::Duration::from_secs(180)
+        );
+    }
+
+    #[test]
+    fn instability_partial_table_keeps_defaults_for_unset_fields() {
+        // E1-F8: only `max_disconnects` set — window and clear_after retain
+        // their `InstabilityWindow::default()` values (60 s / 120 s).
+        let cfg = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            user = "u"
+            [profiles.instability]
+            max_disconnects = 5
+            [profiles.trust]
+            pin_sha256 = ["SHA256:dummy"]
+        "#;
+        let (c, _) = load_str(cfg, false).unwrap();
+        let bundle = build(&c.profiles[0], &empty_resolver()).unwrap();
+        assert_eq!(bundle.supervisor_cfg.instability.max_disconnects, 5);
+        assert_eq!(
+            bundle.supervisor_cfg.instability.window,
+            std::time::Duration::from_secs(60)
+        );
+        assert_eq!(
+            bundle.supervisor_cfg.instability.clear_after,
+            std::time::Duration::from_secs(120)
+        );
+    }
+
+    #[test]
+    fn jitter_ratio_is_threaded_into_backoff_config() {
+        // E1-F16 (cfg side): the parsed jitter ratio lands in BackoffConfig.
+        let cfg = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            user = "u"
+            [profiles.reconnect]
+            jitter = "0%"
+            [profiles.trust]
+            pin_sha256 = ["SHA256:dummy"]
+        "#;
+        let (c, _) = load_str(cfg, false).unwrap();
+        let bundle = build(&c.profiles[0], &empty_resolver()).unwrap();
+        assert!((bundle.supervisor_cfg.backoff.jitter - 0.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn relative_script_path_anchors_to_config_dir() {
+        // E8-F13: a relative `[profiles.script].path` resolves against the
+        // config file's parent directory, not the process CWD.
+        let resolved = resolve_script_path(
+            "hooks/edge.rhai",
+            Some(std::path::Path::new("/etc/spt/config.toml")),
+        );
+        assert_eq!(
+            resolved,
+            std::path::Path::new("/etc/spt/hooks/edge.rhai")
+        );
+    }
+
+    #[test]
+    fn absolute_script_path_is_left_untouched() {
+        // E8-F13: absolute paths bypass anchoring regardless of config dir.
+        let abs = if cfg!(windows) {
+            r"C:\scripts\edge.rhai"
+        } else {
+            "/scripts/edge.rhai"
+        };
+        let resolved =
+            resolve_script_path(abs, Some(std::path::Path::new("/etc/spt/config.toml")));
+        assert_eq!(resolved, std::path::PathBuf::from(abs));
+    }
+
+    #[test]
+    fn relative_script_path_without_config_dir_stays_relative() {
+        // E8-F13: when the config path is unknown, fall back to the legacy
+        // CWD-relative behaviour (path returned unchanged).
+        let resolved = resolve_script_path("hooks/edge.rhai", None);
+        assert_eq!(resolved, std::path::PathBuf::from("hooks/edge.rhai"));
+    }
+
+    #[test]
+    fn build_with_options_anchors_script_path_to_config_dir() {
+        // E8-F13 end-to-end: a relative script path under a config in a temp
+        // dir loads when anchored, and the engine is constructed.
+        use spt_scripting::config::HookName;
+        use spt_scripting::event::{Event, PreConnect};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let script_rel = "hooks.rhai";
+        std::fs::write(
+            dir.path().join(script_rel),
+            "fn before(event) { print(`pre-connect: ${event.host}`); }\n",
+        )
+        .expect("write script");
+        let config_path = dir.path().join("config.toml");
+
+        // The script path is RELATIVE — it only resolves because we anchor to
+        // the config dir via BuildOptions.config_path.
+        let cfg = format!(
+            r#"
+            version = 1
+            [[profiles]]
+            name = "edge"
+            protocol = "ssh2"
+            host = "example.com"
+            user = "alice"
+            [profiles.script]
+            path = "{script_rel}"
+            [profiles.script.hooks]
+            pre_connect = "before"
+            [profiles.trust]
+            pin_sha256 = ["SHA256:dummy"]
+            "#
+        );
+        std::fs::write(&config_path, &cfg).expect("write config");
+        let (c, _) = load_str(&cfg, false).expect("load");
+        let options = BuildOptions {
+            config_path: Some(config_path.as_path()),
+            key_source: None,
+        };
+        let bundle = build_with_options(&c.profiles[0], &empty_resolver(), &c, &options)
+            .expect("build_with_options");
+        let engine = bundle
+            .script_engine
+            .as_ref()
+            .expect("ScriptEngine must be constructed when [profiles.script] is set");
+
+        let event = Event::PreConnect(PreConnect {
+            profile: "edge".into(),
+            host: "example.com".into(),
+            port: 22,
+            attempt: 1,
+        });
+        engine
+            .invoke(HookName::PreConnect, &event)
+            .expect("invoke pre_connect");
+        assert_eq!(engine.recorder_snapshot().calls.len(), 1);
     }
 
     #[test]
@@ -1421,5 +1968,203 @@ mod tests {
             msg.contains("\"yolo\"") && msg.contains("not recognised"),
             "got: {msg}"
         );
+    }
+
+    // ---- multi-auth Phase 2b: per-endpoint AuthConfig resolution -----------
+    //
+    // `ProfileBundle.endpoint_auth` is an index-aligned `Vec<AuthConfig>`
+    // (one entry per `endpoints[i]`) built with the Hop-style whole-block
+    // fallback `endpoint.user.or(profile.user)` / `endpoint.auth.or(profile.auth)`.
+    // The profile-level `ProfileBundle.auth` is retained as the global default.
+
+    /// (a) An endpoint that declares its own `[auth]` resolves to that method,
+    /// independently of (and overriding) the profile-level auth.
+    #[test]
+    fn endpoint_with_own_auth_resolves_to_that_method() {
+        let cfg = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "top.example"
+            user = "alice"
+            [profiles.auth]
+            method = "agent"
+            [[profiles.endpoints]]
+            name = "primary"
+            host = "ep1.example"
+            port = 22
+            [profiles.endpoints.auth]
+            method = "password"
+            password = "secret://ns/ep1pw"
+            [profiles.trust]
+            pin_sha256 = ["SHA256:dummy"]
+        "#;
+        let (c, _) = load_str(cfg, false).unwrap();
+        let bundle = build(&c.profiles[0], &empty_resolver()).unwrap();
+        assert_eq!(bundle.endpoints.len(), 1);
+        assert_eq!(bundle.endpoint_auth.len(), bundle.endpoints.len());
+        // Profile-level default is still the agent method.
+        assert!(matches!(bundle.auth.methods[0], AuthMethod::Agent { .. }));
+        // The endpoint's own auth overrides it with the password method.
+        match &bundle.endpoint_auth[0].methods[0] {
+            AuthMethod::Password { secret } => {
+                assert_eq!(secret.to_string(), "secret://ns/ep1pw");
+            }
+            other => panic!("expected per-endpoint Password, got {other:?}"),
+        }
+    }
+
+    /// (b) An endpoint without its own auth inherits the profile/global auth.
+    #[test]
+    fn endpoint_without_auth_inherits_profile_auth() {
+        let cfg = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "top.example"
+            user = "alice"
+            [profiles.auth]
+            method = "agent"
+            [[profiles.endpoints]]
+            name = "primary"
+            host = "ep1.example"
+            port = 22
+            [profiles.trust]
+            pin_sha256 = ["SHA256:dummy"]
+        "#;
+        let (c, _) = load_str(cfg, false).unwrap();
+        let bundle = build(&c.profiles[0], &empty_resolver()).unwrap();
+        assert_eq!(bundle.endpoint_auth.len(), bundle.endpoints.len());
+        // Inherited from `[profiles.auth]` (agent), with the profile username.
+        assert!(matches!(
+            bundle.endpoint_auth[0].methods[0],
+            AuthMethod::Agent { .. }
+        ));
+        assert_eq!(bundle.endpoint_auth[0].username, "alice");
+    }
+
+    /// (c) `endpoint.user` overrides `profile.user` for that endpoint's
+    /// `AuthConfig.username`, while a sibling endpoint without `user` keeps the
+    /// profile-level username.
+    #[test]
+    fn endpoint_user_overrides_profile_user() {
+        let cfg = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "top.example"
+            user = "alice"
+            [profiles.auth]
+            method = "agent"
+            [[profiles.endpoints]]
+            name = "primary"
+            host = "ep1.example"
+            port = 22
+            user = "bob"
+            [[profiles.endpoints]]
+            name = "backup"
+            host = "ep2.example"
+            port = 22
+            [profiles.trust]
+            pin_sha256 = ["SHA256:dummy"]
+        "#;
+        let (c, _) = load_str(cfg, false).unwrap();
+        let bundle = build(&c.profiles[0], &empty_resolver()).unwrap();
+        assert_eq!(bundle.endpoint_auth.len(), 2);
+        // Endpoint 0 overrides the username.
+        assert_eq!(bundle.endpoint_auth[0].username, "bob");
+        // Endpoint 1 inherits the profile-level username.
+        assert_eq!(bundle.endpoint_auth[1].username, "alice");
+        // Profile-level default username is unchanged.
+        assert_eq!(bundle.auth.username, "alice");
+    }
+
+    /// (d) Two endpoints each carrying a DISTINCT `secret://` password ref each
+    /// resolve to their own secret reference — proving the per-endpoint vec
+    /// keeps credentials separate rather than collapsing onto one.
+    #[test]
+    fn two_endpoints_carry_distinct_secret_password_refs() {
+        let cfg = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "top.example"
+            user = "alice"
+            [[profiles.endpoints]]
+            name = "primary"
+            host = "ep1.example"
+            port = 22
+            [profiles.endpoints.auth]
+            method = "password"
+            password = "secret://ns/ep1pw"
+            [[profiles.endpoints]]
+            name = "backup"
+            host = "ep2.example"
+            port = 22
+            [profiles.endpoints.auth]
+            method = "password"
+            password = "secret://ns/ep2pw"
+            [profiles.trust]
+            pin_sha256 = ["SHA256:dummy"]
+        "#;
+        let (c, _) = load_str(cfg, false).unwrap();
+        let bundle = build(&c.profiles[0], &empty_resolver()).unwrap();
+        assert_eq!(bundle.endpoint_auth.len(), 2);
+        let secret_of = |a: &AuthConfig| match &a.methods[0] {
+            AuthMethod::Password { secret } => secret.to_string(),
+            other => panic!("expected Password method, got {other:?}"),
+        };
+        assert_eq!(secret_of(&bundle.endpoint_auth[0]), "secret://ns/ep1pw");
+        assert_eq!(secret_of(&bundle.endpoint_auth[1]), "secret://ns/ep2pw");
+    }
+
+    /// Implicit single host-derived endpoint (no `[[profiles.endpoints]]`)
+    /// yields exactly one `endpoint_auth` entry = the profile-level auth, so the
+    /// vec stays index-aligned with the synthesised single endpoint.
+    #[test]
+    fn implicit_single_endpoint_yields_one_profile_level_auth() {
+        let cfg = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "top.example"
+            user = "alice"
+            [profiles.auth]
+            method = "agent"
+            [profiles.trust]
+            pin_sha256 = ["SHA256:dummy"]
+        "#;
+        let (c, _) = load_str(cfg, false).unwrap();
+        let bundle = build(&c.profiles[0], &empty_resolver()).unwrap();
+        assert_eq!(bundle.endpoints.len(), 1);
+        assert_eq!(bundle.endpoint_auth.len(), 1);
+        assert_eq!(bundle.endpoint_auth[0].username, "alice");
+        assert!(matches!(
+            bundle.endpoint_auth[0].methods[0],
+            AuthMethod::Agent { .. }
+        ));
+    }
+
+    /// Idle profile (empty host, no endpoints) yields an empty `endpoint_auth`
+    /// vec, matching the empty `endpoints` vec.
+    #[test]
+    fn idle_profile_yields_empty_endpoint_auth() {
+        let cfg = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            [profiles.trust]
+            pin_sha256 = ["SHA256:dummy"]
+        "#;
+        let (c, _) = load_str(cfg, false).unwrap();
+        let bundle = build(&c.profiles[0], &empty_resolver()).unwrap();
+        assert!(bundle.endpoints.is_empty());
+        assert!(bundle.endpoint_auth.is_empty());
     }
 }

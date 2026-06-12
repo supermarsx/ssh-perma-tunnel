@@ -51,7 +51,7 @@ use spt_protocol::forward::{
 use spt_protocol::handle::{ForwardHandle, ForwardId};
 use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
-use tokio::sync::{mpsc, oneshot, watch, Mutex as AsyncMutex};
+use tokio::sync::{mpsc, oneshot, watch, Mutex as AsyncMutex, Semaphore};
 use tracing::{debug, error, warn};
 
 use crate::frame::{
@@ -61,18 +61,87 @@ use crate::frame::{
 /// Channel-open timeout (peer must answer the open frame within this).
 const OPEN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
+/// Hard ceiling on the number of concurrent accepted inbound forwards when the
+/// peer's `Settings` did not advertise a `max_forwards` value. The advertised
+/// value (when present) takes precedence; this is only the fallback bound so an
+/// unbounded peer cannot flood us into unbounded task/socket growth (E3-F3).
+const DEFAULT_MAX_INBOUND_FORWARDS: u32 = 256;
+
+/// Cap on the number of in-flight remote-UDP per-datagram dial tasks across all
+/// flows on a session. The remote-UDP path spawns a short-lived task per
+/// inbound datagram (each binding a socket + a 64 KiB buffer); without a bound a
+/// datagram flood translates directly into unbounded socket/memory growth
+/// (E3-F3). Bounded fan-out drops excess datagrams instead.
+const MAX_REMOTE_UDP_INFLIGHT: usize = 1024;
+
+/// What the inbound-bidi dispatcher hands off to the remote-forward loop once
+/// it has accepted an inbound `forwarded-tcp` open *and* successfully dialed
+/// the local target (E3-F8): the already-connected local socket plus the QUIC
+/// stream halves to bridge it against, and a concurrency permit whose lifetime
+/// bounds the forward (E3-F3).
+pub(crate) struct InboundForward {
+    pub(crate) send: SendStream,
+    pub(crate) recv: RecvStream,
+    pub(crate) local: TcpStream,
+    /// Held for the lifetime of the bridged connection so the `max_forwards`
+    /// semaphore reflects live forwards, not merely accepted opens.
+    pub(crate) _permit: tokio::sync::OwnedSemaphorePermit,
+}
+
+/// Per-remote-forward registration: the local target to dial on each inbound
+/// open and the channel that delivers dialed-and-accepted inbound forwards to
+/// the forward's bridge loop.
+pub(crate) struct RemoteForwardEntry {
+    pub(crate) target: TargetAddr,
+    pub(crate) tx: mpsc::UnboundedSender<InboundForward>,
+}
+
 /// Transient state shared between the session and its dispatch loop.
 ///
 /// * `udp_flows` maps a flow-id (allocated either by a local UDP forward or by
 ///   the peer's `UdpAssociate` frame) to a sender that receives inbound
 ///   datagram payloads (sans flow-id prefix).
-/// * `remote_forwards` maps a `(host, port)` listening address to a sender
-///   that receives inbound bidi streams from the peer for that listener.
-#[derive(Default)]
+/// * `remote_forwards` maps a `(host, port)` listening address to the target +
+///   sender that receives dialed inbound forwards from the peer for that
+///   listener.
+/// * `inbound_forward_limit` bounds the number of concurrently-accepted inbound
+///   forwards (`max_forwards` enforcement, E3-F3).
+/// * `remote_udp_inflight` bounds the per-datagram remote-UDP dial fan-out
+///   (E3-F3).
 pub struct SessionState {
     pub(crate) udp_flows: DashMap<u32, mpsc::UnboundedSender<Bytes>>,
-    pub(crate) remote_forwards:
-        DashMap<(String, u16), mpsc::UnboundedSender<(SendStream, RecvStream)>>,
+    pub(crate) remote_forwards: DashMap<(String, u16), RemoteForwardEntry>,
+    pub(crate) inbound_forward_limit: Arc<Semaphore>,
+    pub(crate) remote_udp_inflight: Arc<Semaphore>,
+}
+
+impl Default for SessionState {
+    fn default() -> Self {
+        Self::with_max_forwards(None)
+    }
+}
+
+impl SessionState {
+    /// Build session state with the inbound-forward concurrency cap taken from
+    /// the peer's advertised `max_forwards` (falling back to
+    /// [`DEFAULT_MAX_INBOUND_FORWARDS`] when the peer advertises none, and
+    /// clamping `0`/absurd values into a sane range).
+    #[must_use]
+    pub fn with_max_forwards(max_forwards: Option<u32>) -> Self {
+        let cap = match max_forwards {
+            Some(0) | None => DEFAULT_MAX_INBOUND_FORWARDS,
+            Some(n) => n,
+        };
+        // Semaphore permits are `usize`; on 16-bit targets a huge advertised
+        // cap would overflow, so clamp to a generous ceiling.
+        let cap = usize::try_from(cap).unwrap_or(usize::MAX).min(1 << 20);
+        Self {
+            udp_flows: DashMap::new(),
+            remote_forwards: DashMap::new(),
+            inbound_forward_limit: Arc::new(Semaphore::new(cap)),
+            remote_udp_inflight: Arc::new(Semaphore::new(MAX_REMOTE_UDP_INFLIGHT)),
+        }
+    }
 }
 
 impl std::fmt::Debug for SessionState {
@@ -80,6 +149,14 @@ impl std::fmt::Debug for SessionState {
         f.debug_struct("SessionState")
             .field("udp_flows", &self.udp_flows.len())
             .field("remote_forwards", &self.remote_forwards.len())
+            .field(
+                "inbound_forward_permits_available",
+                &self.inbound_forward_limit.available_permits(),
+            )
+            .field(
+                "remote_udp_inflight_available",
+                &self.remote_udp_inflight.available_permits(),
+            )
             .finish()
     }
 }
@@ -256,6 +333,7 @@ pub async fn open_remote(
     state: Arc<SessionState>,
     control_send: Arc<AsyncMutex<SendStream>>,
     control_recv: Arc<AsyncMutex<RecvStream>>,
+    control_request: Arc<AsyncMutex<()>>,
     spec: &RemoteForwardSpec,
     peer_supports_remote: bool,
 ) -> Result<ForwardHandle> {
@@ -266,13 +344,24 @@ pub async fn open_remote(
     }
     let (host, port) = bind_host_port(&spec.listen)?;
 
+    // E3-F5: hold the control-request lock across the write-request /
+    // read-response exchange so two concurrent `open_remote` calls can't have
+    // their `ForwardOpenResponse` frames mis-routed to each other on the
+    // shared, un-correlated control stream.
+    let _ctl_guard = control_request.lock().await;
+
     // Register the inbound dispatch entry *before* sending the request so a
     // peer that races to open `forwarded-tcp` streams the moment it ACKs
-    // doesn't lose the first connection.
-    let (inbound_tx, inbound_rx) = mpsc::unbounded_channel::<(SendStream, RecvStream)>();
-    state
-        .remote_forwards
-        .insert((host.clone(), port), inbound_tx);
+    // doesn't lose the first connection. The entry carries the local target so
+    // the dispatcher can dial it *before* ACKing the open (E3-F8).
+    let (inbound_tx, inbound_rx) = mpsc::unbounded_channel::<InboundForward>();
+    state.remote_forwards.insert(
+        (host.clone(), port),
+        RemoteForwardEntry {
+            target: spec.target.clone(),
+            tx: inbound_tx,
+        },
+    );
 
     let req = Ssh3Frame::new(
         Ssh3FrameKind::DirectTcpRequest,
@@ -324,13 +413,11 @@ pub async fn open_remote(
     let (close_tx, close_rx) = oneshot::channel();
     let id = ForwardId::new();
     let name = spec.name.clone();
-    let target = spec.target.clone();
 
     tokio::spawn(remote_loop(
         conn,
         state.clone(),
         inbound_rx,
-        target,
         state_tx,
         close_rx,
         name.clone(),
@@ -345,8 +432,7 @@ pub async fn open_remote(
 async fn remote_loop(
     _conn: Connection,
     state: Arc<SessionState>,
-    mut inbound_rx: mpsc::UnboundedReceiver<(SendStream, RecvStream)>,
-    target: TargetAddr,
+    mut inbound_rx: mpsc::UnboundedReceiver<InboundForward>,
     state_tx: watch::Sender<ForwardState>,
     mut close_rx: oneshot::Receiver<()>,
     name: String,
@@ -358,11 +444,10 @@ async fn remote_loop(
             _ = &mut close_rx => break,
             inbound = inbound_rx.recv() => {
                 match inbound {
-                    Some((send, recv)) => {
-                        let target = target.clone();
+                    Some(inbound) => {
                         let name_t = name.clone();
                         tokio::spawn(async move {
-                            if let Err(e) = bridge_remote(send, recv, &target).await {
+                            if let Err(e) = bridge_remote(inbound).await {
                                 warn!(target: "spt_ssh3::forward", forward = %name_t, error = %e, "remote conn failed");
                             }
                         });
@@ -376,23 +461,20 @@ async fn remote_loop(
     let _ = state_tx.send(ForwardState::Stopped);
 }
 
-async fn bridge_remote(
-    mut send: SendStream,
-    mut recv: RecvStream,
-    target: &TargetAddr,
-) -> Result<()> {
-    // Inbound stream already past its channel-open frame (the dispatcher
-    // consumed and validated it). Dial the local target and bridge raw.
-    let mut sock = TcpStream::connect((target.host.as_str(), target.port))
-        .await
-        .map_err(|e| {
-            // Best-effort error response; the dispatcher already sent OK.
-            Error::NetworkUnreachable(format!(
-                "ssh3 remote-forward dial {}:{}: {e}",
-                target.host, target.port
-            ))
-        })?;
-    let (mut sr, mut sw) = sock.split();
+/// Bridge an already-dialed inbound remote forward. The dispatcher has already
+/// consumed the channel-open frame, dialed the local target, and acked the peer
+/// with `ok:true` *only because* the dial succeeded (E3-F8); here we just splice
+/// the QUIC stream against the connected socket. The concurrency permit inside
+/// [`InboundForward`] is released when this future (and the moved socket/stream)
+/// drops.
+async fn bridge_remote(inbound: InboundForward) -> Result<()> {
+    let InboundForward {
+        mut send,
+        mut recv,
+        mut local,
+        _permit,
+    } = inbound;
+    let (mut sr, mut sw) = local.split();
     let to_local = async {
         let n = tokio::io::copy(&mut recv, &mut sw).await;
         let _ = sw.shutdown().await;
@@ -540,11 +622,30 @@ pub async fn open_udp(
     Ok(ForwardHandle::new(id, name, state_rx, close_tx))
 }
 
+/// Send a `ForwardOpenResponse { ok: false, reason }` and half-close `send`.
+async fn reject_inbound(mut send: SendStream, reason: &str) {
+    let _ = Ssh3Frame::new(
+        Ssh3FrameKind::ForwardOpenResponse,
+        ForwardOpenResponse {
+            ok: false,
+            reason: reason.to_string(),
+        }
+        .encode(),
+    )
+    .write_async(&mut send)
+    .await;
+    let _ = send.finish();
+}
+
 /// Dispatch one inbound bidi stream from the peer.
 ///
-/// Reads the channel-open frame, looks up a matching remote-forward, and on
-/// match sends an OK response and hands the stream off. On no-match (or any
-/// error) sends a rejection and drops the stream.
+/// Reads the channel-open frame, looks up a matching remote-forward, **dials the
+/// local target**, and only on a successful dial sends `ok:true` and hands the
+/// connected forward off (E3-F8). On capacity-exhaustion, no-match, dial
+/// failure, or any protocol error it sends `ok:false` with a reason and drops
+/// the stream. A `max_forwards` permit (E3-F3) is acquired before the dial and
+/// held for the lifetime of the bridged connection; if no permit is available
+/// the open is rejected immediately rather than queued.
 pub(crate) async fn dispatch_inbound_bidi(
     state: Arc<SessionState>,
     mut send: SendStream,
@@ -563,17 +664,7 @@ pub(crate) async fn dispatch_inbound_bidi(
             kind = ?frame.kind,
             "inbound bidi: unexpected first frame"
         );
-        let _ = Ssh3Frame::new(
-            Ssh3FrameKind::ForwardOpenResponse,
-            ForwardOpenResponse {
-                ok: false,
-                reason: "unexpected open frame".into(),
-            }
-            .encode(),
-        )
-        .write_async(&mut send)
-        .await;
-        let _ = send.finish();
+        reject_inbound(send, "unexpected open frame").await;
         return;
     }
     let open = match ChannelOpenPayload::decode(frame.payload) {
@@ -585,27 +676,47 @@ pub(crate) async fn dispatch_inbound_bidi(
     };
 
     let key = (open.host.clone(), open.port);
-    let Some(entry) = state.remote_forwards.get(&key) else {
-        debug!(
+    let (target, tx) = {
+        let Some(entry) = state.remote_forwards.get(&key) else {
+            debug!(
+                target: "spt_ssh3::forward",
+                host = %open.host, port = open.port,
+                "inbound bidi: no matching remote forward — rejecting"
+            );
+            reject_inbound(send, "no remote forward registered for that bind").await;
+            return;
+        };
+        (entry.target.clone(), entry.tx.clone())
+    };
+
+    // E3-F3: bound concurrent inbound forwards by the negotiated `max_forwards`
+    // cap. `try_acquire_owned` fails immediately when at capacity so a flood of
+    // opens is rejected (not queued, which would itself be an unbounded buffer).
+    let Ok(permit) = state.inbound_forward_limit.clone().try_acquire_owned() else {
+        warn!(
             target: "spt_ssh3::forward",
             host = %open.host, port = open.port,
-            "inbound bidi: no matching remote forward — rejecting"
+            "inbound bidi: max_forwards reached — rejecting"
         );
-        let _ = Ssh3Frame::new(
-            Ssh3FrameKind::ForwardOpenResponse,
-            ForwardOpenResponse {
-                ok: false,
-                reason: "no remote forward registered for that bind".into(),
-            }
-            .encode(),
-        )
-        .write_async(&mut send)
-        .await;
-        let _ = send.finish();
+        reject_inbound(send, "max_forwards reached").await;
         return;
     };
-    let tx = entry.value().clone();
-    drop(entry);
+
+    // E3-F8: dial the local target *before* ACKing so the peer never sees a
+    // success for a forward whose downstream is unreachable.
+    let local = match TcpStream::connect((target.host.as_str(), target.port)).await {
+        Ok(s) => s,
+        Err(e) => {
+            debug!(
+                target: "spt_ssh3::forward",
+                target = %format!("{}:{}", target.host, target.port),
+                error = %e,
+                "inbound bidi: local dial failed — rejecting"
+            );
+            reject_inbound(send, &format!("local dial failed: {e}")).await;
+            return;
+        }
+    };
 
     if Ssh3Frame::new(
         Ssh3FrameKind::ForwardOpenResponse,
@@ -621,7 +732,12 @@ pub(crate) async fn dispatch_inbound_bidi(
     {
         return;
     }
-    let _ = tx.send((send, recv));
+    let _ = tx.send(InboundForward {
+        send,
+        recv,
+        local,
+        _permit: permit,
+    });
 }
 
 /// Server-side helper: accept inbound bidi streams that are local-tcp opens
@@ -766,6 +882,7 @@ async fn open_remote_udp(
     let name = spec.name.clone();
     let target = spec.target.clone();
     let state_clone = state.clone();
+    let inflight = state.remote_udp_inflight.clone();
     let name_t = name.clone();
 
     // For each inbound datagram, dial target; reflect replies back over the
@@ -774,6 +891,19 @@ async fn open_remote_udp(
         let dial_target = format!("{}:{}", target.host, target.port);
         let inbound_loop = async {
             while let Some(payload) = inbound_rx.recv().await {
+                // E3-F3: bound the per-datagram fan-out. Each datagram spawns a
+                // task that binds a socket + allocates a 64 KiB buffer; without
+                // a cap a datagram flood is unbounded socket/memory growth.
+                // `try_acquire_owned` drops the datagram (rather than queueing)
+                // when the session is already at its in-flight ceiling.
+                let Ok(permit) = inflight.clone().try_acquire_owned() else {
+                    warn!(
+                        target: "spt_ssh3::forward",
+                        target = %dial_target,
+                        "remote-udp in-flight cap reached — dropping datagram"
+                    );
+                    continue;
+                };
                 // Resolve + connect a fresh local UDP socket per inbound
                 // datagram (stateless mapping). For long-lived flows the
                 // caller can layer a connection-tracking table on top.
@@ -801,6 +931,8 @@ async fn open_remote_udp(
                 let mut buf = vec![0u8; 64 * 1024];
                 let conn_clone = conn.clone();
                 tokio::spawn(async move {
+                    // Permit released when this reply task finishes.
+                    let _permit = permit;
                     let r = tokio::time::timeout(
                         std::time::Duration::from_secs(5),
                         sock.recv(&mut buf),

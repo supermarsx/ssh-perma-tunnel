@@ -200,18 +200,13 @@ pub async fn snmp(global: &GlobalOpts, args: ObserveSnmpArgs) -> Result<()> {
         }
     }
 
-    if args.json {
-        let v = json!({
-            "target": target_str,
-            "root": oid_str,
-            "user": user_name,
-            "pairs": pairs.iter().map(|(o, v)| json!({"oid": o, "value": v})).collect::<Vec<_>>(),
-        });
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&v).map_err(|e| Error::RuntimeFailure(e.to_string()))?
-        );
-    } else {
+    let payload = json!({
+        "target": target_str,
+        "root": oid_str,
+        "user": user_name,
+        "pairs": pairs.iter().map(|(o, v)| json!({"oid": o, "value": v})).collect::<Vec<_>>(),
+    });
+    if !crate::cli::tunnel_ops::emit(global, args.json, &payload)? {
         println!("# target: {target_str}  user: {user_name}");
         for (o, val) in &pairs {
             println!("{o}\t{val}");
@@ -450,6 +445,7 @@ mod tests {
             config_fingerprint: None,
             state_dir: None,
             profile: None,
+            portable: false,
             output: OutputFormat::Human,
             json: false,
             log_level: LogLevel::Info,

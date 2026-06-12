@@ -21,9 +21,18 @@ can still be exercised offline.
 
 ## Safety
 
-Production-impacting drivers require `--unsafe-allow-production-impact` (a
-`SafetyError` is returned otherwise). Loopback / dry-run paths are never
-gated.
+Production-impacting drivers (`reconnect`, `udp`, `limits`) require a
+**two-key opt-in** before they will run against a live tunnel; otherwise a
+`SafetyError` is returned. Both keys must be set:
+
+1. the CLI flag `--unsafe-allow-production-impact` on the command, and
+2. the config gate `[benchmark].allow_production_impact = true`.
+
+The effective gate is `cli_flag && config_flag`, so setting just one has no
+effect. Loopback / dry-run paths — the `spt benchmark run` synthetic path
+(invoked without `--profile`) and the in-process loopback connectors — are
+**never gated**: they cannot impact production by construction, so they run
+regardless of either key.
 
 ## Result schema
 

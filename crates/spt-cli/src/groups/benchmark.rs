@@ -100,6 +100,10 @@ pub struct BenchmarkLatency {
     /// Sample count.
     #[arg(long, value_name = "N")]
     pub samples: Option<u32>,
+    /// Allow drivers that may impact production. Combined with the
+    /// `[benchmark.allow_production_impact]` config flag.
+    #[arg(long)]
+    pub unsafe_allow_production_impact: bool,
     /// JSON output.
     #[arg(long)]
     pub json: bool,
@@ -117,6 +121,10 @@ pub struct BenchmarkThroughput {
     /// Payload size.
     #[arg(long, value_name = "SIZE")]
     pub payload_size: Option<String>,
+    /// Allow drivers that may impact production. Combined with the
+    /// `[benchmark.allow_production_impact]` config flag.
+    #[arg(long)]
+    pub unsafe_allow_production_impact: bool,
     /// JSON output.
     #[arg(long)]
     pub json: bool,
@@ -137,6 +145,10 @@ pub struct BenchmarkUdp {
     /// Packets per second.
     #[arg(long, value_name = "N")]
     pub pps: Option<u32>,
+    /// Allow drivers that may impact production. Combined with the
+    /// `[benchmark.allow_production_impact]` config flag.
+    #[arg(long)]
+    pub unsafe_allow_production_impact: bool,
     /// JSON output.
     #[arg(long)]
     pub json: bool,
@@ -151,6 +163,10 @@ pub struct BenchmarkReconnect {
     /// Iteration count.
     #[arg(long, value_name = "N")]
     pub iterations: Option<u32>,
+    /// Allow drivers that may impact production. Combined with the
+    /// `[benchmark.allow_production_impact]` config flag.
+    #[arg(long)]
+    pub unsafe_allow_production_impact: bool,
     /// JSON output.
     #[arg(long)]
     pub json: bool,
@@ -176,6 +192,10 @@ pub struct BenchmarkLimits {
     /// Forward target.
     #[command(flatten)]
     pub target: BenchmarkTarget,
+    /// Allow drivers that may impact production. Combined with the
+    /// `[benchmark.allow_production_impact]` config flag.
+    #[arg(long)]
+    pub unsafe_allow_production_impact: bool,
     /// JSON output.
     #[arg(long)]
     pub json: bool,

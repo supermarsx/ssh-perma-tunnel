@@ -5,6 +5,7 @@
 //! string, and an explicit [`Severity`]. A converter [`Event::to_state_event`]
 //! is provided so the bus can persist events through `spt-state::EventRing`.
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 use chrono::{DateTime, Utc};
@@ -208,6 +209,54 @@ impl Event {
                 .as_ref()
                 .map(|c| Value::String(c.as_str().to_owned())),
             other => self.fields.get(other).cloned(),
+        }
+    }
+
+    /// Borrowed string view of a field for templating / dedupe / expr eval.
+    ///
+    /// Returns `None` for an absent field. Allocates only for `ts`
+    /// (RFC-3339 formatting) and non-string `fields` values; the well-known
+    /// columns (`id/kind/severity/message` and the four ids) borrow directly.
+    ///
+    /// Render semantics match [`Event::lookup_field`] when its result is fed
+    /// through `template::append_value`: a `Value::Null` field renders as the
+    /// empty string, so it maps to `Cow::Borrowed("")` here.
+    #[must_use]
+    pub fn lookup_field_str(&self, path: &str) -> Option<Cow<'_, str>> {
+        Some(match path {
+            "id" => Cow::Borrowed(self.id.as_str()),
+            "kind" => Cow::Borrowed(self.kind.as_str()),
+            "severity" => Cow::Borrowed(self.severity.as_str()),
+            "message" => Cow::Borrowed(self.message.as_str()),
+            "ts" => Cow::Owned(self.ts.to_rfc3339()),
+            "profile_id" => Cow::Borrowed(self.profile_id.as_ref()?.as_str()),
+            "forward_id" => Cow::Borrowed(self.forward_id.as_ref()?.as_str()),
+            "session_id" => Cow::Borrowed(self.session_id.as_ref()?.as_str()),
+            "connection_id" => Cow::Borrowed(self.connection_id.as_ref()?.as_str()),
+            other => match self.fields.get(other)? {
+                Value::String(s) => Cow::Borrowed(s.as_str()),
+                Value::Null => Cow::Borrowed(""),
+                v => Cow::Owned(v.to_string()),
+            },
+        })
+    }
+
+    /// True iff the named field resolves to a genuine string value.
+    ///
+    /// The well-known columns (`id/ts/kind/severity/message` and the four
+    /// optional ids) are always strings when present; arbitrary `fields.*`
+    /// entries are strings only when their JSON value is `Value::String`.
+    /// Used by the substring (`~=`) expression operator to preserve its
+    /// string-only matching contract without allocating a `Value`.
+    #[must_use]
+    pub fn field_is_string(&self, path: &str) -> bool {
+        match path {
+            "id" | "ts" | "kind" | "severity" | "message" => true,
+            "profile_id" => self.profile_id.is_some(),
+            "forward_id" => self.forward_id.is_some(),
+            "session_id" => self.session_id.is_some(),
+            "connection_id" => self.connection_id.is_some(),
+            other => matches!(self.fields.get(other), Some(Value::String(_))),
         }
     }
 }
@@ -450,6 +499,84 @@ mod tests {
         assert!(obj.contains_key("session_id"));
         assert!(obj.contains_key("connection_id"));
         assert_eq!(obj.get("message").unwrap().as_str().unwrap(), "hello");
+    }
+
+    #[test]
+    fn lookup_field_str_borrows_well_known_columns() {
+        let p = ProfileId::new("p1").unwrap();
+        let e = Event::builder("k", Severity::Info)
+            .profile(p)
+            .field("foo", "bar")
+            .message("hi")
+            .build();
+        assert!(matches!(e.lookup_field_str("kind"), Some(Cow::Borrowed("k"))));
+        assert!(matches!(
+            e.lookup_field_str("severity"),
+            Some(Cow::Borrowed("info"))
+        ));
+        assert!(matches!(
+            e.lookup_field_str("message"),
+            Some(Cow::Borrowed("hi"))
+        ));
+        assert!(matches!(
+            e.lookup_field_str("profile_id"),
+            Some(Cow::Borrowed("p1"))
+        ));
+        assert!(matches!(
+            e.lookup_field_str("foo"),
+            Some(Cow::Borrowed("bar"))
+        ));
+        // `ts` must allocate (RFC-3339); it is still Some.
+        assert!(matches!(e.lookup_field_str("ts"), Some(Cow::Owned(_))));
+        // Absent field / unset optional id → None.
+        assert!(e.lookup_field_str("missing").is_none());
+        assert!(e.lookup_field_str("session_id").is_none());
+    }
+
+    /// Regression: a `Value::Null` field must render as the empty string via
+    /// `lookup_field_str` (matching `template::append_value`'s `Null` → "").
+    #[test]
+    fn lookup_field_str_null_renders_empty() {
+        let e = Event::builder("k", Severity::Info)
+            .field("nullish", Value::Null)
+            .build();
+        // `lookup_field` returns the raw Null value...
+        assert_eq!(e.lookup_field("nullish"), Some(Value::Null));
+        // ...but the string view collapses it to "" (byte-identical render).
+        let got = e.lookup_field_str("nullish").unwrap();
+        assert_eq!(got.as_ref(), "");
+        assert!(matches!(got, Cow::Borrowed("")));
+    }
+
+    /// Non-string scalar fields (numbers/bools/arrays) round-trip through
+    /// `to_string`, matching the `append_value` composite path.
+    #[test]
+    fn lookup_field_str_non_string_values_stringify() {
+        let e = Event::builder("k", Severity::Info)
+            .field("count", 42)
+            .field("flag", true)
+            .build();
+        assert_eq!(e.lookup_field_str("count").unwrap().as_ref(), "42");
+        assert_eq!(e.lookup_field_str("flag").unwrap().as_ref(), "true");
+    }
+
+    /// `field_is_string` gates the `~=` operator: only genuine string fields
+    /// (and the always-string well-known columns) qualify.
+    #[test]
+    fn field_is_string_distinguishes_strings_from_scalars() {
+        let p = ProfileId::new("p1").unwrap();
+        let e = Event::builder("k", Severity::Info)
+            .profile(p)
+            .field("text", "hello")
+            .field("count", 42)
+            .build();
+        assert!(e.field_is_string("kind"));
+        assert!(e.field_is_string("severity"));
+        assert!(e.field_is_string("profile_id"));
+        assert!(e.field_is_string("text"));
+        assert!(!e.field_is_string("count"));
+        assert!(!e.field_is_string("session_id")); // unset optional id
+        assert!(!e.field_is_string("absent"));
     }
 
     #[test]

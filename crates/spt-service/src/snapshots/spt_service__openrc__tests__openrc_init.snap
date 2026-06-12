@@ -15,6 +15,10 @@ command_background=true
 pidfile="/run/spt-relay.pid"
 directory="/var/lib/spt"
 
+# Environment exports from [profiles].env (blank when none configured).
+export RUST_LOG="info"
+export SPT_STATE_DIR="/var/lib/spt"
+
 depend() {
     need net
     after firewall

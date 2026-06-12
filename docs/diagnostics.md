@@ -12,8 +12,16 @@ optional remediation hint.
     spt diagnose bundle --out support.tgz --redacted --since 24h
 
 Available subcommands map 1:1 to sub-systems: `network`, `auth`, `trust`,
-`dns`, `bind`, `port`, `service`, `secrets`, `observability`, `mcp`. M0 wires
-`run` and `bundle` end-to-end; specific subcommands are tracked in M5.
+`dns`, `bind`, `port`, `service`, `secrets`, `observability`, `mcp`.
+
+`diagnose run` registers and executes the **real** check set (it is no
+longer a no-op that prints "0 checks") — `run` reuses the same runner and
+context as the individual subcommands, honours `--report <path>` to write
+the structured JSON report, and **exits non-zero when any check fails**
+(`has_failures()`). The `mcp` check spawns `mcp serve --stdio --enable` and
+asserts the live tool/resource counts (35 tools / 16 resources); the `ssh2`
+check queries the real russh algorithm set; `network`, `dns`/`bind`,
+`service`, and `time` (NTP drift) checks run real probes.
 
 ## Port autodetect
 
@@ -31,7 +39,9 @@ or sends a TLS ClientHello / HTTP probe when the peer is silent.
 - `status.json`              — last status snapshot.
 - `events.jsonl`             — recent events (redacted).
 - `logs.txt`                 — log tail.
-- `stats.txt`                — Prometheus exposition.
+- `stats.txt`                — Prometheus exposition (the metrics exporter
+                               is spawned at `tunnel run` and writes
+                               `metrics.prom` in the state dir).
 - `report.json`              — structured diagnostic report.
 
 Every text entry is passed through `spt_core::redact(..,

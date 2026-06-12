@@ -73,13 +73,30 @@ impl AcceptLoop {
             let accept = listener.accept();
             tokio::pin!(accept);
 
-            let (sock, peer) = if let Some(rx) = shutdown.as_mut() {
+            let accept_res = if let Some(rx) = shutdown.as_mut() {
                 tokio::select! {
-                    res = &mut accept => res?,
+                    res = &mut accept => res,
                     _ = rx => return Ok(()),
                 }
             } else {
-                accept.await?
+                accept.await
+            };
+
+            let (sock, peer) = match accept_res {
+                Ok(pair) => pair,
+                Err(e) if is_transient_accept_error(&e) => {
+                    // E1-F9: a transient accept() error (fd exhaustion
+                    // EMFILE/ENFILE, ECONNABORTED, would-block) must not kill
+                    // the listener for good. Log, briefly back off to relieve
+                    // fd pressure, and keep accepting.
+                    tracing::warn!(error = %e, kind = ?e.kind(), "accept: transient error, retrying");
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                    continue;
+                }
+                Err(e) => {
+                    // Fatal listener error: propagate and end the loop.
+                    return Err(e);
+                }
             };
 
             if !acl.decide(peer.ip()).is_allow() {
@@ -102,6 +119,31 @@ impl AcceptLoop {
             });
         }
     }
+}
+
+/// Classify an `accept()` error as transient (retry the loop) versus fatal
+/// (terminate the listener). Transient = conditions that resolve on their own:
+/// connection aborted before accept completed, would-block spurious wakeups,
+/// and file-descriptor exhaustion (EMFILE/ENFILE) — a brief fd-pressure spike
+/// must not permanently kill a forward listener (E1-F9).
+fn is_transient_accept_error(e: &std::io::Error) -> bool {
+    use std::io::ErrorKind;
+    if matches!(
+        e.kind(),
+        ErrorKind::ConnectionAborted | ErrorKind::WouldBlock | ErrorKind::Interrupted
+    ) {
+        return true;
+    }
+    // fd-exhaustion (EMFILE = 24, ENFILE = 23) has no stable ErrorKind variant
+    // and surfaces as ErrorKind::Other; match the raw OS errno on unix.
+    #[cfg(unix)]
+    if let Some(code) = e.raw_os_error() {
+        // EMFILE (per-process fd limit) / ENFILE (system-wide fd limit).
+        if code == 24 || code == 23 {
+            return true;
+        }
+    }
+    false
 }
 
 #[cfg(test)]
@@ -148,5 +190,27 @@ mod tests {
         let _ = tx.send(());
         let _ = server.await;
         assert!(counter.load(Ordering::SeqCst) >= 3);
+    }
+
+    #[test]
+    fn transient_accept_errors_are_classified() {
+        use std::io::{Error, ErrorKind};
+        assert!(is_transient_accept_error(&Error::from(
+            ErrorKind::ConnectionAborted
+        )));
+        assert!(is_transient_accept_error(&Error::from(ErrorKind::WouldBlock)));
+        assert!(is_transient_accept_error(&Error::from(
+            ErrorKind::Interrupted
+        )));
+        // A genuinely fatal error is not retried.
+        assert!(!is_transient_accept_error(&Error::from(
+            ErrorKind::InvalidInput
+        )));
+        #[cfg(unix)]
+        {
+            // EMFILE / ENFILE fd-exhaustion are transient.
+            assert!(is_transient_accept_error(&Error::from_raw_os_error(24)));
+            assert!(is_transient_accept_error(&Error::from_raw_os_error(23)));
+        }
     }
 }

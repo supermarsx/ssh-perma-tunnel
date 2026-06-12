@@ -472,7 +472,9 @@ async fn noauth_get_next_walks_then_returns_endofmib() {
 
 #[tokio::test]
 async fn set_request_writable_scalar_succeeds() {
-    let user = UsmUser::no_auth("u");
+    // User is explicitly granted write access; otherwise the agent default-
+    // denies SET (see `set_request_read_only_user_rejected`).
+    let user = UsmUser::no_auth("u").writable(true);
     let agent = AgentBuilder::new()
         .bind("127.0.0.1:0".parse().unwrap())
         .documentation_enterprise_pen()
@@ -530,6 +532,57 @@ async fn set_request_writable_scalar_succeeds() {
     };
     let r = client.request_noauth(missing).await;
     assert_ne!(r.error_status, 0);
+
+    agent.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn set_request_read_only_user_rejected() {
+    // A user with the default (read-only) permission must not be able to
+    // mutate a writable scalar: the agent default-denies SET with `noAccess`
+    // (error-status 6) before the handler runs, so the scalar keeps its value.
+    let user = UsmUser::no_auth("ro"); // writable defaults to false
+    assert!(!user.writable, "users must default to read-only");
+    let agent = AgentBuilder::new()
+        .bind("127.0.0.1:0".parse().unwrap())
+        .documentation_enterprise_pen()
+        .add_user(user.clone())
+        .add_scalar(
+            oid("1.3.6.1.4.1.32473.12.1.0"),
+            WritableScalar::new(Value::Integer(0), true),
+        )
+        .run()
+        .await
+        .unwrap();
+    let mut client = Client::new(agent.local_addr(), user).await;
+    client.discover().await;
+
+    // SET on an otherwise-writable scalar is rejected for the read-only user.
+    let set = Pdu {
+        kind: PduKind::SetRequest,
+        request_id: client.alloc_id(),
+        error_status: 0,
+        error_index: 0,
+        variable_bindings: vec![VarBind::new(
+            oid("1.3.6.1.4.1.32473.12.1.0"),
+            Value::Integer(77),
+        )],
+    };
+    let r = client.request_noauth(set).await;
+    // noAccess (RFC 3416 error-status 6).
+    assert_eq!(r.error_status, 6, "read-only user SET must be denied");
+    assert_eq!(r.error_index, 1);
+
+    // The scalar must be unchanged: a Get still returns the original value.
+    let get = Pdu {
+        kind: PduKind::GetRequest,
+        request_id: client.alloc_id(),
+        error_status: 0,
+        error_index: 0,
+        variable_bindings: vec![VarBind::null(oid("1.3.6.1.4.1.32473.12.1.0"))],
+    };
+    let r = client.request_noauth(get).await;
+    assert_eq!(r.variable_bindings[0].value, Value::Integer(0));
 
     agent.shutdown().await.unwrap();
 }

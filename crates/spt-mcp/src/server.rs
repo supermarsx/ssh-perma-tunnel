@@ -35,6 +35,11 @@ use crate::transport::{stdio::StdioTransport, Transport, TransportKind};
 use serde_json::{json, Value};
 use std::sync::Arc;
 
+/// MCP protocol revisions this server can speak. The `initialize` handler
+/// echoes a client's requested version when it appears here, else falls back
+/// to [`ServerCapabilities::protocol_version`] (E8-F15).
+pub const SUPPORTED_PROTOCOL_VERSIONS: &[&str] = &["2024-11-05"];
+
 /// Capabilities advertised in the `initialize` response.
 ///
 /// The values intentionally describe the subset implemented in this crate.
@@ -129,7 +134,12 @@ impl McpServerInner {
         match req.method.as_str() {
             "initialize" => {
                 self.verify_init_token(req.params.as_ref())?;
-                Ok(self.initialize_result())
+                let requested = req
+                    .params
+                    .as_ref()
+                    .and_then(|p| p.get("protocolVersion"))
+                    .and_then(Value::as_str);
+                Ok(self.initialize_result(requested))
             }
             "resources/list" => Ok(self.list_resources()),
             "resources/read" => self.read_resource(req.params).await,
@@ -163,9 +173,20 @@ impl McpServerInner {
         }
     }
 
-    fn initialize_result(&self) -> Value {
+    /// Build the `initialize` result, echoing a negotiated protocol version
+    /// (E8-F15).
+    ///
+    /// MCP/JSON-RPC clients send their preferred `protocolVersion` in the
+    /// `initialize` params. We honour it when it matches a version this server
+    /// understands; otherwise we fall back to (and advertise) our own
+    /// supported revision so the client can decide whether to proceed.
+    fn initialize_result(&self, requested: Option<&str>) -> Value {
+        let negotiated = match requested {
+            Some(v) if SUPPORTED_PROTOCOL_VERSIONS.contains(&v) => v.to_owned(),
+            _ => self.capabilities.protocol_version.clone(),
+        };
         json!({
-            "protocolVersion": self.capabilities.protocol_version,
+            "protocolVersion": negotiated,
             "serverInfo": {
                 "name": self.capabilities.name,
                 "version": self.capabilities.version,
@@ -561,9 +582,23 @@ mod tests {
     #[tokio::test]
     async fn initialize_returns_capabilities() {
         let s = server_with(McpPolicy::default(), MockAuditSink::new());
-        let v = s.inner.initialize_result();
+        let v = s.inner.initialize_result(None);
         assert_eq!(v["protocolVersion"], "2024-11-05");
         assert_eq!(v["serverInfo"]["name"], "spt-mcp");
+    }
+
+    /// A client requesting a supported protocol version gets it echoed back;
+    /// an unsupported request falls back to the server's own revision (E8-F15).
+    #[tokio::test]
+    async fn initialize_echoes_negotiated_protocol_version() {
+        let s = server_with(McpPolicy::default(), MockAuditSink::new());
+        let echoed = s.inner.initialize_result(Some("2024-11-05"));
+        assert_eq!(echoed["protocolVersion"], "2024-11-05");
+        let fallback = s.inner.initialize_result(Some("1999-01-01"));
+        assert_eq!(
+            fallback["protocolVersion"], "2024-11-05",
+            "unsupported request must fall back to the server revision"
+        );
     }
 
     #[tokio::test]

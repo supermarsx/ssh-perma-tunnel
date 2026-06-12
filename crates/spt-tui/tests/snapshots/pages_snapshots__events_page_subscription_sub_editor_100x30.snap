@@ -1,0 +1,34 @@
+---
+source: crates/spt-tui/tests/pages_snapshots.rs
+expression: snap
+---
+┌Subscriptions* (a=add d=del Enter┐┌Subscription detail────────────────────────────────────────────┐
+│▶ #0 https://push.example/ep1    ││endpoint: https://push.example/ep1                             │
+│                                 ││p256dh:   BPUBLICKEY                                           │
+│                                 ││auth:     [REDACTED]                                           │
+│                                 ││                                                               │
+│                                 ││                                                               │
+│                                 ││                                                               │
+│                                 ││                                                               │
+│                                 ││                                                               │
+│                                 ││                                                               │
+│                                 ││                                                               │
+│                                 ││                                                               │
+│                                 ││                                                               │
+│                                 ││                                                               │
+│                                 ││                                                               │
+│                                 ││                                                               │
+│                                 ││                                                               │
+│                                 ││                                                               │
+│                                 ││                                                               │
+│                                 ││                                                               │
+│                                 ││                                                               │
+│                                 ││                                                               │
+│                                 ││                                                               │
+│                                 ││                                                               │
+│                                 ││                                                               │
+│                                 ││                                                               │
+│                                 ││                                                               │
+│                                 ││                                                               │
+│                                 ││                                                               │
+└─────────────────────────────────┘└───────────────────────────────────────────────────────────────┘

@@ -113,6 +113,15 @@ pub struct GlobalOpts {
     /// Override the runtime state directory.
     #[arg(long, env = "SPT_STATE_DIR", global = true, value_name = "PATH")]
     pub state_dir: Option<PathBuf>,
+    /// Portable mode: keep all runtime state next to the executable instead
+    /// of OS-standard locations (no OS install required).
+    ///
+    /// `main.rs` performs a raw pre-clap scan of the argv for this flag so
+    /// portable paths are resolved before the runtime is built; this
+    /// declaration exists so the flag is visible to `--help`, generated
+    /// shell completions, and the man pages.
+    #[arg(long, global = true)]
+    pub portable: bool,
     /// Restrict operations to the named profile.
     #[arg(long, global = true, value_name = "NAME")]
     pub profile: Option<String>,
@@ -451,6 +460,43 @@ mod tests {
     #[test]
     fn parses_completion_generate() {
         Cli::try_parse_from(["spt", "completion", "generate", "bash"]).unwrap();
+    }
+
+    // E4-F10 / E4-F8: the `--portable` flag and the remote-config globals
+    // (`--config-url` / `--config-fingerprint`) must be declared on
+    // `GlobalOpts` so they are accepted in the leading global position and
+    // are discoverable via `--help`, completions, and man pages.
+    #[test]
+    fn parses_global_portable_and_config_url() {
+        let cli = Cli::try_parse_from([
+            "spt",
+            "--portable",
+            "--config-url",
+            "https://cfg.example/spt.toml",
+            "--config-fingerprint",
+            "abc123",
+            "config",
+            "validate",
+        ])
+        .unwrap();
+        assert!(cli.global.portable);
+        assert_eq!(
+            cli.global.config_url.as_deref(),
+            Some("https://cfg.example/spt.toml")
+        );
+        assert_eq!(cli.global.config_fingerprint.as_deref(), Some("abc123"));
+        match cli.command {
+            Command::Config(_) => {}
+            other => panic!("expected Command::Config, got {other:?}"),
+        }
+    }
+
+    // `--portable` must also be accepted in the trailing/global position
+    // (clap `global = true`), matching the other global flags.
+    #[test]
+    fn parses_portable_after_subcommand() {
+        let cli = Cli::try_parse_from(["spt", "config", "validate", "--portable"]).unwrap();
+        assert!(cli.global.portable);
     }
 
     // t6-Bwire: verify the FTP translator group is reachable from the

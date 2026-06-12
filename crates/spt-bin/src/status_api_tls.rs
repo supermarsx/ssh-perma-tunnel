@@ -110,6 +110,14 @@ pub async fn launch(
     source: Arc<dyn StateSnapshotSource>,
     resolver: &Resolver,
 ) -> Result<SptStatusApiHandle> {
+    // Security gate (E6-F3): refuse an unauthenticated API on a non-loopback
+    // bind. Applies to BOTH the plain and TLS branches below — TLS encrypts the
+    // transport but `auth.mode = none` still leaves the snapshot readable by any
+    // client that completes the handshake. The plain-HTTP branch's delegate
+    // (`StatusApiServer::start`) re-checks this too; doing it here fails fast and
+    // covers the TLS branch, which `start` never reaches.
+    spt_status_api::reject_anonymous_non_loopback(cfg)?;
+
     // Sanity gate: mTLS requires TLS.
     if !cfg.tls.enabled && matches!(cfg.auth.mode, StatusApiAuthMode::MutualTls { .. }) {
         return Err(Error::InvalidConfig(
@@ -249,14 +257,12 @@ async fn accept_loop(
                     }
 
                     // Per-connection wrapper: convert hyper's Incoming body
-                    // into axum's body type and insert the PeerIdentity
-                    // extension before delegating to the Router.
+                    // into axum's body type and insert the PeerIdentity +
+                    // ConnectInfo extensions before delegating to the Router.
+                    // See `inject_extensions` for the E6-F7 rationale.
                     let svc_for_conn = svc.map_request(move |req: hyper::Request<Incoming>| {
-                        let mut axum_req: Request = req.map(axum::body::Body::new);
-                        if let Some(id) = peer_id.clone() {
-                            axum_req.extensions_mut().insert(id);
-                        }
-                        axum_req
+                        let axum_req: Request = req.map(axum::body::Body::new);
+                        inject_extensions(axum_req, peer, peer_id.clone())
                     });
 
                     let io = TokioIo::new(tls_stream);
@@ -270,6 +276,33 @@ async fn accept_loop(
             }
         }
     }
+}
+
+/// Insert the per-connection request extensions before the router runs.
+///
+/// E6-F7: the TLS accept loop builds the per-connection service with
+/// `into_make_service()`, which (unlike the plain-HTTP path's
+/// `into_make_service_with_connect_info::<SocketAddr>`) does NOT inject a
+/// `ConnectInfo<SocketAddr>` extension. Without it, the status-API rate-limit
+/// middleware falls back to `127.0.0.1` for every request, collapsing the
+/// documented per-remote-IP token bucket into one shared bucket on the TLS
+/// path — one noisy client throttles everyone and the limiter can no longer
+/// distinguish attackers.
+///
+/// We therefore insert `ConnectInfo(peer)` from the accepted socket so the
+/// limiter keys per remote IP, matching the plain path. The verified mTLS
+/// `PeerIdentity` (if any) is inserted alongside for the auth layer.
+fn inject_extensions(
+    mut req: axum::extract::Request,
+    peer: SocketAddr,
+    peer_id: Option<PeerIdentity>,
+) -> axum::extract::Request {
+    req.extensions_mut()
+        .insert(axum::extract::ConnectInfo(peer));
+    if let Some(id) = peer_id {
+        req.extensions_mut().insert(id);
+    }
+    req
 }
 
 /// Pull the verified client certificate (if any) out of the rustls
@@ -334,6 +367,116 @@ mod tests {
             },
             auth: StatusApiAuthConfig { mode: auth },
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // E6-F3: anonymous (auth.mode = none) non-loopback bind must be refused
+    // at launch, on BOTH the plain and TLS branches. Loopback must be allowed.
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn anonymous_non_loopback_plain_rejected() {
+        // auth = none + 0.0.0.0 + plain HTTP -> refuse to start.
+        let mut cfg = cfg_with_auth(false, StatusApiAuthMode::None);
+        cfg.bind = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 0);
+        let src: Arc<dyn StateSnapshotSource> = Arc::new(spt_status_api::InMemorySource::new());
+        let result = launch(&cfg, src, &empty_resolver()).await;
+        match result {
+            Ok(_) => panic!("expected InvalidConfig for auth=none on 0.0.0.0"),
+            Err(Error::InvalidConfig(msg)) => {
+                assert!(msg.contains("none"), "msg={msg}");
+                assert!(msg.contains("loopback"), "msg={msg}");
+            }
+            Err(other) => panic!("expected InvalidConfig, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn anonymous_non_loopback_tls_rejected() {
+        // The guard fires before any TLS/cert work, so a routable bind with
+        // auth=none is refused even on the TLS branch (paths need not exist).
+        let mut cfg = cfg_with_auth(true, StatusApiAuthMode::None);
+        cfg.bind = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 7)), 0);
+        let src: Arc<dyn StateSnapshotSource> = Arc::new(spt_status_api::InMemorySource::new());
+        let result = launch(&cfg, src, &empty_resolver()).await;
+        match result {
+            Ok(_) => panic!("expected InvalidConfig for auth=none on routable TLS bind"),
+            Err(Error::InvalidConfig(msg)) => {
+                assert!(msg.contains("loopback"), "msg={msg}");
+            }
+            Err(other) => panic!("expected InvalidConfig, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn anonymous_loopback_plain_allowed() {
+        // auth = none on loopback is the supported anonymous deployment.
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let cfg = cfg_with_auth(false, StatusApiAuthMode::None);
+        assert!(cfg.bind.ip().is_loopback());
+        let src: Arc<dyn StateSnapshotSource> = Arc::new(spt_status_api::InMemorySource::new());
+        let handle = launch(&cfg, src, &empty_resolver())
+            .await
+            .expect("loopback + auth=none must start");
+        handle.shutdown().await;
+    }
+
+    // -----------------------------------------------------------------------
+    // E6-F7: the TLS request transform must carry the real peer address in a
+    // `ConnectInfo<SocketAddr>` extension so the rate limiter keys per-IP and
+    // does NOT collapse to a single shared 127.0.0.1 bucket.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn inject_extensions_keys_connect_info_per_peer() {
+        use axum::extract::ConnectInfo;
+
+        let peer_a = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(203, 0, 113, 7)), 51000);
+        let peer_b = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(198, 51, 100, 9)), 52000);
+
+        let req_a =
+            inject_extensions(axum::extract::Request::new(axum::body::Body::empty()), peer_a, None);
+        let req_b =
+            inject_extensions(axum::extract::Request::new(axum::body::Body::empty()), peer_b, None);
+
+        let ci_a = req_a
+            .extensions()
+            .get::<ConnectInfo<SocketAddr>>()
+            .expect("ConnectInfo inserted for peer A");
+        let ci_b = req_b
+            .extensions()
+            .get::<ConnectInfo<SocketAddr>>()
+            .expect("ConnectInfo inserted for peer B");
+
+        // Distinct peers -> distinct ConnectInfo -> distinct rate-limiter keys.
+        assert_eq!(ci_a.0, peer_a);
+        assert_eq!(ci_b.0, peer_b);
+        assert_ne!(
+            ci_a.0.ip(),
+            ci_b.0.ip(),
+            "per-peer IPs must differ; the limiter keys on these"
+        );
+        // Crucially NOT the loopback fallback the limiter uses when ConnectInfo
+        // is absent (the pre-fix behavior on the TLS path).
+        assert_ne!(ci_a.0.ip(), IpAddr::V4(Ipv4Addr::LOCALHOST));
+    }
+
+    #[test]
+    fn inject_extensions_carries_peer_identity() {
+        let peer = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(203, 0, 113, 7)), 51000);
+        let id = PeerIdentity {
+            subject_dn: "CN=prom".into(),
+        };
+        let req = inject_extensions(
+            axum::extract::Request::new(axum::body::Body::empty()),
+            peer,
+            Some(id.clone()),
+        );
+        let got = req
+            .extensions()
+            .get::<PeerIdentity>()
+            .expect("PeerIdentity inserted");
+        assert_eq!(got.subject_dn, id.subject_dn);
     }
 
     #[tokio::test]

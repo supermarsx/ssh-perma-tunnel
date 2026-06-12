@@ -5,6 +5,9 @@
 
 use std::fmt::Write;
 
+#[cfg(target_os = "macos")]
+use spt_core::error::Result;
+
 use crate::{normalize, Action, FirewallPlan, FirewallPlanner, Manager, Rule};
 
 /// Anchor name owned by spt under `pf`.
@@ -39,6 +42,55 @@ impl FirewallPlanner for PfPlanner {
             rule_count: sorted.len(),
         }
     }
+
+    /// Load the plan into the `com.spt` pf anchor via `pfctl -a com.spt -f -`.
+    /// Loading an anchor replaces its prior contents, so apply is idempotent.
+    ///
+    /// Live shell-out requires root; exercised only by `#[ignore]`-gated tests.
+    #[cfg(target_os = "macos")]
+    fn apply(&self, plan: &FirewallPlan, dry_run: bool) -> Result<()> {
+        if dry_run {
+            tracing::info!(rules = plan.rule_count, "spt-firewall pf dry-run");
+            tracing::debug!("\n{}", plan.script);
+            return Ok(());
+        }
+        crate::run_native("pfctl", &["-a", ANCHOR, "-f", "-"], Some(&plan.script))?;
+        Ok(())
+    }
+
+    /// Flush the `com.spt` anchor (`pfctl -a com.spt -F all`). Idempotent.
+    #[cfg(target_os = "macos")]
+    fn remove(&self, _plan: &FirewallPlan) -> Result<()> {
+        crate::run_native("pfctl", &["-a", ANCHOR, "-F", "all"], None)?;
+        Ok(())
+    }
+
+    /// List spt-managed rule ids by parsing `pfctl -a com.spt -s rules` for the
+    /// `label "spt:<id>"` tokens.
+    #[cfg(target_os = "macos")]
+    fn query_active_rules(&self) -> Result<Vec<String>> {
+        let listing = crate::run_native("pfctl", &["-a", ANCHOR, "-s", "rules"], None)?;
+        Ok(parse_label_ids(&listing, TAG_PREFIX))
+    }
+}
+
+/// Extract spt rule ids from `pfctl -s rules` output by scanning for the
+/// `label "<prefix><id>"` tokens.
+#[cfg(any(target_os = "macos", test))]
+pub(crate) fn parse_label_ids(listing: &str, prefix: &str) -> Vec<String> {
+    let needle = format!("label \"{prefix}");
+    let mut ids = Vec::new();
+    for line in listing.lines() {
+        if let Some(start) = line.find(&needle) {
+            let rest = &line[start + needle.len()..];
+            if let Some(end) = rest.find('"') {
+                ids.push(rest[..end].to_string());
+            }
+        }
+    }
+    ids.sort();
+    ids.dedup();
+    ids
 }
 
 fn render_pf_rule(r: &Rule) -> String {

@@ -6,13 +6,30 @@ client and the upstream server, configured via
 
 | `kind` | Backing crate(s) | Notes |
 |---|---|---|
-| `obfs4` | hand-rolled (X25519 + HMAC-SHA256 + XSalsa20-Poly1305 / NaCl secretbox) | "obfs4 client subset" — see caveats below |
+| `obfs4` | hand-rolled (X25519 + HMAC-SHA256 + XSalsa20-Poly1305 / NaCl secretbox) | **spt↔spt-only — NOT Tor-PT / obfs4proxy compatible** (see caveats) |
 | `meek-http` | `reqwest` (rustls TLS) | HTTPS POST/POST domain-fronting |
 | `websocket` | `tokio-tungstenite 0.24` | RFC 6455, advertises `Sec-WebSocket-Protocol: ssh` |
 | `shadowsocks` | `aes-gcm` + `chacha20poly1305` + `blake3` | AEAD-2022 with `blake3::derive_key` KDF |
 
 All four ship audit-hook integration: every `connect` call fires the
 configured `AuditHook` with the transport name.
+
+## Wiring status
+
+Obfuscation **is now wired into the runtime.** When a profile carries an
+`[profiles.transport.obfuscation]` config, the russh SSH2 backend dials
+through the obfuscated `ConnectStream` (via `connect_to_endpoint`) instead
+of a plain TCP socket — configuring obfs no longer silently yields a plain
+connection. The obfuscation kind threads from the profile through
+`Ssh2Protocol` / `HopSpec` into the connect path.
+
+> **No end-to-end interop test server exists in-tree.** The wiring is
+> exercised only **spt↔spt** (an spt client against an spt-controlled
+> acceptor) and against mock acceptors that mirror spt's own framing. None
+> of the four transports is validated against its reference server
+> (`obfs4proxy`, `meek-server`, `shadowsocks-rust ssserver`). Treat all four
+> as **spt-to-spt obfuscation**, not drop-in compatibility with the
+> reference implementations — see the per-transport caveats below.
 
 ## obfs4 client subset
 
@@ -30,6 +47,14 @@ shell-out to `obfs4proxy`). It implements:
 * IAT modes 0 (off), 1 (paranoid, 5 ms inter-frame), 2 (normal, 1 ms).
 
 ### Wire-incompatibility caveats vs `obfs4proxy`
+
+> **obfs4 here is spt↔spt-only and cannot authenticate against a real
+> Tor obfs4 bridge.** The NTOR handshake is non-spec: it folds the bridge
+> identity `B` into the HKDF *salt* instead of computing two ECDH outputs
+> and concatenating them per obfs4-spec §3. A spec-correct two-ECDH NTOR
+> (validated against an `obfs4proxy` reference) is deferred — there are no
+> captured reference vectors in-tree. Do not advertise this transport as a
+> Tor pluggable transport.
 
 * **AUTH tag derivation**: this client folds the AUTH tag into the
   HKDF output (third 32-byte block). The reference obfs4-spec computes

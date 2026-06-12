@@ -15,7 +15,7 @@ pub struct TcpOptions {
     pub nodelay: bool,
     /// Idle time before keepalive probes (Linux/macOS/Windows).
     pub keepalive_idle: Option<Duration>,
-    /// Interval between keepalive probes (Linux/macOS).
+    /// Interval between keepalive probes (Linux/macOS/Windows/BSD).
     pub keepalive_interval: Option<Duration>,
     /// Maximum keepalive probes (Linux only).
     pub keepalive_retries: Option<u32>,
@@ -58,12 +58,17 @@ pub fn apply(socket: &Socket, opts: &TcpOptions) -> Result<()> {
         keepalive = keepalive.with_time(idle);
         want_keepalive = true;
     }
+    // socket2 implements the keepalive *interval* on Windows too
+    // (SIO_KEEPALIVE_VALS), so include `target_os = "windows"` here to avoid
+    // silently dropping `TcpOptions::production()`'s 15s interval on Windows
+    // (E7-F16).
     #[cfg(any(
         target_os = "linux",
         target_os = "macos",
         target_os = "freebsd",
         target_os = "netbsd",
         target_os = "android",
+        target_os = "windows",
     ))]
     if let Some(interval) = opts.keepalive_interval {
         keepalive = keepalive.with_interval(interval);
@@ -115,6 +120,16 @@ pub fn bind_tcp(addr: SocketAddr, opts: &TcpOptions) -> Result<TcpListener> {
     let socket = Socket::new(domain, Type::STREAM, Some(Protocol::TCP))
         .map_err(|e| Error::RuntimeFailure(format!("create socket: {e}")))?;
 
+    // E7-F10: SO_REUSEADDR has different, dangerous semantics on Windows.
+    // On Unix it only relaxes TIME_WAIT reuse; on Windows it permits *another
+    // process* to bind the same address/port as an active listener, which would
+    // let any local process hijack spt's forward listeners (whose listeners
+    // often front credentials-bearing protocols). We therefore set it only on
+    // Unix. On Windows we leave the OS default, which already refuses a second
+    // bind to an address/port held by an active listener (the safe behaviour);
+    // socket2 0.6 does not expose `SO_EXCLUSIVEADDRUSE`, and the default is
+    // equivalent for our forward-listener use case.
+    #[cfg(unix)]
     socket
         .set_reuse_address(true)
         .map_err(|e| Error::RuntimeFailure(format!("set SO_REUSEADDR: {e}")))?;
@@ -206,5 +221,30 @@ mod tests {
         let socket = Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP)).unwrap();
         apply(&socket, &TcpOptions::default()).unwrap();
         apply(&socket, &TcpOptions::production()).unwrap();
+    }
+
+    // E7-F16: the production keepalive interval must apply without error on
+    // Windows too (socket2 supports SIO_KEEPALIVE_VALS there). Setting an
+    // interval-only keepalive should succeed on every supported target.
+    #[test]
+    fn keepalive_interval_applies_cross_platform() {
+        let socket = Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP)).unwrap();
+        let opts = TcpOptions {
+            keepalive_idle: Some(Duration::from_secs(30)),
+            keepalive_interval: Some(Duration::from_secs(15)),
+            ..TcpOptions::default()
+        };
+        apply(&socket, &opts).expect("keepalive (idle+interval) should apply on this platform");
+    }
+
+    // E7-F10 regression: bind_tcp must succeed on every platform without
+    // relying on SO_REUSEADDR (which is now Unix-only). A fresh ephemeral
+    // bind exercises the post-gate path.
+    #[tokio::test(flavor = "current_thread")]
+    async fn bind_tcp_succeeds_without_reuseaddr_on_all_platforms() {
+        let opts = TcpOptions::production();
+        let listener =
+            bind_tcp(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0), &opts).unwrap();
+        assert!(listener.local_addr().unwrap().port() != 0);
     }
 }

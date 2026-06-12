@@ -1106,6 +1106,7 @@ sni_name = "web.example.local"
             config_url: None,
             config_fingerprint: None,
             state_dir: None,
+            portable: false,
             profile: None,
             output: OutputFormat::Human,
             json: false,

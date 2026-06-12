@@ -197,7 +197,14 @@ impl ProfileStateMachine {
             (S::Connecting, E::ConnectFail) => Some(S::Reconnecting),
             (S::Authenticating, E::AuthOk) => Some(S::EstablishingForwards),
             (S::Authenticating, E::AuthFail) => Some(S::Reconnecting),
-            (S::EstablishingForwards, E::ForwardsUp) => Some(S::Active),
+            // `ForwardsUp` (all required forwards healthy) re-enters `Active`
+            // from any "session-up but not yet fully Active" state. Accepting
+            // it from `Degraded`/`Unstable` lets an in-place forward recovery
+            // (E1-F4) clear the degraded condition without a full reconnect.
+            (
+                S::EstablishingForwards | S::Degraded | S::Unstable,
+                E::ForwardsUp,
+            ) => Some(S::Active),
             (S::EstablishingForwards, E::ForwardDown) => Some(S::Degraded),
 
             (S::Active, E::ForwardDown) => Some(S::Degraded),

@@ -374,8 +374,16 @@ impl Agent {
             Err(other) => return Err(other),
         };
 
+        // Resolve the authenticated user's write permission for access control
+        // (VACM-style). Defaults to read-only when the user is unknown.
+        let user_name = String::from_utf8_lossy(&msg.security.user_name).to_string();
+        let writable = self
+            .users
+            .get(&user_name)
+            .is_some_and(|k| k.user.writable);
+
         // Dispatch the PDU.
-        let response = self.dispatch_pdu(scoped.pdu).await?;
+        let response = self.dispatch_pdu(scoped.pdu, writable).await?;
         let resp_scoped = ScopedPdu {
             context_engine_id: self.engine_id.as_bytes().to_vec(),
             context_name: scoped.context_name.clone(),
@@ -384,7 +392,6 @@ impl Agent {
 
         // Reply at the same security level. For authPriv we need the user's
         // keys.
-        let user_name = String::from_utf8_lossy(&msg.security.user_name).to_string();
         let user_keys = self.users.get(&user_name).cloned();
         let reply = self
             .build_response_message(&msg, resp_scoped, level, user_keys)
@@ -490,12 +497,15 @@ impl Agent {
     }
 
     /// Dispatches a request PDU to the MIB registry and produces a Response.
-    async fn dispatch_pdu(&self, req: Pdu) -> Result<Pdu> {
+    ///
+    /// `writable` reflects the authenticated user's write permission; a
+    /// `SetRequest` from a user without it is rejected before any handler runs.
+    async fn dispatch_pdu(&self, req: Pdu, writable: bool) -> Result<Pdu> {
         match req.kind {
             PduKind::GetRequest => Ok(self.handle_get(req).await),
             PduKind::GetNextRequest => Ok(self.handle_get_next(req).await),
             PduKind::GetBulkRequest => Ok(self.handle_get_bulk(req).await),
-            PduKind::SetRequest => Ok(self.handle_set(req).await),
+            PduKind::SetRequest => Ok(self.handle_set(req, writable).await),
             PduKind::Response | PduKind::Report => {
                 // Agents shouldn't normally receive these. Drop with a no-op.
                 Ok(Pdu {
@@ -631,7 +641,19 @@ impl Agent {
         }
     }
 
-    async fn handle_set(&self, req: Pdu) -> Pdu {
+    async fn handle_set(&self, req: Pdu, writable: bool) -> Pdu {
+        // VACM-style access control: default-deny writes. A user without an
+        // explicit writable grant cannot mutate any OID, so a SET fails with
+        // `noAccess` on the first binding before any handler is consulted.
+        if !writable {
+            return Pdu {
+                kind: PduKind::Response,
+                request_id: req.request_id,
+                error_status: ErrorStatus::NoAccess as i32,
+                error_index: i32::from(!req.variable_bindings.is_empty()),
+                variable_bindings: req.variable_bindings,
+            };
+        }
         let mut error_status = ErrorStatus::NoError as i32;
         let mut error_index: i32 = 0;
         for (i, vb) in req.variable_bindings.iter().enumerate() {

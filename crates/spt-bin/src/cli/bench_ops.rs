@@ -5,6 +5,21 @@
 //! wires `Orchestrator::live_connector(profile, forward)` into the
 //! [`spt_benchmark`] driver suite, so the CLI body here is just an MCP RPC.
 //!
+//! # Production-impact gating
+//!
+//! Drivers whose `impact()` is `Production` (`reconnect`, `udp`, `limits`)
+//! refuse to run against a live tunnel unless the operator opts in. The opt-in
+//! is a **two-key gate** — *both* must be set:
+//!
+//! 1. the CLI flag `--unsafe-allow-production-impact` on the command, and
+//! 2. the config gate `[benchmark].allow_production_impact = true`.
+//!
+//! [`run_live`] computes `allow_prod = cli_flag && config_flag` and forwards
+//! it to the server-side `benchmark_run` tool, which calls `check_safety`.
+//! Synthetic loopback runs (the `spt benchmark run` path with no `--profile`,
+//! and the in-process connectors in [`crate::benchmark_bridge`]) are never
+//! gated — they cannot impact production by construction.
+//!
 //! `report_export` reads `<state_dir>/benchmarks/<run-id>.json` and renders
 //! it to one of the four supported formats (`md|csv|json|jsonl`) at a
 //! caller-supplied output path.
@@ -177,12 +192,7 @@ pub async fn run_live(global: &GlobalOpts, args: BenchmarkRunArgs) -> Result<()>
     }
     let v = client.call_tool("benchmark_run", payload).await?;
 
-    if args.json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&v).map_err(|e| Error::RuntimeFailure(e.to_string()))?
-        );
-    } else {
+    if !crate::cli::tunnel_ops::emit(global, args.json, &v)? {
         let iter_ok = v
             .get("iterations_completed")
             .and_then(Value::as_u64)
@@ -270,6 +280,7 @@ mod tests {
             config_fingerprint: None,
             state_dir: Some(dir),
             profile: None,
+            portable: false,
             output: OutputFormat::Json,
             json: true,
             log_level: LogLevel::Error,

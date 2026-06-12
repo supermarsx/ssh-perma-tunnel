@@ -28,6 +28,8 @@ spt-state = { workspace = true }
 spt-stats = { workspace = true }
 spt-forward = { workspace = true }
 spt-sftp = { workspace = true }
+spt-events = { workspace = true }
+spt-observability = { workspace = true }
 
 tokio = { workspace = true }
 async-trait = { workspace = true }
@@ -39,6 +41,8 @@ thiserror = { workspace = true }
 rand = { workspace = true }
 humantime = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
+futures = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "test-util"] }

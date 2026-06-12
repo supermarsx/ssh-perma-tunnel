@@ -61,11 +61,44 @@ pub fn sign(sealed: &[u8], signing_key: &SigningKey) -> Result<Vec<u8>, Error> {
 /// public key matches one of `allowed_keys` (constant-time compare), and
 /// the Ed25519 signature is valid over `magic || meta || body`.
 ///
-/// If `allowed_keys` is empty this still requires *some* valid signature
-/// — useful when the caller wants any-key gating but only cares that the
-/// envelope was signed at all. Pass at least one key to enforce a
-/// trust root.
+/// # Empty allow-list is a hard error (fail-closed)
+///
+/// If `allowed_keys` is empty this returns
+/// `Error::TrustFailed("no trust anchors configured")`. "The envelope is
+/// signed at all" is **not** "the envelope is signed by someone I trust" —
+/// a call site that derives `allowed_keys` from config and gets an empty
+/// list (mis-set / cleared) must not silently downgrade to no trust root.
+///
+/// If you genuinely want any-key gating (accept any valid self-embedded
+/// signature, ignoring the trust root), call [`verify_with_options`] with
+/// `any_signed_ok = true`.
 pub fn verify(sealed: &[u8], allowed_keys: &[VerifyingKey]) -> Result<(), Error> {
+    verify_with_options(sealed, allowed_keys, false)
+}
+
+/// Verify the `[signature]` block against `allowed_keys`, with an explicit
+/// opt-in for accepting any self-embedded signing key.
+///
+/// Behaves like [`verify`], except that when `allowed_keys` is empty:
+///
+/// * `any_signed_ok == false` → `Error::TrustFailed("no trust anchors
+///   configured")` (the safe default).
+/// * `any_signed_ok == true`  → the trust-anchor check is skipped and the
+///   call succeeds for *any* valid self-embedded signature. Use only when
+///   the caller deliberately wants "is this signed at all" gating.
+///
+/// When `allowed_keys` is non-empty, `any_signed_ok` has no effect: the
+/// embedded key must still be in the allow-list.
+pub fn verify_with_options(
+    sealed: &[u8],
+    allowed_keys: &[VerifyingKey],
+    any_signed_ok: bool,
+) -> Result<(), Error> {
+    if allowed_keys.is_empty() && !any_signed_ok {
+        return Err(Error::TrustFailed(
+            "no trust anchors configured (empty allowed-keys list)".into(),
+        ));
+    }
     let (parsed, meta, _body, sig_opt) = ParsedEnvelope::parse(sealed)?;
 
     // Audit at entry — verify is called on every load of a signed

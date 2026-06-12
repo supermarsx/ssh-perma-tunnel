@@ -76,8 +76,31 @@ impl SystemdSystemManager {
         render_unit(spec, /* user_scope */ false)
     }
 
-    fn unit_path(&self, name: &str) -> PathBuf {
-        self.unit_root.join(format!("{name}.service"))
+    fn unit_path(&self, name: &str) -> Result<PathBuf> {
+        validate_unit_name(name)?;
+        Ok(self.unit_root.join(format!("{name}.service")))
+    }
+}
+
+/// Reject service/unit names that could escape the unit root on path joins.
+///
+/// systemd unit names are limited to `[A-Za-z0-9_.@-]`; anything else (slashes,
+/// `..`, whitespace) is refused so that `--name '../../evil'` cannot make
+/// install/uninstall write or delete files outside `unit_root`.
+fn validate_unit_name(name: &str) -> Result<()> {
+    if !name.is_empty()
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'@' | b'-'))
+        // Defence-in-depth: disallow `.`/`..` and any name that is purely dots.
+        && name != "."
+        && name != ".."
+    {
+        Ok(())
+    } else {
+        Err(Error::ServiceManagerFailed(format!(
+            "invalid service name {name:?}: must match [A-Za-z0-9_.@-]+"
+        )))
     }
 }
 
@@ -108,7 +131,7 @@ impl ServiceManager for SystemdSystemManager {
 
     async fn install(&self, spec: &ServiceSpec) -> Result<()> {
         let unit = render_unit(spec, false);
-        let path = self.unit_path(&spec.name);
+        let path = self.unit_path(&spec.name)?;
 
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| {
@@ -126,6 +149,8 @@ impl ServiceManager for SystemdSystemManager {
     }
 
     async fn uninstall(&self, name: &str) -> Result<()> {
+        // Validate before any path join or systemctl call.
+        let path = self.unit_path(name)?;
         // Best-effort stop+disable, then remove file.
         let _ = self
             .runner
@@ -136,7 +161,6 @@ impl ServiceManager for SystemdSystemManager {
             .run("systemctl", &["disable", name], DEFAULT_TIMEOUT)
             .await;
 
-        let path = self.unit_path(name);
         match std::fs::remove_file(&path) {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -298,7 +322,7 @@ pub(crate) fn parse_show_output(stdout: &str) -> ServiceStatus {
 /// * `2024-01-15 10:30:45 UTC`
 /// * `n/a` (never entered active) — returns `None`.
 fn parse_systemd_timestamp(s: &str) -> Option<chrono::DateTime<chrono::Utc>> {
-    use chrono::{NaiveDateTime, TimeZone, Utc};
+    use chrono::{Local, NaiveDateTime, TimeZone, Utc};
 
     const FORMATS: &[&str] = &["%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M:%S%.f"];
 
@@ -313,15 +337,27 @@ fn parse_systemd_timestamp(s: &str) -> Option<chrono::DateTime<chrono::Utc>> {
         .filter(|(head, _)| head.len() == 3 && head.chars().all(|c| c.is_ascii_alphabetic()))
         .map_or(s, |(_, rest)| rest);
 
-    // Drop a trailing timezone token if present (e.g. "UTC", "EDT").
-    let core = trimmed
+    // Capture a trailing timezone token if present (e.g. "UTC", "EDT") and drop
+    // it from the wall-clock portion we hand to the parser.
+    let (core, tz) = trimmed
         .rsplit_once(' ')
         .filter(|(_, tail)| tail.chars().all(|c| c.is_ascii_alphabetic()) && !tail.is_empty())
-        .map_or(trimmed, |(head, _)| head);
+        .map_or((trimmed, None), |(head, tail)| (head, Some(tail)));
 
     for fmt in FORMATS {
         if let Ok(naive) = NaiveDateTime::parse_from_str(core, fmt) {
-            return Some(Utc.from_utc_datetime(&naive));
+            // `systemctl show` emits the wall clock in the host's local timezone
+            // (unless the token is explicitly UTC). Interpret accordingly and
+            // normalise to Utc so `ServiceStatus.since` is an absolute instant.
+            if tz.is_some_and(|t| t.eq_ignore_ascii_case("UTC") || t.eq_ignore_ascii_case("GMT")) {
+                return Some(Utc.from_utc_datetime(&naive));
+            }
+            return match Local.from_local_datetime(&naive).single() {
+                Some(local) => Some(local.with_timezone(&Utc)),
+                // Ambiguous/non-existent local time (DST fold): fall back to
+                // treating it as UTC rather than dropping the timestamp.
+                None => Some(Utc.from_utc_datetime(&naive)),
+            };
         }
     }
     None
@@ -359,12 +395,44 @@ pub(crate) fn render_unit(spec: &ServiceSpec, user_scope: bool) -> String {
         "multi-user.target"
     };
 
+    // E7-F2: pair the sandbox (ProtectSystem=strict / ProtectHome=read-only)
+    // with a writable state path, otherwise StateLock fails at boot and the
+    // installed service crash-loops. `StateDirectory=spt` creates and binds a
+    // 0700 state dir owned by the service user and exports $STATE_DIRECTORY;
+    // SPT_STATE_DIR is set explicitly so it is present even when `spec.env`
+    // is empty (the CLI install path passes an empty env).
+    //
+    // System scope resolves to /var/lib/spt; user scope resolves under the
+    // user's $XDG_STATE_HOME (~/.local/state/spt). ReadWritePaths and
+    // AmbientCapabilities are only valid/appropriate for system units.
+    let state_hardening = if user_scope {
+        "StateDirectory=spt".to_string()
+    } else {
+        "# State dir must be writable under the sandbox below; StateDirectory\n\
+         # creates and binds /var/lib/spt (0700, owned by User=).\n\
+         StateDirectory=spt\n\
+         ReadWritePaths=/var/lib/spt /var/log/spt\n\
+         Environment=\"SPT_STATE_DIR=/var/lib/spt\""
+            .to_string()
+    };
+    // CAP_NET_BIND_SERVICE lets system services bind privileged ports under
+    // NoNewPrivileges=true; user units cannot be granted ambient capabilities.
+    let ambient_caps = if user_scope {
+        String::new()
+    } else {
+        "# Allow binding privileged ports (<1024) for forwards under NoNewPrivileges=true.\n\
+         AmbientCapabilities=CAP_NET_BIND_SERVICE"
+            .to_string()
+    };
+
     let mut vars: BTreeMap<&str, String> = BTreeMap::new();
     vars.insert("description", spec.description.clone());
     vars.insert("service_type", svc_type.to_string());
     vars.insert("exec_path", spec.exec_path.display().to_string());
     vars.insert("args", args);
     vars.insert("working_dir", spec.working_dir.display().to_string());
+    vars.insert("state_hardening", state_hardening);
+    vars.insert("ambient_caps", ambient_caps);
     vars.insert("env_lines", env_lines);
     vars.insert("user_line", user_line);
     vars.insert("group_line", group_line);
@@ -407,6 +475,106 @@ mod tests {
         assert!(out.contains("Group=spt"));
         assert!(out.contains("Type=notify"));
         assert!(out.contains("WantedBy=multi-user.target"));
+    }
+
+    /// E7-F2: the sandbox (`ProtectSystem=strict` / `ProtectHome=read-only`)
+    /// must be paired with a writable state path, otherwise `StateLock` fails at
+    /// boot and the installed service crash-loops.
+    #[test]
+    fn render_makes_state_dir_writable() {
+        let mgr = SystemdSystemManager::new();
+        let out = mgr.render(&sample_spec());
+        assert!(
+            out.contains("StateDirectory=spt"),
+            "unit must declare StateDirectory so /var/lib/spt is writable: {out}"
+        );
+        assert!(out.contains("ReadWritePaths=/var/lib/spt /var/log/spt"));
+        assert!(
+            out.contains("Environment=\"SPT_STATE_DIR=/var/lib/spt\""),
+            "unit must export SPT_STATE_DIR even when the spec env is empty: {out}"
+        );
+        // Sanity: the sandbox is still in place.
+        assert!(out.contains("ProtectSystem=strict"));
+        assert!(out.contains("ProtectHome=read-only"));
+        assert!(out.contains("AmbientCapabilities=CAP_NET_BIND_SERVICE"));
+    }
+
+    /// E7-F3: when the spec does not opt into `sd_notify` the unit must render
+    /// `Type=simple` (the binary sends no readiness notification yet).
+    #[test]
+    fn render_type_simple_when_no_sd_notify() {
+        let mgr = SystemdSystemManager::new();
+        let mut spec = sample_spec();
+        spec.sd_notify = false;
+        let out = mgr.render(&spec);
+        assert!(out.contains("Type=simple"), "{out}");
+        assert!(!out.contains("Type=notify"), "{out}");
+        // State-dir writability is independent of the service type.
+        assert!(out.contains("StateDirectory=spt"));
+    }
+
+    #[test]
+    fn validate_unit_name_accepts_systemd_charset() {
+        assert!(validate_unit_name("spt").is_ok());
+        assert!(validate_unit_name("spt-relay").is_ok());
+        assert!(validate_unit_name("spt@inst.service").is_ok());
+        assert!(validate_unit_name("A_b.9-x").is_ok());
+    }
+
+    #[test]
+    fn validate_unit_name_rejects_path_escapes() {
+        assert!(validate_unit_name("").is_err());
+        assert!(validate_unit_name(".").is_err());
+        assert!(validate_unit_name("..").is_err());
+        assert!(validate_unit_name("../../evil").is_err());
+        assert!(validate_unit_name("a/b").is_err());
+        assert!(validate_unit_name("with space").is_err());
+        assert!(validate_unit_name("nul\0byte").is_err());
+    }
+
+    #[tokio::test]
+    async fn install_rejects_unsafe_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mock = Arc::new(MockRunner::new());
+        let mgr = SystemdSystemManager::new_with_runner(mock)
+            .with_unit_root(tmp.path().to_path_buf());
+        let mut spec = sample_spec();
+        spec.name = "../../evil".into();
+        let err = mgr.install(&spec).await.unwrap_err();
+        assert!(matches!(err, Error::ServiceManagerFailed(_)));
+        // Nothing escaped the unit root.
+        assert!(!tmp.path().parent().unwrap().join("evil.service").exists());
+    }
+
+    #[tokio::test]
+    async fn uninstall_rejects_unsafe_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mock = Arc::new(MockRunner::new());
+        let mgr = SystemdSystemManager::new_with_runner(mock)
+            .with_unit_root(tmp.path().to_path_buf());
+        let err = mgr.uninstall("../../evil").await.unwrap_err();
+        assert!(matches!(err, Error::ServiceManagerFailed(_)));
+    }
+
+    #[test]
+    fn parse_timestamp_utc_token_is_utc() {
+        // Explicit UTC token → interpreted as UTC regardless of host tz.
+        let dt = parse_systemd_timestamp("Mon 2024-01-15 10:30:45 UTC").unwrap();
+        assert_eq!(dt.to_rfc3339(), "2024-01-15T10:30:45+00:00");
+    }
+
+    #[test]
+    fn parse_timestamp_local_token_converts_to_utc() {
+        // A local-zone wall clock must round-trip back to the same instant.
+        use chrono::{Local, TimeZone};
+        let naive = chrono::NaiveDate::from_ymd_opt(2024, 6, 15)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
+        let local = Local.from_local_datetime(&naive).single().unwrap();
+        let rendered = format!("{} EDT", naive.format("%Y-%m-%d %H:%M:%S"));
+        let parsed = parse_systemd_timestamp(&rendered).unwrap();
+        assert_eq!(parsed, local.with_timezone(&chrono::Utc));
     }
 
     #[test]

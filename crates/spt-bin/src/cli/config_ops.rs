@@ -104,10 +104,30 @@ pub async fn doctor(global: &GlobalOpts, args: groups::config::ConfigDoctor) -> 
 /// `spt config reload`.
 ///
 /// Bridge to the running `spt tunnel run` supervisor via the loopback MCP
-/// transport. Honors `--wait` by simply returning the synchronous
-/// `tunnel_reload` tool result — the tool already invokes
-/// `Controller::reload()` to completion before responding.
+/// transport.
+///
+/// `--mode` selects the reload mechanism. This op-local path only implements
+/// the live `signal` mechanism (push a reload to the running supervisor over
+/// the MCP loopback); the other mechanisms are owned by other surfaces and are
+/// rejected here with [`Error::InvalidArgs`] rather than silently ignored
+/// (t-rev E4-F5):
+/// - `signal` (default): push `tunnel_reload` over the MCP loopback.
+/// - `watch`: the running supervisor's config-watcher (if enabled) reloads on
+///   its own — there is nothing for this command to push.
+/// - `service`: use `spt service reload` to signal an installed OS service.
+/// - `none`: reloading is explicitly disabled, which contradicts this command.
+///
+/// `--wait` makes the command treat a reload that did not apply as a failure
+/// (the `tunnel_reload` tool already invokes `Controller::reload()` to
+/// completion synchronously before responding, so this only changes how the
+/// reported `applied` flag is interpreted).
 pub async fn reload(global: &GlobalOpts, args: groups::config::ConfigReload) -> Result<()> {
+    // Reject reload mechanisms this op-local path cannot honor instead of
+    // silently ignoring the flag (t-rev E4-F5).
+    if let Some(mode) = args.mode {
+        reject_unsupported_mode(mode)?;
+    }
+
     // Pre-check: if [mcp].listen is empty or absent in the on-disk config,
     // the running supervisor has no loopback listener and we can't talk to
     // it. Surface the precise hint from the brief.
@@ -138,8 +158,20 @@ pub async fn reload(global: &GlobalOpts, args: groups::config::ConfigReload) -> 
         .call_tool("tunnel_reload", json!({}))
         .await
         .map_err(|e| Error::ReloadFailed(format!("tunnel_reload: {e}")))?;
-    let _ = args.mode;
-    let _ = args.wait;
+
+    // `--wait`: the tool already runs `Controller::reload()` to completion
+    // synchronously, so the result's `applied` flag reflects the final
+    // outcome. When the caller asked to wait, treat a reload that the
+    // supervisor reports as *not applied* as a hard failure (so scripts can
+    // gate on `$?`) rather than printing `applied = false` with exit 0.
+    if args.wait {
+        if let Some(false) = result.get("applied").and_then(|v| v.as_bool()) {
+            return Err(Error::ReloadFailed(
+                "supervisor reported the configuration was not applied".into(),
+            ));
+        }
+    }
+
     match output_format(global) {
         OutputFormat::Human => {
             println!("config reload requested via MCP loopback");
@@ -228,6 +260,32 @@ fn precondition_no_mcp() -> Error {
          otherwise edit the config and SIGHUP / Windows ParamChange the service"
             .into(),
     )
+}
+
+/// Reject `--mode` values that `spt config reload` cannot honor via the
+/// op-local MCP-loopback path. `signal` is the only supported mechanism here;
+/// the others are surfaced as actionable [`Error::InvalidArgs`] (t-rev E4-F5)
+/// instead of being silently ignored.
+fn reject_unsupported_mode(mode: groups::config::ReloadMode) -> Result<()> {
+    use groups::config::ReloadMode as M;
+    match mode {
+        M::Signal => Ok(()),
+        M::Watch => Err(Error::InvalidArgs(
+            "`--mode watch` is not a push action: a running supervisor with the \
+             config-watcher enabled reloads on its own. Drop `--mode` (or use \
+             `--mode signal`) to push a reload now"
+                .into(),
+        )),
+        M::Service => Err(Error::InvalidArgs(
+            "`--mode service` is not handled here; use `spt service reload` to \
+             signal an installed OS service"
+                .into(),
+        )),
+        M::None => Err(Error::InvalidArgs(
+            "`--mode none` disables reloading, which contradicts `config reload`"
+                .into(),
+        )),
+    }
 }
 
 fn mcp_listen_configured(cfg: &Config) -> bool {
@@ -1236,6 +1294,7 @@ mod tests {
             verbose: 0,
             no_color: true,
             dry_run: false,
+            portable: false,
         }
     }
 
@@ -1326,6 +1385,48 @@ mod tests {
                 );
             }
             other => panic!("expected ReloadFailed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn reject_unsupported_mode_only_allows_signal() {
+        use groups::config::ReloadMode as M;
+        assert!(reject_unsupported_mode(M::Signal).is_ok());
+        for (mode, needle) in [
+            (M::Watch, "watch"),
+            (M::Service, "spt service reload"),
+            (M::None, "disables reloading"),
+        ] {
+            match reject_unsupported_mode(mode) {
+                Err(Error::InvalidArgs(msg)) => assert!(
+                    msg.contains(needle),
+                    "mode {mode:?}: expected `{needle}` in `{msg}`"
+                ),
+                other => panic!("mode {mode:?}: expected InvalidArgs, got {other:?}"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn reload_rejects_unsupported_mode_before_io() {
+        // `--mode service` must be rejected as InvalidArgs regardless of
+        // config/MCP state (the check runs before any I/O). We pass no config
+        // path at all, proving the mode gate fires first (t-rev E4-F5).
+        let g = opts(None);
+        let r = reload(
+            &g,
+            groups::config::ConfigReload {
+                mode: Some(groups::config::ReloadMode::Service),
+                wait: false,
+            },
+        )
+        .await;
+        match r {
+            Err(Error::InvalidArgs(msg)) => assert!(
+                msg.contains("spt service reload"),
+                "expected service-reload hint, got `{msg}`"
+            ),
+            other => panic!("expected InvalidArgs, got {other:?}"),
         }
     }
 

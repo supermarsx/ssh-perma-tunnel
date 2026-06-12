@@ -2,14 +2,14 @@
 
 use clap::{Args, Subcommand, ValueEnum};
 
-const EXAMPLES: &str = "EXAMPLES:
+pub(crate) const EXAMPLES: &str = "EXAMPLES:
   spt log tail --follow --profile edge --since 15m
   spt log test --sink remote-syslog
   spt log remote list
   spt log remote test --sink remote-syslog --send-test-record
   spt log export --format jsonl --since 24h
   spt log tail --since 1h --json
-  spt log export --format csv --since 7d";
+  spt log export --format jsonl --since 7d";
 
 /// `spt log` group.
 #[derive(Args, Debug)]

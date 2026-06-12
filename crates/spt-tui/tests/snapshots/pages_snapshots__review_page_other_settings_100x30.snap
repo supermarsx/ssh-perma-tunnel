@@ -1,0 +1,34 @@
+---
+source: crates/spt-tui/tests/pages_snapshots.rs
+expression: snap
+---
+┌Canonical TOML (redacted) — line 1/19  ↑↓/jk to scroll, Ctrl-S to save────────────────────────────┐
+│version = 1                                                                                       │
+│                                                                                                  │
+│[[profiles]]                                                                                      │
+│name = "demo"                                                                                     │
+│enabled = true                                                                                    │
+│protocol = "ssh2"                                                                                 │
+│host = "demo.example.com"                                                                         │
+│                                                                                                  │
+│[[profiles.hops]]                                                                                 │
+│name = "jump"                                                                                     │
+│protocol = "ssh2"                                                                                 │
+│host = "jump.example.com"                                                                         │
+│port = 22                                                                                         │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+┌Validation: 0 error(s), 0 warning(s)──────────────────────────────────────────────────────────────┐
+│no issues                                                                                         │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+┌Other settings (read-only — edit in the config file)──────────────────────────────────────────────┐
+│• hops — proxy-jump / multi-hop chain                                                             │
+│• script — Rhai scripting hooks                                                                   │
+│• transport — obfuscation transport                                                               │
+│• enabled — profile start flag                                                                    │
+│⚠ unknown key `mystery_key` — NOT understood by the schema; a TUI save will drop it               │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘

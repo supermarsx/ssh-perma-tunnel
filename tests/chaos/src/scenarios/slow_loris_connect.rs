@@ -9,9 +9,9 @@
 //! probe times out → backoff fires.  Assertion: ≥2 reconnect attempts
 //! within the time budget.
 //!
-//! Status: **`#[ignore]`** by default — the wall-clock cost is ~2 s per
-//! retry under the timeout we picked; we don't want this gating every
-//! PR.
+//! Status: runs on every PR. The per-probe read timeout is 150ms and the
+//! scenario is bounded to a 3 s observation window, so it is fast and
+//! deterministic (the silent listener always times out).
 
 use std::time::Duration;
 
@@ -26,7 +26,6 @@ use spt_protocol::Endpoint;
 use spt_supervisor::{ProfileSupervisor, ProfileSupervisorConfig};
 
 #[tokio::test]
-#[ignore = "slow — runs under SPT_CHAOS_FULL=1"]
 async fn slow_loris_connect() {
     // Listener that accepts and idles forever.
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");

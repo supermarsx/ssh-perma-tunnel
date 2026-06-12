@@ -10,10 +10,14 @@
 //! * `sessions` — aligned table from `StatusSnapshot::sessions`.
 //! * `health`   — green / yellow / red / unknown aggregation across profiles
 //!   plus the recent-error tail, with health-specific exit codes
-//!   (0 / 1 / 2 / 3).
+//!   (0 / 1 / 2 / 3). See [`health`] for the full exit contract (E4-F12).
 //!
-//! All three honour `--json`, in which case the JSON form is the parsed
-//! `StatusSnapshot` (or, for `health`, a small derived object).
+//! All three honour machine output via the shared [`effective_format`] /
+//! [`emit`] helpers (E4-F6/E4-F16): both `spt --json <cmd>` and
+//! `spt <cmd> --json` work, and `--output yaml|jsonl` is honoured. The JSON
+//! form is the parsed `StatusSnapshot` (or, for `sessions`, the sessions array;
+//! for `health`, a small derived object). Machine output is pretty on a TTY and
+//! compact when piped.
 
 #![allow(clippy::module_name_repetitions)]
 #![allow(clippy::missing_errors_doc)]
@@ -30,17 +34,108 @@ use serde::Serialize;
 #[cfg(windows)]
 use serde_json::json;
 use spt_cli::groups::tunnel::{TunnelHealth, TunnelSessions, TunnelStats};
-use spt_cli::GlobalOpts;
+use spt_cli::{GlobalOpts, OutputFormat};
 use spt_config::openssh_config::parse_user_host_port;
 use spt_config::schema::{Config, Hop};
 use spt_core::{Error, Result};
 use spt_state::status::{LastError, ProfileStatus, StatusSnapshot};
 
-/// Default grace period after `TerminateProcess` before `WaitForSingleObject`
-/// returns and we call it a hung process. Mirrors the systemd `TimeoutStopSec`
-/// default in `packaging/systemd/spt.service` (90s).
+// ---------------------------------------------------------------------------
+// Shared machine-output helpers (E4-F6, E4-F16)
+//
+// These live here, in spt-bin, so the `effective_format` / `emit` policy is
+// owned entirely by the binary crate (NOT spt-cli) — this avoids a cross-crate
+// race with `spt-cli` during the parallel fill-the-gaps work. Every ops module
+// in the `t-fill-p3-ops-json` lock set reuses these via
+// `crate::cli::tunnel_ops::{effective_format, emit}`.
+// ---------------------------------------------------------------------------
+
+/// Resolve the effective output format for a command, honouring **both** the
+/// global `--json` / `--output` flags and a leaf-local `--json` bool.
+///
+/// Precedence (highest first):
+/// 1. `global.json` or `local_json` → [`OutputFormat::Json`] (the documented
+///    `--json` convenience alias, regardless of flag placement — this is the
+///    E4-F6 fix: `spt --json <cmd>` now works the same as `spt <cmd> --json`).
+/// 2. `global.output` (so `--output yaml|jsonl|json` is honoured).
+/// 3. [`OutputFormat::Human`].
+///
+/// Note: a leaf `--json` only ever *adds* JSON output; it never downgrades an
+/// explicit `--output yaml`. When neither JSON flag is set we defer entirely to
+/// `--output`, so existing `<cmd> --json` callers keep byte-identical behaviour.
+#[must_use]
+pub(crate) fn effective_format(global: &GlobalOpts, local_json: bool) -> OutputFormat {
+    if global.json || local_json {
+        // `--output json` and either `--json` agree; but if the user explicitly
+        // asked for a *non-Human* structured format other than json, respect it
+        // (e.g. `--output yaml --json` is contradictory; we treat the richer
+        // `--output` choice as authoritative only when it is itself structured).
+        return match global.output {
+            OutputFormat::Yaml => OutputFormat::Yaml,
+            OutputFormat::Jsonl => OutputFormat::Jsonl,
+            // Human or Json both collapse to Json under a `--json` request.
+            OutputFormat::Human | OutputFormat::Json => OutputFormat::Json,
+        };
+    }
+    global.output
+}
+
+/// Emit `value` as machine output under the effective format, with a fixed
+/// stream policy (E4-F16): **pretty JSON on a TTY, compact JSON when piped**;
+/// JSONL is always single-line compact; YAML is YAML. The TTY probe is on
+/// `stdout` (the stream the payload is written to), not stderr.
+///
+/// Returns `Ok(true)` when machine output was written (the caller should then
+/// return without printing a human form), or `Ok(false)` when the effective
+/// format is Human (the caller should render its human view).
+pub(crate) fn emit<T: serde::Serialize>(
+    global: &GlobalOpts,
+    local_json: bool,
+    value: &T,
+) -> Result<bool> {
+    let fmt = effective_format(global, local_json);
+    match fmt {
+        OutputFormat::Human => Ok(false),
+        OutputFormat::Json => {
+            use std::io::IsTerminal;
+            let s = if std::io::stdout().is_terminal() {
+                serde_json::to_string_pretty(value)
+            } else {
+                serde_json::to_string(value)
+            }
+            .map_err(|e| Error::RuntimeFailure(format!("serialize json: {e}")))?;
+            println!("{s}");
+            Ok(true)
+        }
+        OutputFormat::Jsonl => {
+            let s = serde_json::to_string(value)
+                .map_err(|e| Error::RuntimeFailure(format!("serialize jsonl: {e}")))?;
+            println!("{s}");
+            Ok(true)
+        }
+        OutputFormat::Yaml => {
+            let s = serde_yaml::to_string(value)
+                .map_err(|e| Error::RuntimeFailure(format!("serialize yaml: {e}")))?;
+            print!("{s}");
+            Ok(true)
+        }
+    }
+}
+
+/// Total stop budget. After a graceful console-ctrl signal we wait up to
+/// [`GRACEFUL_WAIT`] for an orderly shutdown; if the process is still alive we
+/// hard-kill and then wait the remainder of this budget for the kill to take.
+/// Mirrors the systemd `TimeoutStopSec` default in
+/// `packaging/systemd/spt.service` (90s).
 #[cfg(windows)]
 const STOP_GRACE: std::time::Duration = std::time::Duration::from_secs(90);
+
+/// How long to wait for the supervisor to shut down *gracefully* after a
+/// console Ctrl event before falling back to `TerminateProcess`. Kept well
+/// under [`STOP_GRACE`] so the overall `tunnel stop` call is always bounded
+/// and never hangs even if the graceful path is ignored by the target.
+#[cfg(windows)]
+const GRACEFUL_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 
 // ---------------------------------------------------------------------------
 // Public entry points
@@ -52,8 +147,7 @@ pub async fn stats(global: &GlobalOpts, args: TunnelStatsArgs) -> Result<()> {
     let snap = read_status(&state_dir)?;
     let filtered = apply_filters(&snap, args.profile.as_deref(), args.forward.as_deref());
 
-    if args.json {
-        print_json(&filtered)?;
+    if emit(global, args.json, &filtered)? {
         return Ok(());
     }
     println!("{}", render_stats_human(&filtered, Utc::now()));
@@ -66,11 +160,10 @@ pub async fn sessions(global: &GlobalOpts, args: TunnelSessionsArgs) -> Result<(
     let snap = read_status(&state_dir)?;
     let filtered = apply_filters(&snap, args.profile.as_deref(), args.forward.as_deref());
 
-    if args.json {
-        // Match the brief: "JSON dumps the sessions array."
-        let v = serde_json::to_string_pretty(&filtered.sessions)
-            .map_err(|e| Error::RuntimeFailure(format!("serialize sessions: {e}")))?;
-        println!("{v}");
+    // Match the brief: machine output dumps the sessions array (not the whole
+    // snapshot). `emit` applies the shared pretty-on-tty / compact-on-pipe
+    // policy and honours global `--json` / `--output yaml|jsonl`.
+    if emit(global, args.json, &filtered.sessions)? {
         return Ok(());
     }
     println!("{}", render_sessions_human(&filtered, Utc::now()));
@@ -78,7 +171,31 @@ pub async fn sessions(global: &GlobalOpts, args: TunnelSessionsArgs) -> Result<(
 }
 
 /// `spt tunnel health` — aggregate profile state into a green/yellow/red/unknown
-/// summary. Exits with the corresponding numeric code (0/1/2/3) for shell use.
+/// summary, then exit with a health-specific numeric code for shell scripting.
+///
+/// # Exit contract (E4-F12)
+///
+/// Unlike every other `spt` command, `tunnel health` does **not** map its exit
+/// status through [`spt_core::Error::exit_code`]. It deliberately exits with a
+/// dedicated health code so a monitoring script can branch on tunnel health
+/// directly (`spt tunnel health; case $? in ...`). The codes are:
+///
+/// | Code | Level   | Meaning                                                     |
+/// |------|---------|-------------------------------------------------------------|
+/// | `0`  | green   | every profile Ready/Active and no recent errors             |
+/// | `1`  | yellow  | at least one profile reconnecting/backing-off, or a recent error |
+/// | `2`  | red     | at least one profile Failed/Stopped/Error                   |
+/// | `3`  | unknown | no supervisor running (no `status.json`) or no profiles configured |
+///
+/// These values intentionally overlap the *global* exit vocabulary
+/// (1=`InvalidArgs`, 2=`InvalidConfig`, 3=`RuntimeFailure`) but carry the
+/// health meaning above **only for this subcommand**. The same table is
+/// reproduced in `docs/cli-reference.md` and in the `TunnelHealth` `--help`
+/// after-help so operators are never surprised by `echo $?`.
+///
+/// `--json` (or global `--json` / `--output yaml|jsonl`) emits the structured
+/// report (`overall`, `profiles[]`, `recent_events[]`) on stdout *before* the
+/// process exits with the health code.
 pub async fn health(global: &GlobalOpts, args: TunnelHealthArgs) -> Result<()> {
     let state_dir = resolve_state_dir(global)?;
     let report = match try_read_status(&state_dir)? {
@@ -86,12 +203,8 @@ pub async fn health(global: &GlobalOpts, args: TunnelHealthArgs) -> Result<()> {
         None => HealthReport::unknown(),
     };
 
-    if args.json {
-        let payload = report.to_json();
-        let v = serde_json::to_string_pretty(&payload)
-            .map_err(|e| Error::RuntimeFailure(format!("serialize health: {e}")))?;
-        println!("{v}");
-    } else {
+    let payload = report.to_json();
+    if !emit(global, args.json, &payload)? {
         println!("{}", render_health_human(&report, Utc::now()));
     }
 
@@ -111,9 +224,14 @@ pub async fn health(global: &GlobalOpts, args: TunnelHealthArgs) -> Result<()> {
 ///
 /// Used when no MCP loopback is reachable (the supervisor is running outside
 /// a service host with the MCP listener disabled). We read the recorded PID
-/// from `<state_dir>/spt.pid` and signal it via the Win32
-/// `OpenProcess` + `TerminateProcess` pair, then wait up to `STOP_GRACE`
-/// for the process to exit before reporting a timeout.
+/// from `<state_dir>/spt.pid` and **try a graceful shutdown first** (E7-F7):
+/// we attach to the supervisor's console and deliver a `CTRL_C_EVENT` /
+/// `CTRL_BREAK_EVENT`, which the supervisor's signal task treats exactly like
+/// a Unix `SIGTERM` — it runs its orderly shutdown (status flush, status-API
+/// stop, forward teardown). Only if the process is still alive after
+/// [`GRACEFUL_WAIT`] do we fall back to a hard `TerminateProcess`, then wait
+/// the remainder of [`STOP_GRACE`]. This brings Windows to parity with the
+/// Unix path instead of the previous immediate hard kill.
 ///
 /// On non-Windows targets this is a no-op that returns
 /// [`Error::UnsupportedPlatform`] so callers can compile-share the dispatch
@@ -131,8 +249,22 @@ pub async fn stop_windows_standalone(_global: &GlobalOpts) -> Result<()> {
 pub async fn stop_windows_standalone(global: &GlobalOpts) -> Result<()> {
     let state_dir = resolve_state_dir(global)?;
     let pid = read_lock_pid(&state_dir)?;
-    windows_impl::terminate_with_grace(pid, STOP_GRACE)?;
-    println!("ok: terminated pid {pid} (Windows standalone)");
+    // Graceful-first: the console-ctrl signal lets the supervisor flush state
+    // and tear down cleanly. `stop_with_grace` only hard-kills as a bounded
+    // fallback, so the overall call is always time-bounded.
+    let outcome = windows_impl::stop_with_grace(pid, GRACEFUL_WAIT, STOP_GRACE)?;
+    match outcome {
+        windows_impl::StopOutcome::Graceful => {
+            println!("ok: stopped pid {pid} gracefully (Windows standalone)");
+        }
+        windows_impl::StopOutcome::HardKilled => {
+            println!(
+                "ok: terminated pid {pid} (Windows standalone) — graceful \
+                 shutdown did not complete within {}s, hard-killed",
+                GRACEFUL_WAIT.as_secs()
+            );
+        }
+    }
     Ok(())
 }
 
@@ -202,13 +334,45 @@ mod windows_impl {
 
     use spt_core::{Error, Result};
     use windows::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT};
+    use windows::Win32::System::Console::{
+        AttachConsole, FreeConsole, GenerateConsoleCtrlEvent, SetConsoleCtrlHandler,
+        ATTACH_PARENT_PROCESS, CTRL_BREAK_EVENT, CTRL_C_EVENT,
+    };
     use windows::Win32::System::Threading::{
         OpenProcess, TerminateProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
     };
 
-    /// Open the process, terminate it, wait up to `grace`, then close the
-    /// handle. Returns `RuntimeFailure` for any Win32 error.
-    pub(super) fn terminate_with_grace(pid: u32, grace: Duration) -> Result<()> {
+    /// Result of a graceful-first stop attempt: whether the supervisor exited
+    /// on its own after the console signal, or had to be hard-killed.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(super) enum StopOutcome {
+        /// The process exited within the graceful window after the Ctrl event.
+        Graceful,
+        /// The graceful window elapsed; we fell back to `TerminateProcess`.
+        HardKilled,
+    }
+
+    /// Stop `pid` **gracefully first** (E7-F7), then hard-kill as a bounded
+    /// fallback.
+    ///
+    /// 1. Open a handle to the target (synchronize + terminate access).
+    /// 2. Deliver a console Ctrl event (`CTRL_C_EVENT` then `CTRL_BREAK_EVENT`)
+    ///    so the supervisor's signal task runs its orderly shutdown — the
+    ///    Windows analogue of Unix `SIGTERM`.
+    /// 3. Wait up to `graceful_wait` for a clean exit. If the process exits,
+    ///    return [`StopOutcome::Graceful`].
+    /// 4. Otherwise `TerminateProcess` and wait the remainder of `total_grace`,
+    ///    returning [`StopOutcome::HardKilled`].
+    ///
+    /// The call is always time-bounded (never longer than `total_grace`) so
+    /// `tunnel stop` can never hang, even when the target ignores the Ctrl
+    /// event. Returns `RuntimeFailure` only for genuine Win32 errors (bad
+    /// handle, kill failure, or a hard-kill that still didn't take).
+    pub(super) fn stop_with_grace(
+        pid: u32,
+        graceful_wait: Duration,
+        total_grace: Duration,
+    ) -> Result<StopOutcome> {
         let handle: HANDLE =
             // SAFETY: `OpenProcess` (kernel32.dll) takes only PoD arguments —
             // `PROCESS_TERMINATE | PROCESS_SYNCHRONIZE` access mask, `bInheritHandle=false`,
@@ -226,26 +390,41 @@ mod windows_impl {
             )));
         }
 
-        let result = (|| -> Result<()> {
+        let result = (|| -> Result<StopOutcome> {
+            // --- Graceful attempt: console Ctrl event ----------------------
+            // Best-effort: a delivery failure (e.g. the supervisor has no
+            // console, or is a different session) just means we proceed to the
+            // wait/fallback — it is never fatal on its own.
+            let signalled = try_console_ctrl(pid);
+
+            if signalled {
+                // Give the supervisor its orderly-shutdown window.
+                if wait_for_exit(handle, graceful_wait)? {
+                    return Ok(StopOutcome::Graceful);
+                }
+            }
+
+            // --- Fallback: hard kill --------------------------------------
             // SAFETY: handle is valid (checked above). Exit code 1 mirrors the
             // service stop convention used by `windows-service`.
             unsafe { TerminateProcess(handle, 1) }
                 .map_err(|e| Error::RuntimeFailure(format!("TerminateProcess({pid}): {e}")))?;
-            // Truncate to u32 milliseconds; clamp to avoid overflow.
-            let ms = u32::try_from(grace.as_millis()).unwrap_or(u32::MAX);
-            // SAFETY: handle is valid; WaitForSingleObject is a read.
-            let wait = unsafe { WaitForSingleObject(handle, ms) };
-            if wait == WAIT_OBJECT_0 {
-                Ok(())
-            } else if wait == WAIT_TIMEOUT {
-                Err(Error::RuntimeFailure(format!(
-                    "process {pid} did not exit within {}ms after TerminateProcess",
-                    ms
-                )))
+
+            // Wait the remainder of the total budget for the kill to take.
+            let remaining = total_grace.saturating_sub(if signalled {
+                graceful_wait
+            } else {
+                Duration::ZERO
+            });
+            // Even with no remaining budget, give the kernel a brief window to
+            // reap the terminated process so we don't spuriously report a hang.
+            let remaining = remaining.max(Duration::from_secs(2));
+            if wait_for_exit(handle, remaining)? {
+                Ok(StopOutcome::HardKilled)
             } else {
                 Err(Error::RuntimeFailure(format!(
-                    "WaitForSingleObject returned 0x{:x}",
-                    wait.0
+                    "process {pid} did not exit within {}ms after TerminateProcess",
+                    u32::try_from(remaining.as_millis()).unwrap_or(u32::MAX)
                 )))
             }
         })();
@@ -256,6 +435,91 @@ mod windows_impl {
         // of the caller-visible operation.
         let _ = unsafe { CloseHandle(handle) };
         result
+    }
+
+    /// Wait up to `dur` for `handle` to become signalled (process exit).
+    /// Returns `Ok(true)` if the process exited within the window, `Ok(false)`
+    /// on timeout, and `Err` on a genuine Win32 wait failure.
+    fn wait_for_exit(handle: HANDLE, dur: Duration) -> Result<bool> {
+        // Truncate to u32 milliseconds; clamp to avoid overflow.
+        let ms = u32::try_from(dur.as_millis()).unwrap_or(u32::MAX);
+        // SAFETY: handle is valid for the lifetime of `stop_with_grace`;
+        // WaitForSingleObject only reads the handle.
+        let wait = unsafe { WaitForSingleObject(handle, ms) };
+        if wait == WAIT_OBJECT_0 {
+            Ok(true)
+        } else if wait == WAIT_TIMEOUT {
+            Ok(false)
+        } else {
+            Err(Error::RuntimeFailure(format!(
+                "WaitForSingleObject returned 0x{:x}",
+                wait.0
+            )))
+        }
+    }
+
+    /// Deliver a console Ctrl event to `pid`'s process group so the supervisor
+    /// can shut down gracefully (the Windows analogue of `SIGTERM`).
+    ///
+    /// Console Ctrl events can only be sent to processes that share a console,
+    /// so we transiently `AttachConsole(pid)`. Because the event would also be
+    /// delivered to *this* process, we install a no-op handler
+    /// (`SetConsoleCtrlHandler(None, true)` → the event is ignored by us)
+    /// across the send, then restore our default handling and detach.
+    ///
+    /// Returns `true` if at least one Ctrl event was delivered, `false` if the
+    /// attach failed (target has no console / different session) so the caller
+    /// can skip the graceful wait and go straight to the hard-kill fallback.
+    /// All steps are best-effort — this never errors.
+    ///
+    /// Console state is restored on every path: if we had to detach our own
+    /// console to attach the target's, we reattach the parent console before
+    /// returning so a long-lived caller (and the test harness) is left intact.
+    fn try_console_ctrl(pid: u32) -> bool {
+        // SAFETY: all calls below are plain Win32 console APIs taking PoD
+        // arguments. A process may be attached to at most one console, so we
+        // first try AttachConsole directly; only if that's refused (we already
+        // own a console) do we FreeConsole and retry, then restore the parent
+        // console on the way out. Every state change is reverted before return.
+        // A failure at any step is reported via the boolean return — never a
+        // panic.
+        unsafe {
+            // Try to attach to the target's console without disturbing ours.
+            let mut freed_own = false;
+            if AttachConsole(pid).is_err() {
+                // Likely ERROR_ACCESS_DENIED: we already own a console. Drop it
+                // and retry so we can bind the target's.
+                let _ = FreeConsole();
+                freed_own = true;
+                if AttachConsole(pid).is_err() {
+                    // Target has no console / is in a different session.
+                    // Best-effort restore our own console and bail.
+                    let _ = AttachConsole(ATTACH_PARENT_PROCESS);
+                    return false;
+                }
+            }
+
+            // Make sure the event we're about to raise does not terminate this
+            // CLI process: install the "ignore" handler (NULL routine + add).
+            let _ = SetConsoleCtrlHandler(None, true);
+
+            // Send to the whole attached console group (group id 0). Try
+            // CTRL_C first (the supervisor's tokio `ctrl_c()` listens for it),
+            // then CTRL_BREAK as a backstop for handlers that only catch break.
+            let c_ok = GenerateConsoleCtrlEvent(CTRL_C_EVENT, 0).is_ok();
+            let brk_ok = GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, 0).is_ok();
+
+            // Detach from the target console and restore our own Ctrl handling.
+            let _ = SetConsoleCtrlHandler(None, false);
+            let _ = FreeConsole();
+            if freed_own {
+                // Re-acquire the console we started with so the caller (and the
+                // test harness) keeps working after we return.
+                let _ = AttachConsole(ATTACH_PARENT_PROCESS);
+            }
+
+            c_ok || brk_ok
+        }
     }
 }
 
@@ -367,13 +631,6 @@ fn apply_filters(
         out.connections.retain(|x| x.forward == f);
     }
     out
-}
-
-fn print_json(snap: &StatusSnapshot) -> Result<()> {
-    let s = serde_json::to_string_pretty(snap)
-        .map_err(|e| Error::RuntimeFailure(format!("serialize status: {e}")))?;
-    println!("{s}");
-    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -1205,6 +1462,7 @@ mod tests {
             config_fingerprint: None,
             state_dir: Some(dir),
             profile: None,
+            portable: false,
             output: OF::Human,
             json: false,
             log_level: LogLevel::Info,
@@ -1214,6 +1472,48 @@ mod tests {
             no_color: false,
             dry_run: false,
         }
+    }
+
+    // -- effective_format / emit (E4-F6, E4-F16) ------------------------
+
+    #[test]
+    fn effective_format_global_json_matches_leaf_json() {
+        use spt_cli::OutputFormat as OF;
+        let mut g = make_global_with_state_dir(std::path::PathBuf::from("."));
+        // Global `--json`, no leaf flag.
+        g.json = true;
+        g.output = OF::Human;
+        assert_eq!(effective_format(&g, false), OF::Json);
+        // Leaf `--json`, no global flag.
+        g.json = false;
+        assert_eq!(effective_format(&g, true), OF::Json);
+    }
+
+    #[test]
+    fn effective_format_defaults_to_human_and_honours_output() {
+        use spt_cli::OutputFormat as OF;
+        let mut g = make_global_with_state_dir(std::path::PathBuf::from("."));
+        assert_eq!(effective_format(&g, false), OF::Human);
+        g.output = OF::Yaml;
+        assert_eq!(effective_format(&g, false), OF::Yaml);
+        g.output = OF::Jsonl;
+        assert_eq!(effective_format(&g, false), OF::Jsonl);
+        // `--json` does not downgrade an explicit structured `--output`.
+        g.output = OF::Yaml;
+        assert_eq!(effective_format(&g, true), OF::Yaml);
+    }
+
+    #[test]
+    fn emit_returns_false_for_human_true_for_machine() {
+        let mut g = make_global_with_state_dir(std::path::PathBuf::from("."));
+        let v = serde_json::json!({"k": "v"});
+        // Human → caller renders human.
+        assert!(!emit(&g, false, &v).unwrap());
+        // Leaf json → machine.
+        assert!(emit(&g, true, &v).unwrap());
+        // Global json → machine (placement-independent: the E4-F6 fix).
+        g.json = true;
+        assert!(emit(&g, false, &v).unwrap());
     }
 
     #[cfg(not(windows))]
@@ -1254,18 +1554,36 @@ mod tests {
         assert!(matches!(err, Error::RuntimeFailure(_)));
     }
 
+    /// Spawn a long-lived child in its **own** process group + new console so
+    /// any console Ctrl event we raise during a stop test is isolated to the
+    /// child and can never reach the cargo-test runner's console.
+    /// `cmd /c pause` blocks indefinitely on stdin and ignores CTRL_C/BREAK in
+    /// this configuration, so it exercises the hard-kill fallback path.
     #[cfg(windows)]
-    #[tokio::test]
-    async fn stop_windows_standalone_terminates_a_real_child_process() {
-        // Spawn a tiny long-lived child so we can verify the Win32 termination
-        // path end-to-end. `cmd /c pause` blocks indefinitely on stdin.
-        let mut child = std::process::Command::new("cmd.exe")
+    fn spawn_isolated_pause_child() -> std::process::Child {
+        use std::os::windows::process::CommandExt;
+        // CREATE_NEW_PROCESS_GROUP (0x0200) | CREATE_NEW_CONSOLE (0x0010):
+        // the child is the root of its own group and owns a fresh console, so
+        // GenerateConsoleCtrlEvent against its group never touches our console.
+        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+        const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
+        std::process::Command::new("cmd.exe")
             .args(["/c", "pause"])
+            .creation_flags(CREATE_NEW_PROCESS_GROUP | CREATE_NEW_CONSOLE)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .spawn()
-            .expect("spawn cmd /c pause");
+            .expect("spawn cmd /c pause")
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn stop_windows_standalone_terminates_a_real_child_process() {
+        // Verify the end-to-end stop path: a child that doesn't shut down on
+        // the console Ctrl event must still be reliably hard-killed within the
+        // bounded fallback window.
+        let mut child = spawn_isolated_pause_child();
         let pid = child.id();
 
         let d = spt_state::testing::TempStateDir::new();
@@ -1275,11 +1593,47 @@ mod tests {
 
         stop_windows_standalone(&g)
             .await
-            .expect("stop_windows_standalone should terminate the child");
+            .expect("stop_windows_standalone should stop the child");
 
-        // Wait succeeds quickly because the process is already dead.
+        // Wait succeeds quickly because the process is now dead.
         let status = child.wait().expect("child wait");
-        assert!(!status.success(), "expected non-zero exit after terminate");
+        assert!(!status.success(), "expected non-zero exit after stop");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn stop_with_grace_hard_kills_unresponsive_child() {
+        // A child that ignores the console Ctrl event falls through to the
+        // TerminateProcess fallback and is reported as `HardKilled`. Short
+        // graceful window so the test stays fast.
+        let mut child = spawn_isolated_pause_child();
+        let pid = child.id();
+
+        let outcome = windows_impl::stop_with_grace(
+            pid,
+            std::time::Duration::from_millis(300),
+            std::time::Duration::from_secs(5),
+        )
+        .expect("stop_with_grace should hard-kill the unresponsive child");
+        assert_eq!(outcome, windows_impl::StopOutcome::HardKilled);
+
+        let status = child.wait().expect("child wait");
+        assert!(!status.success(), "expected non-zero exit after hard kill");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn stop_with_grace_errors_on_invalid_pid() {
+        // A PID that cannot be opened surfaces a RuntimeFailure rather than a
+        // false "stopped". PID 0 is the System Idle Process — OpenProcess for
+        // TERMINATE|SYNCHRONIZE on it is denied.
+        let err = windows_impl::stop_with_grace(
+            0,
+            std::time::Duration::from_millis(50),
+            std::time::Duration::from_secs(1),
+        )
+        .unwrap_err();
+        assert!(matches!(err, Error::RuntimeFailure(_)));
     }
 
     #[cfg(windows)]

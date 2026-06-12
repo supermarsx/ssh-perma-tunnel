@@ -149,6 +149,32 @@ impl Drop for StatusApiHandle {
     }
 }
 
+/// Reject an unauthenticated (`auth.mode = none`) server bound to a
+/// non-loopback interface.
+///
+/// Returns [`spt_core::Error::InvalidConfig`] when `cfg.auth.mode` is
+/// [`StatusApiAuthMode::None`](spt_config::StatusApiAuthMode::None) and
+/// `cfg.bind`'s IP is not loopback. Both `0.0.0.0` and `::` are
+/// `is_unspecified()` rather than `is_loopback()`, so wildcard binds are
+/// refused. Any non-`None` auth mode (bearer / basic / mtls) is always
+/// allowed regardless of bind address.
+///
+/// This is the runtime enforcement of the security control documented on
+/// `StatusApiAuthMode::None` and in the `spt_config` status-api module. It is
+/// called by both [`StatusApiServer::start`] (plain HTTP) and the inline TLS
+/// host (`status_api_tls::launch`).
+pub fn reject_anonymous_non_loopback(cfg: &StatusApiConfig) -> Result<(), spt_core::Error> {
+    use spt_config::StatusApiAuthMode;
+    if matches!(cfg.auth.mode, StatusApiAuthMode::None) && !cfg.bind.ip().is_loopback() {
+        return Err(spt_core::Error::InvalidConfig(format!(
+            "status-api: refusing to start with auth.mode = \"none\" on non-loopback bind {}; \
+             set an authenticated [status_api.auth] mode (bearer/basic/mtls) or bind to loopback",
+            cfg.bind
+        )));
+    }
+    Ok(())
+}
+
 /// The status API server.
 ///
 /// Construct with [`StatusApiServer::router`] (returns an axum router only,
@@ -212,6 +238,16 @@ impl StatusApiServer {
         source: Arc<dyn StateSnapshotSource>,
         resolver: &Resolver,
     ) -> Result<StatusApiHandle, spt_core::Error> {
+        // Security guard (E6-F3): refuse to start an unauthenticated API on a
+        // non-loopback interface. `auth.mode = none` + an off-loopback bind
+        // (e.g. `0.0.0.0:9617`) would expose the read-only snapshot — profiles,
+        // forwards, sessions, metrics — to every reachable client with no
+        // credential. The config-module docs and the `StatusApiAuthMode::None`
+        // doc-comment both promise this refusal; it is enforced here (and in
+        // `status_api_tls::launch` for the TLS path). `0.0.0.0`/`::` are
+        // `is_unspecified()` (not loopback), so they are correctly rejected.
+        reject_anonymous_non_loopback(cfg)?;
+
         let auth_ctx = Arc::new(AuthContext::from_config(&cfg.auth, resolver)?);
         let limiter = RateLimiter::new(RateLimitConfig::from_rps(cfg.rate_limit_rps));
         let state = AppState::new(source, cfg.expose_metrics);
@@ -241,5 +277,78 @@ impl StatusApiServer {
             shutdown_tx: Some(shutdown_tx),
             join: Some(join),
         })
+    }
+}
+
+#[cfg(test)]
+mod guard_tests {
+    use super::*;
+    use spt_config::{StatusApiAuthConfig, StatusApiAuthMode, StatusApiConfig};
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+
+    fn cfg(ip: IpAddr, mode: StatusApiAuthMode) -> StatusApiConfig {
+        StatusApiConfig {
+            enabled: true,
+            bind: SocketAddr::new(ip, 9617),
+            auth: StatusApiAuthConfig { mode },
+            ..StatusApiConfig::default()
+        }
+    }
+
+    #[test]
+    fn anonymous_non_loopback_rejected() {
+        let c = cfg(
+            IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)),
+            StatusApiAuthMode::None,
+        );
+        let err = reject_anonymous_non_loopback(&c).expect_err("0.0.0.0 + none must be rejected");
+        match err {
+            spt_core::Error::InvalidConfig(msg) => {
+                assert!(msg.contains("none"), "msg={msg}");
+                assert!(msg.contains("loopback"), "msg={msg}");
+            }
+            other => panic!("expected InvalidConfig, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn anonymous_routable_v4_rejected() {
+        let c = cfg(
+            IpAddr::V4(Ipv4Addr::new(10, 0, 0, 5)),
+            StatusApiAuthMode::None,
+        );
+        assert!(reject_anonymous_non_loopback(&c).is_err());
+    }
+
+    #[test]
+    fn anonymous_unspecified_v6_rejected() {
+        let c = cfg(IpAddr::V6(Ipv6Addr::UNSPECIFIED), StatusApiAuthMode::None);
+        assert!(reject_anonymous_non_loopback(&c).is_err());
+    }
+
+    #[test]
+    fn anonymous_loopback_allowed() {
+        let c4 = cfg(IpAddr::V4(Ipv4Addr::LOCALHOST), StatusApiAuthMode::None);
+        assert!(reject_anonymous_non_loopback(&c4).is_ok());
+        let c6 = cfg(IpAddr::V6(Ipv6Addr::LOCALHOST), StatusApiAuthMode::None);
+        assert!(reject_anonymous_non_loopback(&c6).is_ok());
+    }
+
+    #[test]
+    fn authenticated_non_loopback_allowed() {
+        // A bearer-mode server on a routable interface is fine — it is
+        // authenticated. Only `auth.mode = none` is guarded.
+        let c = StatusApiConfig {
+            enabled: true,
+            bind: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 9617),
+            auth: StatusApiAuthConfig {
+                mode: StatusApiAuthMode::Bearer {
+                    token_from: spt_secrets::SecretRef::new("api", "token")
+                        .expect("valid secret ref"),
+                },
+            },
+            ..StatusApiConfig::default()
+        };
+        assert!(reject_anonymous_non_loopback(&c).is_ok());
     }
 }

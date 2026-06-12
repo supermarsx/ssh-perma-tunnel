@@ -2,7 +2,27 @@
 
 `spt` plans firewall rules per OS and applies them idempotently. The
 binary refuses to run a non-dry-run apply without explicit operator
-confirmation; in M0 only `--dry-run` is wired.
+confirmation (`--yes`).
+
+## Apply status
+
+The per-OS renderers and the apply/remove/query plumbing **are
+implemented** (no longer dry-run-only):
+
+- The **renderers are pure and snapshot-tested** — same input always
+  yields the same native script. nftables emits `ip6` / `meta nfproto`
+  selectors for IPv6 CIDRs and a `flush table inet spt` preamble; the
+  Windows `netsh advfirewall` renderer is corrected (no invalid params).
+- **Live apply/remove** shells out to the native command (`nft`,
+  `iptables`, `pfctl`, `netsh`) and requires **administrator / root**.
+  Live execution is `#[ignore]`-gated in CI (needs a privileged runner);
+  the renderer + plan correctness is what CI verifies.
+- The applied plan is persisted to the state dir for crash-recovery /
+  idempotent `remove`.
+
+`spt firewall status` reports `"live rule application not yet
+implemented"` only on a genuinely unsupported platform — it no longer
+misdiagnoses an `UnsupportedPlatform` result as a permissions problem.
 
 ## Backends
 
@@ -16,11 +36,13 @@ confirmation; in M0 only `--dry-run` is wired.
 ## Plan & apply
 
     spt firewall plan --json
-    spt firewall apply --system --dry-run     # safe preview
-    spt firewall remove --system --dry-run
+    spt firewall apply --system --dry-run     # safe preview (no changes)
+    spt firewall apply --system --yes         # live apply (needs admin/root)
+    spt firewall remove --system --yes        # live remove (needs admin/root)
 
 The planner is **pure** — same input always yields the same script — so
-golden tests can pin the rendered output.
+golden tests can pin the rendered output. A non-dry-run `apply`/`remove`
+requires `--yes` and elevated privileges; without `--yes` it refuses.
 
 ## Interfaces, Gateways, And Policy
 

@@ -56,7 +56,7 @@ pub use envelope::{Meta, MAGIC};
 pub use sealing::{
     is_sealed, peek_meta, seal, unseal, KeySource, Passphrase, SecretSlice, X25519PublicKey,
 };
-pub use signing::{sign, verify, SigningKey, VerifyingKey};
+pub use signing::{sign, verify, verify_with_options, SigningKey, VerifyingKey};
 
 #[cfg(test)]
 mod tests;

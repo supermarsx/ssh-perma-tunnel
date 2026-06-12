@@ -129,22 +129,43 @@ where
     ///
     /// `make` is only invoked on insert.
     pub fn touch_or_insert<F: FnOnce() -> V>(&self, key: K, make: F) -> bool {
-        if let Some(mut e) = self.map.get_mut(&key) {
-            e.last_seen = Instant::now();
-            return true;
+        use dashmap::mapref::entry::Entry as DmEntry;
+        // Snapshot the flow count *before* acquiring the entry lock (see the
+        // self-deadlock note below for why it can't be read inside the entry).
+        let len_snapshot = self.map.len() as u32;
+        // E1-F10: atomic get-or-insert via DashMap's `entry()` API. Holding the
+        // entry lock across the occupied/vacant decision closes the TOCTOU
+        // window where two concurrent datagrams for the same key both `insert`
+        // (the second silently dropping the first `make()` value — for a
+        // PeerTable that orphans an allocated reply channel).
+        match self.map.entry(key) {
+            DmEntry::Occupied(mut occ) => {
+                occ.get_mut().last_seen = Instant::now();
+                true
+            }
+            DmEntry::Vacant(vac) => {
+                // Cap check. We must NOT call `self.map.len()` while holding a
+                // vacant entry: `len()` re-locks every shard for read, including
+                // the shard this entry write-locks, which would self-deadlock.
+                // So the cap is checked against a `len()` snapshot taken before
+                // the entry was acquired. The vacant entry still guarantees this
+                // *key* is inserted atomically; the only residual race is two
+                // *distinct* keys racing the cap and momentarily overshooting by
+                // up to the number of concurrent writers — a small,
+                // self-correcting overshoot that idle eviction reclaims. The
+                // value-dropping race (the correctness-relevant half) is fully
+                // closed.
+                if self.cfg.max_flows > 0 && len_snapshot >= self.cfg.max_flows {
+                    self.rejected_full.fetch_add(1, Ordering::Relaxed);
+                    return false;
+                }
+                vac.insert(Entry {
+                    value: make(),
+                    last_seen: Instant::now(),
+                });
+                true
+            }
         }
-        if self.cfg.max_flows > 0 && (self.map.len() as u32) >= self.cfg.max_flows {
-            self.rejected_full.fetch_add(1, Ordering::Relaxed);
-            return false;
-        }
-        self.map.insert(
-            key,
-            Entry {
-                value: make(),
-                last_seen: Instant::now(),
-            },
-        );
-        true
     }
 
     /// Apply `f` to the per-flow value if present; returns `true` if found.
@@ -163,17 +184,17 @@ where
         let cutoff = Instant::now()
             .checked_sub(self.cfg.idle_timeout)
             .unwrap_or_else(Instant::now);
-        let mut evict_keys = Vec::new();
-        for entry in self.map.iter() {
-            if entry.value().last_seen < cutoff {
-                evict_keys.push(entry.key().clone());
-            }
-        }
-        let n = evict_keys.len();
-        for k in evict_keys {
-            self.map.remove(&k);
-        }
-        n
+        // E1-F10: single-pass `retain` instead of a scan-then-remove. The old
+        // two-phase approach snapshotted stale keys and removed them later
+        // without re-checking `last_seen`, so a flow touched between the scan
+        // and the remove was evicted while active (forcing a needless
+        // NAT-style rebind / channel reallocation on its next packet). `retain`
+        // evaluates the predicate under the shard lock at removal time, so a
+        // concurrently-touched flow whose `last_seen` was bumped past the cutoff
+        // is kept.
+        let before = self.map.len();
+        self.map.retain(|_, e| e.last_seen >= cutoff);
+        before.saturating_sub(self.map.len())
     }
 }
 
@@ -225,5 +246,38 @@ mod tests {
         tokio::time::advance(Duration::from_secs(20)).await;
         assert_eq!(t.evict_idle(), 1);
         assert!(t.is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn evict_keeps_recently_touched_flow() {
+        // E1-F10: a flow whose last_seen is bumped past the cutoff must survive
+        // eviction. With the old two-phase scan it could be removed anyway.
+        let t: UdpFlowTable<UdpFlowKey, u32> = UdpFlowTable::new(UdpFlowTableConfig {
+            idle_timeout: Duration::from_secs(10),
+            ..Default::default()
+        });
+        t.touch_or_insert(addr(1), || 1);
+        t.touch_or_insert(addr(2), || 2);
+        // Age both past the cutoff...
+        tokio::time::advance(Duration::from_secs(20)).await;
+        // ...but re-touch addr(1) right before eviction.
+        assert!(t.touch_or_insert(addr(1), || 99));
+        assert_eq!(t.evict_idle(), 1); // only addr(2) is stale
+        assert_eq!(t.len(), 1);
+        assert!(t.with_value(&addr(1), |_| {}));
+        assert!(!t.with_value(&addr(2), |_| {}));
+    }
+
+    #[tokio::test]
+    async fn touch_existing_does_not_replace_value() {
+        // E1-F10: re-touching an existing key keeps the original value (the
+        // `make` closure is not re-invoked), so an allocated per-flow resource
+        // is never silently dropped.
+        let t: UdpFlowTable<UdpFlowKey, u32> = UdpFlowTable::new(UdpFlowTableConfig::default());
+        assert!(t.touch_or_insert(addr(1), || 1));
+        assert!(t.touch_or_insert(addr(1), || 999));
+        let mut seen = 0u32;
+        assert!(t.with_value(&addr(1), |v| seen = *v));
+        assert_eq!(seen, 1, "original value preserved on re-touch");
     }
 }

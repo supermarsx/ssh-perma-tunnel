@@ -9,6 +9,7 @@
 //! the orchestrator drive manual failover, session close, drain, and live
 //! connector requests against the running profile.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -30,6 +31,7 @@ use crate::instability::{InstabilityDetector, InstabilityWindow};
 use crate::reconnect::{Backoff, BackoffConfig};
 use crate::session::{SessionRegistry, SessionRow};
 use crate::state_machine::{ProfileEvent as SmEvent, ProfileStateMachine, ProfileStateName};
+use crate::stats::SupervisorObservers;
 
 /// Public observable events emitted by a [`ProfileSupervisor`].
 #[derive(Debug, Clone)]
@@ -97,11 +99,27 @@ pub struct ProfileSupervisorConfig {
     /// supervisor triggers a reconnect — see spec §11.3 ("missed keepalives
     /// beyond policy MUST trigger session replacement"). Default 30 s.
     pub keepalive_interval: Duration,
+    /// Per-probe timeout bounding a single `TunnelSession::keepalive` call,
+    /// independent of the probe cadence ([`Self::keepalive_interval`]).
+    ///
+    /// INVARIANT: `keepalive_timeout` MUST exceed the worst-case *healthy*
+    /// round-trip latency of a live link (which can be multi-second on a slow
+    /// but functioning path), and is deliberately decoupled from the cadence.
+    /// Coupling the timeout to the interval would abort a healthy-but-slow
+    /// probe and misclassify it as `SessionLost`, producing a spurious
+    /// reconnect storm. Default 10 s. See E1-F11.
+    pub keepalive_timeout: Duration,
     /// RNG seed (for deterministic tests). `None` ⇒ entropy.
     pub rng_seed: Option<u64>,
     /// Shared registry to publish session rows into. Default = a fresh
     /// per-supervisor registry; the [`crate::Orchestrator`] injects its own.
     pub registry: SessionRegistry,
+    /// Optional observability sinks (canonical event bus + standard metric
+    /// handles). Default = empty (every hook is a no-op). `p4-dispatch-wire`
+    /// injects a wired set via [`crate::Orchestrator::with_event_bus`] /
+    /// [`crate::Orchestrator::with_metrics`]; the orchestrator threads them in
+    /// here when it spawns each profile. See E6-F1 / E1-F13.
+    pub observers: SupervisorObservers,
 }
 
 impl Default for ProfileSupervisorConfig {
@@ -114,8 +132,10 @@ impl Default for ProfileSupervisorConfig {
             instability: InstabilityWindow::default(),
             runner_cfg: ForwardRunnerConfig::default(),
             keepalive_interval: Duration::from_secs(30),
+            keepalive_timeout: Duration::from_secs(10),
             rng_seed: None,
             registry: SessionRegistry::new(),
+            observers: SupervisorObservers::default(),
         }
     }
 }
@@ -145,6 +165,10 @@ impl std::fmt::Debug for ProfileSupervisor {
 impl ProfileSupervisor {
     /// Spawn a supervisor for `name` driving `protocol` against `endpoints`,
     /// opening `forwards` once a session establishes.
+    ///
+    /// `auth` is the profile-level / global default credential, used for any
+    /// endpoint that has no per-endpoint override. To supply per-endpoint
+    /// credentials, use [`Self::spawn_with_auth`].
     pub fn spawn(
         name: impl Into<String>,
         protocol: Arc<dyn TunnelProtocol>,
@@ -153,6 +177,35 @@ impl ProfileSupervisor {
         forwards: Vec<Forward>,
         cfg: ProfileSupervisorConfig,
     ) -> Self {
+        Self::spawn_with_auth(
+            name,
+            protocol,
+            auth,
+            HashMap::new(),
+            endpoints,
+            forwards,
+            cfg,
+        )
+    }
+
+    /// Spawn a supervisor with per-endpoint authentication.
+    ///
+    /// `default_auth` is the profile-level fallback credential; `auth_by_endpoint`
+    /// maps `(host, port)` to the resolved [`AuthConfig`] for that specific
+    /// endpoint. At connect time the supervisor looks the chosen endpoint up in
+    /// the map and uses its credential, falling back to `default_auth` when the
+    /// endpoint has no entry. Passing an empty map reproduces the behaviour of
+    /// [`Self::spawn`] exactly (every endpoint uses `default_auth`).
+    pub fn spawn_with_auth(
+        name: impl Into<String>,
+        protocol: Arc<dyn TunnelProtocol>,
+        default_auth: AuthConfig,
+        auth_by_endpoint: HashMap<(String, u16), AuthConfig>,
+        endpoints: Vec<Endpoint>,
+        forwards: Vec<Forward>,
+        cfg: ProfileSupervisorConfig,
+    ) -> Self {
+        let auth = default_auth;
         let name: String = name.into();
         let (state_tx, state_rx) = watch::channel(ProfileStateName::Idle);
         let (events_tx, events_rx) = mpsc::unbounded_channel();
@@ -165,10 +218,18 @@ impl ProfileSupervisor {
         ));
         let current_session: Arc<Mutex<Option<SessionId>>> = Arc::new(Mutex::new(None));
         let registry = cfg.registry.clone();
+        // E1-F17: hold the failover RNG in the task rather than reseeding it on
+        // every pick. With `rng_seed` set this makes weighted picks advance
+        // deterministically; in entropy mode it avoids per-pick seeding cost.
+        let rng: rand::rngs::StdRng = match cfg.rng_seed {
+            Some(s) => SeedableRng::seed_from_u64(s),
+            None => SeedableRng::from_entropy(),
+        };
         let task = ProfileTask {
             name: name.clone(),
             protocol,
             auth,
+            auth_by_endpoint,
             forwards,
             cfg,
             state_tx,
@@ -180,6 +241,8 @@ impl ProfileSupervisor {
             registry,
             current_session: Arc::clone(&current_session),
             session_up_since: None,
+            rng,
+            current_endpoint: None,
         };
         let join = tokio::spawn(task.run(control_rx));
 
@@ -304,6 +367,14 @@ impl Drop for ProfileSupervisor {
     fn drop(&mut self) {
         // Best-effort signal — non-blocking.
         let _ = self.control.try_send(Control::Shutdown);
+        // E1-F5: abort the task as a backstop so a displaced supervisor cannot
+        // keep its session and bound listeners alive (the `try_send` above can
+        // silently fail if the 16-slot control channel is full). Callers that
+        // need a graceful stop use `stop().await`, which takes the join handle
+        // before drop runs.
+        if let Some(j) = self.join.lock().take() {
+            j.abort();
+        }
     }
 }
 
@@ -314,7 +385,13 @@ impl Drop for ProfileSupervisor {
 struct ProfileTask {
     name: String,
     protocol: Arc<dyn TunnelProtocol>,
+    /// Profile-level / global default credential. Used at connect time for any
+    /// endpoint that has no entry in [`Self::auth_by_endpoint`].
     auth: AuthConfig,
+    /// Per-endpoint resolved credentials keyed by `(host, port)`. Populated from
+    /// `ProfileBundle.endpoint_auth` (multi-auth Phase 3). Empty ⇒ every endpoint
+    /// falls back to [`Self::auth`] (the pre-feature behaviour).
+    auth_by_endpoint: HashMap<(String, u16), AuthConfig>,
     forwards: Vec<Forward>,
     cfg: ProfileSupervisorConfig,
     state_tx: watch::Sender<ProfileStateName>,
@@ -331,7 +408,45 @@ struct ProfileTask {
     /// honour `BackoffConfig::reset_after` per spec §11.2:
     /// "Backoff MUST reset after a stable connected duration."
     session_up_since: Option<Instant>,
+    /// E1-F17: long-lived failover RNG. Held across picks so a seeded
+    /// supervisor advances its weighted choices instead of repeating the
+    /// first pick forever.
+    rng: rand::rngs::StdRng,
+    /// Endpoint backing the currently-active session, recorded at connect
+    /// time so a keepalive-detected loss can charge the failure to the right
+    /// endpoint (E1-F3).
+    current_endpoint: Option<Endpoint>,
 }
+
+/// A per-forward slot inside [`ProfileTask::run_active`]: the owned runner,
+/// a clone of its state watch, and the config needed to reopen it (E1-F4).
+struct ForwardSlot {
+    runner: Option<ForwardRunner>,
+    watch_rx: watch::Receiver<spt_protocol::ForwardState>,
+    name: String,
+    cfg: Option<Forward>,
+}
+
+impl ForwardSlot {
+    fn runner_state(&self) -> spt_protocol::ForwardState {
+        *self.watch_rx.borrow()
+    }
+
+    /// A forward is "healthy" when it has a live runner that is not in a
+    /// terminal failure/stopped state.
+    fn is_healthy(&self) -> bool {
+        self.runner.is_some()
+            && !matches!(
+                self.runner_state(),
+                spt_protocol::ForwardState::Failed
+                    | spt_protocol::ForwardState::Stopped
+                    | spt_protocol::ForwardState::Disabled
+            )
+    }
+}
+
+/// Small fixed backoff between per-forward reopen attempts (E1-F4).
+const FORWARD_REOPEN_BACKOFF: Duration = Duration::from_millis(500);
 
 /// Outcome of one supervised session — drives the outer `run` loop.
 enum LoopAction {
@@ -359,7 +474,9 @@ enum ActiveDecision {
         grace: Duration,
         reply: oneshot::Sender<Result<DrainReport>>,
     },
-    KeepaliveFailed,
+    /// The session-health probe failed (keepalive `Err` or timeout) — the
+    /// session is dead and must be replaced via the reconnect path.
+    SessionLost,
 }
 
 impl ProfileTask {
@@ -386,15 +503,31 @@ impl ProfileTask {
                 let _ = self.events_tx.send(ProfileEvent::BackoffExhausted {
                     profile: self.name.clone(),
                 });
+                self.cfg.observers.emit_lifecycle(
+                    "profile.backoff_exhausted",
+                    spt_events::Severity::Error,
+                    &self.name,
+                    format!(
+                        "profile `{}` exhausted reconnect backoff; giving up",
+                        self.name
+                    ),
+                    &[("attempt", serde_json::Value::from(self.backoff.attempt()))],
+                );
                 // t8-C1: notify chaos / harness observer (no-op in production).
                 crate::reconnect::notify_max_exhausted(self.backoff.attempt());
                 break;
             }
 
-            // 1. Pick endpoint.
+            // 1. Pick endpoint. E1-F1: drive the state machine at its real
+            //    boundaries. When re-entering the loop from `Reconnecting`
+            //    or `FailingOver` (after a prior failure), advance out of
+            //    that state honestly before resolving.
+            self.enter_resolving();
             let endpoint = match self.pick_endpoint() {
                 Some(ep) => ep,
                 None => {
+                    // No eligible endpoint (all cooling down): announce the
+                    // failover attempt and back off.
                     self.fire(SmEvent::FailoverPick);
                     let delay = self.next_backoff();
                     if self.sleep_or_control(delay, &mut control).await {
@@ -404,15 +537,27 @@ impl ProfileTask {
                 }
             };
 
-            // 2. Connect.
+            // 2. Connect. We fold DNS resolution into `connect`, so we fire
+            //    `ResolveOk` (→ Connecting) optimistically and only confirm
+            //    `ConnectOk` / `AuthOk` once the backend actually returns a
+            //    live session. A failure fires `ConnectFail` (→ Reconnecting).
             self.fire(SmEvent::ResolveOk);
-            self.fire(SmEvent::ConnectOk);
-            self.fire(SmEvent::AuthOk);
+            // Multi-auth Phase 3: select the credential resolved for *this*
+            // endpoint, falling back to the profile-level default when the
+            // endpoint has no per-endpoint override (empty map ⇒ always default).
+            // Cloned up front so the borrow doesn't outlive into the `select!`
+            // control arms (which take `&mut self`).
+            let endpoint_auth: AuthConfig = self
+                .auth_by_endpoint
+                .get(&(endpoint.host.clone(), endpoint.port))
+                .unwrap_or(&self.auth)
+                .clone();
             let session_res = tokio::select! {
-                r = self.protocol.connect(&endpoint, &self.auth) => r,
+                r = self.protocol.connect(&endpoint, &endpoint_auth) => r,
                 ctrl = control.recv() => {
                     match ctrl {
                         Some(Control::Shutdown) | None => {
+                            self.cleanup_session();
                             self.fire(SmEvent::Stop);
                             self.fire(SmEvent::Stopped);
                             return;
@@ -427,9 +572,14 @@ impl ProfileTask {
                             continue;
                         }
                         Some(Control::Drain { reply, .. }) => {
-                            // Nothing to drain pre-session.
+                            // Pre-session drain is terminal (E1-F18): mirror the
+                            // active-path semantics so the same command always
+                            // ends the profile.
                             let _ = reply.send(Ok(DrainReport::default()));
-                            continue;
+                            self.cleanup_session();
+                            self.fire(SmEvent::Stop);
+                            self.fire(SmEvent::Stopped);
+                            return;
                         }
                     }
                 }
@@ -439,11 +589,16 @@ impl ProfileTask {
                     self.selector
                         .lock()
                         .record_success(&endpoint.host, endpoint.port);
+                    // Connect + auth confirmed: walk the SM to EstablishingForwards.
+                    self.fire(SmEvent::ConnectOk);
+                    self.fire(SmEvent::AuthOk);
+                    self.current_endpoint = Some(endpoint.clone());
                     // t8-C1: notify chaos / harness observer (no-op in production).
                     crate::reconnect::notify_success(self.backoff.attempt());
                     s
                 }
                 Err(e) => {
+                    self.fire(SmEvent::ConnectFail);
                     self.handle_session_failure(&endpoint, &e);
                     let delay = self.next_backoff();
                     if self.sleep_or_control(delay, &mut control).await {
@@ -462,9 +617,12 @@ impl ProfileTask {
                 Ok(r) => r,
                 Err(e) => {
                     tracing::warn!(profile = %self.name, error = %e, "failed to open forwards");
-                    self.fire(SmEvent::ForwardDown);
+                    // We never reached a healthy session: abandon it and treat
+                    // this like a session loss (→ Reconnecting), not a partial
+                    // Degraded state.
+                    self.fire(SmEvent::SessionLost);
                     self.unpublish_session();
-                    let _ = session.close().await;
+                    let _ = close_session_bounded(session, self.cfg.keepalive_interval).await;
                     self.handle_session_failure(&endpoint, &e);
                     let delay = self.next_backoff();
                     if self.sleep_or_control(delay, &mut control).await {
@@ -510,14 +668,63 @@ impl ProfileTask {
         // Spec §11.3: the supervisor MUST detect session-level liveness
         // failures and trigger replacement. We drive
         // `TunnelSession::keepalive` on `cfg.keepalive_interval` and
-        // treat any `Err` as "session dead → reconnect now".
+        // treat any `Err` *or* timeout as "session dead → reconnect now".
         let mut keepalive = tokio::time::interval(self.cfg.keepalive_interval);
         // The first interval tick fires immediately; consume it so we
         // don't probe the moment we enter the loop.
         keepalive.set_missed_tick_behavior(MissedTickBehavior::Delay);
         keepalive.tick().await;
 
+        // E1-F4: observe each forward's live state. `forwards` pairs the
+        // owned runner with its watch receiver and config so a failed forward
+        // can be reopened in place while the session stays up.
+        let mut forwards: Vec<ForwardSlot> = runners
+            .into_iter()
+            .map(|r| {
+                let watch_rx = r.watch_state();
+                let name = r.name().to_owned();
+                let cfg = self.forwards.iter().find(|f| f.name == name).cloned();
+                ForwardSlot {
+                    runner: Some(r),
+                    watch_rx,
+                    name,
+                    cfg,
+                }
+            })
+            .collect();
+        // `degraded` mirrors the SM: true once we've fired ForwardDown for a
+        // forward and haven't yet recovered every forward.
+        let mut degraded = false;
+        // Pending per-forward reopen deadline (small backoff). `None` when no
+        // forward is awaiting reopen.
+        let mut reopen_at: Option<Instant> = None;
+
         let decision = loop {
+            // Build a future that resolves when any forward's state changes.
+            let any_forward_changed = async {
+                use futures::StreamExt as _;
+                if forwards.is_empty() {
+                    return std::future::pending::<usize>().await;
+                }
+                let mut futs = futures::stream::FuturesUnordered::new();
+                for (idx, slot) in forwards.iter().enumerate() {
+                    let mut rx = slot.watch_rx.clone();
+                    futs.push(async move {
+                        let _ = rx.changed().await;
+                        idx
+                    });
+                }
+                // Always at least one element here, so `next()` resolves.
+                futs.next().await.unwrap_or(0)
+            };
+
+            let reopen_tick = async {
+                match reopen_at {
+                    Some(t) => tokio::time::sleep_until(t).await,
+                    None => std::future::pending::<()>().await,
+                }
+            };
+
             tokio::select! {
                 msg = control.recv() => {
                     break match msg {
@@ -534,64 +741,191 @@ impl ProfileTask {
                     };
                 }
                 _ = keepalive.tick() => {
-                    match session.keepalive().await {
-                        Ok(()) => continue,
-                        Err(e) => {
+                    // E1-F11: bound the probe so a black-holed connection can't
+                    // wedge the control channel. Treat timeout as failure.
+                    let probe = tokio::time::timeout(
+                        self.cfg.keepalive_timeout,
+                        session.keepalive(),
+                    ).await;
+                    match probe {
+                        Ok(Ok(())) => {
+                            // E1-F8: a healthy probe accrues clean-uptime for
+                            // the instability detector. When enough clean time
+                            // has elapsed the Unstable flag clears.
+                            if self.instability.tick_healthy(Instant::now()) {
+                                let _ = self.events_tx.send(ProfileEvent::InstabilityCleared {
+                                    profile: self.name.clone(),
+                                });
+                                self.cfg.observers.emit_lifecycle(
+                                    "profile.instability_cleared",
+                                    spt_events::Severity::Info,
+                                    &self.name,
+                                    format!(
+                                        "profile `{}` instability cleared",
+                                        self.name
+                                    ),
+                                    &[],
+                                );
+                                self.fire(SmEvent::InstabilityClear);
+                            }
+                            continue;
+                        }
+                        Ok(Err(e)) => {
                             tracing::warn!(
                                 profile = %self.name,
                                 error = %e,
                                 "session keepalive failed; triggering reconnect"
                             );
-                            break ActiveDecision::KeepaliveFailed;
+                            break ActiveDecision::SessionLost;
                         }
+                        Err(_) => {
+                            tracing::warn!(
+                                profile = %self.name,
+                                "session keepalive timed out; triggering reconnect"
+                            );
+                            break ActiveDecision::SessionLost;
+                        }
+                    }
+                }
+                idx = any_forward_changed, if !forwards.is_empty() => {
+                    let st = forwards[idx].runner_state();
+                    if matches!(st, spt_protocol::ForwardState::Failed | spt_protocol::ForwardState::Stopped)
+                        && forwards[idx].cfg.is_some()
+                    {
+                        // Forward died unexpectedly while the session is up.
+                        if !degraded {
+                            degraded = true;
+                            self.fire(SmEvent::ForwardDown);
+                            let _ = self.events_tx.send(ProfileEvent::StateChanged {
+                                profile: self.name.clone(),
+                                from: ProfileStateName::Active,
+                                to: ProfileStateName::Degraded,
+                            });
+                        }
+                        // Schedule a reopen with a small backoff.
+                        if reopen_at.is_none() {
+                            reopen_at = Some(Instant::now() + FORWARD_REOPEN_BACKOFF);
+                        }
+                    }
+                }
+                _ = reopen_tick => {
+                    reopen_at = None;
+                    // Attempt to reopen every failed forward in place.
+                    self.reopen_failed_forwards(session.as_mut(), &mut forwards).await;
+                    let all_up = forwards.iter().all(ForwardSlot::is_healthy);
+                    if all_up && degraded {
+                        degraded = false;
+                        self.fire(SmEvent::ForwardsUp);
+                    } else if !all_up {
+                        // Still down — retry after another backoff.
+                        reopen_at = Some(Instant::now() + FORWARD_REOPEN_BACKOFF);
                     }
                 }
             }
         };
 
+        let runners: Vec<ForwardRunner> = forwards
+            .iter_mut()
+            .filter_map(|s| s.runner.take())
+            .collect();
+
         match decision {
             ActiveDecision::ShutdownExit => {
-                for r in runners {
-                    r.stop().await;
-                }
-                let _ = session.close().await;
+                stop_runners_bounded(runners, self.cfg.keepalive_interval).await;
+                let _ = close_session_bounded(session, self.cfg.keepalive_interval).await;
                 LoopAction::Exit
             }
             ActiveDecision::Failover { override_to, reply } => {
                 let res = self.apply_manual_override(override_to.as_deref());
+                self.emit_failover(override_to.as_deref());
                 let _ = self.events_tx.send(ProfileEvent::FailoverRequested {
                     profile: self.name.clone(),
                     override_to,
                 });
                 let _ = reply.send(res);
-                for r in runners {
-                    r.stop().await;
-                }
-                let _ = session.close().await;
+                self.fire(SmEvent::SessionLost);
+                stop_runners_bounded(runners, self.cfg.keepalive_interval).await;
+                let _ = close_session_bounded(session, self.cfg.keepalive_interval).await;
                 LoopAction::Retry(Duration::from_millis(0))
             }
             ActiveDecision::CloseSession { reply } => {
-                for r in runners {
-                    r.stop().await;
-                }
-                let _ = session.close().await;
+                self.fire(SmEvent::SessionLost);
+                stop_runners_bounded(runners, self.cfg.keepalive_interval).await;
+                let _ = close_session_bounded(session, self.cfg.keepalive_interval).await;
                 let _ = reply.send(Ok(()));
                 LoopAction::Retry(Duration::from_millis(0))
             }
             ActiveDecision::Drain { grace, reply } => {
                 let report = drain_runners(runners, grace).await;
-                let _ = session.close().await;
+                let _ = close_session_bounded(session, self.cfg.keepalive_interval).await;
                 let _ = reply.send(Ok(report));
                 LoopAction::Exit
             }
-            ActiveDecision::KeepaliveFailed => {
-                self.fire(SmEvent::ForwardDown);
-                for r in runners {
-                    r.stop().await;
+            ActiveDecision::SessionLost => {
+                // E1-F3: route session loss through the failure accounting and
+                // backoff machinery just like a connect failure.
+                self.fire(SmEvent::SessionLost);
+                stop_runners_bounded(runners, self.cfg.keepalive_interval).await;
+                let _ = close_session_bounded(session, self.cfg.keepalive_interval).await;
+                if let Some(ep) = self.current_endpoint.clone() {
+                    self.handle_session_failure(&ep, &Error::NetworkUnreachable(
+                        "session keepalive failed".into(),
+                    ));
                 }
-                let _ = session.close().await;
-                LoopAction::Retry(Duration::from_millis(0))
+                let delay = self.next_backoff();
+                LoopAction::Retry(delay)
             }
+        }
+    }
+
+    /// Attempt to reopen every failed/stopped forward in place over the live
+    /// session (E1-F4). Updates the slots' runners on success.
+    async fn reopen_failed_forwards(
+        &self,
+        session: &mut dyn TunnelSession,
+        forwards: &mut [ForwardSlot],
+    ) {
+        for slot in forwards.iter_mut() {
+            if slot.is_healthy() {
+                continue;
+            }
+            let Some(cfg) = slot.cfg.clone() else {
+                continue;
+            };
+            // Drop the dead runner first.
+            if let Some(old) = slot.runner.take() {
+                old.stop().await;
+            }
+            match ForwardRunner::start(&cfg, session, &self.cfg.runner_cfg).await {
+                Ok(r) => {
+                    slot.watch_rx = r.watch_state();
+                    slot.runner = Some(r);
+                    tracing::info!(profile = %self.name, forward = %slot.name, "forward reopened");
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        profile = %self.name,
+                        forward = %slot.name,
+                        error = %e,
+                        "forward reopen failed; will retry"
+                    );
+                }
+            }
+        }
+    }
+
+    /// E1-F1: advance honestly out of `Reconnecting` / `FailingOver` into
+    /// `Resolving` before the next connect attempt. No-op from `Idle` (the
+    /// initial `Start` already moved us to `Resolving`).
+    fn enter_resolving(&mut self) {
+        match self.sm.state() {
+            ProfileStateName::Reconnecting => {
+                self.fire(SmEvent::RetryNow);
+            }
+            ProfileStateName::FailingOver => {
+                self.fire(SmEvent::EndpointReady);
+            }
+            _ => {}
         }
     }
 
@@ -600,6 +934,7 @@ impl ProfileTask {
             Control::Shutdown => std::ops::ControlFlow::Break(()),
             Control::Failover { override_to, reply } => {
                 let res = self.apply_manual_override(override_to.as_deref());
+                self.emit_failover(override_to.as_deref());
                 let _ = self.events_tx.send(ProfileEvent::FailoverRequested {
                     profile: self.name.clone(),
                     override_to,
@@ -612,8 +947,11 @@ impl ProfileTask {
                 std::ops::ControlFlow::Continue(())
             }
             Control::Drain { reply, .. } => {
+                // E1-F18: drain is terminal in every path. With no session up
+                // there is nothing to drain, so reply with an empty report and
+                // end the profile (mirrors the active-path Exit semantics).
                 let _ = reply.send(Ok(DrainReport::default()));
-                std::ops::ControlFlow::Continue(())
+                std::ops::ControlFlow::Break(())
             }
         }
     }
@@ -657,14 +995,10 @@ impl ProfileTask {
         self.unpublish_session();
     }
 
-    fn pick_endpoint(&self) -> Option<Endpoint> {
-        let mut rng: rand::rngs::StdRng = match self.cfg.rng_seed {
-            Some(s) => SeedableRng::seed_from_u64(s),
-            None => SeedableRng::from_entropy(),
-        };
+    fn pick_endpoint(&mut self) -> Option<Endpoint> {
         let now = Instant::now();
         let sel = self.selector.lock();
-        sel.pick(&mut rng, now).ok().cloned()
+        sel.pick(&mut self.rng, now).ok().cloned()
     }
 
     fn handle_session_failure(&mut self, endpoint: &Endpoint, _e: &spt_core::Error) {
@@ -676,6 +1010,13 @@ impl ProfileTask {
             let _ = self.events_tx.send(ProfileEvent::InstabilityHit {
                 profile: self.name.clone(),
             });
+            self.cfg.observers.emit_lifecycle(
+                "profile.instability_hit",
+                spt_events::Severity::Warn,
+                &self.name,
+                format!("profile `{}` instability detector tripped", self.name),
+                &[],
+            );
             self.fire(SmEvent::InstabilityHit);
         }
     }
@@ -710,6 +1051,32 @@ impl ProfileTask {
             delay,
             attempt,
         });
+        // E6-F1: a scheduled reconnect is an alertable lifecycle event.
+        // E1-F13: bump the reconnects counter (label = profile).
+        let endpoint = self
+            .current_endpoint
+            .as_ref()
+            .map(|e| format!("{}:{}", e.host, e.port));
+        let mut fields = vec![
+            ("attempt", serde_json::Value::from(attempt)),
+            (
+                "delay_ms",
+                serde_json::Value::from(
+                    u64::try_from(delay.as_millis()).unwrap_or(u64::MAX),
+                ),
+            ),
+        ];
+        if let Some(ep) = &endpoint {
+            fields.push(("endpoint", serde_json::Value::from(ep.clone())));
+        }
+        self.cfg.observers.emit_lifecycle(
+            "profile.reconnect_scheduled",
+            spt_events::Severity::Warn,
+            &self.name,
+            format!("profile `{}` reconnect attempt {attempt} in {delay:?}", self.name),
+            &fields,
+        );
+        self.cfg.observers.inc_reconnect(&self.name);
         // t8-C1: notify chaos / harness observer (no-op in production).
         crate::reconnect::notify_attempt(attempt, delay);
         delay
@@ -729,6 +1096,7 @@ impl ProfileTask {
                     None | Some(Control::Shutdown) => true,
                     Some(Control::Failover { override_to, reply }) => {
                         let res = self.apply_manual_override(override_to.as_deref());
+                        self.emit_failover(override_to.as_deref());
                         let _ = self.events_tx.send(ProfileEvent::FailoverRequested {
                             profile: self.name.clone(),
                             override_to,
@@ -741,12 +1109,35 @@ impl ProfileTask {
                         false
                     }
                     Some(Control::Drain { reply, .. }) => {
+                        // E1-F18: drain is terminal even mid-backoff.
                         let _ = reply.send(Ok(DrainReport::default()));
-                        false
+                        true
                     }
                 }
             }
         }
+    }
+
+    /// Emit a canonical `profile.failover_requested` event (E6-F1). No-op
+    /// unless an event bus was injected.
+    fn emit_failover(&self, override_to: Option<&str>) {
+        let mut fields = Vec::new();
+        if let Some(ep) = override_to {
+            fields.push(("override_to", serde_json::Value::from(ep.to_owned())));
+        }
+        if let Some(cur) = &self.current_endpoint {
+            fields.push((
+                "endpoint",
+                serde_json::Value::from(format!("{}:{}", cur.host, cur.port)),
+            ));
+        }
+        self.cfg.observers.emit_lifecycle(
+            "profile.failover_requested",
+            spt_events::Severity::Warn,
+            &self.name,
+            format!("profile `{}` failover requested", self.name),
+            &fields,
+        );
     }
 
     fn fire(&mut self, ev: SmEvent) {
@@ -759,7 +1150,51 @@ impl ProfileTask {
                     from: prev,
                     to: new,
                 });
+                // E6-F1 / E1-F13: re-emit the transition as a canonical event
+                // and update the profile_state gauge. Both are no-ops unless a
+                // bus / metrics handle was injected.
+                let endpoint = self
+                    .current_endpoint
+                    .as_ref()
+                    .map(|e| format!("{}:{}", e.host, e.port));
+                self.cfg
+                    .observers
+                    .emit_state_change(&self.name, prev, new, endpoint.as_deref());
+                self.cfg.observers.set_profile_state(&self.name, new);
             }
+        }
+    }
+}
+
+/// Stop every runner concurrently, bounding each stop so one wedged forward
+/// (E1-F11) cannot stall profile teardown indefinitely. The grace per forward
+/// is derived from `bound`; runners that don't reach a terminal state in time
+/// are abandoned (their tasks drop when the handle drops).
+async fn stop_runners_bounded(runners: Vec<ForwardRunner>, bound: Duration) {
+    if runners.is_empty() {
+        return;
+    }
+    let grace = bound.max(Duration::from_secs(1));
+    let mut joins = Vec::with_capacity(runners.len());
+    for r in runners {
+        joins.push(tokio::spawn(async move {
+            r.stop().await;
+        }));
+    }
+    for j in joins {
+        let _ = tokio::time::timeout(grace, j).await;
+    }
+}
+
+/// Close a session with a bounded wait so a black-holed connection cannot wedge
+/// the supervisor's stop / reconnect path (E1-F11).
+async fn close_session_bounded(session: Box<dyn TunnelSession>, bound: Duration) -> Result<()> {
+    let grace = bound.max(Duration::from_secs(1));
+    match tokio::time::timeout(grace, session.close()).await {
+        Ok(r) => r,
+        Err(_) => {
+            // Abandon: dropping the box drops the underlying transport.
+            Ok(())
         }
     }
 }
@@ -1008,6 +1443,126 @@ mod tests {
         }
     }
 
+    /// A `TunnelSession` whose `keepalive()` deliberately sleeps for a fixed
+    /// duration, modelling a healthy-but-slow link (multi-RTT latency). Used to
+    /// prove the supervisor's per-probe timeout is decoupled from the cadence.
+    struct SlowKeepaliveSession {
+        probe_delay: Duration,
+        info: spt_protocol::SessionInfo,
+    }
+
+    impl SlowKeepaliveSession {
+        fn new(probe_delay: Duration) -> Self {
+            Self {
+                probe_delay,
+                info: spt_protocol::SessionInfo {
+                    backend: "slow".into(),
+                    peer_version: None,
+                    negotiated: None,
+                    established_at: 0,
+                },
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl spt_protocol::TunnelSession for SlowKeepaliveSession {
+        async fn open_local_forward(
+            &mut self,
+            _spec: &spt_protocol::LocalForwardSpec,
+        ) -> Result<spt_protocol::ForwardHandle> {
+            Err(Error::RuntimeFailure("no forwards".into()))
+        }
+        async fn open_remote_forward(
+            &mut self,
+            _spec: &spt_protocol::RemoteForwardSpec,
+        ) -> Result<spt_protocol::ForwardHandle> {
+            Err(Error::RuntimeFailure("no forwards".into()))
+        }
+        async fn open_dynamic_forward(
+            &mut self,
+            _spec: &spt_protocol::DynamicForwardSpec,
+        ) -> Result<spt_protocol::ForwardHandle> {
+            Err(Error::RuntimeFailure("no forwards".into()))
+        }
+        async fn open_udp_forward(
+            &mut self,
+            _spec: &spt_protocol::UdpForwardSpec,
+        ) -> Result<spt_protocol::ForwardHandle> {
+            Err(Error::RuntimeFailure("no forwards".into()))
+        }
+        async fn keepalive(&mut self) -> Result<()> {
+            // Healthy probe that simply takes a while to round-trip.
+            tokio::time::sleep(self.probe_delay).await;
+            Ok(())
+        }
+        async fn close(self: Box<Self>) -> Result<()> {
+            Ok(())
+        }
+        fn session_info(&self) -> spt_protocol::SessionInfo {
+            self.info.clone()
+        }
+    }
+
+    #[derive(Debug)]
+    struct SlowKeepaliveProto {
+        probe_delay: Duration,
+    }
+
+    #[async_trait::async_trait]
+    impl spt_protocol::TunnelProtocol for SlowKeepaliveProto {
+        async fn connect(
+            &self,
+            _endpoint: &Endpoint,
+            _auth: &AuthConfig,
+        ) -> Result<Box<dyn spt_protocol::TunnelSession>> {
+            Ok(Box::new(SlowKeepaliveSession::new(self.probe_delay)))
+        }
+        fn capabilities(&self) -> spt_protocol::ProtocolCapabilities {
+            spt_protocol::ProtocolCapabilities::ssh3()
+        }
+        fn name(&self) -> &'static str {
+            "slow"
+        }
+    }
+
+    /// E1-F11 regression guard: a healthy probe that is *slower than the
+    /// keepalive interval but faster than the keepalive timeout* MUST NOT be
+    /// misclassified as `SessionLost`. Before the fix the per-probe timeout was
+    /// hard-coupled to `keepalive_interval`, so this slow-but-alive probe was
+    /// aborted at the cadence and triggered a spurious reconnect storm.
+    #[tokio::test]
+    async fn slow_healthy_probe_does_not_trigger_session_lost() {
+        // Probe takes 150 ms: 3× the 50 ms interval, but well under the
+        // 2 s timeout.
+        let proto = Arc::new(SlowKeepaliveProto {
+            probe_delay: Duration::from_millis(150),
+        });
+
+        let mut cfg = ProfileSupervisorConfig::default();
+        cfg.backoff.initial_delay = Duration::from_millis(5);
+        cfg.backoff.max_delay = Duration::from_millis(10);
+        cfg.backoff.max_attempts = 0;
+        cfg.keepalive_interval = Duration::from_millis(50);
+        cfg.keepalive_timeout = Duration::from_secs(2);
+
+        let sup =
+            ProfileSupervisor::spawn("p", proto.clone(), auth(), vec![endpoint("a")], vec![], cfg);
+        let mut events = sup.take_events().unwrap();
+
+        // Run long enough that several probes complete (≥6 cadence ticks,
+        // ≥4 full 150 ms probes). With the bug, the FIRST probe would abort
+        // at 50 ms and schedule a reconnect; with the fix, none should.
+        let attempt = wait_for_reconnect_attempt(&mut events, Duration::from_secs(1)).await;
+        assert!(
+            attempt.is_none(),
+            "a slow-but-healthy probe (150 ms < 2 s timeout) must NOT trigger a \
+             reconnect; got reconnect attempt {attempt:?}"
+        );
+
+        sup.stop().await;
+    }
+
     #[tokio::test]
     async fn reset_after_short_uptime_does_not_reset() {
         // Session is up only briefly (< reset_after) before keepalive
@@ -1120,6 +1675,177 @@ mod tests {
         sup.stop().await;
     }
 
+    /// E1-F1: after a keepalive-detected loss and a successful reconnect, the
+    /// profile MUST re-enter `Active` (it used to get stuck in `Degraded`
+    /// forever because `ForwardsUp` was illegal from `Degraded` and success
+    /// events were fired pre-connect).
+    #[tokio::test]
+    async fn reenters_active_after_keepalive_reconnect() {
+        let proto = Arc::new(ToggleProto::new());
+        let keepalive_fail = Arc::clone(&proto.keepalive_fail);
+
+        let mut cfg = ProfileSupervisorConfig::default();
+        cfg.backoff.initial_delay = Duration::from_millis(5);
+        cfg.backoff.max_delay = Duration::from_millis(10);
+        cfg.backoff.max_attempts = 0;
+        cfg.keepalive_interval = Duration::from_millis(40);
+
+        // Two endpoints: a keepalive failure cools the active one (60s floor),
+        // so the reconnect must fail over to the sibling. Both share the toggle,
+        // so once keepalive succeeds again the new session stays Active.
+        let sup = ProfileSupervisor::spawn(
+            "p",
+            proto.clone(),
+            auth(),
+            vec![endpoint("a"), endpoint("b")],
+            vec![],
+            cfg,
+        );
+        let mut rx = sup.watch_state();
+
+        // Wait for first Active.
+        wait_for_state(&mut rx, ProfileStateName::Active).await;
+
+        // Trip keepalive → session loss → reconnect. Connect still succeeds.
+        keepalive_fail.store(true, std::sync::atomic::Ordering::SeqCst);
+        // Wait until we leave Active (Reconnecting/Resolving/...).
+        loop {
+            if *rx.borrow() != ProfileStateName::Active {
+                break;
+            }
+            rx.changed().await.unwrap();
+        }
+        // Let keepalive succeed again so the new session stays up.
+        keepalive_fail.store(false, std::sync::atomic::Ordering::SeqCst);
+
+        // We must return to Active, not be stuck in Degraded.
+        wait_for_state(&mut rx, ProfileStateName::Active).await;
+        assert!(
+            proto.connect_count.load(std::sync::atomic::Ordering::SeqCst) >= 2,
+            "expected a real reconnect (≥2 connects)"
+        );
+        sup.stop().await;
+    }
+
+    async fn wait_for_state(
+        rx: &mut watch::Receiver<ProfileStateName>,
+        target: ProfileStateName,
+    ) {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            if *rx.borrow() == target {
+                return;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "state never reached {target:?} (now {:?})",
+                *rx.borrow()
+            );
+            let _ = tokio::time::timeout(Duration::from_millis(200), rx.changed()).await;
+        }
+    }
+
+    /// E6-F1 (supervisor side): a supervisor with an injected [`EventBus`]
+    /// re-emits its state transitions as canonical `profile.*` events. We drive
+    /// it to `Active` via the mock protocol and assert `profile.connected`
+    /// arrives on the bus carrying the profile id.
+    #[tokio::test]
+    async fn injected_event_bus_receives_state_transition_events() {
+        use spt_events::{EventBus, Severity};
+
+        let bus = EventBus::default();
+        let mut rx = bus.subscribe();
+
+        let proto = Arc::new(MockTunnelProtocol::new());
+        let cfg = ProfileSupervisorConfig {
+            observers: crate::stats::SupervisorObservers {
+                event_bus: Some(bus),
+                metrics: None,
+            },
+            ..Default::default()
+        };
+        let sup = ProfileSupervisor::spawn(
+            "alerting-profile",
+            proto.clone(),
+            auth(),
+            vec![endpoint("a")],
+            vec![],
+            cfg,
+        );
+
+        // Wait until the profile reaches Active.
+        let mut state_rx = sup.watch_state();
+        loop {
+            if *state_rx.borrow() == ProfileStateName::Active {
+                break;
+            }
+            state_rx.changed().await.unwrap();
+        }
+
+        // Drain the bus until we see the canonical `profile.connected` event.
+        let mut saw_connected = false;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        while tokio::time::Instant::now() < deadline {
+            match tokio::time::timeout(Duration::from_millis(200), rx.recv()).await {
+                Ok(Ok(ev)) => {
+                    if ev.kind.as_str() == "profile.connected" {
+                        assert_eq!(ev.severity, Severity::Info);
+                        assert_eq!(
+                            ev.profile_id.as_ref().map(spt_core::ProfileId::as_str),
+                            Some("alerting-profile")
+                        );
+                        saw_connected = true;
+                        break;
+                    }
+                }
+                Ok(Err(_)) | Err(_) => continue,
+            }
+        }
+        assert!(
+            saw_connected,
+            "expected a canonical profile.connected event on the injected bus"
+        );
+        sup.stop().await;
+    }
+
+    /// The injected metrics handle's `reconnects` counter advances when the
+    /// supervisor schedules a reconnect (E1-F13).
+    #[tokio::test]
+    async fn injected_metrics_count_reconnects() {
+        use spt_observability::metrics::MetricsExporter;
+
+        let metrics = MetricsExporter::new().unwrap().standard().clone();
+
+        let proto = Arc::new(MockTunnelProtocol::new());
+        proto.set_connect_fails(true); // force the reconnect path
+        let mut cfg = ProfileSupervisorConfig::default();
+        cfg.backoff.initial_delay = Duration::from_millis(1);
+        cfg.backoff.max_delay = Duration::from_millis(2);
+        cfg.backoff.max_attempts = 3;
+        cfg.observers = crate::stats::SupervisorObservers {
+            event_bus: None,
+            metrics: Some(metrics.clone()),
+        };
+        let sup =
+            ProfileSupervisor::spawn("recon", proto, auth(), vec![endpoint("a")], vec![], cfg);
+        let mut events = sup.take_events().unwrap();
+
+        // Wait until backoff is exhausted (several reconnects scheduled).
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+        while tokio::time::Instant::now() < deadline {
+            match tokio::time::timeout(Duration::from_millis(100), events.recv()).await {
+                Ok(Some(ProfileEvent::BackoffExhausted { .. })) => break,
+                Ok(Some(_)) => continue,
+                Ok(None) | Err(_) => {}
+            }
+        }
+        assert!(
+            metrics.reconnects.with_label_values(&["recon"]).get() >= 1,
+            "expected the reconnects counter to advance for the failing profile"
+        );
+        sup.stop().await;
+    }
+
     #[tokio::test]
     async fn endpoint_key_round_trip() {
         let (h, p) = parse_endpoint_key("example.com:2222").unwrap();
@@ -1168,5 +1894,185 @@ mod tests {
         );
         let s = format!("{e}");
         assert!(s.contains("retry: retry with backoff"));
+    }
+
+    // ──────── multi-auth Phase 3: per-endpoint credential selection ────
+
+    /// A `TunnelProtocol` that records, per connect, the `(host:port)` it was
+    /// asked to reach and the `AuthConfig.username` it was handed. Lets a test
+    /// assert the supervisor selected the credential resolved for *that*
+    /// endpoint rather than one profile-wide default. `connect` always
+    /// succeeds, then the session's keepalive holds the loop open.
+    #[derive(Debug, Clone)]
+    struct RecordingAuthProto {
+        seen: Arc<Mutex<Vec<(String, String)>>>,
+    }
+
+    impl RecordingAuthProto {
+        fn new() -> Self {
+            Self {
+                seen: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+
+        /// `(host:port → username)` recorded across all connects so far.
+        fn pairs(&self) -> Vec<(String, String)> {
+            self.seen.lock().clone()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl spt_protocol::TunnelProtocol for RecordingAuthProto {
+        async fn connect(
+            &self,
+            endpoint: &Endpoint,
+            auth: &AuthConfig,
+        ) -> Result<Box<dyn spt_protocol::TunnelSession>> {
+            self.seen.lock().push((
+                format!("{}:{}", endpoint.host, endpoint.port),
+                auth.username.clone(),
+            ));
+            // Healthy session that never fails keepalive, so the supervisor
+            // stays Active on the first endpoint it connects.
+            Ok(Box::new(SlowKeepaliveSession::new(Duration::from_secs(0))))
+        }
+        fn capabilities(&self) -> spt_protocol::ProtocolCapabilities {
+            spt_protocol::ProtocolCapabilities::ssh3()
+        }
+        fn name(&self) -> &'static str {
+            "recording-auth"
+        }
+    }
+
+    /// A profile with two endpoints, each carrying a *distinct* `AuthConfig`,
+    /// drives the supervisor's per-endpoint credential lookup: the mock protocol
+    /// must receive the username matching the endpoint it was asked to connect.
+    #[tokio::test]
+    async fn per_endpoint_auth_is_passed_to_matching_endpoint() {
+        let proto = Arc::new(RecordingAuthProto::new());
+
+        let ep_a = Endpoint::new("host-a", 22);
+        let ep_b = Endpoint::new("host-b", 2022);
+
+        let auth_a = AuthConfig::new("alice", vec![]);
+        let auth_b = AuthConfig::new("bob", vec![]);
+
+        let mut map: HashMap<(String, u16), AuthConfig> = HashMap::new();
+        map.insert(("host-a".to_owned(), 22), auth_a.clone());
+        map.insert(("host-b".to_owned(), 2022), auth_b.clone());
+
+        // Priority failover picks the first endpoint; the default_auth is a
+        // sentinel that must NOT be used for either endpoint.
+        let default_auth = AuthConfig::new("SHOULD-NOT-BE-USED", vec![]);
+
+        let sup = ProfileSupervisor::spawn_with_auth(
+            "p",
+            proto.clone(),
+            default_auth,
+            map,
+            vec![ep_a, ep_b],
+            vec![],
+            ProfileSupervisorConfig::default(),
+        );
+
+        // Wait until at least one connect has been recorded.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            if !proto.pairs().is_empty() {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "no connect was recorded"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+
+        // The first connect targets the priority endpoint (host-a:22) and MUST
+        // carry alice's credential, never the sentinel default.
+        let pairs = proto.pairs();
+        let (host_port, username) = &pairs[0];
+        assert_eq!(host_port, "host-a:22");
+        assert_eq!(
+            username, "alice",
+            "endpoint host-a:22 must receive its own resolved auth (alice), \
+             got `{username}`"
+        );
+        assert_ne!(
+            username, "SHOULD-NOT-BE-USED",
+            "the profile-wide default must not be used when a per-endpoint \
+             override exists"
+        );
+
+        sup.stop().await;
+    }
+
+    /// Failover to the second endpoint hands the protocol *that* endpoint's
+    /// credential (bob), proving the lookup is keyed per `(host, port)` rather
+    /// than fixed to the first pick.
+    #[tokio::test]
+    async fn per_endpoint_auth_follows_failover_to_second_endpoint() {
+        let proto = Arc::new(RecordingAuthProto::new());
+
+        let ep_a = Endpoint::new("host-a", 22);
+        let ep_b = Endpoint::new("host-b", 2022);
+
+        let mut map: HashMap<(String, u16), AuthConfig> = HashMap::new();
+        map.insert(("host-a".to_owned(), 22), AuthConfig::new("alice", vec![]));
+        map.insert(("host-b".to_owned(), 2022), AuthConfig::new("bob", vec![]));
+
+        let sup = ProfileSupervisor::spawn_with_auth(
+            "p",
+            proto.clone(),
+            AuthConfig::new("default", vec![]),
+            map,
+            vec![ep_a, ep_b],
+            vec![],
+            ProfileSupervisorConfig::default(),
+        );
+
+        // Wait for the first connect (host-a).
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            if !proto.pairs().is_empty() {
+                break;
+            }
+            assert!(tokio::time::Instant::now() < deadline, "no first connect");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+
+        // Pin failover to host-b:2022 and force the active session to drop.
+        sup.failover(Some("host-b:2022")).await.unwrap();
+
+        // Wait for a connect that targeted host-b carrying bob.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+        loop {
+            if proto
+                .pairs()
+                .iter()
+                .any(|(hp, user)| hp == "host-b:2022" && user == "bob")
+            {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "never connected host-b:2022 with bob's auth; saw {:?}",
+                proto.pairs()
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+
+        // No connect to host-b should ever have used alice's or the default
+        // credential.
+        for (hp, user) in proto.pairs() {
+            if hp == "host-b:2022" {
+                assert_eq!(
+                    user, "bob",
+                    "host-b:2022 must always receive bob's resolved auth"
+                );
+            }
+        }
+
+        sup.stop().await;
     }
 }

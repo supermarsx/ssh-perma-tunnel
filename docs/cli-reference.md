@@ -1,6 +1,6 @@
 # CLI Reference
 
-`spt` is structured as a Docker-style command tree with 21 top-level groups.
+`spt` is structured as a Docker-style command tree with 25 top-level groups.
 The canonical flag listing is generated from the Clap command tree and is
 available through:
 
@@ -33,7 +33,7 @@ surfaces, completion support, and exit-code contract.
 
 | Group | Command surface |
 |-------|-----------------|
-| `config` | `init`, `validate`, `doctor`, `render`, `diff`, `migrate`, `reload`, `pull`, `trust add-url` |
+| `config` | `init`, `validate`, `doctor`, `render`, `diff`, `migrate`, `reload`, `pull`, `trust add-url`, `encrypt`, `decrypt`, `edit`, `crypt rotate` |
 | `profile` | `list`, `show`, `add`, `configure`, `set`, `enable`, `disable`, `remove`, `test` |
 | `forward` | `list`, `show`, `add local`, `add remote`, `explain`, `test`, `throttle`, `remove` |
 | `tunnel` | `run`, `status`, `stats`, `sessions`, `stop`, `reload`, `health`, `failover` |
@@ -48,7 +48,8 @@ surfaces, completion support, and exit-code contract.
 | `event` | `list`, `test`, `replay`, `sink list`, `sink test` |
 | `stats` | `summary`, `live`, `connections`, `throughput`, `errors`, `export` |
 | `session` | `list`, `show`, `close`, `drain`, `top` |
-| `sftp` | `test`, `list`, `stat`, `get`, `put`, `mkdir`, `rm`, `rmdir`, `rename`, `mount list`, `mount add`, `mount remove`, `mount plan`, `drive list`, `drive add`, `drive remove`, `drive plan` |
+| `ftp` | `translator serve` |
+| `sftp` | `test`, `list`, `stat`, `get`, `put`, `mkdir`, `rm`, `rmdir`, `rename`, `cat`, `tail`, `chmod`, `symlink`, `readlink`, `realpath`, `put-recursive`, `get-recursive`, `mount list`, `mount add`, `mount remove`, `mount plan`, `mount start`, `mount stop`, `umount`, `drive list`, `drive add`, `drive remove`, `drive plan` |
 | `diagnose` | `run`, `network`, `auth`, `trust`, `dns`, `bind`, `port`, `service`, `secrets`, `observability`, `mcp`, `bundle` |
 | `benchmark` | `run`, `latency`, `throughput`, `udp`, `reconnect`, `dns`, `limits`, `report compare`, `report export` |
 | `mcp` | `serve`, `inspect`, `policy show`, `policy set` |
@@ -278,23 +279,64 @@ cargo run -p spt-bin --bin spt-mangen -- --out packaging/man
 ## Exit Codes
 
 The binary uses stable process exit codes from `crates/spt-core/src/exit_code.rs`.
-The most common are:
+The numeric value of each code is part of the public CLI contract and never
+changes. The full table (kept in lockstep with the `ExitCode` enum) is:
 
 | Code | Name | Meaning |
 |------|------|---------|
 | 0 | `Success` | Successful completion. |
-| 1 | `InvalidArgs` | Bad CLI arguments. |
-| 2 | `InvalidConfig` | Config failed to load or validate. |
-| 3 | `RuntimeFailure` | Generic runtime failure. |
-| 5 | `AuthFailed` | Authentication failed. |
-| 6 | `TrustFailed` | Host key or TLS pin verification failed. |
-| 8 | `UnsupportedFeature` | Requested capability is not supported. |
-| 9 | `ServiceManagerFailed` | Native service manager operation failed. |
-| 16 | `StateLockFailed` | Another `spt` process owns the state lock. |
-| 17 | `SecretUnavailable` | Secret could not be resolved. |
-| 19 | `KeyFailure` | Key generation, parsing, or certificate failure. |
-| 20 | `PermissionDenied` | OS-level permission denied. |
-| 22 | `ConfigReloadRejected` | Reload was rejected. |
-| 23 | `Timeout` | Operation timed out. |
-| 24 | `OutOfMemory` | Memory allocation failure or configured memory cap. |
-| 26 | `McpFailed` | MCP server or policy failure. |
+| 1 | `InvalidArgs` | Invalid command-line arguments. |
+| 2 | `InvalidConfig` | Configuration file failed to load or validate. |
+| 3 | `RuntimeFailure` | Generic runtime failure not covered by a more specific code. |
+| 4 | `RequiredProfileFailed` | One or more profiles marked `required` failed to start or stay up. |
+| 5 | `AuthFailed` | Authentication to a remote endpoint failed. |
+| 6 | `TrustFailed` | Trust verification (host key, TLS pin, certificate) failed. |
+| 7 | `LocalBindFailed` | A local listening bind failed. |
+| 8 | `RemoteBindFailed` | A remote/forwarded bind failed. |
+| 9 | `ServiceManagerFailed` | A service-manager operation (install, start, stop, ...) failed. |
+| 10 | `UnsupportedPlatform` | Platform or feature is not supported. |
+| 11 | `DnsFailed` | DNS resolution or the internal DNS resolver failed. |
+| 12 | `NetworkUnreachable` | Network unreachable or connection refused. |
+| 13 | `KeepaliveTimeout` | Keepalive timed out. |
+| 14 | `ReloadFailed` | `config reload` failed. |
+| 15 | `LoggingSinkUnavailable` | A required logging sink is unavailable. |
+| 16 | `StateLockFailed` | State directory or state-lock acquisition failed. |
+| 17 | `SecretUnavailable` | A referenced secret is unavailable, locked, or denied. |
+| 18 | `SecretCryptoFailed` | Secret encryption or decryption failed. |
+| 19 | `KeyFailure` | Key generation, parsing, or file-permission check failed. |
+| 20 | `PermissionDenied` | Permission denied. |
+| 21 | `ResourceExhausted` | Resource exhausted or out-of-memory. |
+| 22 | `RateLimited` | A rate limit or throttle policy rejected the operation. |
+| 23 | `FailoverExhausted` | All failover targets exhausted. |
+| 24 | `SnmpOrMetricsFailed` | SNMP agent or metrics exporter failed. |
+| 25 | `WindowsEventLogFailed` | A Windows Event Log operation failed. |
+| 26 | `McpFailed` | MCP server policy or operation failed. |
+| 27 | `RemoteSinkRejected` | A remote observability sink rejected delivered data. |
+| 28 | `PartialDegraded` | Partial success with degraded non-required profiles. |
+| 29 | `HealthCheckFailed` | A health check failed. |
+| 30 | `VersionOrMigrationFailed` | Schema version or migration failure. |
+| 31 | `InternalError` | Internal error (assertion, invariant, or `unreachable`). |
+| 32 | `DiagnosticFailed` | A diagnostic check reported failure. |
+| 33 | `DiagnosticBundleFailed` | Diagnostic bundle generation failed. |
+| 34 | `BenchmarkFailed` | A benchmark run failed. |
+| 35 | `BenchmarkRefused` | Benchmark refused by safety policy. |
+| 36 | `SessionNotFound` | Session not found. |
+| 37 | `SessionCloseFailed` | Session close or drain failed. |
+
+### `tunnel health` exit contract
+
+`spt tunnel health` does **not** use the table above. It is a probe command
+whose exit status encodes the health verdict directly (analogous to
+`systemctl is-active`), so monitoring tooling can branch on `$?`:
+
+| Code | Verdict | Meaning |
+|------|---------|---------|
+| 0 | green | All checked profiles are healthy. |
+| 1 | yellow | Degraded — at least one profile is reconnecting or partially up. |
+| 2 | red | Unhealthy — one or more checked profiles are down. |
+| 3 | unknown | Health could not be determined (no running supervisor / no state). |
+
+These values are scoped to `tunnel health` and intentionally overlap the
+numeric range of the global table; do not interpret a `tunnel health` exit of
+`2` as `InvalidConfig`. The same contract is shown in `spt tunnel health
+--help`.

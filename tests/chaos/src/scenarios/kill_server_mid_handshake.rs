@@ -10,13 +10,14 @@
 //! * at least 2 reconnect attempts,
 //! * attempt deltas are within the configured backoff ceiling.
 //!
-//! ## `#[ignore]`'d because…
+//! ## Determinism
 //!
-//! Even with the TCP-probe, this scenario is timing-sensitive (the
-//! `Partition` window must elapse mid-probe; the OS scheduler can
-//! occasionally land the probe before the partition triggers and the
-//! scenario gets a spurious `on_success`). For deterministic CI we keep
-//! it `#[ignore]`'d and run under `SPT_CHAOS_FULL=1`.
+//! Earlier revisions started in `Pristine` and raced a behaviour swap
+//! mid-probe, which was flaky. This version starts in
+//! `Partition { after: ZERO }` so *every* accepted connection goes silent
+//! immediately — the probe always times out and the supervisor always
+//! retries. With the race removed the scenario is deterministic and runs
+//! on every PR (it no longer needs `SPT_CHAOS_FULL=1`).
 
 use std::time::Duration;
 
@@ -26,7 +27,6 @@ use crate::scenarios::common::{
 use spt_chaos_proxy::ChaosBehaviour;
 
 #[tokio::test]
-#[ignore = "timing-sensitive — run under SPT_CHAOS_FULL=1"]
 async fn kill_server_mid_handshake() {
     let echo = EchoServer::spawn().await.expect("echo server");
     // Start in Partition: every accepted connection goes silent

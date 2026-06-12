@@ -26,9 +26,16 @@ pub(crate) fn resolve_secret(s: &SecretRef) -> Result<String> {
     match s {
         SecretRef::Env(name) => std::env::var(name)
             .map_err(|_| Error::InvalidConfig(format!("env var `{name}` not set"))),
-        SecretRef::File(path) => std::fs::read_to_string(path)
-            .map(|s| s.trim_end_matches(['\r', '\n']).to_string())
-            .map_err(|e| Error::InvalidConfig(format!("read {path}: {e}"))),
+        SecretRef::File(path) => {
+            // Enforce the same 0400/0600 (Unix) / DACL-audit (Windows) check
+            // the spt-secrets file backend applies, instead of a bare read.
+            // E2-F2: previously this path skipped the mode check entirely.
+            spt_secrets::file::check_mode(std::path::Path::new(path))
+                .map_err(|e| Error::InvalidConfig(format!("secret file {path}: {e}")))?;
+            std::fs::read_to_string(path)
+                .map(|s| s.trim_end_matches(['\r', '\n']).to_string())
+                .map_err(|e| Error::InvalidConfig(format!("read {path}: {e}")))
+        }
         SecretRef::Vault { .. } => Err(Error::InvalidConfig(
             "ssh3 backend cannot resolve `secret://` refs directly; \
              pre-resolve via spt-secrets and pass as env: or file://"
@@ -222,8 +229,33 @@ mod tests {
                 .unwrap_or(0)
         ));
         std::fs::write(&path, b"value-on-disk\r\n\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
         let got = resolve_secret(&SecretRef::File(path.to_string_lossy().into())).unwrap();
         assert_eq!(got, "value-on-disk");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_secret_file_rejects_world_readable() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!(
+            "spt-ssh3-test-loose-{}-{}.txt",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::write(&path, b"value-on-disk").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let err = resolve_secret(&SecretRef::File(path.to_string_lossy().into())).unwrap_err();
+        assert!(matches!(err, Error::InvalidConfig(_)), "got {err:?}");
         let _ = std::fs::remove_file(&path);
     }
 

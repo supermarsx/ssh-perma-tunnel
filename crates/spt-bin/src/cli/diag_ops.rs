@@ -163,7 +163,7 @@ pub async fn auth(global: &GlobalOpts, args: DiagnoseAuthArgs) -> Result<()> {
         diag = AuthDiagnostic::for_profile(p);
     }
     let checks = diag.run(&ctx).await;
-    render_checks(&checks, args.json)?;
+    render_checks(global, &checks, args.json)?;
     if args.probe {
         eprintln!(
             "spt: --probe live-connect not yet exposed by spt-cli; structural validation only"
@@ -180,7 +180,7 @@ pub async fn trust(global: &GlobalOpts, args: DiagnoseTrustArgs) -> Result<()> {
         diag = TrustDiagnostic::for_profile(p);
     }
     let checks = diag.run(&ctx).await;
-    render_checks(&checks, args.json)?;
+    render_checks(global, &checks, args.json)?;
     fail_if_any_failures(&checks)
 }
 
@@ -192,12 +192,12 @@ pub async fn observability(global: &GlobalOpts, args: DiagnoseObservabilityArgs)
         diag = ObservabilityDiagnostic::for_sink(s);
     }
     let checks = diag.run(&ctx).await;
-    render_checks(&checks, args.json)?;
+    render_checks(global, &checks, args.json)?;
     fail_if_any_failures(&checks)
 }
 
 /// `spt diagnose port --host <h> --port <p> [--tcp|--udp] [--autodetect-service]`.
-pub async fn port(_global: &GlobalOpts, args: DiagnosePortArgs) -> Result<()> {
+pub async fn port(global: &GlobalOpts, args: DiagnosePortArgs) -> Result<()> {
     let target_addr = format!("{}:{}", args.host, args.port);
     let mut output = serde_json::Map::new();
     output.insert(
@@ -212,7 +212,7 @@ pub async fn port(_global: &GlobalOpts, args: DiagnosePortArgs) -> Result<()> {
             Err(e) => {
                 output.insert("reachable".into(), serde_json::Value::Bool(false));
                 output.insert("error".into(), serde_json::Value::String(e.to_string()));
-                return print_port(&output, args.json, &target_addr);
+                return print_port(global, &output, args.json, &target_addr);
             }
         };
         let Some(addr) = parsed else {
@@ -221,7 +221,7 @@ pub async fn port(_global: &GlobalOpts, args: DiagnosePortArgs) -> Result<()> {
                 "error".into(),
                 serde_json::Value::String("dns: no addresses".into()),
             );
-            return print_port(&output, args.json, &target_addr);
+            return print_port(global, &output, args.json, &target_addr);
         };
         let det = autodetect_udp(addr, Duration::from_secs(3)).await;
         match det {
@@ -237,7 +237,7 @@ pub async fn port(_global: &GlobalOpts, args: DiagnosePortArgs) -> Result<()> {
                 output.insert("reachable".into(), serde_json::Value::Bool(false));
             }
         }
-        return print_port(&output, args.json, &target_addr);
+        return print_port(global, &output, args.json, &target_addr);
     }
 
     output.insert("transport".into(), serde_json::Value::String("tcp".into()));
@@ -266,7 +266,7 @@ pub async fn port(_global: &GlobalOpts, args: DiagnosePortArgs) -> Result<()> {
             output.insert("error".into(), serde_json::Value::String(e.to_string()));
         }
     }
-    print_port(&output, args.json, &target_addr)
+    print_port(global, &output, args.json, &target_addr)
 }
 
 // ---------------------------------------------------------------------------
@@ -289,11 +289,9 @@ fn build_context(global: &GlobalOpts) -> Result<DiagnosticContext> {
     Ok(ctx)
 }
 
-fn render_checks(checks: &[Check], json: bool) -> Result<()> {
-    if json {
-        let v = serde_json::to_string_pretty(checks)
-            .map_err(|e| Error::DiagnosticBundleFailed(e.to_string()))?;
-        println!("{v}");
+fn render_checks(global: &GlobalOpts, checks: &[Check], json: bool) -> Result<()> {
+    if crate::cli::tunnel_ops::emit(global, json, &checks)? {
+        // machine output written under the effective format
     } else if checks.is_empty() {
         println!("(no checks ran)");
     } else {
@@ -323,14 +321,13 @@ fn fail_if_any_failures(checks: &[Check]) -> Result<()> {
 }
 
 fn print_port(
+    global: &GlobalOpts,
     output: &serde_json::Map<String, serde_json::Value>,
     json: bool,
     target: &str,
 ) -> Result<()> {
-    if json {
-        let s = serde_json::to_string_pretty(output)
-            .map_err(|e| Error::RuntimeFailure(e.to_string()))?;
-        println!("{s}");
+    if crate::cli::tunnel_ops::emit(global, json, output)? {
+        // machine output written
     } else if output.get("reachable") == Some(&serde_json::Value::Bool(true)) {
         let svc = output.get("service").and_then(|v| v.as_str()).unwrap_or("");
         if svc.is_empty() {
@@ -361,6 +358,7 @@ mod tests {
             config_fingerprint: None,
             state_dir: None,
             profile: None,
+            portable: false,
             output: OutputFormat::Json,
             json: true,
             log_level: LogLevel::Error,
@@ -606,9 +604,10 @@ agent = true
 
     #[test]
     fn render_checks_handles_empty_human_and_jsonl_paths() {
+        let g = global(None);
         let checks: Vec<Check> = Vec::new();
-        render_checks(&checks, false).unwrap();
-        render_checks(&checks, true).unwrap();
+        render_checks(&g, &checks, false).unwrap();
+        render_checks(&g, &checks, true).unwrap();
     }
 
     #[test]
@@ -620,6 +619,27 @@ agent = true
         )
         .with_evidence("evidence here")
         .with_remediation("remedy goes here");
-        render_checks(&[c], false).unwrap();
+        render_checks(&global(None), &[c], false).unwrap();
+    }
+
+    // E4-F6: global `--json` and leaf `--json` resolve to the same effective
+    // machine format for a representative diagnose command.
+    #[test]
+    fn global_json_and_leaf_json_are_equivalent_for_diag_ops() {
+        use crate::cli::tunnel_ops::effective_format;
+        let mut g_global = global(None);
+        g_global.json = true;
+        g_global.output = spt_cli::OutputFormat::Human;
+        let mut g_leaf = global(None);
+        g_leaf.json = false;
+        g_leaf.output = spt_cli::OutputFormat::Human;
+        assert_eq!(
+            effective_format(&g_global, false),
+            effective_format(&g_leaf, true),
+        );
+        assert_eq!(
+            effective_format(&g_global, false),
+            spt_cli::OutputFormat::Json
+        );
     }
 }

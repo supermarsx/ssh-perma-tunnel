@@ -7,20 +7,23 @@
 //!
 //! ## Running
 //!
-//! Most scenarios are `#[ignore]`'d by default because they are timing-
-//! sensitive and would flake under CI load. To run the full suite:
+//! Ten of the twelve scenarios are deterministic and run on every PR (the
+//! Linux CI `chaos` job runs the default set). The two remaining ones are
+//! feature-gated — they depend on chaos-proxy behaviours that are not yet
+//! implemented (`DnsAnswerRotation`, `HostKeyChurn`) — and stay `#[ignore]`'d
+//! with a reason explaining what would un-block them. To run the ignored
+//! pair anyway (they currently only assert plumbing):
 //!
 //! ```bash
-//! SPT_CHAOS_FULL=1 cargo test \
-//!     --manifest-path tests/chaos/Cargo.toml -- --ignored
+//! cargo test --manifest-path tests/chaos/Cargo.toml -- --ignored
 //! ```
 //!
 //! ## PR-gating vs ignored
 //!
 //! | Status | Scenarios |
 //! |---|---|
-//! | PR-gating (run on every PR) | `max_attempts_exhaustion`, `rst_storm_100_per_sec` |
-//! | `#[ignore]` — runs under `SPT_CHAOS_FULL=1` | the remaining 10 |
+//! | PR-gating (run on every PR) | `max_attempts_exhaustion`, `rst_storm_100_per_sec`, `kill_server_mid_handshake`, `kill_server_mid_data`, `network_partition_during_keepalive`, `latency_spike_10ms_to_500ms`, `slow_loris_connect`, `half_close`, `repeated_quick_reconnects`, `reset_after_stable_uptime` (10) |
+//! | `#[ignore]` — feature-gated, cannot run yet | `dns_flap_ttl_1s`, `host_key_churn_after_restart` (2) |
 //!
 //! See `.orchestration/logs/t8-C2.md` for the full status matrix +
 //! reconnect-logic bugs surfaced during scenario authoring.

@@ -15,6 +15,9 @@ DAEMON_USER="{{user}}"
 PIDFILE="/var/run/${NAME}.pid"
 WORKDIR="{{working_dir}}"
 
+# Environment exports from [profiles].env (blank when none configured).
+{{env_exports}}
+
 case "$1" in
     start)
         echo "Starting ${NAME}"

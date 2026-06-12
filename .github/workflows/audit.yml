@@ -1,0 +1,138 @@
+# =============================================================================
+# audit — weekly dependency-vulnerability scan (non-gating)
+# =============================================================================
+#
+# Why this is a SEPARATE workflow, not a CI job (E9-F2):
+#
+#   The main CI pipeline is deliberately gate-light to keep PRs fast — the
+#   `security` job (cargo-deny + RustSec audit) was removed from ci.yml by
+#   owner request. But that left ZERO advisory feedback: the 2026 RUSTSEC
+#   advisories against pinned deps (russh, hickory, time, …) sat undetected.
+#
+#   This workflow restores the feedback loop WITHOUT re-gating PRs:
+#     - It NEVER runs on `pull_request` or `push` — only on a weekly cron and
+#       manual `workflow_dispatch`. It cannot block a merge.
+#     - On findings it OPENS or UPDATES a tracking issue instead of failing a
+#       required check. A maintainer triages on their own cadence.
+#
+# MSRV note: do NOT `cargo update` here. `cargo audit` reads the committed
+# Cargo.lock as-is; updating the lock would violate the MSRV-1.85 pin policy.
+# =============================================================================
+
+name: audit
+
+on:
+  schedule:
+    # Mondays 07:00 UTC. Weekly is enough for an advisory feed; the goal is a
+    # standing tracking issue, not real-time alerting.
+    - cron: '0 7 * * 1'
+  workflow_dispatch: {}
+
+# Least privilege: only the permission needed to open/update the tracking issue.
+permissions:
+  contents: read
+  issues: write
+
+# Never run two audits concurrently; a manual dispatch supersedes an in-flight
+# scheduled run.
+concurrency:
+  group: audit
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    name: cargo-audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      # Prebuilt binary via taiki-e/install-action — same pattern the package
+      # job uses for cargo-deb/cargo-wix. Avoids a multi-minute source compile
+      # of cargo-audit on every weekly run.
+      - name: Install cargo-audit (prebuilt)
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+
+      # Run against the committed Cargo.lock. `|| true` keeps the step green —
+      # this workflow is non-gating; the report drives the issue, not a check
+      # failure. `--json` gives us a machine-parseable result for the issue body.
+      - name: Run cargo audit
+        id: audit
+        shell: bash
+        run: |
+          set +e
+          cargo audit --json > audit.json
+          code=$?
+          echo "exit_code=${code}" >> "${GITHUB_OUTPUT}"
+          # exit 0 = clean; non-zero = vulnerabilities and/or warnings found.
+          if [[ "${code}" -ne 0 ]]; then
+            echo "found=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "found=false" >> "${GITHUB_OUTPUT}"
+          fi
+          exit 0
+
+      # Human-readable summary for the run log + issue body.
+      - name: Render report
+        if: steps.audit.outputs.found == 'true'
+        shell: bash
+        run: |
+          {
+            echo "## cargo audit findings"
+            echo
+            echo "Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+            echo
+            echo '```'
+            # Re-run in human format for a readable table; failures here are
+            # non-fatal (the JSON above is the source of truth).
+            cargo audit || true
+            echo '```'
+          } > report.md
+          cat report.md >> "${GITHUB_STEP_SUMMARY}"
+
+      # Open a new tracking issue or update the existing open one. Keyed by a
+      # stable title so repeat runs edit the same issue rather than spamming.
+      - name: Open or update tracking issue
+        if: steps.audit.outputs.found == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const body = fs.readFileSync('report.md', 'utf8');
+            const title = 'Dependency advisories: cargo audit findings';
+            const marker = '<!-- cargo-audit-tracking -->';
+            const fullBody = `${marker}\n\n${body}\n\n_Updated by the weekly \`audit\` workflow. Non-gating — triage on your own cadence._`;
+
+            const existing = await github.paginate(github.rest.issues.listForRepo, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'dependencies',
+              per_page: 100,
+            });
+            const found = existing.find(i => i.title === title);
+
+            if (found) {
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: found.number,
+                body: fullBody,
+              });
+              core.notice(`Updated existing audit issue #${found.number}`);
+            } else {
+              const created = await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                body: fullBody,
+                labels: ['dependencies', 'security'],
+              });
+              core.notice(`Opened audit issue #${created.data.number}`);
+            }
+
+      - name: No findings
+        if: steps.audit.outputs.found == 'false'
+        shell: bash
+        run: echo "cargo audit reported no advisories." >> "${GITHUB_STEP_SUMMARY}"

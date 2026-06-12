@@ -383,6 +383,7 @@ impl ProfileBuilder {
     /// use spt_config::schema::Endpoint;
     /// let p = ProfileBuilder::new("a").add_endpoint(Endpoint {
     ///     name: "primary".into(), host: "h".into(), port: 22, priority: Some(1), weight: None,
+    ///     user: None, auth: None,
     /// }).build();
     /// assert_eq!(p.endpoints.len(), 1);
     /// ```

@@ -105,6 +105,47 @@ where
     Ok(Some(req))
 }
 
+/// Outcome of reading one frame in the resilient connection loop (E8-F15).
+///
+/// Unlike [`read_request`], a malformed JSON line does **not** abort the
+/// connection: it is surfaced as [`FrameRead::ParseError`] so the loop can
+/// answer a JSON-RPC `-32700` and keep serving subsequent frames.
+enum FrameRead {
+    /// A well-formed request frame (may be a blank/notification line).
+    Request(Request),
+    /// The line was not valid JSON-RPC; the loop should reply `-32700` and
+    /// continue. Carries the parser message for diagnostics.
+    ParseError(String),
+    /// Clean EOF — the loop should exit.
+    Eof,
+}
+
+/// Read one frame, mapping a malformed line to [`FrameRead::ParseError`]
+/// rather than propagating an error that tears down the connection.
+async fn read_frame<R>(reader: &mut R) -> crate::Result<FrameRead>
+where
+    R: AsyncBufReadExt + Unpin,
+{
+    let mut line = String::new();
+    let n = reader.read_line(&mut line).await?;
+    if n == 0 {
+        return Ok(FrameRead::Eof);
+    }
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return Ok(FrameRead::Request(Request {
+            jsonrpc: "2.0".to_owned(),
+            id: None,
+            method: String::new(),
+            params: None,
+        }));
+    }
+    match serde_json::from_str::<Request>(trimmed) {
+        Ok(req) => Ok(FrameRead::Request(req)),
+        Err(e) => Ok(FrameRead::ParseError(e.to_string())),
+    }
+}
+
 /// Write one JSON-RPC response, followed by a newline and a flush.
 pub async fn write_response<W>(writer: &mut W, response: &Response) -> crate::Result<()>
 where
@@ -167,6 +208,11 @@ where
     run_connection_inner(inner, reader, writer, /* with_notify */ true).await
 }
 
+/// Maximum rejected `initialize` attempts before a connection is dropped
+/// (E8-F15). Loopback-mitigated, but bounds token-guess grinding on a single
+/// socket.
+const MAX_FAILED_INITIALIZES: u32 = 5;
+
 async fn run_connection_inner<R, W>(
     inner: Arc<McpServerInner>,
     reader: &mut R,
@@ -184,6 +230,13 @@ where
     // until initialize succeeds.
     let mut initialized = false;
     let needs_token = inner.auth_token().is_some();
+    // Cap failed `initialize` attempts per connection (E8-F15). On a
+    // token-gated loopback listener an unbounded retry loop lets a local peer
+    // grind through token guesses on one socket; after this many rejected
+    // initializes we drop the connection (loopback-mitigated, but cheap to
+    // bound). Successful initialize resets the budget implicitly by setting
+    // `initialized = true`, after which this counter is no longer consulted.
+    let mut failed_initializes: u32 = 0;
     loop {
         tokio::select! {
             biased;
@@ -202,14 +255,27 @@ where
                     }
                 }
             }
-            req = read_request(reader) => {
-                let req = match req? {
-                    None => {
-                        tracing::trace!("read_request: EOF — closing connection");
+            frame = read_frame(reader) => {
+                let req = match frame? {
+                    FrameRead::Eof => {
+                        tracing::trace!("read_frame: EOF — closing connection");
                         break;
                     }
-                    Some(r) if r.method.is_empty() => continue,
-                    Some(r) => r,
+                    // Malformed JSON: answer JSON-RPC -32700 and keep the
+                    // connection alive (E8-F15). The id is unknown, so per
+                    // JSON-RPC we reply with a null id.
+                    FrameRead::ParseError(msg) => {
+                        tracing::debug!(error = %msg, "MCP frame parse error — replying -32700, continuing");
+                        let resp = crate::protocol::Response::err(
+                            crate::protocol::Id::Null,
+                            -32700,
+                            format!("parse error: {msg}"),
+                        );
+                        write_response(writer, &resp).await?;
+                        continue;
+                    }
+                    FrameRead::Request(r) if r.method.is_empty() => continue,
+                    FrameRead::Request(r) => r,
                 };
                 if req.is_notification() {
                     inner.note(&req);
@@ -229,8 +295,21 @@ where
                 let response = inner.dispatch_with_notify(req, notify_for_call).await;
                 let success = response.error.is_none();
                 write_response(writer, &response).await?;
-                if is_init && success {
-                    initialized = true;
+                if is_init {
+                    if success {
+                        initialized = true;
+                    } else {
+                        // Cap failed initialize attempts per connection
+                        // (E8-F15) — drop after too many rejected tokens.
+                        failed_initializes += 1;
+                        if failed_initializes >= MAX_FAILED_INITIALIZES {
+                            tracing::warn!(
+                                attempts = failed_initializes,
+                                "too many failed MCP initialize attempts — closing connection"
+                            );
+                            break;
+                        }
+                    }
                 }
             }
         }
@@ -522,6 +601,90 @@ mod tests {
             .await
             .unwrap();
         assert!(writer.is_empty());
+    }
+
+    /// A malformed JSON frame must NOT tear down the connection: the loop
+    /// answers JSON-RPC -32700 and keeps serving subsequent frames (E8-F15).
+    #[tokio::test]
+    async fn parse_error_frame_does_not_kill_session() {
+        use crate::audit::NoopAuditSink;
+        use crate::controller::NoopController;
+        use crate::policy::{McpPolicy, Policy};
+        use crate::server::McpServer;
+        use crate::sources::NoopSources;
+        let sources = Arc::new(NoopSources);
+        let server = McpServer::new(
+            Policy::new(McpPolicy {
+                enabled: true,
+                ..Default::default()
+            }),
+            Arc::new(NoopAuditSink),
+            Arc::new(NoopController),
+            sources.clone() as crate::sources::DynConfigSource,
+            sources as crate::sources::DynStateSource,
+        );
+        let inner = server.inner();
+
+        // Frame 1: garbage. Frame 2: a valid ping. The session must answer
+        // both and then close cleanly on EOF.
+        let body = b"{not json at all\n{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"ping\"}\n".to_vec();
+        let cursor = std::io::Cursor::new(body);
+        let mut reader = tokio::io::BufReader::new(cursor);
+        let mut writer: Vec<u8> = Vec::new();
+        run_connection(inner, &mut reader, &mut writer)
+            .await
+            .expect("a parse error must not propagate out of the connection");
+
+        let out = String::from_utf8(writer).unwrap();
+        let mut lines = out.lines();
+        let first: Response = serde_json::from_str(lines.next().expect("parse-error reply")).unwrap();
+        let err = first.error.expect("first frame is an error reply");
+        assert_eq!(err.code, -32700, "malformed frame answered with parse error");
+        let second: Response =
+            serde_json::from_str(lines.next().expect("ping reply after parse error")).unwrap();
+        assert!(second.error.is_none(), "ping after parse error succeeds");
+        assert_eq!(second.result.unwrap()["pong"], true);
+    }
+
+    /// A token-gated connection drops after too many failed initialize
+    /// attempts rather than looping forever (E8-F15).
+    #[tokio::test]
+    async fn failed_initializes_are_capped() {
+        use crate::audit::NoopAuditSink;
+        use crate::controller::NoopController;
+        use crate::policy::{McpPolicy, Policy};
+        use crate::server::McpServer;
+        use crate::sources::NoopSources;
+        let sources = Arc::new(NoopSources);
+        let server = McpServer::new(
+            Policy::new(McpPolicy {
+                enabled: true,
+                ..Default::default()
+            }),
+            Arc::new(NoopAuditSink),
+            Arc::new(NoopController),
+            sources.clone() as crate::sources::DynConfigSource,
+            sources as crate::sources::DynStateSource,
+        )
+        .with_auth_token("correct-horse");
+        let inner = server.inner();
+
+        // Ten initialize attempts all carrying the wrong token. The loop must
+        // give up well before draining all ten (cap is 5).
+        let bad = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"token\":\"wrong\"}}\n";
+        let body = bad.repeat(10).into_bytes();
+        let cursor = std::io::Cursor::new(body);
+        let mut reader = tokio::io::BufReader::new(cursor);
+        let mut writer: Vec<u8> = Vec::new();
+        run_connection(inner, &mut reader, &mut writer)
+            .await
+            .expect("capped close is not an error");
+        let out = String::from_utf8(writer).unwrap();
+        let replies = out.lines().count();
+        assert!(
+            replies <= 5,
+            "expected the loop to drop after <=5 failed initializes, got {replies} replies"
+        );
     }
 
     #[tokio::test]

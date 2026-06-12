@@ -13,8 +13,8 @@ use thiserror::Error;
 use tracing::{debug, warn};
 
 use crate::cache::{hex_sha256, load_cached, save_atomic, CachedEntry};
-use crate::http::{HttpError, HttpFetcher};
-use spt_config::remote::{RemoteConfigSpec, SpecCheck};
+use crate::http::{HttpError, HttpFetcher, ReqwestFetcher};
+use spt_config::remote::{RemoteConfigPlan, RemoteConfigSpec, SpecCheck};
 
 /// Errors specific to remote-config fetching. These map onto
 /// `spt_core::Error::InvalidConfig`/`RemoteSinkRejected`/`InternalError` at
@@ -145,22 +145,91 @@ pub async fn fetch<F: HttpFetcher + ?Sized>(
                 etag: c.etag,
             })
         }
+        // E5-F8: a server-error response (5xx) is operationally indistinguishable
+        // from a transport failure — the origin is down. Route it through the
+        // SAME cache-fallback arm as `Err(e)` when `allow_cached_on_failure` is
+        // set, instead of hard-failing with `BadStatus` while a verified cache
+        // sits on disk. 4xx (and any other unexpected non-2xx/304) remain hard
+        // `BadStatus` errors: they signal a client/config problem the cache
+        // cannot paper over.
+        Ok(resp) if resp.status >= 500 && spec.allow_cached_on_failure => {
+            cache_fallback_or(
+                cached,
+                spec,
+                &format!("http status {}", resp.status),
+                RemoteConfigError::BadStatus(resp.status),
+            )
+        }
         Ok(resp) => Err(RemoteConfigError::BadStatus(resp.status)),
         Err(e) if spec.allow_cached_on_failure => {
-            if let Some(c) = cached {
-                if verify_cache_against_pin(&c, &spec.fingerprint_sha256).is_ok() {
-                    warn!(error = %e, "remote-config fetch failed; using cache");
-                    return Ok(FetchResult {
-                        outcome: FetchOutcome::StaleFromCache,
-                        body: c.body,
-                        etag: c.etag,
-                    });
-                }
-            }
-            Err(RemoteConfigError::NoCacheFallback(e.to_string()))
+            let reason = e.to_string();
+            let on_no_cache = RemoteConfigError::NoCacheFallback(reason.clone());
+            cache_fallback_or(cached, spec, &reason, on_no_cache)
         }
         Err(e) => Err(RemoteConfigError::Fetch(e)),
     }
+}
+
+/// Shared cache-fallback arm used by both the transport-error and 5xx paths
+/// (E5-F8). Returns the verified cache as `StaleFromCache` when one exists and
+/// passes the pin re-check; otherwise yields `on_no_cache`.
+fn cache_fallback_or(
+    cached: Option<CachedEntry>,
+    spec: &RemoteConfigSpec,
+    reason: &str,
+    on_no_cache: RemoteConfigError,
+) -> Result<FetchResult, RemoteConfigError> {
+    if let Some(c) = cached {
+        if verify_cache_against_pin(&c, &spec.fingerprint_sha256).is_ok() {
+            warn!(reason = %reason, "remote-config fetch failed; using cache");
+            return Ok(FetchResult {
+                outcome: FetchOutcome::StaleFromCache,
+                body: c.body,
+                etag: c.etag,
+            });
+        }
+    }
+    Err(on_no_cache)
+}
+
+/// Build a TLS-pinned [`ReqwestFetcher`] from a [`RemoteConfigPlan`]'s pin
+/// surface (E5-F5 pin plumbing).
+///
+/// This is the missing link the `config pull` call site needs: instead of
+/// `ReqwestFetcher::new()` (an empty pin set), it routes the plan's configured
+/// `pin_spki_sha256` / `allow_self_signed` / `max_cert_chain_depth` through
+/// `ReqwestFetcher::with_pin`, so the SPKI pins in `[runtime.remote_config]` are
+/// actually enforced on the connection.
+///
+/// # Deferred — background poller
+/// There is intentionally **no** background polling task here. The schema's
+/// `[runtime.remote_config].poll_interval` is not yet consumed at runtime; a
+/// supervisor-driven refresh loop is out of scope for this change and tracked as
+/// follow-up (see review finding E5-F5, "full" effort). This builder only serves
+/// the on-demand `config pull` path.
+pub fn fetcher_for_plan(plan: &RemoteConfigPlan) -> Result<ReqwestFetcher, RemoteConfigError> {
+    ReqwestFetcher::with_pin(
+        &plan.pin_spki_sha256,
+        plan.allow_self_signed,
+        plan.max_cert_chain_depth,
+    )
+    .map_err(RemoteConfigError::Fetch)
+}
+
+/// One-shot fetch driven by a [`RemoteConfigPlan`] (E5-F5).
+///
+/// Convenience over [`fetch`] + [`fetcher_for_plan`]: builds a correctly-pinned
+/// fetcher from the plan and runs the fetch against `plan.spec`. The call site
+/// in `config pull` (wired in Phase 4) should prefer this so configured pins and
+/// `allow_cached_on_failure` are honored end-to-end.
+///
+/// See [`fetcher_for_plan`] for the note on the deferred background poller.
+pub async fn fetch_with_plan(
+    plan: &RemoteConfigPlan,
+    state_dir: &Path,
+) -> Result<FetchResult, RemoteConfigError> {
+    let fetcher = fetcher_for_plan(plan)?;
+    fetch(&plan.spec, state_dir, &fetcher).await
 }
 
 fn verify_cache_against_pin(cached: &CachedEntry, pin: &str) -> Result<(), RemoteConfigError> {
@@ -378,12 +447,92 @@ mod tests {
             etag: None,
             body: Vec::new(),
         });
+        // 5xx with allow_cached_on_failure=true but NO cache → BadStatus(500)
+        // (the cache-fallback arm finds nothing usable; E5-F8 keeps this hard).
         let err = fetch(&good_spec(&body), d.path(), &f).await.unwrap_err();
-        // 500 is treated as transport-ish; allow_cached_on_failure=true but no
-        // cache → NoCacheFallback.
-        match err {
-            RemoteConfigError::BadStatus(500) | RemoteConfigError::NoCacheFallback(_) => {}
-            other => panic!("unexpected: {other:?}"),
-        }
+        assert!(matches!(err, RemoteConfigError::BadStatus(500)), "{err:?}");
+    }
+
+    // E5-F8: a 5xx response with a verified cache on disk and
+    // allow_cached_on_failure=true must fall back to the cache, exactly like a
+    // transport error does — not hard-fail with BadStatus.
+    #[tokio::test]
+    async fn five_xx_with_cache_allowed_falls_back_to_cache() {
+        let d = tempdir().unwrap();
+        let body = b"cached-config\n".to_vec();
+        let spec = good_spec(&body); // allow_cached_on_failure: true
+        save_atomic(d.path(), &body, Some("\"v1\"")).unwrap();
+        let f = FakeFetcher::default();
+        f.push_ok(HttpResponse {
+            status: 503,
+            etag: None,
+            body: Vec::new(),
+        });
+        let res = fetch(&spec, d.path(), &f).await.unwrap();
+        assert_eq!(res.outcome, FetchOutcome::StaleFromCache);
+        assert_eq!(res.body, body);
+    }
+
+    // E5-F8: a 5xx must STILL hard-fail when cache-fallback is disabled.
+    #[tokio::test]
+    async fn five_xx_with_cache_disabled_is_bad_status() {
+        let d = tempdir().unwrap();
+        let body = b"cached".to_vec();
+        let mut spec = good_spec(&body);
+        spec.allow_cached_on_failure = false;
+        save_atomic(d.path(), &body, None).unwrap();
+        let f = FakeFetcher::default();
+        f.push_ok(HttpResponse {
+            status: 502,
+            etag: None,
+            body: Vec::new(),
+        });
+        let err = fetch(&spec, d.path(), &f).await.unwrap_err();
+        assert!(matches!(err, RemoteConfigError::BadStatus(502)), "{err:?}");
+    }
+
+    // E5-F8: a 4xx is a client/config problem, NOT a fallback case — it must
+    // stay BadStatus even with a usable cache and allow_cached_on_failure=true.
+    #[tokio::test]
+    async fn four_xx_does_not_fall_back_to_cache() {
+        let d = tempdir().unwrap();
+        let body = b"cached".to_vec();
+        let spec = good_spec(&body); // allow_cached_on_failure: true
+        save_atomic(d.path(), &body, Some("\"v1\"")).unwrap();
+        let f = FakeFetcher::default();
+        f.push_ok(HttpResponse {
+            status: 404,
+            etag: None,
+            body: Vec::new(),
+        });
+        let err = fetch(&spec, d.path(), &f).await.unwrap_err();
+        assert!(matches!(err, RemoteConfigError::BadStatus(404)), "{err:?}");
+    }
+
+    // E5-F5 pin plumbing: the fetcher builder carries the configured pin set,
+    // and the plan carries the configured body fingerprint.
+    #[test]
+    fn pin_builder_carries_configured_fingerprint_and_pins() {
+        // A syntactically valid base64 SPKI pin (the connector validates format).
+        let pin = "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".to_string();
+        let rc = spt_config::RuntimeRemoteConfig {
+            url: Some("https://cfg.example.com/c.toml".into()),
+            fingerprint_sha256: Some("c".repeat(64)),
+            allow_cached_on_failure: Some(true),
+            pin_spki_sha256: vec![pin.clone()],
+            max_cert_chain_depth: Some(4),
+            ..Default::default()
+        };
+        let plan =
+            RemoteConfigSpec::plan_from_runtime(&rc, None, None, Some(1_000_000)).unwrap();
+        // Configured fingerprint flows into the spec used by fetch().
+        assert_eq!(plan.spec.fingerprint_sha256, "c".repeat(64));
+        assert!(plan.spec.allow_cached_on_failure);
+        // Configured SPKI pins flow into the plan's TLS pin surface.
+        assert_eq!(plan.pin_spki_sha256, vec![pin]);
+        assert_eq!(plan.max_cert_chain_depth, Some(4));
+        // And the builder constructs a real pinned fetcher without error.
+        let fetcher = fetcher_for_plan(&plan);
+        assert!(fetcher.is_ok(), "fetcher_for_plan failed: {:?}", fetcher.err());
     }
 }

@@ -2324,7 +2324,7 @@ _spt() {
 
     case "${cmd}" in
         spt)
-            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status completion about kill update help"
+            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status completion about kill update help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 1 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -2374,7 +2374,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__about)
-            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version list show licenses export help"
+            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version list show licenses export help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -2424,7 +2424,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__about__subcmd__export)
-            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <PATH>"
+            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <PATH>"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -2558,7 +2558,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__about__subcmd__licenses)
-            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -2608,7 +2608,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__about__subcmd__list)
-            opts="-q -v -h -V --format --license --include-dev --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --format --license --include-dev --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -2666,7 +2666,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__about__subcmd__show)
-            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <NAME>"
+            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <NAME>"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -2716,7 +2716,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__auth)
-            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version test ssh3-login help"
+            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version test ssh3-login help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -2822,7 +2822,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__auth__subcmd__ssh3__subcmd__login)
-            opts="-q -v -h -V --issuer --client-id --audience --scope --save-as --json --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --issuer --client-id --audience --scope --save-as --json --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -2892,7 +2892,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__auth__subcmd__test)
-            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <PROFILE>"
+            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --portable --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <PROFILE>"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -2938,7 +2938,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__benchmark)
-            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version run latency throughput udp reconnect dns limits report help"
+            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version run latency throughput udp reconnect dns limits report help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -2988,7 +2988,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__benchmark__subcmd__dns)
-            opts="-q -v -h -V --name --samples --json --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --name --samples --json --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -3214,7 +3214,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__benchmark__subcmd__latency)
-            opts="-q -v -h -V --profile --forward --samples --json --config --config-dir --config-url --config-fingerprint --state-dir --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --profile --forward --samples --unsafe-allow-production-impact --json --config --config-dir --config-url --config-fingerprint --state-dir --portable --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -3272,7 +3272,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__benchmark__subcmd__limits)
-            opts="-q -v -h -V --profile --forward --json --config --config-dir --config-url --config-fingerprint --state-dir --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --profile --forward --unsafe-allow-production-impact --json --config --config-dir --config-url --config-fingerprint --state-dir --portable --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -3326,7 +3326,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__benchmark__subcmd__reconnect)
-            opts="-q -v -h -V --profile --iterations --json --config --config-dir --config-url --config-fingerprint --state-dir --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --profile --iterations --unsafe-allow-production-impact --json --config --config-dir --config-url --config-fingerprint --state-dir --portable --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -3380,7 +3380,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__benchmark__subcmd__report)
-            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version compare export help"
+            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version compare export help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -3430,7 +3430,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__benchmark__subcmd__report__subcmd__compare)
-            opts="-q -v -h -V --baseline --candidate --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --baseline --candidate --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -3488,7 +3488,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__benchmark__subcmd__report__subcmd__export)
-            opts="-q -v -h -V --format --out --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <RUN-ID>"
+            opts="-q -v -h -V --format --out --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <RUN-ID>"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -3602,7 +3602,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__benchmark__subcmd__run)
-            opts="-q -v -h -V --driver --profile --forward --duration --connections --count --unsafe-allow-production-impact --json --config --config-dir --config-url --config-fingerprint --state-dir --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --driver --profile --forward --duration --connections --count --unsafe-allow-production-impact --json --config --config-dir --config-url --config-fingerprint --state-dir --portable --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -3672,7 +3672,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__benchmark__subcmd__throughput)
-            opts="-q -v -h -V --profile --forward --duration --payload-size --json --config --config-dir --config-url --config-fingerprint --state-dir --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --profile --forward --duration --payload-size --unsafe-allow-production-impact --json --config --config-dir --config-url --config-fingerprint --state-dir --portable --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -3734,7 +3734,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__benchmark__subcmd__udp)
-            opts="-q -v -h -V --profile --forward --duration --packet-size --pps --json --config --config-dir --config-url --config-fingerprint --state-dir --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --profile --forward --duration --packet-size --pps --unsafe-allow-production-impact --json --config --config-dir --config-url --config-fingerprint --state-dir --portable --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -3800,7 +3800,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__completion)
-            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version generate help"
+            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version generate help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -3850,7 +3850,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__completion__subcmd__generate)
-            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version bash elvish fish powershell zsh"
+            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version bash elvish fish powershell zsh"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -3942,7 +3942,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__config)
-            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version init validate doctor render diff migrate reload pull trust encrypt decrypt edit crypt help"
+            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version init validate doctor render diff migrate reload pull trust encrypt decrypt edit crypt help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -3992,7 +3992,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__config__subcmd__crypt)
-            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version rotate help"
+            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version rotate help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -4084,7 +4084,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__config__subcmd__crypt__subcmd__rotate)
-            opts="-q -v -h -V --new-passphrase-from --new-recipient --vault-path --vault-passphrase-from --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <SEALED>"
+            opts="-q -v -h -V --new-passphrase-from --new-recipient --vault-path --vault-passphrase-from --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <SEALED>"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -4150,7 +4150,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__config__subcmd__decrypt)
-            opts="-q -v -h -V --out --passphrase-from --recipient-key --vault-path --vault-passphrase-from --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <IN>"
+            opts="-q -v -h -V --out --passphrase-from --recipient-key --vault-path --vault-passphrase-from --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <IN>"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -4220,7 +4220,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__config__subcmd__diff)
-            opts="-q -v -h -V --from --to --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --from --to --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -4278,7 +4278,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__config__subcmd__doctor)
-            opts="-q -v -h -V --network --service --secrets --dns --observability --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --network --service --secrets --dns --observability --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -4328,7 +4328,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__config__subcmd__edit)
-            opts="-q -v -h -V --passphrase-from --vault-path --vault-passphrase-from --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <SEALED>"
+            opts="-q -v -h -V --passphrase-from --vault-path --vault-passphrase-from --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <SEALED>"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -4390,7 +4390,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__config__subcmd__encrypt)
-            opts="-q -v -h -V --out --passphrase-from --recipient --use-vault-master --vault-path --vault-passphrase-from --force --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <IN>"
+            opts="-q -v -h -V --out --passphrase-from --recipient --use-vault-master --vault-path --vault-passphrase-from --force --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <IN>"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -4698,7 +4698,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__config__subcmd__init)
-            opts="-q -v -h -V --path --example --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --path --example --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -4756,7 +4756,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__config__subcmd__migrate)
-            opts="-q -v -h -V --from-version --to-version --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --from-version --to-version --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -4814,7 +4814,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__config__subcmd__pull)
-            opts="-q -v -h -V --url --fingerprint --out --cache --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --url --fingerprint --out --cache --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -4876,7 +4876,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__config__subcmd__reload)
-            opts="-q -v -h -V --mode --wait --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --mode --wait --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -4930,7 +4930,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__config__subcmd__render)
-            opts="-q -v -h -V --redacted --json --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --redacted --json --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -4980,7 +4980,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__config__subcmd__trust)
-            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version add-url help"
+            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version add-url help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -5030,7 +5030,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__config__subcmd__trust__subcmd__add__subcmd__url)
-            opts="-q -v -h -V --url --fingerprint --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --url --fingerprint --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -5130,7 +5130,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__config__subcmd__validate)
-            opts="-q -v -h -V --strict --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --strict --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -5180,7 +5180,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__diagnose)
-            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version run network auth trust dns bind port service secrets observability mcp bundle help"
+            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version run network auth trust dns bind port service secrets observability mcp bundle help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -5230,7 +5230,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__diagnose__subcmd__auth)
-            opts="-q -v -h -V --probe --json --config --config-dir --config-url --config-fingerprint --state-dir --output --log-level --color --quiet --verbose --no-color --dry-run --help --version [PROFILE]"
+            opts="-q -v -h -V --probe --json --config --config-dir --config-url --config-fingerprint --state-dir --portable --output --log-level --color --quiet --verbose --no-color --dry-run --help --version [PROFILE]"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -5276,7 +5276,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__diagnose__subcmd__bind)
-            opts="-q -v -h -V --profile --forward --json --config --config-dir --config-url --config-fingerprint --state-dir --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --profile --forward --json --config --config-dir --config-url --config-fingerprint --state-dir --portable --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -5330,7 +5330,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__diagnose__subcmd__bundle)
-            opts="-q -v -h -V --out --redacted --since --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --out --redacted --since --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -5388,7 +5388,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__diagnose__subcmd__dns)
-            opts="-q -v -h -V --name --json --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --name --json --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -5638,7 +5638,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__diagnose__subcmd__mcp)
-            opts="-q -v -h -V --json --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --json --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -5688,7 +5688,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__diagnose__subcmd__network)
-            opts="-q -v -h -V --profile --endpoint --json --config --config-dir --config-url --config-fingerprint --state-dir --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --profile --endpoint --json --config --config-dir --config-url --config-fingerprint --state-dir --portable --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -5742,7 +5742,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__diagnose__subcmd__observability)
-            opts="-q -v -h -V --sink --json --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --sink --json --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -5796,7 +5796,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__diagnose__subcmd__port)
-            opts="-q -v -h -V --host --port --tcp --udp --autodetect-service --json --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --host --port --tcp --udp --autodetect-service --json --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -5854,7 +5854,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__diagnose__subcmd__run)
-            opts="-q -v -h -V --all --offline --online --profile --report --json --config --config-dir --config-url --config-fingerprint --state-dir --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --all --offline --online --profile --report --json --config --config-dir --config-url --config-fingerprint --state-dir --portable --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -5908,7 +5908,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__diagnose__subcmd__secrets)
-            opts="-q -v -h -V --json --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --json --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -5958,7 +5958,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__diagnose__subcmd__service)
-            opts="-q -v -h -V --config --user --system --json --config-dir --config-url --config-fingerprint --state-dir --profile --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --config --user --system --json --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -6008,7 +6008,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__diagnose__subcmd__trust)
-            opts="-q -v -h -V --probe --json --config --config-dir --config-url --config-fingerprint --state-dir --output --log-level --color --quiet --verbose --no-color --dry-run --help --version [PROFILE]"
+            opts="-q -v -h -V --probe --json --config --config-dir --config-url --config-fingerprint --state-dir --portable --output --log-level --color --quiet --verbose --no-color --dry-run --help --version [PROFILE]"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -6054,7 +6054,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__dns)
-            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version serve status query upstream record hosts help"
+            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version serve status query upstream record hosts help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -6300,7 +6300,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__dns__subcmd__hosts)
-            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version render apply restore help"
+            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version render apply restore help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -6350,7 +6350,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__dns__subcmd__hosts__subcmd__apply)
-            opts="-q -v -h -V --path --backup --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --path --backup --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -6474,7 +6474,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__dns__subcmd__hosts__subcmd__render)
-            opts="-q -v -h -V --out --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --out --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -6528,7 +6528,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__dns__subcmd__hosts__subcmd__restore)
-            opts="-q -v -h -V --backup --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --backup --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -6582,7 +6582,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__dns__subcmd__query)
-            opts="-q -v -h -V --type --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <NAME>"
+            opts="-q -v -h -V --type --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <NAME>"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -6636,7 +6636,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__dns__subcmd__record)
-            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version add remove help"
+            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version add remove help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -6686,7 +6686,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__dns__subcmd__record__subcmd__add)
-            opts="-q -v -h -V --addr --ttl --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <NAME>"
+            opts="-q -v -h -V --addr --ttl --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <NAME>"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -6800,7 +6800,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__dns__subcmd__record__subcmd__remove)
-            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <NAME>"
+            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <NAME>"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -6850,7 +6850,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__dns__subcmd__serve)
-            opts="-q -v -h -V --foreground --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --foreground --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -6900,7 +6900,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__dns__subcmd__status)
-            opts="-q -v -h -V --json --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --json --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -6950,7 +6950,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__dns__subcmd__upstream)
-            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version set help"
+            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version set help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -7042,7 +7042,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__dns__subcmd__upstream__subcmd__set)
-            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <ADDR:PORT>..."
+            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <ADDR:PORT>..."
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -7092,7 +7092,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__event)
-            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version list test replay sink help"
+            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version list test replay sink help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -7254,7 +7254,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__event__subcmd__list)
-            opts="-q -v -h -V --json --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --json --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -7304,7 +7304,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__event__subcmd__replay)
-            opts="-q -v -h -V --since --binding --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --since --binding --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -7362,7 +7362,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__event__subcmd__sink)
-            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version test list help"
+            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version test list help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -7468,7 +7468,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__event__subcmd__sink__subcmd__list)
-            opts="-q -v -h -V --json --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --json --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -7518,7 +7518,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__event__subcmd__sink__subcmd__test)
-            opts="-q -v -h -V --json --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --log-level --color --quiet --verbose --no-color --dry-run --help --version <SINK-NAME>"
+            opts="-q -v -h -V --json --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --log-level --color --quiet --verbose --no-color --dry-run --help --version <SINK-NAME>"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -7568,7 +7568,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__event__subcmd__test)
-            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <BINDING-NAME>"
+            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <BINDING-NAME>"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -7618,7 +7618,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__firewall)
-            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version plan apply remove status interfaces bind-preview gateway policy help"
+            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version plan apply remove status interfaces bind-preview gateway policy help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -7668,7 +7668,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__firewall__subcmd__apply)
-            opts="-q -v -h -V --profile --forward --user --system --dry-run --config --config-dir --config-url --config-fingerprint --state-dir --output --json --log-level --color --quiet --verbose --no-color --help --version"
+            opts="-q -v -h -V --profile --forward --user --system --dry-run --config --config-dir --config-url --config-fingerprint --state-dir --portable --output --json --log-level --color --quiet --verbose --no-color --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -7722,7 +7722,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__firewall__subcmd__bind__subcmd__preview)
-            opts="-q -v -h -V --forward --json --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --forward --json --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -7776,7 +7776,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__firewall__subcmd__gateway)
-            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version show set help"
+            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version show set help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -7882,7 +7882,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__firewall__subcmd__gateway__subcmd__set)
-            opts="-q -v -h -V --default-interface --allowed-interface --denied-interface --require-explicit-interface --allow-all-interfaces --bind-ipv6 --default-gateway --gateway-interface --route-check-target --policy --require-gateway-match --tcp-nodelay --socket-keepalive --tcp-fast-open --reuse-port --io-uring --zerocopy --sendfile --checksum-offload --large-send-offload --load-balance-strategy --sticky-sessions --health-check --load-balance-fail-after --load-balance-restore-after --rebalance-interval --json --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --default-interface --allowed-interface --denied-interface --require-explicit-interface --allow-all-interfaces --bind-ipv6 --default-gateway --gateway-interface --route-check-target --policy --require-gateway-match --tcp-nodelay --socket-keepalive --tcp-fast-open --reuse-port --io-uring --zerocopy --sendfile --checksum-offload --large-send-offload --load-balance-strategy --sticky-sessions --health-check --load-balance-fail-after --load-balance-restore-after --rebalance-interval --json --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -8036,7 +8036,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__firewall__subcmd__gateway__subcmd__show)
-            opts="-q -v -h -V --json --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --json --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -8310,7 +8310,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__firewall__subcmd__interfaces)
-            opts="-q -v -h -V --json --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --json --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -8360,7 +8360,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__firewall__subcmd__plan)
-            opts="-q -v -h -V --profile --forward --json --config --config-dir --config-url --config-fingerprint --state-dir --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --profile --forward --json --config --config-dir --config-url --config-fingerprint --state-dir --portable --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -8414,7 +8414,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__firewall__subcmd__policy)
-            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version list show set unset help"
+            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version list show set unset help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -8548,7 +8548,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__firewall__subcmd__policy__subcmd__list)
-            opts="-q -v -h -V --json --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --json --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -8598,7 +8598,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__firewall__subcmd__policy__subcmd__set)
-            opts="-q -v -h -V --scope --enforced --json --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --log-level --color --quiet --verbose --no-color --dry-run --help --version <SECTION.NAME> <VALUE>"
+            opts="-q -v -h -V --scope --enforced --json --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --log-level --color --quiet --verbose --no-color --dry-run --help --version <SECTION.NAME> <VALUE>"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -8652,7 +8652,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__firewall__subcmd__policy__subcmd__show)
-            opts="-q -v -h -V --json --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --json --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -8702,7 +8702,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__firewall__subcmd__policy__subcmd__unset)
-            opts="-q -v -h -V --scope --clear-enforced --json --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --log-level --color --quiet --verbose --no-color --dry-run --help --version <SECTION.NAME>"
+            opts="-q -v -h -V --scope --clear-enforced --json --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --log-level --color --quiet --verbose --no-color --dry-run --help --version <SECTION.NAME>"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -8756,7 +8756,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__firewall__subcmd__remove)
-            opts="-q -v -h -V --profile --forward --user --system --dry-run --config --config-dir --config-url --config-fingerprint --state-dir --output --json --log-level --color --quiet --verbose --no-color --help --version"
+            opts="-q -v -h -V --profile --forward --user --system --dry-run --config --config-dir --config-url --config-fingerprint --state-dir --portable --output --json --log-level --color --quiet --verbose --no-color --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -8810,7 +8810,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__firewall__subcmd__status)
-            opts="-q -v -h -V --json --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --json --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -8860,7 +8860,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__forward)
-            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version list show add explain test throttle remove help"
+            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version list show add explain test throttle remove help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -8910,7 +8910,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__forward__subcmd__add)
-            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version local remote dynamic help"
+            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version local remote dynamic help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -8960,7 +8960,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__forward__subcmd__add__subcmd__dynamic)
-            opts="-q -v -h -V --profile --listen --connections --proxy-protocol --config --config-dir --config-url --config-fingerprint --state-dir --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --profile --listen --connections --proxy-protocol --config --config-dir --config-url --config-fingerprint --state-dir --portable --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -9092,7 +9092,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__forward__subcmd__add__subcmd__local)
-            opts="-q -v -h -V --profile --listen --to --tcp --udp --config --config-dir --config-url --config-fingerprint --state-dir --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --profile --listen --to --tcp --udp --config --config-dir --config-url --config-fingerprint --state-dir --portable --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -9150,7 +9150,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__forward__subcmd__add__subcmd__remote)
-            opts="-q -v -h -V --profile --listen --to --tcp --udp --config --config-dir --config-url --config-fingerprint --state-dir --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --profile --listen --to --tcp --udp --config --config-dir --config-url --config-fingerprint --state-dir --portable --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -9208,7 +9208,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__forward__subcmd__explain)
-            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <PROFILE/FORWARD>"
+            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <PROFILE/FORWARD>"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -9426,7 +9426,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__forward__subcmd__list)
-            opts="-q -v -h -V --profile --json --config --config-dir --config-url --config-fingerprint --state-dir --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --profile --json --config --config-dir --config-url --config-fingerprint --state-dir --portable --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -9476,7 +9476,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__forward__subcmd__remove)
-            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <PROFILE/FORWARD>"
+            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <PROFILE/FORWARD>"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -9526,7 +9526,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__forward__subcmd__show)
-            opts="-q -v -h -V --friendly --json --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --log-level --color --quiet --verbose --no-color --dry-run --help --version <PROFILE/FORWARD>"
+            opts="-q -v -h -V --friendly --json --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --log-level --color --quiet --verbose --no-color --dry-run --help --version <PROFILE/FORWARD>"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -9576,7 +9576,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__forward__subcmd__test)
-            opts="-q -v -h -V --connect --dns-name --timeout --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <PROFILE/FORWARD>"
+            opts="-q -v -h -V --connect --dns-name --timeout --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <PROFILE/FORWARD>"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -9634,7 +9634,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__forward__subcmd__throttle)
-            opts="-q -v -h -V --in --out --connections --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <PROFILE/FORWARD>"
+            opts="-q -v -h -V --in --out --connections --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <PROFILE/FORWARD>"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -9696,7 +9696,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__ftp)
-            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version translator help"
+            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version translator help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -9802,7 +9802,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__ftp__subcmd__translator)
-            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version serve help"
+            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version serve help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -9894,7 +9894,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__ftp__subcmd__translator__subcmd__serve)
-            opts="-q -v -h -V --bind --pasv-range --external-ip --welcome-banner --max-clients --idle-timeout --tls-cert --tls-key --tls-required --profile --json --config --config-dir --config-url --config-fingerprint --state-dir --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --bind --pasv-range --external-ip --welcome-banner --max-clients --idle-timeout --tls-cert --tls-key --tls-required --profile --json --config --config-dir --config-url --config-fingerprint --state-dir --portable --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -13098,7 +13098,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__key)
-            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version generate inspect public change-passphrase sign-cert verify-cert install-public help"
+            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version generate inspect public change-passphrase sign-cert verify-cert install-public help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -13148,7 +13148,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__key__subcmd__change__subcmd__passphrase)
-            opts="-q -v -h -V --new-passphrase-from --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <PATH>"
+            opts="-q -v -h -V --new-passphrase-from --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <PATH>"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -13202,7 +13202,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__key__subcmd__generate)
-            opts="-q -v -h -V --type --out --bits --comment --encrypt --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --type --out --bits --comment --encrypt --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -13394,7 +13394,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__key__subcmd__inspect)
-            opts="-q -v -h -V --fingerprint --json --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --log-level --color --quiet --verbose --no-color --dry-run --help --version <PATH>"
+            opts="-q -v -h -V --fingerprint --json --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --log-level --color --quiet --verbose --no-color --dry-run --help --version <PATH>"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -13448,7 +13448,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__key__subcmd__install__subcmd__public)
-            opts="-q -v -h -V --profile --target --key --remote-command --config --config-dir --config-url --config-fingerprint --state-dir --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --profile --target --key --remote-command --config --config-dir --config-url --config-fingerprint --state-dir --portable --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -13510,7 +13510,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__key__subcmd__public)
-            opts="-q -v -h -V --out --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <PATH>"
+            opts="-q -v -h -V --out --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <PATH>"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -13564,7 +13564,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__key__subcmd__sign__subcmd__cert)
-            opts="-q -v -h -V --ca-key --public-key --principal --validity --serial --cert-type --key-id --out --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --ca-key --public-key --principal --validity --serial --cert-type --key-id --out --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -13646,7 +13646,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__key__subcmd__verify__subcmd__cert)
-            opts="-q -v -h -V --trusted-cas --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <PATH>"
+            opts="-q -v -h -V --trusted-cas --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <PATH>"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -13700,7 +13700,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__kill)
-            opts="-q -v -h -V --force --include-self --dry-run --name --timeout --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --help --version"
+            opts="-q -v -h -V --force --include-self --dry-run --name --timeout --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -13758,7 +13758,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__log)
-            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version tail remote test export help"
+            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version tail remote test export help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -13808,7 +13808,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__log__subcmd__export)
-            opts="-q -v -h -V --format --since --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --format --since --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -14006,7 +14006,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__log__subcmd__remote)
-            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version list test status drain help"
+            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version list test status drain help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -14056,7 +14056,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__log__subcmd__remote__subcmd__drain)
-            opts="-q -v -h -V --sink --json --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --sink --json --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -14194,7 +14194,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__log__subcmd__remote__subcmd__list)
-            opts="-q -v -h -V --json --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --json --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -14244,7 +14244,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__log__subcmd__remote__subcmd__status)
-            opts="-q -v -h -V --sink --json --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --sink --json --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -14298,7 +14298,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__log__subcmd__remote__subcmd__test)
-            opts="-q -v -h -V --sink --send-test-record --json --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --sink --send-test-record --json --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -14352,7 +14352,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__log__subcmd__tail)
-            opts="-q -v -h -V --follow --profile --since --json --config --config-dir --config-url --config-fingerprint --state-dir --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --follow --profile --since --json --config --config-dir --config-url --config-fingerprint --state-dir --portable --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -14406,7 +14406,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__log__subcmd__test)
-            opts="-q -v -h -V --sink --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --sink --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -14460,7 +14460,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__mcp)
-            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version serve inspect policy help"
+            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version serve inspect policy help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -14608,7 +14608,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__mcp__subcmd__inspect)
-            opts="-q -v -h -V --json --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --json --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -14658,7 +14658,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__mcp__subcmd__policy)
-            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version show set help"
+            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version show set help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -14764,7 +14764,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__mcp__subcmd__policy__subcmd__set)
-            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <KEY=VALUE>..."
+            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <KEY=VALUE>..."
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -14814,7 +14814,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__mcp__subcmd__policy__subcmd__show)
-            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -14864,7 +14864,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__mcp__subcmd__serve)
-            opts="-q -v -h -V --stdio --listen --read-only --config --enable --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --stdio --listen --read-only --config --enable --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -14918,7 +14918,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__observe)
-            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version metrics windows-event help"
+            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version metrics windows-event help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -15066,7 +15066,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__observe__subcmd__metrics)
-            opts="-q -v -h -V --format --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --format --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -15120,7 +15120,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__observe__subcmd__windows__subcmd__event)
-            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version install-source uninstall-source test help"
+            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version install-source uninstall-source test help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -15240,7 +15240,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__observe__subcmd__windows__subcmd__event__subcmd__install__subcmd__source)
-            opts="-q -v -h -V --source --channel --message-dll --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --source --channel --message-dll --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -15302,7 +15302,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__observe__subcmd__windows__subcmd__event__subcmd__test)
-            opts="-q -v -h -V --source --channel --level --event-id --message --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --source --channel --level --event-id --message --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -15372,7 +15372,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__observe__subcmd__windows__subcmd__event__subcmd__uninstall__subcmd__source)
-            opts="-q -v -h -V --source --channel --message-dll --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --source --channel --message-dll --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -15434,7 +15434,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__profile)
-            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version list show add configure set enable disable remove test help"
+            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version list show add configure set enable disable remove test help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -15484,7 +15484,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__profile__subcmd__add)
-            opts="-q -v -h -V --protocol --host --user --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <NAME>"
+            opts="-q -v -h -V --protocol --host --user --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <NAME>"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -15546,7 +15546,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__profile__subcmd__configure)
-            opts="-q -v -h -V --name --tui --no-tui --from-template --field --from --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --name --tui --no-tui --from-template --field --from --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -15612,7 +15612,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__profile__subcmd__disable)
-            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <NAME>"
+            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <NAME>"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -15662,7 +15662,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__profile__subcmd__enable)
-            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <NAME>"
+            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <NAME>"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -15866,7 +15866,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__profile__subcmd__list)
-            opts="-q -v -h -V --json --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --json --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -15916,7 +15916,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__profile__subcmd__remove)
-            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <NAME>"
+            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <NAME>"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -15966,7 +15966,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__profile__subcmd__set)
-            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <NAME> <KEY=VALUE>..."
+            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <NAME> <KEY=VALUE>..."
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -16016,7 +16016,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__profile__subcmd__show)
-            opts="-q -v -h -V --redacted --json --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --log-level --color --quiet --verbose --no-color --dry-run --help --version <NAME>"
+            opts="-q -v -h -V --redacted --json --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --log-level --color --quiet --verbose --no-color --dry-run --help --version <NAME>"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -16066,7 +16066,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__profile__subcmd__test)
-            opts="-q -v -h -V --connect-only --bind-only --auth-only --trust-only --dns-only --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <NAME>"
+            opts="-q -v -h -V --connect-only --bind-only --auth-only --trust-only --dns-only --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <NAME>"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -16116,7 +16116,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__secret)
-            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version store set get list rotate remove doctor help"
+            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version store set get list rotate remove doctor help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -16166,7 +16166,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__secret__subcmd__doctor)
-            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -16216,7 +16216,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__secret__subcmd__get)
-            opts="-q -v -h -V --reveal --vault-path --passphrase-from --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <NAME>"
+            opts="-q -v -h -V --reveal --vault-path --passphrase-from --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <NAME>"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -16414,7 +16414,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__secret__subcmd__list)
-            opts="-q -v -h -V --namespace --vault-path --passphrase-from --json --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --namespace --vault-path --passphrase-from --json --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -16476,7 +16476,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__secret__subcmd__remove)
-            opts="-q -v -h -V --new-value-from --vault-path --passphrase-from --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <NAME>"
+            opts="-q -v -h -V --new-value-from --vault-path --passphrase-from --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <NAME>"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -16538,7 +16538,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__secret__subcmd__rotate)
-            opts="-q -v -h -V --new-value-from --vault-path --passphrase-from --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <NAME>"
+            opts="-q -v -h -V --new-value-from --vault-path --passphrase-from --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <NAME>"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -16600,7 +16600,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__secret__subcmd__set)
-            opts="-q -v -h -V --prompt --from-env --from-file --vault-path --passphrase-from --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <NAME>"
+            opts="-q -v -h -V --prompt --from-env --from-file --vault-path --passphrase-from --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <NAME>"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -16666,7 +16666,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__secret__subcmd__store)
-            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version init help"
+            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version init help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -16758,7 +16758,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__secret__subcmd__store__subcmd__init)
-            opts="-q -v -h -V --backend --vault-path --passphrase-from --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --backend --vault-path --passphrase-from --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -16820,7 +16820,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__service)
-            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version install uninstall start stop restart status render help"
+            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version install uninstall start stop restart status render help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -16996,7 +16996,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__service__subcmd__install)
-            opts="-q -v -h -V --config --user --system --name --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --config --user --system --name --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -17050,7 +17050,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__service__subcmd__render)
-            opts="-q -v -h -V --config --user --system --name --format --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --config --user --system --name --format --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -17108,7 +17108,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__service__subcmd__restart)
-            opts="-q -v -h -V --config --user --system --name --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --config --user --system --name --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -17162,7 +17162,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__service__subcmd__start)
-            opts="-q -v -h -V --config --user --system --name --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --config --user --system --name --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -17216,7 +17216,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__service__subcmd__status)
-            opts="-q -v -h -V --config --user --system --name --json --config-dir --config-url --config-fingerprint --state-dir --profile --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --config --user --system --name --json --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -17270,7 +17270,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__service__subcmd__stop)
-            opts="-q -v -h -V --config --user --system --name --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --config --user --system --name --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -17324,7 +17324,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__service__subcmd__uninstall)
-            opts="-q -v -h -V --config --user --system --name --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --config --user --system --name --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -17378,7 +17378,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__session)
-            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version list show close drain top help"
+            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version list show close drain top help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -17428,7 +17428,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__session__subcmd__close)
-            opts="-q -v -h -V --grace --reason --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <SESSION-ID>"
+            opts="-q -v -h -V --grace --reason --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <SESSION-ID>"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -17486,7 +17486,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__session__subcmd__drain)
-            opts="-q -v -h -V --forward --grace --config --config-dir --config-url --config-fingerprint --state-dir --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <PROFILE>"
+            opts="-q -v -h -V --forward --grace --config --config-dir --config-url --config-fingerprint --state-dir --portable --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <PROFILE>"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -17638,7 +17638,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__session__subcmd__list)
-            opts="-q -v -h -V --profile --forward --json --config --config-dir --config-url --config-fingerprint --state-dir --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --profile --forward --json --config --config-dir --config-url --config-fingerprint --state-dir --portable --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -17692,7 +17692,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__session__subcmd__show)
-            opts="-q -v -h -V --json --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --log-level --color --quiet --verbose --no-color --dry-run --help --version <SESSION-ID>"
+            opts="-q -v -h -V --json --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --log-level --color --quiet --verbose --no-color --dry-run --help --version <SESSION-ID>"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -17742,7 +17742,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__session__subcmd__top)
-            opts="-q -v -h -V --sort --limit --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --sort --limit --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -17800,7 +17800,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__sftp)
-            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version test list stat get put mkdir rm rmdir rename cat tail chmod symlink readlink realpath put-recursive get-recursive mount drive umount help"
+            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version test list stat get put mkdir rm rmdir rename cat tail chmod symlink readlink realpath put-recursive get-recursive mount drive umount help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -17850,7 +17850,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__sftp__subcmd__cat)
-            opts="-q -v -h -V --profile --size-cap --config --config-dir --config-url --config-fingerprint --state-dir --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <PATH>"
+            opts="-q -v -h -V --profile --size-cap --config --config-dir --config-url --config-fingerprint --state-dir --portable --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <PATH>"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -17904,7 +17904,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__sftp__subcmd__chmod)
-            opts="-q -v -h -V --profile --mode --config --config-dir --config-url --config-fingerprint --state-dir --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <PATH>"
+            opts="-q -v -h -V --profile --mode --config --config-dir --config-url --config-fingerprint --state-dir --portable --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <PATH>"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -17958,7 +17958,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__sftp__subcmd__drive)
-            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version list add remove plan help"
+            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version list add remove plan help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -18008,7 +18008,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__sftp__subcmd__drive__subcmd__add)
-            opts="-q -v -h -V --profile --name --remote --letter --read-only --cache --config --config-dir --config-url --config-fingerprint --state-dir --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --profile --name --remote --letter --read-only --cache --config --config-dir --config-url --config-fingerprint --state-dir --portable --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -18158,7 +18158,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__sftp__subcmd__drive__subcmd__list)
-            opts="-q -v -h -V --profile --json --config --config-dir --config-url --config-fingerprint --state-dir --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --profile --json --config --config-dir --config-url --config-fingerprint --state-dir --portable --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -18208,7 +18208,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__sftp__subcmd__drive__subcmd__plan)
-            opts="-q -v -h -V --profile --name --remote --letter --cache --read-only --json --config --config-dir --config-url --config-fingerprint --state-dir --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --profile --name --remote --letter --cache --read-only --json --config --config-dir --config-url --config-fingerprint --state-dir --portable --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -18274,7 +18274,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__sftp__subcmd__drive__subcmd__remove)
-            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <PROFILE/MOUNT>"
+            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <PROFILE/MOUNT>"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -18324,7 +18324,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__sftp__subcmd__get)
-            opts="-q -v -h -V --profile --out --config --config-dir --config-url --config-fingerprint --state-dir --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <REMOTE>"
+            opts="-q -v -h -V --profile --out --config --config-dir --config-url --config-fingerprint --state-dir --portable --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <REMOTE>"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -18378,7 +18378,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__sftp__subcmd__get__subcmd__recursive)
-            opts="-q -v -h -V --profile --resume --bps --checksum --follow-symlinks --config --config-dir --config-url --config-fingerprint --state-dir --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <SOURCE> <DESTINATION>"
+            opts="-q -v -h -V --profile --resume --bps --checksum --follow-symlinks --config --config-dir --config-url --config-fingerprint --state-dir --portable --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <SOURCE> <DESTINATION>"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -18884,7 +18884,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__sftp__subcmd__list)
-            opts="-q -v -h -V --profile --json --config --config-dir --config-url --config-fingerprint --state-dir --output --log-level --color --quiet --verbose --no-color --dry-run --help --version <PATH>"
+            opts="-q -v -h -V --profile --json --config --config-dir --config-url --config-fingerprint --state-dir --portable --output --log-level --color --quiet --verbose --no-color --dry-run --help --version <PATH>"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -18934,7 +18934,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__sftp__subcmd__mkdir)
-            opts="-q -v -h -V --profile --json --config --config-dir --config-url --config-fingerprint --state-dir --output --log-level --color --quiet --verbose --no-color --dry-run --help --version <PATH>"
+            opts="-q -v -h -V --profile --json --config --config-dir --config-url --config-fingerprint --state-dir --portable --output --log-level --color --quiet --verbose --no-color --dry-run --help --version <PATH>"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -18984,7 +18984,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__sftp__subcmd__mount)
-            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version list add remove plan start stop help"
+            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version list add remove plan start stop help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -19034,7 +19034,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__sftp__subcmd__mount__subcmd__add)
-            opts="-q -v -h -V --profile --name --remote --mount-point --read-only --cache --config --config-dir --config-url --config-fingerprint --state-dir --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --profile --name --remote --mount-point --read-only --cache --config --config-dir --config-url --config-fingerprint --state-dir --portable --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -19212,7 +19212,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__sftp__subcmd__mount__subcmd__list)
-            opts="-q -v -h -V --profile --json --config --config-dir --config-url --config-fingerprint --state-dir --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --profile --json --config --config-dir --config-url --config-fingerprint --state-dir --portable --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -19262,7 +19262,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__sftp__subcmd__mount__subcmd__plan)
-            opts="-q -v -h -V --profile --name --remote --mount-point --cache --read-only --json --config --config-dir --config-url --config-fingerprint --state-dir --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --profile --name --remote --mount-point --cache --read-only --json --config --config-dir --config-url --config-fingerprint --state-dir --portable --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -19328,7 +19328,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__sftp__subcmd__mount__subcmd__remove)
-            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <PROFILE/MOUNT>"
+            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <PROFILE/MOUNT>"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -19378,7 +19378,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__sftp__subcmd__mount__subcmd__start)
-            opts="-q -v -h -V --profile --local --remote --read-only --volume --json --config --config-dir --config-url --config-fingerprint --state-dir --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --profile --local --remote --read-only --volume --json --config --config-dir --config-url --config-fingerprint --state-dir --portable --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -19440,7 +19440,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__sftp__subcmd__mount__subcmd__stop)
-            opts="-q -v -h -V --json --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --log-level --color --quiet --verbose --no-color --dry-run --help --version <PATH>"
+            opts="-q -v -h -V --json --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --log-level --color --quiet --verbose --no-color --dry-run --help --version <PATH>"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -19490,7 +19490,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__sftp__subcmd__put)
-            opts="-q -v -h -V --profile --config --config-dir --config-url --config-fingerprint --state-dir --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <LOCAL> <REMOTE>"
+            opts="-q -v -h -V --profile --config --config-dir --config-url --config-fingerprint --state-dir --portable --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <LOCAL> <REMOTE>"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -19540,7 +19540,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__sftp__subcmd__put__subcmd__recursive)
-            opts="-q -v -h -V --profile --resume --bps --checksum --follow-symlinks --config --config-dir --config-url --config-fingerprint --state-dir --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <SOURCE> <DESTINATION>"
+            opts="-q -v -h -V --profile --resume --bps --checksum --follow-symlinks --config --config-dir --config-url --config-fingerprint --state-dir --portable --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <SOURCE> <DESTINATION>"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -19598,7 +19598,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__sftp__subcmd__readlink)
-            opts="-q -v -h -V --profile --json --config --config-dir --config-url --config-fingerprint --state-dir --output --log-level --color --quiet --verbose --no-color --dry-run --help --version <PATH>"
+            opts="-q -v -h -V --profile --json --config --config-dir --config-url --config-fingerprint --state-dir --portable --output --log-level --color --quiet --verbose --no-color --dry-run --help --version <PATH>"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -19648,7 +19648,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__sftp__subcmd__realpath)
-            opts="-q -v -h -V --profile --json --config --config-dir --config-url --config-fingerprint --state-dir --output --log-level --color --quiet --verbose --no-color --dry-run --help --version <PATH>"
+            opts="-q -v -h -V --profile --json --config --config-dir --config-url --config-fingerprint --state-dir --portable --output --log-level --color --quiet --verbose --no-color --dry-run --help --version <PATH>"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -19698,7 +19698,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__sftp__subcmd__rename)
-            opts="-q -v -h -V --profile --config --config-dir --config-url --config-fingerprint --state-dir --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <OLD_PATH> <NEW_PATH>"
+            opts="-q -v -h -V --profile --config --config-dir --config-url --config-fingerprint --state-dir --portable --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <OLD_PATH> <NEW_PATH>"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -19748,7 +19748,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__sftp__subcmd__rm)
-            opts="-q -v -h -V --profile --json --config --config-dir --config-url --config-fingerprint --state-dir --output --log-level --color --quiet --verbose --no-color --dry-run --help --version <PATH>"
+            opts="-q -v -h -V --profile --json --config --config-dir --config-url --config-fingerprint --state-dir --portable --output --log-level --color --quiet --verbose --no-color --dry-run --help --version <PATH>"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -19798,7 +19798,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__sftp__subcmd__rmdir)
-            opts="-q -v -h -V --profile --json --config --config-dir --config-url --config-fingerprint --state-dir --output --log-level --color --quiet --verbose --no-color --dry-run --help --version <PATH>"
+            opts="-q -v -h -V --profile --json --config --config-dir --config-url --config-fingerprint --state-dir --portable --output --log-level --color --quiet --verbose --no-color --dry-run --help --version <PATH>"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -19848,7 +19848,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__sftp__subcmd__stat)
-            opts="-q -v -h -V --profile --json --config --config-dir --config-url --config-fingerprint --state-dir --output --log-level --color --quiet --verbose --no-color --dry-run --help --version <PATH>"
+            opts="-q -v -h -V --profile --json --config --config-dir --config-url --config-fingerprint --state-dir --portable --output --log-level --color --quiet --verbose --no-color --dry-run --help --version <PATH>"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -19898,7 +19898,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__sftp__subcmd__symlink)
-            opts="-q -v -h -V --profile --target --config --config-dir --config-url --config-fingerprint --state-dir --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <LINKPATH>"
+            opts="-q -v -h -V --profile --target --config --config-dir --config-url --config-fingerprint --state-dir --portable --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <LINKPATH>"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -19952,7 +19952,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__sftp__subcmd__tail)
-            opts="-q -v -h -V --profile --bytes --config --config-dir --config-url --config-fingerprint --state-dir --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <PATH>"
+            opts="-q -v -h -V --profile --bytes --config --config-dir --config-url --config-fingerprint --state-dir --portable --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <PATH>"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -20006,7 +20006,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__sftp__subcmd__test)
-            opts="-q -v -h -V --profile --json --config --config-dir --config-url --config-fingerprint --state-dir --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --profile --json --config --config-dir --config-url --config-fingerprint --state-dir --portable --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -20056,7 +20056,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__sftp__subcmd__umount)
-            opts="-q -v -h -V --json --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --log-level --color --quiet --verbose --no-color --dry-run --help --version <PATH>"
+            opts="-q -v -h -V --json --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --log-level --color --quiet --verbose --no-color --dry-run --help --version <PATH>"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -20106,7 +20106,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__stats)
-            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version summary live connections throughput errors export help"
+            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version summary live connections throughput errors export help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -20156,7 +20156,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__stats__subcmd__connections)
-            opts="-q -v -h -V --profile --forward --json --config --config-dir --config-url --config-fingerprint --state-dir --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --profile --forward --json --config --config-dir --config-url --config-fingerprint --state-dir --portable --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -20210,7 +20210,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__stats__subcmd__errors)
-            opts="-q -v -h -V --since --profile --json --config --config-dir --config-url --config-fingerprint --state-dir --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --since --profile --json --config --config-dir --config-url --config-fingerprint --state-dir --portable --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -20264,7 +20264,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__stats__subcmd__export)
-            opts="-q -v -h -V --format --since --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --format --since --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -20434,7 +20434,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__stats__subcmd__live)
-            opts="-q -v -h -V --interval --profile --forward --config --config-dir --config-url --config-fingerprint --state-dir --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --interval --profile --forward --config --config-dir --config-url --config-fingerprint --state-dir --portable --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -20492,7 +20492,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__stats__subcmd__summary)
-            opts="-q -v -h -V --profile --forward --json --config --config-dir --config-url --config-fingerprint --state-dir --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --profile --forward --json --config --config-dir --config-url --config-fingerprint --state-dir --portable --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -20546,7 +20546,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__stats__subcmd__throughput)
-            opts="-q -v -h -V --profile --forward --window --json --config --config-dir --config-url --config-fingerprint --state-dir --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --profile --forward --window --json --config --config-dir --config-url --config-fingerprint --state-dir --portable --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -20604,7 +20604,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__status)
-            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version serve status token help"
+            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version serve status token help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -20738,7 +20738,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__status__subcmd__serve)
-            opts="-q -v -h -V --config --bind --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --config --bind --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -20792,7 +20792,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__status__subcmd__status)
-            opts="-q -v -h -V --detail --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --detail --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -20842,7 +20842,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__status__subcmd__token)
-            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version rotate help"
+            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version rotate help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -20934,7 +20934,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__status__subcmd__token__subcmd__rotate)
-            opts="-q -v -h -V --print-token --bytes --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --print-token --bytes --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -20988,7 +20988,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__tunnel)
-            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version run status stats sessions stop reload health failover help"
+            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version run status stats sessions stop reload health failover help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -21038,7 +21038,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__tunnel__subcmd__failover)
-            opts="-q -v -h -V --endpoint --reason --config --config-dir --config-url --config-fingerprint --state-dir --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <PROFILE>"
+            opts="-q -v -h -V --endpoint --reason --config --config-dir --config-url --config-fingerprint --state-dir --portable --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <PROFILE>"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -21092,7 +21092,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__tunnel__subcmd__health)
-            opts="-q -v -h -V --json --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --json --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -21282,7 +21282,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__tunnel__subcmd__reload)
-            opts="-q -v -h -V --wait --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --wait --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -21332,7 +21332,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__tunnel__subcmd__run)
-            opts="-J -q -v -h -V --foreground --once --profiles --jump --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-J -q -v -h -V --foreground --once --profiles --jump --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -21394,7 +21394,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__tunnel__subcmd__sessions)
-            opts="-q -v -h -V --profile --forward --json --config --config-dir --config-url --config-fingerprint --state-dir --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --profile --forward --json --config --config-dir --config-url --config-fingerprint --state-dir --portable --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -21448,7 +21448,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__tunnel__subcmd__stats)
-            opts="-q -v -h -V --profile --forward --interval --json --config --config-dir --config-url --config-fingerprint --state-dir --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --profile --forward --interval --json --config --config-dir --config-url --config-fingerprint --state-dir --portable --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -21506,7 +21506,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__tunnel__subcmd__status)
-            opts="-q -v -h -V --watch --json --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --watch --json --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -21556,7 +21556,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__tunnel__subcmd__stop)
-            opts="-q -v -h -V --profile --grace --config --config-dir --config-url --config-fingerprint --state-dir --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --profile --grace --config --config-dir --config-url --config-fingerprint --state-dir --portable --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -21610,7 +21610,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__update)
-            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version check download apply now status history help"
+            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version check download apply now status history help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -21660,7 +21660,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__update__subcmd__apply)
-            opts="-q -v -h -V --no-restart --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --no-restart --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -21710,7 +21710,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__update__subcmd__check)
-            opts="-q -v -h -V --source --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --source --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -21764,7 +21764,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__update__subcmd__download)
-            opts="-q -v -h -V --target --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --target --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -21930,7 +21930,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__update__subcmd__history)
-            opts="-q -v -h -V --limit --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --limit --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -21984,7 +21984,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__update__subcmd__now)
-            opts="-q -v -h -V --no-restart --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --no-restart --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -22034,7 +22034,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__update__subcmd__status)
-            opts="-q -v -h -V --json --config --config-dir --config-url --config-fingerprint --state-dir --profile --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --json --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0

@@ -59,6 +59,10 @@ impl Default for DispatcherConfig {
 pub struct Dispatcher {
     join: Mutex<Option<JoinHandle<()>>>,
     shutdown: Mutex<Option<oneshot::Sender<()>>>,
+    /// Background spool-retry task that periodically redelivers spooled
+    /// events for sinks that have since recovered.
+    retry_join: Mutex<Option<JoinHandle<()>>>,
+    retry_shutdown: Mutex<Option<oneshot::Sender<()>>>,
 }
 
 impl Dispatcher {
@@ -111,17 +115,47 @@ impl Dispatcher {
             }
         });
 
+        // Spool-retry task: every `retry_interval`, attempt to drain each
+        // sink whose spool is non-empty. A sink that has healed redelivers its
+        // backlog; a sink still failing re-spools and we try again next tick.
+        let retry_interval = inner.cfg.retry_interval;
+        let (retry_sd_tx, mut retry_sd_rx) = oneshot::channel();
+        let inner_for_retry = inner.clone();
+        let retry_join = tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(retry_interval);
+            // The first immediate tick is uninteresting (nothing spooled yet);
+            // skip it so the first real attempt happens after one interval.
+            ticker.tick().await;
+            loop {
+                tokio::select! {
+                    biased;
+                    _ = &mut retry_sd_rx => break,
+                    _ = ticker.tick() => {
+                        inner_for_retry.drain_pending_spools().await;
+                    }
+                }
+            }
+        });
+
         Ok(Self {
             join: Mutex::new(Some(join)),
             shutdown: Mutex::new(Some(sd_tx)),
+            retry_join: Mutex::new(Some(retry_join)),
+            retry_shutdown: Mutex::new(Some(retry_sd_tx)),
         })
     }
 
     /// Stop the dispatcher and wait for it to drain.
     pub async fn shutdown(self) {
-        let tx = self.shutdown.lock().take();
-        if let Some(tx) = tx {
+        if let Some(tx) = self.retry_shutdown.lock().take() {
             let _ = tx.send(());
+        }
+        if let Some(tx) = self.shutdown.lock().take() {
+            let _ = tx.send(());
+        }
+        let retry_join = self.retry_join.lock().take();
+        if let Some(j) = retry_join {
+            let _ = j.await;
         }
         let join = self.join.lock().take();
         if let Some(j) = join {
@@ -132,6 +166,9 @@ impl Dispatcher {
 
 impl Drop for Dispatcher {
     fn drop(&mut self) {
+        if let Some(tx) = self.retry_shutdown.lock().take() {
+            let _ = tx.send(());
+        }
         if let Some(tx) = self.shutdown.lock().take() {
             let _ = tx.send(());
         }
@@ -144,8 +181,7 @@ pub struct DispatcherInner {
     sinks: HashMap<String, Arc<dyn Sink>>,
     dedupe_state: DedupeState,
     spools: HashMap<String, Arc<Mutex<DiskSpool>>>,
-    /// Retained for future retry-task config; suppress `dead_code`.
-    #[allow(dead_code)]
+    /// Dispatcher config; consumed by the spool-retry task (`retry_interval`).
     cfg: DispatcherConfig,
 }
 
@@ -210,6 +246,26 @@ impl DispatcherInner {
                 }
                 return;
             }
+        }
+    }
+
+    /// Drain every sink whose spool currently holds at least one entry.
+    ///
+    /// Called on each retry tick by the background task spawned in
+    /// [`Dispatcher::spawn`]. Sinks with empty spools are skipped (no sink
+    /// I/O); sinks still failing re-spool inside [`Self::drain_spool`] and are
+    /// retried on the next tick.
+    pub async fn drain_pending_spools(&self) {
+        // Snapshot the names with a non-empty spool first so we don't hold the
+        // per-spool lock across the `.await` in `drain_spool`.
+        let pending: Vec<String> = self
+            .spools
+            .iter()
+            .filter(|(_, s)| s.lock().len() > 0)
+            .map(|(name, _)| name.clone())
+            .collect();
+        for name in pending {
+            self.drain_spool(&name).await;
         }
     }
 
@@ -580,6 +636,105 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
         assert_eq!(t.requests().len(), 1);
+        d.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn drain_pending_spools_redelivers_only_nonempty_sinks() {
+        let tmp = tempdir().unwrap();
+        let cfg = DispatcherConfig {
+            spool_root: tmp.path().into(),
+            ..DispatcherConfig::default()
+        };
+        // Sink "a" will spool one event; sink "b" stays empty.
+        let ta = Arc::new(RecordingTransport::new());
+        ta.fail_once(SinkError::Transient("down".into()));
+        let tb = Arc::new(RecordingTransport::new());
+        let mut sinks: HashMap<String, Arc<dyn Sink>> = HashMap::new();
+        sinks.insert(
+            "a".into(),
+            Arc::new(HttpSink::new(
+                "a",
+                "POST",
+                "https://x",
+                "{}",
+                "application/json",
+                HttpAuth::None,
+                ta.clone(),
+            )) as Arc<dyn Sink>,
+        );
+        sinks.insert(
+            "b".into(),
+            Arc::new(HttpSink::new(
+                "b",
+                "POST",
+                "https://x",
+                "{}",
+                "application/json",
+                HttpAuth::None,
+                tb.clone(),
+            )) as Arc<dyn Sink>,
+        );
+        let bindings = vec![make_binding(vec!["k"], vec!["a"])];
+        let d = build_for_test(bindings, sinks, cfg).unwrap();
+
+        d.dispatch(Arc::new(Event::builder("k", Severity::Info).build()))
+            .await;
+        assert_eq!(d.spool_len("a"), 1, "transient failure should spool");
+        assert_eq!(d.spool_len("b"), 0);
+
+        // Recovery: draining all pending spools redelivers "a" and never
+        // touches the empty "b".
+        d.drain_pending_spools().await;
+        assert_eq!(d.spool_len("a"), 0, "healed sink's spool should clear");
+        assert_eq!(ta.requests().len(), 1, "spooled event redelivered once");
+        assert!(tb.requests().is_empty(), "empty sink not contacted");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn spawned_retry_task_redelivers_spooled_event_after_recovery() {
+        let tmp = tempdir().unwrap();
+        let cfg = DispatcherConfig {
+            spool_root: tmp.path().into(),
+            // Short interval so the test does not wait the 30s default.
+            retry_interval: Duration::from_millis(20),
+            ..DispatcherConfig::default()
+        };
+        let bus = EventBus::new(&crate::bus::EventBusConfig::default());
+        let t = Arc::new(RecordingTransport::new());
+        // The very first delivery (via the live dispatch path) fails
+        // transiently and spools; the retry task's redelivery then succeeds.
+        t.fail_once(SinkError::Transient("network down".into()));
+        let http = Arc::new(HttpSink::new(
+            "alerts",
+            "POST",
+            "https://x",
+            "{}",
+            "application/json",
+            HttpAuth::None,
+            t.clone(),
+        )) as Arc<dyn Sink>;
+        let mut sinks: HashMap<String, Arc<dyn Sink>> = HashMap::new();
+        sinks.insert("alerts".into(), http);
+        let bindings = vec![make_binding(vec!["k"], vec!["alerts"])];
+        let d = Dispatcher::spawn(&bus, bindings, sinks, cfg).unwrap();
+
+        // Emit one event: the live delivery fails and spools it.
+        bus.emit(Event::builder("k", Severity::Info).build());
+
+        // The background retry task should drain the spool once the sink heals.
+        let mut redelivered = false;
+        for _ in 0..200 {
+            if t.requests().len() == 1 {
+                redelivered = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(
+            redelivered,
+            "retry task should have redelivered the spooled event"
+        );
         d.shutdown().await;
     }
 

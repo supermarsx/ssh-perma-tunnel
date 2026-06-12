@@ -30,7 +30,9 @@ use crate::live_connector::{LiveConnector, UnavailableConnector};
 use crate::profile::{ProfileSupervisor, ProfileSupervisorConfig};
 use crate::reload::{ReloadAction, ReloadPlan};
 use crate::session::{SessionRegistry, SessionRow};
-use crate::stats::{update_throughput_ewma, StatsTick, StatsTickConfig};
+use crate::stats::{
+    flush_metrics, update_throughput_ewma, StatsTick, StatsTickConfig, SupervisorObservers,
+};
 
 /// Top-level orchestrator.
 pub struct Orchestrator {
@@ -43,11 +45,26 @@ pub struct Orchestrator {
     live_overrides: Mutex<HashMap<String, Arc<dyn LiveConnector>>>,
     /// Cached config for the stats tick.
     stats_cfg: StatsTickConfig,
+    /// Observability sinks injected by `p4-dispatch-wire` (event bus + standard
+    /// metric handles). Threaded into every profile's
+    /// [`ProfileSupervisorConfig`] at start, and consumed by the stats-tick task
+    /// to populate byte/connection/state metrics. Empty by default (no-op).
+    observers: Mutex<SupervisorObservers>,
 }
 
 struct StatsBroadcast {
     tx: broadcast::Sender<StatsTick>,
-    _task: JoinHandle<()>,
+    task: JoinHandle<()>,
+}
+
+impl Drop for Orchestrator {
+    fn drop(&mut self) {
+        // E1-F19: the stats ticker loops unconditionally ("keep ticking — it's
+        // cheap"); abort it on orchestrator drop so it doesn't outlive us.
+        if let Some(b) = self.stats.lock().take() {
+            b.task.abort();
+        }
+    }
 }
 
 impl std::fmt::Debug for Orchestrator {
@@ -80,7 +97,50 @@ impl Orchestrator {
             stats: Mutex::new(None),
             live_overrides: Mutex::new(HashMap::new()),
             stats_cfg,
+            observers: Mutex::new(SupervisorObservers::default()),
         }
+    }
+
+    /// Inject the canonical [`spt_events::EventBus`] so every profile transition
+    /// re-emits as a canonical [`spt_events::Event`] (E6-F1). The bus itself is
+    /// constructed by `p4-dispatch-wire` in `cli_dispatch` and handed here.
+    ///
+    /// Takes effect for profiles started *after* this call (call it before
+    /// `start_profile` / `apply`). Returns `self` for builder-style chaining.
+    #[must_use]
+    pub fn with_event_bus(self, bus: spt_events::EventBus) -> Self {
+        self.observers.lock().event_bus = Some(bus);
+        self
+    }
+
+    /// Inject the standard Prometheus metric handles (E1-F13 / E6-F4). The
+    /// exporter is constructed by `p4-dispatch-wire`; pass
+    /// `exporter.standard().clone()`. The supervisor increments `reconnects`
+    /// and the stats-tick task populates `bytes_in/out`, `forward_active`, and
+    /// `profile_state`.
+    ///
+    /// Takes effect for profiles started *after* this call. Returns `self`.
+    #[must_use]
+    pub fn with_metrics(self, metrics: spt_observability::metrics::StandardMetrics) -> Self {
+        self.observers.lock().metrics = Some(metrics);
+        self
+    }
+
+    /// Setter form of [`Self::with_event_bus`] for callers holding `&Orchestrator`.
+    pub fn set_event_bus(&self, bus: spt_events::EventBus) {
+        self.observers.lock().event_bus = Some(bus);
+    }
+
+    /// Setter form of [`Self::with_metrics`] for callers holding `&Orchestrator`.
+    pub fn set_metrics(&self, metrics: spt_observability::metrics::StandardMetrics) {
+        self.observers.lock().metrics = Some(metrics);
+    }
+
+    /// Snapshot of the currently-injected observers (used internally to thread
+    /// them into each profile's config and the stats-tick task).
+    #[must_use]
+    fn observers(&self) -> SupervisorObservers {
+        self.observers.lock().clone()
     }
 
     /// Number of profiles currently supervised.
@@ -110,21 +170,77 @@ impl Orchestrator {
     }
 
     /// Start a profile.
+    ///
+    /// E1-F5: if a supervisor for `profile.name` is already running, the old
+    /// instance is removed and dropped *before* the new one is spawned. The
+    /// displaced [`ProfileSupervisor`]'s `Drop` aborts its task (and signals
+    /// shutdown), so the old session/listeners are torn down promptly instead
+    /// of leaking and racing the new task for the same ports. For a graceful
+    /// (awaited) stop+restart, prefer [`Self::restart_profile`].
+    ///
+    /// E5-F1: a profile whose `enabled` is explicitly `false` is not started —
+    /// any stale instance is still removed and the slot left empty.
+    ///
+    /// The API stays synchronous so existing call sites are unaffected.
     pub fn start_profile(
         &self,
         profile: &Profile,
         protocol: Arc<dyn TunnelProtocol>,
         auth: AuthConfig,
         endpoints: Vec<Endpoint>,
+        cfg: ProfileSupervisorConfig,
+    ) {
+        self.start_profile_with_auth(
+            profile,
+            protocol,
+            auth,
+            HashMap::new(),
+            endpoints,
+            cfg,
+        );
+    }
+
+    /// Start a profile, threading per-endpoint credentials.
+    ///
+    /// Identical to [`Self::start_profile`] except `auth_by_endpoint` carries the
+    /// resolved `(host, port) → AuthConfig` map (multi-auth Phase 3). `auth`
+    /// remains the profile-level default used for any endpoint absent from the
+    /// map. An empty map reproduces [`Self::start_profile`] exactly.
+    pub fn start_profile_with_auth(
+        &self,
+        profile: &Profile,
+        protocol: Arc<dyn TunnelProtocol>,
+        auth: AuthConfig,
+        auth_by_endpoint: HashMap<(String, u16), AuthConfig>,
+        endpoints: Vec<Endpoint>,
         mut cfg: ProfileSupervisorConfig,
     ) {
+        // Remove + drop any existing instance first. Drop aborts its task
+        // (E1-F5 backstop), so this is an immediate, synchronous teardown.
+        let displaced = self.profiles.lock().remove(&profile.name);
+        self.live_overrides.lock().remove(&profile.name);
+        drop(displaced);
+
+        if profile.enabled == Some(false) {
+            tracing::info!(
+                profile = %profile.name,
+                "profile is disabled; not starting"
+            );
+            return;
+        }
+
         // Inject the orchestrator's shared registry so the per-profile task
         // publishes its session row centrally.
         cfg.registry = self.registry.clone();
-        let sup = ProfileSupervisor::spawn(
+        // Inject the observability sinks (event bus + metrics) so the profile
+        // re-emits canonical events and bumps the reconnect counter (E6-F1 /
+        // E1-F13). No-op when nothing was injected.
+        cfg.observers = self.observers();
+        let sup = ProfileSupervisor::spawn_with_auth(
             profile.name.clone(),
             protocol,
             auth,
+            auth_by_endpoint,
             endpoints,
             profile.forwards.clone(),
             cfg,
@@ -132,6 +248,43 @@ impl Orchestrator {
         self.profiles
             .lock()
             .insert(profile.name.clone(), Arc::new(sup));
+    }
+
+    /// Gracefully stop any existing instance of `profile` (awaiting shutdown),
+    /// then start the new one. Use this from async contexts that want a clean
+    /// handoff; [`Self::start_profile`] is the synchronous best-effort variant.
+    pub async fn restart_profile(
+        &self,
+        profile: &Profile,
+        protocol: Arc<dyn TunnelProtocol>,
+        auth: AuthConfig,
+        endpoints: Vec<Endpoint>,
+        cfg: ProfileSupervisorConfig,
+    ) {
+        self.restart_profile_with_auth(
+            profile,
+            protocol,
+            auth,
+            HashMap::new(),
+            endpoints,
+            cfg,
+        )
+        .await;
+    }
+
+    /// Per-endpoint-auth variant of [`Self::restart_profile`] (multi-auth
+    /// Phase 3). An empty `auth_by_endpoint` reproduces `restart_profile`.
+    pub async fn restart_profile_with_auth(
+        &self,
+        profile: &Profile,
+        protocol: Arc<dyn TunnelProtocol>,
+        auth: AuthConfig,
+        auth_by_endpoint: HashMap<(String, u16), AuthConfig>,
+        endpoints: Vec<Endpoint>,
+        cfg: ProfileSupervisorConfig,
+    ) {
+        self.stop_profile(&profile.name).await;
+        self.start_profile_with_auth(profile, protocol, auth, auth_by_endpoint, endpoints, cfg);
     }
 
     /// Stop a profile, if present, awaiting shutdown.
@@ -157,25 +310,64 @@ impl Orchestrator {
             ProfileSupervisorConfig,
         )>,
     {
+        // Adapt the 5-tuple provider to the per-endpoint-auth provider with an
+        // empty map (every endpoint uses the profile-level default).
+        self.apply_with_auth(plan, |name| {
+            provider(name).map(|(p, proto, auth, eps, cfg)| {
+                (p, proto, auth, HashMap::new(), eps, cfg)
+            })
+        })
+        .await;
+    }
+
+    /// Per-endpoint-auth variant of [`Self::apply`] (multi-auth Phase 3). The
+    /// provider additionally yields the `(host, port) → AuthConfig` map for each
+    /// profile; an empty map reproduces [`Self::apply`].
+    pub async fn apply_with_auth<F>(&self, plan: &ReloadPlan, mut provider: F)
+    where
+        F: FnMut(
+            &str,
+        ) -> Option<(
+            Profile,
+            Arc<dyn TunnelProtocol>,
+            AuthConfig,
+            HashMap<(String, u16), AuthConfig>,
+            Vec<Endpoint>,
+            ProfileSupervisorConfig,
+        )>,
+    {
+        // E1-F7: coalesce the per-forward actions of a profile into a single
+        // restart. A reload touching three forwards of one profile must restart
+        // it once, not three times (which would sever every other forward's
+        // live connections on each pass). We collect the set of profiles that
+        // need a forward-driven restart, then apply each exactly once.
+        let mut forward_restart: Vec<String> = Vec::new();
         for action in &plan.actions {
             match action {
                 ReloadAction::StopProfile(n) => self.stop_profile(n).await,
                 ReloadAction::StartProfile(n) | ReloadAction::RestartProfile(n) => {
-                    if matches!(action, ReloadAction::RestartProfile(_)) {
-                        self.stop_profile(n).await;
-                    }
-                    if let Some((p, proto, auth, eps, cfg)) = provider(n) {
-                        self.start_profile(&p, proto, auth, eps, cfg);
+                    // `restart_profile` gracefully stops any existing instance
+                    // first (E1-F5) and `start_profile` skips disabled profiles
+                    // (E5-F1), so RestartProfile and StartProfile share a path.
+                    if let Some((p, proto, auth, eauth, eps, cfg)) = provider(n) {
+                        self.restart_profile_with_auth(&p, proto, auth, eauth, eps, cfg)
+                            .await;
                     }
                 }
                 ReloadAction::AddForward { profile, .. }
                 | ReloadAction::RemoveForward { profile, .. }
                 | ReloadAction::RestartForward { profile, .. } => {
-                    self.stop_profile(profile).await;
-                    if let Some((p, proto, auth, eps, cfg)) = provider(profile) {
-                        self.start_profile(&p, proto, auth, eps, cfg);
+                    if !forward_restart.iter().any(|p| p == profile) {
+                        forward_restart.push(profile.clone());
                     }
                 }
+            }
+        }
+
+        for profile in forward_restart {
+            if let Some((p, proto, auth, eauth, eps, cfg)) = provider(&profile) {
+                self.restart_profile_with_auth(&p, proto, auth, eauth, eps, cfg)
+                    .await;
             }
         }
     }
@@ -252,9 +444,16 @@ impl Orchestrator {
             let interval = self.stats_cfg.interval;
             let half_life = self.stats_cfg.ewma_half_life_secs;
             let tx_clone = tx.clone();
+            // E1-F13 / E6-F4: snapshot the injected metric handle (if any) so the
+            // flush populates per-profile byte / connection / state metrics.
+            let metrics = self.observers.lock().metrics.clone();
             let task = tokio::spawn(async move {
                 let ewma = Ewma::new(Duration::from_secs_f64(half_life.max(0.5)));
                 let mut prev_total: u64 = 0;
+                // Per-profile (bytes_in, bytes_out) high-water mark for monotonic
+                // counter deltas across flushes.
+                let mut metric_prev: std::collections::BTreeMap<String, (u64, u64)> =
+                    std::collections::BTreeMap::new();
                 let mut ticker = tokio::time::interval(interval);
                 ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
                 ticker.tick().await; // first tick is immediate
@@ -262,6 +461,8 @@ impl Orchestrator {
                     ticker.tick().await;
                     let rows = registry.snapshot();
                     let mut tick = StatsTick::from_rows(&rows);
+                    // Increment the standard metric counters from this flush.
+                    flush_metrics(metrics.as_ref(), &tick, &mut metric_prev);
                     let total = tick.total_bytes_in + tick.total_bytes_out;
                     let bps = update_throughput_ewma(&ewma, prev_total, total, interval);
                     prev_total = total;
@@ -280,7 +481,7 @@ impl Orchestrator {
                     }
                 }
             });
-            *g = Some(StatsBroadcast { tx, _task: task });
+            *g = Some(StatsBroadcast { tx, task });
         }
         g.as_ref().unwrap().tx.subscribe()
     }
@@ -310,10 +511,18 @@ impl Orchestrator {
             return Arc::clone(c);
         }
         if self.profiles.lock().contains_key(profile) {
-            // Default fallback: a useful echo connector. Backends should
-            // override via [`set_live_connector`] with their session-aware
-            // adapter.
-            Arc::new(crate::live_connector::EchoLiveConnector::default())
+            // E1-F13: do NOT silently hand back an in-process echo loop for a
+            // running profile — benchmark numbers measured against it are
+            // synthetic, not the live tunnel, and were being presented as real.
+            // Until a backend registers a session-aware connector via
+            // [`set_live_connector`], report the live connector as unavailable
+            // so callers surface an honest "not wired" error instead of fake
+            // throughput.
+            UnavailableConnector::arc(format!(
+                "live connector for profile `{profile}` is not wired \
+                 (no session-aware backend connector registered); \
+                 the synthetic echo connector is no longer used in production"
+            ))
         } else {
             UnavailableConnector::arc(format!("profile `{profile}` not running"))
         }
@@ -547,6 +756,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn start_profile_replaces_existing_without_leaking() {
+        // E1-F5: starting a profile that's already running must stop the old
+        // instance first (single entry, no leaked task / port race).
+        let orch = Orchestrator::new();
+        let _p1 = start_running_profile(&orch);
+        assert_eq!(orch.len(), 1);
+        let _row = wait_for_session(&orch).await;
+        // Start "p" again — should still be exactly one entry.
+        let _p2 = start_running_profile(&orch);
+        assert_eq!(orch.len(), 1, "double-start must not leak a second entry");
+        orch.stop_profile("p").await;
+        assert!(orch.is_empty());
+    }
+
+    #[tokio::test]
+    async fn start_profile_skips_disabled() {
+        // E5-F1: a profile with enabled = false is not started.
+        let orch = Orchestrator::new();
+        let proto = Arc::new(MockTunnelProtocol::new());
+        let cfg = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "a"
+            enabled = false
+        "#;
+        let (c, _) = load_str(cfg, false).unwrap();
+        orch.start_profile(
+            &c.profiles[0],
+            proto,
+            auth(),
+            vec![endpoint("a", 22)],
+            ProfileSupervisorConfig::default(),
+        );
+        assert!(orch.is_empty(), "disabled profile must not start");
+    }
+
+    #[tokio::test]
     async fn live_connector_unavailable_when_not_running() {
         let orch = Orchestrator::new();
         let c = orch.live_connector("ghost", None);
@@ -554,11 +802,30 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn live_connector_running_default_echoes() {
+    async fn live_connector_running_without_backend_is_unavailable() {
+        // E1-F13: a running profile with no registered session-aware connector
+        // must NOT silently return an in-process echo loop — that would present
+        // synthetic benchmark numbers as real. It reports unavailable instead.
+        let orch = Orchestrator::new();
+        let _proto = start_running_profile(&orch);
+        let _row = wait_for_session(&orch).await;
+        let conn = orch.live_connector("p", None);
+        assert!(conn.open_tcp("ignored", 0).await.is_err());
+        orch.stop_profile("p").await;
+    }
+
+    #[tokio::test]
+    async fn live_connector_uses_registered_override() {
+        // An explicitly registered connector is still honoured for a running
+        // profile (the supported wiring path).
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let orch = Orchestrator::new();
         let _proto = start_running_profile(&orch);
         let _row = wait_for_session(&orch).await;
+        orch.set_live_connector(
+            "p",
+            Arc::new(crate::live_connector::EchoLiveConnector::default()),
+        );
         let conn = orch.live_connector("p", None);
         let mut s = conn.open_tcp("ignored", 0).await.unwrap();
         s.write_all(b"abc").await.unwrap();

@@ -52,6 +52,10 @@ pub fn resolve_secret(backends: &[&dyn SecretBackend], r: &AuthSecretRef) -> Res
             Ok(secret_bytes(v.to_string_lossy().into_owned().into_bytes()))
         }
         AuthSecretRef::File(path) => {
+            // Enforce the same 0400/0600 (Unix) / DACL-audit (Windows) check
+            // the spt-secrets file backend applies, instead of a bare read.
+            // E2-F2: previously this path skipped the mode check entirely.
+            spt_secrets::file::check_mode(std::path::Path::new(path))?;
             let bytes = std::fs::read(path).map_err(|e| Error::SecretUnavailable {
                 reference: format!("file://{path}"),
                 reason: format!("read `{path}`: {e}"),
@@ -148,15 +152,41 @@ mod tests {
         }
     }
 
+    /// Tighten a file to owner-only so the mode check accepts it. No-op on
+    /// non-Unix (the Windows check is best-effort and never rejects).
+    #[allow(unused_variables)]
+    fn make_owner_only(path: &std::path::Path) {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+    }
+
     #[test]
     fn resolve_secret_file_variant() {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("s.txt");
         std::fs::write(&p, b"filebody").unwrap();
+        make_owner_only(&p);
         let backends: Vec<&dyn SecretBackend> = vec![];
         let rf = AuthSecretRef::File(p.to_string_lossy().into_owned());
         let got = resolve_secret(&backends, &rf).unwrap();
         assert_eq!(got.expose_secret().as_slice(), b"filebody");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_secret_file_variant_rejects_world_readable() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("loose.txt");
+        std::fs::write(&p, b"filebody").unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let backends: Vec<&dyn SecretBackend> = vec![];
+        let rf = AuthSecretRef::File(p.to_string_lossy().into_owned());
+        let err = resolve_secret(&backends, &rf).unwrap_err();
+        assert!(matches!(err, Error::PermissionDenied(_)), "got {err:?}");
     }
 
     #[test]
@@ -259,6 +289,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("badutf8.bin");
         std::fs::write(&p, [0xFFu8, 0xFE]).unwrap();
+        make_owner_only(&p);
         let backends: Vec<std::sync::Arc<dyn SecretBackend>> = vec![];
         let rf = AuthSecretRef::File(p.to_string_lossy().into_owned());
         let err = resolve_passphrase(&backends, Some(&rf)).unwrap_err();

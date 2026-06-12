@@ -6,8 +6,18 @@
 //! differences (whitespace, key ordering produced by the user) do not cause
 //! spurious mismatches.
 //!
-//! The canonical render uses [`RedactionMode::Standard`] so secrets are not
-//! mixed into the fingerprint, then computes SHA-256 over the resulting bytes.
+//! The canonical render uses [`RedactionMode::None`] so that *every*
+//! security-sensitive field participates in the hash — including `secret://`
+//! references, inline secret material, and pins like `fingerprint_sha256`.
+//!
+//! E5-F12: a redacted render collapses every `secret://ns/name` to
+//! `secret://[REDACTED]` and every `passphrase|password|token|auth|…` value to
+//! `[REDACTED]`, so re-pointing `auth.passphrase` from `secret://a/x` to
+//! `secret://b/y`, or changing `runtime.remote_config.fingerprint_sha256`,
+//! would leave the fingerprint unchanged — defeating the "running config ==
+//! on-disk config" check exactly on the fields that matter most. The
+//! fingerprint is a one-way SHA-256 digest that never re-exposes the rendered
+//! bytes, so hashing the verbatim render is safe and stays inside the process.
 
 use sha2::{Digest, Sha256};
 use spt_core::RedactionMode;
@@ -16,9 +26,13 @@ use crate::render::render;
 use crate::schema::Config;
 
 /// Fingerprint a [`Config`] by SHA-256 over its canonical rendered form.
+///
+/// The render is verbatim ([`RedactionMode::None`]) so secret-reference and
+/// pin changes are reflected in the digest (E5-F12). The resulting 32-byte
+/// hash is one-way; it does not leak the rendered secrets.
 #[must_use]
 pub fn fingerprint(c: &Config) -> [u8; 32] {
-    let canonical = render(c, RedactionMode::Standard);
+    let canonical = render(c, RedactionMode::None);
     fingerprint_str(&canonical)
 }
 
@@ -81,5 +95,33 @@ mod tests {
     #[test]
     fn fingerprint_str_basic() {
         assert_ne!(fingerprint_str("a"), fingerprint_str("b"));
+    }
+
+    /// E5-F12: re-pointing a `secret://` reference must change the
+    /// fingerprint. Under the old `RedactionMode::Standard` render both refs
+    /// collapsed to `secret://[REDACTED]` and the digests matched.
+    #[test]
+    fn fingerprint_tracks_secret_ref_changes() {
+        let with_ref = |r: &str| {
+            format!(
+                r#"
+                version = 1
+                [[profiles]]
+                name = "p"
+                protocol = "ssh2"
+                host = "h"
+                [profiles.auth]
+                method = "password"
+                password = "{r}"
+                "#
+            )
+        };
+        let (a, _) = load_str(&with_ref("secret://a/x"), false).unwrap();
+        let (b, _) = load_str(&with_ref("secret://b/y"), false).unwrap();
+        assert_ne!(
+            fingerprint(&a),
+            fingerprint(&b),
+            "changing a secret:// reference must change the config fingerprint"
+        );
     }
 }

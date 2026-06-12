@@ -2,11 +2,11 @@
 
 use clap::{Args, Subcommand, ValueEnum};
 
-const EXAMPLES: &str = "EXAMPLES:
+pub(crate) const EXAMPLES: &str = "EXAMPLES:
   spt session list --profile edge
   spt session show abc123 --json
   spt session close abc123 --grace 5s --reason \"drain\"
-  spt session drain --profile edge --timeout 30s
+  spt session drain edge --timeout 30s
   spt session top --sort bytes --limit 20";
 
 /// `spt session` group.
@@ -75,7 +75,7 @@ pub struct SessionClose {
 /// `spt session drain`.
 #[derive(Args, Debug)]
 pub struct SessionDrain {
-    /// Profile name. Accepted positionally or via `--profile`.
+    /// Profile name (positional).
     pub profile: String,
     /// Filter by forward.
     #[arg(long)]

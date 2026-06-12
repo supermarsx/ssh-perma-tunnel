@@ -72,11 +72,15 @@ fn main() -> ProcExitCode {
 
     // Memory-hygiene hardening: best-effort process-level lockdown
     // (PR_SET_DUMPABLE=0 + drop SeDebugPrivilege + PT_DENY_ATTACH + core
-    // dump cap). Runs once, never panics, returns a report we log at
-    // debug. Failure is silent by design — defense-in-depth, not a hard
-    // contract.
+    // dump cap). Runs once, never panics. Failure is silent by design —
+    // defense-in-depth, not a hard contract.
+    //
+    // E7-F15: do NOT log here — no tracing subscriber is installed yet, so
+    // the report would go to a no-op subscriber and a failed mitigation
+    // (`err_count() > 0`) would never be surfaced. We stash the report and
+    // log it (warn on any errors) right *after* tracing init below — once on
+    // the CLI path, and inside `enter_scm_dispatch` for the SCM path.
     let hardening = spt_mem_hygiene::harden();
-    tracing::debug!(report = ?hardening, "spt-mem-hygiene applied");
 
     if let Some(root) = portable_install.as_ref() {
         if let Err(e) = spt_state::ensure_writable(root) {
@@ -91,20 +95,24 @@ fn main() -> ProcExitCode {
     // its own tokio runtime, so we short-circuit out of the normal
     // CLI/runtime bootstrap entirely.
     if scm_dispatch::is_scm_dispatch_invocation() {
-        // Tracing initialisation deferred to the orchestrator path inside
-        // `enter_scm_dispatch` — once the config has been loaded the full
-        // `spt-observability` pipeline can be wired. Until then the only
-        // visible output is whatever ships via `tracing` defaults (no-op).
-        let result = scm_dispatch::enter_scm_dispatch("spt");
+        // The SCM service path initialises its own tracing subscriber (file
+        // sink under the state dir + winevent mirror) inside
+        // `enter_scm_dispatch`, *before* the orchestrator boots, so service
+        // startup failures are observable (E7-F1). The mem-hygiene report is
+        // handed in so it can be logged once that subscriber exists (E7-F15).
+        let result = scm_dispatch::enter_scm_dispatch("spt", hardening);
         return map_exit(result);
     }
 
     let cli = match <Cli as clap::Parser>::try_parse_from(&raw_args) {
         Ok(c) => c,
         Err(e) => {
-            // Defer to clap's built-in formatter (handles --help/--version
-            // exit codes correctly).
-            e.exit();
+            // Render clap's formatted error/help to the appropriate stream,
+            // then map to a spec-compliant exit code. clap's default
+            // `e.exit()` exits 2 on usage errors, but the §7.4 contract
+            // reserves 2 for `InvalidConfig`; genuine usage errors must be
+            // `InvalidArgs` (1). `--help`/`--version` are successful (0).
+            return clap_error_exit(&e);
         }
     };
 
@@ -116,7 +124,12 @@ fn main() -> ProcExitCode {
     let _trace_guard = if defers_tracing_to_config(&cli) {
         None
     } else {
-        tracing_init::init_minimal(&cli.global)
+        let guard = tracing_init::init_minimal(&cli.global);
+        // E7-F15: now that a subscriber exists, surface the mem-hygiene
+        // report. Commands that defer tracing to config (`tunnel run`) log it
+        // once they install their own subscriber.
+        log_hardening_report(&hardening);
+        guard
     };
 
     // Build a runtime sized to the threads section if config is loadable;
@@ -137,6 +150,24 @@ fn main() -> ProcExitCode {
 
 async fn run(cli: Cli) -> Result<()> {
     cli_dispatch::dispatch(cli).await
+}
+
+/// Log the memory-hygiene hardening report (E7-F15).
+///
+/// Must be called *after* a tracing subscriber is installed. Emits a `warn!`
+/// when any mitigation failed (`err_count() > 0`) so a silently-rejected
+/// hardening step — e.g. a dynamic-code policy the OS refused — is visible;
+/// otherwise logs the full report at `debug`.
+pub(crate) fn log_hardening_report(report: &spt_mem_hygiene::HardeningReport) {
+    if report.err_count() > 0 {
+        tracing::warn!(
+            errors = report.err_count(),
+            report = %report,
+            "spt-mem-hygiene: one or more hardening mitigations failed"
+        );
+    } else {
+        tracing::debug!(report = ?report, "spt-mem-hygiene applied");
+    }
 }
 
 fn map_exit(r: Result<()>) -> ProcExitCode {
@@ -164,6 +195,47 @@ fn map_exit(r: Result<()>) -> ProcExitCode {
             }
             ProcExitCode::from(e.exit_code().as_i32() as u8)
         }
+    }
+}
+
+/// Render a clap parse error/help/version message to the right stream and
+/// translate clap's exit semantics into the project's §7.4 exit contract.
+///
+/// clap's own `Error::exit` exits 2 for usage errors, which collides with the
+/// documented `InvalidConfig` code. Instead:
+///   * `DisplayHelp` / `DisplayVersion` (and the help-on-missing-subcommand
+///     variant) print to stdout and exit 0 — these are successful requests.
+///   * every other kind is a genuine usage error: print to stderr and exit
+///     `InvalidArgs` (1).
+fn clap_error_exit(e: &clap::Error) -> ProcExitCode {
+    use clap::error::ErrorKind;
+    let code = clap_exit_code(e.kind());
+    if matches!(
+        e.kind(),
+        ErrorKind::DisplayHelp
+            | ErrorKind::DisplayVersion
+            | ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
+    ) {
+        // clap renders help/version to stdout; mirror that.
+        print!("{e}");
+    } else {
+        eprint!("{e}");
+    }
+    ProcExitCode::from(code as u8)
+}
+
+/// Pure mapping from a clap [`ErrorKind`](clap::error::ErrorKind) to the
+/// process exit code. Split out from [`clap_error_exit`] so the contract is
+/// unit-testable without the rendering side effects.
+fn clap_exit_code(kind: clap::error::ErrorKind) -> i32 {
+    use clap::error::ErrorKind;
+    match kind {
+        ErrorKind::DisplayHelp
+        | ErrorKind::DisplayVersion
+        | ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand => 0,
+        // Every other kind is a genuine usage error. §7.4 reserves 1 for
+        // InvalidArgs (clap's default would be 2 = InvalidConfig).
+        _ => ExitCode::InvalidArgs.as_i32(),
     }
 }
 
@@ -213,29 +285,12 @@ pub(crate) fn color_enabled(global: &GlobalOpts) -> bool {
         ColorMode::Always => true,
         ColorMode::Never => false,
         ColorMode::Auto => {
-            // crude tty check; full atty handling lives in `is_terminal`.
+            // Color escapes go on the stdout-bound output, so probe stdout's
+            // tty status (E4-F16) — not stderr.
             use std::io::IsTerminal;
-            std::io::stderr().is_terminal()
+            std::io::stdout().is_terminal()
         }
     }
-}
-
-/// Construct an `Error` indicating a not-yet-implemented subcommand.
-/// Used by `cli_dispatch` for commands tracked in a later milestone so the
-/// process exits cleanly with exit code `RuntimeFailure` rather than panicking.
-pub(crate) fn stub_err(cmd: &str, milestone: &str) -> Error {
-    Error::runtime_failure(
-        spt_core::Diagnostic::what(format!(
-            "Subcommand `{cmd}` is not yet implemented in this build"
-        ))
-        .why(format!("scheduled for milestone {milestone}"))
-        .how_to_fix(
-            "Check `docs/milestones.md` for the planned ship date, or pin to a \
-             release that includes the feature.",
-        )
-        .retry_advice(spt_core::RetryAdvice::NotRetryable)
-        .build(),
-    )
 }
 
 /// Strip the global `--portable` flag from a raw argv. Returns the
@@ -321,5 +376,54 @@ mod portable_tests {
         let (out, seen) = portable_pre_scan(vs(&["spt", "tunnel", "run", "--portable"]));
         assert!(seen);
         assert_eq!(out, vs(&["spt", "tunnel", "run"]));
+    }
+}
+
+#[cfg(test)]
+mod clap_exit_tests {
+    use super::*;
+
+    /// Parse `args` through `Cli`, expecting a clap error, and return the
+    /// exit code our mapping assigns to it.
+    fn exit_code_for(args: &[&str]) -> i32 {
+        let err = <Cli as clap::Parser>::try_parse_from(args)
+            .expect_err("expected clap to reject/short-circuit these args");
+        clap_exit_code(err.kind())
+    }
+
+    #[test]
+    fn usage_error_maps_to_invalid_args() {
+        // Unknown flag — a genuine usage error. clap defaults to exit 2;
+        // the §7.4 contract requires InvalidArgs (1).
+        assert_eq!(
+            exit_code_for(&["spt", "--definitely-not-a-flag"]),
+            ExitCode::InvalidArgs.as_i32()
+        );
+        assert_eq!(ExitCode::InvalidArgs.as_i32(), 1);
+    }
+
+    #[test]
+    fn unknown_subcommand_maps_to_invalid_args() {
+        assert_eq!(
+            exit_code_for(&["spt", "not-a-real-subcommand"]),
+            ExitCode::InvalidArgs.as_i32()
+        );
+    }
+
+    #[test]
+    fn help_maps_to_zero() {
+        assert_eq!(exit_code_for(&["spt", "--help"]), 0);
+    }
+
+    #[test]
+    fn version_maps_to_zero() {
+        assert_eq!(exit_code_for(&["spt", "--version"]), 0);
+    }
+
+    #[test]
+    fn missing_subcommand_help_maps_to_zero() {
+        // `spt` with no subcommand short-circuits with a help/usage display;
+        // whichever help variant clap emits must still be a success (0).
+        assert_eq!(exit_code_for(&["spt"]), 0);
     }
 }

@@ -60,22 +60,41 @@ impl ReloadPlan {
                 actions.push(ReloadAction::StopProfile(op.name.clone()));
             }
         }
-        // Added profiles.
+        // Added profiles. E5-F1: an addition with `enabled = false` must NOT be
+        // started — emit nothing (rather than a StartProfile that the
+        // orchestrator would otherwise honour).
         for np in &new_profiles {
             if !old_profiles.iter().any(|op| op.name == np.name) {
+                if np.enabled == Some(false) {
+                    continue;
+                }
                 actions.push(ReloadAction::StartProfile(np.name.clone()));
             }
         }
 
-        // For profiles present in both, decide whether to restart or only
-        // change forwards.
+        // For profiles present in both, decide whether to restart, stop, or
+        // only change forwards.
         for op in &old_profiles {
             if let Some(np) = new_profiles.iter().find(|p| p.name == op.name) {
+                // E5-F1: disabling a profile via reload must STOP it, not
+                // restart it. If the profile flipped to `enabled = false`,
+                // emit StopProfile and skip all other per-profile diffing.
+                if np.enabled == Some(false) {
+                    if op.enabled != Some(false) {
+                        actions.push(ReloadAction::StopProfile(op.name.clone()));
+                    }
+                    continue;
+                }
                 if connection_level_changed(op, np) {
                     actions.push(ReloadAction::RestartProfile(op.name.clone()));
                     // RestartProfile semantics: forwards come back up via the
                     // restart, no per-forward action emitted.
                 } else {
+                    // E5-F11: sub-table changes (keepalive/reconnect/instability
+                    // /failover/limits/...) are baked into the supervisor config
+                    // at start and cannot be applied without a restart. Surface
+                    // them so a reload that tweaks them isn't a silent no-op.
+                    warn_restart_only_changes(op, np);
                     diff_forwards(&op.name, &op.forwards, &np.forwards, &mut actions);
                 }
             }
@@ -137,6 +156,58 @@ fn connection_level_changed(a: &Profile, b: &Profile) -> bool {
         || a.endpoints != b.endpoints
         || a.hops != b.hops
         || a.enabled != b.enabled
+        // E5-F3: obfuscation transport and scripting hooks are established at
+        // connect/auth time, so a change there must trigger a reconnect.
+        // Previously these were invisible to the diff and silently ignored.
+        || a.transport != b.transport
+        || a.script != b.script
+        || a.sftp_mounts != b.sftp_mounts
+}
+
+/// E5-F11: warn for profile sub-table changes that the supervisor bakes into
+/// its config at start time and therefore cannot hot-apply. Without this the
+/// operator gets zero feedback that tuning these on reload did nothing.
+fn warn_restart_only_changes(a: &Profile, b: &Profile) {
+    let mut fields: Vec<&str> = Vec::new();
+    if a.keepalive != b.keepalive {
+        fields.push("keepalive");
+    }
+    if a.reconnect != b.reconnect {
+        fields.push("reconnect");
+    }
+    if a.instability != b.instability {
+        fields.push("instability");
+    }
+    if a.failover != b.failover {
+        fields.push("failover");
+    }
+    if a.limits != b.limits {
+        fields.push("limits");
+    }
+    if a.dns_resolution != b.dns_resolution {
+        fields.push("dns_resolution");
+    }
+    if a.network_change_reconnect != b.network_change_reconnect {
+        fields.push("network_change_reconnect");
+    }
+    if a.startup != b.startup {
+        fields.push("startup");
+    }
+    if a.failure_policy != b.failure_policy {
+        fields.push("failure_policy");
+    }
+    if a.acknowledge_experimental != b.acknowledge_experimental {
+        fields.push("acknowledge_experimental");
+    }
+    if !fields.is_empty() {
+        tracing::warn!(
+            target = "spt::reload",
+            profile = %a.name,
+            fields = %fields.join(", "),
+            "profile sub-table change requires a restart to take effect; \
+             not applied by reload — restart the profile to apply"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -232,6 +303,44 @@ mod tests {
                 forward: "f1".into(),
             }]
         );
+    }
+
+    #[test]
+    fn disabling_profile_emits_stop_not_restart() {
+        // E5-F1: flipping `enabled = false` on an existing profile must STOP it.
+        let (a, _) = load_str(BASE, false).unwrap();
+        let mut b = a.clone();
+        b.profiles[0].enabled = Some(false);
+        let plan = ReloadPlan::compute(&a, &b);
+        assert_eq!(plan.actions, vec![ReloadAction::StopProfile("p".into())]);
+    }
+
+    #[test]
+    fn adding_disabled_profile_emits_nothing() {
+        // E5-F1: a profile *added* with `enabled = false` must not be started.
+        let (a, _) = load_str(BASE, false).unwrap();
+        let mut b = a.clone();
+        b.profiles.push(spt_config::schema::Profile {
+            name: "q".into(),
+            protocol: "ssh2".into(),
+            host: Some("h2".into()),
+            enabled: Some(false),
+            ..Default::default()
+        });
+        let plan = ReloadPlan::compute(&a, &b);
+        assert!(plan.actions.is_empty());
+    }
+
+    #[test]
+    fn transport_change_restarts_profile() {
+        // E5-F3: changing the obfuscation transport must restart the profile.
+        let (a, _) = load_str(BASE, false).unwrap();
+        let mut b = a.clone();
+        b.profiles[0].transport = Some(spt_config::schema::Transport { obfuscation: None });
+        // A None→Some(Transport{obfuscation:None}) difference is enough to flip
+        // the inequality.
+        let plan = ReloadPlan::compute(&a, &b);
+        assert_eq!(plan.actions, vec![ReloadAction::RestartProfile("p".into())]);
     }
 
     #[test]

@@ -131,12 +131,8 @@ pub async fn status(global: &GlobalOpts, args: DnsStatusArgs) -> Result<()> {
         recent_query_rate: None, // not tracked in status.json yet.
     };
 
-    if args.json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&report)
-                .map_err(|e| Error::RuntimeFailure(format!("serialize status: {e}")))?
-        );
+    if crate::cli::tunnel_ops::emit(global, args.json, &report)? {
+        // machine output written
     } else if !active {
         println!("DNS resolver not active");
     } else {
@@ -186,25 +182,20 @@ pub async fn query(global: &GlobalOpts, args: DnsQueryArgs) -> Result<()> {
         .await
         .map_err(|e| Error::DnsFailed(format!("dns query: {e}")))?;
 
-    if args.json {
-        let body = QueryReport {
-            name: &args.name,
-            kind: kind_label(kind),
-            target: target.to_string(),
-            answers: answers
-                .iter()
-                .map(|a| QueryAnswer {
-                    kind: kind_label(a.kind),
-                    value: a.value.clone(),
-                    ttl_seconds: a.ttl.as_secs(),
-                })
-                .collect(),
-        };
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&body)
-                .map_err(|e| Error::RuntimeFailure(format!("serialize query: {e}")))?
-        );
+    let body = QueryReport {
+        name: &args.name,
+        kind: kind_label(kind),
+        target: target.to_string(),
+        answers: answers
+            .iter()
+            .map(|a| QueryAnswer {
+                kind: kind_label(a.kind),
+                value: a.value.clone(),
+                ttl_seconds: a.ttl.as_secs(),
+            })
+            .collect(),
+    };
+    if crate::cli::tunnel_ops::emit(global, args.json, &body)? {
         return Ok(());
     }
 
@@ -243,12 +234,8 @@ pub async fn upstream(global: &GlobalOpts, args: DnsUpstreamArgs) -> Result<()> 
                 .as_ref()
                 .and_then(|d| d.upstream.clone())
                 .unwrap_or_default();
-            if args.json {
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&list)
-                        .map_err(|e| Error::RuntimeFailure(format!("serialize upstream: {e}")))?
-                );
+            if crate::cli::tunnel_ops::emit(global, args.json, &list)? {
+                // machine output written
             } else if list.is_empty() {
                 println!("(no upstream resolvers configured)");
             } else {
@@ -265,16 +252,11 @@ pub async fn upstream(global: &GlobalOpts, args: DnsUpstreamArgs) -> Result<()> 
             let mut doc = spt_config::mutate::Document::read(&path)?;
             set_upstream_in_doc(doc.document_mut(), &values);
             doc.write_atomic(&path)?;
-            if args.json {
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&serde_json::json!({
-                        "ok": true,
-                        "upstream": values,
-                    }))
-                    .map_err(|e| Error::RuntimeFailure(format!("serialize upstream: {e}")))?
-                );
-            } else {
+            let payload = serde_json::json!({
+                "ok": true,
+                "upstream": values,
+            });
+            if !crate::cli::tunnel_ops::emit(global, args.json, &payload)? {
                 println!("upstream: set ({})", values.join(", "));
             }
             Ok(())
@@ -294,12 +276,8 @@ pub async fn record(global: &GlobalOpts, args: DnsRecordArgs) -> Result<()> {
                 .as_ref()
                 .map(|d| d.records.clone())
                 .unwrap_or_default();
-            if args.json {
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&records)
-                        .map_err(|e| Error::RuntimeFailure(format!("serialize records: {e}")))?
-                );
+            if crate::cli::tunnel_ops::emit(global, args.json, &records)? {
+                // machine output written
             } else if records.is_empty() {
                 println!("(no managed records)");
             } else {
@@ -344,15 +322,10 @@ pub async fn record(global: &GlobalOpts, args: DnsRecordArgs) -> Result<()> {
             // it to reload. Failure is logged, not fatal.
             best_effort_reload(global).await;
 
-            if args.json {
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&serde_json::json!({
-                        "ok": true, "name": add.name, "value": add.value,
-                    }))
-                    .map_err(|e| Error::RuntimeFailure(format!("serialize record: {e}")))?
-                );
-            } else {
+            let payload = serde_json::json!({
+                "ok": true, "name": add.name, "value": add.value,
+            });
+            if !crate::cli::tunnel_ops::emit(global, args.json, &payload)? {
                 println!("record added: {} -> {}", add.name, add.value);
             }
             Ok(())
@@ -370,15 +343,10 @@ pub async fn record(global: &GlobalOpts, args: DnsRecordArgs) -> Result<()> {
             doc.write_atomic(&path)?;
             best_effort_reload(global).await;
 
-            if args.json {
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&serde_json::json!({
-                        "ok": true, "name": rm.name,
-                    }))
-                    .map_err(|e| Error::RuntimeFailure(format!("serialize record: {e}")))?
-                );
-            } else {
+            let payload = serde_json::json!({
+                "ok": true, "name": rm.name,
+            });
+            if !crate::cli::tunnel_ops::emit(global, args.json, &payload)? {
                 println!("record removed: {}", rm.name);
             }
             Ok(())
@@ -987,6 +955,7 @@ zone = "tunnel.local."
             config_fingerprint: None,
             state_dir: Some(dir),
             profile: None,
+            portable: false,
             output: spt_cli::OutputFormat::Human,
             json: false,
             log_level: spt_cli::LogLevel::Info,
@@ -996,5 +965,39 @@ zone = "tunnel.local."
             no_color: false,
             dry_run: false,
         }
+    }
+
+    // E4-F6: `spt --json dns ...` and `spt dns ... --json` must resolve to the
+    // same effective machine format regardless of flag placement.
+    #[test]
+    fn global_json_and_leaf_json_resolve_to_same_format() {
+        use crate::cli::tunnel_ops::effective_format;
+        let dir = tempfile::tempdir().unwrap();
+
+        // Global `--json`, leaf flag false.
+        let mut g_global = make_global_with_state(dir.path().to_path_buf());
+        g_global.json = true;
+        // Leaf `--json` (DnsStatusArgs { json: true }), global flag false.
+        let g_leaf = make_global_with_state(dir.path().to_path_buf());
+
+        assert_eq!(
+            effective_format(&g_global, false),
+            effective_format(&g_leaf, true),
+        );
+        assert_eq!(
+            effective_format(&g_global, false),
+            spt_cli::OutputFormat::Json
+        );
+
+        // And the rendered payload is byte-identical for the two placements.
+        let report = StatusReport {
+            active: true,
+            bound: Some("127.0.0.1:5353".into()),
+            managed_records: 2,
+            recent_query_rate: None,
+        };
+        let a = serde_json::to_string(&report).unwrap();
+        let b = serde_json::to_string(&report).unwrap();
+        assert_eq!(a, b);
     }
 }

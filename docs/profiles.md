@@ -65,6 +65,88 @@ when `[[profiles.endpoints]]` is absent. New profiles should declare
 `[[profiles.endpoints]]` blocks directly so failover and per-endpoint
 priority/weight work.
 
+## Per-endpoint authentication
+
+By default every endpoint in a profile authenticates with the profile-level
+`[profiles.auth]` block and the profile-level `user` — this is the **global**
+case. A profile that declares only `[profiles.auth]` and no per-endpoint auth
+behaves exactly as it always has: the same credentials are used for every
+endpoint. No change is required for existing configs (the new fields are
+omitted entirely when unset).
+
+Each `[[profiles.endpoints]]` block may optionally carry its **own**
+credentials by adding an inline `[profiles.endpoints.auth]` block and/or a
+`user` field. When present, that endpoint uses its own credentials; when
+absent, it inherits the profile-level `[profiles.auth]` (and `user`).
+
+### Precedence: whole-block override, not field merge
+
+Per-endpoint auth is a **whole-block override**, not a field-level merge:
+
+- If an endpoint declares `[profiles.endpoints.auth]`, that block **fully
+  replaces** the profile-level `[profiles.auth]` for that endpoint. You
+  cannot inherit the profile auth and override only one field (for example,
+  keep the profile key but swap the username inside the auth block) — restate
+  the complete auth block on the endpoint.
+- `endpoint.user` overrides `profile.user` **for that endpoint only**. (The
+  username is resolved independently of the auth block, so you can keep the
+  global `[profiles.auth]` and still vary just the login user per endpoint by
+  setting `user` on the endpoint without an `[profiles.endpoints.auth]` block.)
+
+This mirrors the existing per-hop `[profiles.hops.auth]` fallback semantics: a
+hop with its own `auth`/`user` overrides the profile-level credentials for that
+hop, and inherits them when unset. Per-endpoint auth resolves identically.
+
+Secrets in a per-endpoint `[profiles.endpoints.auth]` block use the same
+`secret://` references as profile auth (see [Secrets](secrets.md)); two
+endpoints may point at distinct secret refs and the resolver resolves each
+independently at connect time.
+
+### Example: one endpoint inherits, one overrides
+
+    [[profiles]]
+    name = "edge"
+    enabled = true
+    protocol = "ssh2"
+    user = "tunnel"
+
+    # Profile-level (global) credentials — used by any endpoint that does
+    # not declare its own [profiles.endpoints.auth].
+    [profiles.auth]
+    method = "public_key"
+    identity_file = "/etc/spt/id_ed25519"
+
+    # Inherits the global user (`tunnel`) and the global public_key auth above.
+    [[profiles.endpoints]]
+    name = "primary"
+    host = "edge.example.com"
+    port = 22
+    priority = 0
+
+    # Overrides with its own user AND its own full auth block — this endpoint
+    # logs in as `dr-svc` with a different key and passphrase, ignoring the
+    # profile-level [profiles.auth] entirely.
+    [[profiles.endpoints]]
+    name = "dr"
+    host = "edge-dr.example.com"
+    port = 22
+    priority = 10
+    user = "dr-svc"
+
+    [profiles.endpoints.auth]
+    method = "public_key"
+    identity_file = "/etc/spt/id_dr_ed25519"
+    passphrase = "secret://ssh/edge-dr/passphrase"
+
+### TUI editing
+
+The override is editable from the TUI **Endpoints** page: each endpoint has an
+auth-override toggle. With the toggle off, the endpoint inherits the global
+`[profiles.auth]` (and `user`); turning it on reveals the per-endpoint `user`
+and auth fields, which write an inline `[profiles.endpoints.auth]` block for
+that endpoint. The **Auth** page continues to edit the profile-level
+(global/default) `[profiles.auth]`.
+
     [[profiles.forwards]]
     name = "db"
     type = "local"

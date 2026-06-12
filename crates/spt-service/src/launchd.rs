@@ -26,6 +26,7 @@ use std::time::Duration;
 
 use spt_core::error::{Error, Result};
 
+use crate::task_scheduler::validate_service_name;
 use crate::{
     template, unsupported, CommandRunner, Scope, ServiceCapabilities, ServiceManager, ServiceSpec,
     ServiceState, ServiceStatus, TokioRunner,
@@ -172,6 +173,7 @@ impl LaunchdManager {
     /// non-zero. A "not found" status is surfaced with a recognisable
     /// `service not found` substring.
     pub async fn kill_signal(&self, name: &str, signal: &str) -> Result<()> {
+        validate_service_name(name)?;
         let label = Self::label_for(name);
         let target = self.domain_target(&label);
         let out = self
@@ -229,8 +231,16 @@ impl ServiceManager for LaunchdManager {
     }
 
     async fn install(&self, spec: &ServiceSpec) -> Result<()> {
+        validate_service_name(&spec.name)?;
         let plist = render_plist(spec);
-        let path = Self::plist_path(spec);
+        // Derive the path from the manager's own scope, not `spec.scope`, so
+        // install and uninstall/start/stop/status all agree on the domain and
+        // file location. A `--user` install used to write to
+        // `~/Library/LaunchAgents` (from `spec.scope`) while every other verb
+        // looked in `/Library/LaunchDaemons` (from `self.scope`), orphaning an
+        // auto-starting agent the CLI could never see again (E7-F4).
+        let label = Self::label_for(&spec.name);
+        let path = Self::plist_path_for(self.scope, &label);
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
                 .map_err(|e| Error::ServiceManagerFailed(format!("mkdir {parent:?}: {e}")))?;
@@ -253,6 +263,7 @@ impl ServiceManager for LaunchdManager {
     }
 
     async fn uninstall(&self, name: &str) -> Result<()> {
+        validate_service_name(name)?;
         let label = Self::label_for(name);
         let path = Self::plist_path_for(self.scope, &label);
         if path.exists() {
@@ -269,6 +280,7 @@ impl ServiceManager for LaunchdManager {
     }
 
     async fn status(&self, name: &str) -> Result<ServiceStatus> {
+        validate_service_name(name)?;
         let label = Self::label_for(name);
 
         if self.min_kickstart {
@@ -301,6 +313,7 @@ impl ServiceManager for LaunchdManager {
     }
 
     async fn start(&self, name: &str) -> Result<()> {
+        validate_service_name(name)?;
         let label = Self::label_for(name);
         let path = Self::plist_path_for(self.scope, &label);
         let path_s = path.display().to_string();
@@ -319,6 +332,7 @@ impl ServiceManager for LaunchdManager {
     }
 
     async fn stop(&self, name: &str) -> Result<()> {
+        validate_service_name(name)?;
         let label = Self::label_for(name);
         let path = Self::plist_path_for(self.scope, &label);
         let path_s = path.display().to_string();
@@ -362,6 +376,7 @@ impl ServiceManager for LaunchdManager {
         if !self.min_kickstart {
             return Err(unsupported(self.name(), "reload"));
         }
+        validate_service_name(name)?;
         let label = Self::label_for(name);
         let target = self.domain_target(&label);
         let out = self
@@ -390,21 +405,38 @@ impl ServiceManager for LaunchdManager {
 
 /// Detect the effective UID for building agent domain targets.
 ///
-/// Order: `$UID` → `$SUDO_UID` → `501` (conventional first-user UID on
-/// macOS). Avoids a `nix`/`libc` dependency to keep the crate's dep graph
-/// uniform across platforms; tests inject explicitly via [`LaunchdManager::with_uid`].
+/// Order:
+/// 1. `SPT_TEST_UID` — an explicit test override (always honoured, all OSes).
+/// 2. `nix::unistd::geteuid()` under `cfg(unix)` — the real effective UID.
+/// 3. `$SUDO_UID` — when invoked via `sudo`, prefer the invoking user's UID
+///    so `gui/<uid>` targets the operator's GUI session rather than root's.
+/// 4. `501` — the conventional first-user UID on macOS (last-resort fallback,
+///    and the value used on non-unix builds where `geteuid` is unavailable).
+///
+/// E7-F8: `$UID` is a non-exported shell parameter, so the old `$UID`-first
+/// lookup almost never fired and every non-501 user got the wrong domain.
+/// `geteuid()` is authoritative; the `SPT_TEST_UID` env keeps tests hermetic
+/// without depending on the host UID.
 fn detect_uid() -> u32 {
-    if let Some(s) = std::env::var_os("UID") {
+    if let Some(s) = std::env::var_os("SPT_TEST_UID") {
         if let Ok(n) = s.to_string_lossy().parse::<u32>() {
             return n;
         }
     }
+    // Under sudo, the GUI session belongs to the invoking user, not root.
     if let Some(s) = std::env::var_os("SUDO_UID") {
         if let Ok(n) = s.to_string_lossy().parse::<u32>() {
             return n;
         }
     }
-    501
+    #[cfg(unix)]
+    {
+        return nix::unistd::geteuid().as_raw();
+    }
+    #[cfg(not(unix))]
+    {
+        501
+    }
 }
 
 /// Parse `launchctl list <label>` output.
@@ -591,10 +623,17 @@ fn render_plist(spec: &ServiceSpec) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n");
+    // Back-compat scalar for the legacy `<{{keep_alive}}/>` template shape.
+    // NOTE: this collapses OnFailure to `true`, which restarts even after a
+    // *clean* exit — the launchd-correct mapping is the SuccessfulExit dict
+    // emitted in `keep_alive_block` below. Once the packaging template
+    // switches `<{{keep_alive}}/>` → `{{keep_alive_block}}` this scalar is
+    // unused. (E7-F9; template owned by p5-packaging-units.)
     let keep_alive = match spec.restart_policy {
         crate::RestartPolicy::Always | crate::RestartPolicy::OnFailure => "true",
         crate::RestartPolicy::Never => "false",
     };
+    let keep_alive_block = keep_alive_element(spec.restart_policy);
     let user_keys = match (&spec.user, spec.scope) {
         (Some(u), Scope::System) => {
             let mut s = format!(
@@ -626,11 +665,32 @@ fn render_plist(spec: &ServiceSpec) -> String {
     vars.insert("args_array", args_array);
     vars.insert("working_dir", spec.working_dir.display().to_string());
     vars.insert("keep_alive", keep_alive.to_string());
+    vars.insert("keep_alive_block", keep_alive_block);
     vars.insert("stdout_path", stdout_path);
     vars.insert("stderr_path", stderr_path);
     vars.insert("env_dict", env_dict);
     vars.insert("user_keys", user_keys);
     template::render(TEMPLATE, &vars)
+}
+
+/// Build the full `<key>KeepAlive</key> ...` plist element for a restart
+/// policy with the launchd-correct mapping (E7-F9):
+///   * `Always`    → `<true/>`  (restart unconditionally)
+///   * `OnFailure` → `{ SuccessfulExit = false; }` (restart only on non-zero exit)
+///   * `Never`     → `<false/>` (never auto-restart)
+///
+/// Rendered into the `{{keep_alive_block}}` template var. Note the legacy
+/// `<{{keep_alive}}/>` template shape cannot express the `OnFailure` dict, so
+/// the packaging template must adopt `{{keep_alive_block}}` for the correct
+/// behavior to land (owned by p5-packaging-units).
+fn keep_alive_element(policy: crate::RestartPolicy) -> String {
+    match policy {
+        crate::RestartPolicy::Always => "    <key>KeepAlive</key>\n    <true/>".to_string(),
+        crate::RestartPolicy::Never => "    <key>KeepAlive</key>\n    <false/>".to_string(),
+        crate::RestartPolicy::OnFailure => "    <key>KeepAlive</key>\n    \
+             <dict>\n        <key>SuccessfulExit</key>\n        <false/>\n    </dict>"
+            .to_string(),
+    }
 }
 
 fn xml_escape(s: &str) -> String {
@@ -932,5 +992,111 @@ mod tests {
         let mgr = mgr_with(Scope::System, &mock);
         mgr.kill_signal("relay", "SIGHUP").await.unwrap();
         mock.assert_called("launchctl", &["kill", "SIGHUP", "system/io.spt.relay"]);
+    }
+
+    // ---- E7-F4: install/uninstall path agreement for user scope ----------
+
+    #[tokio::test]
+    async fn user_install_writes_agent_path_matching_uninstall() {
+        // Install a user-scope agent and confirm both install (load -w <path>)
+        // and uninstall (unload -w <path>) target the SAME LaunchAgents path —
+        // previously install used spec.scope and the rest used self.scope, so a
+        // --user install was orphaned under /Library/LaunchDaemons.
+        let prev_home = std::env::var_os("HOME");
+        let home = std::env::temp_dir().join("spt-launchd-test-home");
+        std::env::set_var("HOME", &home);
+        let expected = format!(
+            "{}/Library/LaunchAgents/io.spt.relay.plist",
+            home.display().to_string().trim_end_matches('/')
+        );
+
+        let install_mock = MockRunner::new();
+        install_mock.push_output(ok(""));
+        let mgr = mgr_with(Scope::User, &install_mock);
+        // Build a user-scope spec; even if spec.scope said System, self.scope
+        // must win — assert that explicitly.
+        let mut spec = sample_spec();
+        spec.scope = Scope::System; // deliberately diverge from manager scope
+        spec.name = "relay".into();
+        spec.user = None;
+        spec.group = None;
+        mgr.install(&spec).await.unwrap();
+        let calls = install_mock.calls();
+        assert_eq!(calls[0].1[0], "load");
+        assert_eq!(calls[0].1[2], expected, "install must use manager scope path");
+
+        let uninstall_mock = MockRunner::new();
+        uninstall_mock.push_output(ok(""));
+        let mgr2 = mgr_with(Scope::User, &uninstall_mock);
+        // Pre-create the plist so uninstall removes it.
+        if let Some(parent) = std::path::Path::new(&expected).parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(&expected, "<plist/>").unwrap();
+        mgr2.uninstall("relay").await.unwrap();
+        let calls2 = uninstall_mock.calls();
+        assert_eq!(calls2[0].1[0], "unload");
+        assert_eq!(calls2[0].1[2], expected, "uninstall must use same path");
+        assert!(
+            !std::path::Path::new(&expected).exists(),
+            "uninstall should have removed the agent plist"
+        );
+
+        match prev_home {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
+    }
+
+    // ---- E7-F17: name validation rejection -------------------------------
+
+    #[tokio::test]
+    async fn install_rejects_path_traversal_name() {
+        let mock = MockRunner::new();
+        let mgr = mgr_with(Scope::System, &mock);
+        let mut spec = sample_spec();
+        spec.name = "../../evil".into();
+        let err = mgr.install(&spec).await.expect_err("must reject");
+        assert!(format!("{err}").contains("invalid service name"));
+        assert!(mock.calls().is_empty(), "no launchctl call on rejected name");
+    }
+
+    #[tokio::test]
+    async fn uninstall_rejects_path_traversal_name() {
+        let mock = MockRunner::new();
+        let mgr = mgr_with(Scope::System, &mock);
+        let err = mgr.uninstall("../evil").await.expect_err("must reject");
+        assert!(format!("{err}").contains("invalid service name"));
+    }
+
+    // ---- E7-F8: detect_uid env override ----------------------------------
+
+    #[test]
+    fn detect_uid_honours_test_override() {
+        std::env::set_var("SPT_TEST_UID", "4242");
+        let got = detect_uid();
+        std::env::remove_var("SPT_TEST_UID");
+        assert_eq!(got, 4242);
+    }
+
+    // ---- E7-F9: OnFailure renders the SuccessfulExit dict -----------------
+
+    #[test]
+    fn keep_alive_block_maps_on_failure_to_successful_exit_dict() {
+        let block = keep_alive_element(crate::RestartPolicy::OnFailure);
+        assert!(block.contains("<key>KeepAlive</key>"));
+        assert!(block.contains("<key>SuccessfulExit</key>"));
+        assert!(block.contains("<false/>"));
+        assert!(!block.contains("<true/>"), "OnFailure must not be <true/>");
+    }
+
+    #[test]
+    fn keep_alive_block_maps_always_and_never() {
+        let always = keep_alive_element(crate::RestartPolicy::Always);
+        assert!(always.contains("<true/>"));
+        assert!(!always.contains("SuccessfulExit"));
+        let never = keep_alive_element(crate::RestartPolicy::Never);
+        assert!(never.contains("<false/>"));
+        assert!(!never.contains("SuccessfulExit"));
     }
 }

@@ -42,8 +42,20 @@ impl FileBackend {
     }
 }
 
+/// Enforce owner-only permissions on a secret file before reading it.
+///
+/// On Unix this is a hard check: only `0o400` and `0o600` are accepted;
+/// anything broader returns [`Error::PermissionDenied`]. On Windows this
+/// performs a best-effort DACL audit and emits a `warn!` when read access is
+/// granted to a non-owner principal, but never rejects (NTFS ACLs are too
+/// environment-dependent for a hard per-read gate; strict enforcement lives in
+/// `spt secret doctor`). On other platforms it is a no-op.
+///
+/// Exposed so the SSH auth fast-paths (`spt-ssh2`, `spt-ssh3`) that resolve
+/// `file://` references can apply the same enforcement instead of doing a bare
+/// `fs::read`.
 #[cfg(unix)]
-fn check_mode(path: &Path) -> Result<()> {
+pub fn check_mode(path: &Path) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
     let meta = fs::metadata(path).map_err(|e| Error::SecretUnavailable {
         reference: path.display().to_string(),
@@ -59,24 +71,153 @@ fn check_mode(path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// See the Unix variant for the full contract.
 #[cfg(windows)]
-fn check_mode(path: &Path) -> Result<()> {
-    // Best-effort: ensure the file exists and we can stat it. A full ACL
-    // audit (NT principals, inherited ACEs) is in scope for `spt secret
-    // doctor` but kept out of the per-read fast path. If we ever add
-    // strict-mode ACL enforcement on Windows, plumb it through here.
-    match fs::metadata(path) {
-        Ok(_) => Ok(()),
-        Err(e) => Err(Error::SecretUnavailable {
+pub fn check_mode(path: &Path) -> Result<()> {
+    // First confirm the file exists / is stat-able. A missing or unreadable
+    // file is the same error the read would surface.
+    if let Err(e) = fs::metadata(path) {
+        return Err(Error::SecretUnavailable {
             reference: path.display().to_string(),
             reason: format!("stat: {e}"),
-        }),
+        });
     }
+    // Best-effort DACL audit: warn (never reject) when a non-owner principal
+    // has read access. Full enforcement stays in `spt secret doctor`.
+    if let Some(principal) = windows_dacl::non_owner_reader(path) {
+        warn!(
+            path = %path.display(),
+            principal = %principal,
+            "secret file DACL grants read access to a non-owner principal; \
+             restrict it to the owner (run `spt secret doctor` for details)"
+        );
+    }
+    Ok(())
 }
 
 #[cfg(not(any(unix, windows)))]
-fn check_mode(_path: &Path) -> Result<()> {
+pub fn check_mode(_path: &Path) -> Result<()> {
     Ok(())
+}
+
+#[cfg(windows)]
+mod windows_dacl {
+    //! Best-effort DACL inspection: returns a label for the first non-owner
+    //! principal that is granted read access, or `None` when the DACL is
+    //! owner-clean (or the inspection could not be performed — failures are
+    //! swallowed so a quirky ACL never blocks a read).
+
+    use std::ffi::c_void;
+    use std::os::windows::ffi::OsStrExt;
+    use std::path::Path;
+
+    use windows::core::{PCWSTR, PWSTR};
+    use windows::Win32::Foundation::{LocalFree, ERROR_SUCCESS, HLOCAL};
+    use windows::Win32::Security::Authorization::{
+        ConvertSidToStringSidW, GetNamedSecurityInfoW, SE_FILE_OBJECT,
+    };
+    use windows::Win32::Security::{
+        EqualSid, GetAce, IsValidAcl, ACCESS_ALLOWED_ACE, ACE_HEADER, ACL,
+        DACL_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID,
+    };
+
+    // `ACCESS_ALLOWED_ACE_TYPE` == 0 (winnt.h). Inlined to avoid pulling in the
+    // `Win32_System_SystemServices` feature just for one constant.
+    const ACCESS_ALLOWED_ACE_TYPE: u8 = 0;
+    // Read-implying bits: GENERIC_READ | GENERIC_ALL | FILE_GENERIC_READ |
+    // FILE_READ_DATA | the generic-mapping superset. We treat any of these as
+    // "can read".
+    const GENERIC_READ: u32 = 0x8000_0000;
+    const GENERIC_ALL: u32 = 0x1000_0000;
+    const FILE_READ_DATA: u32 = 0x0000_0001;
+    const FILE_GENERIC_READ: u32 = 0x0012_0089;
+
+    fn grants_read(mask: u32) -> bool {
+        mask & (GENERIC_READ | GENERIC_ALL | FILE_GENERIC_READ | FILE_READ_DATA) != 0
+    }
+
+    fn sid_to_string(sid: PSID) -> String {
+        // SAFETY: `sid` came from a valid security descriptor; on success the
+        // returned PWSTR points at a LocalAlloc buffer we free below.
+        unsafe {
+            let mut out = PWSTR::null();
+            if ConvertSidToStringSidW(sid, &mut out).is_ok() && !out.is_null() {
+                let s = out.to_string().unwrap_or_else(|_| "<sid>".into());
+                let _ = LocalFree(HLOCAL(out.0.cast::<c_void>()));
+                s
+            } else {
+                "<sid>".into()
+            }
+        }
+    }
+
+    pub(super) fn non_owner_reader(path: &Path) -> Option<String> {
+        let wide: Vec<u16> = path
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+
+        let mut owner = PSID::default();
+        let mut dacl: *mut ACL = std::ptr::null_mut();
+        let mut sd = PSECURITY_DESCRIPTOR::default();
+
+        // SAFETY: all out-params are owned locals; `sd` is freed before return.
+        unsafe {
+            let rc = GetNamedSecurityInfoW(
+                PCWSTR(wide.as_ptr()),
+                SE_FILE_OBJECT,
+                OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+                Some(&mut owner),
+                None,
+                Some(&mut dacl),
+                None,
+                &mut sd,
+            );
+            if rc != ERROR_SUCCESS {
+                return None;
+            }
+
+            let result = (|| {
+                if dacl.is_null() || !IsValidAcl(dacl).as_bool() {
+                    // A null DACL grants everyone full access — flag it.
+                    return if dacl.is_null() {
+                        Some("Everyone (null DACL)".to_string())
+                    } else {
+                        None
+                    };
+                }
+                let count = (*dacl).AceCount;
+                for i in 0..count {
+                    let mut ace: *mut c_void = std::ptr::null_mut();
+                    if GetAce(dacl, u32::from(i), &mut ace).is_err() || ace.is_null() {
+                        continue;
+                    }
+                    let header = ace.cast::<ACE_HEADER>();
+                    if (*header).AceType != ACCESS_ALLOWED_ACE_TYPE {
+                        continue;
+                    }
+                    let allowed = ace.cast::<ACCESS_ALLOWED_ACE>();
+                    if !grants_read((*allowed).Mask) {
+                        continue;
+                    }
+                    // The SID is laid out starting at `SidStart`.
+                    let sid = PSID(std::ptr::addr_of!((*allowed).SidStart) as *mut c_void);
+                    let is_owner = !owner.is_invalid()
+                        && EqualSid(sid, owner).is_ok();
+                    if !is_owner {
+                        return Some(sid_to_string(sid));
+                    }
+                }
+                None
+            })();
+
+            if !sd.is_invalid() {
+                let _ = LocalFree(HLOCAL(sd.0));
+            }
+            result
+        }
+    }
 }
 
 impl SecretBackend for FileBackend {
@@ -380,5 +521,58 @@ mod tests {
         b.set(&r, b"payload").unwrap();
         let got = b.get(&r).unwrap().unwrap();
         assert_eq!(got.expose_secret().as_slice(), b"payload");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn check_mode_rejects_world_readable() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempdir().unwrap();
+        let p = dir.path().join("s");
+        fs::write(&p, b"x").unwrap();
+        fs::set_permissions(&p, fs::Permissions::from_mode(0o644)).unwrap();
+        let err = check_mode(&p).unwrap_err();
+        assert!(matches!(err, Error::PermissionDenied(_)), "got {err:?}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn check_mode_accepts_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempdir().unwrap();
+        let p = dir.path().join("s");
+        fs::write(&p, b"x").unwrap();
+        fs::set_permissions(&p, fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(check_mode(&p).is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn check_mode_missing_file_is_unavailable() {
+        let dir = tempdir().unwrap();
+        let err = check_mode(&dir.path().join("nope")).unwrap_err();
+        assert!(matches!(err, Error::SecretUnavailable { .. }), "got {err:?}");
+    }
+
+    // On Windows `check_mode` is best-effort: it must never reject a readable
+    // file (the DACL audit only warns). A freshly-created file in a temp dir
+    // typically inherits a permissive DACL (Users:R), which exercises the
+    // non-owner-reader warn path without failing the read.
+    #[cfg(windows)]
+    #[test]
+    fn windows_check_mode_never_rejects_readable_file() {
+        let dir = tempdir().unwrap();
+        let p = dir.path().join("s");
+        fs::write(&p, b"x").unwrap();
+        // Whether or not the DACL is owner-clean, the call must succeed.
+        assert!(check_mode(&p).is_ok());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_check_mode_missing_file_is_unavailable() {
+        let dir = tempdir().unwrap();
+        let err = check_mode(&dir.path().join("nope")).unwrap_err();
+        assert!(matches!(err, Error::SecretUnavailable { .. }), "got {err:?}");
     }
 }

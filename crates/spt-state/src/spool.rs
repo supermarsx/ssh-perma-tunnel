@@ -113,8 +113,22 @@ impl DiskSpool {
     }
 
     /// Push a payload. Evicts oldest entries to satisfy size/file caps.
+    ///
+    /// A single payload larger than [`SpoolConfig::max_bytes`] is rejected with
+    /// [`Error::RuntimeFailure`] rather than being written: admitting it would
+    /// leave `total_bytes > max_bytes` and violate the byte-cap guarantee even
+    /// after evicting the entire queue. (`max_bytes == 0` means unlimited, so no
+    /// single-payload cap applies.)
     pub fn push(&mut self, payload: &[u8]) -> Result<u64> {
         let size = payload.len() as u64;
+
+        // Reject a single payload that can never fit under the byte cap.
+        if self.cfg.max_bytes > 0 && size > self.cfg.max_bytes {
+            return Err(Error::RuntimeFailure(format!(
+                "spool payload {size} bytes exceeds max_bytes {} cap",
+                self.cfg.max_bytes
+            )));
+        }
 
         // Evict to fit.
         self.evict_to_fit(size);
@@ -288,6 +302,52 @@ mod tests {
         }
         assert!(s.total_bytes() <= 6);
         assert!(s.len() <= 3);
+    }
+
+    #[test]
+    fn oversized_payload_is_rejected_and_cap_preserved() {
+        let tmp = tempdir().unwrap();
+        let mut s = DiskSpool::open(
+            tmp.path().to_path_buf(),
+            SpoolConfig {
+                max_bytes: 4,
+                max_files: 0,
+            },
+        )
+        .unwrap();
+        // A fitting payload is admitted.
+        s.push(b"abcd").unwrap();
+        assert_eq!(s.len(), 1);
+
+        // A single oversized payload is rejected outright; existing entries and
+        // the byte cap are left intact (no eviction-then-overflow).
+        let err = s.push(b"abcde").unwrap_err();
+        assert!(
+            matches!(err, Error::RuntimeFailure(ref m) if m.contains("exceeds max_bytes")),
+            "unexpected error: {err:?}"
+        );
+        assert_eq!(s.len(), 1, "rejected push must not evict existing entries");
+        assert!(s.total_bytes() <= 4);
+
+        // The surviving entry is still the original, intact payload.
+        let e = s.pop().unwrap().unwrap();
+        assert_eq!(e.payload, b"abcd");
+    }
+
+    #[test]
+    fn unlimited_max_bytes_accepts_large_payload() {
+        let tmp = tempdir().unwrap();
+        let mut s = DiskSpool::open(
+            tmp.path().to_path_buf(),
+            SpoolConfig {
+                max_bytes: 0, // unlimited
+                max_files: 0,
+            },
+        )
+        .unwrap();
+        s.push(&vec![0u8; 4096]).unwrap();
+        assert_eq!(s.len(), 1);
+        assert_eq!(s.total_bytes(), 4096);
     }
 
     #[test]

@@ -13,6 +13,7 @@
 use std::time::Duration;
 
 use spt_core::{BindAddr, Error, Result};
+use spt_net::diag::{network_unreachable_from_io, network_unreachable_with, NetworkErrorKind};
 use tokio::net::TcpStream;
 
 /// Connect to `target`. Honours `BindAddr` variants:
@@ -27,17 +28,35 @@ pub async fn connect_target(target: &BindAddr, timeout: Option<Duration>) -> Res
     let timeout = timeout.unwrap_or_else(|| Duration::from_secs(30));
     match target {
         BindAddr::Tcp(sock) => {
+            // E7-F11: classify connect failures into structured
+            // `NetworkUnreachable` diagnostics (retry advice + fix-it text,
+            // exit code 12) via spt-net's diag helpers instead of a bare string.
+            let endpoint = sock.to_string();
             let s = tokio::time::timeout(timeout, TcpStream::connect(sock))
                 .await
-                .map_err(|_| Error::NetworkUnreachable(format!("connect timeout: {sock}")))?
-                .map_err(|e| Error::NetworkUnreachable(format!("connect {sock}: {e}")))?;
+                .map_err(|_| {
+                    network_unreachable_with(
+                        &endpoint,
+                        NetworkErrorKind::TimedOut,
+                        Some("connect timed out"),
+                    )
+                })?
+                .map_err(|e| network_unreachable_from_io(&endpoint, &e))?;
             Ok(s)
         }
         BindAddr::TcpHostPort { host, port } => {
+            // E7-F11: structured diagnostic on connect failure (see above).
+            let endpoint = format!("{host}:{port}");
             let s = tokio::time::timeout(timeout, TcpStream::connect((host.as_str(), *port)))
                 .await
-                .map_err(|_| Error::NetworkUnreachable(format!("connect timeout: {host}:{port}")))?
-                .map_err(|e| Error::NetworkUnreachable(format!("connect {host}:{port}: {e}")))?;
+                .map_err(|_| {
+                    network_unreachable_with(
+                        &endpoint,
+                        NetworkErrorKind::TimedOut,
+                        Some("connect timed out"),
+                    )
+                })?
+                .map_err(|e| network_unreachable_from_io(&endpoint, &e))?;
             Ok(s)
         }
         BindAddr::Unix(_) => Err(Error::UnsupportedPlatform(
@@ -75,25 +94,40 @@ mod tests {
     // ---- Timeout / connect-refused / IPv6 / DNS coverage ----
 
     /// Connecting to a closed loopback port via [`BindAddr::Tcp`] must surface
-    /// a `NetworkUnreachable` error (connection refused branch, not timeout).
+    /// a structured `NetworkUnreachable` diagnostic (E7-F11): classified by the
+    /// spt-net diag helper, carrying the endpoint, a retry advice, and a fix-it
+    /// hint — exit code 12. (The exact OS error kind differs per platform —
+    /// Linux returns ECONNREFUSED, Windows can surface a timeout — so we assert
+    /// the structured contract, not a specific classification.)
     #[tokio::test]
     async fn refuses_closed_tcp_socket() {
+        use spt_core::{ExitCode, RetryAdvice};
         let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = l.local_addr().unwrap().port();
         drop(l);
         let target = BindAddr::parse(&format!("127.0.0.1:{port}")).unwrap();
-        let r = connect_target(&target, Some(Duration::from_secs(2))).await;
-        match r {
-            Err(Error::NetworkUnreachable(msg)) => {
-                assert!(msg.contains("connect"), "msg={msg}");
-            }
-            other => panic!("expected NetworkUnreachable, got {other:?}"),
-        }
+        let err = connect_target(&target, Some(Duration::from_secs(2)))
+            .await
+            .expect_err("connect to closed port must fail");
+        assert_eq!(err.exit_code(), ExitCode::NetworkUnreachable);
+        let d = err
+            .diagnostic()
+            .expect("connect failure must carry a structured diagnostic");
+        assert_eq!(d.endpoint.as_deref(), Some(format!("127.0.0.1:{port}").as_str()));
+        // Every network failure class the helper produces here is retryable
+        // with backoff (the adoption upgraded the bare string to advice-bearing).
+        assert_eq!(d.retry_advice, Some(RetryAdvice::RetryWithBackoff));
+        assert!(
+            d.how_to_fix.is_some(),
+            "structured diagnostic must carry fix-it text: {d:?}"
+        );
     }
 
-    /// Same as above but via the [`BindAddr::TcpHostPort`] branch.
+    /// Same as above but via the [`BindAddr::TcpHostPort`] branch — structured
+    /// diagnostic with exit code 12 (E7-F11).
     #[tokio::test]
     async fn refuses_closed_tcphostport() {
+        use spt_core::ExitCode;
         let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = l.local_addr().unwrap().port();
         drop(l);
@@ -101,43 +135,62 @@ mod tests {
             host: "127.0.0.1".into(),
             port,
         };
-        let r = connect_target(&target, Some(Duration::from_secs(2))).await;
-        assert!(matches!(r, Err(Error::NetworkUnreachable(_))));
+        let err = connect_target(&target, Some(Duration::from_secs(2)))
+            .await
+            .expect_err("connect to closed port must fail");
+        assert_eq!(err.exit_code(), ExitCode::NetworkUnreachable);
+        assert!(
+            err.diagnostic().is_some(),
+            "connect failure must carry a structured diagnostic"
+        );
     }
 
     /// TEST-NET-1 (192.0.2.0/24, RFC 5737) is documented as unrouteable.
+    /// The timeout arm yields a structured `TimedOut` diagnostic (E7-F11).
     #[tokio::test]
     async fn connect_timeout_tcp() {
+        use spt_core::ExitCode;
         let target = BindAddr::Tcp("192.0.2.1:65000".parse().unwrap());
-        let r = connect_target(&target, Some(Duration::from_millis(50))).await;
-        assert!(matches!(r, Err(Error::NetworkUnreachable(_))));
+        let err = connect_target(&target, Some(Duration::from_millis(50)))
+            .await
+            .expect_err("unrouteable connect must fail");
+        assert_eq!(err.exit_code(), ExitCode::NetworkUnreachable);
+        assert!(err.diagnostic().is_some());
     }
 
-    /// TcpHostPort timeout/unrouteable path.
+    /// TcpHostPort timeout/unrouteable path — structured diagnostic.
     #[tokio::test]
     async fn connect_timeout_tcphostport() {
+        use spt_core::ExitCode;
         let target = BindAddr::TcpHostPort {
             host: "192.0.2.2".into(),
             port: 65001,
         };
-        let r = connect_target(&target, Some(Duration::from_millis(50))).await;
-        assert!(matches!(r, Err(Error::NetworkUnreachable(_))));
+        let err = connect_target(&target, Some(Duration::from_millis(50)))
+            .await
+            .expect_err("unrouteable connect must fail");
+        assert_eq!(err.exit_code(), ExitCode::NetworkUnreachable);
+        assert!(err.diagnostic().is_some());
     }
 
-    /// DNS resolution failure: ".invalid" TLD is reserved (RFC 6761).
+    /// DNS resolution failure: ".invalid" TLD is reserved (RFC 6761). The
+    /// resolver error flows through `classify_io_error` and surfaces as a
+    /// structured `NetworkUnreachable` diagnostic carrying the endpoint.
     #[tokio::test]
     async fn dns_failure_returns_network_unreachable() {
+        use spt_core::ExitCode;
         let target = BindAddr::TcpHostPort {
             host: "no-such-host.invalid".into(),
             port: 22,
         };
-        let r = connect_target(&target, Some(Duration::from_secs(2))).await;
-        match r {
-            Err(Error::NetworkUnreachable(msg)) => {
-                assert!(msg.contains("no-such-host.invalid"));
-            }
-            other => panic!("expected NetworkUnreachable, got {other:?}"),
-        }
+        let err = connect_target(&target, Some(Duration::from_secs(2)))
+            .await
+            .expect_err("DNS lookup of reserved .invalid TLD must fail");
+        assert_eq!(err.exit_code(), ExitCode::NetworkUnreachable);
+        let d = err
+            .diagnostic()
+            .expect("DNS failure must carry a structured diagnostic");
+        assert_eq!(d.endpoint.as_deref(), Some("no-such-host.invalid:22"));
     }
 
     /// IPv6 loopback via [`BindAddr::Tcp`].
@@ -201,5 +254,61 @@ mod tests {
         let target = BindAddr::Unix("/tmp/never.sock".into());
         let r = connect_target(&target, None).await;
         assert!(matches!(r, Err(Error::UnsupportedPlatform(_))));
+    }
+
+    /// E7-F11 (call-site adoption): a connect to an unreachable target must
+    /// yield a *classified* `spt_net::diag` diagnostic, not a generic opaque
+    /// error. The exact `NetworkErrorKind` is platform- and timing-dependent
+    /// for a closed loopback port (ECONNREFUSED on Linux; on Windows the SYN
+    /// retry can outlast the connect deadline and surface as a timeout), so we
+    /// don't pin one kind. Instead we assert the produced (`what`, `how_to_fix`)
+    /// pair is byte-identical to one the diag helper emits — proving the call
+    /// site is wired through `network_unreachable_*` rather than an ad-hoc
+    /// string — alongside the structured-contract fields.
+    #[tokio::test]
+    async fn unreachable_target_yields_classified_error() {
+        use spt_core::{ExitCode, RetryAdvice};
+        use spt_net::diag::{network_unreachable_with, NetworkErrorKind};
+
+        let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = l.local_addr().unwrap().port();
+        drop(l); // nothing is listening now
+        let endpoint = format!("127.0.0.1:{port}");
+        let sock: std::net::SocketAddr = endpoint.parse().unwrap();
+
+        let actual = connect_target(&BindAddr::Tcp(sock), Some(Duration::from_secs(2)))
+            .await
+            .expect_err("connect_target to a closed port must fail");
+
+        // Contract: structured, exit code 12, endpoint preserved, retryable.
+        assert_eq!(actual.exit_code(), ExitCode::NetworkUnreachable);
+        let ad = actual
+            .diagnostic()
+            .expect("connect_target must yield a classified diagnostic");
+        assert_eq!(ad.endpoint.as_deref(), Some(endpoint.as_str()));
+        assert_eq!(ad.retry_advice, Some(RetryAdvice::RetryWithBackoff));
+
+        // Provenance: the (what, how_to_fix) pair must match one the diag
+        // helper produces for the same endpoint — i.e. it came from
+        // `spt_net::diag`, not a hand-rolled format string.
+        let helper_pairs: Vec<_> = [
+            NetworkErrorKind::ConnectionReset,
+            NetworkErrorKind::ConnectionRefused,
+            NetworkErrorKind::TimedOut,
+            NetworkErrorKind::NetworkUnreachable,
+            NetworkErrorKind::HostUnreachable,
+            NetworkErrorKind::Other,
+        ]
+        .into_iter()
+        .map(|k| {
+            let e = network_unreachable_with(&endpoint, k, None);
+            let d = e.diagnostic().unwrap().clone();
+            (d.what, d.how_to_fix)
+        })
+        .collect();
+        assert!(
+            helper_pairs.contains(&(ad.what.clone(), ad.how_to_fix.clone())),
+            "diagnostic did not come from spt_net::diag: {ad:?}"
+        );
     }
 }

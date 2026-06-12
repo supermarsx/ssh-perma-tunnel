@@ -67,15 +67,33 @@ impl ExprFilter {
     /// Test whether this expression is satisfied by `event`.
     #[must_use]
     pub fn matches(&self, event: &Event) -> bool {
-        let Some(actual) = event.lookup_field(&self.field) else {
-            return matches!(self.op, ExprOp::Neq);
-        };
         match self.op {
-            ExprOp::Eq => json_loose_eq(&actual, &self.value),
-            ExprOp::Neq => !json_loose_eq(&actual, &self.value),
-            ExprOp::Contains => match (&actual, &self.value) {
-                (Value::String(a), Value::String(b)) => a.contains(b.as_str()),
-                _ => false,
+            // `Contains` is string-on-both-sides only: it must NOT match a
+            // numeric/bool field that merely stringifies to the needle. Use
+            // the allocation-light borrowed-string accessor, but gate it on
+            // the underlying field actually being a JSON string so the
+            // historical "string-only" semantics are byte-identical.
+            ExprOp::Contains => {
+                let Value::String(needle) = &self.value else {
+                    return false;
+                };
+                if !event.field_is_string(&self.field) {
+                    return false;
+                }
+                match event.lookup_field_str(&self.field) {
+                    Some(haystack) => haystack.contains(needle.as_str()),
+                    None => false,
+                }
+            }
+            // `Eq`/`Neq` need a real `Value` for numeric coercion; an absent
+            // field is unequal to everything (so `Neq` holds, `Eq` fails).
+            ExprOp::Eq => match event.lookup_field(&self.field) {
+                Some(actual) => json_loose_eq(&actual, &self.value),
+                None => false,
+            },
+            ExprOp::Neq => match event.lookup_field(&self.field) {
+                Some(actual) => !json_loose_eq(&actual, &self.value),
+                None => true,
             },
         }
     }
@@ -177,16 +195,20 @@ impl Dedupe {
     /// Compute the dedupe key for `event`.
     #[must_use]
     pub fn key_for(&self, event: &Event) -> String {
-        let parts: Vec<String> = self
-            .key_fields
-            .iter()
-            .map(|f| match event.lookup_field(f) {
-                Some(Value::String(s)) => s,
-                Some(other) => other.to_string(),
-                None => String::from("∅"),
-            })
-            .collect();
-        parts.join("|")
+        // Build the key by pushing each field's borrowed string view directly,
+        // avoiding the per-field `Value` allocation. Missing fields keep the
+        // historical `∅` placeholder.
+        let mut key = String::new();
+        for (i, f) in self.key_fields.iter().enumerate() {
+            if i > 0 {
+                key.push('|');
+            }
+            match event.lookup_field_str(f) {
+                Some(v) => key.push_str(&v),
+                None => key.push('∅'),
+            }
+        }
+        key
     }
 }
 

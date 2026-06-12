@@ -558,6 +558,7 @@ mod tests {
             config_fingerprint: None,
             state_dir: None,
             profile: None,
+            portable: false,
             output: OutputFormat::Human,
             json: false,
             log_level: LogLevel::Info,

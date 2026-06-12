@@ -11,9 +11,10 @@
 //! * no two attempts fired *simultaneously* (delay between successive
 //!   `on_attempt` callbacks is > 0).
 //!
-//! Status: **`#[ignore]`** — covered by `rst_storm_100_per_sec`'s
-//! PR-gating run; this one validates the *backoff growth* axis
-//! specifically and is left to opt-in.
+//! Status: runs on every PR. It complements `rst_storm_100_per_sec` by
+//! validating the *backoff growth* axis specifically. Bounded to 6
+//! attempts (`fast_backoff(6)`) and a 10 s deadline that breaks early on
+//! exhaustion, so it is deterministic and finishes in ~1-2 s.
 
 use std::time::Duration;
 
@@ -23,7 +24,6 @@ use crate::scenarios::common::{
 use spt_chaos_proxy::ChaosBehaviour;
 
 #[tokio::test]
-#[ignore = "slow — covered shape-wise by rst_storm_100_per_sec; opt-in via SPT_CHAOS_FULL=1"]
 async fn repeated_quick_reconnects() {
     let echo = EchoServer::spawn().await.expect("echo server");
     let (_proxy, proxy_addr, _proxy_task) =

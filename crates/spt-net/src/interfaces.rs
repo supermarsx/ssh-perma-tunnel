@@ -2,6 +2,21 @@
 //!
 //! Wraps the `if-addrs` crate and folds per-address records into one
 //! [`Interface`] per logical interface name with split IPv4/IPv6 lists.
+//!
+//! ## Field-accuracy caveats (E7-F12)
+//!
+//! The `if-addrs` backend exposes only interface name + bound addresses. Two
+//! [`Interface`] fields therefore cannot be populated authoritatively and are
+//! documented as best-effort:
+//!
+//! * [`Interface::is_up`] — a heuristic (`true` for every enumerated
+//!   interface), not a kernel operstate read. `getifaddrs(3)` may return
+//!   down interfaces on Linux, so do not gate binding on this field.
+//! * [`Interface::mac`] — always `None` from [`list`]; the backend does not
+//!   surface link-layer addresses.
+//!
+//! Populating either accurately needs platform FFI (`GetAdaptersAddresses` on
+//! Windows, sysfs on Linux) and is tracked as a follow-up.
 
 use std::collections::BTreeMap;
 use std::net::{Ipv4Addr, Ipv6Addr};
@@ -19,10 +34,28 @@ pub struct Interface {
     pub ipv6: Vec<Ipv6Addr>,
     /// Whether this interface is the loopback interface.
     pub is_loopback: bool,
-    /// Whether this interface is administratively up. `if-addrs` lists only
-    /// up interfaces, so this is `true` for any returned interface.
+    /// Best-effort "administratively up" flag.
+    ///
+    /// **Accuracy caveat (E7-F12):** this is currently a *heuristic*, not an
+    /// authoritative read of the kernel's operational state. It is set to
+    /// `true` for every interface returned by [`list`] on the assumption that
+    /// the underlying `if-addrs` enumeration only surfaces interfaces that have
+    /// at least one address bound. That assumption holds on Windows/macOS but
+    /// is **not** guaranteed on Linux, where `getifaddrs(3)` can also return
+    /// addresses on administratively-down interfaces. Until this field is
+    /// populated authoritatively (Linux: sysfs `/sys/class/net/<if>/operstate`;
+    /// Windows: `GetAdaptersAddresses`), do **not** rely on it to gate binding
+    /// decisions (e.g. `AutoPrefer::PlatformDefault`). See the module note.
     pub is_up: bool,
     /// Hardware (MAC) address, if available.
+    ///
+    /// **Always `None` from [`list`] (E7-F12):** the `if-addrs` backend does
+    /// not expose link-layer addresses, so production enumeration never
+    /// populates this. Only the `testing` fixtures set it. Populating it would
+    /// require platform-specific FFI (`GetAdaptersAddresses` / sysfs
+    /// `address`); the field is retained for forward-compatibility and the
+    /// testing surface, but consumers must treat `None` as "unknown", not
+    /// "no MAC".
     pub mac: Option<[u8; 6]>,
 }
 
@@ -40,10 +73,13 @@ impl Interface {
     }
 }
 
-/// Enumerate all up network interfaces on the host.
+/// Enumerate the host's network interfaces (those with at least one bound
+/// address).
 ///
 /// Returns an [`Error::RuntimeFailure`] if the OS query fails. The result is
-/// stable-ordered by interface name.
+/// stable-ordered by interface name. See the module-level note for the
+/// [`Interface::is_up`] / [`Interface::mac`] accuracy caveats — neither is
+/// authoritatively populated here.
 pub fn list() -> Result<Vec<Interface>> {
     let raw = if_addrs::get_if_addrs()
         .map_err(|e| Error::RuntimeFailure(format!("interface enumeration failed: {e}")))?;
@@ -97,6 +133,19 @@ mod tests {
         assert!(
             ifaces.iter().any(|i| i.is_loopback),
             "expected at least one loopback interface, got {ifaces:?}"
+        );
+    }
+
+    #[test]
+    fn list_documents_mac_unknown_contract() {
+        // E7-F12: production enumeration cannot derive MAC addresses from the
+        // if-addrs backend, so every interface reports `mac == None`. This test
+        // pins that documented contract so a future backend change that starts
+        // populating `mac` is a deliberate, reviewed change (and updates docs).
+        let ifaces = list().expect("enumerate interfaces");
+        assert!(
+            ifaces.iter().all(|i| i.mac.is_none()),
+            "list() must not populate mac (if-addrs has no link-layer info); got {ifaces:?}"
         );
     }
 

@@ -132,30 +132,41 @@ pub struct UsmUser {
     /// Privacy protocol and password (only valid if `auth` is also set).
     #[allow(clippy::struct_field_names)]
     pub priv_: Option<(PrivProtocol, SecretBytes)>,
+    /// Whether this user is permitted to issue `SetRequest` (write) PDUs.
+    ///
+    /// This is a minimal VACM-style access control: the agent consults this
+    /// flag in `handle_set` before dispatching any write. It **defaults to
+    /// `false`** (read-only) so a newly provisioned user cannot mutate writable
+    /// OIDs until explicitly granted write access via
+    /// [`UsmUser::writable`]. SET requests from a read-only user are rejected
+    /// with `noAccess`.
+    pub writable: bool,
 }
 
 impl UsmUser {
-    /// `noAuthNoPriv` user.
+    /// `noAuthNoPriv` user. Read-only by default; see [`UsmUser::writable`].
     #[must_use]
     pub fn no_auth(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
             auth: None,
             priv_: None,
+            writable: false,
         }
     }
 
-    /// `authNoPriv` user.
+    /// `authNoPriv` user. Read-only by default; see [`UsmUser::writable`].
     #[must_use]
     pub fn auth_only(name: impl Into<String>, auth: AuthProtocol, password: SecretBytes) -> Self {
         Self {
             name: name.into(),
             auth: Some((auth, password)),
             priv_: None,
+            writable: false,
         }
     }
 
-    /// `authPriv` user.
+    /// `authPriv` user. Read-only by default; see [`UsmUser::writable`].
     #[must_use]
     pub fn auth_priv(
         name: impl Into<String>,
@@ -168,7 +179,23 @@ impl UsmUser {
             name: name.into(),
             auth: Some((auth, auth_password)),
             priv_: Some((priv_, priv_password)),
+            writable: false,
         }
+    }
+
+    /// Grants this user write (SET) access. Without this, the user is
+    /// read-only (the default) and any `SetRequest` it issues is rejected.
+    ///
+    /// Returns `self` for builder-style chaining:
+    /// ```
+    /// # use spt_snmp::usm::UsmUser;
+    /// let user = UsmUser::no_auth("admin").writable(true);
+    /// assert!(user.writable);
+    /// ```
+    #[must_use]
+    pub fn writable(mut self, writable: bool) -> Self {
+        self.writable = writable;
+        self
     }
 
     /// Returns the security level requested by the user's configuration.

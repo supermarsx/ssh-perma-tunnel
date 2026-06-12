@@ -217,6 +217,14 @@ async fn handle_pair(
     up: TcpStream,
     behaviour: Arc<Mutex<ChaosBehaviour>>,
 ) -> std::io::Result<()> {
+    // If the behaviour is RstAfterBytes, arm SO_LINGER(0) on the downstream
+    // (client-facing) socket *before* splitting so that the eventual drop
+    // emits a real TCP RST rather than a clean FIN — the chaos matrix's "RST"
+    // axis depends on the peer observing ECONNRESET.
+    if matches!(&*behaviour.lock(), ChaosBehaviour::RstAfterBytes(_)) {
+        rst::arm_linger_zero(&down);
+    }
+
     // Split each side; pair them.
     let (down_r, down_w) = down.into_split();
     let (up_r, up_w) = up.into_split();

@@ -92,7 +92,30 @@ pub fn canonical_audience(host: &str, port: u16, url_path: &str) -> String {
     } else {
         format!("/{url_path}")
     };
-    format!("https://{host}:{port}{path}")
+    let authority_host = bracket_ipv6_literal(host);
+    format!("https://{authority_host}:{port}{path}")
+}
+
+/// Bracket a bare IPv6 literal so the resulting URI authority is parseable.
+///
+/// An IPv6 address in a URI authority MUST be enclosed in `[ ]` (RFC 3986
+/// §3.2.2) so the colons in the address aren't confused with the
+/// `host:port` separator. We detect a bare IPv6 literal heuristically: it
+/// contains a `:` (a hostname or IPv4 literal never does), is not already
+/// bracketed, and parses as an [`std::net::Ipv6Addr`]. Hostnames, IPv4
+/// literals, and already-bracketed inputs are returned unchanged.
+fn bracket_ipv6_literal(host: &str) -> std::borrow::Cow<'_, str> {
+    if host.starts_with('[') || !host.contains(':') {
+        return std::borrow::Cow::Borrowed(host);
+    }
+    // A zone-id (`fe80::1%eth0`) splits at the first `%`; the address part
+    // is what must parse as IPv6.
+    let addr_part = host.split('%').next().unwrap_or(host);
+    if addr_part.parse::<std::net::Ipv6Addr>().is_ok() {
+        std::borrow::Cow::Owned(format!("[{host}]"))
+    } else {
+        std::borrow::Cow::Borrowed(host)
+    }
 }
 
 /// Current time in seconds since `UNIX_EPOCH` (best-effort; falls back to 0
@@ -426,12 +449,55 @@ mod tests {
     }
 
     #[test]
-    fn canonical_audience_ipv6_unbracketed() {
-        // Pin the existing behaviour: no IPv6 bracketing.
+    fn canonical_audience_ipv6_is_bracketed() {
+        // E2-F6: IPv6 literals must be bracketed so the URI authority is
+        // parseable and the JWT `aud` matches the CONNECT request.
         assert_eq!(
             canonical_audience("::1", 443, "/ssh3"),
-            "https://::1:443/ssh3"
+            "https://[::1]:443/ssh3"
         );
+        assert_eq!(
+            canonical_audience("2001:db8::1", 7443, "/ssh3"),
+            "https://[2001:db8::1]:7443/ssh3"
+        );
+    }
+
+    #[test]
+    fn canonical_audience_already_bracketed_ipv6_unchanged() {
+        // An input that is already bracketed must not be double-bracketed.
+        assert_eq!(
+            canonical_audience("[::1]", 443, "/ssh3"),
+            "https://[::1]:443/ssh3"
+        );
+    }
+
+    #[test]
+    fn canonical_audience_ipv6_with_zone_id_is_bracketed() {
+        // Link-local with a zone id stays a single bracketed authority.
+        assert_eq!(
+            canonical_audience("fe80::1%eth0", 443, "/ssh3"),
+            "https://[fe80::1%eth0]:443/ssh3"
+        );
+    }
+
+    #[test]
+    fn canonical_audience_hostname_and_ipv4_unbracketed() {
+        // Hostnames and IPv4 literals contain no `:` and must be left alone.
+        assert_eq!(
+            canonical_audience("host.example", 443, "/ssh3"),
+            "https://host.example:443/ssh3"
+        );
+        assert_eq!(
+            canonical_audience("192.0.2.1", 443, "/ssh3"),
+            "https://192.0.2.1:443/ssh3"
+        );
+    }
+
+    #[test]
+    fn bracket_ipv6_literal_rejects_non_ipv6_with_colon() {
+        // A pathological host that contains a colon but is not a valid IPv6
+        // literal is returned unchanged (we don't want to bracket garbage).
+        assert_eq!(bracket_ipv6_literal("not:an:address"), "not:an:address");
     }
 
     #[test]

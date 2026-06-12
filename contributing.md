@@ -17,9 +17,9 @@ posture wherever data crosses a process boundary.
 
 ## Development setup
 
-`spt` targets **Rust 1.83**, pinned by [`rust-toolchain.toml`](rust-toolchain.toml).
-`rustup` will install the right toolchain on first invocation; you do
-not need to manage it yourself.
+`spt` targets **Rust 1.85**, pinned by [`rust-toolchain.toml`](rust-toolchain.toml)
+(and `rust-version` in the root `Cargo.toml`). `rustup` will install the
+right toolchain on first invocation; you do not need to manage it yourself.
 
 The day-to-day commands are:
 
@@ -30,7 +30,11 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all -- --check
 ```
 
-CI runs the same set plus a cross-build matrix and `cargo-deny`.
+CI runs the same set (`fmt`, `clippy`, `test`, `build`) across a 5-target
+cross-build matrix. There is **no** `cargo-deny` gate in CI (the
+`deny.toml` was removed); dependency-advisory scanning runs out-of-band in
+a non-gating scheduled `cargo audit` workflow (`.github/workflows/audit.yml`),
+which opens/updates an issue on findings rather than blocking PRs.
 
 ### Do not run `cargo update`
 
@@ -104,10 +108,14 @@ Tests live where they belong:
    alters specified behaviour.
 6. CI must be green before merge:
    - `cargo fmt --check`
-   - `cargo clippy -- -D warnings`
+   - `cargo clippy --all-targets -- -D warnings`
    - `cargo test --workspace --locked`
-   - cross-build matrix (8 targets)
-   - `cargo deny check`
+   - cross-build matrix (5 targets: `x86_64`/`aarch64` linux-gnu,
+     `aarch64` apple-darwin, `x86_64`/`aarch64` pc-windows-msvc)
+
+   There is no `cargo deny check` gate. `cargo audit` runs only on the
+   scheduled (weekly) `audit.yml` workflow and is non-gating — it will not
+   block your PR, but check the audit issue tracker if you bump a dependency.
 
 Maintainers may squash on merge; write your PR description as if it
 will become the squashed commit message.

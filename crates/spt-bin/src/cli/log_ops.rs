@@ -127,18 +127,15 @@ pub async fn test(global: &GlobalOpts, args: LogTestArgs) -> Result<()> {
         Err(e) => (false, "unknown".to_string(), Some(e)),
     };
 
-    if args.json {
-        let v = json!({
-            "sink": args.sink,
-            "surface": surface,
-            "ok": ok,
-            "elapsed_ms": elapsed_ms,
-            "error": err,
-        });
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&v).map_err(|e| Error::RuntimeFailure(e.to_string()))?
-        );
+    let payload = json!({
+        "sink": args.sink,
+        "surface": surface,
+        "ok": ok,
+        "elapsed_ms": elapsed_ms,
+        "error": err,
+    });
+    if crate::cli::tunnel_ops::emit(global, args.json, &payload)? {
+        // machine output written
     } else if ok {
         println!("ok: sink `{}` ({}) in {}ms", args.sink, surface, elapsed_ms);
     } else {
@@ -164,23 +161,18 @@ pub async fn remote_list(global: &GlobalOpts, args: LogRemoteListArgs) -> Result
     let (cfg, _w) =
         spt_config::load(&path, false).map_err(|e| Error::InvalidConfig(format!("load: {e}")))?;
     let remotes = cfg.logging.map_or_else(Vec::new, |l| l.remote);
-    if args.json {
-        let rows = remotes
-            .iter()
-            .map(|r| {
-                json!({
-                    "name": r.name,
-                    "type": r.kind,
-                    "endpoint": r.endpoint,
-                    "required": r.required.unwrap_or(false),
-                })
+    let rows = remotes
+        .iter()
+        .map(|r| {
+            json!({
+                "name": r.name,
+                "type": r.kind,
+                "endpoint": r.endpoint,
+                "required": r.required.unwrap_or(false),
             })
-            .collect::<Vec<_>>();
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&rows)
-                .map_err(|e| Error::RuntimeFailure(e.to_string()))?
-        );
+        })
+        .collect::<Vec<_>>();
+    if crate::cli::tunnel_ops::emit(global, args.json, &rows)? {
         return Ok(());
     }
     if remotes.is_empty() {
@@ -208,20 +200,15 @@ pub async fn remote_status(global: &GlobalOpts, args: LogRemoteStatusArgs) -> Re
     let state_dir = spt_state::resolve_state_dir(global.state_dir.as_deref())?;
     let spool_dir = remote_spool_dir(remote, &state_dir);
     let (pending_files, pending_bytes) = spool_stats(&spool_dir)?;
-    if args.json {
-        let v = json!({
-            "sink": remote.name,
-            "type": remote.kind,
-            "endpoint": remote.endpoint,
-            "spool_dir": spool_dir,
-            "pending_files": pending_files,
-            "pending_bytes": pending_bytes,
-        });
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&v).map_err(|e| Error::RuntimeFailure(e.to_string()))?
-        );
-    } else {
+    let payload = json!({
+        "sink": remote.name,
+        "type": remote.kind,
+        "endpoint": remote.endpoint,
+        "spool_dir": spool_dir,
+        "pending_files": pending_files,
+        "pending_bytes": pending_bytes,
+    });
+    if !crate::cli::tunnel_ops::emit(global, args.json, &payload)? {
         println!(
             "{}\t{}\tpending_files={}\tpending_bytes={}\tspool={}",
             remote.name,
@@ -255,16 +242,13 @@ pub async fn remote_drain(global: &GlobalOpts, args: LogRemoteDrainArgs) -> Resu
             }
         }
     }
-    if args.json {
-        let v = json!({
-            "sink": remote.name,
-            "drained": drained,
-            "error": failed,
-        });
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&v).map_err(|e| Error::RuntimeFailure(e.to_string()))?
-        );
+    let payload = json!({
+        "sink": remote.name,
+        "drained": drained,
+        "error": failed.clone(),
+    });
+    if crate::cli::tunnel_ops::emit(global, args.json, &payload)? {
+        // machine output written
     } else if let Some(e) = failed {
         println!("FAIL: drained {drained} record(s), then failed: {e}");
         return Err(Error::RuntimeFailure(format!(
@@ -789,6 +773,7 @@ mod tests {
             config_fingerprint: None,
             state_dir: state,
             profile: None,
+            portable: false,
             output: OutputFormat::Human,
             json: false,
             log_level: LogLevel::Info,
@@ -798,6 +783,25 @@ mod tests {
             no_color: true,
             dry_run: false,
         }
+    }
+
+    // E4-F6: global `--json` and leaf `--json` resolve to the same machine
+    // format for a representative log command (`remote list`).
+    #[test]
+    fn global_json_and_leaf_json_are_equivalent_for_log_ops() {
+        use crate::cli::tunnel_ops::effective_format;
+        let mut g_global = opts(None, None);
+        g_global.json = true;
+        let g_leaf = opts(None, None);
+        assert_eq!(
+            effective_format(&g_global, false),
+            effective_format(&g_leaf, true),
+        );
+        assert_eq!(effective_format(&g_global, false), OutputFormat::Json);
+        // `--output yaml` is honoured and not downgraded by a leaf `--json`.
+        let mut g_yaml = opts(None, None);
+        g_yaml.output = OutputFormat::Yaml;
+        assert_eq!(effective_format(&g_yaml, true), OutputFormat::Yaml);
     }
 
     #[test]

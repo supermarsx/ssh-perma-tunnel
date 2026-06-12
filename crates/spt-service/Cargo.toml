@@ -26,6 +26,11 @@ csv = "1.3"
 [features]
 testing = []
 
+[target.'cfg(unix)'.dependencies]
+# `geteuid()` for resolving the launchd agent `gui/<uid>` domain (E7-F8).
+# The workspace `nix` already enables the `user` feature.
+nix = { workspace = true }
+
 [target.'cfg(windows)'.dependencies]
 windows-service = { workspace = true }
 

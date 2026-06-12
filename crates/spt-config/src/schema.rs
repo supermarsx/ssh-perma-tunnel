@@ -1799,6 +1799,14 @@ pub struct Endpoint {
     /// Weighted-failover weight. §9.11.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub weight: Option<u32>,
+    /// Username for this endpoint; falls back to the profile-level user when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user: Option<String>,
+    /// Per-endpoint auth; fully overrides (not field-merges) the profile-level
+    /// global [profiles.auth] for this endpoint when set. Falls back to the
+    /// profile auth when unset (the global default case).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth: Option<Auth>,
 }
 
 /// Hop transport kind. Added by t6-e3 for proxy-jump support.
@@ -2067,6 +2075,75 @@ proxy_password_ref = \"secret://proxies/alice\"
         let pw = hop.proxy_password_ref.expect("ref present");
         assert_eq!(pw.ns(), "proxies");
         assert_eq!(pw.name(), "alice");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// multi-auth Phase 1: per-endpoint `user` + `auth` round-trip + back-compat
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod endpoint_auth_tests {
+    use super::*;
+
+    #[test]
+    fn endpoint_inline_user_and_auth_round_trip() {
+        // An endpoint carrying its own `user` plus a full inline `[auth]`
+        // block must deserialise into `Some(..)` and re-serialise verbatim.
+        let toml_str = "\
+name = \"primary\"
+host = \"a.example.com\"
+port = 22
+user = \"alice\"
+
+[auth]
+method = \"public_key\"
+identity_file = \"/home/alice/.ssh/id_ed25519\"
+password = \"secret://hosts/alice\"
+";
+        let ep: Endpoint = toml::from_str(toml_str).unwrap();
+        assert_eq!(ep.user.as_deref(), Some("alice"));
+        let auth = ep.auth.as_ref().expect("inline auth present");
+        assert_eq!(auth.method, "public_key");
+        assert_eq!(auth.identity_file.as_deref(), Some("/home/alice/.ssh/id_ed25519"));
+
+        // Re-serialise: the inline values survive the round-trip.
+        let rendered = toml::to_string(&ep).unwrap();
+        let reparsed: Endpoint = toml::from_str(&rendered).unwrap();
+        assert_eq!(reparsed, ep, "endpoint must round-trip byte-stably");
+        assert!(rendered.contains("user = \"alice\""));
+        assert!(rendered.contains("method = \"public_key\""));
+    }
+
+    #[test]
+    fn endpoint_without_auth_omits_keys_and_inherits_globally() {
+        // The zero-config / global-default case: no `user`, no `auth`.
+        // Both must deserialise to `None` and serialise with NO `user`/`auth`
+        // keys, keeping configs byte-identical to the pre-feature layout.
+        let toml_str = "name = \"e\"\nhost = \"h\"\nport = 22\n";
+        let ep: Endpoint = toml::from_str(toml_str).unwrap();
+        assert!(ep.user.is_none());
+        assert!(ep.auth.is_none());
+
+        let rendered = toml::to_string(&ep).unwrap();
+        assert!(
+            !rendered.contains("user"),
+            "no `user` key expected, got: {rendered}"
+        );
+        assert!(
+            !rendered.contains("auth"),
+            "no `auth` key expected, got: {rendered}"
+        );
+        // Exact byte-identical serialisation against a struct built without
+        // the new fields (proves purely-additive, skip-when-none behaviour).
+        let expected = toml::to_string(&Endpoint {
+            name: "e".into(),
+            host: "h".into(),
+            port: 22,
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(rendered, expected);
     }
 }
 

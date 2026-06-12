@@ -4,6 +4,29 @@ The event subsystem fans typed lifecycle events to a configurable set of
 sinks. Bindings filter and template events; the dispatcher persists failed
 deliveries to disk for retry.
 
+## Runtime status
+
+The events pipeline **is wired into `tunnel run`.** At startup the binary
+constructs one `EventBus` (with a ring buffer), builds the sink registry
+from `[[events.sinks]]`, spawns the `Dispatcher`, and threads an `EventBus`
+handle into the supervisor so profile/forward lifecycle transitions re-emit
+as canonical `Event`s. (Earlier builds left this subsystem inert — that
+caveat no longer applies.)
+
+**Sink coverage is partial.** Three sink kinds deliver:
+
+| Sink kind                       | Status                                    |
+|---------------------------------|-------------------------------------------|
+| `http` / `webhook_post`         | delivered                                 |
+| `command`                       | delivered                                 |
+| `mcp_notify`                    | delivered                                 |
+| `email` (SMTP) / `sms` / `push` | **warned-and-skipped** — secret-heavy sinks are not yet delivered; configuring one logs a warning at startup and the sink is a no-op (follow-up). |
+
+**TUI configurability (v1).** The events surface is now editable from the
+TUI for the delivered sink kinds — `http`, `webhook_post`, `command`,
+`mcp_notify` sinks plus their bindings. `email` / `sms` / `push` sink
+editing is **deferred** in the TUI (configure those by hand in TOML).
+
 ## Event shape
 
 Each `Event` carries:
@@ -29,12 +52,14 @@ re-fires of identical events within the window.
 
     [[events.sinks]]
     name = "slack"
-    type = "https"               # https|smtp|sms|push|command|mcp_notify
+    type = "webhook_post"        # http | webhook_post | command | mcp_notify  (delivered)
+                                 # email | sms | push                        (warned-and-skipped)
     endpoint = "https://hooks.slack.com/..."
     template = "{{kind}} on {{profile}}: {{message}}"
 
 Templates use mustache-like `{{field}}` substitution. Unknown fields render
-as the empty string.
+as the empty string (a `Null` field renders empty, never the literal
+`"null"`).
 
 ## Delivery & retries
 

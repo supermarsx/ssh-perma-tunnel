@@ -8,7 +8,7 @@ use rand::RngCore;
 
 use crate::envelope::{Meta, MAGIC};
 use crate::sealing::{is_sealed, peek_meta, seal, unseal, KeySource, Passphrase, X25519PublicKey};
-use crate::signing::{sign, verify, SigningKey, VerifyingKey};
+use crate::signing::{sign, verify, verify_with_options, SigningKey, VerifyingKey};
 
 // ---------------------------------------------------------------------------
 // Fast-Argon2id helper. Default seal() uses m=64MiB which is too slow for
@@ -420,9 +420,10 @@ fn meta_bytes_are_aad_bound_to_body() {
     matches::assert_matches!(err, spt_core::Error::SecretCryptoFailed(_));
 }
 
-// 24. verify with empty allowed_keys accepts any valid signature.
+// 24. E2-F5: verify() with an empty allow-list is a hard error (fail-closed),
+// but the explicit any_signed_ok opt-in still accepts any valid signature.
 #[test]
-fn verify_with_empty_allowed_keys_accepts_any_signature() {
+fn verify_empty_allowed_keys_is_hard_error_unless_opted_in() {
     let master = random_vault_master();
     let sealed = seal(b"x", &KeySource::VaultMaster(master)).unwrap();
 
@@ -432,7 +433,24 @@ fn verify_with_empty_allowed_keys_accepts_any_signature() {
     let signed = sign(&sealed, &sk).unwrap();
 
     let no_keys: &[VerifyingKey] = &[];
-    verify(&signed, no_keys).unwrap();
+
+    // Default verify() rejects an empty allow-list with TrustFailed.
+    let err = verify(&signed, no_keys).unwrap_err();
+    matches::assert_matches!(err, spt_core::Error::TrustFailed(_));
+
+    // The explicit opt-in still accepts any valid self-embedded signature.
+    verify_with_options(&signed, no_keys, true).unwrap();
+
+    // A non-empty allow-list works regardless of the flag.
+    verify_with_options(&signed, &[sk.verifying_key()], false).unwrap();
+
+    // With opt-in but a *wrong* key in a non-empty list, the allow-list still
+    // governs (opt-in only relaxes the empty case).
+    let mut other = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut other);
+    let wrong = SigningKey::from_bytes(&other).verifying_key();
+    let err = verify_with_options(&signed, &[wrong], true).unwrap_err();
+    matches::assert_matches!(err, spt_core::Error::TrustFailed(_));
 }
 
 // 25. Re-signing replaces the existing signature.

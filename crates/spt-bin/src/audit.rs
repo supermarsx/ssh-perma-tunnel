@@ -30,6 +30,7 @@
 //! | `audit.script.loaded`                 | `spt-scripting`        | `path`, `sha256`                           |
 //! | `audit.script.invoked`                | `spt-scripting`        | `hook`, `duration_us`, `outcome`           |
 //! | `audit.sftp.umount`                   | `spt-bin::cli::sftp_ops` | `mountpoint`, `reason`                   |
+//! | `audit.mcp.tool_call`                 | `spt-mcp`              | `tool`, `ok`, `client_id?`, `error?`       |
 //!
 //! All fields are stringified — [`spt_core::audit::AuditEvent::fields`]
 //! is keyed by `String → String` by contract. Booleans serialise as
@@ -190,6 +191,62 @@ impl spt_scripting::AuditSink for ScriptAuditBridge {
                 )
                 .with_field("outcome", outcome.as_str()),
         );
+    }
+}
+
+/// Bridge from [`spt_mcp::McpAuditSink`] to the workspace audit sink
+/// (E8-F5).
+///
+/// The MCP server emits exactly one [`spt_mcp::AuditEvent`] per tool call
+/// (success, policy-denial, or handler error). This bridge translates each
+/// into a canonical `audit.mcp.tool_call` event and dispatches it through
+/// [`record_audit`] — the same seam wired to the operator log / event bus at
+/// startup. It is installed in the loopback server build path
+/// (`mcp_server::build_server_with_sources`) only when `[mcp].audit_events`
+/// is `true`; otherwise the server keeps the [`spt_mcp::NoopAuditSink`].
+///
+/// The MCP server has *already* redacted the event's `arguments`/`error`
+/// before calling `record`, so this bridge does not re-redact. It carries the
+/// scalar metadata (tool name, outcome, optional client id / error message)
+/// into the canonical schema; the (redacted) argument tree is summarised as a
+/// field count rather than flattened, keeping the audit line compact.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct McpAuditBridge;
+
+impl McpAuditBridge {
+    /// Construct the bridge.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self
+    }
+
+    /// Convenience: build an `Arc<dyn spt_mcp::McpAuditSink>` ready to hand to
+    /// the server builder.
+    #[must_use]
+    pub fn arc() -> Arc<dyn spt_mcp::McpAuditSink> {
+        Arc::new(Self)
+    }
+}
+
+#[async_trait::async_trait]
+impl spt_mcp::McpAuditSink for McpAuditBridge {
+    async fn record(&self, event: spt_mcp::AuditEvent) {
+        // A denied or errored call is operator-visible elevated risk.
+        let severity = if event.ok {
+            AuditSeverity::Info
+        } else {
+            AuditSeverity::Warning
+        };
+        let mut ev = AuditEvent::new("audit.mcp.tool_call", severity)
+            .with_field("tool", event.tool)
+            .with_field("ok", bool_str(event.ok));
+        if let Some(client_id) = event.client_id {
+            ev = ev.with_field("client_id", client_id);
+        }
+        if let Some(error) = event.error {
+            ev = ev.with_field("error", error);
+        }
+        record_audit(ev);
     }
 }
 
@@ -448,6 +505,71 @@ mod tests {
         emit_sftp_umount(Path::new("/b"), "shutdown");
         assert_eq!(first.events().len(), 1, "first must not see post-swap");
         assert_eq!(second.events().len(), 1, "second must capture post-swap");
+        clear_audit_sink_for_test();
+    }
+
+    /// MCP audit bridge relays a successful write-tool call into
+    /// `audit.mcp.tool_call` at `Info` severity with the tool name + `ok`.
+    /// (E8-F5)
+    // The `test_lock` guard serialises the process-wide audit sink; it is held
+    // across the single (synchronous-bodied) `record` await deliberately.
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test]
+    async fn mcp_tool_call_event_relayed() {
+        use spt_mcp::McpAuditSink as _;
+        let _g = test_lock();
+        let sink = install_mock_sink();
+        let bridge = McpAuditBridge::new();
+        bridge
+            .record(spt_mcp::AuditEvent {
+                tool: "tunnel_reload".to_owned(),
+                arguments: serde_json::json!({"profile": "alpha"}),
+                ok: true,
+                client_id: Some("claude-cli".to_owned()),
+                error: None,
+                timestamp_ms: 0,
+            })
+            .await;
+        let evs = sink.events();
+        assert_eq!(evs.len(), 1);
+        assert_eq!(evs[0].kind, "audit.mcp.tool_call");
+        assert_eq!(
+            evs[0].fields.get("tool").map(String::as_str),
+            Some("tunnel_reload")
+        );
+        assert_eq!(evs[0].fields.get("ok").map(String::as_str), Some("true"));
+        assert_eq!(
+            evs[0].fields.get("client_id").map(String::as_str),
+            Some("claude-cli")
+        );
+        assert_eq!(evs[0].severity, AuditSeverity::Info);
+        clear_audit_sink_for_test();
+    }
+
+    /// A denied/errored MCP call elevates severity to `Warning` and carries
+    /// the (already-redacted) error message. (E8-F5)
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test]
+    async fn mcp_tool_call_error_elevates_severity() {
+        use spt_mcp::McpAuditSink as _;
+        let _g = test_lock();
+        let sink = install_mock_sink();
+        McpAuditBridge::new()
+            .record(spt_mcp::AuditEvent {
+                tool: "forward_add".to_owned(),
+                arguments: serde_json::json!({}),
+                ok: false,
+                client_id: None,
+                error: Some("policy denied: tool forward_add is not in allow_write_tools".to_owned()),
+                timestamp_ms: 0,
+            })
+            .await;
+        let evs = sink.events();
+        assert_eq!(evs.len(), 1);
+        assert_eq!(evs[0].fields.get("ok").map(String::as_str), Some("false"));
+        assert_eq!(evs[0].severity, AuditSeverity::Warning);
+        assert!(evs[0].fields.contains_key("error"));
+        assert!(!evs[0].fields.contains_key("client_id"));
         clear_audit_sink_for_test();
     }
 

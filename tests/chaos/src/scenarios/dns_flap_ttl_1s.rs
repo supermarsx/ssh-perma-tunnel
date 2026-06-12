@@ -21,7 +21,7 @@ use crate::scenarios::common::{
 use spt_chaos_proxy::ChaosBehaviour;
 
 #[tokio::test]
-#[ignore = "FIXME(C1-deferred): DnsAnswerRotation not implemented in spt-chaos-proxy::dns; see t8-C2.md"]
+#[ignore = "feature-gated: ChaosBehaviour::DnsAnswerRotation is a Pristine passthrough (spt-chaos-proxy::dns is a stub); no DNS-rotation mechanism exists to exercise. Cannot be un-ignored until real DNS rotation lands. See t8-C2.md"]
 async fn dns_flap_ttl_1s() {
     let echo = EchoServer::spawn().await.expect("echo server");
     let (proxy, proxy_addr, _proxy_task) = spawn_proxy_to(

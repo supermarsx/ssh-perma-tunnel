@@ -5,11 +5,18 @@
 //! SSH2 backend. The checks below verify:
 //!
 //! 1. `ssh2.russh_init`             — russh's algorithm catalog is reachable.
-//! 2. `ssh2.supported_algs.<kind>`  — list russh's supported algorithm names
-//!    across kex / hostkey / cipher / mac / compression.
+//!    Built by reading [`russh::Preferred::DEFAULT`] at runtime rather than
+//!    a hardcoded `Pass`, so the check fails loudly if russh ever ships an
+//!    empty default negotiation set (E8-F8).
+//! 2. `ssh2.supported_algs.<kind>`  — list russh's *actually-negotiated*
+//!    default algorithm names across kex / hostkey / cipher / mac /
+//!    compression, queried live from [`russh::Preferred::DEFAULT`] so the
+//!    listing can never silently drift from the linked russh version
+//!    (previously a hand-maintained string table — E8-F8).
 //! 3. `ssh2.crypto_policy.<kind>`   — for each entry in the configured
 //!    [`spt_ssh2::CryptoPolicy`] allow-list, `Pass` if russh recognizes
-//!    the name, `Fail` otherwise. Deprecated algorithms emit a `Warn`.
+//!    the name (via the real `TryFrom<&str>` parser russh uses on connect),
+//!    `Fail` otherwise. Deprecated algorithms emit a `Warn`.
 
 use async_trait::async_trait;
 
@@ -20,52 +27,45 @@ use crate::framework::{Diagnostic, DiagnosticContext};
 #[derive(Default, Debug)]
 pub struct Ssh2Diagnostic;
 
-fn russh_supported(kind: &str) -> Vec<&'static str> {
+/// The russh default-negotiated algorithm names for `kind`, queried live from
+/// [`russh::Preferred::DEFAULT`]. Returns owned `String`s because russh's
+/// `Name` newtypes only expose `&str` borrows tied to the (static) default.
+///
+/// `kind` accepts both bare (`cipher`, `mac`) and direction-suffixed
+/// (`cipher_cs`, `cipher_sc`, `mac_cs`, `mac_sc`) labels; russh negotiates a
+/// single set per direction-pair, so both suffixes map to the same list.
+fn russh_supported(kind: &str) -> Vec<String> {
+    let p = russh::Preferred::DEFAULT;
     match kind {
-        "kex" => vec![
-            "curve25519-sha256",
-            "curve25519-sha256@libssh.org",
-            "diffie-hellman-group1-sha1",
-            "diffie-hellman-group14-sha1",
-            "diffie-hellman-group14-sha256",
-            "diffie-hellman-group16-sha512",
-            "ecdh-sha2-nistp256",
-            "ecdh-sha2-nistp384",
-            "ecdh-sha2-nistp521",
-            "none",
-        ],
-        "hostkey" => vec![
-            "ssh-ed25519",
-            "ssh-rsa",
-            "rsa-sha2-256",
-            "rsa-sha2-512",
-            "ecdsa-sha2-nistp256",
-            "ecdsa-sha2-nistp384",
-            "ecdsa-sha2-nistp521",
-        ],
-        "cipher" | "cipher_cs" | "cipher_sc" => vec![
-            "aes256-gcm@openssh.com",
-            "chacha20-poly1305@openssh.com",
-            "aes256-ctr",
-            "aes192-ctr",
-            "aes128-ctr",
-            "aes256-cbc",
-            "aes192-cbc",
-            "aes128-cbc",
-            "3des-cbc",
-            "none",
-        ],
-        "mac" | "mac_cs" | "mac_sc" => vec![
-            "hmac-sha2-512-etm@openssh.com",
-            "hmac-sha2-256-etm@openssh.com",
-            "hmac-sha1-etm@openssh.com",
-            "hmac-sha2-512",
-            "hmac-sha2-256",
-            "hmac-sha1",
-            "none",
-        ],
-        "compression" => vec!["none", "zlib", "zlib@openssh.com"],
+        "kex" => p.kex.iter().map(|n| n.as_ref().to_string()).collect(),
+        "hostkey" | "host_key" | "key" => {
+            p.key.iter().map(|n| n.as_ref().to_string()).collect()
+        }
+        "cipher" | "cipher_cs" | "cipher_sc" => {
+            p.cipher.iter().map(|n| n.as_ref().to_string()).collect()
+        }
+        "mac" | "mac_cs" | "mac_sc" => p.mac.iter().map(|n| n.as_ref().to_string()).collect(),
+        "compression" => p
+            .compression
+            .iter()
+            .map(|n| n.as_ref().to_string())
+            .collect(),
         _ => Vec::new(),
+    }
+}
+
+/// Whether russh recognizes `algo` for `kind`, using the *same* `TryFrom<&str>`
+/// parsers russh applies when building a connection's `Preferred` set. This is
+/// the real acceptance test — a name passes here iff russh would accept it on
+/// the wire, not iff it appears in a hand-maintained list.
+fn russh_recognizes(kind: &str, algo: &str) -> bool {
+    match kind {
+        "kex" => russh::kex::Name::try_from(algo).is_ok(),
+        "hostkey" | "host_key" | "key" => russh::keys::key::Name::try_from(algo).is_ok(),
+        "cipher" => russh::cipher::Name::try_from(algo).is_ok(),
+        "mac" => russh::mac::Name::try_from(algo).is_ok(),
+        "compression" => russh::compression::Name::try_from(algo).is_ok(),
+        _ => false,
     }
 }
 
@@ -76,10 +76,35 @@ impl Diagnostic for Ssh2Diagnostic {
     }
     async fn run(&self, ctx: &DiagnosticContext) -> Vec<Check> {
         let mut out = Vec::new();
-        out.push(
-            Check::new("ssh2.russh_init", Severity::Info, Status::Pass)
-                .with_evidence("russh algorithm catalog reachable; pure-Rust SSH2 backend"),
-        );
+
+        // E8-F8: actually probe russh rather than hardcoding `Pass`. Reading
+        // `Preferred::DEFAULT` exercises the algorithm-catalog statics; a
+        // healthy backend negotiates at least one kex / key / cipher / mac by
+        // default. An empty default set means russh shipped a broken build.
+        let p = russh::Preferred::DEFAULT;
+        let catalogue_total =
+            p.kex.len() + p.key.len() + p.cipher.len() + p.mac.len() + p.compression.len();
+        if p.kex.is_empty() || p.key.is_empty() || p.cipher.is_empty() || p.mac.is_empty() {
+            out.push(
+                Check::new("ssh2.russh_init", Severity::High, Status::Fail)
+                    .with_evidence(format!(
+                        "russh default negotiation set is incomplete: \
+                         kex={} key={} cipher={} mac={}",
+                        p.kex.len(),
+                        p.key.len(),
+                        p.cipher.len(),
+                        p.mac.len(),
+                    ))
+                    .with_remediation("the linked russh build is broken; reinstall / rebuild spt"),
+            );
+        } else {
+            out.push(
+                Check::new("ssh2.russh_init", Severity::Info, Status::Pass).with_evidence(format!(
+                    "russh algorithm catalog reachable ({catalogue_total} default algorithms); \
+                     pure-Rust SSH2 backend"
+                )),
+            );
+        }
 
         for label in [
             "kex",
@@ -146,10 +171,12 @@ fn check_policy(out: &mut Vec<Check>, kind: &str, policy: &[String]) {
     if policy.is_empty() {
         return;
     }
-    let supported = russh_supported(kind);
     for algo in policy {
         let id = format!("ssh2.crypto_policy.{kind}");
-        if supported.iter().any(|s| s.eq_ignore_ascii_case(algo)) {
+        // Validate against russh's real `TryFrom<&str>` parser, not just the
+        // default-negotiated subset: a policy may legitimately request a
+        // non-default-but-supported algorithm (e.g. an extra cipher).
+        if russh_recognizes(kind, algo) {
             out.push(
                 Check::new(id, Severity::Info, Status::Pass)
                     .with_evidence(format!("russh supports `{algo}`")),
@@ -180,6 +207,60 @@ mod tests {
         assert!(r
             .iter()
             .any(|c| c.id == "ssh2.crypto_policy" && c.status == Status::Skipped));
+    }
+
+    // E8-F8: the supported-algs listing must be *derived* from russh, not a
+    // frozen string table. Tie the diagnostic's reported counts back to
+    // `russh::Preferred::DEFAULT` so a russh upgrade that changes the default
+    // set is reflected automatically (and this test fails if the wiring is
+    // ever reverted to a hardcoded list).
+    #[test]
+    fn supported_algs_are_queried_live_from_russh() {
+        let p = russh::Preferred::DEFAULT;
+        assert_eq!(russh_supported("kex").len(), p.kex.len());
+        assert_eq!(russh_supported("cipher").len(), p.cipher.len());
+        assert_eq!(russh_supported("mac").len(), p.mac.len());
+        assert_eq!(russh_supported("hostkey").len(), p.key.len());
+        // curve25519 is russh's default kex; if russh drops it this fails loud.
+        assert!(
+            russh_supported("kex")
+                .iter()
+                .any(|a| a.starts_with("curve25519-sha256")),
+            "russh default kex set: {:?}",
+            russh_supported("kex"),
+        );
+        // Direction suffixes resolve to the same set as the bare label.
+        assert_eq!(russh_supported("cipher"), russh_supported("cipher_cs"));
+        assert_eq!(russh_supported("mac_sc"), russh_supported("mac"));
+        assert!(russh_supported("bogus-kind").is_empty());
+    }
+
+    // The policy acceptance test now uses russh's real parser: a supported
+    // cipher that is *not* in the default negotiation set must still Pass.
+    #[tokio::test]
+    async fn policy_passes_on_supported_non_default_algo() {
+        // aes256-cbc is recognized by russh's `TryFrom` parser but is not a
+        // default cipher; the old default-list test would have failed it.
+        if russh_recognizes("cipher", "aes256-cbc") {
+            let ctx = ctx_with_policy(spt_ssh2::CryptoPolicy {
+                ciphers: vec!["aes256-cbc".to_string()],
+                ..Default::default()
+            });
+            let r = Ssh2Diagnostic.run(&ctx).await;
+            assert!(
+                r.iter()
+                    .any(|c| c.id == "ssh2.crypto_policy.cipher" && c.status == Status::Pass),
+                "checks: {r:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn russh_recognizes_known_and_rejects_unknown() {
+        assert!(russh_recognizes("kex", "curve25519-sha256"));
+        assert!(russh_recognizes("mac", "hmac-sha2-256"));
+        assert!(!russh_recognizes("kex", "definitely-not-a-kex"));
+        assert!(!russh_recognizes("unknown-kind", "anything"));
     }
 
     fn ctx_with_policy(p: spt_ssh2::CryptoPolicy) -> DiagnosticContext {

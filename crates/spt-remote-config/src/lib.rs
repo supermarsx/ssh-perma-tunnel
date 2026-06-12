@@ -26,8 +26,10 @@ pub mod http;
 pub mod testing;
 
 pub use cache::{cache_path, fingerprint_sidecar_path, load_cached, save_atomic};
-pub use fetch::{fetch, FetchOutcome, FetchResult, RemoteConfigError};
+pub use fetch::{
+    fetch, fetch_with_plan, fetcher_for_plan, FetchOutcome, FetchResult, RemoteConfigError,
+};
 pub use http::{HttpFetcher, HttpResponse, ReqwestFetcher};
 
-/// Re-export of the source-of-truth spec type.
-pub use spt_config::remote::RemoteConfigSpec;
+/// Re-export of the source-of-truth spec/plan types.
+pub use spt_config::remote::{PlanError, RemoteConfigPlan, RemoteConfigSpec};

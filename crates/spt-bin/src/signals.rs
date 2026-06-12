@@ -78,7 +78,11 @@ async fn run_signal_task(tx: watch::Sender<Option<Signal>>) {
 ///    supplied and the file exists.
 /// 3. Returns `Ok(None)` if no source is configured — the caller treats this
 ///    as "leave the filter untouched".
-#[cfg(unix)]
+///
+/// Cross-platform: SIGHUP drives this on Unix; on Windows the SCM
+/// `ParamChange` (reload) branch in [`crate::scm_dispatch`] calls it for the
+/// same live-log-filter reload (E7-F13). The body uses only `std::fs`/`env`,
+/// so it compiles and behaves identically on every target.
 pub fn read_sighup_log_filter(
     state_dir: Option<&std::path::Path>,
 ) -> std::io::Result<Option<String>> {

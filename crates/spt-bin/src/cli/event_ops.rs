@@ -106,15 +106,12 @@ pub async fn replay(global: &GlobalOpts, args: EventReplayArgs) -> Result<()> {
         }));
     }
 
-    if args.json {
-        let v = json!({
-            "event_id": args.event_id,
-            "sinks": results,
-        });
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&v).map_err(|e| Error::RuntimeFailure(e.to_string()))?
-        );
+    let payload = json!({
+        "event_id": args.event_id,
+        "sinks": results,
+    });
+    if crate::cli::tunnel_ops::emit(global, args.json, &payload)? {
+        // machine output written
     } else if results.is_empty() {
         println!(
             "(no sink matches event id `{}`; did you mean `--sink <name>`?)",
@@ -336,6 +333,7 @@ mod tests {
             config_fingerprint: None,
             state_dir: Some(state),
             profile: None,
+            portable: false,
             output: OutputFormat::Human,
             json: false,
             log_level: LogLevel::Info,
@@ -549,6 +547,7 @@ mod tests {
             config_fingerprint: None,
             state_dir: None,
             profile: None,
+            portable: false,
             output: OutputFormat::Human,
             json: false,
             log_level: LogLevel::Info,

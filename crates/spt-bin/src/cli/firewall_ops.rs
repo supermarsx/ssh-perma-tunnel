@@ -1,8 +1,12 @@
 //! `spt firewall {status, bind-preview}` operations.
 //!
-//! `status` queries the per-OS planner's `query_active_rules()` (default impl
-//! returns `UnsupportedPlatform`, which surfaces as a graceful error rather
-//! than a panic) and prints the spt-managed rules currently installed.
+//! `status` queries the per-OS planner's `query_active_rules()` — now a real
+//! implementation on Linux/macOS/Windows (it shells out to `nft`/`pfctl`/`netsh`
+//! to list rules carrying the spt tag) — and prints the spt-managed rules
+//! currently installed. On a platform with no firewall backend the planner
+//! returns `UnsupportedPlatform`, surfaced as a graceful error rather than a
+//! panic. A live query that fails to shell out (most commonly because it needs
+//! admin/root) surfaces as `RuntimeFailure` with an elevation hint.
 //!
 //! `bind-preview` loads the config, computes the rules that *would* be applied
 //! were the supervisor to start, and prints them. It never shells out and does
@@ -62,10 +66,28 @@ pub async fn status(_global: &GlobalOpts, args: FirewallStatusArgs) -> Result<()
     match planner.query_active_rules() {
         Ok(rules) => emit_status(args.json, &rules, planner.as_ref()),
         Err(Error::UnsupportedPlatform(msg)) => {
-            // Distinguish "live query unsupported" from "permission denied".
-            // Either way the brief asks us to surface gracefully and exit !=0.
+            // Live query is implemented for Linux/macOS/Windows. Reaching this
+            // arm means we're on a platform with no firewall backend at all, so
+            // there is nothing to query — report that truthfully rather than
+            // claiming the feature is unimplemented (it is) or misdiagnosing a
+            // permissions problem. Still exits != 0. `bind-preview` still works.
             Err(Error::UnsupportedPlatform(format!(
-                "no permission to query active rules ({msg})"
+                "no firewall backend for this platform; \
+                 `spt firewall status` cannot query active rules ({msg}). \
+                 Use `spt firewall bind-preview` to see the rules that would be applied"
+            )))
+        }
+        Err(Error::RuntimeFailure(msg)) => {
+            // The live query shelled out (nft/pfctl/netsh) and the command
+            // failed. The overwhelmingly common cause is missing privileges:
+            // querying the active ruleset needs admin/root. Surface the real
+            // command error AND an actionable elevation hint, without
+            // over-claiming (it may also be a missing tool / other failure).
+            Err(Error::RuntimeFailure(format!(
+                "querying active firewall rules failed ({msg}); \
+                 this usually means it must be run with administrator/root \
+                 privileges. Use `spt firewall bind-preview` to inspect the \
+                 rule set without querying the live firewall"
             )))
         }
         Err(other) => Err(other),
@@ -991,6 +1013,7 @@ mod tests {
             verbose: 0,
             no_color: true,
             dry_run: false,
+            portable: false,
         }
     }
 
@@ -1041,14 +1064,43 @@ target = "internal:5432"
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn status_returns_unsupported_when_planner_default_impl_used() {
-        // The default `query_active_rules` impl returns UnsupportedPlatform.
-        // We don't override it in any per-OS planner shipped today, so the
-        // command surfaces a graceful error rather than panicking.
+    async fn status_query_is_implemented_and_messages_are_accurate() {
+        // `query_active_rules` is now a REAL per-OS implementation (it shells
+        // out to nft/pfctl/netsh). The outcome here is environment-dependent:
+        //  - Ok(()) when the live read query succeeds (e.g. `netsh ... show
+        //    rule` typically works unprivileged on Windows CI),
+        //  - RuntimeFailure when the query shelled out but failed (commonly
+        //    needs admin/root, or the tool is absent),
+        //  - UnsupportedPlatform only on a platform with no firewall backend.
+        // Whatever the outcome, the command must never panic and must NOT
+        // resurrect the stale "not yet implemented" claim (the feature IS
+        // implemented) nor misdiagnose failures as a generic "no permission".
         let g = opts(None);
         let args = FirewallStatusArgs::default();
-        let err = status(&g, args).await.unwrap_err();
-        assert!(matches!(err, Error::UnsupportedPlatform(_)));
+        match status(&g, args).await {
+            Ok(()) => {}
+            Err(Error::UnsupportedPlatform(msg)) => {
+                assert!(
+                    msg.contains("no firewall backend"),
+                    "unsupported-platform message must name the missing backend, got `{msg}`"
+                );
+                assert!(
+                    !msg.contains("not yet implemented"),
+                    "feature IS implemented; message must not claim otherwise, got `{msg}`"
+                );
+            }
+            Err(Error::RuntimeFailure(msg)) => {
+                assert!(
+                    msg.contains("administrator/root"),
+                    "live-query failure should hint at elevation, got `{msg}`"
+                );
+                assert!(
+                    !msg.contains("not yet implemented"),
+                    "feature IS implemented; message must not claim otherwise, got `{msg}`"
+                );
+            }
+            Err(other) => panic!("unexpected error variant from status: {other:?}"),
+        }
     }
 
     #[test]

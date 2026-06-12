@@ -522,6 +522,111 @@ async fn auth_tls_reply_and_handshake() {
 }
 
 // ---------------------------------------------------------------------------
+// 16. Passive data-connection source-IP validation (E3-F4).
+//     A data connection whose source IP matches the control peer is
+//     accepted; one from a different source IP is rejected with 425.
+// ---------------------------------------------------------------------------
+
+// Matching case: control + data both originate from 127.0.0.1, so the
+// transfer completes (226). This exercises the accept-path through the
+// new `accept_data_connection` source-IP gate on the success branch.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn passive_data_matching_source_ip_accepted() {
+    let (addr, handle, dir) = spawn_translator(|_| {}).await;
+    let (mut br, mut wr) = connect(addr).await;
+    login(&mut br, &mut wr).await;
+
+    send(&mut wr, "TYPE I").await;
+    let _ = recv_line(&mut br).await;
+    let port = pasv(&mut br, &mut wr).await;
+    let payload = b"matching-source-ok";
+    send(&mut wr, "STOR ok.bin").await;
+    // Data connection from the same host (127.0.0.1) as the control peer.
+    let mut dc = TcpStream::connect(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port))
+        .await
+        .expect("data connect");
+    dc.write_all(payload).await.expect("write data");
+    dc.shutdown().await.expect("shutdown data");
+
+    let r = recv_line(&mut br).await;
+    assert!(r.starts_with("226"), "matching-IP STOR → `{r}`");
+    let bytes = std::fs::read(dir.path().join("ok.bin")).expect("read uploaded");
+    assert_eq!(bytes, payload);
+    handle.shutdown();
+}
+
+// Mismatch case: bind the control listener on the 127.0.0.2 loopback alias
+// and connect the data channel from 127.0.0.1. The accepted data peer
+// (127.0.0.1) differs from the control peer (127.0.0.2), so the transfer
+// must be refused with 425. The whole 127.0.0.0/8 block is loopback on
+// Linux; on platforms where 127.0.0.2 cannot be bound/connected, the test
+// skips rather than failing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn passive_data_mismatched_source_ip_rejected_425() {
+    let control_ip = Ipv4Addr::new(127, 0, 0, 2);
+
+    // Probe: can we bind+connect on 127.0.0.2 at all on this host?
+    match tokio::net::TcpListener::bind(SocketAddr::new(IpAddr::V4(control_ip), 0)).await {
+        Ok(_probe) => {}
+        Err(_) => {
+            eprintln!("skipping: 127.0.0.2 loopback alias unavailable on this host");
+            return;
+        }
+    }
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let factory = Arc::new(MockSftpFactory::new(dir.path().to_path_buf()));
+    let mut cfg = TranslatorConfig::defaults_for(SocketAddr::new(IpAddr::V4(control_ip), 0));
+    cfg.auth = AuthPolicy::Static {
+        username: "alice".into(),
+        password: "s3cret".into(),
+    };
+    cfg.passive_port_range = (55_000, 55_100);
+    cfg.idle_timeout = Duration::from_secs(60);
+    let server = Server::new(cfg, factory);
+    let handle = server.start().await.expect("start");
+    let addr = handle.local_addr;
+
+    // Control connection is established FROM 127.0.0.1 TO 127.0.0.2 — the
+    // server sees the control peer as 127.0.0.1 (the connecting side).
+    // To make control and data peers differ, bind the control socket to
+    // 127.0.0.2 explicitly and the data socket to 127.0.0.1.
+    let ctrl_sock = tokio::net::TcpSocket::new_v4().expect("ctrl socket");
+    ctrl_sock
+        .bind(SocketAddr::new(IpAddr::V4(control_ip), 0))
+        .expect("bind ctrl to 127.0.0.2");
+    let stream = ctrl_sock.connect(addr).await.expect("ctrl connect");
+    let (rd, mut wr) = stream.into_split();
+    let mut br = BufReader::new(rd);
+    let mut greeting = String::new();
+    br.read_line(&mut greeting).await.expect("greet");
+    assert!(greeting.starts_with("220 "));
+    login(&mut br, &mut wr).await;
+
+    let port = pasv(&mut br, &mut wr).await;
+    send(&mut wr, "RETR whatever.txt").await;
+
+    // Data connection FROM 127.0.0.1 (different host than the control peer
+    // 127.0.0.2) — must be rejected with 425.
+    let data_sock = tokio::net::TcpSocket::new_v4().expect("data socket");
+    data_sock
+        .bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0))
+        .expect("bind data to 127.0.0.1");
+    // The data listener is bound on 0.0.0.0:<port>; connect to it on the
+    // control IP so the server's accept() sees source 127.0.0.1.
+    let _ = data_sock
+        .connect(SocketAddr::new(IpAddr::V4(control_ip), port))
+        .await;
+
+    let r = recv_line(&mut br).await;
+    assert!(
+        r.starts_with("425"),
+        "mismatched data source IP must be refused with 425, got `{r}`",
+    );
+    handle.shutdown();
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 

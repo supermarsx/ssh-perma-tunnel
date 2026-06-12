@@ -61,16 +61,48 @@ pub fn diff(a: &Config, b: &Config) -> Vec<Change> {
     diff_top!(secrets);
     diff_top!(dns);
     diff_top!(firewall);
+    diff_top!(network);
     diff_top!(observability);
     diff_top!(events);
     diff_top!(mcp);
+    diff_top!(updater);
     diff_top!(diagnostics);
     diff_top!(benchmark);
+    diff_top!(capabilities);
+    diff_top!(round_robin);
+    diff_top!(status_api);
 
     diff_profiles(a, b, &mut changes);
 
     changes
 }
+
+/// The set of top-level [`Config`] field names covered by [`diff`]'s
+/// `diff_top!` invocations, plus `version` and `profiles` (handled
+/// separately). Kept adjacent to the macro so the
+/// [`tests::diff_top_covers_every_schema_field`] enumeration test can fail
+/// loudly when a new top-level table is added to the schema without a
+/// matching `diff_top!` line — see E5-F3.
+#[cfg(test)]
+const DIFF_TOP_COVERED: &[&str] = &[
+    "version",
+    "runtime",
+    "logging",
+    "secrets",
+    "dns",
+    "firewall",
+    "network",
+    "observability",
+    "events",
+    "mcp",
+    "updater",
+    "diagnostics",
+    "benchmark",
+    "capabilities",
+    "round_robin",
+    "status_api",
+    "profiles",
+];
 
 fn diff_profiles(a: &Config, b: &Config, out: &mut Vec<Change>) {
     let a_names: Vec<&str> = a.profiles.iter().map(|p| p.name.as_str()).collect();
@@ -136,9 +168,53 @@ fn diff_profile(a: &Profile, b: &Profile, out: &mut Vec<Change>) {
     field!(limits);
     field!(endpoints);
     field!(hops);
+    field!(sftp_mounts);
+    field!(script);
+    field!(transport);
 
     diff_forwards(&p, &a.forwards, &b.forwards, out);
 }
+
+/// Profile field names covered by [`diff_profile`] (and `forwards`, handled
+/// by [`diff_forwards`]). `name` is the identity key and is not a diffable
+/// value. Kept adjacent to the function so
+/// [`tests::diff_profile_covers_every_schema_field`] fails loudly when a new
+/// profile field is added without diff coverage — see E5-F3.
+#[cfg(test)]
+const DIFF_PROFILE_COVERED: &[&str] = &[
+    "name",
+    "description",
+    "enabled",
+    "protocol",
+    "host",
+    "port",
+    "endpoint",
+    "acknowledge_experimental",
+    "user",
+    "connect_timeout",
+    "dns_resolution",
+    "network_change_reconnect",
+    "startup",
+    "failure_policy",
+    "tags",
+    "connection",
+    "crypto",
+    "auth",
+    "trust",
+    "tls",
+    "ssh3",
+    "keepalive",
+    "reconnect",
+    "instability",
+    "failover",
+    "limits",
+    "endpoints",
+    "hops",
+    "forwards",
+    "sftp_mounts",
+    "script",
+    "transport",
+];
 
 fn diff_forwards(prefix: &str, a: &[Forward], b: &[Forward], out: &mut Vec<Change>) {
     let a_names: Vec<&str> = a.iter().map(|f| f.name.as_str()).collect();
@@ -174,7 +250,7 @@ fn diff_forwards(prefix: &str, a: &[Forward], b: &[Forward], out: &mut Vec<Chang
 
 #[cfg(test)]
 mod tests {
-    use super::{diff, ChangeKind};
+    use super::{diff, ChangeKind, DIFF_PROFILE_COVERED, DIFF_TOP_COVERED};
     use crate::load::load_str;
 
     const A: &str = r#"
@@ -215,6 +291,239 @@ mod tests {
         });
         let ch = diff(&a, &b);
         assert!(ch.iter().any(|c| c.kind == ChangeKind::Added));
+    }
+
+    /// Serialize `value` to a `toml::Table` and return its top-level keys.
+    ///
+    /// Fields with `#[serde(skip_serializing_if = ...)]` only appear when
+    /// populated, so the caller must hand in a fully-populated value for the
+    /// key set to be exhaustive.
+    fn serialized_keys<T: serde::Serialize>(value: &T) -> Vec<String> {
+        let toml_value = toml::Value::try_from(value).expect("serialize to toml::Value");
+        match toml_value {
+            toml::Value::Table(table) => table.keys().cloned().collect(),
+            other => panic!("expected a table, got {other:?}"),
+        }
+    }
+
+    /// A config TOML that populates *every* top-level table so that every
+    /// top-level key serializes. When a new top-level table is added to the
+    /// schema, this fixture must be extended too — and the coverage assertion
+    /// below forces a matching `diff_top!` line. See E5-F3.
+    const FULL_TOP: &str = r#"
+        version = 1
+
+        [runtime]
+        state_dir = "/var/lib/spt"
+
+        [logging]
+        level = "info"
+
+        [secrets]
+        backend = "auto"
+
+        [dns]
+        enabled = false
+
+        [firewall]
+        [firewall.platform]
+        linux = "auto"
+
+        [network]
+        [network.interface]
+        bind_ipv6 = "auto"
+
+        [observability]
+        [observability.snmp]
+        enabled = false
+
+        [events]
+
+        [mcp]
+        enabled = false
+
+        [updater]
+        enabled = false
+
+        [diagnostics]
+
+        [benchmark]
+
+        [capabilities]
+        allow_sftp = false
+
+        # round_robin and status_api are `skip_serializing_if` default — set a
+        # non-default value so the key actually serializes for the coverage scan.
+        [round_robin]
+        enabled = true
+
+        [status_api]
+        enabled = true
+
+        [[profiles]]
+        name = "p"
+        protocol = "ssh2"
+        host = "h"
+    "#;
+
+    /// A profile TOML that populates *every* profile field so the serialized
+    /// key set is exhaustive. New profile fields must be added here, which
+    /// forces a matching `field!`/`diff_forwards` line via the assertion. E5-F3.
+    const FULL_PROFILE: &str = r#"
+        version = 1
+
+        [[profiles]]
+        name = "p"
+        description = "d"
+        enabled = true
+        protocol = "ssh2"
+        host = "h"
+        port = 22
+        endpoint = "https://x:443/ssh3"
+        acknowledge_experimental = true
+        user = "u"
+        connect_timeout = "10s"
+        dns_resolution = "once"
+        network_change_reconnect = true
+        startup = "eager"
+        failure_policy = "retry"
+        tags = ["a"]
+
+        [profiles.connection]
+
+        [profiles.crypto]
+
+        [profiles.auth]
+        method = "password"
+
+        [profiles.trust]
+
+        [profiles.tls]
+
+        [profiles.ssh3]
+
+        [profiles.keepalive]
+        interval = "10s"
+
+        [profiles.reconnect]
+
+        [profiles.instability]
+
+        [profiles.failover]
+
+        [profiles.limits]
+
+        [[profiles.endpoints]]
+        name = "e"
+        host = "eh"
+        port = 22
+
+        [[profiles.hops]]
+        name = "hop"
+        protocol = "ssh2"
+        host = "hh"
+        port = 22
+
+        [[profiles.forwards]]
+        name = "f"
+        type = "local"
+        transport = "tcp"
+        bind = "127.0.0.1:1"
+        target = "x:22"
+
+        [[profiles.sftp_mounts]]
+        name = "m"
+        remote_path = "/r"
+        mount_point = "/l"
+
+        [profiles.script]
+        path = "s.rhai"
+
+        [profiles.transport]
+        [profiles.transport.obfuscation]
+        kind = "meek-http"
+        url = "https://front.example/"
+    "#;
+
+    #[test]
+    fn diff_top_covers_every_schema_field() {
+        let (cfg, _) = load_str(FULL_TOP, false).unwrap();
+        let keys = serialized_keys(&cfg);
+        for key in &keys {
+            assert!(
+                DIFF_TOP_COVERED.contains(&key.as_str()),
+                "top-level config field `{key}` is serialized but not covered by \
+                 diff()'s diff_top! list — add it to the diff macro AND to \
+                 DIFF_TOP_COVERED so reload diffs do not silently miss it (E5-F3)"
+            );
+        }
+        // Every covered name must still exist on the schema, so the guard can
+        // never rot into stale entries that pass vacuously.
+        for covered in DIFF_TOP_COVERED {
+            assert!(
+                keys.iter().any(|k| k == covered),
+                "DIFF_TOP_COVERED lists `{covered}` but the schema fixture does not \
+                 serialize it — remove the stale entry or extend FULL_TOP"
+            );
+        }
+        // Sanity: the schema really does expose all 15 tables + version + profiles.
+        assert_eq!(keys.len(), DIFF_TOP_COVERED.len());
+    }
+
+    #[test]
+    fn diff_profile_covers_every_schema_field() {
+        let (cfg, _) = load_str(FULL_PROFILE, false).unwrap();
+        let profile = &cfg.profiles[0];
+        let keys = serialized_keys(profile);
+        for key in &keys {
+            assert!(
+                DIFF_PROFILE_COVERED.contains(&key.as_str()),
+                "profile field `{key}` is serialized but not covered by \
+                 diff_profile()/diff_forwards() — add a `field!({key})` line AND an \
+                 entry in DIFF_PROFILE_COVERED so reload diffs do not silently miss \
+                 it (E5-F3)"
+            );
+        }
+        for covered in DIFF_PROFILE_COVERED {
+            assert!(
+                keys.iter().any(|k| k == covered),
+                "DIFF_PROFILE_COVERED lists `{covered}` but the schema fixture does \
+                 not serialize it — remove the stale entry or extend FULL_PROFILE"
+            );
+        }
+        assert_eq!(keys.len(), DIFF_PROFILE_COVERED.len());
+    }
+
+    #[test]
+    fn transport_change_is_detected() {
+        let (a, _) = load_str(FULL_PROFILE, false).unwrap();
+        let mut b = a.clone();
+        // Flip the obfuscation URL — a connection-level transport change that
+        // previously produced zero diff entries (E5-F3).
+        if let Some(transport) = b.profiles[0].transport.as_mut() {
+            if let Some(crate::schema::ObfsConfig::MeekHttp { url, .. }) =
+                transport.obfuscation.as_mut()
+            {
+                *url = "https://other.example/".into();
+            }
+        }
+        let changes = diff(&a, &b);
+        assert!(
+            changes.iter().any(|c| c.path.contains("transport")),
+            "changing transport.obfuscation must surface a diff entry, got {changes:?}"
+        );
+    }
+
+    #[test]
+    fn status_api_change_is_detected() {
+        let (a, _) = load_str(FULL_TOP, false).unwrap();
+        let mut b = a.clone();
+        b.status_api.enabled = !b.status_api.enabled;
+        let changes = diff(&a, &b);
+        assert!(
+            changes.iter().any(|c| c.path == "status_api"),
+            "changing [status_api] must surface a diff entry, got {changes:?}"
+        );
     }
 
     #[test]

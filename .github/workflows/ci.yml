@@ -45,32 +45,22 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
-  workflow_dispatch:
-    inputs:
-      kind:
-        description: 'Pipeline kind'
-        required: true
-        default: full
-        type: choice
-        options:
-          - full
+  workflow_dispatch: {}
 
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
   MSRV: 1.85
 
-# Always cancel any in-progress run on the same ref when a new push arrives
-# (operator override, 2026-05-25 — "always cancel previous CI jobs").
-# Trade-off: this now applies to `main` and tag refs too, so a rapid sequence
-# of pushes to main can abort an in-flight `release` run (it is downstream of
-# build). Accept that the latest commit wins; the superseded release
-# simply does not publish. Revert to the ref-scoped expression below if a
-# release must always run to completion:
-#   cancel-in-progress: ${{ github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/tags/') }}
+# Cancel any in-progress run on the same ref when a new push arrives, EXCEPT
+# on `main` and tag refs — a release run (downstream of build) must always run
+# to completion. Cancelling a release mid-flight can leave a pushed tag with no
+# GitHub release and no bump commit (E9-F8), orphaning the tag and breaking
+# bump-version.sh's tag-derived counter + the changelog prev_tag computation.
+# PR / feature-branch runs are still superseded by the latest push.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/tags/') }}
 
 permissions:
   contents: read
@@ -81,7 +71,6 @@ jobs:
   # ---------------------------------------------------------------------------
   fmt:
     name: fmt
-    if: github.event_name != 'workflow_dispatch' || inputs.kind == 'full'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -95,7 +84,6 @@ jobs:
   # ---------------------------------------------------------------------------
   clippy:
     name: clippy
-    if: github.event_name != 'workflow_dispatch' || inputs.kind == 'full'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -119,7 +107,6 @@ jobs:
   # ---------------------------------------------------------------------------
   typecheck:
     name: typecheck
-    if: github.event_name != 'workflow_dispatch' || inputs.kind == 'full'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -134,6 +121,46 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y pkg-config libssl-dev libdbus-1-dev libkrb5-dev clang libclang-dev
       - run: cargo check --workspace --locked
+
+  # ---------------------------------------------------------------------------
+  # chaos — reconnect / chaos-proxy scenario suite (E8-F12).
+  #
+  # The chaos harness lives in a DECOUPLED workspace (tests/chaos/Cargo.toml is
+  # `[workspace]`-isolated, NOT a root member) so it never runs under the
+  # default `cargo test --workspace` matrix above. This job exercises it on
+  # Linux only — the harness spawns stub SSH/DNS servers + the chaos proxy on
+  # loopback, which is cheapest and most deterministic on the GitHub Linux
+  # runner.
+  #
+  # Only the two PR-gating scenarios (max_attempts_exhaustion,
+  # rst_storm_100_per_sec) run here — the other 10 are `#[ignore]` and timing-
+  # sensitive (run under SPT_CHAOS_FULL=1 in a nightly job, not on PRs).
+  #
+  # Non-gating: `continue-on-error: true` keeps the owner's PR-speed intent —
+  # a flaky chaos run never blocks a merge; it surfaces as an amber check.
+  # ---------------------------------------------------------------------------
+  chaos:
+    name: chaos
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@1.85.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: chaos
+          workspaces: ". -> target\n tests/chaos -> tests/chaos/target"
+      - name: Install Linux system deps
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libssl-dev libdbus-1-dev libkrb5-dev clang libclang-dev
+      - name: Run chaos scenarios (PR-gating subset)
+        shell: bash
+        # Decoupled manifest; runs only the non-#[ignore]'d scenarios.
+        # --test-threads=1: scenarios bind loopback ports + drive the
+        # supervisor's process-global test hooks, which race in parallel.
+        run: cargo test --manifest-path tests/chaos/Cargo.toml --locked -- --test-threads=1
 
   # ---------------------------------------------------------------------------
   # prepare-release — compute the next YY.N once, share the bumped Cargo.toml
@@ -153,7 +180,6 @@ jobs:
   # ---------------------------------------------------------------------------
   prepare-release:
     name: prepare-release
-    if: github.event_name != 'workflow_dispatch' || inputs.kind == 'full'
     runs-on: ubuntu-latest
     outputs:
       version:       ${{ steps.bump.outputs.version }}
@@ -186,7 +212,6 @@ jobs:
   # ---------------------------------------------------------------------------
   test:
     name: test (${{ matrix.target }})
-    if: github.event_name != 'workflow_dispatch' || inputs.kind == 'full'
     needs: [fmt, clippy, typecheck, prepare-release]
     strategy:
       fail-fast: false
@@ -306,7 +331,6 @@ jobs:
   # ---------------------------------------------------------------------------
   build:
     name: build (${{ matrix.target }})
-    if: github.event_name != 'workflow_dispatch' || inputs.kind == 'full'
     needs: [test, prepare-release]
     strategy:
       fail-fast: false
@@ -385,7 +409,6 @@ jobs:
   # ---------------------------------------------------------------------------
   package:
     name: package (${{ matrix.target }})
-    if: github.event_name != 'workflow_dispatch' || inputs.kind == 'full'
     needs: [build, prepare-release]
     strategy:
       fail-fast: false
@@ -421,10 +444,11 @@ jobs:
         uses: taiki-e/install-action@v2
         with:
           tool: cargo-deb,cargo-generate-rpm
-      - name: Install cargo-wix
+      - name: Install cargo-wix (prebuilt)
         if: ${{ matrix.os == 'windows' }}
-        shell: pwsh
-        run: cargo install cargo-wix --locked
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-wix
       # The windows-2025-vs2026 image ships WiX 3 preinstalled, but the
       # windows-11-arm image does not. Historically we ran
       # `choco install wixtoolset` on the ARM runner — that took ~19
@@ -698,7 +722,11 @@ jobs:
           # an infinite release loop.
           git commit -m "release: ${TAG} [skip ci]" || true
           git tag -a "${TAG}" -m "spt ${TAG}"
-          git push origin HEAD:main --follow-tags
+          # --atomic: push the branch ref and the tag ref in a single
+          # transaction. If main advanced during the ~10 min release job and
+          # the branch push is rejected (non-FF), the tag is NOT pushed either,
+          # avoiding an orphaned tag with no bump commit (E9-F8).
+          git push --atomic origin HEAD:main "refs/tags/${TAG}"
       - name: Publish GitHub release
         shell: bash
         env:
@@ -797,7 +825,6 @@ jobs:
   # ---------------------------------------------------------------------------
   pkg-homebrew:
     name: pkg-homebrew
-    if: github.event_name != 'workflow_dispatch' || inputs.kind == 'full'
     # Local-mode validation is `ruby -c` + placeholder lint, which needs no
     # macOS — run on ubuntu so the job isn't stuck waiting for a scarce macOS
     # runner. The real `brew install` smoke (SPT_PKG_RELEASE_MODE=1) only fires
@@ -816,7 +843,6 @@ jobs:
 
   pkg-scoop:
     name: pkg-scoop
-    if: github.event_name != 'workflow_dispatch' || inputs.kind == 'full'
     runs-on: windows-2025-vs2026
     env:
       SPT_PKG_RELEASE_MODE: ${{ github.event_name == 'release' && '1' || '0' }}
@@ -835,7 +861,6 @@ jobs:
 
   pkg-choco:
     name: pkg-choco
-    if: github.event_name != 'workflow_dispatch' || inputs.kind == 'full'
     runs-on: windows-2025-vs2026
     env:
       SPT_PKG_RELEASE_MODE: ${{ github.event_name == 'release' && '1' || '0' }}
@@ -851,7 +876,6 @@ jobs:
 
   pkg-snap:
     name: pkg-snap
-    if: github.event_name != 'workflow_dispatch' || inputs.kind == 'full'
     runs-on: ubuntu-latest
     env:
       SPT_PKG_RELEASE_MODE: ${{ github.event_name == 'release' && '1' || '0' }}
@@ -868,7 +892,6 @@ jobs:
 
   pkg-flatpak:
     name: pkg-flatpak
-    if: github.event_name != 'workflow_dispatch' || inputs.kind == 'full'
     runs-on: ubuntu-latest
     env:
       SPT_PKG_RELEASE_MODE: ${{ github.event_name == 'release' && '1' || '0' }}
@@ -888,7 +911,6 @@ jobs:
 
   pkg-aur:
     name: pkg-aur
-    if: github.event_name != 'workflow_dispatch' || inputs.kind == 'full'
     runs-on: ubuntu-latest
     env:
       SPT_PKG_RELEASE_MODE: ${{ github.event_name == 'release' && '1' || '0' }}
@@ -903,9 +925,11 @@ jobs:
 
   pkg-winget:
     name: pkg-winget
-    # Release-gated only: winget manifests are published to the
-    # microsoft/winget-pkgs repo on tagged releases.
-    if: github.event_name != 'workflow_dispatch' || inputs.kind == 'full'
+    # Runs on every PR in local-validation mode (parse + lint the manifest),
+    # like the other pkg-* jobs. The real publish to the microsoft/winget-pkgs
+    # repo only happens on tagged releases — that is gated by the
+    # SPT_PKG_RELEASE_MODE env below (set to 1 only on `release` events), not
+    # by the job-level `if:`.
     runs-on: windows-2025-vs2026
     env:
       SPT_PKG_RELEASE_MODE: ${{ github.event_name == 'release' && '1' || '0' }}
@@ -921,7 +945,6 @@ jobs:
 
   pkg-nix:
     name: pkg-nix
-    if: github.event_name != 'workflow_dispatch' || inputs.kind == 'full'
     runs-on: ubuntu-latest
     env:
       SPT_PKG_RELEASE_MODE: ${{ github.event_name == 'release' && '1' || '0' }}

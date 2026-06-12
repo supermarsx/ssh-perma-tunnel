@@ -29,6 +29,16 @@
 use std::path::PathBuf;
 
 use spt_core::{Error, Result};
+use spt_mem_hygiene::HardeningReport;
+
+/// Event Log source name + base event id used by the SCM service path
+/// (E7-F1). The source is best-effort registered at startup; unregistered
+/// hosts still see the events rendered as raw text.
+#[cfg(target_os = "windows")]
+const WINEVENT_SOURCE: &str = "spt";
+/// Event id for a fatal service-main error mirrored to the Windows Event Log.
+#[cfg(target_os = "windows")]
+const WINEVENT_ID_FATAL: u32 = 1;
 
 /// Sentinel argv flag that selects the SCM dispatch path. Detected in
 /// `main()` before `Cli::parse_args` so clap never sees it.
@@ -51,15 +61,30 @@ pub fn is_scm_dispatch_invocation() -> bool {
 /// the dispatcher always picks up the running service, so a fixed `"spt"`
 /// is fine even though installed services may be named `spt-<config>`.
 #[cfg(target_os = "windows")]
-pub fn enter_scm_dispatch(service_name: &'static str) -> Result<()> {
+pub fn enter_scm_dispatch(
+    service_name: &'static str,
+    hardening: HardeningReport,
+) -> Result<()> {
     use spt_service::windows_scm;
-    windows_scm::run_as_service(service_name, |scm_args, handles| {
-        // SCM start arguments are `lpServiceArgVectors` — typically just the
-        // service name itself. The real `--config <path>` lives on the
-        // *process* argv (from ImagePath), which we re-parse below. Logging
-        // this for diagnostic completeness.
+    windows_scm::run_as_service(service_name, move |scm_args, handles| {
+        // E7-F1: install a tracing subscriber FIRST — before we build the
+        // runtime or load config — so every failure below (bad config path,
+        // state-lock conflict, profile build error) lands in `<state>/spt.log`
+        // and the Windows Event Log instead of vanishing into a no-op
+        // subscriber. Without this the whole service runtime was unobservable.
+        let (state_dir_for_log, _trace_guard, reload_handle) = init_scm_tracing();
+
+        // E7-F15: now that a subscriber exists, surface the mem-hygiene report
+        // (warn on any failed mitigation).
+        crate::log_hardening_report(&hardening);
+
+        // Best-effort Event Log source registration so fatal mirrors render
+        // with a name in Event Viewer. Failure is non-fatal.
+        let _ = spt_winevent::register_source(WINEVENT_SOURCE, None, None);
+
         tracing::info!(
             scm_args = ?scm_args,
+            ?state_dir_for_log,
             "spt service-main entered; building tokio runtime"
         );
 
@@ -71,21 +96,117 @@ pub fn enter_scm_dispatch(service_name: &'static str) -> Result<()> {
             Ok(rt) => rt,
             Err(e) => {
                 tracing::error!(error = %e, "spt service-main: failed to build tokio runtime");
+                mirror_fatal(&format!("failed to build tokio runtime: {e}"));
+                // RuntimeFailure exit code — a non-zero ServiceSpecific so SCM
+                // does not report a clean stop (E7-F1).
+                handles.set_exit_code(spt_core::ExitCode::RuntimeFailure.as_i32());
                 return;
             }
         };
 
-        if let Err(e) = rt.block_on(scm_main(handles)) {
+        if let Err(e) = rt.block_on(scm_main(&handles, reload_handle.clone())) {
             tracing::error!(error = %e, "spt service-main returned with error");
+            mirror_fatal(&format!("service-main failed: {e}"));
+            // Map the typed error's exit code into SCM's ServiceSpecific slot
+            // so the failure is distinguishable from a deliberate stop.
+            handles.set_exit_code(e.exit_code().as_i32());
         }
         // Drop the runtime to flush any pending tasks.
         rt.shutdown_timeout(std::time::Duration::from_secs(5));
     })
 }
 
+/// Initialise the SCM service subscriber (E7-F1).
+///
+/// Returns the resolved state dir (for diagnostics), the `TracingGuard` whose
+/// lifetime keeps the file sink alive for the service run, and a
+/// [`LogReloadHandle`] used by the `ParamChange` reload branch (E7-F13).
+///
+/// The state dir is resolved from `--state-dir`/`$SPT_STATE_DIR`/OS default
+/// *without* loading the config (which may itself fail to load — we need a log
+/// sink in place before that). The file sink writes `<state>/spt.log`. If init
+/// fails entirely we fall back to a minimal stderr subscriber so the service
+/// is never wholly silent.
+#[cfg(target_os = "windows")]
+fn init_scm_tracing() -> (
+    PathBuf,
+    Option<spt_observability::TracingGuard>,
+    Option<spt_observability::LogReloadHandle>,
+) {
+    use spt_observability::config::{
+        Destination, FileSink, LogFormat, LoggingConfig, RotationPolicy,
+    };
+
+    let (_cfg_path, explicit_state_dir) = parse_scm_args();
+    let state_dir = spt_state::resolve_state_dir(explicit_state_dir.as_deref())
+        .unwrap_or_else(|_| std::path::PathBuf::from("."));
+
+    // Honour SPT_LOG / log-filter for the service subscriber too.
+    let level = crate::signals::read_sighup_log_filter(Some(&state_dir))
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| "info".to_string());
+
+    let cfg = LoggingConfig {
+        level,
+        format: LogFormat::Json,
+        no_color: true,
+        destinations: vec![Destination::File],
+        file: Some(FileSink {
+            path: state_dir.join("spt.log"),
+            rotate: RotationPolicy::Daily,
+            max_files: 7,
+        }),
+        redact: spt_core::RedactionMode::Standard,
+        remote: Vec::new(),
+    };
+
+    match spt_observability::init(&cfg) {
+        Ok(guard) => {
+            let handle = guard.reload_handle();
+            (state_dir, Some(guard), Some(handle))
+        }
+        Err(e) => {
+            // Fall back to a stderr-only subscriber so we are not wholly
+            // silent; the service has no console but this still feeds any
+            // attached debugger.
+            let fallback = LoggingConfig {
+                level: "info".into(),
+                format: LogFormat::Compact,
+                no_color: true,
+                destinations: vec![Destination::Stderr],
+                file: None,
+                redact: spt_core::RedactionMode::Standard,
+                remote: Vec::new(),
+            };
+            let guard = spt_observability::init(&fallback).ok();
+            let handle = guard.as_ref().map(spt_observability::TracingGuard::reload_handle);
+            mirror_fatal(&format!("file log init failed, using stderr fallback: {e}"));
+            (state_dir, guard, handle)
+        }
+    }
+}
+
+/// Mirror a fatal service message to the Windows Event Log (E7-F1).
+///
+/// Best-effort: a missing source registration or a non-elevated context just
+/// drops the event. The tracing file sink remains the primary record.
+#[cfg(target_os = "windows")]
+fn mirror_fatal(message: &str) {
+    let _ = spt_winevent::report_event(
+        WINEVENT_SOURCE,
+        spt_winevent::Level::Error,
+        WINEVENT_ID_FATAL,
+        message,
+    );
+}
+
 /// Non-Windows stub. Always returns `UnsupportedPlatform`.
 #[cfg(not(target_os = "windows"))]
-pub fn enter_scm_dispatch(_service_name: &'static str) -> Result<()> {
+pub fn enter_scm_dispatch(
+    _service_name: &'static str,
+    _hardening: HardeningReport,
+) -> Result<()> {
     Err(Error::UnsupportedPlatform(
         "--scm-dispatch is Windows-only".into(),
     ))
@@ -96,7 +217,10 @@ pub fn enter_scm_dispatch(_service_name: &'static str) -> Result<()> {
 // ============================================================================
 
 #[cfg(target_os = "windows")]
-async fn scm_main(handles: std::sync::Arc<spt_service::windows_scm::ScmHandles>) -> Result<()> {
+async fn scm_main(
+    handles: &std::sync::Arc<spt_service::windows_scm::ScmHandles>,
+    reload_handle: Option<spt_observability::LogReloadHandle>,
+) -> Result<()> {
     let (config, state_dir) = parse_scm_args();
     tracing::info!(
         ?config,
@@ -110,7 +234,16 @@ async fn scm_main(handles: std::sync::Arc<spt_service::windows_scm::ScmHandles>)
         )
     })?;
 
-    run_orchestrator_under_scm(state_dir.as_deref(), &path, handles).await
+    // Box the orchestrator-under-SCM future: like `tunnel_run` it boots the
+    // orchestrator + reload machinery, so its future trips clippy's
+    // `large_futures` threshold otherwise.
+    Box::pin(run_orchestrator_under_scm(
+        state_dir.as_deref(),
+        &path,
+        handles,
+        reload_handle,
+    ))
+    .await
 }
 
 /// Heart of SCM dispatch: bring up the orchestrator, then `select!` on
@@ -122,7 +255,8 @@ async fn scm_main(handles: std::sync::Arc<spt_service::windows_scm::ScmHandles>)
 async fn run_orchestrator_under_scm(
     explicit_state_dir: Option<&std::path::Path>,
     config_path: &std::path::Path,
-    handles: std::sync::Arc<spt_service::windows_scm::ScmHandles>,
+    handles: &std::sync::Arc<spt_service::windows_scm::ScmHandles>,
+    reload_handle: Option<spt_observability::LogReloadHandle>,
 ) -> Result<()> {
     let (mut cfg, _w) = spt_config::load(config_path, false)
         .map_err(|e| Error::InvalidConfig(format!("load: {e}")))?;
@@ -175,10 +309,20 @@ async fn run_orchestrator_under_scm(
                     bundle.endpoints.clone(),
                     &cfg.round_robin,
                 );
-                orchestrator.start_profile(
+                // Multi-auth Phase 3: zip endpoints with index-aligned resolved
+                // credentials into the (host, port) → AuthConfig map.
+                let auth_by_endpoint: std::collections::HashMap<(String, u16), spt_auth::AuthConfig> =
+                    bundle
+                        .endpoints
+                        .iter()
+                        .zip(bundle.endpoint_auth.iter())
+                        .map(|(ep, auth)| ((ep.host.clone(), ep.port), auth.clone()))
+                        .collect();
+                orchestrator.start_profile_with_auth(
                     profile,
                     bundle.protocol,
                     bundle.auth,
+                    auth_by_endpoint,
                     bundle.endpoints,
                     bundle.supervisor_cfg,
                 );
@@ -234,7 +378,12 @@ async fn run_orchestrator_under_scm(
 
     tracing::info!("spt service: orchestrator running; awaiting SCM signals");
 
-    let mut current_cfg = cfg;
+    // E7-F13: share one last-applied-config cell across SCM reloads, exactly
+    // like the SIGHUP path in `cli_dispatch::tunnel_run`. Before this, the SCM
+    // reload branch had its own `current_cfg` and diffed against the *boot*
+    // config forever (a duplicate of the old E1-F2 bug); now reloads diff
+    // against the last-applied config and advance the cell on success.
+    let config_cell = crate::controller::ConfigCell::new(cfg);
     loop {
         tokio::select! {
             () = handles.shutdown.notified() => {
@@ -243,12 +392,26 @@ async fn run_orchestrator_under_scm(
             }
             () = handles.reload.notified() => {
                 tracing::info!("spt service: reload (PARAMCHANGE) requested — re-reading config");
-                match scm_reload(config_path, &resolver, &orchestrator, &current_cfg).await {
-                    Ok(new_cfg) => {
-                        let fp = spt_config::fingerprint::fingerprint_hex(&new_cfg);
+                // E7-F13: also re-read the log filter (SPT_LOG / <state>/log-filter)
+                // so operators can raise verbosity on a live Windows service
+                // without restarting it — the Windows parity for the Unix
+                // SIGHUP log-reload path.
+                reload_scm_log_filter(reload_handle.as_ref(), &state_dir);
+                match scm_reload(config_path, &resolver, &orchestrator, &config_cell).await {
+                    Ok(outcome) => {
+                        let fp = spt_config::fingerprint::fingerprint_hex(&outcome.applied);
                         writer.update(|s| { s.config_fingerprint_sha256 = fp; }).await;
-                        current_cfg = new_cfg;
-                        tracing::info!("spt service: reload applied");
+                        if outcome.provider_failures.is_empty() {
+                            tracing::info!("spt service: reload applied");
+                        } else {
+                            for f in &outcome.provider_failures {
+                                tracing::error!(profile = %f.profile, error = %f.error, "spt service: profile failed to build on reload");
+                            }
+                            tracing::warn!(
+                                failures = outcome.provider_failures.len(),
+                                "spt service: reload applied with profile build failures"
+                            );
+                        }
                     }
                     Err(e) => {
                         tracing::error!(error = %e, "spt service: reload failed; keeping previous config");
@@ -269,45 +432,55 @@ async fn run_orchestrator_under_scm(
     Ok(())
 }
 
-/// Re-read config from disk and apply a [`spt_supervisor::ReloadPlan`] —
-/// duplicated from `cli_dispatch::reload_orchestrator` because the latter
-/// lives in a locked file.
+/// Re-read config from disk and run the **shared** reload pipeline through the
+/// [`ConfigCell`] (E7-F13).
+///
+/// This now delegates to the same `controller::ConfigCell::reload` /
+/// `run_reload_pipeline` used by the SIGHUP path and the MCP controller,
+/// rather than carrying its own duplicate copy that diffed against the boot
+/// config. The cell:
+///   * re-applies the GPO/HKLM overlay on every reload (E5-F2),
+///   * validates and bails before touching the orchestrator,
+///   * diffs against the **last-applied** config (not boot),
+///   * stops (not restarts) disabled profiles (E5-F1),
+///   * surfaces per-profile build failures instead of dropping them (E1-F14).
 #[cfg(target_os = "windows")]
 async fn scm_reload(
     path: &std::path::Path,
     resolver: &spt_secrets::Resolver,
     orch: &spt_supervisor::Orchestrator,
-    old_cfg: &spt_config::schema::Config,
-) -> Result<spt_config::schema::Config> {
-    let (new_cfg, _) = spt_config::load(path, false)
+    cell: &crate::controller::ConfigCell,
+) -> Result<crate::controller::ReloadOutcome> {
+    let (new_cfg, warnings) = spt_config::load(path, false)
         .map_err(|e| Error::InvalidConfig(format!("reload load: {e}")))?;
-    let diags = spt_config::validate(&new_cfg);
-    if !diags.errors.is_empty() {
-        return Err(Error::InvalidConfig(format!(
-            "reload validation failed ({} errors)",
-            diags.errors.len()
-        )));
+    cell.reload(new_cfg, &warnings, resolver, orch)
+        .await
+        .map_err(|e| Error::InvalidConfig(format!("reload: {e}")))
+}
+
+/// Re-apply the log filter on an SCM `ParamChange` (E7-F13).
+///
+/// Reads the directive via [`crate::signals::read_sighup_log_filter`]
+/// (`SPT_LOG` env → `<state>/log-filter`) and pushes it through the
+/// [`spt_observability::LogReloadHandle`]. A missing directive leaves the
+/// filter untouched; a bad directive is logged and ignored so a reload never
+/// kills the service.
+#[cfg(target_os = "windows")]
+fn reload_scm_log_filter(
+    handle: Option<&spt_observability::LogReloadHandle>,
+    state_dir: &std::path::Path,
+) {
+    let Some(handle) = handle else {
+        return;
+    };
+    match crate::signals::read_sighup_log_filter(Some(state_dir)) {
+        Ok(Some(directive)) => match handle.reload(&directive) {
+            Ok(()) => tracing::info!(directive = %directive, "spt service: log filter reloaded"),
+            Err(e) => tracing::warn!(error = %e, "spt service: log filter reload failed"),
+        },
+        Ok(None) => tracing::debug!("spt service: log reload — no directive available"),
+        Err(e) => tracing::warn!(error = %e, "spt service: failed to read log directive"),
     }
-    let plan = spt_supervisor::ReloadPlan::compute(old_cfg, &new_cfg);
-    let new_for_provider = new_cfg.clone();
-    orch.apply(&plan, |name| {
-        let p = new_for_provider
-            .profiles
-            .iter()
-            .find(|p| p.name == name)?
-            .clone();
-        let bundle =
-            crate::profile_factory::build_with_config(&p, resolver, &new_for_provider).ok()?;
-        Some((
-            p,
-            bundle.protocol,
-            bundle.auth,
-            bundle.endpoints,
-            bundle.supervisor_cfg,
-        ))
-    })
-    .await;
-    Ok(new_cfg)
 }
 
 /// Walk the **process** argv (not SCM args) for `--config <path>` and
@@ -375,7 +548,7 @@ mod tests {
     #[cfg(not(target_os = "windows"))]
     #[test]
     fn enter_scm_dispatch_unsupported_off_windows() {
-        let err = enter_scm_dispatch("spt").unwrap_err();
+        let err = enter_scm_dispatch("spt", spt_mem_hygiene::HardeningReport::new()).unwrap_err();
         match err {
             Error::UnsupportedPlatform(msg) => {
                 assert!(msg.contains("Windows"));

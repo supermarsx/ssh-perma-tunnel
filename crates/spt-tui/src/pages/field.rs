@@ -521,8 +521,26 @@ impl FieldList {
                 .unwrap_or_else(|| (field.def.get)(profile));
 
             match value {
-                FieldValue::Text(s) | FieldValue::SecretRef(s) => {
+                FieldValue::Text(s) => {
                     field.text.render(area, buf, field.def.label, &s);
+                }
+                FieldValue::SecretRef(s) => {
+                    // Secret redaction: in NAV mode (not actively editing
+                    // this row) a non-empty secret reference renders the
+                    // `[REDACTED]` marker — the cleartext `secret://…` body
+                    // must never paint into the buffer where a screenshot
+                    // or snapshot could capture it. While the operator is
+                    // actively editing the row we show the live edit buffer
+                    // so they can see what they are typing/correcting. The
+                    // committed value is always the real reference (begin_edit
+                    // seeds the edit buffer from the cleartext getter).
+                    if editing || s.is_empty() {
+                        field.text.render(area, buf, field.def.label, &s);
+                    } else {
+                        field
+                            .text
+                            .render(area, buf, field.def.label, "[REDACTED]");
+                    }
                 }
                 FieldValue::Numeric(s) => {
                     field.numeric.render(area, buf, field.def.label, &s);

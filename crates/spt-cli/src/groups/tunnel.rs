@@ -2,7 +2,7 @@
 
 use clap::{Args, Subcommand};
 
-const EXAMPLES: &str = "EXAMPLES:
+pub(crate) const EXAMPLES: &str = "EXAMPLES:
   spt tunnel run --foreground
   spt tunnel run --once --profiles edge,backup
   spt tunnel status --watch --json

@@ -6,7 +6,7 @@ use std::future::Future;
 use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use russh::client;
@@ -142,6 +142,93 @@ pub(crate) struct HopSpec {
     pub trust: Option<TrustVerifier>,
 }
 
+/// Obfuscation policy threaded from the profile's
+/// `[profiles.transport.obfuscation]` block into the russh dial path (E3-F2).
+///
+/// When present, the *first* TCP hop (or the single direct endpoint when no
+/// multi-hop chain is configured) is dialed through
+/// [`crate::connect_to_endpoint`], producing a [`crate::ConnectStream`] whose
+/// `Obfuscated` variant is handed to [`russh::client::connect_stream`] — the
+/// same primitive `multi_hop.rs` already uses for channel streams. Without
+/// this the entire `spt-obfs` crate and the `[obfuscation]` config surface
+/// were unreachable: `russh::client::connect` always dialed plain TCP itself,
+/// so a configured obfuscation transport was a silent no-op.
+///
+/// Obfuscation only wraps the outermost transport; inner multi-hop legs run
+/// over `direct-tcpip` channels and are unaffected.
+#[derive(Clone)]
+pub(crate) struct ObfsPolicy {
+    /// Resolved obfuscation transport configuration. The static transport
+    /// identifier recorded on the resulting session (e.g. `"obfs4"`,
+    /// `"meek-http"`) is read from [`spt_obfs::ObfsConfig::name`].
+    pub config: Arc<spt_obfs::ObfsConfig>,
+    /// Optional audit hook fired from inside the obfuscation crate.
+    pub audit: Option<Arc<dyn spt_obfs::AuditHook>>,
+}
+
+/// SSH2 transport-keepalive policy threaded from the supervisor's
+/// `[profiles.keepalive]` policy into the russh `client::Config`.
+///
+/// `interval` maps to russh `Config::keepalive_interval` (idle time before a
+/// transport-level `keepalive@openssh.com` global request is sent) and
+/// `max_missed` maps to `Config::keepalive_max` (number of unanswered
+/// keepalives that closes the connection). When `interval` is `None` the
+/// russh defaults are preserved (no transport keepalives) and liveness is
+/// driven solely by [`RusshSsh2Session::keepalive`]'s active channel probe.
+///
+/// This resolves E3-F1: previously the russh `Config` was built with
+/// `..Default::default()`, so `keepalive_interval` was always `None` and the
+/// in-code comment claiming "russh drives protocol keepalives from
+/// `client::Config`" was false.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct KeepalivePolicy {
+    /// Idle interval before russh emits a transport keepalive. `None` keeps
+    /// transport keepalives disabled (russh default).
+    pub interval: Option<Duration>,
+    /// Maximum unanswered keepalives before russh closes the transport.
+    /// `None` keeps the russh default (3).
+    pub max_missed: Option<usize>,
+}
+
+impl KeepalivePolicy {
+    /// Apply this policy to a russh [`client::Config`], leaving russh's own
+    /// defaults in place for any field left unset.
+    fn apply(&self, cfg: &mut client::Config) {
+        if let Some(interval) = self.interval {
+            cfg.keepalive_interval = Some(interval);
+        }
+        if let Some(max) = self.max_missed {
+            cfg.keepalive_max = max;
+        }
+    }
+}
+
+/// Reject auth methods that the russh 0.46 backend can never satisfy
+/// (`gssapi`/`sspi` — russh exposes no `gssapi-with-mic` userauth primitive,
+/// see [`try_gssapi_auth`]). Surfacing this at profile build / validation
+/// time (E3-F9) fails fast instead of wasting a connect attempt and a backoff
+/// cycle on a statically-impossible configuration.
+pub(crate) fn validate_auth_methods(auth: &AuthConfig) -> Result<()> {
+    for method in &auth.methods {
+        match method {
+            AuthMethod::Gssapi { .. } | AuthMethod::Sspi { .. } => {
+                return Err(Error::InvalidConfig(format!(
+                    "auth method `{}` is not supported by the SSH2/russh backend: \
+                     russh 0.46 does not expose `gssapi-with-mic` (RFC 4462) as a \
+                     userauth primitive. Remove `{}` from `auth.methods` or use a \
+                     supported method (public_key, agent, password, \
+                     keyboard_interactive, certificate).",
+                    method_name(method),
+                    method_name(method),
+                )));
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn connect(
     endpoint: Endpoint,
     auth_cfg: AuthConfig,
@@ -150,12 +237,76 @@ pub(crate) fn connect(
     backends: Vec<Arc<dyn SecretBackend>>,
     hops: Vec<HopSpec>,
     gss_audit: Option<Arc<dyn spt_auth_sspi::AuditHook>>,
+    keepalive: KeepalivePolicy,
+    obfs: Option<ObfsPolicy>,
 ) -> ConnectFuture {
     Box::pin(async move {
-        connect_inner(endpoint, auth_cfg, crypto, trust, backends, hops, gss_audit).await
+        connect_inner(
+            endpoint, auth_cfg, crypto, trust, backends, hops, gss_audit, keepalive, obfs,
+        )
+        .await
     })
 }
 
+/// Dial the outermost transport for the russh session and hand the resulting
+/// byte stream to [`russh::client::connect_stream`].
+///
+/// When `obfs` is `None` this is exactly equivalent to the upstream
+/// `russh::client::connect` helper (TCP dial → `connect_stream`). When an
+/// [`ObfsPolicy`] is present (E3-F2) the dial is routed through
+/// [`crate::connect_to_endpoint`], so a configured `[obfuscation]` transport
+/// actually carries the SSH handshake instead of being silently bypassed.
+///
+/// Returns the russh handle plus the static transport name to record on the
+/// session (`"tcp"` for the plain path, the obfs transport id otherwise).
+async fn dial_outer(
+    cfg: Arc<client::Config>,
+    host: &str,
+    port: u16,
+    handler: ClientHandler,
+    obfs: Option<&ObfsPolicy>,
+) -> std::result::Result<(RusshHandle, Option<&'static str>), russh::Error> {
+    match obfs {
+        None => {
+            let handle = client::connect(cfg, (host.to_owned(), port), handler).await?;
+            Ok((handle, None))
+        }
+        Some(policy) => {
+            let target = format!("{host}:{port}");
+            // `connect_to_endpoint` performs the obfuscation handshake and
+            // returns a type-erased duplex stream. A failure here (transport
+            // build error, obfs handshake failure, TCP dial failure) maps onto
+            // `russh::Error::IO` so the caller's existing trust/diagnostic
+            // mapping treats it like any other dial failure.
+            let stream = crate::connect_to_endpoint(
+                &target,
+                Some(policy.config.as_ref()),
+                policy.audit.clone(),
+            )
+            .await
+            .map_err(|e| {
+                russh::Error::IO(std::io::Error::other(format!(
+                    "obfuscated dial to {target} failed: {e}"
+                )))
+            })?;
+            let transport_name = policy.config.name();
+            match stream {
+                crate::ConnectStream::Plain(sock) => {
+                    // `obfs_cfg = Some` always yields the Obfuscated variant;
+                    // this arm is unreachable in practice but kept total.
+                    let handle = client::connect_stream(cfg, sock, handler).await?;
+                    Ok((handle, Some(transport_name)))
+                }
+                crate::ConnectStream::Obfuscated(stream) => {
+                    let handle = client::connect_stream(cfg, stream, handler).await?;
+                    Ok((handle, Some(transport_name)))
+                }
+            }
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn connect_inner(
     endpoint: Endpoint,
     auth_cfg: AuthConfig,
@@ -164,11 +315,31 @@ async fn connect_inner(
     backends: Vec<Arc<dyn SecretBackend>>,
     hops: Vec<HopSpec>,
     gss_audit: Option<Arc<dyn spt_auth_sspi::AuditHook>>,
+    keepalive: KeepalivePolicy,
+    obfs: Option<ObfsPolicy>,
 ) -> Result<RusshSsh2Session> {
-    let cfg = Arc::new(client::Config {
+    // E3-F9: fail fast on statically-impossible auth methods (gssapi/sspi)
+    // for the endpoint and every hop before spending a TCP connect + backoff
+    // cycle. Profile validation should also catch this, but enforcing here
+    // keeps the backend honest for direct callers.
+    validate_auth_methods(&auth_cfg)?;
+    for hop in &hops {
+        if let Some(hop_auth) = &hop.auth {
+            validate_auth_methods(hop_auth)?;
+        }
+    }
+
+    // E3-F1: set the transport keepalive policy on the russh client config so
+    // russh actually emits `keepalive@openssh.com` global requests and tears
+    // the session down after `keepalive_max` unanswered probes. Previously
+    // this was `..Default::default()` (keepalive_interval = None), so no
+    // transport keepalives were ever sent.
+    let mut config = client::Config {
         preferred: build_preferred(&crypto)?,
         ..Default::default()
-    });
+    };
+    keepalive.apply(&mut config);
+    let cfg = Arc::new(config);
 
     // Multi-hop dispatch: walk `hops` end-to-end. Each hop opens a
     // `direct-tcpip` channel through the previous session and handshakes a
@@ -190,11 +361,14 @@ async fn connect_inner(
             trust_failure: Arc::clone(&first_trust_failure),
             remote_forwards: RemoteForwardMap::default(),
         };
+        // E3-F2: the obfuscation policy wraps the *outermost* transport only —
+        // i.e. the plain-TCP dial to the first hop. Inner hops traverse
+        // `direct-tcpip` channels and are unaffected.
         let first_handle =
-            match client::connect(cfg.clone(), (first.host.clone(), first.port), first_handler)
+            match dial_outer(cfg.clone(), &first.host, first.port, first_handler, obfs.as_ref())
                 .await
             {
-                Ok(h) => h,
+                Ok((h, _name)) => h,
                 Err(e) => {
                     if let Some(reason) = first_trust_failure.lock().clone() {
                         return Err(Error::TrustFailed(reason));
@@ -315,8 +489,11 @@ async fn connect_inner(
             remote_forwards: final_remote_forwards,
             info,
             script_engine: None,
-            obfs_transport_name: None,
-            obfs_audit: None,
+            script_ctx: ScriptContext::default(),
+            established_at_instant: std::time::Instant::now(),
+            // The outermost (first-hop) transport carried the obfuscation.
+            obfs_transport_name: obfs.as_ref().map(|p| p.config.name()),
+            obfs_audit: obfs.as_ref().and_then(|p| p.audit.clone()),
         });
     }
 
@@ -330,17 +507,22 @@ async fn connect_inner(
         remote_forwards: Arc::clone(&remote_forwards),
     };
 
-    let handle = match client::connect(cfg, (endpoint.host.clone(), endpoint.port), handler).await {
-        Ok(handle) => handle,
-        Err(e) => {
-            if let Some(reason) = trust_failure.lock().clone() {
-                return Err(Error::TrustFailed(reason));
-            }
-            return Err(Error::network_unreachable(
-                spt_core::Diagnostic::what(format!(
-                    "Failed to connect to `{}:{}`",
-                    endpoint.host, endpoint.port
-                ))
+    // E3-F2: route the single direct endpoint through `dial_outer`, so a
+    // configured `[obfuscation]` transport actually carries the handshake
+    // (was: `client::connect` always dialed plain TCP, making the obfs crate
+    // and config unreachable).
+    let (handle, obfs_name) =
+        match dial_outer(cfg, &endpoint.host, endpoint.port, handler, obfs.as_ref()).await {
+            Ok(pair) => pair,
+            Err(e) => {
+                if let Some(reason) = trust_failure.lock().clone() {
+                    return Err(Error::TrustFailed(reason));
+                }
+                return Err(Error::network_unreachable(
+                    spt_core::Diagnostic::what(format!(
+                        "Failed to connect to `{}:{}`",
+                        endpoint.host, endpoint.port
+                    ))
                 .why(format!("{e}"))
                 .how_to_fix(
                     "Verify the target host is reachable from this network, that \
@@ -377,8 +559,10 @@ async fn connect_inner(
         remote_forwards,
         info,
         script_engine: None,
-        obfs_transport_name: None,
-        obfs_audit: None,
+        script_ctx: ScriptContext::default(),
+        established_at_instant: std::time::Instant::now(),
+        obfs_transport_name: obfs_name,
+        obfs_audit: obfs.as_ref().and_then(|p| p.audit.clone()),
     })
 }
 
@@ -391,8 +575,28 @@ pub struct RusshSsh2Session {
     // t7-Phase0: scripting + obfs hooks ported from the deleted libssh2
     // `Ssh2Session<S>` so downstream callers retain their builder ergonomics.
     script_engine: Option<Arc<spt_scripting::ScriptEngine>>,
+    // E8-F1: context carried so the lifecycle hooks (post_connect, on_disconnect,
+    // on_forward_state) can populate the `profile`/`host`/`port` fields of their
+    // event payloads. Set alongside the engine via `with_script_context`.
+    script_ctx: ScriptContext,
+    established_at_instant: std::time::Instant,
     obfs_transport_name: Option<&'static str>,
     obfs_audit: Option<Arc<dyn spt_obfs::AuditHook>>,
+}
+
+/// Identifying context for scripting lifecycle events (E8-F1).
+///
+/// Populated when the protocol attaches the engine to a freshly-built session
+/// so `on_disconnect` / `on_forward_state` payloads can name the profile and
+/// endpoint without the session needing the full profile.
+#[derive(Debug, Clone, Default)]
+pub struct ScriptContext {
+    /// Profile name (`[[profiles]].name`).
+    pub profile: String,
+    /// Remote host the session connected to.
+    pub host: String,
+    /// Remote port.
+    pub port: u16,
 }
 
 impl RusshSsh2Session {
@@ -424,8 +628,59 @@ impl RusshSsh2Session {
         self
     }
 
+    /// Attach the scripting [`ScriptContext`] (profile name + endpoint) used
+    /// to populate lifecycle event payloads (E8-F1). Returns `self` for
+    /// builder-style chaining at the protocol layer.
+    #[must_use]
+    pub fn with_script_context(mut self, ctx: ScriptContext) -> Self {
+        self.script_ctx = ctx;
+        self
+    }
+
+    /// Fire the `on_forward_state` hook for a forward transition (E8-F1).
+    ///
+    /// No-op when no engine is attached. Used by the protocol layer's forward
+    /// runners so operator scripts observe forward state-machine transitions.
+    pub async fn dispatch_forward_state(
+        &self,
+        forward_id: impl Into<String>,
+        transition: spt_scripting::event::ForwardStateTransition,
+    ) {
+        if !self.has_script_engine() {
+            return;
+        }
+        let event = spt_scripting::event::Event::ForwardState(spt_scripting::event::ForwardState {
+            profile: self.script_ctx.profile.clone(),
+            forward_id: forward_id.into(),
+            transition,
+        });
+        self.dispatch_script_event_async(spt_scripting::config::HookName::OnForwardState, event)
+            .await;
+    }
+
+    /// Fire the `post_connect` hook (E8-F1). No-op when no engine is attached.
+    pub async fn dispatch_post_connect(&self, auth_method: impl Into<String>) {
+        if !self.has_script_engine() {
+            return;
+        }
+        let event = spt_scripting::event::Event::PostConnect(spt_scripting::event::PostConnect {
+            profile: self.script_ctx.profile.clone(),
+            host: self.script_ctx.host.clone(),
+            port: self.script_ctx.port,
+            auth_method: auth_method.into(),
+            server_banner: self.info.peer_version.clone(),
+        });
+        self.dispatch_script_event_async(spt_scripting::config::HookName::PostConnect, event)
+            .await;
+    }
+
     /// Dispatch a structured event to the configured script hook. Returns
     /// silently when no engine is attached.
+    ///
+    /// This is the synchronous entry point. `rhai` execution is CPU-bound and
+    /// the `max_operations` budget defaults to 1M, so on the async runtime
+    /// prefer [`Self::dispatch_script_event_async`] which offloads the call to
+    /// a blocking thread (E8-F1).
     pub fn dispatch_script_event(
         &self,
         hook: spt_scripting::config::HookName,
@@ -441,6 +696,49 @@ impl RusshSsh2Session {
                 Err(e.into())
             }
         }
+    }
+
+    /// Async wrapper around [`Self::dispatch_script_event`] (E8-F1).
+    ///
+    /// Rhai is synchronous and a single hook may run up to `max_operations`
+    /// (default 1M) operations, so invoking it directly on a runtime worker
+    /// thread risks stalling other tasks. We clone the `Arc<ScriptEngine>` and
+    /// run `invoke` on `tokio::task::spawn_blocking`.
+    ///
+    /// A hook failure is logged and swallowed — a misbehaving operator script
+    /// must never abort the session lifecycle (connect/auth/forward/disconnect
+    /// all proceed regardless). When no engine is attached this is a cheap
+    /// no-op that never touches the blocking pool.
+    pub async fn dispatch_script_event_async(
+        &self,
+        hook: spt_scripting::config::HookName,
+        event: spt_scripting::event::Event,
+    ) {
+        let Some(engine) = self.script_engine.clone() else {
+            return;
+        };
+        let result = tokio::task::spawn_blocking(move || engine.invoke(hook, &event)).await;
+        match result {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                tracing::warn!(hook = %hook, error = %e, "spt-ssh2: script hook failed");
+            }
+            Err(join_err) => {
+                tracing::warn!(
+                    hook = %hook,
+                    error = %join_err,
+                    "spt-ssh2: script hook task panicked or was cancelled"
+                );
+            }
+        }
+    }
+
+    /// True when a scripting engine is attached (a `[profiles.script]` block
+    /// was configured for this profile). Used by the lifecycle dispatch sites
+    /// to skip event-struct construction entirely when scripting is off.
+    #[must_use]
+    pub fn has_script_engine(&self) -> bool {
+        self.script_engine.is_some()
     }
 
     /// Attach an obfuscation audit hook.
@@ -468,20 +766,41 @@ impl RusshSsh2Session {
 #[async_trait]
 impl TunnelSession for RusshSsh2Session {
     async fn open_local_forward(&mut self, spec: &LocalForwardSpec) -> Result<ForwardHandle> {
-        open_local(Arc::clone(&self.handle), spec).await
+        let handle = open_local(Arc::clone(&self.handle), spec).await?;
+        // E8-F1: report the forward reaching its Listening state to the
+        // `on_forward_state` script hook (the listener is bound by the time
+        // `open_local` returns).
+        self.dispatch_forward_state(
+            forward_id_for(&spec.name, "local", &spec.listen),
+            spt_scripting::event::ForwardStateTransition::Listening,
+        )
+        .await;
+        Ok(handle)
     }
 
     async fn open_remote_forward(&mut self, spec: &RemoteForwardSpec) -> Result<ForwardHandle> {
-        open_remote(
+        let handle = open_remote(
             Arc::clone(&self.handle),
             Arc::clone(&self.remote_forwards),
             spec,
         )
-        .await
+        .await?;
+        self.dispatch_forward_state(
+            forward_id_for(&spec.name, "remote", &spec.listen),
+            spt_scripting::event::ForwardStateTransition::Active,
+        )
+        .await;
+        Ok(handle)
     }
 
     async fn open_dynamic_forward(&mut self, spec: &DynamicForwardSpec) -> Result<ForwardHandle> {
-        open_dynamic(Arc::clone(&self.handle), spec).await
+        let handle = open_dynamic(Arc::clone(&self.handle), spec).await?;
+        self.dispatch_forward_state(
+            forward_id_for(&spec.name, "dynamic", &spec.listen),
+            spt_scripting::event::ForwardStateTransition::Listening,
+        )
+        .await;
+        Ok(handle)
     }
 
     async fn open_udp_forward(&mut self, _spec: &UdpForwardSpec) -> Result<ForwardHandle> {
@@ -491,12 +810,60 @@ impl TunnelSession for RusshSsh2Session {
     }
 
     async fn keepalive(&mut self) -> Result<()> {
-        // russh drives protocol keepalives from client::Config. The trait call
-        // remains a no-op so the supervisor can keep a uniform backend API.
+        // E3-F1: a REAL liveness probe (was previously an unconditional
+        // `Ok(())` no-op, so the supervisor could never detect a dead SSH2
+        // session — defeating spec §11.3 for the primary backend).
+        //
+        // Two layers:
+        //  1. `Handle::is_closed()` — the russh client event loop drops the
+        //     command sender when the transport dies (transport I/O error, peer
+        //     DISCONNECT, or `keepalive_max` transport keepalives going
+        //     unanswered on a black-holed link). A closed handle is a
+        //     definitively dead session.
+        //  2. An active round-trip: open a session channel and close it. This
+        //     forces a real request/confirmation exchange across the live
+        //     transport, so a session whose underlying event loop has died (but
+        //     whose handle has not yet observed the drop) surfaces as a
+        //     `SendError`/channel-open failure here rather than only when real
+        //     forward traffic happens to hit an I/O error.
+        let handle = self.handle.lock().await;
+        if handle.is_closed() {
+            return Err(Error::NetworkUnreachable(
+                "russh transport closed: the SSH2 session is no longer alive \
+                 (transport keepalives exhausted or peer disconnected)"
+                    .into(),
+            ));
+        }
+        let channel = handle.channel_open_session().await.map_err(|e| {
+            Error::NetworkUnreachable(format!(
+                "russh keepalive liveness probe failed to open a session channel: {e}"
+            ))
+        })?;
+        // Best-effort close; the open already proved liveness. A close error
+        // does not by itself indicate a dead session.
+        let _ = channel.close().await;
         Ok(())
     }
 
     async fn close(self: Box<Self>) -> Result<()> {
+        // E8-F1: fire the `on_disconnect` hook before tearing the transport
+        // down so operator scripts observe the session ending with a stable
+        // reason and the measured lifetime. A script failure is logged and
+        // swallowed inside the dispatcher — it must not block the close.
+        if self.has_script_engine() {
+            let duration_ms = self.established_at_instant.elapsed().as_millis() as u64;
+            let event =
+                spt_scripting::event::Event::Disconnect(spt_scripting::event::Disconnect {
+                    profile: self.script_ctx.profile.clone(),
+                    reason: "user_request".into(),
+                    duration_ms,
+                });
+            self.dispatch_script_event_async(
+                spt_scripting::config::HookName::OnDisconnect,
+                event,
+            )
+            .await;
+        }
         let handle = self.handle.lock().await;
         handle
             .disconnect(russh::Disconnect::ByApplication, "spt: session close", "")
@@ -1364,6 +1731,22 @@ async fn bridge_remote(channel: russh::Channel<client::Msg>, target: &TargetAddr
     Ok(())
 }
 
+/// Build the `forward_id` field for an `on_forward_state` event (E8-F1):
+/// the configured `name` when set, otherwise `kind:bind` for anonymous
+/// forwards (matching the documented event schema).
+fn forward_id_for(name: &str, kind: &str, listen: &BindAddr) -> String {
+    if name.is_empty() {
+        let bind = match listen {
+            BindAddr::Tcp(sock) => sock.to_string(),
+            BindAddr::TcpHostPort { host, port } => format!("{host}:{port}"),
+            BindAddr::Unix(path) => path.display().to_string(),
+        };
+        format!("{kind}:{bind}")
+    } else {
+        name.to_owned()
+    }
+}
+
 fn bind_addr_string(addr: &BindAddr) -> Result<String> {
     match addr {
         BindAddr::Tcp(sock) => Ok(sock.to_string()),
@@ -1423,6 +1806,170 @@ mod tests {
         assert_eq!(preferred.mac.len(), 1);
         assert_eq!(preferred.key.len(), 1);
         assert_eq!(preferred.compression.len(), 1);
+    }
+
+    // ──────── E3-F1: keepalive config plumbing ────────────────────────
+
+    #[test]
+    fn keepalive_policy_default_preserves_russh_defaults() {
+        // A default policy (interval=None, max_missed=None) must leave russh's
+        // own Config defaults untouched: keepalive_interval stays None (no
+        // transport keepalives) and keepalive_max stays at russh's default (3).
+        let mut cfg = client::Config::default();
+        let default_max = cfg.keepalive_max;
+        KeepalivePolicy::default().apply(&mut cfg);
+        assert_eq!(cfg.keepalive_interval, None);
+        assert_eq!(cfg.keepalive_max, default_max);
+    }
+
+    #[test]
+    fn keepalive_policy_plumbs_interval_and_max_into_russh_config() {
+        // This is the regression guard for E3-F1: previously the russh Config
+        // was built `..Default::default()`, so keepalive_interval was always
+        // None. The supervisor's keepalive policy must now reach russh.
+        let mut cfg = client::Config::default();
+        let policy = KeepalivePolicy {
+            interval: Some(Duration::from_secs(15)),
+            max_missed: Some(5),
+        };
+        policy.apply(&mut cfg);
+        assert_eq!(cfg.keepalive_interval, Some(Duration::from_secs(15)));
+        assert_eq!(cfg.keepalive_max, 5);
+    }
+
+    #[test]
+    fn keepalive_policy_partial_only_sets_provided_fields() {
+        let mut cfg = client::Config::default();
+        let default_max = cfg.keepalive_max;
+        KeepalivePolicy {
+            interval: Some(Duration::from_secs(20)),
+            max_missed: None,
+        }
+        .apply(&mut cfg);
+        assert_eq!(cfg.keepalive_interval, Some(Duration::from_secs(20)));
+        // max_missed left unset ⇒ russh default retained.
+        assert_eq!(cfg.keepalive_max, default_max);
+    }
+
+    // ──────── E3-F9: gssapi/sspi fail-fast validation ──────────────────
+
+    #[test]
+    fn validate_auth_methods_rejects_gssapi() {
+        let auth = AuthConfig::new(
+            "user",
+            vec![AuthMethod::Gssapi {
+                service: None,
+                principal: None,
+                delegate: false,
+            }],
+        );
+        let err = validate_auth_methods(&auth).expect_err("gssapi must be rejected");
+        assert!(matches!(err, Error::InvalidConfig(_)), "got {err:?}");
+        assert!(format!("{err}").contains("gssapi"));
+    }
+
+    #[test]
+    fn validate_auth_methods_rejects_sspi() {
+        let auth = AuthConfig::new(
+            "user",
+            vec![AuthMethod::Sspi {
+                service: None,
+                principal: None,
+                delegate: false,
+                allow_ntlm_fallback: false,
+            }],
+        );
+        let err = validate_auth_methods(&auth).expect_err("sspi must be rejected");
+        assert!(matches!(err, Error::InvalidConfig(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn validate_auth_methods_accepts_supported_methods() {
+        let auth = AuthConfig::new(
+            "user",
+            vec![
+                AuthMethod::Agent { socket: None },
+                AuthMethod::Password {
+                    secret: spt_auth::SecretRef::Env("X".into()),
+                },
+            ],
+        );
+        validate_auth_methods(&auth).expect("supported methods must pass");
+    }
+
+    // ──────── E3-F2: obfuscation dial path ─────────────────────────────
+
+    #[tokio::test]
+    async fn obfs_policy_routes_dial_through_connect_to_endpoint() {
+        // Regression guard for E3-F2: when an `ObfsPolicy` is present the
+        // russh dial MUST go through `connect_to_endpoint` (the obfuscation
+        // transport) instead of `client::connect`'s plain TCP. We assert the
+        // obfs audit hook — which fires from *inside* the obfuscation crate's
+        // `connect`, before any TCP I/O — recorded the attempt. If the obfs
+        // branch were skipped (the pre-E3-F2 behaviour) the hook would never
+        // fire and `entries` would be empty.
+        let audit = Arc::new(spt_obfs::audit::MockAuditHook::new());
+        let obfs = ObfsPolicy {
+            config: Arc::new(spt_obfs::ObfsConfig::Obfs4 {
+                node_id: [7; 20],
+                public_key: [9; 32],
+                iat_mode: 0,
+            }),
+            audit: Some(Arc::clone(&audit) as Arc<dyn spt_obfs::AuditHook>),
+        };
+        // Port 1 on loopback is unroutable for SSH; the connect will error,
+        // but the obfs audit hook fires before the failure.
+        let endpoint = Endpoint::new("127.0.0.1", 1);
+        let auth = AuthConfig::new("u", vec![AuthMethod::Agent { socket: None }]);
+        let _ = connect(
+            endpoint,
+            auth,
+            CryptoPolicy::default(),
+            TrustVerifier::default(),
+            Vec::new(),
+            Vec::new(),
+            None,
+            KeepalivePolicy::default(),
+            Some(obfs),
+        )
+        .await;
+
+        let entries = audit.entries();
+        assert_eq!(
+            entries.len(),
+            1,
+            "obfs branch must fire the audit hook exactly once; got {entries:?}"
+        );
+        assert_eq!(entries[0].0, "obfs4", "wrong transport name recorded");
+        assert_eq!(
+            entries[0].1, "127.0.0.1:1",
+            "target must be the canonical host:port"
+        );
+    }
+
+    #[tokio::test]
+    async fn no_obfs_policy_does_not_touch_obfuscation_layer() {
+        // Complementary guard: with `obfs = None` the dial takes the plain
+        // path and never constructs an obfs transport / fires its audit.
+        let audit = Arc::new(spt_obfs::audit::MockAuditHook::new());
+        let endpoint = Endpoint::new("127.0.0.1", 1);
+        let auth = AuthConfig::new("u", vec![AuthMethod::Agent { socket: None }]);
+        let _ = connect(
+            endpoint,
+            auth,
+            CryptoPolicy::default(),
+            TrustVerifier::default(),
+            Vec::new(),
+            Vec::new(),
+            None,
+            KeepalivePolicy::default(),
+            None,
+        )
+        .await;
+        assert!(
+            audit.entries().is_empty(),
+            "plain dial must not fire the obfs audit hook"
+        );
     }
 
     #[test]

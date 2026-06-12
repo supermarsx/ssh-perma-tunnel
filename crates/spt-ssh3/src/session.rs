@@ -48,6 +48,19 @@ pub struct Ssh3Session {
     peer_settings: Ssh3Settings,
     control_send: Arc<AsyncMutex<SendStream>>,
     control_recv: Arc<AsyncMutex<RecvStream>>,
+    /// Serializes control-stream *request/response* exchanges (E3-F5).
+    ///
+    /// The control bidi multiplexes several frame kinds (forward-open acks,
+    /// UDP-associate requests, `AppPing` keepalives) with no per-request
+    /// correlation id in the wire format. A full demux would require extending
+    /// the frame header, which the wire-compat constraint forbids touching
+    /// here. As a scoped mitigation we (a) keep keepalive `AppPing` strictly
+    /// fire-and-forget — it never consumes a frame off `control_recv` — and
+    /// (b) hold this mutex across the only request that *does* read a response
+    /// ([`forward::open_remote`]), so two such requests can never have their
+    /// `ForwardOpenResponse` frames mis-routed to each other. Full
+    /// correlation-id demux is tracked as a follow-up.
+    control_request: Arc<AsyncMutex<()>>,
     state: Arc<SessionState>,
     next_flow_id: Arc<std::sync::atomic::AtomicU32>,
     /// Background dispatcher tasks (h3 driver + bidi accept + datagram
@@ -101,7 +114,10 @@ impl Ssh3Session {
         info: SessionInfo,
         h3_driver: Option<tokio::task::JoinHandle<()>>,
     ) -> Self {
-        let state = Arc::new(SessionState::default());
+        // E3-F3: size the inbound-forward concurrency cap from the peer's
+        // advertised `max_forwards` so a peer that opens unbounded inbound
+        // forwards is bounded.
+        let state = Arc::new(SessionState::with_max_forwards(peer_settings.max_forwards));
         let next_flow_id = Arc::new(std::sync::atomic::AtomicU32::new(1));
 
         let mut background = Vec::new();
@@ -175,6 +191,7 @@ impl Ssh3Session {
             peer_settings,
             control_send: Arc::new(AsyncMutex::new(control_send)),
             control_recv: Arc::new(AsyncMutex::new(control_recv)),
+            control_request: Arc::new(AsyncMutex::new(())),
             state,
             next_flow_id,
             background,
@@ -205,6 +222,7 @@ impl TunnelSession for Ssh3Session {
             self.state.clone(),
             self.control_send.clone(),
             self.control_recv.clone(),
+            self.control_request.clone(),
             spec,
             self.peer_settings.remote_tcp,
         )

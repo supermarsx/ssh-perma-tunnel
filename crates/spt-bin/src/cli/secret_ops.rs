@@ -403,6 +403,7 @@ mod tests {
             config_url: None,
             config_fingerprint: None,
             state_dir: Some(state_dir.to_path_buf()),
+            portable: false,
             profile: None,
             output: Of::Human,
             json: false,

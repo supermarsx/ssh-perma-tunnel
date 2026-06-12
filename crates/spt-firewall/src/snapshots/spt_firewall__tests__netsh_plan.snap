@@ -3,5 +3,5 @@ source: crates/spt-firewall/src/lib.rs
 expression: plan.script
 ---
 rem spt-firewall: Windows Firewall plan
-netsh advfirewall firewall add rule name="spt:dns-udp" group="spt" dir=in action=allow protocol=udp localport=5353 localip=127.0.0.1/32 enable=yes
-netsh advfirewall firewall add rule name="spt:smtp-in" group="spt" dir=in action=allow protocol=tcp localport=2525 remoteip=10.0.0.0/8 interface="eth0" enable=yes
+netsh advfirewall firewall add rule name="spt:dns-udp" dir=in action=allow protocol=udp localport=5353 localip=127.0.0.1/32 enable=yes
+netsh advfirewall firewall add rule name="spt:smtp-in" dir=in action=allow protocol=tcp localport=2525 remoteip=10.0.0.0/8 enable=yes

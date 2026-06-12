@@ -99,6 +99,8 @@ fn arb_profile(u: &mut Unstructured<'_>) -> arbitrary::Result<spt_config::schema
             port: 22,
             priority: Some(prio),
             weight: None,
+            user: None,
+            auth: None,
         });
     }
 

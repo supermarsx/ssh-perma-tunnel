@@ -1,6 +1,6 @@
 # Print an optspec for argparse to handle cmd's options that are independent of any subcommand.
 function __fish_spt_global_optspecs
-	string join \n config= config-dir= config-url= config-fingerprint= state-dir= profile= output= json log-level= color= q/quiet v/verbose no-color dry-run h/help V/version
+	string join \n config= config-dir= config-url= config-fingerprint= state-dir= portable profile= output= json log-level= color= q/quiet v/verbose no-color dry-run h/help V/version
 end
 
 function __fish_spt_needs_command
@@ -42,6 +42,7 @@ trace\t'Trace and above (very verbose)'"
 complete -c spt -n "__fish_spt_needs_command" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_needs_command" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_needs_command" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_needs_command" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_needs_command" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -93,6 +94,7 @@ trace\t'Trace and above (very verbose)'"
 complete -c spt -n "__fish_spt_using_subcommand config; and not __fish_seen_subcommand_from init validate doctor render diff migrate reload pull trust encrypt decrypt edit crypt help" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand config; and not __fish_seen_subcommand_from init validate doctor render diff migrate reload pull trust encrypt decrypt edit crypt help" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand config; and not __fish_seen_subcommand_from init validate doctor render diff migrate reload pull trust encrypt decrypt edit crypt help" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand config; and not __fish_seen_subcommand_from init validate doctor render diff migrate reload pull trust encrypt decrypt edit crypt help" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand config; and not __fish_seen_subcommand_from init validate doctor render diff migrate reload pull trust encrypt decrypt edit crypt help" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -140,6 +142,7 @@ trace\t'Trace and above (very verbose)'"
 complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from init" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from init" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from init" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from init" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from init" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -166,6 +169,7 @@ complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcomma
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
 complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from validate" -l strict -d 'Reject unknown fields and friendly aliases'
+complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from validate" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from validate" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from validate" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from validate" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -196,6 +200,7 @@ complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcomma
 complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from doctor" -l secrets -d 'Run secret backend checks'
 complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from doctor" -l dns -d 'Run DNS checks'
 complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from doctor" -l observability -d 'Run observability sink checks'
+complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from doctor" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from doctor" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from doctor" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from doctor" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -223,6 +228,7 @@ always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
 complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from render" -l redacted -d 'Redact secret values'
 complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from render" -l json -d 'Render as JSON instead of canonical TOML'
+complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from render" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from render" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from render" -s v -l verbose -d 'Increase verbosity (repeat for more)'
 complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from render" -l no-color -d 'Disable color (legacy convenience flag; use `--color never`)'
@@ -249,6 +255,7 @@ trace\t'Trace and above (very verbose)'"
 complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from diff" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from diff" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from diff" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from diff" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from diff" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -276,6 +283,7 @@ trace\t'Trace and above (very verbose)'"
 complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from migrate" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from migrate" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from migrate" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from migrate" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from migrate" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -306,6 +314,7 @@ complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcomma
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
 complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from reload" -l wait -d 'Wait for reload to complete'
+complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from reload" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from reload" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from reload" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from reload" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -335,6 +344,7 @@ complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcomma
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
 complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from pull" -l cache -d 'Update the local atomic cache'
+complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from pull" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from pull" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from pull" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from pull" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -360,6 +370,7 @@ trace\t'Trace and above (very verbose)'"
 complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from trust" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from trust" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from trust" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from trust" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from trust" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -394,6 +405,7 @@ always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
 complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from encrypt" -l use-vault-master -d 'Use the keychain-resident vault master key'
 complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from encrypt" -l force -d 'Overwrite an existing output file'
+complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from encrypt" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from encrypt" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from encrypt" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from encrypt" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -424,6 +436,7 @@ trace\t'Trace and above (very verbose)'"
 complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from decrypt" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from decrypt" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from decrypt" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from decrypt" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from decrypt" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -452,6 +465,7 @@ trace\t'Trace and above (very verbose)'"
 complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from edit" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from edit" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from edit" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from edit" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from edit" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -477,6 +491,7 @@ trace\t'Trace and above (very verbose)'"
 complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from crypt" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from crypt" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from crypt" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from crypt" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from crypt" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -518,6 +533,7 @@ trace\t'Trace and above (very verbose)'"
 complete -c spt -n "__fish_spt_using_subcommand profile; and not __fish_seen_subcommand_from list show add configure set enable disable remove test help" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand profile; and not __fish_seen_subcommand_from list show add configure set enable disable remove test help" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand profile; and not __fish_seen_subcommand_from list show add configure set enable disable remove test help" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand profile; and not __fish_seen_subcommand_from list show add configure set enable disable remove test help" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand profile; and not __fish_seen_subcommand_from list show add configure set enable disable remove test help" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -554,6 +570,7 @@ complete -c spt -n "__fish_spt_using_subcommand profile; and __fish_seen_subcomm
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
 complete -c spt -n "__fish_spt_using_subcommand profile; and __fish_seen_subcommand_from list" -l json -d 'JSON output'
+complete -c spt -n "__fish_spt_using_subcommand profile; and __fish_seen_subcommand_from list" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand profile; and __fish_seen_subcommand_from list" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand profile; and __fish_seen_subcommand_from list" -s v -l verbose -d 'Increase verbosity (repeat for more)'
 complete -c spt -n "__fish_spt_using_subcommand profile; and __fish_seen_subcommand_from list" -l no-color -d 'Disable color (legacy convenience flag; use `--color never`)'
@@ -580,6 +597,7 @@ always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
 complete -c spt -n "__fish_spt_using_subcommand profile; and __fish_seen_subcommand_from show" -l redacted -d 'Redact secret fields'
 complete -c spt -n "__fish_spt_using_subcommand profile; and __fish_seen_subcommand_from show" -l json -d 'JSON output'
+complete -c spt -n "__fish_spt_using_subcommand profile; and __fish_seen_subcommand_from show" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand profile; and __fish_seen_subcommand_from show" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand profile; and __fish_seen_subcommand_from show" -s v -l verbose -d 'Increase verbosity (repeat for more)'
 complete -c spt -n "__fish_spt_using_subcommand profile; and __fish_seen_subcommand_from show" -l no-color -d 'Disable color (legacy convenience flag; use `--color never`)'
@@ -608,6 +626,7 @@ trace\t'Trace and above (very verbose)'"
 complete -c spt -n "__fish_spt_using_subcommand profile; and __fish_seen_subcommand_from add" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand profile; and __fish_seen_subcommand_from add" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand profile; and __fish_seen_subcommand_from add" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand profile; and __fish_seen_subcommand_from add" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand profile; and __fish_seen_subcommand_from add" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -639,6 +658,7 @@ always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
 complete -c spt -n "__fish_spt_using_subcommand profile; and __fish_seen_subcommand_from configure" -l tui -d 'Force the TUI wizard'
 complete -c spt -n "__fish_spt_using_subcommand profile; and __fish_seen_subcommand_from configure" -l no-tui -d 'Disable the TUI wizard (non-interactive)'
+complete -c spt -n "__fish_spt_using_subcommand profile; and __fish_seen_subcommand_from configure" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand profile; and __fish_seen_subcommand_from configure" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand profile; and __fish_seen_subcommand_from configure" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand profile; and __fish_seen_subcommand_from configure" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -664,6 +684,7 @@ trace\t'Trace and above (very verbose)'"
 complete -c spt -n "__fish_spt_using_subcommand profile; and __fish_seen_subcommand_from set" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand profile; and __fish_seen_subcommand_from set" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand profile; and __fish_seen_subcommand_from set" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand profile; and __fish_seen_subcommand_from set" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand profile; and __fish_seen_subcommand_from set" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -689,6 +710,7 @@ trace\t'Trace and above (very verbose)'"
 complete -c spt -n "__fish_spt_using_subcommand profile; and __fish_seen_subcommand_from enable" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand profile; and __fish_seen_subcommand_from enable" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand profile; and __fish_seen_subcommand_from enable" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand profile; and __fish_seen_subcommand_from enable" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand profile; and __fish_seen_subcommand_from enable" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -714,6 +736,7 @@ trace\t'Trace and above (very verbose)'"
 complete -c spt -n "__fish_spt_using_subcommand profile; and __fish_seen_subcommand_from disable" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand profile; and __fish_seen_subcommand_from disable" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand profile; and __fish_seen_subcommand_from disable" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand profile; and __fish_seen_subcommand_from disable" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand profile; and __fish_seen_subcommand_from disable" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -739,6 +762,7 @@ trace\t'Trace and above (very verbose)'"
 complete -c spt -n "__fish_spt_using_subcommand profile; and __fish_seen_subcommand_from remove" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand profile; and __fish_seen_subcommand_from remove" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand profile; and __fish_seen_subcommand_from remove" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand profile; and __fish_seen_subcommand_from remove" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand profile; and __fish_seen_subcommand_from remove" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -769,6 +793,7 @@ complete -c spt -n "__fish_spt_using_subcommand profile; and __fish_seen_subcomm
 complete -c spt -n "__fish_spt_using_subcommand profile; and __fish_seen_subcommand_from test" -l auth-only -d 'Only test auth'
 complete -c spt -n "__fish_spt_using_subcommand profile; and __fish_seen_subcommand_from test" -l trust-only -d 'Only test trust (host-key/TLS pin)'
 complete -c spt -n "__fish_spt_using_subcommand profile; and __fish_seen_subcommand_from test" -l dns-only -d 'Only test DNS'
+complete -c spt -n "__fish_spt_using_subcommand profile; and __fish_seen_subcommand_from test" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand profile; and __fish_seen_subcommand_from test" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand profile; and __fish_seen_subcommand_from test" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand profile; and __fish_seen_subcommand_from test" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -804,6 +829,7 @@ trace\t'Trace and above (very verbose)'"
 complete -c spt -n "__fish_spt_using_subcommand forward; and not __fish_seen_subcommand_from list show add explain test throttle remove help" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand forward; and not __fish_seen_subcommand_from list show add explain test throttle remove help" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand forward; and not __fish_seen_subcommand_from list show add explain test throttle remove help" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand forward; and not __fish_seen_subcommand_from list show add explain test throttle remove help" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand forward; and not __fish_seen_subcommand_from list show add explain test throttle remove help" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -838,6 +864,7 @@ complete -c spt -n "__fish_spt_using_subcommand forward; and __fish_seen_subcomm
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
 complete -c spt -n "__fish_spt_using_subcommand forward; and __fish_seen_subcommand_from list" -l json -d 'JSON output'
+complete -c spt -n "__fish_spt_using_subcommand forward; and __fish_seen_subcommand_from list" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand forward; and __fish_seen_subcommand_from list" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand forward; and __fish_seen_subcommand_from list" -s v -l verbose -d 'Increase verbosity (repeat for more)'
 complete -c spt -n "__fish_spt_using_subcommand forward; and __fish_seen_subcommand_from list" -l no-color -d 'Disable color (legacy convenience flag; use `--color never`)'
@@ -864,6 +891,7 @@ always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
 complete -c spt -n "__fish_spt_using_subcommand forward; and __fish_seen_subcommand_from show" -l friendly -d 'Friendly textual layout'
 complete -c spt -n "__fish_spt_using_subcommand forward; and __fish_seen_subcommand_from show" -l json -d 'JSON output'
+complete -c spt -n "__fish_spt_using_subcommand forward; and __fish_seen_subcommand_from show" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand forward; and __fish_seen_subcommand_from show" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand forward; and __fish_seen_subcommand_from show" -s v -l verbose -d 'Increase verbosity (repeat for more)'
 complete -c spt -n "__fish_spt_using_subcommand forward; and __fish_seen_subcommand_from show" -l no-color -d 'Disable color (legacy convenience flag; use `--color never`)'
@@ -888,6 +916,7 @@ trace\t'Trace and above (very verbose)'"
 complete -c spt -n "__fish_spt_using_subcommand forward; and __fish_seen_subcommand_from add" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand forward; and __fish_seen_subcommand_from add" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand forward; and __fish_seen_subcommand_from add" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand forward; and __fish_seen_subcommand_from add" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand forward; and __fish_seen_subcommand_from add" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -917,6 +946,7 @@ trace\t'Trace and above (very verbose)'"
 complete -c spt -n "__fish_spt_using_subcommand forward; and __fish_seen_subcommand_from explain" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand forward; and __fish_seen_subcommand_from explain" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand forward; and __fish_seen_subcommand_from explain" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand forward; and __fish_seen_subcommand_from explain" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand forward; and __fish_seen_subcommand_from explain" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -945,6 +975,7 @@ complete -c spt -n "__fish_spt_using_subcommand forward; and __fish_seen_subcomm
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
 complete -c spt -n "__fish_spt_using_subcommand forward; and __fish_seen_subcommand_from test" -l connect -d 'Probe with a TCP connect'
+complete -c spt -n "__fish_spt_using_subcommand forward; and __fish_seen_subcommand_from test" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand forward; and __fish_seen_subcommand_from test" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand forward; and __fish_seen_subcommand_from test" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand forward; and __fish_seen_subcommand_from test" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -973,6 +1004,7 @@ trace\t'Trace and above (very verbose)'"
 complete -c spt -n "__fish_spt_using_subcommand forward; and __fish_seen_subcommand_from throttle" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand forward; and __fish_seen_subcommand_from throttle" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand forward; and __fish_seen_subcommand_from throttle" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand forward; and __fish_seen_subcommand_from throttle" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand forward; and __fish_seen_subcommand_from throttle" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -998,6 +1030,7 @@ trace\t'Trace and above (very verbose)'"
 complete -c spt -n "__fish_spt_using_subcommand forward; and __fish_seen_subcommand_from remove" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand forward; and __fish_seen_subcommand_from remove" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand forward; and __fish_seen_subcommand_from remove" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand forward; and __fish_seen_subcommand_from remove" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand forward; and __fish_seen_subcommand_from remove" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -1031,6 +1064,7 @@ trace\t'Trace and above (very verbose)'"
 complete -c spt -n "__fish_spt_using_subcommand tunnel; and not __fish_seen_subcommand_from run status stats sessions stop reload health failover help" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand tunnel; and not __fish_seen_subcommand_from run status stats sessions stop reload health failover help" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand tunnel; and not __fish_seen_subcommand_from run status stats sessions stop reload health failover help" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand tunnel; and not __fish_seen_subcommand_from run status stats sessions stop reload health failover help" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand tunnel; and not __fish_seen_subcommand_from run status stats sessions stop reload health failover help" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -1069,6 +1103,7 @@ always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
 complete -c spt -n "__fish_spt_using_subcommand tunnel; and __fish_seen_subcommand_from run" -l foreground -d 'Run in the foreground'
 complete -c spt -n "__fish_spt_using_subcommand tunnel; and __fish_seen_subcommand_from run" -l once -d 'Start once and exit non-zero on startup failure'
+complete -c spt -n "__fish_spt_using_subcommand tunnel; and __fish_seen_subcommand_from run" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand tunnel; and __fish_seen_subcommand_from run" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand tunnel; and __fish_seen_subcommand_from run" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand tunnel; and __fish_seen_subcommand_from run" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -1096,6 +1131,7 @@ always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
 complete -c spt -n "__fish_spt_using_subcommand tunnel; and __fish_seen_subcommand_from status" -l watch -d 'Continuously refresh'
 complete -c spt -n "__fish_spt_using_subcommand tunnel; and __fish_seen_subcommand_from status" -l json -d 'JSON output'
+complete -c spt -n "__fish_spt_using_subcommand tunnel; and __fish_seen_subcommand_from status" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand tunnel; and __fish_seen_subcommand_from status" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand tunnel; and __fish_seen_subcommand_from status" -s v -l verbose -d 'Increase verbosity (repeat for more)'
 complete -c spt -n "__fish_spt_using_subcommand tunnel; and __fish_seen_subcommand_from status" -l no-color -d 'Disable color (legacy convenience flag; use `--color never`)'
@@ -1123,6 +1159,7 @@ complete -c spt -n "__fish_spt_using_subcommand tunnel; and __fish_seen_subcomma
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
 complete -c spt -n "__fish_spt_using_subcommand tunnel; and __fish_seen_subcommand_from stats" -l json -d 'JSON output'
+complete -c spt -n "__fish_spt_using_subcommand tunnel; and __fish_seen_subcommand_from stats" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand tunnel; and __fish_seen_subcommand_from stats" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand tunnel; and __fish_seen_subcommand_from stats" -s v -l verbose -d 'Increase verbosity (repeat for more)'
 complete -c spt -n "__fish_spt_using_subcommand tunnel; and __fish_seen_subcommand_from stats" -l no-color -d 'Disable color (legacy convenience flag; use `--color never`)'
@@ -1149,6 +1186,7 @@ complete -c spt -n "__fish_spt_using_subcommand tunnel; and __fish_seen_subcomma
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
 complete -c spt -n "__fish_spt_using_subcommand tunnel; and __fish_seen_subcommand_from sessions" -l json -d 'JSON output'
+complete -c spt -n "__fish_spt_using_subcommand tunnel; and __fish_seen_subcommand_from sessions" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand tunnel; and __fish_seen_subcommand_from sessions" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand tunnel; and __fish_seen_subcommand_from sessions" -s v -l verbose -d 'Increase verbosity (repeat for more)'
 complete -c spt -n "__fish_spt_using_subcommand tunnel; and __fish_seen_subcommand_from sessions" -l no-color -d 'Disable color (legacy convenience flag; use `--color never`)'
@@ -1174,6 +1212,7 @@ trace\t'Trace and above (very verbose)'"
 complete -c spt -n "__fish_spt_using_subcommand tunnel; and __fish_seen_subcommand_from stop" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand tunnel; and __fish_seen_subcommand_from stop" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand tunnel; and __fish_seen_subcommand_from stop" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand tunnel; and __fish_seen_subcommand_from stop" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand tunnel; and __fish_seen_subcommand_from stop" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -1200,6 +1239,7 @@ complete -c spt -n "__fish_spt_using_subcommand tunnel; and __fish_seen_subcomma
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
 complete -c spt -n "__fish_spt_using_subcommand tunnel; and __fish_seen_subcommand_from reload" -l wait -d 'Block until reload finishes'
+complete -c spt -n "__fish_spt_using_subcommand tunnel; and __fish_seen_subcommand_from reload" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand tunnel; and __fish_seen_subcommand_from reload" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand tunnel; and __fish_seen_subcommand_from reload" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand tunnel; and __fish_seen_subcommand_from reload" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -1226,6 +1266,7 @@ complete -c spt -n "__fish_spt_using_subcommand tunnel; and __fish_seen_subcomma
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
 complete -c spt -n "__fish_spt_using_subcommand tunnel; and __fish_seen_subcommand_from health" -l json -d 'JSON output'
+complete -c spt -n "__fish_spt_using_subcommand tunnel; and __fish_seen_subcommand_from health" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand tunnel; and __fish_seen_subcommand_from health" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand tunnel; and __fish_seen_subcommand_from health" -s v -l verbose -d 'Increase verbosity (repeat for more)'
 complete -c spt -n "__fish_spt_using_subcommand tunnel; and __fish_seen_subcommand_from health" -l no-color -d 'Disable color (legacy convenience flag; use `--color never`)'
@@ -1251,6 +1292,7 @@ trace\t'Trace and above (very verbose)'"
 complete -c spt -n "__fish_spt_using_subcommand tunnel; and __fish_seen_subcommand_from failover" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand tunnel; and __fish_seen_subcommand_from failover" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand tunnel; and __fish_seen_subcommand_from failover" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand tunnel; and __fish_seen_subcommand_from failover" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand tunnel; and __fish_seen_subcommand_from failover" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -1285,6 +1327,7 @@ trace\t'Trace and above (very verbose)'"
 complete -c spt -n "__fish_spt_using_subcommand service; and not __fish_seen_subcommand_from install uninstall start stop restart status render help" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand service; and not __fish_seen_subcommand_from install uninstall start stop restart status render help" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand service; and not __fish_seen_subcommand_from install uninstall start stop restart status render help" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand service; and not __fish_seen_subcommand_from install uninstall start stop restart status render help" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand service; and not __fish_seen_subcommand_from install uninstall start stop restart status render help" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -1321,6 +1364,7 @@ always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
 complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from install" -l user -d 'User-scoped service'
 complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from install" -l system -d 'System-scoped service'
+complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from install" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from install" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from install" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from install" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -1349,6 +1393,7 @@ always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
 complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from uninstall" -l user -d 'User-scoped service'
 complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from uninstall" -l system -d 'System-scoped service'
+complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from uninstall" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from uninstall" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from uninstall" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from uninstall" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -1377,6 +1422,7 @@ always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
 complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from start" -l user -d 'User-scoped service'
 complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from start" -l system -d 'System-scoped service'
+complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from start" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from start" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from start" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from start" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -1405,6 +1451,7 @@ always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
 complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from stop" -l user -d 'User-scoped service'
 complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from stop" -l system -d 'System-scoped service'
+complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from stop" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from stop" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from stop" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from stop" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -1433,6 +1480,7 @@ always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
 complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from restart" -l user -d 'User-scoped service'
 complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from restart" -l system -d 'System-scoped service'
+complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from restart" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from restart" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from restart" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from restart" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -1462,6 +1510,7 @@ never\t'Never emit color escapes'"
 complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from status" -l user -d 'User-scoped service'
 complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from status" -l system -d 'System-scoped service'
 complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from status" -l json -d 'JSON output'
+complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from status" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from status" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from status" -s v -l verbose -d 'Increase verbosity (repeat for more)'
 complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from status" -l no-color -d 'Disable color (legacy convenience flag; use `--color never`)'
@@ -1492,6 +1541,7 @@ always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
 complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from render" -l user -d 'User-scoped service'
 complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from render" -l system -d 'System-scoped service'
+complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from render" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from render" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from render" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from render" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -1525,6 +1575,7 @@ trace\t'Trace and above (very verbose)'"
 complete -c spt -n "__fish_spt_using_subcommand key; and not __fish_seen_subcommand_from generate inspect public change-passphrase sign-cert verify-cert install-public help" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand key; and not __fish_seen_subcommand_from generate inspect public change-passphrase sign-cert verify-cert install-public help" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand key; and not __fish_seen_subcommand_from generate inspect public change-passphrase sign-cert verify-cert install-public help" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand key; and not __fish_seen_subcommand_from generate inspect public change-passphrase sign-cert verify-cert install-public help" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand key; and not __fish_seen_subcommand_from generate inspect public change-passphrase sign-cert verify-cert install-public help" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -1565,6 +1616,7 @@ complete -c spt -n "__fish_spt_using_subcommand key; and __fish_seen_subcommand_
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
 complete -c spt -n "__fish_spt_using_subcommand key; and __fish_seen_subcommand_from generate" -l encrypt -d 'Encrypt the private key at rest with a passphrase'
+complete -c spt -n "__fish_spt_using_subcommand key; and __fish_seen_subcommand_from generate" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand key; and __fish_seen_subcommand_from generate" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand key; and __fish_seen_subcommand_from generate" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand key; and __fish_seen_subcommand_from generate" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -1593,6 +1645,7 @@ complete -c spt -n "__fish_spt_using_subcommand key; and __fish_seen_subcommand_
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
 complete -c spt -n "__fish_spt_using_subcommand key; and __fish_seen_subcommand_from inspect" -l json -d 'JSON output'
+complete -c spt -n "__fish_spt_using_subcommand key; and __fish_seen_subcommand_from inspect" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand key; and __fish_seen_subcommand_from inspect" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand key; and __fish_seen_subcommand_from inspect" -s v -l verbose -d 'Increase verbosity (repeat for more)'
 complete -c spt -n "__fish_spt_using_subcommand key; and __fish_seen_subcommand_from inspect" -l no-color -d 'Disable color (legacy convenience flag; use `--color never`)'
@@ -1618,6 +1671,7 @@ trace\t'Trace and above (very verbose)'"
 complete -c spt -n "__fish_spt_using_subcommand key; and __fish_seen_subcommand_from public" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand key; and __fish_seen_subcommand_from public" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand key; and __fish_seen_subcommand_from public" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand key; and __fish_seen_subcommand_from public" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand key; and __fish_seen_subcommand_from public" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -1644,6 +1698,7 @@ trace\t'Trace and above (very verbose)'"
 complete -c spt -n "__fish_spt_using_subcommand key; and __fish_seen_subcommand_from change-passphrase" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand key; and __fish_seen_subcommand_from change-passphrase" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand key; and __fish_seen_subcommand_from change-passphrase" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand key; and __fish_seen_subcommand_from change-passphrase" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand key; and __fish_seen_subcommand_from change-passphrase" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -1678,6 +1733,7 @@ trace\t'Trace and above (very verbose)'"
 complete -c spt -n "__fish_spt_using_subcommand key; and __fish_seen_subcommand_from sign-cert" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand key; and __fish_seen_subcommand_from sign-cert" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand key; and __fish_seen_subcommand_from sign-cert" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand key; and __fish_seen_subcommand_from sign-cert" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand key; and __fish_seen_subcommand_from sign-cert" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -1704,6 +1760,7 @@ trace\t'Trace and above (very verbose)'"
 complete -c spt -n "__fish_spt_using_subcommand key; and __fish_seen_subcommand_from verify-cert" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand key; and __fish_seen_subcommand_from verify-cert" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand key; and __fish_seen_subcommand_from verify-cert" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand key; and __fish_seen_subcommand_from verify-cert" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand key; and __fish_seen_subcommand_from verify-cert" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -1732,6 +1789,7 @@ trace\t'Trace and above (very verbose)'"
 complete -c spt -n "__fish_spt_using_subcommand key; and __fish_seen_subcommand_from install-public" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand key; and __fish_seen_subcommand_from install-public" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand key; and __fish_seen_subcommand_from install-public" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand key; and __fish_seen_subcommand_from install-public" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand key; and __fish_seen_subcommand_from install-public" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -1765,6 +1823,7 @@ trace\t'Trace and above (very verbose)'"
 complete -c spt -n "__fish_spt_using_subcommand secret; and not __fish_seen_subcommand_from store set get list rotate remove doctor help" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand secret; and not __fish_seen_subcommand_from store set get list rotate remove doctor help" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand secret; and not __fish_seen_subcommand_from store set get list rotate remove doctor help" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand secret; and not __fish_seen_subcommand_from store set get list rotate remove doctor help" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand secret; and not __fish_seen_subcommand_from store set get list rotate remove doctor help" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -1798,6 +1857,7 @@ trace\t'Trace and above (very verbose)'"
 complete -c spt -n "__fish_spt_using_subcommand secret; and __fish_seen_subcommand_from store" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand secret; and __fish_seen_subcommand_from store" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand secret; and __fish_seen_subcommand_from store" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand secret; and __fish_seen_subcommand_from store" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand secret; and __fish_seen_subcommand_from store" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -1830,6 +1890,7 @@ complete -c spt -n "__fish_spt_using_subcommand secret; and __fish_seen_subcomma
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
 complete -c spt -n "__fish_spt_using_subcommand secret; and __fish_seen_subcommand_from set" -l prompt -d 'Read from a TTY prompt'
+complete -c spt -n "__fish_spt_using_subcommand secret; and __fish_seen_subcommand_from set" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand secret; and __fish_seen_subcommand_from set" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand secret; and __fish_seen_subcommand_from set" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand secret; and __fish_seen_subcommand_from set" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -1858,6 +1919,7 @@ complete -c spt -n "__fish_spt_using_subcommand secret; and __fish_seen_subcomma
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
 complete -c spt -n "__fish_spt_using_subcommand secret; and __fish_seen_subcommand_from get" -l reveal -d 'Print the plaintext value'
+complete -c spt -n "__fish_spt_using_subcommand secret; and __fish_seen_subcommand_from get" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand secret; and __fish_seen_subcommand_from get" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand secret; and __fish_seen_subcommand_from get" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand secret; and __fish_seen_subcommand_from get" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -1887,6 +1949,7 @@ complete -c spt -n "__fish_spt_using_subcommand secret; and __fish_seen_subcomma
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
 complete -c spt -n "__fish_spt_using_subcommand secret; and __fish_seen_subcommand_from list" -l json -d 'JSON output'
+complete -c spt -n "__fish_spt_using_subcommand secret; and __fish_seen_subcommand_from list" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand secret; and __fish_seen_subcommand_from list" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand secret; and __fish_seen_subcommand_from list" -s v -l verbose -d 'Increase verbosity (repeat for more)'
 complete -c spt -n "__fish_spt_using_subcommand secret; and __fish_seen_subcommand_from list" -l no-color -d 'Disable color (legacy convenience flag; use `--color never`)'
@@ -1914,6 +1977,7 @@ trace\t'Trace and above (very verbose)'"
 complete -c spt -n "__fish_spt_using_subcommand secret; and __fish_seen_subcommand_from rotate" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand secret; and __fish_seen_subcommand_from rotate" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand secret; and __fish_seen_subcommand_from rotate" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand secret; and __fish_seen_subcommand_from rotate" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand secret; and __fish_seen_subcommand_from rotate" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -1942,6 +2006,7 @@ trace\t'Trace and above (very verbose)'"
 complete -c spt -n "__fish_spt_using_subcommand secret; and __fish_seen_subcommand_from remove" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand secret; and __fish_seen_subcommand_from remove" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand secret; and __fish_seen_subcommand_from remove" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand secret; and __fish_seen_subcommand_from remove" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand secret; and __fish_seen_subcommand_from remove" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -1967,6 +2032,7 @@ trace\t'Trace and above (very verbose)'"
 complete -c spt -n "__fish_spt_using_subcommand secret; and __fish_seen_subcommand_from doctor" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand secret; and __fish_seen_subcommand_from doctor" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand secret; and __fish_seen_subcommand_from doctor" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand secret; and __fish_seen_subcommand_from doctor" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand secret; and __fish_seen_subcommand_from doctor" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -2000,6 +2066,7 @@ trace\t'Trace and above (very verbose)'"
 complete -c spt -n "__fish_spt_using_subcommand auth; and not __fish_seen_subcommand_from test ssh3-login help" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand auth; and not __fish_seen_subcommand_from test ssh3-login help" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand auth; and not __fish_seen_subcommand_from test ssh3-login help" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand auth; and not __fish_seen_subcommand_from test ssh3-login help" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand auth; and not __fish_seen_subcommand_from test ssh3-login help" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -2027,6 +2094,7 @@ trace\t'Trace and above (very verbose)'"
 complete -c spt -n "__fish_spt_using_subcommand auth; and __fish_seen_subcommand_from test" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand auth; and __fish_seen_subcommand_from test" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand auth; and __fish_seen_subcommand_from test" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand auth; and __fish_seen_subcommand_from test" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand auth; and __fish_seen_subcommand_from test" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -2058,6 +2126,7 @@ complete -c spt -n "__fish_spt_using_subcommand auth; and __fish_seen_subcommand
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
 complete -c spt -n "__fish_spt_using_subcommand auth; and __fish_seen_subcommand_from ssh3-login" -l json -d 'JSON output (machine-readable)'
+complete -c spt -n "__fish_spt_using_subcommand auth; and __fish_seen_subcommand_from ssh3-login" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand auth; and __fish_seen_subcommand_from ssh3-login" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand auth; and __fish_seen_subcommand_from ssh3-login" -s v -l verbose -d 'Increase verbosity (repeat for more)'
 complete -c spt -n "__fish_spt_using_subcommand auth; and __fish_seen_subcommand_from ssh3-login" -l no-color -d 'Disable color (legacy convenience flag; use `--color never`)'
@@ -2085,6 +2154,7 @@ trace\t'Trace and above (very verbose)'"
 complete -c spt -n "__fish_spt_using_subcommand dns; and not __fish_seen_subcommand_from serve status query upstream record hosts help" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand dns; and not __fish_seen_subcommand_from serve status query upstream record hosts help" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand dns; and not __fish_seen_subcommand_from serve status query upstream record hosts help" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand dns; and not __fish_seen_subcommand_from serve status query upstream record hosts help" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand dns; and not __fish_seen_subcommand_from serve status query upstream record hosts help" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -2118,6 +2188,7 @@ complete -c spt -n "__fish_spt_using_subcommand dns; and __fish_seen_subcommand_
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
 complete -c spt -n "__fish_spt_using_subcommand dns; and __fish_seen_subcommand_from serve" -l foreground -d 'Run in the foreground'
+complete -c spt -n "__fish_spt_using_subcommand dns; and __fish_seen_subcommand_from serve" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand dns; and __fish_seen_subcommand_from serve" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand dns; and __fish_seen_subcommand_from serve" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand dns; and __fish_seen_subcommand_from serve" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -2144,6 +2215,7 @@ complete -c spt -n "__fish_spt_using_subcommand dns; and __fish_seen_subcommand_
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
 complete -c spt -n "__fish_spt_using_subcommand dns; and __fish_seen_subcommand_from status" -l json -d 'JSON output'
+complete -c spt -n "__fish_spt_using_subcommand dns; and __fish_seen_subcommand_from status" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand dns; and __fish_seen_subcommand_from status" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand dns; and __fish_seen_subcommand_from status" -s v -l verbose -d 'Increase verbosity (repeat for more)'
 complete -c spt -n "__fish_spt_using_subcommand dns; and __fish_seen_subcommand_from status" -l no-color -d 'Disable color (legacy convenience flag; use `--color never`)'
@@ -2172,6 +2244,7 @@ trace\t'Trace and above (very verbose)'"
 complete -c spt -n "__fish_spt_using_subcommand dns; and __fish_seen_subcommand_from query" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand dns; and __fish_seen_subcommand_from query" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand dns; and __fish_seen_subcommand_from query" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand dns; and __fish_seen_subcommand_from query" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand dns; and __fish_seen_subcommand_from query" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -2197,6 +2270,7 @@ trace\t'Trace and above (very verbose)'"
 complete -c spt -n "__fish_spt_using_subcommand dns; and __fish_seen_subcommand_from upstream" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand dns; and __fish_seen_subcommand_from upstream" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand dns; and __fish_seen_subcommand_from upstream" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand dns; and __fish_seen_subcommand_from upstream" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand dns; and __fish_seen_subcommand_from upstream" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -2224,6 +2298,7 @@ trace\t'Trace and above (very verbose)'"
 complete -c spt -n "__fish_spt_using_subcommand dns; and __fish_seen_subcommand_from record" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand dns; and __fish_seen_subcommand_from record" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand dns; and __fish_seen_subcommand_from record" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand dns; and __fish_seen_subcommand_from record" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand dns; and __fish_seen_subcommand_from record" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -2252,6 +2327,7 @@ trace\t'Trace and above (very verbose)'"
 complete -c spt -n "__fish_spt_using_subcommand dns; and __fish_seen_subcommand_from hosts" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand dns; and __fish_seen_subcommand_from hosts" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand dns; and __fish_seen_subcommand_from hosts" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand dns; and __fish_seen_subcommand_from hosts" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand dns; and __fish_seen_subcommand_from hosts" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -2288,6 +2364,7 @@ trace\t'Trace and above (very verbose)'"
 complete -c spt -n "__fish_spt_using_subcommand firewall; and not __fish_seen_subcommand_from plan apply remove status interfaces bind-preview gateway policy help" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand firewall; and not __fish_seen_subcommand_from plan apply remove status interfaces bind-preview gateway policy help" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand firewall; and not __fish_seen_subcommand_from plan apply remove status interfaces bind-preview gateway policy help" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand firewall; and not __fish_seen_subcommand_from plan apply remove status interfaces bind-preview gateway policy help" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand firewall; and not __fish_seen_subcommand_from plan apply remove status interfaces bind-preview gateway policy help" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -2324,6 +2401,7 @@ complete -c spt -n "__fish_spt_using_subcommand firewall; and __fish_seen_subcom
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
 complete -c spt -n "__fish_spt_using_subcommand firewall; and __fish_seen_subcommand_from plan" -l json -d 'JSON output'
+complete -c spt -n "__fish_spt_using_subcommand firewall; and __fish_seen_subcommand_from plan" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand firewall; and __fish_seen_subcommand_from plan" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand firewall; and __fish_seen_subcommand_from plan" -s v -l verbose -d 'Increase verbosity (repeat for more)'
 complete -c spt -n "__fish_spt_using_subcommand firewall; and __fish_seen_subcommand_from plan" -l no-color -d 'Disable color (legacy convenience flag; use `--color never`)'
@@ -2352,6 +2430,7 @@ never\t'Never emit color escapes'"
 complete -c spt -n "__fish_spt_using_subcommand firewall; and __fish_seen_subcommand_from apply" -l user -d 'User-scoped scope'
 complete -c spt -n "__fish_spt_using_subcommand firewall; and __fish_seen_subcommand_from apply" -l system -d 'System-scoped scope'
 complete -c spt -n "__fish_spt_using_subcommand firewall; and __fish_seen_subcommand_from apply" -l dry-run -d 'Print actions without changing system state'
+complete -c spt -n "__fish_spt_using_subcommand firewall; and __fish_seen_subcommand_from apply" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand firewall; and __fish_seen_subcommand_from apply" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand firewall; and __fish_seen_subcommand_from apply" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand firewall; and __fish_seen_subcommand_from apply" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -2380,6 +2459,7 @@ never\t'Never emit color escapes'"
 complete -c spt -n "__fish_spt_using_subcommand firewall; and __fish_seen_subcommand_from remove" -l user -d 'User-scoped scope'
 complete -c spt -n "__fish_spt_using_subcommand firewall; and __fish_seen_subcommand_from remove" -l system -d 'System-scoped scope'
 complete -c spt -n "__fish_spt_using_subcommand firewall; and __fish_seen_subcommand_from remove" -l dry-run -d 'Print actions without changing system state'
+complete -c spt -n "__fish_spt_using_subcommand firewall; and __fish_seen_subcommand_from remove" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand firewall; and __fish_seen_subcommand_from remove" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand firewall; and __fish_seen_subcommand_from remove" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand firewall; and __fish_seen_subcommand_from remove" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -2405,6 +2485,7 @@ complete -c spt -n "__fish_spt_using_subcommand firewall; and __fish_seen_subcom
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
 complete -c spt -n "__fish_spt_using_subcommand firewall; and __fish_seen_subcommand_from status" -l json -d 'JSON output'
+complete -c spt -n "__fish_spt_using_subcommand firewall; and __fish_seen_subcommand_from status" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand firewall; and __fish_seen_subcommand_from status" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand firewall; and __fish_seen_subcommand_from status" -s v -l verbose -d 'Increase verbosity (repeat for more)'
 complete -c spt -n "__fish_spt_using_subcommand firewall; and __fish_seen_subcommand_from status" -l no-color -d 'Disable color (legacy convenience flag; use `--color never`)'
@@ -2430,6 +2511,7 @@ complete -c spt -n "__fish_spt_using_subcommand firewall; and __fish_seen_subcom
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
 complete -c spt -n "__fish_spt_using_subcommand firewall; and __fish_seen_subcommand_from interfaces" -l json -d 'JSON output'
+complete -c spt -n "__fish_spt_using_subcommand firewall; and __fish_seen_subcommand_from interfaces" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand firewall; and __fish_seen_subcommand_from interfaces" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand firewall; and __fish_seen_subcommand_from interfaces" -s v -l verbose -d 'Increase verbosity (repeat for more)'
 complete -c spt -n "__fish_spt_using_subcommand firewall; and __fish_seen_subcommand_from interfaces" -l no-color -d 'Disable color (legacy convenience flag; use `--color never`)'
@@ -2456,6 +2538,7 @@ complete -c spt -n "__fish_spt_using_subcommand firewall; and __fish_seen_subcom
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
 complete -c spt -n "__fish_spt_using_subcommand firewall; and __fish_seen_subcommand_from bind-preview" -l json -d 'JSON output'
+complete -c spt -n "__fish_spt_using_subcommand firewall; and __fish_seen_subcommand_from bind-preview" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand firewall; and __fish_seen_subcommand_from bind-preview" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand firewall; and __fish_seen_subcommand_from bind-preview" -s v -l verbose -d 'Increase verbosity (repeat for more)'
 complete -c spt -n "__fish_spt_using_subcommand firewall; and __fish_seen_subcommand_from bind-preview" -l no-color -d 'Disable color (legacy convenience flag; use `--color never`)'
@@ -2480,6 +2563,7 @@ trace\t'Trace and above (very verbose)'"
 complete -c spt -n "__fish_spt_using_subcommand firewall; and __fish_seen_subcommand_from gateway" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand firewall; and __fish_seen_subcommand_from gateway" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand firewall; and __fish_seen_subcommand_from gateway" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand firewall; and __fish_seen_subcommand_from gateway" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand firewall; and __fish_seen_subcommand_from gateway" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -2508,6 +2592,7 @@ trace\t'Trace and above (very verbose)'"
 complete -c spt -n "__fish_spt_using_subcommand firewall; and __fish_seen_subcommand_from policy" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand firewall; and __fish_seen_subcommand_from policy" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand firewall; and __fish_seen_subcommand_from policy" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand firewall; and __fish_seen_subcommand_from policy" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand firewall; and __fish_seen_subcommand_from policy" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -2547,6 +2632,7 @@ trace\t'Trace and above (very verbose)'"
 complete -c spt -n "__fish_spt_using_subcommand log; and not __fish_seen_subcommand_from tail remote test export help" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand log; and not __fish_seen_subcommand_from tail remote test export help" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand log; and not __fish_seen_subcommand_from tail remote test export help" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand log; and not __fish_seen_subcommand_from tail remote test export help" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand log; and not __fish_seen_subcommand_from tail remote test export help" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -2580,6 +2666,7 @@ always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
 complete -c spt -n "__fish_spt_using_subcommand log; and __fish_seen_subcommand_from tail" -l follow -d 'Follow mode'
 complete -c spt -n "__fish_spt_using_subcommand log; and __fish_seen_subcommand_from tail" -l json -d 'JSON output'
+complete -c spt -n "__fish_spt_using_subcommand log; and __fish_seen_subcommand_from tail" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand log; and __fish_seen_subcommand_from tail" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand log; and __fish_seen_subcommand_from tail" -s v -l verbose -d 'Increase verbosity (repeat for more)'
 complete -c spt -n "__fish_spt_using_subcommand log; and __fish_seen_subcommand_from tail" -l no-color -d 'Disable color (legacy convenience flag; use `--color never`)'
@@ -2604,6 +2691,7 @@ trace\t'Trace and above (very verbose)'"
 complete -c spt -n "__fish_spt_using_subcommand log; and __fish_seen_subcommand_from remote" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand log; and __fish_seen_subcommand_from remote" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand log; and __fish_seen_subcommand_from remote" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand log; and __fish_seen_subcommand_from remote" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand log; and __fish_seen_subcommand_from remote" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -2635,6 +2723,7 @@ trace\t'Trace and above (very verbose)'"
 complete -c spt -n "__fish_spt_using_subcommand log; and __fish_seen_subcommand_from test" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand log; and __fish_seen_subcommand_from test" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand log; and __fish_seen_subcommand_from test" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand log; and __fish_seen_subcommand_from test" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand log; and __fish_seen_subcommand_from test" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -2663,6 +2752,7 @@ trace\t'Trace and above (very verbose)'"
 complete -c spt -n "__fish_spt_using_subcommand log; and __fish_seen_subcommand_from export" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand log; and __fish_seen_subcommand_from export" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand log; and __fish_seen_subcommand_from export" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand log; and __fish_seen_subcommand_from export" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand log; and __fish_seen_subcommand_from export" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -2693,6 +2783,7 @@ trace\t'Trace and above (very verbose)'"
 complete -c spt -n "__fish_spt_using_subcommand observe; and not __fish_seen_subcommand_from metrics windows-event help" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand observe; and not __fish_seen_subcommand_from metrics windows-event help" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand observe; and not __fish_seen_subcommand_from metrics windows-event help" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand observe; and not __fish_seen_subcommand_from metrics windows-event help" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand observe; and not __fish_seen_subcommand_from metrics windows-event help" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -2723,6 +2814,7 @@ trace\t'Trace and above (very verbose)'"
 complete -c spt -n "__fish_spt_using_subcommand observe; and __fish_seen_subcommand_from metrics" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand observe; and __fish_seen_subcommand_from metrics" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand observe; and __fish_seen_subcommand_from metrics" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand observe; and __fish_seen_subcommand_from metrics" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand observe; and __fish_seen_subcommand_from metrics" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -2748,6 +2840,7 @@ trace\t'Trace and above (very verbose)'"
 complete -c spt -n "__fish_spt_using_subcommand observe; and __fish_seen_subcommand_from windows-event" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand observe; and __fish_seen_subcommand_from windows-event" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand observe; and __fish_seen_subcommand_from windows-event" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand observe; and __fish_seen_subcommand_from windows-event" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand observe; and __fish_seen_subcommand_from windows-event" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -2780,6 +2873,7 @@ trace\t'Trace and above (very verbose)'"
 complete -c spt -n "__fish_spt_using_subcommand event; and not __fish_seen_subcommand_from list test replay sink help" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand event; and not __fish_seen_subcommand_from list test replay sink help" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand event; and not __fish_seen_subcommand_from list test replay sink help" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand event; and not __fish_seen_subcommand_from list test replay sink help" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand event; and not __fish_seen_subcommand_from list test replay sink help" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -2811,6 +2905,7 @@ complete -c spt -n "__fish_spt_using_subcommand event; and __fish_seen_subcomman
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
 complete -c spt -n "__fish_spt_using_subcommand event; and __fish_seen_subcommand_from list" -l json -d 'JSON output'
+complete -c spt -n "__fish_spt_using_subcommand event; and __fish_seen_subcommand_from list" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand event; and __fish_seen_subcommand_from list" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand event; and __fish_seen_subcommand_from list" -s v -l verbose -d 'Increase verbosity (repeat for more)'
 complete -c spt -n "__fish_spt_using_subcommand event; and __fish_seen_subcommand_from list" -l no-color -d 'Disable color (legacy convenience flag; use `--color never`)'
@@ -2835,6 +2930,7 @@ trace\t'Trace and above (very verbose)'"
 complete -c spt -n "__fish_spt_using_subcommand event; and __fish_seen_subcommand_from test" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand event; and __fish_seen_subcommand_from test" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand event; and __fish_seen_subcommand_from test" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand event; and __fish_seen_subcommand_from test" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand event; and __fish_seen_subcommand_from test" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -2862,6 +2958,7 @@ trace\t'Trace and above (very verbose)'"
 complete -c spt -n "__fish_spt_using_subcommand event; and __fish_seen_subcommand_from replay" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand event; and __fish_seen_subcommand_from replay" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand event; and __fish_seen_subcommand_from replay" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand event; and __fish_seen_subcommand_from replay" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand event; and __fish_seen_subcommand_from replay" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -2887,6 +2984,7 @@ trace\t'Trace and above (very verbose)'"
 complete -c spt -n "__fish_spt_using_subcommand event; and __fish_seen_subcommand_from sink" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand event; and __fish_seen_subcommand_from sink" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand event; and __fish_seen_subcommand_from sink" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand event; and __fish_seen_subcommand_from sink" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand event; and __fish_seen_subcommand_from sink" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -2920,6 +3018,7 @@ trace\t'Trace and above (very verbose)'"
 complete -c spt -n "__fish_spt_using_subcommand stats; and not __fish_seen_subcommand_from summary live connections throughput errors export help" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand stats; and not __fish_seen_subcommand_from summary live connections throughput errors export help" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand stats; and not __fish_seen_subcommand_from summary live connections throughput errors export help" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand stats; and not __fish_seen_subcommand_from summary live connections throughput errors export help" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand stats; and not __fish_seen_subcommand_from summary live connections throughput errors export help" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -2954,6 +3053,7 @@ complete -c spt -n "__fish_spt_using_subcommand stats; and __fish_seen_subcomman
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
 complete -c spt -n "__fish_spt_using_subcommand stats; and __fish_seen_subcommand_from summary" -l json -d 'JSON output'
+complete -c spt -n "__fish_spt_using_subcommand stats; and __fish_seen_subcommand_from summary" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand stats; and __fish_seen_subcommand_from summary" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand stats; and __fish_seen_subcommand_from summary" -s v -l verbose -d 'Increase verbosity (repeat for more)'
 complete -c spt -n "__fish_spt_using_subcommand stats; and __fish_seen_subcommand_from summary" -l no-color -d 'Disable color (legacy convenience flag; use `--color never`)'
@@ -2980,6 +3080,7 @@ trace\t'Trace and above (very verbose)'"
 complete -c spt -n "__fish_spt_using_subcommand stats; and __fish_seen_subcommand_from live" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand stats; and __fish_seen_subcommand_from live" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand stats; and __fish_seen_subcommand_from live" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand stats; and __fish_seen_subcommand_from live" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand stats; and __fish_seen_subcommand_from live" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -3007,6 +3108,7 @@ complete -c spt -n "__fish_spt_using_subcommand stats; and __fish_seen_subcomman
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
 complete -c spt -n "__fish_spt_using_subcommand stats; and __fish_seen_subcommand_from connections" -l json -d 'JSON output'
+complete -c spt -n "__fish_spt_using_subcommand stats; and __fish_seen_subcommand_from connections" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand stats; and __fish_seen_subcommand_from connections" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand stats; and __fish_seen_subcommand_from connections" -s v -l verbose -d 'Increase verbosity (repeat for more)'
 complete -c spt -n "__fish_spt_using_subcommand stats; and __fish_seen_subcommand_from connections" -l no-color -d 'Disable color (legacy convenience flag; use `--color never`)'
@@ -3034,6 +3136,7 @@ complete -c spt -n "__fish_spt_using_subcommand stats; and __fish_seen_subcomman
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
 complete -c spt -n "__fish_spt_using_subcommand stats; and __fish_seen_subcommand_from throughput" -l json -d 'JSON output'
+complete -c spt -n "__fish_spt_using_subcommand stats; and __fish_seen_subcommand_from throughput" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand stats; and __fish_seen_subcommand_from throughput" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand stats; and __fish_seen_subcommand_from throughput" -s v -l verbose -d 'Increase verbosity (repeat for more)'
 complete -c spt -n "__fish_spt_using_subcommand stats; and __fish_seen_subcommand_from throughput" -l no-color -d 'Disable color (legacy convenience flag; use `--color never`)'
@@ -3060,6 +3163,7 @@ complete -c spt -n "__fish_spt_using_subcommand stats; and __fish_seen_subcomman
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
 complete -c spt -n "__fish_spt_using_subcommand stats; and __fish_seen_subcommand_from errors" -l json -d 'JSON output'
+complete -c spt -n "__fish_spt_using_subcommand stats; and __fish_seen_subcommand_from errors" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand stats; and __fish_seen_subcommand_from errors" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand stats; and __fish_seen_subcommand_from errors" -s v -l verbose -d 'Increase verbosity (repeat for more)'
 complete -c spt -n "__fish_spt_using_subcommand stats; and __fish_seen_subcommand_from errors" -l no-color -d 'Disable color (legacy convenience flag; use `--color never`)'
@@ -3089,6 +3193,7 @@ trace\t'Trace and above (very verbose)'"
 complete -c spt -n "__fish_spt_using_subcommand stats; and __fish_seen_subcommand_from export" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand stats; and __fish_seen_subcommand_from export" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand stats; and __fish_seen_subcommand_from export" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand stats; and __fish_seen_subcommand_from export" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand stats; and __fish_seen_subcommand_from export" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -3121,6 +3226,7 @@ trace\t'Trace and above (very verbose)'"
 complete -c spt -n "__fish_spt_using_subcommand session; and not __fish_seen_subcommand_from list show close drain top help" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand session; and not __fish_seen_subcommand_from list show close drain top help" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand session; and not __fish_seen_subcommand_from list show close drain top help" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand session; and not __fish_seen_subcommand_from list show close drain top help" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand session; and not __fish_seen_subcommand_from list show close drain top help" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -3154,6 +3260,7 @@ complete -c spt -n "__fish_spt_using_subcommand session; and __fish_seen_subcomm
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
 complete -c spt -n "__fish_spt_using_subcommand session; and __fish_seen_subcommand_from list" -l json -d 'JSON output'
+complete -c spt -n "__fish_spt_using_subcommand session; and __fish_seen_subcommand_from list" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand session; and __fish_seen_subcommand_from list" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand session; and __fish_seen_subcommand_from list" -s v -l verbose -d 'Increase verbosity (repeat for more)'
 complete -c spt -n "__fish_spt_using_subcommand session; and __fish_seen_subcommand_from list" -l no-color -d 'Disable color (legacy convenience flag; use `--color never`)'
@@ -3179,6 +3286,7 @@ complete -c spt -n "__fish_spt_using_subcommand session; and __fish_seen_subcomm
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
 complete -c spt -n "__fish_spt_using_subcommand session; and __fish_seen_subcommand_from show" -l json -d 'JSON output'
+complete -c spt -n "__fish_spt_using_subcommand session; and __fish_seen_subcommand_from show" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand session; and __fish_seen_subcommand_from show" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand session; and __fish_seen_subcommand_from show" -s v -l verbose -d 'Increase verbosity (repeat for more)'
 complete -c spt -n "__fish_spt_using_subcommand session; and __fish_seen_subcommand_from show" -l no-color -d 'Disable color (legacy convenience flag; use `--color never`)'
@@ -3205,6 +3313,7 @@ trace\t'Trace and above (very verbose)'"
 complete -c spt -n "__fish_spt_using_subcommand session; and __fish_seen_subcommand_from close" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand session; and __fish_seen_subcommand_from close" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand session; and __fish_seen_subcommand_from close" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand session; and __fish_seen_subcommand_from close" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand session; and __fish_seen_subcommand_from close" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -3231,6 +3340,7 @@ trace\t'Trace and above (very verbose)'"
 complete -c spt -n "__fish_spt_using_subcommand session; and __fish_seen_subcommand_from drain" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand session; and __fish_seen_subcommand_from drain" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand session; and __fish_seen_subcommand_from drain" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand session; and __fish_seen_subcommand_from drain" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand session; and __fish_seen_subcommand_from drain" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -3261,6 +3371,7 @@ trace\t'Trace and above (very verbose)'"
 complete -c spt -n "__fish_spt_using_subcommand session; and __fish_seen_subcommand_from top" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand session; and __fish_seen_subcommand_from top" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand session; and __fish_seen_subcommand_from top" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand session; and __fish_seen_subcommand_from top" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand session; and __fish_seen_subcommand_from top" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -3292,6 +3403,7 @@ trace\t'Trace and above (very verbose)'"
 complete -c spt -n "__fish_spt_using_subcommand ftp; and not __fish_seen_subcommand_from translator help" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand ftp; and not __fish_seen_subcommand_from translator help" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand ftp; and not __fish_seen_subcommand_from translator help" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand ftp; and not __fish_seen_subcommand_from translator help" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand ftp; and not __fish_seen_subcommand_from translator help" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -3319,6 +3431,7 @@ trace\t'Trace and above (very verbose)'"
 complete -c spt -n "__fish_spt_using_subcommand ftp; and __fish_seen_subcommand_from translator" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand ftp; and __fish_seen_subcommand_from translator" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand ftp; and __fish_seen_subcommand_from translator" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand ftp; and __fish_seen_subcommand_from translator" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand ftp; and __fish_seen_subcommand_from translator" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -3348,6 +3461,7 @@ trace\t'Trace and above (very verbose)'"
 complete -c spt -n "__fish_spt_using_subcommand sftp; and not __fish_seen_subcommand_from test list stat get put mkdir rm rmdir rename cat tail chmod symlink readlink realpath put-recursive get-recursive mount drive umount help" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand sftp; and not __fish_seen_subcommand_from test list stat get put mkdir rm rmdir rename cat tail chmod symlink readlink realpath put-recursive get-recursive mount drive umount help" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand sftp; and not __fish_seen_subcommand_from test list stat get put mkdir rm rmdir rename cat tail chmod symlink readlink realpath put-recursive get-recursive mount drive umount help" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand sftp; and not __fish_seen_subcommand_from test list stat get put mkdir rm rmdir rename cat tail chmod symlink readlink realpath put-recursive get-recursive mount drive umount help" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand sftp; and not __fish_seen_subcommand_from test list stat get put mkdir rm rmdir rename cat tail chmod symlink readlink realpath put-recursive get-recursive mount drive umount help" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -3395,6 +3509,7 @@ complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from test" -l json -d 'JSON output'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from test" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from test" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from test" -s v -l verbose -d 'Increase verbosity (repeat for more)'
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from test" -l no-color -d 'Disable color (legacy convenience flag; use `--color never`)'
@@ -3420,6 +3535,7 @@ complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from list" -l json -d 'JSON output'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from list" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from list" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from list" -s v -l verbose -d 'Increase verbosity (repeat for more)'
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from list" -l no-color -d 'Disable color (legacy convenience flag; use `--color never`)'
@@ -3445,6 +3561,7 @@ complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from stat" -l json -d 'JSON output'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from stat" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from stat" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from stat" -s v -l verbose -d 'Increase verbosity (repeat for more)'
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from stat" -l no-color -d 'Disable color (legacy convenience flag; use `--color never`)'
@@ -3470,6 +3587,7 @@ trace\t'Trace and above (very verbose)'"
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from get" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from get" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from get" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from get" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from get" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -3495,6 +3613,7 @@ trace\t'Trace and above (very verbose)'"
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from put" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from put" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from put" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from put" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from put" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -3521,6 +3640,7 @@ complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from mkdir" -l json -d 'JSON output'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from mkdir" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from mkdir" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from mkdir" -s v -l verbose -d 'Increase verbosity (repeat for more)'
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from mkdir" -l no-color -d 'Disable color (legacy convenience flag; use `--color never`)'
@@ -3546,6 +3666,7 @@ complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from rm" -l json -d 'JSON output'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from rm" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from rm" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from rm" -s v -l verbose -d 'Increase verbosity (repeat for more)'
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from rm" -l no-color -d 'Disable color (legacy convenience flag; use `--color never`)'
@@ -3571,6 +3692,7 @@ complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from rmdir" -l json -d 'JSON output'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from rmdir" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from rmdir" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from rmdir" -s v -l verbose -d 'Increase verbosity (repeat for more)'
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from rmdir" -l no-color -d 'Disable color (legacy convenience flag; use `--color never`)'
@@ -3595,6 +3717,7 @@ trace\t'Trace and above (very verbose)'"
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from rename" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from rename" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from rename" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from rename" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from rename" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -3621,6 +3744,7 @@ trace\t'Trace and above (very verbose)'"
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from cat" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from cat" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from cat" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from cat" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from cat" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -3647,6 +3771,7 @@ trace\t'Trace and above (very verbose)'"
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from tail" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from tail" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from tail" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from tail" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from tail" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -3673,6 +3798,7 @@ trace\t'Trace and above (very verbose)'"
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from chmod" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from chmod" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from chmod" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from chmod" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from chmod" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -3699,6 +3825,7 @@ trace\t'Trace and above (very verbose)'"
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from symlink" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from symlink" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from symlink" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from symlink" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from symlink" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -3725,6 +3852,7 @@ complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from readlink" -l json -d 'JSON output'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from readlink" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from readlink" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from readlink" -s v -l verbose -d 'Increase verbosity (repeat for more)'
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from readlink" -l no-color -d 'Disable color (legacy convenience flag; use `--color never`)'
@@ -3750,6 +3878,7 @@ complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from realpath" -l json -d 'JSON output'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from realpath" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from realpath" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from realpath" -s v -l verbose -d 'Increase verbosity (repeat for more)'
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from realpath" -l no-color -d 'Disable color (legacy convenience flag; use `--color never`)'
@@ -3779,6 +3908,7 @@ always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from put-recursive" -l resume -d 'Resume mode: seek into existing target files instead of truncating'
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from put-recursive" -l follow-symlinks -d 'Follow symbolic links during the walk (loops are still detected)'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from put-recursive" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from put-recursive" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from put-recursive" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from put-recursive" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -3809,6 +3939,7 @@ always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from get-recursive" -l resume -d 'Resume mode: seek into existing target files instead of truncating'
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from get-recursive" -l follow-symlinks -d 'Follow symbolic links during the walk (loops are still detected)'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from get-recursive" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from get-recursive" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from get-recursive" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from get-recursive" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -3834,6 +3965,7 @@ trace\t'Trace and above (very verbose)'"
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from mount" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from mount" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from mount" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from mount" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from mount" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -3866,6 +3998,7 @@ trace\t'Trace and above (very verbose)'"
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from drive" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from drive" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from drive" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from drive" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from drive" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -3897,6 +4030,7 @@ complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from umount" -l json -d 'JSON output'
+complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from umount" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from umount" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from umount" -s v -l verbose -d 'Increase verbosity (repeat for more)'
 complete -c spt -n "__fish_spt_using_subcommand sftp; and __fish_seen_subcommand_from umount" -l no-color -d 'Disable color (legacy convenience flag; use `--color never`)'
@@ -3942,6 +4076,7 @@ trace\t'Trace and above (very verbose)'"
 complete -c spt -n "__fish_spt_using_subcommand diagnose; and not __fish_seen_subcommand_from run network auth trust dns bind port service secrets observability mcp bundle help" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand diagnose; and not __fish_seen_subcommand_from run network auth trust dns bind port service secrets observability mcp bundle help" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand diagnose; and not __fish_seen_subcommand_from run network auth trust dns bind port service secrets observability mcp bundle help" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand diagnose; and not __fish_seen_subcommand_from run network auth trust dns bind port service secrets observability mcp bundle help" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand diagnose; and not __fish_seen_subcommand_from run network auth trust dns bind port service secrets observability mcp bundle help" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -3985,6 +4120,7 @@ complete -c spt -n "__fish_spt_using_subcommand diagnose; and __fish_seen_subcom
 complete -c spt -n "__fish_spt_using_subcommand diagnose; and __fish_seen_subcommand_from run" -l offline -d 'Restrict to offline-only checks'
 complete -c spt -n "__fish_spt_using_subcommand diagnose; and __fish_seen_subcommand_from run" -l online -d 'Restrict to online-only checks'
 complete -c spt -n "__fish_spt_using_subcommand diagnose; and __fish_seen_subcommand_from run" -l json -d 'JSON output'
+complete -c spt -n "__fish_spt_using_subcommand diagnose; and __fish_seen_subcommand_from run" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand diagnose; and __fish_seen_subcommand_from run" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand diagnose; and __fish_seen_subcommand_from run" -s v -l verbose -d 'Increase verbosity (repeat for more)'
 complete -c spt -n "__fish_spt_using_subcommand diagnose; and __fish_seen_subcommand_from run" -l no-color -d 'Disable color (legacy convenience flag; use `--color never`)'
@@ -4011,6 +4147,7 @@ complete -c spt -n "__fish_spt_using_subcommand diagnose; and __fish_seen_subcom
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
 complete -c spt -n "__fish_spt_using_subcommand diagnose; and __fish_seen_subcommand_from network" -l json -d 'JSON output'
+complete -c spt -n "__fish_spt_using_subcommand diagnose; and __fish_seen_subcommand_from network" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand diagnose; and __fish_seen_subcommand_from network" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand diagnose; and __fish_seen_subcommand_from network" -s v -l verbose -d 'Increase verbosity (repeat for more)'
 complete -c spt -n "__fish_spt_using_subcommand diagnose; and __fish_seen_subcommand_from network" -l no-color -d 'Disable color (legacy convenience flag; use `--color never`)'
@@ -4036,6 +4173,7 @@ always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
 complete -c spt -n "__fish_spt_using_subcommand diagnose; and __fish_seen_subcommand_from auth" -l probe -d 'Run a live connect probe (forward-compatible; structural-only today)'
 complete -c spt -n "__fish_spt_using_subcommand diagnose; and __fish_seen_subcommand_from auth" -l json -d 'JSON output'
+complete -c spt -n "__fish_spt_using_subcommand diagnose; and __fish_seen_subcommand_from auth" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand diagnose; and __fish_seen_subcommand_from auth" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand diagnose; and __fish_seen_subcommand_from auth" -s v -l verbose -d 'Increase verbosity (repeat for more)'
 complete -c spt -n "__fish_spt_using_subcommand diagnose; and __fish_seen_subcommand_from auth" -l no-color -d 'Disable color (legacy convenience flag; use `--color never`)'
@@ -4061,6 +4199,7 @@ always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
 complete -c spt -n "__fish_spt_using_subcommand diagnose; and __fish_seen_subcommand_from trust" -l probe -d 'Run a live connect probe (forward-compatible; structural-only today)'
 complete -c spt -n "__fish_spt_using_subcommand diagnose; and __fish_seen_subcommand_from trust" -l json -d 'JSON output'
+complete -c spt -n "__fish_spt_using_subcommand diagnose; and __fish_seen_subcommand_from trust" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand diagnose; and __fish_seen_subcommand_from trust" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand diagnose; and __fish_seen_subcommand_from trust" -s v -l verbose -d 'Increase verbosity (repeat for more)'
 complete -c spt -n "__fish_spt_using_subcommand diagnose; and __fish_seen_subcommand_from trust" -l no-color -d 'Disable color (legacy convenience flag; use `--color never`)'
@@ -4087,6 +4226,7 @@ complete -c spt -n "__fish_spt_using_subcommand diagnose; and __fish_seen_subcom
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
 complete -c spt -n "__fish_spt_using_subcommand diagnose; and __fish_seen_subcommand_from dns" -l json -d 'JSON output'
+complete -c spt -n "__fish_spt_using_subcommand diagnose; and __fish_seen_subcommand_from dns" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand diagnose; and __fish_seen_subcommand_from dns" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand diagnose; and __fish_seen_subcommand_from dns" -s v -l verbose -d 'Increase verbosity (repeat for more)'
 complete -c spt -n "__fish_spt_using_subcommand diagnose; and __fish_seen_subcommand_from dns" -l no-color -d 'Disable color (legacy convenience flag; use `--color never`)'
@@ -4113,6 +4253,7 @@ complete -c spt -n "__fish_spt_using_subcommand diagnose; and __fish_seen_subcom
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
 complete -c spt -n "__fish_spt_using_subcommand diagnose; and __fish_seen_subcommand_from bind" -l json -d 'JSON output'
+complete -c spt -n "__fish_spt_using_subcommand diagnose; and __fish_seen_subcommand_from bind" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand diagnose; and __fish_seen_subcommand_from bind" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand diagnose; and __fish_seen_subcommand_from bind" -s v -l verbose -d 'Increase verbosity (repeat for more)'
 complete -c spt -n "__fish_spt_using_subcommand diagnose; and __fish_seen_subcommand_from bind" -l no-color -d 'Disable color (legacy convenience flag; use `--color never`)'
@@ -4143,6 +4284,7 @@ complete -c spt -n "__fish_spt_using_subcommand diagnose; and __fish_seen_subcom
 complete -c spt -n "__fish_spt_using_subcommand diagnose; and __fish_seen_subcommand_from port" -l udp -d 'UDP probe'
 complete -c spt -n "__fish_spt_using_subcommand diagnose; and __fish_seen_subcommand_from port" -l autodetect-service -d 'Try to identify the service'
 complete -c spt -n "__fish_spt_using_subcommand diagnose; and __fish_seen_subcommand_from port" -l json -d 'JSON output'
+complete -c spt -n "__fish_spt_using_subcommand diagnose; and __fish_seen_subcommand_from port" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand diagnose; and __fish_seen_subcommand_from port" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand diagnose; and __fish_seen_subcommand_from port" -s v -l verbose -d 'Increase verbosity (repeat for more)'
 complete -c spt -n "__fish_spt_using_subcommand diagnose; and __fish_seen_subcommand_from port" -l no-color -d 'Disable color (legacy convenience flag; use `--color never`)'
@@ -4170,6 +4312,7 @@ never\t'Never emit color escapes'"
 complete -c spt -n "__fish_spt_using_subcommand diagnose; and __fish_seen_subcommand_from service" -l user -d 'User scope'
 complete -c spt -n "__fish_spt_using_subcommand diagnose; and __fish_seen_subcommand_from service" -l system -d 'System scope'
 complete -c spt -n "__fish_spt_using_subcommand diagnose; and __fish_seen_subcommand_from service" -l json -d 'JSON output'
+complete -c spt -n "__fish_spt_using_subcommand diagnose; and __fish_seen_subcommand_from service" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand diagnose; and __fish_seen_subcommand_from service" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand diagnose; and __fish_seen_subcommand_from service" -s v -l verbose -d 'Increase verbosity (repeat for more)'
 complete -c spt -n "__fish_spt_using_subcommand diagnose; and __fish_seen_subcommand_from service" -l no-color -d 'Disable color (legacy convenience flag; use `--color never`)'
@@ -4195,6 +4338,7 @@ complete -c spt -n "__fish_spt_using_subcommand diagnose; and __fish_seen_subcom
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
 complete -c spt -n "__fish_spt_using_subcommand diagnose; and __fish_seen_subcommand_from secrets" -l json -d 'JSON output'
+complete -c spt -n "__fish_spt_using_subcommand diagnose; and __fish_seen_subcommand_from secrets" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand diagnose; and __fish_seen_subcommand_from secrets" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand diagnose; and __fish_seen_subcommand_from secrets" -s v -l verbose -d 'Increase verbosity (repeat for more)'
 complete -c spt -n "__fish_spt_using_subcommand diagnose; and __fish_seen_subcommand_from secrets" -l no-color -d 'Disable color (legacy convenience flag; use `--color never`)'
@@ -4221,6 +4365,7 @@ complete -c spt -n "__fish_spt_using_subcommand diagnose; and __fish_seen_subcom
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
 complete -c spt -n "__fish_spt_using_subcommand diagnose; and __fish_seen_subcommand_from observability" -l json -d 'JSON output'
+complete -c spt -n "__fish_spt_using_subcommand diagnose; and __fish_seen_subcommand_from observability" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand diagnose; and __fish_seen_subcommand_from observability" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand diagnose; and __fish_seen_subcommand_from observability" -s v -l verbose -d 'Increase verbosity (repeat for more)'
 complete -c spt -n "__fish_spt_using_subcommand diagnose; and __fish_seen_subcommand_from observability" -l no-color -d 'Disable color (legacy convenience flag; use `--color never`)'
@@ -4246,6 +4391,7 @@ complete -c spt -n "__fish_spt_using_subcommand diagnose; and __fish_seen_subcom
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
 complete -c spt -n "__fish_spt_using_subcommand diagnose; and __fish_seen_subcommand_from mcp" -l json -d 'JSON output'
+complete -c spt -n "__fish_spt_using_subcommand diagnose; and __fish_seen_subcommand_from mcp" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand diagnose; and __fish_seen_subcommand_from mcp" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand diagnose; and __fish_seen_subcommand_from mcp" -s v -l verbose -d 'Increase verbosity (repeat for more)'
 complete -c spt -n "__fish_spt_using_subcommand diagnose; and __fish_seen_subcommand_from mcp" -l no-color -d 'Disable color (legacy convenience flag; use `--color never`)'
@@ -4273,6 +4419,7 @@ complete -c spt -n "__fish_spt_using_subcommand diagnose; and __fish_seen_subcom
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
 complete -c spt -n "__fish_spt_using_subcommand diagnose; and __fish_seen_subcommand_from bundle" -l redacted -d 'Redact secrets and PII'
+complete -c spt -n "__fish_spt_using_subcommand diagnose; and __fish_seen_subcommand_from bundle" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand diagnose; and __fish_seen_subcommand_from bundle" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand diagnose; and __fish_seen_subcommand_from bundle" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand diagnose; and __fish_seen_subcommand_from bundle" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -4311,6 +4458,7 @@ trace\t'Trace and above (very verbose)'"
 complete -c spt -n "__fish_spt_using_subcommand benchmark; and not __fish_seen_subcommand_from run latency throughput udp reconnect dns limits report help" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand benchmark; and not __fish_seen_subcommand_from run latency throughput udp reconnect dns limits report help" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand benchmark; and not __fish_seen_subcommand_from run latency throughput udp reconnect dns limits report help" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand benchmark; and not __fish_seen_subcommand_from run latency throughput udp reconnect dns limits report help" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand benchmark; and not __fish_seen_subcommand_from run latency throughput udp reconnect dns limits report help" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -4352,6 +4500,7 @@ always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
 complete -c spt -n "__fish_spt_using_subcommand benchmark; and __fish_seen_subcommand_from run" -l unsafe-allow-production-impact -d 'Allow drivers that may impact production. Combined with the `[benchmark.allow_production_impact]` config flag'
 complete -c spt -n "__fish_spt_using_subcommand benchmark; and __fish_seen_subcommand_from run" -l json -d 'JSON output'
+complete -c spt -n "__fish_spt_using_subcommand benchmark; and __fish_seen_subcommand_from run" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand benchmark; and __fish_seen_subcommand_from run" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand benchmark; and __fish_seen_subcommand_from run" -s v -l verbose -d 'Increase verbosity (repeat for more)'
 complete -c spt -n "__fish_spt_using_subcommand benchmark; and __fish_seen_subcommand_from run" -l no-color -d 'Disable color (legacy convenience flag; use `--color never`)'
@@ -4378,7 +4527,9 @@ trace\t'Trace and above (very verbose)'"
 complete -c spt -n "__fish_spt_using_subcommand benchmark; and __fish_seen_subcommand_from latency" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand benchmark; and __fish_seen_subcommand_from latency" -l unsafe-allow-production-impact -d 'Allow drivers that may impact production. Combined with the `[benchmark.allow_production_impact]` config flag'
 complete -c spt -n "__fish_spt_using_subcommand benchmark; and __fish_seen_subcommand_from latency" -l json -d 'JSON output'
+complete -c spt -n "__fish_spt_using_subcommand benchmark; and __fish_seen_subcommand_from latency" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand benchmark; and __fish_seen_subcommand_from latency" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand benchmark; and __fish_seen_subcommand_from latency" -s v -l verbose -d 'Increase verbosity (repeat for more)'
 complete -c spt -n "__fish_spt_using_subcommand benchmark; and __fish_seen_subcommand_from latency" -l no-color -d 'Disable color (legacy convenience flag; use `--color never`)'
@@ -4406,7 +4557,9 @@ trace\t'Trace and above (very verbose)'"
 complete -c spt -n "__fish_spt_using_subcommand benchmark; and __fish_seen_subcommand_from throughput" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand benchmark; and __fish_seen_subcommand_from throughput" -l unsafe-allow-production-impact -d 'Allow drivers that may impact production. Combined with the `[benchmark.allow_production_impact]` config flag'
 complete -c spt -n "__fish_spt_using_subcommand benchmark; and __fish_seen_subcommand_from throughput" -l json -d 'JSON output'
+complete -c spt -n "__fish_spt_using_subcommand benchmark; and __fish_seen_subcommand_from throughput" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand benchmark; and __fish_seen_subcommand_from throughput" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand benchmark; and __fish_seen_subcommand_from throughput" -s v -l verbose -d 'Increase verbosity (repeat for more)'
 complete -c spt -n "__fish_spt_using_subcommand benchmark; and __fish_seen_subcommand_from throughput" -l no-color -d 'Disable color (legacy convenience flag; use `--color never`)'
@@ -4435,7 +4588,9 @@ trace\t'Trace and above (very verbose)'"
 complete -c spt -n "__fish_spt_using_subcommand benchmark; and __fish_seen_subcommand_from udp" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand benchmark; and __fish_seen_subcommand_from udp" -l unsafe-allow-production-impact -d 'Allow drivers that may impact production. Combined with the `[benchmark.allow_production_impact]` config flag'
 complete -c spt -n "__fish_spt_using_subcommand benchmark; and __fish_seen_subcommand_from udp" -l json -d 'JSON output'
+complete -c spt -n "__fish_spt_using_subcommand benchmark; and __fish_seen_subcommand_from udp" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand benchmark; and __fish_seen_subcommand_from udp" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand benchmark; and __fish_seen_subcommand_from udp" -s v -l verbose -d 'Increase verbosity (repeat for more)'
 complete -c spt -n "__fish_spt_using_subcommand benchmark; and __fish_seen_subcommand_from udp" -l no-color -d 'Disable color (legacy convenience flag; use `--color never`)'
@@ -4461,7 +4616,9 @@ trace\t'Trace and above (very verbose)'"
 complete -c spt -n "__fish_spt_using_subcommand benchmark; and __fish_seen_subcommand_from reconnect" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand benchmark; and __fish_seen_subcommand_from reconnect" -l unsafe-allow-production-impact -d 'Allow drivers that may impact production. Combined with the `[benchmark.allow_production_impact]` config flag'
 complete -c spt -n "__fish_spt_using_subcommand benchmark; and __fish_seen_subcommand_from reconnect" -l json -d 'JSON output'
+complete -c spt -n "__fish_spt_using_subcommand benchmark; and __fish_seen_subcommand_from reconnect" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand benchmark; and __fish_seen_subcommand_from reconnect" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand benchmark; and __fish_seen_subcommand_from reconnect" -s v -l verbose -d 'Increase verbosity (repeat for more)'
 complete -c spt -n "__fish_spt_using_subcommand benchmark; and __fish_seen_subcommand_from reconnect" -l no-color -d 'Disable color (legacy convenience flag; use `--color never`)'
@@ -4489,6 +4646,7 @@ complete -c spt -n "__fish_spt_using_subcommand benchmark; and __fish_seen_subco
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
 complete -c spt -n "__fish_spt_using_subcommand benchmark; and __fish_seen_subcommand_from dns" -l json -d 'JSON output'
+complete -c spt -n "__fish_spt_using_subcommand benchmark; and __fish_seen_subcommand_from dns" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand benchmark; and __fish_seen_subcommand_from dns" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand benchmark; and __fish_seen_subcommand_from dns" -s v -l verbose -d 'Increase verbosity (repeat for more)'
 complete -c spt -n "__fish_spt_using_subcommand benchmark; and __fish_seen_subcommand_from dns" -l no-color -d 'Disable color (legacy convenience flag; use `--color never`)'
@@ -4514,7 +4672,9 @@ trace\t'Trace and above (very verbose)'"
 complete -c spt -n "__fish_spt_using_subcommand benchmark; and __fish_seen_subcommand_from limits" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand benchmark; and __fish_seen_subcommand_from limits" -l unsafe-allow-production-impact -d 'Allow drivers that may impact production. Combined with the `[benchmark.allow_production_impact]` config flag'
 complete -c spt -n "__fish_spt_using_subcommand benchmark; and __fish_seen_subcommand_from limits" -l json -d 'JSON output'
+complete -c spt -n "__fish_spt_using_subcommand benchmark; and __fish_seen_subcommand_from limits" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand benchmark; and __fish_seen_subcommand_from limits" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand benchmark; and __fish_seen_subcommand_from limits" -s v -l verbose -d 'Increase verbosity (repeat for more)'
 complete -c spt -n "__fish_spt_using_subcommand benchmark; and __fish_seen_subcommand_from limits" -l no-color -d 'Disable color (legacy convenience flag; use `--color never`)'
@@ -4539,6 +4699,7 @@ trace\t'Trace and above (very verbose)'"
 complete -c spt -n "__fish_spt_using_subcommand benchmark; and __fish_seen_subcommand_from report" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand benchmark; and __fish_seen_subcommand_from report" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand benchmark; and __fish_seen_subcommand_from report" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand benchmark; and __fish_seen_subcommand_from report" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand benchmark; and __fish_seen_subcommand_from report" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -4576,6 +4737,7 @@ trace\t'Trace and above (very verbose)'"
 complete -c spt -n "__fish_spt_using_subcommand mcp; and not __fish_seen_subcommand_from serve inspect policy help" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand mcp; and not __fish_seen_subcommand_from serve inspect policy help" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand mcp; and not __fish_seen_subcommand_from serve inspect policy help" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand mcp; and not __fish_seen_subcommand_from serve inspect policy help" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand mcp; and not __fish_seen_subcommand_from serve inspect policy help" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -4609,6 +4771,7 @@ never\t'Never emit color escapes'"
 complete -c spt -n "__fish_spt_using_subcommand mcp; and __fish_seen_subcommand_from serve" -l stdio -d 'Speak MCP over stdio'
 complete -c spt -n "__fish_spt_using_subcommand mcp; and __fish_seen_subcommand_from serve" -l read-only -d 'Force read-only'
 complete -c spt -n "__fish_spt_using_subcommand mcp; and __fish_seen_subcommand_from serve" -l enable -d 'Explicit `--enable` toggle (required unless `[mcp].enabled = true`)'
+complete -c spt -n "__fish_spt_using_subcommand mcp; and __fish_seen_subcommand_from serve" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand mcp; and __fish_seen_subcommand_from serve" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand mcp; and __fish_seen_subcommand_from serve" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand mcp; and __fish_seen_subcommand_from serve" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -4635,6 +4798,7 @@ complete -c spt -n "__fish_spt_using_subcommand mcp; and __fish_seen_subcommand_
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
 complete -c spt -n "__fish_spt_using_subcommand mcp; and __fish_seen_subcommand_from inspect" -l json -d 'JSON output'
+complete -c spt -n "__fish_spt_using_subcommand mcp; and __fish_seen_subcommand_from inspect" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand mcp; and __fish_seen_subcommand_from inspect" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand mcp; and __fish_seen_subcommand_from inspect" -s v -l verbose -d 'Increase verbosity (repeat for more)'
 complete -c spt -n "__fish_spt_using_subcommand mcp; and __fish_seen_subcommand_from inspect" -l no-color -d 'Disable color (legacy convenience flag; use `--color never`)'
@@ -4659,6 +4823,7 @@ trace\t'Trace and above (very verbose)'"
 complete -c spt -n "__fish_spt_using_subcommand mcp; and __fish_seen_subcommand_from policy" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand mcp; and __fish_seen_subcommand_from policy" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand mcp; and __fish_seen_subcommand_from policy" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand mcp; and __fish_seen_subcommand_from policy" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand mcp; and __fish_seen_subcommand_from policy" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -4691,6 +4856,7 @@ trace\t'Trace and above (very verbose)'"
 complete -c spt -n "__fish_spt_using_subcommand status; and not __fish_seen_subcommand_from serve status token help" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand status; and not __fish_seen_subcommand_from serve status token help" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand status; and not __fish_seen_subcommand_from serve status token help" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand status; and not __fish_seen_subcommand_from serve status token help" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand status; and not __fish_seen_subcommand_from serve status token help" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -4721,6 +4887,7 @@ trace\t'Trace and above (very verbose)'"
 complete -c spt -n "__fish_spt_using_subcommand status; and __fish_seen_subcommand_from serve" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand status; and __fish_seen_subcommand_from serve" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand status; and __fish_seen_subcommand_from serve" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand status; and __fish_seen_subcommand_from serve" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand status; and __fish_seen_subcommand_from serve" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -4747,6 +4914,7 @@ complete -c spt -n "__fish_spt_using_subcommand status; and __fish_seen_subcomma
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
 complete -c spt -n "__fish_spt_using_subcommand status; and __fish_seen_subcommand_from status" -l detail -d 'Show the resolved auth mode and TLS state in addition to the bind'
+complete -c spt -n "__fish_spt_using_subcommand status; and __fish_seen_subcommand_from status" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand status; and __fish_seen_subcommand_from status" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand status; and __fish_seen_subcommand_from status" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand status; and __fish_seen_subcommand_from status" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -4772,6 +4940,7 @@ trace\t'Trace and above (very verbose)'"
 complete -c spt -n "__fish_spt_using_subcommand status; and __fish_seen_subcommand_from token" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand status; and __fish_seen_subcommand_from token" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand status; and __fish_seen_subcommand_from token" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand status; and __fish_seen_subcommand_from token" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand status; and __fish_seen_subcommand_from token" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -4803,6 +4972,7 @@ trace\t'Trace and above (very verbose)'"
 complete -c spt -n "__fish_spt_using_subcommand completion; and not __fish_seen_subcommand_from generate help" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand completion; and not __fish_seen_subcommand_from generate help" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand completion; and not __fish_seen_subcommand_from generate help" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand completion; and not __fish_seen_subcommand_from generate help" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand completion; and not __fish_seen_subcommand_from generate help" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -4830,6 +5000,7 @@ trace\t'Trace and above (very verbose)'"
 complete -c spt -n "__fish_spt_using_subcommand completion; and __fish_seen_subcommand_from generate" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand completion; and __fish_seen_subcommand_from generate" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand completion; and __fish_seen_subcommand_from generate" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand completion; and __fish_seen_subcommand_from generate" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand completion; and __fish_seen_subcommand_from generate" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -4857,6 +5028,7 @@ trace\t'Trace and above (very verbose)'"
 complete -c spt -n "__fish_spt_using_subcommand about; and not __fish_seen_subcommand_from list show licenses export help" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand about; and not __fish_seen_subcommand_from list show licenses export help" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand about; and not __fish_seen_subcommand_from list show licenses export help" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand about; and not __fish_seen_subcommand_from list show licenses export help" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand about; and not __fish_seen_subcommand_from list show licenses export help" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -4892,6 +5064,7 @@ complete -c spt -n "__fish_spt_using_subcommand about; and __fish_seen_subcomman
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
 complete -c spt -n "__fish_spt_using_subcommand about; and __fish_seen_subcommand_from list" -l include-dev -d 'Include dev / test dependencies (default: runtime-only)'
+complete -c spt -n "__fish_spt_using_subcommand about; and __fish_seen_subcommand_from list" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand about; and __fish_seen_subcommand_from list" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand about; and __fish_seen_subcommand_from list" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand about; and __fish_seen_subcommand_from list" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -4917,6 +5090,7 @@ trace\t'Trace and above (very verbose)'"
 complete -c spt -n "__fish_spt_using_subcommand about; and __fish_seen_subcommand_from show" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand about; and __fish_seen_subcommand_from show" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand about; and __fish_seen_subcommand_from show" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand about; and __fish_seen_subcommand_from show" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand about; and __fish_seen_subcommand_from show" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -4942,6 +5116,7 @@ trace\t'Trace and above (very verbose)'"
 complete -c spt -n "__fish_spt_using_subcommand about; and __fish_seen_subcommand_from licenses" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand about; and __fish_seen_subcommand_from licenses" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand about; and __fish_seen_subcommand_from licenses" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand about; and __fish_seen_subcommand_from licenses" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand about; and __fish_seen_subcommand_from licenses" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -4967,6 +5142,7 @@ trace\t'Trace and above (very verbose)'"
 complete -c spt -n "__fish_spt_using_subcommand about; and __fish_seen_subcommand_from export" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand about; and __fish_seen_subcommand_from export" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand about; and __fish_seen_subcommand_from export" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand about; and __fish_seen_subcommand_from export" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand about; and __fish_seen_subcommand_from export" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -5002,6 +5178,7 @@ never\t'Never emit color escapes'"
 complete -c spt -n "__fish_spt_using_subcommand kill" -l force -d 'Skip the graceful signal and go straight to a hard kill (`SIGKILL` / `TerminateProcess`). Default: send a graceful signal (`SIGTERM` / `TerminateProcess` with grace window) first'
 complete -c spt -n "__fish_spt_using_subcommand kill" -l include-self -d 'Include the current process in the kill list (the calling `spt` itself). Off by default — typical use is "kill all the other ones."'
 complete -c spt -n "__fish_spt_using_subcommand kill" -l dry-run -d 'Print what would be killed without actually signalling anything'
+complete -c spt -n "__fish_spt_using_subcommand kill" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand kill" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand kill" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand kill" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -5026,6 +5203,7 @@ trace\t'Trace and above (very verbose)'"
 complete -c spt -n "__fish_spt_using_subcommand update; and not __fish_seen_subcommand_from check download apply now status history help" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand update; and not __fish_seen_subcommand_from check download apply now status history help" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand update; and not __fish_seen_subcommand_from check download apply now status history help" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand update; and not __fish_seen_subcommand_from check download apply now status history help" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand update; and not __fish_seen_subcommand_from check download apply now status history help" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -5059,6 +5237,7 @@ trace\t'Trace and above (very verbose)'"
 complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from check" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from check" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from check" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from check" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from check" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -5085,6 +5264,7 @@ trace\t'Trace and above (very verbose)'"
 complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from download" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from download" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from download" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from download" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from download" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -5111,6 +5291,7 @@ complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcomma
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
 complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from apply" -l no-restart -d 'Skip the post-install restart even when `[updater.action].restart_supervisor = true`'
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from apply" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from apply" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from apply" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from apply" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -5137,6 +5318,7 @@ complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcomma
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
 complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from now" -l no-restart -d 'Skip the post-install restart'
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from now" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from now" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from now" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from now" -s v -l verbose -d 'Increase verbosity (repeat for more)'
@@ -5163,6 +5345,7 @@ complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcomma
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
 complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from status" -l json -d 'Emit JSON instead of the human table'
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from status" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from status" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from status" -s v -l verbose -d 'Increase verbosity (repeat for more)'
 complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from status" -l no-color -d 'Disable color (legacy convenience flag; use `--color never`)'
@@ -5188,6 +5371,7 @@ trace\t'Trace and above (very verbose)'"
 complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from history" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from history" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from history" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from history" -s q -l quiet -d 'Suppress non-essential output'
 complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from history" -s v -l verbose -d 'Increase verbosity (repeat for more)'

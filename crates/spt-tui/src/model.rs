@@ -14,7 +14,7 @@
 use std::path::{Path, PathBuf};
 
 use spt_config::mutate::Document;
-use spt_config::schema::{Config, Profile};
+use spt_config::schema::{Config, Dns, Events, Profile};
 use spt_config::{render, validate, ValidationDiagnostics};
 use spt_core::{Error, RedactionMode, Result};
 
@@ -30,6 +30,21 @@ pub struct Model {
     selected: usize,
     /// `true` if any field has been edited since load/save.
     dirty: bool,
+    /// `true` if the global `[events]` table specifically was mutated since
+    /// load/save. Tracked separately from [`Self::dirty`] so that a
+    /// profile-only edit does not cause [`crate::save::save_to`] to
+    /// re-serialize (and thereby reorder/canonicalize) an otherwise-untouched
+    /// `[events]` block — preserving it byte-for-byte. Set by
+    /// [`Self::events_mut`] / [`Self::config_mut`]; cleared on save.
+    events_dirty: bool,
+    /// `true` if the global `[dns]` table specifically was mutated since
+    /// load/save. Tracked separately from [`Self::dirty`] (mirroring
+    /// [`Self::events_dirty`]) so that a profile-only edit does not cause
+    /// [`crate::save::save_to`] to re-serialize (and thereby
+    /// reorder/canonicalize) an otherwise-untouched `[dns]` block —
+    /// preserving it byte-for-byte. Set by [`Self::dns_mut`] /
+    /// [`Self::config_mut`]; cleared on save.
+    dns_dirty: bool,
     /// Last successful save target (for restore-on-error reporting).
     last_saved: Option<PathBuf>,
 }
@@ -49,6 +64,8 @@ impl Model {
             config,
             selected: 0,
             dirty: false,
+            events_dirty: false,
+            dns_dirty: false,
             last_saved: None,
         })
     }
@@ -64,6 +81,8 @@ impl Model {
             config,
             selected: 0,
             dirty: false,
+            events_dirty: false,
+            dns_dirty: false,
             last_saved: None,
         }
     }
@@ -131,6 +150,98 @@ impl Model {
     /// indicating an actual profile mutation took place.
     pub fn mark_dirty(&mut self) {
         self.dirty = true;
+    }
+
+    /// Mutably borrow the whole [`Config`] and mark the model dirty.
+    ///
+    /// The global counterpart of [`Self::profile_mut`]: use it for
+    /// unconditional mutations of top-level (non-profile) tables such as
+    /// `[events]`. Mirrors the same dirty contract — every borrow flips
+    /// the dirty bit. For the conditional `on_edit_key` path prefer
+    /// [`Self::config_mut_silent`] + [`Self::mark_dirty`].
+    pub fn config_mut(&mut self) -> &mut Config {
+        self.dirty = true;
+        // A whole-config mutable borrow may touch `[events]` or `[dns]`, so
+        // flag both for re-serialization on save. Editors that only touch a
+        // profile should use `profile_mut` instead, keeping `[events]`/`[dns]`
+        // byte-preserved.
+        self.events_dirty = true;
+        self.dns_dirty = true;
+        &mut self.config
+    }
+
+    /// Mutably borrow the whole [`Config`] **without** marking the model
+    /// dirty. The global counterpart of [`Self::profile_mut_silent`]: the
+    /// caller must call [`Self::mark_dirty`] iff the keystroke actually
+    /// mutated the config (so navigation keys routed through `on_edit_key`
+    /// don't flip the dirty bit on every press).
+    pub fn config_mut_silent(&mut self) -> &mut Config {
+        &mut self.config
+    }
+
+    /// Immutably borrow the global `[events]` table, if present.
+    #[must_use]
+    pub fn events(&self) -> Option<&Events> {
+        self.config.events.as_ref()
+    }
+
+    /// Mutably borrow the global `[events]` table, lazily initializing it
+    /// to [`Events::default`] if the config has none yet, and mark the
+    /// model dirty.
+    ///
+    /// Like [`Self::config_mut`] (and unlike the `*_silent` accessors),
+    /// every borrow flips the dirty bit — use it for unconditional
+    /// mutations (add/remove a sink or binding). The lazy `Some(..)` init
+    /// is what lets `[events]` go from absent to present on first edit;
+    /// [`crate::save::save_to`] only splices `[events]` when it is both
+    /// dirty and present, so an untouched config keeps `[events]` absent.
+    pub fn events_mut(&mut self) -> &mut Events {
+        self.dirty = true;
+        self.events_dirty = true;
+        self.config.events.get_or_insert_with(Events::default)
+    }
+
+    /// `true` if the `[events]` table was specifically mutated since the last
+    /// load/save (via [`Self::events_mut`] / [`Self::config_mut`]).
+    ///
+    /// [`crate::save::save_to`] uses this — not the global [`Self::is_dirty`]
+    /// flag — to decide whether to re-splice `[events]`, so a profile-only
+    /// edit leaves the source `[events]` block byte-for-byte.
+    #[must_use]
+    pub fn is_events_dirty(&self) -> bool {
+        self.events_dirty
+    }
+
+    /// Immutably borrow the global `[dns]` table, if present.
+    #[must_use]
+    pub fn dns(&self) -> Option<&Dns> {
+        self.config.dns.as_ref()
+    }
+
+    /// Mutably borrow the global `[dns]` table, lazily initializing it to
+    /// [`Dns::default`] if the config has none yet, and mark the model dirty.
+    ///
+    /// Like [`Self::events_mut`] (and unlike the `*_silent` accessors), every
+    /// borrow flips the dirty bit — use it for unconditional mutations
+    /// (add/remove/edit a `[[dns.records]]` entry). The lazy `Some(..)` init
+    /// is what lets `[dns]` go from absent to present on first edit;
+    /// [`crate::save::save_to`] only splices `[dns]` when it is both dirty and
+    /// present, so an untouched config keeps `[dns]` absent.
+    pub fn dns_mut(&mut self) -> &mut Dns {
+        self.dirty = true;
+        self.dns_dirty = true;
+        self.config.dns.get_or_insert_with(Dns::default)
+    }
+
+    /// `true` if the `[dns]` table was specifically mutated since the last
+    /// load/save (via [`Self::dns_mut`] / [`Self::config_mut`]).
+    ///
+    /// [`crate::save::save_to`] uses this — not the global [`Self::is_dirty`]
+    /// flag — to decide whether to re-splice `[dns]`, so a profile-only edit
+    /// leaves the source `[dns]` block byte-for-byte.
+    #[must_use]
+    pub fn is_dns_dirty(&self) -> bool {
+        self.dns_dirty
     }
 
     /// Select a profile by index. No-op if out of range.
@@ -203,6 +314,8 @@ impl Model {
         self.document = document;
         self.last_saved = Some(target);
         self.dirty = false;
+        self.events_dirty = false;
+        self.dns_dirty = false;
     }
 
     /// Mutably borrow the round-trip document so [`crate::save`] can splice
@@ -349,5 +462,124 @@ endpoint = "https://q.example.com"
         let mut m = Model::from_str(RAW);
         let _p = m.profile_mut();
         assert!(m.is_dirty());
+    }
+
+    #[test]
+    fn config_mut_marks_dirty() {
+        let mut m = Model::from_str(RAW);
+        assert!(!m.is_dirty());
+        let _c = m.config_mut();
+        assert!(m.is_dirty());
+    }
+
+    #[test]
+    fn config_mut_silent_does_not_mark_dirty() {
+        let mut m = Model::from_str(RAW);
+        let _c = m.config_mut_silent();
+        assert!(!m.is_dirty());
+    }
+
+    #[test]
+    fn events_accessor_is_none_when_absent() {
+        let m = Model::from_str(RAW);
+        assert!(m.events().is_none());
+    }
+
+    #[test]
+    fn events_mut_lazily_inits_and_marks_dirty() {
+        let mut m = Model::from_str(RAW);
+        assert!(m.events().is_none());
+        assert!(!m.is_dirty());
+        // First borrow materializes `Some(Events::default())`.
+        m.events_mut().sinks.push(spt_config::schema::EventSink {
+            name: "s".into(),
+            kind: "http".into(),
+            ..Default::default()
+        });
+        assert!(m.is_dirty());
+        let ev = m.events().expect("events present after events_mut");
+        assert_eq!(ev.sinks.len(), 1);
+        assert_eq!(ev.sinks[0].name, "s");
+    }
+
+    #[test]
+    fn events_mut_reuses_existing_table() {
+        let raw = r#"version = 1
+[[profiles]]
+name = "p"
+protocol = "ssh2"
+
+[[events.bindings]]
+name = "b"
+on = ["profile.failed"]
+actions = ["notify"]
+"#;
+        let mut m = Model::from_str(raw);
+        assert_eq!(m.events().unwrap().bindings.len(), 1);
+        // Mutating must not wipe the pre-existing binding.
+        m.events_mut().bindings[0].min_level = Some("warn".into());
+        let ev = m.events().unwrap();
+        assert_eq!(ev.bindings.len(), 1);
+        assert_eq!(ev.bindings[0].min_level.as_deref(), Some("warn"));
+    }
+
+    #[test]
+    fn dns_accessor_is_none_when_absent() {
+        let m = Model::from_str(RAW);
+        assert!(m.dns().is_none());
+        assert!(!m.is_dns_dirty());
+    }
+
+    #[test]
+    fn dns_mut_lazily_inits_and_marks_dirty() {
+        let mut m = Model::from_str(RAW);
+        assert!(m.dns().is_none());
+        assert!(!m.is_dirty());
+        assert!(!m.is_dns_dirty());
+        // First borrow materializes `Some(Dns::default())`.
+        m.dns_mut().records.push(spt_config::schema::DnsRecord {
+            name: "a.example.com".into(),
+            kind: "A".into(),
+            value: "10.0.0.1".into(),
+            ..Default::default()
+        });
+        assert!(m.is_dirty());
+        assert!(m.is_dns_dirty());
+        let dns = m.dns().expect("dns present after dns_mut");
+        assert_eq!(dns.records.len(), 1);
+        assert_eq!(dns.records[0].name, "a.example.com");
+    }
+
+    #[test]
+    fn dns_mut_reuses_existing_table() {
+        let raw = r#"version = 1
+[[profiles]]
+name = "p"
+protocol = "ssh2"
+
+[dns]
+mode = "transparent_forwarder"
+
+[[dns.records]]
+name = "a.example.com"
+type = "A"
+value = "10.0.0.1"
+"#;
+        let mut m = Model::from_str(raw);
+        assert_eq!(m.dns().unwrap().records.len(), 1);
+        // Mutating must not wipe the pre-existing record or scalar.
+        m.dns_mut().records[0].ttl = Some("300".into());
+        let dns = m.dns().unwrap();
+        assert_eq!(dns.records.len(), 1);
+        assert_eq!(dns.mode.as_deref(), Some("transparent_forwarder"));
+        assert_eq!(dns.records[0].ttl.as_deref(), Some("300"));
+    }
+
+    #[test]
+    fn config_mut_marks_dns_dirty() {
+        let mut m = Model::from_str(RAW);
+        assert!(!m.is_dns_dirty());
+        let _c = m.config_mut();
+        assert!(m.is_dns_dirty());
     }
 }

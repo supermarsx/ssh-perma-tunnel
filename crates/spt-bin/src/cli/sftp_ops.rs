@@ -1127,6 +1127,7 @@ drive_letter = "S:"
             config_url: None,
             config_fingerprint: None,
             state_dir: None,
+            portable: false,
             profile: None,
             output: spt_cli::OutputFormat::Human,
             json: false,

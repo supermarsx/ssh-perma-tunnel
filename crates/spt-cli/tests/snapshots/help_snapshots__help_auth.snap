@@ -33,6 +33,14 @@ Options:
           
           [env: SPT_STATE_DIR=]
 
+      --portable
+          Portable mode: keep all runtime state next to the executable instead of OS-standard
+          locations (no OS install required).
+          
+          `main.rs` performs a raw pre-clap scan of the argv for this flag so portable paths are
+          resolved before the runtime is built; this declaration exists so the flag is visible to
+          `--help`, generated shell completions, and the man pages.
+
       --profile <NAME>
           Restrict operations to the named profile
 

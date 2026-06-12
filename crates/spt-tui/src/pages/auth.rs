@@ -7,10 +7,11 @@
 use crossterm::event::KeyEvent;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
+use spt_config::schema::{Auth, Profile};
 
 use crate::model::Model;
 use crate::pages::field::{
-    opt_bool_with_help, opt_choice_with_help, opt_secret, opt_text, FieldList,
+    opt_bool_with_help, opt_choice_with_help, opt_secret, opt_text, FieldDef, FieldList,
 };
 use crate::pages::Page;
 
@@ -35,6 +36,135 @@ const METHODS_HELP: &[&str] = &[
     "OIDC device-code flow (SSH3). Set `oidc_issuer` + `oidc_client_id`.",
 ];
 
+/// Build the shared set of auth credential fields (method + identity/
+/// certificate files + passphrase/password/token secrets + agent +
+/// keyboard-interactive + OIDC issuer/client-id) for an `Option<Auth>`
+/// target reachable from a [`Profile`].
+///
+/// This is the **single source of truth** for the auth editor used by
+/// both [`AuthPage`] (global `[profiles.auth]`, via `|p| &mut p.auth`)
+/// and the per-endpoint override on the Endpoints page (via
+/// `|p| &mut p.endpoints[i].auth`). Centralising it guarantees the same
+/// secret redaction (`opt_secret` → `FieldValue::SecretRef`) and
+/// `secret://` validation everywhere a credential field is shown.
+///
+/// `get` borrows the target `Option<Auth>` immutably; `get_mut` borrows
+/// it mutably. Both are `Copy` (function-pointer-friendly) closures so
+/// they can be cloned into each per-field getter/setter. The `prefix`
+/// is prepended to every label (e.g. `"auth"` → `"auth.method"`).
+///
+/// The labels are leaked to `&'static str` because [`FieldDef::label`]
+/// requires `'static`; a small, bounded one-time leak per distinct
+/// prefix is acceptable for a TUI page built once.
+pub(crate) fn auth_fields<GR, GM>(prefix: &str, get: GR, get_mut: GM) -> Vec<FieldDef>
+where
+    GR: Fn(&Profile) -> Option<&Auth> + Copy + 'static,
+    GM: Fn(&mut Profile) -> &mut Option<Auth> + Copy + 'static,
+{
+    // Helper: build a `&'static` label `"{prefix}.{suffix}"`.
+    let lbl = |suffix: &str| -> &'static str {
+        Box::leak(format!("{prefix}.{suffix}").into_boxed_str())
+    };
+
+    vec![
+        opt_choice_with_help(
+            lbl("method"),
+            "Spec §9.12 auth method",
+            METHODS,
+            METHODS_HELP,
+            move |p| get(p).map(|a| a.method.clone()),
+            move |p, v| {
+                get_mut(p).get_or_insert_with(Default::default).method = v.unwrap_or_default();
+            },
+        ),
+        opt_text(
+            lbl("identity_file"),
+            "Path to OpenSSH PEM private key (public_key, certificate)",
+            move |p| get(p).and_then(|a| a.identity_file.clone()),
+            move |p, v| get_mut(p).get_or_insert_with(Default::default).identity_file = v,
+        ),
+        opt_text(
+            lbl("certificate_file"),
+            "Path to OpenSSH user certificate (`*-cert.pub`)",
+            move |p| get(p).and_then(|a| a.certificate_file.clone()),
+            move |p, v| get_mut(p).get_or_insert_with(Default::default).certificate_file = v,
+        ),
+        // The schema stores these as `Option<RedactedString>` (t5-e7) so the
+        // value zeroes on drop and never leaks through derived `Debug`.
+        // The TUI form layer still works on `Option<String>`, so the
+        // getter exposes the cleartext (Display via `.to_string()`) and
+        // the setter wraps incoming text back into `RedactedString`. The
+        // cleartext lives in `FieldValue::SecretRef(String)` only for the
+        // duration of a single edit-and-commit; redaction at render-time
+        // still applies via the `FieldValue::SecretRef` variant.
+        opt_secret(
+            lbl("passphrase"),
+            "Secret ref for an encrypted private key — `secret://ns/name`",
+            move |p| get(p).and_then(|a| a.passphrase.as_ref().map(|r| r.expose().to_owned())),
+            move |p, v| {
+                get_mut(p).get_or_insert_with(Default::default).passphrase =
+                    v.map(spt_core::RedactedString::from);
+            },
+        ),
+        opt_secret(
+            lbl("password"),
+            "Secret ref for password auth — `secret://ns/name`",
+            move |p| get(p).and_then(|a| a.password.as_ref().map(|r| r.expose().to_owned())),
+            move |p, v| {
+                get_mut(p).get_or_insert_with(Default::default).password =
+                    v.map(spt_core::RedactedString::from);
+            },
+        ),
+        opt_secret(
+            lbl("token"),
+            "Secret ref for SSH3 bearer token — `secret://ns/name`",
+            move |p| get(p).and_then(|a| a.token.as_ref().map(|r| r.expose().to_owned())),
+            move |p, v| {
+                get_mut(p).get_or_insert_with(Default::default).token =
+                    v.map(spt_core::RedactedString::from);
+            },
+        ),
+        opt_bool_with_help(
+            lbl("agent"),
+            "Try SSH agent (`SSH_AUTH_SOCK` / Pageant)",
+            "Skip the SSH agent. Use when the agent is untrusted or out of scope.",
+            "Try the SSH agent first, falling back to `identity_file`. Recommended.",
+            move |p| get(p).and_then(|a| a.agent),
+            move |p, v| get_mut(p).get_or_insert_with(Default::default).agent = v,
+        ),
+        opt_text(
+            lbl("identity_hint"),
+            "Agent identity hint string",
+            move |p| get(p).and_then(|a| a.identity_hint.clone()),
+            move |p, v| get_mut(p).get_or_insert_with(Default::default).identity_hint = v,
+        ),
+        opt_bool_with_help(
+            lbl("keyboard_interactive"),
+            "Allow SSH2 keyboard-interactive fallback",
+            "Keyboard-interactive challenges refused. Safer — no human-style prompts.",
+            "Permit keyboard-interactive prompts (PAM, OTP). Needed for some MFA setups.",
+            move |p| get(p).and_then(|a| a.keyboard_interactive),
+            move |p, v| {
+                get_mut(p)
+                    .get_or_insert_with(Default::default)
+                    .keyboard_interactive = v;
+            },
+        ),
+        opt_text(
+            lbl("oidc_issuer"),
+            "OIDC issuer URL (SSH3 OIDC device flow)",
+            move |p| get(p).and_then(|a| a.oidc_issuer.clone()),
+            move |p, v| get_mut(p).get_or_insert_with(Default::default).oidc_issuer = v,
+        ),
+        opt_text(
+            lbl("oidc_client_id"),
+            "OIDC client id",
+            move |p| get(p).and_then(|a| a.oidc_client_id.clone()),
+            move |p, v| get_mut(p).get_or_insert_with(Default::default).oidc_client_id = v,
+        ),
+    ]
+}
+
 /// Auth method + secret refs.
 pub struct AuthPage {
     list: FieldList,
@@ -42,120 +172,24 @@ pub struct AuthPage {
 
 impl AuthPage {
     /// Build the page.
+    ///
+    /// This is the **global** default auth editor (`[profiles.auth]`).
+    /// Individual endpoints may override it on the Endpoints page; when
+    /// an endpoint sets its own auth, that whole block replaces this one
+    /// for that endpoint.
     pub fn new() -> Self {
-        let fields = vec![
-            opt_text(
-                "user",
-                "Remote login user — applies to every auth method",
-                |p| p.user.clone(),
-                |p, v| p.user = v,
-            ),
-            opt_choice_with_help(
-                "auth.method",
-                "Spec §9.12 auth method",
-                METHODS,
-                METHODS_HELP,
-                |p| p.auth.as_ref().map(|a| a.method.clone()),
-                |p, v| p.auth.get_or_insert_with(Default::default).method = v.unwrap_or_default(),
-            ),
-            opt_text(
-                "auth.identity_file",
-                "Path to OpenSSH PEM private key (public_key, certificate)",
-                |p| p.auth.as_ref().and_then(|a| a.identity_file.clone()),
-                |p, v| p.auth.get_or_insert_with(Default::default).identity_file = v,
-            ),
-            opt_text(
-                "auth.certificate_file",
-                "Path to OpenSSH user certificate (`*-cert.pub`)",
-                |p| p.auth.as_ref().and_then(|a| a.certificate_file.clone()),
-                |p, v| p.auth.get_or_insert_with(Default::default).certificate_file = v,
-            ),
-            // The schema stores these as `Option<RedactedString>` (t5-e7) so the
-            // value zeroes on drop and never leaks through derived `Debug`.
-            // The TUI form layer still works on `Option<String>`, so the
-            // getter exposes the cleartext (Display via `.to_string()`) and
-            // the setter wraps incoming text back into `RedactedString`. The
-            // cleartext lives in `FieldValue::SecretRef(String)` only for the
-            // duration of a single edit-and-commit; redaction at render-time
-            // still applies via the `FieldValue::SecretRef` variant.
-            opt_secret(
-                "auth.passphrase",
-                "Secret ref for an encrypted private key — `secret://ns/name`",
-                |p| {
-                    p.auth
-                        .as_ref()
-                        .and_then(|a| a.passphrase.as_ref().map(|r| r.expose().to_owned()))
-                },
-                |p, v| {
-                    p.auth.get_or_insert_with(Default::default).passphrase =
-                        v.map(spt_core::RedactedString::from);
-                },
-            ),
-            opt_secret(
-                "auth.password",
-                "Secret ref for password auth — `secret://ns/name`",
-                |p| {
-                    p.auth
-                        .as_ref()
-                        .and_then(|a| a.password.as_ref().map(|r| r.expose().to_owned()))
-                },
-                |p, v| {
-                    p.auth.get_or_insert_with(Default::default).password =
-                        v.map(spt_core::RedactedString::from);
-                },
-            ),
-            opt_secret(
-                "auth.token",
-                "Secret ref for SSH3 bearer token — `secret://ns/name`",
-                |p| {
-                    p.auth
-                        .as_ref()
-                        .and_then(|a| a.token.as_ref().map(|r| r.expose().to_owned()))
-                },
-                |p, v| {
-                    p.auth.get_or_insert_with(Default::default).token =
-                        v.map(spt_core::RedactedString::from);
-                },
-            ),
-            opt_bool_with_help(
-                "auth.agent",
-                "Try SSH agent (`SSH_AUTH_SOCK` / Pageant)",
-                "Skip the SSH agent. Use when the agent is untrusted or out of scope.",
-                "Try the SSH agent first, falling back to `identity_file`. Recommended.",
-                |p| p.auth.as_ref().and_then(|a| a.agent),
-                |p, v| p.auth.get_or_insert_with(Default::default).agent = v,
-            ),
-            opt_text(
-                "auth.identity_hint",
-                "Agent identity hint string",
-                |p| p.auth.as_ref().and_then(|a| a.identity_hint.clone()),
-                |p, v| p.auth.get_or_insert_with(Default::default).identity_hint = v,
-            ),
-            opt_bool_with_help(
-                "auth.keyboard_interactive",
-                "Allow SSH2 keyboard-interactive fallback",
-                "Keyboard-interactive challenges refused. Safer — no human-style prompts.",
-                "Permit keyboard-interactive prompts (PAM, OTP). Needed for some MFA setups.",
-                |p| p.auth.as_ref().and_then(|a| a.keyboard_interactive),
-                |p, v| {
-                    p.auth
-                        .get_or_insert_with(Default::default)
-                        .keyboard_interactive = v;
-                },
-            ),
-            opt_text(
-                "auth.oidc_issuer",
-                "OIDC issuer URL (SSH3 OIDC device flow)",
-                |p| p.auth.as_ref().and_then(|a| a.oidc_issuer.clone()),
-                |p, v| p.auth.get_or_insert_with(Default::default).oidc_issuer = v,
-            ),
-            opt_text(
-                "auth.oidc_client_id",
-                "OIDC client id",
-                |p| p.auth.as_ref().and_then(|a| a.oidc_client_id.clone()),
-                |p, v| p.auth.get_or_insert_with(Default::default).oidc_client_id = v,
-            ),
-        ];
+        let mut fields = vec![opt_text(
+            "user",
+            "Remote login user — global default; per-endpoint `user` overrides it",
+            |p| p.user.clone(),
+            |p, v| p.user = v,
+        )];
+        // Shared credential fields targeting the global `[profiles.auth]`.
+        fields.extend(auth_fields(
+            "auth",
+            |p: &Profile| p.auth.as_ref(),
+            |p: &mut Profile| &mut p.auth,
+        ));
         Self {
             list: FieldList::new(fields),
         }
