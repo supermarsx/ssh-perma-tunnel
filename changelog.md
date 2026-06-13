@@ -1,3 +1,12 @@
+## [26.11] - 2026-06-13
+
+# spt 26.11
+
+## Changes since 26.10
+
+- fix(ci): regenerate tests/chaos/Cargo.lock after spt-key rsa dep (f41134f)
+- fix(spt-key): correct RSA cert-signing; chore: dependabot MSRV 1.83->1.88 (bda276c)
+
 ## [26.10] - 2026-06-13
 
 # spt 26.10
