@@ -98,7 +98,7 @@ jobs:
       # stable title so repeat runs edit the same issue rather than spamming.
       - name: Open or update tracking issue
         if: steps.audit.outputs.found == 'true'
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           script: |
             const fs = require('fs');
