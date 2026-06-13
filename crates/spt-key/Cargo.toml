@@ -29,6 +29,14 @@ serde = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 sha2 = { workspace = true }
+# RSA signing for `cert::sign_cert` with an RSA CA. ssh-key 0.6.7's own RSA
+# signer reconstructs `rsa::RsaPrivateKey` from `(p, p)` instead of `(p, q)`
+# (bug in `private/rsa.rs`), which makes every RSA cert-signature fail with a
+# `cryptographic error`. We bypass that path by reconstructing the key with the
+# correct `(p, q)` and signing via `rsa` directly. Pinned to the version
+# already in `Cargo.lock` (transitive of ssh-key 0.6.7) with the same feature
+# set ssh-key uses, so declaring it here does NOT trigger a `cargo update`.
+rsa = { version = "0.9", default-features = false, features = ["sha2"] }
 base64 = { workspace = true }
 rand = { workspace = true }
 rand_chacha = { workspace = true, optional = true }

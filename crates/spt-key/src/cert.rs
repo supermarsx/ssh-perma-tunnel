@@ -8,7 +8,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rand::rngs::OsRng;
 use ssh_key::certificate::Builder;
-use ssh_key::{HashAlg, PublicKey};
+use ssh_key::{Algorithm, HashAlg, PublicKey};
 
 pub use ssh_key::Certificate;
 
@@ -127,7 +127,104 @@ pub fn sign_cert(ca: &KeyPair, subject: &PublicKey, opts: CertOptions) -> Result
         b.comment(opts.comment).map_err(map_err)?;
     }
 
-    b.sign(ca.private()).map_err(map_err)
+    // ssh-key 0.6.7's own RSA `Signer` impl reconstructs the `rsa::RsaPrivateKey`
+    // from `(p, p)` instead of `(p, q)` (bug in `private/rsa.rs`), so signing
+    // with an RSA CA fails with a `cryptographic error`. For RSA CAs we route
+    // through a corrected signer that rebuilds the key with the proper `(p, q)`;
+    // every other algorithm uses ssh-key's intact signer directly.
+    match ca.private().algorithm() {
+        Algorithm::Rsa { .. } => {
+            let signer = rsa::RsaCertSigner::new(ca.private())?;
+            b.sign(&signer).map_err(map_err)
+        }
+        _ => b.sign(ca.private()).map_err(map_err),
+    }
+}
+
+/// Corrected RSA certificate signer.
+///
+/// Works around the ssh-key 0.6.7 bug where `TryFrom<&RsaKeypair> for
+/// rsa::RsaPrivateKey` passes the prime `p` twice (`vec![p, p]`) instead of
+/// `(p, q)`, producing a structurally invalid key whose signing operation
+/// fails. We reconstruct the `rsa::RsaPrivateKey` with the correct `(p, q)` and
+/// produce a byte-identical `rsa-sha2-512` PKCS#1 v1.5 signature — matching what
+/// ssh-key's own (intact) verifier expects.
+mod rsa {
+    pub use ::rsa::{BigUint, RsaPrivateKey};
+
+    use rsa::pkcs1v15::SigningKey;
+    use rsa::sha2::Sha512;
+    use rsa::signature::{SignatureEncoding, Signer};
+
+    use spt_core::{Error, Result};
+    use ssh_key::public::KeyData;
+    use ssh_key::{Algorithm, HashAlg, PrivateKey, Signature};
+
+    /// A `SigningKey` for ssh-key's certificate `Builder` that signs RSA with a
+    /// correctly-reconstructed `(p, q)` private key.
+    pub struct RsaCertSigner {
+        signing_key: SigningKey<Sha512>,
+        public: KeyData,
+    }
+
+    impl RsaCertSigner {
+        /// Build the corrected signer from an RSA [`PrivateKey`].
+        ///
+        /// # Errors
+        /// Returns an error if `ca` is not RSA or if the key components cannot
+        /// be assembled into a valid `rsa::RsaPrivateKey`.
+        pub fn new(ca: &PrivateKey) -> Result<Self> {
+            let ssh_key::private::KeypairData::Rsa(kp) = ca.key_data() else {
+                return Err(Error::InvalidArgs(
+                    "RsaCertSigner: CA key is not RSA".into(),
+                ));
+            };
+            let to_big = |m: &ssh_key::Mpint| -> Result<BigUint> {
+                BigUint::try_from(m).map_err(|e| {
+                    Error::InvalidConfig(format!("ssh-key cert: bad RSA component: {e}"))
+                })
+            };
+            // The fix: `(p, q)`, not `(p, p)`.
+            let priv_key = RsaPrivateKey::from_components(
+                to_big(&kp.public.n)?,
+                to_big(&kp.public.e)?,
+                to_big(&kp.private.d)?,
+                vec![to_big(&kp.private.p)?, to_big(&kp.private.q)?],
+            )
+            .map_err(|e| {
+                Error::InvalidConfig(format!("ssh-key cert: reconstruct RSA private key: {e}"))
+            })?;
+
+            Ok(Self {
+                signing_key: SigningKey::<Sha512>::new(priv_key),
+                public: ca.public_key().key_data().clone(),
+            })
+        }
+    }
+
+    impl Signer<Signature> for RsaCertSigner {
+        fn try_sign(&self, message: &[u8]) -> ::rsa::signature::Result<Signature> {
+            let sig = self
+                .signing_key
+                .try_sign(message)
+                .map_err(|_| ::rsa::signature::Error::new())?;
+            Signature::new(
+                Algorithm::Rsa {
+                    hash: Some(HashAlg::Sha512),
+                },
+                sig.to_vec(),
+            )
+            .map_err(|_| ::rsa::signature::Error::new())
+        }
+    }
+
+    // ssh-key's blanket `SigningKey` impl applies to any `Signer<Signature>`
+    // that also has `KeyData: From<&Self>`.
+    impl From<&RsaCertSigner> for KeyData {
+        fn from(s: &RsaCertSigner) -> Self {
+            s.public.clone()
+        }
+    }
 }
 
 /// Verify `cert`'s signature and that it was issued by one of `trusted_cas`.
@@ -365,6 +462,56 @@ mod tests {
         if let Ok(cert) = result {
             assert!(verify_cert(&cert, &[ca.public()]).is_err());
         }
+    }
+
+    /// Regression: signing a certificate with an **RSA CA** must succeed and
+    /// verify. ssh-key 0.6.7's own RSA signer reconstructs the private key from
+    /// `(p, p)` instead of `(p, q)`, so before the corrected signer in
+    /// [`sign_cert`] this failed with `cryptographic error`. Uses RSA-2048 (the
+    /// bug is size-independent) to keep keygen fast enough for the default
+    /// (non-ignored) test run.
+    #[test]
+    fn rsa_ca_signs_and_verifies_cert() {
+        use rand::rngs::OsRng;
+        use ssh_key::private::{KeypairData, RsaKeypair};
+        use ssh_key::{Algorithm, PrivateKey};
+
+        let rsa = RsaKeypair::random(&mut OsRng, 2048).unwrap();
+        let ca = KeyPair::from_private(PrivateKey::new(KeypairData::from(rsa), "rsa-ca").unwrap());
+        // Sanity: the CA really is RSA.
+        assert!(matches!(ca.private().algorithm(), Algorithm::Rsa { .. }));
+
+        let subject =
+            KeyPair::from_private(PrivateKey::random(&mut OsRng, Algorithm::Ed25519).unwrap());
+
+        let cert = sign_cert(
+            &ca,
+            subject.public_ref(),
+            CertOptions {
+                key_id: "rsa-ca-test".into(),
+                principals: vec!["alice".into()],
+                serial: 7,
+                ..CertOptions::default()
+            },
+        )
+        .expect("RSA-CA cert signing must succeed");
+
+        // The signature must verify against the CA (the core of the bug fix).
+        verify_cert(&cert, &[ca.public()]).expect("RSA-CA cert must verify");
+
+        // And the cert must carry an RSA (sha2-512) signature.
+        assert!(matches!(
+            cert.signature().algorithm(),
+            Algorithm::Rsa {
+                hash: Some(ssh_key::HashAlg::Sha512)
+            }
+        ));
+
+        // Byte round-trip survives.
+        let s = cert.to_openssh().unwrap();
+        let reparsed = Certificate::from_openssh(&s).unwrap();
+        assert_eq!(reparsed.serial(), 7);
+        verify_cert(&reparsed, &[ca.public()]).expect("reparsed RSA cert must verify");
     }
 
     #[test]

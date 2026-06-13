@@ -3,7 +3,7 @@
 # Three ecosystems are tracked. All Cargo updates are advisory: the
 # lockfile is pinned for MSRV reasons (see contributing.md), so a
 # Dependabot PR is the *start* of a review, not the end. A human must
-# verify the proposed lockfile still builds on Rust 1.83 before merge.
+# verify the proposed lockfile still builds on Rust 1.88 before merge.
 
 version: 2
 updates:
@@ -24,7 +24,7 @@ updates:
       include: "scope"
     # NOTE: every Cargo PR opened by Dependabot needs manual MSRV
     # verification before merge. The lockfile is intentionally pinned
-    # to versions that build on Rust 1.83; transitive bumps can
+    # to versions that build on Rust 1.88; transitive bumps can
     # silently raise that floor. Run the msrv.yml workflow on the PR
     # branch and confirm green before clicking merge.
     groups:
