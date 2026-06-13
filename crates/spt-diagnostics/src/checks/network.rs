@@ -148,10 +148,8 @@ impl Diagnostic for DnsDiagnostic {
         // enforces the required fields, so this is a structural sanity note).
         if !dns.records.is_empty() {
             out.push(
-                Check::new("dns.records", Severity::Info, Status::Pass).with_evidence(format!(
-                    "{} static record(s) configured",
-                    dns.records.len()
-                )),
+                Check::new("dns.records", Severity::Info, Status::Pass)
+                    .with_evidence(format!("{} static record(s) configured", dns.records.len())),
             );
         }
 
@@ -215,8 +213,9 @@ async fn probe_upstream(upstream: &str) -> Check {
     match resolved {
         Ok(Ok(mut addrs)) => {
             if addrs.next().is_some() {
-                Check::new("dns.upstream", Severity::Info, Status::Pass)
-                    .with_evidence(format!("upstream `{upstream}` resolves to a sendable address"))
+                Check::new("dns.upstream", Severity::Info, Status::Pass).with_evidence(format!(
+                    "upstream `{upstream}` resolves to a sendable address"
+                ))
             } else {
                 Check::new("dns.upstream", Severity::Medium, Status::Warn)
                     .with_evidence(format!("upstream `{upstream}` resolved to no addresses"))
@@ -296,8 +295,10 @@ impl Diagnostic for BindDiagnostic {
         }
 
         if listeners.is_empty() {
-            return vec![Check::new("bind.listeners", Severity::Info, Status::Skipped)
-                .with_evidence("no enabled listeners with a bind address configured")];
+            return vec![
+                Check::new("bind.listeners", Severity::Info, Status::Skipped)
+                    .with_evidence("no enabled listeners with a bind address configured"),
+            ];
         }
 
         let mut out = Vec::new();

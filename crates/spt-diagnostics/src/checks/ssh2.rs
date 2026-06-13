@@ -38,9 +38,7 @@ fn russh_supported(kind: &str) -> Vec<String> {
     let p = russh::Preferred::DEFAULT;
     match kind {
         "kex" => p.kex.iter().map(|n| n.as_ref().to_string()).collect(),
-        "hostkey" | "host_key" | "key" => {
-            p.key.iter().map(|n| n.as_ref().to_string()).collect()
-        }
+        "hostkey" | "host_key" | "key" => p.key.iter().map(|n| n.as_ref().to_string()).collect(),
         "cipher" | "cipher_cs" | "cipher_sc" => {
             p.cipher.iter().map(|n| n.as_ref().to_string()).collect()
         }

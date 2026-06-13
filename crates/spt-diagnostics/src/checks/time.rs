@@ -64,13 +64,19 @@ impl Diagnostic for TimeDiagnostic {
         if yr < 2024 {
             out.push(
                 Check::new("time.sanity", Severity::High, Status::Fail)
-                    .with_evidence(format!("system clock reports {yr}, before the 2024 build floor"))
-                    .with_remediation("the RTC is likely unset; sync time (NTP) and check the battery"),
+                    .with_evidence(format!(
+                        "system clock reports {yr}, before the 2024 build floor"
+                    ))
+                    .with_remediation(
+                        "the RTC is likely unset; sync time (NTP) and check the battery",
+                    ),
             );
         } else if yr > 2100 {
             out.push(
                 Check::new("time.sanity", Severity::High, Status::Fail)
-                    .with_evidence(format!("system clock reports {yr}, implausibly far in the future"))
+                    .with_evidence(format!(
+                        "system clock reports {yr}, implausibly far in the future"
+                    ))
                     .with_remediation("correct the system clock; sync time via NTP"),
             );
         } else {
@@ -92,7 +98,9 @@ impl TimeDiagnostic {
                 .with_evidence(
                     "SNTP drift probe disabled (experimental; enable with the live probe flag)",
                 )
-                .with_remediation("run `chronyc tracking` / `w32tm /query /status` for local drift");
+                .with_remediation(
+                    "run `chronyc tracking` / `w32tm /query /status` for local drift",
+                );
         }
 
         match query_sntp(&self.ntp_server, NTP_BUDGET).await {
@@ -100,9 +108,8 @@ impl TimeDiagnostic {
                 let abs_ms = drift.num_milliseconds().unsigned_abs();
                 let secs = abs_ms as f64 / 1000.0;
                 if abs_ms <= DRIFT_WARN_THRESHOLD.as_millis() as u64 {
-                    Check::new("time.ntp_drift", Severity::Info, Status::Pass).with_evidence(
-                        format!("clock within {secs:.3}s of `{}`", self.ntp_server),
-                    )
+                    Check::new("time.ntp_drift", Severity::Info, Status::Pass)
+                        .with_evidence(format!("clock within {secs:.3}s of `{}`", self.ntp_server))
                 } else {
                     Check::new("time.ntp_drift", Severity::Medium, Status::Warn)
                         .with_evidence(format!(
@@ -115,7 +122,10 @@ impl TimeDiagnostic {
             // Offline / unreachable / malformed: degrade to Skipped, never Fail,
             // so an air-gapped host running diagnostics is not penalised.
             Err(e) => Check::new("time.ntp_drift", Severity::Low, Status::Skipped)
-                .with_evidence(format!("SNTP probe of `{}` unavailable: {e}", self.ntp_server))
+                .with_evidence(format!(
+                    "SNTP probe of `{}` unavailable: {e}",
+                    self.ntp_server
+                ))
                 .with_remediation("network may be offline; verify local time sync manually"),
         }
     }
@@ -220,7 +230,10 @@ mod tests {
         let drift = r.iter().find(|c| c.id == "time.ntp_drift").unwrap();
         assert_eq!(drift.status, Status::Skipped);
         let ev = drift.evidence.join(" ");
-        assert!(ev.contains("experimental") || ev.contains("disabled"), "{ev}");
+        assert!(
+            ev.contains("experimental") || ev.contains("disabled"),
+            "{ev}"
+        );
     }
 
     // E8-F8: when enabled but the server is unreachable (RFC 5737 TEST-NET-1,

@@ -364,33 +364,38 @@ async fn connect_inner(
         // E3-F2: the obfuscation policy wraps the *outermost* transport only —
         // i.e. the plain-TCP dial to the first hop. Inner hops traverse
         // `direct-tcpip` channels and are unaffected.
-        let first_handle =
-            match dial_outer(cfg.clone(), &first.host, first.port, first_handler, obfs.as_ref())
-                .await
-            {
-                Ok((h, _name)) => h,
-                Err(e) => {
-                    if let Some(reason) = first_trust_failure.lock().clone() {
-                        return Err(Error::TrustFailed(reason));
-                    }
-                    return Err(Error::network_unreachable(
-                        spt_core::Diagnostic::what(format!(
-                            "Failed to connect to first hop `{}:{}`",
-                            first.host, first.port
-                        ))
-                        .why(format!("{e}"))
-                        .how_to_fix(
-                            "Verify the bastion is reachable (`nc -zv <host> <port>`), \
+        let first_handle = match dial_outer(
+            cfg.clone(),
+            &first.host,
+            first.port,
+            first_handler,
+            obfs.as_ref(),
+        )
+        .await
+        {
+            Ok((h, _name)) => h,
+            Err(e) => {
+                if let Some(reason) = first_trust_failure.lock().clone() {
+                    return Err(Error::TrustFailed(reason));
+                }
+                return Err(Error::network_unreachable(
+                    spt_core::Diagnostic::what(format!(
+                        "Failed to connect to first hop `{}:{}`",
+                        first.host, first.port
+                    ))
+                    .why(format!("{e}"))
+                    .how_to_fix(
+                        "Verify the bastion is reachable (`nc -zv <host> <port>`), \
                              that no firewall is blocking the egress, and that DNS is \
                              resolving to the expected IP. If the server is behind a \
                              proxy or VPN, ensure the tunnel is up.",
-                        )
-                        .endpoint(format!("{}:{}", first.host, first.port))
-                        .retry_advice(spt_core::RetryAdvice::RetryWithBackoff)
-                        .build(),
-                    ));
-                }
-            };
+                    )
+                    .endpoint(format!("{}:{}", first.host, first.port))
+                    .retry_advice(spt_core::RetryAdvice::RetryWithBackoff)
+                    .build(),
+                ));
+            }
+        };
         let first_shared = Arc::new(AsyncMutex::new(first_handle));
         let first_auth = first.auth.clone().unwrap_or_else(|| auth_cfg.clone());
         run_auth(
@@ -523,19 +528,19 @@ async fn connect_inner(
                         "Failed to connect to `{}:{}`",
                         endpoint.host, endpoint.port
                     ))
-                .why(format!("{e}"))
-                .how_to_fix(
-                    "Verify the target host is reachable from this network, that \
+                    .why(format!("{e}"))
+                    .how_to_fix(
+                        "Verify the target host is reachable from this network, that \
                          the configured port is correct, and that DNS resolves the \
                          hostname. Common causes: server down, firewall block, \
                          stale `~/.ssh/known_hosts` entry pointing to wrong IP.",
-                )
-                .endpoint(format!("{}:{}", endpoint.host, endpoint.port))
-                .retry_advice(spt_core::RetryAdvice::RetryWithBackoff)
-                .build(),
-            ));
-        }
-    };
+                    )
+                    .endpoint(format!("{}:{}", endpoint.host, endpoint.port))
+                    .retry_advice(spt_core::RetryAdvice::RetryWithBackoff)
+                    .build(),
+                ));
+            }
+        };
 
     // Wrap the handle in `Arc<AsyncMutex>` *before* `run_auth` so every auth
     // arm (including the agent `authenticate_publickey_with` path) shares one
@@ -852,17 +857,13 @@ impl TunnelSession for RusshSsh2Session {
         // swallowed inside the dispatcher — it must not block the close.
         if self.has_script_engine() {
             let duration_ms = self.established_at_instant.elapsed().as_millis() as u64;
-            let event =
-                spt_scripting::event::Event::Disconnect(spt_scripting::event::Disconnect {
-                    profile: self.script_ctx.profile.clone(),
-                    reason: "user_request".into(),
-                    duration_ms,
-                });
-            self.dispatch_script_event_async(
-                spt_scripting::config::HookName::OnDisconnect,
-                event,
-            )
-            .await;
+            let event = spt_scripting::event::Event::Disconnect(spt_scripting::event::Disconnect {
+                profile: self.script_ctx.profile.clone(),
+                reason: "user_request".into(),
+                duration_ms,
+            });
+            self.dispatch_script_event_async(spt_scripting::config::HookName::OnDisconnect, event)
+                .await;
         }
         let handle = self.handle.lock().await;
         handle
@@ -1266,8 +1267,7 @@ async fn try_agent_auth(
     let mut last_err: Option<String> = None;
     for key in identities {
         let user = username.clone();
-        let outcome =
-            drive_authenticate_future(Arc::clone(&handle), user, &key, &mut signer).await;
+        let outcome = drive_authenticate_future(Arc::clone(&handle), user, &key, &mut signer).await;
         match outcome {
             Ok(true) => return Ok(true),
             Ok(false) => {

@@ -227,7 +227,10 @@ mod tests {
             }
             assert!(d <= ceiling);
         }
-        assert!(any_below_half, "full jitter should produce sub-half samples");
+        assert!(
+            any_below_half,
+            "full jitter should produce sub-half samples"
+        );
     }
 
     #[test]

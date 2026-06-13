@@ -537,9 +537,7 @@ impl FieldList {
                     if editing || s.is_empty() {
                         field.text.render(area, buf, field.def.label, &s);
                     } else {
-                        field
-                            .text
-                            .render(area, buf, field.def.label, "[REDACTED]");
+                        field.text.render(area, buf, field.def.label, "[REDACTED]");
                     }
                 }
                 FieldValue::Numeric(s) => {

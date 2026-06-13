@@ -509,12 +509,16 @@ mod tests {
         s.record_failure("a", 22, now);
         // "a" is still cooling at +120s (would have been back with the old 60s cap).
         assert_eq!(
-            s.pick(&mut rng, now + Duration::from_secs(120)).unwrap().host,
+            s.pick(&mut rng, now + Duration::from_secs(120))
+                .unwrap()
+                .host,
             "b"
         );
         // After the full 5 minutes, "a" returns.
         assert_eq!(
-            s.pick(&mut rng, now + Duration::from_secs(301)).unwrap().host,
+            s.pick(&mut rng, now + Duration::from_secs(301))
+                .unwrap()
+                .host,
             "a"
         );
     }
@@ -587,8 +591,14 @@ mod tests {
         let now = Instant::now();
         s.record_failure("a", 22, now);
         // Still cooling immediately after the failure → "b" preferred.
-        assert_eq!(s.pick(&mut rng, now + Duration::from_secs(1)).unwrap().host, "b");
+        assert_eq!(
+            s.pick(&mut rng, now + Duration::from_secs(1)).unwrap().host,
+            "b"
+        );
         // By +6s (> configured 5s, far below any 60s floor) "a" is eligible.
-        assert_eq!(s.pick(&mut rng, now + Duration::from_secs(6)).unwrap().host, "a");
+        assert_eq!(
+            s.pick(&mut rng, now + Duration::from_secs(6)).unwrap().host,
+            "a"
+        );
     }
 }

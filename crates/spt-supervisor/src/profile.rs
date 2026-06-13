@@ -868,9 +868,10 @@ impl ProfileTask {
                 stop_runners_bounded(runners, self.cfg.keepalive_interval).await;
                 let _ = close_session_bounded(session, self.cfg.keepalive_interval).await;
                 if let Some(ep) = self.current_endpoint.clone() {
-                    self.handle_session_failure(&ep, &Error::NetworkUnreachable(
-                        "session keepalive failed".into(),
-                    ));
+                    self.handle_session_failure(
+                        &ep,
+                        &Error::NetworkUnreachable("session keepalive failed".into()),
+                    );
                 }
                 let delay = self.next_backoff();
                 LoopAction::Retry(delay)
@@ -1061,9 +1062,7 @@ impl ProfileTask {
             ("attempt", serde_json::Value::from(attempt)),
             (
                 "delay_ms",
-                serde_json::Value::from(
-                    u64::try_from(delay.as_millis()).unwrap_or(u64::MAX),
-                ),
+                serde_json::Value::from(u64::try_from(delay.as_millis()).unwrap_or(u64::MAX)),
             ),
         ];
         if let Some(ep) = &endpoint {
@@ -1073,7 +1072,10 @@ impl ProfileTask {
             "profile.reconnect_scheduled",
             spt_events::Severity::Warn,
             &self.name,
-            format!("profile `{}` reconnect attempt {attempt} in {delay:?}", self.name),
+            format!(
+                "profile `{}` reconnect attempt {attempt} in {delay:?}",
+                self.name
+            ),
             &fields,
         );
         self.cfg.observers.inc_reconnect(&self.name);
@@ -1721,16 +1723,16 @@ mod tests {
         // We must return to Active, not be stuck in Degraded.
         wait_for_state(&mut rx, ProfileStateName::Active).await;
         assert!(
-            proto.connect_count.load(std::sync::atomic::Ordering::SeqCst) >= 2,
+            proto
+                .connect_count
+                .load(std::sync::atomic::Ordering::SeqCst)
+                >= 2,
             "expected a real reconnect (≥2 connects)"
         );
         sup.stop().await;
     }
 
-    async fn wait_for_state(
-        rx: &mut watch::Receiver<ProfileStateName>,
-        target: ProfileStateName,
-    ) {
+    async fn wait_for_state(rx: &mut watch::Receiver<ProfileStateName>, target: ProfileStateName) {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
         loop {
             if *rx.borrow() == target {

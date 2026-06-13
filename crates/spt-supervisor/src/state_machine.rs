@@ -201,10 +201,7 @@ impl ProfileStateMachine {
             // from any "session-up but not yet fully Active" state. Accepting
             // it from `Degraded`/`Unstable` lets an in-place forward recovery
             // (E1-F4) clear the degraded condition without a full reconnect.
-            (
-                S::EstablishingForwards | S::Degraded | S::Unstable,
-                E::ForwardsUp,
-            ) => Some(S::Active),
+            (S::EstablishingForwards | S::Degraded | S::Unstable, E::ForwardsUp) => Some(S::Active),
             (S::EstablishingForwards, E::ForwardDown) => Some(S::Degraded),
 
             (S::Active, E::ForwardDown) => Some(S::Degraded),

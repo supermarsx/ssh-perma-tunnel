@@ -282,8 +282,7 @@ fn reject_unsupported_mode(mode: groups::config::ReloadMode) -> Result<()> {
                 .into(),
         )),
         M::None => Err(Error::InvalidArgs(
-            "`--mode none` disables reloading, which contradicts `config reload`"
-                .into(),
+            "`--mode none` disables reloading, which contradicts `config reload`".into(),
         )),
     }
 }

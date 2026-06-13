@@ -61,10 +61,7 @@ pub fn is_scm_dispatch_invocation() -> bool {
 /// the dispatcher always picks up the running service, so a fixed `"spt"`
 /// is fine even though installed services may be named `spt-<config>`.
 #[cfg(target_os = "windows")]
-pub fn enter_scm_dispatch(
-    service_name: &'static str,
-    hardening: HardeningReport,
-) -> Result<()> {
+pub fn enter_scm_dispatch(service_name: &'static str, hardening: HardeningReport) -> Result<()> {
     use spt_service::windows_scm;
     windows_scm::run_as_service(service_name, move |scm_args, handles| {
         // E7-F1: install a tracing subscriber FIRST — before we build the
@@ -180,7 +177,9 @@ fn init_scm_tracing() -> (
                 remote: Vec::new(),
             };
             let guard = spt_observability::init(&fallback).ok();
-            let handle = guard.as_ref().map(spt_observability::TracingGuard::reload_handle);
+            let handle = guard
+                .as_ref()
+                .map(spt_observability::TracingGuard::reload_handle);
             mirror_fatal(&format!("file log init failed, using stderr fallback: {e}"));
             (state_dir, guard, handle)
         }
@@ -203,10 +202,7 @@ fn mirror_fatal(message: &str) {
 
 /// Non-Windows stub. Always returns `UnsupportedPlatform`.
 #[cfg(not(target_os = "windows"))]
-pub fn enter_scm_dispatch(
-    _service_name: &'static str,
-    _hardening: HardeningReport,
-) -> Result<()> {
+pub fn enter_scm_dispatch(_service_name: &'static str, _hardening: HardeningReport) -> Result<()> {
     Err(Error::UnsupportedPlatform(
         "--scm-dispatch is Windows-only".into(),
     ))
@@ -311,13 +307,15 @@ async fn run_orchestrator_under_scm(
                 );
                 // Multi-auth Phase 3: zip endpoints with index-aligned resolved
                 // credentials into the (host, port) → AuthConfig map.
-                let auth_by_endpoint: std::collections::HashMap<(String, u16), spt_auth::AuthConfig> =
-                    bundle
-                        .endpoints
-                        .iter()
-                        .zip(bundle.endpoint_auth.iter())
-                        .map(|(ep, auth)| ((ep.host.clone(), ep.port), auth.clone()))
-                        .collect();
+                let auth_by_endpoint: std::collections::HashMap<
+                    (String, u16),
+                    spt_auth::AuthConfig,
+                > = bundle
+                    .endpoints
+                    .iter()
+                    .zip(bundle.endpoint_auth.iter())
+                    .map(|(ep, auth)| ((ep.host.clone(), ep.port), auth.clone()))
+                    .collect();
                 orchestrator.start_profile_with_auth(
                     profile,
                     bundle.protocol,

@@ -2148,7 +2148,10 @@ password = \"secret://hosts/alice\"
         assert_eq!(ep.user.as_deref(), Some("alice"));
         let auth = ep.auth.as_ref().expect("inline auth present");
         assert_eq!(auth.method, "public_key");
-        assert_eq!(auth.identity_file.as_deref(), Some("/home/alice/.ssh/id_ed25519"));
+        assert_eq!(
+            auth.identity_file.as_deref(),
+            Some("/home/alice/.ssh/id_ed25519")
+        );
 
         // Re-serialise: the inline values survive the round-trip.
         let rendered = toml::to_string(&ep).unwrap();

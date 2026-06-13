@@ -694,7 +694,14 @@ mod tests {
 
     #[test]
     fn validate_service_name_accepts_typical_names() {
-        for ok in ["spt", "spt-relay", "spt_relay", "io.spt.relay", "svc@1", "a.b-c_d"] {
+        for ok in [
+            "spt",
+            "spt-relay",
+            "spt_relay",
+            "io.spt.relay",
+            "svc@1",
+            "a.b-c_d",
+        ] {
             assert!(validate_service_name(ok).is_ok(), "should accept {ok:?}");
         }
     }
@@ -1073,11 +1080,8 @@ mod tests {
             // hard-coding a UTC string (which would only hold on a UTC host).
             use chrono::{Local, NaiveDateTime, TimeZone};
             let dt = parse_schtasks_timestamp("5/4/2026 3:24:21 PM").expect("parse");
-            let expected_local = NaiveDateTime::parse_from_str(
-                "2026-05-04 15:24:21",
-                "%Y-%m-%d %H:%M:%S",
-            )
-            .unwrap();
+            let expected_local =
+                NaiveDateTime::parse_from_str("2026-05-04 15:24:21", "%Y-%m-%d %H:%M:%S").unwrap();
             let want = Local
                 .from_local_datetime(&expected_local)
                 .earliest()
@@ -1090,11 +1094,8 @@ mod tests {
         fn parse_timestamp_handles_iso() {
             use chrono::{Local, NaiveDateTime, TimeZone};
             let dt = parse_schtasks_timestamp("2026-05-04 15:24:21").expect("parse");
-            let expected_local = NaiveDateTime::parse_from_str(
-                "2026-05-04 15:24:21",
-                "%Y-%m-%d %H:%M:%S",
-            )
-            .unwrap();
+            let expected_local =
+                NaiveDateTime::parse_from_str("2026-05-04 15:24:21", "%Y-%m-%d %H:%M:%S").unwrap();
             let want = Local
                 .from_local_datetime(&expected_local)
                 .earliest()

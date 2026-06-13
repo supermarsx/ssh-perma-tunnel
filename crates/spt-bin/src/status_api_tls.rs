@@ -434,10 +434,16 @@ mod tests {
         let peer_a = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(203, 0, 113, 7)), 51000);
         let peer_b = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(198, 51, 100, 9)), 52000);
 
-        let req_a =
-            inject_extensions(axum::extract::Request::new(axum::body::Body::empty()), peer_a, None);
-        let req_b =
-            inject_extensions(axum::extract::Request::new(axum::body::Body::empty()), peer_b, None);
+        let req_a = inject_extensions(
+            axum::extract::Request::new(axum::body::Body::empty()),
+            peer_a,
+            None,
+        );
+        let req_b = inject_extensions(
+            axum::extract::Request::new(axum::body::Body::empty()),
+            peer_b,
+            None,
+        );
 
         let ci_a = req_a
             .extensions()

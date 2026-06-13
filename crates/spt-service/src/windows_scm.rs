@@ -952,8 +952,8 @@ mod windows_impl {
     use windows_service::service::{
         Service, ServiceAccess, ServiceAction, ServiceActionType, ServiceControl,
         ServiceControlAccept, ServiceErrorControl, ServiceExitCode, ServiceFailureActions,
-        ServiceFailureResetPeriod, ServiceInfo, ServiceStartType,
-        ServiceState as WinServiceState, ServiceStatus as WinServiceStatus, ServiceType,
+        ServiceFailureResetPeriod, ServiceInfo, ServiceStartType, ServiceState as WinServiceState,
+        ServiceStatus as WinServiceStatus, ServiceType,
     };
     use windows_service::service_control_handler::{self, ServiceControlHandlerResult};
     use windows_service::service_dispatcher;

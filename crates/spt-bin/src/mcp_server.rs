@@ -298,11 +298,7 @@ fn read_recent_events(state_dir: &std::path::Path) -> Vec<Value> {
     };
     // Pick the lexicographically-greatest file name (daily files are
     // `events-YYYY-MM-DD.jsonl`, so lexical order == chronological order).
-    let latest = rd
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| p.is_file())
-        .max();
+    let latest = rd.flatten().map(|e| e.path()).filter(|p| p.is_file()).max();
     let Some(path) = latest else {
         return Vec::new();
     };

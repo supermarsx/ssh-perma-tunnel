@@ -763,10 +763,14 @@ impl DnsPage {
                     r.port.map(|n| n.to_string()).unwrap_or_default()
                 )),
             ];
-            let block = Block::default().borders(Borders::ALL).title("Record detail");
+            let block = Block::default()
+                .borders(Borders::ALL)
+                .title("Record detail");
             Paragraph::new(lines).block(block).render(cols[1], buf);
         } else {
-            let block = Block::default().borders(Borders::ALL).title("Record detail");
+            let block = Block::default()
+                .borders(Borders::ALL)
+                .title("Record detail");
             Paragraph::new("(no records — press `a` to add)")
                 .block(block)
                 .render(cols[1], buf);
@@ -941,7 +945,10 @@ port = 5060
         }
         p.on_key(k(KeyCode::Enter), &mut m); // commit
         assert_eq!(
-            m.profile().forwards[1].dns_names.clone().unwrap_or_default(),
+            m.profile().forwards[1]
+                .dns_names
+                .clone()
+                .unwrap_or_default(),
             vec!["second.example"]
         );
         // forwards[0] untouched.

@@ -14,9 +14,9 @@
 use std::borrow::Cow;
 // 1.88 lint: clippy::non_std_lazy_statics — std `LazyLock` is stable on 1.88,
 // so the lazy statics below use it instead of `once_cell::sync::Lazy`.
-use std::sync::LazyLock;
 use regex::{Regex, RegexSet};
 use serde::{Deserialize, Serialize};
+use std::sync::LazyLock;
 
 /// Selects how aggressively [`redact`] scrubs an input string.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
@@ -40,7 +40,8 @@ static BEARER: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)(bearer\s+)([A-Za-z0-9._~+/=\-]+)").unwrap());
 
 /// `Authorization: Basic <b64>`
-static BASIC: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)(basic\s+)([A-Za-z0-9+/=]+)").unwrap());
+static BASIC: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)(basic\s+)([A-Za-z0-9+/=]+)").unwrap());
 
 /// `password = "..."`, `passphrase=...`, `key=...`, `secret=...`,
 /// `token=...`, `api_key=...` — values are scrubbed but the key name is kept.
@@ -84,8 +85,9 @@ static IPV4: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 /// Best-effort IPv6 — matches typical addresses with at least two colons.
-static IPV6: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\b(?:[0-9A-Fa-f]{1,4}:){2,7}[0-9A-Fa-f]{1,4}\b|::1\b|::\b").unwrap());
+static IPV6: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\b(?:[0-9A-Fa-f]{1,4}:){2,7}[0-9A-Fa-f]{1,4}\b|::1\b|::\b").unwrap()
+});
 
 /// Email address.
 static EMAIL: LazyLock<Regex> =

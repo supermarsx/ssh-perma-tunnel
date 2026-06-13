@@ -536,8 +536,8 @@ mod tests {
     async fn install_rejects_unsafe_name() {
         let tmp = tempfile::tempdir().unwrap();
         let mock = Arc::new(MockRunner::new());
-        let mgr = SystemdSystemManager::new_with_runner(mock)
-            .with_unit_root(tmp.path().to_path_buf());
+        let mgr =
+            SystemdSystemManager::new_with_runner(mock).with_unit_root(tmp.path().to_path_buf());
         let mut spec = sample_spec();
         spec.name = "../../evil".into();
         let err = mgr.install(&spec).await.unwrap_err();
@@ -550,8 +550,8 @@ mod tests {
     async fn uninstall_rejects_unsafe_name() {
         let tmp = tempfile::tempdir().unwrap();
         let mock = Arc::new(MockRunner::new());
-        let mgr = SystemdSystemManager::new_with_runner(mock)
-            .with_unit_root(tmp.path().to_path_buf());
+        let mgr =
+            SystemdSystemManager::new_with_runner(mock).with_unit_root(tmp.path().to_path_buf());
         let err = mgr.uninstall("../../evil").await.unwrap_err();
         assert!(matches!(err, Error::ServiceManagerFailed(_)));
     }

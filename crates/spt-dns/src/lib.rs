@@ -102,10 +102,9 @@ pub async fn query_resolver(
         let value = match (kind, rdata) {
             (RecordKind::A, RData::A(a)) => a.0.to_string(),
             (RecordKind::AAAA, RData::AAAA(a)) => a.0.to_string(),
-            (RecordKind::SRV, RData::SRV(s)) => format!(
-                "{} {} {} {}",
-                s.priority, s.weight, s.port, s.target
-            ),
+            (RecordKind::SRV, RData::SRV(s)) => {
+                format!("{} {} {} {}", s.priority, s.weight, s.port, s.target)
+            }
             (RecordKind::TXT, RData::TXT(t)) => t
                 .txt_data
                 .iter()
@@ -157,7 +156,9 @@ pub(crate) fn build_tokio_resolver(
         opts.attempts = 1;
         opts.use_hosts_file = use_hosts_file;
     }
-    builder.build().map_err(|e| DnsError::Upstream(e.to_string()))
+    builder
+        .build()
+        .map_err(|e| DnsError::Upstream(e.to_string()))
 }
 
 /// Helper: a [`ConnectionConfig`](hickory_resolver::config::ConnectionConfig)

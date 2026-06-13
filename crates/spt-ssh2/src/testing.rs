@@ -970,6 +970,7 @@ impl OpenSshTestServer {
     /// Returns `Ok(None)` when `sshd` is not on `PATH`. Tests should branch
     /// on this to skip cleanly.
     pub async fn start(self) -> std::io::Result<Option<RunningOpenSshServer>> {
+        use std::fmt::Write as _;
         let Some(sshd_path) = Self::locate_sshd() else {
             return Ok(None);
         };
@@ -1019,22 +1020,24 @@ impl OpenSshTestServer {
 
         // Minimal sshd_config. We deliberately avoid PAM / motd / login banner.
         let mut cfg = String::new();
-        cfg.push_str(&format!("Port {port}\n"));
+        writeln!(cfg, "Port {port}").unwrap();
         cfg.push_str("ListenAddress 127.0.0.1\n");
-        cfg.push_str(&format!("HostKey {}\n", host_key_path.display()));
+        writeln!(cfg, "HostKey {}", host_key_path.display()).unwrap();
         cfg.push_str("UsePAM no\n");
         cfg.push_str("StrictModes no\n");
         cfg.push_str("PrintMotd no\n");
         cfg.push_str("PermitRootLogin no\n");
-        cfg.push_str(&format!(
-            "PasswordAuthentication {}\n",
+        writeln!(
+            cfg,
+            "PasswordAuthentication {}",
             if self.password_auth { "yes" } else { "no" }
-        ));
+        )
+        .unwrap();
         cfg.push_str("PubkeyAuthentication yes\n");
         cfg.push_str("ChallengeResponseAuthentication no\n");
-        cfg.push_str(&format!("AllowUsers {}\n", self.username));
+        writeln!(cfg, "AllowUsers {}", self.username).unwrap();
         if let Some(akp) = &authorized_keys_path {
-            cfg.push_str(&format!("AuthorizedKeysFile {}\n", akp.display()));
+            writeln!(cfg, "AuthorizedKeysFile {}", akp.display()).unwrap();
         }
         cfg.push_str("AllowTcpForwarding yes\n");
         cfg.push_str("GatewayPorts no\n");

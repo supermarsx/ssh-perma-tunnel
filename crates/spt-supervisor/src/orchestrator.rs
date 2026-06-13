@@ -190,14 +190,7 @@ impl Orchestrator {
         endpoints: Vec<Endpoint>,
         cfg: ProfileSupervisorConfig,
     ) {
-        self.start_profile_with_auth(
-            profile,
-            protocol,
-            auth,
-            HashMap::new(),
-            endpoints,
-            cfg,
-        );
+        self.start_profile_with_auth(profile, protocol, auth, HashMap::new(), endpoints, cfg);
     }
 
     /// Start a profile, threading per-endpoint credentials.
@@ -261,15 +254,8 @@ impl Orchestrator {
         endpoints: Vec<Endpoint>,
         cfg: ProfileSupervisorConfig,
     ) {
-        self.restart_profile_with_auth(
-            profile,
-            protocol,
-            auth,
-            HashMap::new(),
-            endpoints,
-            cfg,
-        )
-        .await;
+        self.restart_profile_with_auth(profile, protocol, auth, HashMap::new(), endpoints, cfg)
+            .await;
     }
 
     /// Per-endpoint-auth variant of [`Self::restart_profile`] (multi-auth
@@ -313,9 +299,8 @@ impl Orchestrator {
         // Adapt the 5-tuple provider to the per-endpoint-auth provider with an
         // empty map (every endpoint uses the profile-level default).
         self.apply_with_auth(plan, |name| {
-            provider(name).map(|(p, proto, auth, eps, cfg)| {
-                (p, proto, auth, HashMap::new(), eps, cfg)
-            })
+            provider(name)
+                .map(|(p, proto, auth, eps, cfg)| (p, proto, auth, HashMap::new(), eps, cfg))
         })
         .await;
     }

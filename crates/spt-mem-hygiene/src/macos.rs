@@ -26,7 +26,7 @@ fn disable_core_dump() -> HardeningResult {
     // fields and does not retain the pointer. No caller-supplied
     // pointers participate. Returns -1/errno on failure; surfaced via
     // `last_os_error`. See `setrlimit(2)` man page.
-    let rc = unsafe { libc::setrlimit(libc::RLIMIT_CORE, &rl) };
+    let rc = unsafe { libc::setrlimit(libc::RLIMIT_CORE, &raw const rl) };
     if rc == 0 {
         HardeningResult::ok("setrlimit.rlimit_core")
     } else {

@@ -124,7 +124,12 @@ where
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
     let state_dir = state_dir.into();
     let task = tokio::spawn(run_loop(
-        plan, state_dir, interval, fetcher, apply_cb, shutdown_rx,
+        plan,
+        state_dir,
+        interval,
+        fetcher,
+        apply_cb,
+        shutdown_rx,
     ));
     RemoteConfigPollHandle { shutdown_tx, task }
 }
@@ -234,7 +239,9 @@ fn next_delay(interval: Duration, failures: u32) -> Duration {
 /// RNG crate.
 fn lcg_jitter(seed: u32) -> u64 {
     // Numerical Recipes LCG constants on a 64-bit widened seed.
-    let x = (u64::from(seed)).wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+    let x = (u64::from(seed))
+        .wrapping_mul(6_364_136_223_846_793_005)
+        .wrapping_add(1_442_695_040_888_963_407);
     // Take the high bits (better distributed than the low bits of an LCG).
     x >> 33
 }
@@ -353,7 +360,11 @@ mod tests {
         handle.shutdown().await;
 
         let got = sink.lock().unwrap();
-        assert_eq!(got.len(), 1, "apply_cb must fire exactly once for a stable body");
+        assert_eq!(
+            got.len(),
+            1,
+            "apply_cb must fire exactly once for a stable body"
+        );
         assert_eq!(got[0], body);
     }
 
@@ -417,7 +428,9 @@ mod tests {
         let d = tempdir().unwrap();
         // No cache on disk + transport error + allow_cached_on_failure=true →
         // NoCacheFallback error every tick. Loop must keep running.
-        let f = Arc::new(FakeFetcher::new(vec![Err(HttpError::Transport("dns".into()))]));
+        let f = Arc::new(FakeFetcher::new(vec![Err(HttpError::Transport(
+            "dns".into(),
+        ))]));
         let sink: Sink = Arc::new(Mutex::new(Vec::new()));
 
         let f_for_handle = f.clone();
@@ -471,7 +484,9 @@ mod tests {
     async fn loop_ticks_on_interval() {
         let body = b"version = 1\n".to_vec();
         let d = tempdir().unwrap();
-        let f = Arc::new(FakeFetcher::new(vec![Ok(FakeFetcher::ok(200, &body, None))]));
+        let f = Arc::new(FakeFetcher::new(vec![Ok(FakeFetcher::ok(
+            200, &body, None,
+        ))]));
         let sink: Sink = Arc::new(Mutex::new(Vec::new()));
 
         let handle = spawn_with_fetcher(
@@ -504,7 +519,10 @@ mod tests {
         // Backoff grows but never exceeds the interval.
         for failures in 1..=10u32 {
             let d = next_delay(i, failures);
-            assert!(d <= i, "backoff {d:?} exceeded cap {i:?} at failures={failures}");
+            assert!(
+                d <= i,
+                "backoff {d:?} exceeded cap {i:?} at failures={failures}"
+            );
         }
         // Early backoff (1 failure) should be well under the cap.
         assert!(next_delay(i, 1) < i);

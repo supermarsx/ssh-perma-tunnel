@@ -408,14 +408,23 @@ mod observer_tests {
 
     #[test]
     fn state_change_kind_maps_alertable_states() {
-        assert_eq!(state_change_kind(ProfileStateName::Active), "profile.connected");
-        assert_eq!(state_change_kind(ProfileStateName::Degraded), "profile.degraded");
+        assert_eq!(
+            state_change_kind(ProfileStateName::Active),
+            "profile.connected"
+        );
+        assert_eq!(
+            state_change_kind(ProfileStateName::Degraded),
+            "profile.degraded"
+        );
         assert_eq!(
             state_change_kind(ProfileStateName::Reconnecting),
             "profile.reconnecting"
         );
         assert_eq!(severity_for_state(ProfileStateName::Active), Severity::Info);
-        assert_eq!(severity_for_state(ProfileStateName::Degraded), Severity::Warn);
+        assert_eq!(
+            severity_for_state(ProfileStateName::Degraded),
+            Severity::Warn
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]

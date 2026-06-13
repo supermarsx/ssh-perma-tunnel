@@ -939,7 +939,11 @@ async fn tunnel_run(global: &GlobalOpts, args: groups::tunnel::TunnelRun) -> Res
     // `warnings_to_diagnostics` so they share the diagnostics loop below and
     // appear with the same shape as semantic validation warnings.
     let unknown_key_diags = spt_config::load::warnings_to_diagnostics(&unknown_keys);
-    for warning in diags.warnings.iter().chain(unknown_key_diags.warnings.iter()) {
+    for warning in diags
+        .warnings
+        .iter()
+        .chain(unknown_key_diags.warnings.iter())
+    {
         tracing::warn!(
             code = %warning.code,
             path = warning.path.as_deref().unwrap_or(""),
@@ -994,10 +998,11 @@ async fn tunnel_run(global: &GlobalOpts, args: groups::tunnel::TunnelRun) -> Res
     // orchestrator so the supervisor hot path increments real counters.
     let metrics_exporter = spt_observability::metrics::MetricsExporter::new()
         .map_err(|e| Error::RuntimeFailure(format!("metrics exporter: {e}")))?;
-    let metrics_handle = metrics_exporter.spawn(spt_observability::metrics::MetricsExporterConfig {
-        state_file: spt_state::paths::metrics_path(&state_dir),
-        ..Default::default()
-    });
+    let metrics_handle =
+        metrics_exporter.spawn(spt_observability::metrics::MetricsExporterConfig {
+            state_file: spt_state::paths::metrics_path(&state_dir),
+            ..Default::default()
+        });
 
     // Construct the orchestrator (with the events bus + metrics injected
     // BEFORE any profile starts) and start every enabled profile.
@@ -1076,13 +1081,15 @@ async fn tunnel_run(global: &GlobalOpts, args: groups::tunnel::TunnelRun) -> Res
                 );
                 // Multi-auth Phase 3: zip endpoints with index-aligned resolved
                 // credentials into the (host, port) → AuthConfig map.
-                let auth_by_endpoint: std::collections::HashMap<(String, u16), spt_auth::AuthConfig> =
-                    bundle
-                        .endpoints
-                        .iter()
-                        .zip(bundle.endpoint_auth.iter())
-                        .map(|(ep, auth)| ((ep.host.clone(), ep.port), auth.clone()))
-                        .collect();
+                let auth_by_endpoint: std::collections::HashMap<
+                    (String, u16),
+                    spt_auth::AuthConfig,
+                > = bundle
+                    .endpoints
+                    .iter()
+                    .zip(bundle.endpoint_auth.iter())
+                    .map(|(ep, auth)| ((ep.host.clone(), ep.port), auth.clone()))
+                    .collect();
                 orchestrator.start_profile_with_auth(
                     profile,
                     bundle.protocol,
@@ -1166,13 +1173,8 @@ async fn tunnel_run(global: &GlobalOpts, args: groups::tunnel::TunnelRun) -> Res
     // as a tokio task and funnels each changed remote body through the SAME
     // reload pipeline as SIGHUP (`ConfigCell::reload`). Off unless
     // `[runtime.remote_config].enabled = true` with a positive poll_interval.
-    let remote_config_handle = maybe_spawn_remote_config_poller(
-        &cfg,
-        &state_dir,
-        &resolver,
-        &orchestrator,
-        &config_cell,
-    );
+    let remote_config_handle =
+        maybe_spawn_remote_config_poller(&cfg, &state_dir, &resolver, &orchestrator, &config_cell);
 
     let signal_rx = crate::signals::spawn();
 
@@ -1320,11 +1322,14 @@ fn build_events_pipeline(
     state_dir: &Path,
 ) -> Result<(spt_events::EventBus, EventsPipeline)> {
     let ring = std::sync::Arc::new(
-        spt_state::EventRing::spawn(state_dir.to_path_buf(), spt_state::EventRingConfig::default())
-            .map_err(|e| Error::RuntimeFailure(format!("events ring: {e}")))?,
+        spt_state::EventRing::spawn(
+            state_dir.to_path_buf(),
+            spt_state::EventRingConfig::default(),
+        )
+        .map_err(|e| Error::RuntimeFailure(format!("events ring: {e}")))?,
     );
-    let bus = spt_events::EventBus::new(&spt_events::EventBusConfig::default())
-        .with_ring(ring.clone());
+    let bus =
+        spt_events::EventBus::new(&spt_events::EventBusConfig::default()).with_ring(ring.clone());
 
     let events = cfg.events.clone().unwrap_or_default();
     let sinks = build_event_sinks(&events.sinks);
@@ -1374,18 +1379,19 @@ fn build_event_sinks(
                     tracing::warn!(sink = %sc.name, "events sink `{}` has no url/endpoint — skipped", sc.kind);
                     continue;
                 };
-                let transport = match spt_events::sinks::http::reqwest_transport::ReqwestTransport::with_pin(
-                    timeout,
-                    &sc.pin_spki_sha256,
-                    sc.allow_self_signed.unwrap_or(false),
-                    sc.max_cert_chain_depth.or(Some(5)),
-                ) {
-                    Ok(t) => Arc::new(t) as Arc<dyn spt_events::sinks::http::HttpTransport>,
-                    Err(e) => {
-                        tracing::warn!(sink = %sc.name, error = %e, "events http sink transport build failed — skipped");
-                        continue;
-                    }
-                };
+                let transport =
+                    match spt_events::sinks::http::reqwest_transport::ReqwestTransport::with_pin(
+                        timeout,
+                        &sc.pin_spki_sha256,
+                        sc.allow_self_signed.unwrap_or(false),
+                        sc.max_cert_chain_depth.or(Some(5)),
+                    ) {
+                        Ok(t) => Arc::new(t) as Arc<dyn spt_events::sinks::http::HttpTransport>,
+                        Err(e) => {
+                            tracing::warn!(sink = %sc.name, error = %e, "events http sink transport build failed — skipped");
+                            continue;
+                        }
+                    };
                 let method = sc.method.clone().unwrap_or_else(|| "POST".into());
                 let content_type = sc
                     .content_type
@@ -1443,10 +1449,7 @@ fn build_event_bindings(
         if refs.is_empty() {
             continue;
         }
-        let min_severity = b
-            .min_level
-            .as_deref()
-            .and_then(spt_events::Severity::parse);
+        let min_severity = b.min_level.as_deref().and_then(spt_events::Severity::parse);
         out.push(spt_events::Binding {
             name: b.name.clone(),
             r#match: spt_events::BindingMatch {
@@ -1821,8 +1824,10 @@ async fn maybe_spawn_mcp_loopback(
     // E8-F2 + E8-F5: pass REAL config/state sources (so MCP resources + read
     // tools serve live data instead of NoopSources `{}`/`[]`), plus the audit
     // sink gated on `[mcp].audit_events`.
-    let sources =
-        crate::mcp_server::McpSources::from_config_and_state_dir(cfg.clone(), state_dir.to_path_buf());
+    let sources = crate::mcp_server::McpSources::from_config_and_state_dir(
+        cfg.clone(),
+        state_dir.to_path_buf(),
+    );
     let audit = crate::mcp_server::mcp_audit_sink(cfg);
     let server = crate::mcp_server::build_server_with_sources(policy, controller, sources, audit)
         .with_auth_token(token);
@@ -2134,7 +2139,10 @@ fn service_render(args: groups::service::ServiceRender) -> Result<()> {
         let backend = mgr.name();
         let matches = match fmt {
             RenderFormat::Unit => {
-                matches!(backend, "systemd-system" | "systemd-user" | "openrc" | "sysv")
+                matches!(
+                    backend,
+                    "systemd-system" | "systemd-user" | "openrc" | "sysv"
+                )
             }
             RenderFormat::Plist => matches!(backend, "launchd-daemon" | "launchd-agent"),
             RenderFormat::Windows => matches!(backend, "windows-scm" | "task-scheduler"),
@@ -3673,9 +3681,7 @@ async fn session_drain_dispatch(
     let v = client
         .call_tool("session_drain", payload)
         .await
-        .map_err(|e| {
-            Error::SessionCloseFailed(format!("session drain `{}`: {e}", args.profile))
-        })?;
+        .map_err(|e| Error::SessionCloseFailed(format!("session drain `{}`: {e}", args.profile)))?;
     println!(
         "{}",
         serde_json::to_string_pretty(&v).map_err(|e| Error::RuntimeFailure(e.to_string()))?
@@ -3977,8 +3983,7 @@ async fn diagnose_bundle(
     ))
     .ok();
     let recent_logs = std::fs::read_to_string(state_dir.join("spt.log")).ok();
-    let stats_summary =
-        std::fs::read_to_string(spt_state::paths::metrics_path(&state_dir)).ok();
+    let stats_summary = std::fs::read_to_string(spt_state::paths::metrics_path(&state_dir)).ok();
     let inputs = spt_diagnostics::BundleInputs {
         effective_config,
         status_snapshot: std::fs::read_to_string(spt_state::paths::status_path(&state_dir)).ok(),
@@ -4537,10 +4542,7 @@ async fn mcp_serve(global: &GlobalOpts, args: groups::mcp::McpServe) -> Result<(
         .as_ref()
         .and_then(|p| spt_config::load(p, false).ok())
         .and_then(|(c, _)| c.mcp);
-    let cfg_mcp_enabled = cfg_mcp
-        .as_ref()
-        .and_then(|m| m.enabled)
-        .unwrap_or(false);
+    let cfg_mcp_enabled = cfg_mcp.as_ref().and_then(|m| m.enabled).unwrap_or(false);
     let cfg_listen = cfg_mcp.and_then(|m| m.listen);
     let listen = args.listen.clone().or(cfg_listen);
     let stdio = args.stdio || listen.is_none();
@@ -4645,9 +4647,7 @@ fn map_remote_config_err(e: spt_remote_config::RemoteConfigError) -> Error {
         R::Fetch(_) | R::BadStatus(_) | R::NotModifiedWithoutCache | R::NoCacheFallback(_) => {
             Error::NetworkUnreachable(format!("remote-config fetch: {e}"))
         }
-        R::InvalidSpec(_) | R::CacheIo(_) => {
-            Error::InvalidConfig(format!("remote-config: {e}"))
-        }
+        R::InvalidSpec(_) | R::CacheIo(_) => Error::InvalidConfig(format!("remote-config: {e}")),
     }
 }
 
@@ -7068,7 +7068,10 @@ mod tests {
         });
         let policy = loopback_mcp_policy(&cfg, "127.0.0.1:0");
         assert!(policy.allow_write_tools.iter().any(|t| t == "profile_set"));
-        assert!(policy.allow_write_tools.iter().any(|t| t == "session_close"));
+        assert!(policy
+            .allow_write_tools
+            .iter()
+            .any(|t| t == "session_close"));
     }
 
     // ----- E6-F1 events pipeline / E6-F4 metrics -----------------------------
@@ -7598,11 +7601,7 @@ mod tests {
         let leftovers: Vec<_> = std::fs::read_dir(state.path())
             .unwrap()
             .filter_map(|e| e.ok())
-            .filter(|e| {
-                e.file_name()
-                    .to_string_lossy()
-                    .starts_with("spt-merged-")
-            })
+            .filter(|e| e.file_name().to_string_lossy().starts_with("spt-merged-"))
             .collect();
         assert!(
             leftovers.is_empty(),
@@ -7660,9 +7659,7 @@ mod tests {
     // ----- E5-F10: sealed-without-key in a daemon context ---------------------
 
     fn seal_config(path: &Path, body: &str, passphrase: &str) {
-        let key = spt_config_crypt::KeySource::Passphrase(
-            passphrase.as_bytes().to_vec().into(),
-        );
+        let key = spt_config_crypt::KeySource::Passphrase(passphrase.as_bytes().to_vec().into());
         let sealed = spt_config_crypt::seal(body.as_bytes(), &key).unwrap();
         std::fs::write(path, sealed).unwrap();
         assert!(spt_config_crypt::is_sealed(&std::fs::read(path).unwrap()));
@@ -7702,7 +7699,8 @@ mod tests {
             // assertion only holds without a TTY. Skip rather than hang.
             return;
         }
-        let err = load_config_for_run(&path).expect_err("sealed-without-key must error in daemon ctx");
+        let err =
+            load_config_for_run(&path).expect_err("sealed-without-key must error in daemon ctx");
         let msg = err.to_string();
         assert!(
             msg.contains("SPT_CONFIG_PASSPHRASE"),
@@ -7716,7 +7714,10 @@ mod tests {
     fn mcp_serve_enabled_honors_config_or_flag() {
         // E4-F13: enabled when --enable OR [mcp].enabled=true; refused otherwise.
         assert!(mcp_serve_enabled(true, false), "--enable alone permits");
-        assert!(mcp_serve_enabled(false, true), "[mcp].enabled alone permits");
+        assert!(
+            mcp_serve_enabled(false, true),
+            "[mcp].enabled alone permits"
+        );
         assert!(mcp_serve_enabled(true, true));
         assert!(!mcp_serve_enabled(false, false), "neither -> refused");
     }
@@ -7733,13 +7734,7 @@ mod tests {
             "version = 1\n[mcp]\nenabled = true\nlisten = \"256.256.256.256:1\"\n",
         )
         .unwrap();
-        let cli = parse(&[
-            "spt",
-            "--config",
-            path.to_str().unwrap(),
-            "mcp",
-            "serve",
-        ]);
+        let cli = parse(&["spt", "--config", path.to_str().unwrap(), "mcp", "serve"]);
         // Gate is cleared (no McpFailed "disabled by default"); the subsequent
         // loopback bind on a bogus address fails -> still McpFailed, but with a
         // bind-related message, proving we passed the enable check.
@@ -7781,10 +7776,7 @@ mod tests {
             "show",
             "nope",
         ]);
-        assert!(matches!(
-            dispatch_err(cli).await,
-            Error::SessionNotFound(_)
-        ));
+        assert!(matches!(dispatch_err(cli).await, Error::SessionNotFound(_)));
     }
 
     #[tokio::test]
@@ -7937,14 +7929,8 @@ mod tests {
         let (cfg, _w) = spt_config::load_str("version = 1\n", false).unwrap();
         let cell = crate::controller::ConfigCell::new(cfg.clone());
         assert!(
-            maybe_spawn_remote_config_poller(
-                &cfg,
-                td.path(),
-                &resolver,
-                &orchestrator,
-                &cell
-            )
-            .is_none(),
+            maybe_spawn_remote_config_poller(&cfg, td.path(), &resolver, &orchestrator, &cell)
+                .is_none(),
             "absent remote_config must not spawn a poller"
         );
 
@@ -7959,14 +7945,8 @@ mod tests {
         let (cfg, _w) = spt_config::load_str(toml, false).unwrap();
         let cell = crate::controller::ConfigCell::new(cfg.clone());
         assert!(
-            maybe_spawn_remote_config_poller(
-                &cfg,
-                td.path(),
-                &resolver,
-                &orchestrator,
-                &cell
-            )
-            .is_none(),
+            maybe_spawn_remote_config_poller(&cfg, td.path(), &resolver, &orchestrator, &cell)
+                .is_none(),
             "disabled remote_config must not spawn a poller"
         );
     }
@@ -7986,10 +7966,8 @@ mod tests {
             _if_none_match: Option<&str>,
             _max_bytes: u64,
             _timeout: std::time::Duration,
-        ) -> std::result::Result<
-            spt_remote_config::HttpResponse,
-            spt_remote_config::http::HttpError,
-        > {
+        ) -> std::result::Result<spt_remote_config::HttpResponse, spt_remote_config::http::HttpError>
+        {
             Ok(spt_remote_config::HttpResponse {
                 status: 200,
                 etag: Some("\"v1\"".into()),

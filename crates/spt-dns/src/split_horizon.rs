@@ -18,7 +18,7 @@ use std::net::{Ipv4Addr, Ipv6Addr};
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use hickory_proto::op::{Metadata, MessageType, OpCode, ResponseCode};
+use hickory_proto::op::{MessageType, Metadata, OpCode, ResponseCode};
 use hickory_proto::rr::rdata::{A as ARdata, AAAA as AAAARdata, SRV as SRVRdata, TXT as TXTRdata};
 use hickory_proto::rr::{Name, RData, Record as ProtoRecord, RecordType};
 use hickory_resolver::net::runtime::Time;
@@ -446,7 +446,10 @@ mod tests {
             // Forwarder path passes `authoritative = false`.
             let mut handler = CapturingHandler::new();
             let request = request_for("www.example.com.");
-            let answers = vec![a_record("www.example.com.", Ipv4Addr::new(93, 184, 216, 34))];
+            let answers = vec![a_record(
+                "www.example.com.",
+                Ipv4Addr::new(93, 184, 216, 34),
+            )];
             send_answers(&mut handler, &request, &answers, false).await;
 
             let msg = handler.parsed();
@@ -497,11 +500,7 @@ mod tests {
             let msg = handler.parsed();
             // hickory 0.26: `Message::answers` is a public field; records expose
             // their owner via `name()`.
-            let owners: Vec<String> = msg
-                .answers
-                .iter()
-                .map(|r| r.name.to_string())
-                .collect();
+            let owners: Vec<String> = msg.answers.iter().map(|r| r.name.to_string()).collect();
             // The CNAME owner is the qname; the A record's owner is the CNAME
             // target — NOT collapsed onto the qname.
             assert!(
@@ -513,7 +512,11 @@ mod tests {
                 "A record must keep its real owner (cdn.example.net.), not the \
                  qname; got {owners:?}"
             );
-            assert_eq!(owners.len(), 2, "exactly two answers expected, got {owners:?}");
+            assert_eq!(
+                owners.len(),
+                2,
+                "exactly two answers expected, got {owners:?}"
+            );
         });
     }
 

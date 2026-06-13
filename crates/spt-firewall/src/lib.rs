@@ -329,9 +329,9 @@ pub(crate) fn run_native(program: &str, args: &[&str], stdin: Option<&str>) -> R
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
-    let mut child = cmd.spawn().map_err(|e| {
-        Error::RuntimeFailure(format!("spawn firewall command `{program}`: {e}"))
-    })?;
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| Error::RuntimeFailure(format!("spawn firewall command `{program}`: {e}")))?;
 
     if let Some(input) = stdin {
         let mut handle = child

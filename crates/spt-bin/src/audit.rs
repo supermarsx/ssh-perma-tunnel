@@ -560,7 +560,9 @@ mod tests {
                 arguments: serde_json::json!({}),
                 ok: false,
                 client_id: None,
-                error: Some("policy denied: tool forward_add is not in allow_write_tools".to_owned()),
+                error: Some(
+                    "policy denied: tool forward_add is not in allow_write_tools".to_owned(),
+                ),
                 timestamp_ms: 0,
             })
             .await;

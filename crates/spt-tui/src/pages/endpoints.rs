@@ -67,10 +67,7 @@ impl EndpointsPage {
 
 /// `true` when endpoint `idx` carries a per-endpoint auth override.
 fn endpoint_override_on(profile: &Profile, idx: usize) -> bool {
-    profile
-        .endpoints
-        .get(idx)
-        .is_some_and(|e| e.auth.is_some())
+    profile.endpoints.get(idx).is_some_and(|e| e.auth.is_some())
 }
 
 /// Per-endpoint auth status marker for the list row / detail pane:
@@ -669,7 +666,15 @@ port = 22
         let labels: Vec<&str> = fields.iter().map(|f| f.label).collect();
         assert_eq!(
             labels,
-            ["name", "host", "port", "priority", "weight", "user", "auth.override"]
+            [
+                "name",
+                "host",
+                "port",
+                "priority",
+                "weight",
+                "user",
+                "auth.override"
+            ]
         );
     }
 

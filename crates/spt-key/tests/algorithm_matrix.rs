@@ -55,10 +55,10 @@ use tempfile::tempdir;
 // `ssh-key 0.6` imported above; the two coexist and we cross-verify wire bytes
 // between them. Its RSA signing path is correct (the 0.6.7 `(p, p)` bug is
 // fixed in 0.7-rc), so all RSA signing flows through it.
-use russh::keys::ssh_key as rk;
-use russh::keys::ssh_key::Signature as RkSignature;
 use russh::keys::signature::Signer as RkSigner;
 use russh::keys::signature::Verifier as RkVerifier;
+use russh::keys::ssh_key as rk;
+use russh::keys::ssh_key::Signature as RkSignature;
 
 // ---------------------------------------------------------------------------
 // Test fixtures
@@ -327,8 +327,8 @@ fn cross_lib_ssh_key_signs_rk_verifies_ed25519() {
     assert_eq!(sk_sig.algorithm(), Algorithm::Ed25519);
 
     let rk_pub = ssh_key_pub_to_rk(sk_priv.public_key());
-    let rk_sig = RkSignature::new(rk::Algorithm::Ed25519, sk_sig.as_bytes().to_vec())
-        .expect("rk sig wrap");
+    let rk_sig =
+        RkSignature::new(rk::Algorithm::Ed25519, sk_sig.as_bytes().to_vec()).expect("rk sig wrap");
     RkVerifier::verify(rk_pub.key_data(), msg, &rk_sig).expect("rk verify failed");
 }
 

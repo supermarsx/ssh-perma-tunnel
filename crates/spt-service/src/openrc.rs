@@ -605,8 +605,7 @@ mod tests {
     fn render_env_exports_escapes_special_chars() {
         let mut spec = sample_spec();
         spec.env.clear();
-        spec.env
-            .insert("K".into(), "a\"b$c`d\\e".into());
+        spec.env.insert("K".into(), "a\"b$c`d\\e".into());
         let out = render_env_exports(&spec);
         assert_eq!(out, "export K=\"a\\\"b\\$c\\`d\\\\e\"");
     }

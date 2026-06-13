@@ -627,7 +627,8 @@ mod tests {
 
         // Frame 1: garbage. Frame 2: a valid ping. The session must answer
         // both and then close cleanly on EOF.
-        let body = b"{not json at all\n{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"ping\"}\n".to_vec();
+        let body =
+            b"{not json at all\n{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"ping\"}\n".to_vec();
         let cursor = std::io::Cursor::new(body);
         let mut reader = tokio::io::BufReader::new(cursor);
         let mut writer: Vec<u8> = Vec::new();
@@ -637,9 +638,13 @@ mod tests {
 
         let out = String::from_utf8(writer).unwrap();
         let mut lines = out.lines();
-        let first: Response = serde_json::from_str(lines.next().expect("parse-error reply")).unwrap();
+        let first: Response =
+            serde_json::from_str(lines.next().expect("parse-error reply")).unwrap();
         let err = first.error.expect("first frame is an error reply");
-        assert_eq!(err.code, -32700, "malformed frame answered with parse error");
+        assert_eq!(
+            err.code, -32700,
+            "malformed frame answered with parse error"
+        );
         let second: Response =
             serde_json::from_str(lines.next().expect("ping reply after parse error")).unwrap();
         assert!(second.error.is_none(), "ping after parse error succeeds");

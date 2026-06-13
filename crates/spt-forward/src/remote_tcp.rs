@@ -113,7 +113,10 @@ mod tests {
         let d = err
             .diagnostic()
             .expect("connect failure must carry a structured diagnostic");
-        assert_eq!(d.endpoint.as_deref(), Some(format!("127.0.0.1:{port}").as_str()));
+        assert_eq!(
+            d.endpoint.as_deref(),
+            Some(format!("127.0.0.1:{port}").as_str())
+        );
         // Every network failure class the helper produces here is retryable
         // with backoff (the adoption upgraded the bare string to advice-bearing).
         assert_eq!(d.retry_advice, Some(RetryAdvice::RetryWithBackoff));

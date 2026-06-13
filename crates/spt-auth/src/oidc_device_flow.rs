@@ -414,7 +414,7 @@ impl OidcDeviceFlowClient {
                 Err(PollError::AuthorizationPending) => {
                     debug!(target: "spt_auth::oidc", "authorization_pending");
                     backoff = Duration::from_millis(250); // reset transport backoff
-                    // 1.88 lint: redundant_continue (loops back implicitly)
+                                                          // 1.88 lint: redundant_continue (loops back implicitly)
                 }
                 Err(PollError::SlowDown) => {
                     interval = (interval * 2).max(interval + Duration::from_secs(5));

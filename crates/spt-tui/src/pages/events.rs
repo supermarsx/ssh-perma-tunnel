@@ -130,10 +130,7 @@ impl EditorRow {
         value: String,
     ) -> Self {
         let mut row = Self::new(label, help, RowKind::Choice, value, options);
-        row.select.index = options
-            .iter()
-            .position(|o| *o == row.value)
-            .unwrap_or(0);
+        row.select.index = options.iter().position(|o| *o == row.value).unwrap_or(0);
         row
     }
 
@@ -272,7 +269,9 @@ fn render_static(area: Rect, buf: &mut Buffer, label: &str, value: &str, focused
         .borders(Borders::ALL)
         .title(label)
         .border_style(style);
-    Paragraph::new(value.to_owned()).block(block).render(area, buf);
+    Paragraph::new(value.to_owned())
+        .block(block)
+        .render(area, buf);
 }
 
 /// Tint the border of `area` Yellow to mark nav focus (mirrors the
@@ -415,8 +414,7 @@ impl RowEditor {
 
     fn render(&self, area: Rect, buf: &mut Buffer) {
         let n = self.rows.len().max(1);
-        let constraints: Vec<Constraint> =
-            (0..n).map(|_| Constraint::Length(3)).collect();
+        let constraints: Vec<Constraint> = (0..n).map(|_| Constraint::Length(3)).collect();
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints(constraints)
@@ -793,8 +791,16 @@ fn apply_command_rows(rows: &[EditorRow], c: &mut EventCommand) {
 
 fn subscription_rows(sub: &EventSinkSubscription) -> Vec<EditorRow> {
     vec![
-        EditorRow::text("endpoint", "Subscription endpoint URL", sub.endpoint.clone()),
-        EditorRow::text("p256dh", "Browser P256 ECDH key (base64url)", sub.p256dh.clone()),
+        EditorRow::text(
+            "endpoint",
+            "Subscription endpoint URL",
+            sub.endpoint.clone(),
+        ),
+        EditorRow::text(
+            "p256dh",
+            "Browser P256 ECDH key (base64url)",
+            sub.p256dh.clone(),
+        ),
         EditorRow::secret_opaque(
             "auth",
             "Per-subscription auth secret (base64url) — opaque",
@@ -894,9 +900,9 @@ impl EventsPage {
     /// the page should fall back to the original two-region layout so the
     /// default-state snapshot stays byte-identical.
     fn is_empty_state(model: &Model) -> bool {
-        model.events().is_none_or(|e| {
-            e.sinks.is_empty() && e.bindings.is_empty() && e.commands.is_empty()
-        })
+        model
+            .events()
+            .is_none_or(|e| e.sinks.is_empty() && e.bindings.is_empty() && e.commands.is_empty())
     }
 
     fn n_sinks(model: &Model) -> usize {
@@ -1035,8 +1041,7 @@ impl Page for EventsPage {
         // POPULATED STATE: tags + sinks + bindings (+ commands when present).
         // The Commands region is rendered only when it is non-empty OR is the
         // active region — so the zero-commands populated layout is unchanged.
-        let show_commands =
-            Self::n_commands(model) > 0 || self.region == Region::Commands;
+        let show_commands = Self::n_commands(model) > 0 || self.region == Region::Commands;
         let constraints: Vec<Constraint> = if show_commands {
             vec![
                 Constraint::Length(5),
@@ -1556,10 +1561,7 @@ impl EventsPage {
                 Line::from(format!("name:   {}", s.name)),
                 Line::from(format!("type:   {}", s.kind)),
                 Line::from(format!("url:    {}", s.url.clone().unwrap_or_default())),
-                Line::from(format!(
-                    "method: {}",
-                    s.method.clone().unwrap_or_default()
-                )),
+                Line::from(format!("method: {}", s.method.clone().unwrap_or_default())),
                 Line::from(format!(
                     "auth:   {}",
                     if s.auth.is_some() { "[REDACTED]" } else { "" }
@@ -1685,10 +1687,7 @@ impl EventsPage {
                     "args:       {}",
                     c.args.clone().unwrap_or_default().join(", ")
                 )),
-                Line::from(format!(
-                    "allow_exec: {}",
-                    c.allow_exec.unwrap_or(false)
-                )),
+                Line::from(format!("allow_exec: {}", c.allow_exec.unwrap_or(false))),
                 Line::from(format!(
                     "timeout:    {}",
                     c.timeout.clone().unwrap_or_default()
@@ -2151,8 +2150,7 @@ vapid_subject = "mailto:ops@example.com"
 
     #[test]
     fn secret_opaque_display_is_redacted_and_unvalidated() {
-        let row =
-            EditorRow::secret_opaque("vapid_private_key", "h", "rawkeymaterial".to_owned());
+        let row = EditorRow::secret_opaque("vapid_private_key", "h", "rawkeymaterial".to_owned());
         assert_eq!(row.display(), "[REDACTED]");
         // SecretOpaque skips `secret://` validation entirely.
         assert!(row.validate().is_none());
@@ -2237,7 +2235,10 @@ vapid_subject = "mailto:ops@example.com"
                                              // Move to the `subscriptions` row and open the sub-editor.
         let sub_row = {
             let ed = p.sink_editor.as_ref().unwrap();
-            ed.rows.iter().position(|r| r.label == "subscriptions").unwrap()
+            ed.rows
+                .iter()
+                .position(|r| r.label == "subscriptions")
+                .unwrap()
         };
         for _ in 0..sub_row {
             p.on_key(k(KeyCode::Down), &mut m);
@@ -2282,7 +2283,10 @@ vapid_subject = "mailto:ops@example.com"
         p.on_key(k(KeyCode::Enter), &mut m);
         let sub_row = {
             let ed = p.sink_editor.as_ref().unwrap();
-            ed.rows.iter().position(|r| r.label == "subscriptions").unwrap()
+            ed.rows
+                .iter()
+                .position(|r| r.label == "subscriptions")
+                .unwrap()
         };
         for _ in 0..sub_row {
             p.on_key(k(KeyCode::Down), &mut m);

@@ -1393,10 +1393,7 @@ mod tests {
             "hooks/edge.rhai",
             Some(std::path::Path::new("/etc/spt/config.toml")),
         );
-        assert_eq!(
-            resolved,
-            std::path::Path::new("/etc/spt/hooks/edge.rhai")
-        );
+        assert_eq!(resolved, std::path::Path::new("/etc/spt/hooks/edge.rhai"));
     }
 
     #[test]
@@ -1407,8 +1404,7 @@ mod tests {
         } else {
             "/scripts/edge.rhai"
         };
-        let resolved =
-            resolve_script_path(abs, Some(std::path::Path::new("/etc/spt/config.toml")));
+        let resolved = resolve_script_path(abs, Some(std::path::Path::new("/etc/spt/config.toml")));
         assert_eq!(resolved, std::path::PathBuf::from(abs));
     }
 

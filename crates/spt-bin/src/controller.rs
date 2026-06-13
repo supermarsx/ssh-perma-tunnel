@@ -262,10 +262,13 @@ pub async fn run_reload_pipeline(
                     ))
                 }
                 Err(e) => {
-                    failures.lock().expect("provider-failure lock").push(ProviderFailure {
-                        profile: name.to_owned(),
-                        error: e.to_string(),
-                    });
+                    failures
+                        .lock()
+                        .expect("provider-failure lock")
+                        .push(ProviderFailure {
+                            profile: name.to_owned(),
+                            error: e.to_string(),
+                        });
                     None
                 }
             }
@@ -907,10 +910,7 @@ pin_sha256 = ["SHA256:dummy"]
             .await
             .unwrap();
         assert!(
-            outcome
-                .provider_failures
-                .iter()
-                .any(|f| f.profile == "p"),
+            outcome.provider_failures.iter().any(|f| f.profile == "p"),
             "expected a recorded provider failure for profile `p`, got {:?}",
             outcome.provider_failures
         );

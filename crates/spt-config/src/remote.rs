@@ -214,7 +214,10 @@ mod tests {
         assert_eq!(plan.spec.url, "https://cfg.example.com/c.toml");
         assert!(plan.spec.allow_cached_on_failure);
         assert_eq!(plan.spec.max_size_bytes, Some(2_000_000));
-        assert_eq!(plan.spec.etag_cache.as_deref(), Some("/var/cache/spt/remote.toml"));
+        assert_eq!(
+            plan.spec.etag_cache.as_deref(),
+            Some("/var/cache/spt/remote.toml")
+        );
         // The configured TLS pins flow into the plan's pin surface.
         assert_eq!(plan.pin_spki_sha256, vec!["SHA256:AAAA", "SHA256:BBBB"]);
         assert!(plan.allow_self_signed);

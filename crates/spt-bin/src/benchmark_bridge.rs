@@ -118,10 +118,7 @@ pub async fn run_live_benchmark(
             return Box::new(move || {
                 let lc = lc.clone();
                 Box::pin(async move {
-                    let endpoint = lc
-                        .open_udp()
-                        .await
-                        .map_err(std::io::Error::other)?; // 1.88 lint: io_other_error
+                    let endpoint = lc.open_udp().await.map_err(std::io::Error::other)?; // 1.88 lint: io_other_error
                     Ok(spt_benchmark::UdpEndpoint {
                         socket: endpoint.socket,
                         target: endpoint.target,

@@ -91,8 +91,8 @@ fn rss_bytes() -> io::Result<u64> {
     let mut pmc = PROCESS_MEMORY_COUNTERS::default();
     let cb = u32::try_from(std::mem::size_of::<PROCESS_MEMORY_COUNTERS>())
         .map_err(|_| io::Error::other("PMC size overflow"))?; // 1.88 lint: io_other_error
-    // SAFETY: `GetCurrentProcess` returns a pseudo-handle that is always valid
-    // and does not need closing. `pmc` is a stack value of the size we pass.
+                                                              // SAFETY: `GetCurrentProcess` returns a pseudo-handle that is always valid
+                                                              // and does not need closing. `pmc` is a stack value of the size we pass.
     let ok = unsafe { K32GetProcessMemoryInfo(GetCurrentProcess(), &raw mut pmc, cb) };
     if !ok.as_bool() {
         return Err(io::Error::last_os_error());

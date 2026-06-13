@@ -62,9 +62,8 @@ where
     GM: Fn(&mut Profile) -> &mut Option<Auth> + Copy + 'static,
 {
     // Helper: build a `&'static` label `"{prefix}.{suffix}"`.
-    let lbl = |suffix: &str| -> &'static str {
-        Box::leak(format!("{prefix}.{suffix}").into_boxed_str())
-    };
+    let lbl =
+        |suffix: &str| -> &'static str { Box::leak(format!("{prefix}.{suffix}").into_boxed_str()) };
 
     vec![
         opt_choice_with_help(
@@ -81,13 +80,21 @@ where
             lbl("identity_file"),
             "Path to OpenSSH PEM private key (public_key, certificate)",
             move |p| get(p).and_then(|a| a.identity_file.clone()),
-            move |p, v| get_mut(p).get_or_insert_with(Default::default).identity_file = v,
+            move |p, v| {
+                get_mut(p)
+                    .get_or_insert_with(Default::default)
+                    .identity_file = v;
+            },
         ),
         opt_text(
             lbl("certificate_file"),
             "Path to OpenSSH user certificate (`*-cert.pub`)",
             move |p| get(p).and_then(|a| a.certificate_file.clone()),
-            move |p, v| get_mut(p).get_or_insert_with(Default::default).certificate_file = v,
+            move |p, v| {
+                get_mut(p)
+                    .get_or_insert_with(Default::default)
+                    .certificate_file = v;
+            },
         ),
         // The schema stores these as `Option<RedactedString>` (t5-e7) so the
         // value zeroes on drop and never leaks through derived `Debug`.
@@ -136,7 +143,11 @@ where
             lbl("identity_hint"),
             "Agent identity hint string",
             move |p| get(p).and_then(|a| a.identity_hint.clone()),
-            move |p, v| get_mut(p).get_or_insert_with(Default::default).identity_hint = v,
+            move |p, v| {
+                get_mut(p)
+                    .get_or_insert_with(Default::default)
+                    .identity_hint = v;
+            },
         ),
         opt_bool_with_help(
             lbl("keyboard_interactive"),
@@ -160,7 +171,11 @@ where
             lbl("oidc_client_id"),
             "OIDC client id",
             move |p| get(p).and_then(|a| a.oidc_client_id.clone()),
-            move |p, v| get_mut(p).get_or_insert_with(Default::default).oidc_client_id = v,
+            move |p, v| {
+                get_mut(p)
+                    .get_or_insert_with(Default::default)
+                    .oidc_client_id = v;
+            },
         ),
     ]
 }

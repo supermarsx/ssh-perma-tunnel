@@ -377,10 +377,7 @@ impl Agent {
         // Resolve the authenticated user's write permission for access control
         // (VACM-style). Defaults to read-only when the user is unknown.
         let user_name = String::from_utf8_lossy(&msg.security.user_name).to_string();
-        let writable = self
-            .users
-            .get(&user_name)
-            .is_some_and(|k| k.user.writable);
+        let writable = self.users.get(&user_name).is_some_and(|k| k.user.writable);
 
         // Dispatch the PDU.
         let response = self.dispatch_pdu(scoped.pdu, writable).await?;

@@ -242,14 +242,12 @@ impl ServiceManager for LaunchdManager {
         let label = Self::label_for(&spec.name);
         let path = Self::plist_path_for(self.scope, &label);
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| {
-                    Error::ServiceManagerFailed(format!("mkdir {}: {e}", parent.display()))
-                })?; // 1.88 lint: unnecessary_debug_formatting
+            std::fs::create_dir_all(parent).map_err(|e| {
+                Error::ServiceManagerFailed(format!("mkdir {}: {e}", parent.display()))
+            })?; // 1.88 lint: unnecessary_debug_formatting
         }
-        std::fs::write(&path, plist).map_err(|e| {
-            Error::ServiceManagerFailed(format!("write {}: {e}", path.display()))
-        })?; // 1.88 lint: unnecessary_debug_formatting
+        std::fs::write(&path, plist)
+            .map_err(|e| Error::ServiceManagerFailed(format!("write {}: {e}", path.display())))?; // 1.88 lint: unnecessary_debug_formatting
         let path_s = path.display().to_string();
         let out = self
             .runner
@@ -435,7 +433,7 @@ fn detect_uid() -> u32 {
     }
     #[cfg(unix)]
     {
-        return nix::unistd::geteuid().as_raw();
+        nix::unistd::geteuid().as_raw()
     }
     #[cfg(not(unix))]
     {
@@ -1029,7 +1027,10 @@ mod tests {
         mgr.install(&spec).await.unwrap();
         let calls = install_mock.calls();
         assert_eq!(calls[0].1[0], "load");
-        assert_eq!(calls[0].1[2], expected, "install must use manager scope path");
+        assert_eq!(
+            calls[0].1[2], expected,
+            "install must use manager scope path"
+        );
 
         let uninstall_mock = MockRunner::new();
         uninstall_mock.push_output(ok(""));
@@ -1064,7 +1065,10 @@ mod tests {
         spec.name = "../../evil".into();
         let err = mgr.install(&spec).await.expect_err("must reject");
         assert!(format!("{err}").contains("invalid service name"));
-        assert!(mock.calls().is_empty(), "no launchctl call on rejected name");
+        assert!(
+            mock.calls().is_empty(),
+            "no launchctl call on rejected name"
+        );
     }
 
     #[tokio::test]

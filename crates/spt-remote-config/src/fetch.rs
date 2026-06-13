@@ -152,14 +152,12 @@ pub async fn fetch<F: HttpFetcher + ?Sized>(
         // sits on disk. 4xx (and any other unexpected non-2xx/304) remain hard
         // `BadStatus` errors: they signal a client/config problem the cache
         // cannot paper over.
-        Ok(resp) if resp.status >= 500 && spec.allow_cached_on_failure => {
-            cache_fallback_or(
-                cached,
-                spec,
-                &format!("http status {}", resp.status),
-                RemoteConfigError::BadStatus(resp.status),
-            )
-        }
+        Ok(resp) if resp.status >= 500 && spec.allow_cached_on_failure => cache_fallback_or(
+            cached,
+            spec,
+            &format!("http status {}", resp.status),
+            RemoteConfigError::BadStatus(resp.status),
+        ),
         Ok(resp) => Err(RemoteConfigError::BadStatus(resp.status)),
         Err(e) if spec.allow_cached_on_failure => {
             let reason = e.to_string();
@@ -523,8 +521,7 @@ mod tests {
             max_cert_chain_depth: Some(4),
             ..Default::default()
         };
-        let plan =
-            RemoteConfigSpec::plan_from_runtime(&rc, None, None, Some(1_000_000)).unwrap();
+        let plan = RemoteConfigSpec::plan_from_runtime(&rc, None, None, Some(1_000_000)).unwrap();
         // Configured fingerprint flows into the spec used by fetch().
         assert_eq!(plan.spec.fingerprint_sha256, "c".repeat(64));
         assert!(plan.spec.allow_cached_on_failure);
@@ -533,6 +530,10 @@ mod tests {
         assert_eq!(plan.max_cert_chain_depth, Some(4));
         // And the builder constructs a real pinned fetcher without error.
         let fetcher = fetcher_for_plan(&plan);
-        assert!(fetcher.is_ok(), "fetcher_for_plan failed: {:?}", fetcher.err());
+        assert!(
+            fetcher.is_ok(),
+            "fetcher_for_plan failed: {:?}",
+            fetcher.err()
+        );
     }
 }

@@ -205,8 +205,7 @@ mod windows_dacl {
                     }
                     // The SID is laid out starting at `SidStart`.
                     let sid = PSID(std::ptr::addr_of!((*allowed).SidStart) as *mut c_void);
-                    let is_owner = !owner.is_invalid()
-                        && EqualSid(sid, owner).is_ok();
+                    let is_owner = !owner.is_invalid() && EqualSid(sid, owner).is_ok();
                     if !is_owner {
                         return Some(sid_to_string(sid));
                     }
@@ -553,7 +552,10 @@ mod tests {
     fn check_mode_missing_file_is_unavailable() {
         let dir = tempdir().unwrap();
         let err = check_mode(&dir.path().join("nope")).unwrap_err();
-        assert!(matches!(err, Error::SecretUnavailable { .. }), "got {err:?}");
+        assert!(
+            matches!(err, Error::SecretUnavailable { .. }),
+            "got {err:?}"
+        );
     }
 
     // On Windows `check_mode` is best-effort: it must never reject a readable
@@ -575,6 +577,9 @@ mod tests {
     fn windows_check_mode_missing_file_is_unavailable() {
         let dir = tempdir().unwrap();
         let err = check_mode(&dir.path().join("nope")).unwrap_err();
-        assert!(matches!(err, Error::SecretUnavailable { .. }), "got {err:?}");
+        assert!(
+            matches!(err, Error::SecretUnavailable { .. }),
+            "got {err:?}"
+        );
     }
 }

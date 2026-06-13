@@ -32,7 +32,7 @@ use hickory_proto::rr::{Name, RData, Record as ProtoRecord, RecordType};
 use hickory_resolver::config::{
     ConnectionConfig, NameServerConfig, ProtocolConfig, ResolveHosts, ResolverConfig,
 };
-use hickory_resolver::net::runtime::{TokioRuntimeProvider, Time};
+use hickory_resolver::net::runtime::{Time, TokioRuntimeProvider};
 use hickory_resolver::{Resolver, TokioResolver};
 use hickory_server::server::{Request, RequestHandler, ResponseHandler, ResponseInfo};
 use hickory_server::zone_handler::MessageResponseBuilder;
@@ -114,11 +114,8 @@ async fn unmanaged_name_forwarded_to_upstream() {
                 && qname_str.to_ascii_lowercase().starts_with("upstream-only.")
             {
                 let qname = Name::from_utf8(&qname_str).unwrap();
-                let rec = ProtoRecord::from_rdata(
-                    qname,
-                    30,
-                    RData::A(ARdata(Ipv4Addr::new(8, 8, 4, 4))),
-                );
+                let rec =
+                    ProtoRecord::from_rdata(qname, 30, RData::A(ARdata(Ipv4Addr::new(8, 8, 4, 4))));
                 let answers = [rec];
                 let builder = MessageResponseBuilder::from_message_request(request);
                 let mut metadata = Metadata::response_from_request(&request.metadata);

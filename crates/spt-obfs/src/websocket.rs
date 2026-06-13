@@ -267,7 +267,7 @@ impl AsyncWrite for WebsocketStream {
             Poll::Ready(Ok(())) => {}
             Poll::Ready(Err(e)) => {
                 // 1.88 lint: io_other_error
-                return Poll::Ready(Err(std::io::Error::other(format!("ws ready: {e}"))))
+                return Poll::Ready(Err(std::io::Error::other(format!("ws ready: {e}"))));
             }
             Poll::Pending => return Poll::Pending,
         }
@@ -287,7 +287,9 @@ impl AsyncWrite for WebsocketStream {
         match self.ws.poll_flush_unpin(cx) {
             Poll::Ready(Ok(())) => Poll::Ready(Ok(())),
             // 1.88 lint: io_other_error
-            Poll::Ready(Err(e)) => Poll::Ready(Err(std::io::Error::other(format!("ws flush: {e}")))),
+            Poll::Ready(Err(e)) => {
+                Poll::Ready(Err(std::io::Error::other(format!("ws flush: {e}"))))
+            }
             Poll::Pending => Poll::Pending,
         }
     }
@@ -305,7 +307,9 @@ impl AsyncWrite for WebsocketStream {
         match self.ws.poll_close_unpin(cx) {
             Poll::Ready(Ok(())) => Poll::Ready(Ok(())),
             // 1.88 lint: io_other_error
-            Poll::Ready(Err(e)) => Poll::Ready(Err(std::io::Error::other(format!("ws close: {e}")))),
+            Poll::Ready(Err(e)) => {
+                Poll::Ready(Err(std::io::Error::other(format!("ws close: {e}"))))
+            }
             Poll::Pending => Poll::Pending,
         }
     }

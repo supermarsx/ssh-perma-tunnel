@@ -629,7 +629,10 @@ mod tests {
         // The veto must hold regardless of pattern order in the field
         // (`!bad` listed before the wildcard).
         let key = one_key();
-        let text = format!("!bad.example.com,*.example.com {}", key.to_openssh().unwrap());
+        let text = format!(
+            "!bad.example.com,*.example.com {}",
+            key.to_openssh().unwrap()
+        );
         let kh = KnownHosts::parse(&text).unwrap();
         assert_eq!(
             kh.verify("bad.example.com", 22, &key),
@@ -703,7 +706,10 @@ mod tests {
         let mut kh = KnownHosts::parse(&text).unwrap();
         kh.add("second.example", 22, k2.clone(), false);
         assert_eq!(kh.verify("first.example", 22, &k1), KnownHostsResult::Match);
-        assert_eq!(kh.verify("second.example", 22, &k2), KnownHostsResult::Match);
+        assert_eq!(
+            kh.verify("second.example", 22, &k2),
+            KnownHostsResult::Match
+        );
         let idx = kh.index.as_ref().unwrap();
         assert!(idx.exact.contains_key("second.example"));
     }

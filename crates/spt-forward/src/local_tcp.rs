@@ -198,7 +198,9 @@ mod tests {
         assert!(is_transient_accept_error(&Error::from(
             ErrorKind::ConnectionAborted
         )));
-        assert!(is_transient_accept_error(&Error::from(ErrorKind::WouldBlock)));
+        assert!(is_transient_accept_error(&Error::from(
+            ErrorKind::WouldBlock
+        )));
         assert!(is_transient_accept_error(&Error::from(
             ErrorKind::Interrupted
         )));

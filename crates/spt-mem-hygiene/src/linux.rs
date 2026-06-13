@@ -72,7 +72,7 @@ fn disable_core_dump() -> HardeningResult {
     // unprivileged process, which is exactly the property we want. No
     // pointers from caller-supplied data flow into the syscall. Returns
     // -1/errno on failure; surfaced via `last_os_error`.
-    let rc = unsafe { libc::setrlimit(libc::RLIMIT_CORE, &rl) };
+    let rc = unsafe { libc::setrlimit(libc::RLIMIT_CORE, &raw const rl) };
     if rc == 0 {
         HardeningResult::ok("setrlimit.rlimit_core")
     } else {

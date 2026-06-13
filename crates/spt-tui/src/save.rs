@@ -614,7 +614,10 @@ port = 22
         let model = Model::from_str(raw);
         // Order follows NON_WIZARD_TABLE_KEYS: hops, sftp_mounts, script,
         // transport, enabled.
-        assert_eq!(present_non_wizard_keys(&model), vec!["hops", "transport", "enabled"]);
+        assert_eq!(
+            present_non_wizard_keys(&model),
+            vec!["hops", "transport", "enabled"]
+        );
     }
 
     /// A wizard-only profile (no non-wizard tables) reports an empty list,
@@ -777,14 +780,20 @@ actions = ["mail"]
         let mail = ev.sinks.iter().find(|s| s.name == "mail").unwrap();
         assert_eq!(mail.smtp.as_deref(), Some("smtp://mail.example.com:587"));
         assert_eq!(mail.from.as_deref(), Some("alerts@example.com"));
-        assert_eq!(mail.to.as_deref(), Some(&["ops@example.com".to_string()][..]));
+        assert_eq!(
+            mail.to.as_deref(),
+            Some(&["ops@example.com".to_string()][..])
+        );
 
         // Deferred push secret preserved (value carried verbatim through the
         // transparent RedactedString serialize).
         let push = ev.sinks.iter().find(|s| s.name == "push").unwrap();
         let key = push.vapid_private_key.as_ref().expect("vapid key present");
         assert_eq!(key, &"super-secret-vapid-key");
-        assert_eq!(push.vapid_subject.as_deref(), Some("mailto:ops@example.com"));
+        assert_eq!(
+            push.vapid_subject.as_deref(),
+            Some("mailto:ops@example.com")
+        );
 
         // The edit landed.
         assert_eq!(ev.bindings[0].min_level.as_deref(), Some("error"));

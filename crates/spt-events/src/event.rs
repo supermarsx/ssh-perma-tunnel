@@ -509,7 +509,10 @@ mod tests {
             .field("foo", "bar")
             .message("hi")
             .build();
-        assert!(matches!(e.lookup_field_str("kind"), Some(Cow::Borrowed("k"))));
+        assert!(matches!(
+            e.lookup_field_str("kind"),
+            Some(Cow::Borrowed("k"))
+        ));
         assert!(matches!(
             e.lookup_field_str("severity"),
             Some(Cow::Borrowed("info"))

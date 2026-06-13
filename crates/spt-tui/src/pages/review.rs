@@ -360,7 +360,9 @@ fn other_settings_lines(model: &Model) -> Vec<Line<'static>> {
     }
     for key in dropped {
         out.push(Line::from(Span::styled(
-            format!("⚠ unknown key `{key}` — NOT understood by the schema; a TUI save will drop it"),
+            format!(
+                "⚠ unknown key `{key}` — NOT understood by the schema; a TUI save will drop it"
+            ),
             Style::default().fg(Color::Yellow),
         )));
     }

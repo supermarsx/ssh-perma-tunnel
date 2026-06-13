@@ -244,9 +244,7 @@ fn check_logging(d: &mut Diagnostics, c: &Config) {
             d.push(
                 Diagnostic::error(
                     "logging_format_invalid",
-                    format!(
-                        "logging.format `{format}` is invalid (compact|pretty|json)"
-                    ),
+                    format!("logging.format `{format}` is invalid (compact|pretty|json)"),
                 )
                 .at("logging.format"),
             );
@@ -255,10 +253,7 @@ fn check_logging(d: &mut Diagnostics, c: &Config) {
 
     if let Some(destinations) = logging.destinations.as_ref() {
         for (i, dest) in destinations.iter().enumerate() {
-            if !matches!(
-                dest.as_str(),
-                "stderr" | "console" | "file" | "journald"
-            ) {
+            if !matches!(dest.as_str(), "stderr" | "console" | "file" | "journald") {
                 d.push(
                     Diagnostic::error(
                         "logging_destination_invalid",
@@ -278,9 +273,7 @@ fn check_logging(d: &mut Diagnostics, c: &Config) {
             d.push(
                 Diagnostic::error(
                     "logging_rotate_invalid",
-                    format!(
-                        "logging.rotate `{rotate}` is invalid (size|daily|hourly|none)"
-                    ),
+                    format!("logging.rotate `{rotate}` is invalid (size|daily|hourly|none)"),
                 )
                 .at("logging.rotate"),
             );
@@ -485,9 +478,7 @@ fn check_secrets(d: &mut Diagnostics, c: &Config) {
             d.push(
                 Diagnostic::error(
                     "secrets_backend_invalid",
-                    format!(
-                        "secrets.backend `{backend}` is invalid (auto|keychain|vault|env)"
-                    ),
+                    format!("secrets.backend `{backend}` is invalid (auto|keychain|vault|env)"),
                 )
                 .at("secrets.backend"),
             );
@@ -623,7 +614,10 @@ fn check_events(d: &mut Diagnostics, c: &Config) {
             d.push(
                 Diagnostic::error(
                     "event_binding_no_categories",
-                    format!("event binding `{}` subscribes to no `on` categories", binding.name),
+                    format!(
+                        "event binding `{}` subscribes to no `on` categories",
+                        binding.name
+                    ),
                 )
                 .at(format!("{prefix}.on")),
             );
@@ -633,7 +627,10 @@ fn check_events(d: &mut Diagnostics, c: &Config) {
                 d.push(
                     Diagnostic::error(
                         "event_binding_empty_category",
-                        format!("event binding `{}` has an empty `on` category", binding.name),
+                        format!(
+                            "event binding `{}` has an empty `on` category",
+                            binding.name
+                        ),
                     )
                     .at(format!("{prefix}.on[{j}]")),
                 );
@@ -651,8 +648,8 @@ fn check_events(d: &mut Diagnostics, c: &Config) {
         }
         for (j, action) in binding.actions.iter().enumerate() {
             // 1.88 lint: manual_contains
-            let known = sink_names.contains(&action.as_str())
-                || command_names.contains(&action.as_str());
+            let known =
+                sink_names.contains(&action.as_str()) || command_names.contains(&action.as_str());
             if !known {
                 d.push(
                     Diagnostic::error(
@@ -2673,10 +2670,9 @@ mod tests {
         let (c, _) = load_str(raw, false).unwrap();
         let d = validate(&c);
         assert!(
-            !d.errors
-                .iter()
-                .any(|e| e.code == "remote_config_poll_too_frequent"
-                    || e.code == "duration_invalid"),
+            !d.errors.iter().any(
+                |e| e.code == "remote_config_poll_too_frequent" || e.code == "duration_invalid"
+            ),
             "errors: {:?}",
             d.errors
         );
@@ -4314,9 +4310,7 @@ mod tests {
         let (c, _) = load_str(raw, false).unwrap();
         let d = validate(&c);
         assert!(
-            !d.warnings
-                .iter()
-                .any(|w| w.code.starts_with("status_api_")),
+            !d.warnings.iter().any(|w| w.code.starts_with("status_api_")),
             "disabled status_api must not warn: {:?}",
             d.warnings
         );

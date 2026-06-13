@@ -26,7 +26,9 @@ use spt_protocol::endpoint::TargetAddr;
 use spt_protocol::forward::RemoteForwardSpec;
 use spt_protocol::handle::ForwardHandle;
 use spt_protocol::session::{SessionInfo, TunnelSession};
-use spt_ssh3::frame::{ChannelOpenPayload, ForwardOpenResponse, Ssh3Frame, Ssh3FrameKind, Ssh3Settings};
+use spt_ssh3::frame::{
+    ChannelOpenPayload, ForwardOpenResponse, Ssh3Frame, Ssh3FrameKind, Ssh3Settings,
+};
 use spt_ssh3::{accept_control_stream, open_control_stream, Ssh3Session};
 use tokio::net::TcpListener;
 
