@@ -76,7 +76,7 @@ mod tests {
         for _ in 0..16 {
             match client.read(&mut buf).await {
                 Ok(0) => break, // clean EOF (FIN) — RST not observed
-                Ok(_) => continue,
+                Ok(_) => {} // 1.88 lint: redundant_continue
                 Err(e) if e.kind() == ErrorKind::ConnectionReset => {
                     saw_reset = true;
                     break;

@@ -499,6 +499,13 @@ fn timeout_row(s: &EventSink) -> EditorRow {
         s.timeout.clone().unwrap_or_default(),
     )
 }
+fn subject_template_row(s: &EventSink) -> EditorRow {
+    EditorRow::text(
+        "subject_template",
+        "Subject template ({{var}} rendered against the event)",
+        s.subject_template.clone().unwrap_or_default(),
+    )
+}
 fn body_template_row(s: &EventSink) -> EditorRow {
     EditorRow::text(
         "body_template",
@@ -531,9 +538,7 @@ fn sink_rows(s: &EventSink) -> Vec<EditorRow> {
                 "Recipient list (CSV)",
                 s.to.as_deref().unwrap_or(&[]),
             ));
-            // NOTE: email runtime uses a `subject_template` but the schema's
-            // `EventSink` has no `subject` field — only `body_template` is
-            // surfaced here. (Flagged: schema gap, NOT fixed.)
+            rows.push(subject_template_row(s));
             rows.push(body_template_row(s));
             rows.push(auth_row(s));
             rows.push(timeout_row(s));
@@ -665,6 +670,7 @@ fn apply_sink_rows(rows: &[EditorRow], s: &mut EventSink) {
             "to" => s.to = opt_list_val(row),
             "provider" => s.provider = opt(&row.value),
             "endpoint" => s.endpoint = opt(&row.value),
+            "subject_template" => s.subject_template = opt(&row.value),
             "body_template" => s.body_template = opt(&row.value),
             "vapid_subject" => s.vapid_subject = opt(&row.value),
             "vapid_private_key" => {
@@ -2064,11 +2070,31 @@ vapid_subject = "mailto:ops@example.com"
         assert!(labels.contains(&"smtp"));
         assert!(labels.contains(&"from"));
         assert!(labels.contains(&"to"));
+        assert!(labels.contains(&"subject_template"));
         assert!(labels.contains(&"body_template"));
         assert!(labels.contains(&"auth"));
-        // No `subject` row (schema gap — only body_template surfaced).
-        assert!(!labels.contains(&"subject"));
         assert!(!labels.contains(&"vapid_private_key"));
+    }
+
+    #[test]
+    fn apply_sink_rows_round_trips_subject_template() {
+        let s = EventSink {
+            name: "mailer".into(),
+            kind: "email".into(),
+            ..Default::default()
+        };
+        let mut rows = sink_rows(&s);
+        for row in &mut rows {
+            if row.label == "subject_template" {
+                row.value = "[{{severity}}] {{kind}}".into();
+            }
+        }
+        let mut out = s.clone();
+        apply_sink_rows(&rows, &mut out);
+        assert_eq!(
+            out.subject_template.as_deref(),
+            Some("[{{severity}}] {{kind}}")
+        );
     }
 
     #[test]

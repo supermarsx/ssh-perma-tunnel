@@ -228,8 +228,7 @@ mod tests {
     use super::*;
     use crate::zone::RecordKind;
     use hickory_proto::rr::{RData, RecordType};
-    use hickory_resolver::config::{NameServerConfigGroup, ResolverConfig, ResolverOpts};
-    use hickory_resolver::TokioAsyncResolver;
+    use hickory_resolver::config::ResolveHosts;
 
     #[test]
     fn fake_zone_builder_collects_records() {
@@ -253,22 +252,21 @@ mod tests {
         let port = resolver.port();
         assert!(port > 0);
 
-        let group =
-            NameServerConfigGroup::from_ips_clear(&["127.0.0.1".parse().unwrap()], port, true);
-        let cfg = ResolverConfig::from_parts(None, vec![], group);
-        let mut opts = ResolverOpts::default();
-        opts.timeout = Duration::from_secs(2);
-        opts.attempts = 1;
-        opts.use_hosts_file = false;
-        let client = TokioAsyncResolver::tokio(cfg, opts);
+        // hickory 0.26: build the test client through the crate's shared
+        // `build_tokio_resolver` helper (the old `NameServerConfigGroup` +
+        // `TokioAsyncResolver::tokio` construction was removed in the 0.25
+        // rework).
+        let addr: std::net::SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+        let client =
+            crate::build_tokio_resolver(addr, Duration::from_secs(2), ResolveHosts::Never).unwrap();
 
         let lookup = client
             .lookup("alpha.tunnel.local.", RecordType::A)
             .await
             .expect("query resolves");
         let mut found = false;
-        for rec in lookup.records() {
-            if let Some(RData::A(a)) = rec.data() {
+        for rec in lookup.answers() {
+            if let RData::A(a) = &rec.data {
                 assert_eq!(a.0, Ipv4Addr::new(127, 0, 0, 1));
                 found = true;
             }

@@ -34,7 +34,7 @@
 # regardless of runner image availability. This is the manual escape hatch
 # when a native runner image is broken or quota-exhausted.
 #
-# MSRV (1.85) is the single toolchain we use — it is implicitly tested by
+# MSRV (1.88) is the single toolchain we use — it is implicitly tested by
 # every fmt / clippy / test / build job. There is no separate `msrv` job.
 # =============================================================================
 
@@ -50,7 +50,7 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
-  MSRV: 1.85
+  MSRV: 1.88
 
 # Cancel any in-progress run on the same ref when a new push arrives, EXCEPT
 # on `main` and tag refs — a release run (downstream of build) must always run
@@ -87,7 +87,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@1.85.0
+      - uses: dtolnay/rust-toolchain@1.88.0
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
@@ -110,7 +110,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@1.85.0
+      - uses: dtolnay/rust-toolchain@1.88.0
       - uses: Swatinem/rust-cache@v2
         with:
           key: typecheck
@@ -145,7 +145,7 @@ jobs:
     continue-on-error: true
     steps:
       - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@1.85.0
+      - uses: dtolnay/rust-toolchain@1.88.0
       - uses: Swatinem/rust-cache@v2
         with:
           key: chaos
@@ -192,7 +192,7 @@ jobs:
           # bump-version.sh inspects `git tag --list "${YY}.*"` to compute N;
           # shallow checkout has no tag refs.
           fetch-depth: 0
-      - uses: dtolnay/rust-toolchain@1.85.0
+      - uses: dtolnay/rust-toolchain@1.88.0
       - name: Compute next YY.N and bump Cargo.toml + Cargo.lock
         id: bump
         shell: bash
@@ -253,7 +253,7 @@ jobs:
           # Cargo.lock with the prepare-release bumped copies so every cargo
           # invocation in this job sees the to-be-released version.
           path: .
-      - uses: dtolnay/rust-toolchain@1.85.0
+      - uses: dtolnay/rust-toolchain@1.88.0
         with:
           targets: ${{ matrix.target }}
           components: clippy
@@ -350,7 +350,7 @@ jobs:
         with:
           name: prepared-source
           path: .
-      - uses: dtolnay/rust-toolchain@1.85.0
+      - uses: dtolnay/rust-toolchain@1.88.0
         with:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
@@ -404,7 +404,7 @@ jobs:
   # ---------------------------------------------------------------------------
   # package — turn each built binary into distributable artifacts (tarball,
   # deb/rpm, pkg, zip/msi). Downstream of `build`; consumes the uploaded binary
-  # so it never recompiles. Packaging tools that don't build on MSRV 1.85
+  # so it never recompiles. Packaging tools that don't build on MSRV 1.88
   # (cargo-deb) are installed as prebuilt binaries.
   # ---------------------------------------------------------------------------
   package:
@@ -427,7 +427,7 @@ jobs:
         with:
           name: prepared-source
           path: .
-      - uses: dtolnay/rust-toolchain@1.85.0
+      - uses: dtolnay/rust-toolchain@1.88.0
         with:
           targets: ${{ matrix.target }}
       - name: Download release binary

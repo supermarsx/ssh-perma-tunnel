@@ -218,9 +218,7 @@ async fn rename_dotdot_does_not_escape_root() {
         "RNTO with `..` must be rejected with 550, got: `{r2}`"
     );
     let outside_root = std::path::Path::new("/evil.txt");
-    if outside_root.exists() {
-        panic!("rename escaped to /evil.txt");
-    }
+    assert!(!outside_root.exists(), "rename escaped to /evil.txt");
     handle.shutdown();
 }
 

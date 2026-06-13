@@ -930,7 +930,6 @@ async fn pbsz_prot_p_wraps_data_channel_in_tls() {
 mod russh_sftp_bridge {
     use std::sync::Arc;
 
-    use async_trait::async_trait;
     use russh::server::{Auth, Msg, Session};
     use russh::{Channel, ChannelId};
     use tokio::sync::Mutex;
@@ -952,7 +951,9 @@ mod russh_sftp_bridge {
         }
     }
 
-    #[async_trait]
+    // russh 0.61's `server::Handler` uses native `async fn` trait methods
+    // (no `#[async_trait]`); applying the macro produces E0195 lifetime
+    // mismatches against the trait declaration.
     impl russh::server::Handler for SshHandler {
         type Error = russh::Error;
 
@@ -1006,17 +1007,19 @@ mod russh_sftp_bridge {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn ssh2_sftp_factory_pools_sessions_across_open_for() {
+    use russh::keys::ssh_key::{Algorithm, PrivateKey};
     use russh::server::Config as RusshConfig;
-    use russh_keys::key::KeyPair;
     use spt_auth::{AuthConfig, AuthMethod};
     use spt_ftp_translator::{factory::Ssh2UserBinding, SftpFactory, Ssh2SftpFactory};
     use spt_protocol::Endpoint;
-    use spt_ssh2::{CryptoPolicy, TrustPolicy};
+    use spt_ssh2::CryptoPolicy;
 
     // 1) Start an embedded russh server with WinCNG-compatible algorithm
     //    pinning + SFTP subsystem bridge.
-    let key =
-        KeyPair::generate_rsa(2048, russh_keys::key::SignatureHash::SHA2_256).expect("rsa keygen");
+    // russh 0.61's server `keys` field takes ssh-key 0.7-rc `PrivateKey`s.
+    // Keygen needs a rand_core-0.10 `CryptoRng` (workspace rand is 0.8).
+    let key = PrivateKey::random(&mut rand010::rng(), Algorithm::Rsa { hash: None })
+        .expect("rsa-2048 keygen");
     let preferred = spt_ssh2::testing::wincng_libssh2_compatible_preferred();
     let cfg = Arc::new(RusshConfig {
         inactivity_timeout: Some(Duration::from_secs(60)),
@@ -1062,7 +1065,11 @@ async fn ssh2_sftp_factory_pools_sessions_across_open_for() {
                     secret: spt_auth::SecretRef::Env("SPT_FTP_SSH2_FACTORY_PW".into()),
                 }],
             ),
-            trust: TrustPolicy::default(),
+            // TOFU: the embedded russh server mints an ephemeral host key per
+            // run, so accept-on-first-use (persisting to a temp known_hosts) is
+            // the only viable trust posture. `TrustPolicy::default()` has
+            // `accept_new = false` and would reject the unknown host.
+            trust: spt_ssh2::testing::tofu_trust_verifier(),
             crypto: CryptoPolicy {
                 kex: vec![
                     "diffie-hellman-group14-sha256".into(),

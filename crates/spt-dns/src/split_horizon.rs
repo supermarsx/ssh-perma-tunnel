@@ -18,13 +18,13 @@ use std::net::{Ipv4Addr, Ipv6Addr};
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use hickory_proto::op::{Header, MessageType, OpCode, ResponseCode};
+use hickory_proto::op::{Metadata, MessageType, OpCode, ResponseCode};
 use hickory_proto::rr::rdata::{A as ARdata, AAAA as AAAARdata, SRV as SRVRdata, TXT as TXTRdata};
 use hickory_proto::rr::{Name, RData, Record as ProtoRecord, RecordType};
-use hickory_resolver::error::ResolveErrorKind;
-use hickory_resolver::TokioAsyncResolver;
-use hickory_server::authority::MessageResponseBuilder;
+use hickory_resolver::net::runtime::Time;
+use hickory_resolver::TokioResolver;
 use hickory_server::server::{Request, RequestHandler, ResponseHandler, ResponseInfo};
+use hickory_server::zone_handler::MessageResponseBuilder;
 use tracing::{debug, warn};
 
 use crate::health::HealthSource;
@@ -33,7 +33,7 @@ use crate::zone::{AnswerPolicy, ManagedZone, Record, RecordKind};
 /// Split-horizon DNS [`RequestHandler`] used by [`crate::DnsServer`].
 pub struct SplitHorizonHandler {
     zones: Vec<ManagedZone>,
-    upstream: Option<Arc<TokioAsyncResolver>>,
+    upstream: Option<Arc<TokioResolver>>,
     health: Arc<dyn HealthSource>,
 }
 
@@ -41,7 +41,7 @@ impl SplitHorizonHandler {
     /// Build a handler from its parts.
     pub fn new(
         zones: Vec<ManagedZone>,
-        upstream: Option<Arc<TokioAsyncResolver>>,
+        upstream: Option<Arc<TokioResolver>>,
         health: Arc<dyn HealthSource>,
     ) -> Self {
         Self {
@@ -81,18 +81,25 @@ impl SplitHorizonHandler {
 
 #[async_trait]
 impl RequestHandler for SplitHorizonHandler {
-    async fn handle_request<R: ResponseHandler>(
+    async fn handle_request<R: ResponseHandler, T: Time>(
         &self,
         request: &Request,
         mut response_handle: R,
     ) -> ResponseInfo {
-        let header = request.header();
-        if header.message_type() != MessageType::Query || header.op_code() != OpCode::Query {
+        // hickory 0.26: the request header is now `Metadata` (accessed via the
+        // `Request`'s deref to `MessageRequest`), and queries are a slice of
+        // `LowerQuery`. There's no `request.header()`/`request.query()` any more.
+        let metadata = &request.metadata;
+        if metadata.message_type != MessageType::Query || metadata.op_code != OpCode::Query {
             return send_simple(&mut response_handle, request, ResponseCode::NotImp).await;
         }
 
-        let query = request.query();
-        let qname_str = query.name().to_string();
+        let Some(query) = request.queries.queries().first() else {
+            return send_simple(&mut response_handle, request, ResponseCode::FormErr).await;
+        };
+        // `LowerQuery::original()` yields the case-preserving `Query`/`Name`.
+        let qname = query.original().name();
+        let qname_str = qname.to_string();
         let qtype = query.query_type();
 
         let kind = match qtype {
@@ -109,8 +116,7 @@ impl RequestHandler for SplitHorizonHandler {
                 let raw = zone.lookup(&qname_str, kind);
                 let filtered = self.filter_by_policy(raw).await;
                 if !filtered.is_empty() {
-                    let qname: Name = query.name().clone().into();
-                    let answers = match build_answers(&qname, &filtered) {
+                    let answers = match build_answers(qname, &filtered) {
                         Ok(a) => a,
                         Err(e) => {
                             warn!(error = %e, "failed to build dns answers");
@@ -149,7 +155,7 @@ impl RequestHandler for SplitHorizonHandler {
 }
 
 async fn forward_to_upstream<R: ResponseHandler>(
-    upstream: &TokioAsyncResolver,
+    upstream: &TokioResolver,
     request: &Request,
     response_handle: &mut R,
     qname_str: &str,
@@ -158,30 +164,27 @@ async fn forward_to_upstream<R: ResponseHandler>(
     let lookup = upstream.lookup(qname_str, qtype).await;
     match lookup {
         Ok(answer) => {
-            let mut records = Vec::new();
-            for rec in answer.records() {
-                // Preserve each upstream record's real owner name (`rec.name()`)
-                // rather than forcing the query name onto every record. Forcing
-                // the qname flattens CNAME chains (e.g. `www -> cdn -> A`, where
-                // the A record's owner is `cdn`, not `www`).
-                let mut r = ProtoRecord::with(rec.name().clone(), rec.record_type(), rec.ttl());
-                r.set_data(rec.data().cloned());
-                records.push(r);
-            }
+            // Preserve each upstream record's real owner name rather than
+            // forcing the query name onto every record. Forcing the qname
+            // flattens CNAME chains (e.g. `www -> cdn -> A`, where the A
+            // record's owner is `cdn`, not `www`). hickory 0.26 stores the
+            // record data inline (`record.data`), so a plain clone carries the
+            // owner name, type, TTL, and rdata verbatim — `answer.records()` is
+            // now `answer.answers()`.
+            let records: Vec<ProtoRecord> = answer.answers().to_vec();
             // Forwarded (recursive) answers are NOT authoritative: leave AA
             // clear and set RA (recursion available) instead.
             send_answers(response_handle, request, &records, false).await
         }
         Err(e) => {
-            // Distinguish NXDOMAIN/no-records from real failures.
-            match e.kind() {
-                ResolveErrorKind::NoRecordsFound { .. } => {
-                    send_simple(response_handle, request, ResponseCode::NXDomain).await
-                }
-                _ => {
-                    warn!(error = %e, "upstream resolver failure");
-                    send_simple(response_handle, request, ResponseCode::ServFail).await
-                }
+            // Distinguish NXDOMAIN/no-records from real failures. hickory 0.26
+            // exposes `NetError::is_no_records_found()` in place of the removed
+            // `ResolveErrorKind::NoRecordsFound` match arm.
+            if e.is_no_records_found() {
+                send_simple(response_handle, request, ResponseCode::NXDomain).await
+            } else {
+                warn!(error = %e, "upstream resolver failure");
+                send_simple(response_handle, request, ResponseCode::ServFail).await
             }
         }
     }
@@ -190,11 +193,7 @@ async fn forward_to_upstream<R: ResponseHandler>(
 fn build_answers(qname: &Name, records: &[&Record]) -> crate::Result<Vec<ProtoRecord>> {
     let mut out = Vec::with_capacity(records.len());
     for rec in records {
-        let mut r = ProtoRecord::with(
-            qname.clone(),
-            rec.kind.to_record_type(),
-            rec.ttl.as_secs() as u32,
-        );
+        let ttl = rec.ttl.as_secs() as u32;
         let rdata = match rec.kind {
             RecordKind::A => {
                 let ip: Ipv4Addr = rec.value.parse().map_err(|e: std::net::AddrParseError| {
@@ -243,8 +242,10 @@ fn build_answers(qname: &Name, records: &[&Record]) -> crate::Result<Vec<ProtoRe
                 RData::TXT(TXTRdata::new(chunks))
             }
         };
-        r.set_data(Some(rdata));
-        out.push(r);
+        // hickory 0.26: `Record::with(..)` + `set_data(Some(..))` was replaced
+        // by `Record::from_rdata(name, ttl, rdata)`, which stores the rdata
+        // (and thus the record type) inline.
+        out.push(ProtoRecord::from_rdata(qname.clone(), ttl, rdata));
     }
     Ok(out)
 }
@@ -263,23 +264,39 @@ async fn send_answers<R: ResponseHandler>(
     authoritative: bool,
 ) -> ResponseInfo {
     let builder = MessageResponseBuilder::from_message_request(request);
-    let mut header = Header::response_from_request(request.header());
+    // hickory 0.26: the response header is now `Metadata` (AA/RA are plain
+    // fields), and `MessageResponseBuilder::build` takes a `Metadata` rather
+    // than the old `Header`.
+    let mut metadata = Metadata::response_from_request(&request.metadata);
     if authoritative {
-        header.set_authoritative(true);
+        metadata.authoritative = true;
     } else {
-        header.set_authoritative(false);
-        header.set_recursion_available(true);
+        metadata.authoritative = false;
+        metadata.recursion_available = true;
     }
-    let response = builder.build(header, answers, &[], &[], &[]);
+    let response = builder.build(metadata, answers, &[], &[], &[]);
     match response_handle.send_response(response).await {
         Ok(info) => info,
         Err(e) => {
             warn!(error = %e, "failed to send DNS response");
-            let mut hdr = Header::response_from_request(request.header());
-            hdr.set_response_code(ResponseCode::ServFail);
-            hdr.into()
+            servfail_info(request)
         }
     }
+}
+
+/// Build a `ServFail` [`ResponseInfo`] for `request`.
+///
+/// hickory 0.26 replaced `Header` with a `{ metadata, counts }` pair and made
+/// `ResponseInfo::serve_failed` crate-private, so we assemble the header
+/// ourselves from the request metadata.
+fn servfail_info(request: &Request) -> ResponseInfo {
+    use hickory_proto::op::{Header, HeaderCounts};
+    let mut metadata = Metadata::response_from_request(&request.metadata);
+    metadata.response_code = ResponseCode::ServFail;
+    ResponseInfo::from(Header {
+        metadata,
+        counts: HeaderCounts::default(),
+    })
 }
 
 async fn send_simple<R: ResponseHandler>(
@@ -288,14 +305,13 @@ async fn send_simple<R: ResponseHandler>(
     code: ResponseCode,
 ) -> ResponseInfo {
     let builder = MessageResponseBuilder::from_message_request(request);
-    let response = builder.error_msg(request.header(), code);
+    // hickory 0.26: `error_msg` now takes the request `Metadata`.
+    let response = builder.error_msg(&request.metadata, code);
     match response_handle.send_response(response).await {
         Ok(info) => info,
         Err(e) => {
             warn!(error = %e, "failed to send simple DNS response");
-            let mut hdr = Header::response_from_request(request.header());
-            hdr.set_response_code(ResponseCode::ServFail);
-            hdr.into()
+            servfail_info(request)
         }
     }
 }
@@ -303,11 +319,11 @@ async fn send_simple<R: ResponseHandler>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::build_tokio_resolver;
     use crate::testing::{FakeHealthSource, FakeZone, LocalhostResolver};
     use crate::zone::Record;
-    use hickory_resolver::config::{NameServerConfigGroup, ResolverConfig, ResolverOpts};
-    use hickory_resolver::error::ResolveErrorKind;
-    use hickory_resolver::TokioAsyncResolver;
+    use hickory_resolver::config::ResolveHosts;
+    use std::net::SocketAddr;
     use std::time::Duration as StdDuration;
 
     fn rt() -> tokio::runtime::Runtime {
@@ -317,15 +333,14 @@ mod tests {
             .unwrap()
     }
 
-    fn client_for(port: u16) -> TokioAsyncResolver {
-        let group =
-            NameServerConfigGroup::from_ips_clear(&["127.0.0.1".parse().unwrap()], port, true);
-        let cfg = ResolverConfig::from_parts(None, vec![], group);
-        let mut opts = ResolverOpts::default();
-        opts.timeout = StdDuration::from_secs(2);
-        opts.attempts = 1;
-        opts.use_hosts_file = false;
-        TokioAsyncResolver::tokio(cfg, opts)
+    // hickory 0.26: the old `NameServerConfigGroup::from_ips_clear` +
+    // `TokioAsyncResolver::tokio` client construction was removed in the 0.25
+    // rework. Reuse the crate's `build_tokio_resolver` helper (the same builder
+    // path the forwarder uses) pointed at the loopback test port.
+    fn client_for(port: u16) -> TokioResolver {
+        let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+        build_tokio_resolver(addr, StdDuration::from_secs(2), ResolveHosts::Never)
+            .expect("build test resolver")
     }
 
     // ---- Direct `send_answers` header/owner-name tests --------------------
@@ -336,9 +351,12 @@ mod tests {
     // flags and each answer record's real owner name.
 
     use hickory_proto::op::{Message, MessageType as ProtoMsgType, OpCode as ProtoOpCode, Query};
-    use hickory_proto::serialize::binary::{BinDecodable, BinEncoder};
-    use hickory_server::authority::MessageRequest;
-    use hickory_server::server::{Protocol, ResponseHandler};
+    use hickory_proto::serialize::binary::BinEncoder;
+    // hickory 0.26: `Protocol` moved out of `hickory_server::server` (now
+    // private there) into `hickory_net::xfer::Protocol`, re-exported as
+    // `hickory_server::net::xfer::Protocol`.
+    use hickory_server::net::xfer::Protocol;
+    use hickory_server::server::ResponseHandler;
     use std::sync::{Arc, Mutex};
 
     /// Mock `ResponseHandler` that serializes the response to the DNS wire
@@ -365,9 +383,11 @@ mod tests {
 
     #[async_trait]
     impl ResponseHandler for CapturingHandler {
+        // hickory 0.26: `send_response` returns `Result<ResponseInfo, NetError>`
+        // (was `std::io::Result<ResponseInfo>` in 0.24).
         async fn send_response<'a>(
             &mut self,
-            response: hickory_server::authority::MessageResponse<
+            response: hickory_server::zone_handler::MessageResponse<
                 '_,
                 'a,
                 impl Iterator<Item = &'a ProtoRecord> + Send + 'a,
@@ -375,7 +395,7 @@ mod tests {
                 impl Iterator<Item = &'a ProtoRecord> + Send + 'a,
                 impl Iterator<Item = &'a ProtoRecord> + Send + 'a,
             >,
-        ) -> std::io::Result<ResponseInfo> {
+        ) -> Result<ResponseInfo, hickory_server::net::NetError> {
             let mut buf = Vec::with_capacity(512);
             let info = {
                 let mut encoder = BinEncoder::new(&mut buf);
@@ -389,30 +409,35 @@ mod tests {
     }
 
     /// Build a minimal `Request` carrying a single `A` query for `qname`.
+    ///
+    /// hickory 0.26: `Message::new()` now takes `(id, message_type, op_code)`
+    /// directly (the `set_id`/`set_message_type`/`set_op_code` builder setters
+    /// were removed), `recursion_desired` is a plain `metadata` field, and a
+    /// `Request` is constructed from the wire bytes via `Request::from_bytes`
+    /// (the old `MessageRequest::from_bytes` + `Request::new` pair is gone).
     fn request_for(qname: &str) -> Request {
-        let mut msg = Message::new();
-        msg.set_id(0x1234)
-            .set_message_type(ProtoMsgType::Query)
-            .set_op_code(ProtoOpCode::Query)
-            .set_recursion_desired(true);
+        let mut msg = Message::new(0x1234, ProtoMsgType::Query, ProtoOpCode::Query);
+        msg.metadata.recursion_desired = true;
         let name = Name::from_utf8(qname).unwrap();
         msg.add_query(Query::query(name, RecordType::A));
         let wire = msg.to_vec().unwrap();
-        let req = MessageRequest::from_bytes(&wire).unwrap();
-        Request::new(req, "127.0.0.1:5353".parse().unwrap(), Protocol::Udp)
+        Request::from_bytes(wire, "127.0.0.1:5353".parse().unwrap(), Protocol::Udp).unwrap()
     }
 
     fn a_record(owner: &str, ip: Ipv4Addr) -> ProtoRecord {
-        let mut r = ProtoRecord::with(Name::from_utf8(owner).unwrap(), RecordType::A, 60);
-        r.set_data(Some(RData::A(ARdata(ip))));
-        r
+        // hickory 0.26: `Record::with(..)` + `set_data(Some(..))` was replaced
+        // by `Record::from_rdata(name, ttl, rdata)`, which stores rdata (and the
+        // record type) inline.
+        ProtoRecord::from_rdata(Name::from_utf8(owner).unwrap(), 60, RData::A(ARdata(ip)))
     }
 
     fn cname_record(owner: &str, target: &str) -> ProtoRecord {
         use hickory_proto::rr::rdata::CNAME as CNAMErdata;
-        let mut r = ProtoRecord::with(Name::from_utf8(owner).unwrap(), RecordType::CNAME, 60);
-        r.set_data(Some(RData::CNAME(CNAMErdata(Name::from_utf8(target).unwrap()))));
-        r
+        ProtoRecord::from_rdata(
+            Name::from_utf8(owner).unwrap(),
+            60,
+            RData::CNAME(CNAMErdata(Name::from_utf8(target).unwrap())),
+        )
     }
 
     #[test]
@@ -425,12 +450,13 @@ mod tests {
             send_answers(&mut handler, &request, &answers, false).await;
 
             let msg = handler.parsed();
+            // hickory 0.26: the header flags are plain `metadata` fields.
             assert!(
-                !msg.header().authoritative(),
+                !msg.metadata.authoritative,
                 "forwarded answer must NOT set AA"
             );
             assert!(
-                msg.header().recursion_available(),
+                msg.metadata.recursion_available,
                 "forwarded answer must set RA"
             );
         });
@@ -447,7 +473,7 @@ mod tests {
 
             let msg = handler.parsed();
             assert!(
-                msg.header().authoritative(),
+                msg.metadata.authoritative,
                 "managed-zone answer must set AA=1"
             );
         });
@@ -469,10 +495,12 @@ mod tests {
             send_answers(&mut handler, &request, &answers, false).await;
 
             let msg = handler.parsed();
+            // hickory 0.26: `Message::answers` is a public field; records expose
+            // their owner via `name()`.
             let owners: Vec<String> = msg
-                .answers()
+                .answers
                 .iter()
-                .map(|r| r.name().to_string())
+                .map(|r| r.name.to_string())
                 .collect();
             // The CNAME owner is the qname; the A record's owner is the CNAME
             // target — NOT collapsed onto the qname.
@@ -500,7 +528,7 @@ mod tests {
             // resolver error, or it may collapse to NoRecordsFound. We accept
             // either as long as no records came back.
             if let Ok(lookup) = client.lookup("nothing.example.", RecordType::A).await {
-                assert_eq!(lookup.records().len(), 0);
+                assert_eq!(lookup.answers().len(), 0);
             }
             resolver.shutdown().await;
         });
@@ -518,8 +546,10 @@ mod tests {
             // MX is not in our supported set; handler returns NoError-empty.
             let res = client.lookup("a.tunnel.local.", RecordType::MX).await;
             match res {
-                Ok(lookup) => assert_eq!(lookup.records().len(), 0),
-                Err(e) => assert!(matches!(e.kind(), ResolveErrorKind::NoRecordsFound { .. })),
+                Ok(lookup) => assert_eq!(lookup.answers().len(), 0),
+                // hickory 0.26: `ResolveErrorKind::NoRecordsFound` was removed;
+                // the resolver error is a `NetError` with `is_no_records_found()`.
+                Err(e) => assert!(e.is_no_records_found()),
             }
             resolver.shutdown().await;
         });
@@ -547,10 +577,7 @@ mod tests {
                 .lookup("gated.tunnel.local.", RecordType::A)
                 .await
                 .expect_err("must fail because NoHealth filters the record");
-            assert!(matches!(
-                err.kind(),
-                ResolveErrorKind::NoRecordsFound { .. }
-            ));
+            assert!(err.is_no_records_found());
             resolver.shutdown().await;
         });
     }
@@ -579,8 +606,10 @@ mod tests {
                 .lookup("gated.tunnel.local.", RecordType::A)
                 .await
                 .expect("query resolves");
-            let any_match = lookup.records().iter().any(|r| {
-                matches!(r.data(), Some(hickory_proto::rr::RData::A(a)) if a.0 == std::net::Ipv4Addr::new(10,1,2,3))
+            // hickory 0.26: `Lookup::records()` -> `answers()`; record rdata is
+            // the inline `data` field, no longer an `Option` behind `data()`.
+            let any_match = lookup.answers().iter().any(|r| {
+                matches!(&r.data, hickory_proto::rr::RData::A(a) if a.0 == std::net::Ipv4Addr::new(10,1,2,3))
             });
             assert!(any_match);
             resolver.shutdown().await;
@@ -607,7 +636,7 @@ mod tests {
                 .lookup("nogate.tunnel.local.", RecordType::A)
                 .await
                 .expect("query resolves");
-            assert_eq!(lookup.records().len(), 1);
+            assert_eq!(lookup.answers().len(), 1);
             resolver.shutdown().await;
         });
     }
@@ -626,11 +655,11 @@ mod tests {
                 .await
                 .expect("query resolves");
             let mut found = false;
-            for rec in lookup.records() {
-                if let Some(hickory_proto::rr::RData::SRV(s)) = rec.data() {
-                    assert_eq!(s.priority(), 10);
-                    assert_eq!(s.weight(), 5);
-                    assert_eq!(s.port(), 25);
+            for rec in lookup.answers() {
+                if let hickory_proto::rr::RData::SRV(s) = &rec.data {
+                    assert_eq!(s.priority, 10);
+                    assert_eq!(s.weight, 5);
+                    assert_eq!(s.port, 25);
                     found = true;
                 }
             }
@@ -653,8 +682,8 @@ mod tests {
                 .await
                 .expect("query resolves");
             let mut found = false;
-            for rec in lookup.records() {
-                if let Some(hickory_proto::rr::RData::AAAA(a)) = rec.data() {
+            for rec in lookup.answers() {
+                if let hickory_proto::rr::RData::AAAA(a) = &rec.data {
                     assert_eq!(a.0, "fd00::abcd".parse::<std::net::Ipv6Addr>().unwrap());
                     found = true;
                 }
@@ -682,9 +711,9 @@ mod tests {
                 .expect("query resolves");
             let mut chunk_count = 0usize;
             let mut total = 0usize;
-            for rec in lookup.records() {
-                if let Some(hickory_proto::rr::RData::TXT(t)) = rec.data() {
-                    for chunk in t.iter() {
+            for rec in lookup.answers() {
+                if let hickory_proto::rr::RData::TXT(t) = &rec.data {
+                    for chunk in &t.txt_data {
                         chunk_count += 1;
                         total += chunk.len();
                     }

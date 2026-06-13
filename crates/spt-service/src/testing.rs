@@ -29,6 +29,11 @@ pub use crate::runner::{MockRunner, RunOutput};
 pub use crate::windows_scm::{BackendStatus, MockScmBackend, ScmAccess, ScmCall};
 
 /// One observed call against a [`MockServiceManager`].
+// 1.88 lint: large_enum_variant — `Install(ServiceSpec)` dwarfs the other
+// string-only arms. This is a test-support record type, not a hot allocation
+// path; boxing it would churn every construction/match site for no runtime
+// benefit, so the size disparity is accepted here.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ServiceCall {
     /// `install(spec)`.

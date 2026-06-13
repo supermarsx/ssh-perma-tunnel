@@ -200,17 +200,18 @@ pub mod fixtures {
 
 /// Serialize a single profile into a self-contained TOML config string.
 fn serialize_profile(p: &Profile) -> String {
+    use std::fmt::Write as _; // 1.88 lint: format_push_string
     let mut s = String::from("version = 1\n\n[[profiles]]\n");
-    s.push_str(&format!("name = \"{}\"\n", p.name));
-    s.push_str(&format!("protocol = \"{}\"\n", p.protocol));
+    let _ = writeln!(s, "name = \"{}\"", p.name);
+    let _ = writeln!(s, "protocol = \"{}\"", p.protocol);
     if let Some(h) = &p.host {
-        s.push_str(&format!("host = \"{h}\"\n"));
+        let _ = writeln!(s, "host = \"{h}\"");
     }
     if let Some(port) = p.port {
-        s.push_str(&format!("port = {port}\n"));
+        let _ = writeln!(s, "port = {port}");
     }
     if let Some(u) = &p.user {
-        s.push_str(&format!("user = \"{u}\"\n"));
+        let _ = writeln!(s, "user = \"{u}\"");
     }
     s
 }

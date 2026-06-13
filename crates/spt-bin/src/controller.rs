@@ -497,7 +497,7 @@ impl Controller for OrchestratorController {
                             break;
                         }
                     }
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {} // 1.88 lint: redundant_continue
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }
             }

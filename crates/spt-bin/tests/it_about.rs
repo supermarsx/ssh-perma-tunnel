@@ -235,8 +235,12 @@ fn about_export_json_extension_writes_valid_json() {
 
 #[test]
 fn about_data_includes_vendor_forks_via_show() {
+    // t-msrv-russh Phase 2 de-vendored russh (now upstream crates.io 0.61.x),
+    // so `libgssapi` is the remaining `vendor/`-rooted fork. It carries the
+    // additive `gss_get_mic` / `gss_verify_mic` bindings (see root Cargo.toml
+    // `[patch.crates-io]`) and stays classified as a locally patched vendor dep.
     let out = spt_bin()
-        .args(["about", "show", "russh"])
+        .args(["about", "show", "libgssapi"])
         .output()
         .expect("spawn");
     assert!(
@@ -247,6 +251,6 @@ fn about_data_includes_vendor_forks_via_show() {
     let stdout = String::from_utf8(out.stdout).unwrap();
     assert!(
         stdout.contains("vendor") && stdout.contains("locally patched"),
-        "russh should be flagged as a vendor fork: {stdout}"
+        "libgssapi should be flagged as a vendor fork: {stdout}"
     );
 }

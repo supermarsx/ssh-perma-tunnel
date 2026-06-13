@@ -1,16 +1,17 @@
 //! UDP+TCP listener wired to the [`crate::SplitHorizonHandler`].
 //!
 //! `DnsServer::run` binds a UDP socket and a TCP listener, hands them to a
-//! `hickory_server::ServerFuture`, and returns a [`DnsHandle`] that owns the
+//! `hickory_server::Server`, and returns a [`DnsHandle`] that owns the
 //! server-future task and its shutdown signal.
 
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use hickory_resolver::config::{NameServerConfigGroup, ResolverConfig, ResolverOpts};
-use hickory_resolver::TokioAsyncResolver;
-use hickory_server::ServerFuture;
+use hickory_resolver::config::{NameServerConfig, ProtocolConfig, ResolveHosts, ResolverConfig};
+use hickory_resolver::net::runtime::TokioRuntimeProvider;
+use hickory_resolver::{Resolver, TokioResolver};
+use hickory_server::Server;
 use tokio::net::{TcpListener, UdpSocket};
 use tokio::task::JoinHandle;
 use tracing::info;
@@ -21,6 +22,44 @@ use crate::split_horizon::SplitHorizonHandler;
 use crate::zone::ManagedZone;
 
 const DEFAULT_TCP_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Per-connection outgoing response buffer size for the TCP listener.
+///
+/// hickory 0.26's `Server::register_listener` gained this third argument; 32
+/// matches hickory's own internal test default and is ample for a stub
+/// resolver that answers one query per connection.
+const DEFAULT_TCP_RESPONSE_BUFFER: usize = 32;
+
+/// Build a Tokio resolver fronting every configured upstream (UDP+TCP).
+///
+/// hickory 0.26 removed `NameServerConfigGroup::from_ips_clear`; we assemble a
+/// [`NameServerConfig`] per upstream socket address, each carrying its own
+/// port on UDP and TCP `ConnectionConfig`s, then build through
+/// `Resolver::builder_with_config`.
+fn build_upstream_resolver(upstream: &[SocketAddr], timeout: Duration) -> Result<TokioResolver> {
+    let name_servers = upstream
+        .iter()
+        .map(|addr| {
+            let mut udp = hickory_resolver::config::ConnectionConfig::new(ProtocolConfig::Udp);
+            udp.port = addr.port();
+            let mut tcp = hickory_resolver::config::ConnectionConfig::new(ProtocolConfig::Tcp);
+            tcp.port = addr.port();
+            NameServerConfig::new(addr.ip(), true, vec![udp, tcp])
+        })
+        .collect::<Vec<_>>();
+
+    let cfg = ResolverConfig::from_parts(None, vec![], name_servers);
+    let mut builder = Resolver::builder_with_config(cfg, TokioRuntimeProvider::default());
+    {
+        let opts = builder.options_mut();
+        opts.timeout = timeout;
+        opts.attempts = 1;
+        opts.use_hosts_file = ResolveHosts::Never;
+    }
+    builder
+        .build()
+        .map_err(|e| DnsError::Upstream(e.to_string()))
+}
 
 /// Builder for [`DnsServer`].
 pub struct DnsServerBuilder {
@@ -98,20 +137,16 @@ impl DnsServerBuilder {
         let upstream = if self.upstream.is_empty() {
             None
         } else {
-            let group = NameServerConfigGroup::from_ips_clear(
-                &self.upstream.iter().map(SocketAddr::ip).collect::<Vec<_>>(),
-                self.upstream[0].port(),
-                true,
-            );
-            let cfg = ResolverConfig::from_parts(None, vec![], group);
-            let mut opts = ResolverOpts::default();
-            opts.timeout = Duration::from_secs(3);
-            opts.attempts = 1;
-            Some(Arc::new(TokioAsyncResolver::tokio(cfg, opts)))
+            // hickory 0.26: build one resolver fronting every configured
+            // upstream. `NameServerConfigGroup::from_ips_clear` was removed in
+            // the 0.25 rework; we assemble a `NameServerConfig` per upstream
+            // (UDP+TCP, with each upstream's own port) directly.
+            let resolver = build_upstream_resolver(&self.upstream, Duration::from_secs(3))?;
+            Some(Arc::new(resolver))
         };
 
         let handler = SplitHorizonHandler::new(self.zones, upstream, self.health);
-        let mut server = ServerFuture::new(handler);
+        let mut server = Server::new(handler);
 
         let udp = UdpSocket::bind(bind).await?;
         let local_udp = udp.local_addr()?;
@@ -119,7 +154,9 @@ impl DnsServerBuilder {
 
         let tcp = TcpListener::bind(bind).await?;
         let local_tcp = tcp.local_addr()?;
-        server.register_listener(tcp, self.tcp_timeout);
+        // hickory 0.26 `register_listener` gained a third arg: the per-conn
+        // outgoing response buffer size. 32 matches hickory's own test default.
+        server.register_listener(tcp, self.tcp_timeout, DEFAULT_TCP_RESPONSE_BUFFER);
 
         info!(udp = %local_udp, tcp = %local_tcp, "spt-dns server bound");
 

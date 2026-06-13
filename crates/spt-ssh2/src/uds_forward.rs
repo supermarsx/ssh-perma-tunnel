@@ -261,7 +261,7 @@ where
     pub async fn request(handle: SharedRusshHandle<H>, socket_path: &str) -> Result<Self> {
         validate_socket_path(socket_path)?;
         {
-            let mut g = handle.lock().await;
+            let g = handle.lock().await;
             g.streamlocal_forward(socket_path)
                 .await
                 .map_err(|e| Error::RemoteBindFailed {

@@ -25,6 +25,8 @@
 //! 17. Fleet feature gates in `[capabilities]` use known values and safe
 //!     combinations.
 
+use std::time::Duration;
+
 use spt_core::{address::BindAddr, duration::parse_duration, size::parse_size};
 
 use crate::diagnostic::{Diagnostic, Diagnostics};
@@ -648,8 +650,9 @@ fn check_events(d: &mut Diagnostics, c: &Config) {
             );
         }
         for (j, action) in binding.actions.iter().enumerate() {
-            let known = sink_names.iter().any(|n| *n == action.as_str())
-                || command_names.iter().any(|n| *n == action.as_str());
+            // 1.88 lint: manual_contains
+            let known = sink_names.contains(&action.as_str())
+                || command_names.contains(&action.as_str());
             if !known {
                 d.push(
                     Diagnostic::error(
@@ -806,6 +809,9 @@ fn check_runtime(d: &mut Diagnostics, c: &Config) {
 
     if let Some(rc) = rt.remote_config.as_ref() {
         if matches!(rc.enabled, Some(true)) {
+            // Minimum spacing between remote-config polls; an abusive value below this
+            // would let one fleet-wide knob hammer the config endpoint.
+            const MIN_REMOTE_POLL_INTERVAL: Duration = Duration::from_secs(30);
             match rc.url.as_deref() {
                 None | Some("") => d.push(
                     Diagnostic::error(
@@ -831,6 +837,34 @@ fn check_runtime(d: &mut Diagnostics, c: &Config) {
                     )
                     .at("runtime.remote_config.fingerprint_sha256"),
                 );
+            }
+
+            // `poll_interval` is only meaningful when remote-config is enabled, so we
+            // validate it alongside the url/fingerprint checks. First ensure it parses
+            // as a duration, then enforce a minimum floor so an abusive value cannot
+            // turn a fleet-wide knob into a thundering-herd poll loop.
+            check_duration_field(
+                d,
+                rc.poll_interval.as_deref(),
+                "runtime.remote_config.poll_interval",
+            );
+            if let Some(pi) = rc.poll_interval.as_deref() {
+                if let Ok(parsed) = parse_duration(pi) {
+                    if parsed < MIN_REMOTE_POLL_INTERVAL {
+                        d.push(
+                            Diagnostic::error(
+                                "remote_config_poll_too_frequent",
+                                format!(
+                                    "remote_config.poll_interval `{pi}` is below the minimum of \
+                                     30s — polling this frequently would hammer the config \
+                                     endpoint across the fleet",
+                                ),
+                            )
+                            .at("runtime.remote_config.poll_interval")
+                            .with_help("use `poll_interval = \"30s\"` or longer"),
+                        );
+                    }
+                }
             }
         }
     }
@@ -2571,6 +2605,106 @@ mod tests {
         let (c, _) = load_str(raw, false).unwrap();
         let d = validate(&c);
         assert!(d.errors.iter().any(|e| e.code == "version_unsupported"));
+    }
+
+    #[test]
+    fn poll_interval_invalid_duration_errors() {
+        let raw = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            [runtime.remote_config]
+            enabled = true
+            url = "https://cfg.example.com/c.toml"
+            fingerprint_sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            poll_interval = "not_a_duration"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(
+            d.errors.iter().any(|e| e.code == "duration_invalid"
+                && e.path.as_deref() == Some("runtime.remote_config.poll_interval")),
+            "errors: {:?}",
+            d.errors
+        );
+    }
+
+    #[test]
+    fn poll_interval_below_minimum_errors() {
+        let raw = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            [runtime.remote_config]
+            enabled = true
+            url = "https://cfg.example.com/c.toml"
+            fingerprint_sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            poll_interval = "5s"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(
+            d.errors
+                .iter()
+                .any(|e| e.code == "remote_config_poll_too_frequent"),
+            "errors: {:?}",
+            d.errors
+        );
+    }
+
+    #[test]
+    fn valid_poll_interval_ok() {
+        let raw = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            [runtime.remote_config]
+            enabled = true
+            url = "https://cfg.example.com/c.toml"
+            fingerprint_sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            poll_interval = "60s"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(
+            !d.errors
+                .iter()
+                .any(|e| e.code == "remote_config_poll_too_frequent"
+                    || e.code == "duration_invalid"),
+            "errors: {:?}",
+            d.errors
+        );
+    }
+
+    #[test]
+    fn poll_interval_not_checked_when_disabled() {
+        // A too-frequent / invalid poll_interval must be ignored entirely when
+        // remote-config is disabled, since the poller never runs.
+        let raw = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            [runtime.remote_config]
+            enabled = false
+            poll_interval = "1s"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(
+            !d.errors
+                .iter()
+                .any(|e| e.code == "remote_config_poll_too_frequent"),
+            "errors: {:?}",
+            d.errors
+        );
     }
 
     #[test]

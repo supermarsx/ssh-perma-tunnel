@@ -6,7 +6,7 @@
 //!
 //! All tests in this file are:
 //!
-//! * `#[cfg_attr(target_os = "windows", ignore)]` — Windows builds compile the
+//! * `#[cfg_attr(target_os = "windows", ignore = "no sshd on Windows CI")]` — Windows builds compile the
 //!   tests for completeness but skip them at runtime (the Windows OpenSSH
 //!   `sshd.exe` config schema and ACL setup differ enough that supporting it
 //!   is out of scope).
@@ -28,7 +28,7 @@
 #![allow(clippy::missing_panics_doc, clippy::missing_errors_doc)]
 
 #[cfg(feature = "testing")]
-#[cfg_attr(target_os = "windows", ignore)]
+#[cfg_attr(target_os = "windows", ignore = "no sshd on Windows CI")]
 #[tokio::test]
 async fn openssh_locate_sshd_does_not_panic() {
     #[cfg(unix)]
@@ -39,7 +39,7 @@ async fn openssh_locate_sshd_does_not_panic() {
 }
 
 #[cfg(all(unix, feature = "testing"))]
-#[cfg_attr(target_os = "windows", ignore)]
+#[cfg_attr(target_os = "windows", ignore = "no sshd on Windows CI")]
 #[tokio::test]
 async fn openssh_start_skips_cleanly_when_sshd_absent() {
     use spt_ssh2::testing::OpenSshTestServer;
@@ -66,7 +66,7 @@ async fn openssh_start_skips_cleanly_when_sshd_absent() {
 }
 
 #[cfg(all(unix, feature = "testing"))]
-#[cfg_attr(target_os = "windows", ignore)]
+#[cfg_attr(target_os = "windows", ignore = "no sshd on Windows CI")]
 #[tokio::test]
 async fn openssh_config_path_present_when_running() {
     use spt_ssh2::testing::OpenSshTestServer;

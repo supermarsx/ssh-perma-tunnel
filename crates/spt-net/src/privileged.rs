@@ -83,7 +83,7 @@ mod platform {
         //     uninitialised memory.
         unsafe {
             let mut token: HANDLE = HANDLE::default();
-            OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token).ok()?;
+            OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &raw mut token).ok()?; // 1.88 lint: implicit raw-pointer borrow
             let mut elevation = TOKEN_ELEVATION::default();
             let mut ret_len: u32 = 0;
             let elevation_ptr: *mut TOKEN_ELEVATION = std::ptr::from_mut(&mut elevation);
@@ -92,7 +92,7 @@ mod platform {
                 TokenElevation,
                 Some(elevation_ptr.cast()),
                 u32::try_from(mem::size_of::<TOKEN_ELEVATION>()).unwrap_or(0),
-                &mut ret_len,
+                &raw mut ret_len, // 1.88 lint: implicit raw-pointer borrow
             );
             let _ = CloseHandle(token);
             result.ok()?;

@@ -801,6 +801,10 @@ pub struct EventSink {
     /// Body template (a `{{var}}` template rendered against the event).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub body_template: Option<String>,
+    /// Subject-line template for `email` sinks ({{var}} rendered against the
+    /// event, same engine as `body_template`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subject_template: Option<String>,
     /// Push subscriptions. Each entry is a JSON object with
     /// `endpoint`, `p256dh`, `auth` (the standard `PushSubscription` fields).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -925,12 +929,12 @@ pub struct Updater {
     /// One of:
     ///
     /// * `"off"`    — supervisor refuses to spawn the thread even if
-    ///                `enabled = true` (belt-and-braces).
+    ///   `enabled = true` (belt-and-braces).
     /// * `"check"`  — poll for new versions, expose via `spt update status`.
     /// * `"warn"`   — `check` + emit a `tracing::warn!` and an audit event
-    ///                so operators see a banner in their log pipeline.
+    ///   so operators see a banner in their log pipeline.
     /// * `"auto"`   — `warn` + download + verify + atomic install +
-    ///                supervisor restart.
+    ///   supervisor restart.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<String>,
 
@@ -949,7 +953,7 @@ pub struct Updater {
     ///
     /// * `"github"` — query `api.github.com/repos/{repo}/releases/latest`.
     /// * `"url"`    — HTTPS GET on a configured release-manifest URL with
-    ///                an SHA-256 pin (`url_fingerprint`).
+    ///   an SHA-256 pin (`url_fingerprint`).
     /// * `"static"` — `file://` directory (offline mirrors, smoke tests).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
@@ -2075,6 +2079,45 @@ proxy_password_ref = \"secret://proxies/alice\"
         let pw = hop.proxy_password_ref.expect("ref present");
         assert_eq!(pw.ns(), "proxies");
         assert_eq!(pw.name(), "alice");
+    }
+}
+
+#[cfg(test)]
+mod event_sink_subject_template_tests {
+    use super::*;
+
+    #[test]
+    fn subject_template_some_round_trips_through_toml() {
+        let toml_str = "\
+name = \"mailer\"
+type = \"email\"
+subject_template = \"[{{severity}}] {{kind}}\"
+";
+        let sink: EventSink = toml::from_str(toml_str).unwrap();
+        assert_eq!(
+            sink.subject_template.as_deref(),
+            Some("[{{severity}}] {{kind}}")
+        );
+        let rendered = toml::to_string(&sink).unwrap();
+        assert!(
+            rendered.contains("subject_template = \"[{{severity}}] {{kind}}\""),
+            "expected subject_template in: {rendered}"
+        );
+    }
+
+    #[test]
+    fn subject_template_none_is_omitted_on_serialize() {
+        let sink = EventSink {
+            name: "mailer".into(),
+            kind: "email".into(),
+            ..Default::default()
+        };
+        assert!(sink.subject_template.is_none());
+        let rendered = toml::to_string(&sink).unwrap();
+        assert!(
+            !rendered.contains("subject_template"),
+            "unset subject_template must be omitted; got: {rendered}"
+        );
     }
 }
 

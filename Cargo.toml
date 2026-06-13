@@ -62,11 +62,6 @@ default-members = ["crates/spt-bin"]
 exclude = [
     "tests/property",
     "tests/chaos",
-    # t7-P1: vendored russh fork (carries a single-line `+ 'static` trait-bound
-    # patch on `russh::auth::Signer::Future` so we can drive agent userauth
-    # through the russh backend). The fork ships its own `[workspace]` table —
-    # excluding it here keeps the outer resolver from absorbing its members.
-    "vendor/russh-fork",
     # t7-P3: vendored libgssapi fork (carries additive `gss_get_mic` /
     # `gss_verify_mic` bindings on top of upstream 0.9.1 so the Unix backend
     # can produce real RFC 4462 §3.5 MIC tokens, wire-compatible with strict
@@ -81,16 +76,11 @@ exclude = [
     "tools/icon-build",
 ]
 
-# t7-P1: route registry russh / russh-keys / russh-cryptovec to the local
-# vendored fork. The only material change vs. upstream russh-v0.46.0 is two
-# lines in `vendor/russh-fork/russh/src/auth.rs` adding `+ 'static` to the
-# `auth::Signer::Future` trait bound (and the matching `type Future` alias on
-# the AgentClient impl). See `.orchestration/logs/t7-P1.md` for the full
-# rationale and the upstream-PR path.
+# t-msrv-russh Phase 2: the vendored russh fork (russh 0.46.0 + a `+ 'static`
+# Signer patch) is gone — upstream russh 0.61.x carries those `+ 'static`
+# bounds on `auth::Signer`/`Signer::Future` itself, so no patch is needed.
+# Only the libgssapi fork patch remains below.
 [patch.crates-io]
-russh = { path = "vendor/russh-fork/russh" }
-russh-keys = { path = "vendor/russh-fork/russh-keys" }
-russh-cryptovec = { path = "vendor/russh-fork/cryptovec" }
 # t7-P3: route the registry `libgssapi` and `libgssapi-sys` names to the
 # vendored fork under `vendor/libgssapi-fork/`. The fork is identical to
 # upstream 0.9.1 / 0.3.3 except for additive `gss_get_mic` / `gss_verify_mic`
@@ -116,7 +106,7 @@ libgssapi-sys = { path = "vendor/libgssapi-fork/libgssapi-sys" }
 # `releasing.md` and `docs/releases/readme.md`.
 version = "0.26.9"  # rolling
 edition = "2021"
-rust-version = "1.85"
+rust-version = "1.88"
 license = "MIT"
 repository = "https://github.com/supermarsx/ssh-perma-tunnel"
 homepage = "https://github.com/supermarsx/ssh-perma-tunnel"
@@ -190,8 +180,8 @@ async-trait = "0.1"
 # CLI
 clap = { version = "4.6", features = ["derive", "env", "wrap_help"] }
 clap_complete = "4.6"
-# t9-Bump: was `=0.2.31`. MSRV is now 1.85, so the edition2024 / roff 1.x
-# concerns are moot. Bumped to 0.3.0 (rust-version 1.85, latest stable).
+# t9-Bump: was `=0.2.31`; the edition2024 / roff 1.x concerns are moot under
+# the current MSRV (1.88). Bumped to 0.3.0 (latest stable).
 clap_mangen = "0.3"
 
 # Serde / config
@@ -250,9 +240,19 @@ bytes = "1"
 zerocopy = "0.8"
 
 # SSH / networking transports — pure-Rust russh stack (libssh2 was removed in t7-Phase0).
-russh-keys = "0.46"
-# t9-Bump: was `=2.1.2`. 2.2.x is API-compatible (patch); bumped to 2.2.
-russh-sftp = "2.2"
+# t-msrv-russh Phase 2: upgraded from the vendored russh 0.46 fork to upstream
+# russh 0.61.x (fixes RUSTSEC-2026-0154/-0153, carries the `+ 'static` Signer
+# bounds the fork added). `russh-keys` merged into `russh::keys` upstream — the
+# standalone crate is gone. `russh-cryptovec` is reached via `russh::CryptoVec`.
+russh = "0.61"
+# t-msrv-russh Phase 2b: the `russh-keys 0.46` workspace dev-dep was REMOVED
+# (RUSTSEC-2026-0154/-0153). Its sole consumers — `spt-key`,
+# `spt-ftp-translator` test matrices and `tests/stress` — were migrated to
+# `russh::keys::ssh_key` (ssh-key 0.7-rc, bundled with russh 0.61) / the
+# workspace `ssh-key 0.6`, dropping russh 0.46 + russh-cryptovec 0.7.3 from
+# the lock entirely.
+# t9-Bump: was `=2.1.2`. t-msrv-russh: 2.3.0 is API-compatible with russh 0.61.
+russh-sftp = "2.3"
 ssh-key = { version = "0.6", default-features = false, features = ["std", "alloc", "ed25519", "p256", "rsa", "encryption", "rand_core", "ecdsa", "getrandom"] }
 quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls", "ring"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
@@ -264,8 +264,8 @@ webpki-roots = "1"
 x509-parser = "0.18"
 
 # Email + WebPush transports for spt-events sinks
-# t9-Bump: was `=0.11.19`. MSRV is now 1.85, so the edition2024 concern is
-# moot. Bumped to 0.11.22 (rust-version 1.85, latest stable).
+# t9-Bump: was `=0.11.19`; the edition2024 concern is moot under the current
+# MSRV (1.88). Bumped to 0.11.22 (latest stable).
 lettre = { version = "0.11.22", default-features = false, features = ["smtp-transport", "tokio1-rustls-tls", "builder", "ring", "webpki-roots"] }
 # `web-push` 0.11 transitively pulls in `chumsky → stacker` (and lettre also
 # pulls `chumsky` independently — `psm` is hand-pinned to 0.1.27 in the
@@ -275,26 +275,38 @@ lettre = { version = "0.11.22", default-features = false, features = ["smtp-tran
 # with our existing reqwest transport for the actual HTTPS POST.
 web-push-native = { version = "0.4", default-features = false, features = ["vapid"] }
 # `jwt-simple` is pulled by `web-push-native` for VAPID ES256 signing.
-# t9-Bump re-evaluation: bumped to 0.12.16 was attempted but reverted — see
-# `superboring` below. Original pin retained at 0.12.9.
-jwt-simple = { version = "=0.12.9", default-features = false, features = ["pure-rust"] }
-# `superboring` is `jwt-simple`'s `pure-rust` backend. Pinned at =0.1.5:
-# 0.1.6+ requires `aes-keywrap ^0.9.0`, and `aes-keywrap 0.9.0` uses
-# `u*::is_multiple_of` (stabilized in Rust 1.87) which is unavailable under
-# workspace MSRV 1.85. The crate is the LAST version not requiring that
-# dependency. (Pre-t9-Bump rationale cited edition2024; that's now moot, but
-# the aes-keywrap MSRV-1.87 floor is the binding constraint.)
-superboring = "=0.1.5"
-# t9-Bump: was `=1.0.3` (edition2024 concern). MSRV is now 1.85 — bumped to 1.0.4.
+# t-msrv-russh Phase 4: the `=0.12.9` pin existed ONLY for MSRV 1.85 (it was
+# kept in lockstep with the `superboring =0.1.5` pin below). MSRV is now 1.88,
+# so the pin is relaxed to the `0.12` line (latest compatible, currently
+# 0.12.16). Targeted `cargo update -p jwt-simple` is sanctioned.
+jwt-simple = { version = "0.12", default-features = false, features = ["pure-rust"] }
+# `superboring` is `jwt-simple`'s `pure-rust` backend.
+# t-msrv-russh Phase 4: the `=0.1.5` pin existed ONLY for MSRV 1.85. The old
+# binding constraint was `superboring 0.1.6+` → `aes-keywrap ^0.9.0` →
+# `u*::is_multiple_of` (stabilized in Rust 1.87). With MSRV now 1.88 that floor
+# is satisfied, so the pin is relaxed past 0.1.5. It is capped at `>=0.1.6,
+# <0.1.9` (currently resolves 0.1.8): superboring 0.1.9 added an `ml-dsa`
+# feature that drops a PRE-RELEASE crypto dep (`ml-dsa 0.1.0-rc.x`) into the
+# graph. We do NOT ship RC crypto, so we stay on the last pre-ml-dsa line.
+# Revisit when ml-dsa cuts a stable 0.1.x release.
+superboring = ">=0.1.6, <0.1.9"
+# t9-Bump: was `=1.0.3` (edition2024 concern, moot under MSRV 1.88) — bumped to 1.0.4.
 blake2b_simd = "1.0.4"
 h3 = "0.0.6"
 h3-quinn = "0.0.7"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream", "gzip"] }
 
 # DNS
-hickory-server = "0.24"
-hickory-resolver = "0.24"
-hickory-proto = "0.24"
+# t-msrv-russh Phase 3: bumped from 0.24 to 0.26 to clear RUSTSEC-2026-0119
+# (hickory-proto DoS, fixed in hickory-server 0.26.1). The 0.24->0.26 jump is
+# two majors: the resolver builder API was reworked in 0.25 (TokioAsyncResolver
+# -> Resolver::builder_with_config + TokioConnectionProvider), ResolveError /
+# ResolveErrorKind were replaced by ProtoError/ProtoErrorKind, and the
+# server-side RequestHandler/ResponseHandler signatures shifted. hickory 0.26
+# declares rust-version 1.88 (our active MSRV).
+hickory-server = "0.26"
+hickory-resolver = "0.26"
+hickory-proto = "0.26"
 
 # Service / OS
 windows-service = "0.8"
@@ -340,7 +352,6 @@ criterion = { version = "0.5", features = ["html_reports"] }
 mockall = "0.14"
 assert_cmd = "2.2"
 predicates = "3"
-russh = "0.46"
 proptest = "1.11"
 insta = { version = "1", features = ["yaml", "json"] }
 axum = "0.7"

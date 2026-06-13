@@ -234,12 +234,17 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 #[cfg(feature = "testing")]
 #[must_use]
 pub fn wincng_libssh2_compatible_preferred() -> russh::Preferred {
+    use russh::keys::ssh_key::{Algorithm, HashAlg};
     use std::borrow::Cow;
     russh::Preferred {
         kex: Cow::Owned(vec![russh::kex::DH_G14_SHA256, russh::kex::DH_G16_SHA512]),
         key: Cow::Owned(vec![
-            russh_keys::key::RSA_SHA2_256,
-            russh_keys::key::RSA_SHA2_512,
+            Algorithm::Rsa {
+                hash: Some(HashAlg::Sha256),
+            },
+            Algorithm::Rsa {
+                hash: Some(HashAlg::Sha512),
+            },
         ]),
         cipher: Cow::Owned(vec![russh::cipher::AES_256_CTR]),
         mac: Cow::Owned(vec![russh::mac::HMAC_SHA256]),
@@ -331,7 +336,7 @@ struct ServerInner {
 pub struct RusshTestServer {
     accepted_password: Option<(String, String)>,
     accept_any_pubkey: bool,
-    authorized_pubkeys: Vec<russh_keys::key::PublicKey>,
+    authorized_pubkeys: Vec<russh::keys::ssh_key::PublicKey>,
     use_ed25519_host_key: bool,
     /// Optional override for the server's algorithm preference list. When
     /// `None`, russh's [`russh::Preferred::DEFAULT`] is used. Set via
@@ -396,7 +401,7 @@ impl RusshTestServer {
     /// "accept any pubkey" default. May be called multiple times to whitelist
     /// several keys.
     #[must_use]
-    pub fn with_authorized_pubkey(mut self, key: russh_keys::key::PublicKey) -> Self {
+    pub fn with_authorized_pubkey(mut self, key: russh::keys::ssh_key::PublicKey) -> Self {
         self.authorized_pubkeys.push(key);
         self.accept_any_pubkey = false;
         self
@@ -415,11 +420,12 @@ impl RusshTestServer {
     /// Build a russh server config with a fresh host key and reasonable
     /// timeouts.
     fn build_russh_config(&self) -> russh::server::Config {
+        use russh::keys::ssh_key::{Algorithm, PrivateKey};
+        let mut rng = rand010::rng();
         let key = if self.use_ed25519_host_key {
-            russh_keys::key::KeyPair::generate_ed25519()
+            PrivateKey::random(&mut rng, Algorithm::Ed25519).expect("ed25519 keygen")
         } else {
-            russh_keys::key::KeyPair::generate_rsa(2048, russh_keys::key::SignatureHash::SHA2_256)
-                .expect("rsa-2048 keygen")
+            PrivateKey::random(&mut rng, Algorithm::Rsa { hash: None }).expect("rsa-2048 keygen")
         };
         let mut cfg = russh::server::Config {
             inactivity_timeout: Some(std::time::Duration::from_secs(60)),
@@ -506,7 +512,7 @@ async fn spawn_accept_loop(
 struct TestHandler {
     password: Option<(String, String)>,
     any_pubkey: bool,
-    authorized_pubkeys: Vec<russh_keys::key::PublicKey>,
+    authorized_pubkeys: Vec<russh::keys::ssh_key::PublicKey>,
     inner: Arc<ServerInner>,
     /// Channel IDs whose data should *not* be echoed by the `data`
     /// handler. Populated by `channel_open_direct_tcpip` when a loopback
@@ -520,21 +526,21 @@ struct TestHandler {
 }
 
 #[cfg(feature = "testing")]
-fn pubkey_eq(a: &russh_keys::key::PublicKey, b: &russh_keys::key::PublicKey) -> bool {
-    // russh-keys 0.46 doesn't impl Eq on PublicKey; compare the public-key
-    // fingerprint (sha256) which uniquely identifies it.
-    a.fingerprint() == b.fingerprint()
+fn pubkey_eq(a: &russh::keys::ssh_key::PublicKey, b: &russh::keys::ssh_key::PublicKey) -> bool {
+    // Compare the canonical SHA-256 fingerprint, which uniquely identifies the
+    // key independent of comment / encoding.
+    use russh::keys::ssh_key::HashAlg;
+    a.fingerprint(HashAlg::Sha256) == b.fingerprint(HashAlg::Sha256)
 }
 
 #[cfg(feature = "testing")]
-#[async_trait]
 impl russh::server::Handler for TestHandler {
     type Error = russh::Error;
 
     async fn auth_publickey(
         &mut self,
         _user: &str,
-        key: &russh_keys::key::PublicKey,
+        key: &russh::keys::ssh_key::PublicKey,
     ) -> std::result::Result<russh::server::Auth, Self::Error> {
         self.inner.auth_attempts.fetch_add(1, Ordering::Relaxed);
         if self.any_pubkey {
@@ -543,9 +549,7 @@ impl russh::server::Handler for TestHandler {
         if self.authorized_pubkeys.iter().any(|k| pubkey_eq(k, key)) {
             return Ok(russh::server::Auth::Accept);
         }
-        Ok(russh::server::Auth::Reject {
-            proceed_with_methods: None,
-        })
+        Ok(russh::server::Auth::reject())
     }
 
     async fn auth_password(
@@ -559,9 +563,7 @@ impl russh::server::Handler for TestHandler {
                 return Ok(russh::server::Auth::Accept);
             }
         }
-        Ok(russh::server::Auth::Reject {
-            proceed_with_methods: None,
-        })
+        Ok(russh::server::Auth::reject())
     }
 
     async fn channel_open_session(
@@ -751,7 +753,10 @@ impl russh::server::Handler for TestHandler {
         let chan_id: u32 = channel.into();
         let is_piped = self.piped_channels.lock().contains(&chan_id);
         if !is_piped {
-            session.data(channel, russh::CryptoVec::from(data.to_vec()));
+            // russh 0.61's `Session::data` takes `impl Into<bytes::Bytes>` and
+            // returns a `Result`; a write failure here just means the channel
+            // is gone, which the echo handler can ignore.
+            let _ = session.data(channel, data.to_vec());
         }
         Ok(())
     }
@@ -1176,8 +1181,13 @@ mod tests {
     #[cfg(feature = "testing")]
     #[tokio::test]
     async fn russh_test_server_with_authorized_pubkey_disables_any() {
-        let kp = russh_keys::key::KeyPair::generate_ed25519();
-        let pubkey = kp.clone_public_key().expect("pubkey");
+        let pubkey = russh::keys::ssh_key::PrivateKey::random(
+            &mut rand010::rng(),
+            russh::keys::ssh_key::Algorithm::Ed25519,
+        )
+        .expect("ed25519 keygen")
+        .public_key()
+        .clone();
         let server = RusshTestServer::new()
             .with_authorized_pubkey(pubkey)
             .start()

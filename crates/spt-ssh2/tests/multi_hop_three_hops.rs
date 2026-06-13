@@ -32,13 +32,12 @@ use tokio::sync::Mutex as AsyncMutex;
 #[derive(Debug, Clone)]
 struct PassThroughHandler;
 
-#[async_trait::async_trait]
 impl client::Handler for PassThroughHandler {
     type Error = russh::Error;
 
     async fn check_server_key(
         &mut self,
-        _server_public_key: &russh_keys::key::PublicKey,
+        _server_public_key: &russh::keys::ssh_key::PublicKey,
     ) -> Result<bool, Self::Error> {
         Ok(true)
     }
@@ -89,7 +88,7 @@ async fn three_hop_russh_chain_handshakes_and_serves_channel_open() {
         .authenticate_password("u", "pw")
         .await
         .expect("auth A");
-    assert!(authed, "server A must accept password");
+    assert!(authed.success(), "server A must accept password");
     let shared_a = Arc::new(AsyncMutex::new(handle_a));
 
     // -- Hop 2: open chained session A -> B. -------------------------------
@@ -108,7 +107,7 @@ async fn three_hop_russh_chain_handshakes_and_serves_channel_open() {
         .await
         .expect("auth B over chained session");
     assert!(
-        authed_b,
+        authed_b.success(),
         "server B must accept password over chained channel"
     );
     let shared_b = Arc::new(AsyncMutex::new(handle_b));
@@ -129,7 +128,7 @@ async fn three_hop_russh_chain_handshakes_and_serves_channel_open() {
         .await
         .expect("auth C over chained session");
     assert!(
-        authed_c,
+        authed_c.success(),
         "server C must accept password through 3-hop chain"
     );
 
@@ -195,7 +194,8 @@ async fn two_hop_russh_chain_handshakes_and_serves_channel_open() {
     assert!(handle_a
         .authenticate_password("u", "pw")
         .await
-        .expect("auth A"));
+        .expect("auth A")
+        .success());
     let shared_a = Arc::new(AsyncMutex::new(handle_a));
 
     let mut handle_b = open_chained_session(
@@ -210,7 +210,8 @@ async fn two_hop_russh_chain_handshakes_and_serves_channel_open() {
     assert!(handle_b
         .authenticate_password("u", "pw")
         .await
-        .expect("auth B over chained session"));
+        .expect("auth B over chained session")
+        .success());
 
     let _channel = handle_b
         .channel_open_session()

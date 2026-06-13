@@ -21,6 +21,7 @@
 pub mod cache;
 pub mod fetch;
 pub mod http;
+pub mod poll;
 
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
@@ -30,6 +31,7 @@ pub use fetch::{
     fetch, fetch_with_plan, fetcher_for_plan, FetchOutcome, FetchResult, RemoteConfigError,
 };
 pub use http::{HttpFetcher, HttpResponse, ReqwestFetcher};
+pub use poll::{spawn, spawn_with_fetcher, RemoteConfigPollHandle};
 
 /// Re-export of the source-of-truth spec/plan types.
 pub use spt_config::remote::{PlanError, RemoteConfigPlan, RemoteConfigSpec};

@@ -638,18 +638,20 @@ fn apply_filters(
 // ---------------------------------------------------------------------------
 
 fn render_stats_human(snap: &StatusSnapshot, now: DateTime<Utc>) -> String {
+    use std::fmt::Write as _; // 1.88 lint: format_push_string
     let mut out = String::new();
     let active_sessions: u64 = snap
         .sessions
         .iter()
         .filter(|s| eq_ic(&s.state, "running") || eq_ic(&s.state, "active"))
         .count() as u64;
-    out.push_str(&format!(
-        "tunnel: {} profiles · {} forwards · {} active sessions\n\n",
+    let _ = writeln!(
+        out,
+        "tunnel: {} profiles · {} forwards · {} active sessions\n",
         snap.profiles.len(),
         snap.forwards.len(),
         active_sessions,
-    ));
+    );
 
     // Profile rollup
     let name_w = snap
@@ -670,8 +672,9 @@ fn render_stats_human(snap: &StatusSnapshot, now: DateTime<Utc>) -> String {
             .iter()
             .filter(|f| f.profile == p.id)
             .fold((0u64, 0u64), |(a, b), f| (a + f.bytes_in, b + f.bytes_out));
-        out.push_str(&format!(
-            "{:<width$}  {:<13}  uptime {}    rx {}    tx {}    reconnects {}\n",
+        let _ = writeln!(
+            out,
+            "{:<width$}  {:<13}  uptime {}    rx {}    tx {}    reconnects {}",
             p.id,
             p.state,
             uptime,
@@ -679,22 +682,23 @@ fn render_stats_human(snap: &StatusSnapshot, now: DateTime<Utc>) -> String {
             spt_core::size::format_size(tx),
             p.reconnect_count,
             width = name_w,
-        ));
+        );
     }
 
     if !snap.forwards.is_empty() {
         out.push_str("\nforwards:\n");
         for f in &snap.forwards {
             let listen = f.local_addr.clone().unwrap_or_else(|| "-".into());
-            out.push_str(&format!(
-                "  {}/{}        listen {}  active {}   rx {}   tx {}\n",
+            let _ = writeln!(
+                out,
+                "  {}/{}        listen {}  active {}   rx {}   tx {}",
                 f.profile,
                 f.id,
                 listen,
                 f.current_connections,
                 spt_core::size::format_size(f.bytes_in),
                 spt_core::size::format_size(f.bytes_out),
-            ));
+            );
         }
     }
 
@@ -702,11 +706,13 @@ fn render_stats_human(snap: &StatusSnapshot, now: DateTime<Utc>) -> String {
 }
 
 fn render_sessions_human(snap: &StatusSnapshot, now: DateTime<Utc>) -> String {
+    use std::fmt::Write as _; // 1.88 lint: format_push_string
     let mut out = String::new();
-    out.push_str(&format!(
-        "{:<22} {:<14} {:<22} {:<12} {:<20} {:<5}\n",
+    let _ = writeln!(
+        out,
+        "{:<22} {:<14} {:<22} {:<12} {:<20} {:<5}",
         "ID", "PROFILE", "ENDPOINT", "SINCE", "BYTES IN/OUT", "CONNS",
-    ));
+    );
     if snap.sessions.is_empty() {
         out.push_str("(no active sessions)\n");
         return out;
@@ -721,22 +727,24 @@ fn render_sessions_human(snap: &StatusSnapshot, now: DateTime<Utc>) -> String {
             spt_core::size::format_size(s.bytes_in),
             spt_core::size::format_size(s.bytes_out),
         );
-        out.push_str(&format!(
-            "{:<22} {:<14} {:<22} {:<12} {:<20} {:<5}\n",
+        let _ = writeln!(
+            out,
+            "{:<22} {:<14} {:<22} {:<12} {:<20} {:<5}",
             truncate(&s.id, 22),
             truncate(&s.profile, 14),
             truncate(&s.endpoint, 22),
             since,
             bytes,
             s.active_forwards,
-        ));
+        );
     }
     out
 }
 
 fn render_health_human(report: &HealthReport, now: DateTime<Utc>) -> String {
+    use std::fmt::Write as _; // 1.88 lint: format_push_string
     let mut out = String::new();
-    out.push_str(&format!("tunnel health: {}\n\n", report.level.label()));
+    let _ = writeln!(out, "tunnel health: {}\n", report.level.label());
 
     if report.profiles.is_empty() && matches!(report.level, HealthLevel::Unknown) {
         out.push_str("  (no supervisor running — `status.json` not found)\n");
@@ -751,21 +759,22 @@ fn render_health_human(report: &HealthReport, now: DateTime<Utc>) -> String {
         .max(7);
     for p in &report.profiles {
         let last = p.last_error.as_deref().unwrap_or("-");
-        out.push_str(&format!(
-            "  {:<width$}  {:<13} uptime {}    last error: {}\n",
+        let _ = writeln!(
+            out,
+            "  {:<width$}  {:<13} uptime {}    last error: {}",
             format!("{}:", p.id),
             p.state,
             p.uptime.as_ref().cloned().unwrap_or_else(|| "-".into()),
             last,
             width = name_w + 1,
-        ));
+        );
     }
 
     if !report.recent_events.is_empty() {
         out.push_str("\n  Recent events (last 10m):\n");
         for ev in &report.recent_events {
             let when = ev.at.map_or_else(|| "-".to_string(), |t| fmt_clock(t));
-            out.push_str(&format!("    - {}  {}  {}\n", when, ev.scope, ev.message));
+            let _ = writeln!(out, "    - {}  {}  {}", when, ev.scope, ev.message);
         }
     }
 

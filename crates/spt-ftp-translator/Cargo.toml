@@ -67,9 +67,13 @@ tokio-rustls = { workspace = true }
 # `ssh2_sftp_factory_pools_sessions` integration test. Each dep is
 # already in the workspace lockfile via spt-ssh2 / spt-sftp.
 russh = { workspace = true }
-russh-keys = { workspace = true }
 russh-sftp = { workspace = true }
 async-trait = { workspace = true }
+# rand 0.10 supplies the rand_core-0.10 `CryptoRng` that russh 0.61's
+# `ssh_key::PrivateKey::random` host-keygen requires (workspace rand is 0.8).
+# Already in the lock via spt-ssh2's `rand010` alias — no `cargo update`.
+# Replaces the removed `russh-keys 0.46` dep (RUSTSEC-2026-0154/-0153).
+rand010 = { package = "rand", version = "0.10" }
 
 [[test]]
 name = "translator"

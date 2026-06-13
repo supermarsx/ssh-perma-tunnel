@@ -602,7 +602,7 @@ impl AsyncWrite for Obfs4Stream {
         let chunk = &data[..chunk_len];
         let ctr = self.next_tx_ctr();
         let frame = seal_frame(&self.c2s_key, ctr, chunk)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+            .map_err(|e| std::io::Error::other(e.to_string()))?; // 1.88 lint: io_other_error
 
         let mut written = 0;
         while written < frame.len() {

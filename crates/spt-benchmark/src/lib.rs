@@ -7,7 +7,7 @@
 //! # Layout
 //! - [`driver`]  — [`BenchmarkDriver`] trait + [`BenchContext`].
 //! - [`drivers`] — concrete drivers: latency, throughput, UDP loss/jitter,
-//!                 reconnect time, DNS query rate, and limits enforcement.
+//!   reconnect time, DNS query rate, and limits enforcement.
 //! - [`result`]  — [`BenchResult`] + serialisation.
 //! - [`safety`]  — production-impact gating.
 //! - [`compare`] — load two reports → side-by-side diff.

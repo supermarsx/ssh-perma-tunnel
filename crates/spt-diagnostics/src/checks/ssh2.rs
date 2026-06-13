@@ -61,7 +61,9 @@ fn russh_supported(kind: &str) -> Vec<String> {
 fn russh_recognizes(kind: &str, algo: &str) -> bool {
     match kind {
         "kex" => russh::kex::Name::try_from(algo).is_ok(),
-        "hostkey" | "host_key" | "key" => russh::keys::key::Name::try_from(algo).is_ok(),
+        // russh 0.61: host-key algorithms are `ssh_key::Algorithm` (parsed via
+        // `Algorithm::new`), not a dedicated `key::Name` newtype.
+        "hostkey" | "host_key" | "key" => russh::keys::ssh_key::Algorithm::new(algo).is_ok(),
         "cipher" => russh::cipher::Name::try_from(algo).is_ok(),
         "mac" => russh::mac::Name::try_from(algo).is_ok(),
         "compression" => russh::compression::Name::try_from(algo).is_ok(),

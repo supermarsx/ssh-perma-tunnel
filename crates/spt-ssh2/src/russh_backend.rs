@@ -10,7 +10,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use russh::client;
-use russh_keys::PublicKeyBase64 as _;
+use russh::keys::ssh_key::HashAlg;
+use russh::keys::{PrivateKeyWithHashAlg, PublicKeyBase64 as _};
 use secrecy::ExposeSecret as _;
 use spt_auth::{AuthConfig, AuthMethod, SecretRef as AuthSecretRef};
 use spt_core::{BindAddr, Error, Result};
@@ -53,13 +54,12 @@ struct ClientHandler {
     remote_forwards: RemoteForwardMap,
 }
 
-#[async_trait]
 impl client::Handler for ClientHandler {
     type Error = russh::Error;
 
     async fn check_server_key(
         &mut self,
-        server_public_key: &russh_keys::key::PublicKey,
+        server_public_key: &russh::keys::ssh_key::PublicKey,
     ) -> std::result::Result<bool, Self::Error> {
         // Map the russh-typed key into our `ssh_key::PublicKey` and run the
         // configured trust policy. We must NOT collapse every `Ok(_)` to
@@ -203,7 +203,7 @@ impl KeepalivePolicy {
     }
 }
 
-/// Reject auth methods that the russh 0.46 backend can never satisfy
+/// Reject auth methods that the russh 0.61 backend can never satisfy
 /// (`gssapi`/`sspi` — russh exposes no `gssapi-with-mic` userauth primitive,
 /// see [`try_gssapi_auth`]). Surfacing this at profile build / validation
 /// time (E3-F9) fails fast instead of wasting a connect attempt and a backoff
@@ -214,7 +214,7 @@ pub(crate) fn validate_auth_methods(auth: &AuthConfig) -> Result<()> {
             AuthMethod::Gssapi { .. } | AuthMethod::Sspi { .. } => {
                 return Err(Error::InvalidConfig(format!(
                     "auth method `{}` is not supported by the SSH2/russh backend: \
-                     russh 0.46 does not expose `gssapi-with-mic` (RFC 4462) as a \
+                     russh 0.61 does not expose `gssapi-with-mic` (RFC 4462) as a \
                      userauth primitive. Remove `{}` from `auth.methods` or use a \
                      supported method (public_key, agent, password, \
                      keyboard_interactive, certificate).",
@@ -537,11 +537,11 @@ async fn connect_inner(
         }
     };
 
-    // Wrap the handle in `Arc<AsyncMutex>` *before* `run_auth` so the agent
-    // arm can `tokio::spawn` `authenticate_future` with `'static` ownership —
-    // russh 0.46's `Signer::Future` lacks an explicit `+ 'static` bound,
-    // and only the spawn boundary contains the resulting auto-trait Send
-    // inference. The other arms gain a single `.lock().await` per call.
+    // Wrap the handle in `Arc<AsyncMutex>` *before* `run_auth` so every auth
+    // arm (including the agent `authenticate_publickey_with` path) shares one
+    // owned handle. russh 0.61 carries the `+ 'static` `Signer` bounds
+    // upstream, so the spawn gymnastics the vendored 0.46 fork required are no
+    // longer needed; each arm just takes a single `.lock().await` per call.
     let shared = Arc::new(AsyncMutex::new(handle));
     run_auth(Arc::clone(&shared), auth_cfg, backends, gss_audit).await?;
     let info = SessionInfo {
@@ -882,7 +882,7 @@ fn build_preferred(crypto: &CryptoPolicy) -> Result<russh::Preferred> {
         preferred.kex = Cow::Owned(parse_names("kex", &crypto.kex)?);
     }
     if !crypto.host_keys.is_empty() {
-        preferred.key = Cow::Owned(parse_names("host_key", &crypto.host_keys)?);
+        preferred.key = Cow::Owned(parse_host_key_names(&crypto.host_keys)?);
     }
     if !crypto.ciphers.is_empty() {
         preferred.cipher = Cow::Owned(parse_names("cipher", &crypto.ciphers)?);
@@ -907,6 +907,25 @@ where
                 "russh SSH2 backend does not support {field} algorithm `{value}`"
             ))
         })?);
+    }
+    Ok(parsed)
+}
+
+/// Parse host-key algorithm names into russh 0.61's `ssh_key::Algorithm`.
+///
+/// Unlike the `kex`/`cipher`/`mac`/`compression` `Name` types, `ssh-key`'s
+/// `Algorithm` does not implement `TryFrom<&str>`; it implements `FromStr`
+/// via `Algorithm::new`. We map a parse failure onto the same `InvalidConfig`
+/// diagnostic `parse_names` produces.
+fn parse_host_key_names(values: &[String]) -> Result<Vec<russh::keys::ssh_key::Algorithm>> {
+    let mut parsed = Vec::with_capacity(values.len());
+    for value in values {
+        let algo = russh::keys::ssh_key::Algorithm::new(value).map_err(|_| {
+            Error::InvalidConfig(format!(
+                "russh SSH2 backend does not support host_key algorithm `{value}`"
+            ))
+        })?;
+        parsed.push(algo);
     }
     Ok(parsed)
 }
@@ -1019,6 +1038,7 @@ async fn try_auth_method(
             let user_for_msg = username.clone();
             h.authenticate_password(username, password)
                 .await
+                .map(|r| r.success())
                 .map_err(|e| {
                     Error::auth_failed(
                         spt_core::Diagnostic::what(format!(
@@ -1041,12 +1061,14 @@ async fn try_auth_method(
             ..
         } => {
             let passphrase = resolve_passphrase(&backends, passphrase.as_ref())?;
-            let key = russh_keys::load_secret_key(&identity_file, passphrase.as_deref())
+            let key = russh::keys::load_secret_key(&identity_file, passphrase.as_deref())
                 .map_err(|e| Error::KeyFailure(format!("load private key: {e}")))?;
+            let key = PrivateKeyWithHashAlg::new(Arc::new(key), RSA_AUTH_HASH_ALG);
             let mut h = handle.lock().await;
             let user_for_msg = username.clone();
-            h.authenticate_publickey(username, Arc::new(key))
+            h.authenticate_publickey(username, key)
                 .await
+                .map(|r| r.success())
                 .map_err(|e| {
                     Error::auth_failed(
                         spt_core::Diagnostic::what(format!(
@@ -1069,14 +1091,15 @@ async fn try_auth_method(
             passphrase,
         } => {
             let passphrase = resolve_passphrase(&backends, passphrase.as_ref())?;
-            let key = russh_keys::load_secret_key(&key, passphrase.as_deref())
+            let key = russh::keys::load_secret_key(&key, passphrase.as_deref())
                 .map_err(|e| Error::KeyFailure(format!("load private key: {e}")))?;
-            let cert = russh_keys::load_openssh_certificate(&cert)
+            let cert = russh::keys::load_openssh_certificate(&cert)
                 .map_err(|e| Error::KeyFailure(format!("load OpenSSH certificate: {e}")))?;
             let mut h = handle.lock().await;
             let user_for_msg = username.clone();
             h.authenticate_openssh_cert(username, Arc::new(key), cert)
                 .await
+                .map(|r| r.success())
                 .map_err(|e| {
                     Error::auth_failed(
                         spt_core::Diagnostic::what(format!(
@@ -1149,7 +1172,7 @@ async fn try_keyboard_interactive(
     loop {
         match response {
             client::KeyboardInteractiveAuthResponse::Success => return Ok(true),
-            client::KeyboardInteractiveAuthResponse::Failure => return Ok(false),
+            client::KeyboardInteractiveAuthResponse::Failure { .. } => return Ok(false),
             client::KeyboardInteractiveAuthResponse::InfoRequest { prompts, .. } => {
                 let mut answers = Vec::with_capacity(prompts.len());
                 for prompt in prompts {
@@ -1195,12 +1218,14 @@ async fn try_keyboard_interactive(
 /// OpenSSH-compatible named pipe `\\.\pipe\openssh-ssh-agent` or Pageant on
 /// Windows; or the explicit `socket` path from the `AuthMethod::Agent`
 /// config), lists identities, and tries `publickey` userauth against each
-/// identity in turn via [`russh::client::Handle::authenticate_future`].
-/// Returns `Ok(true)` on the first identity the server accepts.
+/// identity in turn via
+/// [`russh::client::Handle::authenticate_publickey_with`]. Returns `Ok(true)`
+/// on the first identity the server accepts.
 ///
-/// Each identity attempt opens a *fresh* `AgentClient` because
-/// `authenticate_future` consumes its [`russh::auth::Signer`] by value
-/// (russh re-uses the agent client as the per-attempt signer state).
+/// A single `AgentClient` serves every identity attempt: russh 0.61's
+/// `authenticate_publickey_with` borrows the [`russh::auth::Signer`] mutably
+/// (the 0.46 by-value consumption that forced a fresh client per attempt is
+/// gone).
 async fn try_agent_auth(
     handle: SharedHandle,
     username: String,
@@ -1218,6 +1243,9 @@ async fn try_agent_auth(
             .map_err(|e| Error::AuthFailed(format!("ssh-agent: request_identities: {e}")))?
     };
 
+    // russh 0.61 lets one `AgentClient` signer serve every identity attempt
+    // (`authenticate_publickey_with` borrows `&mut signer`), so unlike the
+    // 0.46 fork we open a single signer and reuse it across identities.
     if identities.is_empty() {
         return Err(Error::auth_failed(
             spt_core::Diagnostic::what("ssh-agent has no loaded identities")
@@ -1232,16 +1260,14 @@ async fn try_agent_auth(
         ));
     }
 
+    // A single signer drives every identity attempt (russh 0.61's
+    // `authenticate_publickey_with` borrows the `Signer` mutably).
+    let mut signer = Agent::open_signer(socket_ref).await?;
     let mut last_err: Option<String> = None;
     for key in identities {
-        // The agent driver must consume the russh `Signer` (which is the
-        // `AgentClient` itself) by value. Open a fresh signer per identity
-        // because `authenticate_future` takes ownership.
-        let signer = Agent::open_signer(socket_ref).await?;
         let user = username.clone();
-        let key_for_auth = key.clone();
         let outcome =
-            drive_authenticate_future(Arc::clone(&handle), user, key_for_auth, signer).await;
+            drive_authenticate_future(Arc::clone(&handle), user, &key, &mut signer).await;
         match outcome {
             Ok(true) => return Ok(true),
             Ok(false) => {
@@ -1270,38 +1296,34 @@ async fn try_agent_auth(
 
 /// Drive russh's `Signer`-based publickey userauth path.
 ///
-/// Calls [`russh::client::Handle::authenticate_future`] with the supplied
-/// agent-client signer. The russh `AgentClient<R>` itself implements
-/// `russh::auth::Signer` — each `Reply::SignRequest` from the server is
-/// dispatched back through the agent's `sign_request` round trip.
+/// Calls [`russh::client::Handle::authenticate_publickey_with`] with the
+/// supplied agent-client signer. In russh 0.61 the `AgentClient<R>` itself
+/// implements [`russh::auth::Signer`] (`auth_sign`), and each server
+/// `SignRequest` is dispatched back through the agent's `sign_request` round
+/// trip internally — no vendored fork is needed. The signer is borrowed
+/// mutably, so a single agent connection serves every identity.
 ///
-/// # Send-HRT and the upstream patch
-///
-/// In upstream russh-v0.46.0 this call site does not type-check: the outer
-/// `ConnectFuture` (`Pin<Box<dyn Future + Send + 'static>>`) `CoerceUnsized`
-/// proof fails on a higher-ranked-lifetime obligation from the generic
-/// `S: auth::Signer` state machine. We vendored russh under
-/// `vendor/russh-fork/` with the minimum patch set that fixes this:
-///
-/// 1. `auth::Signer: Sized + Send + 'static` (was `Sized`).
-/// 2. `Signer::Error: ... + Send + 'static`, `Signer::Future: ... + Send + 'static`.
-/// 3. `client::Handle::authenticate_future` rewritten from `async fn` to
-///    return an explicit `Pin<Box<dyn Future + Send + 'a>>`, hoisting the
-///    `self.sender.clone()` and `&mut self.receiver` reborrows into the
-///    sync prelude so the boxed future captures only owned/reborrowed state.
-///
-/// Behaviour is identical to upstream. See `.orchestration/logs/t7-P1.md`
-/// for the full unified diff and the upstream-PR follow-up plan.
+/// The identity's public key is presented to the server; for RSA agent keys
+/// we request a SHA-256 signature (`rsa-sha2-256`).
 async fn drive_authenticate_future(
     handle: SharedHandle,
     user: String,
-    key: russh_keys::key::PublicKey,
-    signer: crate::agent::DynAgentClient,
+    identity: &russh::keys::agent::AgentIdentity,
+    signer: &mut crate::agent::DynAgentClient,
 ) -> std::result::Result<bool, String> {
+    let public_key = identity.public_key().into_owned();
     let mut h = handle.lock().await;
-    let (_signer_back, result) = h.authenticate_future(user, key, signer).await;
-    result.map_err(|e| format!("russh authenticate_future: {e}"))
+    h.authenticate_publickey_with(user, public_key, RSA_AUTH_HASH_ALG, signer)
+        .await
+        .map(|r| r.success())
+        .map_err(|e| format!("russh authenticate_publickey_with: {e}"))
 }
+
+/// Hash algorithm to request for RSA keys. russh ignores this for non-RSA
+/// algorithms (Ed25519/ECDSA), so it is safe to pass unconditionally. We pick
+/// SHA-256 (`rsa-sha2-256`) — the modern default OpenSSH accepts; passing
+/// `None` would select the deprecated SHA-1 `ssh-rsa`.
+const RSA_AUTH_HASH_ALG: Option<HashAlg> = Some(HashAlg::Sha256);
 
 /// SSH2/russh GSSAPI (`gssapi-with-mic` per RFC 4462) userauth dispatch.
 ///
@@ -1316,10 +1338,10 @@ async fn drive_authenticate_future(
 ///   needed in this file is to drive the token-exchange loop through the
 ///   built provider.
 ///
-/// **russh 0.46 does not implement `gssapi-with-mic` as a first-class
+/// **russh 0.61 does not implement `gssapi-with-mic` as a first-class
 /// userauth primitive.** The
-/// [`russh::auth::Method`] enum (`auth.rs:80` in russh 0.46) covers
-/// `none`, `password`, `publickey`, `openssh-cert`, `future-publickey`, and
+/// [`russh::auth::Method`] enum covers `none`, `password`, `publickey`,
+/// `openssh-cert`, `future-publickey`, `future-certificate`, and
 /// `keyboard-interactive` only. Until upstream russh exposes a
 /// gssapi userauth method (or a low-level `userauth_request` hook permitting
 /// custom method names), this dispatcher surfaces the
@@ -1354,7 +1376,7 @@ async fn try_gssapi_auth(
     // cannot drive the `gssapi-with-mic` userauth state machine.
     let _provider = spt_auth_sspi::provider_for(&cfg);
     Err(spt_auth_sspi::unsupported_backend(
-        "russh 0.46 does not yet expose gssapi-with-mic (RFC 4462) as a userauth method; \
+        "russh 0.61 does not yet expose gssapi-with-mic (RFC 4462) as a userauth method; \
          provider built via spt-auth-sspi but cannot be driven through this backend yet",
     ))
 }
@@ -1385,7 +1407,7 @@ async fn try_sspi_auth(
     };
     let _provider = spt_auth_sspi::sspi_provider_for(&cfg);
     Err(spt_auth_sspi::unsupported_backend(
-        "russh 0.46 does not yet expose gssapi-with-mic / SSPI Negotiate (RFC 4462) as a \
+        "russh 0.61 does not yet expose gssapi-with-mic / SSPI Negotiate (RFC 4462) as a \
          userauth method; provider built via spt-auth-sspi but cannot be driven through this \
          backend yet",
     ))
@@ -1630,7 +1652,7 @@ async fn open_remote(
         .insert(initial_key.clone(), tx.clone());
 
     let bound_port = {
-        let mut handle = handle.lock().await;
+        let handle = handle.lock().await;
         match handle
             .tcpip_forward(address.clone(), u32::from(requested_port))
             .await
@@ -1767,7 +1789,13 @@ fn remote_listen_parts(addr: &BindAddr) -> Result<(String, u16)> {
     }
 }
 
-fn russh_key_to_ssh_key(key: &russh_keys::key::PublicKey) -> Result<ssh_key::PublicKey> {
+/// Bridge russh 0.61's `ssh-key` (0.7-rc) host-key type into the workspace's
+/// `ssh-key` 0.6 `PublicKey` that [`TrustVerifier::verify`] (and spt-trust)
+/// operate on. russh pins an `ssh-key` rc that is a different crate version
+/// than the workspace's stable 0.6, so the only stable bridge is the SSH wire
+/// encoding: `PublicKeyBase64::public_key_bytes` produces the canonical
+/// public-key blob, which our 0.6 `PublicKey::from_bytes` re-parses.
+fn russh_key_to_ssh_key(key: &russh::keys::ssh_key::PublicKey) -> Result<ssh_key::PublicKey> {
     ssh_key::PublicKey::from_bytes(&key.public_key_bytes())
         .map_err(|e| Error::TrustFailed(format!("parse russh host key: {e}")))
 }

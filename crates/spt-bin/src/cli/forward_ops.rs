@@ -451,9 +451,10 @@ pub async fn show(global: &GlobalOpts, args: ForwardShowArgs) -> Result<()> {
 }
 
 fn print_human(v: &ForwardView) {
+    use std::fmt::Write as _; // 1.88 lint: format_push_string
     let mut out = String::new();
     let push = |out: &mut String, k: &str, val: &str| {
-        out.push_str(&format!("{k:<22}: {val}\n"));
+        let _ = writeln!(out, "{k:<22}: {val}");
     };
     push(&mut out, "profile", &v.profile);
     push(&mut out, "forward", &v.name);
@@ -502,59 +503,55 @@ fn print_human(v: &ForwardView) {
     }
     out.push_str("limits:\n");
     if let Some(s) = &v.limits.max_bytes_per_second_in {
-        out.push_str(&format!("  max_bytes_per_second_in : {s}\n"));
+        let _ = writeln!(out, "  max_bytes_per_second_in : {s}");
     }
     if let Some(s) = &v.limits.max_bytes_per_second_out {
-        out.push_str(&format!("  max_bytes_per_second_out: {s}\n"));
+        let _ = writeln!(out, "  max_bytes_per_second_out: {s}");
     }
     if let Some(n) = v.limits.max_connections {
-        out.push_str(&format!("  max_connections         : {n}\n"));
+        let _ = writeln!(out, "  max_connections         : {n}");
     }
     if let Some(n) = v.limits.max_new_connections_per_second {
-        out.push_str(&format!("  max_new_conns_per_second: {n}\n"));
+        let _ = writeln!(out, "  max_new_conns_per_second: {n}");
     }
     if let Some(s) = &v.limits.max_burst_bytes_in {
-        out.push_str(&format!("  max_burst_bytes_in      : {s}\n"));
+        let _ = writeln!(out, "  max_burst_bytes_in      : {s}");
     }
     if let Some(s) = &v.limits.max_burst_bytes_out {
-        out.push_str(&format!("  max_burst_bytes_out     : {s}\n"));
+        let _ = writeln!(out, "  max_burst_bytes_out     : {s}");
     }
     if let Some(n) = v.limits.max_datagram_size {
-        out.push_str(&format!("  max_datagram_size       : {n}\n"));
+        let _ = writeln!(out, "  max_datagram_size       : {n}");
     }
     if let Some(n) = v.limits.max_packets_per_second {
-        out.push_str(&format!("  max_packets_per_second  : {n}\n"));
+        let _ = writeln!(out, "  max_packets_per_second  : {n}");
     }
     out.push_str("acl:\n");
-    out.push_str(&format!(
-        "  bind_mode               : {}\n",
-        v.acl.bind_mode
-    ));
+    let _ = writeln!(out, "  bind_mode               : {}", v.acl.bind_mode);
     if !v.acl.allow_cidrs.is_empty() {
-        out.push_str(&format!(
-            "  allow_cidrs             : {}\n",
+        let _ = writeln!(
+            out,
+            "  allow_cidrs             : {}",
             v.acl.allow_cidrs.join(", ")
-        ));
+        );
     }
     if !v.acl.deny_cidrs.is_empty() {
-        out.push_str(&format!(
-            "  deny_cidrs              : {}\n",
+        let _ = writeln!(
+            out,
+            "  deny_cidrs              : {}",
             v.acl.deny_cidrs.join(", ")
-        ));
+        );
     }
     out.push_str("health:\n");
-    out.push_str(&format!(
-        "  required                : {}\n",
-        v.health.required
-    ));
+    let _ = writeln!(out, "  required                : {}", v.health.required);
     if let Some(a) = &v.health.instability_action {
-        out.push_str(&format!("  instability_action      : {a}\n"));
+        let _ = writeln!(out, "  instability_action      : {a}");
     }
     if let Some(w) = &v.health.instability_window {
-        out.push_str(&format!("  instability_window      : {w}\n"));
+        let _ = writeln!(out, "  instability_window      : {w}");
     }
     if let Some(n) = v.health.max_disconnects {
-        out.push_str(&format!("  max_disconnects         : {n}\n"));
+        let _ = writeln!(out, "  max_disconnects         : {n}");
     }
     print!("{out}");
 }
@@ -580,11 +577,9 @@ pub async fn explain(global: &GlobalOpts, args: ForwardExplainArgs) -> Result<()
 }
 
 fn render_narrative(v: &ForwardView, profile: &Profile) -> String {
+    use std::fmt::Write as _; // 1.88 lint: format_push_string
     let mut out = String::new();
-    out.push_str(&format!(
-        "forward '{}' on profile '{}':\n\n",
-        v.name, v.profile
-    ));
+    let _ = writeln!(out, "forward '{}' on profile '{}':\n", v.name, v.profile);
     out.push_str("  When this forward is active:\n");
 
     // Listener line.
@@ -643,38 +638,38 @@ fn render_narrative(v: &ForwardView, profile: &Profile) -> String {
                 ]
             })
             .join(", ");
-        out.push_str(&format!(
-            "  - Each accepted {proto_upper} proxy connection speaks one of: {protocols};\n    opens {channel_kind} through the `{}` session.\n",
+        let _ = writeln!(
+            out,
+            "  - Each accepted {proto_upper} proxy connection speaks one of: {protocols};\n    opens {channel_kind} through the `{}` session.",
             v.profile
-        ));
+        );
     } else {
-        out.push_str(&format!(
+        let _ = writeln!(
+            out,
             "  - Each accepted {proto_upper} connection opens {channel_kind}\n    \
-             through the `{}` session to {}.\n",
+             through the `{}` session to {}.",
             v.profile, v.target
-        ));
+        );
     }
 
     // Target resolution side.
-    out.push_str(&format!(
-        "  - Target name resolution happens on the {} side.\n",
+    let _ = writeln!(
+        out,
+        "  - Target name resolution happens on the {} side.",
         match v.target_resolve.as_str() {
             "local" => "local",
             "remote" => "remote",
             "previous-hop" => "previous-hop",
             _ => "remote (default)",
         }
-    ));
+    );
 
     // DNS names.
     if !v.dns_names.is_empty() {
-        out.push_str(&format!(
-            "  - DNS names registered: {}.\n",
-            v.dns_names.join(", ")
-        ));
+        let _ = writeln!(out, "  - DNS names registered: {}.", v.dns_names.join(", "));
     }
     if let Some(sni) = &v.sni_name {
-        out.push_str(&format!("  - TLS clients should set SNI = `{sni}`.\n"));
+        let _ = writeln!(out, "  - TLS clients should set SNI = `{sni}`.");
     }
 
     // Limits / throttle.
@@ -692,23 +687,20 @@ fn render_narrative(v: &ForwardView, profile: &Profile) -> String {
         throttle_bits.push(format!("burst-out {s}"));
     }
     if !throttle_bits.is_empty() {
-        out.push_str(&format!(
-            "  - Token bucket: {}.\n",
-            throttle_bits.join(", ")
-        ));
+        let _ = writeln!(out, "  - Token bucket: {}.", throttle_bits.join(", "));
     }
     if let Some(n) = v.limits.max_connections {
-        out.push_str(&format!("  - Connection limit: {n} concurrent.\n"));
+        let _ = writeln!(out, "  - Connection limit: {n} concurrent.");
     }
     if let Some(n) = v.limits.max_new_connections_per_second {
-        out.push_str(&format!("  - Accept rate: {n}/s.\n"));
+        let _ = writeln!(out, "  - Accept rate: {n}/s.");
     }
     if v.transport == "udp" {
         if let Some(n) = v.limits.max_datagram_size {
-            out.push_str(&format!("  - Maximum datagram size: {n} bytes.\n"));
+            let _ = writeln!(out, "  - Maximum datagram size: {n} bytes.");
         }
         if let Some(n) = v.limits.max_packets_per_second {
-            out.push_str(&format!("  - Packet rate: {n}/s.\n"));
+            let _ = writeln!(out, "  - Packet rate: {n}/s.");
         }
     }
 
@@ -724,12 +716,12 @@ fn render_narrative(v: &ForwardView, profile: &Profile) -> String {
         } else {
             v.acl.deny_cidrs.join(", ")
         };
-        out.push_str(&format!("  - ACL: allow {allow}; deny {deny}.\n"));
+        let _ = writeln!(out, "  - ACL: allow {allow}; deny {deny}.");
     }
 
     // Idle.
     if let Some(t) = &v.idle_timeout {
-        out.push_str(&format!("  - Idle connections close after {t}.\n"));
+        let _ = writeln!(out, "  - Idle connections close after {t}.");
     }
 
     // Health policy.
@@ -749,14 +741,15 @@ fn render_narrative(v: &ForwardView, profile: &Profile) -> String {
             "instability action `{action}` fires after {max} disconnects within {window}"
         ));
     }
-    out.push_str(&format!(
-        "  - Health policy: forward is reported healthy when {}.\n",
+    let _ = writeln!(
+        out,
+        "  - Health policy: forward is reported healthy when {}.",
         health_facts.join(", and ")
-    ));
+    );
 
     // Bind-conflict policy.
     if let Some(c) = &v.on_bind_conflict {
-        out.push_str(&format!("  - On bind conflict: {c}.\n"));
+        let _ = writeln!(out, "  - On bind conflict: {c}.");
     }
 
     // What happens when the session is down.
@@ -771,10 +764,11 @@ fn render_narrative(v: &ForwardView, profile: &Profile) -> String {
     // Operator notes.
     out.push_str("\n  Operator notes:\n");
     out.push_str("  - This forward writes to the event ring as kind=`forward.connect`.\n");
-    out.push_str(&format!(
-        "  - Throttle changes via `spt forward throttle {}/{} --in <bps> --out <bps>`.\n",
+    let _ = writeln!(
+        out,
+        "  - Throttle changes via `spt forward throttle {}/{} --in <bps> --out <bps>`.",
         v.profile, v.name
-    ));
+    );
 
     out
 }

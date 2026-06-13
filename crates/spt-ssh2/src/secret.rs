@@ -34,9 +34,9 @@ pub fn resolve_secret(backends: &[&dyn SecretBackend], r: &AuthSecretRef) -> Res
                     reason: format!("invalid reference: {e}"),
                 })?;
             for b in backends {
-                match b.get(&secrets_ref)? {
-                    Some(v) => return Ok(v),
-                    None => continue,
+                // None falls through to the next backend.
+                if let Some(v) = b.get(&secrets_ref)? {
+                    return Ok(v);
                 }
             }
             Err(Error::SecretUnavailable {

@@ -179,6 +179,11 @@ async fn send_421(mut stream: TcpStream) -> std::io::Result<()> {
 /// can hand the underlying [`TcpStream`] to the [`TlsAcceptor`] without
 /// any unsafe `dyn`-downcast tricks. FTP control traffic is strict
 /// request/response, so concurrent read/write halves aren't needed.
+// 1.88 lint: large_enum_variant — the `Tls` variant is inherently larger than
+// `Plain`. There is exactly one `ControlStream` per FTP connection (long-lived,
+// not collection-stored), so the size disparity is irrelevant; boxing would only
+// add an indirection on the hot control-channel read/write path.
+#[allow(clippy::large_enum_variant)]
 pub enum ControlStream {
     /// Plaintext control channel — the initial state.
     Plain(BufReader<TcpStream>),
@@ -249,6 +254,10 @@ impl AsyncRead for ControlStream {
 }
 
 /// A data-channel socket — TLS-wrapped iff PROT P negotiated.
+// 1.88 lint: large_enum_variant — `Tls` is inherently larger; one `DataStream`
+// per data transfer (long-lived, not collection-stored), so boxing would only
+// add indirection on the transfer hot path.
+#[allow(clippy::large_enum_variant)]
 enum DataStream {
     /// Plain TCP data connection (PROT C, the default).
     Plain(TcpStream),

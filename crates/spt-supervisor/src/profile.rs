@@ -649,7 +649,7 @@ impl ProfileTask {
                     if self.sleep_or_control(delay, &mut control).await {
                         break;
                     }
-                    continue;
+                    // 1.88 lint: redundant_continue
                 }
             }
         }
@@ -768,7 +768,7 @@ impl ProfileTask {
                                 );
                                 self.fire(SmEvent::InstabilityClear);
                             }
-                            continue;
+                            // 1.88 lint: redundant_continue
                         }
                         Ok(Err(e)) => {
                             tracing::warn!(
@@ -1301,7 +1301,7 @@ mod tests {
             tokio::select! {
                 ev = events.recv() => match ev {
                     Some(ProfileEvent::BackoffExhausted { .. }) => { got_exhausted = true; break }
-                    Some(_) => continue,
+                    Some(_) => {} // 1.88 lint: redundant_continue
                     None => break,
                 },
                 _ = tokio::time::sleep(Duration::from_millis(50)) => {}
@@ -1437,7 +1437,7 @@ mod tests {
                 Ok(Some(ProfileEvent::ReconnectScheduled { attempt, .. })) => {
                     return Some(attempt);
                 }
-                Ok(Some(_)) => continue,
+                Ok(Some(_)) => {} // 1.88 lint: redundant_continue
                 Ok(None) | Err(_) => return None,
             }
         }
@@ -1786,19 +1786,17 @@ mod tests {
         let mut saw_connected = false;
         let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
         while tokio::time::Instant::now() < deadline {
-            match tokio::time::timeout(Duration::from_millis(200), rx.recv()).await {
-                Ok(Ok(ev)) => {
-                    if ev.kind.as_str() == "profile.connected" {
-                        assert_eq!(ev.severity, Severity::Info);
-                        assert_eq!(
-                            ev.profile_id.as_ref().map(spt_core::ProfileId::as_str),
-                            Some("alerting-profile")
-                        );
-                        saw_connected = true;
-                        break;
-                    }
+            // Non-event ticks (timeout/lagged) just loop again.
+            if let Ok(Ok(ev)) = tokio::time::timeout(Duration::from_millis(200), rx.recv()).await {
+                if ev.kind.as_str() == "profile.connected" {
+                    assert_eq!(ev.severity, Severity::Info);
+                    assert_eq!(
+                        ev.profile_id.as_ref().map(spt_core::ProfileId::as_str),
+                        Some("alerting-profile")
+                    );
+                    saw_connected = true;
+                    break;
                 }
-                Ok(Err(_)) | Err(_) => continue,
             }
         }
         assert!(
@@ -1835,7 +1833,7 @@ mod tests {
         while tokio::time::Instant::now() < deadline {
             match tokio::time::timeout(Duration::from_millis(100), events.recv()).await {
                 Ok(Some(ProfileEvent::BackoffExhausted { .. })) => break,
-                Ok(Some(_)) => continue,
+                Ok(Some(_)) => {} // 1.88 lint: redundant_continue
                 Ok(None) | Err(_) => {}
             }
         }

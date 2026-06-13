@@ -5,15 +5,19 @@
 //! 1. **Keygen** — `ssh-key 0.6` `PrivateKey::random(...)` (or
 //!    `spt_key::generate` for the subset our [`KeyAlgorithm`] enum can express).
 //! 2. **Sign + verify** — `ssh-key`'s `Signer<Signature>` / `Verifier<Signature>`
-//!    impls for ed25519 and ECDSA; **`russh-keys 0.46`** for RSA, because
-//!    `ssh-key 0.6.7` ships an upstream bug in
-//!    `private/rsa.rs:192-204` that reconstructs `rsa::RsaPrivateKey` with
-//!    `p` repeated twice instead of `(p, q)`, breaking every RSA signing path
-//!    that flows through `Signer<Signature> for RsaKeypair`. RSA *verification*
-//!    works because `RsaPublicKey` uses `(n, e)` only.
+//!    impls for ed25519 and ECDSA; **`ssh-key 0.7-rc`** (via
+//!    `russh::keys::ssh_key`) for RSA, because the workspace `ssh-key 0.6.7`
+//!    ships an upstream bug in `private/rsa.rs:192-204` that reconstructs
+//!    `rsa::RsaPrivateKey` with `p` repeated twice instead of `(p, q)`,
+//!    breaking every RSA signing path that flows through
+//!    `Signer<Signature> for RsaKeypair`. RSA *verification* works because
+//!    `RsaPublicKey` uses `(n, e)` only — so we sign with 0.7-rc and verify
+//!    with both 0.7-rc and the workspace 0.6. (This replaces the old
+//!    `russh-keys 0.46` dependency, removed to clear RUSTSEC-2026-0154/-0153.)
 //! 3. **Cross-library round-trip** — bridge the OpenSSH wire-format public key
-//!    + raw signature bytes between `ssh-key` and `russh-keys 0.46`. Both
-//!      libraries verify the other's signature for the algorithms we ship.
+//!    plus raw signature bytes between the workspace `ssh-key 0.6` and russh's
+//!    bundled `ssh-key 0.7-rc`. Both libraries verify the other's signature for
+//!    the algorithms we ship.
 //! 4. **OpenSSH PEM round-trip** — serialize + parse + assert byte-exact PEM
 //!    equality on a second serialize (unencrypted path; encrypted KDF uses a
 //!    fresh salt every time so we cannot byte-compare ciphertext).
@@ -32,20 +36,29 @@
 //! 60-second budget we generate **one** RSA key per library via
 //! [`std::sync::OnceLock`] and re-use it across every RSA case. The
 //! distinction between `rsa-sha2-256` and `rsa-sha2-512` is exercised by
-//! parameterising the russh-keys `SignatureHash` — no second keygen needed.
+//! parameterising the ssh-key 0.7-rc RSA signer's `Option<HashAlg>` — no
+//! second keygen needed.
 
 #![allow(clippy::needless_pass_by_value)]
 
 use std::sync::OnceLock;
 
 use rand::rngs::OsRng;
-use russh_keys::key::SignatureHash;
-use russh_keys::PublicKeyBase64 as _;
 use signature::{Signer, Verifier};
 use spt_key::{generate, load, save_encrypted, sign_cert, verify_cert, CertOptions, KeyAlgorithm};
 use ssh_key::public::KeyData;
 use ssh_key::{Algorithm, EcdsaCurve, HashAlg, PrivateKey};
 use tempfile::tempdir;
+
+// The "other" SSH key library: upstream russh 0.61's bundled `ssh-key 0.7-rc`,
+// re-exported as `russh::keys::ssh_key`. Distinct from the workspace
+// `ssh-key 0.6` imported above; the two coexist and we cross-verify wire bytes
+// between them. Its RSA signing path is correct (the 0.6.7 `(p, p)` bug is
+// fixed in 0.7-rc), so all RSA signing flows through it.
+use russh::keys::ssh_key as rk;
+use russh::keys::ssh_key::Signature as RkSignature;
+use russh::keys::signature::Signer as RkSigner;
+use russh::keys::signature::Verifier as RkVerifier;
 
 // ---------------------------------------------------------------------------
 // Test fixtures
@@ -61,23 +74,28 @@ fn shared_ssh_key_rsa() -> &'static PrivateKey {
     })
 }
 
-/// One russh-keys RSA-3072 keypair shared across every RSA test below.
-fn shared_russh_rsa(hash: SignatureHash) -> russh_keys::key::KeyPair {
-    static RSA: OnceLock<russh_keys::key::KeyPair> = OnceLock::new();
-    let base = RSA.get_or_init(|| {
-        russh_keys::key::KeyPair::generate_rsa(3072, SignatureHash::SHA2_512)
-            .expect("russh rsa-3072 keygen")
-    });
-    let mut k = base.clone();
-    // The hash field on russh's KeyPair::RSA is what gets emitted as the
-    // outer signature algorithm name on the wire. Match what each test asks.
-    if let russh_keys::key::KeyPair::RSA {
-        hash: ref mut h, ..
-    } = k
-    {
-        *h = hash;
-    }
-    k
+/// One ssh-key 0.7-rc RSA-3072 keypair shared across every RSA test below.
+/// Wrapped in a `PrivateKey` so we can derive both the public key (wire bytes)
+/// and the `RsaKeypair` needed for hash-parameterised signing.
+fn shared_rk_rsa() -> &'static rk::PrivateKey {
+    static RSA: OnceLock<rk::PrivateKey> = OnceLock::new();
+    RSA.get_or_init(|| {
+        // ssh-key 0.7-rc's keygen needs a rand_core-0.10 `CryptoRng`.
+        let mut rng = rand010::rng();
+        let kp = rk::private::RsaKeypair::random(&mut rng, 3072).expect("rk rsa-3072 keygen");
+        let kd = rk::private::KeypairData::from(kp);
+        rk::PrivateKey::new(kd, "spt-rk-rsa-test").expect("wrap rk rsa keypair")
+    })
+}
+
+/// Sign `msg` with the shared RSA key under the given hash algorithm, using
+/// ssh-key 0.7-rc's `Signer<Signature> for (&RsaKeypair, Option<HashAlg>)`.
+fn rk_rsa_sign(msg: &[u8], hash: rk::HashAlg) -> RkSignature {
+    let priv_key = shared_rk_rsa();
+    let rk::private::KeypairData::Rsa(kp) = priv_key.key_data() else {
+        panic!("shared rk key is not RSA");
+    };
+    RkSigner::try_sign(&(kp, Some(hash)), msg).expect("rk rsa sign")
 }
 
 /// Generate a non-RSA private key for the given ssh-key `Algorithm`.
@@ -196,60 +214,62 @@ fn modern_algorithms_sign_verify_pem_roundtrip_cert() {
 }
 
 // ---------------------------------------------------------------------------
-// 2. RSA via russh-keys: sha2-256 and sha2-512 signing paths, then verify
-//    with ssh-key's `Verifier<Signature>` for the round-trip.
+// 2. RSA via ssh-key 0.7-rc (russh::keys): sha2-256 and sha2-512 signing
+//    paths, then verify with the workspace ssh-key 0.6 `Verifier<Signature>`
+//    for the cross-library round-trip.
 // ---------------------------------------------------------------------------
 
-/// Bridge a russh-keys public-key into ssh-key's `KeyData` via the SSH binary
-/// wire format the two libraries share.
-fn russh_pub_to_ssh_key_data(rk: &russh_keys::key::KeyPair) -> KeyData {
-    let wire = rk.public_key_bytes();
+/// Bridge an ssh-key 0.7-rc public key into the workspace `ssh-key 0.6`
+/// `KeyData` via the SSH binary wire format the two versions share.
+fn rk_pub_to_ssh_key_data(pubkey: &rk::PublicKey) -> KeyData {
+    let wire = pubkey.to_bytes().expect("rk public to_bytes");
     let mut reader: &[u8] = &wire;
-    <KeyData as ssh_encoding::Decode>::decode(&mut reader).expect("decode russh public bytes")
+    <KeyData as ssh_encoding::Decode>::decode(&mut reader).expect("decode rk public bytes")
 }
 
 #[test]
-fn russh_signs_rsa_sha2_256_ssh_key_verifies() {
-    let rk = shared_russh_rsa(SignatureHash::SHA2_256);
+fn rk_signs_rsa_sha2_256_ssh_key_verifies() {
     let msg = b"rsa-sha2-256 cross-lib";
+    let sig = rk_rsa_sign(msg, rk::HashAlg::Sha256);
+    assert_eq!(
+        sig.algorithm(),
+        rk::Algorithm::Rsa {
+            hash: Some(rk::HashAlg::Sha256)
+        }
+    );
 
-    let sig = rk.sign_detached(msg).expect("russh rsa-sha2-256 sign");
-    let russh_keys::signature::Signature::RSA { hash, bytes } = sig else {
-        panic!("expected RSA russh signature");
-    };
-    assert!(matches!(hash, SignatureHash::SHA2_256));
-
-    // Wrap into an ssh-key Signature with the matching algorithm and verify.
+    // Wrap into a workspace ssh-key 0.6 Signature with the matching algorithm
+    // and verify against the bridged public key.
     let sk_sig = ssh_key::Signature::new(
         Algorithm::Rsa {
             hash: Some(HashAlg::Sha256),
         },
-        bytes,
+        sig.as_bytes().to_vec(),
     )
     .expect("wrap rsa sig");
-    let sk_pub = russh_pub_to_ssh_key_data(&rk);
+    let sk_pub = rk_pub_to_ssh_key_data(shared_rk_rsa().public_key());
     Verifier::verify(&sk_pub, msg, &sk_sig).expect("ssh-key verify rsa-sha2-256");
 }
 
 #[test]
-fn russh_signs_rsa_sha2_512_ssh_key_verifies() {
-    let rk = shared_russh_rsa(SignatureHash::SHA2_512);
+fn rk_signs_rsa_sha2_512_ssh_key_verifies() {
     let msg = b"rsa-sha2-512 cross-lib";
-
-    let sig = rk.sign_detached(msg).expect("russh rsa-sha2-512 sign");
-    let russh_keys::signature::Signature::RSA { hash, bytes } = sig else {
-        panic!("expected RSA russh signature");
-    };
-    assert!(matches!(hash, SignatureHash::SHA2_512));
+    let sig = rk_rsa_sign(msg, rk::HashAlg::Sha512);
+    assert_eq!(
+        sig.algorithm(),
+        rk::Algorithm::Rsa {
+            hash: Some(rk::HashAlg::Sha512)
+        }
+    );
 
     let sk_sig = ssh_key::Signature::new(
         Algorithm::Rsa {
             hash: Some(HashAlg::Sha512),
         },
-        bytes,
+        sig.as_bytes().to_vec(),
     )
     .expect("wrap rsa sig");
-    let sk_pub = russh_pub_to_ssh_key_data(&rk);
+    let sk_pub = rk_pub_to_ssh_key_data(shared_rk_rsa().public_key());
     Verifier::verify(&sk_pub, msg, &sk_sig).expect("ssh-key verify rsa-sha2-512");
 }
 
@@ -279,39 +299,41 @@ fn ssh_rsa_sha1_accepted_with_escape_hatch() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn cross_lib_russh_signs_ssh_key_verifies_ed25519() {
-    let rk = russh_keys::key::KeyPair::generate_ed25519();
+fn cross_lib_rk_signs_ssh_key_verifies_ed25519() {
+    // Sign with ssh-key 0.7-rc (via russh), verify with workspace ssh-key 0.6.
+    let rk_priv = rk::PrivateKey::random(&mut rand010::rng(), rk::Algorithm::Ed25519).unwrap();
     let msg = b"cross-lib ed25519";
-    let sig = rk.sign_detached(msg).unwrap();
+    let rk_sig: RkSignature = RkSigner::try_sign(&rk_priv, msg).expect("rk try_sign");
+    assert_eq!(rk_sig.algorithm(), rk::Algorithm::Ed25519);
 
-    let sig_bytes = match sig {
-        russh_keys::signature::Signature::Ed25519(s) => s.0.to_vec(),
-        _ => panic!("expected Ed25519 signature variant"),
-    };
-
-    let sk_pub_data = russh_pub_to_ssh_key_data(&rk);
-    let sk_sig = ssh_key::Signature::new(Algorithm::Ed25519, sig_bytes).expect("sig wrap");
+    let sk_pub_data = rk_pub_to_ssh_key_data(rk_priv.public_key());
+    let sk_sig =
+        ssh_key::Signature::new(Algorithm::Ed25519, rk_sig.as_bytes().to_vec()).expect("sig wrap");
     Verifier::verify(&sk_pub_data, msg, &sk_sig).expect("ssh-key verify");
 }
 
+/// Bridge a workspace ssh-key 0.6 public key into an ssh-key 0.7-rc
+/// `PublicKey` via the shared SSH binary wire format.
+fn ssh_key_pub_to_rk(pubkey: &ssh_key::PublicKey) -> rk::PublicKey {
+    let wire = pubkey.to_bytes().expect("public to_bytes");
+    rk::PublicKey::from_bytes(&wire).expect("rk PublicKey::from_bytes")
+}
+
 #[test]
-fn cross_lib_ssh_key_signs_russh_verifies_ed25519() {
+fn cross_lib_ssh_key_signs_rk_verifies_ed25519() {
     let sk_priv = PrivateKey::random(&mut OsRng, Algorithm::Ed25519).unwrap();
     let msg = b"cross-lib reverse";
     let sk_sig: ssh_key::Signature = sk_priv.try_sign(msg).expect("raw try_sign");
     assert_eq!(sk_sig.algorithm(), Algorithm::Ed25519);
 
-    let wire = sk_priv.public_key().to_bytes().expect("public to_bytes");
-    let rk_pub =
-        russh_keys::key::parse_public_key(&wire, None).expect("russh-keys parse_public_key");
-    assert!(
-        rk_pub.verify_detached(msg, sk_sig.as_bytes()),
-        "russh-keys verify failed"
-    );
+    let rk_pub = ssh_key_pub_to_rk(sk_priv.public_key());
+    let rk_sig = RkSignature::new(rk::Algorithm::Ed25519, sk_sig.as_bytes().to_vec())
+        .expect("rk sig wrap");
+    RkVerifier::verify(rk_pub.key_data(), msg, &rk_sig).expect("rk verify failed");
 }
 
 #[test]
-fn cross_lib_ecdsa_p256_ssh_key_signs_russh_verifies() {
+fn cross_lib_ecdsa_p256_ssh_key_signs_rk_verifies() {
     let sk_priv = PrivateKey::random(
         &mut OsRng,
         Algorithm::Ecdsa {
@@ -321,12 +343,16 @@ fn cross_lib_ecdsa_p256_ssh_key_signs_russh_verifies() {
     .unwrap();
     let msg = b"cross-lib ecdsa";
     let sk_sig: ssh_key::Signature = sk_priv.try_sign(msg).expect("try_sign");
-    let wire = sk_priv.public_key().to_bytes().expect("public to_bytes");
-    let rk_pub = russh_keys::key::parse_public_key(&wire, None).expect("parse_public_key");
-    assert!(
-        rk_pub.verify_detached(msg, sk_sig.as_bytes()),
-        "russh-keys ECDSA verify failed"
-    );
+
+    let rk_pub = ssh_key_pub_to_rk(sk_priv.public_key());
+    let rk_sig = RkSignature::new(
+        rk::Algorithm::Ecdsa {
+            curve: rk::EcdsaCurve::NistP256,
+        },
+        sk_sig.as_bytes().to_vec(),
+    )
+    .expect("rk sig wrap");
+    RkVerifier::verify(rk_pub.key_data(), msg, &rk_sig).expect("rk ECDSA verify failed");
 }
 
 // ---------------------------------------------------------------------------

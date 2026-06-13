@@ -29,13 +29,10 @@ pub async fn bind_passive(
     let (lo, hi) = cfg.passive_port_range;
     for port in lo..=hi {
         let addr = SocketAddr::new(ip, port);
-        match TcpListener::bind(addr).await {
-            Ok(listener) => {
-                let port = listener.local_addr().map(|a| a.port()).unwrap_or(port);
-                return Ok(PassiveListener { listener, port });
-            }
-            // Most often EADDRINUSE — keep walking.
-            Err(_) => continue,
+        // Err is most often EADDRINUSE — keep walking. (1.88 lint: redundant_continue)
+        if let Ok(listener) = TcpListener::bind(addr).await {
+            let port = listener.local_addr().map(|a| a.port()).unwrap_or(port);
+            return Ok(PassiveListener { listener, port });
         }
     }
     Err(TranslatorError::NoPassivePort { low: lo, high: hi })

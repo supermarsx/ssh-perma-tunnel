@@ -419,14 +419,16 @@ mod tests {
     /// scrolling actually has somewhere to go. The forwards array
     /// gives us cheap line inflation.
     fn long_model() -> Model {
+        use std::fmt::Write as _; // 1.88 lint: format_push_string
         let mut s = String::from(
             "version = 1\n\n[[profiles]]\nname = \"p\"\nprotocol = \"ssh2\"\nhost = \"h.example.com\"\n",
         );
         for i in 0..30 {
-            s.push_str(&format!(
-                "\n[[profiles.forwards]]\nname = \"f-{i}\"\ntype = \"local\"\ntransport = \"tcp\"\nbind = \"127.0.0.1:{p}\"\ntarget = \"example.com:22\"\n",
+            let _ = writeln!(
+                s,
+                "\n[[profiles.forwards]]\nname = \"f-{i}\"\ntype = \"local\"\ntransport = \"tcp\"\nbind = \"127.0.0.1:{p}\"\ntarget = \"example.com:22\"",
                 p = 10000 + i,
-            ));
+            );
         }
         Model::from_str(&s)
     }

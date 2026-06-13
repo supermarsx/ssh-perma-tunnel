@@ -2,9 +2,9 @@
 //!
 //! Strategy:
 //!
-//! * Tests bind an in-process `russh_keys::agent::server::serve` instance
+//! * Tests bind an in-process `russh::keys::agent::server::serve` instance
 //!   over a Unix-domain socket (on Unix) or a Windows named pipe (on
-//!   Windows). The same `russh_keys` agent server implementation backs both
+//!   Windows). The same `russh::keys` agent server implementation backs both
 //!   transports, so the agent protocol bytes are identical.
 //! * The agent server is seeded with a freshly generated Ed25519 key. Tests
 //!   then verify that `Agent::list_identities` enumerates the seeded key
@@ -37,12 +37,17 @@ async fn from_stream_propagates_eof_as_auth_failed() {
 
 #[tokio::test]
 async fn fingerprint_is_stable_per_key_shape() {
-    let key = russh_keys::key::KeyPair::generate_ed25519();
-    let pub_key = key.clone_public_key().expect("derive pubkey");
-    let fp = Agent::fingerprint(&pub_key);
+    use russh::keys::agent::AgentIdentity;
+    use russh::keys::ssh_key::{Algorithm, PrivateKey};
+    let pub_key = PrivateKey::random(&mut rand010::rng(), Algorithm::Ed25519)
+        .expect("ed25519 keygen")
+        .public_key()
+        .clone();
+    let identity = AgentIdentity::from(pub_key);
+    let fp = Agent::fingerprint(&identity);
     assert!(fp.starts_with("ssh-ed25519"), "{fp}");
     // Same key produces identical fingerprint.
-    assert_eq!(fp, Agent::fingerprint(&pub_key));
+    assert_eq!(fp, Agent::fingerprint(&identity));
 }
 
 #[tokio::test]
@@ -57,11 +62,11 @@ async fn windows_pipe_constant_exposed() {
 #[cfg(unix)]
 pub mod unix_agent {
     use super::Agent;
-    use russh_keys::key::KeyPair;
+    use russh::keys::ssh_key::PrivateKey;
     use tempfile::TempDir;
     use tokio::net::UnixListener;
 
-    /// Stream wrapper accepted by `russh_keys::agent::server::serve`.
+    /// Stream wrapper accepted by `russh::keys::agent::server::serve`.
     struct Incoming {
         listener: UnixListener,
     }
@@ -80,19 +85,19 @@ pub mod unix_agent {
 
     #[derive(Clone)]
     struct NoopAgent;
-    impl russh_keys::agent::server::Agent for NoopAgent {}
+    impl russh::keys::agent::server::Agent for NoopAgent {}
 
-    /// Spawn the russh-keys built-in agent server on a temp UDS path and
-    /// pre-load it with the supplied keys via a separate `AgentClient`.
-    /// Returns the temp dir (for RAII cleanup) and the socket path.
-    pub async fn spawn_agent(keys: Vec<KeyPair>) -> (TempDir, std::path::PathBuf) {
+    /// Spawn the russh built-in agent server on a temp UDS path and pre-load
+    /// it with the supplied keys via a separate `AgentClient`. Returns the
+    /// temp dir (for RAII cleanup) and the socket path.
+    pub async fn spawn_agent(keys: Vec<PrivateKey>) -> (TempDir, std::path::PathBuf) {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("agent.sock");
         let listener = UnixListener::bind(&path).expect("bind agent socket");
 
         let incoming = Incoming { listener };
         tokio::spawn(async move {
-            let _ = russh_keys::agent::server::serve(incoming, NoopAgent).await;
+            let _ = russh::keys::agent::server::serve(incoming, NoopAgent).await;
         });
 
         // Yield so the listener task is scheduled before we load identities.
@@ -103,7 +108,7 @@ pub mod unix_agent {
             let stream = tokio::net::UnixStream::connect(&path)
                 .await
                 .expect("connect seed client");
-            let mut client = russh_keys::agent::client::AgentClient::connect(stream);
+            let mut client = russh::keys::agent::client::AgentClient::connect(stream);
             client
                 .add_identity(&key, &[])
                 .await
@@ -115,16 +120,17 @@ pub mod unix_agent {
 
     #[tokio::test]
     async fn list_identities_returns_seeded_key() {
-        use russh_keys::PublicKeyBase64 as _;
-        let key = KeyPair::generate_ed25519();
-        let pub_a = key.clone_public_key().unwrap();
+        use russh::keys::ssh_key::Algorithm;
+        use russh::keys::PublicKeyBase64 as _;
+        let key = PrivateKey::random(&mut rand010::rng(), Algorithm::Ed25519).expect("keygen");
+        let pub_a = key.public_key().clone();
         let (_dir, path) = spawn_agent(vec![key]).await;
 
         let agent = Agent::connect_path(&path).await.expect("connect");
         let listed = agent.list_identities().await.expect("list identities");
         assert_eq!(listed.len(), 1, "exactly one identity expected");
         assert_eq!(
-            listed[0].public_key_bytes(),
+            listed[0].public_key().public_key_bytes(),
             pub_a.public_key_bytes(),
             "listed key bytes must match seeded key"
         );
@@ -132,7 +138,8 @@ pub mod unix_agent {
 
     #[tokio::test]
     async fn sign_round_trips_through_agent_server() {
-        let key = KeyPair::generate_ed25519();
+        use russh::keys::ssh_key::Algorithm;
+        let key = PrivateKey::random(&mut rand010::rng(), Algorithm::Ed25519).expect("keygen");
         let (_dir, path) = spawn_agent(vec![key]).await;
         let agent = Agent::connect_path(&path).await.expect("connect");
         let listed = agent.list_identities().await.expect("list");
@@ -156,7 +163,7 @@ pub mod unix_agent {
 // ---------- Cross-platform GSSAPI / SSPI dispatch (provider stub path) ----------
 
 /// `AuthMethod::Gssapi` dispatch must surface the documented
-/// `UnsupportedBackend:` marker (russh 0.46 lacks `gssapi-with-mic`). We
+/// `UnsupportedBackend:` marker (russh 0.61 lacks `gssapi-with-mic`). We
 /// drive the public `Ssh2Protocol::connect` path against a russh test
 /// server that *accepts password* — the auth call fails because we only
 /// configure a Gssapi method, surfacing the dispatch error.
@@ -241,24 +248,24 @@ async fn sspi_dispatch_surfaces_unsupported_backend_marker() {
 
 /// End-to-end driver coverage (t7-P1 happy path). The actor connects to a
 /// real in-process SSH-agent server, enumerates identities, and drives
-/// `publickey` auth through `Handle::authenticate_future` against an
+/// `publickey` auth through `Handle::authenticate_publickey_with` against an
 /// embedded russh test server that authorises the same Ed25519 key. The
 /// session must establish (`Ok(_)`).
 ///
-/// Pre-t7-P1 this test asserted the `UnsupportedBackend:` upstream-block
-/// marker. After the local russh-fork patch (`+ 'static` on `Signer::Future`
-/// and friends, plus an explicit `Box::pin` return on `authenticate_future`)
-/// the dispatcher is wired through and the connection succeeds.
+/// russh 0.61 carries the `+ 'static` `Signer` bounds upstream (the vendored
+/// fork's sole purpose), so the agent driver wires straight through and the
+/// connection succeeds.
 #[cfg(unix)]
 #[tokio::test]
 async fn authenticate_via_agent_succeeds() {
+    use russh::keys::ssh_key::{Algorithm, PrivateKey};
     use spt_auth::{AuthConfig, AuthMethod};
     use spt_protocol::{Endpoint, TunnelProtocol as _};
     use spt_ssh2::testing::RusshTestServer;
     use spt_ssh2::Ssh2Protocol;
 
-    let key = russh_keys::key::KeyPair::generate_ed25519();
-    let pubkey = key.clone_public_key().expect("derive pubkey");
+    let key = PrivateKey::random(&mut rand010::rng(), Algorithm::Ed25519).expect("keygen");
+    let pubkey = key.public_key().clone();
 
     let server = RusshTestServer::new()
         .with_authorized_pubkey(pubkey)
@@ -303,9 +310,10 @@ async fn authenticate_via_agent_rejects_unknown_key() {
 
     // X = the agent-held key; Y = the server-authorised key. They must
     // differ for the negative path to be meaningful.
-    let agent_key = russh_keys::key::KeyPair::generate_ed25519();
-    let server_key = russh_keys::key::KeyPair::generate_ed25519();
-    let server_pub = server_key.clone_public_key().expect("derive pubkey");
+    use russh::keys::ssh_key::{Algorithm, PrivateKey};
+    let agent_key = PrivateKey::random(&mut rand010::rng(), Algorithm::Ed25519).expect("keygen");
+    let server_key = PrivateKey::random(&mut rand010::rng(), Algorithm::Ed25519).expect("keygen");
+    let server_pub = server_key.public_key().clone();
 
     let server = RusshTestServer::new()
         .with_authorized_pubkey(server_pub)

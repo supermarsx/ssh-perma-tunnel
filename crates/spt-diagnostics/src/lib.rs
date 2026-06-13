@@ -9,7 +9,7 @@
 //! - [`check`]           — `Check`, `Status`, `Severity` data model.
 //! - [`framework`]       — `Diagnostic` trait + `DiagnosticRunner` aggregator.
 //! - [`checks`]          — concrete `Diagnostic` implementations for the
-//!                         toolsets §13.12 enumerates.
+//!   toolsets §13.12 enumerates.
 //! - [`port_autodetect`] — banner-read + safe-handshake port probes.
 //! - [`bundle`]          — redacted tar.gz bundle builder.
 //!

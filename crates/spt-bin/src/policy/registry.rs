@@ -321,7 +321,7 @@ mod imp {
                 REG_OPTION_NON_VOLATILE,
                 KEY_WRITE,
                 None,
-                &mut h,
+                &raw mut h, // 1.88 lint: implicit raw-pointer borrow
                 None,
             )
         };
@@ -436,7 +436,7 @@ mod imp {
         // SAFETY: `RegOpenKeyExW` (advapi32.dll). `path_w` is a stack-rooted UTF-16
         // NUL-terminated buffer that outlives the call. `&mut h` receives the freshly
         // opened handle on success; caller must `RegCloseKey(h)` exactly once.
-        let rc = unsafe { RegOpenKeyExW(hive, PCWSTR(path_w.as_ptr()), 0, KEY_READ, &mut h) };
+        let rc = unsafe { RegOpenKeyExW(hive, PCWSTR(path_w.as_ptr()), 0, KEY_READ, &raw mut h) }; // 1.88 lint: implicit raw-pointer borrow
         if rc == ERROR_SUCCESS {
             Ok(h)
         } else {
@@ -462,7 +462,7 @@ mod imp {
                     h,
                     idx,
                     windows::core::PWSTR(name.as_mut_ptr()),
-                    &mut len,
+                    &raw mut len, // 1.88 lint: implicit raw-pointer borrow
                     None,
                     windows::core::PWSTR::null(),
                     None,
@@ -500,11 +500,11 @@ mod imp {
                     h,
                     idx,
                     windows::core::PWSTR(name.as_mut_ptr()),
-                    &mut name_len,
+                    &raw mut name_len, // 1.88 lint: implicit raw-pointer borrow
                     None,
-                    Some(&mut vtype.0),
+                    Some(&raw mut vtype.0),
                     None,
-                    Some(&mut data_len),
+                    Some(&raw mut data_len),
                 )
             };
             if rc == ERROR_NO_MORE_ITEMS {
@@ -528,11 +528,11 @@ mod imp {
                     h,
                     idx,
                     windows::core::PWSTR(name2.as_mut_ptr()),
-                    &mut name2_len,
+                    &raw mut name2_len, // 1.88 lint: implicit raw-pointer borrow
                     None,
-                    Some(&mut vtype2.0),
+                    Some(&raw mut vtype2.0),
                     Some(data.as_mut_ptr()),
-                    Some(&mut data2_len),
+                    Some(&raw mut data2_len),
                 )
             };
             idx += 1;
@@ -560,9 +560,9 @@ mod imp {
                 h,
                 PCWSTR(name_w.as_ptr()),
                 None,
-                Some(&mut vtype),
+                Some(&raw mut vtype), // 1.88 lint: implicit raw-pointer borrow
                 None,
-                Some(&mut data_len),
+                Some(&raw mut data_len),
             )
         };
         if rc != ERROR_SUCCESS {
@@ -580,9 +580,9 @@ mod imp {
                 h,
                 PCWSTR(name_w.as_ptr()),
                 None,
-                Some(&mut vtype2),
+                Some(&raw mut vtype2), // 1.88 lint: implicit raw-pointer borrow
                 Some(data.as_mut_ptr()),
-                Some(&mut data_len2),
+                Some(&raw mut data_len2),
             )
         };
         if rc2 != ERROR_SUCCESS {
@@ -688,7 +688,7 @@ mod imp {
                     REG_OPTION_NON_VOLATILE,
                     KEY_WRITE,
                     None,
-                    &mut h,
+                    &raw mut h, // 1.88 lint: implicit raw-pointer borrow
                     None,
                 )
             };

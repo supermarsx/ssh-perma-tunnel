@@ -6,13 +6,12 @@
 //! cannot extend `crates/spt-ssh2/src/testing.rs::TestHandler` because
 //! `testing.rs` is outside this executor's lock scope).
 //!
-//! Important constraint of russh 0.46: the server's
+//! Important constraint of russh 0.61: the server's
 //! [`russh::server::Handler`] trait has hooks for `streamlocal_forward`
 //! and `cancel_streamlocal_forward`, but **no `ChannelType` variant for
 //! inbound `direct-streamlocal@openssh.com` channel opens**. The server
 //! parses such opens as `ChannelType::Unknown { typ }` and immediately
-//! sends `SSH_OPEN_ADMINISTRATIVELY_PROHIBITED` (see
-//! `russh-0.46.0/src/server/encrypted.rs:1273`). As a consequence, the
+//! sends `SSH_OPEN_ADMINISTRATIVELY_PROHIBITED`. As a consequence, the
 //! plan's "`local_uds` positive russh roundtrip (mock russh server)" is
 //! infeasible with the available server library — we test the
 //! client-side behaviour against the rejection (which is itself the
@@ -28,10 +27,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use async_trait::async_trait;
 use russh::client;
 use russh::server::{self, Auth, Handler as ServerHandler};
-use russh::{Channel, Disconnect, MethodSet, Preferred};
+use russh::{Channel, Disconnect, MethodKind, MethodSet, Preferred};
 use spt_core::Error;
 use spt_ssh2::uds_forward::{
     encode_direct_streamlocal_body, open_local_uds, validate_socket_path,
@@ -56,7 +54,6 @@ struct UdsServerHandler {
     accept_paths: Arc<parking_lot::Mutex<Vec<String>>>,
 }
 
-#[async_trait]
 impl ServerHandler for UdsServerHandler {
     type Error = russh::Error;
 
@@ -71,7 +68,7 @@ impl ServerHandler for UdsServerHandler {
     async fn auth_publickey(
         &mut self,
         _user: &str,
-        _key: &russh_keys::key::PublicKey,
+        _key: &russh::keys::ssh_key::PublicKey,
     ) -> std::result::Result<Auth, Self::Error> {
         Ok(Auth::Accept)
     }
@@ -116,13 +113,12 @@ impl ServerHandler for UdsServerHandler {
 #[derive(Clone)]
 struct ClientHandlerAcceptAll;
 
-#[async_trait]
 impl client::Handler for ClientHandlerAcceptAll {
     type Error = russh::Error;
 
     async fn check_server_key(
         &mut self,
-        _server_public_key: &russh_keys::key::PublicKey,
+        _server_public_key: &russh::keys::ssh_key::PublicKey,
     ) -> std::result::Result<bool, Self::Error> {
         Ok(true)
     }
@@ -132,12 +128,17 @@ impl client::Handler for ClientHandlerAcceptAll {
 /// the same on Windows CI. Mirrors `wincng_libssh2_compatible_preferred`
 /// in `spt_ssh2::testing` but tailored to RSA-2048 host keys.
 fn pinning() -> Preferred {
+    use russh::keys::ssh_key::{Algorithm, HashAlg};
     use std::borrow::Cow;
     Preferred {
         kex: Cow::Owned(vec![russh::kex::DH_G14_SHA256, russh::kex::DH_G16_SHA512]),
         key: Cow::Owned(vec![
-            russh_keys::key::RSA_SHA2_256,
-            russh_keys::key::RSA_SHA2_512,
+            Algorithm::Rsa {
+                hash: Some(HashAlg::Sha256),
+            },
+            Algorithm::Rsa {
+                hash: Some(HashAlg::Sha512),
+            },
         ]),
         cipher: Cow::Owned(vec![russh::cipher::AES_256_CTR]),
         mac: Cow::Owned(vec![russh::mac::HMAC_SHA256]),
@@ -145,10 +146,10 @@ fn pinning() -> Preferred {
     }
 }
 
-/// Generate an ephemeral RSA-2048 host key for the server.
-fn ephemeral_host_key() -> russh_keys::key::KeyPair {
-    russh_keys::key::KeyPair::generate_rsa(2048, russh_keys::key::SignatureHash::SHA2_256)
-        .expect("rsa keypair")
+/// Generate an ephemeral RSA host key for the server.
+fn ephemeral_host_key() -> russh::keys::ssh_key::PrivateKey {
+    use russh::keys::ssh_key::{Algorithm, PrivateKey};
+    PrivateKey::random(&mut rand010::rng(), Algorithm::Rsa { hash: None }).expect("rsa keypair")
 }
 
 struct RunningServer {
@@ -171,7 +172,7 @@ async fn spawn_server() -> RunningServer {
         auth_rejection_time_initial: Some(Duration::from_millis(50)),
         keys: vec![ephemeral_host_key()],
         preferred: pinning(),
-        methods: MethodSet::PASSWORD | MethodSet::PUBLICKEY,
+        methods: MethodSet::from(&[MethodKind::Password, MethodKind::PublicKey][..]),
         ..Default::default()
     });
 
@@ -232,7 +233,7 @@ async fn connect_client(addr: std::net::SocketAddr) -> SharedRusshHandle<ClientH
         .authenticate_password("tester", "pw")
         .await
         .expect("auth");
-    assert!(ok, "password auth accepted");
+    assert!(ok.success(), "password auth accepted");
     Arc::new(AsyncMutex::new(handle))
 }
 

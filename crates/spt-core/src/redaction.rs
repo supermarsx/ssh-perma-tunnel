@@ -12,8 +12,9 @@
 //!   and email addresses, used when hostname/address redaction is enabled.
 
 use std::borrow::Cow;
-
-use once_cell::sync::Lazy;
+// 1.88 lint: clippy::non_std_lazy_statics — std `LazyLock` is stable on 1.88,
+// so the lazy statics below use it instead of `once_cell::sync::Lazy`.
+use std::sync::LazyLock;
 use regex::{Regex, RegexSet};
 use serde::{Deserialize, Serialize};
 
@@ -35,15 +36,15 @@ const REDACTED: &str = "[REDACTED]";
 // --- Standard patterns ------------------------------------------------------
 
 /// `Authorization: Bearer <token>`
-static BEARER: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"(?i)(bearer\s+)([A-Za-z0-9._~+/=\-]+)").unwrap());
+static BEARER: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)(bearer\s+)([A-Za-z0-9._~+/=\-]+)").unwrap());
 
 /// `Authorization: Basic <b64>`
-static BASIC: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)(basic\s+)([A-Za-z0-9+/=]+)").unwrap());
+static BASIC: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)(basic\s+)([A-Za-z0-9+/=]+)").unwrap());
 
 /// `password = "..."`, `passphrase=...`, `key=...`, `secret=...`,
 /// `token=...`, `api_key=...` — values are scrubbed but the key name is kept.
-static KV_SECRET: Lazy<Regex> = Lazy::new(|| {
+static KV_SECRET: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
         r#"(?ix)
             (password|passphrase|secret|api[_-]?key|token|key)
@@ -65,7 +66,7 @@ static KV_SECRET: Lazy<Regex> = Lazy::new(|| {
 /// We don't enforce that the BEGIN/END labels match (regex crate has no
 /// backreferences); the body between any private-key BEGIN and any
 /// private-key END is replaced. PEM in the wild always pairs them.
-static PEM_BLOCK: Lazy<Regex> = Lazy::new(|| {
+static PEM_BLOCK: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
         r"(?s)-----BEGIN [A-Z0-9 ]*PRIVATE KEY[A-Z0-9 ]*-----.*?-----END [A-Z0-9 ]*PRIVATE KEY[A-Z0-9 ]*-----",
     )
@@ -75,7 +76,7 @@ static PEM_BLOCK: Lazy<Regex> = Lazy::new(|| {
 // --- Strict-only patterns ---------------------------------------------------
 
 /// IPv4 dotted quad.
-static IPV4: Lazy<Regex> = Lazy::new(|| {
+static IPV4: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
         r"\b(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(?:\.(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}\b",
     )
@@ -83,12 +84,12 @@ static IPV4: Lazy<Regex> = Lazy::new(|| {
 });
 
 /// Best-effort IPv6 — matches typical addresses with at least two colons.
-static IPV6: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"\b(?:[0-9A-Fa-f]{1,4}:){2,7}[0-9A-Fa-f]{1,4}\b|::1\b|::\b").unwrap());
+static IPV6: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\b(?:[0-9A-Fa-f]{1,4}:){2,7}[0-9A-Fa-f]{1,4}\b|::1\b|::\b").unwrap());
 
 /// Email address.
-static EMAIL: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b").unwrap());
+static EMAIL: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b").unwrap());
 
 /// `RegexSet` over every pattern used by `Strict` mode (standard + email + IP).
 ///
@@ -102,7 +103,7 @@ static EMAIL: Lazy<Regex> =
 /// extra `EMAIL` / `IPV4` / `IPV6` patterns have no fast literal anchor, so
 /// the OLD path runs at ~320 MiB/s, the combined NFA wins (~540 MiB/s), and
 /// the precheck is a net +40 % win on the no-match path.
-static STRICT_SET: Lazy<RegexSet> = Lazy::new(|| {
+static STRICT_SET: LazyLock<RegexSet> = LazyLock::new(|| {
     RegexSet::new([
         PEM_BLOCK.as_str(),
         BEARER.as_str(),

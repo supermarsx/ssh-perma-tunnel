@@ -15,8 +15,11 @@
 #     - On findings it OPENS or UPDATES a tracking issue instead of failing a
 #       required check. A maintainer triages on their own cadence.
 #
-# MSRV note: do NOT `cargo update` here. `cargo audit` reads the committed
-# Cargo.lock as-is; updating the lock would violate the MSRV-1.85 pin policy.
+# MSRV note: this workflow does not `cargo update` — `cargo audit` reads the
+# committed Cargo.lock as-is, so the report reflects the deps we actually ship.
+# (The old "never cargo update" rule was an MSRV-1.85 artifact; MSRV is now 1.88
+# and targeted updates are sanctioned — but they belong in a PR with a green
+# build/clippy/test gate, not silently inside this advisory-only scan.)
 # =============================================================================
 
 name: audit

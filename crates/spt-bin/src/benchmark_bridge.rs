@@ -31,13 +31,13 @@ impl ReconnectTrigger for SupervisorReconnectAdapter {
     async fn wait_session_up(&self) -> std::io::Result<()> {
         spt_supervisor::ReconnectTrigger::wait_session_up(&self.inner)
             .await
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
+            .map_err(|e| std::io::Error::other(e.to_string())) // 1.88 lint: io_other_error
     }
 
     async fn trigger_drop(&self) -> std::io::Result<()> {
         spt_supervisor::ReconnectTrigger::trigger_drop(&self.inner)
             .await
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
+            .map_err(|e| std::io::Error::other(e.to_string())) // 1.88 lint: io_other_error
     }
 }
 
@@ -83,7 +83,7 @@ pub async fn run_live_benchmark(
                     let stream = lc
                         .open_tcp("bench", 0)
                         .await
-                        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+                        .map_err(std::io::Error::other)?; // 1.88 lint: io_other_error
                     let boxed: spt_benchmark::driver::BoxedStream = Box::pin(stream);
                     Ok(boxed)
                 })
@@ -121,7 +121,7 @@ pub async fn run_live_benchmark(
                     let endpoint = lc
                         .open_udp()
                         .await
-                        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+                        .map_err(std::io::Error::other)?; // 1.88 lint: io_other_error
                     Ok(spt_benchmark::UdpEndpoint {
                         socket: endpoint.socket,
                         target: endpoint.target,

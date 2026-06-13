@@ -38,16 +38,26 @@ tempfile = { workspace = true, optional = true }
 [dev-dependencies]
 tempfile = { workspace = true }
 rand_chacha = { workspace = true }
-# Cross-library verification matrix (t6-e11): russh-keys signs/verifies the
-# same byte sequences that ssh-key does; we round-trip through both to catch
-# wire-format drift between the two SSH key crates.
-russh-keys = { workspace = true }
+# Cross-library verification matrix (t6-e11): the "other" SSH key library is
+# now upstream russh 0.61's bundled `ssh-key 0.7-rc` (reached via
+# `russh::keys::ssh_key`), replacing the removed `russh-keys 0.46` dep
+# (RUSTSEC-2026-0154/-0153). russh 0.61 is already in `Cargo.lock` via
+# spt-ssh2/spt-bin, so declaring it here does NOT trigger a `cargo update`.
+# The RSA *signing* path runs through ssh-key 0.7-rc because ssh-key 0.6.7
+# ships a known bug in `private/rsa.rs` that reconstructs `rsa::RsaPrivateKey`
+# with `(p, p)` instead of `(p, q)` (fixed in 0.7-rc). We still cross-verify
+# the wire bytes against spt-key's ssh-key 0.6 to catch format drift.
+russh = { workspace = true }
 spt-auth = { workspace = true }
 # `signature` provides the `Signer` / `Verifier` traits implemented for
 # ssh-key's `PrivateKey` / `PublicKey`. `ssh-encoding` exposes the SSH binary
-# `Decode` / `Encode` traits used to bridge wire bytes between ssh-key and
-# russh-keys. Both already appear in `Cargo.lock` as transitive deps of
+# `Decode` / `Encode` traits used to bridge wire bytes between the two ssh-key
+# versions. Both already appear in `Cargo.lock` as transitive deps of
 # ssh-key — declaring them here just lifts the symbols into the dev-dep
 # graph without triggering a `cargo update`.
 signature = "2"
 ssh-encoding = "0.2"
+# rand 0.10 supplies the rand_core-0.10 `CryptoRng` that ssh-key 0.7-rc's
+# `PrivateKey::random` / `RsaKeypair::random` require (workspace rand is 0.8).
+# Already in the lock via spt-ssh2's `rand010` alias, so no `cargo update`.
+rand010 = { package = "rand", version = "0.10" }

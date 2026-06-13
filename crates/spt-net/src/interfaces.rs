@@ -157,7 +157,7 @@ mod tests {
             .find(|i| i.is_loopback)
             .expect("loopback present");
         let has_v4_loopback = lo.ipv4.iter().any(Ipv4Addr::is_loopback);
-        let has_v6_loopback = lo.ipv6.iter().any(|ip| *ip == Ipv6Addr::LOCALHOST);
+        let has_v6_loopback = lo.ipv6.contains(&Ipv6Addr::LOCALHOST); // 1.88 lint: manual_contains
         assert!(
             has_v4_loopback || has_v6_loopback,
             "loopback interface should have a loopback ip; got {lo:?}"

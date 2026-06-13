@@ -510,9 +510,9 @@ impl AsyncWrite for AeadStream {
         let method = self.method;
         let len_be = (chunk_len as u16).to_be_bytes();
         let len_ct = aead_seal(method, &key, &len_nonce, &len_be)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+            .map_err(|e| std::io::Error::other(e.to_string()))?; // 1.88 lint: io_other_error
         let body_ct = aead_seal(method, &key, &body_nonce, chunk)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+            .map_err(|e| std::io::Error::other(e.to_string()))?; // 1.88 lint: io_other_error
 
         let mut buf = Vec::with_capacity(len_ct.len() + body_ct.len());
         buf.extend_from_slice(&len_ct);

@@ -1,7 +1,0 @@
-[toolchain]
-# t8-B1 bump: ml-kem 0.3.2 (RustCrypto, pure-Rust mlkem768x25519-sha256 KEX
-# dep) declares rust-version 1.85 (hybrid-array → edition2024). The outer
-# workspace already targets MSRV 1.85 (see ../../Cargo.toml workspace.package
-# rust-version), so this brings the fork in sync with the consumer; the 1.81
-# pin was vestigial from the original t7-P1 carve-out.
-channel = "1.85.0"

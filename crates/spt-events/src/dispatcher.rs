@@ -261,7 +261,7 @@ impl DispatcherInner {
         let pending: Vec<String> = self
             .spools
             .iter()
-            .filter(|(_, s)| s.lock().len() > 0)
+            .filter(|(_, s)| !s.lock().is_empty()) // 1.88 lint: len_zero
             .map(|(name, _)| name.clone())
             .collect();
         for name in pending {

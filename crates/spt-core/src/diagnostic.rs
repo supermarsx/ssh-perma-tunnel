@@ -117,6 +117,7 @@ impl Diagnostic {
     /// ```
     #[must_use]
     pub fn render(&self) -> String {
+        use std::fmt::Write as _; // 1.88 lint: format_push_string
         let mut out = self.what.clone();
         if let Some(why) = &self.why {
             out.push_str("\n  why: ");
@@ -128,13 +129,13 @@ impl Diagnostic {
         }
         match (&self.file_path, self.line_no) {
             (Some(p), Some(l)) => {
-                out.push_str(&format!("\n  at: {}:{l}", p.display()));
+                let _ = write!(out, "\n  at: {}:{l}", p.display());
             }
             (Some(p), None) => {
-                out.push_str(&format!("\n  at: {}", p.display()));
+                let _ = write!(out, "\n  at: {}", p.display());
             }
             (None, Some(l)) => {
-                out.push_str(&format!("\n  at line {l}"));
+                let _ = write!(out, "\n  at line {l}");
             }
             (None, None) => {}
         }

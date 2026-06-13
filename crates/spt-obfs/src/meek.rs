@@ -253,18 +253,16 @@ impl MeekStream {
                 .body(body)
                 .send()
                 .await
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, format!("{e}")))?;
+                .map_err(|e| std::io::Error::other(format!("{e}")))?; // 1.88 lint: io_other_error
             let status = r.status().as_u16();
             if !(200..300).contains(&status) {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    format!("meek HTTP {status}"),
-                ));
+                // 1.88 lint: io_other_error
+                return Err(std::io::Error::other(format!("meek HTTP {status}")));
             }
             let bytes = r
                 .bytes()
                 .await
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, format!("{e}")))?;
+                .map_err(|e| std::io::Error::other(format!("{e}")))?; // 1.88 lint: io_other_error
             Ok(bytes.to_vec())
         })
     }

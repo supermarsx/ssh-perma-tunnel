@@ -2,7 +2,23 @@
 //!
 //! Strategy: bind on `127.0.0.1:0` (ephemeral). Use `hickory-resolver` over
 //! TCP as a client to query against the bound address. For the forwarder path
-//! we run a tiny in-process upstream responder with `ServerFuture`.
+//! we run a tiny in-process upstream responder with `Server`.
+//!
+//! hickory 0.26 migration notes (0.24 -> 0.26, two majors):
+//! * `TokioAsyncResolver::tokio` + `NameServerConfigGroup` were removed in the
+//!   0.25 rework. The client is built via `Resolver::builder_with_config` +
+//!   `TokioRuntimeProvider`, assembling a `NameServerConfig` with UDP/TCP
+//!   `ConnectionConfig`s carrying the bound port.
+//! * `ServerFuture` -> `Server`.
+//! * `RequestHandler::handle_request` gained a second generic `T: Time`; the
+//!   request header is now `Metadata` (a field, accessed via the `Request`
+//!   deref to `MessageRequest`), there's no `request.query()`/`request.header()`.
+//! * `MessageResponseBuilder` moved to `hickory_server::zone_handler`;
+//!   `build`/`error_msg` take `Metadata` and `Metadata::response_from_request`
+//!   replaces `Header::response_from_request`.
+//! * `Record::with(..)` + `set_data(Some(..))` -> `Record::from_rdata`; rdata is
+//!   the inline `data` field. `Lookup::records()` -> `answers()`. SRV fields
+//!   (`priority`/`weight`/`port`/`target`) are public, not methods.
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
@@ -10,16 +26,17 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use hickory_proto::op::{Header, ResponseCode};
+use hickory_proto::op::{Metadata, ResponseCode};
 use hickory_proto::rr::rdata::A as ARdata;
 use hickory_proto::rr::{Name, RData, Record as ProtoRecord, RecordType};
 use hickory_resolver::config::{
-    NameServerConfig, NameServerConfigGroup, Protocol, ResolverConfig, ResolverOpts,
+    ConnectionConfig, NameServerConfig, ProtocolConfig, ResolveHosts, ResolverConfig,
 };
-use hickory_resolver::TokioAsyncResolver;
-use hickory_server::authority::MessageResponseBuilder;
+use hickory_resolver::net::runtime::{TokioRuntimeProvider, Time};
+use hickory_resolver::{Resolver, TokioResolver};
 use hickory_server::server::{Request, RequestHandler, ResponseHandler, ResponseInfo};
-use hickory_server::ServerFuture;
+use hickory_server::zone_handler::MessageResponseBuilder;
+use hickory_server::Server;
 use tokio::net::UdpSocket;
 
 use spt_dns::{AnswerPolicy, DnsServerBuilder, ForwardHealth, HealthSource, ManagedZone, Record};
@@ -30,15 +47,24 @@ fn dns_test_lock() -> &'static tokio::sync::Mutex<()> {
     DNS_TEST_LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
 }
 
-fn loopback_resolver(addr: SocketAddr) -> TokioAsyncResolver {
-    let group = NameServerConfigGroup::from(vec![NameServerConfig::new(addr, Protocol::Tcp)]);
-    let cfg = ResolverConfig::from_parts(None, vec![], group);
-    let mut opts = ResolverOpts::default();
-    opts.timeout = Duration::from_secs(2);
-    opts.attempts = 1;
-    // disable use of /etc/hosts and similar.
-    opts.use_hosts_file = false;
-    TokioAsyncResolver::tokio(cfg, opts)
+/// Build a TCP-only loopback resolver pointed at `addr`.
+///
+/// hickory 0.26: assemble a `NameServerConfig` directly (the old
+/// `NameServerConfigGroup::from(..)` + `TokioAsyncResolver::tokio` path was
+/// removed) and build through `Resolver::builder_with_config`.
+fn loopback_resolver(addr: SocketAddr) -> TokioResolver {
+    let mut tcp = ConnectionConfig::new(ProtocolConfig::Tcp);
+    tcp.port = addr.port();
+    let ns = NameServerConfig::new(addr.ip(), true, vec![tcp]);
+    let cfg = ResolverConfig::from_parts(None, vec![], vec![ns]);
+    let mut builder = Resolver::builder_with_config(cfg, TokioRuntimeProvider::default());
+    {
+        let opts = builder.options_mut();
+        opts.timeout = Duration::from_secs(2);
+        opts.attempts = 1;
+        opts.use_hosts_file = ResolveHosts::Never;
+    }
+    builder.build().expect("build loopback resolver")
 }
 
 #[tokio::test]
@@ -77,30 +103,31 @@ async fn unmanaged_name_forwarded_to_upstream() {
     struct UpstreamHandler;
     #[async_trait]
     impl RequestHandler for UpstreamHandler {
-        async fn handle_request<R: ResponseHandler>(
+        async fn handle_request<R: ResponseHandler, T: Time>(
             &self,
             request: &Request,
             mut response_handle: R,
         ) -> ResponseInfo {
-            let q = request.query();
+            let q = request.queries.queries().first().expect("a query");
+            let qname_str = q.original().name().to_string();
             if q.query_type() == RecordType::A
-                && q.name()
-                    .to_string()
-                    .to_ascii_lowercase()
-                    .starts_with("upstream-only.")
+                && qname_str.to_ascii_lowercase().starts_with("upstream-only.")
             {
-                let qname = Name::from_utf8(q.name().to_string()).unwrap();
-                let mut rec = ProtoRecord::with(qname, RecordType::A, 30);
-                rec.set_data(Some(RData::A(ARdata(Ipv4Addr::new(8, 8, 4, 4)))));
+                let qname = Name::from_utf8(&qname_str).unwrap();
+                let rec = ProtoRecord::from_rdata(
+                    qname,
+                    30,
+                    RData::A(ARdata(Ipv4Addr::new(8, 8, 4, 4))),
+                );
                 let answers = [rec];
                 let builder = MessageResponseBuilder::from_message_request(request);
-                let mut header = Header::response_from_request(request.header());
-                header.set_authoritative(true);
-                let response = builder.build(header, &answers, &[], &[], &[]);
+                let mut metadata = Metadata::response_from_request(&request.metadata);
+                metadata.authoritative = true;
+                let response = builder.build(metadata, &answers, &[], &[], &[]);
                 return response_handle.send_response(response).await.unwrap();
             }
             let builder = MessageResponseBuilder::from_message_request(request);
-            let response = builder.error_msg(request.header(), ResponseCode::NXDomain);
+            let response = builder.error_msg(&request.metadata, ResponseCode::NXDomain);
             response_handle.send_response(response).await.unwrap()
         }
     }
@@ -109,7 +136,7 @@ async fn unmanaged_name_forwarded_to_upstream() {
 
     let upstream_socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
     let upstream_addr = upstream_socket.local_addr().unwrap();
-    let mut up = ServerFuture::new(UpstreamHandler);
+    let mut up = Server::new(UpstreamHandler);
     up.register_socket(upstream_socket);
     let upstream_task = tokio::spawn(async move {
         let _ = up.block_until_done().await;
@@ -197,8 +224,8 @@ async fn answer_when_healthy_filters_unhealthy() {
         .await
         .expect("answers when healthy");
     let mut found = false;
-    for rec in r2.records() {
-        if let Some(RData::A(a)) = rec.data() {
+    for rec in r2.answers() {
+        if let RData::A(a) = &rec.data {
             assert_eq!(a.0, Ipv4Addr::new(10, 0, 0, 7));
             found = true;
         }
@@ -241,20 +268,24 @@ async fn srv_synthesis_record_resolves() {
         .unwrap();
 
     let resolver = loopback_resolver(handle.tcp_addr());
+    // hickory 0.26: `srv_lookup` returns a generic `Lookup`; iterate its
+    // `answers()` and match `RData::SRV` (SRV fields are now public).
     let lookup = resolver
         .srv_lookup("_smtp._tcp.tunnel.local.")
         .await
         .expect("srv answer present");
     let mut found = false;
-    for srv in lookup.iter() {
-        if srv.port() == 25
-            && srv
-                .target()
-                .to_string()
-                .eq_ignore_ascii_case("mail.tunnel.local.")
-        {
-            found = true;
-            break;
+    for rec in lookup.answers() {
+        if let RData::SRV(srv) = &rec.data {
+            if srv.port == 25
+                && srv
+                    .target
+                    .to_string()
+                    .eq_ignore_ascii_case("mail.tunnel.local.")
+            {
+                found = true;
+                break;
+            }
         }
     }
     assert!(found, "expected synthesized SRV in answer");

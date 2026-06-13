@@ -68,5 +68,8 @@ nix = { version = "0.29", features = ["fs", "signal", "user", "mman", "resource"
 spt-ssh2 = { path = "../../crates/spt-ssh2", version = "0.26.1", features = ["testing"] }
 spt-protocol = { path = "../../crates/spt-protocol", version = "0.26.1" }
 spt-core = { path = "../../crates/spt-core", version = "0.26.1" }
-russh = "0.46"
-russh-keys = "0.46"
+# NOTE: the stress tests drive an SSH server exclusively through
+# `spt_ssh2::testing::RusshTestServer` (upstream russh 0.61). The former
+# direct `russh`/`russh-keys` 0.46 dev-deps were unused dead pins and were
+# removed to clear RUSTSEC-2026-0154/-0153 (they kept russh 0.46 +
+# russh-cryptovec 0.7.3 in Cargo.lock).

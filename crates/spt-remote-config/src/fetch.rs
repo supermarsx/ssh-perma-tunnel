@@ -201,12 +201,12 @@ fn cache_fallback_or(
 /// `ReqwestFetcher::with_pin`, so the SPKI pins in `[runtime.remote_config]` are
 /// actually enforced on the connection.
 ///
-/// # Deferred — background poller
-/// There is intentionally **no** background polling task here. The schema's
-/// `[runtime.remote_config].poll_interval` is not yet consumed at runtime; a
-/// supervisor-driven refresh loop is out of scope for this change and tracked as
-/// follow-up (see review finding E5-F5, "full" effort). This builder only serves
-/// the on-demand `config pull` path.
+/// # Background poller
+/// This builder serves the on-demand `config pull` path. The reusable
+/// supervisor-driven refresh loop that consumes
+/// `[runtime.remote_config].poll_interval` lives in [`crate::poll`]
+/// (see [`crate::poll::spawn`] / [`crate::poll::spawn_with_fetcher`]); it calls
+/// this same builder to construct its pinned fetcher.
 pub fn fetcher_for_plan(plan: &RemoteConfigPlan) -> Result<ReqwestFetcher, RemoteConfigError> {
     ReqwestFetcher::with_pin(
         &plan.pin_spki_sha256,

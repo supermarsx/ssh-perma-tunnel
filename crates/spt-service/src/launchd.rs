@@ -243,10 +243,13 @@ impl ServiceManager for LaunchdManager {
         let path = Self::plist_path_for(self.scope, &label);
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
-                .map_err(|e| Error::ServiceManagerFailed(format!("mkdir {parent:?}: {e}")))?;
+                .map_err(|e| {
+                    Error::ServiceManagerFailed(format!("mkdir {}: {e}", parent.display()))
+                })?; // 1.88 lint: unnecessary_debug_formatting
         }
-        std::fs::write(&path, plist)
-            .map_err(|e| Error::ServiceManagerFailed(format!("write {path:?}: {e}")))?;
+        std::fs::write(&path, plist).map_err(|e| {
+            Error::ServiceManagerFailed(format!("write {}: {e}", path.display()))
+        })?; // 1.88 lint: unnecessary_debug_formatting
         let path_s = path.display().to_string();
         let out = self
             .runner
@@ -273,8 +276,9 @@ impl ServiceManager for LaunchdManager {
                 .runner
                 .run("launchctl", &["unload", "-w", &path_s], LAUNCHCTL_TIMEOUT)
                 .await;
-            std::fs::remove_file(&path)
-                .map_err(|e| Error::ServiceManagerFailed(format!("remove {path:?}: {e}")))?;
+            std::fs::remove_file(&path).map_err(|e| {
+                Error::ServiceManagerFailed(format!("remove {}: {e}", path.display()))
+            })?; // 1.88 lint: unnecessary_debug_formatting
         }
         Ok(())
     }
@@ -641,10 +645,12 @@ fn render_plist(spec: &ServiceSpec) -> String {
                 xml_escape(u)
             );
             if let Some(g) = &spec.group {
-                s.push_str(&format!(
+                use std::fmt::Write as _; // 1.88 lint: format_push_string
+                let _ = write!(
+                    s,
                     "\n    <key>GroupName</key>\n    <string>{}</string>",
                     xml_escape(g)
-                ));
+                );
             }
             s
         }

@@ -324,7 +324,7 @@ mod platform {
             // writes a single `DWORD` to `*lpMode` on success. No
             // aliasing: `original` is a fresh local.
             unsafe {
-                GetConsoleMode(handle, &mut original)
+                GetConsoleMode(handle, &raw mut original) // 1.88 lint: implicit raw-pointer borrow
                     .map_err(|e| Error::RuntimeFailure(format!("GetConsoleMode(stdin): {e}")))?;
             }
             // Clear ENABLE_ECHO_INPUT; keep ENABLE_LINE_INPUT so the
@@ -608,12 +608,12 @@ mod tests {
         struct Failing;
         impl io::Read for Failing {
             fn read(&mut self, _buf: &mut [u8]) -> io::Result<usize> {
-                Err(io::Error::new(io::ErrorKind::Other, "simulated"))
+                Err(io::Error::other("simulated")) // 1.88 lint: io_other_error
             }
         }
         impl io::BufRead for Failing {
             fn fill_buf(&mut self) -> io::Result<&[u8]> {
-                Err(io::Error::new(io::ErrorKind::Other, "simulated"))
+                Err(io::Error::other("simulated")) // 1.88 lint: io_other_error
             }
             fn consume(&mut self, _amt: usize) {}
         }

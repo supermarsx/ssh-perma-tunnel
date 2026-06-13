@@ -1410,7 +1410,7 @@ mod tests {
 
         let e = InitError::CreateDir(
             "/tmp".into(),
-            std::io::Error::new(std::io::ErrorKind::Other, "nope"),
+            std::io::Error::other("nope"), // 1.88 lint: io_other_error
         );
         assert!(format!("{e}").contains("/tmp"));
     }

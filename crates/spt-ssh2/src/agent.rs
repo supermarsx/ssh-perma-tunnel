@@ -1,7 +1,7 @@
 //! SSH-agent client actor for the russh backend.
 //!
 //! [`Agent`] is a thin asynchronous wrapper around
-//! [`russh_keys::agent::client::AgentClient`] that erases the underlying
+//! [`russh::keys::agent::client::AgentClient`] that erases the underlying
 //! transport (Unix domain socket / Windows named pipe / Pageant) behind a
 //! single concrete type and offers the three operations the russh
 //! `publickey` userauth flow needs:
@@ -16,10 +16,10 @@
 //! * [`Agent::sign`] — calls `SSH_AGENTC_SIGN_REQUEST` for one key/blob pair.
 //!
 //! The actor stores the connected [`AgentClient`] behind an
-//! [`AsyncMutex<Option<_>>`] because `russh_keys`'s `sign_request` consumes
-//! the client by value and returns it back through its future. The
-//! `Option::take` / `Option::replace` dance keeps that lifecycle expressible
-//! through a shared `&Agent`.
+//! [`AsyncMutex<Option<_>>`]. In russh 0.61 `sign_request` only borrows the
+//! client mutably (the 0.46 by-value consumption is gone), but the
+//! `Option`-wrapped storage is retained so a transport that fails mid-flight
+//! can be dropped and surfaced as an error on the next call.
 
 #![deny(unsafe_op_in_unsafe_fn)]
 
@@ -28,19 +28,19 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use russh_keys::agent::client::{AgentClient, AgentStream};
-use russh_keys::key::PublicKey;
-use russh_keys::PublicKeyBase64 as _;
+use russh::keys::agent::client::{AgentClient, AgentStream};
+use russh::keys::agent::AgentIdentity;
+use russh::keys::PublicKeyBase64 as _;
 use spt_core::{Error, Result};
 use tokio::sync::Mutex as AsyncMutex;
 
-/// Dynamic-typed agent client. `russh_keys` already exposes a
+/// Dynamic-typed agent client. `russh::keys` already exposes a
 /// [`AgentClient::dynamic`] helper that produces this shape so callers can
 /// store both `UnixStream` (Unix) and `NamedPipeClient` / Pageant
 /// (Windows) transports under one type.
 type DynAgent = AgentClient<Box<dyn AgentStream + Send + Unpin + 'static>>;
 
-/// Public alias for the dynamic-typed `russh_keys::agent::client::AgentClient`
+/// Public alias for the dynamic-typed `russh::keys::agent::client::AgentClient`
 /// shape used by the russh backend's `authenticate_future` driver. Exposed
 /// so the russh-backend wiring can name the type without spelling out the
 /// trait-object chain.
@@ -185,7 +185,9 @@ impl Agent {
         //    glue via the `pageant` crate; we cannot detect availability ahead
         //    of time, so the first identity-listing call will surface any
         //    failure as an `Error::AuthFailed`.
-        let client = AgentClient::connect_pageant().await;
+        let client = AgentClient::connect_pageant()
+            .await
+            .map_err(|e| Error::AuthFailed(format!("ssh-agent: connect Pageant: {e}")))?;
         Ok(Self {
             inner: Arc::new(AsyncMutex::new(Some(client.dynamic()))),
             transport: "Pageant".to_owned(),
@@ -199,7 +201,7 @@ impl Agent {
         lower.starts_with(r"\\.\pipe\") || lower.starts_with(r"\\?\pipe\")
     }
 
-    fn map_connect_err(path: &Path, e: &russh_keys::Error) -> Error {
+    fn map_connect_err(path: &Path, e: &russh::keys::Error) -> Error {
         Error::AuthFailed(format!("ssh-agent: connect `{}`: {e}", path.display()))
     }
 
@@ -211,31 +213,9 @@ impl Agent {
         &self.transport
     }
 
-    /// Borrow the underlying client through the actor's mutex, executing the
-    /// supplied closure with `take` / `replace` semantics. The closure is
-    /// allowed to consume the client (which `AgentClient::sign_request`
-    /// requires) and must return it back so the actor can keep using it for
-    /// subsequent calls.
-    async fn with_client<F, Fut, T>(&self, f: F) -> Result<T>
-    where
-        F: FnOnce(DynAgent) -> Fut,
-        Fut: std::future::Future<Output = (DynAgent, std::result::Result<T, russh_keys::Error>)>
-            + Send,
-    {
-        let mut guard = self.inner.lock().await;
-        let client = guard.take().ok_or_else(|| {
-            Error::AuthFailed(format!(
-                "ssh-agent ({}): client previously failed and was dropped",
-                self.transport
-            ))
-        })?;
-        let (client, result) = f(client).await;
-        *guard = Some(client);
-        result.map_err(|e| Error::AuthFailed(format!("ssh-agent ({}): {e}", self.transport)))
-    }
-
-    /// List identities (public keys) currently held by the agent.
-    pub async fn list_identities(&self) -> Result<Vec<PublicKey>> {
+    /// List identities (public keys / certificates) currently held by the
+    /// agent.
+    pub async fn list_identities(&self) -> Result<Vec<AgentIdentity>> {
         let mut guard = self.inner.lock().await;
         let client = guard.as_mut().ok_or_else(|| {
             Error::AuthFailed(format!(
@@ -251,20 +231,29 @@ impl Agent {
         })
     }
 
-    /// Ask the agent to sign `data` with `key`. Returns the raw signature
+    /// Ask the agent to sign `data` with `identity`. Returns the raw signature
     /// blob (the SSH-wire `string` containing `algo` + `signature`, as
     /// returned by `SSH_AGENT_SIGN_RESPONSE`).
-    pub async fn sign(&self, key: &PublicKey, data: &[u8]) -> Result<Vec<u8>> {
-        let mut buf = russh_cryptovec::CryptoVec::new();
-        buf.extend(data);
-        let key = key.clone();
-        let out = self
-            .with_client(|client| async move {
-                let (client, res) = client.sign_request(&key, buf).await;
-                (client, res)
-            })
-            .await?;
-        Ok(out.to_vec())
+    ///
+    /// For RSA identities a SHA-256 signature (`rsa-sha2-256`) is requested;
+    /// russh ignores the hash hint for non-RSA keys.
+    pub async fn sign(&self, identity: &AgentIdentity, data: &[u8]) -> Result<Vec<u8>> {
+        let hash_alg = if identity.public_key().algorithm().is_rsa() {
+            Some(russh::keys::ssh_key::HashAlg::Sha256)
+        } else {
+            None
+        };
+        let mut guard = self.inner.lock().await;
+        let client = guard.as_mut().ok_or_else(|| {
+            Error::AuthFailed(format!(
+                "ssh-agent ({}): client previously failed and was dropped",
+                self.transport
+            ))
+        })?;
+        client
+            .sign_request(identity, hash_alg, data.to_vec())
+            .await
+            .map_err(|e| Error::AuthFailed(format!("ssh-agent ({}): sign: {e}", self.transport)))
     }
 
     /// Open a fresh, *unwrapped* `AgentClient` suitable for direct
@@ -310,7 +299,9 @@ impl Agent {
                         error = %e,
                         "openssh-ssh-agent named pipe unavailable; trying Pageant"
                     );
-                    let client = AgentClient::connect_pageant().await;
+                    let client = AgentClient::connect_pageant().await.map_err(|e| {
+                        Error::AuthFailed(format!("ssh-agent: connect Pageant: {e}"))
+                    })?;
                     Ok(client.dynamic())
                 }
             }
@@ -355,15 +346,15 @@ impl Agent {
         }
     }
 
-    /// Fingerprint helper used by tracing spans. Returns the
-    /// SHA-256 base64-no-padding form (the same shape `ssh-keygen -lf`
-    /// prints), prefixed with `SHA256:`. Errors propagate as the empty
-    /// string so tracing remains best-effort.
+    /// Fingerprint helper used by tracing spans. Returns the algorithm name
+    /// plus the base64 public-key blob. Best-effort: used only for diagnostic
+    /// output.
     #[must_use]
-    pub fn fingerprint(key: &PublicKey) -> String {
-        // PublicKeyBase64 is implemented for russh_keys::PublicKey.
+    pub fn fingerprint(identity: &AgentIdentity) -> String {
+        // `PublicKeyBase64` is implemented for russh's `ssh_key::PublicKey`.
+        let key = identity.public_key();
         let b64 = key.public_key_base64();
-        format!("{} ({})", key.name(), b64)
+        format!("{} ({})", key.algorithm(), b64)
     }
 
     /// Internal-only constructor for tests that supply an already-connected

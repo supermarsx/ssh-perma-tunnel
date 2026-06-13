@@ -141,7 +141,8 @@ mod windows_dacl {
         // returned PWSTR points at a LocalAlloc buffer we free below.
         unsafe {
             let mut out = PWSTR::null();
-            if ConvertSidToStringSidW(sid, &mut out).is_ok() && !out.is_null() {
+            if ConvertSidToStringSidW(sid, &raw mut out).is_ok() && !out.is_null() {
+                // 1.88 lint: implicit raw-pointer borrow
                 let s = out.to_string().unwrap_or_else(|_| "<sid>".into());
                 let _ = LocalFree(HLOCAL(out.0.cast::<c_void>()));
                 s
@@ -168,11 +169,11 @@ mod windows_dacl {
                 PCWSTR(wide.as_ptr()),
                 SE_FILE_OBJECT,
                 OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
-                Some(&mut owner),
+                Some(&raw mut owner),
                 None,
-                Some(&mut dacl),
+                Some(&raw mut dacl),
                 None,
-                &mut sd,
+                &raw mut sd, // 1.88 lint: implicit raw-pointer borrow
             );
             if rc != ERROR_SUCCESS {
                 return None;
@@ -190,7 +191,8 @@ mod windows_dacl {
                 let count = (*dacl).AceCount;
                 for i in 0..count {
                     let mut ace: *mut c_void = std::ptr::null_mut();
-                    if GetAce(dacl, u32::from(i), &mut ace).is_err() || ace.is_null() {
+                    if GetAce(dacl, u32::from(i), &raw mut ace).is_err() || ace.is_null() {
+                        // 1.88 lint: implicit raw-pointer borrow
                         continue;
                     }
                     let header = ace.cast::<ACE_HEADER>();

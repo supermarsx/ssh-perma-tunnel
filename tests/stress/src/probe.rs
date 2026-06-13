@@ -90,10 +90,10 @@ fn rss_bytes() -> io::Result<u64> {
     use windows::Win32::System::Threading::GetCurrentProcess;
     let mut pmc = PROCESS_MEMORY_COUNTERS::default();
     let cb = u32::try_from(std::mem::size_of::<PROCESS_MEMORY_COUNTERS>())
-        .map_err(|_| io::Error::new(io::ErrorKind::Other, "PMC size overflow"))?;
+        .map_err(|_| io::Error::other("PMC size overflow"))?; // 1.88 lint: io_other_error
     // SAFETY: `GetCurrentProcess` returns a pseudo-handle that is always valid
     // and does not need closing. `pmc` is a stack value of the size we pass.
-    let ok = unsafe { K32GetProcessMemoryInfo(GetCurrentProcess(), &mut pmc, cb) };
+    let ok = unsafe { K32GetProcessMemoryInfo(GetCurrentProcess(), &raw mut pmc, cb) };
     if !ok.as_bool() {
         return Err(io::Error::last_os_error());
     }
@@ -105,8 +105,8 @@ fn open_handle_count() -> io::Result<u64> {
     use windows::Win32::System::Threading::{GetCurrentProcess, GetProcessHandleCount};
     let mut count: u32 = 0;
     // SAFETY: pseudo-handle is always valid; `count` is a valid stack pointer.
-    let res = unsafe { GetProcessHandleCount(GetCurrentProcess(), &mut count) };
-    res.map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+    let res = unsafe { GetProcessHandleCount(GetCurrentProcess(), &raw mut count) };
+    res.map_err(|e| io::Error::other(e.to_string()))?; // 1.88 lint: io_other_error
     Ok(u64::from(count))
 }
 

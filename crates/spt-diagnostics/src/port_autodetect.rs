@@ -484,7 +484,7 @@ impl Detector for LdapDetector {
         }
         // Reply must be an LDAPMessage SEQUENCE (0x30) and contain a
         // BindResponse application tag (0x61) somewhere in the first window.
-        if buf[0] == 0x30 && buf[..n].iter().any(|&b| b == 0x61) {
+        if buf[0] == 0x30 && buf[..n].contains(&0x61) { // 1.88 lint: manual_contains
             return Some(DetectedService {
                 class: ServiceClass::Ldap,
                 evidence: format!("ldap BindResponse, {n} bytes"),
@@ -739,7 +739,7 @@ impl UdpDetector for SnmpUdpDetector {
             return None;
         }
         // Look for GetResponse PDU tag (0xa2) somewhere in the payload.
-        if !buf[..n].iter().any(|&b| b == 0xa2) {
+        if !buf[..n].contains(&0xa2) { // 1.88 lint: manual_contains
             return None;
         }
         Some(DetectedService {

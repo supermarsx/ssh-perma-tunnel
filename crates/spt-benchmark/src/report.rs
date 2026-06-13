@@ -100,6 +100,7 @@ fn render_csv(results: &[BenchResult]) -> String {
 }
 
 fn render_markdown(results: &[BenchResult]) -> String {
+    use std::fmt::Write as _; // 1.88 lint: format_push_string
     let mut out = String::new();
     out.push_str("| driver | iters | duration_ms | p50_ms | p99_ms | throughput_bps | errors |\n");
     out.push_str("|---|---|---|---|---|---|---|\n");
@@ -122,10 +123,11 @@ fn render_markdown(results: &[BenchResult]) -> String {
         } else {
             format!("{} error(s)", r.errors.len())
         };
-        out.push_str(&format!(
-            "| {} | {} | {} | {p50:.3} | {p99:.3} | {tput:.3} | {} |\n",
+        let _ = writeln!(
+            out,
+            "| {} | {} | {} | {p50:.3} | {p99:.3} | {tput:.3} | {} |",
             r.driver, r.iterations_completed, r.duration_ms, errs
-        ));
+        );
     }
     out
 }

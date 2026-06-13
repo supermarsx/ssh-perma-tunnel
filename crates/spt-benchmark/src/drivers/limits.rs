@@ -314,7 +314,7 @@ mod tests {
     fn safety_blocks_prod_without_flag() {
         let driver = LimitsDriver::new(
             Box::new(|| {
-                Box::pin(async { Err(std::io::Error::new(std::io::ErrorKind::Other, "x")) })
+                Box::pin(async { Err(std::io::Error::other("x")) }) // 1.88 lint: io_other_error
             }),
             LimitsExpectations::default(),
         );

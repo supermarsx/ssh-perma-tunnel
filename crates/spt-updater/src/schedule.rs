@@ -23,6 +23,11 @@ pub struct Scheduler {
     last_fire_epoch: parking_lot::Mutex<i64>,
 }
 
+// 1.88 lint: large_enum_variant — `Cron(CronSchedule)` is far larger than the
+// other arms. There is exactly one `SchedulerInner` per `Scheduler` (long-lived,
+// not collection-stored), so the size disparity has no practical cost; boxing
+// would only add an indirection on the hot tick path.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
 enum SchedulerInner {
     Cron(CronSchedule),

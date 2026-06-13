@@ -77,23 +77,18 @@ pub async fn query_resolver(
     kind: RecordKind,
 ) -> Result<Vec<DnsAnswer>> {
     use hickory_proto::rr::RData;
-    use hickory_resolver::config::{NameServerConfigGroup, ResolverConfig, ResolverOpts};
-    use hickory_resolver::error::ResolveErrorKind;
-    use hickory_resolver::TokioAsyncResolver;
+    use hickory_resolver::config::ResolveHosts;
 
-    let group = NameServerConfigGroup::from_ips_clear(&[addr.ip()], addr.port(), true);
-    let cfg = ResolverConfig::from_parts(None, vec![], group);
-    let mut opts = ResolverOpts::default();
-    opts.timeout = Duration::from_secs(2);
-    opts.attempts = 1;
-    opts.use_hosts_file = false;
-    let resolver = TokioAsyncResolver::tokio(cfg, opts);
+    // hickory 0.26: the resolver is built via `Resolver::builder_with_config`
+    // + a `TokioRuntimeProvider`; `TokioAsyncResolver::tokio`/
+    // `NameServerConfigGroup` were removed in the 0.25 rework.
+    let resolver = build_tokio_resolver(addr, Duration::from_secs(2), ResolveHosts::Never)?;
 
     let lookup = match resolver.lookup(name, kind.to_record_type()).await {
         Ok(l) => l,
         Err(e) => {
             // NXDOMAIN / NoRecordsFound is empty-answer, not an error.
-            if matches!(e.kind(), ResolveErrorKind::NoRecordsFound { .. }) {
+            if e.is_no_records_found() {
                 return Ok(Vec::new());
             }
             return Err(map_resolve_error(&e));
@@ -101,20 +96,18 @@ pub async fn query_resolver(
     };
 
     let mut out = Vec::new();
-    for rec in lookup.records() {
-        let ttl = Duration::from_secs(u64::from(rec.ttl()));
-        let Some(rdata) = rec.data() else { continue };
+    for rec in lookup.answers() {
+        let ttl = Duration::from_secs(u64::from(rec.ttl));
+        let rdata = &rec.data;
         let value = match (kind, rdata) {
             (RecordKind::A, RData::A(a)) => a.0.to_string(),
             (RecordKind::AAAA, RData::AAAA(a)) => a.0.to_string(),
             (RecordKind::SRV, RData::SRV(s)) => format!(
                 "{} {} {} {}",
-                s.priority(),
-                s.weight(),
-                s.port(),
-                s.target()
+                s.priority, s.weight, s.port, s.target
             ),
             (RecordKind::TXT, RData::TXT(t)) => t
+                .txt_data
                 .iter()
                 .map(|chunk| String::from_utf8_lossy(chunk).into_owned())
                 .collect::<String>(),
@@ -125,8 +118,57 @@ pub async fn query_resolver(
     Ok(out)
 }
 
-fn map_resolve_error(e: &hickory_resolver::error::ResolveError) -> DnsError {
+fn map_resolve_error(e: &hickory_resolver::net::NetError) -> DnsError {
     DnsError::Upstream(e.to_string())
+}
+
+/// Build a single-upstream Tokio resolver pointed at `addr`.
+///
+/// Centralizes the hickory 0.26 builder dance so `query_resolver`, the
+/// [`server`] forwarder, and tests share one construction path. The 0.26
+/// resolver is generic over a runtime provider and built through
+/// `Resolver::builder_with_config` (the old `TokioAsyncResolver::tokio` +
+/// `NameServerConfigGroup::from_ips_clear` constructors were removed in the
+/// 0.25 rework). A `NameServerConfig` is assembled directly from the IP with
+/// UDP+TCP `ConnectionConfig`s carrying the requested port.
+pub(crate) fn build_tokio_resolver(
+    addr: SocketAddr,
+    timeout: Duration,
+    use_hosts_file: hickory_resolver::config::ResolveHosts,
+) -> Result<hickory_resolver::TokioResolver> {
+    use hickory_resolver::config::{NameServerConfig, ProtocolConfig, ResolverConfig};
+    use hickory_resolver::net::runtime::TokioRuntimeProvider;
+    use hickory_resolver::Resolver;
+
+    let ns = NameServerConfig::new(
+        addr.ip(),
+        true,
+        vec![
+            connection_on_port(ProtocolConfig::Udp, addr.port()),
+            connection_on_port(ProtocolConfig::Tcp, addr.port()),
+        ],
+    );
+    let cfg = ResolverConfig::from_parts(None, vec![], vec![ns]);
+
+    let mut builder = Resolver::builder_with_config(cfg, TokioRuntimeProvider::default());
+    {
+        let opts = builder.options_mut();
+        opts.timeout = timeout;
+        opts.attempts = 1;
+        opts.use_hosts_file = use_hosts_file;
+    }
+    builder.build().map_err(|e| DnsError::Upstream(e.to_string()))
+}
+
+/// Helper: a [`ConnectionConfig`](hickory_resolver::config::ConnectionConfig)
+/// for `protocol` bound to a non-default `port`.
+fn connection_on_port(
+    protocol: hickory_resolver::config::ProtocolConfig,
+    port: u16,
+) -> hickory_resolver::config::ConnectionConfig {
+    let mut c = hickory_resolver::config::ConnectionConfig::new(protocol);
+    c.port = port;
+    c
 }
 
 #[cfg(test)]
@@ -247,16 +289,10 @@ mod tests {
     #[test]
     fn map_resolve_error_produces_upstream_variant() {
         rt().block_on(async {
-            use hickory_resolver::config::{NameServerConfigGroup, ResolverConfig, ResolverOpts};
-            use hickory_resolver::TokioAsyncResolver;
-            let group =
-                NameServerConfigGroup::from_ips_clear(&["127.0.0.1".parse().unwrap()], 1, true);
-            let cfg = ResolverConfig::from_parts(None, vec![], group);
-            let mut opts = ResolverOpts::default();
-            opts.timeout = Duration::from_millis(50);
-            opts.attempts = 1;
-            opts.use_hosts_file = false;
-            let resolver = TokioAsyncResolver::tokio(cfg, opts);
+            use hickory_resolver::config::ResolveHosts;
+            let addr: SocketAddr = "127.0.0.1:1".parse().unwrap();
+            let resolver =
+                build_tokio_resolver(addr, Duration::from_millis(50), ResolveHosts::Never).unwrap();
             if let Err(e) = resolver
                 .lookup("example.invalid.", hickory_proto::rr::RecordType::A)
                 .await

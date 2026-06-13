@@ -88,7 +88,7 @@ pub(crate) fn register_source(name: &str, channel: &str, message_dll: Option<&Pa
             REG_OPTION_NON_VOLATILE,
             KEY_WRITE,
             None,
-            &mut hkey,
+            &raw mut hkey, // 1.88 lint: implicit raw-pointer borrow
             None,
         )
     };

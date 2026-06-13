@@ -276,13 +276,14 @@ pub async fn http_connect<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
+    use std::fmt::Write as _; // 1.88 lint: format_push_string
     let mut req = String::new();
-    req.push_str(&format!("CONNECT {host}:{port} HTTP/1.1\r\n"));
-    req.push_str(&format!("Host: {host}:{port}\r\n"));
+    let _ = writeln!(req, "CONNECT {host}:{port} HTTP/1.1\r");
+    let _ = writeln!(req, "Host: {host}:{port}\r");
     req.push_str("Proxy-Connection: keep-alive\r\n");
     if let Some(c) = creds {
         let token = B64.encode(format!("{}:{}", c.username, c.password));
-        req.push_str(&format!("Proxy-Authorization: Basic {token}\r\n"));
+        let _ = writeln!(req, "Proxy-Authorization: Basic {token}\r");
     }
     req.push_str("\r\n");
     write_all(stream, req.as_bytes()).await?;

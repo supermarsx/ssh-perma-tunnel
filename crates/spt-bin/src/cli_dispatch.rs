@@ -1162,6 +1162,18 @@ async fn tunnel_run(global: &GlobalOpts, args: groups::tunnel::TunnelRun) -> Res
     // `StatusWriter` updates. Plain HTTP only in v1 (TLS deferred).
     let status_api_handle = maybe_spawn_status_api(&cfg, &state_dir, &resolver).await?;
 
+    // E5-F5: optionally bring up the remote-config background poller. It runs
+    // as a tokio task and funnels each changed remote body through the SAME
+    // reload pipeline as SIGHUP (`ConfigCell::reload`). Off unless
+    // `[runtime.remote_config].enabled = true` with a positive poll_interval.
+    let remote_config_handle = maybe_spawn_remote_config_poller(
+        &cfg,
+        &state_dir,
+        &resolver,
+        &orchestrator,
+        &config_cell,
+    );
+
     let signal_rx = crate::signals::spawn();
 
     if args.once {
@@ -1194,6 +1206,9 @@ async fn tunnel_run(global: &GlobalOpts, args: groups::tunnel::TunnelRun) -> Res
             // closes, even if the explicit Shutdown message races with
             // the runtime shutting down.
             let _ = h.shutdown().await;
+        }
+        if let Some(h) = remote_config_handle {
+            h.shutdown().await;
         }
         // E6-F1/E6-F4: stop the events dispatcher and flush+stop the metrics
         // exporter writer (final metrics.prom snapshot) before returning.
@@ -1258,6 +1273,9 @@ async fn tunnel_run(global: &GlobalOpts, args: groups::tunnel::TunnelRun) -> Res
     }
     if let Some(h) = updater_handle.as_ref() {
         let _ = h.shutdown().await;
+    }
+    if let Some(h) = remote_config_handle {
+        h.shutdown().await;
     }
     // E6-F1/E6-F4: stop the events dispatcher + metrics exporter writer.
     events_pipeline.shutdown().await;
@@ -1477,6 +1495,167 @@ async fn maybe_spawn_status_api(
         "status-api listening (inline supervisor host)"
     );
     Ok(Some(handle))
+}
+
+/// E5-F5: optionally spawn the remote-config background poller.
+///
+/// Off by default — the poller is created only when `[runtime.remote_config]`
+/// is present, `enabled = true`, and `poll_interval` parses to a positive
+/// duration (the 30s floor is enforced earlier by `validate::check_runtime`).
+/// This mirrors the embedded-updater opt-in: info log when spawned, debug log
+/// when the feature is off, and `Ok(None)` rather than aborting startup when the
+/// plan cannot be built.
+///
+/// The driver ([`spt_remote_config::spawn`]) owns the tick loop, SHA-based
+/// change detection, backoff, and shutdown; this function only builds the fetch
+/// plan and the apply callback. The callback captures CLONES of the
+/// `Arc<Orchestrator>`, `Arc<Resolver>`, and the [`crate::controller::ConfigCell`]
+/// and funnels every changed body through THE SAME reload pipeline as SIGHUP
+/// (`ConfigCell::reload`) — preserving the Phase-1 `Box::pin` large-future
+/// mitigation and the single-mutex serialization. A malformed body, a UTF-8
+/// error, or a rejected reload is logged and skipped; the poller never crashes
+/// the supervisor.
+fn maybe_spawn_remote_config_poller(
+    cfg: &spt_config::schema::Config,
+    state_dir: &Path,
+    resolver: &std::sync::Arc<spt_secrets::Resolver>,
+    orchestrator: &std::sync::Arc<spt_supervisor::Orchestrator>,
+    config_cell: &crate::controller::ConfigCell,
+) -> Option<spt_remote_config::RemoteConfigPollHandle> {
+    let rc = cfg
+        .runtime
+        .as_ref()
+        .and_then(|r| r.remote_config.as_ref())?;
+    if rc.enabled != Some(true) {
+        tracing::debug!(
+            target: "spt_remote_config",
+            "[runtime.remote_config] disabled — remote-config poller not started"
+        );
+        return None;
+    }
+    // Gate on a positive poll_interval. The 30s floor is a validation error
+    // (see validate::check_runtime); here we only need a parseable, >0 value.
+    let interval = match rc.poll_interval.as_deref() {
+        Some(s) => match spt_core::duration::parse_duration(s) {
+            Ok(d) if !d.is_zero() => d,
+            Ok(_) => {
+                tracing::debug!(
+                    target: "spt_remote_config",
+                    "[runtime.remote_config].poll_interval is zero — poller not started"
+                );
+                return None;
+            }
+            Err(e) => {
+                tracing::warn!(
+                    target: "spt_remote_config",
+                    error = %e,
+                    "[runtime.remote_config].poll_interval did not parse — poller not started"
+                );
+                return None;
+            }
+        },
+        None => {
+            tracing::debug!(
+                target: "spt_remote_config",
+                "[runtime.remote_config].poll_interval unset — poller not started"
+            );
+            return None;
+        }
+    };
+
+    // Build the fetch plan from the same builder `config_pull` / `--config-url`
+    // use (no CLI overrides; default size cap).
+    let plan = match spt_config::remote::RemoteConfigSpec::plan_from_runtime(rc, None, None, None) {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!(
+                target: "spt_remote_config",
+                error = %e,
+                "[runtime.remote_config] incomplete (url/fingerprint) — poller not started"
+            );
+            return None;
+        }
+    };
+
+    // Apply callback: clones captured per the driver's `Fn` bound. On each
+    // changed body, parse + funnel through the shared reload pipeline.
+    let resolver = resolver.clone();
+    let orchestrator = orchestrator.clone();
+    let config_cell = config_cell.clone();
+    let apply_cb = move |body: Vec<u8>| {
+        let resolver = resolver.clone();
+        let orchestrator = orchestrator.clone();
+        let config_cell = config_cell.clone();
+        async move {
+            let text = match std::str::from_utf8(&body) {
+                Ok(t) => t,
+                Err(e) => {
+                    tracing::error!(
+                        target: "spt_remote_config",
+                        error = %e,
+                        "remote config body is not valid UTF-8 — skipping this update"
+                    );
+                    return;
+                }
+            };
+            let (new_cfg, warnings) = match spt_config::load_str(text, false) {
+                Ok(parsed) => parsed,
+                Err(e) => {
+                    tracing::error!(
+                        target: "spt_remote_config",
+                        error = %e,
+                        "remote config failed to parse — skipping this update"
+                    );
+                    return;
+                }
+            };
+            // SAME pipeline as SIGHUP. Box::pin preserves the Phase-1
+            // `large_futures` mitigation (the reload future is the heaviest
+            // await — it clones a full Config and runs the apply plan).
+            match Box::pin(config_cell.reload(new_cfg, &warnings, &resolver, &orchestrator)).await {
+                Ok(outcome) => {
+                    for f in &outcome.provider_failures {
+                        tracing::error!(
+                            target: "spt_remote_config",
+                            profile = %f.profile,
+                            error = %f.error,
+                            "profile failed to build on remote reload — not started",
+                        );
+                    }
+                    tracing::info!(
+                        target: "spt_remote_config",
+                        "applied updated remote config"
+                    );
+                }
+                Err(e) => {
+                    tracing::error!(
+                        target: "spt_remote_config",
+                        error = %e,
+                        "remote reload rejected; keeping previous config"
+                    );
+                }
+            }
+        }
+    };
+
+    match spt_remote_config::spawn(plan, state_dir.to_path_buf(), interval, apply_cb) {
+        Ok(handle) => {
+            tracing::info!(
+                target: "spt_remote_config",
+                interval = ?interval,
+                "remote-config poller started"
+            );
+            Some(handle)
+        }
+        Err(e) => {
+            tracing::warn!(
+                target: "spt_remote_config",
+                error = %e,
+                "failed to build pinned remote-config fetcher — poller not started"
+            );
+            None
+        }
+    }
 }
 
 async fn wait_for_once_startup(
@@ -3379,12 +3558,13 @@ fn stats_export(global: &GlobalOpts, args: groups::stats::StatsExport) -> Result
             // live registry — see M4.
             let v: serde_json::Value =
                 serde_json::from_str(&snap).unwrap_or(serde_json::Value::Null);
+            use std::fmt::Write as _; // 1.88 lint: format_push_string
             let mut out = String::from("profile,state\n");
             if let Some(arr) = v.get("profiles").and_then(|x| x.as_array()) {
                 for p in arr {
                     let name = p.get("id").and_then(|x| x.as_str()).unwrap_or("");
                     let state = p.get("state").and_then(|x| x.as_str()).unwrap_or("");
-                    out.push_str(&format!("{name},{state}\n"));
+                    let _ = writeln!(out, "{name},{state}");
                 }
             }
             out
@@ -7741,5 +7921,158 @@ mod tests {
         // E5-F9 reader-side helper: this process is alive; pid 0 never is.
         assert!(pid_is_alive(std::process::id()));
         assert!(!pid_is_alive(0));
+    }
+
+    // ----- E5-F5: remote-config poller wiring --------------------------------
+
+    /// Disabled (or absent) `[runtime.remote_config]` must NOT spawn a poller.
+    #[tokio::test]
+    async fn remote_config_poller_gating_returns_none_when_disabled() {
+        use std::sync::Arc;
+        let td = tempfile::tempdir().unwrap();
+        let resolver = Arc::new(spt_secrets::Resolver::new(vec![]));
+        let orchestrator = Arc::new(spt_supervisor::Orchestrator::new());
+
+        // (a) No `[runtime.remote_config]` table at all.
+        let (cfg, _w) = spt_config::load_str("version = 1\n", false).unwrap();
+        let cell = crate::controller::ConfigCell::new(cfg.clone());
+        assert!(
+            maybe_spawn_remote_config_poller(
+                &cfg,
+                td.path(),
+                &resolver,
+                &orchestrator,
+                &cell
+            )
+            .is_none(),
+            "absent remote_config must not spawn a poller"
+        );
+
+        // (b) Present but `enabled = false`, even with a valid url/fingerprint
+        // and interval — still no poller.
+        let toml = "version = 1\n\
+             [runtime.remote_config]\n\
+             enabled = false\n\
+             url = \"https://cfg.example/spt.toml\"\n\
+             fingerprint_sha256 = \"0000000000000000000000000000000000000000000000000000000000000000\"\n\
+             poll_interval = \"60s\"\n";
+        let (cfg, _w) = spt_config::load_str(toml, false).unwrap();
+        let cell = crate::controller::ConfigCell::new(cfg.clone());
+        assert!(
+            maybe_spawn_remote_config_poller(
+                &cfg,
+                td.path(),
+                &resolver,
+                &orchestrator,
+                &cell
+            )
+            .is_none(),
+            "disabled remote_config must not spawn a poller"
+        );
+    }
+
+    /// A fake [`spt_remote_config::HttpFetcher`] that serves a fixed body so the
+    /// real `fetch` fingerprint check passes, exercising the production apply
+    /// callback (load_str -> ConfigCell::reload) end to end.
+    struct StaticFetcher {
+        body: Vec<u8>,
+    }
+
+    #[async_trait::async_trait]
+    impl spt_remote_config::HttpFetcher for StaticFetcher {
+        async fn get(
+            &self,
+            _url: &str,
+            _if_none_match: Option<&str>,
+            _max_bytes: u64,
+            _timeout: std::time::Duration,
+        ) -> std::result::Result<
+            spt_remote_config::HttpResponse,
+            spt_remote_config::http::HttpError,
+        > {
+            Ok(spt_remote_config::HttpResponse {
+                status: 200,
+                etag: Some("\"v1\"".into()),
+                body: self.body.clone(),
+            })
+        }
+    }
+
+    /// The poller, fed a remote body that differs from the boot config, must
+    /// drive the SAME reload pipeline (ConfigCell::reload) so the cell advances
+    /// from the boot config to the served one.
+    #[tokio::test]
+    async fn remote_config_poller_reloads_on_change() {
+        use spt_remote_config::cache::hex_sha256;
+        use std::sync::Arc;
+
+        let td = tempfile::tempdir().unwrap();
+        let resolver = Arc::new(spt_secrets::Resolver::new(vec![]));
+        let orchestrator = Arc::new(spt_supervisor::Orchestrator::new());
+
+        // Boot config: no logging level set. Seed the shared cell with it.
+        let (boot, _w) = spt_config::load_str("version = 1\n", false).unwrap();
+        let cell = crate::controller::ConfigCell::new(boot.clone());
+        assert!(
+            cell.snapshot().await.logging.is_none(),
+            "boot config has no [logging] table"
+        );
+
+        // CHANGED remote config: adds a [logging] level. Its fingerprint pins
+        // exactly this body so the real `fetch` verification passes.
+        let remote_body = b"version = 1\n[logging]\nlevel = \"debug\"\n".to_vec();
+        let plan = spt_config::remote::RemoteConfigPlan {
+            spec: spt_config::remote::RemoteConfigSpec {
+                url: "https://cfg.example/spt.toml".into(),
+                fingerprint_sha256: hex_sha256(&remote_body),
+                allow_cached_on_failure: false,
+                max_size_bytes: Some(1_000_000),
+                etag_cache: None,
+            },
+            ..Default::default()
+        };
+
+        // Apply callback identical to the production one in
+        // `maybe_spawn_remote_config_poller`: parse + ConfigCell::reload.
+        let cb_resolver = resolver.clone();
+        let cb_orch = orchestrator.clone();
+        let cb_cell = cell.clone();
+        let apply_cb = move |body: Vec<u8>| {
+            let resolver = cb_resolver.clone();
+            let orchestrator = cb_orch.clone();
+            let config_cell = cb_cell.clone();
+            async move {
+                let text = std::str::from_utf8(&body).expect("utf8");
+                let (new_cfg, warnings) = spt_config::load_str(text, false).expect("parse");
+                Box::pin(config_cell.reload(new_cfg, &warnings, &resolver, &orchestrator))
+                    .await
+                    .expect("reload");
+            }
+        };
+
+        let handle = spt_remote_config::spawn_with_fetcher(
+            plan,
+            td.path().to_path_buf(),
+            std::time::Duration::from_millis(20),
+            StaticFetcher { body: remote_body },
+            apply_cb,
+        );
+
+        // Poll until the cell advances (the reload ran) or time out.
+        let mut advanced = false;
+        for _ in 0..50 {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            let snap = cell.snapshot().await;
+            if snap.logging.as_ref().and_then(|l| l.level.as_deref()) == Some("debug") {
+                advanced = true;
+                break;
+            }
+        }
+        handle.shutdown().await;
+
+        assert!(
+            advanced,
+            "the poller must funnel the changed body through ConfigCell::reload, advancing the cell"
+        );
     }
 }

@@ -13,6 +13,19 @@ use crate::event::Event;
 use crate::sinks::{Sink, SinkError};
 use crate::template;
 
+/// Default subject-line template used when a config `email` sink omits
+/// `subject_template`. Mirrors the body-template default pattern: a
+/// config-build site uses
+/// [`resolve_subject_template`] over `sc.subject_template`.
+pub const DEFAULT_EMAIL_SUBJECT_TEMPLATE: &str = "[{{severity}}] {{kind}}";
+
+/// Resolve a config `subject_template` (`Option<String>`) to the effective
+/// subject template, falling back to [`DEFAULT_EMAIL_SUBJECT_TEMPLATE`] when
+/// unset. Mirrors the body-template default pattern for config-build sites.
+pub fn resolve_subject_template(configured: Option<String>) -> String {
+    configured.unwrap_or_else(|| DEFAULT_EMAIL_SUBJECT_TEMPLATE.into())
+}
+
 /// One outbound email message.
 #[derive(Debug, Clone)]
 pub struct EmailMessage {
@@ -202,6 +215,29 @@ mod tests {
         assert!(m[0].body.contains("connection refused"));
         assert_eq!(m[0].from, "spt@example.com");
         assert_eq!(m[0].to, vec!["sre@example.com".to_string()]);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn default_subject_template_renders_when_unset() {
+        // A config build site that omits `subject_template` falls back to the
+        // DEFAULT const; rendering it yields the same subject the explicit
+        // `deliver_renders_subject_and_body` test asserts.
+        let t = Arc::new(RecordingEmailTransport::new());
+        // Simulate a config sink that omits `subject_template`.
+        let subject_template = resolve_subject_template(None);
+        assert_eq!(subject_template, DEFAULT_EMAIL_SUBJECT_TEMPLATE);
+        let sink = EmailSink::new(
+            "ops",
+            "spt@example.com",
+            vec!["sre@example.com".into()],
+            subject_template,
+            "msg={{message}}",
+            t.clone(),
+        );
+        let ev = Event::builder("profile.failed", Severity::Error).build();
+        sink.deliver(Arc::new(ev)).await.unwrap();
+        let m = t.messages();
+        assert_eq!(m[0].subject, "[error] profile.failed");
     }
 
     #[tokio::test(flavor = "current_thread")]

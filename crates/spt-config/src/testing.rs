@@ -762,9 +762,10 @@ pub fn canonical_toml(c: &Config) -> String {
 pub fn assert_validates(c: &Config) {
     let d = validate::validate(c);
     if !d.errors.is_empty() {
+        use std::fmt::Write as _; // 1.88 lint: format_push_string
         let mut msg = String::from("config failed validation:\n");
         for e in &d.errors {
-            msg.push_str(&format!("  - {e}\n"));
+            let _ = writeln!(msg, "  - {e}");
         }
         panic!("{msg}");
     }

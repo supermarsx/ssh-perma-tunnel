@@ -707,7 +707,11 @@ pub(crate) fn scm_failure_action_plan(policy: crate::RestartPolicy) -> Option<(u
 // ============================================================================
 
 /// One observed call against a `MockScmBackend`.
+// 1.88 lint: large_enum_variant — `CreateService(ServiceSpec)` dwarfs the
+// string-only arms. Test-support record type, not a hot path; boxing would
+// churn every construction/match site for no runtime benefit.
 #[cfg(any(test, feature = "testing"))]
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ScmCall {
     /// `open_scm()` — pre-flight before install.

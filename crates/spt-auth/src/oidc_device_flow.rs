@@ -414,13 +414,13 @@ impl OidcDeviceFlowClient {
                 Err(PollError::AuthorizationPending) => {
                     debug!(target: "spt_auth::oidc", "authorization_pending");
                     backoff = Duration::from_millis(250); // reset transport backoff
-                    continue;
+                    // 1.88 lint: redundant_continue (loops back implicitly)
                 }
                 Err(PollError::SlowDown) => {
                     interval = (interval * 2).max(interval + Duration::from_secs(5));
                     debug!(target: "spt_auth::oidc", new_interval_ms = interval.as_millis() as u64, "slow_down");
                     backoff = Duration::from_millis(250);
-                    continue;
+                    // 1.88 lint: redundant_continue
                 }
                 Err(PollError::Terminal(e)) => return Err(e.into()),
                 Err(PollError::Transport(msg)) => {
@@ -431,7 +431,7 @@ impl OidcDeviceFlowClient {
                     };
                     tokio::time::sleep(backoff + jitter).await;
                     backoff = (backoff * 2).min(Duration::from_secs(30));
-                    continue;
+                    // 1.88 lint: redundant_continue
                 }
             }
         }

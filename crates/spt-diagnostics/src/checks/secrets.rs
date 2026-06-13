@@ -95,8 +95,9 @@ fn round_trip_probe(resolver: &Arc<Resolver>) -> Vec<Check> {
 
     // Try each backend in chain order; first one that accepts `set` wins.
     for backend in resolver.backends() {
-        match backend.set(&r, payload) {
-            Ok(()) => {
+        // Err: backend rejected `set` — try the next one. (1.88 lint: redundant_continue)
+        if backend.set(&r, payload).is_ok() {
+            {
                 // Round-trip read.
                 let read = matches!(backend.get(&r), Ok(Some(b)) if b.expose_secret().as_slice() == payload);
                 let removed = backend.remove(&r).unwrap_or(false);
@@ -121,7 +122,6 @@ fn round_trip_probe(resolver: &Arc<Resolver>) -> Vec<Check> {
                 }
                 return vec![chk];
             }
-            Err(_) => continue, // try next backend
         }
     }
 

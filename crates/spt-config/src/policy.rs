@@ -192,13 +192,13 @@ pub fn find_binding(section: &str, name: &str) -> Option<&'static Binding> {
 /// * Secrets — `Backend`, `MemoryProtection`
 /// * Firewall — `Manager`, `ApplyRules`, `BindPolicy`
 /// * Observability — `Metrics_Enabled`, `Metrics_Format`,
-///                    `WindowsEvent_Enabled`, `WindowsEvent_Channel`
+///   `WindowsEvent_Enabled`, `WindowsEvent_Channel`
 /// * Mcp — `Enabled`, `Bind`
 /// * Capabilities — SSH2 backend, GSSAPI/SSPI, PQ/ML-KEM, proxy, SFTP,
-///                  mount/drive, Windows Event Log, and GPO write gates
+///   mount/drive, Windows Event Log, and GPO write gates
 /// * `RemoteConfig` — `Enabled`, `Url`, `AllowCachedOnFailure`
 /// * Allowlists — `AllowedRemoteSinks`, `AllowedSecretsBackends`,
-///                 `AllowedFirewallManagers`, `AllowedLoggingDestinations`
+///   `AllowedFirewallManagers`, `AllowedLoggingDestinations`
 pub static BINDINGS: &[Binding] = &[
     // Logging
     Binding {

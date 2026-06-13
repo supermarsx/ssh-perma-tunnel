@@ -51,7 +51,7 @@ impl Resolver {
         for backend in &self.backends {
             match backend.get(r) {
                 Ok(Some(v)) => return Ok(v),
-                Ok(None) => continue,
+                Ok(None) => {} // 1.88 lint: redundant_continue
                 Err(e) => return Err(e),
             }
         }
@@ -70,7 +70,7 @@ impl Resolver {
         for backend in &self.backends {
             match backend.get(r) {
                 Ok(Some(v)) => return Ok(Some(v)),
-                Ok(None) => continue,
+                Ok(None) => {} // 1.88 lint: redundant_continue
                 Err(e) => return Err(e),
             }
         }
