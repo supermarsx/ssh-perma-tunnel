@@ -1,3 +1,13 @@
+## [26.10] - 2026-06-13
+
+# spt 26.10
+
+## Changes since 26.9
+
+- fix(ci): rustfmt, cfg(unix) clippy lints, and chaos lockfile after 1.88/russh modernization (c478686)
+- chore: MSRV 1.85->1.88, modernize russh/hickory/time, + email subject & remote-config poller (98d6d21)
+- feat: implement full review gap-fill + TUI-configurable DNS, events, and per-endpoint auth (e7be629)
+
 ## [26.9] - 2026-06-09
 
 # spt 26.9
