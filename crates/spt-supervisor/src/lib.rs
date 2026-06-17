@@ -44,12 +44,12 @@ pub mod stats;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
 
-pub use control::{Control, DrainReport, EndpointKey};
+pub use control::{BenchForward, Control, DrainReport, EndpointKey};
 pub use failover::{EndpointSelector, FailoverMode, ManualOverride, SelectorError};
 pub use instability::{InstabilityDetector, InstabilityWindow};
 pub use live_connector::{
-    AsyncReadWrite, BoxedStream, EchoLiveConnector, LiveConnector, UdpEndpoint,
-    UnavailableConnector,
+    AsyncReadWrite, BoxedStream, EchoLiveConnector, LiveConnector, SupervisorLiveConnector,
+    UdpEndpoint, UnavailableConnector,
 };
 pub use mount_registry::{MountKey, MountRegistry, MountRegistryError};
 pub use orchestrator::Orchestrator;

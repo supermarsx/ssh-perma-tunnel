@@ -389,6 +389,14 @@ pub(crate) fn render_unit(spec: &ServiceSpec, user_scope: bool) -> String {
         .filter(|_| !user_scope)
         .map_or(String::new(), |g| format!("Group={g}"));
     let svc_type = if spec.sd_notify { "notify" } else { "simple" };
+    // For Type=notify, restrict readiness notifications to the main process and
+    // emit the line just before ExecStart. spt sends READY=1 / STOPPING=1 over
+    // $NOTIFY_SOCKET (see crate::systemd_notify). Empty for Type=simple.
+    let notify_access = if spec.sd_notify {
+        "NotifyAccess=main\n"
+    } else {
+        ""
+    };
     let wanted_by = if user_scope {
         "default.target"
     } else {
@@ -428,6 +436,7 @@ pub(crate) fn render_unit(spec: &ServiceSpec, user_scope: bool) -> String {
     let mut vars: BTreeMap<&str, String> = BTreeMap::new();
     vars.insert("description", spec.description.clone());
     vars.insert("service_type", svc_type.to_string());
+    vars.insert("notify_access", notify_access.to_string());
     vars.insert("exec_path", spec.exec_path.display().to_string());
     vars.insert("args", args);
     vars.insert("working_dir", spec.working_dir.display().to_string());
@@ -475,6 +484,29 @@ mod tests {
         assert!(out.contains("Group=spt"));
         assert!(out.contains("Type=notify"));
         assert!(out.contains("WantedBy=multi-user.target"));
+    }
+
+    /// E7-F3 / E8-F3: with `sd_notify` enabled the unit must render
+    /// `Type=notify` *and* `NotifyAccess=main` so the (now-implemented)
+    /// `READY=1`/`STOPPING=1` writer is honoured.
+    #[test]
+    fn render_type_notify_emits_notify_access() {
+        let mgr = SystemdSystemManager::new();
+        let mut spec = sample_spec();
+        spec.sd_notify = true;
+        let out = mgr.render(&spec);
+        assert!(out.contains("Type=notify"), "{out}");
+        assert!(out.contains("NotifyAccess=main"), "{out}");
+    }
+
+    /// `Type=simple` units must not carry a `NotifyAccess` line.
+    #[test]
+    fn render_simple_omits_notify_access() {
+        let mgr = SystemdSystemManager::new();
+        let mut spec = sample_spec();
+        spec.sd_notify = false;
+        let out = mgr.render(&spec);
+        assert!(!out.contains("NotifyAccess"), "{out}");
     }
 
     /// E7-F2: the sandbox (`ProtectSystem=strict` / `ProtectHome=read-only`)

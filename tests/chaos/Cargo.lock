@@ -2839,7 +2839,7 @@ dependencies = [
 
 [[package]]
 name = "spt-auth"
-version = "0.26.10"
+version = "0.26.11"
 dependencies = [
  "hmac",
  "rand 0.8.6",
@@ -2863,7 +2863,7 @@ dependencies = [
 
 [[package]]
 name = "spt-chaos-proxy"
-version = "0.26.10"
+version = "0.26.11"
 dependencies = [
  "parking_lot",
  "rand 0.8.6",
@@ -2891,7 +2891,7 @@ dependencies = [
 
 [[package]]
 name = "spt-config"
-version = "0.26.10"
+version = "0.26.11"
 dependencies = [
  "atomicwrites",
  "directories",
@@ -2932,7 +2932,7 @@ dependencies = [
 
 [[package]]
 name = "spt-core"
-version = "0.26.10"
+version = "0.26.11"
 dependencies = [
  "bytesize",
  "chrono",
@@ -2951,7 +2951,7 @@ dependencies = [
 
 [[package]]
 name = "spt-events"
-version = "0.26.10"
+version = "0.26.11"
 dependencies = [
  "async-trait",
  "base64ct",
@@ -2965,8 +2965,10 @@ dependencies = [
  "parking_lot",
  "regex",
  "reqwest",
+ "secrecy",
  "serde",
  "serde_json",
+ "spt-config",
  "spt-core",
  "spt-secrets",
  "spt-state",
@@ -2981,7 +2983,7 @@ dependencies = [
 
 [[package]]
 name = "spt-forward"
-version = "0.26.10"
+version = "0.26.11"
 dependencies = [
  "async-trait",
  "bytes",
@@ -3005,7 +3007,7 @@ dependencies = [
 
 [[package]]
 name = "spt-key"
-version = "0.26.10"
+version = "0.26.11"
 dependencies = [
  "atomicwrites",
  "base64",
@@ -3023,7 +3025,7 @@ dependencies = [
 
 [[package]]
 name = "spt-net"
-version = "0.26.10"
+version = "0.26.11"
 dependencies = [
  "caps",
  "if-addrs",
@@ -3039,7 +3041,7 @@ dependencies = [
 
 [[package]]
 name = "spt-observability"
-version = "0.26.10"
+version = "0.26.11"
 dependencies = [
  "chrono",
  "once_cell",
@@ -3069,7 +3071,7 @@ dependencies = [
 
 [[package]]
 name = "spt-protocol"
-version = "0.26.10"
+version = "0.26.11"
 dependencies = [
  "async-trait",
  "serde",
@@ -3082,7 +3084,7 @@ dependencies = [
 
 [[package]]
 name = "spt-secrets"
-version = "0.26.10"
+version = "0.26.11"
 dependencies = [
  "aes-gcm",
  "argon2",
@@ -3107,7 +3109,7 @@ dependencies = [
 
 [[package]]
 name = "spt-sftp"
-version = "0.26.10"
+version = "0.26.11"
 dependencies = [
  "futures",
  "hex",
@@ -3121,7 +3123,7 @@ dependencies = [
 
 [[package]]
 name = "spt-state"
-version = "0.26.10"
+version = "0.26.11"
 dependencies = [
  "atomicwrites",
  "chrono",
@@ -3138,7 +3140,7 @@ dependencies = [
 
 [[package]]
 name = "spt-stats"
-version = "0.26.10"
+version = "0.26.11"
 dependencies = [
  "chrono",
  "dashmap",
@@ -3150,7 +3152,7 @@ dependencies = [
 
 [[package]]
 name = "spt-supervisor"
-version = "0.26.10"
+version = "0.26.11"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3178,7 +3180,7 @@ dependencies = [
 
 [[package]]
 name = "spt-trust"
-version = "0.26.10"
+version = "0.26.11"
 dependencies = [
  "atomicwrites",
  "base64",
@@ -3311,9 +3313,9 @@ checksum = "a7973cce6668464ea31f176d85b13c7ab3bba2cb3b77a2ed26abd7801688010a"
 
 [[package]]
 name = "syn"
-version = "2.0.117"
+version = "2.0.118"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e665b8803e7b1d2a727f4023456bbbbe74da67099c585258af0ad9c5013b9b99"
+checksum = "1b9ae57f904213ebb649ce6895b8a66c66f0203b9319718f69a5612a065b1422"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -4001,9 +4003,9 @@ dependencies = [
 
 [[package]]
 name = "webpki-roots"
-version = "1.0.7"
+version = "1.0.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "52f5ee44c96cf55f1b349600768e3ece3a8f26010c05265ab73f945bb1a2eb9d"
+checksum = "bf85cb06032201fa7c6f829d7db5a7e5aa45bcc0655327713065f6f0576731bf"
 dependencies = [
  "rustls-pki-types",
 ]

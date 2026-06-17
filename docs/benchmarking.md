@@ -6,24 +6,43 @@
 
 | Driver       | Status                                                     |
 |--------------|------------------------------------------------------------|
-| `latency`    | implemented; synthetic connector or live tunnel TCP stream |
-| `throughput` | implemented; synthetic connector or live tunnel TCP stream |
-| `udp`        | implemented; synthetic loopback or `LiveConnector::open_udp` |
-| `reconnect`  | implemented; synthetic no-op or supervisor close/reconnect trigger |
-| `dns`        | implemented through the async `DnsClient` seam             |
-| `limits`     | implemented; probes the supplied connector for cap/throttle behavior |
+| `latency`    | implemented; synthetic connector **or live tunnel** (TCP stream through a running profile) |
+| `throughput` | implemented; synthetic connector **or live tunnel** (TCP stream through a running profile) |
+| `limits`     | implemented; synthetic connector **or live tunnel** (N concurrent live forwards + throttle probe) |
+| `reconnect`  | implemented; synthetic no-op **or live tunnel** (supervisor close/reconnect trigger) |
+| `udp`        | implemented synthetic-only; **live UDP is NOT supported** — see below |
+| `dns`        | implemented **synthetic-only** (no live DNS seam in shipped paths) |
 
 When a CLI benchmark includes `--profile`, the request is sent to the
-running supervisor through the MCP loopback and the server-side bridge wires
-the live connector and reconnect trigger into the driver suite. Without a
-profile, the CLI uses synthetic in-process connectors so reports and formats
-can still be exercised offline.
+running supervisor through the MCP loopback and the server-side bridge wires a
+session-aware live connector (and the reconnect trigger) into the driver
+suite. For a running profile, `latency` / `throughput` / `limits` / `reconnect`
+now execute **against the live tunnel**. Without a profile (or against a
+stopped one), the CLI uses synthetic in-process connectors so reports and
+formats can still be exercised offline.
+
+### Live UDP is unsupported
+
+`udp` has **no live path**. Running it against a profile returns a structured
+`UnsupportedPlatform` error rather than fabricating data: the `TunnelSession`
+API exposes no raw-datagram seam (only a proxy-listener forward with no port
+readback), so even SSH3's advertised UDP capability has no in-process channel
+to benchmark over. The error message distinguishes SSH2 (no UDP capability)
+from SSH3 (capability present, no seam). Run `udp` against the synthetic
+loopback connector instead.
+
+> Live-tunnel TCP caveat: the live forward targets loopback on the *remote*
+> side, so a full echo round-trip requires the deployment's remote to echo
+> loopback. Absent a remote echoer the write path still genuinely exercises the
+> live session and the drivers record read timeouts honestly as errors — no
+> fabricated throughput.
 
 ## Safety
 
-Production-impacting drivers (`reconnect`, `udp`, `limits`) require a
-**two-key opt-in** before they will run against a live tunnel; otherwise a
-`SafetyError` is returned. Both keys must be set:
+Production-impacting drivers (`latency`, `throughput`, `limits`, `reconnect`)
+require a **two-key opt-in** before they will run against a live tunnel;
+otherwise a `SafetyError` is returned. (`udp` has no live path, so the gate
+never applies to it.) Both keys must be set:
 
 1. the CLI flag `--unsafe-allow-production-impact` on the command, and
 2. the config gate `[benchmark].allow_production_impact = true`.

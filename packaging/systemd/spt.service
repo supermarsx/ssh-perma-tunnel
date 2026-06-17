@@ -5,12 +5,12 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-# Type=simple: the spt binary does not yet send sd_notify READY=1 / STOPPING=1.
-# Using Type=notify here causes systemd to wait for a readiness notification
-# that never arrives, time out (~90s), and kill+restart the service forever.
-# TODO(E7-F3 / E8-F3): switch back to Type=notify once a NOTIFY_SOCKET writer
-# (READY=1 after orchestrator bring-up, STOPPING=1 on shutdown) is implemented.
-Type=simple
+# Type=notify: the spt binary sends sd_notify READY=1 once the orchestrator is
+# up and STOPPING=1 at the start of an orderly shutdown, via $NOTIFY_SOCKET
+# (see spt-service::systemd_notify; no libsystemd dependency).
+Type=notify
+# Only the main process emits notifications.
+NotifyAccess=main
 ExecStart=/usr/bin/spt tunnel run --foreground --config /etc/spt/spt.toml
 ExecReload=/usr/bin/spt tunnel reload
 WorkingDirectory=/var/lib/spt

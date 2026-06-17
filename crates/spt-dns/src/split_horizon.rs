@@ -28,6 +28,7 @@ use hickory_server::zone_handler::MessageResponseBuilder;
 use tracing::{debug, warn};
 
 use crate::health::HealthSource;
+use crate::mode::DnsMode;
 use crate::zone::{AnswerPolicy, ManagedZone, Record, RecordKind};
 
 /// Split-horizon DNS [`RequestHandler`] used by [`crate::DnsServer`].
@@ -35,19 +36,48 @@ pub struct SplitHorizonHandler {
     zones: Vec<ManagedZone>,
     upstream: Option<Arc<TokioResolver>>,
     health: Arc<dyn HealthSource>,
+    mode: DnsMode,
 }
 
 impl SplitHorizonHandler {
-    /// Build a handler from its parts.
+    /// Build a handler from its parts, defaulting to
+    /// [`DnsMode::TransparentForwarder`] semantics.
+    ///
+    /// Prefer [`SplitHorizonHandler::with_mode`] to honor a configured DNS
+    /// mode at runtime; this constructor is kept for callers that only want
+    /// the historical forwarder behavior.
     pub fn new(
         zones: Vec<ManagedZone>,
         upstream: Option<Arc<TokioResolver>>,
         health: Arc<dyn HealthSource>,
     ) -> Self {
+        Self::with_mode(zones, upstream, health, DnsMode::TransparentForwarder)
+    }
+
+    /// Build a handler honoring a specific [`DnsMode`].
+    ///
+    /// The mode controls the **unmanaged-name** path:
+    ///
+    /// * [`DnsMode::TransparentForwarder`] — unmanaged names are forwarded to
+    ///   the upstream resolver (if any), else `REFUSED`.
+    /// * [`DnsMode::SyntheticOnly`] — unmanaged names always return
+    ///   `NXDOMAIN`; the upstream forwarder path is never taken even if
+    ///   upstreams were configured. This is the "authoritative-only" posture:
+    ///   the server answers exclusively for names it owns.
+    ///
+    /// Managed-zone answering (including health-gated policies) is identical
+    /// across modes.
+    pub fn with_mode(
+        zones: Vec<ManagedZone>,
+        upstream: Option<Arc<TokioResolver>>,
+        health: Arc<dyn HealthSource>,
+        mode: DnsMode,
+    ) -> Self {
         Self {
             zones,
             upstream,
             health,
+            mode,
         }
     }
 
@@ -138,7 +168,16 @@ impl RequestHandler for SplitHorizonHandler {
             return send_simple(&mut response_handle, request, ResponseCode::NoError).await;
         }
 
-        // Forwarder path.
+        // Unmanaged-name path. In synthetic-only (authoritative-only) mode we
+        // never recurse upstream — the server answers exclusively for names it
+        // owns, so unmanaged names are NXDOMAIN regardless of any configured
+        // upstream. In transparent-forwarder mode we recurse upstream when one
+        // is wired, else REFUSED.
+        if self.mode == DnsMode::SyntheticOnly {
+            debug!(name = %qname_str, "synthetic-only mode: unmanaged name -> NXDOMAIN");
+            return send_simple(&mut response_handle, request, ResponseCode::NXDomain).await;
+        }
+
         if let Some(upstream) = self.upstream.clone() {
             return forward_to_upstream(
                 &upstream,
@@ -693,6 +732,198 @@ mod tests {
             }
             assert!(found);
             resolver.shutdown().await;
+        });
+    }
+
+    #[test]
+    fn synthetic_only_mode_returns_nxdomain_for_unmanaged_name() {
+        rt().block_on(async {
+            use crate::mode::DnsMode;
+            // Managed zone + an upstream configured, but synthetic-only mode
+            // must NEVER recurse: unmanaged names are NXDOMAIN regardless.
+            let zone = FakeZone::new("tunnel.local.")
+                .a("a.tunnel.local.", "10.0.0.1".parse().unwrap())
+                .build();
+            // A bogus upstream that would normally be tried in forwarder mode.
+            let upstream: SocketAddr = "127.0.0.1:1".parse().unwrap();
+            let resolver = LocalhostResolver::start_with_mode(
+                vec![zone],
+                DnsMode::SyntheticOnly,
+                vec![upstream],
+            )
+            .await
+            .unwrap();
+            let port = resolver.port();
+            let client = client_for(port);
+            // Managed name still answers.
+            let managed = client
+                .lookup("a.tunnel.local.", RecordType::A)
+                .await
+                .expect("managed name resolves");
+            assert_eq!(managed.answers().len(), 1);
+            // Unmanaged name -> NXDOMAIN (no recursion attempted).
+            let err = client
+                .lookup("example.com.", RecordType::A)
+                .await
+                .expect_err("synthetic-only must NXDOMAIN unmanaged names");
+            assert!(err.is_no_records_found());
+            resolver.shutdown().await;
+        });
+    }
+
+    #[test]
+    fn transparent_forwarder_without_upstream_refuses_unmanaged() {
+        rt().block_on(async {
+            use crate::mode::DnsMode;
+            // Forwarder mode but no upstream → REFUSED/empty for unmanaged.
+            let zone = FakeZone::new("tunnel.local.")
+                .a("a.tunnel.local.", "10.0.0.1".parse().unwrap())
+                .build();
+            let resolver = LocalhostResolver::start_with_mode(
+                vec![zone],
+                DnsMode::TransparentForwarder,
+                vec![],
+            )
+            .await
+            .unwrap();
+            let port = resolver.port();
+            let client = client_for(port);
+            if let Ok(lookup) = client.lookup("nothing.example.", RecordType::A).await {
+                assert_eq!(lookup.answers().len(), 0);
+            }
+            resolver.shutdown().await;
+        });
+    }
+
+    #[test]
+    fn synthetic_only_still_health_gates_managed_records() {
+        rt().block_on(async {
+            use crate::mode::DnsMode;
+            // Health gating is mode-independent: an unhealthy forward's record
+            // is suppressed (NXDOMAIN) even in synthetic-only mode.
+            let mut zone = FakeZone::new("tunnel.local.").build();
+            zone.records.push(
+                Record::a(
+                    "gated.tunnel.local.",
+                    "10.0.0.2".parse().unwrap(),
+                    StdDuration::from_secs(60),
+                )
+                .with_policy(AnswerPolicy::AnswerWhenHealthy, Some("p/f".into())),
+            );
+            // No upstream; default NoHealth filters the gated record.
+            let resolver =
+                LocalhostResolver::start_with_mode(vec![zone], DnsMode::SyntheticOnly, vec![])
+                    .await
+                    .unwrap();
+            let port = resolver.port();
+            let client = client_for(port);
+            let err = client
+                .lookup("gated.tunnel.local.", RecordType::A)
+                .await
+                .expect_err("unhealthy forward record must be suppressed");
+            assert!(err.is_no_records_found());
+            resolver.shutdown().await;
+        });
+    }
+
+    #[test]
+    fn auto_synthesized_records_answer_through_handler() {
+        rt().block_on(async {
+            use crate::srv::{
+                auto_records_from_forwards, ForwardAddr, ForwardDnsSource, SrvSource,
+            };
+            use crate::zone::AnswerPolicy;
+            // Build a zone purely from auto_records_from_forwards (the
+            // auto_records runtime behavior) and confirm the handler answers
+            // both the synthesized A and SRV records.
+            let fwds = vec![ForwardDnsSource {
+                dns_names: vec!["web.tunnel.local".into()],
+                addr: Some(ForwardAddr::V4("10.5.6.7".parse().unwrap())),
+                srv: Some(SrvSource {
+                    service: "https".into(),
+                    transport: "tcp".into(),
+                    target: "web.tunnel.local.".into(),
+                    port: 443,
+                    priority: 1,
+                    weight: 1,
+                    ttl: StdDuration::from_secs(60),
+                    answer_policy: AnswerPolicy::AlwaysAnswer,
+                    forward_id: None,
+                }),
+                ttl: StdDuration::from_secs(60),
+                answer_policy: AnswerPolicy::AlwaysAnswer,
+                forward_id: None,
+            }];
+            let mut zone = ManagedZone::new("tunnel.local.");
+            zone.records = auto_records_from_forwards("tunnel.local.", &fwds);
+            let resolver = LocalhostResolver::start(vec![zone]).await.unwrap();
+            let port = resolver.port();
+            let client = client_for(port);
+            // A record from dns_names.
+            let a = client
+                .lookup("web.tunnel.local.", RecordType::A)
+                .await
+                .expect("synthesized A resolves");
+            assert!(a.answers().iter().any(|r| matches!(&r.data,
+                hickory_proto::rr::RData::A(ip) if ip.0 == Ipv4Addr::new(10, 5, 6, 7))));
+            // SRV record synthesized alongside.
+            let srv = client
+                .lookup("_https._tcp.tunnel.local.", RecordType::SRV)
+                .await
+                .expect("synthesized SRV resolves");
+            assert!(srv.answers().iter().any(|r| matches!(&r.data,
+                hickory_proto::rr::RData::SRV(s) if s.port == 443)));
+            resolver.shutdown().await;
+        });
+    }
+
+    #[test]
+    fn auto_synthesized_record_health_gated_when_unhealthy() {
+        rt().block_on(async {
+            use crate::srv::{auto_records_from_forwards, ForwardAddr, ForwardDnsSource};
+            use crate::zone::AnswerPolicy;
+            // An auto-synthesized record carrying AnswerWhenHealthy + forward_id
+            // must be suppressed by an unhealthy FakeHealthSource.
+            let fwds = vec![ForwardDnsSource {
+                dns_names: vec!["svc.tunnel.local".into()],
+                addr: Some(ForwardAddr::V4("10.7.7.7".parse().unwrap())),
+                srv: None,
+                ttl: StdDuration::from_secs(60),
+                answer_policy: AnswerPolicy::AnswerWhenHealthy,
+                forward_id: Some("p/svc".into()),
+            }];
+            let mut zone = ManagedZone::new("tunnel.local.");
+            zone.records = auto_records_from_forwards("tunnel.local.", &fwds);
+            // Unhealthy source -> suppressed.
+            let resolver = LocalhostResolver::start_with_health(
+                vec![zone.clone()],
+                std::sync::Arc::new(FakeHealthSource(false)),
+            )
+            .await
+            .unwrap();
+            let port = resolver.port();
+            let client = client_for(port);
+            let err = client
+                .lookup("svc.tunnel.local.", RecordType::A)
+                .await
+                .expect_err("unhealthy auto-record must be suppressed");
+            assert!(err.is_no_records_found());
+            resolver.shutdown().await;
+
+            // Healthy source -> answered.
+            let resolver2 = LocalhostResolver::start_with_health(
+                vec![zone],
+                std::sync::Arc::new(FakeHealthSource(true)),
+            )
+            .await
+            .unwrap();
+            let client2 = client_for(resolver2.port());
+            let ok = client2
+                .lookup("svc.tunnel.local.", RecordType::A)
+                .await
+                .expect("healthy auto-record resolves");
+            assert_eq!(ok.answers().len(), 1);
+            resolver2.shutdown().await;
         });
     }
 

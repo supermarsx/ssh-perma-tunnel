@@ -8,9 +8,19 @@ get separate services.
 ## systemd (Linux)
 
 The shipped unit lives at [/packaging/systemd/spt.service](../packaging/systemd/spt.service).
-The service uses `Type=notify` + `sd_notify` for clean state reporting, runs
-as `spt:spt`, and applies `NoNewPrivileges`, `ProtectSystem=strict`, and
+The packaged unit is `Type=notify` with `NotifyAccess=main`: the daemon sends
+real `READY=1` (once the orchestrator is fully up) and `STOPPING=1` (at the
+start of graceful shutdown) directly over `$NOTIFY_SOCKET` — implemented with
+a plain `UnixDatagram` writer, so there is **no `libsystemd` / sd-notify C
+dependency**. The notify calls are best-effort: when `$NOTIFY_SOCKET` is unset
+(i.e. not launched under `Type=notify`) they are a clean no-op. The service
+runs as `spt:spt` and applies `NoNewPrivileges`, `ProtectSystem=strict`, and
 `PrivateTmp=true`.
+
+> Note: only the **packaged** static unit ships `Type=notify`. Units rendered
+> by the CLI installer (`spt service install`) currently render `Type=simple`
+> (the `sd_notify` flag is off on that path); the daemon's notify calls simply
+> no-op there.
 
 User-scope services (`--user`) install under
 `~/.config/systemd/user/spt-<config-stem>.service`.

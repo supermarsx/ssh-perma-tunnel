@@ -487,27 +487,27 @@ impl Orchestrator {
     /// that key on a specific forward may consult it; the default
     /// implementation ignores it.
     ///
-    /// If `profile` is not running, an [`UnavailableConnector`] that errors
-    /// on every method is returned so the caller can shape error messages
-    /// uniformly.
+    /// Resolution order:
+    /// 1. An explicit override registered via [`Self::set_live_connector`]
+    ///    (tests / integrators) wins.
+    /// 2. For a running profile, a [`SupervisorLiveConnector`] over the live
+    ///    [`ProfileSupervisor`] — `open_tcp` opens a fresh forward through the
+    ///    live session (latency / throughput / limits run genuinely live);
+    ///    `open_udp` returns a structured "unsupported" error (no datagram seam
+    ///    on the session API).
+    /// 3. Otherwise an [`UnavailableConnector`] (profile not running) so the
+    ///    caller can shape a uniform error.
     #[must_use]
     pub fn live_connector(&self, profile: &str, _forward: Option<&str>) -> Arc<dyn LiveConnector> {
         if let Some(c) = self.live_overrides.lock().get(profile) {
             return Arc::clone(c);
         }
-        if self.profiles.lock().contains_key(profile) {
-            // E1-F13: do NOT silently hand back an in-process echo loop for a
-            // running profile — benchmark numbers measured against it are
-            // synthetic, not the live tunnel, and were being presented as real.
-            // Until a backend registers a session-aware connector via
-            // [`set_live_connector`], report the live connector as unavailable
-            // so callers surface an honest "not wired" error instead of fake
-            // throughput.
-            UnavailableConnector::arc(format!(
-                "live connector for profile `{profile}` is not wired \
-                 (no session-aware backend connector registered); \
-                 the synthetic echo connector is no longer used in production"
-            ))
+        if let Some(sup) = self.profiles.lock().get(profile).cloned() {
+            // E1-F13: a running profile gets a session-aware connector that
+            // opens a real forward through the live tunnel. This replaces the
+            // previous "not wired" UnavailableConnector — benchmark TCP traffic
+            // now traverses the live session rather than an in-process echo.
+            crate::live_connector::SupervisorLiveConnector::arc(sup)
         } else {
             UnavailableConnector::arc(format!("profile `{profile}` not running"))
         }
@@ -787,15 +787,25 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn live_connector_running_without_backend_is_unavailable() {
-        // E1-F13: a running profile with no registered session-aware connector
-        // must NOT silently return an in-process echo loop — that would present
-        // synthetic benchmark numbers as real. It reports unavailable instead.
+    async fn live_connector_running_is_session_aware() {
+        // E1-F13: a running profile now yields a session-aware
+        // SupervisorLiveConnector rather than a bare UnavailableConnector. It
+        // opens a real forward through the live session — but the no-I/O
+        // MockTunnelProtocol binds no listener, so the connect honestly fails
+        // (no fabricated throughput). open_udp is structurally unsupported.
         let orch = Orchestrator::new();
         let _proto = start_running_profile(&orch);
         let _row = wait_for_session(&orch).await;
         let conn = orch.live_connector("p", None);
+        // TCP: opens a live forward; connecting to the (un-served) loopback
+        // listener fails against the mock — an honest error, not fake data.
         assert!(conn.open_tcp("ignored", 0).await.is_err());
+        // UDP: structured unsupported (no datagram seam on the session API).
+        match conn.open_udp().await {
+            Err(spt_core::Error::UnsupportedPlatform(_)) => {}
+            Err(other) => panic!("expected UnsupportedPlatform, got {other:?}"),
+            Ok(_) => panic!("expected UnsupportedPlatform, got Ok"),
+        }
         orch.stop_profile("p").await;
     }
 

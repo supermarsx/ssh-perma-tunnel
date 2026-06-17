@@ -10,6 +10,7 @@ Wants=network-online.target
 
 [Service]
 Type=notify
+NotifyAccess=main
 ExecStart=/usr/local/bin/spt service run --config /etc/spt/relay.toml
 WorkingDirectory=/var/lib/spt
 StateDirectory=spt

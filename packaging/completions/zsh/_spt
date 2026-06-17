@@ -4266,6 +4266,8 @@ never\:"Never emit color escapes"))' \
 '--user[User-scoped scope]' \
 '--system[System-scoped scope]' \
 '--dry-run[Print actions without changing system state]' \
+'-y[Confirm and perform live firewall mutation (required for apply outside --dry-run)]' \
+'--yes[Confirm and perform live firewall mutation (required for apply outside --dry-run)]' \
 '--portable[Portable mode\: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)]' \
 '--json[Convenience alias for \`--output json\`]' \
 '-q[Suppress non-essential output]' \
@@ -4303,6 +4305,8 @@ never\:"Never emit color escapes"))' \
 '--user[User-scoped scope]' \
 '--system[System-scoped scope]' \
 '--dry-run[Print actions without changing system state]' \
+'-y[Confirm and perform live firewall mutation (required for apply outside --dry-run)]' \
+'--yes[Confirm and perform live firewall mutation (required for apply outside --dry-run)]' \
 '--portable[Portable mode\: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)]' \
 '--json[Convenience alias for \`--output json\`]' \
 '-q[Suppress non-essential output]' \

@@ -990,7 +990,7 @@ async fn tunnel_run(global: &GlobalOpts, args: groups::tunnel::TunnelRun) -> Res
     // persistence ring), the sink registry from `[[events.sinks]]`, and the
     // Dispatcher subscribed to the bus. The bus is injected into the
     // orchestrator below so ProfileEvents re-emit as canonical Events.
-    let (event_bus, events_pipeline) = build_events_pipeline(&cfg, &state_dir)?;
+    let (event_bus, events_pipeline) = build_events_pipeline(&cfg, &state_dir, &resolver)?;
 
     // E6-F4: instantiate the Prometheus exporter and spawn its periodic writer
     // task (writes `<state_dir>/metrics.prom`). HOLD `metrics_handle` for the
@@ -1176,7 +1176,18 @@ async fn tunnel_run(global: &GlobalOpts, args: groups::tunnel::TunnelRun) -> Res
     let remote_config_handle =
         maybe_spawn_remote_config_poller(&cfg, &state_dir, &resolver, &orchestrator, &config_cell);
 
+    // GAP 3: bring up the embedded DNS resolver when `[dns]` is enabled with a
+    // listener mode. Honors mode / auto_records / health-gating; a misconfig
+    // logs and returns None rather than aborting the tunnel.
+    let dns_runtime = maybe_spawn_dns_server(&cfg, &state_dir).await?;
+
     let signal_rx = crate::signals::spawn();
+
+    // GAP 5 (systemd): the orchestrator is up, forwards are bound, and the
+    // control surfaces (MCP/status-api/remote-config poller) are spawned —
+    // signal readiness to the service manager. No-op when `$NOTIFY_SOCKET` is
+    // unset (i.e. not launched under `Type=notify`), so unconditionally safe.
+    spt_service::sd_notify_ready();
 
     if args.once {
         // `--once`: wait until every selected profile reaches startup readiness
@@ -1211,6 +1222,9 @@ async fn tunnel_run(global: &GlobalOpts, args: groups::tunnel::TunnelRun) -> Res
         }
         if let Some(h) = remote_config_handle {
             h.shutdown().await;
+        }
+        if let Some(d) = dns_runtime {
+            d.shutdown().await;
         }
         // E6-F1/E6-F4: stop the events dispatcher and flush+stop the metrics
         // exporter writer (final metrics.prom snapshot) before returning.
@@ -1266,6 +1280,11 @@ async fn tunnel_run(global: &GlobalOpts, args: groups::tunnel::TunnelRun) -> Res
             None => {}
         }
     }
+    // GAP 5 (systemd): the shutdown signal (SIGTERM / CTRL-C) fired — tell the
+    // service manager we're stopping BEFORE tearing down forwards, so systemd
+    // doesn't treat the teardown window as an unexpected exit. No-op when
+    // `$NOTIFY_SOCKET` is unset.
+    spt_service::sd_notify_stopping();
     orchestrator.shutdown().await;
     if let Some(h) = mcp_handle {
         h.shutdown(&state_dir).await;
@@ -1278,6 +1297,9 @@ async fn tunnel_run(global: &GlobalOpts, args: groups::tunnel::TunnelRun) -> Res
     }
     if let Some(h) = remote_config_handle {
         h.shutdown().await;
+    }
+    if let Some(d) = dns_runtime {
+        d.shutdown().await;
     }
     // E6-F1/E6-F4: stop the events dispatcher + metrics exporter writer.
     events_pipeline.shutdown().await;
@@ -1295,6 +1317,10 @@ struct EventsPipeline {
     dispatcher: Option<spt_events::Dispatcher>,
     /// Kept alive so the persistence ring writer task isn't dropped early.
     _ring: std::sync::Arc<spt_state::EventRing>,
+    /// Live MCP notifier backing any `mcp_notify` sink (GAP 1). Held so the
+    /// broadcast channel stays open for the lifetime of the run; MCP clients
+    /// subscribe to it via `subscribe()`.
+    _mcp_notifier: std::sync::Arc<crate::mcp_notifier::BroadcastMcpNotifier>,
 }
 
 impl EventsPipeline {
@@ -1305,6 +1331,225 @@ impl EventsPipeline {
     }
 }
 
+/// Live DNS resolver handle held for the lifetime of `tunnel run` (GAP 3).
+/// Dropping/`shutdown`-ing it aborts the resolver listeners.
+struct DnsRuntime {
+    handle: spt_dns::DnsHandle,
+}
+
+impl DnsRuntime {
+    async fn shutdown(self) {
+        self.handle.shutdown().await;
+    }
+}
+
+/// Bring up the embedded DNS resolver for `tunnel run` when `[dns]` is enabled
+/// and its `mode` selects a listener posture (GAP 3).
+///
+/// Honors:
+/// * `mode` — `transparent_forwarder` / `synthetic_only` start a listener;
+///   `disabled` / `hosts_file` do not (returns `Ok(None)`).
+/// * `[[dns.records]]` — static managed records.
+/// * `auto_records` — synthesize A/AAAA (+ SRV) from each forward's `dns_names`.
+/// * `upstream` — recursion target for `transparent_forwarder`.
+/// * health-gating — a [`crate::dns_health::ProfileSupervisorHealthSource`]
+///   reading the supervisor status snapshot gates `AnswerWhen*` records.
+///
+/// A misconfigured DNS block logs a warning and returns `Ok(None)` rather than
+/// aborting the whole tunnel — the forwarding plane must come up regardless.
+async fn maybe_spawn_dns_server(
+    cfg: &spt_config::schema::Config,
+    state_dir: &Path,
+) -> Result<Option<DnsRuntime>> {
+    let Some(dns_cfg) = cfg.dns.as_ref() else {
+        return Ok(None);
+    };
+    if dns_cfg.enabled != Some(true) {
+        return Ok(None);
+    }
+    let mode = match spt_dns::DnsMode::from_config_str(dns_cfg.mode.as_deref().unwrap_or("")) {
+        Ok(Some(m)) => m,
+        Ok(None) => {
+            // `disabled` / `hosts_file`: no listener in the tunnel-run path.
+            tracing::info!(
+                mode = dns_cfg.mode.as_deref().unwrap_or(""),
+                "dns: mode selects no resolver listener — skipping embedded DNS server"
+            );
+            return Ok(None);
+        }
+        Err(unknown) => {
+            tracing::warn!(mode = %unknown, "dns: unknown `[dns] mode` — embedded DNS server not started");
+            return Ok(None);
+        }
+    };
+
+    let bind: std::net::SocketAddr = dns_cfg
+        .bind
+        .as_deref()
+        .unwrap_or("127.0.0.1:5353")
+        .parse()
+        .map_err(|e| Error::InvalidConfig(format!("[dns] bind: {e}")))?;
+
+    let suffix = dns_cfg
+        .zone
+        .clone()
+        .unwrap_or_else(|| "tunnel.local.".into());
+    let default_ttl = dns_cfg
+        .ttl
+        .as_deref()
+        .and_then(|d| spt_core::duration::parse_duration(d).ok())
+        .unwrap_or_else(|| std::time::Duration::from_secs(60));
+
+    let mut zone = spt_dns::ManagedZone::new(suffix.clone());
+
+    // Static `[[dns.records]]`.
+    for rec in &dns_cfg.records {
+        match build_static_record(rec, default_ttl) {
+            Ok(r) => {
+                if let Err(e) = zone.add(r) {
+                    tracing::warn!(name = %rec.name, error = %e, "dns: skipping invalid static record");
+                }
+            }
+            Err(e) => {
+                tracing::warn!(name = %rec.name, error = %e, "dns: skipping unparseable static record");
+            }
+        }
+    }
+
+    // `auto_records`: synthesize address/SRV records from forwards' dns_names.
+    if dns_cfg.auto_records == Some(true) {
+        let sources = forward_dns_sources(cfg, default_ttl);
+        for r in spt_dns::auto_records_from_forwards(&suffix, &sources) {
+            if let Err(e) = zone.add(r) {
+                tracing::debug!(error = %e, "dns: skipping duplicate auto-synthesized record");
+            }
+        }
+    }
+
+    let upstream = parse_dns_upstreams(dns_cfg.upstream.as_deref().unwrap_or(&[]));
+    let health = std::sync::Arc::new(crate::dns_health::ProfileSupervisorHealthSource::new(
+        state_dir.to_path_buf(),
+    )) as std::sync::Arc<dyn spt_dns::HealthSource>;
+
+    let mut builder = spt_dns::DnsServerBuilder::new()
+        .bind(bind)
+        .mode(mode)
+        .upstream(upstream)
+        .health_source(health);
+    if !zone.records.is_empty() {
+        builder = builder.add_zone(zone);
+    }
+
+    let handle = builder
+        .run()
+        .await
+        .map_err(|e| Error::DnsFailed(format!("dns server: {e}")))?;
+    tracing::info!(
+        udp = %handle.udp_addr(),
+        tcp = %handle.tcp_addr(),
+        mode = ?mode,
+        "embedded DNS resolver bound"
+    );
+    Ok(Some(DnsRuntime { handle }))
+}
+
+/// Build a [`spt_dns::Record`] from a `[[dns.records]]` config entry, always
+/// `AlwaysAnswer` (static records are not health-gated).
+fn build_static_record(
+    rec: &spt_config::schema::DnsRecord,
+    default_ttl: std::time::Duration,
+) -> std::result::Result<spt_dns::Record, String> {
+    let kind = match rec.kind.to_ascii_uppercase().as_str() {
+        "A" => spt_dns::RecordKind::A,
+        "AAAA" => spt_dns::RecordKind::AAAA,
+        "SRV" => spt_dns::RecordKind::SRV,
+        "TXT" => spt_dns::RecordKind::TXT,
+        other => return Err(format!("unknown record type `{other}`")),
+    };
+    let ttl = rec
+        .ttl
+        .as_deref()
+        .and_then(|d| spt_core::duration::parse_duration(d).ok())
+        .unwrap_or(default_ttl);
+    // SRV values may be split across priority/weight/port fields.
+    let value = if kind == spt_dns::RecordKind::SRV {
+        match (rec.priority, rec.weight, rec.port) {
+            (Some(p), Some(w), Some(port)) => format!("{p} {w} {port} {}", rec.value),
+            _ => rec.value.clone(),
+        }
+    } else {
+        rec.value.clone()
+    };
+    Ok(spt_dns::Record {
+        name: rec.name.clone(),
+        kind,
+        value,
+        ttl,
+        answer_policy: spt_dns::AnswerPolicy::AlwaysAnswer,
+        forward_id: None,
+    })
+}
+
+/// Build the per-forward DNS sources for `auto_records` from every profile's
+/// `[[profiles.forwards]]` that declares `dns_names`. The address record points
+/// at the forward's resolved listener IP; records are health-gated through the
+/// `forward_id = "<profile>/<forward>"` seam (`AnswerWhenListening`).
+fn forward_dns_sources(
+    cfg: &spt_config::schema::Config,
+    default_ttl: std::time::Duration,
+) -> Vec<spt_dns::ForwardDnsSource> {
+    let mut out = Vec::new();
+    for p in &cfg.profiles {
+        for f in &p.forwards {
+            let Some(names) = f.dns_names.as_ref().filter(|n| !n.is_empty()) else {
+                continue;
+            };
+            let addr = forward_listener_addr(f);
+            out.push(spt_dns::ForwardDnsSource {
+                dns_names: names.clone(),
+                addr,
+                srv: None,
+                ttl: default_ttl,
+                // Gate the auto records on the forward actually listening.
+                answer_policy: spt_dns::AnswerPolicy::AnswerWhenListening,
+                forward_id: Some(format!("{}/{}", p.name, f.name)),
+            });
+        }
+    }
+    out
+}
+
+/// Extract the listener IP a forward binds, mapping it to a [`spt_dns::ForwardAddr`].
+/// Returns `None` when the bind is unspecified/unparseable (no address record
+/// synthesized — the forward may still contribute an SRV later).
+fn forward_listener_addr(f: &spt_config::schema::Forward) -> Option<spt_dns::ForwardAddr> {
+    let raw = f.bind.as_deref().or(f.listen.as_deref())?;
+    // Accept `host:port` or a bare host/IP.
+    let ip = raw
+        .parse::<std::net::SocketAddr>()
+        .map(|sa| sa.ip())
+        .or_else(|_| raw.parse::<std::net::IpAddr>())
+        .ok()?;
+    match ip {
+        std::net::IpAddr::V4(v4) => Some(spt_dns::ForwardAddr::V4(v4)),
+        std::net::IpAddr::V6(v6) => Some(spt_dns::ForwardAddr::V6(v6)),
+    }
+}
+
+/// Parse the `[dns] upstream` list to socket addrs (bare IPs default to :53).
+fn parse_dns_upstreams(items: &[String]) -> Vec<std::net::SocketAddr> {
+    items
+        .iter()
+        .filter_map(|s| {
+            s.parse::<std::net::SocketAddr>().ok().or_else(|| {
+                s.parse::<std::net::IpAddr>()
+                    .ok()
+                    .map(|ip| std::net::SocketAddr::new(ip, 53))
+            })
+        })
+        .collect()
+}
+
 /// Build a single `EventBus` (with a persistence ring) from `[events]`,
 /// construct the sink registry + bindings from `[[events.sinks]]` /
 /// `[[events.bindings]]`, and spawn the `Dispatcher` subscribed to the bus
@@ -1313,13 +1558,16 @@ impl EventsPipeline {
 /// `spt_events::Event` onto the bus, where the dispatcher fans it out to the
 /// configured sinks and the ring persists it to `<state_dir>/events/`.
 ///
-/// Sinks that need runtime secret material or transports we cannot safely
-/// build here (email/sms/webpush/snmp_trap/windows_event/remote_log) are
-/// logged and skipped rather than aborting startup — HTTP/webhook and
-/// mcp-notify cover the common alerting path and keep the pipeline live.
+/// Every configured sink kind (http/webhook_post/email/sms/push/mcp_notify/
+/// command) is constructed via [`spt_events::build_sink`] with real transports
+/// and the live secrets [`spt_secrets::Resolver`]; a sink that fails to build
+/// (bad config / missing secret) is logged and skipped for that one entry
+/// rather than aborting startup. The `mcp_notify` sink is backed by a live
+/// [`crate::mcp_notifier::BroadcastMcpNotifier`] (no more `NoopMcpNotifier`).
 fn build_events_pipeline(
     cfg: &spt_config::schema::Config,
     state_dir: &Path,
+    resolver: &spt_secrets::Resolver,
 ) -> Result<(spt_events::EventBus, EventsPipeline)> {
     let ring = std::sync::Arc::new(
         spt_state::EventRing::spawn(
@@ -1332,7 +1580,8 @@ fn build_events_pipeline(
         spt_events::EventBus::new(&spt_events::EventBusConfig::default()).with_ring(ring.clone());
 
     let events = cfg.events.clone().unwrap_or_default();
-    let sinks = build_event_sinks(&events.sinks);
+    let mcp_notifier = std::sync::Arc::new(crate::mcp_notifier::BroadcastMcpNotifier::new());
+    let sinks = build_event_sinks(&events.sinks, &events.commands, resolver, &mcp_notifier);
     let bindings = build_event_bindings(&events.bindings, &sinks);
 
     let dispatcher = if sinks.is_empty() {
@@ -1355,80 +1604,166 @@ fn build_events_pipeline(
         EventsPipeline {
             dispatcher,
             _ring: ring,
+            _mcp_notifier: mcp_notifier,
         },
     ))
 }
 
-/// Map `[[events.sinks]]` config entries onto live `Arc<dyn Sink>` handles for
-/// the kinds we can construct without runtime secret resolution.
+/// Map `[[events.sinks]]` config entries onto live `Arc<dyn Sink>` handles
+/// (GAP 1).
+///
+/// Every configured sink kind is constructed via [`spt_events::build_sink`]
+/// with the shared production transports (one pooled HTTPS transport, an SMTP
+/// transport, a child-process runner) and a live MCP notifier. The secrets
+/// [`spt_secrets::Resolver`] resolves `secret://` references the same way the
+/// rest of the binary does. A sink that fails to build (bad URL, missing
+/// secret, no matching `[[events.commands]]` allow-entry, …) is logged and
+/// skipped for that one entry — never silently dropped without a loud reason,
+/// and never aborting the whole pipeline.
 fn build_event_sinks(
     configured: &[spt_config::schema::EventSink],
+    commands: &[spt_config::schema::EventCommand],
+    resolver: &spt_secrets::Resolver,
+    mcp_notifier: &std::sync::Arc<crate::mcp_notifier::BroadcastMcpNotifier>,
 ) -> std::collections::HashMap<String, std::sync::Arc<dyn spt_events::Sink>> {
     use std::sync::Arc;
     let mut sinks: std::collections::HashMap<String, Arc<dyn spt_events::Sink>> =
         std::collections::HashMap::new();
+    if configured.is_empty() {
+        return sinks;
+    }
+
+    // Shared production transports, built once and reused across sinks.
+    // The HTTPS transport carries per-sink TLS pin params; sinks that need a
+    // different pin set get a bespoke transport in their own `SinkDeps` below.
+    // Most deployments share one, so we build a default (no extra pins) here.
+    let http: Option<Arc<dyn spt_events::sinks::http::HttpTransport>> =
+        match spt_events::sinks::http::reqwest_transport::ReqwestTransport::with_pin(
+            spt_events::sinks::build::DEFAULT_SINK_TIMEOUT,
+            &[],
+            false,
+            Some(5),
+        ) {
+            Ok(t) => Some(Arc::new(t) as Arc<dyn spt_events::sinks::http::HttpTransport>),
+            Err(e) => {
+                tracing::warn!(error = %e, "events: shared HTTPS transport build failed — http/webhook/sms/push sinks will be skipped");
+                None
+            }
+        };
+    let command: Arc<dyn spt_events::sinks::command::CommandRunner> =
+        Arc::new(spt_events::sinks::command::ProcessRunner);
+    let mcp: Arc<dyn spt_events::McpNotifier> = mcp_notifier.clone();
+
     for sc in configured {
-        let timeout = sc
-            .timeout
-            .as_deref()
-            .and_then(|d| spt_core::duration::parse_duration(d).ok())
-            .unwrap_or_else(|| std::time::Duration::from_secs(10));
-        match sc.kind.as_str() {
-            "http" | "webhook_post" => {
-                let Some(url) = sc.url.clone().or_else(|| sc.endpoint.clone()) else {
-                    tracing::warn!(sink = %sc.name, "events sink `{}` has no url/endpoint — skipped", sc.kind);
+        // Per-sink HTTPS transport when the sink declares its own TLS pin set
+        // or self-signed posture (so each sink honors its own pinning), else
+        // reuse the shared transport.
+        let per_sink_http: Option<Arc<dyn spt_events::sinks::http::HttpTransport>> = if sc
+            .pin_spki_sha256
+            .is_empty()
+            && sc.allow_self_signed != Some(true)
+        {
+            http.clone()
+        } else {
+            match spt_events::sinks::http::reqwest_transport::ReqwestTransport::with_pin(
+                sink_timeout_or_default(sc),
+                &sc.pin_spki_sha256,
+                sc.allow_self_signed.unwrap_or(false),
+                sc.max_cert_chain_depth.or(Some(5)),
+            ) {
+                Ok(t) => Some(Arc::new(t) as Arc<dyn spt_events::sinks::http::HttpTransport>),
+                Err(e) => {
+                    tracing::warn!(sink = %sc.name, error = %e, "events sink HTTPS transport build failed — skipped");
                     continue;
-                };
-                let transport =
-                    match spt_events::sinks::http::reqwest_transport::ReqwestTransport::with_pin(
-                        timeout,
-                        &sc.pin_spki_sha256,
-                        sc.allow_self_signed.unwrap_or(false),
-                        sc.max_cert_chain_depth.or(Some(5)),
-                    ) {
-                        Ok(t) => Arc::new(t) as Arc<dyn spt_events::sinks::http::HttpTransport>,
-                        Err(e) => {
-                            tracing::warn!(sink = %sc.name, error = %e, "events http sink transport build failed — skipped");
-                            continue;
-                        }
-                    };
-                let method = sc.method.clone().unwrap_or_else(|| "POST".into());
-                let content_type = sc
-                    .content_type
-                    .clone()
-                    .unwrap_or_else(|| "application/json".into());
-                let body = sc
-                    .body_template
-                    .clone()
-                    .unwrap_or_else(|| "{{event}}".into());
-                let sink = spt_events::sinks::http::HttpSink::new(
-                    sc.name.clone(),
-                    method,
-                    url,
-                    body,
-                    content_type,
-                    spt_events::sinks::http::HttpAuth::None,
-                    transport,
-                );
-                sinks.insert(sc.name.clone(), Arc::new(sink));
+                }
             }
-            "mcp_notify" => {
-                let sink = spt_events::sinks::mcp_notify::McpNotifySink::new(
-                    sc.name.clone(),
-                    Arc::new(spt_events::NoopMcpNotifier),
-                );
-                sinks.insert(sc.name.clone(), Arc::new(sink));
+        };
+
+        // Build the SMTP transport per-sink (email sinks carry their own
+        // host/port/credentials). Only attempted for `email` sinks.
+        let email = if sc.kind == "email" {
+            match build_email_transport(sc, resolver) {
+                Ok(t) => Some(t),
+                Err(e) => {
+                    tracing::warn!(sink = %sc.name, error = %e, "events email sink transport build failed — skipped");
+                    continue;
+                }
             }
-            other => {
+        } else {
+            None
+        };
+
+        let mut deps = spt_events::SinkDeps::none()
+            .with_command(command.clone())
+            .with_mcp(mcp.clone());
+        if let Some(h) = per_sink_http {
+            deps = deps.with_http(h);
+        }
+        if let Some(e) = email {
+            deps = deps.with_email(e);
+        }
+
+        match spt_events::build_sink(sc, commands, &deps, resolver) {
+            Ok(sink) => {
+                sinks.insert(sc.name.clone(), Arc::from(sink));
+            }
+            Err(e) => {
                 tracing::warn!(
                     sink = %sc.name,
-                    kind = %other,
-                    "events sink kind not wired in the inline supervisor path (needs secret/transport setup) — skipped"
+                    kind = %sc.kind,
+                    error = %e,
+                    "events sink failed to build — skipped",
                 );
             }
         }
     }
     sinks
+}
+
+/// Per-sink delivery timeout, falling back to the events default.
+fn sink_timeout_or_default(sc: &spt_config::schema::EventSink) -> std::time::Duration {
+    sc.timeout
+        .as_deref()
+        .and_then(|d| spt_core::duration::parse_duration(d).ok())
+        .unwrap_or(spt_events::sinks::build::DEFAULT_SINK_TIMEOUT)
+}
+
+/// Build a production SMTP transport for an `email` sink from its config.
+///
+/// `smtp` is `host` or `host:port` (default port 587, STARTTLS). The optional
+/// `auth` field is a `user:pass` pair (each half may be a `secret://` ref
+/// resolved through the shared resolver).
+fn build_email_transport(
+    sc: &spt_config::schema::EventSink,
+    resolver: &spt_secrets::Resolver,
+) -> Result<std::sync::Arc<dyn spt_events::sinks::email::EmailTransport>> {
+    use std::sync::Arc;
+    let endpoint = sc
+        .smtp
+        .as_deref()
+        .ok_or_else(|| Error::InvalidConfig(format!("email sink `{}` has no `smtp`", sc.name)))?;
+    let (host, port) = match endpoint.rsplit_once(':') {
+        Some((h, p)) => (
+            h.to_string(),
+            p.parse::<u16>().map_err(|e| {
+                Error::InvalidConfig(format!("email sink `{}` smtp port: {e}", sc.name))
+            })?,
+        ),
+        None => (endpoint.to_string(), 587u16),
+    };
+    let user_pass = match sc.auth.as_deref() {
+        Some(raw) => {
+            let resolved = spt_events::resolve_secret(raw, resolver)
+                .map_err(|e| Error::InvalidConfig(format!("email sink `{}` auth: {e}", sc.name)))?;
+            resolved
+                .split_once(':')
+                .map(|(u, p)| (u.to_string(), p.to_string()))
+        }
+        None => None,
+    };
+    let transport = spt_events::sinks::email::smtp::SmtpTransport::build(&host, port, user_pass)
+        .map_err(|e| Error::InvalidConfig(format!("email sink `{}` smtp: {e}", sc.name)))?;
+    Ok(Arc::new(transport) as Arc<dyn spt_events::sinks::email::EmailTransport>)
 }
 
 /// Map `[[events.bindings]]` onto dispatcher [`spt_events::Binding`]s, keeping
@@ -3025,6 +3360,15 @@ fn firewall_apply(
             println!("(dry-run) would remove {} rules", plan.rule_count);
             return Ok(());
         }
+        if !args.yes {
+            // Live removal mutates the host firewall — require explicit
+            // confirmation (the `--yes` flag cli1 added) before shelling out.
+            return Err(Error::InvalidArgs(
+                "live firewall remove mutates the host firewall — pass `--yes` to confirm \
+                 (or `--dry-run` to preview)"
+                    .into(),
+            ));
+        }
         // E4-F4: propagate the Result instead of `let _ = ...`; a failed
         // removal must not report success (exit 0).
         p.remove(&plan)?;
@@ -3035,14 +3379,19 @@ fn firewall_apply(
         p.apply(&plan, true)?;
         println!("(dry-run) would apply {} rules", plan.rule_count);
         Ok(())
+    } else if args.yes {
+        // GAP 4: confirmed live apply. Route to the real per-OS apply in
+        // spt-firewall (`FirewallPlanner::apply` with dry_run = false), which
+        // shells out via the platform planner (nft/pf/netsh).
+        p.apply(&plan, false)?;
+        println!("(applied {} rules)", plan.rule_count);
+        Ok(())
     } else {
-        // E4-F4: real apply is gated on an explicit confirmation that the CLI
-        // surface does not yet expose (`--yes` is not declared on
-        // `FirewallApply`). Return a structured, milestone-named not-implemented
-        // error instead of either silently no-oping or mutating unconfirmed.
-        Err(Error::UnsupportedPlatform(
-            "real firewall apply requires explicit confirmation (`--yes`), which ships in \
-             M-firewall; pass `--dry-run` to preview the rendered plan"
+        // No `--yes`: refuse to mutate unconfirmed. Render/dry-run/status all
+        // remain available without confirmation.
+        Err(Error::InvalidArgs(
+            "live firewall apply mutates the host firewall — pass `--yes` to perform the \
+             live mutation (or `--dry-run` to preview the rendered plan)"
                 .into(),
         ))
     }
@@ -6167,14 +6516,39 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn firewall_apply_without_dry_run_refused() {
-        // E4-F4: real apply (no --dry-run, no --yes surface) returns a
-        // structured not-implemented error naming the milestone.
+    async fn firewall_apply_without_yes_refused() {
+        // GAP 4: real apply (no --dry-run, no --yes) refuses with a clear
+        // "pass --yes" message rather than mutating unconfirmed.
         let cli = parse(&["spt", "firewall", "apply", "--system"]);
-        assert!(matches!(
-            dispatch_err(cli).await,
-            Error::UnsupportedPlatform(_)
-        ));
+        let err = dispatch_err(cli).await;
+        match err {
+            Error::InvalidArgs(m) => assert!(
+                m.contains("--yes"),
+                "refusal must tell the user to pass --yes, got: {m}"
+            ),
+            other => panic!("expected InvalidArgs naming --yes, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn firewall_apply_with_yes_routes_to_real_apply() {
+        // GAP 4: with --yes (and no --dry-run) the dispatch reaches the real
+        // per-OS `FirewallPlanner::apply`. The default rule set is empty, so
+        // the platform planner has no rules to shell out and returns Ok —
+        // deterministic, mutates nothing.
+        let cli = parse(&["spt", "firewall", "apply", "--system", "--yes"]);
+        dispatch_ok(cli).await;
+    }
+
+    #[tokio::test]
+    async fn firewall_remove_without_yes_refused() {
+        // GAP 4: live remove also requires --yes.
+        let cli = parse(&["spt", "firewall", "remove", "--system"]);
+        let err = dispatch_err(cli).await;
+        assert!(
+            matches!(&err, Error::InvalidArgs(m) if m.contains("--yes")),
+            "expected InvalidArgs naming --yes, got {err:?}"
+        );
     }
 
     #[tokio::test]
@@ -7153,10 +7527,21 @@ mod tests {
         dispatcher.shutdown().await;
     }
 
-    // E6-F1: `build_event_sinks` maps the tractable sink kinds and skips the
-    // rest without aborting.
+    // GAP 1: `build_event_sinks` now constructs every configured kind via
+    // `spt_events::build_sink` — http/webhook, mcp_notify (live notifier), and
+    // command — and only skips an entry whose own config is invalid.
     #[test]
-    fn build_event_sinks_maps_http_and_mcp_notify() {
+    fn build_event_sinks_constructs_all_configured_kinds() {
+        let resolver = spt_secrets::Resolver::new(vec![]);
+        let notifier = std::sync::Arc::new(crate::mcp_notifier::BroadcastMcpNotifier::new());
+        let commands = vec![spt_config::schema::EventCommand {
+            // A command sink references the `[[events.commands]]` entry whose
+            // `name` matches the SINK name.
+            name: "runner".into(),
+            command: "echo".into(),
+            allow_exec: Some(true),
+            ..Default::default()
+        }];
         let configured = vec![
             spt_config::schema::EventSink {
                 name: "hook".into(),
@@ -7170,16 +7555,31 @@ mod tests {
                 ..Default::default()
             },
             spt_config::schema::EventSink {
-                name: "mail".into(),
-                kind: "email".into(),
+                name: "runner".into(),
+                kind: "command".into(),
                 ..Default::default()
             },
         ];
-        let sinks = build_event_sinks(&configured);
-        assert!(sinks.contains_key("hook"));
-        assert!(sinks.contains_key("notify"));
-        // email needs secret/transport setup we don't wire here — skipped.
-        assert!(!sinks.contains_key("mail"));
+        let sinks = build_event_sinks(&configured, &commands, &resolver, &notifier);
+        assert!(sinks.contains_key("hook"), "http sink constructed");
+        assert!(sinks.contains_key("notify"), "mcp_notify sink constructed");
+        assert!(sinks.contains_key("runner"), "command sink constructed");
+    }
+
+    // GAP 1: a `command` sink whose allow-entry is missing must be skipped
+    // (loud build error), not silently registered.
+    #[test]
+    fn build_event_sinks_skips_command_without_allow_entry() {
+        let resolver = spt_secrets::Resolver::new(vec![]);
+        let notifier = std::sync::Arc::new(crate::mcp_notifier::BroadcastMcpNotifier::new());
+        let configured = vec![spt_config::schema::EventSink {
+            name: "runner".into(),
+            kind: "command".into(),
+            ..Default::default()
+        }];
+        // No `[[events.commands]]` entry matching the sink name ⇒ build error.
+        let sinks = build_event_sinks(&configured, &[], &resolver, &notifier);
+        assert!(!sinks.contains_key("runner"), "no allow-entry ⇒ skipped");
     }
 
     // E6-F4: the metrics exporter spawns and writes the prom file to the

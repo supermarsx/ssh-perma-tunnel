@@ -13,19 +13,32 @@ handle into the supervisor so profile/forward lifecycle transitions re-emit
 as canonical `Event`s. (Earlier builds left this subsystem inert — that
 caveat no longer applies.)
 
-**Sink coverage is partial.** Three sink kinds deliver:
+**All sink kinds now fire at runtime.** Every configured `[[events.sinks]]`
+entry is constructed at startup and delivers; a per-sink build failure is
+logged loudly and that one sink is skipped (never silently dropped):
 
 | Sink kind                       | Status                                    |
 |---------------------------------|-------------------------------------------|
 | `http` / `webhook_post`         | delivered                                 |
-| `command`                       | delivered                                 |
-| `mcp_notify`                    | delivered                                 |
-| `email` (SMTP) / `sms` / `push` | **warned-and-skipped** — secret-heavy sinks are not yet delivered; configuring one logs a warning at startup and the sink is a no-op (follow-up). |
+| `email` (SMTP)                  | delivered                                 |
+| `sms`                           | delivered                                 |
+| `push` / `webpush`              | delivered (`WebPushSink` when `subscriptions` + `vapid_private_key` are present, otherwise `PushSink`) |
+| `command`                       | delivered (requires a matching `[[events.commands]]` entry with `allow_exec = true`) |
+| `mcp_notify`                    | delivered to the loopback MCP broadcast channel — see caveat below |
 
-**TUI configurability (v1).** The events surface is now editable from the
-TUI for the delivered sink kinds — `http`, `webhook_post`, `command`,
-`mcp_notify` sinks plus their bindings. `email` / `sms` / `push` sink
-editing is **deferred** in the TUI (configure those by hand in TOML).
+**`mcp_notify` caveat.** The `mcp_notify` sink is live: it publishes each
+event as a `spt/event` JSON-RPC frame onto the loopback MCP broadcast channel
+(the same broadcast seam `stats_subscribe` streams over). However, a
+client-facing MCP subscription tool to stream those frames out to a connected
+client **is not yet provided** — so frames are dropped when nothing is
+subscribed. The notifier itself is real (no Noop placeholder remains); only
+the consumer-side subscription tool is pending.
+
+**TUI configurability (v1).** The events surface is editable from the TUI for
+`http`, `webhook_post`, `command`, and `mcp_notify` sinks plus their bindings.
+`email` / `sms` / `push` sink **editing in the TUI** is still deferred
+(configure those kinds by hand in TOML) — note this is a TUI-editor gap only;
+all kinds deliver at runtime regardless of how they were configured.
 
 ## Event shape
 
@@ -52,14 +65,17 @@ re-fires of identical events within the window.
 
     [[events.sinks]]
     name = "slack"
-    type = "webhook_post"        # http | webhook_post | command | mcp_notify  (delivered)
-                                 # email | sms | push                        (warned-and-skipped)
+    type = "webhook_post"        # http | webhook_post | email | sms | push | command | mcp_notify
     endpoint = "https://hooks.slack.com/..."
     template = "{{kind}} on {{profile}}: {{message}}"
 
 Templates use mustache-like `{{field}}` substitution. Unknown fields render
 as the empty string (a `Null` field renders empty, never the literal
 `"null"`).
+
+For `email` sinks the subject line is templated too: `subject_template` is
+configurable (it accepts the same `{{field}}` substitution) and defaults to
+`"[{{severity}}] {{kind}}"` when omitted.
 
 ## Delivery & retries
 

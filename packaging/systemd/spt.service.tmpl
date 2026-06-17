@@ -6,7 +6,7 @@ Wants=network-online.target
 
 [Service]
 Type={{service_type}}
-ExecStart={{exec_path}} {{args}}
+{{notify_access}}ExecStart={{exec_path}} {{args}}
 WorkingDirectory={{working_dir}}
 {{state_hardening}}
 {{env_lines}}

@@ -18,6 +18,7 @@ use tracing::info;
 
 use crate::error::{DnsError, Result};
 use crate::health::{HealthSource, NoHealth};
+use crate::mode::DnsMode;
 use crate::split_horizon::SplitHorizonHandler;
 use crate::zone::ManagedZone;
 
@@ -68,6 +69,7 @@ pub struct DnsServerBuilder {
     zones: Vec<ManagedZone>,
     health: Arc<dyn HealthSource>,
     tcp_timeout: Duration,
+    mode: DnsMode,
 }
 
 impl Default for DnsServerBuilder {
@@ -78,6 +80,7 @@ impl Default for DnsServerBuilder {
             zones: Vec::new(),
             health: Arc::new(NoHealth),
             tcp_timeout: DEFAULT_TCP_TIMEOUT,
+            mode: DnsMode::default(),
         }
     }
 }
@@ -125,6 +128,20 @@ impl DnsServerBuilder {
         self
     }
 
+    /// Set the runtime [`DnsMode`] (defaults to
+    /// [`DnsMode::TransparentForwarder`]).
+    ///
+    /// In [`DnsMode::SyntheticOnly`] the listener never recurses upstream:
+    /// unmanaged names are `NXDOMAIN` even if [`upstream`](Self::upstream) was
+    /// populated. The binary maps the `[dns] mode` config string via
+    /// [`DnsMode::from_config_str`] and only calls [`run`](Self::run) for the
+    /// listener modes (`disabled` / `hosts_file` start no server).
+    #[must_use]
+    pub fn mode(mut self, mode: DnsMode) -> Self {
+        self.mode = mode;
+        self
+    }
+
     /// Bind sockets and start the server.
     ///
     /// Returns a [`DnsHandle`] that controls the lifetime; dropping the
@@ -145,7 +162,7 @@ impl DnsServerBuilder {
             Some(Arc::new(resolver))
         };
 
-        let handler = SplitHorizonHandler::new(self.zones, upstream, self.health);
+        let handler = SplitHorizonHandler::with_mode(self.zones, upstream, self.health, self.mode);
         let mut server = Server::new(handler);
 
         let udp = UdpSocket::bind(bind).await?;

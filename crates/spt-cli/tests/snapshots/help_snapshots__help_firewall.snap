@@ -107,6 +107,7 @@ Options:
 EXAMPLES:
   spt firewall plan --profile edge --json
   spt firewall apply --system --dry-run
+  spt firewall apply --system --yes
   spt firewall remove --user
   spt firewall bind-preview --forward edge/db
   spt firewall gateway show --json

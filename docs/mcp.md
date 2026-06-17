@@ -5,10 +5,17 @@
 live-control tool), JSON-RPC 2.0 over stdio. The server is **disabled by
 default**, **read-only by default**, and **never returns plaintext secrets**.
 
-Resources and read-only tools are backed by **real** `ConfigSource` /
-`StateSource` adapters over the live config, status snapshot, and event/log
-state (the earlier NoopSources fixtures are gone). Mutating tools route
-through the live `Controller`.
+In the **`tunnel run` loopback** MCP server, resources and read-only tools are
+backed by **real** `ConfigSource` / `StateSource` adapters over the live
+config, status snapshot, and event/log state, and mutating tools route through
+the live `Controller` (real side effects).
+
+The **standalone `spt mcp serve`** path has no running supervisor to act on,
+so it builds a Noop controller/sources server: resource reads return
+empty/placeholder documents and mutating tools respond plan-only
+(`{ "applied": false, "planned": … }`) rather than performing side effects.
+Use the loopback server (started inside `tunnel run`) when you need live data
+and real mutations.
 
 ## Enabling
 

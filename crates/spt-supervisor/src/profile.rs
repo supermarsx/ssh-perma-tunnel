@@ -151,6 +151,10 @@ pub struct ProfileSupervisor {
     selector: Arc<Mutex<EndpointSelector>>,
     /// Tracks the currently-published session id for this supervisor.
     current_session: Arc<Mutex<Option<SessionId>>>,
+    /// Whether the backing protocol can open client-initiated UDP forwards
+    /// (SSH3). Captured at spawn so the bench live connector can gate its UDP
+    /// driver without re-reaching the protocol object.
+    supports_udp: bool,
 }
 
 impl std::fmt::Debug for ProfileSupervisor {
@@ -207,6 +211,9 @@ impl ProfileSupervisor {
     ) -> Self {
         let auth = default_auth;
         let name: String = name.into();
+        // Capture UDP capability before `protocol` is moved into the task so the
+        // bench live connector can gate its UDP driver (E1-F13 live bench).
+        let supports_udp = protocol.capabilities().local_udp;
         let (state_tx, state_rx) = watch::channel(ProfileStateName::Idle);
         let (events_tx, events_rx) = mpsc::unbounded_channel();
         let (control_tx, control_rx) = mpsc::channel(16);
@@ -254,7 +261,14 @@ impl ProfileSupervisor {
             join: Mutex::new(Some(join)),
             selector,
             current_session,
+            supports_udp,
         }
+    }
+
+    /// Whether the backing protocol can open client-initiated UDP forwards.
+    #[must_use]
+    pub fn supports_udp(&self) -> bool {
+        self.supports_udp
     }
 
     /// Profile name.
@@ -335,6 +349,22 @@ impl ProfileSupervisor {
         let (reply, rx) = oneshot::channel();
         self.control
             .send(Control::CloseSession { reply })
+            .await
+            .map_err(|_| Error::RuntimeFailure("supervisor not running".into()))?;
+        rx.await
+            .map_err(|_| Error::RuntimeFailure("supervisor reply lost".into()))?
+    }
+
+    /// Open a fresh TCP forward through the **live** session for benchmarking.
+    ///
+    /// Returns a [`crate::control::BenchForward`] whose `local_addr` a caller
+    /// connects to (driving bytes through the live tunnel) and whose `guard`,
+    /// when dropped, tears the forward down. Errors with a structured
+    /// "no live session" diagnostic if the profile is not currently Active.
+    pub async fn open_bench_forward(&self) -> Result<crate::control::BenchForward> {
+        let (reply, rx) = oneshot::channel();
+        self.control
+            .send(Control::OpenBenchForward { reply })
             .await
             .map_err(|_| Error::RuntimeFailure("supervisor not running".into()))?;
         rx.await
@@ -571,6 +601,11 @@ impl ProfileTask {
                             let _ = reply.send(Ok(()));
                             continue;
                         }
+                        Some(Control::OpenBenchForward { reply }) => {
+                            // Connecting, not yet active — no live session.
+                            let _ = reply.send(Err(no_live_session_err()));
+                            continue;
+                        }
                         Some(Control::Drain { reply, .. }) => {
                             // Pre-session drain is terminal (E1-F18): mirror the
                             // active-path semantics so the same command always
@@ -727,18 +762,27 @@ impl ProfileTask {
 
             tokio::select! {
                 msg = control.recv() => {
-                    break match msg {
-                        None | Some(Control::Shutdown) => ActiveDecision::ShutdownExit,
+                    match msg {
+                        None | Some(Control::Shutdown) => break ActiveDecision::ShutdownExit,
                         Some(Control::Failover { override_to, reply }) => {
-                            ActiveDecision::Failover { override_to, reply }
+                            break ActiveDecision::Failover { override_to, reply };
                         }
                         Some(Control::CloseSession { reply }) => {
-                            ActiveDecision::CloseSession { reply }
+                            break ActiveDecision::CloseSession { reply };
                         }
                         Some(Control::Drain { grace, reply }) => {
-                            ActiveDecision::Drain { grace, reply }
+                            break ActiveDecision::Drain { grace, reply };
                         }
-                    };
+                        Some(Control::OpenBenchForward { reply }) => {
+                            // Open a fresh `local` forward over the LIVE session
+                            // for benchmarking, without disturbing the supervised
+                            // forwards or the session lifecycle (E1-F13 live
+                            // bench wiring). Stays in the active loop.
+                            let res = open_bench_forward(session.as_mut()).await;
+                            let _ = reply.send(res);
+                            // 1.88 lint: redundant_continue
+                        }
+                    }
                 }
                 _ = keepalive.tick() => {
                     // E1-F11: bound the probe so a black-holed connection can't
@@ -954,6 +998,11 @@ impl ProfileTask {
                 let _ = reply.send(Ok(DrainReport::default()));
                 std::ops::ControlFlow::Break(())
             }
+            Control::OpenBenchForward { reply } => {
+                // No live session in the idle/reconnect phase — report honestly.
+                let _ = reply.send(Err(no_live_session_err()));
+                std::ops::ControlFlow::Continue(())
+            }
         }
     }
 
@@ -1110,6 +1159,11 @@ impl ProfileTask {
                         let _ = reply.send(Ok(()));
                         false
                     }
+                    Some(Control::OpenBenchForward { reply }) => {
+                        // Backoff/reconnect phase — no live session yet.
+                        let _ = reply.send(Err(no_live_session_err()));
+                        false
+                    }
                     Some(Control::Drain { reply, .. }) => {
                         // E1-F18: drain is terminal even mid-backoff.
                         let _ = reply.send(Ok(DrainReport::default()));
@@ -1247,6 +1301,74 @@ fn parse_endpoint_key(s: &str) -> Result<(String, u16)> {
         .parse()
         .map_err(|e| Error::InvalidArgs(format!("endpoint port `{port}`: {e}")))?;
     Ok((host.to_owned(), port))
+}
+
+/// Structured error returned when an [`Control::OpenBenchForward`] arrives while
+/// no live session is up (idle / connecting / backoff phases).
+fn no_live_session_err() -> Error {
+    Error::runtime_failure(
+        spt_core::Diagnostic::what("Cannot open a benchmark forward: no live session")
+            .why(
+                "the profile is between sessions (connecting, reconnecting, or idle); a live \
+                 benchmark forward can only be opened while a session is Active",
+            )
+            .how_to_fix(
+                "Wait until `spt status` shows the profile Active, then re-run the benchmark. \
+                 For a deterministic measurement, run against a synthetic loopback connector \
+                 instead of `--live`.",
+            )
+            .retry_advice(spt_core::RetryAdvice::RetryWithBackoff)
+            .build(),
+    )
+}
+
+/// Open a fresh `local` forward over the **live** session for benchmarking.
+///
+/// The supervisor pre-binds a loopback listener to learn a concrete ephemeral
+/// port, hands that port to the backend as the forward's `listen` address, and
+/// returns the bound [`SocketAddr`] so a benchmark connector can dial it; the
+/// bytes then traverse the live tunnel's channel. The returned
+/// [`crate::control::BenchForward`] carries a drop-guard whose paired receiver
+/// is awaited by a spawned task that closes the forward when the guard drops.
+///
+/// The forward's `target` is `127.0.0.1:<same port>` — appropriate for a
+/// deployment whose remote side echoes loopback; absent a remote echoer the
+/// per-iteration reads simply time out and the driver records them honestly
+/// (the live channel is still genuinely exercised on the write path).
+async fn open_bench_forward(
+    session: &mut dyn TunnelSession,
+) -> Result<crate::control::BenchForward> {
+    use spt_core::BindAddr;
+    use spt_protocol::{LocalForwardSpec, TargetAddr};
+
+    // Pre-bind to discover a free loopback port, then release it so the backend
+    // can bind the same address for the forward listener. The brief gap is a
+    // benign TOCTOU for a benchmark seam.
+    let probe = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .map_err(|e| Error::RuntimeFailure(format!("bench forward port probe failed: {e}")))?;
+    let local_addr = probe
+        .local_addr()
+        .map_err(|e| Error::RuntimeFailure(format!("bench forward local_addr failed: {e}")))?;
+    drop(probe);
+
+    let spec = LocalForwardSpec {
+        name: format!("__spt_bench_{}", local_addr.port()),
+        listen: BindAddr::Tcp(local_addr),
+        target: TargetAddr::new(local_addr.ip().to_string(), local_addr.port()),
+        max_connections: None,
+    };
+    let handle = session.open_local_forward(&spec).await?;
+
+    // Own the forward handle in a task that lives until the caller drops the
+    // guard. Dropping the guard closes `guard_rx`, which closes the forward.
+    let (guard, guard_rx) = oneshot::channel::<()>();
+    tokio::spawn(async move {
+        let _ = guard_rx.await;
+        handle.close().await;
+    });
+
+    Ok(crate::control::BenchForward { local_addr, guard })
 }
 
 #[cfg(test)]

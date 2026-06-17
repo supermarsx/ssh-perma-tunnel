@@ -9,12 +9,20 @@
 //!
 //! Public surface:
 //! - [`server::DnsServer`] / [`server::DnsServerBuilder`] — listener + handler.
+//!   The builder takes a [`mode::DnsMode`] so the configured `[dns] mode` is
+//!   honored at runtime (forwarder vs authoritative/synthetic-only).
+//! - [`mode::DnsMode`] — runtime listener posture mapped from the `[dns] mode`
+//!   config string (`DnsMode::from_config_str`).
 //! - [`zone::ManagedZone`] / [`zone::Record`] — managed-zone description.
+//! - [`srv::synthesize_srv_records`] / [`srv::auto_records_from_forwards`] —
+//!   auto-derive A/AAAA/SRV records from a forward's `dns_names` (the
+//!   `[dns] auto_records` behavior), mixed into a [`zone::ManagedZone`].
 //! - [`split_horizon::SplitHorizonHandler`] — the [`hickory_server::server::RequestHandler`]
 //!   implementation, exposed in case callers want to host their own server.
 //! - [`health::HealthSource`] — trait wired to `spt-supervisor` at runtime so
 //!   `AnswerWhenListening` / `AnswerWhenHealthy` policies can consult live
-//!   forward state.
+//!   forward state. [`health::NoHealth`] / [`health::AlwaysHealthy`] are the
+//!   default seams when no supervisor source is injected.
 //! - [`hosts::HostsManager`] / [`hosts::HostsApplyReport`] — hosts-file
 //!   render/apply/restore.
 //!
@@ -25,6 +33,7 @@
 pub mod error;
 pub mod health;
 pub mod hosts;
+pub mod mode;
 pub mod server;
 pub mod split_horizon;
 pub mod srv;
@@ -34,10 +43,14 @@ pub mod zone;
 pub mod testing;
 
 pub use error::{DnsError, Result};
-pub use health::{ForwardHealth, HealthSource, NoHealth};
+pub use health::{AlwaysHealthy, ForwardHealth, HealthSource, NoHealth};
 pub use hosts::{HostsApplyReport, HostsEntry, HostsManager, HOSTS_BEGIN_MARKER, HOSTS_END_MARKER};
+pub use mode::DnsMode;
 pub use server::{DnsHandle, DnsServer, DnsServerBuilder};
 pub use split_horizon::SplitHorizonHandler;
+pub use srv::{
+    auto_records_from_forwards, synthesize_srv_records, ForwardAddr, ForwardDnsSource, SrvSource,
+};
 pub use zone::{AnswerPolicy, ManagedZone, Record, RecordKind};
 
 // ---------------------------------------------------------------------------

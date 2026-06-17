@@ -11,12 +11,15 @@ use thiserror::Error;
 
 use crate::event::Event;
 
+pub mod build;
 pub mod command;
 pub mod email;
 pub mod http;
 pub mod mcp_notify;
 pub mod push;
 pub mod sms;
+
+pub use build::{build_sink, resolve_secret, SinkDeps};
 
 /// Errors a sink may return.
 #[derive(Debug, Error)]

@@ -6,17 +6,26 @@ confirmation (`--yes`).
 
 ## Apply status
 
-The per-OS renderers and the apply/remove/query plumbing **are
-implemented** (no longer dry-run-only):
+`spt firewall apply` / `remove` perform **live, per-OS mutation**. The
+behaviour is gated by the two independent flags `--dry-run` and `--yes`:
 
-- The **renderers are pure and snapshot-tested** — same input always
-  yields the same native script. nftables emits `ip6` / `meta nfproto`
-  selectors for IPv6 CIDRs and a `flush table inet spt` preamble; the
-  Windows `netsh advfirewall` renderer is corrected (no invalid params).
-- **Live apply/remove** shells out to the native command (`nft`,
-  `iptables`, `pfctl`, `netsh`) and requires **administrator / root**.
-  Live execution is `#[ignore]`-gated in CI (needs a privileged runner);
-  the renderer + plan correctness is what CI verifies.
+- `--dry-run` — previews the rendered native script; makes **no changes**.
+- `--yes` (without `--dry-run`) — actually shells out to the native command
+  (`nft`, `iptables`, `pfctl`, `netsh`) to apply or remove the rules. Requires
+  **administrator / root**.
+- neither flag (a bare non-dry-run `apply`/`remove`) — refuses with a clear
+  "pass `--yes`" message and makes no changes. This is a deliberate safety
+  gate, not an unimplemented stub.
+
+Supporting details:
+
+- The **renderers are pure and snapshot-tested** — same input always yields
+  the same native script. nftables emits `ip6` / `meta nfproto` selectors for
+  IPv6 CIDRs and a `flush table inet spt` preamble; the Windows `netsh
+  advfirewall` renderer is corrected (no invalid params).
+- Live execution is `#[ignore]`-gated in CI (it needs a privileged runner);
+  CI verifies the renderer + plan correctness, while the live shell-out runs on
+  a real elevated host.
 - The applied plan is persisted to the state dir for crash-recovery /
   idempotent `remove`.
 

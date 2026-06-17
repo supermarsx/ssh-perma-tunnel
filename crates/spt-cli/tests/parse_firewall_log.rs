@@ -43,6 +43,24 @@ fn firewall_apply_dry_run_parses() {
 }
 
 #[test]
+fn firewall_apply_yes_parses() {
+    for arg in ["--yes", "-y"] {
+        let cli = parse_ok(&["spt", "firewall", "apply", "--system", arg]);
+        match cli.command {
+            Command::Firewall(f) => match f.command {
+                FirewallSub::Apply(a) => {
+                    assert!(a.system);
+                    assert!(a.yes, "expected yes=true for {arg}");
+                    assert!(!a.dry_run);
+                }
+                other => panic!("expected Apply, got {other:?}"),
+            },
+            _ => panic!("expected firewall"),
+        }
+    }
+}
+
+#[test]
 fn firewall_remove_parses() {
     let cli = parse_ok(&["spt", "firewall", "remove", "--user"]);
     match cli.command {

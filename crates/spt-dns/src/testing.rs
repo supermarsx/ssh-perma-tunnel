@@ -12,6 +12,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 
 use crate::health::{ForwardHealth, HealthSource};
+use crate::mode::DnsMode;
 use crate::server::{DnsHandle, DnsServerBuilder};
 use crate::zone::{ManagedZone, Record};
 use crate::Result;
@@ -140,6 +141,26 @@ impl LocalhostResolver {
         let mut b = DnsServerBuilder::new()
             .bind("127.0.0.1:0".parse().unwrap())
             .health_source(health);
+        for z in zones {
+            b = b.add_zone(z);
+        }
+        let handle = b.run().await?;
+        Ok(Self { handle })
+    }
+
+    /// Bind with a custom [`DnsMode`] and upstream list.
+    ///
+    /// Used to exercise mode-specific answering (e.g. `synthetic_only`
+    /// suppressing the upstream forwarder path).
+    pub async fn start_with_mode(
+        zones: Vec<ManagedZone>,
+        mode: DnsMode,
+        upstream: Vec<std::net::SocketAddr>,
+    ) -> Result<Self> {
+        let mut b = DnsServerBuilder::new()
+            .bind("127.0.0.1:0".parse().unwrap())
+            .mode(mode)
+            .upstream(upstream);
         for z in zones {
             b = b.add_zone(z);
         }

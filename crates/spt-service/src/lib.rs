@@ -23,6 +23,7 @@ use spt_core::error::{Error, Result};
 pub mod launchd;
 pub mod openrc;
 pub mod runner;
+pub mod systemd_notify;
 pub mod systemd_system;
 pub mod systemd_user;
 pub mod sysv;
@@ -34,6 +35,7 @@ pub mod windows_scm;
 pub mod testing;
 
 pub use runner::{CommandRunner, MockRunner, RunOutput, TokioRunner};
+pub use systemd_notify::{sd_notify, sd_notify_ready, sd_notify_stopping, NOTIFY_SOCKET_ENV};
 
 /// Whether a service runs at the system or per-user scope.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

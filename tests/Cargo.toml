@@ -65,5 +65,9 @@ spt-protocol = { workspace = true }
 spt-auth = { workspace = true }
 spt-core = { workspace = true }
 spt-forward = { workspace = true, features = ["testing"] }
+# Real russh<->russh e2e forwarding/reconnect coverage (GAP 4) drives the
+# `Ssh2Protocol` backend against the embedded `RusshTestServer` fixture, both
+# of which live behind spt-ssh2's `testing` feature.
+spt-ssh2 = { workspace = true, features = ["testing"] }
 tokio = { workspace = true, features = ["full"] }
 parking_lot = { workspace = true }

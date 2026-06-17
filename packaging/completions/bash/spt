@@ -7668,7 +7668,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__firewall__subcmd__apply)
-            opts="-q -v -h -V --profile --forward --user --system --dry-run --config --config-dir --config-url --config-fingerprint --state-dir --portable --output --json --log-level --color --quiet --verbose --no-color --help --version"
+            opts="-y -q -v -h -V --profile --forward --user --system --dry-run --yes --config --config-dir --config-url --config-fingerprint --state-dir --portable --output --json --log-level --color --quiet --verbose --no-color --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -8756,7 +8756,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__firewall__subcmd__remove)
-            opts="-q -v -h -V --profile --forward --user --system --dry-run --config --config-dir --config-url --config-fingerprint --state-dir --portable --output --json --log-level --color --quiet --verbose --no-color --help --version"
+            opts="-y -q -v -h -V --profile --forward --user --system --dry-run --yes --config --config-dir --config-url --config-fingerprint --state-dir --portable --output --json --log-level --color --quiet --verbose --no-color --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0

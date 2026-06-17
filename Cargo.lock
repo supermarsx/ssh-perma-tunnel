@@ -5977,6 +5977,7 @@ dependencies = [
  "spt-core",
  "spt-forward",
  "spt-protocol",
+ "spt-ssh2",
  "spt-supervisor",
  "tokio",
 ]
@@ -5998,8 +5999,10 @@ dependencies = [
  "parking_lot",
  "regex",
  "reqwest",
+ "secrecy",
  "serde",
  "serde_json",
+ "spt-config",
  "spt-core",
  "spt-secrets",
  "spt-state",

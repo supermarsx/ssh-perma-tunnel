@@ -5,6 +5,7 @@ use clap::{Args, Subcommand, ValueEnum};
 const EXAMPLES: &str = "EXAMPLES:
   spt firewall plan --profile edge --json
   spt firewall apply --system --dry-run
+  spt firewall apply --system --yes
   spt firewall remove --user
   spt firewall bind-preview --forward edge/db
   spt firewall gateway show --json
@@ -75,6 +76,13 @@ pub struct FirewallApply {
     /// Print actions without changing system state.
     #[arg(long)]
     pub dry_run: bool,
+    /// Confirm and perform live firewall mutation (required for apply outside --dry-run).
+    #[arg(
+        long,
+        short = 'y',
+        help = "Confirm and perform live firewall mutation (required for apply outside --dry-run)"
+    )]
+    pub yes: bool,
 }
 
 /// `spt firewall status` / `interfaces`.
