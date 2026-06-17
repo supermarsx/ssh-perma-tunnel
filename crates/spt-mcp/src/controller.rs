@@ -35,15 +35,15 @@ use tokio::sync::mpsc;
 ///
 /// # Default behavior
 ///
-/// Four methods have default implementations that return
+/// Five methods have default implementations that return
 /// [`crate::Error::NotImplemented`]: [`Controller::session_close`],
-/// [`Controller::session_drain`], [`Controller::stats_subscribe`], and
-/// [`Controller::run_benchmark`]. The defaults exist so embedders that only
-/// need the read-only surface (or only the six required mutators) can adopt
-/// the trait without breaking changes. Embedders SHOULD override every
-/// method before exposing the controller over MCP — operators connecting a
-/// stock client will otherwise see `-32003 not implemented` for the four
-/// session/stats/benchmark tools.
+/// [`Controller::session_drain`], [`Controller::stats_subscribe`],
+/// [`Controller::events_subscribe`], and [`Controller::run_benchmark`]. The
+/// defaults exist so embedders that only need the read-only surface (or only
+/// the six required mutators) can adopt the trait without breaking changes.
+/// Embedders SHOULD override every method before exposing the controller over
+/// MCP — operators connecting a stock client will otherwise see `-32003 not
+/// implemented` for the session/stats/events/benchmark tools.
 ///
 /// The `it_controller_contract.rs` integration test in this crate pins the
 /// default behavior (one assertion per default-impl method). The
@@ -99,6 +99,23 @@ pub trait Controller: Send + Sync + 'static {
     ) -> crate::Result<()> {
         let _ = (interval_ms, tx);
         Err(crate::Error::NotImplemented("Controller::stats_subscribe"))
+    }
+
+    /// Spawn a background task that pushes event notification frames onto the
+    /// supplied channel until the receiver drops. Returns once the task has
+    /// been spawned.
+    ///
+    /// Unlike [`Controller::stats_subscribe`], whose ticks are *payloads* the
+    /// transport wraps into `notifications/stats/tick`, the values pushed here
+    /// are **complete JSON-RPC notification frames** (each carrying its own
+    /// `jsonrpc`/`method`/`params`, typically `method = "spt/event"`). The
+    /// per-connection transport loop forwards such pre-framed values verbatim,
+    /// so the client receives the same `spt/event` frames the `mcp_notify`
+    /// event sink produced. This mirrors `stats_subscribe`'s lifecycle: one
+    /// relay task per subscription, terminated when the client's receiver drops.
+    async fn events_subscribe(&self, tx: mpsc::Sender<Value>) -> crate::Result<()> {
+        let _ = tx;
+        Err(crate::Error::NotImplemented("Controller::events_subscribe"))
     }
 
     /// Run a benchmark driver against the live tunnel. The implementation
@@ -182,6 +199,7 @@ pub mod testing {
         StatsSubscribe {
             interval_ms: u64,
         },
+        EventsSubscribe,
         RunBenchmark {
             args: serde_json::Value,
         },
@@ -283,6 +301,27 @@ pub mod testing {
                         .await
                         .is_err()
                     {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                }
+            });
+            Ok(())
+        }
+        async fn events_subscribe(
+            &self,
+            tx: tokio::sync::mpsc::Sender<serde_json::Value>,
+        ) -> crate::Result<()> {
+            self.calls.lock().push(ControllerCall::EventsSubscribe);
+            // Emit a couple of synthetic event frames so tests can observe.
+            tokio::spawn(async move {
+                for i in 0..3 {
+                    let frame = serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "method": "spt/event",
+                        "params": {"event": i}
+                    });
+                    if tx.send(frame).await.is_err() {
                         break;
                     }
                     tokio::time::sleep(std::time::Duration::from_millis(20)).await;

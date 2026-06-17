@@ -1,0 +1,39 @@
+# .cargo/audit.toml — cargo-audit (RustSec) configuration.
+#
+# Read automatically by `cargo audit` when invoked from the workspace root
+# (cargo-audit looks for `.cargo/audit.toml` relative to the lockfile).
+#
+# -----------------------------------------------------------------------------
+# Accepted-risk ignore list
+# -----------------------------------------------------------------------------
+# Each entry here is a DOCUMENTED, deliberate decision — not a way to silence
+# the scanner wholesale. Any advisory NOT listed below is still reported and
+# will open/update the weekly tracking issue (see .github/workflows/audit.yml).
+# The same IDs are mirrored as `--ignore` flags on the CI invocation so the
+# suppression is visible in the workflow log; keep the two in sync.
+#
+# The rationale for each accepted risk lives in `security.md`
+# (section: "Accepted dependency advisories").
+
+[advisories]
+ignore = [
+    # RUSTSEC-2023-0071 — RSA "Marvin Attack" timing side-channel.
+    #
+    # WHY ACCEPTED:
+    #   * No fixed `rsa` release exists. Both the stable `rsa 0.9.x` and the
+    #     `rsa 0.10.0-rc.*` prereleases are flagged; there is nothing to
+    #     upgrade to.
+    #   * The Marvin attack is a timing oracle in RSA *PKCS#1 v1.5 DECRYPTION*,
+    #     exploitable only when an attacker can submit chosen ciphertexts and
+    #     measure decryption timing (a decryption oracle).
+    #   * `spt`'s RSA usage is SIGNING / VERIFICATION only — spt-key's
+    #     RsaCertSigner signs SSH certificates with an RSA CA, and russh uses
+    #     RSA for SSH host-key / public-key *signatures*. We do NOT expose an
+    #     attacker-controlled RSA decryption oracle, so the vulnerable code
+    #     path is not reachable in our usage.
+    #   * Dropping RSA entirely would remove real SSH / certificate capability.
+    #
+    # REVISIT WHEN: a fixed `rsa` crate release ships (then bump + remove this
+    # entry), or if `spt` ever starts performing RSA PKCS#1 v1.5 decryption.
+    "RUSTSEC-2023-0071",
+]

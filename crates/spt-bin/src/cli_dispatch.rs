@@ -1160,6 +1160,7 @@ async fn tunnel_run(global: &GlobalOpts, args: groups::tunnel::TunnelRun) -> Res
         &resolver,
         &path,
         &config_cell,
+        events_pipeline.mcp_notifier(),
     )
     .await?;
 
@@ -1319,11 +1320,19 @@ struct EventsPipeline {
     _ring: std::sync::Arc<spt_state::EventRing>,
     /// Live MCP notifier backing any `mcp_notify` sink (GAP 1). Held so the
     /// broadcast channel stays open for the lifetime of the run; MCP clients
-    /// subscribe to it via `subscribe()`.
-    _mcp_notifier: std::sync::Arc<crate::mcp_notifier::BroadcastMcpNotifier>,
+    /// subscribe to it via the `events_subscribe` MCP tool, which the loopback
+    /// `OrchestratorController` services from this same notifier handle.
+    mcp_notifier: std::sync::Arc<crate::mcp_notifier::BroadcastMcpNotifier>,
 }
 
 impl EventsPipeline {
+    /// Shared handle to the live MCP event notifier. Cloned into the loopback
+    /// `OrchestratorController` so the `events_subscribe` tool streams the same
+    /// `spt/event` frames the `mcp_notify` sink publishes.
+    fn mcp_notifier(&self) -> std::sync::Arc<crate::mcp_notifier::BroadcastMcpNotifier> {
+        self.mcp_notifier.clone()
+    }
+
     async fn shutdown(mut self) {
         if let Some(d) = self.dispatcher.take() {
             d.shutdown().await;
@@ -1604,7 +1613,7 @@ fn build_events_pipeline(
         EventsPipeline {
             dispatcher,
             _ring: ring,
-            _mcp_notifier: mcp_notifier,
+            mcp_notifier,
         },
     ))
 }
@@ -2116,6 +2125,7 @@ async fn maybe_spawn_mcp_loopback(
     resolver: &std::sync::Arc<spt_secrets::Resolver>,
     config_path: &Path,
     config_cell: &crate::controller::ConfigCell,
+    mcp_notifier: std::sync::Arc<crate::mcp_notifier::BroadcastMcpNotifier>,
 ) -> Result<Option<McpLoopbackHandle>> {
     let Some(mcp) = cfg.mcp.as_ref() else {
         return Ok(None);
@@ -2152,6 +2162,7 @@ async fn maybe_spawn_mcp_loopback(
         resolver.clone(),
         config_path.to_path_buf(),
         config_cell.clone(),
+        Some(mcp_notifier),
     )) as std::sync::Arc<dyn spt_mcp::Controller>;
 
     let policy = loopback_mcp_policy(cfg, &listen);
@@ -2186,7 +2197,12 @@ fn loopback_mcp_policy(cfg: &spt_config::schema::Config, listen: &str) -> spt_mc
     let mut policy = crate::mcp_server::mcp_policy_from_config(cfg);
     policy.enabled = true;
     policy.listen = listen.to_owned();
-    for t in ["session_close", "session_drain", "stats_subscribe"] {
+    for t in [
+        "session_close",
+        "session_drain",
+        "stats_subscribe",
+        "events_subscribe",
+    ] {
         if !policy.allow_write_tools.iter().any(|x| x == t) {
             policy.allow_write_tools.push(t.to_owned());
         }
@@ -7423,7 +7439,8 @@ mod tests {
 
     // E8-F3: the loopback policy does NOT force-allow every WRITE_TOOLS. With
     // an empty operator allow-list it grants ONLY the live-bridge tools the
-    // loopback surface needs (session_close/drain, stats_subscribe).
+    // loopback surface needs (session_close/drain, stats_subscribe,
+    // events_subscribe).
     #[test]
     fn loopback_policy_does_not_force_all_write_tools() {
         let mut cfg = spt_config::schema::Config::default();
@@ -7437,6 +7454,7 @@ mod tests {
         assert_eq!(
             allow,
             vec![
+                "events_subscribe".to_string(),
                 "session_close".to_string(),
                 "session_drain".to_string(),
                 "stats_subscribe".to_string()

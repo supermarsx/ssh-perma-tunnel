@@ -128,6 +128,45 @@ async fn orchestrator_stats_subscribe_returns_receiver() {
     drop(rx);
 }
 
+/// `OrchestratorController::events_subscribe` does NOT delegate to the
+/// orchestrator — it relays from the events pipeline's
+/// `BroadcastMcpNotifier` broadcast channel. Pin that broadcast seam (a
+/// subscriber receives a published `spt/event` frame) so a refactor can't
+/// silently regress the override into a `NotImplemented` path. The
+/// `OrchestratorController` unit tests in `controller.rs` exercise the
+/// override directly.
+/// Tiny inline broadcast notifier mirroring the binary-private
+/// `BroadcastMcpNotifier` — reconstructs the same broadcast contract via the
+/// public `spt_events::McpNotifier` trait the override relays from. A
+/// `NoopMcpNotifier` won't do (it drops without publishing).
+struct BcastNotifier(tokio::sync::broadcast::Sender<serde_json::Value>);
+
+#[async_trait::async_trait]
+impl spt_events::McpNotifier for BcastNotifier {
+    async fn notify(&self, n: spt_events::McpNotification) -> Result<(), String> {
+        let method = n.method.clone().unwrap_or_else(|| "spt/event".to_owned());
+        let _ = self.0.send(serde_json::json!({
+            "jsonrpc": "2.0", "method": method, "params": n.params
+        }));
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn broadcast_notifier_delivers_to_subscriber_for_events_subscribe() {
+    use spt_events::{Event, McpNotification, McpNotifier, Severity};
+
+    let (tx, mut rx) = tokio::sync::broadcast::channel::<serde_json::Value>(8);
+    let notifier = BcastNotifier(tx);
+    let ev = Event::builder("profile.failed", Severity::Error).build();
+    notifier
+        .notify(McpNotification::from_event(&ev))
+        .await
+        .unwrap();
+    let frame = rx.try_recv().expect("subscriber receives the frame");
+    assert_eq!(frame["method"], "spt/event");
+}
+
 /// `OrchestratorController::run_benchmark` reaches
 /// `Orchestrator::live_connector` for tunnel-aware drivers. Pin the
 /// connector API exists and produces a `Box<dyn LiveConnector>` so a

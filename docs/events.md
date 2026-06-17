@@ -24,15 +24,17 @@ logged loudly and that one sink is skipped (never silently dropped):
 | `sms`                           | delivered                                 |
 | `push` / `webpush`              | delivered (`WebPushSink` when `subscriptions` + `vapid_private_key` are present, otherwise `PushSink`) |
 | `command`                       | delivered (requires a matching `[[events.commands]]` entry with `allow_exec = true`) |
-| `mcp_notify`                    | delivered to the loopback MCP broadcast channel — see caveat below |
+| `mcp_notify`                    | delivered end-to-end to subscribed MCP clients — see below |
 
-**`mcp_notify` caveat.** The `mcp_notify` sink is live: it publishes each
-event as a `spt/event` JSON-RPC frame onto the loopback MCP broadcast channel
-(the same broadcast seam `stats_subscribe` streams over). However, a
-client-facing MCP subscription tool to stream those frames out to a connected
-client **is not yet provided** — so frames are dropped when nothing is
-subscribed. The notifier itself is real (no Noop placeholder remains); only
-the consumer-side subscription tool is pending.
+**`mcp_notify` delivery.** The `mcp_notify` sink is live and delivers
+end-to-end: it publishes each event as a `spt/event` JSON-RPC frame onto the
+loopback MCP broadcast channel (the same broadcast seam `stats_subscribe`
+streams over), and the loopback MCP server's **`events_subscribe`** tool streams
+those frames out to every connected client that has subscribed. Each subscriber
+gets the frame verbatim; the relay task terminates when the client disconnects.
+When no client is subscribed the frame is simply dropped (broadcast semantics)
+and event dispatch is unaffected. See [`docs/mcp.md`](mcp.md) (Streaming
+subscriptions).
 
 **TUI configurability (v1).** The events surface is editable from the TUI for
 `http`, `webhook_post`, `command`, and `mcp_notify` sinks plus their bindings.

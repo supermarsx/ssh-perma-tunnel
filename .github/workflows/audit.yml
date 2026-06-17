@@ -60,12 +60,24 @@ jobs:
       # Run against the committed Cargo.lock. `|| true` keeps the step green —
       # this workflow is non-gating; the report drives the issue, not a check
       # failure. `--json` gives us a machine-parseable result for the issue body.
+      #
+      # ACCEPTED-RISK SUPPRESSION — RUSTSEC-2023-0071 (rsa "Marvin Attack"):
+      #   --ignore is mirrored here (in addition to .cargo/audit.toml) so the
+      #   suppression is explicit and visible in the workflow log. Keep the two
+      #   in sync. Rationale: there is NO fixed `rsa` release (both rsa 0.9.x
+      #   and the 0.10.0-rc.* prereleases are flagged); the Marvin attack is a
+      #   timing oracle in RSA PKCS#1 v1.5 *decryption*, but `spt` only uses RSA
+      #   for SSH cert/host-key *signing & verification* — we never expose an
+      #   attacker-controlled decryption oracle, so the vulnerable path is
+      #   unreachable. Every OTHER advisory is still reported and still opens
+      #   the tracking issue. Revisit (drop this) when a fixed `rsa` ships.
+      #   Full rationale: security.md → "Accepted dependency advisories".
       - name: Run cargo audit
         id: audit
         shell: bash
         run: |
           set +e
-          cargo audit --json > audit.json
+          cargo audit --json --ignore RUSTSEC-2023-0071 > audit.json
           code=$?
           echo "exit_code=${code}" >> "${GITHUB_OUTPUT}"
           # exit 0 = clean; non-zero = vulnerabilities and/or warnings found.
@@ -88,8 +100,9 @@ jobs:
             echo
             echo '```'
             # Re-run in human format for a readable table; failures here are
-            # non-fatal (the JSON above is the source of truth).
-            cargo audit || true
+            # non-fatal (the JSON above is the source of truth). Same accepted-
+            # risk ignore as the JSON run above so the report matches.
+            cargo audit --ignore RUSTSEC-2023-0071 || true
             echo '```'
           } > report.md
           cat report.md >> "${GITHUB_STEP_SUMMARY}"

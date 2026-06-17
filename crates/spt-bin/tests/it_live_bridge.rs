@@ -6,7 +6,8 @@
 //! `spt_bin::controller::OrchestratorController` does). They then drive
 //! the binary's `McpClient` (re-included via `#[path]`) against the
 //! resulting listener — covering `tunnel_failover`, `session_close`,
-//! `session_drain`, and `stats_subscribe` over the real wire.
+//! `session_drain`, `stats_subscribe`, and `events_subscribe` over the real
+//! wire.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -47,6 +48,9 @@ fn generate_token() -> String {
 
 struct LiveController {
     orch: Arc<Orchestrator>,
+    /// Broadcast of pre-framed `spt/event` JSON-RPC notifications, mirroring
+    /// the binary's `BroadcastMcpNotifier`. `events_subscribe` relays from it.
+    events: tokio::sync::broadcast::Sender<serde_json::Value>,
 }
 
 #[async_trait]
@@ -120,6 +124,29 @@ impl spt_mcp::Controller for LiveController {
         });
         Ok(())
     }
+    async fn events_subscribe(
+        &self,
+        tx: tokio::sync::mpsc::Sender<serde_json::Value>,
+    ) -> spt_mcp::Result<()> {
+        // Mirror the binary's OrchestratorController::events_subscribe: relay
+        // pre-framed `spt/event` notifications from the broadcast onto the
+        // per-connection mpsc until the client receiver drops.
+        let mut rx = self.events.subscribe();
+        tokio::spawn(async move {
+            loop {
+                match rx.recv().await {
+                    Ok(frame) => {
+                        if tx.send(frame).await.is_err() {
+                            break;
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {} // 1.88 lint: redundant_continue
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        });
+        Ok(())
+    }
 }
 
 const CFG: &str = r#"
@@ -137,6 +164,7 @@ async fn spawn_live_bridge(
     Arc<Orchestrator>,
     spt_forward::testing::MockTunnelProtocol,
     tokio::task::JoinHandle<()>,
+    tokio::sync::broadcast::Sender<serde_json::Value>,
 ) {
     let tmp = tempfile::tempdir().unwrap();
     let proto = spt_forward::testing::MockTunnelProtocol::new();
@@ -164,7 +192,11 @@ async fn spawn_live_bridge(
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
 
-    let controller: Arc<dyn spt_mcp::Controller> = Arc::new(LiveController { orch: orch.clone() });
+    let (events_tx, _events_rx) = tokio::sync::broadcast::channel::<serde_json::Value>(64);
+    let controller: Arc<dyn spt_mcp::Controller> = Arc::new(LiveController {
+        orch: orch.clone(),
+        events: events_tx.clone(),
+    });
     let policy = spt_mcp::McpPolicy {
         enabled: true,
         listen: "127.0.0.1:0".into(),
@@ -198,7 +230,7 @@ async fn spawn_live_bridge(
     let task = tokio::spawn(async move {
         let _ = server.run(transport).await;
     });
-    (tmp, orch, proto, task)
+    (tmp, orch, proto, task, events_tx)
 }
 
 // --- Test-side McpClient: thin re-implementation matching the binary's
@@ -304,7 +336,7 @@ impl TestClient {
 
 #[tokio::test]
 async fn tunnel_failover_round_trip_via_mcp_loopback() {
-    let (tmp, orch, _proto, task) = spawn_live_bridge(CFG).await;
+    let (tmp, orch, _proto, task, _events_tx) = spawn_live_bridge(CFG).await;
     let mut client = TestClient::connect_from_dir(tmp.path()).await;
     let init = client.initialize().await;
     assert_eq!(init["protocolVersion"], "2024-11-05");
@@ -327,7 +359,7 @@ async fn tunnel_failover_round_trip_via_mcp_loopback() {
 
 #[tokio::test]
 async fn session_drain_returns_report() {
-    let (tmp, orch, _proto, task) = spawn_live_bridge(CFG).await;
+    let (tmp, orch, _proto, task, _events_tx) = spawn_live_bridge(CFG).await;
     let mut client = TestClient::connect_from_dir(tmp.path()).await;
     client.initialize().await;
     let v = client
@@ -351,7 +383,7 @@ async fn session_drain_returns_report() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn stats_live_emits_at_least_one_tick() {
-    let (tmp, orch, _proto, task) = spawn_live_bridge(CFG).await;
+    let (tmp, orch, _proto, task, _events_tx) = spawn_live_bridge(CFG).await;
     let mut client = TestClient::connect_from_dir(tmp.path()).await;
     client.initialize().await;
     let row = orch.session_list()[0].clone();
@@ -398,9 +430,71 @@ async fn stats_live_emits_at_least_one_tick() {
     let _ = task.await;
 }
 
+/// End-to-end: a client that calls `events_subscribe` over the loopback wire
+/// receives the `spt/event` JSON-RPC notification frames the binary's
+/// `BroadcastMcpNotifier` (here the test broadcast) publishes — the consumer
+/// half of the mcp_notify event sink. Mirrors `stats_live_emits_at_least_one_tick`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn events_subscribe_emits_spt_event_frame() {
+    let (tmp, orch, _proto, task, events_tx) = spawn_live_bridge(CFG).await;
+    let mut client = TestClient::connect_from_dir(tmp.path()).await;
+    client.initialize().await;
+    let v = client
+        .call_tool("events_subscribe", serde_json::json!({}))
+        .await
+        .expect("ok");
+    assert_eq!(
+        v.get("subscribed").and_then(serde_json::Value::as_bool),
+        Some(true)
+    );
+
+    // Give the relay task a moment to attach, then publish a frame. Retry the
+    // emit a few times since the subscribe relay attaches asynchronously.
+    let frame = serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "spt/event",
+        "params": {"kind": "profile.failed", "severity": "error"}
+    });
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+    let mut got_event = false;
+    while tokio::time::Instant::now() < deadline && !got_event {
+        let _ = events_tx.send(frame.clone());
+        let mut line = String::new();
+        let n = tokio::time::timeout(
+            Duration::from_millis(300),
+            client.reader.read_line(&mut line),
+        )
+        .await;
+        match n {
+            Ok(Ok(0)) => panic!("connection EOF before event frame"),
+            Ok(Ok(_)) => {
+                let v: serde_json::Value = match serde_json::from_str(line.trim()) {
+                    Ok(v) => v,
+                    Err(_) => continue,
+                };
+                if v.get("method").and_then(|m| m.as_str()) == Some("spt/event") {
+                    // The frame must be forwarded verbatim (its own method),
+                    // NOT re-wrapped as notifications/stats/tick.
+                    assert_eq!(v["params"]["kind"], "profile.failed", "frame: {v}");
+                    assert!(v.get("id").is_none(), "notification has no id");
+                    got_event = true;
+                }
+            }
+            Ok(Err(e)) => panic!("read err: {e}"),
+            Err(_) => {} // single timeout, keep looping (re-emit)
+        }
+    }
+    assert!(got_event, "no spt/event frame observed within deadline");
+    drop(client);
+    orch.stop_profile("p").await;
+    task.abort();
+    let _ = task.await;
+}
+
 #[tokio::test]
 async fn missing_token_is_rejected() {
-    let (tmp, orch, _proto, task) = spawn_live_bridge(CFG).await;
+    let (tmp, orch, _proto, task, _events_tx) = spawn_live_bridge(CFG).await;
     let mut bad: McpListenSidecar = {
         let body = std::fs::read_to_string(tmp.path().join("mcp-listen.json")).unwrap();
         serde_json::from_str(&body).unwrap()

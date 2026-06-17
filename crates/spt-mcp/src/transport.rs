@@ -175,6 +175,28 @@ where
     Ok(())
 }
 
+/// True when `v` is already a complete JSON-RPC notification frame — an object
+/// carrying both a `"jsonrpc"` and a `"method"` field. Such values are written
+/// to the client verbatim (preserving their own method); anything else is
+/// treated as a `stats_subscribe` tick payload to be wrapped.
+fn is_jsonrpc_notification(v: &Value) -> bool {
+    v.get("jsonrpc").is_some() && v.get("method").is_some()
+}
+
+/// Write a pre-built JSON-RPC notification frame verbatim (followed by a
+/// newline + flush). Used to forward `events_subscribe`'s `spt/event` frames
+/// without re-wrapping them.
+async fn write_prebuilt_frame<W>(writer: &mut W, frame: &Value) -> crate::Result<()>
+where
+    W: AsyncWrite + Unpin,
+{
+    let body = serde_json::to_vec(frame)?;
+    writer.write_all(&body).await?;
+    writer.write_all(b"\n").await?;
+    writer.flush().await?;
+    Ok(())
+}
+
 /// Drive a single newline-framed JSON-RPC peer to completion.
 ///
 /// The caller supplies any `AsyncBufRead + AsyncWrite` pair. Used by both
@@ -193,9 +215,16 @@ where
 
 /// Same as [`run_connection`] but multiplexes server→client JSON-RPC
 /// notifications onto the same writer. Streaming tools (e.g.
-/// `stats_subscribe`) push values onto a per-connection mpsc; this loop
-/// drains the channel as `notifications/stats/tick` frames between
-/// inbound requests.
+/// `stats_subscribe`, `events_subscribe`) push values onto a per-connection
+/// mpsc; this loop drains the channel between inbound requests.
+///
+/// Two payload shapes are supported on the same channel:
+///
+/// * a **pre-framed JSON-RPC notification** (an object carrying both
+///   `"jsonrpc"` and `"method"`, as produced by `events_subscribe`'s
+///   `spt/event` frames) is written verbatim, preserving its own method; and
+/// * any other value is treated as a `stats_subscribe` tick payload and
+///   wrapped into a `notifications/stats/tick` frame.
 pub async fn run_connection_with_notifications<R, W>(
     inner: Arc<McpServerInner>,
     reader: &mut R,
@@ -245,7 +274,17 @@ where
             maybe_payload = notify_rx.recv(), if with_notify => {
                 match maybe_payload {
                     Some(payload) => {
-                        write_notification(writer, "notifications/stats/tick", payload).await?;
+                        // A subscription may push either a pre-framed JSON-RPC
+                        // notification (events_subscribe's `spt/event` frames,
+                        // carrying their own `jsonrpc`+`method`) or a bare tick
+                        // payload (stats_subscribe). Forward the former verbatim
+                        // so its method is preserved; wrap the latter into the
+                        // legacy `notifications/stats/tick` frame.
+                        if is_jsonrpc_notification(&payload) {
+                            write_prebuilt_frame(writer, &payload).await?;
+                        } else {
+                            write_notification(writer, "notifications/stats/tick", payload).await?;
+                        }
                     }
                     None => {
                         // All notify_tx senders have dropped. This shouldn't
@@ -542,6 +581,38 @@ mod tests {
         let parsed: Response = serde_json::from_str(s.trim()).unwrap();
         assert!(matches!(parsed.id, crate::protocol::Id::Num(7)));
         assert!(parsed.result.is_some());
+    }
+
+    #[test]
+    fn is_jsonrpc_notification_detects_preframed() {
+        assert!(is_jsonrpc_notification(&serde_json::json!({
+            "jsonrpc": "2.0", "method": "spt/event", "params": {}
+        })));
+        // A bare stats tick payload is NOT a pre-framed notification.
+        assert!(!is_jsonrpc_notification(&serde_json::json!({
+            "total_sessions": 3
+        })));
+        // Missing method → not a notification frame.
+        assert!(!is_jsonrpc_notification(
+            &serde_json::json!({"jsonrpc": "2.0"})
+        ));
+    }
+
+    #[tokio::test]
+    async fn write_prebuilt_frame_emits_verbatim() {
+        let frame = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "spt/event",
+            "params": {"kind": "profile.failed"}
+        });
+        let mut buf = Vec::<u8>::new();
+        write_prebuilt_frame(&mut buf, &frame).await.unwrap();
+        let s = String::from_utf8(buf).unwrap();
+        assert!(s.ends_with('\n'));
+        let v: serde_json::Value = serde_json::from_str(s.trim()).unwrap();
+        assert_eq!(v["method"], "spt/event");
+        assert_eq!(v["params"]["kind"], "profile.failed");
+        assert!(v.get("id").is_none());
     }
 
     #[tokio::test]

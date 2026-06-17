@@ -1,7 +1,7 @@
 # MCP
 
 `spt` embeds a Model Context Protocol (MCP) server: 16 read-only resources +
-35 tools (31 from spec §16, plus 3 live-bridge tools and the `log_set_level`
+36 tools (31 from spec §16, plus 4 live-bridge tools and the `log_set_level`
 live-control tool), JSON-RPC 2.0 over stdio. The server is **disabled by
 default**, **read-only by default**, and **never returns plaintext secrets**.
 
@@ -79,7 +79,7 @@ the server. Source: [`crates/spt-mcp/src/resources.rs`](../crates/spt-mcp/src/re
 
 ## Tool catalog
 
-35 tools dispatched through the policy gate. Mutating tools (`WRITE_TOOLS`)
+36 tools dispatched through the policy gate. Mutating tools (`WRITE_TOOLS`)
 are denied unless their name appears in `allow_write_tools`. The live MCP
 loopback honours `allow_write_tools` / `default_mode` — it does **not**
 force-allow every write tool. Source:
@@ -95,7 +95,7 @@ force-allow every write tool. Source:
 `dns_query`, `log_tail`, `observe_metrics`, `service_render`, `secret_list`,
 `key_inspect`.
 
-### Mutating / allow-list required (`WRITE_TOOLS`, 17)
+### Mutating / allow-list required (`WRITE_TOOLS`, 18)
 
 | Tool                      | Effect                                              |
 |---------------------------|-----------------------------------------------------|
@@ -115,6 +115,7 @@ force-allow every write tool. Source:
 | `session_close`           | Close a single session (live-bridge).               |
 | `session_drain`           | Drain a session gracefully (live-bridge).           |
 | `stats_subscribe`         | Subscribe to streaming stats (live-bridge).         |
+| `events_subscribe`        | Subscribe to live `spt/event` notifications (live-bridge). |
 | `log_set_level`           | Override the process-wide tracing filter at runtime.|
 
 Note: `diagnose_run`, `diagnose_bundle`, `benchmark_report_export`, and
@@ -125,6 +126,25 @@ calls.
 `secret_set_ref` accepts only references; secret material is never sent over
 the wire. `allow_secret_reveal = true` in `[mcp]` is rejected by the
 validator.
+
+## Streaming subscriptions (loopback only)
+
+Two tools register a server→client notification stream on the loopback
+transport (which multiplexes JSON-RPC notifications onto the same connection;
+the stdio transport returns an `InvalidParams` error since it has no
+notification channel):
+
+- `stats_subscribe` streams `notifications/stats/tick` frames carrying live
+  `StatsTick` payloads from the supervisor.
+- `events_subscribe` streams `spt/event` frames carrying serialized events.
+  These are exactly the frames the **`mcp_notify` event sink** publishes: a
+  configured `mcp_notify` sink pushes each routed event onto a process-local
+  broadcast channel, and every connected client that has called
+  `events_subscribe` receives the frame verbatim. With no subscriber attached
+  the frame is dropped (broadcast semantics) and event dispatch is unaffected.
+
+Both relay one task per subscription and terminate cleanly when the client
+disconnects (the per-connection receiver drops).
 
 ## Audit
 

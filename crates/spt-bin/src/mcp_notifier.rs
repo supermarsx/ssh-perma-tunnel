@@ -10,12 +10,17 @@
 //! [`spt_events::McpNotification`] (method + params) into a JSON-RPC
 //! notification frame and publishes it onto a process-local
 //! [`tokio::sync::broadcast`] channel. The same channel is the seam the MCP
-//! loopback server consumes when a client subscribes — the same broadcast
-//! pattern the orchestrator's `StatsTick` stream (`stats_subscribe`) already
-//! uses. When no subscriber is attached the frame is dropped (broadcast
-//! semantics) and `notify()` still reports success, so a configured
-//! `mcp_notify` sink never blocks the dispatcher or trips spool retry just
-//! because nobody is listening yet.
+//! loopback server consumes when a client subscribes via the `events_subscribe`
+//! MCP tool — the same broadcast pattern the orchestrator's `StatsTick` stream
+//! (`stats_subscribe`) already uses. The loopback `OrchestratorController`'s
+//! `events_subscribe` implementation calls [`subscribe`](BroadcastMcpNotifier::subscribe)
+//! per client and relays each `spt/event` frame onto that connection, so a
+//! configured `mcp_notify` sink now delivers end-to-end to connected clients.
+//!
+//! When no subscriber is attached the frame is dropped (broadcast semantics)
+//! and `notify()` still reports success, so a configured `mcp_notify` sink
+//! never blocks the dispatcher or trips spool retry just because nobody is
+//! listening yet.
 
 use std::sync::Arc;
 

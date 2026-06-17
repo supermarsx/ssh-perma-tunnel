@@ -62,6 +62,17 @@ async fn default_stats_subscribe_returns_not_implemented() {
 }
 
 #[tokio::test]
+async fn default_events_subscribe_returns_not_implemented() {
+    let c = NoopController;
+    let (tx, _rx) = tokio::sync::mpsc::channel::<serde_json::Value>(8);
+    let err = c
+        .events_subscribe(tx)
+        .await
+        .expect_err("default events_subscribe must error");
+    assert_not_implemented(err, "Controller::events_subscribe");
+}
+
+#[tokio::test]
 async fn default_run_benchmark_returns_not_implemented() {
     let c = NoopController;
     let err = c

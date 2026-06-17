@@ -297,24 +297,35 @@ pub struct OrchestratorController {
     resolver: Arc<Resolver>,
     config_path: PathBuf,
     cell: ConfigCell,
+    /// Live MCP event notifier backing the `events_subscribe` tool (GAP 1).
+    /// `Some` when `tunnel run` wired the events pipeline's
+    /// [`crate::mcp_notifier::BroadcastMcpNotifier`]; the controller subscribes
+    /// to it per client and relays `spt/event` frames. `None` (e.g. standalone
+    /// `spt mcp serve`) makes `events_subscribe` honestly report "not wired".
+    mcp_notifier: Option<Arc<crate::mcp_notifier::BroadcastMcpNotifier>>,
 }
 
 impl OrchestratorController {
     /// Build a controller wired to the running orchestrator, sharing the
     /// given [`ConfigCell`] with the SIGHUP reload path. The cell holds the
     /// last-applied config and serializes reloads across both pipelines.
+    ///
+    /// `mcp_notifier` is the events pipeline's broadcast notifier; pass `Some`
+    /// to expose live `events_subscribe` streaming, `None` to leave it unwired.
     #[must_use]
     pub fn new(
         orchestrator: Arc<Orchestrator>,
         resolver: Arc<Resolver>,
         config_path: PathBuf,
         cell: ConfigCell,
+        mcp_notifier: Option<Arc<crate::mcp_notifier::BroadcastMcpNotifier>>,
     ) -> Self {
         Self {
             orchestrator,
             resolver,
             config_path,
             cell,
+            mcp_notifier,
         }
     }
 
@@ -508,6 +519,37 @@ impl Controller for OrchestratorController {
         Ok(())
     }
 
+    async fn events_subscribe(
+        &self,
+        tx: tokio::sync::mpsc::Sender<serde_json::Value>,
+    ) -> McpResult<()> {
+        // Mirror `stats_subscribe`: subscribe to the process-local broadcast
+        // channel and spawn one relay task per client that forwards each
+        // pre-framed `spt/event` JSON-RPC notification onto the per-connection
+        // mpsc until the receiver drops (client disconnect) or the broadcast
+        // closes. No task leaks: a `tx.send` error breaks the loop.
+        let notifier = self.mcp_notifier.as_ref().ok_or_else(|| {
+            McpError::Internal(
+                "events_subscribe: no MCP event notifier wired into this server".to_owned(),
+            )
+        })?;
+        let mut rx = notifier.subscribe();
+        tokio::spawn(async move {
+            loop {
+                match rx.recv().await {
+                    Ok(frame) => {
+                        if tx.send(frame).await.is_err() {
+                            break;
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {} // 1.88 lint: redundant_continue
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        });
+        Ok(())
+    }
+
     async fn run_benchmark(&self, args: serde_json::Value) -> McpResult<serde_json::Value> {
         // Bridge into spt-benchmark using `Orchestrator::live_connector` for
         // tunnel-aware drivers. `dns` is synthetic on the server too.
@@ -598,7 +640,8 @@ pin_sha256 = ["SHA256:dummy"]
         let (cfg, _) = load_str(boot_cfg(), false).unwrap();
         let orch = Arc::new(Orchestrator::new());
         let resolver = Arc::new(spt_secrets::Resolver::new(vec![]));
-        OrchestratorController::new(orch, resolver, path, ConfigCell::new(cfg))
+        let notifier = Arc::new(crate::mcp_notifier::BroadcastMcpNotifier::new());
+        OrchestratorController::new(orch, resolver, path, ConfigCell::new(cfg), Some(notifier))
     }
 
     #[tokio::test]
@@ -770,6 +813,110 @@ pin_sha256 = ["SHA256:dummy"]
             !matches!(result, Err(McpError::NotImplemented(_))),
             "stats_subscribe override must not return NotImplemented, got {result:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn override_contract_events_subscribe_not_default() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ctl = fixture(tmp.path());
+        let (tx, _rx) = tokio::sync::mpsc::channel::<serde_json::Value>(8);
+        let result = ctl.events_subscribe(tx).await;
+        assert!(
+            !matches!(result, Err(McpError::NotImplemented(_))),
+            "events_subscribe override must not return NotImplemented, got {result:?}"
+        );
+    }
+
+    /// A subscriber receives the `spt/event` frame emitted by the wired
+    /// notifier (mirrors the supervisor stats relay). Also covers multiple
+    /// concurrent subscribers each getting the frame, and that dropping a
+    /// subscriber's receiver lets the relay task terminate (no leak).
+    #[tokio::test]
+    async fn events_subscribe_relays_frames_to_subscribers() {
+        use spt_events::{Event, McpNotification, McpNotifier, Severity};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let path = write_cfg(tmp.path(), boot_cfg());
+        let (cfg, _) = load_str(boot_cfg(), false).unwrap();
+        let orch = Arc::new(Orchestrator::new());
+        let resolver = Arc::new(spt_secrets::Resolver::new(vec![]));
+        let notifier = Arc::new(crate::mcp_notifier::BroadcastMcpNotifier::new());
+        let ctl = OrchestratorController::new(
+            orch,
+            resolver,
+            path,
+            ConfigCell::new(cfg),
+            Some(notifier.clone()),
+        );
+
+        // Two concurrent subscribers.
+        let (tx1, mut rx1) = tokio::sync::mpsc::channel::<serde_json::Value>(8);
+        let (tx2, mut rx2) = tokio::sync::mpsc::channel::<serde_json::Value>(8);
+        ctl.events_subscribe(tx1).await.unwrap();
+        ctl.events_subscribe(tx2).await.unwrap();
+
+        // Let the relay tasks attach to the broadcast before emitting.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        while notifier.receiver_count() < 2 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "relays never attached"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+
+        let ev = Event::builder("profile.failed", Severity::Error).build();
+        notifier
+            .notify(McpNotification::from_event(&ev))
+            .await
+            .unwrap();
+
+        for rx in [&mut rx1, &mut rx2] {
+            let frame = tokio::time::timeout(std::time::Duration::from_millis(500), rx.recv())
+                .await
+                .expect("frame")
+                .expect("some frame");
+            assert_eq!(frame["jsonrpc"], "2.0");
+            assert_eq!(frame["method"], "spt/event");
+        }
+
+        // Drop one subscriber: its relay loop must terminate, so the broadcast
+        // receiver count drops back to one.
+        drop(rx1);
+        // Nudge the dropped relay: a send failure only surfaces on the next
+        // broadcast item, so emit one more.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            notifier
+                .notify(McpNotification::from_event(
+                    &Event::builder("session.up", Severity::Info).build(),
+                ))
+                .await
+                .unwrap();
+            let _ = rx2.recv().await;
+            if notifier.receiver_count() <= 1 {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "dropped subscriber's relay task never terminated"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn events_subscribe_without_notifier_errors_internal() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = write_cfg(tmp.path(), boot_cfg());
+        let (cfg, _) = load_str(boot_cfg(), false).unwrap();
+        let orch = Arc::new(Orchestrator::new());
+        let resolver = Arc::new(spt_secrets::Resolver::new(vec![]));
+        // No notifier wired → events_subscribe is honest about it.
+        let ctl = OrchestratorController::new(orch, resolver, path, ConfigCell::new(cfg), None);
+        let (tx, _rx) = tokio::sync::mpsc::channel::<serde_json::Value>(8);
+        let err = ctl.events_subscribe(tx).await.unwrap_err();
+        assert!(matches!(err, McpError::Internal(_)));
     }
 
     #[tokio::test]

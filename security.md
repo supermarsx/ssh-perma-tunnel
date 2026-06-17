@@ -82,6 +82,19 @@ standards-track status. We will still accept reports against it on a
 best-effort basis, but they will not be treated as embargoed
 vulnerabilities and will not block a release.
 
+## Accepted dependency advisories
+
+The weekly `cargo audit` scan (`.github/workflows/audit.yml`) reports
+RustSec advisories against our pinned dependencies. Most are triaged
+by upgrading. A small number are **accepted risks** — suppressed in
+`.cargo/audit.toml` (and mirrored as `--ignore` flags on the CI
+invocation) with the justification recorded here. Every advisory *not*
+in this list is still reported and opens the tracking issue.
+
+| Advisory | Crate | Why accepted | Revisit when |
+| -------- | ----- | ------------ | ------------ |
+| [RUSTSEC-2023-0071](https://rustsec.org/advisories/RUSTSEC-2023-0071) | `rsa` | RSA "Marvin Attack" timing side-channel. No fixed `rsa` release exists (both `rsa 0.9.x` and the `rsa 0.10.0-rc.*` prereleases are flagged). The attack is a timing oracle in RSA **PKCS#1 v1.5 decryption**, exploitable only when an attacker can submit chosen ciphertexts and measure decryption timing. `spt`'s RSA usage is **signing / verification only** — `spt-key`'s `RsaCertSigner` signs SSH certificates with an RSA CA, and `russh` uses RSA for SSH host-key / public-key *signatures*. We never expose an attacker-controlled RSA decryption oracle, so the vulnerable path is unreachable. Dropping RSA would remove real SSH / certificate capability. | A fixed `rsa` crate release ships (bump + remove the ignore entry), or `spt` ever starts performing RSA PKCS#1 v1.5 decryption. |
+
 ## Disclosure
 
 After a fix ships we publish a brief advisory in the GitHub Security

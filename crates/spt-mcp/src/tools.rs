@@ -71,10 +71,11 @@ pub trait ToolHandler: Send + Sync + 'static {
 /// The full canonical name list from spec §16, in spec order. Used by tests
 /// and the registry sanity-check.
 ///
-/// The original spec lists 31 tools; 3 additional live-bridge tools
-/// (`session_close`, `session_drain`, `stats_subscribe`; `benchmark_run`
-/// already counted) are appended for the loopback control surface, plus the
-/// observability live-control tool `log_set_level` (t8-A3) for a total of 35.
+/// The original spec lists 31 tools; 4 additional live-bridge tools
+/// (`session_close`, `session_drain`, `stats_subscribe`, `events_subscribe`;
+/// `benchmark_run` already counted) are appended for the loopback control
+/// surface, plus the observability live-control tool `log_set_level` (t8-A3)
+/// for a total of 36.
 pub const ALL_TOOL_NAMES: &[&str] = &[
     "config_validate",
     "config_doctor",
@@ -111,6 +112,7 @@ pub const ALL_TOOL_NAMES: &[&str] = &[
     "session_close",
     "session_drain",
     "stats_subscribe",
+    "events_subscribe",
     // Observability: runtime log filter override (t8-A3).
     "log_set_level",
 ];
@@ -643,6 +645,57 @@ impl ToolHandler for StatsSubscribe {
         }))
     }
 }
+
+/// `events_subscribe`: register a streaming subscription for live event
+/// notifications. The server pushes `spt/event` JSON-RPC notification frames
+/// on this connection until the client disconnects.
+///
+/// This mirrors [`StatsSubscribe`] exactly: it installs the per-connection
+/// `mpsc::Sender` (set by the loopback transport before dispatch) on the
+/// controller, which spawns a relay task forwarding each event frame. The
+/// frames originate from the binary's `mcp_notify` event sink (a broadcast
+/// channel), the same broadcast pattern `stats_subscribe` uses for ticks.
+///
+/// Unlike `stats_subscribe`, whose payloads the transport wraps into
+/// `notifications/stats/tick`, the values relayed here are already complete
+/// JSON-RPC notification frames (`{"jsonrpc":"2.0","method":"spt/event",..}`),
+/// which the transport forwards verbatim.
+pub struct EventsSubscribe;
+#[async_trait]
+impl ToolHandler for EventsSubscribe {
+    fn name(&self) -> &'static str {
+        "events_subscribe"
+    }
+    fn descriptor(&self) -> ToolDescriptor {
+        ToolDescriptor {
+            name: self.name().to_owned(),
+            description: "Subscribe to live event notifications. Frames are emitted as `spt/event` JSON-RPC notifications carrying the serialized Event.".to_owned(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {},
+                "additionalProperties": true,
+            }),
+        }
+    }
+    async fn call(&self, ctx: &ToolContext, _args: Value) -> crate::Result<Value> {
+        // Streaming dispatch: the server sets `ctx.notification_sender` before
+        // dispatch on transports that support notifications (the loopback
+        // path). Without one we return a typed error so the client knows to
+        // use a notification-capable transport — same contract as
+        // `stats_subscribe`.
+        let tx = ctx.notification_sender.clone().ok_or_else(|| {
+            crate::Error::InvalidParams(
+                "events_subscribe requires a transport with notification support".to_owned(),
+            )
+        })?;
+        ctx.controller.events_subscribe(tx).await?;
+        Ok(json!({
+            "subscribed": true,
+            "notification": "spt/event"
+        }))
+    }
+}
+
 /// `log_set_level`: change the live tracing filter directive at runtime.
 ///
 /// Constructs an `EnvFilter`-style directive of the form `target=level` from
@@ -826,6 +879,7 @@ impl ToolRegistry {
         add!(SessionClose);
         add!(SessionDrain);
         add!(StatsSubscribe);
+        add!(EventsSubscribe);
         // Observability live-control (t8-A3):
         add!(LogSetLevel);
 
@@ -833,7 +887,7 @@ impl ToolRegistry {
         Self { by_name }
     }
 
-    /// Number of registered tools (must be 35).
+    /// Number of registered tools (must be 36).
     #[must_use]
     pub fn len(&self) -> usize {
         self.by_name.len()
@@ -1141,6 +1195,38 @@ mod tests {
             .await
             .expect("tick");
         assert!(first.is_some());
+    }
+
+    #[tokio::test]
+    async fn events_subscribe_without_notify_errors() {
+        let ctrl = RecordingController::new();
+        let ctx = ctx_with(Arc::new(ctrl.clone()));
+        let err = EventsSubscribe.call(&ctx, json!({})).await.unwrap_err();
+        assert!(matches!(err, crate::Error::InvalidParams(_)));
+    }
+
+    #[tokio::test]
+    async fn events_subscribe_with_notify_routes_and_emits_frame() {
+        let ctrl = RecordingController::new();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        let sources = Arc::new(NoopSources);
+        let ctx = ToolContext {
+            config: sources.clone() as DynConfigSource,
+            state: sources as DynStateSource,
+            controller: Arc::new(ctrl.clone()),
+            notification_sender: Some(tx),
+            log_reload: None,
+        };
+        let v = EventsSubscribe.call(&ctx, json!({})).await.expect("ok");
+        assert_eq!(v["subscribed"], true);
+        assert_eq!(v["notification"], "spt/event");
+        let first = tokio::time::timeout(std::time::Duration::from_millis(500), rx.recv())
+            .await
+            .expect("frame")
+            .expect("some frame");
+        // The relayed value is a complete JSON-RPC notification frame.
+        assert_eq!(first["jsonrpc"], "2.0");
+        assert_eq!(first["method"], "spt/event");
     }
 
     #[tokio::test]
