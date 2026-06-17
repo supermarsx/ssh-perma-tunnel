@@ -1,3 +1,11 @@
+## [26.13] - 2026-06-17
+
+# spt 26.13
+
+## Changes since 26.12
+
+- feat(mcp): events_subscribe streaming + chore: accept rsa Marvin advisory (no upstream fix) (0044011)
+
 ## [26.12] - 2026-06-17
 
 # spt 26.12
