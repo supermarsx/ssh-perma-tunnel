@@ -1,3 +1,12 @@
+## [26.12] - 2026-06-17
+
+# spt 26.12
+
+## Changes since 26.11
+
+- fix(test): firewall_apply_with_yes asserts routing, not privileged mutation success (3720510)
+- feat: wire remaining capabilities (event sinks, live bench, DNS runtime, e2e, sd_notify, firewall --yes) (5bc3f28)
+
 ## [26.11] - 2026-06-13
 
 # spt 26.11
