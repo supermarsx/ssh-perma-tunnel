@@ -1,3 +1,11 @@
+## [26.14] - 2026-06-18
+
+# spt 26.14
+
+## Changes since 26.13
+
+- feat(cli): repurpose `spt status` as app overview; move API controls to `spt status-api` (0671994)
+
 ## [26.13] - 2026-06-17
 
 # spt 26.13
