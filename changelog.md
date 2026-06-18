@@ -1,3 +1,11 @@
+## [26.15] - 2026-06-18
+
+# spt 26.15
+
+## Changes since 26.14
+
+- feat(cli): colorize human readouts + show real service status in `spt status` (d9734f4)
+
 ## [26.14] - 2026-06-18
 
 # spt 26.14
