@@ -442,7 +442,7 @@ pub async fn show(global: &GlobalOpts, args: ForwardShowArgs) -> Result<()> {
             print!("{s}");
         }
         OutputFormat::Human => {
-            print_human(&view);
+            print_human(&view, crate::styler(global));
         }
     }
 
@@ -450,7 +450,17 @@ pub async fn show(global: &GlobalOpts, args: ForwardShowArgs) -> Result<()> {
     Ok(())
 }
 
-fn print_human(v: &ForwardView) {
+/// Render a bool as its plain `true`/`false` text, colored green when true and
+/// dim when false. Text is unchanged so machine output / plain mode is intact.
+fn color_bool(st: crate::cli::style::Styler, b: bool) -> String {
+    if b {
+        st.green("true")
+    } else {
+        st.dim("false")
+    }
+}
+
+fn print_human(v: &ForwardView, st: crate::cli::style::Styler) {
     use std::fmt::Write as _; // 1.88 lint: format_push_string
     let mut out = String::new();
     let push = |out: &mut String, k: &str, val: &str| {
@@ -460,7 +470,8 @@ fn print_human(v: &ForwardView) {
     push(&mut out, "forward", &v.name);
     push(&mut out, "direction", &v.direction);
     push(&mut out, "transport", &v.transport);
-    push(&mut out, "bind", &v.bind.canonical);
+    // The listener bind is a present resource → green.
+    push(&mut out, "bind", &st.green(&v.bind.canonical));
     if !v.bind.resolved.is_empty() {
         let resolved = v
             .bind
@@ -491,12 +502,12 @@ fn print_human(v: &ForwardView) {
     if let Some(s) = &v.sni_name {
         push(&mut out, "sni_name", s);
     }
-    push(&mut out, "expose", &v.expose.to_string());
+    push(&mut out, "expose", &color_bool(st, v.expose));
     if let Some(t) = &v.idle_timeout {
         push(&mut out, "idle_timeout", t);
     }
     if let Some(r) = v.required {
-        push(&mut out, "required", &r.to_string());
+        push(&mut out, "required", &color_bool(st, r));
     }
     if let Some(c) = &v.on_bind_conflict {
         push(&mut out, "on_bind_conflict", c);
@@ -543,7 +554,11 @@ fn print_human(v: &ForwardView) {
         );
     }
     out.push_str("health:\n");
-    let _ = writeln!(out, "  required                : {}", v.health.required);
+    let _ = writeln!(
+        out,
+        "  required                : {}",
+        color_bool(st, v.health.required)
+    );
     if let Some(a) = &v.health.instability_action {
         let _ = writeln!(out, "  instability_action      : {a}");
     }
@@ -900,22 +915,29 @@ pub async fn test(global: &GlobalOpts, args: ForwardTestArgs) -> Result<()> {
             print!("{s}");
         }
         OutputFormat::Human => {
+            let st = crate::styler(global);
             println!(
                 "listener      : {}",
                 report
                     .listener
                     .map_or_else(|| "(none)".to_owned(), |a| a.to_string())
             );
+            // listener_up: reachable → green, down → red.
+            let up = if report.listener_up {
+                st.green("true")
+            } else {
+                st.red("false")
+            };
             println!(
                 "listener up   : {}{}",
-                report.listener_up,
+                up,
                 if let Some(us) = report.connect_micros {
                     format!(" ({us} us)")
                 } else {
                     String::new()
                 }
             );
-            println!("probe write ok: {}", report.probe_write_ok);
+            println!("probe write ok: {}", color_bool(st, report.probe_write_ok));
             if let Some(d) = &report.dns {
                 println!(
                     "dns {}    : {}",

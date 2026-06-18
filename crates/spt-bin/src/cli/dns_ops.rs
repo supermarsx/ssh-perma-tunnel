@@ -134,11 +134,15 @@ pub async fn status(global: &GlobalOpts, args: DnsStatusArgs) -> Result<()> {
     if crate::cli::tunnel_ops::emit(global, args.json, &report)? {
         // machine output written
     } else if !active {
-        println!("DNS resolver not active");
+        let st = crate::styler(global);
+        println!("DNS resolver {}", st.red("not active"));
     } else {
+        let st = crate::styler(global);
+        let bound = report.bound.as_deref().unwrap_or("(unknown)");
         println!(
-            "DNS resolver active: bound={} managed_records={}",
-            report.bound.as_deref().unwrap_or("(unknown)"),
+            "DNS resolver {}: bound={} managed_records={}",
+            st.green("active"),
+            st.green(bound),
             report.managed_records
         );
     }

@@ -172,7 +172,10 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
         Command::Diagnose(c) => diagnose_dispatch(&global, c).await,
         Command::Benchmark(c) => benchmark_dispatch(&global, c).await,
         Command::Mcp(c) => mcp_dispatch(&global, c).await,
-        Command::Status(c) => crate::cli::status_ops::status_overview(&global, c).await,
+        // The overview future builds an `OverviewReport` (runtime + snapshot)
+        // and awaits the OS service-status probe; box it to keep the combined
+        // `dispatch` future under clippy's `large_futures` threshold.
+        Command::Status(c) => Box::pin(crate::cli::status_ops::status_overview(&global, c)).await,
         Command::StatusApi(c) => status_api_dispatch(&global, c).await,
         Command::Completion(c) => completion_dispatch(&global, c),
         Command::About(c) => about_dispatch(&global, c).await,
@@ -2705,6 +2708,26 @@ fn service_name_from_path(p: &Path) -> String {
         .and_then(|s| s.to_str())
         .map(|s| format!("spt-{s}"))
         .unwrap_or_else(|| "spt".into())
+}
+
+/// Query the OS service state for the inline `spt status` Services section.
+///
+/// Reuses the same default `ServiceManager` build path as the `service`
+/// group (`new_default_manager`) and the canonical naming used by the
+/// install tooling: when a `--config` was given we derive `spt-<stem>`
+/// (matching [`service_name_from_path`]), otherwise the canonical `"spt"`
+/// unit. Errors are surfaced as `Unknown` with a short reason rather than
+/// propagated, so `spt status` never fails because of the service probe.
+pub(crate) async fn probe_service_status(
+    config: Option<&Path>,
+) -> std::result::Result<(String, spt_service::ServiceStatus), String> {
+    let name = match config {
+        Some(p) => service_name_from_path(p),
+        None => "spt".to_string(),
+    };
+    let mgr = spt_service::new_default_manager().map_err(|e| e.to_string())?;
+    let st = mgr.status(&name).await.map_err(|e| e.to_string())?;
+    Ok((name, st))
 }
 
 // ============================================================================

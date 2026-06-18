@@ -338,6 +338,10 @@ impl Liveness {
 /// `--watch` clears + re-renders every ~2s until Ctrl-C.
 pub async fn status_overview(global: &GlobalOpts, cmd: StatusCmd) -> Result<()> {
     let fmt = overview_format(global, &cmd);
+    // Color only ever applies to the human path; `styler` already honors
+    // `--no-color` / `NO_COLOR` / `--color` / stdout is-terminal, so piped
+    // output stays plain even on the human branch.
+    let st = crate::styler(global);
 
     if cmd.watch {
         // Live refresh loop: clear screen + reprint until Ctrl-C / SIGTERM.
@@ -349,9 +353,10 @@ pub async fn status_overview(global: &GlobalOpts, cmd: StatusCmd) -> Result<()> 
         }
         loop {
             let report = build_report(global)?;
+            let svc = query_service_line(global).await;
             // Clear screen + home cursor, then reprint.
             print!("\x1b[2J\x1b[H");
-            print!("{}", render_human(&report, cmd.detail));
+            print!("{}", render_human(&report, cmd.detail, st, &svc));
             use std::io::Write;
             let _ = std::io::stdout().flush();
             tokio::select! {
@@ -364,6 +369,7 @@ pub async fn status_overview(global: &GlobalOpts, cmd: StatusCmd) -> Result<()> 
     let report = build_report(global)?;
     match fmt {
         OutputFormat::Json | OutputFormat::Jsonl => {
+            // Machine output must never carry ANSI escapes.
             println!(
                 "{}",
                 serde_json::to_string_pretty(&report.to_json()).unwrap()
@@ -376,10 +382,50 @@ pub async fn status_overview(global: &GlobalOpts, cmd: StatusCmd) -> Result<()> 
             print!("{yaml}");
         }
         OutputFormat::Human => {
-            print!("{}", render_human(&report, cmd.detail));
+            let svc = query_service_line(global).await;
+            print!("{}", render_human(&report, cmd.detail, st, &svc));
         }
     }
     Ok(())
+}
+
+/// Human-readable description of the OS service state for the Services
+/// section. `label` is the displayed phrase (colored via
+/// [`crate::cli::style::Styler::state`]); on a query error it already embeds a
+/// short `unknown (<reason>)` parenthetical.
+struct ServiceLine {
+    label: String,
+}
+
+/// Probe the OS service state for the inline Services section. Never fails:
+/// query errors collapse to `unknown (<reason>)`.
+async fn query_service_line(global: &GlobalOpts) -> ServiceLine {
+    match crate::cli_dispatch::probe_service_status(global.config.as_deref()).await {
+        Ok((_name, st)) => {
+            use spt_service::ServiceState;
+            let label = match st.state {
+                ServiceState::NotInstalled => "not installed".to_string(),
+                ServiceState::Running => {
+                    if let Some(pid) = st.pid {
+                        format!("running (pid {pid})")
+                    } else {
+                        "running".to_string()
+                    }
+                }
+                ServiceState::Stopped => "stopped".to_string(),
+                ServiceState::Failed => "failed".to_string(),
+                ServiceState::Unknown => "unknown".to_string(),
+            };
+            ServiceLine { label }
+        }
+        Err(reason) => {
+            // Keep the reason short and single-line so the overview stays tidy.
+            let short = reason.lines().next().unwrap_or(&reason).trim();
+            ServiceLine {
+                label: format!("unknown ({short})"),
+            }
+        }
+    }
 }
 
 /// The combined, render-agnostic overview data.
@@ -513,16 +559,22 @@ impl OverviewReport {
 }
 
 /// Render the elaborate human report. `detail` widens per-component fields.
+/// `st` colorizes the human path; `svc` carries the queried OS service line.
 #[allow(clippy::too_many_lines)]
-fn render_human(r: &OverviewReport, detail: bool) -> String {
+fn render_human(
+    r: &OverviewReport,
+    detail: bool,
+    st: crate::cli::style::Styler,
+    svc: &ServiceLine,
+) -> String {
     use std::fmt::Write as _;
     let mut o = String::new();
 
     // -- Daemon section -----------------------------------------------------
-    let _ = writeln!(o, "spt status");
+    let _ = writeln!(o, "{}", st.bold(&st.cyan("spt status")));
     let _ = writeln!(o, "==========");
     let _ = writeln!(o);
-    let _ = writeln!(o, "Daemon: {}", r.liveness.label());
+    let _ = writeln!(o, "Daemon: {}", st.state(r.liveness.label()));
     if let Some(rs) = &r.runtime {
         let _ = writeln!(o, "  pid:         {}", rs.pid());
         let _ = writeln!(o, "  version:     {}", rs.version);
@@ -555,14 +607,14 @@ fn render_human(r: &OverviewReport, detail: bool) -> String {
 
     // -- Profiles / Tunnels -------------------------------------------------
     let _ = writeln!(o);
-    let _ = writeln!(o, "Profiles / Tunnels:");
+    let _ = writeln!(o, "{}", st.bold(&st.cyan("Profiles / Tunnels:")));
     match r.snapshot.as_ref().filter(|s| !s.profiles.is_empty()) {
         None => {
             let _ = writeln!(o, "  (none reported)");
         }
         Some(snap) => {
             for p in &snap.profiles {
-                let _ = writeln!(o, "  - {} [{}]", p.id, p.state);
+                let _ = writeln!(o, "  - {} [{}]", p.id, st.state(&p.state));
                 if let Some(ep) = &p.active_endpoint {
                     let _ = writeln!(o, "      endpoint:   {ep}");
                 }
@@ -593,7 +645,7 @@ fn render_human(r: &OverviewReport, detail: bool) -> String {
 
     // -- Forwards -----------------------------------------------------------
     let _ = writeln!(o);
-    let _ = writeln!(o, "Forwards:");
+    let _ = writeln!(o, "{}", st.bold(&st.cyan("Forwards:")));
     match r.snapshot.as_ref().filter(|s| !s.forwards.is_empty()) {
         None => {
             let _ = writeln!(o, "  (none reported)");
@@ -602,7 +654,14 @@ fn render_human(r: &OverviewReport, detail: bool) -> String {
             for f in &snap.forwards {
                 let listener = f.local_addr.as_deref().unwrap_or("?");
                 let target = f.remote_addr.as_deref().unwrap_or("?");
-                let _ = writeln!(o, "  - {} [{}] {} -> {}", f.id, f.state, listener, target);
+                let _ = writeln!(
+                    o,
+                    "  - {} [{}] {} -> {}",
+                    f.id,
+                    st.state(&f.state),
+                    listener,
+                    target
+                );
                 if detail {
                     let _ = writeln!(
                         o,
@@ -616,7 +675,7 @@ fn render_human(r: &OverviewReport, detail: bool) -> String {
 
     // -- Subsystems ---------------------------------------------------------
     let _ = writeln!(o);
-    let _ = writeln!(o, "Subsystems:");
+    let _ = writeln!(o, "{}", st.bold(&st.cyan("Subsystems:")));
     match r.runtime.as_ref().map(|rs| &rs.subsystems) {
         None => {
             let _ = writeln!(o, "  (unknown — daemon not running)");
@@ -624,10 +683,15 @@ fn render_human(r: &OverviewReport, detail: bool) -> String {
         Some(sub) => {
             match &sub.status_api {
                 Some(s) => {
+                    let onoff = if s.enabled {
+                        st.green("on")
+                    } else {
+                        st.dim("off")
+                    };
                     let _ = writeln!(
                         o,
                         "  status API:    {} {}",
-                        if s.enabled { "on" } else { "off" },
+                        onoff,
                         s.bind.as_deref().unwrap_or("-")
                     );
                     if detail {
@@ -640,15 +704,19 @@ fn render_human(r: &OverviewReport, detail: bool) -> String {
                     }
                 }
                 None => {
-                    let _ = writeln!(o, "  status API:    off");
+                    let _ = writeln!(o, "  status API:    {}", st.dim("off"));
                 }
             }
             match &sub.mcp {
                 Some(m) => {
-                    let _ = writeln!(o, "  MCP loopback:  {}", m.bind.as_deref().unwrap_or("-"));
+                    let _ = writeln!(
+                        o,
+                        "  MCP loopback:  {}",
+                        st.green(m.bind.as_deref().unwrap_or("-"))
+                    );
                 }
                 None => {
-                    let _ = writeln!(o, "  MCP loopback:  off");
+                    let _ = writeln!(o, "  MCP loopback:  {}", st.dim("off"));
                 }
             }
             match &sub.dns {
@@ -656,32 +724,37 @@ fn render_human(r: &OverviewReport, detail: bool) -> String {
                     let _ = writeln!(
                         o,
                         "  DNS:           {} (mode {})",
-                        d.bind.as_deref().unwrap_or("-"),
+                        st.green(d.bind.as_deref().unwrap_or("-")),
                         d.mode.as_deref().unwrap_or("-")
                     );
                 }
                 None => {
-                    let _ = writeln!(o, "  DNS:           off");
+                    let _ = writeln!(o, "  DNS:           {}", st.dim("off"));
                 }
             }
             match &sub.metrics {
                 Some(m) => {
-                    let _ = writeln!(o, "  Metrics:       {}", m.path.as_deref().unwrap_or("-"));
+                    let _ = writeln!(
+                        o,
+                        "  Metrics:       {}",
+                        st.green(m.path.as_deref().unwrap_or("-"))
+                    );
                 }
                 None => {
-                    let _ = writeln!(o, "  Metrics:       off");
+                    let _ = writeln!(o, "  Metrics:       {}", st.dim("off"));
                 }
             }
             match &sub.remote_config_poller {
                 Some(rc) if rc.enabled => {
                     let _ = writeln!(
                         o,
-                        "  Remote config: on (every {}s)",
+                        "  Remote config: {} (every {}s)",
+                        st.green("on"),
                         rc.interval_secs.unwrap_or(0)
                     );
                 }
                 _ => {
-                    let _ = writeln!(o, "  Remote config: off");
+                    let _ = writeln!(o, "  Remote config: {}", st.dim("off"));
                 }
             }
             match &sub.events {
@@ -692,7 +765,7 @@ fn render_human(r: &OverviewReport, detail: bool) -> String {
                     }
                 }
                 None => {
-                    let _ = writeln!(o, "  Events:        off");
+                    let _ = writeln!(o, "  Events:        {}", st.dim("off"));
                 }
             }
         }
@@ -700,8 +773,8 @@ fn render_human(r: &OverviewReport, detail: bool) -> String {
 
     // -- Services -----------------------------------------------------------
     let _ = writeln!(o);
-    let _ = writeln!(o, "Services:");
-    let _ = writeln!(o, "  OS service state: see `spt service status`");
+    let _ = writeln!(o, "{}", st.bold(&st.cyan("Services:")));
+    let _ = writeln!(o, "  OS service: {}", st.state(&svc.label));
 
     o
 }
@@ -826,12 +899,26 @@ mod overview_tests {
         let g = global(td.path().to_path_buf());
         let report = build_report(&g).unwrap();
         assert_eq!(report.liveness, Liveness::NotRunning);
-        let human = render_human(&report, false);
+        let plain = crate::cli::style::Styler::new(false);
+        let svc = ServiceLine {
+            label: "not installed".into(),
+        };
+        let human = render_human(&report, false, plain, &svc);
         assert!(human.contains("NOT RUNNING"), "got:\n{human}");
+        // The inline service line renders the NotInstalled common case.
+        assert!(human.contains("OS service: not installed"), "got:\n{human}");
+        // Plain styler must not inject any escapes.
+        assert!(
+            !human.contains('\x1b'),
+            "plain output had escapes:\n{human}"
+        );
         // JSON form must still be valid and mark the daemon not live.
         let v = report.to_json();
         assert_eq!(v["daemon"]["live"], serde_json::json!(false));
         assert_eq!(v["daemon"]["state"], serde_json::json!("not_running"));
+        // Machine output (JSON) must never carry ANSI escapes.
+        let s = serde_json::to_string_pretty(&v).unwrap();
+        assert!(!s.contains('\x1b'), "json output had escapes:\n{s}");
     }
 
     #[test]
@@ -844,10 +931,29 @@ mod overview_tests {
         let report = build_report(&g).unwrap();
         assert_eq!(report.liveness, Liveness::Running);
         assert!(report.liveness.is_live());
-        let human = render_human(&report, true);
+        let plain = crate::cli::style::Styler::new(false);
+        let svc = ServiceLine {
+            label: "running (pid 42)".into(),
+        };
+        let human = render_human(&report, true, plain, &svc);
         assert!(human.contains("RUNNING"), "got:\n{human}");
         assert!(human.contains("status API"));
         assert!(human.contains("127.0.0.1:7878"));
+        assert!(
+            human.contains("OS service: running (pid 42)"),
+            "got:\n{human}"
+        );
+
+        // Enabled styler must inject escapes and color the RUNNING daemon
+        // label green and the service line green.
+        let styled = crate::cli::style::Styler::new(true);
+        let colored = render_human(&report, true, styled, &svc);
+        assert!(colored.contains('\x1b'), "styled output had no escapes");
+        // "RUNNING" daemon liveness → green.
+        assert!(
+            colored.contains("\x1b[32mRUNNING\x1b[0m"),
+            "got:\n{colored}"
+        );
     }
 
     #[test]

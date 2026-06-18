@@ -323,10 +323,13 @@ async fn toggle_enabled(global: &GlobalOpts, name: &str, on: bool) -> Result<()>
         });
         println!("{msg}");
     } else {
+        // Color the action verb: enabled→green, disabled→dim.
+        let st = crate::styler(global);
+        let action_col = if on { st.green(action) } else { st.dim(action) };
         match reloaded {
-            Ok(()) => println!("ok: profile `{name}` {action} (supervisor reloaded)"),
+            Ok(()) => println!("ok: profile `{name}` {action_col} (supervisor reloaded)"),
             Err(_) => println!(
-                "ok: profile `{name}` {action} (supervisor not running; will apply on next start)"
+                "ok: profile `{name}` {action_col} (supervisor not running; will apply on next start)"
             ),
         }
     }
@@ -477,11 +480,13 @@ fn emit_test_report(global: &GlobalOpts, profile: &str, results: &[EndpointResul
         let v = json!({ "profile": profile, "endpoints": arr });
         println!("{v}");
     } else {
+        let st = crate::styler(global);
         for r in results {
             match &r.status {
                 EndpointStatus::Connected { peer_version } => println!(
-                    "endpoint {id}: connected in {ms}ms{peer}",
+                    "endpoint {id}: {status} in {ms}ms{peer}",
                     id = r.id,
+                    status = st.green("connected"),
                     ms = r.latency_ms,
                     peer = peer_version
                         .as_ref()
@@ -489,8 +494,9 @@ fn emit_test_report(global: &GlobalOpts, profile: &str, results: &[EndpointResul
                         .unwrap_or_default(),
                 ),
                 EndpointStatus::Failed(err) => println!(
-                    "endpoint {id}: failed in {ms}ms — {err}",
+                    "endpoint {id}: {status} in {ms}ms — {err}",
                     id = r.id,
+                    status = st.red("failed"),
                     ms = r.latency_ms,
                 ),
             }

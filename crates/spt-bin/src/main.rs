@@ -274,8 +274,14 @@ pub(crate) fn log_level_directive(level: LogLevel, verbose: u8) -> String {
     }
 }
 
+/// Build a [`Styler`](crate::cli::style::Styler) honoring the resolved
+/// color policy. Renderers should call this once and thread the result
+/// through their human-output paths.
+pub(crate) fn styler(global: &GlobalOpts) -> crate::cli::style::Styler {
+    crate::cli::style::Styler::new(color_enabled(global))
+}
+
 /// Convenience for handlers: should we honor color escapes?
-#[allow(dead_code)]
 pub(crate) fn color_enabled(global: &GlobalOpts) -> bool {
     if global.no_color {
         return false;

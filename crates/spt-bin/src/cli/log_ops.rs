@@ -137,10 +137,19 @@ pub async fn test(global: &GlobalOpts, args: LogTestArgs) -> Result<()> {
     if crate::cli::tunnel_ops::emit(global, args.json, &payload)? {
         // machine output written
     } else if ok {
-        println!("ok: sink `{}` ({}) in {}ms", args.sink, surface, elapsed_ms);
-    } else {
+        let st = crate::styler(global);
         println!(
-            "FAIL: sink `{}` in {}ms — {}",
+            "{}: sink `{}` ({}) in {}ms",
+            st.green("ok"),
+            args.sink,
+            surface,
+            elapsed_ms
+        );
+    } else {
+        let st = crate::styler(global);
+        println!(
+            "{}: sink `{}` in {}ms — {}",
+            st.red("FAIL"),
             args.sink,
             elapsed_ms,
             err.as_deref().unwrap_or("unknown error")
@@ -250,13 +259,22 @@ pub async fn remote_drain(global: &GlobalOpts, args: LogRemoteDrainArgs) -> Resu
     if crate::cli::tunnel_ops::emit(global, args.json, &payload)? {
         // machine output written
     } else if let Some(e) = failed {
-        println!("FAIL: drained {drained} record(s), then failed: {e}");
+        let st = crate::styler(global);
+        println!(
+            "{}: drained {drained} record(s), then failed: {e}",
+            st.red("FAIL")
+        );
         return Err(Error::RuntimeFailure(format!(
             "remote log drain for `{}` failed",
             remote.name
         )));
     } else {
-        println!("ok: drained {drained} record(s) from `{}`", remote.name);
+        let st = crate::styler(global);
+        println!(
+            "{}: drained {drained} record(s) from `{}`",
+            st.green("ok"),
+            remote.name
+        );
     }
     Ok(())
 }

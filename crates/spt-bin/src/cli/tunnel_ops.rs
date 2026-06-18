@@ -35,6 +35,8 @@ use serde::Serialize;
 use serde_json::json;
 use spt_cli::groups::tunnel::{TunnelHealth, TunnelSessions, TunnelStats};
 use spt_cli::{GlobalOpts, OutputFormat};
+
+use crate::cli::style::Styler;
 use spt_config::openssh_config::parse_user_host_port;
 use spt_config::schema::{Config, Hop};
 use spt_core::{Error, Result};
@@ -150,7 +152,10 @@ pub async fn stats(global: &GlobalOpts, args: TunnelStatsArgs) -> Result<()> {
     if emit(global, args.json, &filtered)? {
         return Ok(());
     }
-    println!("{}", render_stats_human(&filtered, Utc::now()));
+    println!(
+        "{}",
+        render_stats_human(&filtered, Utc::now(), crate::styler(global))
+    );
     Ok(())
 }
 
@@ -166,7 +171,10 @@ pub async fn sessions(global: &GlobalOpts, args: TunnelSessionsArgs) -> Result<(
     if emit(global, args.json, &filtered.sessions)? {
         return Ok(());
     }
-    println!("{}", render_sessions_human(&filtered, Utc::now()));
+    println!(
+        "{}",
+        render_sessions_human(&filtered, Utc::now(), crate::styler(global))
+    );
     Ok(())
 }
 
@@ -205,7 +213,10 @@ pub async fn health(global: &GlobalOpts, args: TunnelHealthArgs) -> Result<()> {
 
     let payload = report.to_json();
     if !emit(global, args.json, &payload)? {
-        println!("{}", render_health_human(&report, Utc::now()));
+        println!(
+            "{}",
+            render_health_human(&report, Utc::now(), crate::styler(global))
+        );
     }
 
     let code = report.level.exit_code();
@@ -637,7 +648,7 @@ fn apply_filters(
 // Human renderers
 // ---------------------------------------------------------------------------
 
-fn render_stats_human(snap: &StatusSnapshot, now: DateTime<Utc>) -> String {
+fn render_stats_human(snap: &StatusSnapshot, now: DateTime<Utc>, st: Styler) -> String {
     use std::fmt::Write as _; // 1.88 lint: format_push_string
     let mut out = String::new();
     let active_sessions: u64 = snap
@@ -672,11 +683,14 @@ fn render_stats_human(snap: &StatusSnapshot, now: DateTime<Utc>) -> String {
             .iter()
             .filter(|f| f.profile == p.id)
             .fold((0u64, 0u64), |(a, b), f| (a + f.bytes_in, b + f.bytes_out));
+        // Pad the state to the column width *before* coloring so ANSI escapes
+        // don't throw off alignment.
+        let state_cell = st.state(&format!("{:<13}", p.state));
         let _ = writeln!(
             out,
-            "{:<width$}  {:<13}  uptime {}    rx {}    tx {}    reconnects {}",
+            "{:<width$}  {}  uptime {}    rx {}    tx {}    reconnects {}",
             p.id,
-            p.state,
+            state_cell,
             uptime,
             spt_core::size::format_size(rx),
             spt_core::size::format_size(tx),
@@ -686,7 +700,7 @@ fn render_stats_human(snap: &StatusSnapshot, now: DateTime<Utc>) -> String {
     }
 
     if !snap.forwards.is_empty() {
-        out.push_str("\nforwards:\n");
+        let _ = writeln!(out, "\n{}", st.bold(&st.cyan("forwards:")));
         for f in &snap.forwards {
             let listen = f.local_addr.clone().unwrap_or_else(|| "-".into());
             let _ = writeln!(
@@ -705,14 +719,14 @@ fn render_stats_human(snap: &StatusSnapshot, now: DateTime<Utc>) -> String {
     out
 }
 
-fn render_sessions_human(snap: &StatusSnapshot, now: DateTime<Utc>) -> String {
+fn render_sessions_human(snap: &StatusSnapshot, now: DateTime<Utc>, st: Styler) -> String {
     use std::fmt::Write as _; // 1.88 lint: format_push_string
     let mut out = String::new();
-    let _ = writeln!(
-        out,
+    let header = format!(
         "{:<22} {:<14} {:<22} {:<12} {:<20} {:<5}",
         "ID", "PROFILE", "ENDPOINT", "SINCE", "BYTES IN/OUT", "CONNS",
     );
+    let _ = writeln!(out, "{}", st.bold(&header));
     if snap.sessions.is_empty() {
         out.push_str("(no active sessions)\n");
         return out;
@@ -741,10 +755,17 @@ fn render_sessions_human(snap: &StatusSnapshot, now: DateTime<Utc>) -> String {
     out
 }
 
-fn render_health_human(report: &HealthReport, now: DateTime<Utc>) -> String {
+fn render_health_human(report: &HealthReport, now: DateTime<Utc>, st: Styler) -> String {
     use std::fmt::Write as _; // 1.88 lint: format_push_string
     let mut out = String::new();
-    let _ = writeln!(out, "tunnel health: {}\n", report.level.label());
+    // Color the overall verdict by level (green/yellow/red/dim-unknown).
+    let verdict = match report.level {
+        HealthLevel::Green => st.green(report.level.label()),
+        HealthLevel::Yellow => st.yellow(report.level.label()),
+        HealthLevel::Red => st.red(report.level.label()),
+        HealthLevel::Unknown => st.dim(report.level.label()),
+    };
+    let _ = writeln!(out, "tunnel health: {}\n", verdict);
 
     if report.profiles.is_empty() && matches!(report.level, HealthLevel::Unknown) {
         out.push_str("  (no supervisor running — `status.json` not found)\n");
@@ -759,11 +780,12 @@ fn render_health_human(report: &HealthReport, now: DateTime<Utc>) -> String {
         .max(7);
     for p in &report.profiles {
         let last = p.last_error.as_deref().unwrap_or("-");
+        let state_cell = st.state(&format!("{:<13}", p.state));
         let _ = writeln!(
             out,
-            "  {:<width$}  {:<13} uptime {}    last error: {}",
+            "  {:<width$}  {} uptime {}    last error: {}",
             format!("{}:", p.id),
-            p.state,
+            state_cell,
             p.uptime.as_ref().cloned().unwrap_or_else(|| "-".into()),
             last,
             width = name_w + 1,
@@ -1335,7 +1357,7 @@ mod tests {
     #[test]
     fn render_stats_human_includes_header_and_forward_listing() {
         let snap = green_snapshot();
-        let s = render_stats_human(&snap, ts());
+        let s = render_stats_human(&snap, ts(), Styler::new(false));
         assert!(s.contains("tunnel: 2 profiles"));
         assert!(
             s.contains("5 forwards").not_or(true)
@@ -1361,7 +1383,7 @@ mod tests {
     #[test]
     fn render_sessions_human_table_has_header() {
         let snap = green_snapshot();
-        let s = render_sessions_human(&snap, ts() + ChronoDuration::hours(1));
+        let s = render_sessions_human(&snap, ts() + ChronoDuration::hours(1), Styler::new(false));
         assert!(s.contains("ID"));
         assert!(s.contains("PROFILE"));
         assert!(s.contains("ENDPOINT"));
@@ -1372,7 +1394,7 @@ mod tests {
     #[test]
     fn render_sessions_human_handles_empty_table() {
         let snap = StatusSnapshotBuilder::new().build();
-        let s = render_sessions_human(&snap, ts());
+        let s = render_sessions_human(&snap, ts(), Styler::new(false));
         assert!(s.contains("(no active sessions)"));
     }
 
@@ -1380,7 +1402,7 @@ mod tests {
     fn render_health_human_labels_each_level() {
         let snap = green_snapshot();
         let r = compute_health(&snap, ts());
-        let s = render_health_human(&r, ts());
+        let s = render_health_human(&r, ts(), Styler::new(false));
         assert!(s.contains("GREEN"));
         assert!(s.contains("bastion-prod"));
     }
@@ -1388,7 +1410,7 @@ mod tests {
     #[test]
     fn render_health_human_unknown_explains_missing_supervisor() {
         let r = HealthReport::unknown();
-        let s = render_health_human(&r, ts());
+        let s = render_health_human(&r, ts(), Styler::new(false));
         assert!(s.contains("UNKNOWN"));
         assert!(s.contains("no supervisor running"));
     }

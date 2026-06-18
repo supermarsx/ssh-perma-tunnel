@@ -118,18 +118,19 @@ pub async fn replay(global: &GlobalOpts, args: EventReplayArgs) -> Result<()> {
             args.event_id
         );
     } else {
+        let st = crate::styler(global);
         for r in &results {
             let name = r.get("sink").and_then(|v| v.as_str()).unwrap_or("?");
             let kind = r.get("kind").and_then(|v| v.as_str()).unwrap_or("?");
             let ok = r.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
             if ok {
-                println!("{name}\t{kind}\tOK");
+                println!("{name}\t{kind}\t{}", st.green("OK"));
             } else {
                 let err = r
                     .get("error")
                     .and_then(|v| v.as_str())
                     .unwrap_or("(no error message)");
-                println!("{name}\t{kind}\tFAIL: {err}");
+                println!("{name}\t{kind}\t{}: {err}", st.red("FAIL"));
             }
         }
     }

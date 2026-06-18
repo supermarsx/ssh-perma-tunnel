@@ -86,7 +86,7 @@ pub async fn doctor(global: &GlobalOpts, args: groups::config::ConfigDoctor) -> 
     let (cfg, warnings) = spt_config::load(&path, false)
         .map_err(|e| Error::InvalidConfig(format!("load `{}`: {e}", path.display())))?;
     let report = run_config_doctor(&cfg, &warnings, &path, &args).await;
-    emit_report(&report, output_format(global))?;
+    emit_report(&report, output_format(global), crate::styler(global))?;
 
     let counts = report.counts();
     if report.has_failures() {
@@ -502,7 +502,11 @@ struct ReportEnvelope<'a> {
     checks: &'a [Check],
 }
 
-fn emit_report(report: &DiagnosticReport, fmt: OutputFormat) -> Result<()> {
+fn emit_report(
+    report: &DiagnosticReport,
+    fmt: OutputFormat,
+    st: crate::cli::style::Styler,
+) -> Result<()> {
     let counts = report.counts();
     let envelope = ReportEnvelope {
         summary: counts,
@@ -511,12 +515,16 @@ fn emit_report(report: &DiagnosticReport, fmt: OutputFormat) -> Result<()> {
     match fmt {
         OutputFormat::Human => {
             for c in &report.checks {
-                println!(
-                    "[{:>7}] {} ({:?})",
-                    format!("{:?}", c.status).to_lowercase(),
-                    c.id,
-                    c.severity
-                );
+                // Pad to width 7 *then* color so ANSI escapes don't disturb the
+                // right-aligned status column.
+                let padded = format!("{:>7}", format!("{:?}", c.status).to_lowercase());
+                let status_col = match c.status {
+                    Status::Pass => st.green(&padded),
+                    Status::Warn => st.yellow(&padded),
+                    Status::Fail => st.red(&padded),
+                    Status::Skipped => st.dim(&padded),
+                };
+                println!("[{}] {} ({:?})", status_col, c.id, c.severity);
                 for ev in &c.evidence {
                     println!("    - {ev}");
                 }

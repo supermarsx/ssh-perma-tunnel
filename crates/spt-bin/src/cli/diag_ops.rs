@@ -295,10 +295,19 @@ fn render_checks(global: &GlobalOpts, checks: &[Check], json: bool) -> Result<()
     } else if checks.is_empty() {
         println!("(no checks ran)");
     } else {
+        let st = crate::styler(global);
         for c in checks {
+            // Color only the status token; structure/wording is unchanged.
+            let status = format!("{:?}", c.status);
+            let status_col = match c.status {
+                Status::Pass => st.green(&status),
+                Status::Warn => st.yellow(&status),
+                Status::Fail => st.red(&status),
+                Status::Skipped => st.dim(&status),
+            };
             println!(
-                "[{:?}] {} ({:?}): {}",
-                c.status,
+                "[{}] {} ({:?}): {}",
+                status_col,
                 c.id,
                 c.severity,
                 c.evidence.join("; ")
@@ -329,18 +338,20 @@ fn print_port(
     if crate::cli::tunnel_ops::emit(global, json, output)? {
         // machine output written
     } else if output.get("reachable") == Some(&serde_json::Value::Bool(true)) {
+        let st = crate::styler(global);
         let svc = output.get("service").and_then(|v| v.as_str()).unwrap_or("");
         if svc.is_empty() {
-            println!("{target}: reachable");
+            println!("{target}: {}", st.green("reachable"));
         } else {
-            println!("{target}: reachable ({svc})");
+            println!("{target}: {} ({svc})", st.green("reachable"));
         }
     } else {
+        let st = crate::styler(global);
         let err = output
             .get("error")
             .and_then(|v| v.as_str())
             .unwrap_or("unreachable");
-        println!("{target}: {err}");
+        println!("{target}: {}", st.red(err));
     }
     Ok(())
 }
