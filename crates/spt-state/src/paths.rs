@@ -29,6 +29,13 @@ pub fn status_ring_path(dir: &Path, ts: &str) -> PathBuf {
     dir.join(format!("status.{ts}.json"))
 }
 
+/// `<dir>/runtime.json` — daemon + subsystem runtime status (atomically
+/// replaced). Sibling to `status.json`, written by `tunnel run`.
+#[must_use]
+pub fn runtime_path(dir: &Path) -> PathBuf {
+    dir.join("runtime.json")
+}
+
 /// `<dir>/metrics.prom` — Prometheus text exposition file.
 #[must_use]
 pub fn metrics_path(dir: &Path) -> PathBuf {
@@ -122,6 +129,7 @@ mod tests {
             status_ring_path(d, "20260101T000000Z"),
             Path::new("/var/state/status.20260101T000000Z.json")
         );
+        assert_eq!(runtime_path(d), Path::new("/var/state/runtime.json"));
         assert_eq!(metrics_path(d), Path::new("/var/state/metrics.prom"));
         assert_eq!(events_dir(d), Path::new("/var/state/events"));
         assert_eq!(

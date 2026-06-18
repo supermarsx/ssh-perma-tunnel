@@ -172,7 +172,8 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
         Command::Diagnose(c) => diagnose_dispatch(&global, c).await,
         Command::Benchmark(c) => benchmark_dispatch(&global, c).await,
         Command::Mcp(c) => mcp_dispatch(&global, c).await,
-        Command::Status(c) => status_dispatch(&global, c).await,
+        Command::Status(c) => crate::cli::status_ops::status_overview(&global, c).await,
+        Command::StatusApi(c) => status_api_dispatch(&global, c).await,
         Command::Completion(c) => completion_dispatch(&global, c),
         Command::About(c) => about_dispatch(&global, c).await,
         Command::Kill(c) => crate::cli::kill_ops::run(c).await,
@@ -1182,6 +1183,29 @@ async fn tunnel_run(global: &GlobalOpts, args: groups::tunnel::TunnelRun) -> Res
     // logs and returns None rather than aborting the tunnel.
     let dns_runtime = maybe_spawn_dns_server(&cfg, &state_dir).await?;
 
+    // appstatus (Wave 2): now that every subsystem has been (maybe) spawned,
+    // record the daemon identity + per-subsystem state into the sibling
+    // `<state_dir>/runtime.json` so `spt status` can render an app-wide
+    // overview. Single-writer for this file (`tunnel_run` only); the
+    // supervisor's `StatusWriter` keeps owning `status.json`. Best-effort: a
+    // failed write logs and does not abort the run. On graceful shutdown both
+    // teardown blocks delete the file so a cleanly-stopped daemon isn't
+    // reported running (pid-liveness/staleness is the crash fallback).
+    {
+        let runtime_status = build_runtime_status(
+            &cfg,
+            &path,
+            &state_dir,
+            status_api_handle.as_ref(),
+            mcp_handle.as_ref(),
+            dns_runtime.as_ref(),
+            remote_config_handle.as_ref(),
+        );
+        if let Err(e) = spt_state::write_runtime(&state_dir, &runtime_status) {
+            tracing::warn!(error = %e, "failed to write runtime.json — `spt status` overview unavailable");
+        }
+    }
+
     let signal_rx = crate::signals::spawn();
 
     // GAP 5 (systemd): the orchestrator is up, forwards are bound, and the
@@ -1231,6 +1255,9 @@ async fn tunnel_run(global: &GlobalOpts, args: groups::tunnel::TunnelRun) -> Res
         // exporter writer (final metrics.prom snapshot) before returning.
         events_pipeline.shutdown().await;
         metrics_handle.shutdown().await;
+        // appstatus (Wave 2): clean shutdown — remove runtime.json so `spt
+        // status` reports NOT RUNNING (pid-liveness/staleness covers crashes).
+        remove_runtime_status(&state_dir);
         writer.flush().await?;
         writer_handle.stop().await;
         return once_result;
@@ -1305,9 +1332,119 @@ async fn tunnel_run(global: &GlobalOpts, args: groups::tunnel::TunnelRun) -> Res
     // E6-F1/E6-F4: stop the events dispatcher + metrics exporter writer.
     events_pipeline.shutdown().await;
     metrics_handle.shutdown().await;
+    // appstatus (Wave 2): clean shutdown — remove runtime.json so `spt status`
+    // reports NOT RUNNING (pid-liveness/staleness covers crashes).
+    remove_runtime_status(&state_dir);
     writer.flush().await?;
     writer_handle.stop().await;
     Ok(())
+}
+
+/// appstatus (Wave 2): assemble the daemon [`spt_state::RuntimeStatus`] from the
+/// resolved identity plus the live subsystem handles. Bind addresses come from
+/// the bound handles where available (status-api, DNS), falling back to the
+/// configured value (MCP loopback); the remote-config interval and events
+/// sink-count/kinds are read from the config. Pure + cheap — no I/O.
+fn build_runtime_status(
+    cfg: &spt_config::schema::Config,
+    config_path: &Path,
+    state_dir: &Path,
+    status_api: Option<&crate::status_api_tls::SptStatusApiHandle>,
+    mcp: Option<&McpLoopbackHandle>,
+    dns: Option<&DnsRuntime>,
+    remote_config: Option<&spt_remote_config::RemoteConfigPollHandle>,
+) -> spt_state::RuntimeStatus {
+    let mut rs = spt_state::RuntimeStatus::default().with_identity(
+        std::process::id(),
+        env!("CARGO_PKG_VERSION"),
+        chrono::Utc::now(),
+        config_path.display().to_string(),
+        state_dir.display().to_string(),
+    );
+
+    // status-api: only recorded when actually spawned (handle present).
+    if let Some(h) = status_api {
+        let auth_mode = match &cfg.status_api.auth.mode {
+            spt_config::StatusApiAuthMode::None => "none",
+            spt_config::StatusApiAuthMode::Bearer { .. } => "bearer",
+            spt_config::StatusApiAuthMode::Basic { .. } => "basic",
+            spt_config::StatusApiAuthMode::MutualTls { .. } => "mtls",
+        };
+        rs.set_status_api(spt_state::StatusApiStatus {
+            enabled: true,
+            bind: Some(h.local_addr().to_string()),
+            auth_mode: Some(auth_mode.to_string()),
+            tls: cfg.status_api.tls.enabled,
+        });
+    }
+
+    // MCP loopback: handle has no addr accessor; use the configured listen.
+    if mcp.is_some() {
+        rs.set_mcp(spt_state::McpStatus {
+            bind: cfg.mcp.as_ref().and_then(|m| m.listen.clone()),
+        });
+    }
+
+    // DNS: bound UDP address + configured mode.
+    if let Some(d) = dns {
+        rs.set_dns(spt_state::DnsStatus {
+            bind: Some(d.handle.udp_addr().to_string()),
+            mode: cfg.dns.as_ref().and_then(|c| c.mode.clone()),
+        });
+    }
+
+    // Metrics exporter always runs in `tunnel_run`.
+    rs.set_metrics(spt_state::MetricsStatus {
+        path: Some(
+            spt_state::paths::metrics_path(state_dir)
+                .display()
+                .to_string(),
+        ),
+    });
+
+    // Remote-config poller: only when the handle exists; re-derive interval.
+    if remote_config.is_some() {
+        let interval_secs = cfg
+            .runtime
+            .as_ref()
+            .and_then(|r| r.remote_config.as_ref())
+            .and_then(|rc| rc.poll_interval.as_deref())
+            .and_then(|s| spt_core::duration::parse_duration(s).ok())
+            .map(|d| d.as_secs());
+        rs.set_remote_config_poller(spt_state::RemoteConfigPollerStatus {
+            enabled: true,
+            interval_secs,
+        });
+    }
+
+    // Events: sink count + kinds from config (always present in `tunnel_run`).
+    let events = cfg.events.clone().unwrap_or_default();
+    if !events.sinks.is_empty() {
+        let mut kinds: Vec<String> = events.sinks.iter().map(|s| s.kind.clone()).collect();
+        kinds.sort();
+        kinds.dedup();
+        rs.set_events(spt_state::EventsStatus {
+            sink_count: u32::try_from(events.sinks.len()).unwrap_or(u32::MAX),
+            kinds,
+        });
+    }
+
+    rs
+}
+
+/// appstatus (Wave 2): best-effort delete `<state_dir>/runtime.json` on graceful
+/// shutdown. A failure (already gone, perms) is logged at debug and ignored —
+/// pid-liveness + staleness are the fallback for a crashed daemon that never
+/// reached this path.
+fn remove_runtime_status(state_dir: &Path) {
+    let path = spt_state::paths::runtime_path(state_dir);
+    match std::fs::remove_file(&path) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => {
+            tracing::debug!(error = %e, path = %path.display(), "could not remove runtime.json on shutdown");
+        }
+    }
 }
 
 /// Handle bundling the live events pipeline (E6-F1): the `EventBus` injected
@@ -2243,7 +2380,7 @@ async fn reload_orchestrator(
 /// Used by status readers (E5-F9) to detect a stale `status.json` left behind
 /// by a crashed supervisor. Returns `true` when liveness can't be determined
 /// (fail-open) so we never emit a false "dead supervisor" warning.
-fn pid_is_alive(pid: u32) -> bool {
+pub(crate) fn pid_is_alive(pid: u32) -> bool {
     use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
     if pid == 0 {
         return false;
@@ -4949,16 +5086,22 @@ async fn mcp_serve(global: &GlobalOpts, args: groups::mcp::McpServe) -> Result<(
 }
 
 // ============================================================================
-// status (plan §t4-e5)
+// status-api (plan §t4-e5) — read-only HTTP/JSON status API controls
+//
+// NOTE: this is the OLD `spt status {serve,status,token}` group, renamed to
+// `spt status-api {serve,show,token}` by appstatus-cli (Wave 1B). The bodies
+// are unchanged (same `status_ops::{serve,status,token_rotate}` handlers); only
+// the clap variant names + the inner `status`→`show` arm moved. The NEW
+// `spt status` app-overview is handled by `status_ops::status_overview`.
 // ============================================================================
 
-async fn status_dispatch(global: &GlobalOpts, c: groups::status::StatusCmd) -> Result<()> {
-    use groups::status::{StatusSub, StatusTokenSub};
+async fn status_api_dispatch(global: &GlobalOpts, c: groups::status::StatusApiCmd) -> Result<()> {
+    use groups::status::{StatusApiSub, StatusApiTokenSub};
     match c.command {
-        StatusSub::Serve(args) => crate::cli::status_ops::serve(global, args).await,
-        StatusSub::Status(args) => crate::cli::status_ops::status(global, args).await,
-        StatusSub::Token(t) => match t.command {
-            StatusTokenSub::Rotate(args) => {
+        StatusApiSub::Serve(args) => crate::cli::status_ops::serve(global, args).await,
+        StatusApiSub::Show(args) => crate::cli::status_ops::status(global, args).await,
+        StatusApiSub::Token(t) => match t.command {
+            StatusApiTokenSub::Rotate(args) => {
                 crate::cli::status_ops::token_rotate(global, args).await
             }
         },

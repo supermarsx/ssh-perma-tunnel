@@ -28,6 +28,7 @@ pub mod events;
 pub mod lock;
 pub mod paths;
 pub mod portable;
+pub mod runtime;
 pub mod spool;
 pub mod status;
 
@@ -40,6 +41,10 @@ pub use dir::resolve_state_dir;
 pub use events::{Event, EventRing, EventRingConfig};
 pub use lock::StateLock;
 pub use portable::{ensure_writable, portable_context_for, PortableContext};
+pub use runtime::{
+    read_runtime, write_runtime, DnsStatus, EventsStatus, McpStatus, MetricsStatus,
+    RemoteConfigPollerStatus, RuntimeStatus, StatusApiStatus, Subsystems,
+};
 pub use spool::{DiskSpool, SpoolConfig, SpoolEntry};
 pub use status::{
     Counters, FailoverState, StatusSnapshot, StatusWriter, StatusWriterConfig, StatusWriterHandle,

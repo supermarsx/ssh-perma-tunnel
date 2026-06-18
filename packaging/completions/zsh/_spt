@@ -9591,6 +9591,42 @@ esac
 ;;
 (status)
 _arguments "${_arguments_options[@]}" : \
+'--output=[Output format for the overview (overrides the global \`--output\`)]:FORMAT:((human\:"Human-readable text (default)"
+json\:"Structured JSON"
+jsonl\:"JSON Lines (one record per line)"
+yaml\:"YAML"))' \
+'--config=[Path to a single config file]:PATH:_files' \
+'--config-dir=[Path to a directory of \`*.toml\` configs (loaded in lexical order)]:PATH:_files' \
+'--config-url=[HTTPS URL of a remote config to fetch]:URL:_default' \
+'--config-fingerprint=[SHA-256 fingerprint pin for \`--config-url\`]:SHA256:_default' \
+'--state-dir=[Override the runtime state directory]:PATH:_files' \
+'--profile=[Restrict operations to the named profile]:NAME:_default' \
+'--log-level=[Tracing log level]:LOG_LEVEL:((error\:"Only errors"
+warn\:"Warnings and above"
+info\:"Informational and above (default)"
+debug\:"Debug and above"
+trace\:"Trace and above (very verbose)"))' \
+'--color=[Color policy for human output]:COLOR:((auto\:"Auto-detect based on tty"
+always\:"Always emit color escapes"
+never\:"Never emit color escapes"))' \
+'--json[Convenience alias for \`--output json\` (machine-readable overview)]' \
+'--detail[Show verbose per-component state (resolved bind addresses, auth modes, last-error detail, per-forward counters) instead of the compact roll-up]' \
+'--watch[Continuously refresh the overview in place instead of printing once]' \
+'--portable[Portable mode\: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)]' \
+'-q[Suppress non-essential output]' \
+'--quiet[Suppress non-essential output]' \
+'*-v[Increase verbosity (repeat for more)]' \
+'*--verbose[Increase verbosity (repeat for more)]' \
+'--no-color[Disable color (legacy convenience flag; use \`--color never\`)]' \
+'--dry-run[Show what would happen without making changes]' \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+'-V[Print version]' \
+'--version[Print version]' \
+&& ret=0
+;;
+(status-api)
+_arguments "${_arguments_options[@]}" : \
 '--config=[Path to a single config file]:PATH:_files' \
 '--config-dir=[Path to a directory of \`*.toml\` configs (loaded in lexical order)]:PATH:_files' \
 '--config-url=[HTTPS URL of a remote config to fetch]:URL:_default' \
@@ -9621,15 +9657,15 @@ never\:"Never emit color escapes"))' \
 '--help[Print help (see more with '\''--help'\'')]' \
 '-V[Print version]' \
 '--version[Print version]' \
-":: :_spt__subcmd__status_commands" \
-"*::: :->status" \
+":: :_spt__subcmd__status-api_commands" \
+"*::: :->status-api" \
 && ret=0
 
     case $state in
-    (status)
+    (status-api)
         words=($line[1] "${words[@]}")
         (( CURRENT += 1 ))
-        curcontext="${curcontext%:*:*}:spt-status-command-$line[1]:"
+        curcontext="${curcontext%:*:*}:spt-status-api-command-$line[1]:"
         case $line[1] in
             (serve)
 _arguments "${_arguments_options[@]}" : \
@@ -9666,7 +9702,7 @@ never\:"Never emit color escapes"))' \
 '--version[Print version]' \
 && ret=0
 ;;
-(status)
+(show)
 _arguments "${_arguments_options[@]}" : \
 '--config=[Path to a single config file]:PATH:_files' \
 '--config-dir=[Path to a directory of \`*.toml\` configs (loaded in lexical order)]:PATH:_files' \
@@ -9733,7 +9769,7 @@ never\:"Never emit color escapes"))' \
 '--help[Print help (see more with '\''--help'\'')]' \
 '-V[Print version]' \
 '--version[Print version]' \
-":: :_spt__subcmd__status__subcmd__token_commands" \
+":: :_spt__subcmd__status-api__subcmd__token_commands" \
 "*::: :->token" \
 && ret=0
 
@@ -9741,7 +9777,7 @@ never\:"Never emit color escapes"))' \
     (token)
         words=($line[1] "${words[@]}")
         (( CURRENT += 1 ))
-        curcontext="${curcontext%:*:*}:spt-status-token-command-$line[1]:"
+        curcontext="${curcontext%:*:*}:spt-status-api-token-command-$line[1]:"
         case $line[1] in
             (rotate)
 _arguments "${_arguments_options[@]}" : \
@@ -9781,7 +9817,7 @@ never\:"Never emit color escapes"))' \
 ;;
 (help)
 _arguments "${_arguments_options[@]}" : \
-":: :_spt__subcmd__status__subcmd__token__subcmd__help_commands" \
+":: :_spt__subcmd__status-api__subcmd__token__subcmd__help_commands" \
 "*::: :->help" \
 && ret=0
 
@@ -9789,7 +9825,7 @@ _arguments "${_arguments_options[@]}" : \
     (help)
         words=($line[1] "${words[@]}")
         (( CURRENT += 1 ))
-        curcontext="${curcontext%:*:*}:spt-status-token-help-command-$line[1]:"
+        curcontext="${curcontext%:*:*}:spt-status-api-token-help-command-$line[1]:"
         case $line[1] in
             (rotate)
 _arguments "${_arguments_options[@]}" : \
@@ -9809,7 +9845,7 @@ esac
 ;;
 (help)
 _arguments "${_arguments_options[@]}" : \
-":: :_spt__subcmd__status__subcmd__help_commands" \
+":: :_spt__subcmd__status-api__subcmd__help_commands" \
 "*::: :->help" \
 && ret=0
 
@@ -9817,19 +9853,19 @@ _arguments "${_arguments_options[@]}" : \
     (help)
         words=($line[1] "${words[@]}")
         (( CURRENT += 1 ))
-        curcontext="${curcontext%:*:*}:spt-status-help-command-$line[1]:"
+        curcontext="${curcontext%:*:*}:spt-status-api-help-command-$line[1]:"
         case $line[1] in
             (serve)
 _arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
-(status)
+(show)
 _arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
 (token)
 _arguments "${_arguments_options[@]}" : \
-":: :_spt__subcmd__status__subcmd__help__subcmd__token_commands" \
+":: :_spt__subcmd__status-api__subcmd__help__subcmd__token_commands" \
 "*::: :->token" \
 && ret=0
 
@@ -9837,7 +9873,7 @@ _arguments "${_arguments_options[@]}" : \
     (token)
         words=($line[1] "${words[@]}")
         (( CURRENT += 1 ))
-        curcontext="${curcontext%:*:*}:spt-status-help-token-command-$line[1]:"
+        curcontext="${curcontext%:*:*}:spt-status-api-help-token-command-$line[1]:"
         case $line[1] in
             (rotate)
 _arguments "${_arguments_options[@]}" : \
@@ -11788,27 +11824,31 @@ esac
 ;;
 (status)
 _arguments "${_arguments_options[@]}" : \
-":: :_spt__subcmd__help__subcmd__status_commands" \
-"*::: :->status" \
+&& ret=0
+;;
+(status-api)
+_arguments "${_arguments_options[@]}" : \
+":: :_spt__subcmd__help__subcmd__status-api_commands" \
+"*::: :->status-api" \
 && ret=0
 
     case $state in
-    (status)
+    (status-api)
         words=($line[1] "${words[@]}")
         (( CURRENT += 1 ))
-        curcontext="${curcontext%:*:*}:spt-help-status-command-$line[1]:"
+        curcontext="${curcontext%:*:*}:spt-help-status-api-command-$line[1]:"
         case $line[1] in
             (serve)
 _arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
-(status)
+(show)
 _arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
 (token)
 _arguments "${_arguments_options[@]}" : \
-":: :_spt__subcmd__help__subcmd__status__subcmd__token_commands" \
+":: :_spt__subcmd__help__subcmd__status-api__subcmd__token_commands" \
 "*::: :->token" \
 && ret=0
 
@@ -11816,7 +11856,7 @@ _arguments "${_arguments_options[@]}" : \
     (token)
         words=($line[1] "${words[@]}")
         (( CURRENT += 1 ))
-        curcontext="${curcontext%:*:*}:spt-help-status-token-command-$line[1]:"
+        curcontext="${curcontext%:*:*}:spt-help-status-api-token-command-$line[1]:"
         case $line[1] in
             (rotate)
 _arguments "${_arguments_options[@]}" : \
@@ -11962,7 +12002,8 @@ _spt_commands() {
 'diagnose:Targeted diagnostics and support bundles' \
 'benchmark:Controlled benchmarking against forwards' \
 'mcp:Built-in MCP server controls' \
-'status:Read-only status API controls' \
+'status:Show overall app status — daemon, tunnels/profiles, forwards, and subsystems (status API, MCP, DNS, metrics, remote-config, events, services)' \
+'status-api:Controls for the read-only HTTP status API' \
 'completion:Generate shell completions' \
 'about:List bundled libraries and their licenses' \
 'kill:Terminate every running \`spt\` instance on this host' \
@@ -13556,7 +13597,8 @@ _spt__subcmd__help_commands() {
 'diagnose:Targeted diagnostics and support bundles' \
 'benchmark:Controlled benchmarking against forwards' \
 'mcp:Built-in MCP server controls' \
-'status:Read-only status API controls' \
+'status:Show overall app status — daemon, tunnels/profiles, forwards, and subsystems (status API, MCP, DNS, metrics, remote-config, events, services)' \
+'status-api:Controls for the read-only HTTP status API' \
 'completion:Generate shell completions' \
 'about:List bundled libraries and their licenses' \
 'kill:Terminate every running \`spt\` instance on this host' \
@@ -14788,34 +14830,39 @@ _spt__subcmd__help__subcmd__stats__subcmd__throughput_commands() {
 }
 (( $+functions[_spt__subcmd__help__subcmd__status_commands] )) ||
 _spt__subcmd__help__subcmd__status_commands() {
-    local commands; commands=(
-'serve:Run the status API server in foreground (rare — supervisor normally hosts inline when \`\[status_api\].enabled = true\`)' \
-'status:Show whether the API is bound + how to reach it' \
-'token:Bearer-token management for the status API auth' \
-    )
+    local commands; commands=()
     _describe -t commands 'spt help status commands' commands "$@"
 }
-(( $+functions[_spt__subcmd__help__subcmd__status__subcmd__serve_commands] )) ||
-_spt__subcmd__help__subcmd__status__subcmd__serve_commands() {
-    local commands; commands=()
-    _describe -t commands 'spt help status serve commands' commands "$@"
+(( $+functions[_spt__subcmd__help__subcmd__status-api_commands] )) ||
+_spt__subcmd__help__subcmd__status-api_commands() {
+    local commands; commands=(
+'serve:Run the status API server in foreground (rare — supervisor normally hosts inline when \`\[status_api\].enabled = true\`)' \
+'show:Show whether the API is bound + how to reach it' \
+'token:Bearer-token management for the status API auth' \
+    )
+    _describe -t commands 'spt help status-api commands' commands "$@"
 }
-(( $+functions[_spt__subcmd__help__subcmd__status__subcmd__status_commands] )) ||
-_spt__subcmd__help__subcmd__status__subcmd__status_commands() {
+(( $+functions[_spt__subcmd__help__subcmd__status-api__subcmd__serve_commands] )) ||
+_spt__subcmd__help__subcmd__status-api__subcmd__serve_commands() {
     local commands; commands=()
-    _describe -t commands 'spt help status status commands' commands "$@"
+    _describe -t commands 'spt help status-api serve commands' commands "$@"
 }
-(( $+functions[_spt__subcmd__help__subcmd__status__subcmd__token_commands] )) ||
-_spt__subcmd__help__subcmd__status__subcmd__token_commands() {
+(( $+functions[_spt__subcmd__help__subcmd__status-api__subcmd__show_commands] )) ||
+_spt__subcmd__help__subcmd__status-api__subcmd__show_commands() {
+    local commands; commands=()
+    _describe -t commands 'spt help status-api show commands' commands "$@"
+}
+(( $+functions[_spt__subcmd__help__subcmd__status-api__subcmd__token_commands] )) ||
+_spt__subcmd__help__subcmd__status-api__subcmd__token_commands() {
     local commands; commands=(
 'rotate:Rotate the bearer token in the vault (only when \`auth.mode = "bearer"\` and the \`token_from\` SecretRef points at a writable backend)' \
     )
-    _describe -t commands 'spt help status token commands' commands "$@"
+    _describe -t commands 'spt help status-api token commands' commands "$@"
 }
-(( $+functions[_spt__subcmd__help__subcmd__status__subcmd__token__subcmd__rotate_commands] )) ||
-_spt__subcmd__help__subcmd__status__subcmd__token__subcmd__rotate_commands() {
+(( $+functions[_spt__subcmd__help__subcmd__status-api__subcmd__token__subcmd__rotate_commands] )) ||
+_spt__subcmd__help__subcmd__status-api__subcmd__token__subcmd__rotate_commands() {
     local commands; commands=()
-    _describe -t commands 'spt help status token rotate commands' commands "$@"
+    _describe -t commands 'spt help status-api token rotate commands' commands "$@"
 }
 (( $+functions[_spt__subcmd__help__subcmd__tunnel_commands] )) ||
 _spt__subcmd__help__subcmd__tunnel_commands() {
@@ -16400,91 +16447,96 @@ _spt__subcmd__stats__subcmd__throughput_commands() {
 }
 (( $+functions[_spt__subcmd__status_commands] )) ||
 _spt__subcmd__status_commands() {
-    local commands; commands=(
-'serve:Run the status API server in foreground (rare — supervisor normally hosts inline when \`\[status_api\].enabled = true\`)' \
-'status:Show whether the API is bound + how to reach it' \
-'token:Bearer-token management for the status API auth' \
-'help:Print this message or the help of the given subcommand(s)' \
-    )
+    local commands; commands=()
     _describe -t commands 'spt status commands' commands "$@"
 }
-(( $+functions[_spt__subcmd__status__subcmd__help_commands] )) ||
-_spt__subcmd__status__subcmd__help_commands() {
+(( $+functions[_spt__subcmd__status-api_commands] )) ||
+_spt__subcmd__status-api_commands() {
     local commands; commands=(
 'serve:Run the status API server in foreground (rare — supervisor normally hosts inline when \`\[status_api\].enabled = true\`)' \
-'status:Show whether the API is bound + how to reach it' \
+'show:Show whether the API is bound + how to reach it' \
 'token:Bearer-token management for the status API auth' \
 'help:Print this message or the help of the given subcommand(s)' \
     )
-    _describe -t commands 'spt status help commands' commands "$@"
+    _describe -t commands 'spt status-api commands' commands "$@"
 }
-(( $+functions[_spt__subcmd__status__subcmd__help__subcmd__help_commands] )) ||
-_spt__subcmd__status__subcmd__help__subcmd__help_commands() {
+(( $+functions[_spt__subcmd__status-api__subcmd__help_commands] )) ||
+_spt__subcmd__status-api__subcmd__help_commands() {
+    local commands; commands=(
+'serve:Run the status API server in foreground (rare — supervisor normally hosts inline when \`\[status_api\].enabled = true\`)' \
+'show:Show whether the API is bound + how to reach it' \
+'token:Bearer-token management for the status API auth' \
+'help:Print this message or the help of the given subcommand(s)' \
+    )
+    _describe -t commands 'spt status-api help commands' commands "$@"
+}
+(( $+functions[_spt__subcmd__status-api__subcmd__help__subcmd__help_commands] )) ||
+_spt__subcmd__status-api__subcmd__help__subcmd__help_commands() {
     local commands; commands=()
-    _describe -t commands 'spt status help help commands' commands "$@"
+    _describe -t commands 'spt status-api help help commands' commands "$@"
 }
-(( $+functions[_spt__subcmd__status__subcmd__help__subcmd__serve_commands] )) ||
-_spt__subcmd__status__subcmd__help__subcmd__serve_commands() {
+(( $+functions[_spt__subcmd__status-api__subcmd__help__subcmd__serve_commands] )) ||
+_spt__subcmd__status-api__subcmd__help__subcmd__serve_commands() {
     local commands; commands=()
-    _describe -t commands 'spt status help serve commands' commands "$@"
+    _describe -t commands 'spt status-api help serve commands' commands "$@"
 }
-(( $+functions[_spt__subcmd__status__subcmd__help__subcmd__status_commands] )) ||
-_spt__subcmd__status__subcmd__help__subcmd__status_commands() {
+(( $+functions[_spt__subcmd__status-api__subcmd__help__subcmd__show_commands] )) ||
+_spt__subcmd__status-api__subcmd__help__subcmd__show_commands() {
     local commands; commands=()
-    _describe -t commands 'spt status help status commands' commands "$@"
+    _describe -t commands 'spt status-api help show commands' commands "$@"
 }
-(( $+functions[_spt__subcmd__status__subcmd__help__subcmd__token_commands] )) ||
-_spt__subcmd__status__subcmd__help__subcmd__token_commands() {
+(( $+functions[_spt__subcmd__status-api__subcmd__help__subcmd__token_commands] )) ||
+_spt__subcmd__status-api__subcmd__help__subcmd__token_commands() {
     local commands; commands=(
 'rotate:Rotate the bearer token in the vault (only when \`auth.mode = "bearer"\` and the \`token_from\` SecretRef points at a writable backend)' \
     )
-    _describe -t commands 'spt status help token commands' commands "$@"
+    _describe -t commands 'spt status-api help token commands' commands "$@"
 }
-(( $+functions[_spt__subcmd__status__subcmd__help__subcmd__token__subcmd__rotate_commands] )) ||
-_spt__subcmd__status__subcmd__help__subcmd__token__subcmd__rotate_commands() {
+(( $+functions[_spt__subcmd__status-api__subcmd__help__subcmd__token__subcmd__rotate_commands] )) ||
+_spt__subcmd__status-api__subcmd__help__subcmd__token__subcmd__rotate_commands() {
     local commands; commands=()
-    _describe -t commands 'spt status help token rotate commands' commands "$@"
+    _describe -t commands 'spt status-api help token rotate commands' commands "$@"
 }
-(( $+functions[_spt__subcmd__status__subcmd__serve_commands] )) ||
-_spt__subcmd__status__subcmd__serve_commands() {
+(( $+functions[_spt__subcmd__status-api__subcmd__serve_commands] )) ||
+_spt__subcmd__status-api__subcmd__serve_commands() {
     local commands; commands=()
-    _describe -t commands 'spt status serve commands' commands "$@"
+    _describe -t commands 'spt status-api serve commands' commands "$@"
 }
-(( $+functions[_spt__subcmd__status__subcmd__status_commands] )) ||
-_spt__subcmd__status__subcmd__status_commands() {
+(( $+functions[_spt__subcmd__status-api__subcmd__show_commands] )) ||
+_spt__subcmd__status-api__subcmd__show_commands() {
     local commands; commands=()
-    _describe -t commands 'spt status status commands' commands "$@"
+    _describe -t commands 'spt status-api show commands' commands "$@"
 }
-(( $+functions[_spt__subcmd__status__subcmd__token_commands] )) ||
-_spt__subcmd__status__subcmd__token_commands() {
+(( $+functions[_spt__subcmd__status-api__subcmd__token_commands] )) ||
+_spt__subcmd__status-api__subcmd__token_commands() {
     local commands; commands=(
 'rotate:Rotate the bearer token in the vault (only when \`auth.mode = "bearer"\` and the \`token_from\` SecretRef points at a writable backend)' \
 'help:Print this message or the help of the given subcommand(s)' \
     )
-    _describe -t commands 'spt status token commands' commands "$@"
+    _describe -t commands 'spt status-api token commands' commands "$@"
 }
-(( $+functions[_spt__subcmd__status__subcmd__token__subcmd__help_commands] )) ||
-_spt__subcmd__status__subcmd__token__subcmd__help_commands() {
+(( $+functions[_spt__subcmd__status-api__subcmd__token__subcmd__help_commands] )) ||
+_spt__subcmd__status-api__subcmd__token__subcmd__help_commands() {
     local commands; commands=(
 'rotate:Rotate the bearer token in the vault (only when \`auth.mode = "bearer"\` and the \`token_from\` SecretRef points at a writable backend)' \
 'help:Print this message or the help of the given subcommand(s)' \
     )
-    _describe -t commands 'spt status token help commands' commands "$@"
+    _describe -t commands 'spt status-api token help commands' commands "$@"
 }
-(( $+functions[_spt__subcmd__status__subcmd__token__subcmd__help__subcmd__help_commands] )) ||
-_spt__subcmd__status__subcmd__token__subcmd__help__subcmd__help_commands() {
+(( $+functions[_spt__subcmd__status-api__subcmd__token__subcmd__help__subcmd__help_commands] )) ||
+_spt__subcmd__status-api__subcmd__token__subcmd__help__subcmd__help_commands() {
     local commands; commands=()
-    _describe -t commands 'spt status token help help commands' commands "$@"
+    _describe -t commands 'spt status-api token help help commands' commands "$@"
 }
-(( $+functions[_spt__subcmd__status__subcmd__token__subcmd__help__subcmd__rotate_commands] )) ||
-_spt__subcmd__status__subcmd__token__subcmd__help__subcmd__rotate_commands() {
+(( $+functions[_spt__subcmd__status-api__subcmd__token__subcmd__help__subcmd__rotate_commands] )) ||
+_spt__subcmd__status-api__subcmd__token__subcmd__help__subcmd__rotate_commands() {
     local commands; commands=()
-    _describe -t commands 'spt status token help rotate commands' commands "$@"
+    _describe -t commands 'spt status-api token help rotate commands' commands "$@"
 }
-(( $+functions[_spt__subcmd__status__subcmd__token__subcmd__rotate_commands] )) ||
-_spt__subcmd__status__subcmd__token__subcmd__rotate_commands() {
+(( $+functions[_spt__subcmd__status-api__subcmd__token__subcmd__rotate_commands] )) ||
+_spt__subcmd__status-api__subcmd__token__subcmd__rotate_commands() {
     local commands; commands=()
-    _describe -t commands 'spt status token rotate commands' commands "$@"
+    _describe -t commands 'spt status-api token rotate commands' commands "$@"
 }
 (( $+functions[_spt__subcmd__tunnel_commands] )) ||
 _spt__subcmd__tunnel_commands() {

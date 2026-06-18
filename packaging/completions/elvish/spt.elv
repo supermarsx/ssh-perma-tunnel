@@ -59,7 +59,8 @@ set edit:completion:arg-completer[spt] = {|@words|
             cand diagnose 'Targeted diagnostics and support bundles'
             cand benchmark 'Controlled benchmarking against forwards'
             cand mcp 'Built-in MCP server controls'
-            cand status 'Read-only status API controls'
+            cand status 'Show overall app status — daemon, tunnels/profiles, forwards, and subsystems (status API, MCP, DNS, metrics, remote-config, events, services)'
+            cand status-api 'Controls for the read-only HTTP status API'
             cand completion 'Generate shell completions'
             cand about 'List bundled libraries and their licenses'
             cand kill 'Terminate every running `spt` instance on this host'
@@ -6097,6 +6098,31 @@ set edit:completion:arg-completer[spt] = {|@words|
         &'spt;mcp;help;help'= {
         }
         &'spt;status'= {
+            cand --output 'Output format for the overview (overrides the global `--output`)'
+            cand --config 'Path to a single config file'
+            cand --config-dir 'Path to a directory of `*.toml` configs (loaded in lexical order)'
+            cand --config-url 'HTTPS URL of a remote config to fetch'
+            cand --config-fingerprint 'SHA-256 fingerprint pin for `--config-url`'
+            cand --state-dir 'Override the runtime state directory'
+            cand --profile 'Restrict operations to the named profile'
+            cand --log-level 'Tracing log level'
+            cand --color 'Color policy for human output'
+            cand --json 'Convenience alias for `--output json` (machine-readable overview)'
+            cand --detail 'Show verbose per-component state (resolved bind addresses, auth modes, last-error detail, per-forward counters) instead of the compact roll-up'
+            cand --watch 'Continuously refresh the overview in place instead of printing once'
+            cand --portable 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
+            cand -q 'Suppress non-essential output'
+            cand --quiet 'Suppress non-essential output'
+            cand -v 'Increase verbosity (repeat for more)'
+            cand --verbose 'Increase verbosity (repeat for more)'
+            cand --no-color 'Disable color (legacy convenience flag; use `--color never`)'
+            cand --dry-run 'Show what would happen without making changes'
+            cand -h 'Print help (see more with ''--help'')'
+            cand --help 'Print help (see more with ''--help'')'
+            cand -V 'Print version'
+            cand --version 'Print version'
+        }
+        &'spt;status-api'= {
             cand --config 'Path to a single config file'
             cand --config-dir 'Path to a directory of `*.toml` configs (loaded in lexical order)'
             cand --config-url 'HTTPS URL of a remote config to fetch'
@@ -6119,11 +6145,11 @@ set edit:completion:arg-completer[spt] = {|@words|
             cand -V 'Print version'
             cand --version 'Print version'
             cand serve 'Run the status API server in foreground (rare — supervisor normally hosts inline when `[status_api].enabled = true`)'
-            cand status 'Show whether the API is bound + how to reach it'
+            cand show 'Show whether the API is bound + how to reach it'
             cand token 'Bearer-token management for the status API auth'
             cand help 'Print this message or the help of the given subcommand(s)'
         }
-        &'spt;status;serve'= {
+        &'spt;status-api;serve'= {
             cand --config 'Override config path (otherwise inherits `--config`)'
             cand --bind 'Override the bind address. Defaults to the value in `[status_api].bind`'
             cand --config-dir 'Path to a directory of `*.toml` configs (loaded in lexical order)'
@@ -6147,7 +6173,7 @@ set edit:completion:arg-completer[spt] = {|@words|
             cand -V 'Print version'
             cand --version 'Print version'
         }
-        &'spt;status;status'= {
+        &'spt;status-api;show'= {
             cand --config 'Path to a single config file'
             cand --config-dir 'Path to a directory of `*.toml` configs (loaded in lexical order)'
             cand --config-url 'HTTPS URL of a remote config to fetch'
@@ -6171,7 +6197,7 @@ set edit:completion:arg-completer[spt] = {|@words|
             cand -V 'Print version'
             cand --version 'Print version'
         }
-        &'spt;status;token'= {
+        &'spt;status-api;token'= {
             cand --config 'Path to a single config file'
             cand --config-dir 'Path to a directory of `*.toml` configs (loaded in lexical order)'
             cand --config-url 'HTTPS URL of a remote config to fetch'
@@ -6196,7 +6222,7 @@ set edit:completion:arg-completer[spt] = {|@words|
             cand rotate 'Rotate the bearer token in the vault (only when `auth.mode = "bearer"` and the `token_from` SecretRef points at a writable backend)'
             cand help 'Print this message or the help of the given subcommand(s)'
         }
-        &'spt;status;token;rotate'= {
+        &'spt;status-api;token;rotate'= {
             cand --bytes 'Length in bytes of the random token before base64 encoding. Defaults to 32 (256-bit)'
             cand --config 'Path to a single config file'
             cand --config-dir 'Path to a directory of `*.toml` configs (loaded in lexical order)'
@@ -6221,30 +6247,30 @@ set edit:completion:arg-completer[spt] = {|@words|
             cand -V 'Print version'
             cand --version 'Print version'
         }
-        &'spt;status;token;help'= {
+        &'spt;status-api;token;help'= {
             cand rotate 'Rotate the bearer token in the vault (only when `auth.mode = "bearer"` and the `token_from` SecretRef points at a writable backend)'
             cand help 'Print this message or the help of the given subcommand(s)'
         }
-        &'spt;status;token;help;rotate'= {
+        &'spt;status-api;token;help;rotate'= {
         }
-        &'spt;status;token;help;help'= {
+        &'spt;status-api;token;help;help'= {
         }
-        &'spt;status;help'= {
+        &'spt;status-api;help'= {
             cand serve 'Run the status API server in foreground (rare — supervisor normally hosts inline when `[status_api].enabled = true`)'
-            cand status 'Show whether the API is bound + how to reach it'
+            cand show 'Show whether the API is bound + how to reach it'
             cand token 'Bearer-token management for the status API auth'
             cand help 'Print this message or the help of the given subcommand(s)'
         }
-        &'spt;status;help;serve'= {
+        &'spt;status-api;help;serve'= {
         }
-        &'spt;status;help;status'= {
+        &'spt;status-api;help;show'= {
         }
-        &'spt;status;help;token'= {
+        &'spt;status-api;help;token'= {
             cand rotate 'Rotate the bearer token in the vault (only when `auth.mode = "bearer"` and the `token_from` SecretRef points at a writable backend)'
         }
-        &'spt;status;help;token;rotate'= {
+        &'spt;status-api;help;token;rotate'= {
         }
-        &'spt;status;help;help'= {
+        &'spt;status-api;help;help'= {
         }
         &'spt;completion'= {
             cand --config 'Path to a single config file'
@@ -6686,7 +6712,8 @@ set edit:completion:arg-completer[spt] = {|@words|
             cand diagnose 'Targeted diagnostics and support bundles'
             cand benchmark 'Controlled benchmarking against forwards'
             cand mcp 'Built-in MCP server controls'
-            cand status 'Read-only status API controls'
+            cand status 'Show overall app status — daemon, tunnels/profiles, forwards, and subsystems (status API, MCP, DNS, metrics, remote-config, events, services)'
+            cand status-api 'Controls for the read-only HTTP status API'
             cand completion 'Generate shell completions'
             cand about 'List bundled libraries and their licenses'
             cand kill 'Terminate every running `spt` instance on this host'
@@ -7277,18 +7304,20 @@ set edit:completion:arg-completer[spt] = {|@words|
         &'spt;help;mcp;policy;set'= {
         }
         &'spt;help;status'= {
+        }
+        &'spt;help;status-api'= {
             cand serve 'Run the status API server in foreground (rare — supervisor normally hosts inline when `[status_api].enabled = true`)'
-            cand status 'Show whether the API is bound + how to reach it'
+            cand show 'Show whether the API is bound + how to reach it'
             cand token 'Bearer-token management for the status API auth'
         }
-        &'spt;help;status;serve'= {
+        &'spt;help;status-api;serve'= {
         }
-        &'spt;help;status;status'= {
+        &'spt;help;status-api;show'= {
         }
-        &'spt;help;status;token'= {
+        &'spt;help;status-api;token'= {
             cand rotate 'Rotate the bearer token in the vault (only when `auth.mode = "bearer"` and the `token_from` SecretRef points at a writable backend)'
         }
-        &'spt;help;status;token;rotate'= {
+        &'spt;help;status-api;token;rotate'= {
         }
         &'spt;help;completion'= {
             cand generate 'Print completions for a shell to stdout'

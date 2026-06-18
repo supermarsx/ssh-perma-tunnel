@@ -62,7 +62,8 @@ Register-ArgumentCompleter -Native -CommandName 'spt' -ScriptBlock {
             [CompletionResult]::new('diagnose', 'diagnose', [CompletionResultType]::ParameterValue, 'Targeted diagnostics and support bundles')
             [CompletionResult]::new('benchmark', 'benchmark', [CompletionResultType]::ParameterValue, 'Controlled benchmarking against forwards')
             [CompletionResult]::new('mcp', 'mcp', [CompletionResultType]::ParameterValue, 'Built-in MCP server controls')
-            [CompletionResult]::new('status', 'status', [CompletionResultType]::ParameterValue, 'Read-only status API controls')
+            [CompletionResult]::new('status', 'status', [CompletionResultType]::ParameterValue, 'Show overall app status — daemon, tunnels/profiles, forwards, and subsystems (status API, MCP, DNS, metrics, remote-config, events, services)')
+            [CompletionResult]::new('status-api', 'status-api', [CompletionResultType]::ParameterValue, 'Controls for the read-only HTTP status API')
             [CompletionResult]::new('completion', 'completion', [CompletionResultType]::ParameterValue, 'Generate shell completions')
             [CompletionResult]::new('about', 'about', [CompletionResultType]::ParameterValue, 'List bundled libraries and their licenses')
             [CompletionResult]::new('kill', 'kill', [CompletionResultType]::ParameterValue, 'Terminate every running `spt` instance on this host')
@@ -6599,6 +6600,32 @@ Register-ArgumentCompleter -Native -CommandName 'spt' -ScriptBlock {
             break
         }
         'spt;status' {
+            [CompletionResult]::new('--output', '--output', [CompletionResultType]::ParameterName, 'Output format for the overview (overrides the global `--output`)')
+            [CompletionResult]::new('--config', '--config', [CompletionResultType]::ParameterName, 'Path to a single config file')
+            [CompletionResult]::new('--config-dir', '--config-dir', [CompletionResultType]::ParameterName, 'Path to a directory of `*.toml` configs (loaded in lexical order)')
+            [CompletionResult]::new('--config-url', '--config-url', [CompletionResultType]::ParameterName, 'HTTPS URL of a remote config to fetch')
+            [CompletionResult]::new('--config-fingerprint', '--config-fingerprint', [CompletionResultType]::ParameterName, 'SHA-256 fingerprint pin for `--config-url`')
+            [CompletionResult]::new('--state-dir', '--state-dir', [CompletionResultType]::ParameterName, 'Override the runtime state directory')
+            [CompletionResult]::new('--profile', '--profile', [CompletionResultType]::ParameterName, 'Restrict operations to the named profile')
+            [CompletionResult]::new('--log-level', '--log-level', [CompletionResultType]::ParameterName, 'Tracing log level')
+            [CompletionResult]::new('--color', '--color', [CompletionResultType]::ParameterName, 'Color policy for human output')
+            [CompletionResult]::new('--json', '--json', [CompletionResultType]::ParameterName, 'Convenience alias for `--output json` (machine-readable overview)')
+            [CompletionResult]::new('--detail', '--detail', [CompletionResultType]::ParameterName, 'Show verbose per-component state (resolved bind addresses, auth modes, last-error detail, per-forward counters) instead of the compact roll-up')
+            [CompletionResult]::new('--watch', '--watch', [CompletionResultType]::ParameterName, 'Continuously refresh the overview in place instead of printing once')
+            [CompletionResult]::new('--portable', '--portable', [CompletionResultType]::ParameterName, 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)')
+            [CompletionResult]::new('-q', '-q', [CompletionResultType]::ParameterName, 'Suppress non-essential output')
+            [CompletionResult]::new('--quiet', '--quiet', [CompletionResultType]::ParameterName, 'Suppress non-essential output')
+            [CompletionResult]::new('-v', '-v', [CompletionResultType]::ParameterName, 'Increase verbosity (repeat for more)')
+            [CompletionResult]::new('--verbose', '--verbose', [CompletionResultType]::ParameterName, 'Increase verbosity (repeat for more)')
+            [CompletionResult]::new('--no-color', '--no-color', [CompletionResultType]::ParameterName, 'Disable color (legacy convenience flag; use `--color never`)')
+            [CompletionResult]::new('--dry-run', '--dry-run', [CompletionResultType]::ParameterName, 'Show what would happen without making changes')
+            [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help (see more with ''--help'')')
+            [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help (see more with ''--help'')')
+            [CompletionResult]::new('-V', '-V ', [CompletionResultType]::ParameterName, 'Print version')
+            [CompletionResult]::new('--version', '--version', [CompletionResultType]::ParameterName, 'Print version')
+            break
+        }
+        'spt;status-api' {
             [CompletionResult]::new('--config', '--config', [CompletionResultType]::ParameterName, 'Path to a single config file')
             [CompletionResult]::new('--config-dir', '--config-dir', [CompletionResultType]::ParameterName, 'Path to a directory of `*.toml` configs (loaded in lexical order)')
             [CompletionResult]::new('--config-url', '--config-url', [CompletionResultType]::ParameterName, 'HTTPS URL of a remote config to fetch')
@@ -6621,12 +6648,12 @@ Register-ArgumentCompleter -Native -CommandName 'spt' -ScriptBlock {
             [CompletionResult]::new('-V', '-V ', [CompletionResultType]::ParameterName, 'Print version')
             [CompletionResult]::new('--version', '--version', [CompletionResultType]::ParameterName, 'Print version')
             [CompletionResult]::new('serve', 'serve', [CompletionResultType]::ParameterValue, 'Run the status API server in foreground (rare — supervisor normally hosts inline when `[status_api].enabled = true`)')
-            [CompletionResult]::new('status', 'status', [CompletionResultType]::ParameterValue, 'Show whether the API is bound + how to reach it')
+            [CompletionResult]::new('show', 'show', [CompletionResultType]::ParameterValue, 'Show whether the API is bound + how to reach it')
             [CompletionResult]::new('token', 'token', [CompletionResultType]::ParameterValue, 'Bearer-token management for the status API auth')
             [CompletionResult]::new('help', 'help', [CompletionResultType]::ParameterValue, 'Print this message or the help of the given subcommand(s)')
             break
         }
-        'spt;status;serve' {
+        'spt;status-api;serve' {
             [CompletionResult]::new('--config', '--config', [CompletionResultType]::ParameterName, 'Override config path (otherwise inherits `--config`)')
             [CompletionResult]::new('--bind', '--bind', [CompletionResultType]::ParameterName, 'Override the bind address. Defaults to the value in `[status_api].bind`')
             [CompletionResult]::new('--config-dir', '--config-dir', [CompletionResultType]::ParameterName, 'Path to a directory of `*.toml` configs (loaded in lexical order)')
@@ -6651,7 +6678,7 @@ Register-ArgumentCompleter -Native -CommandName 'spt' -ScriptBlock {
             [CompletionResult]::new('--version', '--version', [CompletionResultType]::ParameterName, 'Print version')
             break
         }
-        'spt;status;status' {
+        'spt;status-api;show' {
             [CompletionResult]::new('--config', '--config', [CompletionResultType]::ParameterName, 'Path to a single config file')
             [CompletionResult]::new('--config-dir', '--config-dir', [CompletionResultType]::ParameterName, 'Path to a directory of `*.toml` configs (loaded in lexical order)')
             [CompletionResult]::new('--config-url', '--config-url', [CompletionResultType]::ParameterName, 'HTTPS URL of a remote config to fetch')
@@ -6676,7 +6703,7 @@ Register-ArgumentCompleter -Native -CommandName 'spt' -ScriptBlock {
             [CompletionResult]::new('--version', '--version', [CompletionResultType]::ParameterName, 'Print version')
             break
         }
-        'spt;status;token' {
+        'spt;status-api;token' {
             [CompletionResult]::new('--config', '--config', [CompletionResultType]::ParameterName, 'Path to a single config file')
             [CompletionResult]::new('--config-dir', '--config-dir', [CompletionResultType]::ParameterName, 'Path to a directory of `*.toml` configs (loaded in lexical order)')
             [CompletionResult]::new('--config-url', '--config-url', [CompletionResultType]::ParameterName, 'HTTPS URL of a remote config to fetch')
@@ -6702,7 +6729,7 @@ Register-ArgumentCompleter -Native -CommandName 'spt' -ScriptBlock {
             [CompletionResult]::new('help', 'help', [CompletionResultType]::ParameterValue, 'Print this message or the help of the given subcommand(s)')
             break
         }
-        'spt;status;token;rotate' {
+        'spt;status-api;token;rotate' {
             [CompletionResult]::new('--bytes', '--bytes', [CompletionResultType]::ParameterName, 'Length in bytes of the random token before base64 encoding. Defaults to 32 (256-bit)')
             [CompletionResult]::new('--config', '--config', [CompletionResultType]::ParameterName, 'Path to a single config file')
             [CompletionResult]::new('--config-dir', '--config-dir', [CompletionResultType]::ParameterName, 'Path to a directory of `*.toml` configs (loaded in lexical order)')
@@ -6728,38 +6755,38 @@ Register-ArgumentCompleter -Native -CommandName 'spt' -ScriptBlock {
             [CompletionResult]::new('--version', '--version', [CompletionResultType]::ParameterName, 'Print version')
             break
         }
-        'spt;status;token;help' {
+        'spt;status-api;token;help' {
             [CompletionResult]::new('rotate', 'rotate', [CompletionResultType]::ParameterValue, 'Rotate the bearer token in the vault (only when `auth.mode = "bearer"` and the `token_from` SecretRef points at a writable backend)')
             [CompletionResult]::new('help', 'help', [CompletionResultType]::ParameterValue, 'Print this message or the help of the given subcommand(s)')
             break
         }
-        'spt;status;token;help;rotate' {
+        'spt;status-api;token;help;rotate' {
             break
         }
-        'spt;status;token;help;help' {
+        'spt;status-api;token;help;help' {
             break
         }
-        'spt;status;help' {
+        'spt;status-api;help' {
             [CompletionResult]::new('serve', 'serve', [CompletionResultType]::ParameterValue, 'Run the status API server in foreground (rare — supervisor normally hosts inline when `[status_api].enabled = true`)')
-            [CompletionResult]::new('status', 'status', [CompletionResultType]::ParameterValue, 'Show whether the API is bound + how to reach it')
+            [CompletionResult]::new('show', 'show', [CompletionResultType]::ParameterValue, 'Show whether the API is bound + how to reach it')
             [CompletionResult]::new('token', 'token', [CompletionResultType]::ParameterValue, 'Bearer-token management for the status API auth')
             [CompletionResult]::new('help', 'help', [CompletionResultType]::ParameterValue, 'Print this message or the help of the given subcommand(s)')
             break
         }
-        'spt;status;help;serve' {
+        'spt;status-api;help;serve' {
             break
         }
-        'spt;status;help;status' {
+        'spt;status-api;help;show' {
             break
         }
-        'spt;status;help;token' {
+        'spt;status-api;help;token' {
             [CompletionResult]::new('rotate', 'rotate', [CompletionResultType]::ParameterValue, 'Rotate the bearer token in the vault (only when `auth.mode = "bearer"` and the `token_from` SecretRef points at a writable backend)')
             break
         }
-        'spt;status;help;token;rotate' {
+        'spt;status-api;help;token;rotate' {
             break
         }
-        'spt;status;help;help' {
+        'spt;status-api;help;help' {
             break
         }
         'spt;completion' {
@@ -7234,7 +7261,8 @@ Register-ArgumentCompleter -Native -CommandName 'spt' -ScriptBlock {
             [CompletionResult]::new('diagnose', 'diagnose', [CompletionResultType]::ParameterValue, 'Targeted diagnostics and support bundles')
             [CompletionResult]::new('benchmark', 'benchmark', [CompletionResultType]::ParameterValue, 'Controlled benchmarking against forwards')
             [CompletionResult]::new('mcp', 'mcp', [CompletionResultType]::ParameterValue, 'Built-in MCP server controls')
-            [CompletionResult]::new('status', 'status', [CompletionResultType]::ParameterValue, 'Read-only status API controls')
+            [CompletionResult]::new('status', 'status', [CompletionResultType]::ParameterValue, 'Show overall app status — daemon, tunnels/profiles, forwards, and subsystems (status API, MCP, DNS, metrics, remote-config, events, services)')
+            [CompletionResult]::new('status-api', 'status-api', [CompletionResultType]::ParameterValue, 'Controls for the read-only HTTP status API')
             [CompletionResult]::new('completion', 'completion', [CompletionResultType]::ParameterValue, 'Generate shell completions')
             [CompletionResult]::new('about', 'about', [CompletionResultType]::ParameterValue, 'List bundled libraries and their licenses')
             [CompletionResult]::new('kill', 'kill', [CompletionResultType]::ParameterValue, 'Terminate every running `spt` instance on this host')
@@ -8027,22 +8055,25 @@ Register-ArgumentCompleter -Native -CommandName 'spt' -ScriptBlock {
             break
         }
         'spt;help;status' {
+            break
+        }
+        'spt;help;status-api' {
             [CompletionResult]::new('serve', 'serve', [CompletionResultType]::ParameterValue, 'Run the status API server in foreground (rare — supervisor normally hosts inline when `[status_api].enabled = true`)')
-            [CompletionResult]::new('status', 'status', [CompletionResultType]::ParameterValue, 'Show whether the API is bound + how to reach it')
+            [CompletionResult]::new('show', 'show', [CompletionResultType]::ParameterValue, 'Show whether the API is bound + how to reach it')
             [CompletionResult]::new('token', 'token', [CompletionResultType]::ParameterValue, 'Bearer-token management for the status API auth')
             break
         }
-        'spt;help;status;serve' {
+        'spt;help;status-api;serve' {
             break
         }
-        'spt;help;status;status' {
+        'spt;help;status-api;show' {
             break
         }
-        'spt;help;status;token' {
+        'spt;help;status-api;token' {
             [CompletionResult]::new('rotate', 'rotate', [CompletionResultType]::ParameterValue, 'Rotate the bearer token in the vault (only when `auth.mode = "bearer"` and the `token_from` SecretRef points at a writable backend)')
             break
         }
-        'spt;help;status;token;rotate' {
+        'spt;help;status-api;token;rotate' {
             break
         }
         'spt;help;completion' {

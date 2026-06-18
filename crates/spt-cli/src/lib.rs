@@ -200,8 +200,12 @@ pub enum Command {
     Benchmark(groups::benchmark::BenchmarkCmd),
     /// Built-in MCP server controls.
     Mcp(groups::mcp::McpCmd),
-    /// Read-only status API controls.
+    /// Show overall app status — daemon, tunnels/profiles, forwards, and
+    /// subsystems (status API, MCP, DNS, metrics, remote-config, events,
+    /// services).
     Status(groups::status::StatusCmd),
+    /// Controls for the read-only HTTP status API.
+    StatusApi(groups::status::StatusApiCmd),
     /// Generate shell completions.
     Completion(groups::completion::CompletionCmd),
     /// List bundled libraries and their licenses.
@@ -455,6 +459,82 @@ mod tests {
     #[test]
     fn parses_mcp_serve() {
         Cli::try_parse_from(["spt", "mcp", "serve", "--stdio", "--read-only", "--enable"]).unwrap();
+    }
+
+    #[test]
+    fn parses_status_overview() {
+        let cli = Cli::try_parse_from(["spt", "status"]).unwrap();
+        match cli.command {
+            Command::Status(_) => {}
+            other => panic!("expected Command::Status, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_status_overview_json() {
+        let cli = Cli::try_parse_from(["spt", "status", "--json"]).unwrap();
+        match cli.command {
+            Command::Status(c) => assert!(c.json),
+            other => panic!("expected Command::Status, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_status_overview_detail() {
+        let cli = Cli::try_parse_from(["spt", "status", "--detail"]).unwrap();
+        match cli.command {
+            Command::Status(c) => assert!(c.detail),
+            other => panic!("expected Command::Status, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_status_overview_watch() {
+        let cli = Cli::try_parse_from(["spt", "status", "--watch"]).unwrap();
+        match cli.command {
+            Command::Status(c) => assert!(c.watch),
+            other => panic!("expected Command::Status, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_status_api_serve() {
+        let cli =
+            Cli::try_parse_from(["spt", "status-api", "serve", "--bind", "127.0.0.1:0"]).unwrap();
+        match cli.command {
+            Command::StatusApi(c) => match c.command {
+                groups::status::StatusApiSub::Serve(_) => {}
+                other => panic!("expected StatusApiSub::Serve, got {other:?}"),
+            },
+            other => panic!("expected Command::StatusApi, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_status_api_show() {
+        let cli = Cli::try_parse_from(["spt", "status-api", "show", "--detail"]).unwrap();
+        match cli.command {
+            Command::StatusApi(c) => match c.command {
+                groups::status::StatusApiSub::Show(args) => assert!(args.detail),
+                other => panic!("expected StatusApiSub::Show, got {other:?}"),
+            },
+            other => panic!("expected Command::StatusApi, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_status_api_token_rotate() {
+        let cli =
+            Cli::try_parse_from(["spt", "status-api", "token", "rotate", "--print-token"]).unwrap();
+        match cli.command {
+            Command::StatusApi(c) => match c.command {
+                groups::status::StatusApiSub::Token(t) => match t.command {
+                    groups::status::StatusApiTokenSub::Rotate(args) => assert!(args.print_token),
+                },
+                other => panic!("expected StatusApiSub::Token, got {other:?}"),
+            },
+            other => panic!("expected Command::StatusApi, got {other:?}"),
+        }
     }
 
     #[test]

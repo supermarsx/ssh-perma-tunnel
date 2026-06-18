@@ -70,7 +70,8 @@ complete -c spt -n "__fish_spt_needs_command" -f -a "sftp" -d 'SFTP file operati
 complete -c spt -n "__fish_spt_needs_command" -f -a "diagnose" -d 'Targeted diagnostics and support bundles'
 complete -c spt -n "__fish_spt_needs_command" -f -a "benchmark" -d 'Controlled benchmarking against forwards'
 complete -c spt -n "__fish_spt_needs_command" -f -a "mcp" -d 'Built-in MCP server controls'
-complete -c spt -n "__fish_spt_needs_command" -f -a "status" -d 'Read-only status API controls'
+complete -c spt -n "__fish_spt_needs_command" -f -a "status" -d 'Show overall app status — daemon, tunnels/profiles, forwards, and subsystems (status API, MCP, DNS, metrics, remote-config, events, services)'
+complete -c spt -n "__fish_spt_needs_command" -f -a "status-api" -d 'Controls for the read-only HTTP status API'
 complete -c spt -n "__fish_spt_needs_command" -f -a "completion" -d 'Generate shell completions'
 complete -c spt -n "__fish_spt_needs_command" -f -a "about" -d 'List bundled libraries and their licenses'
 complete -c spt -n "__fish_spt_needs_command" -f -a "kill" -d 'Terminate every running `spt` instance on this host'
@@ -4840,122 +4841,150 @@ complete -c spt -n "__fish_spt_using_subcommand mcp; and __fish_seen_subcommand_
 complete -c spt -n "__fish_spt_using_subcommand mcp; and __fish_seen_subcommand_from help" -f -a "inspect" -d 'Inspect MCP capabilities, resources, tools'
 complete -c spt -n "__fish_spt_using_subcommand mcp; and __fish_seen_subcommand_from help" -f -a "policy" -d 'Manage the MCP policy'
 complete -c spt -n "__fish_spt_using_subcommand mcp; and __fish_seen_subcommand_from help" -f -a "help" -d 'Print this message or the help of the given subcommand(s)'
-complete -c spt -n "__fish_spt_using_subcommand status; and not __fish_seen_subcommand_from serve status token help" -l config -d 'Path to a single config file' -r -F
-complete -c spt -n "__fish_spt_using_subcommand status; and not __fish_seen_subcommand_from serve status token help" -l config-dir -d 'Path to a directory of `*.toml` configs (loaded in lexical order)' -r -F
-complete -c spt -n "__fish_spt_using_subcommand status; and not __fish_seen_subcommand_from serve status token help" -l config-url -d 'HTTPS URL of a remote config to fetch' -r
-complete -c spt -n "__fish_spt_using_subcommand status; and not __fish_seen_subcommand_from serve status token help" -l config-fingerprint -d 'SHA-256 fingerprint pin for `--config-url`' -r
-complete -c spt -n "__fish_spt_using_subcommand status; and not __fish_seen_subcommand_from serve status token help" -l state-dir -d 'Override the runtime state directory' -r -F
-complete -c spt -n "__fish_spt_using_subcommand status; and not __fish_seen_subcommand_from serve status token help" -l profile -d 'Restrict operations to the named profile' -r
-complete -c spt -n "__fish_spt_using_subcommand status; and not __fish_seen_subcommand_from serve status token help" -l output -d 'Output format for command results' -r -f -a "human\t'Human-readable text (default)'
+complete -c spt -n "__fish_spt_using_subcommand status" -l output -d 'Output format for the overview (overrides the global `--output`)' -r -f -a "human\t'Human-readable text (default)'
 json\t'Structured JSON'
 jsonl\t'JSON Lines (one record per line)'
 yaml\t'YAML'"
-complete -c spt -n "__fish_spt_using_subcommand status; and not __fish_seen_subcommand_from serve status token help" -l log-level -d 'Tracing log level' -r -f -a "error\t'Only errors'
+complete -c spt -n "__fish_spt_using_subcommand status" -l config -d 'Path to a single config file' -r -F
+complete -c spt -n "__fish_spt_using_subcommand status" -l config-dir -d 'Path to a directory of `*.toml` configs (loaded in lexical order)' -r -F
+complete -c spt -n "__fish_spt_using_subcommand status" -l config-url -d 'HTTPS URL of a remote config to fetch' -r
+complete -c spt -n "__fish_spt_using_subcommand status" -l config-fingerprint -d 'SHA-256 fingerprint pin for `--config-url`' -r
+complete -c spt -n "__fish_spt_using_subcommand status" -l state-dir -d 'Override the runtime state directory' -r -F
+complete -c spt -n "__fish_spt_using_subcommand status" -l profile -d 'Restrict operations to the named profile' -r
+complete -c spt -n "__fish_spt_using_subcommand status" -l log-level -d 'Tracing log level' -r -f -a "error\t'Only errors'
 warn\t'Warnings and above'
 info\t'Informational and above (default)'
 debug\t'Debug and above'
 trace\t'Trace and above (very verbose)'"
-complete -c spt -n "__fish_spt_using_subcommand status; and not __fish_seen_subcommand_from serve status token help" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
+complete -c spt -n "__fish_spt_using_subcommand status" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
-complete -c spt -n "__fish_spt_using_subcommand status; and not __fish_seen_subcommand_from serve status token help" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
-complete -c spt -n "__fish_spt_using_subcommand status; and not __fish_seen_subcommand_from serve status token help" -l json -d 'Convenience alias for `--output json`'
-complete -c spt -n "__fish_spt_using_subcommand status; and not __fish_seen_subcommand_from serve status token help" -s q -l quiet -d 'Suppress non-essential output'
-complete -c spt -n "__fish_spt_using_subcommand status; and not __fish_seen_subcommand_from serve status token help" -s v -l verbose -d 'Increase verbosity (repeat for more)'
-complete -c spt -n "__fish_spt_using_subcommand status; and not __fish_seen_subcommand_from serve status token help" -l no-color -d 'Disable color (legacy convenience flag; use `--color never`)'
-complete -c spt -n "__fish_spt_using_subcommand status; and not __fish_seen_subcommand_from serve status token help" -l dry-run -d 'Show what would happen without making changes'
-complete -c spt -n "__fish_spt_using_subcommand status; and not __fish_seen_subcommand_from serve status token help" -s h -l help -d 'Print help (see more with \'--help\')'
-complete -c spt -n "__fish_spt_using_subcommand status; and not __fish_seen_subcommand_from serve status token help" -s V -l version -d 'Print version'
-complete -c spt -n "__fish_spt_using_subcommand status; and not __fish_seen_subcommand_from serve status token help" -f -a "serve" -d 'Run the status API server in foreground (rare — supervisor normally hosts inline when `[status_api].enabled = true`)'
-complete -c spt -n "__fish_spt_using_subcommand status; and not __fish_seen_subcommand_from serve status token help" -f -a "status" -d 'Show whether the API is bound + how to reach it'
-complete -c spt -n "__fish_spt_using_subcommand status; and not __fish_seen_subcommand_from serve status token help" -f -a "token" -d 'Bearer-token management for the status API auth'
-complete -c spt -n "__fish_spt_using_subcommand status; and not __fish_seen_subcommand_from serve status token help" -f -a "help" -d 'Print this message or the help of the given subcommand(s)'
-complete -c spt -n "__fish_spt_using_subcommand status; and __fish_seen_subcommand_from serve" -l config -d 'Override config path (otherwise inherits `--config`)' -r -F
-complete -c spt -n "__fish_spt_using_subcommand status; and __fish_seen_subcommand_from serve" -l bind -d 'Override the bind address. Defaults to the value in `[status_api].bind`' -r
-complete -c spt -n "__fish_spt_using_subcommand status; and __fish_seen_subcommand_from serve" -l config-dir -d 'Path to a directory of `*.toml` configs (loaded in lexical order)' -r -F
-complete -c spt -n "__fish_spt_using_subcommand status; and __fish_seen_subcommand_from serve" -l config-url -d 'HTTPS URL of a remote config to fetch' -r
-complete -c spt -n "__fish_spt_using_subcommand status; and __fish_seen_subcommand_from serve" -l config-fingerprint -d 'SHA-256 fingerprint pin for `--config-url`' -r
-complete -c spt -n "__fish_spt_using_subcommand status; and __fish_seen_subcommand_from serve" -l state-dir -d 'Override the runtime state directory' -r -F
-complete -c spt -n "__fish_spt_using_subcommand status; and __fish_seen_subcommand_from serve" -l profile -d 'Restrict operations to the named profile' -r
-complete -c spt -n "__fish_spt_using_subcommand status; and __fish_seen_subcommand_from serve" -l output -d 'Output format for command results' -r -f -a "human\t'Human-readable text (default)'
+complete -c spt -n "__fish_spt_using_subcommand status" -l json -d 'Convenience alias for `--output json` (machine-readable overview)'
+complete -c spt -n "__fish_spt_using_subcommand status" -l detail -d 'Show verbose per-component state (resolved bind addresses, auth modes, last-error detail, per-forward counters) instead of the compact roll-up'
+complete -c spt -n "__fish_spt_using_subcommand status" -l watch -d 'Continuously refresh the overview in place instead of printing once'
+complete -c spt -n "__fish_spt_using_subcommand status" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
+complete -c spt -n "__fish_spt_using_subcommand status" -s q -l quiet -d 'Suppress non-essential output'
+complete -c spt -n "__fish_spt_using_subcommand status" -s v -l verbose -d 'Increase verbosity (repeat for more)'
+complete -c spt -n "__fish_spt_using_subcommand status" -l no-color -d 'Disable color (legacy convenience flag; use `--color never`)'
+complete -c spt -n "__fish_spt_using_subcommand status" -l dry-run -d 'Show what would happen without making changes'
+complete -c spt -n "__fish_spt_using_subcommand status" -s h -l help -d 'Print help (see more with \'--help\')'
+complete -c spt -n "__fish_spt_using_subcommand status" -s V -l version -d 'Print version'
+complete -c spt -n "__fish_spt_using_subcommand status-api; and not __fish_seen_subcommand_from serve show token help" -l config -d 'Path to a single config file' -r -F
+complete -c spt -n "__fish_spt_using_subcommand status-api; and not __fish_seen_subcommand_from serve show token help" -l config-dir -d 'Path to a directory of `*.toml` configs (loaded in lexical order)' -r -F
+complete -c spt -n "__fish_spt_using_subcommand status-api; and not __fish_seen_subcommand_from serve show token help" -l config-url -d 'HTTPS URL of a remote config to fetch' -r
+complete -c spt -n "__fish_spt_using_subcommand status-api; and not __fish_seen_subcommand_from serve show token help" -l config-fingerprint -d 'SHA-256 fingerprint pin for `--config-url`' -r
+complete -c spt -n "__fish_spt_using_subcommand status-api; and not __fish_seen_subcommand_from serve show token help" -l state-dir -d 'Override the runtime state directory' -r -F
+complete -c spt -n "__fish_spt_using_subcommand status-api; and not __fish_seen_subcommand_from serve show token help" -l profile -d 'Restrict operations to the named profile' -r
+complete -c spt -n "__fish_spt_using_subcommand status-api; and not __fish_seen_subcommand_from serve show token help" -l output -d 'Output format for command results' -r -f -a "human\t'Human-readable text (default)'
 json\t'Structured JSON'
 jsonl\t'JSON Lines (one record per line)'
 yaml\t'YAML'"
-complete -c spt -n "__fish_spt_using_subcommand status; and __fish_seen_subcommand_from serve" -l log-level -d 'Tracing log level' -r -f -a "error\t'Only errors'
+complete -c spt -n "__fish_spt_using_subcommand status-api; and not __fish_seen_subcommand_from serve show token help" -l log-level -d 'Tracing log level' -r -f -a "error\t'Only errors'
 warn\t'Warnings and above'
 info\t'Informational and above (default)'
 debug\t'Debug and above'
 trace\t'Trace and above (very verbose)'"
-complete -c spt -n "__fish_spt_using_subcommand status; and __fish_seen_subcommand_from serve" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
+complete -c spt -n "__fish_spt_using_subcommand status-api; and not __fish_seen_subcommand_from serve show token help" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
-complete -c spt -n "__fish_spt_using_subcommand status; and __fish_seen_subcommand_from serve" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
-complete -c spt -n "__fish_spt_using_subcommand status; and __fish_seen_subcommand_from serve" -l json -d 'Convenience alias for `--output json`'
-complete -c spt -n "__fish_spt_using_subcommand status; and __fish_seen_subcommand_from serve" -s q -l quiet -d 'Suppress non-essential output'
-complete -c spt -n "__fish_spt_using_subcommand status; and __fish_seen_subcommand_from serve" -s v -l verbose -d 'Increase verbosity (repeat for more)'
-complete -c spt -n "__fish_spt_using_subcommand status; and __fish_seen_subcommand_from serve" -l no-color -d 'Disable color (legacy convenience flag; use `--color never`)'
-complete -c spt -n "__fish_spt_using_subcommand status; and __fish_seen_subcommand_from serve" -l dry-run -d 'Show what would happen without making changes'
-complete -c spt -n "__fish_spt_using_subcommand status; and __fish_seen_subcommand_from serve" -s h -l help -d 'Print help (see more with \'--help\')'
-complete -c spt -n "__fish_spt_using_subcommand status; and __fish_seen_subcommand_from serve" -s V -l version -d 'Print version'
-complete -c spt -n "__fish_spt_using_subcommand status; and __fish_seen_subcommand_from status" -l config -d 'Path to a single config file' -r -F
-complete -c spt -n "__fish_spt_using_subcommand status; and __fish_seen_subcommand_from status" -l config-dir -d 'Path to a directory of `*.toml` configs (loaded in lexical order)' -r -F
-complete -c spt -n "__fish_spt_using_subcommand status; and __fish_seen_subcommand_from status" -l config-url -d 'HTTPS URL of a remote config to fetch' -r
-complete -c spt -n "__fish_spt_using_subcommand status; and __fish_seen_subcommand_from status" -l config-fingerprint -d 'SHA-256 fingerprint pin for `--config-url`' -r
-complete -c spt -n "__fish_spt_using_subcommand status; and __fish_seen_subcommand_from status" -l state-dir -d 'Override the runtime state directory' -r -F
-complete -c spt -n "__fish_spt_using_subcommand status; and __fish_seen_subcommand_from status" -l profile -d 'Restrict operations to the named profile' -r
-complete -c spt -n "__fish_spt_using_subcommand status; and __fish_seen_subcommand_from status" -l output -d 'Output format for command results' -r -f -a "human\t'Human-readable text (default)'
+complete -c spt -n "__fish_spt_using_subcommand status-api; and not __fish_seen_subcommand_from serve show token help" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
+complete -c spt -n "__fish_spt_using_subcommand status-api; and not __fish_seen_subcommand_from serve show token help" -l json -d 'Convenience alias for `--output json`'
+complete -c spt -n "__fish_spt_using_subcommand status-api; and not __fish_seen_subcommand_from serve show token help" -s q -l quiet -d 'Suppress non-essential output'
+complete -c spt -n "__fish_spt_using_subcommand status-api; and not __fish_seen_subcommand_from serve show token help" -s v -l verbose -d 'Increase verbosity (repeat for more)'
+complete -c spt -n "__fish_spt_using_subcommand status-api; and not __fish_seen_subcommand_from serve show token help" -l no-color -d 'Disable color (legacy convenience flag; use `--color never`)'
+complete -c spt -n "__fish_spt_using_subcommand status-api; and not __fish_seen_subcommand_from serve show token help" -l dry-run -d 'Show what would happen without making changes'
+complete -c spt -n "__fish_spt_using_subcommand status-api; and not __fish_seen_subcommand_from serve show token help" -s h -l help -d 'Print help (see more with \'--help\')'
+complete -c spt -n "__fish_spt_using_subcommand status-api; and not __fish_seen_subcommand_from serve show token help" -s V -l version -d 'Print version'
+complete -c spt -n "__fish_spt_using_subcommand status-api; and not __fish_seen_subcommand_from serve show token help" -f -a "serve" -d 'Run the status API server in foreground (rare — supervisor normally hosts inline when `[status_api].enabled = true`)'
+complete -c spt -n "__fish_spt_using_subcommand status-api; and not __fish_seen_subcommand_from serve show token help" -f -a "show" -d 'Show whether the API is bound + how to reach it'
+complete -c spt -n "__fish_spt_using_subcommand status-api; and not __fish_seen_subcommand_from serve show token help" -f -a "token" -d 'Bearer-token management for the status API auth'
+complete -c spt -n "__fish_spt_using_subcommand status-api; and not __fish_seen_subcommand_from serve show token help" -f -a "help" -d 'Print this message or the help of the given subcommand(s)'
+complete -c spt -n "__fish_spt_using_subcommand status-api; and __fish_seen_subcommand_from serve" -l config -d 'Override config path (otherwise inherits `--config`)' -r -F
+complete -c spt -n "__fish_spt_using_subcommand status-api; and __fish_seen_subcommand_from serve" -l bind -d 'Override the bind address. Defaults to the value in `[status_api].bind`' -r
+complete -c spt -n "__fish_spt_using_subcommand status-api; and __fish_seen_subcommand_from serve" -l config-dir -d 'Path to a directory of `*.toml` configs (loaded in lexical order)' -r -F
+complete -c spt -n "__fish_spt_using_subcommand status-api; and __fish_seen_subcommand_from serve" -l config-url -d 'HTTPS URL of a remote config to fetch' -r
+complete -c spt -n "__fish_spt_using_subcommand status-api; and __fish_seen_subcommand_from serve" -l config-fingerprint -d 'SHA-256 fingerprint pin for `--config-url`' -r
+complete -c spt -n "__fish_spt_using_subcommand status-api; and __fish_seen_subcommand_from serve" -l state-dir -d 'Override the runtime state directory' -r -F
+complete -c spt -n "__fish_spt_using_subcommand status-api; and __fish_seen_subcommand_from serve" -l profile -d 'Restrict operations to the named profile' -r
+complete -c spt -n "__fish_spt_using_subcommand status-api; and __fish_seen_subcommand_from serve" -l output -d 'Output format for command results' -r -f -a "human\t'Human-readable text (default)'
 json\t'Structured JSON'
 jsonl\t'JSON Lines (one record per line)'
 yaml\t'YAML'"
-complete -c spt -n "__fish_spt_using_subcommand status; and __fish_seen_subcommand_from status" -l log-level -d 'Tracing log level' -r -f -a "error\t'Only errors'
+complete -c spt -n "__fish_spt_using_subcommand status-api; and __fish_seen_subcommand_from serve" -l log-level -d 'Tracing log level' -r -f -a "error\t'Only errors'
 warn\t'Warnings and above'
 info\t'Informational and above (default)'
 debug\t'Debug and above'
 trace\t'Trace and above (very verbose)'"
-complete -c spt -n "__fish_spt_using_subcommand status; and __fish_seen_subcommand_from status" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
+complete -c spt -n "__fish_spt_using_subcommand status-api; and __fish_seen_subcommand_from serve" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
-complete -c spt -n "__fish_spt_using_subcommand status; and __fish_seen_subcommand_from status" -l detail -d 'Show the resolved auth mode and TLS state in addition to the bind'
-complete -c spt -n "__fish_spt_using_subcommand status; and __fish_seen_subcommand_from status" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
-complete -c spt -n "__fish_spt_using_subcommand status; and __fish_seen_subcommand_from status" -l json -d 'Convenience alias for `--output json`'
-complete -c spt -n "__fish_spt_using_subcommand status; and __fish_seen_subcommand_from status" -s q -l quiet -d 'Suppress non-essential output'
-complete -c spt -n "__fish_spt_using_subcommand status; and __fish_seen_subcommand_from status" -s v -l verbose -d 'Increase verbosity (repeat for more)'
-complete -c spt -n "__fish_spt_using_subcommand status; and __fish_seen_subcommand_from status" -l no-color -d 'Disable color (legacy convenience flag; use `--color never`)'
-complete -c spt -n "__fish_spt_using_subcommand status; and __fish_seen_subcommand_from status" -l dry-run -d 'Show what would happen without making changes'
-complete -c spt -n "__fish_spt_using_subcommand status; and __fish_seen_subcommand_from status" -s h -l help -d 'Print help (see more with \'--help\')'
-complete -c spt -n "__fish_spt_using_subcommand status; and __fish_seen_subcommand_from status" -s V -l version -d 'Print version'
-complete -c spt -n "__fish_spt_using_subcommand status; and __fish_seen_subcommand_from token" -l config -d 'Path to a single config file' -r -F
-complete -c spt -n "__fish_spt_using_subcommand status; and __fish_seen_subcommand_from token" -l config-dir -d 'Path to a directory of `*.toml` configs (loaded in lexical order)' -r -F
-complete -c spt -n "__fish_spt_using_subcommand status; and __fish_seen_subcommand_from token" -l config-url -d 'HTTPS URL of a remote config to fetch' -r
-complete -c spt -n "__fish_spt_using_subcommand status; and __fish_seen_subcommand_from token" -l config-fingerprint -d 'SHA-256 fingerprint pin for `--config-url`' -r
-complete -c spt -n "__fish_spt_using_subcommand status; and __fish_seen_subcommand_from token" -l state-dir -d 'Override the runtime state directory' -r -F
-complete -c spt -n "__fish_spt_using_subcommand status; and __fish_seen_subcommand_from token" -l profile -d 'Restrict operations to the named profile' -r
-complete -c spt -n "__fish_spt_using_subcommand status; and __fish_seen_subcommand_from token" -l output -d 'Output format for command results' -r -f -a "human\t'Human-readable text (default)'
+complete -c spt -n "__fish_spt_using_subcommand status-api; and __fish_seen_subcommand_from serve" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
+complete -c spt -n "__fish_spt_using_subcommand status-api; and __fish_seen_subcommand_from serve" -l json -d 'Convenience alias for `--output json`'
+complete -c spt -n "__fish_spt_using_subcommand status-api; and __fish_seen_subcommand_from serve" -s q -l quiet -d 'Suppress non-essential output'
+complete -c spt -n "__fish_spt_using_subcommand status-api; and __fish_seen_subcommand_from serve" -s v -l verbose -d 'Increase verbosity (repeat for more)'
+complete -c spt -n "__fish_spt_using_subcommand status-api; and __fish_seen_subcommand_from serve" -l no-color -d 'Disable color (legacy convenience flag; use `--color never`)'
+complete -c spt -n "__fish_spt_using_subcommand status-api; and __fish_seen_subcommand_from serve" -l dry-run -d 'Show what would happen without making changes'
+complete -c spt -n "__fish_spt_using_subcommand status-api; and __fish_seen_subcommand_from serve" -s h -l help -d 'Print help (see more with \'--help\')'
+complete -c spt -n "__fish_spt_using_subcommand status-api; and __fish_seen_subcommand_from serve" -s V -l version -d 'Print version'
+complete -c spt -n "__fish_spt_using_subcommand status-api; and __fish_seen_subcommand_from show" -l config -d 'Path to a single config file' -r -F
+complete -c spt -n "__fish_spt_using_subcommand status-api; and __fish_seen_subcommand_from show" -l config-dir -d 'Path to a directory of `*.toml` configs (loaded in lexical order)' -r -F
+complete -c spt -n "__fish_spt_using_subcommand status-api; and __fish_seen_subcommand_from show" -l config-url -d 'HTTPS URL of a remote config to fetch' -r
+complete -c spt -n "__fish_spt_using_subcommand status-api; and __fish_seen_subcommand_from show" -l config-fingerprint -d 'SHA-256 fingerprint pin for `--config-url`' -r
+complete -c spt -n "__fish_spt_using_subcommand status-api; and __fish_seen_subcommand_from show" -l state-dir -d 'Override the runtime state directory' -r -F
+complete -c spt -n "__fish_spt_using_subcommand status-api; and __fish_seen_subcommand_from show" -l profile -d 'Restrict operations to the named profile' -r
+complete -c spt -n "__fish_spt_using_subcommand status-api; and __fish_seen_subcommand_from show" -l output -d 'Output format for command results' -r -f -a "human\t'Human-readable text (default)'
 json\t'Structured JSON'
 jsonl\t'JSON Lines (one record per line)'
 yaml\t'YAML'"
-complete -c spt -n "__fish_spt_using_subcommand status; and __fish_seen_subcommand_from token" -l log-level -d 'Tracing log level' -r -f -a "error\t'Only errors'
+complete -c spt -n "__fish_spt_using_subcommand status-api; and __fish_seen_subcommand_from show" -l log-level -d 'Tracing log level' -r -f -a "error\t'Only errors'
 warn\t'Warnings and above'
 info\t'Informational and above (default)'
 debug\t'Debug and above'
 trace\t'Trace and above (very verbose)'"
-complete -c spt -n "__fish_spt_using_subcommand status; and __fish_seen_subcommand_from token" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
+complete -c spt -n "__fish_spt_using_subcommand status-api; and __fish_seen_subcommand_from show" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
-complete -c spt -n "__fish_spt_using_subcommand status; and __fish_seen_subcommand_from token" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
-complete -c spt -n "__fish_spt_using_subcommand status; and __fish_seen_subcommand_from token" -l json -d 'Convenience alias for `--output json`'
-complete -c spt -n "__fish_spt_using_subcommand status; and __fish_seen_subcommand_from token" -s q -l quiet -d 'Suppress non-essential output'
-complete -c spt -n "__fish_spt_using_subcommand status; and __fish_seen_subcommand_from token" -s v -l verbose -d 'Increase verbosity (repeat for more)'
-complete -c spt -n "__fish_spt_using_subcommand status; and __fish_seen_subcommand_from token" -l no-color -d 'Disable color (legacy convenience flag; use `--color never`)'
-complete -c spt -n "__fish_spt_using_subcommand status; and __fish_seen_subcommand_from token" -l dry-run -d 'Show what would happen without making changes'
-complete -c spt -n "__fish_spt_using_subcommand status; and __fish_seen_subcommand_from token" -s h -l help -d 'Print help (see more with \'--help\')'
-complete -c spt -n "__fish_spt_using_subcommand status; and __fish_seen_subcommand_from token" -s V -l version -d 'Print version'
-complete -c spt -n "__fish_spt_using_subcommand status; and __fish_seen_subcommand_from token" -f -a "rotate" -d 'Rotate the bearer token in the vault (only when `auth.mode = "bearer"` and the `token_from` SecretRef points at a writable backend)'
-complete -c spt -n "__fish_spt_using_subcommand status; and __fish_seen_subcommand_from token" -f -a "help" -d 'Print this message or the help of the given subcommand(s)'
-complete -c spt -n "__fish_spt_using_subcommand status; and __fish_seen_subcommand_from help" -f -a "serve" -d 'Run the status API server in foreground (rare — supervisor normally hosts inline when `[status_api].enabled = true`)'
-complete -c spt -n "__fish_spt_using_subcommand status; and __fish_seen_subcommand_from help" -f -a "status" -d 'Show whether the API is bound + how to reach it'
-complete -c spt -n "__fish_spt_using_subcommand status; and __fish_seen_subcommand_from help" -f -a "token" -d 'Bearer-token management for the status API auth'
-complete -c spt -n "__fish_spt_using_subcommand status; and __fish_seen_subcommand_from help" -f -a "help" -d 'Print this message or the help of the given subcommand(s)'
+complete -c spt -n "__fish_spt_using_subcommand status-api; and __fish_seen_subcommand_from show" -l detail -d 'Show the resolved auth mode and TLS state in addition to the bind'
+complete -c spt -n "__fish_spt_using_subcommand status-api; and __fish_seen_subcommand_from show" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
+complete -c spt -n "__fish_spt_using_subcommand status-api; and __fish_seen_subcommand_from show" -l json -d 'Convenience alias for `--output json`'
+complete -c spt -n "__fish_spt_using_subcommand status-api; and __fish_seen_subcommand_from show" -s q -l quiet -d 'Suppress non-essential output'
+complete -c spt -n "__fish_spt_using_subcommand status-api; and __fish_seen_subcommand_from show" -s v -l verbose -d 'Increase verbosity (repeat for more)'
+complete -c spt -n "__fish_spt_using_subcommand status-api; and __fish_seen_subcommand_from show" -l no-color -d 'Disable color (legacy convenience flag; use `--color never`)'
+complete -c spt -n "__fish_spt_using_subcommand status-api; and __fish_seen_subcommand_from show" -l dry-run -d 'Show what would happen without making changes'
+complete -c spt -n "__fish_spt_using_subcommand status-api; and __fish_seen_subcommand_from show" -s h -l help -d 'Print help (see more with \'--help\')'
+complete -c spt -n "__fish_spt_using_subcommand status-api; and __fish_seen_subcommand_from show" -s V -l version -d 'Print version'
+complete -c spt -n "__fish_spt_using_subcommand status-api; and __fish_seen_subcommand_from token" -l config -d 'Path to a single config file' -r -F
+complete -c spt -n "__fish_spt_using_subcommand status-api; and __fish_seen_subcommand_from token" -l config-dir -d 'Path to a directory of `*.toml` configs (loaded in lexical order)' -r -F
+complete -c spt -n "__fish_spt_using_subcommand status-api; and __fish_seen_subcommand_from token" -l config-url -d 'HTTPS URL of a remote config to fetch' -r
+complete -c spt -n "__fish_spt_using_subcommand status-api; and __fish_seen_subcommand_from token" -l config-fingerprint -d 'SHA-256 fingerprint pin for `--config-url`' -r
+complete -c spt -n "__fish_spt_using_subcommand status-api; and __fish_seen_subcommand_from token" -l state-dir -d 'Override the runtime state directory' -r -F
+complete -c spt -n "__fish_spt_using_subcommand status-api; and __fish_seen_subcommand_from token" -l profile -d 'Restrict operations to the named profile' -r
+complete -c spt -n "__fish_spt_using_subcommand status-api; and __fish_seen_subcommand_from token" -l output -d 'Output format for command results' -r -f -a "human\t'Human-readable text (default)'
+json\t'Structured JSON'
+jsonl\t'JSON Lines (one record per line)'
+yaml\t'YAML'"
+complete -c spt -n "__fish_spt_using_subcommand status-api; and __fish_seen_subcommand_from token" -l log-level -d 'Tracing log level' -r -f -a "error\t'Only errors'
+warn\t'Warnings and above'
+info\t'Informational and above (default)'
+debug\t'Debug and above'
+trace\t'Trace and above (very verbose)'"
+complete -c spt -n "__fish_spt_using_subcommand status-api; and __fish_seen_subcommand_from token" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
+always\t'Always emit color escapes'
+never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand status-api; and __fish_seen_subcommand_from token" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
+complete -c spt -n "__fish_spt_using_subcommand status-api; and __fish_seen_subcommand_from token" -l json -d 'Convenience alias for `--output json`'
+complete -c spt -n "__fish_spt_using_subcommand status-api; and __fish_seen_subcommand_from token" -s q -l quiet -d 'Suppress non-essential output'
+complete -c spt -n "__fish_spt_using_subcommand status-api; and __fish_seen_subcommand_from token" -s v -l verbose -d 'Increase verbosity (repeat for more)'
+complete -c spt -n "__fish_spt_using_subcommand status-api; and __fish_seen_subcommand_from token" -l no-color -d 'Disable color (legacy convenience flag; use `--color never`)'
+complete -c spt -n "__fish_spt_using_subcommand status-api; and __fish_seen_subcommand_from token" -l dry-run -d 'Show what would happen without making changes'
+complete -c spt -n "__fish_spt_using_subcommand status-api; and __fish_seen_subcommand_from token" -s h -l help -d 'Print help (see more with \'--help\')'
+complete -c spt -n "__fish_spt_using_subcommand status-api; and __fish_seen_subcommand_from token" -s V -l version -d 'Print version'
+complete -c spt -n "__fish_spt_using_subcommand status-api; and __fish_seen_subcommand_from token" -f -a "rotate" -d 'Rotate the bearer token in the vault (only when `auth.mode = "bearer"` and the `token_from` SecretRef points at a writable backend)'
+complete -c spt -n "__fish_spt_using_subcommand status-api; and __fish_seen_subcommand_from token" -f -a "help" -d 'Print this message or the help of the given subcommand(s)'
+complete -c spt -n "__fish_spt_using_subcommand status-api; and __fish_seen_subcommand_from help" -f -a "serve" -d 'Run the status API server in foreground (rare — supervisor normally hosts inline when `[status_api].enabled = true`)'
+complete -c spt -n "__fish_spt_using_subcommand status-api; and __fish_seen_subcommand_from help" -f -a "show" -d 'Show whether the API is bound + how to reach it'
+complete -c spt -n "__fish_spt_using_subcommand status-api; and __fish_seen_subcommand_from help" -f -a "token" -d 'Bearer-token management for the status API auth'
+complete -c spt -n "__fish_spt_using_subcommand status-api; and __fish_seen_subcommand_from help" -f -a "help" -d 'Print this message or the help of the given subcommand(s)'
 complete -c spt -n "__fish_spt_using_subcommand completion; and not __fish_seen_subcommand_from generate help" -l config -d 'Path to a single config file' -r -F
 complete -c spt -n "__fish_spt_using_subcommand completion; and not __fish_seen_subcommand_from generate help" -l config-dir -d 'Path to a directory of `*.toml` configs (loaded in lexical order)' -r -F
 complete -c spt -n "__fish_spt_using_subcommand completion; and not __fish_seen_subcommand_from generate help" -l config-url -d 'HTTPS URL of a remote config to fetch' -r
@@ -5388,32 +5417,33 @@ complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcomma
 complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from help" -f -a "status" -d 'Print current status: enabled flag, last check, latest version, next-scheduled tick, staged artifact'
 complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from help" -f -a "history" -d 'Past update events from the audit log'
 complete -c spt -n "__fish_spt_using_subcommand update; and __fish_seen_subcommand_from help" -f -a "help" -d 'Print this message or the help of the given subcommand(s)'
-complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status completion about kill update help" -f -a "config" -d 'Manage configuration files (init, validate, diff, render, reload)'
-complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status completion about kill update help" -f -a "profile" -d 'Manage SSH/SSH3 tunnel profiles'
-complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status completion about kill update help" -f -a "forward" -d 'Manage forwards (local/remote TCP, UDP)'
-complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status completion about kill update help" -f -a "tunnel" -d 'Run, inspect, and control tunnels'
-complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status completion about kill update help" -f -a "service" -d 'Install and control native services'
-complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status completion about kill update help" -f -a "key" -d 'Generate, inspect, and install SSH keys'
-complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status completion about kill update help" -f -a "secret" -d 'Manage the secret vault and OS keychain references'
-complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status completion about kill update help" -f -a "auth" -d 'Authentication helpers'
-complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status completion about kill update help" -f -a "dns" -d 'Built-in DNS resolver and hosts-file management'
-complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status completion about kill update help" -f -a "firewall" -d 'Inspect and manage OS firewall / packet-filter rules'
-complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status completion about kill update help" -f -a "log" -d 'Log tailing, sink testing, and export'
-complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status completion about kill update help" -f -a "observe" -d 'Metrics and Windows Event Log helpers'
-complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status completion about kill update help" -f -a "event" -d 'Event bindings and sinks'
-complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status completion about kill update help" -f -a "stats" -d 'Statistics summaries and live counters'
-complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status completion about kill update help" -f -a "session" -d 'Inspect and manage active sessions'
-complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status completion about kill update help" -f -a "ftp" -d 'FTP→SFTP translator service'
-complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status completion about kill update help" -f -a "sftp" -d 'SFTP file operations and mount planning'
-complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status completion about kill update help" -f -a "diagnose" -d 'Targeted diagnostics and support bundles'
-complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status completion about kill update help" -f -a "benchmark" -d 'Controlled benchmarking against forwards'
-complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status completion about kill update help" -f -a "mcp" -d 'Built-in MCP server controls'
-complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status completion about kill update help" -f -a "status" -d 'Read-only status API controls'
-complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status completion about kill update help" -f -a "completion" -d 'Generate shell completions'
-complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status completion about kill update help" -f -a "about" -d 'List bundled libraries and their licenses'
-complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status completion about kill update help" -f -a "kill" -d 'Terminate every running `spt` instance on this host'
-complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status completion about kill update help" -f -a "update" -d 'Embedded auto-updater (off by default). Manual commands work regardless of the `[updater].enabled` flag; the background polling thread is only spawned when explicitly enabled'
-complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status completion about kill update help" -f -a "help" -d 'Print this message or the help of the given subcommand(s)'
+complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status status-api completion about kill update help" -f -a "config" -d 'Manage configuration files (init, validate, diff, render, reload)'
+complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status status-api completion about kill update help" -f -a "profile" -d 'Manage SSH/SSH3 tunnel profiles'
+complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status status-api completion about kill update help" -f -a "forward" -d 'Manage forwards (local/remote TCP, UDP)'
+complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status status-api completion about kill update help" -f -a "tunnel" -d 'Run, inspect, and control tunnels'
+complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status status-api completion about kill update help" -f -a "service" -d 'Install and control native services'
+complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status status-api completion about kill update help" -f -a "key" -d 'Generate, inspect, and install SSH keys'
+complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status status-api completion about kill update help" -f -a "secret" -d 'Manage the secret vault and OS keychain references'
+complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status status-api completion about kill update help" -f -a "auth" -d 'Authentication helpers'
+complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status status-api completion about kill update help" -f -a "dns" -d 'Built-in DNS resolver and hosts-file management'
+complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status status-api completion about kill update help" -f -a "firewall" -d 'Inspect and manage OS firewall / packet-filter rules'
+complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status status-api completion about kill update help" -f -a "log" -d 'Log tailing, sink testing, and export'
+complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status status-api completion about kill update help" -f -a "observe" -d 'Metrics and Windows Event Log helpers'
+complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status status-api completion about kill update help" -f -a "event" -d 'Event bindings and sinks'
+complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status status-api completion about kill update help" -f -a "stats" -d 'Statistics summaries and live counters'
+complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status status-api completion about kill update help" -f -a "session" -d 'Inspect and manage active sessions'
+complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status status-api completion about kill update help" -f -a "ftp" -d 'FTP→SFTP translator service'
+complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status status-api completion about kill update help" -f -a "sftp" -d 'SFTP file operations and mount planning'
+complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status status-api completion about kill update help" -f -a "diagnose" -d 'Targeted diagnostics and support bundles'
+complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status status-api completion about kill update help" -f -a "benchmark" -d 'Controlled benchmarking against forwards'
+complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status status-api completion about kill update help" -f -a "mcp" -d 'Built-in MCP server controls'
+complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status status-api completion about kill update help" -f -a "status" -d 'Show overall app status — daemon, tunnels/profiles, forwards, and subsystems (status API, MCP, DNS, metrics, remote-config, events, services)'
+complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status status-api completion about kill update help" -f -a "status-api" -d 'Controls for the read-only HTTP status API'
+complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status status-api completion about kill update help" -f -a "completion" -d 'Generate shell completions'
+complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status status-api completion about kill update help" -f -a "about" -d 'List bundled libraries and their licenses'
+complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status status-api completion about kill update help" -f -a "kill" -d 'Terminate every running `spt` instance on this host'
+complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status status-api completion about kill update help" -f -a "update" -d 'Embedded auto-updater (off by default). Manual commands work regardless of the `[updater].enabled` flag; the background polling thread is only spawned when explicitly enabled'
+complete -c spt -n "__fish_spt_using_subcommand help; and not __fish_seen_subcommand_from config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status status-api completion about kill update help" -f -a "help" -d 'Print this message or the help of the given subcommand(s)'
 complete -c spt -n "__fish_spt_using_subcommand help; and __fish_seen_subcommand_from config" -f -a "init" -d 'Initialize a new config file from a template'
 complete -c spt -n "__fish_spt_using_subcommand help; and __fish_seen_subcommand_from config" -f -a "validate" -d 'Validate config syntax, schema, and obvious mistakes'
 complete -c spt -n "__fish_spt_using_subcommand help; and __fish_seen_subcommand_from config" -f -a "doctor" -d 'Run environment checks against the loaded config'
@@ -5553,9 +5583,9 @@ complete -c spt -n "__fish_spt_using_subcommand help; and __fish_seen_subcommand
 complete -c spt -n "__fish_spt_using_subcommand help; and __fish_seen_subcommand_from mcp" -f -a "serve" -d 'Run the MCP server'
 complete -c spt -n "__fish_spt_using_subcommand help; and __fish_seen_subcommand_from mcp" -f -a "inspect" -d 'Inspect MCP capabilities, resources, tools'
 complete -c spt -n "__fish_spt_using_subcommand help; and __fish_seen_subcommand_from mcp" -f -a "policy" -d 'Manage the MCP policy'
-complete -c spt -n "__fish_spt_using_subcommand help; and __fish_seen_subcommand_from status" -f -a "serve" -d 'Run the status API server in foreground (rare — supervisor normally hosts inline when `[status_api].enabled = true`)'
-complete -c spt -n "__fish_spt_using_subcommand help; and __fish_seen_subcommand_from status" -f -a "status" -d 'Show whether the API is bound + how to reach it'
-complete -c spt -n "__fish_spt_using_subcommand help; and __fish_seen_subcommand_from status" -f -a "token" -d 'Bearer-token management for the status API auth'
+complete -c spt -n "__fish_spt_using_subcommand help; and __fish_seen_subcommand_from status-api" -f -a "serve" -d 'Run the status API server in foreground (rare — supervisor normally hosts inline when `[status_api].enabled = true`)'
+complete -c spt -n "__fish_spt_using_subcommand help; and __fish_seen_subcommand_from status-api" -f -a "show" -d 'Show whether the API is bound + how to reach it'
+complete -c spt -n "__fish_spt_using_subcommand help; and __fish_seen_subcommand_from status-api" -f -a "token" -d 'Bearer-token management for the status API auth'
 complete -c spt -n "__fish_spt_using_subcommand help; and __fish_seen_subcommand_from completion" -f -a "generate" -d 'Print completions for a shell to stdout'
 complete -c spt -n "__fish_spt_using_subcommand help; and __fish_seen_subcommand_from about" -f -a "list" -d 'List every bundled library, one line per entry'
 complete -c spt -n "__fish_spt_using_subcommand help; and __fish_seen_subcommand_from about" -f -a "show" -d 'Show detailed information for a single library'

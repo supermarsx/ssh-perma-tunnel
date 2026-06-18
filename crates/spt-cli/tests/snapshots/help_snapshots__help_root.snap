@@ -27,7 +27,9 @@ Commands:
   diagnose    Targeted diagnostics and support bundles
   benchmark   Controlled benchmarking against forwards
   mcp         Built-in MCP server controls
-  status      Read-only status API controls
+  status      Show overall app status — daemon, tunnels/profiles, forwards, and subsystems (status
+              API, MCP, DNS, metrics, remote-config, events, services)
+  status-api  Controls for the read-only HTTP status API
   completion  Generate shell completions
   about       List bundled libraries and their licenses
   kill        Terminate every running `spt` instance on this host

@@ -20,7 +20,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use base64::Engine;
 use serde_json::json;
-use spt_cli::groups::status::{StatusServeArgs, StatusStatusArgs, StatusTokenRotateArgs};
+use spt_cli::groups::status::{
+    StatusApiServeArgs, StatusApiShowArgs, StatusApiTokenRotateArgs, StatusCmd,
+};
 use spt_cli::{GlobalOpts, OutputFormat};
 use spt_config::StatusApiAuthMode;
 use spt_core::{Error, Result};
@@ -70,7 +72,7 @@ impl StateSnapshotSource for FileSnapshotSource {
 /// Foreground-host the status API. Loads the config, builds a
 /// [`FileSnapshotSource`] over the state dir, calls
 /// [`spt_status_api::StatusApiServer::start`], and blocks until Ctrl-C / SIGTERM.
-pub async fn serve(global: &GlobalOpts, args: StatusServeArgs) -> Result<()> {
+pub async fn serve(global: &GlobalOpts, args: StatusApiServeArgs) -> Result<()> {
     let cfg_path = args
         .config
         .clone()
@@ -152,7 +154,7 @@ async fn wait_for_shutdown_signal() {
 // ---------------------------------------------------------------------------
 
 /// Report whether the status API is enabled and how to reach it.
-pub async fn status(global: &GlobalOpts, args: StatusStatusArgs) -> Result<()> {
+pub async fn status(global: &GlobalOpts, args: StatusApiShowArgs) -> Result<()> {
     let cfg_path = require_config(global)?;
     let (cfg, _w) = spt_config::load(&cfg_path, false)
         .map_err(|e| Error::InvalidConfig(format!("load `{}`: {e}", cfg_path.display())))?;
@@ -211,7 +213,7 @@ pub async fn status(global: &GlobalOpts, args: StatusStatusArgs) -> Result<()> {
 /// Rotate the bearer token. Reads `[status_api].auth.token_from`, generates a
 /// fresh random token, writes it via the vault backend, and prints the new
 /// SecretRef. Errors cleanly if the auth mode is not bearer.
-pub async fn token_rotate(global: &GlobalOpts, args: StatusTokenRotateArgs) -> Result<()> {
+pub async fn token_rotate(global: &GlobalOpts, args: StatusApiTokenRotateArgs) -> Result<()> {
     use rand::RngCore;
     use spt_secrets::{KeychainBackend, SecretBackend, VaultBackend};
 
@@ -292,6 +294,448 @@ pub async fn token_rotate(global: &GlobalOpts, args: StatusTokenRotateArgs) -> R
     Ok(())
 }
 
+// ===========================================================================
+// `spt status` — app-status overview (NEW; appstatus Wave 2)
+// ===========================================================================
+//
+// Read-only: combines `<state_dir>/runtime.json` (daemon identity +
+// subsystems, written by `tunnel_run`), `<state_dir>/status.json`
+// (`StatusSnapshot`: profiles/forwards), and (optionally) the loaded config to
+// render an elaborate overview. Never requires a running daemon — a missing
+// `runtime.json` (or a dead/stale pid) is reported cleanly as NOT RUNNING.
+
+/// Daemon liveness verdict derived from `runtime.json` + a pid-liveness probe.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Liveness {
+    /// `runtime.json` present, pid alive, and not stale.
+    Running,
+    /// No `runtime.json` (cleanly stopped, or never started).
+    NotRunning,
+    /// `runtime.json` present but the pid is dead (crashed without cleanup).
+    Dead,
+    /// `runtime.json` present + pid alive but the snapshot is stale.
+    Stale,
+}
+
+impl Liveness {
+    fn label(self) -> &'static str {
+        match self {
+            Liveness::Running => "RUNNING",
+            Liveness::NotRunning => "NOT RUNNING",
+            Liveness::Dead => "NOT RUNNING (crashed — pid not alive)",
+            Liveness::Stale => "STALE (no recent heartbeat)",
+        }
+    }
+    fn is_live(self) -> bool {
+        matches!(self, Liveness::Running)
+    }
+}
+
+/// `spt status` — render the combined app-status overview.
+///
+/// `--json` / `--output json|yaml` emit the machine structure; the default is a
+/// concise human roll-up and `--detail` is the verbose per-component form.
+/// `--watch` clears + re-renders every ~2s until Ctrl-C.
+pub async fn status_overview(global: &GlobalOpts, cmd: StatusCmd) -> Result<()> {
+    let fmt = overview_format(global, &cmd);
+
+    if cmd.watch {
+        // Live refresh loop: clear screen + reprint until Ctrl-C / SIGTERM.
+        // Watch only makes sense for human output; machine formats print once.
+        if !matches!(fmt, OutputFormat::Human) {
+            return Err(Error::InvalidArgs(
+                "--watch is only supported with human output (drop --json/--output)".into(),
+            ));
+        }
+        loop {
+            let report = build_report(global)?;
+            // Clear screen + home cursor, then reprint.
+            print!("\x1b[2J\x1b[H");
+            print!("{}", render_human(&report, cmd.detail));
+            use std::io::Write;
+            let _ = std::io::stdout().flush();
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => return Ok(()),
+                _ = tokio::time::sleep(std::time::Duration::from_secs(2)) => {}
+            }
+        }
+    }
+
+    let report = build_report(global)?;
+    match fmt {
+        OutputFormat::Json | OutputFormat::Jsonl => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&report.to_json()).unwrap()
+            );
+        }
+        OutputFormat::Yaml => {
+            // Reuse the JSON structure through serde_yaml for a faithful machine dump.
+            let yaml = serde_yaml::to_string(&report.to_json())
+                .unwrap_or_else(|e| format!("# yaml render failed: {e}\n"));
+            print!("{yaml}");
+        }
+        OutputFormat::Human => {
+            print!("{}", render_human(&report, cmd.detail));
+        }
+    }
+    Ok(())
+}
+
+/// The combined, render-agnostic overview data.
+struct OverviewReport {
+    liveness: Liveness,
+    state_dir: PathBuf,
+    runtime: Option<spt_state::RuntimeStatus>,
+    snapshot: Option<StatusSnapshot>,
+    /// Subsystems configured-but-not-running (for the NOT-RUNNING hint), derived
+    /// from the loaded config when available.
+    configured_subsystems: Vec<String>,
+    /// Whether a `--config` was loadable (so we can note its absence).
+    config_loaded: bool,
+}
+
+/// Collect runtime.json + status.json + config and decide liveness.
+fn build_report(global: &GlobalOpts) -> Result<OverviewReport> {
+    let state_dir = spt_state::resolve_state_dir(global.state_dir.as_deref())?;
+
+    let runtime = spt_state::read_runtime(&state_dir).unwrap_or(None);
+    let snapshot = read_snapshot(&state_dir);
+
+    // Decide liveness from runtime.json + pid probe + staleness.
+    let interval = spt_state::StatusWriterConfig::default().interval;
+    let liveness = match &runtime {
+        None => Liveness::NotRunning,
+        Some(rs) => {
+            if !crate::cli_dispatch::pid_is_alive(rs.pid()) {
+                Liveness::Dead
+            } else if rs.is_stale(interval) {
+                Liveness::Stale
+            } else {
+                Liveness::Running
+            }
+        }
+    };
+
+    // Best-effort: load config (if `--config` given) to list configured-but-not-
+    // running subsystems when the daemon is down. The renderer never *requires*
+    // a daemon or a config.
+    let (configured_subsystems, config_loaded) = match &global.config {
+        Some(path) => match spt_config::load(path, false) {
+            Ok((cfg, _w)) => (configured_subsystems_from_config(&cfg), true),
+            Err(_) => (Vec::new(), false),
+        },
+        None => (Vec::new(), false),
+    };
+
+    Ok(OverviewReport {
+        liveness,
+        state_dir,
+        runtime,
+        snapshot,
+        configured_subsystems,
+        config_loaded,
+    })
+}
+
+fn read_snapshot(state_dir: &std::path::Path) -> Option<StatusSnapshot> {
+    let path = spt_state::paths::status_path(state_dir);
+    let bytes = std::fs::read(&path).ok()?;
+    serde_json::from_slice::<StatusSnapshot>(&bytes).ok()
+}
+
+/// Names of subsystems the config enables, for the NOT-RUNNING hint.
+fn configured_subsystems_from_config(cfg: &spt_config::schema::Config) -> Vec<String> {
+    let mut out = Vec::new();
+    if cfg.status_api.enabled {
+        out.push("status-api".to_string());
+    }
+    if cfg.mcp.as_ref().and_then(|m| m.listen.as_ref()).is_some()
+        && cfg.mcp.as_ref().and_then(|m| m.enabled) == Some(true)
+    {
+        out.push("mcp".to_string());
+    }
+    if cfg.dns.as_ref().and_then(|d| d.enabled) == Some(true) {
+        out.push("dns".to_string());
+    }
+    if cfg
+        .runtime
+        .as_ref()
+        .and_then(|r| r.remote_config.as_ref())
+        .and_then(|rc| rc.enabled)
+        == Some(true)
+    {
+        out.push("remote-config-poller".to_string());
+    }
+    if cfg
+        .events
+        .as_ref()
+        .map(|e| !e.sinks.is_empty())
+        .unwrap_or(false)
+    {
+        out.push("events".to_string());
+    }
+    out
+}
+
+impl OverviewReport {
+    /// Machine structure (for `--json` / `--output yaml`).
+    fn to_json(&self) -> serde_json::Value {
+        let mut v = json!({
+            "daemon": {
+                "state": match self.liveness {
+                    Liveness::Running => "running",
+                    Liveness::NotRunning => "not_running",
+                    Liveness::Dead => "dead",
+                    Liveness::Stale => "stale",
+                },
+                "live": self.liveness.is_live(),
+            },
+            "state_dir": self.state_dir.display().to_string(),
+        });
+        if let Some(rs) = &self.runtime {
+            v["daemon"]["pid"] = json!(rs.pid());
+            v["daemon"]["version"] = json!(rs.version);
+            v["daemon"]["started_at"] = json!(rs.started_at.map(|t| t.to_rfc3339()));
+            v["daemon"]["config_path"] = json!(rs.config_path);
+            // Subsystems straight from the runtime model.
+            v["subsystems"] = serde_json::to_value(&rs.subsystems).unwrap_or(json!({}));
+        } else {
+            v["configured_subsystems"] = json!(self.configured_subsystems);
+        }
+        if let Some(snap) = &self.snapshot {
+            v["profiles"] = serde_json::to_value(&snap.profiles).unwrap_or(json!([]));
+            v["forwards"] = serde_json::to_value(&snap.forwards).unwrap_or(json!([]));
+            v["counters"] = serde_json::to_value(&snap.counters).unwrap_or(json!({}));
+        }
+        v
+    }
+}
+
+/// Render the elaborate human report. `detail` widens per-component fields.
+#[allow(clippy::too_many_lines)]
+fn render_human(r: &OverviewReport, detail: bool) -> String {
+    use std::fmt::Write as _;
+    let mut o = String::new();
+
+    // -- Daemon section -----------------------------------------------------
+    let _ = writeln!(o, "spt status");
+    let _ = writeln!(o, "==========");
+    let _ = writeln!(o);
+    let _ = writeln!(o, "Daemon: {}", r.liveness.label());
+    if let Some(rs) = &r.runtime {
+        let _ = writeln!(o, "  pid:         {}", rs.pid());
+        let _ = writeln!(o, "  version:     {}", rs.version);
+        if let Some(started) = rs.started_at {
+            let uptime = chrono::Utc::now().signed_duration_since(started);
+            let _ = writeln!(
+                o,
+                "  started:     {} (uptime {})",
+                started.to_rfc3339(),
+                fmt_uptime(uptime)
+            );
+        }
+        let _ = writeln!(o, "  config:      {}", rs.config_path);
+    } else {
+        let _ = writeln!(o, "  (no runtime.json — daemon is not running)");
+        if !r.configured_subsystems.is_empty() {
+            let _ = writeln!(
+                o,
+                "  configured (not running): {}",
+                r.configured_subsystems.join(", ")
+            );
+        } else if !r.config_loaded {
+            let _ = writeln!(
+                o,
+                "  (pass --config to list configured-but-not-running subsystems)"
+            );
+        }
+    }
+    let _ = writeln!(o, "  state dir:   {}", r.state_dir.display());
+
+    // -- Profiles / Tunnels -------------------------------------------------
+    let _ = writeln!(o);
+    let _ = writeln!(o, "Profiles / Tunnels:");
+    match r.snapshot.as_ref().filter(|s| !s.profiles.is_empty()) {
+        None => {
+            let _ = writeln!(o, "  (none reported)");
+        }
+        Some(snap) => {
+            for p in &snap.profiles {
+                let _ = writeln!(o, "  - {} [{}]", p.id, p.state);
+                if let Some(ep) = &p.active_endpoint {
+                    let _ = writeln!(o, "      endpoint:   {ep}");
+                }
+                if detail {
+                    let _ = writeln!(
+                        o,
+                        "      reconnects: {}  failovers: {}",
+                        p.reconnect_count, p.failover_count
+                    );
+                    if let Some(at) = p.last_successful_connection_at {
+                        let _ = writeln!(o, "      last ok:    {}", at.to_rfc3339());
+                    }
+                    if let Some(err) = &p.last_error_category {
+                        let _ = writeln!(o, "      last error: {err}");
+                    }
+                }
+            }
+            let _ = writeln!(
+                o,
+                "  totals: bytes in {} / out {}, reconnects {}, failovers {}",
+                snap.counters.bytes_in,
+                snap.counters.bytes_out,
+                snap.counters.reconnects,
+                snap.counters.failovers
+            );
+        }
+    }
+
+    // -- Forwards -----------------------------------------------------------
+    let _ = writeln!(o);
+    let _ = writeln!(o, "Forwards:");
+    match r.snapshot.as_ref().filter(|s| !s.forwards.is_empty()) {
+        None => {
+            let _ = writeln!(o, "  (none reported)");
+        }
+        Some(snap) => {
+            for f in &snap.forwards {
+                let listener = f.local_addr.as_deref().unwrap_or("?");
+                let target = f.remote_addr.as_deref().unwrap_or("?");
+                let _ = writeln!(o, "  - {} [{}] {} -> {}", f.id, f.state, listener, target);
+                if detail {
+                    let _ = writeln!(
+                        o,
+                        "      {} / {}  conns {}  in {} out {}",
+                        f.direction, f.transport, f.current_connections, f.bytes_in, f.bytes_out
+                    );
+                }
+            }
+        }
+    }
+
+    // -- Subsystems ---------------------------------------------------------
+    let _ = writeln!(o);
+    let _ = writeln!(o, "Subsystems:");
+    match r.runtime.as_ref().map(|rs| &rs.subsystems) {
+        None => {
+            let _ = writeln!(o, "  (unknown — daemon not running)");
+        }
+        Some(sub) => {
+            match &sub.status_api {
+                Some(s) => {
+                    let _ = writeln!(
+                        o,
+                        "  status API:    {} {}",
+                        if s.enabled { "on" } else { "off" },
+                        s.bind.as_deref().unwrap_or("-")
+                    );
+                    if detail {
+                        let _ = writeln!(
+                            o,
+                            "      auth: {}  tls: {}",
+                            s.auth_mode.as_deref().unwrap_or("-"),
+                            s.tls
+                        );
+                    }
+                }
+                None => {
+                    let _ = writeln!(o, "  status API:    off");
+                }
+            }
+            match &sub.mcp {
+                Some(m) => {
+                    let _ = writeln!(o, "  MCP loopback:  {}", m.bind.as_deref().unwrap_or("-"));
+                }
+                None => {
+                    let _ = writeln!(o, "  MCP loopback:  off");
+                }
+            }
+            match &sub.dns {
+                Some(d) => {
+                    let _ = writeln!(
+                        o,
+                        "  DNS:           {} (mode {})",
+                        d.bind.as_deref().unwrap_or("-"),
+                        d.mode.as_deref().unwrap_or("-")
+                    );
+                }
+                None => {
+                    let _ = writeln!(o, "  DNS:           off");
+                }
+            }
+            match &sub.metrics {
+                Some(m) => {
+                    let _ = writeln!(o, "  Metrics:       {}", m.path.as_deref().unwrap_or("-"));
+                }
+                None => {
+                    let _ = writeln!(o, "  Metrics:       off");
+                }
+            }
+            match &sub.remote_config_poller {
+                Some(rc) if rc.enabled => {
+                    let _ = writeln!(
+                        o,
+                        "  Remote config: on (every {}s)",
+                        rc.interval_secs.unwrap_or(0)
+                    );
+                }
+                _ => {
+                    let _ = writeln!(o, "  Remote config: off");
+                }
+            }
+            match &sub.events {
+                Some(e) => {
+                    let _ = writeln!(o, "  Events:        {} sink(s)", e.sink_count);
+                    if detail && !e.kinds.is_empty() {
+                        let _ = writeln!(o, "      kinds: {}", e.kinds.join(", "));
+                    }
+                }
+                None => {
+                    let _ = writeln!(o, "  Events:        off");
+                }
+            }
+        }
+    }
+
+    // -- Services -----------------------------------------------------------
+    let _ = writeln!(o);
+    let _ = writeln!(o, "Services:");
+    let _ = writeln!(o, "  OS service state: see `spt service status`");
+
+    o
+}
+
+/// Format a `chrono::Duration` uptime compactly (e.g. `3d 4h 5m 6s`).
+fn fmt_uptime(d: chrono::Duration) -> String {
+    let secs = d.num_seconds().max(0);
+    let days = secs / 86_400;
+    let hours = (secs % 86_400) / 3600;
+    let mins = (secs % 3600) / 60;
+    let s = secs % 60;
+    if days > 0 {
+        format!("{days}d {hours}h {mins}m {s}s")
+    } else if hours > 0 {
+        format!("{hours}h {mins}m {s}s")
+    } else if mins > 0 {
+        format!("{mins}m {s}s")
+    } else {
+        format!("{s}s")
+    }
+}
+
+/// Resolve the overview output format honoring the command-local `--output` /
+/// `--json` overrides over the global ones.
+fn overview_format(global: &GlobalOpts, cmd: &StatusCmd) -> OutputFormat {
+    if cmd.json || global.json {
+        OutputFormat::Json
+    } else if let Some(o) = cmd.output {
+        o
+    } else {
+        global.output
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -309,4 +753,142 @@ fn require_config(global: &GlobalOpts) -> Result<PathBuf> {
         .config
         .clone()
         .ok_or_else(|| Error::InvalidArgs("--config required".into()))
+}
+
+#[cfg(test)]
+mod overview_tests {
+    use super::*;
+    use spt_cli::{ColorMode, LogLevel};
+
+    fn global(state_dir: PathBuf) -> GlobalOpts {
+        GlobalOpts {
+            config: None,
+            config_dir: None,
+            config_url: None,
+            config_fingerprint: None,
+            state_dir: Some(state_dir),
+            profile: None,
+            portable: false,
+            output: OutputFormat::Human,
+            json: false,
+            log_level: LogLevel::Error,
+            color: ColorMode::Never,
+            quiet: true,
+            verbose: 0,
+            no_color: true,
+            dry_run: false,
+        }
+    }
+
+    fn live_runtime(td: &std::path::Path) -> spt_state::RuntimeStatus {
+        spt_state::RuntimeStatus::default()
+            .with_identity(
+                std::process::id(),
+                "9.9.9",
+                chrono::Utc::now(),
+                "/etc/spt/spt.toml",
+                td.display().to_string(),
+            )
+            .with_status_api(spt_state::StatusApiStatus {
+                enabled: true,
+                bind: Some("127.0.0.1:7878".into()),
+                auth_mode: Some("bearer".into()),
+                tls: true,
+            })
+            .with_metrics(spt_state::MetricsStatus {
+                path: Some("metrics.prom".into()),
+            })
+            .with_events(spt_state::EventsStatus {
+                sink_count: 2,
+                kinds: vec!["email".into(), "http".into()],
+            })
+    }
+
+    #[test]
+    fn runtime_status_round_trips_through_write_read() {
+        let td = tempfile::tempdir().unwrap();
+        let rs = live_runtime(td.path());
+        spt_state::write_runtime(td.path(), &rs).unwrap();
+        let back = spt_state::read_runtime(td.path()).unwrap().unwrap();
+        // `written_at` is stamped by the writer; everything else must match.
+        assert_eq!(back.pid(), rs.pid());
+        assert_eq!(back.version, "9.9.9");
+        assert_eq!(
+            back.subsystems.status_api.unwrap().bind.as_deref(),
+            Some("127.0.0.1:7878")
+        );
+        assert!(back.written_at.is_some());
+    }
+
+    #[test]
+    fn reports_not_running_with_no_runtime_json() {
+        let td = tempfile::tempdir().unwrap();
+        let g = global(td.path().to_path_buf());
+        let report = build_report(&g).unwrap();
+        assert_eq!(report.liveness, Liveness::NotRunning);
+        let human = render_human(&report, false);
+        assert!(human.contains("NOT RUNNING"), "got:\n{human}");
+        // JSON form must still be valid and mark the daemon not live.
+        let v = report.to_json();
+        assert_eq!(v["daemon"]["live"], serde_json::json!(false));
+        assert_eq!(v["daemon"]["state"], serde_json::json!("not_running"));
+    }
+
+    #[test]
+    fn reports_running_with_populated_runtime_and_live_pid() {
+        let td = tempfile::tempdir().unwrap();
+        // Use the current process pid so the liveness probe passes.
+        let rs = live_runtime(td.path());
+        spt_state::write_runtime(td.path(), &rs).unwrap();
+        let g = global(td.path().to_path_buf());
+        let report = build_report(&g).unwrap();
+        assert_eq!(report.liveness, Liveness::Running);
+        assert!(report.liveness.is_live());
+        let human = render_human(&report, true);
+        assert!(human.contains("RUNNING"), "got:\n{human}");
+        assert!(human.contains("status API"));
+        assert!(human.contains("127.0.0.1:7878"));
+    }
+
+    #[test]
+    fn json_overview_emits_valid_structure() {
+        let td = tempfile::tempdir().unwrap();
+        let rs = live_runtime(td.path());
+        spt_state::write_runtime(td.path(), &rs).unwrap();
+        let g = global(td.path().to_path_buf());
+        let report = build_report(&g).unwrap();
+        let v = report.to_json();
+        // Re-serialize to confirm it is valid JSON and carries the daemon +
+        // subsystems sections.
+        let s = serde_json::to_string(&v).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&s).unwrap();
+        assert_eq!(parsed["daemon"]["live"], serde_json::json!(true));
+        assert_eq!(
+            parsed["daemon"]["pid"],
+            serde_json::json!(std::process::id())
+        );
+        assert!(parsed["subsystems"]["status_api"].is_object());
+        assert_eq!(
+            parsed["subsystems"]["events"]["sink_count"],
+            serde_json::json!(2)
+        );
+    }
+
+    #[test]
+    fn dead_pid_reports_not_running() {
+        let td = tempfile::tempdir().unwrap();
+        // pid 0 is never alive (pid_is_alive special-cases it false).
+        let rs = spt_state::RuntimeStatus::default().with_identity(
+            0,
+            "1.0.0",
+            chrono::Utc::now(),
+            "/c.toml",
+            td.path().display().to_string(),
+        );
+        spt_state::write_runtime(td.path(), &rs).unwrap();
+        let g = global(td.path().to_path_buf());
+        let report = build_report(&g).unwrap();
+        assert_eq!(report.liveness, Liveness::Dead);
+        assert!(!report.liveness.is_live());
+    }
 }

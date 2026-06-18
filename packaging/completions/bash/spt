@@ -88,6 +88,9 @@ _spt() {
             spt,status)
                 cmd="spt__subcmd__status"
                 ;;
+            spt,status-api)
+                cmd="spt__subcmd__status__subcmd__api"
+                ;;
             spt,tunnel)
                 cmd="spt__subcmd__tunnel"
                 ;;
@@ -892,6 +895,9 @@ _spt() {
             spt__subcmd__help,status)
                 cmd="spt__subcmd__help__subcmd__status"
                 ;;
+            spt__subcmd__help,status-api)
+                cmd="spt__subcmd__help__subcmd__status__subcmd__api"
+                ;;
             spt__subcmd__help,tunnel)
                 cmd="spt__subcmd__help__subcmd__tunnel"
                 ;;
@@ -1432,17 +1438,17 @@ _spt() {
             spt__subcmd__help__subcmd__stats,throughput)
                 cmd="spt__subcmd__help__subcmd__stats__subcmd__throughput"
                 ;;
-            spt__subcmd__help__subcmd__status,serve)
-                cmd="spt__subcmd__help__subcmd__status__subcmd__serve"
+            spt__subcmd__help__subcmd__status__subcmd__api,serve)
+                cmd="spt__subcmd__help__subcmd__status__subcmd__api__subcmd__serve"
                 ;;
-            spt__subcmd__help__subcmd__status,status)
-                cmd="spt__subcmd__help__subcmd__status__subcmd__status"
+            spt__subcmd__help__subcmd__status__subcmd__api,show)
+                cmd="spt__subcmd__help__subcmd__status__subcmd__api__subcmd__show"
                 ;;
-            spt__subcmd__help__subcmd__status,token)
-                cmd="spt__subcmd__help__subcmd__status__subcmd__token"
+            spt__subcmd__help__subcmd__status__subcmd__api,token)
+                cmd="spt__subcmd__help__subcmd__status__subcmd__api__subcmd__token"
                 ;;
-            spt__subcmd__help__subcmd__status__subcmd__token,rotate)
-                cmd="spt__subcmd__help__subcmd__status__subcmd__token__subcmd__rotate"
+            spt__subcmd__help__subcmd__status__subcmd__api__subcmd__token,rotate)
+                cmd="spt__subcmd__help__subcmd__status__subcmd__api__subcmd__token__subcmd__rotate"
                 ;;
             spt__subcmd__help__subcmd__tunnel,failover)
                 cmd="spt__subcmd__help__subcmd__tunnel__subcmd__failover"
@@ -2182,44 +2188,44 @@ _spt() {
             spt__subcmd__stats__subcmd__help,throughput)
                 cmd="spt__subcmd__stats__subcmd__help__subcmd__throughput"
                 ;;
-            spt__subcmd__status,help)
-                cmd="spt__subcmd__status__subcmd__help"
+            spt__subcmd__status__subcmd__api,help)
+                cmd="spt__subcmd__status__subcmd__api__subcmd__help"
                 ;;
-            spt__subcmd__status,serve)
-                cmd="spt__subcmd__status__subcmd__serve"
+            spt__subcmd__status__subcmd__api,serve)
+                cmd="spt__subcmd__status__subcmd__api__subcmd__serve"
                 ;;
-            spt__subcmd__status,status)
-                cmd="spt__subcmd__status__subcmd__status"
+            spt__subcmd__status__subcmd__api,show)
+                cmd="spt__subcmd__status__subcmd__api__subcmd__show"
                 ;;
-            spt__subcmd__status,token)
-                cmd="spt__subcmd__status__subcmd__token"
+            spt__subcmd__status__subcmd__api,token)
+                cmd="spt__subcmd__status__subcmd__api__subcmd__token"
                 ;;
-            spt__subcmd__status__subcmd__help,help)
-                cmd="spt__subcmd__status__subcmd__help__subcmd__help"
+            spt__subcmd__status__subcmd__api__subcmd__help,help)
+                cmd="spt__subcmd__status__subcmd__api__subcmd__help__subcmd__help"
                 ;;
-            spt__subcmd__status__subcmd__help,serve)
-                cmd="spt__subcmd__status__subcmd__help__subcmd__serve"
+            spt__subcmd__status__subcmd__api__subcmd__help,serve)
+                cmd="spt__subcmd__status__subcmd__api__subcmd__help__subcmd__serve"
                 ;;
-            spt__subcmd__status__subcmd__help,status)
-                cmd="spt__subcmd__status__subcmd__help__subcmd__status"
+            spt__subcmd__status__subcmd__api__subcmd__help,show)
+                cmd="spt__subcmd__status__subcmd__api__subcmd__help__subcmd__show"
                 ;;
-            spt__subcmd__status__subcmd__help,token)
-                cmd="spt__subcmd__status__subcmd__help__subcmd__token"
+            spt__subcmd__status__subcmd__api__subcmd__help,token)
+                cmd="spt__subcmd__status__subcmd__api__subcmd__help__subcmd__token"
                 ;;
-            spt__subcmd__status__subcmd__help__subcmd__token,rotate)
-                cmd="spt__subcmd__status__subcmd__help__subcmd__token__subcmd__rotate"
+            spt__subcmd__status__subcmd__api__subcmd__help__subcmd__token,rotate)
+                cmd="spt__subcmd__status__subcmd__api__subcmd__help__subcmd__token__subcmd__rotate"
                 ;;
-            spt__subcmd__status__subcmd__token,help)
-                cmd="spt__subcmd__status__subcmd__token__subcmd__help"
+            spt__subcmd__status__subcmd__api__subcmd__token,help)
+                cmd="spt__subcmd__status__subcmd__api__subcmd__token__subcmd__help"
                 ;;
-            spt__subcmd__status__subcmd__token,rotate)
-                cmd="spt__subcmd__status__subcmd__token__subcmd__rotate"
+            spt__subcmd__status__subcmd__api__subcmd__token,rotate)
+                cmd="spt__subcmd__status__subcmd__api__subcmd__token__subcmd__rotate"
                 ;;
-            spt__subcmd__status__subcmd__token__subcmd__help,help)
-                cmd="spt__subcmd__status__subcmd__token__subcmd__help__subcmd__help"
+            spt__subcmd__status__subcmd__api__subcmd__token__subcmd__help,help)
+                cmd="spt__subcmd__status__subcmd__api__subcmd__token__subcmd__help__subcmd__help"
                 ;;
-            spt__subcmd__status__subcmd__token__subcmd__help,rotate)
-                cmd="spt__subcmd__status__subcmd__token__subcmd__help__subcmd__rotate"
+            spt__subcmd__status__subcmd__api__subcmd__token__subcmd__help,rotate)
+                cmd="spt__subcmd__status__subcmd__api__subcmd__token__subcmd__help__subcmd__rotate"
                 ;;
             spt__subcmd__tunnel,failover)
                 cmd="spt__subcmd__tunnel__subcmd__failover"
@@ -2324,7 +2330,7 @@ _spt() {
 
     case "${cmd}" in
         spt)
-            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status completion about kill update help"
+            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status status-api completion about kill update help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 1 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -9976,7 +9982,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__help)
-            opts="config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status completion about kill update help"
+            opts="config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status status-api completion about kill update help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -12804,7 +12810,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__help__subcmd__status)
-            opts="serve status token"
+            opts=""
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -12817,7 +12823,21 @@ _spt() {
             COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
             return 0
             ;;
-        spt__subcmd__help__subcmd__status__subcmd__serve)
+        spt__subcmd__help__subcmd__status__subcmd__api)
+            opts="serve show token"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        spt__subcmd__help__subcmd__status__subcmd__api__subcmd__serve)
             opts=""
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
@@ -12831,7 +12851,7 @@ _spt() {
             COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
             return 0
             ;;
-        spt__subcmd__help__subcmd__status__subcmd__status)
+        spt__subcmd__help__subcmd__status__subcmd__api__subcmd__show)
             opts=""
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
@@ -12845,7 +12865,7 @@ _spt() {
             COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
             return 0
             ;;
-        spt__subcmd__help__subcmd__status__subcmd__token)
+        spt__subcmd__help__subcmd__status__subcmd__api__subcmd__token)
             opts="rotate"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
@@ -12859,7 +12879,7 @@ _spt() {
             COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
             return 0
             ;;
-        spt__subcmd__help__subcmd__status__subcmd__token__subcmd__rotate)
+        spt__subcmd__help__subcmd__status__subcmd__api__subcmd__token__subcmd__rotate)
             opts=""
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 5 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
@@ -20604,7 +20624,57 @@ _spt() {
             return 0
             ;;
         spt__subcmd__status)
-            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version serve status token help"
+            opts="-q -v -h -V --output --json --detail --watch --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                --output)
+                    COMPREPLY=($(compgen -W "human json jsonl yaml" -- "${cur}"))
+                    return 0
+                    ;;
+                --config)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --config-dir)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --config-url)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --config-fingerprint)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --state-dir)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --profile)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --log-level)
+                    COMPREPLY=($(compgen -W "error warn info debug trace" -- "${cur}"))
+                    return 0
+                    ;;
+                --color)
+                    COMPREPLY=($(compgen -W "auto always never" -- "${cur}"))
+                    return 0
+                    ;;
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        spt__subcmd__status__subcmd__api)
+            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version serve show token help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -20653,8 +20723,8 @@ _spt() {
             COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
             return 0
             ;;
-        spt__subcmd__status__subcmd__help)
-            opts="serve status token help"
+        spt__subcmd__status__subcmd__api__subcmd__help)
+            opts="serve show token help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -20667,7 +20737,7 @@ _spt() {
             COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
             return 0
             ;;
-        spt__subcmd__status__subcmd__help__subcmd__help)
+        spt__subcmd__status__subcmd__api__subcmd__help__subcmd__help)
             opts=""
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
@@ -20681,7 +20751,7 @@ _spt() {
             COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
             return 0
             ;;
-        spt__subcmd__status__subcmd__help__subcmd__serve)
+        spt__subcmd__status__subcmd__api__subcmd__help__subcmd__serve)
             opts=""
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
@@ -20695,7 +20765,7 @@ _spt() {
             COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
             return 0
             ;;
-        spt__subcmd__status__subcmd__help__subcmd__status)
+        spt__subcmd__status__subcmd__api__subcmd__help__subcmd__show)
             opts=""
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
@@ -20709,7 +20779,7 @@ _spt() {
             COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
             return 0
             ;;
-        spt__subcmd__status__subcmd__help__subcmd__token)
+        spt__subcmd__status__subcmd__api__subcmd__help__subcmd__token)
             opts="rotate"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
@@ -20723,7 +20793,7 @@ _spt() {
             COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
             return 0
             ;;
-        spt__subcmd__status__subcmd__help__subcmd__token__subcmd__rotate)
+        spt__subcmd__status__subcmd__api__subcmd__help__subcmd__token__subcmd__rotate)
             opts=""
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 5 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
@@ -20737,7 +20807,7 @@ _spt() {
             COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
             return 0
             ;;
-        spt__subcmd__status__subcmd__serve)
+        spt__subcmd__status__subcmd__api__subcmd__serve)
             opts="-q -v -h -V --config --bind --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
@@ -20791,7 +20861,7 @@ _spt() {
             COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
             return 0
             ;;
-        spt__subcmd__status__subcmd__status)
+        spt__subcmd__status__subcmd__api__subcmd__show)
             opts="-q -v -h -V --detail --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
@@ -20841,7 +20911,7 @@ _spt() {
             COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
             return 0
             ;;
-        spt__subcmd__status__subcmd__token)
+        spt__subcmd__status__subcmd__api__subcmd__token)
             opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version rotate help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
@@ -20891,7 +20961,7 @@ _spt() {
             COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
             return 0
             ;;
-        spt__subcmd__status__subcmd__token__subcmd__help)
+        spt__subcmd__status__subcmd__api__subcmd__token__subcmd__help)
             opts="rotate help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
@@ -20905,7 +20975,7 @@ _spt() {
             COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
             return 0
             ;;
-        spt__subcmd__status__subcmd__token__subcmd__help__subcmd__help)
+        spt__subcmd__status__subcmd__api__subcmd__token__subcmd__help__subcmd__help)
             opts=""
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 5 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
@@ -20919,7 +20989,7 @@ _spt() {
             COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
             return 0
             ;;
-        spt__subcmd__status__subcmd__token__subcmd__help__subcmd__rotate)
+        spt__subcmd__status__subcmd__api__subcmd__token__subcmd__help__subcmd__rotate)
             opts=""
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 5 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
@@ -20933,7 +21003,7 @@ _spt() {
             COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
             return 0
             ;;
-        spt__subcmd__status__subcmd__token__subcmd__rotate)
+        spt__subcmd__status__subcmd__api__subcmd__token__subcmd__rotate)
             opts="-q -v -h -V --print-token --bytes --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )

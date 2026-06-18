@@ -2,10 +2,16 @@
 source: crates/spt-cli/tests/help_snapshots.rs
 expression: out
 ---
-Show overall app status — daemon, tunnels/profiles, forwards, and subsystems (status API, MCP, DNS,
-metrics, remote-config, events, services)
+Controls for the read-only HTTP status API
 
-Usage: spt status [OPTIONS]
+Usage: spt status-api [OPTIONS] <COMMAND>
+
+Commands:
+  serve  Run the status API server in foreground (rare — supervisor normally hosts inline when
+         `[status_api].enabled = true`)
+  show   Show whether the API is bound + how to reach it
+  token  Bearer-token management for the status API auth
+  help   Print this message or the help of the given subcommand(s)
 
 Options:
       --config <PATH>
@@ -13,35 +19,16 @@ Options:
           
           [env: SPT_CONFIG=]
 
-      --output <FORMAT>
-          Output format for the overview (overrides the global `--output`)
-
-          Possible values:
-          - human: Human-readable text (default)
-          - json:  Structured JSON
-          - jsonl: JSON Lines (one record per line)
-          - yaml:  YAML
-
       --config-dir <PATH>
           Path to a directory of `*.toml` configs (loaded in lexical order)
-
-      --json
-          Convenience alias for `--output json` (machine-readable overview)
 
       --config-url <URL>
           HTTPS URL of a remote config to fetch
           
           [env: SPT_CONFIG_URL=]
 
-      --detail
-          Show verbose per-component state (resolved bind addresses, auth modes, last-error detail,
-          per-forward counters) instead of the compact roll-up
-
       --config-fingerprint <SHA256>
           SHA-256 fingerprint pin for `--config-url`
-
-      --watch
-          Continuously refresh the overview in place instead of printing once
 
       --state-dir <PATH>
           Override the runtime state directory
@@ -58,6 +45,20 @@ Options:
 
       --profile <NAME>
           Restrict operations to the named profile
+
+      --output <OUTPUT>
+          Output format for command results
+
+          Possible values:
+          - human: Human-readable text (default)
+          - json:  Structured JSON
+          - jsonl: JSON Lines (one record per line)
+          - yaml:  YAML
+          
+          [default: human]
+
+      --json
+          Convenience alias for `--output json`
 
       --log-level <LOG_LEVEL>
           Tracing log level
@@ -100,8 +101,7 @@ Options:
           Print version
 
 EXAMPLES:
-  spt status
-  spt status --detail
-  spt status --json
-  spt status --output yaml
-  spt status --watch
+  spt status-api show
+  spt status-api show --output json
+  spt status-api serve --config /etc/spt/spt.toml
+  spt status-api token rotate

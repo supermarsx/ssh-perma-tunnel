@@ -1,6 +1,6 @@
 # CLI Reference
 
-`spt` is structured as a Docker-style command tree with 25 top-level groups.
+`spt` is structured as a Docker-style command tree with 26 top-level groups.
 The canonical flag listing is generated from the Clap command tree and is
 available through:
 
@@ -53,7 +53,8 @@ surfaces, completion support, and exit-code contract.
 | `diagnose` | `run`, `network`, `auth`, `trust`, `dns`, `bind`, `port`, `service`, `secrets`, `observability`, `mcp`, `bundle` |
 | `benchmark` | `run`, `latency`, `throughput`, `udp`, `reconnect`, `dns`, `limits`, `report compare`, `report export` |
 | `mcp` | `serve`, `inspect`, `policy show`, `policy set` |
-| `status` | `serve`, `status`, `token rotate` |
+| `status` | (no subcommands) — show overall app status: daemon, tunnels, forwards, subsystems, services |
+| `status-api` | `serve`, `show`, `token rotate` — controls for the read-only HTTP status API |
 | `completion` | `generate bash`, `generate zsh`, `generate fish`, `generate powershell`, `generate elvish` |
 | `about` | (overview), `list`, `show <crate>`, `licenses`, `export <path>` |
 | `kill` | (no subcommands) — terminate every running spt instance on this host |
@@ -135,6 +136,54 @@ false` for private mirrors that don't replay signatures.
 
 See [`docs/updater.md`](updater.md) for the full schedule grammar, source-
 backend matrix, and operational details.
+
+### `status` — app-status overview
+
+> **Breaking rename (26.x):** `spt status` no longer controls the HTTP status
+> API. It is now a read-only **app-status overview**. The former server
+> controls moved to [`spt status-api`](#status-api--read-only-http-status-api-controls)
+> (`spt status serve|status|token` → `spt status-api serve|show|token`). Scripts
+> that called the old subcommands must be updated.
+
+`spt status` (no subcommands) prints a single overview of the local daemon and
+everything it is running. It is purely read-only: it reads
+`<state_dir>/runtime.json` (written by a running daemon), the `status.json`
+snapshot, and — when reachable — the loaded config. No subsystem is contacted
+over the network and nothing is mutated.
+
+Liveness is reported as **RUNNING** only when `runtime.json` is present, its
+recorded PID is alive, and the snapshot is not stale; otherwise the state is
+reported as not-running, dead (PID gone), or stale. When the daemon is not
+running but a `--config` is supplied, configured-but-inactive subsystems are
+listed from the config.
+
+| Flag | Notes |
+|------|-------|
+| `--detail` | Verbose per-component fields (per-forward direction/transport/conns/bytes, full subsystem detail). Default output is concise. |
+| `--output FORMAT` | Local override of the global `--output`; emits the combined machine structure as `json`/`yaml`. |
+| `--json` | Convenience alias for `--output json` (local; shadows the global `--json`). |
+| `--watch` | Human-only live view: clears and reprints the overview roughly every 2s until `Ctrl-C`. Rejected with `InvalidArgs` when combined with a machine output format. |
+
+Sections shown:
+
+- **Daemon** — PID, version, uptime (from `started_at`), resolved config path, state directory.
+- **Profiles / Tunnels** — per-tunnel state, endpoint, reconnect/failover counts, and byte totals.
+- **Forwards** — per-forward state and listener→target; direction, transport, connection count, and byte counters under `--detail`.
+- **Subsystems** — status API (bind, auth mode, TLS), MCP (bind), DNS (bind, mode), metrics (file path), remote-config poller (enabled + interval), and events (sink count + kinds).
+- **Services** — a brief pointer line (`see spt service status`).
+
+### `status-api` — read-only HTTP status API controls
+
+`spt status-api` is the group that controls the read-only HTTP status API
+server. It is the renamed-and-cleaned successor to the old `spt status` group;
+in particular the awkward `spt status status` inspection command is now
+`spt status-api show`.
+
+| Command | Behavior |
+|---------|----------|
+| `spt status-api serve [--config PATH] [--bind ADDR]` | Run the read-only HTTP status API server. Formerly `spt status serve`. |
+| `spt status-api show [--detail]` | Show the current status-API server configuration/state. Formerly `spt status status`. |
+| `spt status-api token rotate [--print-token] [--bytes N]` | Rotate the status-API bearer token (default 32 bytes). Formerly `spt status token rotate`. |
 
 ## Capability Notes
 
@@ -268,6 +317,7 @@ Committed man pages live under `packaging/man/`:
 - `spt-sftp.1`
 - `spt-stats.1`
 - `spt-status.1`
+- `spt-status-api.1`
 - `spt-tunnel.1`
 
 Regenerate them after CLI changes with:
