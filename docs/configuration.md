@@ -68,7 +68,8 @@ journald, the Windows Event Log) are touched.
     [observability.metrics]   # Prometheus exporter
     [observability.snmp]      # SNMPv3 agent + traps (feature-gated)
     [observability.windows_event] # Windows Event Log integration
-    [events]                  # bindings + sinks
+    [events]                  # bus/dispatcher/spool scalars + bindings + sinks
+    [mem_hygiene]             # opt-in runtime memory-growth monitor (off by default)
     [mcp]                     # Model Context Protocol server
     [diagnostics]             # `spt diagnose` defaults
     [benchmark]               # `spt benchmark` defaults
@@ -173,6 +174,38 @@ an operator-owned IANA Private Enterprise Number:
     version = "v3"
     bind = "127.0.0.1:10161"
     enterprise_id = 12345 # replace with your registered PEN
+
+## `[events]`
+
+Bus, dispatcher, and spool scalars plus bindings and sinks. All scalars are
+optional and TUI-editable; full reference (including per-binding
+`dedupe { key, window }` and the `memory.leak_suspected` kind) is in
+[Events](events.md).
+
+    [events]
+    ring_capacity     = 1024          # event-bus ring buffer (> 0); default 1024
+    retry_interval    = "30s"         # dispatcher retry cadence; default 30s
+    spool_dir         = "event-spool" # spool root; default <state_dir>/events
+    spool_max_bytes   = "64MiB"       # spool size cap (bytesize)
+    default_min_level = "info"        # severity floor for bindings without their own min_level
+
+## `[mem_hygiene]`
+
+Opt-in runtime memory-growth monitor. **Off by default** — omit the block (or
+set `enabled = false`) and the supervisor never spawns the sampler. When
+enabled it samples process RSS on `interval` and emits a `memory.leak_suspected`
+event (severity `warn`) when a sliding-window heuristic detects sustained
+growth. It is a heuristic suspicion signal, not a definitive leak detector.
+Full reference (heuristic, event fields, routing, `spt status` block) in
+[Memory Hygiene](mem-hygiene.md).
+
+    [mem_hygiene]
+    enabled             = true       # default: false
+    interval            = "60s"      # sampling cadence
+    window_samples      = 30         # sliding-window length
+    growth_threshold    = "64MiB"    # absolute net-growth floor
+    growth_rate_per_min = "2MiB"     # minimum average growth rate per minute
+    min_rising_fraction = 0.8        # fraction of adjacent pairs that must rise, in (0, 1]
 
 ## `[dns]`
 

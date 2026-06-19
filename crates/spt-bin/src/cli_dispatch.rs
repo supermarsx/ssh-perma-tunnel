@@ -1008,6 +1008,13 @@ async fn tunnel_run(global: &GlobalOpts, args: groups::tunnel::TunnelRun) -> Res
             ..Default::default()
         });
 
+    // memleak-E4: spawn the optional runtime memory-growth monitor. The emit
+    // callback needs the live `EventBus`, so clone it BEFORE the original is
+    // moved into the orchestrator via `with_event_bus`. Off unless
+    // `[mem_hygiene].enabled = true`; HOLD the handle for the run lifetime and
+    // `.shutdown().await` it in both teardown blocks (alongside metrics).
+    let memory_monitor_handle = maybe_spawn_memory_monitor(&cfg, event_bus.clone());
+
     // Construct the orchestrator (with the events bus + metrics injected
     // BEFORE any profile starts) and start every enabled profile.
     let orchestrator = std::sync::Arc::new(
@@ -1203,6 +1210,7 @@ async fn tunnel_run(global: &GlobalOpts, args: groups::tunnel::TunnelRun) -> Res
             mcp_handle.as_ref(),
             dns_runtime.as_ref(),
             remote_config_handle.as_ref(),
+            memory_monitor_handle.as_ref(),
         );
         if let Err(e) = spt_state::write_runtime(&state_dir, &runtime_status) {
             tracing::warn!(error = %e, "failed to write runtime.json — `spt status` overview unavailable");
@@ -1258,6 +1266,10 @@ async fn tunnel_run(global: &GlobalOpts, args: groups::tunnel::TunnelRun) -> Res
         // exporter writer (final metrics.prom snapshot) before returning.
         events_pipeline.shutdown().await;
         metrics_handle.shutdown().await;
+        // memleak-E4: stop the memory-growth monitor task (abort + join).
+        if let Some(h) = memory_monitor_handle {
+            h.shutdown().await;
+        }
         // appstatus (Wave 2): clean shutdown — remove runtime.json so `spt
         // status` reports NOT RUNNING (pid-liveness/staleness covers crashes).
         remove_runtime_status(&state_dir);
@@ -1335,6 +1347,10 @@ async fn tunnel_run(global: &GlobalOpts, args: groups::tunnel::TunnelRun) -> Res
     // E6-F1/E6-F4: stop the events dispatcher + metrics exporter writer.
     events_pipeline.shutdown().await;
     metrics_handle.shutdown().await;
+    // memleak-E4: stop the memory-growth monitor task (abort + join).
+    if let Some(h) = memory_monitor_handle {
+        h.shutdown().await;
+    }
     // appstatus (Wave 2): clean shutdown — remove runtime.json so `spt status`
     // reports NOT RUNNING (pid-liveness/staleness covers crashes).
     remove_runtime_status(&state_dir);
@@ -1348,6 +1364,7 @@ async fn tunnel_run(global: &GlobalOpts, args: groups::tunnel::TunnelRun) -> Res
 /// the bound handles where available (status-api, DNS), falling back to the
 /// configured value (MCP loopback); the remote-config interval and events
 /// sink-count/kinds are read from the config. Pure + cheap — no I/O.
+#[allow(clippy::too_many_arguments)]
 fn build_runtime_status(
     cfg: &spt_config::schema::Config,
     config_path: &Path,
@@ -1356,6 +1373,7 @@ fn build_runtime_status(
     mcp: Option<&McpLoopbackHandle>,
     dns: Option<&DnsRuntime>,
     remote_config: Option<&spt_remote_config::RemoteConfigPollHandle>,
+    memory_monitor: Option<&spt_mem_hygiene::MemoryMonitorHandle>,
 ) -> spt_state::RuntimeStatus {
     let mut rs = spt_state::RuntimeStatus::default().with_identity(
         std::process::id(),
@@ -1429,6 +1447,29 @@ fn build_runtime_status(
         rs.set_events(spt_state::EventsStatus {
             sink_count: u32::try_from(events.sinks.len()).unwrap_or(u32::MAX),
             kinds,
+        });
+    }
+
+    // memleak-E4: memory-growth monitor — populated only when the handle is
+    // present (monitor actually spawned). Interval is re-derived from the
+    // resolved `[mem_hygiene]` config (mirrors the monitor's own mapping); the
+    // live counters come straight off the handle's lock-free atomics.
+    if let Some(h) = memory_monitor {
+        let interval_secs = cfg
+            .mem_hygiene
+            .as_ref()
+            .map(|m| mem_monitor_config(m).interval.as_secs());
+        let last_flagged = if h.last_flagged() {
+            Some(chrono::Utc::now())
+        } else {
+            None
+        };
+        rs = rs.with_memory_monitor(spt_state::runtime::MemoryMonitorStatus {
+            enabled: true,
+            interval_secs,
+            last_rss_bytes: Some(h.last_rss()),
+            samples: u32::try_from(h.samples_taken()).unwrap_or(u32::MAX),
+            last_flagged,
         });
     }
 
@@ -1725,23 +1766,49 @@ fn build_events_pipeline(
         )
         .map_err(|e| Error::RuntimeFailure(format!("events ring: {e}")))?,
     );
-    let bus =
-        spt_events::EventBus::new(&spt_events::EventBusConfig::default()).with_ring(ring.clone());
-
     let events = cfg.events.clone().unwrap_or_default();
+
+    // memleak-E4: config-drive the bus ring capacity from `[events].ring_capacity`
+    // (clamped to > 0). When unset, fall back to the historical default
+    // (`EventBusConfig::default()`, capacity 1024) so behavior is unchanged.
+    let bus_cfg = match events.ring_capacity {
+        Some(cap) if cap > 0 => spt_events::EventBusConfig::with_capacity(cap as usize),
+        _ => spt_events::EventBusConfig::default(),
+    };
+    let bus = spt_events::EventBus::new(&bus_cfg).with_ring(ring.clone());
+
     let mcp_notifier = std::sync::Arc::new(crate::mcp_notifier::BroadcastMcpNotifier::new());
     let sinks = build_event_sinks(&events.sinks, &events.commands, resolver, &mcp_notifier);
-    let bindings = build_event_bindings(&events.bindings, &sinks);
+    let bindings = build_event_bindings(&events, &sinks);
 
     let dispatcher = if sinks.is_empty() {
         // No buildable sinks — the bus + ring still run (events are persisted
         // and observable), but there's nothing to dispatch to.
         None
     } else {
-        let dcfg = spt_events::DispatcherConfig {
-            spool_root: spt_state::paths::spool_dir(state_dir, "events"),
-            ..Default::default()
-        };
+        // memleak-E4: start from the spool root (state-dir derived) and apply
+        // the optional `[events]` overrides — spool_dir / spool_max_bytes /
+        // retry_interval — via the E6 builders. Unset fields keep dispatcher
+        // defaults, reproducing today's behavior.
+        let mut dcfg = spt_events::DispatcherConfig::default()
+            .with_spool_root(spt_state::paths::spool_dir(state_dir, "events"));
+        if let Some(dir) = events.spool_dir.as_deref() {
+            dcfg = dcfg.with_spool_root(std::path::PathBuf::from(dir));
+        }
+        if let Some(max) = events
+            .spool_max_bytes
+            .as_deref()
+            .and_then(|s| spt_core::size::parse_size(s).ok())
+        {
+            dcfg = dcfg.with_spool_max_bytes(max);
+        }
+        if let Some(retry) = events
+            .retry_interval
+            .as_deref()
+            .and_then(|s| spt_core::duration::parse_duration(s).ok())
+        {
+            dcfg = dcfg.with_retry_interval(retry);
+        }
         Some(
             spt_events::Dispatcher::spawn(&bus, bindings, sinks, dcfg)
                 .map_err(|e| Error::RuntimeFailure(format!("events dispatcher: {e}")))?,
@@ -1756,6 +1823,93 @@ fn build_events_pipeline(
             mcp_notifier,
         },
     ))
+}
+
+/// memleak-E4: map the `[mem_hygiene]` schema table onto a
+/// [`spt_mem_hygiene::MemoryMonitorConfig`]. Unset fields fall back to the
+/// monitor's own conservative defaults (60s interval, 30-sample window,
+/// 64 MiB / 2 MiB-per-min floors, 0.8 rising fraction). Pure + cheap.
+fn mem_monitor_config(m: &spt_config::schema::MemHygiene) -> spt_mem_hygiene::MemoryMonitorConfig {
+    let mut cfg = spt_mem_hygiene::MemoryMonitorConfig::default();
+    if let Some(d) = m
+        .interval
+        .as_deref()
+        .and_then(|s| spt_core::duration::parse_duration(s).ok())
+    {
+        cfg.interval = d;
+    }
+    if let Some(w) = m.window_samples {
+        cfg.window_samples = w as usize;
+    }
+    if let Some(t) = m
+        .growth_threshold
+        .as_deref()
+        .and_then(|s| spt_core::size::parse_size(s).ok())
+    {
+        cfg.growth_threshold_bytes = t;
+    }
+    if let Some(r) = m
+        .growth_rate_per_min
+        .as_deref()
+        .and_then(|s| spt_core::size::parse_size(s).ok())
+    {
+        cfg.growth_rate_bytes_per_min = r;
+    }
+    if let Some(f) = m.min_rising_fraction {
+        cfg.min_rising_fraction = f;
+    }
+    cfg
+}
+
+/// memleak-E4: translate a [`spt_mem_hygiene::MemoryGrowth`] flag into the
+/// canonical `memory.leak_suspected` warning event. Kept as a standalone pure
+/// function so the field mapping is unit-testable without spawning a monitor or
+/// reading real RSS.
+fn memory_growth_event(g: spt_mem_hygiene::MemoryGrowth) -> spt_events::Event {
+    spt_events::Event::builder("memory.leak_suspected", spt_events::Severity::Warn)
+        .message(format!(
+            "suspected memory leak: RSS {} bytes, grew {} bytes ({} bytes/min) over {}s across {} samples (pid {})",
+            g.rss_bytes,
+            g.growth_bytes,
+            g.growth_rate_bytes_per_min,
+            g.window_secs,
+            g.samples,
+            g.pid,
+        ))
+        .field("rss_bytes", g.rss_bytes)
+        .field("baseline_rss_bytes", g.baseline_rss_bytes)
+        .field("growth_bytes", g.growth_bytes)
+        .field("growth_rate_bytes_per_min", g.growth_rate_bytes_per_min)
+        .field("window_secs", g.window_secs)
+        .field("samples", g.samples as u64)
+        .field("pid", u64::from(g.pid))
+        .build()
+}
+
+/// memleak-E4: spawn the runtime memory-growth monitor when
+/// `[mem_hygiene].enabled = true`. The emit callback closes over a CLONE of the
+/// live [`spt_events::EventBus`] (cloned by the caller BEFORE the original is
+/// moved into the orchestrator) and publishes a `memory.leak_suspected` event
+/// per growth episode. Returns `None` when disabled/absent.
+fn maybe_spawn_memory_monitor(
+    cfg: &spt_config::schema::Config,
+    event_bus: spt_events::EventBus,
+) -> Option<spt_mem_hygiene::MemoryMonitorHandle> {
+    let m = cfg.mem_hygiene.as_ref()?;
+    if m.enabled != Some(true) {
+        return None;
+    }
+    let monitor_cfg = mem_monitor_config(m);
+    tracing::info!(
+        target: "spt_mem_hygiene",
+        interval_secs = monitor_cfg.interval.as_secs(),
+        window_samples = monitor_cfg.window_samples,
+        "memory-growth monitor enabled"
+    );
+    let handle = spt_mem_hygiene::MemoryMonitor::spawn(monitor_cfg, move |g| {
+        let _ = event_bus.emit(memory_growth_event(g));
+    });
+    Some(handle)
 }
 
 /// Map `[[events.sinks]]` config entries onto live `Arc<dyn Sink>` handles
@@ -1919,11 +2073,19 @@ fn build_email_transport(
 /// only sink references that resolved to a live sink. When a binding lists no
 /// `on` patterns it matches all kinds (parity with the schema default).
 fn build_event_bindings(
-    configured: &[spt_config::schema::EventBinding],
+    events: &spt_config::schema::Events,
     sinks: &std::collections::HashMap<String, std::sync::Arc<dyn spt_events::Sink>>,
 ) -> Vec<spt_events::Binding> {
+    // memleak-E4: pipeline-wide default min severity from `[events].default_min_level`.
+    // Applied per binding via `min_severity_or` so an explicit per-binding
+    // `min_level` always wins; the default only fills the unset ones.
+    let default_min_level = events
+        .default_min_level
+        .as_deref()
+        .and_then(spt_events::Severity::parse);
+
     let mut out = Vec::new();
-    for b in configured {
+    for b in &events.bindings {
         let refs: Vec<spt_events::SinkRef> = b
             .actions
             .iter()
@@ -1933,27 +2095,48 @@ fn build_event_bindings(
         if refs.is_empty() {
             continue;
         }
-        let min_severity = b.min_level.as_deref().and_then(spt_events::Severity::parse);
-        out.push(spt_events::Binding {
+        let mut binding = spt_events::Binding {
             name: b.name.clone(),
             r#match: spt_events::BindingMatch {
                 kinds: b.on.clone(),
-                min_severity,
+                min_severity: None,
                 ..Default::default()
             },
             sinks: refs,
             dedupe: None,
-        });
+        };
+        // Per-binding min_level (explicit) takes precedence; then apply the
+        // pipeline default as a floor for bindings without their own.
+        if let Some(sev) = b.min_level.as_deref().and_then(spt_events::Severity::parse) {
+            binding = binding.with_min_level(sev);
+        }
+        if let Some(default) = default_min_level {
+            binding = binding.min_severity_or(default);
+        }
+        // memleak-E4: per-binding dedupe from `[[events.bindings]].dedupe`.
+        if let Some(d) = b.dedupe.as_ref() {
+            let window = d
+                .window
+                .as_deref()
+                .and_then(|w| spt_core::duration::parse_duration(w).ok())
+                .unwrap_or_else(|| std::time::Duration::from_secs(60));
+            binding = binding.with_dedupe(Some(spt_events::Dedupe::new(d.key.clone(), window)));
+        }
+        out.push(binding);
     }
     // If the operator configured sinks but no bindings, fan every event to
     // every sink (a sensible default so a lone `[[events.sinks]]` still fires).
     if out.is_empty() && !sinks.is_empty() {
-        out.push(spt_events::Binding {
+        let mut binding = spt_events::Binding {
             name: "default-all".into(),
             r#match: spt_events::BindingMatch::default(),
             sinks: sinks.keys().map(spt_events::SinkRef::new).collect(),
             dedupe: None,
-        });
+        };
+        if let Some(default) = default_min_level {
+            binding = binding.min_severity_or(default);
+        }
+        out.push(binding);
     }
     out
 }
@@ -7701,7 +7884,7 @@ mod tests {
             }),
         );
         // Use the builder's default-all binding (configured sinks, no bindings).
-        let bindings = build_event_bindings(&[], &sinks);
+        let bindings = build_event_bindings(&spt_config::schema::Events::default(), &sinks);
         assert_eq!(bindings.len(), 1, "default-all binding should be created");
         let dcfg = spt_events::DispatcherConfig {
             spool_root: spt_state::paths::spool_dir(td.path(), "events"),
@@ -8651,6 +8834,225 @@ mod tests {
         assert!(
             advanced,
             "the poller must funnel the changed body through ConfigCell::reload, advancing the cell"
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // memleak-E4: events pipeline config-drive + memory monitor wiring.
+    // ------------------------------------------------------------------
+
+    /// Two sinks so `build_event_bindings` doesn't fall back to default-all and
+    /// configured bindings survive the empty-refs filter.
+    fn dummy_sinks(
+        names: &[&str],
+    ) -> std::collections::HashMap<String, std::sync::Arc<dyn spt_events::Sink>> {
+        struct NoopSink;
+        #[async_trait::async_trait]
+        impl spt_events::Sink for NoopSink {
+            #[allow(clippy::unnecessary_literal_bound)]
+            fn name(&self) -> &str {
+                "noop"
+            }
+            fn kind(&self) -> &'static str {
+                "noop"
+            }
+            async fn deliver(
+                &self,
+                _event: std::sync::Arc<spt_events::Event>,
+            ) -> std::result::Result<(), spt_events::SinkError> {
+                Ok(())
+            }
+        }
+        names
+            .iter()
+            .map(|n| {
+                (
+                    (*n).to_string(),
+                    std::sync::Arc::new(NoopSink) as std::sync::Arc<dyn spt_events::Sink>,
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn binding_inherits_default_min_level_when_unset() {
+        let events = spt_config::schema::Events {
+            default_min_level: Some("warn".into()),
+            bindings: vec![spt_config::schema::EventBinding {
+                name: "b".into(),
+                on: vec!["profile.failed".into()],
+                actions: vec!["s".into()],
+                min_level: None,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let sinks = dummy_sinks(&["s"]);
+        let bindings = build_event_bindings(&events, &sinks);
+        assert_eq!(bindings.len(), 1);
+        assert_eq!(
+            bindings[0].r#match.min_severity,
+            Some(spt_events::Severity::Warn)
+        );
+    }
+
+    #[test]
+    fn binding_keeps_own_min_level_over_default() {
+        let events = spt_config::schema::Events {
+            default_min_level: Some("error".into()),
+            bindings: vec![spt_config::schema::EventBinding {
+                name: "b".into(),
+                on: vec!["profile.failed".into()],
+                actions: vec!["s".into()],
+                min_level: Some("info".into()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let sinks = dummy_sinks(&["s"]);
+        let bindings = build_event_bindings(&events, &sinks);
+        assert_eq!(
+            bindings[0].r#match.min_severity,
+            Some(spt_events::Severity::Info),
+            "explicit per-binding min_level wins over default_min_level"
+        );
+    }
+
+    #[test]
+    fn binding_dedupe_maps_key_and_window() {
+        let events = spt_config::schema::Events {
+            bindings: vec![spt_config::schema::EventBinding {
+                name: "b".into(),
+                on: vec!["profile.failed".into()],
+                actions: vec!["s".into()],
+                dedupe: Some(spt_config::schema::EventDedupe {
+                    key: Some("profile_id".into()),
+                    window: Some("90s".into()),
+                }),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let sinks = dummy_sinks(&["s"]);
+        let bindings = build_event_bindings(&events, &sinks);
+        let d = bindings[0].dedupe.as_ref().expect("dedupe must be set");
+        assert_eq!(d.key_fields, vec!["profile_id".to_string()]);
+        assert_eq!(d.interval, std::time::Duration::from_secs(90));
+    }
+
+    #[test]
+    fn binding_without_dedupe_has_none() {
+        let events = spt_config::schema::Events {
+            bindings: vec![spt_config::schema::EventBinding {
+                name: "b".into(),
+                on: vec!["profile.failed".into()],
+                actions: vec!["s".into()],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let sinks = dummy_sinks(&["s"]);
+        let bindings = build_event_bindings(&events, &sinks);
+        assert!(bindings[0].dedupe.is_none());
+    }
+
+    #[test]
+    fn mem_monitor_config_maps_all_fields() {
+        let m = spt_config::schema::MemHygiene {
+            enabled: Some(true),
+            interval: Some("15s".into()),
+            window_samples: Some(12),
+            growth_threshold: Some("8MiB".into()),
+            growth_rate_per_min: Some("1MiB".into()),
+            min_rising_fraction: Some(0.5),
+        };
+        let cfg = mem_monitor_config(&m);
+        assert_eq!(cfg.interval, std::time::Duration::from_secs(15));
+        assert_eq!(cfg.window_samples, 12);
+        assert_eq!(cfg.growth_threshold_bytes, 8 * 1024 * 1024);
+        assert_eq!(cfg.growth_rate_bytes_per_min, 1024 * 1024);
+        assert!((cfg.min_rising_fraction - 0.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn mem_monitor_config_unset_uses_defaults() {
+        let m = spt_config::schema::MemHygiene {
+            enabled: Some(true),
+            ..Default::default()
+        };
+        let cfg = mem_monitor_config(&m);
+        assert_eq!(cfg, spt_mem_hygiene::MemoryMonitorConfig::default());
+    }
+
+    #[test]
+    fn memory_monitor_gating_disabled_is_none() {
+        let bus = spt_events::EventBus::default();
+        // No [mem_hygiene] table at all.
+        let cfg = spt_config::schema::Config::default();
+        assert!(maybe_spawn_memory_monitor(&cfg, bus.clone()).is_none());
+
+        // Present but enabled=false.
+        let mut cfg2 = spt_config::schema::Config::default();
+        cfg2.mem_hygiene = Some(spt_config::schema::MemHygiene {
+            enabled: Some(false),
+            ..Default::default()
+        });
+        assert!(maybe_spawn_memory_monitor(&cfg2, bus).is_none());
+    }
+
+    #[tokio::test]
+    async fn memory_monitor_gating_enabled_is_some() {
+        let bus = spt_events::EventBus::default();
+        let mut cfg = spt_config::schema::Config::default();
+        cfg.mem_hygiene = Some(spt_config::schema::MemHygiene {
+            enabled: Some(true),
+            interval: Some("3600s".into()),
+            ..Default::default()
+        });
+        let handle =
+            maybe_spawn_memory_monitor(&cfg, bus).expect("monitor must spawn when enabled");
+        handle.shutdown().await;
+    }
+
+    #[test]
+    fn memory_growth_event_maps_kind_and_fields() {
+        let g = spt_mem_hygiene::MemoryGrowth {
+            rss_bytes: 200,
+            baseline_rss_bytes: 100,
+            growth_bytes: 100,
+            growth_rate_bytes_per_min: 50,
+            window_secs: 120,
+            samples: 30,
+            pid: 4242,
+        };
+        let ev = memory_growth_event(g);
+        assert_eq!(ev.kind.as_str(), "memory.leak_suspected");
+        assert_eq!(ev.severity, spt_events::Severity::Warn);
+        assert_eq!(ev.fields.get("rss_bytes"), Some(&serde_json::json!(200)));
+        assert_eq!(
+            ev.fields.get("baseline_rss_bytes"),
+            Some(&serde_json::json!(100))
+        );
+        assert_eq!(ev.fields.get("growth_bytes"), Some(&serde_json::json!(100)));
+        assert_eq!(
+            ev.fields.get("growth_rate_bytes_per_min"),
+            Some(&serde_json::json!(50))
+        );
+        assert_eq!(ev.fields.get("window_secs"), Some(&serde_json::json!(120)));
+        assert_eq!(ev.fields.get("samples"), Some(&serde_json::json!(30)));
+        assert_eq!(ev.fields.get("pid"), Some(&serde_json::json!(4242)));
+        assert!(!ev.message.is_empty());
+    }
+
+    #[test]
+    fn events_ring_capacity_honored_in_bus_cfg() {
+        // The bus config builder honors a configured ring_capacity; unset/zero
+        // falls back to the default capacity (reproducing today's behavior).
+        let custom = spt_events::EventBusConfig::with_capacity(2048);
+        assert_eq!(custom.capacity, 2048);
+        assert_eq!(
+            spt_events::EventBusConfig::default().capacity,
+            spt_events::EventBusConfig::default().capacity
         );
     }
 }

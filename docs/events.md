@@ -42,15 +42,41 @@ subscriptions).
 (configure those kinds by hand in TOML) — note this is a TUI-editor gap only;
 all kinds deliver at runtime regardless of how they were configured.
 
+## Pipeline settings (`[events]` scalars)
+
+Top-level `[events]` scalars tune the bus, dispatcher, and spool. All are
+optional and fall back to the defaults below (which reproduce the historical
+hard-coded behavior). Every one is editable from the TUI Events page (the
+"Events settings" region).
+
+    [events]
+    ring_capacity     = 1024          # event-bus ring buffer size (> 0)
+    retry_interval    = "30s"         # dispatcher retry cadence (duration)
+    spool_dir         = "event-spool" # spool root for failed deliveries
+    spool_max_bytes   = "64MiB"       # spool size cap (bytesize)
+    default_min_level = "info"        # severity floor for bindings without their own min_level
+
+| Field | Type | Default | Meaning |
+|---|---|---|---|
+| `ring_capacity` | integer (> 0) | `1024` | Event-bus ring buffer capacity. Validated `> 0` (code `events_ring_capacity_zero`). |
+| `retry_interval` | duration string | `30s` | Dispatcher retry cadence for spooled deliveries. |
+| `spool_dir` | path | `<state_dir>/events` | Spool root for failed deliveries. |
+| `spool_max_bytes` | bytesize string | spool default | Bound on total spool size; oldest entries drop first. |
+| `default_min_level` | severity name | none | Severity floor applied to bindings that do not set their own `min_level`. An explicit per-binding `min_level` always wins. |
+
 ## Event shape
 
 Each `Event` carries:
 
 - `kind` — e.g. `profile.degraded`, `forward.bind_failed`,
-  `auth.failed`, `mcp.tool_called`.
+  `auth.failed`, `mcp.tool_called`, `memory.leak_suspected`.
 - `severity` — info | warn | error.
 - `fields` — a string-keyed map of event-specific data (already-redacted).
 - `timestamp_ms` — Unix epoch milliseconds.
+
+The runtime memory-growth monitor emits `memory.leak_suspected`
+(severity `warn`) when it detects sustained RSS growth — see
+[Memory Hygiene](mem-hygiene.md) for its config, fields, and the heuristic.
 
 ## Bindings
 
@@ -58,10 +84,25 @@ Each `Event` carries:
     name = "ops-pager"
     match = { kind = "profile.degraded", severity = "error" }
     sinks = ["pagerduty", "slack"]
-    dedupe = "5m"
+    min_level = "warn"
 
-`match` is a flat predicate; multiple keys AND together. `dedupe` suppresses
-re-fires of identical events within the window.
+    [events.bindings.dedupe]
+    key    = "profile_id"            # field path to dedupe on; omit for the default key set
+    window = "5m"                    # suppression window (duration); default 60s
+
+`match` is a flat predicate; multiple keys AND together. `min_level` sets the
+severity floor for this binding (overriding `[events].default_min_level`).
+
+**Per-binding dedupe (`dedupe { key, window }`).** The optional `dedupe` table
+suppresses re-fires within `window`:
+
+- `key` — a single field path to dedupe on. When omitted, the dispatcher's
+  default key set (`kind`, `profile_id`, `forward_id`) is used.
+- `window` — duration string for the suppression window; defaults to `60s`.
+
+Bindings — including their `min_level`, the `dedupe` key/window rows, and the
+`on` kind list (which surfaces a `KNOWN_KINDS` hint that now includes
+`memory.leak_suspected`) — are all editable from the TUI Events page.
 
 ## Sinks
 

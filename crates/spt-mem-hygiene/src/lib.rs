@@ -47,6 +47,21 @@
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
+pub mod monitor;
+#[doc(inline)]
+pub use monitor::{
+    evaluate, MemoryGrowth, MemoryMonitor, MemoryMonitorConfig, MemoryMonitorHandle, MemorySample,
+};
+
+/// Test-only allocator instrumentation. Gated behind `test` / the `test-alloc`
+/// feature so dependent crates can reuse [`testing::CountingAllocator`] in
+/// dedicated leak-test binaries (`features = ["test-alloc"]`).
+#[cfg(any(test, feature = "test-alloc"))]
+pub mod testing;
+#[cfg(any(test, feature = "test-alloc"))]
+#[doc(inline)]
+pub use testing::{CountingAllocator, COUNTING_ALLOCATOR};
+
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "macos")]

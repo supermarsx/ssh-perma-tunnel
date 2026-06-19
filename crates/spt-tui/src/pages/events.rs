@@ -31,7 +31,9 @@ use ratatui::text::Line;
 use ratatui::widgets::{
     Block, Borders, List, ListItem, ListState, Paragraph, StatefulWidget, Widget,
 };
-use spt_config::schema::{EventBinding, EventCommand, EventSink, EventSinkSubscription};
+use spt_config::schema::{
+    EventBinding, EventCommand, EventDedupe, EventSink, EventSinkSubscription, Events,
+};
 use spt_core::RedactedString;
 
 use crate::model::Model;
@@ -54,11 +56,36 @@ const SINK_KINDS: &[&str] = &[
 /// Choice options for a boolean-shaped row (`allow_exec`, `allow_self_signed`).
 const BOOL_CHOICES: &[&str] = &["false", "true"];
 
+/// Severity names for the `default_min_level` Choice row, low→high. The empty
+/// first option means "unset" (omit the key — bindings stay unfiltered by
+/// default), matching the schema's `None` round-trip.
+const SEVERITY_CHOICES: &[&str] = &["", "trace", "debug", "info", "warn", "error"];
+
+/// Documented event kinds surfaced as discoverability help on the binding `on`
+/// row, plus the runtime-detection kind `memory.leak_suspected`. The `on` row
+/// stays free-text/CSV so arbitrary or glob kinds still work — this list is a
+/// hint, not a hard picker.
+const KNOWN_KINDS: &[&str] = &[
+    "profile.started",
+    "profile.failed",
+    "profile.stopped",
+    "endpoint.up",
+    "endpoint.down",
+    "forward.bound",
+    "forward.closed",
+    "reconnect.attempt",
+    "reconnect.succeeded",
+    "memory.leak_suspected",
+];
+
 /// Which stacked region currently owns keyboard focus.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Region {
     /// Per-profile tags FieldList.
     Tags,
+    /// Top-level `[events]` scalars (ring_capacity/retry_interval/spool_dir/
+    /// spool_max_bytes/default_min_level) editor.
+    Settings,
     /// `[[events.sinks]]` list/editor.
     Sinks,
     /// `[[events.bindings]]` list/editor.
@@ -695,10 +722,34 @@ fn apply_sink_rows(rows: &[EditorRow], s: &mut EventSink) {
     }
 }
 
+/// Help text for the binding `on` row: free-text/CSV plus a discoverability
+/// hint listing the documented [`KNOWN_KINDS`] (incl. `memory.leak_suspected`).
+/// `on` stays free-text so arbitrary/glob kinds still work. Built once from
+/// `KNOWN_KINDS` so the hint never drifts from the canonical list.
+fn on_help() -> &'static str {
+    use std::sync::OnceLock;
+    static ON_HELP: OnceLock<String> = OnceLock::new();
+    ON_HELP
+        .get_or_init(|| {
+            format!(
+                "Event kinds (CSV, globs OK). Known: {}",
+                KNOWN_KINDS.join(", ")
+            )
+        })
+        .as_str()
+}
+
 fn binding_rows(b: &EventBinding) -> Vec<EditorRow> {
+    let (dedupe_key, dedupe_window) = match b.dedupe.as_ref() {
+        Some(d) => (
+            d.key.clone().unwrap_or_default(),
+            d.window.clone().unwrap_or_default(),
+        ),
+        None => (String::new(), String::new()),
+    };
     vec![
         EditorRow::text("name", "Binding identifier", b.name.clone()),
-        EditorRow::list("on", "Event categories (CSV), e.g. profile.failed", &b.on),
+        EditorRow::list("on", on_help(), &b.on),
         EditorRow::list("actions", "Sink/command names to fire (CSV)", &b.actions),
         EditorRow::text(
             "min_level",
@@ -709,6 +760,16 @@ fn binding_rows(b: &EventBinding) -> Vec<EditorRow> {
             "throttle",
             "Per-binding throttle (e.g. 1m)",
             b.throttle.clone().unwrap_or_default(),
+        ),
+        EditorRow::text(
+            "dedupe.key",
+            "Dedupe key field path (e.g. kind); empty = dispatcher default",
+            dedupe_key,
+        ),
+        EditorRow::text(
+            "dedupe.window",
+            "Dedupe suppression window (duration, e.g. 60s)",
+            dedupe_window,
         ),
     ]
 }
@@ -721,6 +782,10 @@ fn apply_binding_rows(rows: &[EditorRow], b: &mut EventBinding) {
             Some(v.to_owned())
         }
     };
+    // Collect the two dedupe sub-fields then lazily (re)build EventDedupe:
+    // Some when either is non-empty, None when both are empty.
+    let mut dedupe_key: Option<String> = None;
+    let mut dedupe_window: Option<String> = None;
     for row in rows {
         match row.label {
             "name" => b.name = row.value.clone(),
@@ -728,9 +793,86 @@ fn apply_binding_rows(rows: &[EditorRow], b: &mut EventBinding) {
             "actions" => b.actions = row.list.parse(),
             "min_level" => b.min_level = opt(&row.value),
             "throttle" => b.throttle = opt(&row.value),
+            "dedupe.key" => dedupe_key = opt(&row.value),
+            "dedupe.window" => dedupe_window = opt(&row.value),
             _ => {}
         }
     }
+    b.dedupe = if dedupe_key.is_none() && dedupe_window.is_none() {
+        None
+    } else {
+        Some(EventDedupe {
+            key: dedupe_key,
+            window: dedupe_window,
+        })
+    };
+}
+
+// --- Events settings (top-level `[events]` scalars) row builders -----------
+
+/// Build the editor rows for the top-level `[events]` scalars. Mirrors the
+/// schema fields E1 added: ring_capacity/retry_interval/spool_dir/
+/// spool_max_bytes/default_min_level.
+fn settings_rows(e: &Events) -> Vec<EditorRow> {
+    vec![
+        EditorRow::text(
+            "ring_capacity",
+            "Event-bus ring capacity (u32, >0); empty = bus default 1024",
+            e.ring_capacity.map(|c| c.to_string()).unwrap_or_default(),
+        ),
+        EditorRow::text(
+            "retry_interval",
+            "Spool-retry poll interval (duration, e.g. 30s)",
+            e.retry_interval.clone().unwrap_or_default(),
+        ),
+        EditorRow::text(
+            "spool_dir",
+            "Per-sink disk-spool root; empty = default `event-spool`",
+            e.spool_dir.clone().unwrap_or_default(),
+        ),
+        EditorRow::text(
+            "spool_max_bytes",
+            "Disk-spool byte cap (bytesize, e.g. 32MiB)",
+            e.spool_max_bytes.clone().unwrap_or_default(),
+        ),
+        EditorRow::choice(
+            "default_min_level",
+            "Default minimum severity for bindings without their own min_level",
+            SEVERITY_CHOICES,
+            e.default_min_level.clone().unwrap_or_default(),
+        ),
+    ]
+}
+
+fn apply_settings_rows(rows: &[EditorRow], e: &mut Events) {
+    let opt = |v: &str| {
+        let t = v.trim();
+        if t.is_empty() {
+            None
+        } else {
+            Some(t.to_owned())
+        }
+    };
+    for row in rows {
+        match row.label {
+            "ring_capacity" => e.ring_capacity = row.value.trim().parse::<u32>().ok(),
+            "retry_interval" => e.retry_interval = opt(&row.value),
+            "spool_dir" => e.spool_dir = opt(&row.value),
+            "spool_max_bytes" => e.spool_max_bytes = opt(&row.value),
+            "default_min_level" => e.default_min_level = opt(&row.value),
+            _ => {}
+        }
+    }
+}
+
+/// `true` when any top-level `[events]` scalar is set — drives whether the
+/// Settings region is rendered when it is not the active region.
+fn has_settings(e: &Events) -> bool {
+    e.ring_capacity.is_some()
+        || e.retry_interval.is_some()
+        || e.spool_dir.is_some()
+        || e.spool_max_bytes.is_some()
+        || e.default_min_level.is_some()
 }
 
 // --- Command row builders --------------------------------------------------
@@ -851,6 +993,8 @@ pub struct EventsPage {
     list: FieldList,
     /// Active region for keyboard input.
     region: Region,
+    /// Open settings editor (top-level `[events]` scalars), if any.
+    settings_editor: Option<RowEditor>,
     /// Selected sink index (list mode).
     sink_sel: usize,
     /// Selected binding index (list mode).
@@ -883,6 +1027,7 @@ impl EventsPage {
         Self {
             list: FieldList::new(fields),
             region: Region::Tags,
+            settings_editor: None,
             sink_sel: 0,
             binding_sel: 0,
             command_sel: 0,
@@ -900,9 +1045,9 @@ impl EventsPage {
     /// the page should fall back to the original two-region layout so the
     /// default-state snapshot stays byte-identical.
     fn is_empty_state(model: &Model) -> bool {
-        model
-            .events()
-            .is_none_or(|e| e.sinks.is_empty() && e.bindings.is_empty() && e.commands.is_empty())
+        model.events().is_none_or(|e| {
+            e.sinks.is_empty() && e.bindings.is_empty() && e.commands.is_empty() && !has_settings(e)
+        })
     }
 
     fn n_sinks(model: &Model) -> usize {
@@ -913,6 +1058,16 @@ impl EventsPage {
     }
     fn n_commands(model: &Model) -> usize {
         model.events().map_or(0, |e| e.commands.len())
+    }
+
+    fn open_settings_editor(&mut self, model: &Model) {
+        let e = model.events().cloned().unwrap_or_default();
+        self.settings_editor = Some(RowEditor::new(0, settings_rows(&e)));
+    }
+    fn commit_settings_editor(&mut self, model: &mut Model) {
+        if let Some(ed) = self.settings_editor.as_ref() {
+            apply_settings_rows(&ed.rows, model.events_mut());
+        }
     }
 
     fn open_sink_editor(&mut self, model: &Model, idx: usize) {
@@ -1038,34 +1193,44 @@ impl Page for EventsPage {
             return;
         }
 
-        // POPULATED STATE: tags + sinks + bindings (+ commands when present).
-        // The Commands region is rendered only when it is non-empty OR is the
-        // active region — so the zero-commands populated layout is unchanged.
+        // POPULATED STATE: tags + sinks + bindings (+ commands when present)
+        // (+ settings when present). The Commands region is rendered only when
+        // non-empty OR active, and the Settings region only when any scalar is
+        // set OR it is the active region — so the zero-commands / zero-settings
+        // populated layout is byte-identical to the original.
         let show_commands = Self::n_commands(model) > 0 || self.region == Region::Commands;
-        let constraints: Vec<Constraint> = if show_commands {
-            vec![
-                Constraint::Length(5),
-                Constraint::Min(0),
-                Constraint::Min(0),
-                Constraint::Min(0),
-            ]
-        } else {
-            vec![
-                Constraint::Length(5),
-                Constraint::Min(0),
-                Constraint::Min(0),
-            ]
-        };
+        let show_settings =
+            model.events().is_some_and(has_settings) || self.region == Region::Settings;
+        // Tags is the fixed top region; sinks/bindings/commands share the
+        // flexible middle; the settings editor (5 rows × 3 lines = 15 +
+        // borders) gets a fixed slot at the tail so it never starves the
+        // Min(0) list regions above it.
+        let mut constraints: Vec<Constraint> = vec![Constraint::Length(5)];
+        constraints.push(Constraint::Min(0)); // sinks
+        constraints.push(Constraint::Min(0)); // bindings
+        if show_commands {
+            constraints.push(Constraint::Min(0)); // commands
+        }
+        if show_settings {
+            constraints.push(Constraint::Length(17));
+        }
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints(constraints)
             .split(area);
         self.list.render(chunks[0], buf, model.profile());
 
-        self.render_sinks(chunks[1], buf, model);
-        self.render_bindings(chunks[2], buf, model);
+        let mut idx = 1;
+        self.render_sinks(chunks[idx], buf, model);
+        idx += 1;
+        self.render_bindings(chunks[idx], buf, model);
+        idx += 1;
         if show_commands {
-            self.render_commands(chunks[3], buf, model);
+            self.render_commands(chunks[idx], buf, model);
+            idx += 1;
+        }
+        if show_settings {
+            self.render_settings(chunks[idx], buf, model);
         }
     }
 
@@ -1091,6 +1256,7 @@ impl Page for EventsPage {
 
         match self.region {
             Region::Tags => self.on_key_tags(key, model),
+            Region::Settings => self.on_key_settings(key, model),
             Region::Sinks => self.on_key_sinks(key, model),
             Region::Bindings => self.on_key_bindings(key, model),
             Region::Commands => self.on_key_commands(key, model),
@@ -1108,6 +1274,12 @@ impl Page for EventsPage {
         }
         match self.region {
             Region::Tags => self.list.focused_help(),
+            Region::Settings => self
+                .settings_editor
+                .as_ref()
+                .and_then(|e| e.rows.get(e.focus))
+                .map(|r| r.help)
+                .or(Some("Events settings: Enter=edit ↑/↓=move region")),
             Region::Sinks => self
                 .sink_editor
                 .as_ref()
@@ -1142,6 +1314,7 @@ impl Page for EventsPage {
         }
         match self.region {
             Region::Tags => self.list.editing,
+            Region::Settings => self.settings_editor.as_ref().is_some_and(|e| e.editing),
             Region::Sinks => self.sink_editor.as_ref().is_some_and(|e| e.editing),
             Region::Bindings => self.binding_editor.as_ref().is_some_and(|e| e.editing),
             Region::Commands => self.command_editor.as_ref().is_some_and(|e| e.editing),
@@ -1155,7 +1328,8 @@ impl EventsPage {
             Region::Tags => Region::Sinks,
             Region::Sinks => Region::Bindings,
             Region::Bindings => Region::Commands,
-            Region::Commands => Region::Tags,
+            Region::Commands => Region::Settings,
+            Region::Settings => Region::Tags,
         }
     }
 
@@ -1175,6 +1349,53 @@ impl EventsPage {
             return false;
         }
         self.list.on_nav_key(key, model.profile());
+        false
+    }
+
+    /// Key handler for the Settings region (top-level `[events]` scalars).
+    /// The region is backed by a persistent [`RowEditor`] lazily built on
+    /// entry; unlike the list regions it has no add/delete — it edits the
+    /// single `Events` struct in place. Settings sits at the tail of the
+    /// region cycle: boundary Up (in nav mode, at the first row) crosses up
+    /// into Commands, boundary Down (at the last row) wraps round to Tags;
+    /// everything else delegates to the editor.
+    fn on_key_settings(&mut self, key: KeyEvent, model: &mut Model) -> bool {
+        if self.settings_editor.is_none() {
+            self.open_settings_editor(model);
+        }
+        // Boundary region crossing in nav mode (not while editing a field).
+        let editing = self.settings_editor.as_ref().is_some_and(|e| e.editing);
+        if !editing {
+            if matches!(key.code, KeyCode::Up | KeyCode::Char('k'))
+                && self.settings_editor.as_ref().is_some_and(|e| e.focus == 0)
+            {
+                self.region = Region::Commands;
+                return false;
+            }
+            if matches!(key.code, KeyCode::Down | KeyCode::Char('j'))
+                && self
+                    .settings_editor
+                    .as_ref()
+                    .is_some_and(|e| e.focus + 1 >= e.rows.len())
+            {
+                self.region = Region::Tags;
+                return false;
+            }
+        }
+        let Some(ed) = self.settings_editor.as_mut() else {
+            return false;
+        };
+        let (changed, close) = ed.on_key(key);
+        if changed {
+            self.commit_settings_editor(model);
+            return true;
+        }
+        if close {
+            // Esc/Left out of the settings region: drop the editor and hand
+            // focus back up to Commands (mirrors a list region's pane-nav left).
+            self.settings_editor = None;
+            self.region = Region::Commands;
+        }
         false
     }
 
@@ -1379,6 +1600,9 @@ impl EventsPage {
                 let n = Self::n_commands(model);
                 if self.command_sel + 1 < n {
                     self.command_sel += 1;
+                } else {
+                    // At the bottom of the list, Down crosses into Settings.
+                    self.region = Region::Settings;
                 }
                 false
             }
@@ -1519,6 +1743,55 @@ impl EventsPage {
             }
             _ => false,
         }
+    }
+
+    /// Render the Events settings region (top-level `[events]` scalars). When
+    /// the region is focused the live [`RowEditor`] is rendered (lazily built
+    /// on entry); otherwise a read-only summary of the configured scalars.
+    fn render_settings(&mut self, area: Rect, buf: &mut Buffer, model: &Model) {
+        let active = self.region == Region::Settings;
+        if active && self.settings_editor.is_none() {
+            self.open_settings_editor(model);
+        }
+        let title = if active {
+            "Events settings* (Enter=edit ↑/↓=move region)"
+        } else {
+            "Events settings (Tab to focus)"
+        };
+        let block = Block::default().borders(Borders::ALL).title(title);
+        let inner = block.inner(area);
+        block.render(area, buf);
+        if active {
+            if let Some(ed) = self.settings_editor.as_ref() {
+                ed.render(inner, buf);
+                return;
+            }
+        }
+        // Read-only summary (region not focused).
+        let e = model.events().cloned().unwrap_or_default();
+        let lines = vec![
+            Line::from(format!(
+                "ring_capacity:     {}",
+                e.ring_capacity.map(|c| c.to_string()).unwrap_or_default()
+            )),
+            Line::from(format!(
+                "retry_interval:    {}",
+                e.retry_interval.unwrap_or_default()
+            )),
+            Line::from(format!(
+                "spool_dir:         {}",
+                e.spool_dir.unwrap_or_default()
+            )),
+            Line::from(format!(
+                "spool_max_bytes:   {}",
+                e.spool_max_bytes.unwrap_or_default()
+            )),
+            Line::from(format!(
+                "default_min_level: {}",
+                e.default_min_level.unwrap_or_default()
+            )),
+        ];
+        Paragraph::new(lines).render(inner, buf);
     }
 
     fn render_sinks(&mut self, area: Rect, buf: &mut Buffer, model: &Model) {
@@ -1998,6 +2271,8 @@ actions = ["webhook"]
         p.on_key(k(KeyCode::Tab), &mut m);
         assert_eq!(p.region, Region::Commands);
         p.on_key(k(KeyCode::Tab), &mut m);
+        assert_eq!(p.region, Region::Settings);
+        p.on_key(k(KeyCode::Tab), &mut m);
         assert_eq!(p.region, Region::Tags);
     }
 
@@ -2273,6 +2548,194 @@ vapid_subject = "mailto:ops@example.com"
         // Left again closes the sub-editor entirely.
         p.on_key(k(KeyCode::Left), &mut m);
         assert!(p.sub_editor.is_none());
+    }
+
+    // ---- E7 / t-memleak: events settings region, dedupe rows, KNOWN_KINDS.
+
+    #[test]
+    fn known_kinds_includes_memory_leak_suspected() {
+        assert!(KNOWN_KINDS.contains(&"memory.leak_suspected"));
+        assert!(KNOWN_KINDS.contains(&"profile.failed"));
+        // The `on` row help is derived from KNOWN_KINDS, so it surfaces the
+        // runtime-detection kind as discoverability.
+        assert!(on_help().contains("memory.leak_suspected"));
+    }
+
+    #[test]
+    fn binding_rows_surface_dedupe_rows() {
+        let b = EventBinding {
+            name: "b".into(),
+            ..Default::default()
+        };
+        let labels: Vec<&str> = binding_rows(&b).iter().map(|r| r.label).collect();
+        assert!(labels.contains(&"dedupe.key"));
+        assert!(labels.contains(&"dedupe.window"));
+    }
+
+    #[test]
+    fn apply_binding_rows_builds_dedupe_lazily() {
+        let mut b = EventBinding {
+            name: "b".into(),
+            ..Default::default()
+        };
+        // Both dedupe fields empty → None.
+        let rows = binding_rows(&b);
+        apply_binding_rows(&rows, &mut b);
+        assert!(b.dedupe.is_none(), "empty dedupe fields must stay None");
+
+        // Set only the window → Some with key None.
+        let mut rows = binding_rows(&b);
+        for row in &mut rows {
+            if row.label == "dedupe.window" {
+                row.value = "90s".into();
+            }
+        }
+        apply_binding_rows(&rows, &mut b);
+        let d = b.dedupe.as_ref().expect("dedupe materialized");
+        assert_eq!(d.window.as_deref(), Some("90s"));
+        assert!(d.key.is_none());
+
+        // Set the key too; round-trips back through binding_rows.
+        let mut rows = binding_rows(&b);
+        for row in &mut rows {
+            if row.label == "dedupe.key" {
+                row.value = "kind".into();
+            }
+        }
+        apply_binding_rows(&rows, &mut b);
+        let d = b.dedupe.as_ref().unwrap();
+        assert_eq!(d.key.as_deref(), Some("kind"));
+        assert_eq!(d.window.as_deref(), Some("90s"));
+
+        // Clearing both empties dedupe back to None.
+        let mut rows = binding_rows(&b);
+        for row in &mut rows {
+            if matches!(row.label, "dedupe.key" | "dedupe.window") {
+                row.value.clear();
+            }
+        }
+        apply_binding_rows(&rows, &mut b);
+        assert!(b.dedupe.is_none());
+    }
+
+    #[test]
+    fn dedupe_edit_round_trips_through_editor() {
+        let mut p = EventsPage::new();
+        let mut m = model_with_events();
+        p.region = Region::Bindings;
+        p.on_key(k(KeyCode::Enter), &mut m); // open binding editor (binding 0)
+        let win_row = {
+            let ed = p.binding_editor.as_ref().unwrap();
+            ed.rows
+                .iter()
+                .position(|r| r.label == "dedupe.window")
+                .unwrap()
+        };
+        for _ in 0..win_row {
+            p.on_key(k(KeyCode::Down), &mut m);
+        }
+        assert_eq!(
+            p.binding_editor.as_ref().unwrap().rows[p.binding_editor.as_ref().unwrap().focus].label,
+            "dedupe.window"
+        );
+        p.on_key(k(KeyCode::Enter), &mut m); // begin edit
+        for c in "45s".chars() {
+            p.on_key(k(KeyCode::Char(c)), &mut m);
+        }
+        p.on_key(k(KeyCode::Enter), &mut m); // commit
+        assert_eq!(
+            m.events().unwrap().bindings[0]
+                .dedupe
+                .as_ref()
+                .and_then(|d| d.window.as_deref()),
+            Some("45s")
+        );
+    }
+
+    #[test]
+    fn settings_rows_cover_all_scalars() {
+        let e = Events::default();
+        let labels: Vec<&str> = settings_rows(&e).iter().map(|r| r.label).collect();
+        assert_eq!(
+            labels,
+            vec![
+                "ring_capacity",
+                "retry_interval",
+                "spool_dir",
+                "spool_max_bytes",
+                "default_min_level",
+            ]
+        );
+    }
+
+    #[test]
+    fn has_settings_gates_empty_state() {
+        // A model with ONLY a settings scalar set is NOT empty-state, so the
+        // populated layout (with the settings region) is shown.
+        let m = Model::from_str(
+            r#"version = 1
+[[profiles]]
+name = "p"
+protocol = "ssh2"
+
+[events]
+ring_capacity = 2048
+"#,
+        );
+        assert!(!EventsPage::is_empty_state(&m));
+        assert!(has_settings(m.events().unwrap()));
+        // A bare model stays empty-state.
+        assert!(EventsPage::is_empty_state(&model()));
+    }
+
+    #[test]
+    fn settings_editor_commits_ring_capacity_and_min_level() {
+        let mut p = EventsPage::new();
+        let mut m = model_with_events();
+        p.region = Region::Settings;
+        // Entering the region lazily builds the editor on first key.
+        p.on_key(k(KeyCode::Enter), &mut m); // begin edit ring_capacity (row 0)
+        for c in "4096".chars() {
+            p.on_key(k(KeyCode::Char(c)), &mut m);
+        }
+        p.on_key(k(KeyCode::Enter), &mut m); // commit
+        assert_eq!(m.events().unwrap().ring_capacity, Some(4096));
+
+        // Move to default_min_level (Choice, row 4) and pick `warn`.
+        for _ in 0..4 {
+            p.on_key(k(KeyCode::Down), &mut m);
+        }
+        assert_eq!(
+            p.settings_editor.as_ref().unwrap().rows[p.settings_editor.as_ref().unwrap().focus]
+                .label,
+            "default_min_level"
+        );
+        p.on_key(k(KeyCode::Enter), &mut m); // begin edit (Choice "")
+        for _ in 0..4 {
+            p.on_key(k(KeyCode::Right), &mut m); // "" → trace → debug → info → warn
+        }
+        p.on_key(k(KeyCode::Enter), &mut m); // commit
+        assert_eq!(
+            m.events().unwrap().default_min_level.as_deref(),
+            Some("warn")
+        );
+    }
+
+    #[test]
+    fn settings_empty_choice_clears_default_min_level() {
+        let mut e = Events {
+            default_min_level: Some("warn".into()),
+            ..Default::default()
+        };
+        // The empty Choice option maps back to None.
+        let mut rows = settings_rows(&e);
+        for row in &mut rows {
+            if row.label == "default_min_level" {
+                row.value = String::new();
+            }
+        }
+        apply_settings_rows(&rows, &mut e);
+        assert!(e.default_min_level.is_none());
     }
 
     #[test]

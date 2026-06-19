@@ -21,6 +21,7 @@ Index of user-facing documentation for `spt` (SSH Permanent Tunnel).
 - [Firewall](firewall.md) — nft, pf, and Windows Firewall integration
 - [Observability](observability.md) — logs, metrics, OTLP, SNMP
 - [Events](events.md) — bindings, sinks, templating
+- [Memory Hygiene](mem-hygiene.md) — opt-in RSS growth monitor, `memory.leak_suspected`
 - [Diagnostics](diagnostics.md) — `spt diagnose`, bundles, redaction
 - [Benchmarking](benchmarking.md) — drivers, safety, comparing runs
 - [MCP](mcp.md) — MCP server, resources, tools, policy

@@ -61,6 +61,9 @@ bench = ["testing"]
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["full", "test-util"] }
 criterion = { workspace = true }
+# Leak-test binaries install `testing::CountingAllocator` as the
+# `#[global_allocator]` (one per dedicated `tests/it_leak_*.rs` bin).
+spt-mem-hygiene = { workspace = true, features = ["test-alloc"] }
 
 [[bench]]
 name = "hot_paths"

@@ -81,6 +81,8 @@ pub struct Subsystems {
     pub remote_config_poller: Option<RemoteConfigPollerStatus>,
     /// Events dispatcher + sinks.
     pub events: Option<EventsStatus>,
+    /// Memory-monitor (RSS sampling + leak-suspected heuristic).
+    pub memory_monitor: Option<MemoryMonitorStatus>,
 }
 
 /// Status-API server subsystem.
@@ -142,6 +144,33 @@ pub struct EventsStatus {
     pub sink_count: u32,
     /// Event kinds being dispatched (serde-friendly strings).
     pub kinds: Vec<String>,
+}
+
+/// Memory-monitor subsystem.
+///
+/// Samples the daemon process's resident-set size on a fixed interval and emits
+/// a `memory.leak_suspected` event when a sustained-growth heuristic trips. A
+/// missing `memory_monitor` entry (or a deserialized value with all fields at
+/// their defaults) means the monitor is not running — fully backward compatible
+/// with `runtime.json` files written before this subsystem existed.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MemoryMonitorStatus {
+    /// Whether the monitor is enabled/running.
+    pub enabled: bool,
+    /// Sampling interval, serialized as whole seconds. `None` when not sampling.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub interval_secs: Option<u64>,
+    /// Most recent resident-set-size sample, in bytes. `None` before the first
+    /// sample is taken.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_rss_bytes: Option<u64>,
+    /// Number of RSS samples taken so far this run.
+    pub samples: u32,
+    /// Instant the monitor last flagged a suspected leak. `None` when it has
+    /// never flagged.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_flagged: Option<DateTime<Utc>>,
 }
 
 impl RuntimeStatus {
@@ -249,6 +278,13 @@ impl RuntimeStatus {
         self
     }
 
+    /// Builder: attach the memory-monitor subsystem entry.
+    #[must_use]
+    pub fn with_memory_monitor(mut self, s: MemoryMonitorStatus) -> Self {
+        self.subsystems.memory_monitor = Some(s);
+        self
+    }
+
     /// Setter: record the status-API subsystem entry in place.
     pub fn set_status_api(&mut self, s: StatusApiStatus) {
         self.subsystems.status_api = Some(s);
@@ -277,6 +313,11 @@ impl RuntimeStatus {
     /// Setter: record the events subsystem entry in place.
     pub fn set_events(&mut self, s: EventsStatus) {
         self.subsystems.events = Some(s);
+    }
+
+    /// Setter: record the memory-monitor subsystem entry in place.
+    pub fn set_memory_monitor(&mut self, s: MemoryMonitorStatus) {
+        self.subsystems.memory_monitor = Some(s);
     }
 }
 
@@ -363,6 +404,13 @@ mod tests {
                 sink_count: 2,
                 kinds: vec!["session".into(), "connection".into()],
             })
+            .with_memory_monitor(MemoryMonitorStatus {
+                enabled: true,
+                interval_secs: Some(60),
+                last_rss_bytes: Some(123_456_789),
+                samples: 17,
+                last_flagged: Some(Utc.with_ymd_and_hms(2026, 6, 11, 11, 30, 0).unwrap()),
+            })
     }
 
     #[test]
@@ -394,6 +442,13 @@ mod tests {
         );
         assert_eq!(s.events.as_ref().unwrap().sink_count, 2);
         assert_eq!(s.events.as_ref().unwrap().kinds.len(), 2);
+
+        let mm = s.memory_monitor.as_ref().unwrap();
+        assert!(mm.enabled);
+        assert_eq!(mm.interval_secs, Some(60));
+        assert_eq!(mm.last_rss_bytes, Some(123_456_789));
+        assert_eq!(mm.samples, 17);
+        assert!(mm.last_flagged.is_some());
     }
 
     #[test]
@@ -413,6 +468,19 @@ mod tests {
             r.subsystems.dns.as_ref().unwrap().mode.as_deref(),
             Some("tcp")
         );
+        r.set_memory_monitor(MemoryMonitorStatus {
+            enabled: true,
+            interval_secs: Some(30),
+            last_rss_bytes: Some(2048),
+            samples: 3,
+            ..Default::default()
+        });
+        let mm = r.subsystems.memory_monitor.as_ref().unwrap();
+        assert!(mm.enabled);
+        assert_eq!(mm.interval_secs, Some(30));
+        assert_eq!(mm.last_rss_bytes, Some(2048));
+        assert_eq!(mm.samples, 3);
+        assert!(mm.last_flagged.is_none());
         // Untouched subsystems remain absent.
         assert!(r.subsystems.mcp.is_none());
         assert!(r.subsystems.metrics.is_none());
@@ -435,6 +503,25 @@ mod tests {
         assert!(r.written_at.is_none());
         assert!(r.subsystems.status_api.is_none());
         assert!(r.subsystems.events.is_none());
+        assert!(r.subsystems.memory_monitor.is_none());
+    }
+
+    #[test]
+    fn legacy_runtime_json_without_memory_monitor_parses() {
+        // A runtime.json written before the memory-monitor subsystem existed:
+        // it carries other subsystems but no `memory_monitor` key. It must
+        // parse cleanly with the monitor reported as not running.
+        let raw = r#"{
+            "pid": 4242,
+            "version": "0.0.1-test",
+            "subsystems": {
+                "events": { "sink_count": 1, "kinds": ["session"] }
+            }
+        }"#;
+        let r: RuntimeStatus = serde_json::from_str(raw).unwrap();
+        assert_eq!(r.pid, 4242);
+        assert_eq!(r.subsystems.events.as_ref().unwrap().sink_count, 1);
+        assert!(r.subsystems.memory_monitor.is_none());
     }
 
     #[test]

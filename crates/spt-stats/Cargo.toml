@@ -28,6 +28,7 @@ chrono = { workspace = true }
 
 [dev-dependencies]
 criterion = { workspace = true }
+spt-mem-hygiene = { workspace = true, features = ["test-alloc"] }
 
 [lints]
 workspace = true

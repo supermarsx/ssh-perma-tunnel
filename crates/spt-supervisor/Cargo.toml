@@ -48,3 +48,7 @@ futures = { workspace = true }
 tokio = { workspace = true, features = ["full", "test-util"] }
 tempfile = { workspace = true }
 spt-forward = { workspace = true, features = ["testing"] }
+# Self dev-dep enables the `testing` module (OrchestratorBuilder, wait_for_state,
+# MockTunnelProtocol re-export) for the leak-test binary without a feature flag.
+spt-supervisor = { path = ".", version = "0.26.1", features = ["testing"] }
+spt-mem-hygiene = { workspace = true, features = ["test-alloc"] }

@@ -46,6 +46,7 @@ serde = { workspace = true }
 tokio = { workspace = true, features = ["full", "test-util"] }
 tempfile = { workspace = true }
 criterion = { workspace = true }
+spt-mem-hygiene = { workspace = true, features = ["test-alloc"] }
 
 [[bench]]
 name = "token_bucket"

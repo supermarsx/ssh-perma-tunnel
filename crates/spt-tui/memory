@@ -1,0 +1,7 @@
+version = 1
+
+[[profiles]]
+name = "demo"
+protocol = "ssh2"
+host = "demo.example.com"
+user = "alice"

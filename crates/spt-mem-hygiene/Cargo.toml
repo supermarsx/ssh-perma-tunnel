@@ -16,10 +16,16 @@ workspace = true
 # Opt-in on macOS to enable `ptrace(PT_DENY_ATTACH)`. Default OFF because it
 # can break notarization / debugging tools. See docs/security.md.
 macos-anti-debug = []
+# Expose `testing::CountingAllocator` to dependent crates so their dedicated
+# leak-test binaries can install it as the `#[global_allocator]`. Off by
+# default; pull in via `spt-mem-hygiene = { ..., features = ["test-alloc"] }`.
+test-alloc = []
 
 [dependencies]
 serde = { workspace = true }
 tracing = { workspace = true }
+sysinfo = { workspace = true }
+tokio = { workspace = true, features = ["rt", "time", "macros"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 nix = { workspace = true }
@@ -39,3 +45,5 @@ windows = { workspace = true, features = [
 
 [dev-dependencies]
 serde_json = { workspace = true }
+# `start_paused` deterministic time control for the monitor tests.
+tokio = { workspace = true, features = ["rt", "time", "macros", "test-util"] }

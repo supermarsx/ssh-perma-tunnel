@@ -38,6 +38,9 @@ nix = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true }
 criterion = { workspace = true }
+# Leak-test binaries install `testing::CountingAllocator` as the
+# `#[global_allocator]` (one per dedicated `tests/it_leak_*.rs` bin).
+spt-mem-hygiene = { workspace = true, features = ["test-alloc"] }
 
 [[bench]]
 name = "snapshot"

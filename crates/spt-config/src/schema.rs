@@ -73,6 +73,12 @@ pub struct Config {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mcp: Option<Mcp>,
 
+    /// `[mem_hygiene]` table. Memory-hygiene monitor (RSS sampling + leak
+    /// heuristic). **Disabled by default** — the supervisor only spawns the
+    /// monitor when `enabled = true`. See `docs/mem-hygiene.md`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mem_hygiene: Option<MemHygiene>,
+
     /// `[updater]` table. Embedded auto-updater (`spt update` + optional
     /// background polling thread). **Disabled by default** — every field
     /// has a sensible default that only matters once `enabled = true`.
@@ -720,6 +726,32 @@ pub struct ObservabilityWindowsEvent {
 /// `[events]` group. Spec §9.7.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Events {
+    /// Event-bus broadcast ring capacity (`EventBusConfig.capacity`). Slow
+    /// consumers exceeding this lag receive `Lagged`. Omitted maps to the
+    /// bus default (`1024`). Must be `> 0`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ring_capacity: Option<u32>,
+    /// How often the dispatcher's spool-retry task polls each sink's spool
+    /// for redelivery (`DispatcherConfig.retry_interval`, duration string).
+    /// Omitted maps to the dispatcher default (`30s`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_interval: Option<String>,
+    /// Per-sink disk-spool root (`DispatcherConfig.spool_root`). One
+    /// subdirectory per sink is created. Omitted maps to the dispatcher
+    /// default (`event-spool`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spool_dir: Option<String>,
+    /// Disk-spool byte cap applied to every sink's spool
+    /// (`DispatcherConfig.spool.max_bytes`, bytesize string). Omitted maps
+    /// to the `SpoolConfig` default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spool_max_bytes: Option<String>,
+    /// Default minimum severity applied to bindings that do not set their
+    /// own `min_level` (severity name: `trace|debug|info|warn|error|critical`).
+    /// Omitted leaves bindings unfiltered by default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_min_level: Option<String>,
+
     /// `[[events.bindings]]`. §9.7 / §13.11.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub bindings: Vec<EventBinding>,
@@ -746,6 +778,27 @@ pub struct EventBinding {
     /// Per-binding throttle. §9.7.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub throttle: Option<String>,
+    /// Per-binding deduplication policy. Maps to the dispatcher's internal
+    /// `Dedupe { key_fields, interval }`. Omitted disables dedupe for this
+    /// binding.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dedupe: Option<EventDedupe>,
+}
+
+/// Per-binding deduplication policy (`[[events.bindings]].dedupe`). Mirrors
+/// the dispatcher's internal `Dedupe`: events whose computed key repeats
+/// within `window` are suppressed.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct EventDedupe {
+    /// Field path(s) concatenated to form the dedupe key (maps to
+    /// `Dedupe.key_fields`). A single field path; omitted maps to the
+    /// dispatcher default (`kind|profile_id|forward_id`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
+    /// Suppression window (duration string, maps to `Dedupe.interval`).
+    /// Omitted maps to the dispatcher default (`60s`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window: Option<String>,
 }
 
 /// `[[events.sinks]]`. Spec §9.7.
@@ -902,6 +955,48 @@ pub struct Mcp {
     /// `DEFAULT_CHAIN_DEPTH_CAP` (`Some(5)`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_cert_chain_depth: Option<u32>,
+}
+
+// ---------------------------------------------------------------------------
+// [mem_hygiene] — memory-hygiene monitor (off by default)
+// ---------------------------------------------------------------------------
+
+/// `[mem_hygiene]` table. Configures the runtime memory-hygiene monitor that
+/// periodically samples the process RSS and emits a `memory.leak_suspected`
+/// event when a sustained, monotonic growth trend is detected.
+///
+/// The monitor is **off by default**: with the block absent (or
+/// `enabled = false`) the supervisor never spawns it. All fields are
+/// `Option` so an existing config round-trips byte-identically.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct MemHygiene {
+    /// Master switch. **Default: `false`** — the monitor is opt-in. When
+    /// false the supervisor does not spawn the sampling task at all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    /// Sampling interval (duration string, e.g. `"60s"`). One RSS sample is
+    /// taken per tick. **Default: `"60s"`**.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interval: Option<String>,
+    /// Number of samples retained in the sliding window used for the
+    /// leak heuristic. **Default: `30`** (~30 min at the default interval).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window_samples: Option<u32>,
+    /// Absolute net-growth floor (bytesize string, e.g. `"64MiB"`). The
+    /// window's first→last delta must exceed this before a leak is flagged.
+    /// **Default: `"64MiB"`**.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub growth_threshold: Option<String>,
+    /// Minimum sustained growth rate (bytesize-per-minute string, e.g.
+    /// `"2MiB"`). The observed rate over the window must exceed this.
+    /// **Default: `"2MiB"`**.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub growth_rate_per_min: Option<String>,
+    /// Minimum fraction of sample-pairs that must be non-decreasing for the
+    /// window to count as "rising", in the range `(0, 1]`. **Default:
+    /// `0.8`**.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_rising_fraction: Option<f64>,
 }
 
 // ---------------------------------------------------------------------------
@@ -2291,5 +2386,132 @@ local_socket_path = \"/tmp/db.sock\"
         let rendered = toml::to_string(&fwd).unwrap();
         assert!(rendered.contains("remote_socket_path = \"/run/db.sock\""));
         assert!(rendered.contains("local_socket_path = \"/tmp/db.sock\""));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// t-memleak: [mem_hygiene] + events runtime scalars + binding dedupe
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod memleak_schema_tests {
+    use super::*;
+
+    #[test]
+    fn mem_hygiene_some_round_trips_through_toml() {
+        let toml_str = "\
+enabled = true
+interval = \"30s\"
+window_samples = 20
+growth_threshold = \"128MiB\"
+growth_rate_per_min = \"4MiB\"
+min_rising_fraction = 0.75
+";
+        let mh: MemHygiene = toml::from_str(toml_str).unwrap();
+        assert_eq!(mh.enabled, Some(true));
+        assert_eq!(mh.interval.as_deref(), Some("30s"));
+        assert_eq!(mh.window_samples, Some(20));
+        assert_eq!(mh.growth_threshold.as_deref(), Some("128MiB"));
+        assert_eq!(mh.growth_rate_per_min.as_deref(), Some("4MiB"));
+        assert_eq!(mh.min_rising_fraction, Some(0.75));
+
+        let rendered = toml::to_string(&mh).unwrap();
+        let back: MemHygiene = toml::from_str(&rendered).unwrap();
+        assert_eq!(back, mh);
+    }
+
+    #[test]
+    fn mem_hygiene_none_fields_omitted_on_serialize() {
+        let mh = MemHygiene::default();
+        let rendered = toml::to_string(&mh).unwrap();
+        assert!(!rendered.contains("enabled"), "got: {rendered}");
+        assert!(!rendered.contains("interval"), "got: {rendered}");
+        assert!(!rendered.contains("window_samples"), "got: {rendered}");
+        assert!(!rendered.contains("growth_threshold"), "got: {rendered}");
+        assert!(!rendered.contains("growth_rate_per_min"), "got: {rendered}");
+        assert!(!rendered.contains("min_rising_fraction"), "got: {rendered}");
+    }
+
+    #[test]
+    fn config_without_mem_hygiene_omits_table() {
+        let cfg = Config {
+            version: 1,
+            ..Default::default()
+        };
+        assert!(cfg.mem_hygiene.is_none());
+        let rendered = toml::to_string(&cfg).unwrap();
+        assert!(
+            !rendered.contains("mem_hygiene"),
+            "absent mem_hygiene must not render a table; got: {rendered}"
+        );
+    }
+
+    #[test]
+    fn events_scalars_some_round_trip_through_toml() {
+        let toml_str = "\
+ring_capacity = 2048
+retry_interval = \"45s\"
+spool_dir = \"/var/spool/spt\"
+spool_max_bytes = \"32MiB\"
+default_min_level = \"warn\"
+";
+        let ev: Events = toml::from_str(toml_str).unwrap();
+        assert_eq!(ev.ring_capacity, Some(2048));
+        assert_eq!(ev.retry_interval.as_deref(), Some("45s"));
+        assert_eq!(ev.spool_dir.as_deref(), Some("/var/spool/spt"));
+        assert_eq!(ev.spool_max_bytes.as_deref(), Some("32MiB"));
+        assert_eq!(ev.default_min_level.as_deref(), Some("warn"));
+
+        let rendered = toml::to_string(&ev).unwrap();
+        let back: Events = toml::from_str(&rendered).unwrap();
+        assert_eq!(back, ev);
+    }
+
+    #[test]
+    fn events_scalars_none_omitted_on_serialize() {
+        let ev = Events::default();
+        let rendered = toml::to_string(&ev).unwrap();
+        assert!(!rendered.contains("ring_capacity"), "got: {rendered}");
+        assert!(!rendered.contains("retry_interval"), "got: {rendered}");
+        assert!(!rendered.contains("spool_dir"), "got: {rendered}");
+        assert!(!rendered.contains("spool_max_bytes"), "got: {rendered}");
+        assert!(!rendered.contains("default_min_level"), "got: {rendered}");
+    }
+
+    #[test]
+    fn event_binding_dedupe_some_round_trips_through_toml() {
+        let toml_str = "\
+name = \"ops\"
+on = [\"forward.*\"]
+actions = [\"alerts\"]
+
+[dedupe]
+key = \"kind\"
+window = \"5m\"
+";
+        let binding: EventBinding = toml::from_str(toml_str).unwrap();
+        let dedupe = binding.dedupe.as_ref().expect("dedupe present");
+        assert_eq!(dedupe.key.as_deref(), Some("kind"));
+        assert_eq!(dedupe.window.as_deref(), Some("5m"));
+
+        let rendered = toml::to_string(&binding).unwrap();
+        let back: EventBinding = toml::from_str(&rendered).unwrap();
+        assert_eq!(back.dedupe, binding.dedupe);
+    }
+
+    #[test]
+    fn event_binding_dedupe_none_omitted_on_serialize() {
+        let binding = EventBinding {
+            name: "ops".into(),
+            on: vec!["forward.*".into()],
+            actions: vec!["alerts".into()],
+            ..Default::default()
+        };
+        assert!(binding.dedupe.is_none());
+        let rendered = toml::to_string(&binding).unwrap();
+        assert!(
+            !rendered.contains("dedupe"),
+            "unset dedupe must be omitted; got: {rendered}"
+        );
     }
 }

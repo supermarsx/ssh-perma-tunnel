@@ -29,6 +29,16 @@ impl Default for EventBusConfig {
     }
 }
 
+impl EventBusConfig {
+    /// Build a config with the given broadcast `capacity` (e.g. mapped from
+    /// the schema `Events.ring_capacity`). All other fields take their
+    /// defaults. Stable, additive alternative to the struct literal.
+    #[must_use]
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self { capacity }
+    }
+}
+
 /// Broadcast event bus.
 #[derive(Clone)]
 pub struct EventBus {
@@ -229,6 +239,23 @@ mod tests {
         bus2.emit(Event::builder("k", Severity::Info).build());
         let got = rx.recv().await.unwrap();
         assert_eq!(got.kind.as_str(), "k");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn with_capacity_builds_config_with_chosen_capacity() {
+        let cfg = EventBusConfig::with_capacity(7);
+        assert_eq!(cfg.capacity, 7);
+        // And a bus built from it honors that capacity: emit 8 without a
+        // consumer reading, then a late subscriber must observe a Lagged of
+        // exactly the overflow (capacity-bounded buffer).
+        let bus = EventBus::new(&EventBusConfig::with_capacity(2));
+        let mut rx = bus.subscribe();
+        for _ in 0..5 {
+            bus.emit(Event::builder("k", Severity::Info).build());
+        }
+        // The first recv on an over-filled, capacity-2 channel is Lagged.
+        let err = rx.recv().await.expect_err("expected lag on overflow");
+        assert!(matches!(err, broadcast::error::RecvError::Lagged(_)));
     }
 
     #[tokio::test(flavor = "current_thread")]

@@ -521,6 +521,9 @@ fn configured_subsystems_from_config(cfg: &spt_config::schema::Config) -> Vec<St
     {
         out.push("events".to_string());
     }
+    if cfg.mem_hygiene.as_ref().and_then(|m| m.enabled) == Some(true) {
+        out.push("memory-monitor".to_string());
+    }
     out
 }
 
@@ -768,6 +771,38 @@ fn render_human(
                     let _ = writeln!(o, "  Events:        {}", st.dim("off"));
                 }
             }
+            // Memory monitor: present only when the runtime model carries it
+            // (the supervisor sets the field only when the monitor is spawned).
+            // When absent, emit nothing so existing no-monitor snapshots stay
+            // byte-identical.
+            if let Some(mm) = &sub.memory_monitor {
+                let state = if mm.enabled {
+                    st.green("on")
+                } else {
+                    st.dim("off")
+                };
+                let interval = mm
+                    .interval_secs
+                    .map_or_else(|| "-".to_string(), |s| format!("every {s}s"));
+                let _ = writeln!(o, "  Memory monitor: {state} ({interval})");
+                let _ = writeln!(o, "      samples: {}", mm.samples);
+                if let Some(bytes) = mm.last_rss_bytes {
+                    if detail {
+                        let _ = writeln!(o, "      last RSS: {} ({bytes} bytes)", fmt_mib(bytes));
+                    } else {
+                        let _ = writeln!(o, "      last RSS: {}", fmt_mib(bytes));
+                    }
+                }
+                match mm.last_flagged {
+                    Some(at) => {
+                        // Leak suspected — draw attention in red.
+                        let _ = writeln!(o, "      last flagged: {}", st.red(&at.to_rfc3339()));
+                    }
+                    None => {
+                        let _ = writeln!(o, "      {}", st.dim("no growth flagged"));
+                    }
+                }
+            }
         }
     }
 
@@ -777,6 +812,15 @@ fn render_human(
     let _ = writeln!(o, "  OS service: {}", st.state(&svc.label));
 
     o
+}
+
+/// Humanize a byte count to MiB with one decimal (e.g. `42.0 MiB`). Used for
+/// the memory-monitor RSS readout; the concise human path shows only this,
+/// while `--detail` additionally prints the raw byte count.
+fn fmt_mib(bytes: u64) -> String {
+    #[allow(clippy::cast_precision_loss)]
+    let mib = bytes as f64 / (1024.0 * 1024.0);
+    format!("{mib:.1} MiB")
 }
 
 /// Format a `chrono::Duration` uptime compactly (e.g. `3d 4h 5m 6s`).
@@ -977,6 +1021,98 @@ mod overview_tests {
         assert_eq!(
             parsed["subsystems"]["events"]["sink_count"],
             serde_json::json!(2)
+        );
+    }
+
+    #[test]
+    fn memory_monitor_block_renders_when_present_and_flagged() {
+        let td = tempfile::tempdir().unwrap();
+        let flagged = chrono::Utc::now();
+        let rs =
+            live_runtime(td.path()).with_memory_monitor(spt_state::runtime::MemoryMonitorStatus {
+                enabled: true,
+                interval_secs: Some(60),
+                last_rss_bytes: Some(64 * 1024 * 1024),
+                samples: 12,
+                last_flagged: Some(flagged),
+            });
+        spt_state::write_runtime(td.path(), &rs).unwrap();
+        let g = global(td.path().to_path_buf());
+        let report = build_report(&g).unwrap();
+        let svc = ServiceLine {
+            label: "running".into(),
+        };
+
+        // Plain (no color): block present, RSS humanized to MiB, interval shown,
+        // sample count shown, and the flagged timestamp present.
+        let plain = crate::cli::style::Styler::new(false);
+        let human = render_human(&report, false, plain, &svc);
+        assert!(human.contains("Memory monitor: on"), "got:\n{human}");
+        assert!(human.contains("every 60s"), "got:\n{human}");
+        assert!(human.contains("64.0 MiB"), "got:\n{human}");
+        assert!(human.contains("samples: 12"), "got:\n{human}");
+        assert!(
+            human.contains(&flagged.to_rfc3339()),
+            "expected flagged ts; got:\n{human}"
+        );
+        // Concise mode must NOT print raw bytes; --detail must.
+        assert!(
+            !human.contains("bytes)"),
+            "concise leaked raw bytes:\n{human}"
+        );
+        let detail = render_human(&report, true, plain, &svc);
+        assert!(detail.contains("67108864 bytes"), "got:\n{detail}");
+
+        // Colored: the flagged timestamp is wrapped in red.
+        let styled = crate::cli::style::Styler::new(true);
+        let colored = render_human(&report, false, styled, &svc);
+        assert!(
+            colored.contains(&format!("\x1b[31m{}\x1b[0m", flagged.to_rfc3339())),
+            "flagged ts not red; got:\n{colored}"
+        );
+    }
+
+    #[test]
+    fn memory_monitor_present_no_flag_shows_no_growth() {
+        let td = tempfile::tempdir().unwrap();
+        let rs =
+            live_runtime(td.path()).with_memory_monitor(spt_state::runtime::MemoryMonitorStatus {
+                enabled: true,
+                interval_secs: Some(30),
+                last_rss_bytes: Some(10 * 1024 * 1024),
+                samples: 3,
+                last_flagged: None,
+            });
+        spt_state::write_runtime(td.path(), &rs).unwrap();
+        let g = global(td.path().to_path_buf());
+        let report = build_report(&g).unwrap();
+        let plain = crate::cli::style::Styler::new(false);
+        let svc = ServiceLine {
+            label: "running".into(),
+        };
+        let human = render_human(&report, false, plain, &svc);
+        assert!(human.contains("no growth flagged"), "got:\n{human}");
+    }
+
+    #[test]
+    fn memory_monitor_absent_emits_no_block() {
+        // The base `live_runtime` carries no memory monitor; the Subsystems
+        // section must therefore contain no "Memory monitor" line so existing
+        // no-monitor snapshots stay byte-identical.
+        let td = tempfile::tempdir().unwrap();
+        let rs = live_runtime(td.path());
+        assert!(rs.subsystems.memory_monitor.is_none());
+        spt_state::write_runtime(td.path(), &rs).unwrap();
+        let g = global(td.path().to_path_buf());
+        let report = build_report(&g).unwrap();
+        let plain = crate::cli::style::Styler::new(false);
+        let svc = ServiceLine {
+            label: "running".into(),
+        };
+        let human = render_human(&report, true, plain, &svc);
+        assert!(
+            !human.contains("Memory monitor"),
+            "absent monitor must not render a block; got:\n{human}"
         );
     }
 

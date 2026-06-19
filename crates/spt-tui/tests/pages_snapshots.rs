@@ -844,3 +844,84 @@ auth = "TOPSECRETSUBAUTH"
         "expected the redacted auth marker in the row editor render"
     );
 }
+
+// -----------------------------------------------------------------
+// t-memleak (E7) — events fully TUI-configurable: the top-level
+// `[events]` settings region and the per-binding dedupe rows. Both
+// gated behind populated state; the default-state `events_page_100x20`
+// snapshot above stays byte-identical (no scalars / no bindings).
+// -----------------------------------------------------------------
+
+/// The Events "settings" region rendered with all five top-level scalars set.
+/// The region sits at the tail of the layout (below sinks/bindings) and is
+/// shown because the scalars are non-empty. Tab×4 focuses it
+/// (Tags→Sinks→Bindings→Commands→Settings).
+#[test]
+fn snapshot_events_page_settings_region() {
+    const SETTINGS_SAMPLE: &str = r#"version = 1
+[[profiles]]
+name = "demo"
+protocol = "ssh2"
+
+[events]
+ring_capacity = 2048
+retry_interval = "45s"
+spool_dir = "/var/spool/spt"
+spool_max_bytes = "32MiB"
+default_min_level = "warn"
+
+[[events.sinks]]
+name = "webhook"
+type = "http"
+url = "https://example.com/hook"
+
+[[events.bindings]]
+name = "on-fail"
+on = ["profile.failed"]
+actions = ["webhook"]
+"#;
+    let snap = snapshot_page_with_keys(
+        PageKind::Events,
+        &[KeyCode::Tab, KeyCode::Tab, KeyCode::Tab, KeyCode::Tab],
+        SETTINGS_SAMPLE,
+        100,
+        50,
+    );
+    insta::assert_snapshot!("events_page_settings_region_100x50", snap);
+}
+
+/// The binding editor open with the per-binding dedupe rows populated. The
+/// `dedupe.key` / `dedupe.window` rows are surfaced below throttle. Tab×2
+/// focuses Bindings, Enter opens the editor on binding #0.
+#[test]
+fn snapshot_events_page_binding_editor_dedupe() {
+    const DEDUPE_SAMPLE: &str = r#"version = 1
+[[profiles]]
+name = "demo"
+protocol = "ssh2"
+
+[[events.sinks]]
+name = "webhook"
+type = "http"
+url = "https://example.com/hook"
+
+[[events.bindings]]
+name = "on-fail"
+on = ["profile.failed", "memory.leak_suspected"]
+actions = ["webhook"]
+min_level = "warn"
+throttle = "1m"
+
+[events.bindings.dedupe]
+key = "kind"
+window = "90s"
+"#;
+    let snap = snapshot_page_with_keys(
+        PageKind::Events,
+        &[KeyCode::Tab, KeyCode::Tab, KeyCode::Enter],
+        DEDUPE_SAMPLE,
+        100,
+        50,
+    );
+    insta::assert_snapshot!("events_page_binding_editor_dedupe_100x50", snap);
+}

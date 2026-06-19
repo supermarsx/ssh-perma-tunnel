@@ -55,6 +55,40 @@ impl Default for DispatcherConfig {
     }
 }
 
+impl DispatcherConfig {
+    /// Override the per-sink spool root (e.g. mapped from the schema
+    /// `Events.spool_dir`). Chainable, additive, preserves every other field.
+    #[must_use]
+    pub fn with_spool_root(mut self, root: impl Into<PathBuf>) -> Self {
+        self.spool_root = root.into();
+        self
+    }
+
+    /// Override the per-sink spool size cap in bytes (e.g. mapped from the
+    /// schema `Events.spool_max_bytes`). Other [`SpoolConfig`] fields keep
+    /// their current values.
+    #[must_use]
+    pub fn with_spool_max_bytes(mut self, max_bytes: u64) -> Self {
+        self.spool.max_bytes = max_bytes;
+        self
+    }
+
+    /// Replace the whole [`SpoolConfig`] for finer control.
+    #[must_use]
+    pub fn with_spool(mut self, spool: SpoolConfig) -> Self {
+        self.spool = spool;
+        self
+    }
+
+    /// Override how often the retry task drains spools (e.g. mapped from the
+    /// schema `Events.retry_interval`).
+    #[must_use]
+    pub fn with_retry_interval(mut self, retry_interval: Duration) -> Self {
+        self.retry_interval = retry_interval;
+        self
+    }
+}
+
 /// Running dispatcher.
 pub struct Dispatcher {
     join: Mutex<Option<JoinHandle<()>>>,
@@ -549,6 +583,37 @@ mod tests {
         assert!(!c.strict_redaction);
         assert!(c.spool.max_bytes > 0);
         assert!(c.spool.max_files > 0);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn config_builders_set_retry_interval_and_spool() {
+        let tmp = tempdir().unwrap();
+        let cfg = DispatcherConfig::default()
+            .with_spool_root(tmp.path())
+            .with_retry_interval(Duration::from_millis(123))
+            .with_spool_max_bytes(4096);
+        assert_eq!(cfg.spool_root, tmp.path());
+        assert_eq!(cfg.retry_interval, Duration::from_millis(123));
+        assert_eq!(cfg.spool.max_bytes, 4096);
+        // Built dispatcher inner uses the chosen spool_root (subdir per sink)
+        // and carries the chosen retry_interval in cfg.
+        let mut sinks: HashMap<String, Arc<dyn Sink>> = HashMap::new();
+        sinks.insert(
+            "alerts".into(),
+            Arc::new(HttpSink::new(
+                "alerts",
+                "POST",
+                "https://x",
+                "{}",
+                "application/json",
+                HttpAuth::None,
+                Arc::new(RecordingTransport::new()),
+            )) as Arc<dyn Sink>,
+        );
+        let d = build_for_test(Vec::new(), sinks, cfg).unwrap();
+        assert_eq!(d.cfg.retry_interval, Duration::from_millis(123));
+        assert_eq!(d.cfg.spool.max_bytes, 4096);
+        assert!(tmp.path().join("alerts").is_dir());
     }
 
     #[tokio::test(flavor = "current_thread")]

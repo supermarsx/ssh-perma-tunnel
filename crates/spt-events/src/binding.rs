@@ -192,6 +192,18 @@ impl Default for Dedupe {
 }
 
 impl Dedupe {
+    /// Build a dedupe policy from a single key field and a window (e.g.
+    /// mapped from the schema `EventDedupe { key, window }`). When `key` is
+    /// `None` the documented default key fields are used.
+    #[must_use]
+    pub fn new(key: Option<String>, window: Duration) -> Self {
+        let key_fields = key.map_or_else(|| Self::default().key_fields, |k| vec![k]);
+        Self {
+            key_fields,
+            interval: window,
+        }
+    }
+
     /// Compute the dedupe key for `event`.
     #[must_use]
     pub fn key_for(&self, event: &Event) -> String {
@@ -225,6 +237,50 @@ pub struct Binding {
     /// Dedupe policy.
     #[serde(default)]
     pub dedupe: Option<Dedupe>,
+}
+
+impl Binding {
+    /// Construct a binding from its core parts: a `name`, a match predicate,
+    /// and the sinks to fire. `dedupe`/`min_level` default to unset and can be
+    /// layered on with [`Binding::with_dedupe`] / [`Binding::with_min_level`].
+    #[must_use]
+    pub fn new(name: impl Into<String>, r#match: BindingMatch, sinks: Vec<SinkRef>) -> Self {
+        Self {
+            name: name.into(),
+            r#match,
+            sinks,
+            dedupe: None,
+        }
+    }
+
+    /// Attach (or clear) a [`Dedupe`] policy. Chainable.
+    #[must_use]
+    pub fn with_dedupe(mut self, dedupe: Option<Dedupe>) -> Self {
+        self.dedupe = dedupe;
+        self
+    }
+
+    /// Set the binding's minimum-severity floor (`match.min_severity`).
+    /// Chainable. Passing `Some(level)` overrides any current value; `None`
+    /// leaves the existing value untouched so a per-binding level always wins
+    /// over a later-applied default — pair with [`Binding::min_severity_or`].
+    #[must_use]
+    pub fn with_min_level(mut self, level: Severity) -> Self {
+        self.r#match.min_severity = Some(level);
+        self
+    }
+
+    /// Apply a *default* severity floor only when this binding does not
+    /// already declare its own. Use this for the pipeline-wide
+    /// `Events.default_min_level`: bindings with an explicit `min_level` keep
+    /// it; bindings without one inherit `default`.
+    #[must_use]
+    pub fn min_severity_or(mut self, default: Severity) -> Self {
+        if self.r#match.min_severity.is_none() {
+            self.r#match.min_severity = Some(default);
+        }
+        self
+    }
 }
 
 /// In-memory dedupe state.
@@ -475,6 +531,68 @@ mod tests {
         let s2 = serde_json::to_string(&b).unwrap();
         let back2: Binding = serde_json::from_str(&s2).unwrap();
         assert!(back2.dedupe.is_none());
+    }
+
+    #[test]
+    fn dedupe_new_from_key_and_window() {
+        // Explicit key -> single-field key_fields + chosen window.
+        let d = Dedupe::new(Some("forward_id".into()), Duration::from_secs(120));
+        assert_eq!(d.key_fields, vec!["forward_id"]);
+        assert_eq!(d.interval, Duration::from_secs(120));
+        // No key -> documented default fields, window still honored.
+        let d2 = Dedupe::new(None, Duration::from_secs(5));
+        assert_eq!(d2.key_fields, Dedupe::default().key_fields);
+        assert_eq!(d2.interval, Duration::from_secs(5));
+    }
+
+    #[test]
+    fn binding_with_dedupe_set_dedupes_correctly() {
+        // A binding built via the public constructors carrying a Dedupe should
+        // suppress a repeated key within the window.
+        let b = Binding::new(
+            "b",
+            BindingMatch {
+                kinds: vec!["k".into()],
+                ..Default::default()
+            },
+            vec![SinkRef::new("alerts")],
+        )
+        .with_dedupe(Some(Dedupe::new(
+            Some("kind".into()),
+            Duration::from_secs(60),
+        )));
+        let dedupe = b.dedupe.as_ref().expect("dedupe set");
+        let state = DedupeState::new();
+        let e = Event::builder("k", Severity::Info).build();
+        assert!(!state.should_suppress(dedupe, &e), "first is allowed");
+        assert!(state.should_suppress(dedupe, &e), "second is suppressed");
+    }
+
+    #[test]
+    fn binding_with_min_level_sets_floor() {
+        let b = Binding::new("b", BindingMatch::default(), vec![]).with_min_level(Severity::Warn);
+        assert_eq!(b.r#match.min_severity, Some(Severity::Warn));
+        assert!(b.r#match.matches(&ev("x", Severity::Error)));
+        assert!(!b.r#match.matches(&ev("x", Severity::Info)));
+    }
+
+    #[test]
+    fn min_severity_or_applies_default_only_when_unset() {
+        // Unset binding inherits the default floor.
+        let inherited =
+            Binding::new("a", BindingMatch::default(), vec![]).min_severity_or(Severity::Warn);
+        assert_eq!(inherited.r#match.min_severity, Some(Severity::Warn));
+        // A binding with its own level keeps it (default does NOT override).
+        let explicit = Binding::new(
+            "b",
+            BindingMatch {
+                min_severity: Some(Severity::Error),
+                ..Default::default()
+            },
+            vec![],
+        )
+        .min_severity_or(Severity::Warn);
+        assert_eq!(explicit.r#match.min_severity, Some(Severity::Error));
     }
 
     #[test]

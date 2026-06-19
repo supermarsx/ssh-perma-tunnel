@@ -65,6 +65,7 @@ pub fn validate(c: &Config) -> Diagnostics {
     check_observability(&mut d, c);
     check_status_api(&mut d, c);
     check_mcp(&mut d, c);
+    check_mem_hygiene(&mut d, c);
     check_updater(&mut d, c);
     check_capabilities(&mut d, c);
     check_profiles(&mut d, c);
@@ -509,6 +510,39 @@ fn check_events(d: &mut Diagnostics, c: &Config) {
         return;
     };
 
+    // Top-level events runtime scalars (previously hard-coded `::default()`
+    // in build_events_pipeline). These drive the bus ring capacity, the
+    // dispatcher spool/retry settings, and the default binding severity.
+    if matches!(events.ring_capacity, Some(0)) {
+        d.push(
+            Diagnostic::error(
+                "events_ring_capacity_zero",
+                "events.ring_capacity must be greater than zero",
+            )
+            .at("events.ring_capacity"),
+        );
+    }
+    check_duration_field(d, events.retry_interval.as_deref(), "events.retry_interval");
+    check_size_field(
+        d,
+        events.spool_max_bytes.as_deref(),
+        "events.spool_max_bytes",
+    );
+    if let Some(level) = events.default_min_level.as_deref() {
+        if !level.is_empty() && !is_valid_severity(level) {
+            d.push(
+                Diagnostic::error(
+                    "events_default_min_level_invalid",
+                    format!(
+                        "events.default_min_level `{level}` is not a valid severity \
+                         (trace|debug|info|warn|error|critical)"
+                    ),
+                )
+                .at("events.default_min_level"),
+            );
+        }
+    }
+
     // Sink names + types.
     let mut sink_names: Vec<&str> = Vec::with_capacity(events.sinks.len());
     for (i, sink) in events.sinks.iter().enumerate() {
@@ -667,7 +701,43 @@ fn check_events(d: &mut Diagnostics, c: &Config) {
         }
 
         check_duration_field(d, binding.throttle.as_deref(), format!("{prefix}.throttle"));
+
+        // Per-binding min_level (severity name) when present.
+        if let Some(level) = binding.min_level.as_deref() {
+            if !level.is_empty() && !is_valid_severity(level) {
+                d.push(
+                    Diagnostic::error(
+                        "event_binding_min_level_invalid",
+                        format!(
+                            "event binding `{}` min_level `{level}` is not a valid severity \
+                             (trace|debug|info|warn|error|critical)",
+                            binding.name
+                        ),
+                    )
+                    .at(format!("{prefix}.min_level")),
+                );
+            }
+        }
+
+        // Per-binding dedupe window parses as a duration (maps to
+        // `Dedupe.interval`).
+        if let Some(dedupe) = binding.dedupe.as_ref() {
+            check_duration_field(
+                d,
+                dedupe.window.as_deref(),
+                format!("{prefix}.dedupe.window"),
+            );
+        }
     }
+}
+
+/// Recognise a severity name as understood by `spt_events::Severity::parse`.
+/// Kept local so spt-config does not depend on spt-events.
+fn is_valid_severity(s: &str) -> bool {
+    matches!(
+        s.to_ascii_lowercase().as_str(),
+        "trace" | "debug" | "info" | "warn" | "warning" | "error" | "critical" | "crit" | "fatal"
+    )
 }
 
 /// Validate the `[status_api]` table (E5-F7 + E6-F3 config-time side).
@@ -1216,6 +1286,53 @@ fn check_mcp(d: &mut Diagnostics, c: &Config) {
                 "mcp.allow_secret_reveal must remain false (spec §9.8/§16)",
             )
             .at("mcp.allow_secret_reveal"),
+        );
+    }
+}
+
+/// Validate the `[mem_hygiene]` table. The monitor is opt-in, but its
+/// duration/bytesize knobs and the `min_rising_fraction` ratio must parse
+/// even when `enabled = false` so misconfigurations surface at load time
+/// rather than at first sample.
+fn check_mem_hygiene(d: &mut Diagnostics, c: &Config) {
+    let Some(mh) = c.mem_hygiene.as_ref() else {
+        return;
+    };
+
+    check_duration_field(d, mh.interval.as_deref(), "mem_hygiene.interval");
+    check_size_field(
+        d,
+        mh.growth_threshold.as_deref(),
+        "mem_hygiene.growth_threshold",
+    );
+    check_size_field(
+        d,
+        mh.growth_rate_per_min.as_deref(),
+        "mem_hygiene.growth_rate_per_min",
+    );
+
+    if let Some(fraction) = mh.min_rising_fraction {
+        if !(fraction > 0.0 && fraction <= 1.0) {
+            d.push(
+                Diagnostic::error(
+                    "mem_hygiene_min_rising_fraction_range",
+                    format!(
+                        "mem_hygiene.min_rising_fraction `{fraction}` must be in the range \
+                         (0, 1]"
+                    ),
+                )
+                .at("mem_hygiene.min_rising_fraction"),
+            );
+        }
+    }
+
+    if matches!(mh.window_samples, Some(0)) {
+        d.push(
+            Diagnostic::error(
+                "mem_hygiene_window_samples_zero",
+                "mem_hygiene.window_samples must be greater than zero",
+            )
+            .at("mem_hygiene.window_samples"),
         );
     }
 }
@@ -4314,5 +4431,240 @@ mod tests {
             "disabled status_api must not warn: {:?}",
             d.warnings
         );
+    }
+
+    // -----------------------------------------------------------------
+    // t-memleak: [mem_hygiene] + events runtime scalars + binding dedupe
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn mem_hygiene_good_values_validate() {
+        let raw = r#"
+            version = 1
+            [mem_hygiene]
+            enabled = true
+            interval = "60s"
+            window_samples = 30
+            growth_threshold = "64MiB"
+            growth_rate_per_min = "2MiB"
+            min_rising_fraction = 0.8
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(d.is_ok(), "errors: {:?}", d.errors);
+    }
+
+    #[test]
+    fn mem_hygiene_bad_duration_errors() {
+        let raw = r#"
+            version = 1
+            [mem_hygiene]
+            interval = "not-a-duration"
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(d.errors.iter().any(|e| e.code == "duration_invalid"));
+    }
+
+    #[test]
+    fn mem_hygiene_min_rising_fraction_above_one_errors() {
+        let raw = r#"
+            version = 1
+            [mem_hygiene]
+            min_rising_fraction = 1.5
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(d
+            .errors
+            .iter()
+            .any(|e| e.code == "mem_hygiene_min_rising_fraction_range"));
+    }
+
+    #[test]
+    fn mem_hygiene_min_rising_fraction_zero_errors() {
+        let raw = r#"
+            version = 1
+            [mem_hygiene]
+            min_rising_fraction = 0.0
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(d
+            .errors
+            .iter()
+            .any(|e| e.code == "mem_hygiene_min_rising_fraction_range"));
+    }
+
+    #[test]
+    fn events_scalars_good_values_validate() {
+        let raw = r#"
+            version = 1
+            [events]
+            ring_capacity = 2048
+            retry_interval = "45s"
+            spool_dir = "/var/spool/spt"
+            spool_max_bytes = "32MiB"
+            default_min_level = "warn"
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(d.is_ok(), "errors: {:?}", d.errors);
+    }
+
+    #[test]
+    fn events_ring_capacity_zero_errors() {
+        let raw = r#"
+            version = 1
+            [events]
+            ring_capacity = 0
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(d
+            .errors
+            .iter()
+            .any(|e| e.code == "events_ring_capacity_zero"));
+    }
+
+    #[test]
+    fn events_default_min_level_invalid_errors() {
+        let raw = r#"
+            version = 1
+            [events]
+            default_min_level = "loud"
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(d
+            .errors
+            .iter()
+            .any(|e| e.code == "events_default_min_level_invalid"));
+    }
+
+    #[test]
+    fn events_retry_interval_and_spool_max_bytes_bad_error() {
+        let raw = r#"
+            version = 1
+            [events]
+            retry_interval = "soon"
+            spool_max_bytes = "lots"
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(d.errors.iter().any(|e| e.code == "duration_invalid"));
+        assert!(d.errors.iter().any(|e| e.code == "size_invalid"));
+    }
+
+    #[test]
+    fn event_binding_dedupe_bad_window_errors() {
+        let raw = r#"
+            version = 1
+            [events]
+            [[events.sinks]]
+            name = "alerts"
+            type = "webhook_post"
+            url = "https://example.com/hook"
+            [[events.bindings]]
+            name = "ops"
+            on = ["forward.*"]
+            actions = ["alerts"]
+            [events.bindings.dedupe]
+            key = "kind"
+            window = "whenever"
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(d.errors.iter().any(|e| e.code == "duration_invalid"));
+    }
+
+    #[test]
+    fn event_binding_dedupe_good_window_validates() {
+        let raw = r#"
+            version = 1
+            [events]
+            [[events.sinks]]
+            name = "alerts"
+            type = "webhook_post"
+            url = "https://example.com/hook"
+            [[events.bindings]]
+            name = "ops"
+            on = ["forward.*"]
+            actions = ["alerts"]
+            min_level = "warn"
+            [events.bindings.dedupe]
+            key = "kind"
+            window = "5m"
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(d.is_ok(), "errors: {:?}", d.errors);
+    }
+
+    #[test]
+    fn event_binding_min_level_invalid_errors() {
+        let raw = r#"
+            version = 1
+            [events]
+            [[events.sinks]]
+            name = "alerts"
+            type = "webhook_post"
+            url = "https://example.com/hook"
+            [[events.bindings]]
+            name = "ops"
+            on = ["forward.*"]
+            actions = ["alerts"]
+            min_level = "screaming"
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(d
+            .errors
+            .iter()
+            .any(|e| e.code == "event_binding_min_level_invalid"));
     }
 }

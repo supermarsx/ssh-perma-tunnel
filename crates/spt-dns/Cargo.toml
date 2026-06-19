@@ -34,3 +34,7 @@ hickory-resolver = { workspace = true }
 hickory-proto = { workspace = true }
 async-trait = { workspace = true }
 parking_lot = { workspace = true }
+# Self dev-dep enables the `testing` module (FakeZone, LocalhostResolver) for
+# the leak-test binary without a feature flag.
+spt-dns = { path = ".", version = "0.26.1", features = ["testing"] }
+spt-mem-hygiene = { workspace = true, features = ["test-alloc"] }

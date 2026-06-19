@@ -412,6 +412,14 @@ pub fn notify_max_exhausted_for_test(attempt: u32) {
 mod hook_tests {
     use super::*;
     use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::Mutex;
+
+    // Serialize tests that mutate the process-wide reconnect observer.
+    // cargo runs tests in parallel threads; install/notify on the global
+    // observer races with any other test that fires notify_attempt/etc.
+    // Hold this lock for the duration of any test in this mod that touches
+    // the global observer (mirrors the ENV_LOCK pattern used elsewhere).
+    static HOOK_LOCK: Mutex<()> = Mutex::new(());
 
     #[derive(Default)]
     struct Counting {
@@ -433,9 +441,11 @@ mod hook_tests {
 
     #[test]
     fn install_then_notify_dispatches() {
-        // Note: this test mutates process-wide state. Other hook-using
-        // tests in this crate should serialize via a mutex or run with
-        // `--test-threads=1` if added.
+        // This test mutates process-wide state; serialize against any other
+        // hook-using test in this mod (and against the global observer).
+        let _g = HOOK_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let c = Arc::new(Counting::default());
         let prev = install_test_hook(c.clone());
         notify_attempt(1, Duration::from_millis(10));
