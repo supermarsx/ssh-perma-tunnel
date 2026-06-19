@@ -1,3 +1,12 @@
+## [26.16] - 2026-06-19
+
+# spt 26.16
+
+## Changes since 26.15
+
+- fix(ci): regenerate tests/chaos/Cargo.lock after t-memleak dev-dep edges (d3d6c2b)
+- feat: memory-leak detection (events) + extensive leak tests + events fully configurable (b38b8c7)
+
 ## [26.15] - 2026-06-18
 
 # spt 26.15
