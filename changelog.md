@@ -1,3 +1,12 @@
+## [26.17] - 2026-06-22
+
+# spt 26.17
+
+## Changes since 26.16
+
+- fix(chaos): add BackoffConfig.retry_auth_failures field after tunnel-field wiring (7526700)
+- feat: wire dead tunnel config fields so they actually take effect + ~75 coverage tests (f57c907)
+
 ## [26.16] - 2026-06-19
 
 # spt 26.16
