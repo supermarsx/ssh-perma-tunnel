@@ -215,6 +215,102 @@ impl KeepalivePolicy {
     }
 }
 
+/// Socket- and channel-level connection tuning threaded from the profile's
+/// `[profiles.connection]` table into the russh dial path.
+///
+/// This carries only the **genuinely wireable** subset of `[profiles.connection]`:
+///
+/// * `tcp_nodelay` → russh [`client::Config::nodelay`] (russh calls
+///   `set_nodelay` on the SSH socket) *and* the dialed socket via
+///   [`spt_net::sockopts`] so it is honored on the `connect_stream` path too.
+/// * `channel_window_size` → [`client::Config::window_size`].
+/// * `channel_max_packet_size` → [`client::Config::maximum_packet_size`]
+///   (russh rejects values `> 65535`; the factory/validate side clamps).
+/// * `connect_timeout` → bounds the outermost TCP connect via
+///   [`tokio::time::timeout`].
+/// * `socket_keepalive` + `keepalive_idle` / `keepalive_interval` /
+///   `keepalive_retries` → a [`spt_net::sockopts::TcpOptions`] applied to the
+///   dialed `socket2::Socket` before it is handed to russh.
+///
+/// The murky SSH-level timeouts (`auth_timeout`, `handshake_timeout`,
+/// `read_timeout`, `write_timeout`) are intentionally **not** represented here:
+/// russh 0.61 exposes no clean apply site for them (its `Limits` are rekey
+/// byte/time limits, not per-operation deadlines), so they stay parsed-and-
+/// warned in `spt-config` validate.
+///
+/// A fully-defaulted `ConnectionPolicy` is a no-op: every field is `None`/
+/// `false`, so the russh `Config` defaults and the legacy plain-TCP dial are
+/// preserved byte-for-byte.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ConnectionPolicy {
+    /// `tcp_nodelay`. `None` keeps russh's default (Nagle on).
+    pub tcp_nodelay: Option<bool>,
+    /// `channel_window_size`. `None` keeps russh's default (2 MiB).
+    pub channel_window_size: Option<u32>,
+    /// `channel_max_packet_size`. `None` keeps russh's default (32 KiB).
+    pub channel_max_packet_size: Option<u32>,
+    /// `connect_timeout` for the outermost TCP dial. `None` = unbounded
+    /// (tokio's default connect behaviour).
+    pub connect_timeout: Option<Duration>,
+    /// `socket_keepalive` master switch. When `Some(true)`, a `TcpKeepalive`
+    /// is applied with the idle/interval/retry values below; `None`/`Some(false)`
+    /// leaves OS defaults.
+    pub socket_keepalive: Option<bool>,
+    /// `keepalive_idle` — idle time before the first keepalive probe.
+    pub keepalive_idle: Option<Duration>,
+    /// `keepalive_interval` — interval between keepalive probes.
+    pub keepalive_interval: Option<Duration>,
+    /// `keepalive_retries` — probe count before the socket is declared dead
+    /// (Linux only at the OS layer).
+    pub keepalive_retries: Option<u32>,
+}
+
+impl ConnectionPolicy {
+    /// Apply the channel-flow-control + nodelay knobs onto the russh
+    /// [`client::Config`]. Socket-level options (connect timeout, keepalive)
+    /// are applied separately at dial time via [`Self::tcp_options`].
+    fn apply_to_config(&self, cfg: &mut client::Config) {
+        if let Some(nodelay) = self.tcp_nodelay {
+            cfg.nodelay = nodelay;
+        }
+        if let Some(window) = self.channel_window_size {
+            cfg.window_size = window;
+        }
+        if let Some(packet) = self.channel_max_packet_size {
+            // russh rejects `maximum_packet_size > 65535` at connect; clamp so a
+            // larger configured value degrades gracefully rather than failing
+            // the dial.
+            cfg.maximum_packet_size = packet.min(65535);
+        }
+    }
+
+    /// True when a socket-level keepalive should be applied to the dialed
+    /// socket (the master `socket_keepalive` switch is on, or any keepalive
+    /// timing field is set).
+    fn wants_keepalive(&self) -> bool {
+        matches!(self.socket_keepalive, Some(true))
+    }
+
+    /// Build the [`spt_net::sockopts::TcpOptions`] to apply to a freshly
+    /// dialed socket, or `None` when this policy requests no socket-level
+    /// tuning (so the legacy `TcpStream::connect` fast path is preserved).
+    fn tcp_options(&self) -> Option<spt_net::sockopts::TcpOptions> {
+        let nodelay = self.tcp_nodelay.unwrap_or(false);
+        let keepalive = self.wants_keepalive();
+        if !nodelay && !keepalive {
+            return None;
+        }
+        Some(spt_net::sockopts::TcpOptions {
+            nodelay,
+            keepalive_idle: keepalive.then_some(self.keepalive_idle).flatten(),
+            keepalive_interval: keepalive.then_some(self.keepalive_interval).flatten(),
+            keepalive_retries: keepalive.then_some(self.keepalive_retries).flatten(),
+            freebind: false,
+            dual_stack_v6: false,
+        })
+    }
+}
+
 /// Reject auth methods that the russh 0.61 backend can never satisfy
 /// (`gssapi`/`sspi` — russh exposes no `gssapi-with-mic` userauth primitive,
 /// see [`try_gssapi_auth`]). Surfacing this at profile build / validation
@@ -251,13 +347,61 @@ pub(crate) fn connect(
     gss_audit: Option<Arc<dyn spt_auth_sspi::AuditHook>>,
     keepalive: KeepalivePolicy,
     obfs: Option<ObfsPolicy>,
+    connection: ConnectionPolicy,
 ) -> ConnectFuture {
     Box::pin(async move {
         connect_inner(
             endpoint, auth_cfg, crypto, trust, backends, hops, gss_audit, keepalive, obfs,
+            connection,
         )
         .await
     })
+}
+
+/// Dial a plain `TcpStream` to `host:port`, applying the `[profiles.connection]`
+/// socket options (`tcp_nodelay`, `socket_keepalive` + idle/interval/retries)
+/// and bounding the connect with `connect_timeout` when set.
+///
+/// The socket is dialed via tokio, converted to a blocking `socket2::Socket`
+/// to apply the options, then converted back to a non-blocking tokio
+/// `TcpStream` for the russh handshake. Errors map onto `russh::Error::IO` so
+/// the caller's existing dial-failure diagnostics apply unchanged.
+async fn dial_tuned(
+    host: &str,
+    port: u16,
+    connection: &ConnectionPolicy,
+) -> std::result::Result<TcpStream, russh::Error> {
+    let connect = TcpStream::connect((host, port));
+    let sock = match connection.connect_timeout {
+        Some(timeout) => tokio::time::timeout(timeout, connect)
+            .await
+            .map_err(|_| {
+                russh::Error::IO(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    format!("connect to {host}:{port} timed out after {timeout:?}"),
+                ))
+            })?
+            .map_err(russh::Error::IO)?,
+        None => connect.await.map_err(russh::Error::IO)?,
+    };
+
+    if let Some(opts) = connection.tcp_options() {
+        // Convert tokio → std → socket2 to apply options, then back to tokio.
+        // `into_std` requires the runtime to deregister the socket; the socket
+        // is re-registered by `from_std`. Options are applied while it is a
+        // plain `socket2::Socket` (blocking), matching `spt_net::sockopts`.
+        let std_sock = sock.into_std().map_err(russh::Error::IO)?;
+        let socket = socket2::Socket::from(std_sock);
+        spt_net::sockopts::apply(&socket, &opts).map_err(|e| {
+            russh::Error::IO(std::io::Error::other(format!(
+                "apply socket options for {host}:{port}: {e}"
+            )))
+        })?;
+        let std_sock: std::net::TcpStream = socket.into();
+        std_sock.set_nonblocking(true).map_err(russh::Error::IO)?;
+        return TcpStream::from_std(std_sock).map_err(russh::Error::IO);
+    }
+    Ok(sock)
 }
 
 /// Dial the outermost transport for the russh session and hand the resulting
@@ -277,10 +421,21 @@ async fn dial_outer(
     port: u16,
     handler: ClientHandler,
     obfs: Option<&ObfsPolicy>,
+    connection: &ConnectionPolicy,
 ) -> std::result::Result<(RusshHandle, Option<&'static str>), russh::Error> {
     match obfs {
         None => {
-            let handle = client::connect(cfg, (host.to_owned(), port), handler).await?;
+            // When the connection policy requests no socket-level tuning and no
+            // connect timeout, preserve the legacy `client::connect` fast path
+            // (russh dials TCP itself). Otherwise dial the socket here so we can
+            // apply `[profiles.connection]` socket options + connect timeout,
+            // then hand the tuned stream to `connect_stream`.
+            if connection.tcp_options().is_none() && connection.connect_timeout.is_none() {
+                let handle = client::connect(cfg, (host.to_owned(), port), handler).await?;
+                return Ok((handle, None));
+            }
+            let sock = dial_tuned(host, port, connection).await?;
+            let handle = client::connect_stream(cfg, sock, handler).await?;
             Ok((handle, None))
         }
         Some(policy) => {
@@ -329,6 +484,7 @@ async fn connect_inner(
     gss_audit: Option<Arc<dyn spt_auth_sspi::AuditHook>>,
     keepalive: KeepalivePolicy,
     obfs: Option<ObfsPolicy>,
+    connection: ConnectionPolicy,
 ) -> Result<RusshSsh2Session> {
     // E3-F9: fail fast on statically-impossible auth methods (gssapi/sspi)
     // for the endpoint and every hop before spending a TCP connect + backoff
@@ -351,6 +507,10 @@ async fn connect_inner(
         ..Default::default()
     };
     keepalive.apply(&mut config);
+    // t-tunnel-wire conn-wire: apply the genuinely-wireable `[profiles.connection]`
+    // channel/nodelay knobs onto the russh config. Socket-level options
+    // (connect timeout + keepalive) are applied at the dial site below.
+    connection.apply_to_config(&mut config);
     let cfg = Arc::new(config);
 
     // Multi-hop dispatch: walk `hops` end-to-end. Each hop opens a
@@ -382,6 +542,7 @@ async fn connect_inner(
             first.port,
             first_handler,
             obfs.as_ref(),
+            &connection,
         )
         .await
         {
@@ -536,31 +697,39 @@ async fn connect_inner(
     // configured `[obfuscation]` transport actually carries the handshake
     // (was: `client::connect` always dialed plain TCP, making the obfs crate
     // and config unreachable).
-    let (handle, obfs_name) =
-        match dial_outer(cfg, &endpoint.host, endpoint.port, handler, obfs.as_ref()).await {
-            Ok(pair) => pair,
-            Err(e) => {
-                if let Some(reason) = trust_failure.lock().clone() {
-                    return Err(Error::TrustFailed(reason));
-                }
-                return Err(Error::network_unreachable(
-                    spt_core::Diagnostic::what(format!(
-                        "Failed to connect to `{}:{}`",
-                        endpoint.host, endpoint.port
-                    ))
-                    .why(format!("{e}"))
-                    .how_to_fix(
-                        "Verify the target host is reachable from this network, that \
-                         the configured port is correct, and that DNS resolves the \
-                         hostname. Common causes: server down, firewall block, \
-                         stale `~/.ssh/known_hosts` entry pointing to wrong IP.",
-                    )
-                    .endpoint(format!("{}:{}", endpoint.host, endpoint.port))
-                    .retry_advice(spt_core::RetryAdvice::RetryWithBackoff)
-                    .build(),
-                ));
+    let (handle, obfs_name) = match dial_outer(
+        cfg,
+        &endpoint.host,
+        endpoint.port,
+        handler,
+        obfs.as_ref(),
+        &connection,
+    )
+    .await
+    {
+        Ok(pair) => pair,
+        Err(e) => {
+            if let Some(reason) = trust_failure.lock().clone() {
+                return Err(Error::TrustFailed(reason));
             }
-        };
+            return Err(Error::network_unreachable(
+                spt_core::Diagnostic::what(format!(
+                    "Failed to connect to `{}:{}`",
+                    endpoint.host, endpoint.port
+                ))
+                .why(format!("{e}"))
+                .how_to_fix(
+                    "Verify the target host is reachable from this network, that \
+                     the configured port is correct, and that DNS resolves the \
+                     hostname. Common causes: server down, firewall block, \
+                     stale `~/.ssh/known_hosts` entry pointing to wrong IP.",
+                )
+                .endpoint(format!("{}:{}", endpoint.host, endpoint.port))
+                .retry_advice(spt_core::RetryAdvice::RetryWithBackoff)
+                .build(),
+            ));
+        }
+    };
 
     // Wrap the handle in `Arc<AsyncMutex>` *before* `run_auth` so every auth
     // arm (including the agent `authenticate_publickey_with` path) shares one
@@ -2207,6 +2376,92 @@ mod tests {
         assert_eq!(cfg.keepalive_max, default_max);
     }
 
+    // ──────── conn-wire: [profiles.connection] policy plumbing ─────────
+
+    #[test]
+    fn connection_policy_default_preserves_russh_config_defaults() {
+        let mut cfg = client::Config::default();
+        let (def_nodelay, def_window, def_packet) =
+            (cfg.nodelay, cfg.window_size, cfg.maximum_packet_size);
+        ConnectionPolicy::default().apply_to_config(&mut cfg);
+        assert_eq!(cfg.nodelay, def_nodelay);
+        assert_eq!(cfg.window_size, def_window);
+        assert_eq!(cfg.maximum_packet_size, def_packet);
+    }
+
+    #[test]
+    fn connection_policy_plumbs_nodelay_and_channel_sizes_into_config() {
+        let mut cfg = client::Config::default();
+        let policy = ConnectionPolicy {
+            tcp_nodelay: Some(true),
+            channel_window_size: Some(4 * 1024 * 1024),
+            channel_max_packet_size: Some(16384),
+            ..ConnectionPolicy::default()
+        };
+        policy.apply_to_config(&mut cfg);
+        assert!(cfg.nodelay);
+        assert_eq!(cfg.window_size, 4 * 1024 * 1024);
+        assert_eq!(cfg.maximum_packet_size, 16384);
+    }
+
+    #[test]
+    fn connection_policy_clamps_packet_size_to_russh_ceiling() {
+        // russh rejects maximum_packet_size > 65535; the policy clamps so an
+        // over-large configured value degrades gracefully instead of failing
+        // the dial.
+        let mut cfg = client::Config::default();
+        ConnectionPolicy {
+            channel_max_packet_size: Some(1_000_000),
+            ..ConnectionPolicy::default()
+        }
+        .apply_to_config(&mut cfg);
+        assert_eq!(cfg.maximum_packet_size, 65535);
+    }
+
+    #[test]
+    fn connection_policy_no_socket_tuning_yields_no_tcp_options() {
+        // No nodelay, no keepalive ⇒ `None` so the legacy fast-path dial
+        // (`client::connect`) is preserved.
+        assert!(ConnectionPolicy::default().tcp_options().is_none());
+        // keepalive timing without the master switch is still no-op.
+        let timing_only = ConnectionPolicy {
+            keepalive_idle: Some(Duration::from_secs(30)),
+            ..ConnectionPolicy::default()
+        };
+        assert!(timing_only.tcp_options().is_none());
+    }
+
+    #[test]
+    fn connection_policy_socket_keepalive_builds_tcp_options() {
+        let policy = ConnectionPolicy {
+            tcp_nodelay: Some(true),
+            socket_keepalive: Some(true),
+            keepalive_idle: Some(Duration::from_secs(30)),
+            keepalive_interval: Some(Duration::from_secs(10)),
+            keepalive_retries: Some(4),
+            ..ConnectionPolicy::default()
+        };
+        let opts = policy.tcp_options().expect("socket tuning requested");
+        assert!(opts.nodelay);
+        assert_eq!(opts.keepalive_idle, Some(Duration::from_secs(30)));
+        assert_eq!(opts.keepalive_interval, Some(Duration::from_secs(10)));
+        assert_eq!(opts.keepalive_retries, Some(4));
+    }
+
+    #[test]
+    fn connection_policy_nodelay_only_builds_tcp_options_without_keepalive() {
+        let policy = ConnectionPolicy {
+            tcp_nodelay: Some(true),
+            ..ConnectionPolicy::default()
+        };
+        let opts = policy.tcp_options().expect("nodelay requested");
+        assert!(opts.nodelay);
+        // Master keepalive switch off ⇒ no keepalive timings carried.
+        assert_eq!(opts.keepalive_idle, None);
+        assert_eq!(opts.keepalive_interval, None);
+        assert_eq!(opts.keepalive_retries, None);
+    }
+
     // ──────── E3-F9: gssapi/sspi fail-fast validation ──────────────────
 
     #[test]
@@ -2296,6 +2551,7 @@ mod tests {
             None,
             KeepalivePolicy::default(),
             Some(obfs),
+            ConnectionPolicy::default(),
         )
         .await;
 
@@ -2335,6 +2591,7 @@ mod tests {
             None,
             KeepalivePolicy::default(),
             None,
+            ConnectionPolicy::default(),
         )
         .await;
         assert!(

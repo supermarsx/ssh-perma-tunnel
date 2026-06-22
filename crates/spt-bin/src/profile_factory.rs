@@ -19,9 +19,9 @@ use std::sync::Arc;
 
 use spt_auth::{AuthConfig, AuthMethod, SecretRef as AuthSecretRef};
 use spt_config::schema::{
-    Auth as AuthCfg, Capabilities, Config, Crypto as CryptoCfg, Hop as HopCfg,
-    HopKind as SchemaHopKind, Limits as LimitsCfg, Profile, ScriptConfig as SchemaScriptConfig,
-    Trust as TrustCfg,
+    Auth as AuthCfg, Capabilities, Config, Connection as ConnectionCfg, Crypto as CryptoCfg,
+    Hop as HopCfg, HopKind as SchemaHopKind, Limits as LimitsCfg, Profile,
+    ScriptConfig as SchemaScriptConfig, Trust as TrustCfg,
 };
 use spt_config_crypt::KeySource;
 use spt_core::{Diagnostic, Error, Result};
@@ -32,8 +32,8 @@ use spt_scripting::{
 };
 use spt_secrets::{Resolver, SecretRef as SecretsRef};
 use spt_ssh2::{
-    crypto::resolve_crypto_policy, multi_hop::HopKind, proxy_jump::ProxyCredentials, CryptoPolicy,
-    Ssh2Protocol, TrustPolicy,
+    crypto::resolve_crypto_policy, multi_hop::HopKind, proxy_jump::ProxyCredentials,
+    ConnectionPolicy, CryptoPolicy, Ssh2Protocol, TrustPolicy,
 };
 use spt_ssh3::{Ssh3Config, Ssh3Protocol};
 use spt_supervisor::{
@@ -441,6 +441,15 @@ fn build_ssh2(
         builder = builder.keepalive(interval, max_missed);
     }
 
+    // conn-wire: feed the *genuinely wireable* subset of `[profiles.connection]`
+    // into the russh dial path. The murky SSH-level timeouts (auth/handshake/
+    // read/write) have no clean russh apply site and stay parsed-and-warned in
+    // spt-config validate. Absent `[profiles.connection]` → default (no-op)
+    // policy, so behaviour is preserved byte-for-byte for existing profiles.
+    if let Some(connection) = profile.connection.as_ref() {
+        builder = builder.connection(build_connection_policy(&profile.name, connection)?);
+    }
+
     for hop in &profile.hops {
         let hop_auth = build_auth_config_parts(
             hop.user.as_deref().or(profile.user.as_deref()),
@@ -737,6 +746,79 @@ fn build_default_limits(profile_name: &str, limits: &LimitsCfg) -> Result<Forwar
 fn parse_profile_size(profile_name: &str, field: &str, raw: &str) -> Result<u64> {
     spt_core::size::parse_size(raw)
         .map_err(|e| Error::InvalidConfig(format!("profile `{profile_name}`: {field}: {e}")))
+}
+
+/// Map the *wireable* subset of `[profiles.connection]` onto a runtime
+/// [`ConnectionPolicy`] (conn-wire).
+///
+/// Wired here:
+/// * `connect_timeout` → bounds the outermost TCP dial.
+/// * `tcp_nodelay` → russh `Config::nodelay` + the dialed socket.
+/// * `socket_keepalive` + `keepalive_idle`/`keepalive_interval`/
+///   `keepalive_retries` → a socket-level `TcpKeepalive` on the dialed stream.
+/// * `channel_window_size` / `channel_max_packet_size` → russh
+///   `Config::window_size` / `maximum_packet_size` (the latter clamped to
+///   russh's 65535 ceiling at apply time).
+///
+/// **Deliberately NOT wired** (no clean russh 0.61 apply site; still
+/// validate-warned): `auth_timeout`, `handshake_timeout`, `read_timeout`,
+/// `write_timeout`, and the channel-open timeout. Channel sizes are parsed with
+/// [`spt_core::size::parse_size`] and clamped to `u32`.
+fn build_connection_policy(
+    profile_name: &str,
+    connection: &ConnectionCfg,
+) -> Result<ConnectionPolicy> {
+    let connect_timeout = connection
+        .connect_timeout
+        .as_deref()
+        .map(|raw| parse_profile_duration(profile_name, "connection.connect_timeout", raw))
+        .transpose()?;
+    let keepalive_idle = connection
+        .keepalive_idle
+        .as_deref()
+        .map(|raw| parse_profile_duration(profile_name, "connection.keepalive_idle", raw))
+        .transpose()?;
+    let keepalive_interval = connection
+        .keepalive_interval
+        .as_deref()
+        .map(|raw| parse_profile_duration(profile_name, "connection.keepalive_interval", raw))
+        .transpose()?;
+    let channel_window_size = connection
+        .channel_window_size
+        .as_deref()
+        .map(|raw| {
+            parse_profile_size(profile_name, "connection.channel_window_size", raw)
+                .map(saturate_u32)
+        })
+        .transpose()?;
+    let channel_max_packet_size = connection
+        .channel_max_packet_size
+        .as_deref()
+        .map(|raw| {
+            parse_profile_size(profile_name, "connection.channel_max_packet_size", raw)
+                .map(saturate_u32)
+        })
+        .transpose()?;
+    Ok(ConnectionPolicy {
+        tcp_nodelay: connection.tcp_nodelay,
+        channel_window_size,
+        channel_max_packet_size,
+        connect_timeout,
+        socket_keepalive: connection.socket_keepalive,
+        keepalive_idle,
+        keepalive_interval,
+        keepalive_retries: connection.keepalive_retries,
+    })
+}
+
+/// Clamp a parsed byte-size to the `u32` ceiling russh's channel-flow-control
+/// fields use (values larger than `u32::MAX` saturate rather than wrap).
+const fn saturate_u32(value: u64) -> u32 {
+    if value > u32::MAX as u64 {
+        u32::MAX
+    } else {
+        value as u32
+    }
 }
 
 /// Map the `[profiles.instability].action` schema string onto the runtime
@@ -1288,6 +1370,7 @@ mod tests {
     use super::*;
     use spt_config::load::load_str;
     use spt_secrets::EnvBackend;
+    use std::time::Duration;
 
     fn empty_resolver() -> Resolver {
         Resolver::new(vec![Arc::new(EnvBackend::new())])
@@ -3234,5 +3317,129 @@ mod tests {
         )
         .unwrap();
         c.profiles.into_iter().next().unwrap()
+    }
+
+    // ---------------- conn-wire: [profiles.connection] mapping ----------------
+
+    /// Parse a TOML snippet's first profile and return its `[profiles.connection]`.
+    fn connection_from_toml(body: &str) -> ConnectionCfg {
+        let raw = format!(
+            r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            user = "u"
+            [profiles.trust]
+            pin_sha256 = ["SHA256:dummy"]
+            [profiles.connection]
+            {body}
+        "#
+        );
+        let (c, _) = load_str(&raw, false).unwrap();
+        c.profiles
+            .into_iter()
+            .next()
+            .unwrap()
+            .connection
+            .expect("connection table present")
+    }
+
+    #[test]
+    fn connection_policy_maps_all_wireable_fields() {
+        let conn = connection_from_toml(
+            r#"
+            connect_timeout = "7s"
+            tcp_nodelay = true
+            socket_keepalive = true
+            keepalive_idle = "30s"
+            keepalive_interval = "10s"
+            keepalive_retries = 4
+            channel_window_size = "2MiB"
+            channel_max_packet_size = "32KiB"
+        "#,
+        );
+        let policy = build_connection_policy("p", &conn).unwrap();
+        assert_eq!(policy.tcp_nodelay, Some(true));
+        assert_eq!(policy.socket_keepalive, Some(true));
+        assert_eq!(policy.connect_timeout, Some(Duration::from_secs(7)));
+        assert_eq!(policy.keepalive_idle, Some(Duration::from_secs(30)));
+        assert_eq!(policy.keepalive_interval, Some(Duration::from_secs(10)));
+        assert_eq!(policy.keepalive_retries, Some(4));
+        assert_eq!(policy.channel_window_size, Some(2 * 1024 * 1024));
+        assert_eq!(policy.channel_max_packet_size, Some(32 * 1024));
+    }
+
+    #[test]
+    fn connection_policy_default_when_fields_absent() {
+        // An empty `[profiles.connection]` yields a fully-default (no-op) policy.
+        let conn = connection_from_toml("");
+        let policy = build_connection_policy("p", &conn).unwrap();
+        assert_eq!(policy, ConnectionPolicy::default());
+    }
+
+    #[test]
+    fn connection_policy_nodelay_false_is_carried() {
+        let conn = connection_from_toml("tcp_nodelay = false");
+        let policy = build_connection_policy("p", &conn).unwrap();
+        // `Some(false)` is distinct from `None` (russh default): an operator who
+        // writes `tcp_nodelay = false` explicitly disables it.
+        assert_eq!(policy.tcp_nodelay, Some(false));
+        assert!(policy.connect_timeout.is_none());
+        assert!(policy.socket_keepalive.is_none());
+    }
+
+    #[test]
+    fn connection_policy_channel_size_saturates_to_u32() {
+        // A size beyond u32::MAX saturates rather than wrapping.
+        let conn = connection_from_toml(r#"channel_window_size = "8GiB""#);
+        let policy = build_connection_policy("p", &conn).unwrap();
+        assert_eq!(policy.channel_window_size, Some(u32::MAX));
+    }
+
+    #[test]
+    fn connection_policy_only_connect_timeout() {
+        let conn = connection_from_toml(r#"connect_timeout = "2500ms""#);
+        let policy = build_connection_policy("p", &conn).unwrap();
+        assert_eq!(policy.connect_timeout, Some(Duration::from_millis(2500)));
+        assert!(policy.tcp_nodelay.is_none());
+        assert!(policy.socket_keepalive.is_none());
+    }
+
+    #[test]
+    fn connection_policy_rejects_bad_duration() {
+        let conn = connection_from_toml(r#"connect_timeout = "not-a-duration""#);
+        let err = build_connection_policy("p", &conn).unwrap_err();
+        assert!(
+            matches!(err, Error::InvalidConfig(_)),
+            "expected InvalidConfig, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn profile_with_connection_table_builds() {
+        // End-to-end: a profile carrying `[profiles.connection]` builds
+        // successfully, proving `build_ssh2`'s `.connection(...)` wiring is
+        // reachable from config (was a parsed-and-ignored table before).
+        let cfg = r#"
+            version = 1
+            [[profiles]]
+            name = "edge"
+            protocol = "ssh2"
+            host = "example.com"
+            user = "alice"
+            [profiles.trust]
+            pin_sha256 = ["SHA256:dummy"]
+            [profiles.connection]
+            connect_timeout = "5s"
+            tcp_nodelay = true
+            socket_keepalive = true
+            keepalive_idle = "30s"
+            channel_window_size = "4MiB"
+        "#;
+        let (c, _) = load_str(cfg, false).unwrap();
+        let bundle = build(&c.profiles[0], &empty_resolver()).unwrap();
+        assert_eq!(bundle.protocol.name(), "ssh2");
     }
 }

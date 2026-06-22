@@ -36,6 +36,10 @@ spt-obfs = { workspace = true }
 
 tokio = { workspace = true }
 async-trait = { workspace = true }
+# conn-wire: apply `[profiles.connection]` socket options (nodelay/keepalive) to
+# the dialed stream. Already in the lock via tokio/mio's transitive graph, so
+# this only adds a dependency *edge* (no new crate version).
+socket2 = { workspace = true }
 ssh-key = { workspace = true }
 secrecy = { workspace = true }
 zeroize = { workspace = true }

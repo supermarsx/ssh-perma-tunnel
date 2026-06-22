@@ -30,7 +30,9 @@ use crate::crypto::CryptoPolicy;
 use crate::hostkey::TrustVerifier;
 use crate::multi_hop::HopKind;
 use crate::proxy_jump::ProxyCredentials;
-use crate::russh_backend::{validate_auth_methods, KeepalivePolicy, ObfsPolicy, ScriptContext};
+use crate::russh_backend::{
+    validate_auth_methods, ConnectionPolicy, KeepalivePolicy, ObfsPolicy, ScriptContext,
+};
 use crate::sftp::SftpClient;
 // t7-A2:start — scripting engine handle threaded into every session built
 // through this protocol. The Arc is shared across every connect attempt for
@@ -100,6 +102,10 @@ pub struct Ssh2Protocol {
     // the scripting lifecycle hooks can name the profile. `None` profile name
     // (default) leaves the script `profile` field empty.
     profile_name: Option<String>,
+    // conn-wire: socket/channel tuning from `[profiles.connection]` (the
+    // genuinely-wireable subset). Default = no-op (russh defaults + legacy
+    // plain-TCP dial).
+    connection: ConnectionPolicy,
 }
 
 /// Builder for [`Ssh2Protocol`].
@@ -120,6 +126,8 @@ pub struct Ssh2ProtocolBuilder {
     obfuscation: Option<ObfsPolicy>,
     // E8-F1
     profile_name: Option<String>,
+    // conn-wire
+    connection: ConnectionPolicy,
 }
 
 impl Default for Ssh2ProtocolBuilder {
@@ -149,6 +157,8 @@ impl Ssh2ProtocolBuilder {
             obfuscation: None,
             // E8-F1
             profile_name: None,
+            // conn-wire
+            connection: ConnectionPolicy::default(),
         }
     }
 
@@ -329,6 +339,21 @@ impl Ssh2ProtocolBuilder {
         self
     }
 
+    /// Set the `[profiles.connection]` socket/channel tuning policy
+    /// (conn-wire).
+    ///
+    /// Carries the genuinely-wireable subset: `tcp_nodelay`,
+    /// `channel_window_size`, `channel_max_packet_size`, `connect_timeout`,
+    /// and `socket_keepalive` + `keepalive_idle`/`keepalive_interval`/
+    /// `keepalive_retries`. A default ([`ConnectionPolicy::default`]) policy is
+    /// a no-op (russh defaults + legacy plain-TCP dial preserved). Wire this
+    /// from `[profiles.connection]` in `profile_factory`.
+    #[must_use]
+    pub fn connection(mut self, connection: ConnectionPolicy) -> Self {
+        self.connection = connection;
+        self
+    }
+
     /// Finalize the builder.
     #[must_use]
     pub fn build(self) -> Ssh2Protocol {
@@ -349,6 +374,8 @@ impl Ssh2ProtocolBuilder {
             obfuscation: self.obfuscation,
             // E8-F1
             profile_name: self.profile_name,
+            // conn-wire
+            connection: self.connection,
         }
     }
 }
@@ -383,6 +410,7 @@ impl Ssh2Protocol {
             self.gssapi_audit_hook.clone(),
             self.keepalive,
             self.obfuscation.clone(),
+            self.connection,
         )
         .await?;
         session.open_sftp_client().await
@@ -457,6 +485,7 @@ impl TunnelProtocol for Ssh2Protocol {
         let gss_audit = self.gssapi_audit_hook.clone();
         let keepalive = self.keepalive;
         let obfuscation = self.obfuscation.clone();
+        let connection = self.connection;
         let profile = self.profile_name.clone().unwrap_or_default();
 
         // E8-F1: fire the `pre_connect` hook before the dial. The session does
@@ -487,6 +516,7 @@ impl TunnelProtocol for Ssh2Protocol {
             gss_audit,
             keepalive,
             obfuscation,
+            connection,
         )
         .await?;
         // t7-A2 / E8-F1: attach scripting engine + context (if any) before

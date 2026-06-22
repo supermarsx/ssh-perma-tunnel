@@ -44,6 +44,10 @@ pub mod testing;
 pub use agent::Agent;
 pub use crypto::CryptoPolicy;
 pub use protocol::{Ssh2BackendKind, Ssh2Protocol, Ssh2ProtocolBuilder, TrustPolicy};
+// conn-wire: re-export so `spt-bin`'s profile_factory can build the
+// `[profiles.connection]` socket/channel tuning policy and pass it to
+// `Ssh2ProtocolBuilder::connection`.
+pub use russh_backend::ConnectionPolicy;
 pub use session::Ssh2Session;
 pub use sftp::{SftpClient, SftpDirEntry, SftpMetadata};
 

@@ -6398,6 +6398,7 @@ dependencies = [
  "russh-sftp",
  "secrecy",
  "serde",
+ "socket2 0.6.3",
  "spt-auth",
  "spt-auth-sspi",
  "spt-core",

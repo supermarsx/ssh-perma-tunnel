@@ -2033,15 +2033,15 @@ fn check_profile_crypto(
 ///
 /// Covers the sub-tables/fields the wiring task explicitly defers:
 /// `[profiles.tls]` (ssh3/QUIC transport tuning), `[profiles.ssh3]` (deferred
-/// tuning), the **entire** `[profiles.connection]` table (Wave B1 confirmed the
-/// russh/ssh2 builder has no setter for any connection field), and
+/// tuning), the **murky timeout** fields of `[profiles.connection]`, and
 /// `profile.dns_resolution` when it requests resolution caching.
 ///
-/// The `[profiles.connection]` warnings split across two codes: the murky
-/// timeouts (`auth_timeout`/`handshake_timeout`/`read_timeout`/`write_timeout`)
-/// use `profile_connection_timeout_not_applied`; the remaining clear knobs
-/// (`connect_timeout`, `tcp_nodelay`, `socket_keepalive`, the `keepalive_*` /
-/// `channel_*` family) use `profile_connection_field_not_applied`.
+/// conn-wire wired the socket-/channel-level subset of `[profiles.connection]`
+/// (`connect_timeout`, `tcp_nodelay`, `socket_keepalive` + `keepalive_*`,
+/// `channel_window_size`, `channel_max_packet_size`) end to end, so those no
+/// longer warn. Only the murky SSH-level timeouts
+/// (`auth_timeout`/`handshake_timeout`/`read_timeout`/`write_timeout`) remain
+/// deferred, emitting `profile_connection_timeout_not_applied`.
 fn check_profile_deferred(d: &mut Diagnostics, p: &Profile, prefix: &str) {
     // `[profiles.tls]` — parsed but the ssh3 build path ignores it today.
     if p.tls.is_some() {
@@ -2081,17 +2081,21 @@ fn check_profile_deferred(d: &mut Diagnostics, p: &Profile, prefix: &str) {
         }
     }
 
-    // `[profiles.connection]` — the entire table is "parsed but not yet
-    // applied": Wave B1 confirmed the russh/ssh2 builder exposes NO setter for
-    // any connection field (it carries only crypto/trust/hops/backends/
-    // keepalive/obfuscation/profile_name; the *transport* keepalive is driven
-    // from `[profiles.keepalive]`, not from `[profiles.connection]`). Two WARN
-    // codes split the table so callers can distinguish:
-    //   * `profile_connection_timeout_not_applied` — the murky timeout fields
-    //     (auth/handshake/read/write) flagged by Wave B2.
-    //   * `profile_connection_field_not_applied` — the remaining "clear" knobs
-    //     (connect_timeout/tcp_nodelay/socket_keepalive/keepalive_*/channel_*)
-    //     which B1 also leaves unwired.
+    // `[profiles.connection]` — conn-wire wired the *socket- and channel-level*
+    // subset of this table end-to-end (profile_factory → `ConnectionPolicy` →
+    // russh dial path):
+    //   * `connect_timeout` (timed TCP dial),
+    //   * `tcp_nodelay` (russh `Config::nodelay` + dialed socket),
+    //   * `socket_keepalive` + `keepalive_idle`/`keepalive_interval`/
+    //     `keepalive_retries` (socket-level `TcpKeepalive`),
+    //   * `channel_window_size` / `channel_max_packet_size` (russh
+    //     `Config::window_size` / `maximum_packet_size`).
+    // Those fields are LIVE and no longer warned.
+    //
+    // The murky SSH-level timeouts remain unwired: russh 0.61 exposes no clean
+    // apply site for per-operation deadlines (its `Limits` are rekey byte/time
+    // limits, not auth/handshake/read/write timeouts), so they keep emitting
+    // `profile_connection_timeout_not_applied` to avoid silently ignoring them.
     if let Some(conn) = p.connection.as_ref() {
         for (field, set) in [
             ("auth_timeout", conn.auth_timeout.is_some()),
@@ -2104,34 +2108,9 @@ fn check_profile_deferred(d: &mut Diagnostics, p: &Profile, prefix: &str) {
                     Diagnostic::warning(
                         "profile_connection_timeout_not_applied",
                         format!(
-                            "profile `{}` connection.{field} is parsed but not yet applied",
-                            p.name
-                        ),
-                    )
-                    .at(format!("{prefix}.connection.{field}")),
-                );
-            }
-        }
-        for (field, set) in [
-            ("connect_timeout", conn.connect_timeout.is_some()),
-            ("tcp_nodelay", conn.tcp_nodelay.is_some()),
-            ("socket_keepalive", conn.socket_keepalive.is_some()),
-            ("keepalive_idle", conn.keepalive_idle.is_some()),
-            ("keepalive_interval", conn.keepalive_interval.is_some()),
-            ("keepalive_retries", conn.keepalive_retries.is_some()),
-            ("channel_window_size", conn.channel_window_size.is_some()),
-            (
-                "channel_max_packet_size",
-                conn.channel_max_packet_size.is_some(),
-            ),
-        ] {
-            if set {
-                d.push(
-                    Diagnostic::warning(
-                        "profile_connection_field_not_applied",
-                        format!(
-                            "profile `{}` connection.{field} is parsed but not yet applied (no \
-                             builder setter wires it onto the SSH connection yet)",
+                            "profile `{}` connection.{field} is parsed but not yet applied \
+                             (russh 0.61 exposes no per-operation deadline; socket-level \
+                             knobs in this table ARE applied)",
                             p.name
                         ),
                     )
@@ -5110,13 +5089,12 @@ mod tests {
     }
 
     #[test]
-    fn profile_connection_clear_knobs_warn_unapplied() {
-        // Wave B1 confirmed the russh/ssh2 builder has NO setter for any
-        // `[profiles.connection]` field, so the "clear" knobs
-        // (connect_timeout/tcp_nodelay/socket_keepalive/keepalive_*/channel_*)
-        // are parsed but never applied. Each set knob must raise exactly one
-        // `profile_connection_field_not_applied` WARN, and must NOT raise the
-        // murky-timeout code.
+    fn profile_connection_socket_knobs_no_longer_warn() {
+        // conn-wire wired the socket-/channel-level subset of
+        // `[profiles.connection]` end to end (profile_factory →
+        // ConnectionPolicy → russh dial path), so these knobs are LIVE and must
+        // NOT raise `profile_connection_field_not_applied` (the code is
+        // retired) NOR the murky-timeout code.
         let raw = r#"
             version = 1
             [[profiles]]
@@ -5135,17 +5113,18 @@ mod tests {
         "#;
         let (c, _) = load_str(raw, false).unwrap();
         let d = validate(&c);
-        let fired = d
-            .warnings
-            .iter()
-            .filter(|w| w.code == "profile_connection_field_not_applied")
-            .count();
-        assert_eq!(fired, 8, "warnings: {:?}", d.warnings);
+        assert!(
+            !d.warnings
+                .iter()
+                .any(|w| w.code == "profile_connection_field_not_applied"),
+            "wired socket knobs must not raise the retired field code: {:?}",
+            d.warnings
+        );
         assert!(
             !d.warnings
                 .iter()
                 .any(|w| w.code == "profile_connection_timeout_not_applied"),
-            "clear knobs must not raise the timeout code: {:?}",
+            "socket knobs must not raise the timeout code: {:?}",
             d.warnings
         );
     }
