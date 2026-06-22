@@ -122,6 +122,7 @@ struct MountPlanView {
     helper: &'static str,
     read_only: bool,
     cache: String,
+    allow_other: bool,
     capability_checks: Vec<CapabilityCheck>,
     runnable_by_spt: bool,
     note: &'static str,
@@ -533,7 +534,10 @@ pub async fn mount_start(global: &GlobalOpts, args: SftpMountStartArgs) -> Resul
 
     // Resolve the mountpoint and remote root: explicit CLI args win,
     // then fall back to the first matching mount entry in the profile.
-    let (local, remote) = resolve_mount_targets(global, &profile_name, &args)?;
+    // `allow_other` is config-only (there is no CLI flag); it defaults to
+    // false, which reproduces the pre-wire behaviour.
+    let resolved = resolve_mount_targets(global, &profile_name, &args)?;
+    let (local, remote) = (resolved.local, resolved.remote);
 
     let client = open_client(global, &profile_name).await?;
     let sftp = Arc::new(client);
@@ -561,6 +565,7 @@ pub async fn mount_start(global: &GlobalOpts, args: SftpMountStartArgs) -> Resul
 
     let mut opts = MountOpts::new(&local, &remote);
     opts.readonly = args.read_only;
+    opts.allow_other = resolved.allow_other;
     opts.volume_name = args.volume.clone();
     opts.audit_hook = Some(hook);
 
@@ -695,13 +700,29 @@ pub async fn mount_stop(global: &GlobalOpts, args: SftpMountStopArgs) -> Result<
     Ok(())
 }
 
+/// Resolved mount targets plus the config-derived `allow_other` flag.
+///
+/// `allow_other` is config-only (`sftp_mounts[].allow_other`); there is
+/// no CLI flag. When both `--local` and `--remote` are passed explicitly
+/// we skip the config load entirely, so `allow_other` defaults to false —
+/// the pre-wire behaviour.
+struct ResolvedMountTargets {
+    local: PathBuf,
+    remote: PathBuf,
+    allow_other: bool,
+}
+
 fn resolve_mount_targets(
     global: &GlobalOpts,
     profile_name: &str,
     args: &SftpMountStartArgs,
-) -> Result<(PathBuf, PathBuf)> {
+) -> Result<ResolvedMountTargets> {
     if let (Some(local), Some(remote)) = (args.local.clone(), args.remote.clone()) {
-        return Ok((local, remote));
+        return Ok(ResolvedMountTargets {
+            local,
+            remote,
+            allow_other: false,
+        });
     }
     let path = require_config_path(global)?;
     let (cfg, _warnings) = spt_config::load(&path, false)
@@ -725,7 +746,11 @@ fn resolve_mount_targets(
         .remote
         .clone()
         .unwrap_or_else(|| PathBuf::from(&mount.remote_path));
-    Ok((local, remote))
+    Ok(ResolvedMountTargets {
+        local,
+        remote,
+        allow_other: mount.allow_other.unwrap_or(false),
+    })
 }
 
 pub async fn drive_plan(global: &GlobalOpts, args: SftpDrivePlanArgs) -> Result<()> {
@@ -917,6 +942,7 @@ fn build_plan(
         helper: helper_name(kind),
         read_only: mount.read_only.unwrap_or(false),
         cache,
+        allow_other: mount.allow_other.unwrap_or(false),
         capability_checks: checks,
         runnable_by_spt: false,
         note: "spt stores and validates the mount plan; OS filesystem mounting still requires a platform helper/driver.",
@@ -934,6 +960,7 @@ fn emit_plan(global: &GlobalOpts, json_output: bool, plan: &MountPlanView) -> Re
         println!("platform: {}", plan.platform);
         println!("helper: {}", plan.helper);
         println!("cache: {}", plan.cache);
+        println!("allow_other: {}", plan.allow_other);
         for check in &plan.capability_checks {
             println!(
                 "{}: {}",
@@ -1120,6 +1147,34 @@ drive_letter = "S:"
 "#
     }
 
+    fn allow_other_config_text() -> &'static str {
+        r#"
+version = 1
+
+[capabilities]
+ssh2_backend = "russh"
+allow_sftp = true
+allow_filesystem_mounts = true
+
+[[profiles]]
+name = "edge"
+protocol = "ssh2"
+host = "localhost"
+user = "alice"
+
+[[profiles.sftp_mounts]]
+name = "data"
+remote_path = "/srv/data"
+mount_point = "/mnt/data"
+
+[[profiles.sftp_mounts]]
+name = "shared"
+remote_path = "/srv/shared"
+mount_point = "/mnt/shared"
+allow_other = true
+"#
+    }
+
     fn global_with_config(path: &Path) -> GlobalOpts {
         GlobalOpts {
             config: Some(path.to_path_buf()),
@@ -1172,6 +1227,39 @@ drive_letter = "S:"
         assert_eq!(plan.remote_path, "/srv/data");
         assert!(plan.capability_checks.iter().all(|check| check.ok));
         assert!(!plan.runnable_by_spt);
+    }
+
+    #[test]
+    fn resolve_mount_plan_threads_allow_other() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("spt.toml");
+        std::fs::write(&path, allow_other_config_text()).unwrap();
+        let global = global_with_config(&path);
+
+        // Mount configured with `allow_other = true` carries the option
+        // through resolve_mount_plan and into the built plan.
+        let (cfg, profile, mount) = resolve_mount_plan(
+            &global,
+            "edge",
+            Some("shared"),
+            None,
+            None,
+            None,
+            false,
+            None,
+        )
+        .unwrap();
+        assert_eq!(mount.allow_other, Some(true));
+        let plan = build_plan(&cfg, profile, &mount, MountKind::Mount).unwrap();
+        assert!(plan.allow_other);
+
+        // A mount without the flag defaults to false (pre-wire behaviour).
+        let (cfg, profile, mount) =
+            resolve_mount_plan(&global, "edge", Some("data"), None, None, None, false, None)
+                .unwrap();
+        assert_eq!(mount.allow_other, None);
+        let plan = build_plan(&cfg, profile, &mount, MountKind::Mount).unwrap();
+        assert!(!plan.allow_other);
     }
 
     #[test]

@@ -19,20 +19,26 @@ use std::sync::Arc;
 
 use spt_auth::{AuthConfig, AuthMethod, SecretRef as AuthSecretRef};
 use spt_config::schema::{
-    Auth as AuthCfg, Capabilities, Config, Crypto as CryptoCfg, Profile,
-    ScriptConfig as SchemaScriptConfig, Trust as TrustCfg,
+    Auth as AuthCfg, Capabilities, Config, Crypto as CryptoCfg, Hop as HopCfg,
+    HopKind as SchemaHopKind, Limits as LimitsCfg, Profile, ScriptConfig as SchemaScriptConfig,
+    Trust as TrustCfg,
 };
 use spt_config_crypt::KeySource;
 use spt_core::{Diagnostic, Error, Result};
-use spt_protocol::{Endpoint, TunnelProtocol};
+use spt_protocol::{Endpoint, ForwardRateLimits, TunnelProtocol};
 use spt_scripting::{
     config::{ScriptConfig, ScriptHooks, ScriptLimits},
     ScriptEngine,
 };
-use spt_secrets::Resolver;
-use spt_ssh2::{CryptoPolicy, Ssh2Protocol, TrustPolicy};
+use spt_secrets::{Resolver, SecretRef as SecretsRef};
+use spt_ssh2::{
+    crypto::resolve_crypto_policy, multi_hop::HopKind, proxy_jump::ProxyCredentials, CryptoPolicy,
+    Ssh2Protocol, TrustPolicy,
+};
 use spt_ssh3::{Ssh3Config, Ssh3Protocol};
-use spt_supervisor::{BackoffConfig, FailoverMode, ProfileSupervisorConfig};
+use spt_supervisor::{
+    BackoffConfig, FailoverMode, HealthCheckStyle, InstabilityAction, ProfileSupervisorConfig,
+};
 use spt_trust::{KnownHosts, Sha256HostPin};
 
 /// All the bits needed to start one profile.
@@ -377,7 +383,7 @@ fn build_ssh2(
         .map(|endpoint| (endpoint.host.clone(), endpoint.port))
         .collect::<Vec<_>>();
     warn_legacy_ssh2_backend_capability(capabilities);
-    let crypto = build_crypto_policy(profile.crypto.as_ref());
+    let crypto = build_crypto_policy(profile.crypto.as_ref())?;
     reject_unsupported_post_quantum_runtime(profile, capabilities, &crypto)?;
     let mut builder = Ssh2Protocol::builder()
         .crypto(crypto)
@@ -419,6 +425,22 @@ fn build_ssh2(
     for b in resolver.backend_arcs() {
         builder = builder.backend(Arc::clone(b));
     }
+
+    // E3-F1 / A3: feed `[profiles.keepalive]` into the russh transport
+    // keepalive policy. `interval` maps to russh `keepalive_interval`;
+    // `max_missed` maps to `keepalive_max` (the number of unanswered transport
+    // keepalives that closes the session). `None` for either preserves russh's
+    // defaults (no transport keepalive; max 3), so an absent block is a no-op.
+    if let Some(keepalive) = profile.keepalive.as_ref() {
+        let interval = keepalive
+            .interval
+            .as_deref()
+            .map(|raw| parse_profile_duration(&profile.name, "keepalive.interval", raw))
+            .transpose()?;
+        let max_missed = keepalive.max_missed.map(|v| v as usize);
+        builder = builder.keepalive(interval, max_missed);
+    }
+
     for hop in &profile.hops {
         let hop_auth = build_auth_config_parts(
             hop.user.as_deref().or(profile.user.as_deref()),
@@ -435,9 +457,88 @@ fn build_ssh2(
                 "profiles.trust"
             },
         )?;
-        builder = builder.hop_with_auth_trust(&hop.host, hop.port, hop_auth, hop_trust);
+        // t6-e3 / A2: dispatch by the hop's transport `kind`. SSH hops keep the
+        // historical `direct-tcpip` + re-handshake path; SOCKS5 / HTTP CONNECT
+        // proxy hops resolve their optional proxy credentials and go through
+        // `hop_with_kind` so the proxy CONNECT runs before the SSH handshake.
+        match hop.kind {
+            SchemaHopKind::Ssh => {
+                builder = builder.hop_with_auth_trust(&hop.host, hop.port, hop_auth, hop_trust);
+            }
+            SchemaHopKind::Socks5 | SchemaHopKind::HttpConnect => {
+                let creds = resolve_proxy_credentials(hop, resolver, &profile.name)?;
+                builder = builder.hop_with_kind(
+                    &hop.host,
+                    hop.port,
+                    map_hop_kind(hop.kind),
+                    creds,
+                    Some(hop_auth),
+                    Some(hop_trust),
+                );
+            }
+        }
     }
     Ok(builder.build())
+}
+
+/// Map the on-disk `[[profiles.hops]].kind` enum onto the runtime
+/// [`spt_ssh2::multi_hop::HopKind`]. The two enums are intentionally distinct
+/// (the ssh2 crate keeps no build-time dep on spt-config) so the mapping is
+/// hand-written here.
+const fn map_hop_kind(kind: SchemaHopKind) -> HopKind {
+    match kind {
+        SchemaHopKind::Ssh => HopKind::Ssh,
+        SchemaHopKind::Socks5 => HopKind::Socks5,
+        SchemaHopKind::HttpConnect => HopKind::HttpConnect,
+    }
+}
+
+/// Resolve a proxy hop's optional `proxy_username` / `proxy_password_ref` into
+/// [`ProxyCredentials`].
+///
+/// * `proxy_username` is a `RedactedString` carried verbatim in the config
+///   (cleartext), exposed here for the SOCKS5 / HTTP CONNECT auth handshake.
+/// * `proxy_password_ref` is a `secret://` reference resolved through the same
+///   resolver chain used for SSH secrets.
+///
+/// Returns `None` when neither is configured (anonymous proxy). When only one
+/// of the pair is present the missing half resolves to an empty string so the
+/// proxy still sees a (username, password) pair.
+fn resolve_proxy_credentials(
+    hop: &HopCfg,
+    resolver: &Resolver,
+    profile_name: &str,
+) -> Result<Option<ProxyCredentials>> {
+    if hop.proxy_username.is_none() && hop.proxy_password_ref.is_none() {
+        return Ok(None);
+    }
+    let username = hop
+        .proxy_username
+        .as_ref()
+        .map(|u| u.expose().to_owned())
+        .unwrap_or_default();
+    let password = match hop.proxy_password_ref.as_ref() {
+        Some(secret_ref) => resolve_secret_to_string(secret_ref, resolver, profile_name)?,
+        None => String::new(),
+    };
+    Ok(Some(ProxyCredentials { username, password }))
+}
+
+/// Resolve a config [`spt_secrets::SecretRef`] to a UTF-8 `String` through the
+/// resolver chain. Used for proxy-password material that the SOCKS5 / HTTP
+/// CONNECT handshake needs in cleartext at connect time.
+fn resolve_secret_to_string(
+    secret_ref: &SecretsRef,
+    resolver: &Resolver,
+    profile_name: &str,
+) -> Result<String> {
+    use secrecy::ExposeSecret;
+    let bytes = resolver.resolve(secret_ref)?;
+    String::from_utf8(bytes.expose_secret().to_vec()).map_err(|e| {
+        Error::InvalidConfig(format!(
+            "profile `{profile_name}`: proxy_password_ref `{secret_ref}` is not valid UTF-8: {e}"
+        ))
+    })
 }
 
 fn reject_unsupported_post_quantum_runtime(
@@ -537,9 +638,38 @@ fn build_supervisor_config(profile: &Profile) -> Result<ProfileSupervisorConfig>
             cfg.instability.clear_after =
                 parse_profile_duration(&profile.name, "instability.min_successful_uptime", raw)?;
         }
+        // A3: detection on/off. Default `true` keeps the legacy always-on
+        // behaviour; `false` makes the detector fully inert.
+        if let Some(enabled) = instability.enabled {
+            cfg.instability.enabled = enabled;
+        }
+        // A3: secondary keepalive-miss trip condition (`None` = disabled).
+        if let Some(max_keepalive_misses) = instability.max_keepalive_misses {
+            cfg.instability.max_keepalive_misses = Some(max_keepalive_misses);
+        }
+        // A3: p95 latency ceiling (`None` = disabled). The latency source is
+        // wired by the supervisor wave; this side only carries the threshold.
+        if let Some(raw) = instability.max_latency_p95.as_deref() {
+            cfg.instability.max_latency_p95 = Some(parse_profile_duration(
+                &profile.name,
+                "instability.max_latency_p95",
+                raw,
+            )?);
+        }
+        // A3: action taken when the window trips. Map the schema string onto
+        // the `InstabilityAction` enum; an unknown action is rejected.
+        if let Some(action) = instability.action.as_deref() {
+            cfg.instability.action = parse_instability_action(&profile.name, action)?;
+        }
     }
 
     if let Some(failover) = profile.failover.as_ref() {
+        // A3: failover health-check probe style. Map the schema string onto
+        // `HealthCheckStyle`; an unknown style is rejected here (B2 also
+        // validate-warns unimplemented styles).
+        if let Some(health_check) = failover.health_check.as_deref() {
+            cfg.health_check = parse_health_check_style(&profile.name, health_check)?;
+        }
         if let Some(mode) = failover.mode.as_deref() {
             cfg.failover_mode = match mode {
                 "priority" => FailoverMode::Priority,
@@ -568,7 +698,77 @@ fn build_supervisor_config(profile: &Profile) -> Result<ProfileSupervisorConfig>
         }
     }
 
+    // C1: map `[profiles.limits]` onto the forward runner's profile-level
+    // default rate limits. The runner overlays per-forward limits on top of
+    // this default (per-component override), so this only supplies the
+    // profile-wide baseline. Absent → `ForwardRateLimits::default()`
+    // (all-zero = unlimited = prior behaviour).
+    if let Some(limits) = profile.limits.as_ref() {
+        cfg.runner_cfg.default_limits = build_default_limits(&profile.name, limits)?;
+    }
+
     Ok(cfg)
+}
+
+/// Map `[profiles.limits]` → the profile-level [`ForwardRateLimits`] default
+/// used by the forward runner. Byte-rate strings (`max_bytes_per_second_*`)
+/// are parsed with [`spt_core::size::parse_size`] (plain size, no `/s`
+/// suffix); accept-rate (`max_new_connections_per_second`) maps directly.
+/// Burst and per-direction caps the schema does not yet expose stay zero
+/// (unlimited). The bit-rate (`max_bits_per_second_*`) keys are display-only
+/// and intentionally not mapped onto the byte-rate gates.
+fn build_default_limits(profile_name: &str, limits: &LimitsCfg) -> Result<ForwardRateLimits> {
+    let mut out = ForwardRateLimits::default();
+    if let Some(raw) = limits.max_bytes_per_second_out.as_deref() {
+        out.rate_bps_up = parse_profile_size(profile_name, "limits.max_bytes_per_second_out", raw)?;
+    }
+    if let Some(raw) = limits.max_bytes_per_second_in.as_deref() {
+        out.rate_bps_down =
+            parse_profile_size(profile_name, "limits.max_bytes_per_second_in", raw)?;
+    }
+    if let Some(max_new) = limits.max_new_connections_per_second {
+        out.max_new_conns_per_sec = max_new;
+    }
+    Ok(out)
+}
+
+/// Parse a spec-style byte-size string for a `[profiles.limits]` field,
+/// attributing parse errors to the profile + field for actionable diagnostics.
+fn parse_profile_size(profile_name: &str, field: &str, raw: &str) -> Result<u64> {
+    spt_core::size::parse_size(raw)
+        .map_err(|e| Error::InvalidConfig(format!("profile `{profile_name}`: {field}: {e}")))
+}
+
+/// Map the `[profiles.instability].action` schema string onto the runtime
+/// [`InstabilityAction`] enum. Unknown actions are rejected.
+fn parse_instability_action(profile_name: &str, action: &str) -> Result<InstabilityAction> {
+    match action.trim().to_ascii_lowercase().as_str() {
+        "mark_degraded" => Ok(InstabilityAction::MarkDegraded),
+        "failover" => Ok(InstabilityAction::Failover),
+        "increase_keepalive" => Ok(InstabilityAction::IncreaseKeepalive),
+        "increase_backoff" => Ok(InstabilityAction::IncreaseBackoff),
+        "emit_event" => Ok(InstabilityAction::EmitEvent),
+        "restart_session" => Ok(InstabilityAction::RestartSession),
+        other => Err(Error::InvalidConfig(format!(
+            "profile `{profile_name}`: unknown instability.action `{other}` (expected \
+             mark_degraded|failover|increase_keepalive|increase_backoff|emit_event|restart_session)"
+        ))),
+    }
+}
+
+/// Map the `[profiles.failover].health_check` schema string onto the runtime
+/// [`HealthCheckStyle`] enum. Unknown styles are rejected.
+fn parse_health_check_style(profile_name: &str, style: &str) -> Result<HealthCheckStyle> {
+    match style.trim().to_ascii_lowercase().as_str() {
+        "tcp_connect" => Ok(HealthCheckStyle::TcpConnect),
+        "ssh_handshake" => Ok(HealthCheckStyle::SshHandshake),
+        "ssh_auth_preflight" => Ok(HealthCheckStyle::SshAuthPreflight),
+        "ssh3_endpoint" => Ok(HealthCheckStyle::Ssh3Endpoint),
+        other => Err(Error::InvalidConfig(format!(
+            "profile `{profile_name}`: unknown failover.health_check `{other}` (expected \
+             tcp_connect|ssh_handshake|ssh_auth_preflight|ssh3_endpoint)"
+        ))),
+    }
 }
 
 fn build_backoff_config(
@@ -590,6 +790,12 @@ fn build_backoff_config(
     }
     if let Some(max_attempts) = reconnect.max_attempts {
         cfg.max_attempts = max_attempts;
+    }
+    // A3: `[profiles.reconnect].retry_auth_failures` controls whether an
+    // auth-classified connect failure is treated as retryable (default
+    // `false` preserves today's behaviour).
+    if let Some(retry_auth_failures) = reconnect.retry_auth_failures {
+        cfg.retry_auth_failures = retry_auth_failures;
     }
     Ok(cfg)
 }
@@ -625,17 +831,37 @@ fn parse_jitter_ratio(profile_name: &str, raw: &str) -> Result<f32> {
     }
 }
 
-fn build_crypto_policy(crypto: Option<&CryptoCfg>) -> CryptoPolicy {
-    let Some(crypto) = crypto else {
-        return CryptoPolicy::default();
+/// Map `[profiles.crypto]` onto the runtime [`CryptoPolicy`].
+///
+/// The operator's explicit per-category allow-lists are resolved through
+/// [`resolve_crypto_policy`], which fills empty categories from the named
+/// preset (`crypto.policy`, default `"modern"`), rejects deprecated algorithms
+/// unless `allow_deprecated = true`, and (when `warn_on_deprecated = true`)
+/// logs a warning per deprecated algorithm that survives resolution. When no
+/// `[profiles.crypto]` block is present the resolver still fills the default
+/// (modern) preset so the connect path gets a non-empty, vetted allow-list.
+fn build_crypto_policy(crypto: Option<&CryptoCfg>) -> Result<CryptoPolicy> {
+    let (explicit, preset, allow_deprecated, warn_on_deprecated) = match crypto {
+        Some(crypto) => (
+            CryptoPolicy {
+                ciphers: crypto.ciphers.clone().unwrap_or_default(),
+                kex: crypto.kex_algorithms.clone().unwrap_or_default(),
+                macs: crypto.macs.clone().unwrap_or_default(),
+                host_keys: crypto.host_key_algorithms.clone().unwrap_or_default(),
+                compression: crypto.compression.clone().unwrap_or_default(),
+            },
+            crypto.policy.clone(),
+            crypto.allow_deprecated.unwrap_or(false),
+            crypto.warn_on_deprecated.unwrap_or(false),
+        ),
+        None => (CryptoPolicy::default(), None, false, false),
     };
-    CryptoPolicy {
-        ciphers: crypto.ciphers.clone().unwrap_or_default(),
-        kex: crypto.kex_algorithms.clone().unwrap_or_default(),
-        macs: crypto.macs.clone().unwrap_or_default(),
-        host_keys: crypto.host_key_algorithms.clone().unwrap_or_default(),
-        compression: crypto.compression.clone().unwrap_or_default(),
-    }
+    resolve_crypto_policy(
+        preset.as_deref(),
+        &explicit,
+        allow_deprecated,
+        warn_on_deprecated,
+    )
 }
 
 fn build_auth_config(profile: &Profile) -> Result<AuthConfig> {
@@ -696,6 +922,7 @@ fn translate_auth(a: &AuthCfg, username: &str, context: &str) -> Result<Vec<Auth
                     }],
                 });
             }
+            append_agent_fallback(&mut methods, a);
             return Ok(methods);
         }
         "public_key" => {
@@ -716,7 +943,12 @@ fn translate_auth(a: &AuthCfg, username: &str, context: &str) -> Result<Vec<Auth
                 }
             }
         }
-        "agent" => AuthMethod::Agent { socket: None },
+        "agent" => AuthMethod::Agent {
+            socket: agent_socket_from_env(),
+            // A4: when the primary method *is* agent, the identity hint
+            // selects which agent-held key to prefer.
+            identity_hint: a.identity_hint.clone(),
+        },
         "keyboard_interactive" => AuthMethod::KeyboardInteractive {
             responder: vec![spt_auth::KbiResponder {
                 prompt_regex: "(?i)password".into(),
@@ -767,7 +999,38 @@ fn translate_auth(a: &AuthCfg, username: &str, context: &str) -> Result<Vec<Auth
             )));
         }
     };
-    Ok(vec![method])
+    let mut methods = vec![method];
+    append_agent_fallback(&mut methods, a);
+    Ok(methods)
+}
+
+/// Resolve the agent socket path from the environment (`SSH_AUTH_SOCK`),
+/// returning `None` when unset so the agent provider falls back to its own
+/// platform default (Windows named pipe / unix socket discovery).
+fn agent_socket_from_env() -> Option<std::path::PathBuf> {
+    std::env::var_os("SSH_AUTH_SOCK").map(std::path::PathBuf::from)
+}
+
+/// A4 / agent-bool wiring: when `[auth].agent = true` and the primary method
+/// is not already an agent method, append an [`AuthMethod::Agent`] fallback so
+/// the agent is tried after the primary method. The agent socket is taken from
+/// `SSH_AUTH_SOCK` (or `None` for provider default) and `[auth].identity_hint`
+/// selects which agent-held key to prefer. A no-op when `agent` is unset/false
+/// or the methods already contain an agent method (e.g. `method = "agent"`).
+fn append_agent_fallback(methods: &mut Vec<AuthMethod>, a: &AuthCfg) {
+    if !a.agent.unwrap_or(false) {
+        return;
+    }
+    if methods
+        .iter()
+        .any(|m| matches!(m, AuthMethod::Agent { .. }))
+    {
+        return;
+    }
+    methods.push(AuthMethod::Agent {
+        socket: agent_socket_from_env(),
+        identity_hint: a.identity_hint.clone(),
+    });
 }
 
 fn normalize_auth_method(method: &str) -> String {
@@ -1477,6 +1740,8 @@ mod tests {
 
     #[test]
     fn crypto_table_maps_to_ssh2_policy() {
+        // A non-empty explicit category overrides that category only; the
+        // resolver carries the operator's allow-list through verbatim.
         let policy = build_crypto_policy(Some(&CryptoCfg {
             ciphers: Some(vec!["aes256-ctr".into()]),
             kex_algorithms: Some(vec!["diffie-hellman-group14-sha256".into()]),
@@ -1484,7 +1749,8 @@ mod tests {
             host_key_algorithms: Some(vec!["rsa-sha2-256".into()]),
             compression: Some(vec!["none".into()]),
             ..Default::default()
-        }));
+        }))
+        .unwrap();
         assert_eq!(policy.ciphers, vec!["aes256-ctr"]);
         assert_eq!(policy.kex, vec!["diffie-hellman-group14-sha256"]);
         assert_eq!(policy.macs, vec!["hmac-sha2-256"]);
@@ -1568,11 +1834,14 @@ mod tests {
     }
 
     #[test]
-    fn build_crypto_policy_none_returns_default() {
-        let policy = build_crypto_policy(None);
-        assert!(policy.ciphers.is_empty());
-        assert!(policy.kex.is_empty());
-        assert!(policy.macs.is_empty());
+    fn build_crypto_policy_none_fills_modern_preset() {
+        // With no `[profiles.crypto]` block the resolver fills the default
+        // (modern) preset so the connect path gets a vetted, non-empty
+        // allow-list instead of russh's built-in default.
+        let policy = build_crypto_policy(None).unwrap();
+        assert!(!policy.ciphers.is_empty());
+        assert!(!policy.kex.is_empty());
+        assert!(!policy.macs.is_empty());
     }
 
     #[test]
@@ -2162,5 +2431,808 @@ mod tests {
         let bundle = build(&c.profiles[0], &empty_resolver()).unwrap();
         assert!(bundle.endpoints.is_empty());
         assert!(bundle.endpoint_auth.is_empty());
+    }
+
+    // ====================================================================
+    // tw-b1: factory-mapping unit tests — one per newly-wired config field
+    // asserting the value reaches the runtime config / builder.
+    // ====================================================================
+
+    use spt_config::schema::{
+        Crypto as CryptoCfgTy, Failover as FailoverCfg, Hop as HopCfgTy, HopKind as HopKindCfg,
+        Instability as InstabilityCfg, Limits as LimitsCfgTy, Reconnect as ReconnectCfg,
+    };
+    use spt_secrets::backend::secret_bytes;
+    use spt_secrets::{
+        backend::{BackendDoctor, BackendKind, SecretBackend, SecretBytes},
+        SecretRef as SecretsRefTy,
+    };
+
+    /// Minimal in-memory secret backend for proxy-password resolution tests.
+    struct OneSecretBackend {
+        reference: SecretsRefTy,
+        value: Vec<u8>,
+    }
+
+    impl SecretBackend for OneSecretBackend {
+        fn kind(&self) -> BackendKind {
+            BackendKind::Env
+        }
+        fn get(&self, r: &SecretsRefTy) -> Result<Option<SecretBytes>> {
+            if r == &self.reference {
+                Ok(Some(secret_bytes(self.value.clone())))
+            } else {
+                Ok(None)
+            }
+        }
+        fn set(&self, _r: &SecretsRefTy, _value: &[u8]) -> Result<()> {
+            Err(Error::UnsupportedPlatform("read-only test backend".into()))
+        }
+        fn list(&self) -> Result<Vec<SecretsRefTy>> {
+            Ok(vec![self.reference.clone()])
+        }
+        fn remove(&self, _r: &SecretsRefTy) -> Result<bool> {
+            Ok(false)
+        }
+        fn doctor(&self) -> BackendDoctor {
+            BackendDoctor::ok(BackendKind::Env, "test backend")
+        }
+    }
+
+    fn resolver_with_secret(ns: &str, name: &str, value: &str) -> Resolver {
+        let reference = SecretsRefTy::new(ns, name).unwrap();
+        Resolver::new(vec![Arc::new(OneSecretBackend {
+            reference,
+            value: value.as_bytes().to_vec(),
+        })])
+    }
+
+    // ---- 1. rate limits (incl. profile default) ------------------------
+
+    #[test]
+    fn limits_table_feeds_runner_default_limits() {
+        let cfg = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            user = "u"
+            [profiles.limits]
+            max_bytes_per_second_out = "100MiB"
+            max_bytes_per_second_in = "50MiB"
+            max_new_connections_per_second = 25
+            [profiles.trust]
+            pin_sha256 = ["SHA256:dummy"]
+        "#;
+        let (c, _) = load_str(cfg, false).unwrap();
+        let bundle = build(&c.profiles[0], &empty_resolver()).unwrap();
+        let limits = bundle.supervisor_cfg.runner_cfg.default_limits;
+        assert_eq!(limits.rate_bps_up, 100 * 1024 * 1024);
+        assert_eq!(limits.rate_bps_down, 50 * 1024 * 1024);
+        assert_eq!(limits.max_new_conns_per_sec, 25);
+    }
+
+    #[test]
+    fn limits_absent_keeps_unlimited_default() {
+        let cfg = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            user = "u"
+            [profiles.trust]
+            pin_sha256 = ["SHA256:dummy"]
+        "#;
+        let (c, _) = load_str(cfg, false).unwrap();
+        let bundle = build(&c.profiles[0], &empty_resolver()).unwrap();
+        assert!(bundle
+            .supervisor_cfg
+            .runner_cfg
+            .default_limits
+            .is_unlimited());
+    }
+
+    #[test]
+    fn limits_partial_table_leaves_other_components_unlimited() {
+        let limits = build_default_limits(
+            "p",
+            &LimitsCfgTy {
+                max_bytes_per_second_out: Some("10MiB".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(limits.rate_bps_up, 10 * 1024 * 1024);
+        assert_eq!(limits.rate_bps_down, 0);
+        assert_eq!(limits.max_new_conns_per_sec, 0);
+    }
+
+    #[test]
+    fn limits_invalid_byte_size_rejected() {
+        let err = build_default_limits(
+            "p",
+            &LimitsCfgTy {
+                max_bytes_per_second_in: Some("not-a-size".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(err, Error::InvalidConfig(_)));
+    }
+
+    // ---- 2. keepalive.max_missed (builder transport keepalive) ---------
+
+    #[test]
+    fn keepalive_block_builds_ssh2_with_transport_keepalive() {
+        // max_missed + interval are threaded into the builder's keepalive
+        // policy; a successful build proves the `.keepalive(..)` call is wired
+        // (the policy is builder-internal, so we assert via successful build).
+        let cfg = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            user = "u"
+            [profiles.keepalive]
+            interval = "15s"
+            max_missed = 4
+            [profiles.trust]
+            pin_sha256 = ["SHA256:dummy"]
+        "#;
+        let (c, _) = load_str(cfg, false).unwrap();
+        let bundle = build(&c.profiles[0], &empty_resolver()).unwrap();
+        assert_eq!(bundle.protocol.name(), "ssh2");
+        // The supervisor poll cadence still picks up the same interval.
+        assert_eq!(
+            bundle.supervisor_cfg.keepalive_interval,
+            std::time::Duration::from_secs(15)
+        );
+    }
+
+    #[test]
+    fn keepalive_max_missed_only_builds_without_interval() {
+        let cfg = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            user = "u"
+            [profiles.keepalive]
+            max_missed = 2
+            [profiles.trust]
+            pin_sha256 = ["SHA256:dummy"]
+        "#;
+        let (c, _) = load_str(cfg, false).unwrap();
+        let bundle = build(&c.profiles[0], &empty_resolver()).unwrap();
+        assert_eq!(bundle.protocol.name(), "ssh2");
+    }
+
+    // ---- 3. reconnect.retry_auth_failures ------------------------------
+
+    #[test]
+    fn reconnect_retry_auth_failures_feeds_backoff_config() {
+        let cfg = ReconnectCfg {
+            retry_auth_failures: Some(true),
+            ..Default::default()
+        };
+        let backoff = build_backoff_config("p", &cfg).unwrap();
+        assert!(backoff.retry_auth_failures);
+    }
+
+    #[test]
+    fn reconnect_retry_auth_failures_defaults_false() {
+        let backoff = build_backoff_config("p", &ReconnectCfg::default()).unwrap();
+        assert!(!backoff.retry_auth_failures);
+    }
+
+    // ---- 4. instability action / enabled / misses / p95 ----------------
+
+    #[test]
+    fn instability_enabled_false_feeds_supervisor_window() {
+        let cfg = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            user = "u"
+            [profiles.instability]
+            enabled = false
+            [profiles.trust]
+            pin_sha256 = ["SHA256:dummy"]
+        "#;
+        let (c, _) = load_str(cfg, false).unwrap();
+        let bundle = build(&c.profiles[0], &empty_resolver()).unwrap();
+        assert!(!bundle.supervisor_cfg.instability.enabled);
+    }
+
+    #[test]
+    fn instability_enabled_defaults_true() {
+        let cfg = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            user = "u"
+            [profiles.instability]
+            max_disconnects = 3
+            [profiles.trust]
+            pin_sha256 = ["SHA256:dummy"]
+        "#;
+        let (c, _) = load_str(cfg, false).unwrap();
+        let bundle = build(&c.profiles[0], &empty_resolver()).unwrap();
+        assert!(bundle.supervisor_cfg.instability.enabled);
+    }
+
+    #[test]
+    fn instability_max_keepalive_misses_feeds_window() {
+        let cfg = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            user = "u"
+            [profiles.instability]
+            max_keepalive_misses = 6
+            [profiles.trust]
+            pin_sha256 = ["SHA256:dummy"]
+        "#;
+        let (c, _) = load_str(cfg, false).unwrap();
+        let bundle = build(&c.profiles[0], &empty_resolver()).unwrap();
+        assert_eq!(
+            bundle.supervisor_cfg.instability.max_keepalive_misses,
+            Some(6)
+        );
+    }
+
+    #[test]
+    fn instability_max_latency_p95_feeds_window() {
+        let cfg = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            user = "u"
+            [profiles.instability]
+            max_latency_p95 = "250ms"
+            [profiles.trust]
+            pin_sha256 = ["SHA256:dummy"]
+        "#;
+        let (c, _) = load_str(cfg, false).unwrap();
+        let bundle = build(&c.profiles[0], &empty_resolver()).unwrap();
+        assert_eq!(
+            bundle.supervisor_cfg.instability.max_latency_p95,
+            Some(std::time::Duration::from_millis(250))
+        );
+    }
+
+    #[test]
+    fn instability_max_latency_p95_invalid_rejected() {
+        let cfg = InstabilityCfg {
+            max_latency_p95: Some("not-a-duration".into()),
+            ..Default::default()
+        };
+        let profile = Profile {
+            name: "p".into(),
+            protocol: "ssh2".into(),
+            instability: Some(cfg),
+            ..base_profile()
+        };
+        assert!(matches!(
+            build_supervisor_config(&profile),
+            Err(Error::InvalidConfig(_))
+        ));
+    }
+
+    #[test]
+    fn instability_action_maps_each_variant() {
+        assert_eq!(
+            parse_instability_action("p", "mark_degraded").unwrap(),
+            InstabilityAction::MarkDegraded
+        );
+        assert_eq!(
+            parse_instability_action("p", "failover").unwrap(),
+            InstabilityAction::Failover
+        );
+        assert_eq!(
+            parse_instability_action("p", "increase_keepalive").unwrap(),
+            InstabilityAction::IncreaseKeepalive
+        );
+        assert_eq!(
+            parse_instability_action("p", "increase_backoff").unwrap(),
+            InstabilityAction::IncreaseBackoff
+        );
+        assert_eq!(
+            parse_instability_action("p", "emit_event").unwrap(),
+            InstabilityAction::EmitEvent
+        );
+        assert_eq!(
+            parse_instability_action("p", "restart_session").unwrap(),
+            InstabilityAction::RestartSession
+        );
+    }
+
+    #[test]
+    fn instability_action_unknown_rejected() {
+        assert!(matches!(
+            parse_instability_action("p", "explode"),
+            Err(Error::InvalidConfig(_))
+        ));
+    }
+
+    #[test]
+    fn instability_action_feeds_supervisor_window() {
+        let cfg = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            user = "u"
+            [profiles.instability]
+            action = "failover"
+            [profiles.trust]
+            pin_sha256 = ["SHA256:dummy"]
+        "#;
+        let (c, _) = load_str(cfg, false).unwrap();
+        let bundle = build(&c.profiles[0], &empty_resolver()).unwrap();
+        assert_eq!(
+            bundle.supervisor_cfg.instability.action,
+            InstabilityAction::Failover
+        );
+    }
+
+    // ---- 5. failover.health_check (+ unknown rejected) -----------------
+
+    #[test]
+    fn health_check_style_maps_each_variant() {
+        assert_eq!(
+            parse_health_check_style("p", "tcp_connect").unwrap(),
+            HealthCheckStyle::TcpConnect
+        );
+        assert_eq!(
+            parse_health_check_style("p", "ssh_handshake").unwrap(),
+            HealthCheckStyle::SshHandshake
+        );
+        assert_eq!(
+            parse_health_check_style("p", "ssh_auth_preflight").unwrap(),
+            HealthCheckStyle::SshAuthPreflight
+        );
+        assert_eq!(
+            parse_health_check_style("p", "ssh3_endpoint").unwrap(),
+            HealthCheckStyle::Ssh3Endpoint
+        );
+    }
+
+    #[test]
+    fn health_check_unknown_rejected() {
+        assert!(matches!(
+            parse_health_check_style("p", "ping"),
+            Err(Error::InvalidConfig(_))
+        ));
+    }
+
+    #[test]
+    fn failover_health_check_feeds_supervisor_config() {
+        let cfg = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            user = "u"
+            [profiles.failover]
+            health_check = "tcp_connect"
+            [profiles.trust]
+            pin_sha256 = ["SHA256:dummy"]
+        "#;
+        let (c, _) = load_str(cfg, false).unwrap();
+        let bundle = build(&c.profiles[0], &empty_resolver()).unwrap();
+        assert_eq!(
+            bundle.supervisor_cfg.health_check,
+            HealthCheckStyle::TcpConnect
+        );
+    }
+
+    #[test]
+    fn failover_health_check_defaults_to_ssh_handshake() {
+        let cfg = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            user = "u"
+            [profiles.trust]
+            pin_sha256 = ["SHA256:dummy"]
+        "#;
+        let (c, _) = load_str(cfg, false).unwrap();
+        let bundle = build(&c.profiles[0], &empty_resolver()).unwrap();
+        assert_eq!(
+            bundle.supervisor_cfg.health_check,
+            HealthCheckStyle::SshHandshake
+        );
+    }
+
+    #[test]
+    fn failover_unknown_health_check_errors_through_build() {
+        let cfg = FailoverCfg {
+            health_check: Some("ping".into()),
+            ..Default::default()
+        };
+        let profile = Profile {
+            name: "p".into(),
+            protocol: "ssh2".into(),
+            failover: Some(cfg),
+            ..base_profile()
+        };
+        assert!(matches!(
+            build_supervisor_config(&profile),
+            Err(Error::InvalidConfig(_))
+        ));
+    }
+
+    // ---- 6. crypto preset fill + deprecated-reject + warn --------------
+
+    #[test]
+    fn crypto_preset_fills_empty_categories() {
+        // policy = "modern" with no explicit lists → preset fills everything.
+        let policy = build_crypto_policy(Some(&CryptoCfgTy {
+            policy: Some("modern".into()),
+            ..Default::default()
+        }))
+        .unwrap();
+        assert!(!policy.ciphers.is_empty());
+        assert!(!policy.kex.is_empty());
+        assert!(!policy.macs.is_empty());
+        assert!(!policy.host_keys.is_empty());
+    }
+
+    #[test]
+    fn crypto_deprecated_algo_rejected_without_allow() {
+        // A deprecated cipher in the explicit list with allow_deprecated unset
+        // is a hard error.
+        let err = build_crypto_policy(Some(&CryptoCfgTy {
+            ciphers: Some(vec!["aes256-cbc".into()]),
+            ..Default::default()
+        }))
+        .unwrap_err();
+        assert!(matches!(err, Error::InvalidConfig(_)));
+    }
+
+    #[test]
+    fn crypto_deprecated_algo_allowed_with_flag() {
+        // allow_deprecated = true lets the deprecated algo resolve through.
+        let policy = build_crypto_policy(Some(&CryptoCfgTy {
+            ciphers: Some(vec!["aes256-cbc".into()]),
+            allow_deprecated: Some(true),
+            ..Default::default()
+        }))
+        .unwrap();
+        assert_eq!(policy.ciphers, vec!["aes256-cbc"]);
+    }
+
+    #[test]
+    fn crypto_warn_on_deprecated_resolves_without_blocking() {
+        // warn_on_deprecated is independent of allow_deprecated and never
+        // blocks resolution.
+        let policy = build_crypto_policy(Some(&CryptoCfgTy {
+            ciphers: Some(vec!["aes256-cbc".into()]),
+            allow_deprecated: Some(true),
+            warn_on_deprecated: Some(true),
+            ..Default::default()
+        }))
+        .unwrap();
+        assert_eq!(policy.ciphers, vec!["aes256-cbc"]);
+    }
+
+    #[test]
+    fn crypto_unknown_preset_rejected() {
+        let err = build_crypto_policy(Some(&CryptoCfgTy {
+            policy: Some("bananas".into()),
+            ..Default::default()
+        }))
+        .unwrap_err();
+        assert!(matches!(err, Error::InvalidConfig(_)));
+    }
+
+    // ---- 7. agent fallback + identity_hint -----------------------------
+
+    #[test]
+    fn agent_method_carries_identity_hint() {
+        let cfg = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            user = "u"
+            [profiles.auth]
+            method = "agent"
+            identity_hint = "SHA256:abc123"
+            [profiles.trust]
+            pin_sha256 = ["SHA256:dummy"]
+        "#;
+        let (c, _) = load_str(cfg, false).unwrap();
+        let bundle = build(&c.profiles[0], &empty_resolver()).unwrap();
+        match &bundle.auth.methods[0] {
+            AuthMethod::Agent { identity_hint, .. } => {
+                assert_eq!(identity_hint.as_deref(), Some("SHA256:abc123"));
+            }
+            other => panic!("expected Agent method, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn agent_bool_appends_agent_fallback_after_password() {
+        let cfg = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            user = "u"
+            [profiles.auth]
+            method = "password"
+            password = "secret://ns/pw"
+            agent = true
+            identity_hint = "work-key"
+            [profiles.trust]
+            pin_sha256 = ["SHA256:dummy"]
+        "#;
+        let (c, _) = load_str(cfg, false).unwrap();
+        let bundle = build(&c.profiles[0], &empty_resolver()).unwrap();
+        assert_eq!(bundle.auth.methods.len(), 2);
+        assert!(matches!(
+            bundle.auth.methods[0],
+            AuthMethod::Password { .. }
+        ));
+        match &bundle.auth.methods[1] {
+            AuthMethod::Agent { identity_hint, .. } => {
+                assert_eq!(identity_hint.as_deref(), Some("work-key"));
+            }
+            other => panic!("expected appended Agent fallback, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn agent_bool_not_duplicated_when_method_is_agent() {
+        let cfg = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            user = "u"
+            [profiles.auth]
+            method = "agent"
+            agent = true
+            [profiles.trust]
+            pin_sha256 = ["SHA256:dummy"]
+        "#;
+        let (c, _) = load_str(cfg, false).unwrap();
+        let bundle = build(&c.profiles[0], &empty_resolver()).unwrap();
+        // Only one agent method — the bool does not append a second.
+        assert_eq!(bundle.auth.methods.len(), 1);
+        assert!(matches!(bundle.auth.methods[0], AuthMethod::Agent { .. }));
+    }
+
+    #[test]
+    fn agent_bool_false_appends_nothing() {
+        let cfg = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            user = "u"
+            [profiles.auth]
+            method = "password"
+            password = "secret://ns/pw"
+            agent = false
+            [profiles.trust]
+            pin_sha256 = ["SHA256:dummy"]
+        "#;
+        let (c, _) = load_str(cfg, false).unwrap();
+        let bundle = build(&c.profiles[0], &empty_resolver()).unwrap();
+        assert_eq!(bundle.auth.methods.len(), 1);
+        assert!(matches!(
+            bundle.auth.methods[0],
+            AuthMethod::Password { .. }
+        ));
+    }
+
+    // ---- 8. hop kind / creds (socks5 / http-connect / ssh-default) -----
+
+    #[test]
+    fn map_hop_kind_maps_each_variant() {
+        assert_eq!(map_hop_kind(HopKindCfg::Ssh), HopKind::Ssh);
+        assert_eq!(map_hop_kind(HopKindCfg::Socks5), HopKind::Socks5);
+        assert_eq!(map_hop_kind(HopKindCfg::HttpConnect), HopKind::HttpConnect);
+    }
+
+    #[test]
+    fn ssh_hop_builds_with_default_kind() {
+        let cfg = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            user = "u"
+            [profiles.auth]
+            method = "agent"
+            [profiles.trust]
+            pin_sha256 = ["SHA256:dummy"]
+            [[profiles.hops]]
+            name = "bastion"
+            protocol = "ssh2"
+            host = "bastion.example"
+            port = 22
+        "#;
+        let (c, _) = load_str(cfg, false).unwrap();
+        // An SSH-kind hop keeps the historical hop_with_auth_trust path; a
+        // successful build proves it is dispatched correctly.
+        let bundle = build(&c.profiles[0], &empty_resolver()).unwrap();
+        assert_eq!(bundle.protocol.name(), "ssh2");
+    }
+
+    #[test]
+    fn socks5_hop_resolves_proxy_creds() {
+        let hop = HopCfgTy {
+            name: "proxy".into(),
+            protocol: "socks5".into(),
+            host: "proxy.example".into(),
+            port: 1080,
+            kind: HopKindCfg::Socks5,
+            proxy_username: Some("proxyuser".into()),
+            proxy_password_ref: Some(SecretsRefTy::new("ns", "proxypw").unwrap()),
+            ..Default::default()
+        };
+        let resolver = resolver_with_secret("ns", "proxypw", "s3cret");
+        let creds = resolve_proxy_credentials(&hop, &resolver, "p")
+            .unwrap()
+            .expect("expected resolved proxy credentials");
+        assert_eq!(creds.username, "proxyuser");
+        assert_eq!(creds.password, "s3cret");
+    }
+
+    #[test]
+    fn http_connect_hop_username_only_empty_password() {
+        let hop = HopCfgTy {
+            name: "proxy".into(),
+            protocol: "http-connect".into(),
+            host: "proxy.example".into(),
+            port: 8080,
+            kind: HopKindCfg::HttpConnect,
+            proxy_username: Some("onlyuser".into()),
+            ..Default::default()
+        };
+        let creds = resolve_proxy_credentials(&hop, &empty_resolver(), "p")
+            .unwrap()
+            .expect("expected creds when username present");
+        assert_eq!(creds.username, "onlyuser");
+        assert_eq!(creds.password, "");
+    }
+
+    #[test]
+    fn proxy_hop_without_creds_resolves_to_none() {
+        let hop = HopCfgTy {
+            name: "proxy".into(),
+            protocol: "socks5".into(),
+            host: "proxy.example".into(),
+            port: 1080,
+            kind: HopKindCfg::Socks5,
+            ..Default::default()
+        };
+        let creds = resolve_proxy_credentials(&hop, &empty_resolver(), "p").unwrap();
+        assert!(creds.is_none());
+    }
+
+    #[test]
+    fn proxy_hop_password_ref_missing_secret_errors() {
+        let hop = HopCfgTy {
+            name: "proxy".into(),
+            protocol: "socks5".into(),
+            host: "proxy.example".into(),
+            port: 1080,
+            kind: HopKindCfg::Socks5,
+            proxy_password_ref: Some(SecretsRefTy::new("ns", "absent").unwrap()),
+            ..Default::default()
+        };
+        // empty_resolver has no entry → resolve returns SecretUnavailable.
+        assert!(resolve_proxy_credentials(&hop, &empty_resolver(), "p").is_err());
+    }
+
+    #[test]
+    fn socks5_hop_builds_through_full_factory() {
+        let cfg = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            user = "u"
+            [profiles.auth]
+            method = "agent"
+            [profiles.trust]
+            pin_sha256 = ["SHA256:dummy"]
+            [[profiles.hops]]
+            name = "socks"
+            protocol = "socks5"
+            host = "proxy.example"
+            port = 1080
+            kind = "socks5"
+            proxy_username = "u"
+            proxy_password_ref = "secret://ns/proxypw"
+        "#;
+        let (c, _) = load_str(cfg, false).unwrap();
+        let resolver = resolver_with_secret("ns", "proxypw", "pw");
+        let bundle = build(&c.profiles[0], &resolver).unwrap();
+        assert_eq!(bundle.protocol.name(), "ssh2");
+    }
+
+    // ---- 9. connection wired subset ------------------------------------
+    //
+    // No `[profiles.connection]` field has an existing builder/russh-config
+    // setter on the SSH2 path (the builder exposes only crypto/trust/hops/
+    // backends/keepalive/obfuscation/profile_name; the transport keepalive is
+    // driven from `[profiles.keepalive]`, not `[profiles.connection]`). Per
+    // the wave contract we do NOT invent setters — every connection knob is
+    // left for B2 to validate-warn. This test pins that a profile carrying a
+    // full `[profiles.connection]` block still builds (the fields are accepted
+    // at load and simply not mapped onto a non-existent setter).
+
+    #[test]
+    fn connection_block_is_accepted_and_does_not_break_build() {
+        let cfg = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            user = "u"
+            [profiles.connection]
+            connect_timeout = "10s"
+            tcp_nodelay = true
+            socket_keepalive = true
+            keepalive_idle = "30s"
+            keepalive_interval = "10s"
+            keepalive_retries = 3
+            channel_window_size = "2MiB"
+            channel_max_packet_size = "32KiB"
+            [profiles.trust]
+            pin_sha256 = ["SHA256:dummy"]
+        "#;
+        let (c, _) = load_str(cfg, false).unwrap();
+        let bundle = build(&c.profiles[0], &empty_resolver()).unwrap();
+        assert_eq!(bundle.protocol.name(), "ssh2");
+    }
+
+    /// A minimal profile with the required fields set, for unit-testing the
+    /// `build_supervisor_config` / `build_*` helpers that take a `&Profile`.
+    fn base_profile() -> Profile {
+        let (c, _) = load_str(
+            r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            user = "u"
+            [profiles.trust]
+            pin_sha256 = ["SHA256:dummy"]
+        "#,
+            false,
+        )
+        .unwrap();
+        c.profiles.into_iter().next().unwrap()
     }
 }

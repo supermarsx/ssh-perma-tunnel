@@ -26,7 +26,9 @@ use spt_config::testing::{ForwardBuilder, ProfileBuilder};
 use spt_core::BindAddr;
 use spt_e2e_tests::SharedLogProtocol;
 use spt_forward::testing::SessionCall;
-use spt_protocol::{Endpoint, LocalForwardSpec, TargetAddr, TunnelProtocol};
+use spt_protocol::{
+    BindConflictPolicy, Endpoint, ForwardRateLimits, LocalForwardSpec, TargetAddr, TunnelProtocol,
+};
 use spt_ssh2::testing::RusshTestServer;
 use spt_ssh2::Ssh2Protocol;
 use spt_supervisor::testing::{
@@ -134,6 +136,10 @@ async fn local_forward_roundtrip_real_russh() {
             listen: BindAddr::parse(&format!("127.0.0.1:{port}")).unwrap(),
             target: TargetAddr::new("server-side-echo", 7),
             max_connections: Some(4),
+            limits: ForwardRateLimits::default(),
+            idle_timeout: None,
+            on_bind_conflict: BindConflictPolicy::default(),
+            required: false,
         })
         .await
         .expect("open local forward");

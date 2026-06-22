@@ -62,8 +62,8 @@ pub mod uds_listener;
 pub mod testing;
 
 pub use acl::{AclDecision, ForwardAcl};
-pub use bidir::{copy_bidirectional_throttled, CopyStats};
-pub use limits::{ConnectionGate, ConnectionPermit, TokenBucket};
-pub use local_tcp::AcceptLoop;
+pub use bidir::{copy_bidirectional_throttled, copy_bidirectional_throttled_idle, CopyStats};
+pub use limits::{ConnectionGate, ConnectionPermit, RateGate, TokenBucket};
+pub use local_tcp::{bind_with_policy, AcceptLoop, BoundListener};
 pub use runner::{ForwardRunner, ForwardRunnerConfig, ForwardRunnerError};
 pub use udp::{UdpFlowKey, UdpFlowTable, UdpFlowTableConfig};

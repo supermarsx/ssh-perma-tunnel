@@ -85,6 +85,14 @@ Over SSH2/russh, UDP is tunnelled by framing datagrams over a regular
 Over SSH3, UDP datagrams are mapped directly onto QUIC datagrams. The
 same `udp_oversize_drops` counter applies.
 
+The UDP flow table (NAT-style client→upstream mappings) is bounded by a
+hard cap on concurrent flows. The default cap is **65536** flows — generous
+enough never to limit a realistic forward, but finite so a runaway datagram
+flood cannot grow the table without bound (worst case is a few MB). Flows are
+also reclaimed by idle eviction (`udp_idle`). To opt out of the hard cap and
+go back to unbounded growth (idle eviction then being the only bound), set the
+flow cap explicitly to `0`; an unset value uses the bounded default.
+
 ## UNIX-domain-socket forwarding (`type = "local_uds"` / `"remote_uds"`)
 
 `spt` supports forwarding UNIX-domain sockets in both directions via the

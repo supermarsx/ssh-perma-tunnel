@@ -35,3 +35,6 @@ desktop.ini
 /verify.*.stderr.log
 
 # Cargo.lock is intentionally tracked (workspace contains a binary).
+
+# stray path-mangled redirect artifacts
+FProjects*

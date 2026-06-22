@@ -261,7 +261,10 @@ fn translate_methods(profile: &Profile, a: &AuthCfg) -> Result<Vec<AuthMethod>, 
         });
     }
     if a.agent.unwrap_or(false) {
-        out.push(AuthMethod::Agent { socket: None });
+        out.push(AuthMethod::Agent {
+            socket: None,
+            identity_hint: None,
+        });
     }
     if let (Some(issuer), Some(client_id)) = (&a.oidc_issuer, &a.oidc_client_id) {
         let url = url::Url::parse(issuer).map_err(|e| format!("auth.oidc_issuer: {e}"))?;

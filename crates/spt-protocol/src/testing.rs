@@ -5,6 +5,7 @@
 //! forward specs use sane defaults, and no I/O is performed.
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::path::PathBuf;
 
 use spt_core::BindAddr;
 use tokio::sync::{oneshot, watch};
@@ -19,8 +20,8 @@ fn any_v4(port: u16) -> BindAddr {
 
 use crate::endpoint::{AddressFamily, Endpoint};
 use crate::forward::{
-    DynamicForwardSpec, ForwardDirection, ForwardState, LocalForwardSpec, RemoteForwardSpec,
-    UdpForwardSpec,
+    BindConflictPolicy, DynamicForwardSpec, ForwardDirection, ForwardRateLimits, ForwardState,
+    LocalForwardSpec, RemoteForwardSpec, UdpForwardSpec, UdsForwardSpec,
 };
 use crate::handle::{ForwardHandle, ForwardId};
 use crate::TargetAddr;
@@ -89,6 +90,10 @@ pub fn local_forward_spec(port: u16) -> LocalForwardSpec {
         listen: loopback_v4(port),
         target: TargetAddr::new("localhost", port),
         max_connections: None,
+        limits: ForwardRateLimits::default(),
+        idle_timeout: None,
+        on_bind_conflict: BindConflictPolicy::default(),
+        required: false,
     }
 }
 
@@ -109,6 +114,10 @@ pub fn remote_forward_spec(port: u16) -> RemoteForwardSpec {
         listen: any_v4(port),
         target: TargetAddr::new("127.0.0.1", port),
         max_connections: None,
+        limits: ForwardRateLimits::default(),
+        idle_timeout: None,
+        on_bind_conflict: BindConflictPolicy::default(),
+        required: false,
     }
 }
 
@@ -131,6 +140,10 @@ pub fn dynamic_forward_spec(port: u16) -> DynamicForwardSpec {
         allow_socks4a: true,
         allow_socks5: true,
         allow_http_connect: true,
+        limits: ForwardRateLimits::default(),
+        idle_timeout: None,
+        on_bind_conflict: BindConflictPolicy::default(),
+        required: false,
     }
 }
 
@@ -154,6 +167,32 @@ pub fn udp_forward_spec(port: u16) -> UdpForwardSpec {
         target: TargetAddr::new("127.0.0.1", port),
         idle_timeout_secs: 60,
         max_flows: None,
+        limits: ForwardRateLimits::default(),
+    }
+}
+
+/// Build a [`UdsForwardSpec`] listening on `/tmp/spt-test-{port}.sock`,
+/// bridging to the remote socket path `/run/spt-{port}.sock`.
+///
+/// `port` is only used to derive deterministic, distinct paths — UDS forwards
+/// have no port. The spec uses default (unlimited) limits and is non-required.
+///
+/// ```
+/// # #[cfg(feature = "testing")] fn _doc() {
+/// use spt_protocol::testing::uds_forward_spec;
+/// let s = uds_forward_spec(5);
+/// assert_eq!(s.remote_socket_path, "/run/spt-5.sock");
+/// assert!(!s.required);
+/// # }
+/// ```
+#[must_use]
+pub fn uds_forward_spec(port: u16) -> UdsForwardSpec {
+    UdsForwardSpec {
+        name: format!("uds-{port}"),
+        listen_path: PathBuf::from(format!("/tmp/spt-test-{port}.sock")),
+        remote_socket_path: format!("/run/spt-{port}.sock"),
+        limits: ForwardRateLimits::default(),
+        required: false,
     }
 }
 

@@ -283,6 +283,7 @@ async fn authenticate_via_agent_succeeds() {
         "anyone",
         vec![AuthMethod::Agent {
             socket: Some(path.clone()),
+            identity_hint: None,
         }],
     );
     let session = proto
@@ -332,6 +333,7 @@ async fn authenticate_via_agent_rejects_unknown_key() {
         "anyone",
         vec![AuthMethod::Agent {
             socket: Some(path.clone()),
+            identity_hint: None,
         }],
     );
     let res = proto.connect(&endpoint, &auth).await;

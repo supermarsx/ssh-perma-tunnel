@@ -14,6 +14,8 @@ use std::time::Duration;
 use dashmap::DashMap;
 use tokio::time::Instant;
 
+use crate::limits::RateGate;
+
 /// Key into a [`UdpFlowTable`]. Defaults to peer socket address — backends may
 /// supply a richer key (e.g. (peer, server-port)) by parameterising the table.
 pub type UdpFlowKey = SocketAddr;
@@ -27,16 +29,29 @@ pub struct UdpFlowTableConfig {
     /// Maximum permitted datagram size in bytes. Larger datagrams bump the
     /// oversized counter and are *not* admitted.
     pub max_datagram_size: u32,
-    /// Optional cap on the number of concurrent flows. `0` = unlimited.
+    /// Cap on the number of concurrent flows.
+    ///
+    /// `0` = unlimited (no hard cap; only idle eviction bounds the table — a
+    /// power-user escape hatch). The [`Default`] is [`DEFAULT_MAX_FLOWS`], a
+    /// generous-but-finite cap that bounds worst-case memory (a flow entry is
+    /// ~100 bytes, so 65536 flows is a few MB) without limiting realistic
+    /// concurrent-UDP-flow counts on a single forward. Set this to `0`
+    /// explicitly in config to opt back into unbounded behaviour.
     pub max_flows: u32,
 }
+
+/// Default hard cap on concurrent UDP flows per table (see
+/// [`UdpFlowTableConfig::max_flows`]). Generous enough never to limit a
+/// realistic forward, but finite so a runaway flood cannot grow the table
+/// without bound. An explicit `max_flows = 0` in config still means unbounded.
+pub const DEFAULT_MAX_FLOWS: u32 = 65_536;
 
 impl Default for UdpFlowTableConfig {
     fn default() -> Self {
         Self {
             idle_timeout: Duration::from_secs(60),
             max_datagram_size: 1500,
-            max_flows: 0,
+            max_flows: DEFAULT_MAX_FLOWS,
         }
     }
 }
@@ -59,6 +74,11 @@ where
     map: Arc<DashMap<K, Entry<V>>>,
     oversized: Arc<AtomicU64>,
     rejected_full: Arc<AtomicU64>,
+    /// Per-datagram packets-per-second admission gate. Unlimited unless a
+    /// `max_packets_per_sec` limit was configured via [`UdpFlowTable::with_pps`].
+    pps_gate: RateGate,
+    /// Count of datagrams dropped because the pps gate was exhausted.
+    rejected_pps: Arc<AtomicU64>,
 }
 
 impl<K, V> Clone for UdpFlowTable<K, V>
@@ -72,6 +92,8 @@ where
             map: Arc::clone(&self.map),
             oversized: Arc::clone(&self.oversized),
             rejected_full: Arc::clone(&self.rejected_full),
+            pps_gate: self.pps_gate.clone(),
+            rejected_pps: Arc::clone(&self.rejected_pps),
         }
     }
 }
@@ -81,15 +103,49 @@ where
     K: Eq + Hash + Clone + Send + Sync + 'static,
     V: Send + Sync + 'static,
 {
-    /// New table.
+    /// New table with no packets-per-second cap.
     #[must_use]
     pub fn new(cfg: UdpFlowTableConfig) -> Self {
+        Self::with_pps(cfg, 0)
+    }
+
+    /// New table with a `max_packets_per_sec` cap (`0` = unlimited).
+    ///
+    /// When non-zero, [`admit_packet`](Self::admit_packet) meters inbound
+    /// datagrams through a [`RateGate`] (one token per `1/pps` seconds, burst
+    /// of `pps`); excess datagrams are dropped and counted by
+    /// [`rejected_pps_count`](Self::rejected_pps_count).
+    #[must_use]
+    pub fn with_pps(cfg: UdpFlowTableConfig, max_packets_per_sec: u32) -> Self {
         Self {
             cfg,
             map: Arc::new(DashMap::new()),
             oversized: Arc::new(AtomicU64::new(0)),
             rejected_full: Arc::new(AtomicU64::new(0)),
+            pps_gate: RateGate::new(max_packets_per_sec, max_packets_per_sec),
+            rejected_pps: Arc::new(AtomicU64::new(0)),
         }
+    }
+
+    /// Admit one inbound datagram against the packets-per-second cap.
+    ///
+    /// Returns `true` if the datagram may be processed (always `true` when no
+    /// `max_packets_per_sec` was configured); `false` if the pps gate is
+    /// exhausted, in which case the datagram should be dropped — the
+    /// [`rejected_pps_count`](Self::rejected_pps_count) counter is incremented.
+    pub fn admit_packet(&self) -> bool {
+        if self.pps_gate.admit() {
+            true
+        } else {
+            self.rejected_pps.fetch_add(1, Ordering::Relaxed);
+            false
+        }
+    }
+
+    /// Count of datagrams dropped because the packets-per-second cap was hit.
+    #[must_use]
+    pub fn rejected_pps_count(&self) -> u64 {
+        self.rejected_pps.load(Ordering::Relaxed)
     }
 
     /// Number of flows currently tracked.
@@ -266,6 +322,31 @@ mod tests {
         assert_eq!(t.len(), 1);
         assert!(t.with_value(&addr(1), |_| {}));
         assert!(!t.with_value(&addr(2), |_| {}));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn pps_unlimited_admits_everything() {
+        let t: UdpFlowTable<UdpFlowKey, ()> = UdpFlowTable::new(UdpFlowTableConfig::default());
+        for _ in 0..10_000 {
+            assert!(t.admit_packet());
+        }
+        assert_eq!(t.rejected_pps_count(), 0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn pps_cap_drops_excess_datagrams() {
+        // 3 packets/sec, burst 3: first 3 admit, 4th is dropped and counted.
+        let t: UdpFlowTable<UdpFlowKey, ()> =
+            UdpFlowTable::with_pps(UdpFlowTableConfig::default(), 3);
+        assert!(t.admit_packet());
+        assert!(t.admit_packet());
+        assert!(t.admit_packet());
+        assert!(!t.admit_packet());
+        assert_eq!(t.rejected_pps_count(), 1);
+        // After ~1/3s one token refills.
+        tokio::time::advance(Duration::from_millis(334)).await;
+        assert!(t.admit_packet());
+        assert_eq!(t.rejected_pps_count(), 1);
     }
 
     #[tokio::test]

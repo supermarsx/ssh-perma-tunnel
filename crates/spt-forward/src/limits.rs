@@ -1,11 +1,16 @@
 //! Token-bucket rate limiter and connection-cap gate.
 //!
-//! Two primitives:
+//! Three primitives:
 //!
 //! * [`TokenBucket`] — classic byte-rate token bucket with configurable burst.
 //!   Used by [`crate::bidir::copy_bidirectional_throttled`] to throttle per
 //!   direction (per-connection / per-forward / per-profile by composition).
 //! * [`ConnectionGate`] — semaphore-style cap on concurrent connections.
+//! * [`RateGate`] — token-per-`(1/rate)`s *event-admission* gate, used for
+//!   `max_new_conns_per_sec` in the accept loop and `max_packets_per_sec` in
+//!   the UDP datagram path. Unlike [`TokenBucket`] (which meters bytes), a
+//!   [`RateGate`] meters discrete events: one permit becomes available every
+//!   `1/rate` seconds, with a small burst allowance.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -236,6 +241,121 @@ pub struct ConnectionPermit {
     _permit: tokio::sync::OwnedSemaphorePermit,
 }
 
+// --------------------------------------------------------------------------
+// RateGate
+// --------------------------------------------------------------------------
+
+/// An event-admission rate gate: at most `rate` events per second, with a
+/// burst of up to `rate` events drained instantly after an idle period.
+///
+/// This is a token bucket whose token unit is *one event* rather than one
+/// byte. One token is replenished every `1/rate` seconds (computed in integer
+/// nanoseconds to match [`TokenBucket`]'s accounting style and avoid f64
+/// drift). It is used for:
+///
+/// * `max_new_conns_per_sec` — the accept loop calls [`RateGate::admit`]
+///   (non-blocking) per accepted connection and drops the connection when the
+///   gate is exhausted.
+/// * `max_packets_per_sec` — the UDP datagram path calls [`RateGate::admit`]
+///   per inbound datagram and drops the datagram when exhausted.
+///
+/// `rate == 0` means **unlimited** — [`RateGate::admit`] always returns `true`
+/// and [`RateGate::is_active`] returns `false`, preserving prior (uncapped)
+/// behaviour for specs that omit the limit.
+#[derive(Debug, Clone)]
+pub struct RateGate {
+    inner: Arc<RateGateInner>,
+}
+
+#[derive(Debug)]
+struct RateGateInner {
+    rate: u32,
+    /// Capacity in scaled units (`burst_events * NANOS_PER_SEC`).
+    capacity_scaled: u128,
+    state: Mutex<RateGateState>,
+}
+
+#[derive(Debug)]
+struct RateGateState {
+    /// Available event-tokens in scaled units: `events × NANOS_PER_SEC`.
+    tokens_scaled: u128,
+    last: Instant,
+}
+
+impl RateGate {
+    /// New gate admitting `rate` events/sec with a burst allowance of
+    /// `burst` events. `burst` is clamped up to at least `rate` (one full
+    /// second of events) so the steady-state rate is always achievable;
+    /// `burst == 0` therefore yields a burst of `rate`.
+    ///
+    /// `rate == 0` disables the gate ([`admit`](Self::admit) is a no-op that
+    /// always admits).
+    #[must_use]
+    pub fn new(rate: u32, burst: u32) -> Self {
+        let burst_events = u64::from(burst.max(rate.max(1)));
+        let capacity_scaled = (burst_events as u128).saturating_mul(NANOS_PER_SEC);
+        Self {
+            inner: Arc::new(RateGateInner {
+                rate,
+                capacity_scaled,
+                state: Mutex::new(RateGateState {
+                    tokens_scaled: capacity_scaled,
+                    last: Instant::now(),
+                }),
+            }),
+        }
+    }
+
+    /// Disabled gate — [`admit`](Self::admit) always returns `true`.
+    #[must_use]
+    pub fn unlimited() -> Self {
+        Self::new(0, 0)
+    }
+
+    /// Whether this gate actually limits. `false` when `rate == 0`.
+    #[must_use]
+    pub fn is_active(&self) -> bool {
+        self.inner.rate > 0
+    }
+
+    /// Configured rate, in events/second (`0` = unlimited).
+    #[must_use]
+    pub fn rate(&self) -> u32 {
+        self.inner.rate
+    }
+
+    /// Try to admit one event without blocking.
+    ///
+    /// Returns `true` if a token was available (the event is admitted and the
+    /// token consumed) or the gate is unlimited; `false` if the gate is
+    /// currently exhausted (the caller should drop the event).
+    pub fn admit(&self) -> bool {
+        if !self.is_active() {
+            return true;
+        }
+        let rate = u128::from(self.inner.rate);
+        let cap = self.inner.capacity_scaled;
+        // One event costs NANOS_PER_SEC scaled units (mirrors TokenBucket
+        // where one byte costs NANOS_PER_SEC).
+        let need_scaled = NANOS_PER_SEC;
+
+        let mut s = self.inner.state.lock();
+        let now = Instant::now();
+        let elapsed_nanos = now.duration_since(s.last).as_nanos();
+        s.last = now;
+        // Refill: tokens += elapsed_nanos * rate (scaled units), capped.
+        let refill = elapsed_nanos.saturating_mul(rate);
+        s.tokens_scaled = s.tokens_scaled.saturating_add(refill).min(cap);
+
+        if s.tokens_scaled >= need_scaled {
+            s.tokens_scaled -= need_scaled;
+            true
+        } else {
+            false
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -298,6 +418,45 @@ mod tests {
         let g = ConnectionGate::new(0);
         let _permits: Vec<_> = (0..1000).map(|_| g.try_acquire().unwrap()).collect();
         assert_eq!(g.in_flight(), 0); // unlimited reports 0
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn rate_gate_unlimited_always_admits() {
+        let g = RateGate::unlimited();
+        assert!(!g.is_active());
+        assert_eq!(g.rate(), 0);
+        for _ in 0..10_000 {
+            assert!(g.admit());
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn rate_gate_admits_burst_then_throttles() {
+        // 5 events/sec, burst 5: first 5 admit instantly, the 6th is denied
+        // until ~1/5s of refill has elapsed.
+        let g = RateGate::new(5, 5);
+        assert!(g.is_active());
+        for i in 0..5 {
+            assert!(g.admit(), "burst event {i} should admit");
+        }
+        // Bucket drained — next event denied immediately.
+        assert!(!g.admit(), "6th event should be denied while drained");
+        // After 1/5s a single token refills.
+        tokio::time::advance(Duration::from_millis(201)).await;
+        assert!(g.admit(), "one token should have refilled after 1/5s");
+        // ...and then drained again.
+        assert!(!g.admit(), "no second token yet");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn rate_gate_burst_defaults_to_rate() {
+        // burst == 0 is clamped up to `rate`, so a full second of events
+        // drains instantly.
+        let g = RateGate::new(3, 0);
+        assert!(g.admit());
+        assert!(g.admit());
+        assert!(g.admit());
+        assert!(!g.admit());
     }
 
     /// Reference token bucket implemented in pure `f64` (the pre-rewrite

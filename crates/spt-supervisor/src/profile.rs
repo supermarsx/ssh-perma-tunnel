@@ -27,7 +27,7 @@ use tokio::time::{Instant, MissedTickBehavior};
 
 use crate::control::{Control, DrainReport};
 use crate::failover::{EndpointSelector, FailoverMode, ManualOverride};
-use crate::instability::{InstabilityDetector, InstabilityWindow};
+use crate::instability::{InstabilityAction, InstabilityDetector, InstabilityWindow};
 use crate::reconnect::{Backoff, BackoffConfig};
 use crate::session::{SessionRegistry, SessionRow};
 use crate::state_machine::{ProfileEvent as SmEvent, ProfileStateMachine, ProfileStateName};
@@ -79,6 +79,41 @@ pub enum ProfileEvent {
     },
 }
 
+/// Endpoint health-probe style used by the failover/liveness check.
+///
+/// Mirrors `[profiles.failover].health_check`. The default
+/// ([`HealthCheckStyle::SshHandshake`]) reproduces today's fixed behavior: the
+/// supervisor's liveness probe is `TunnelSession::keepalive()`, an SSH-level
+/// round-trip over the already-established session (not a bare TCP connect, not
+/// a full re-auth, not an SSH3 endpoint probe).
+///
+/// CONSUMER (Wave C): the probe site that decides *how* to verify a candidate
+/// endpoint / live session is healthy. Today that is the keepalive arm in
+/// `profile.rs::ProfileTask::run_active` (and, for candidate endpoints, the
+/// connect path). Wave C selects the probe implementation from this style;
+/// unimplemented styles are validated/REJECTED upstream (see validate.rs in
+/// Wave B2) so an unsupported style never silently no-ops.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HealthCheckStyle {
+    /// Bare TCP connect to the endpoint (cheapest; no SSH exchange).
+    TcpConnect,
+    /// SSH transport handshake / keepalive round-trip over the live session
+    /// (today's fixed behavior — the default).
+    SshHandshake,
+    /// Full SSH connect + auth preflight against the endpoint.
+    SshAuthPreflight,
+    /// SSH3 (QUIC) endpoint probe.
+    Ssh3Endpoint,
+}
+
+impl Default for HealthCheckStyle {
+    fn default() -> Self {
+        // Matches today's probe: TunnelSession::keepalive() is an SSH-level
+        // liveness round-trip over the established session.
+        Self::SshHandshake
+    }
+}
+
 /// Tunables for a [`ProfileSupervisor`].
 #[derive(Debug, Clone)]
 pub struct ProfileSupervisorConfig {
@@ -90,6 +125,10 @@ pub struct ProfileSupervisorConfig {
     pub failover_fail_after: u32,
     /// Cooldown unit used before an endpoint is eligible again.
     pub failover_cooldown: Duration,
+    /// Health-probe style for the failover/liveness check. See
+    /// [`HealthCheckStyle`]. Default [`HealthCheckStyle::SshHandshake`] =
+    /// today's fixed behavior. The probe-site consumer is wired in Wave C.
+    pub health_check: HealthCheckStyle,
     /// Instability detector parameters.
     pub instability: InstabilityWindow,
     /// Optional override for the runner.
@@ -129,6 +168,7 @@ impl Default for ProfileSupervisorConfig {
             failover_mode: FailoverMode::Priority,
             failover_fail_after: 1,
             failover_cooldown: Duration::from_secs(5),
+            health_check: HealthCheckStyle::default(),
             instability: InstabilityWindow::default(),
             runner_cfg: ForwardRunnerConfig::default(),
             keepalive_interval: Duration::from_secs(30),
@@ -633,6 +673,33 @@ impl ProfileTask {
                     s
                 }
                 Err(e) => {
+                    // TW-C2: terminal-vs-retryable classifier for auth failures.
+                    // `[profiles.reconnect].retry_auth_failures` (default false)
+                    // decides whether an `AuthFailed*` error from `connect` ends
+                    // the profile (terminal) or rejoins the backoff loop. Every
+                    // other connect error always retries (today's behavior).
+                    if is_auth_failure(&e) && !self.cfg.backoff.retry_auth_failures {
+                        self.fire(SmEvent::AuthFail);
+                        tracing::warn!(
+                            profile = %self.name,
+                            error = %e,
+                            "authentication failed and retry_auth_failures is off; \
+                             treating as terminal and stopping the profile"
+                        );
+                        self.cfg.observers.emit_lifecycle(
+                            "profile.auth_failed",
+                            spt_events::Severity::Error,
+                            &self.name,
+                            format!(
+                                "profile `{}` authentication failed (terminal); \
+                                 set retry_auth_failures=true to keep retrying",
+                                self.name
+                            ),
+                            &[],
+                        );
+                        self.handle_session_failure(&endpoint, &e);
+                        break;
+                    }
                     self.fire(SmEvent::ConnectFail);
                     self.handle_session_failure(&endpoint, &e);
                     let delay = self.next_backoff();
@@ -787,10 +854,31 @@ impl ProfileTask {
                 _ = keepalive.tick() => {
                     // E1-F11: bound the probe so a black-holed connection can't
                     // wedge the control channel. Treat timeout as failure.
-                    let probe = tokio::time::timeout(
-                        self.cfg.keepalive_timeout,
-                        session.keepalive(),
-                    ).await;
+                    // TW-C2: select the liveness probe by `health_check` style.
+                    // `SshHandshake` (default) is the SSH-level keepalive
+                    // round-trip — today's fixed behavior. `TcpConnect` is a bare
+                    // TCP reachability check to the live endpoint. The
+                    // SSH-connect/auth-preflight styles (`SshAuthPreflight`,
+                    // `Ssh3Endpoint`) are not tractable over an established
+                    // session and are rejected upstream by validate.rs (Wave B2);
+                    // defensively they fall back to the SSH keepalive here so an
+                    // un-rejected value can never silently no-op.
+                    let probe = match self.cfg.health_check {
+                        HealthCheckStyle::TcpConnect => {
+                            tokio::time::timeout(
+                                self.cfg.keepalive_timeout,
+                                probe_tcp_connect(self.current_endpoint.as_ref()),
+                            ).await
+                        }
+                        HealthCheckStyle::SshHandshake
+                        | HealthCheckStyle::SshAuthPreflight
+                        | HealthCheckStyle::Ssh3Endpoint => {
+                            tokio::time::timeout(
+                                self.cfg.keepalive_timeout,
+                                session.keepalive(),
+                            ).await
+                        }
+                    };
                     match probe {
                         Ok(Ok(())) => {
                             // E1-F8: a healthy probe accrues clean-uptime for
@@ -1057,17 +1145,74 @@ impl ProfileTask {
             .lock()
             .record_failure(&endpoint.host, endpoint.port, now);
         if self.instability.record_disconnect(now) {
-            let _ = self.events_tx.send(ProfileEvent::InstabilityHit {
-                profile: self.name.clone(),
-            });
-            self.cfg.observers.emit_lifecycle(
-                "profile.instability_hit",
-                spt_events::Severity::Warn,
-                &self.name,
-                format!("profile `{}` instability detector tripped", self.name),
-                &[],
-            );
-            self.fire(SmEvent::InstabilityHit);
+            self.on_instability_trip();
+        }
+    }
+
+    /// TW-C2: respond to a newly-tripped instability detector by selecting the
+    /// configured [`InstabilityAction`]. Every variant emits the canonical
+    /// `profile.instability_hit` event and the `ProfileEvent::InstabilityHit`
+    /// observer event (so an instability trip is always observable); the action
+    /// then layers on its specific response.
+    ///
+    /// Wired today:
+    /// * `MarkDegraded` (default) — fire `SmEvent::InstabilityHit` (→ `Unstable`)
+    ///   and let backoff escalate. This is the pre-TW-C2 fixed behavior.
+    /// * `EmitEvent` — observe only: emit the event, do NOT change state.
+    /// * `Failover` — emit a `FailoverRequested` event so the orchestrator/UI
+    ///   sees the failover intent. The endpoint is already charged a failure
+    ///   (cooled) by `handle_session_failure` above, which biases the next
+    ///   `pick_endpoint` toward a sibling — i.e. the reconnect path fails over.
+    ///
+    /// Fallback to `MarkDegraded` (with a note) for variants whose dedicated
+    /// machinery does not exist in the supervisor yet:
+    /// * `IncreaseKeepalive` — no live mechanism to mutate the keepalive cadence
+    ///   of the running `run_active` loop from here.
+    /// * `IncreaseBackoff` — `Backoff`/`BackoffConfig` ceilings are immutable
+    ///   after construction; there is no runtime escalation hook.
+    /// * `RestartSession` — the trip site (`handle_session_failure`) is already
+    ///   on the failure/reconnect path; there is no live session handle here to
+    ///   tear down independently, so degrade is the correct conservative response.
+    fn on_instability_trip(&mut self) {
+        // Always-observable: event-bus lifecycle event + supervisor event.
+        let _ = self.events_tx.send(ProfileEvent::InstabilityHit {
+            profile: self.name.clone(),
+        });
+        self.cfg.observers.emit_lifecycle(
+            "profile.instability_hit",
+            spt_events::Severity::Warn,
+            &self.name,
+            format!("profile `{}` instability detector tripped", self.name),
+            &[(
+                "action",
+                serde_json::Value::from(format!("{:?}", self.cfg.instability.action)),
+            )],
+        );
+
+        match self.cfg.instability.action {
+            InstabilityAction::EmitEvent => {
+                // Observe only — no state change.
+            }
+            InstabilityAction::Failover => {
+                // Signal failover intent. The failing endpoint was already
+                // recorded (cooled) by the caller, so the next pick rotates to a
+                // sibling. We still mark Unstable so backoff escalation applies
+                // while we rotate.
+                self.emit_failover(None);
+                let _ = self.events_tx.send(ProfileEvent::FailoverRequested {
+                    profile: self.name.clone(),
+                    override_to: None,
+                });
+                self.fire(SmEvent::InstabilityHit);
+            }
+            // MarkDegraded (default) + fallbacks (IncreaseKeepalive /
+            // IncreaseBackoff / RestartSession) all degrade.
+            InstabilityAction::MarkDegraded
+            | InstabilityAction::IncreaseKeepalive
+            | InstabilityAction::IncreaseBackoff
+            | InstabilityAction::RestartSession => {
+                self.fire(SmEvent::InstabilityHit);
+            }
         }
     }
 
@@ -1077,8 +1222,29 @@ impl ProfileTask {
     ) -> Result<Vec<ForwardRunner>> {
         let mut runners = Vec::with_capacity(self.forwards.len());
         for f in &self.forwards {
-            let r = ForwardRunner::start(f, session, &self.cfg.runner_cfg).await?;
-            runners.push(r);
+            match ForwardRunner::start(f, session, &self.cfg.runner_cfg).await {
+                Ok(r) => runners.push(r),
+                Err(e) => {
+                    // TW-C2: per-forward `required` gate. A `required` forward
+                    // that fails to open is fatal — propagate so the caller
+                    // abandons the session (→ Reconnecting per the state
+                    // machine), preserving today's `?`-propagation behavior for
+                    // required forwards. A NON-required forward is best-effort:
+                    // log-and-continue so the session (and its other forwards)
+                    // stays up. `Forward::required` is `Option<bool>` (default
+                    // None = not required), mirrored by `ForwardRunner::required()`.
+                    let required = f.required.unwrap_or(false);
+                    if required {
+                        return Err(e);
+                    }
+                    tracing::warn!(
+                        profile = %self.name,
+                        forward = %f.name,
+                        error = %e,
+                        "non-required forward failed to open; continuing without it"
+                    );
+                }
+            }
         }
         Ok(runners)
     }
@@ -1293,6 +1459,30 @@ async fn drain_runners(runners: Vec<ForwardRunner>, grace: Duration) -> DrainRep
     report
 }
 
+/// TW-C2: bare TCP-connect liveness probe (`HealthCheckStyle::TcpConnect`).
+/// Opens (and immediately drops) a TCP connection to the live endpoint as the
+/// cheapest reachability check — no SSH exchange. Returns `Err` on connect
+/// failure or when no endpoint is recorded, so the caller treats it like any
+/// other failed probe (→ `SessionLost`).
+async fn probe_tcp_connect(endpoint: Option<&Endpoint>) -> Result<()> {
+    let ep = endpoint
+        .ok_or_else(|| Error::NetworkUnreachable("tcp health-check: no current endpoint".into()))?;
+    let addr = format!("{}:{}", ep.host, ep.port);
+    let stream = tokio::net::TcpStream::connect(&addr).await.map_err(|e| {
+        Error::NetworkUnreachable(format!("tcp health-check to {addr} failed: {e}"))
+    })?;
+    drop(stream);
+    Ok(())
+}
+
+/// Classify whether an [`Error`] from [`TunnelProtocol::connect`] represents an
+/// authentication failure, so the reconnect loop can decide terminal vs
+/// retryable per `[profiles.reconnect].retry_auth_failures` (TW-C2). Covers both
+/// the legacy string variant and the structured-diagnostic sibling.
+fn is_auth_failure(e: &Error) -> bool {
+    matches!(e, Error::AuthFailed(_) | Error::AuthFailedDiagnostic(_))
+}
+
 fn parse_endpoint_key(s: &str) -> Result<(String, u16)> {
     let (host, port) = s
         .rsplit_once(':')
@@ -1357,6 +1547,13 @@ async fn open_bench_forward(
         listen: BindAddr::Tcp(local_addr),
         target: TargetAddr::new(local_addr.ip().to_string(), local_addr.port()),
         max_connections: None,
+        // TW-A1 added these fields; a benchmark forward keeps the prior
+        // behavior (unlimited, no idle timeout, default bind-conflict policy,
+        // not required).
+        limits: spt_protocol::ForwardRateLimits::default(),
+        idle_timeout: None,
+        on_bind_conflict: spt_protocol::BindConflictPolicy::default(),
+        required: false,
     };
     let handle = session.open_local_forward(&spec).await?;
 
@@ -1383,6 +1580,27 @@ mod tests {
 
     fn endpoint(host: &str) -> Endpoint {
         Endpoint::new(host, 22)
+    }
+
+    #[test]
+    fn config_health_check_defaults_to_ssh_handshake() {
+        // TW-A3: the new failover health-probe style defaults to today's fixed
+        // behavior (SSH-level keepalive round-trip).
+        let cfg = ProfileSupervisorConfig::default();
+        assert_eq!(cfg.health_check, HealthCheckStyle::SshHandshake);
+        assert_eq!(HealthCheckStyle::default(), HealthCheckStyle::SshHandshake);
+    }
+
+    #[test]
+    fn config_health_check_round_trips_via_struct_update() {
+        let cfg = ProfileSupervisorConfig {
+            health_check: HealthCheckStyle::TcpConnect,
+            ..Default::default()
+        };
+        assert_eq!(cfg.health_check, HealthCheckStyle::TcpConnect);
+        // Other new defaults remain in place.
+        assert!(!cfg.backoff.retry_auth_failures);
+        assert!(cfg.instability.enabled);
     }
 
     #[tokio::test]
@@ -2195,6 +2413,446 @@ mod tests {
             }
         }
 
+        sup.stop().await;
+    }
+
+    // ──────── TW-C2: tuning-knob consumer tests ───────────────────────
+
+    /// A protocol whose `connect` always returns `Error::AuthFailed`, counting
+    /// attempts. Drives the retry-auth-failures classifier deterministically.
+    #[derive(Debug)]
+    struct AuthFailProto {
+        count: Arc<std::sync::atomic::AtomicU32>,
+    }
+    impl AuthFailProto {
+        fn new() -> Self {
+            Self {
+                count: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+            }
+        }
+    }
+    #[async_trait::async_trait]
+    impl spt_protocol::TunnelProtocol for AuthFailProto {
+        async fn connect(
+            &self,
+            _endpoint: &Endpoint,
+            _auth: &AuthConfig,
+        ) -> Result<Box<dyn spt_protocol::TunnelSession>> {
+            self.count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Err(Error::AuthFailed("publickey rejected".into()))
+        }
+        fn capabilities(&self) -> spt_protocol::ProtocolCapabilities {
+            spt_protocol::ProtocolCapabilities::ssh3()
+        }
+        fn name(&self) -> &'static str {
+            "authfail"
+        }
+    }
+
+    /// TW-C2: with `retry_auth_failures = false` (default), an `AuthFailed`
+    /// connect error is terminal — the supervisor stops after a single connect
+    /// instead of looping the backoff path forever.
+    #[tokio::test]
+    async fn auth_failure_is_terminal_when_retry_disabled() {
+        let proto = Arc::new(AuthFailProto::new());
+        let count = Arc::clone(&proto.count);
+        let mut cfg = ProfileSupervisorConfig::default();
+        cfg.backoff.initial_delay = Duration::from_millis(1);
+        cfg.backoff.max_delay = Duration::from_millis(2);
+        // retry_auth_failures defaults to false.
+        assert!(!cfg.backoff.retry_auth_failures);
+        let sup =
+            ProfileSupervisor::spawn("p", proto.clone(), auth(), vec![endpoint("a")], vec![], cfg);
+        let mut rx = sup.watch_state();
+        // The profile must reach a terminal Stopped state (not keep reconnecting).
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+        loop {
+            if *rx.borrow() == ProfileStateName::Stopped {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "auth failure should stop the profile; stuck in {:?}",
+                *rx.borrow()
+            );
+            let _ = tokio::time::timeout(Duration::from_millis(100), rx.changed()).await;
+        }
+        // Exactly one connect attempt — no backoff retry loop.
+        assert_eq!(
+            count.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "terminal auth failure must not retry connect"
+        );
+        sup.stop().await;
+    }
+
+    /// TW-C2: with `retry_auth_failures = true`, an `AuthFailed` connect error is
+    /// retryable — it rejoins the backoff loop and eventually exhausts
+    /// `max_attempts` (i.e. it retried, rather than stopping after one connect).
+    #[tokio::test]
+    async fn auth_failure_is_retried_when_retry_enabled() {
+        let proto = Arc::new(AuthFailProto::new());
+        let count = Arc::clone(&proto.count);
+        let mut cfg = ProfileSupervisorConfig::default();
+        cfg.backoff.initial_delay = Duration::from_millis(1);
+        cfg.backoff.max_delay = Duration::from_millis(2);
+        cfg.backoff.max_attempts = 3;
+        cfg.backoff.retry_auth_failures = true;
+        let sup =
+            ProfileSupervisor::spawn("p", proto.clone(), auth(), vec![endpoint("a")], vec![], cfg);
+        let mut events = sup.take_events().unwrap();
+
+        let mut got_exhausted = false;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+        while tokio::time::Instant::now() < deadline {
+            match tokio::time::timeout(Duration::from_millis(100), events.recv()).await {
+                Ok(Some(ProfileEvent::BackoffExhausted { .. })) => {
+                    got_exhausted = true;
+                    break;
+                }
+                Ok(Some(_)) => {}
+                Ok(None) | Err(_) => {}
+            }
+        }
+        assert!(
+            got_exhausted,
+            "retryable auth failure should exhaust max_attempts, not stop after one connect"
+        );
+        assert!(
+            count.load(std::sync::atomic::Ordering::SeqCst) >= 2,
+            "expected multiple connect attempts when auth failures are retried"
+        );
+        sup.stop().await;
+    }
+
+    /// A session that fails `open_local_forward` for a configured forward name,
+    /// succeeds for any other, and keeps `keepalive` healthy. Counts keepalive
+    /// calls so health-check style selection is observable.
+    struct ForwardFailSession {
+        fail_name: Option<String>,
+        keepalive_count: Arc<std::sync::atomic::AtomicU32>,
+        info: spt_protocol::SessionInfo,
+        // Keep the state senders alive for the life of their handles' receivers
+        // so the watch channels don't close out from under the supervisor.
+        state_txs: Vec<watch::Sender<spt_protocol::ForwardState>>,
+    }
+    impl std::fmt::Debug for ForwardFailSession {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("ForwardFailSession")
+                .field("fail_name", &self.fail_name)
+                .finish()
+        }
+    }
+    impl ForwardFailSession {
+        fn new(
+            fail_name: Option<String>,
+            keepalive_count: Arc<std::sync::atomic::AtomicU32>,
+        ) -> Self {
+            Self {
+                fail_name,
+                keepalive_count,
+                info: spt_protocol::SessionInfo {
+                    backend: "fwdfail".into(),
+                    peer_version: None,
+                    negotiated: None,
+                    established_at: 0,
+                },
+                state_txs: Vec::new(),
+            }
+        }
+        fn make_ok_handle(&mut self, name: &str) -> spt_protocol::ForwardHandle {
+            let (state_tx, state_rx) = watch::channel(spt_protocol::ForwardState::Active);
+            let (close_tx, close_rx) = oneshot::channel::<()>();
+            let tx = state_tx.clone();
+            tokio::spawn(async move {
+                let _ = close_rx.await;
+                let _ = tx.send(spt_protocol::ForwardState::Stopped);
+            });
+            self.state_txs.push(state_tx);
+            spt_protocol::ForwardHandle::new(
+                spt_protocol::ForwardId::new(),
+                name.to_owned(),
+                state_rx,
+                close_tx,
+            )
+        }
+    }
+    #[async_trait::async_trait]
+    impl spt_protocol::TunnelSession for ForwardFailSession {
+        async fn open_local_forward(
+            &mut self,
+            spec: &spt_protocol::LocalForwardSpec,
+        ) -> Result<spt_protocol::ForwardHandle> {
+            if self.fail_name.as_deref() == Some(spec.name.as_str()) {
+                return Err(Error::RuntimeFailure(format!(
+                    "forward `{}` open failed",
+                    spec.name
+                )));
+            }
+            Ok(self.make_ok_handle(&spec.name))
+        }
+        async fn open_remote_forward(
+            &mut self,
+            _spec: &spt_protocol::RemoteForwardSpec,
+        ) -> Result<spt_protocol::ForwardHandle> {
+            Err(Error::RuntimeFailure("no remote".into()))
+        }
+        async fn open_dynamic_forward(
+            &mut self,
+            _spec: &spt_protocol::DynamicForwardSpec,
+        ) -> Result<spt_protocol::ForwardHandle> {
+            Err(Error::RuntimeFailure("no dynamic".into()))
+        }
+        async fn open_udp_forward(
+            &mut self,
+            _spec: &spt_protocol::UdpForwardSpec,
+        ) -> Result<spt_protocol::ForwardHandle> {
+            Err(Error::RuntimeFailure("no udp".into()))
+        }
+        async fn keepalive(&mut self) -> Result<()> {
+            self.keepalive_count
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }
+        async fn close(self: Box<Self>) -> Result<()> {
+            Ok(())
+        }
+        fn session_info(&self) -> spt_protocol::SessionInfo {
+            self.info.clone()
+        }
+    }
+
+    #[derive(Debug)]
+    struct ForwardFailProto {
+        fail_name: Option<String>,
+        keepalive_count: Arc<std::sync::atomic::AtomicU32>,
+        connect_count: Arc<std::sync::atomic::AtomicU32>,
+    }
+    impl ForwardFailProto {
+        fn new(fail_name: Option<String>) -> Self {
+            Self {
+                fail_name,
+                keepalive_count: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+                connect_count: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+            }
+        }
+    }
+    #[async_trait::async_trait]
+    impl spt_protocol::TunnelProtocol for ForwardFailProto {
+        async fn connect(
+            &self,
+            _endpoint: &Endpoint,
+            _auth: &AuthConfig,
+        ) -> Result<Box<dyn spt_protocol::TunnelSession>> {
+            self.connect_count
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(Box::new(ForwardFailSession::new(
+                self.fail_name.clone(),
+                Arc::clone(&self.keepalive_count),
+            )))
+        }
+        fn capabilities(&self) -> spt_protocol::ProtocolCapabilities {
+            spt_protocol::ProtocolCapabilities::ssh3()
+        }
+        fn name(&self) -> &'static str {
+            "fwdfail"
+        }
+    }
+
+    fn local_forward(name: &str, required: Option<bool>) -> Forward {
+        Forward {
+            name: name.to_owned(),
+            kind: "local".to_owned(),
+            transport: "tcp".to_owned(),
+            bind: Some("127.0.0.1:0".to_owned()),
+            target: Some("203.0.113.1:22".to_owned()),
+            required,
+            ..Default::default()
+        }
+    }
+
+    /// TW-C2: a NON-required forward that fails to open must NOT fail the
+    /// profile — the session stays up and reaches Active.
+    #[tokio::test]
+    async fn non_required_forward_failure_does_not_fail_profile() {
+        let proto = Arc::new(ForwardFailProto::new(Some("opt".to_owned())));
+        let cfg = ProfileSupervisorConfig::default();
+        let sup = ProfileSupervisor::spawn(
+            "p",
+            proto.clone(),
+            auth(),
+            vec![endpoint("a")],
+            vec![local_forward("opt", Some(false))],
+            cfg,
+        );
+        let mut rx = sup.watch_state();
+        wait_for_state(&mut rx, ProfileStateName::Active).await;
+        // One connect: the failing non-required forward did not trigger a
+        // session-abandon/reconnect.
+        assert_eq!(
+            proto
+                .connect_count
+                .load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "non-required forward failure must not cause a reconnect"
+        );
+        sup.stop().await;
+    }
+
+    /// TW-C2: a REQUIRED forward that fails to open fails the profile — the
+    /// session is abandoned and the supervisor reconnects (never reaches Active
+    /// while the open keeps failing).
+    #[tokio::test]
+    async fn required_forward_failure_fails_profile() {
+        let proto = Arc::new(ForwardFailProto::new(Some("must".to_owned())));
+        let mut cfg = ProfileSupervisorConfig::default();
+        cfg.backoff.initial_delay = Duration::from_millis(2);
+        cfg.backoff.max_delay = Duration::from_millis(4);
+        let sup = ProfileSupervisor::spawn(
+            "p",
+            proto.clone(),
+            auth(),
+            vec![endpoint("a")],
+            vec![local_forward("must", Some(true))],
+            cfg,
+        );
+        let mut rx = sup.watch_state();
+        // It must NOT reach Active within the window, and must retry (connect
+        // count climbs as the session is abandoned and reconnected).
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(600);
+        while tokio::time::Instant::now() < deadline {
+            assert_ne!(
+                *rx.borrow(),
+                ProfileStateName::Active,
+                "required forward failure must prevent Active"
+            );
+            let _ = tokio::time::timeout(Duration::from_millis(50), rx.changed()).await;
+        }
+        assert!(
+            proto
+                .connect_count
+                .load(std::sync::atomic::Ordering::SeqCst)
+                >= 2,
+            "required forward failure should abandon the session and reconnect"
+        );
+        sup.stop().await;
+    }
+
+    /// TW-C2: instability action = `EmitEvent` emits the InstabilityHit event
+    /// but does NOT move the profile to Unstable; the default `MarkDegraded`
+    /// does. We drive disconnects past the threshold via repeated connect
+    /// failures and observe whether the Unstable state is entered.
+    #[tokio::test]
+    async fn instability_action_emit_event_does_not_mark_unstable() {
+        let proto = Arc::new(MockTunnelProtocol::new());
+        proto.set_connect_fails(true);
+        let mut cfg = ProfileSupervisorConfig::default();
+        cfg.backoff.initial_delay = Duration::from_millis(1);
+        cfg.backoff.max_delay = Duration::from_millis(2);
+        cfg.backoff.max_attempts = 0;
+        cfg.instability.window = Duration::from_secs(60);
+        cfg.instability.max_disconnects = 1; // trip after 2 disconnects
+        cfg.instability.action = InstabilityAction::EmitEvent;
+        let sup =
+            ProfileSupervisor::spawn("p", proto.clone(), auth(), vec![endpoint("a")], vec![], cfg);
+        let mut events = sup.take_events().unwrap();
+        let state_rx = sup.watch_state();
+
+        let mut saw_hit = false;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        while tokio::time::Instant::now() < deadline {
+            match tokio::time::timeout(Duration::from_millis(100), events.recv()).await {
+                Ok(Some(ProfileEvent::InstabilityHit { .. })) => {
+                    saw_hit = true;
+                    break;
+                }
+                Ok(Some(_)) => {}
+                Ok(None) | Err(_) => {}
+            }
+        }
+        assert!(
+            saw_hit,
+            "EmitEvent action must still emit the InstabilityHit event"
+        );
+        // With EmitEvent the SM must never enter Unstable (it stays on the
+        // connect/reconnect path — Resolving/Connecting/Reconnecting).
+        assert_ne!(
+            *state_rx.borrow(),
+            ProfileStateName::Unstable,
+            "EmitEvent action must not transition to Unstable"
+        );
+        sup.stop().await;
+    }
+
+    /// TW-C2: `health_check = TcpConnect` selects the bare-TCP liveness probe —
+    /// the session's SSH `keepalive()` is NOT used for the liveness check. We
+    /// point the endpoint at a live local TCP listener so the probe succeeds and
+    /// the profile stays Active, while `keepalive_count` stays 0.
+    #[tokio::test]
+    async fn health_check_tcp_connect_uses_tcp_probe_not_keepalive() {
+        // A real loopback listener the TCP probe can reach.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        // Accept-and-drop loop so connects succeed repeatedly.
+        tokio::spawn(async move {
+            loop {
+                let _ = listener.accept().await;
+            }
+        });
+
+        let proto = Arc::new(ForwardFailProto::new(None));
+        let keepalive_count = Arc::clone(&proto.keepalive_count);
+        let cfg = ProfileSupervisorConfig {
+            health_check: HealthCheckStyle::TcpConnect,
+            keepalive_interval: Duration::from_millis(20),
+            keepalive_timeout: Duration::from_secs(2),
+            ..Default::default()
+        };
+        let ep = Endpoint::new(addr.ip().to_string(), addr.port());
+        let sup = ProfileSupervisor::spawn("p", proto.clone(), auth(), vec![ep], vec![], cfg);
+        let mut rx = sup.watch_state();
+        wait_for_state(&mut rx, ProfileStateName::Active).await;
+        // Let several probe cadences elapse.
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert_eq!(
+            *rx.borrow(),
+            ProfileStateName::Active,
+            "TCP health-check against a live listener must keep the profile Active"
+        );
+        assert_eq!(
+            keepalive_count.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "TcpConnect style must not call the session's SSH keepalive for liveness"
+        );
+        sup.stop().await;
+    }
+
+    /// TW-C2 sanity: the default `SshHandshake` style DOES drive the session's
+    /// `keepalive()` (today's fixed behavior), so the counter advances.
+    #[tokio::test]
+    async fn health_check_ssh_handshake_uses_keepalive() {
+        let proto = Arc::new(ForwardFailProto::new(None));
+        let keepalive_count = Arc::clone(&proto.keepalive_count);
+        let cfg = ProfileSupervisorConfig {
+            keepalive_interval: Duration::from_millis(20),
+            ..Default::default()
+        };
+        assert_eq!(cfg.health_check, HealthCheckStyle::SshHandshake);
+        let sup =
+            ProfileSupervisor::spawn("p", proto.clone(), auth(), vec![endpoint("a")], vec![], cfg);
+        let mut rx = sup.watch_state();
+        wait_for_state(&mut rx, ProfileStateName::Active).await;
+        // Wait for at least one keepalive probe to fire.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        while keepalive_count.load(std::sync::atomic::Ordering::SeqCst) == 0
+            && tokio::time::Instant::now() < deadline
+        {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(
+            keepalive_count.load(std::sync::atomic::Ordering::SeqCst) >= 1,
+            "SshHandshake style must drive the session keepalive probe"
+        );
         sup.stop().await;
     }
 }

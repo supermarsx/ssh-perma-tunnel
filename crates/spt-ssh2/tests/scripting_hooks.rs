@@ -14,7 +14,9 @@ use std::sync::Arc;
 
 use spt_auth::{AuthConfig, AuthMethod};
 use spt_core::BindAddr;
-use spt_protocol::{Endpoint, LocalForwardSpec, TargetAddr, TunnelProtocol};
+use spt_protocol::{
+    BindConflictPolicy, Endpoint, ForwardRateLimits, LocalForwardSpec, TargetAddr, TunnelProtocol,
+};
 use spt_scripting::audit::AuditEntry;
 use spt_scripting::config::{HookName, ScriptConfig, ScriptHooks};
 use spt_scripting::{HookOutcome, MockAuditSink, ScriptEngine};
@@ -130,6 +132,10 @@ async fn script_hooks_fire_on_connect_forward_and_disconnect() {
             port: 80,
         },
         max_connections: None,
+        limits: ForwardRateLimits::default(),
+        idle_timeout: None,
+        on_bind_conflict: BindConflictPolicy::default(),
+        required: false,
     };
     session
         .open_local_forward(&fwd)

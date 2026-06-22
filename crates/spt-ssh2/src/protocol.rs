@@ -28,6 +28,8 @@ use tracing::warn;
 
 use crate::crypto::CryptoPolicy;
 use crate::hostkey::TrustVerifier;
+use crate::multi_hop::HopKind;
+use crate::proxy_jump::ProxyCredentials;
 use crate::russh_backend::{validate_auth_methods, KeepalivePolicy, ObfsPolicy, ScriptContext};
 use crate::sftp::SftpClient;
 // t7-A2:start — scripting engine handle threaded into every session built
@@ -47,12 +49,19 @@ use spt_auth_sspi::AuditHook as GssAuditHook;
 pub type TrustPolicy = TrustVerifier;
 
 #[derive(Clone)]
-#[allow(dead_code)] // fields consulted only once the russh backend grows real multi-hop dispatch
 struct HopConfig {
     host: String,
     port: u16,
     auth: Option<AuthConfig>,
     trust: Option<TrustPolicy>,
+    /// Dispatch kind for this hop. [`HopKind::Ssh`] (the default) re-establishes
+    /// an SSH session through the hop; [`HopKind::Socks5`] / [`HopKind::HttpConnect`]
+    /// treat the hop as a proxy and tunnel the *next* leg through a SOCKS5 /
+    /// HTTP CONNECT handshake instead.
+    kind: HopKind,
+    /// Optional proxy credentials, consumed only by the proxy hop kinds. The
+    /// factory resolves these from `proxy_username` / `proxy_password_ref`.
+    creds: Option<ProxyCredentials>,
 }
 
 /// SSH2 transport adapter (russh-only since t7-Phase0).
@@ -165,6 +174,8 @@ impl Ssh2ProtocolBuilder {
             port,
             auth: None,
             trust: None,
+            kind: HopKind::Ssh,
+            creds: None,
         });
         self
     }
@@ -183,6 +194,45 @@ impl Ssh2ProtocolBuilder {
             port,
             auth: Some(auth),
             trust: Some(trust),
+            kind: HopKind::Ssh,
+            creds: None,
+        });
+        self
+    }
+
+    /// Add a hop with an explicit dispatch [`HopKind`] and optional proxy
+    /// credentials.
+    ///
+    /// * [`HopKind::Ssh`] behaves like [`Self::hop`] — the hop is reached over
+    ///   `direct-tcpip` and a fresh SSH session is handshaken through it.
+    /// * [`HopKind::Socks5`] / [`HopKind::HttpConnect`] treat the hop's
+    ///   `(host, port)` as a proxy: the connect path opens a `direct-tcpip`
+    ///   channel to the proxy, runs the SOCKS5 / HTTP CONNECT handshake aimed
+    ///   at the *next* leg, then handshakes SSH through the tunneled stream.
+    ///   `creds`, when set, supply the proxy username/password.
+    ///
+    /// `auth` / `trust` are the hop-local SSH auth + host-key policy (used for
+    /// the SSH handshake performed *after* the proxy CONNECT, or directly for
+    /// an SSH-kind hop); pass `None` to fall back to the endpoint's policy.
+    /// This is the surface `profile_factory` calls when mapping a config hop's
+    /// `kind` / `proxy_username` / `proxy_password_ref`.
+    #[must_use]
+    pub fn hop_with_kind(
+        mut self,
+        host: impl Into<String>,
+        port: u16,
+        kind: HopKind,
+        creds: Option<ProxyCredentials>,
+        auth: Option<AuthConfig>,
+        trust: Option<TrustPolicy>,
+    ) -> Self {
+        self.hops.push(HopConfig {
+            host: host.into(),
+            port,
+            auth,
+            trust,
+            kind,
+            creds,
         });
         self
     }
@@ -348,6 +398,8 @@ impl Ssh2Protocol {
                 port: h.port,
                 auth: h.auth.clone(),
                 trust: h.trust.clone(),
+                kind: h.kind,
+                creds: h.creds.clone(),
             })
             .collect()
     }
@@ -574,5 +626,38 @@ mod tests {
             .hop("bastion-b", 2222)
             .build();
         assert_eq!(p.hop_count(), 2);
+    }
+
+    /// `hop_with_kind` records the dispatch kind + creds on the resulting
+    /// `HopSpec` so the factory's proxy mapping reaches `connect_inner`'s
+    /// dispatch. Pins the field wiring the russh backend's `open_next_leg`
+    /// consumes.
+    #[test]
+    fn hop_with_kind_propagates_kind_and_creds_into_spec() {
+        let creds = ProxyCredentials {
+            username: "px".into(),
+            password: "secret".into(),
+        };
+        let proto = Ssh2Protocol::builder()
+            .hop("bastion", 22)
+            .hop_with_kind(
+                "proxy.example.com",
+                1080,
+                HopKind::Socks5,
+                Some(creds),
+                None,
+                None,
+            )
+            .build();
+        assert_eq!(proto.hop_count(), 2);
+        let specs = proto.hop_specs();
+        // First hop defaults to SSH with no creds.
+        assert_eq!(specs[0].kind, HopKind::Ssh);
+        assert!(specs[0].creds.is_none());
+        // Second hop carries the proxy kind + credentials.
+        assert_eq!(specs[1].kind, HopKind::Socks5);
+        let c = specs[1].creds.as_ref().expect("creds carried");
+        assert_eq!(c.username, "px");
+        assert_eq!(c.password, "secret");
     }
 }

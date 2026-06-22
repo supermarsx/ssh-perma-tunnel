@@ -15,9 +15,13 @@ use russh::keys::{PrivateKeyWithHashAlg, PublicKeyBase64 as _};
 use secrecy::ExposeSecret as _;
 use spt_auth::{AuthConfig, AuthMethod, SecretRef as AuthSecretRef};
 use spt_core::{BindAddr, Error, Result};
+use spt_forward::{
+    bind_with_policy, copy_bidirectional_throttled_idle, BoundListener, RateGate, TokenBucket,
+};
 use spt_protocol::{
-    DynamicForwardSpec, Endpoint, ForwardHandle, ForwardId, ForwardState, LocalForwardSpec,
-    RemoteForwardSpec, SessionInfo, TargetAddr, TunnelSession, UdpForwardSpec,
+    BindConflictPolicy, DynamicForwardSpec, Endpoint, ForwardHandle, ForwardId, ForwardRateLimits,
+    ForwardState, LocalForwardSpec, RemoteForwardSpec, SessionInfo, TargetAddr, TunnelSession,
+    UdpForwardSpec, UdsForwardSpec,
 };
 use spt_secrets::SecretBackend;
 use tokio::io::AsyncWriteExt as _;
@@ -28,6 +32,8 @@ use tracing::warn;
 use crate::agent::Agent;
 use crate::crypto::CryptoPolicy;
 use crate::hostkey::TrustVerifier;
+use crate::multi_hop::HopKind;
+use crate::proxy_jump::ProxyCredentials;
 use crate::secret;
 use crate::sftp::SftpClient;
 
@@ -140,6 +146,12 @@ pub(crate) struct HopSpec {
     pub port: u16,
     pub auth: Option<AuthConfig>,
     pub trust: Option<TrustVerifier>,
+    /// Dispatch kind. [`HopKind::Ssh`] (default) re-establishes an SSH session
+    /// through this hop; the proxy kinds tunnel the *next* leg through a SOCKS5
+    /// / HTTP CONNECT handshake spoken at this hop's `(host, port)`.
+    pub kind: HopKind,
+    /// Optional proxy credentials, consumed only by the proxy hop kinds.
+    pub creds: Option<ProxyCredentials>,
 }
 
 /// Obfuscation policy threaded from the profile's
@@ -406,10 +418,14 @@ async fn connect_inner(
         )
         .await?;
 
-        // Walk intermediate hops [1..]: each opens a direct-tcpip channel
-        // through the prior session and handshakes a fresh russh client
-        // over the channel stream.
+        // Walk intermediate hops [1..]: each opens a leg *through the prior
+        // session* and handshakes a fresh russh client over the resulting
+        // channel stream. The leg toward `hop` is dispatched by the *previous*
+        // hop's `kind`: an SSH-kind prior hop opens a plain `direct-tcpip`
+        // channel; a proxy-kind prior hop (SOCKS5 / HTTP CONNECT) opens a
+        // channel to the proxy and tunnels the CONNECT toward `hop` through it.
         let mut prev_shared = first_shared;
+        let mut prev_hop = first;
         for hop in &hops[1..] {
             let hop_trust = hop.trust.clone().unwrap_or_else(|| trust.clone());
             let hop_trust_failure = Arc::new(parking_lot::Mutex::new(None));
@@ -420,8 +436,9 @@ async fn connect_inner(
                 trust_failure: Arc::clone(&hop_trust_failure),
                 remote_forwards: RemoteForwardMap::default(),
             };
-            let hop_handle = crate::multi_hop::open_chained_session(
+            let hop_handle = open_next_leg(
                 Arc::clone(&prev_shared),
+                prev_hop,
                 &hop.host,
                 hop.port,
                 cfg.clone(),
@@ -448,9 +465,11 @@ async fn connect_inner(
             )
             .await?;
             prev_shared = hop_shared;
+            prev_hop = hop;
         }
 
-        // Final hop: tunnel through the last bastion to `endpoint`.
+        // Final leg: tunnel through the last hop to `endpoint`. Dispatched by
+        // the last hop's `kind` (proxy-kind ⇒ CONNECT to `endpoint` through it).
         let final_trust_failure = Arc::new(parking_lot::Mutex::new(None));
         let final_remote_forwards = RemoteForwardMap::default();
         let final_handler = ClientHandler {
@@ -460,8 +479,9 @@ async fn connect_inner(
             trust_failure: Arc::clone(&final_trust_failure),
             remote_forwards: Arc::clone(&final_remote_forwards),
         };
-        let final_handle = crate::multi_hop::open_chained_session(
+        let final_handle = open_next_leg(
             Arc::clone(&prev_shared),
+            prev_hop,
             &endpoint.host,
             endpoint.port,
             cfg.clone(),
@@ -569,6 +589,57 @@ async fn connect_inner(
         obfs_transport_name: obfs_name,
         obfs_audit: obfs.as_ref().and_then(|p| p.audit.clone()),
     })
+}
+
+/// Open the next chained leg toward `(target_host, target_port)` through the
+/// `prev` hop's already-authenticated session, dispatching by `prev.kind`:
+///
+/// * [`HopKind::Ssh`] — a plain `direct-tcpip` channel to the target plus a
+///   fresh SSH handshake (the historical behavior;
+///   [`crate::multi_hop::open_chained_session`]).
+/// * [`HopKind::Socks5`] / [`HopKind::HttpConnect`] — a `direct-tcpip` channel
+///   to the *proxy* (`prev.host:prev.port`), the SOCKS5 / HTTP CONNECT
+///   handshake aimed at `(target_host, target_port)`, then the SSH handshake
+///   through the now-tunneled stream
+///   ([`crate::multi_hop::open_chained_session_with_kind`]).
+///
+/// This is the dispatch point the proxy-hop wiring needs: the leaf proxy /
+/// chained-session helpers already exist and are tested; this connects them to
+/// the `HopSpec.kind` / `HopSpec.creds` fields populated by the factory.
+async fn open_next_leg(
+    prev_shared: SharedHandle,
+    prev: &HopSpec,
+    target_host: &str,
+    target_port: u16,
+    cfg: Arc<client::Config>,
+    handler: ClientHandler,
+) -> Result<RusshHandle> {
+    match prev.kind {
+        HopKind::Ssh => {
+            crate::multi_hop::open_chained_session(
+                prev_shared,
+                target_host,
+                target_port,
+                cfg,
+                handler,
+            )
+            .await
+        }
+        HopKind::Socks5 | HopKind::HttpConnect => {
+            crate::multi_hop::open_chained_session_with_kind(
+                prev_shared,
+                &prev.host,
+                prev.port,
+                target_host,
+                target_port,
+                prev.kind,
+                prev.creds.clone(),
+                cfg,
+                handler,
+            )
+            .await
+        }
+    }
 }
 
 /// russh-backed [`TunnelSession`] — the only SSH2 session type after
@@ -812,6 +883,26 @@ impl TunnelSession for RusshSsh2Session {
         Err(Error::UnsupportedPlatform(
             "SSH2/russh does not support UDP forwards; use SSH3 for UDP forwarding".into(),
         ))
+    }
+
+    async fn open_uds_forward(&mut self, spec: &UdsForwardSpec) -> Result<ForwardHandle> {
+        // `local_uds`: bind a local AF_UNIX listener on `listen_path`, and for
+        // each accepted stream open a `direct-streamlocal@openssh.com` channel
+        // to the remote `remote_socket_path`, bridging the two with the
+        // per-forward limits + idle timeout. On non-Unix the `cfg(not(unix))`
+        // impl below surfaces `UnsupportedPlatform` (the trait default
+        // behaviour is preserved for the platform that cannot bind AF_UNIX).
+        let handle = open_uds(Arc::clone(&self.handle), spec).await?;
+        self.dispatch_forward_state(
+            if spec.name.is_empty() {
+                format!("local_uds:{}", spec.listen_path.display())
+            } else {
+                spec.name.clone()
+            },
+            spt_scripting::event::ForwardStateTransition::Listening,
+        )
+        .await;
+        Ok(handle)
     }
 
     async fn keepalive(&mut self) -> Result<()> {
@@ -1118,7 +1209,10 @@ async fn try_auth_method(
                     )
                 })
         }
-        AuthMethod::Agent { socket } => try_agent_auth(handle, username, socket).await,
+        AuthMethod::Agent {
+            socket,
+            identity_hint,
+        } => try_agent_auth(handle, username, socket, identity_hint).await,
         AuthMethod::KeyboardInteractive { responder } => {
             try_keyboard_interactive(handle, username, responder, backends).await
         }
@@ -1231,11 +1325,12 @@ async fn try_agent_auth(
     handle: SharedHandle,
     username: String,
     socket: Option<std::path::PathBuf>,
+    identity_hint: Option<String>,
 ) -> Result<bool> {
     let socket_ref = socket.as_deref();
     // First listing connection — surface "no agent reachable" errors early.
     let listing_client = Agent::open_signer(socket_ref).await?;
-    let identities = {
+    let mut identities = {
         // Reuse the listing connection just for `request_identities`.
         let mut client = listing_client;
         client
@@ -1243,6 +1338,14 @@ async fn try_agent_auth(
             .await
             .map_err(|e| Error::AuthFailed(format!("ssh-agent: request_identities: {e}")))?
     };
+
+    // E?-A2: if the profile supplied an `identity_hint`, prefer the matching
+    // identity first (by key comment exact-match, or by `SHA256:…`
+    // fingerprint). We stable-partition rather than filter so an unmatched or
+    // wrong hint still falls back to trying every identity in natural order.
+    if let Some(hint) = identity_hint.as_deref() {
+        reorder_by_identity_hint(&mut identities, hint);
+    }
 
     // russh 0.61 lets one `AgentClient` signer serve every identity attempt
     // (`authenticate_publickey_with` borrows `&mut signer`), so unlike the
@@ -1292,6 +1395,38 @@ async fn try_agent_auth(
         warn!(target: "spt_ssh2::russh", "ssh-agent auth exhausted: {msg}");
     }
     Ok(false)
+}
+
+/// Stable-reorder `identities` so every entry matching `hint` (by key comment
+/// exact-match or by `SHA256:…` fingerprint) is tried first, preserving the
+/// agent's natural order within each group. A hint that matches nothing leaves
+/// the list untouched, so the flow still tries every identity.
+fn reorder_by_identity_hint(identities: &mut [russh::keys::agent::AgentIdentity], hint: &str) {
+    // `sort_by_key` is stable, so mapping "matches" → 0 and "no match" → 1
+    // moves matches to the front while preserving relative order in each group.
+    identities.sort_by_key(|id| usize::from(!identity_matches_hint(id, hint)));
+}
+
+/// True when `identity` matches the operator-supplied `hint`, either by an
+/// exact key-comment match or by a `SHA256:…` public-key fingerprint match
+/// (case-insensitive on the `SHA256` label; the base64 body is compared
+/// verbatim).
+fn identity_matches_hint(identity: &russh::keys::agent::AgentIdentity, hint: &str) -> bool {
+    if identity.comment() == hint {
+        return true;
+    }
+    agent_fingerprint(identity).eq_ignore_ascii_case(hint)
+}
+
+/// Canonical `SHA256:…` fingerprint of an agent identity's public key, used to
+/// match an `identity_hint`. Distinct from [`Agent::fingerprint`], which
+/// renders an `algorithm (base64)` diagnostic string rather than the
+/// OpenSSH-style fingerprint operators paste from `ssh-add -l`.
+fn agent_fingerprint(identity: &russh::keys::agent::AgentIdentity) -> String {
+    identity
+        .public_key()
+        .fingerprint(russh::keys::ssh_key::HashAlg::Sha256)
+        .to_string()
 }
 
 /// Drive russh's `Signer`-based publickey userauth path.
@@ -1424,19 +1559,60 @@ fn backend_refs(backends: &[Arc<dyn SecretBackend>]) -> Vec<&dyn SecretBackend> 
     backends.iter().map(std::convert::AsRef::as_ref).collect()
 }
 
+/// Per-direction token buckets built from a forward's [`ForwardRateLimits`].
+///
+/// `up` throttles the client→remote direction (`a→b` in
+/// [`copy_bidirectional_throttled_idle`]); `down` throttles remote→client.
+/// A zero rate yields an inert bucket (unlimited), preserving the prior
+/// `TokenBucket::unlimited()` behaviour at every forward-open site.
+struct ForwardBuckets {
+    up: TokenBucket,
+    down: TokenBucket,
+}
+
+impl ForwardBuckets {
+    fn from_limits(limits: &ForwardRateLimits) -> Self {
+        Self {
+            up: TokenBucket::new(limits.rate_bps_up, limits.burst_up),
+            down: TokenBucket::new(limits.rate_bps_down, limits.burst_down),
+        }
+    }
+}
+
+/// Bind a local TCP listener honouring the forward's [`BindConflictPolicy`].
+///
+/// Returns the bound listener; the actually-bound address (which may differ
+/// from the requested one under [`BindConflictPolicy::NextPort`]) is logged.
+async fn bind_local_listener(
+    listen: &BindAddr,
+    policy: BindConflictPolicy,
+    name: &str,
+) -> Result<TcpListener> {
+    let bind = bind_addr_string(listen)?;
+    let desired: SocketAddr = bind.parse().map_err(|e| Error::LocalBindFailed {
+        address: bind.clone(),
+        reason: format!("parse bind address: {e}"),
+    })?;
+    let BoundListener { listener, addr } = bind_with_policy(desired, policy).await?;
+    if addr != desired {
+        warn!(
+            target: "spt_ssh2::russh",
+            forward = %name,
+            requested = %desired,
+            bound = %addr,
+            "bind conflict resolved to a different address"
+        );
+    }
+    Ok(listener)
+}
+
 async fn open_local(handle: SharedHandle, spec: &LocalForwardSpec) -> Result<ForwardHandle> {
-    let bind = bind_addr_string(&spec.listen)?;
-    let listener = TcpListener::bind(&bind)
-        .await
-        .map_err(|e| Error::LocalBindFailed {
-            address: bind.clone(),
-            reason: e.to_string(),
-        })?;
+    let name = spec.name.clone();
+    let listener = bind_local_listener(&spec.listen, spec.on_bind_conflict, &name).await?;
 
     let (state_tx, state_rx) = watch::channel(ForwardState::Listening);
     let (close_tx, close_rx) = oneshot::channel();
     let id = ForwardId::new();
-    let name = spec.name.clone();
     tokio::spawn(local_loop(
         listener,
         handle,
@@ -1445,23 +1621,19 @@ async fn open_local(handle: SharedHandle, spec: &LocalForwardSpec) -> Result<For
         close_rx,
         spec.max_connections,
         name.clone(),
+        spec.limits,
+        spec.idle_timeout,
     ));
     Ok(ForwardHandle::new(id, name, state_rx, close_tx))
 }
 
 async fn open_dynamic(handle: SharedHandle, spec: &DynamicForwardSpec) -> Result<ForwardHandle> {
-    let bind = bind_addr_string(&spec.listen)?;
-    let listener = TcpListener::bind(&bind)
-        .await
-        .map_err(|e| Error::LocalBindFailed {
-            address: bind.clone(),
-            reason: e.to_string(),
-        })?;
+    let name = spec.name.clone();
+    let listener = bind_local_listener(&spec.listen, spec.on_bind_conflict, &name).await?;
 
     let (state_tx, state_rx) = watch::channel(ForwardState::Listening);
     let (close_tx, close_rx) = oneshot::channel();
     let id = ForwardId::new();
-    let name = spec.name.clone();
     let protocols = crate::dynamic::DynamicProxyProtocolSet {
         socks4: spec.allow_socks4,
         socks4a: spec.allow_socks4a,
@@ -1476,10 +1648,13 @@ async fn open_dynamic(handle: SharedHandle, spec: &DynamicForwardSpec) -> Result
         spec.max_connections,
         name.clone(),
         protocols,
+        spec.limits,
+        spec.idle_timeout,
     ));
     Ok(ForwardHandle::new(id, name, state_rx, close_tx))
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn local_loop(
     listener: TcpListener,
     handle: SharedHandle,
@@ -1488,9 +1663,13 @@ async fn local_loop(
     mut close_rx: oneshot::Receiver<()>,
     max_connections: Option<u32>,
     name: String,
+    limits: ForwardRateLimits,
+    idle_timeout: Option<Duration>,
 ) {
     let _ = state_tx.send(ForwardState::Active);
     let active = Arc::new(std::sync::atomic::AtomicU32::new(0));
+    // `max_new_conns_per_sec == 0` ⇒ unlimited gate (preserves prior behaviour).
+    let rate_gate = RateGate::new(limits.max_new_conns_per_sec, limits.max_new_conns_per_sec);
     loop {
         tokio::select! {
             _ = &mut close_rx => break,
@@ -1502,6 +1681,10 @@ async fn local_loop(
                         continue;
                     }
                 };
+                if !rate_gate.admit() {
+                    warn!(target: "spt_ssh2::russh", forward = %name, "max_new_connections_per_second reached, dropping connection");
+                    continue;
+                }
                 if let Some(limit) = max_connections {
                     if active.load(std::sync::atomic::Ordering::Relaxed) >= limit {
                         warn!(target: "spt_ssh2::russh", forward = %name, "max_connections reached");
@@ -1514,7 +1697,7 @@ async fn local_loop(
                 let active = Arc::clone(&active);
                 let name = name.clone();
                 tokio::spawn(async move {
-                    if let Err(e) = bridge_local(handle, sock, peer, &target).await {
+                    if let Err(e) = bridge_local(handle, sock, peer, &target, &limits, idle_timeout).await {
                         warn!(target: "spt_ssh2::russh", forward = %name, error = %e, "local bridge failed");
                     }
                     active.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
@@ -1534,9 +1717,12 @@ async fn dynamic_loop(
     max_connections: Option<u32>,
     name: String,
     protocols: crate::dynamic::DynamicProxyProtocolSet,
+    limits: ForwardRateLimits,
+    idle_timeout: Option<Duration>,
 ) {
     let _ = state_tx.send(ForwardState::Active);
     let active = Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let rate_gate = RateGate::new(limits.max_new_conns_per_sec, limits.max_new_conns_per_sec);
     loop {
         tokio::select! {
             _ = &mut close_rx => break,
@@ -1548,6 +1734,10 @@ async fn dynamic_loop(
                         continue;
                     }
                 };
+                if !rate_gate.admit() {
+                    warn!(target: "spt_ssh2::russh", forward = %name, "max_new_connections_per_second reached, dropping connection");
+                    continue;
+                }
                 if let Some(limit) = max_connections {
                     if active.load(std::sync::atomic::Ordering::Relaxed) >= limit {
                         warn!(target: "spt_ssh2::russh", forward = %name, "max_connections reached");
@@ -1559,7 +1749,7 @@ async fn dynamic_loop(
                 let active = Arc::clone(&active);
                 let name = name.clone();
                 tokio::spawn(async move {
-                    if let Err(e) = bridge_dynamic(handle, sock, peer, protocols).await {
+                    if let Err(e) = bridge_dynamic(handle, sock, peer, protocols, &limits, idle_timeout).await {
                         warn!(target: "spt_ssh2::russh", forward = %name, error = %e, "dynamic bridge failed");
                     }
                     active.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
@@ -1575,6 +1765,8 @@ async fn bridge_local(
     mut sock: TcpStream,
     peer: SocketAddr,
     target: &TargetAddr,
+    limits: &ForwardRateLimits,
+    idle_timeout: Option<Duration>,
 ) -> Result<()> {
     let channel = {
         let handle = handle.lock().await;
@@ -1589,9 +1781,18 @@ async fn bridge_local(
             .map_err(|e| Error::RuntimeFailure(format!("russh direct-tcpip: {e}")))?
     };
     let mut stream = channel.into_stream();
-    tokio::io::copy_bidirectional(&mut sock, &mut stream)
-        .await
-        .map_err(|e| Error::RuntimeFailure(format!("russh local bridge I/O: {e}")))?;
+    let buckets = ForwardBuckets::from_limits(limits);
+    // `sock` is the client side (a), `stream` the tunnel/remote side (b):
+    // a→b throttles client→remote (up), b→a throttles remote→client (down).
+    copy_bidirectional_throttled_idle(
+        &mut sock,
+        &mut stream,
+        buckets.up,
+        buckets.down,
+        idle_timeout,
+    )
+    .await
+    .map_err(|e| Error::RuntimeFailure(format!("russh local bridge I/O: {e}")))?;
     let _ = stream.shutdown().await;
     Ok(())
 }
@@ -1601,6 +1802,8 @@ async fn bridge_dynamic(
     mut sock: TcpStream,
     peer: SocketAddr,
     protocols: crate::dynamic::DynamicProxyProtocolSet,
+    limits: &ForwardRateLimits,
+    idle_timeout: Option<Duration>,
 ) -> Result<()> {
     let request = crate::dynamic::read_request(&mut sock, protocols).await?;
     let channel = {
@@ -1628,9 +1831,16 @@ async fn bridge_dynamic(
         }
     };
     let mut stream = channel.into_stream();
-    tokio::io::copy_bidirectional(&mut sock, &mut stream)
-        .await
-        .map_err(|e| Error::RuntimeFailure(format!("russh dynamic bridge I/O: {e}")))?;
+    let buckets = ForwardBuckets::from_limits(limits);
+    copy_bidirectional_throttled_idle(
+        &mut sock,
+        &mut stream,
+        buckets.up,
+        buckets.down,
+        idle_timeout,
+    )
+    .await
+    .map_err(|e| Error::RuntimeFailure(format!("russh dynamic bridge I/O: {e}")))?;
     let _ = stream.shutdown().await;
     Ok(())
 }
@@ -1693,6 +1903,8 @@ async fn open_remote(
             target: spec.target.clone(),
             state_tx,
             name: name.clone(),
+            limits: spec.limits,
+            idle_timeout: spec.idle_timeout,
         },
     ));
     Ok(ForwardHandle::new(id, name, state_rx, close_tx))
@@ -1705,6 +1917,8 @@ struct RemoteLoopContext {
     target: TargetAddr,
     state_tx: watch::Sender<ForwardState>,
     name: String,
+    limits: ForwardRateLimits,
+    idle_timeout: Option<Duration>,
 }
 
 async fn remote_loop(
@@ -1719,8 +1933,10 @@ async fn remote_loop(
                 let Some(forwarded) = forwarded else { break; };
                 let target = ctx.target.clone();
                 let name = ctx.name.clone();
+                let limits = ctx.limits;
+                let idle_timeout = ctx.idle_timeout;
                 tokio::spawn(async move {
-                    if let Err(e) = bridge_remote(forwarded.channel, &target).await {
+                    if let Err(e) = bridge_remote(forwarded.channel, &target, &limits, idle_timeout).await {
                         warn!(target: "spt_ssh2::russh", forward = %name, error = %e, "remote bridge failed");
                     }
                 });
@@ -1736,7 +1952,12 @@ async fn remote_loop(
     let _ = ctx.state_tx.send(ForwardState::Stopped);
 }
 
-async fn bridge_remote(channel: russh::Channel<client::Msg>, target: &TargetAddr) -> Result<()> {
+async fn bridge_remote(
+    channel: russh::Channel<client::Msg>,
+    target: &TargetAddr,
+    limits: &ForwardRateLimits,
+    idle_timeout: Option<Duration>,
+) -> Result<()> {
     let mut stream = channel.into_stream();
     let mut sock = TcpStream::connect((target.host.as_str(), target.port))
         .await
@@ -1746,9 +1967,116 @@ async fn bridge_remote(channel: russh::Channel<client::Msg>, target: &TargetAddr
                 target.host, target.port
             ))
         })?;
-    tokio::io::copy_bidirectional(&mut stream, &mut sock)
+    // For a remote forward, `stream` is the tunnel side carrying inbound
+    // connections (remote→client = `up` semantics relative to the client),
+    // `sock` the local target. `a→b` is stream→sock; we apply `up` to the
+    // remote-origin direction and `down` to the reply.
+    let buckets = ForwardBuckets::from_limits(limits);
+    copy_bidirectional_throttled_idle(
+        &mut stream,
+        &mut sock,
+        buckets.up,
+        buckets.down,
+        idle_timeout,
+    )
+    .await
+    .map_err(|e| Error::RuntimeFailure(format!("russh remote bridge I/O: {e}")))?;
+    let _ = stream.shutdown().await;
+    Ok(())
+}
+
+/// Open a `local_uds` forward: bind the local `AF_UNIX` listener on
+/// `spec.listen_path` and spawn an accept loop that bridges each accepted
+/// stream onto a `direct-streamlocal@openssh.com` channel to
+/// `spec.remote_socket_path`.
+///
+/// On non-Unix targets this returns [`Error::UnsupportedPlatform`] (binding an
+/// `AF_UNIX` listener is Unix-only); the outbound channel side would work but
+/// there is no local listener half to drive it.
+#[cfg(unix)]
+async fn open_uds(handle: SharedHandle, spec: &UdsForwardSpec) -> Result<ForwardHandle> {
+    let listen_path = spec.listen_path.to_string_lossy().into_owned();
+    // Clear a stale socket file from a previous unclean shutdown so the bind
+    // does not spuriously fail with AddrInUse.
+    spt_forward::uds_listener::UdsListener::unlink_existing_if_socket(&listen_path)?;
+    let listener = spt_forward::uds_listener::open_listener(&listen_path).await?;
+
+    let (state_tx, state_rx) = watch::channel(ForwardState::Listening);
+    let (close_tx, close_rx) = oneshot::channel();
+    let id = ForwardId::new();
+    let name = spec.name.clone();
+    tokio::spawn(uds_loop(
+        listener,
+        handle,
+        spec.remote_socket_path.clone(),
+        state_tx,
+        close_rx,
+        name.clone(),
+        spec.limits,
+    ));
+    Ok(ForwardHandle::new(id, name, state_rx, close_tx))
+}
+
+#[cfg(not(unix))]
+#[allow(clippy::unused_async)]
+async fn open_uds(_handle: SharedHandle, _spec: &UdsForwardSpec) -> Result<ForwardHandle> {
+    Err(crate::uds_forward::windows_local_uds_unsupported())
+}
+
+/// Accept loop for a `local_uds` forward. Each accepted `UnixStream` is bridged
+/// onto a fresh `direct-streamlocal@openssh.com` channel to `remote_path`.
+#[cfg(unix)]
+async fn uds_loop(
+    listener: spt_forward::uds_listener::UdsListener,
+    handle: SharedHandle,
+    remote_path: String,
+    state_tx: watch::Sender<ForwardState>,
+    mut close_rx: oneshot::Receiver<()>,
+    name: String,
+    limits: ForwardRateLimits,
+) {
+    let _ = state_tx.send(ForwardState::Active);
+    loop {
+        tokio::select! {
+            _ = &mut close_rx => break,
+            accept = listener.accept() => {
+                let sock = match accept {
+                    Ok(value) => value,
+                    Err(e) => {
+                        warn!(target: "spt_ssh2::russh", forward = %name, error = %e, "uds accept failed");
+                        continue;
+                    }
+                };
+                let handle = Arc::clone(&handle);
+                let remote_path = remote_path.clone();
+                let name = name.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = bridge_uds(handle, sock, &remote_path, &limits).await {
+                        warn!(target: "spt_ssh2::russh", forward = %name, error = %e, "uds bridge failed");
+                    }
+                });
+            }
+        }
+    }
+    let _ = state_tx.send(ForwardState::Stopped);
+}
+
+/// Bridge one accepted local `UnixStream` onto a `direct-streamlocal` channel
+/// to `remote_path`, throttling with the per-forward limits.
+#[cfg(unix)]
+async fn bridge_uds(
+    handle: SharedHandle,
+    mut sock: tokio::net::UnixStream,
+    remote_path: &str,
+    limits: &ForwardRateLimits,
+) -> Result<()> {
+    let channel = crate::uds_forward::open_local_uds(&handle, remote_path).await?;
+    let mut stream = channel.into_stream();
+    let buckets = ForwardBuckets::from_limits(limits);
+    // `sock` is the local UDS client (a), `stream` the remote socket (b).
+    copy_bidirectional_throttled_idle(&mut sock, &mut stream, buckets.up, buckets.down, None)
         .await
-        .map_err(|e| Error::RuntimeFailure(format!("russh remote bridge I/O: {e}")))?;
+        .map_err(|e| Error::RuntimeFailure(format!("russh uds bridge I/O: {e}")))?;
     let _ = stream.shutdown().await;
     Ok(())
 }
@@ -1916,7 +2244,10 @@ mod tests {
         let auth = AuthConfig::new(
             "user",
             vec![
-                AuthMethod::Agent { socket: None },
+                AuthMethod::Agent {
+                    socket: None,
+                    identity_hint: None,
+                },
                 AuthMethod::Password {
                     secret: spt_auth::SecretRef::Env("X".into()),
                 },
@@ -1948,7 +2279,13 @@ mod tests {
         // Port 1 on loopback is unroutable for SSH; the connect will error,
         // but the obfs audit hook fires before the failure.
         let endpoint = Endpoint::new("127.0.0.1", 1);
-        let auth = AuthConfig::new("u", vec![AuthMethod::Agent { socket: None }]);
+        let auth = AuthConfig::new(
+            "u",
+            vec![AuthMethod::Agent {
+                socket: None,
+                identity_hint: None,
+            }],
+        );
         let _ = connect(
             endpoint,
             auth,
@@ -1981,7 +2318,13 @@ mod tests {
         // path and never constructs an obfs transport / fires its audit.
         let audit = Arc::new(spt_obfs::audit::MockAuditHook::new());
         let endpoint = Endpoint::new("127.0.0.1", 1);
-        let auth = AuthConfig::new("u", vec![AuthMethod::Agent { socket: None }]);
+        let auth = AuthConfig::new(
+            "u",
+            vec![AuthMethod::Agent {
+                socket: None,
+                identity_hint: None,
+            }],
+        );
         let _ = connect(
             endpoint,
             auth,
@@ -2045,6 +2388,73 @@ mod tests {
             how_to_fix: "[[auth.public_keys]]",
         );
         assert_eq!(e.exit_code(), spt_core::ExitCode::AuthFailed);
+    }
+
+    // ──────── agent identity_hint reordering ──────────────────────────
+
+    /// Build an `AgentIdentity::PublicKey` with a fresh Ed25519 key and the
+    /// given comment for the reorder tests.
+    fn test_identity(comment: &str) -> russh::keys::agent::AgentIdentity {
+        use russh::keys::ssh_key::{Algorithm, PrivateKey};
+        let key = PrivateKey::random(&mut rand010::rng(), Algorithm::Ed25519)
+            .expect("keygen")
+            .public_key()
+            .clone();
+        russh::keys::agent::AgentIdentity::PublicKey {
+            key,
+            comment: comment.to_owned(),
+        }
+    }
+
+    #[test]
+    fn identity_hint_matches_by_comment() {
+        let id = test_identity("work-laptop");
+        assert!(identity_matches_hint(&id, "work-laptop"));
+        assert!(!identity_matches_hint(&id, "home-desktop"));
+    }
+
+    #[test]
+    fn identity_hint_matches_by_fingerprint() {
+        let id = test_identity("anything");
+        let fp = agent_fingerprint(&id);
+        assert!(fp.starts_with("SHA256:"), "got {fp}");
+        assert!(identity_matches_hint(&id, &fp));
+        // Case-insensitive on the SHA256 label.
+        assert!(identity_matches_hint(
+            &id,
+            &fp.replacen("SHA256", "sha256", 1)
+        ));
+    }
+
+    #[test]
+    fn reorder_moves_hinted_comment_to_front() {
+        let mut ids = vec![
+            test_identity("alpha"),
+            test_identity("beta"),
+            test_identity("gamma"),
+        ];
+        reorder_by_identity_hint(&mut ids, "gamma");
+        assert_eq!(ids[0].comment(), "gamma");
+        // Remaining keep their natural order.
+        assert_eq!(ids[1].comment(), "alpha");
+        assert_eq!(ids[2].comment(), "beta");
+    }
+
+    #[test]
+    fn reorder_by_fingerprint_prefers_match() {
+        let mut ids = vec![test_identity("a"), test_identity("b"), test_identity("c")];
+        let target_fp = agent_fingerprint(&ids[2]);
+        reorder_by_identity_hint(&mut ids, &target_fp);
+        assert_eq!(agent_fingerprint(&ids[0]), target_fp);
+    }
+
+    #[test]
+    fn reorder_with_no_match_preserves_order() {
+        let mut ids = vec![test_identity("a"), test_identity("b")];
+        let before: Vec<String> = ids.iter().map(|i| i.comment().to_owned()).collect();
+        reorder_by_identity_hint(&mut ids, "no-such-key");
+        let after: Vec<String> = ids.iter().map(|i| i.comment().to_owned()).collect();
+        assert_eq!(before, after, "unmatched hint must not reorder");
     }
 
     #[test]
@@ -2171,6 +2581,159 @@ mod tests {
             what: "Auth method `public-key` rejected",
             how_to_fix: "/var/log/auth.log",
         );
+    }
+
+    // ──────── C-ssh2: per-forward limits / idle / bind-conflict ────────
+
+    #[test]
+    fn forward_buckets_unlimited_when_limits_zero() {
+        // The all-zero default must reproduce the prior `TokenBucket::unlimited()`
+        // behaviour at every forward-open site.
+        let b = ForwardBuckets::from_limits(&ForwardRateLimits::default());
+        assert!(!b.up.is_active(), "up bucket must be inert for zero rate");
+        assert!(
+            !b.down.is_active(),
+            "down bucket must be inert for zero rate"
+        );
+    }
+
+    #[test]
+    fn forward_buckets_built_from_spec_limits() {
+        let limits = ForwardRateLimits {
+            rate_bps_up: 4096,
+            rate_bps_down: 8192,
+            burst_up: 4096,
+            burst_down: 8192,
+            ..ForwardRateLimits::default()
+        };
+        let b = ForwardBuckets::from_limits(&limits);
+        assert!(b.up.is_active());
+        assert!(b.down.is_active());
+        assert_eq!(b.up.rate_bps(), 4096);
+        assert_eq!(b.down.rate_bps(), 8192);
+        assert_eq!(b.up.burst(), 4096);
+        assert_eq!(b.down.burst(), 8192);
+    }
+
+    #[tokio::test]
+    async fn throttled_buckets_from_spec_actually_slow_throughput() {
+        use tokio::io::{duplex, AsyncReadExt as _, AsyncWriteExt as _};
+        // 4 KiB/s up bucket from a spec; 16 KiB payload ⇒ ~3s wall-clock.
+        let limits = ForwardRateLimits {
+            rate_bps_up: 4 * 1024,
+            burst_up: 4 * 1024,
+            ..ForwardRateLimits::default()
+        };
+        let buckets = ForwardBuckets::from_limits(&limits);
+
+        let (mut left_app, mut left_tun) = duplex(64 * 1024);
+        let (mut right_tun, mut right_app) = duplex(64 * 1024);
+        let bridge = tokio::spawn(async move {
+            copy_bidirectional_throttled_idle(
+                &mut left_tun,
+                &mut right_tun,
+                buckets.up,
+                buckets.down,
+                None,
+            )
+            .await
+        });
+
+        let payload = vec![0xAB; 16 * 1024];
+        left_app.write_all(&payload).await.unwrap();
+        left_app.shutdown().await.unwrap();
+        right_app.shutdown().await.unwrap();
+
+        let start = std::time::Instant::now();
+        let mut got = vec![0u8; payload.len()];
+        right_app.read_exact(&mut got).await.unwrap();
+        let dt = start.elapsed();
+        assert!(
+            dt >= Duration::from_millis(1500),
+            "spec-derived bucket must throttle (>=1.5s), got {dt:?}"
+        );
+        let _ = bridge.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn idle_timeout_closes_a_throttled_bridge() {
+        use tokio::io::duplex;
+        // No bytes flow; a short idle timeout must close the copy on its own
+        // rather than blocking forever. Real (non-paused) time — the
+        // `test-util` feature is not enabled for this crate's tokio — so we use
+        // a small real timeout and bound the test with a generous deadline.
+        let (_left_app, mut left_tun) = duplex(64);
+        let (mut right_tun, _right_app) = duplex(64);
+        let bridge = tokio::spawn(async move {
+            copy_bidirectional_throttled_idle(
+                &mut left_tun,
+                &mut right_tun,
+                TokenBucket::unlimited(),
+                TokenBucket::unlimited(),
+                Some(Duration::from_millis(150)),
+            )
+            .await
+        });
+        let stats = tokio::time::timeout(Duration::from_secs(5), bridge)
+            .await
+            .expect("idle close must fire within the deadline")
+            .expect("bridge task joins")
+            .expect("copy returns Ok on idle close");
+        // Idle close returns default (zero) stats.
+        assert_eq!(stats, spt_forward::CopyStats::default());
+    }
+
+    #[tokio::test]
+    async fn bind_local_listener_honours_fail_on_conflict() {
+        // Occupy a port, then a default-Fail bind on the same addr must error.
+        let occupied = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = occupied.local_addr().unwrap();
+        let listen = BindAddr::Tcp(addr);
+        let err = bind_local_listener(&listen, BindConflictPolicy::Fail, "t")
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::LocalBindFailed { .. }), "got {err:?}");
+    }
+
+    #[tokio::test]
+    async fn bind_local_listener_next_port_falls_forward() {
+        // Occupy a port; NextPort must bind a different (higher) port.
+        let occupied = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = occupied.local_addr().unwrap();
+        let listen = BindAddr::Tcp(addr);
+        let listener = bind_local_listener(&listen, BindConflictPolicy::NextPort, "t")
+            .await
+            .expect("next_port must fall forward");
+        let bound = listener.local_addr().unwrap();
+        assert_ne!(bound.port(), addr.port());
+        assert!(bound.port() > addr.port());
+    }
+
+    /// cfg(unix): `open_uds` binds a local `AF_UNIX` listener and bridges an
+    /// accepted stream's bytes onto a `direct-streamlocal` channel. We can't
+    /// open a real russh channel without a server, so this exercises the
+    /// listener-bind + accept half end-to-end and asserts the bridge attempt
+    /// fires (the channel-open then errors against the dead handle, which the
+    /// loop logs and swallows). The byte-bridge proper is covered against a
+    /// live server in `tests/uds_forward.rs` at the Linux gate.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn open_uds_binds_listener_and_accepts() {
+        let tmp = tempfile::tempdir().unwrap();
+        let listen_path = tmp.path().join("c-ssh2.sock");
+        let listener = spt_forward::uds_listener::open_listener(&listen_path.to_string_lossy())
+            .await
+            .expect("bind local uds listener");
+        // Spawn an acceptor and connect once to prove the listener half works.
+        let listener = std::sync::Arc::new(listener);
+        let lc = std::sync::Arc::clone(&listener);
+        let server = tokio::spawn(async move {
+            let _stream = lc.accept().await.expect("accept");
+        });
+        let _client = tokio::net::UnixStream::connect(&listen_path)
+            .await
+            .expect("connect to local uds");
+        server.await.expect("acceptor joins");
     }
 
     #[test]

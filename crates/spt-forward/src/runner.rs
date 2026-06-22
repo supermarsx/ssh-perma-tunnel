@@ -13,8 +13,9 @@ use spt_config::schema::Forward;
 use spt_core::{BindAddr, Error, Result};
 use spt_net::bind::{resolve_bind, AutoPrefer, BindMode, Family};
 use spt_protocol::{
-    DynamicForwardSpec, ForwardDirection, ForwardHandle, ForwardState, LocalForwardSpec,
-    RemoteForwardSpec, TargetAddr, TunnelSession, UdpForwardSpec,
+    BindConflictPolicy, DynamicForwardSpec, ForwardDirection, ForwardHandle, ForwardRateLimits,
+    ForwardState, LocalForwardSpec, RemoteForwardSpec, TargetAddr, TunnelSession, UdpForwardSpec,
+    UdsForwardSpec,
 };
 use thiserror::Error;
 use tokio::sync::watch;
@@ -53,6 +54,13 @@ impl From<ForwardRunnerError> for Error {
 pub struct ForwardRunnerConfig {
     /// Default UDP idle timeout (used when the config forward omits one).
     pub default_udp_idle: Option<Duration>,
+    /// Profile-level default rate limits, applied to every forward unless a
+    /// per-forward field overrides the matching component.
+    ///
+    /// Populated by the profile factory (B1) from `[profiles.limits]`. The
+    /// [`Default`] (all-zero) leaves every forward unlimited, preserving prior
+    /// behaviour. See [`ForwardRunner::start`] for the merge semantics.
+    pub default_limits: ForwardRateLimits,
 }
 
 /// One forward, driven through its [`ForwardHandle`].
@@ -60,6 +68,7 @@ pub struct ForwardRunnerConfig {
 pub struct ForwardRunner {
     name: String,
     handle: ForwardHandle,
+    required: bool,
 }
 
 impl ForwardRunner {
@@ -70,6 +79,28 @@ impl ForwardRunner {
         runner_cfg: &ForwardRunnerConfig,
     ) -> Result<Self> {
         let name = cfg.name.clone();
+        let required = cfg.required.unwrap_or(false);
+
+        // ---- UDS dispatch (link_kind == "local_uds") -----------------------
+        // Handled before the TCP/UDP path because UDS forwards use socket
+        // *paths*, not `bind`/`listen` host:port addresses. `remote_uds` is
+        // DEFERRED (validate.rs rejects it); only `local_uds` is wired here.
+        if let Some(link_kind) = cfg.link_kind.as_deref() {
+            if link_kind == "local_uds" {
+                let handle =
+                    Self::start_local_uds(cfg, session, runner_cfg, &name, required).await?;
+                return Ok(Self {
+                    name,
+                    handle,
+                    required,
+                });
+            }
+        }
+
+        let limits = effective_limits(cfg, runner_cfg)?;
+        let idle_timeout = parse_idle_timeout(cfg)?;
+        let on_bind_conflict = parse_bind_conflict(cfg)?;
+
         let listen_str = cfg
             .bind
             .as_deref()
@@ -91,6 +122,10 @@ impl ForwardRunner {
                     allow_socks4a: protocols.socks4a,
                     allow_socks5: protocols.socks5,
                     allow_http_connect: protocols.http_connect,
+                    limits,
+                    idle_timeout,
+                    on_bind_conflict,
+                    required,
                 };
                 session.open_dynamic_forward(&spec).await?
             }
@@ -127,6 +162,10 @@ impl ForwardRunner {
                             listen: listen.clone(),
                             target,
                             max_connections: cfg.max_connections,
+                            limits,
+                            idle_timeout,
+                            on_bind_conflict,
+                            required,
                         };
                         session.open_local_forward(&spec).await?
                     }
@@ -136,6 +175,10 @@ impl ForwardRunner {
                             listen: listen.clone(),
                             target,
                             max_connections: cfg.max_connections,
+                            limits,
+                            idle_timeout,
+                            on_bind_conflict,
+                            required,
                         };
                         session.open_remote_forward(&spec).await?
                     }
@@ -161,6 +204,7 @@ impl ForwardRunner {
                             target,
                             idle_timeout_secs: idle_secs,
                             max_flows: cfg.max_connections,
+                            limits,
                         };
                         session.open_udp_forward(&spec).await?
                     }
@@ -182,13 +226,68 @@ impl ForwardRunner {
             }
         };
 
-        Ok(Self { name, handle })
+        Ok(Self {
+            name,
+            handle,
+            required,
+        })
+    }
+
+    /// Build and open a `local_uds` forward.
+    ///
+    /// Validates the local listen path via the UDS listener helper, then asks
+    /// the session to open the forward. On non-Unix targets the session's
+    /// default [`TunnelSession::open_uds_forward`] returns
+    /// `UnsupportedPlatform`; the spt-ssh2 backend overrides it on `cfg(unix)`.
+    async fn start_local_uds(
+        cfg: &Forward,
+        session: &mut dyn TunnelSession,
+        runner_cfg: &ForwardRunnerConfig,
+        name: &str,
+        required: bool,
+    ) -> Result<ForwardHandle> {
+        let local_path =
+            cfg.local_socket_path
+                .as_deref()
+                .ok_or_else(|| ForwardRunnerError::Malformed {
+                    name: name.to_owned(),
+                    reason: "link_kind `local_uds` requires `local_socket_path`".into(),
+                })?;
+        let remote_path =
+            cfg.remote_socket_path
+                .as_deref()
+                .ok_or_else(|| ForwardRunnerError::Malformed {
+                    name: name.to_owned(),
+                    reason: "link_kind `local_uds` requires `remote_socket_path`".into(),
+                })?;
+        // Validate the local path with the same rules the listener enforces at
+        // bind time (absolute, non-empty, no NUL, length cap). This rejects
+        // bad config early and uniformly across platforms.
+        crate::uds_listener::validate_local_path(local_path)?;
+
+        let limits = effective_limits(cfg, runner_cfg)?;
+        let spec = UdsForwardSpec {
+            name: name.to_owned(),
+            listen_path: std::path::PathBuf::from(local_path),
+            remote_socket_path: remote_path.to_owned(),
+            limits,
+            required,
+        };
+        session.open_uds_forward(&spec).await
     }
 
     /// Forward name (config id).
     #[must_use]
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    /// Whether this forward is `required` (its failure should fail the whole
+    /// profile) versus degrade-and-continue. Surfaced for the supervisor's
+    /// open-forwards gate (Wave C2).
+    #[must_use]
+    pub fn required(&self) -> bool {
+        self.required
     }
 
     /// Current forward state.
@@ -264,6 +363,110 @@ fn normalize_proxy_protocol(value: &str) -> Option<&'static str> {
         "socks5" => Some("socks5"),
         "http" | "http_connect" | "connect" => Some("http_connect"),
         _ => None,
+    }
+}
+
+/// Compute the effective per-forward [`ForwardRateLimits`] by overlaying the
+/// per-forward schema fields on top of `runner_cfg.default_limits`.
+///
+/// Merge rule (per component): a per-forward field that is **present**
+/// (`Some(..)` / non-zero `u32`) overrides the profile default; an absent
+/// per-forward field inherits the default. Byte-rate / burst strings are
+/// parsed with [`spt_core::size::parse_size`] (e.g. `"100MiB"`), matching
+/// `spt-config`'s validate layer; a malformed string is a config error.
+///
+/// Field mapping (schema → spec):
+/// * `max_bytes_per_second_out` → `rate_bps_up`   (client→remote, "up")
+/// * `max_bytes_per_second_in`  → `rate_bps_down` (remote→client, "down")
+/// * `max_burst_bytes_out`      → `burst_up`
+/// * `max_burst_bytes_in`       → `burst_down`
+/// * `max_new_connections_per_second` → `max_new_conns_per_sec`
+/// * `max_packets_per_second`         → `max_packets_per_sec`
+fn effective_limits(cfg: &Forward, runner_cfg: &ForwardRunnerConfig) -> Result<ForwardRateLimits> {
+    let mut limits = runner_cfg.default_limits;
+
+    if let Some(v) = parse_size_field(
+        cfg,
+        cfg.max_bytes_per_second_out.as_deref(),
+        "max_bytes_per_second_out",
+    )? {
+        limits.rate_bps_up = v;
+    }
+    if let Some(v) = parse_size_field(
+        cfg,
+        cfg.max_bytes_per_second_in.as_deref(),
+        "max_bytes_per_second_in",
+    )? {
+        limits.rate_bps_down = v;
+    }
+    if let Some(v) = parse_size_field(
+        cfg,
+        cfg.max_burst_bytes_out.as_deref(),
+        "max_burst_bytes_out",
+    )? {
+        limits.burst_up = v;
+    }
+    if let Some(v) = parse_size_field(cfg, cfg.max_burst_bytes_in.as_deref(), "max_burst_bytes_in")?
+    {
+        limits.burst_down = v;
+    }
+    if let Some(v) = cfg.max_new_connections_per_second {
+        limits.max_new_conns_per_sec = v;
+    }
+    if let Some(v) = cfg.max_packets_per_second {
+        limits.max_packets_per_sec = v;
+    }
+    Ok(limits)
+}
+
+/// Parse an optional byte-size string field; `None`/empty yields `None`.
+fn parse_size_field(cfg: &Forward, val: Option<&str>, field: &str) -> Result<Option<u64>> {
+    match val {
+        None => Ok(None),
+        Some(s) if s.trim().is_empty() => Ok(None),
+        Some(s) => spt_core::size::parse_size(s).map(Some).map_err(|e| {
+            ForwardRunnerError::Malformed {
+                name: cfg.name.clone(),
+                reason: format!("{field} `{s}`: {e}"),
+            }
+            .into()
+        }),
+    }
+}
+
+/// Parse the optional TCP `idle_timeout` string into a [`Duration`].
+fn parse_idle_timeout(cfg: &Forward) -> Result<Option<Duration>> {
+    match cfg.idle_timeout.as_deref() {
+        None => Ok(None),
+        Some(s) if s.trim().is_empty() => Ok(None),
+        Some(s) => humantime::parse_duration(s).map(Some).map_err(|e| {
+            ForwardRunnerError::Malformed {
+                name: cfg.name.clone(),
+                reason: format!("idle_timeout `{s}`: {e}"),
+            }
+            .into()
+        }),
+    }
+}
+
+/// Parse the optional `on_bind_conflict` string into a [`BindConflictPolicy`].
+/// Absent → [`BindConflictPolicy::Fail`] (the default, preserving prior
+/// behaviour).
+fn parse_bind_conflict(cfg: &Forward) -> Result<BindConflictPolicy> {
+    match cfg.on_bind_conflict.as_deref() {
+        None => Ok(BindConflictPolicy::Fail),
+        Some(s) => match s.trim().to_ascii_lowercase().replace('-', "_").as_str() {
+            "" | "fail" => Ok(BindConflictPolicy::Fail),
+            "retry" => Ok(BindConflictPolicy::Retry),
+            "next_port" => Ok(BindConflictPolicy::NextPort),
+            other => Err(ForwardRunnerError::Malformed {
+                name: cfg.name.clone(),
+                reason: format!(
+                    "unknown on_bind_conflict `{other}` (expected fail|retry|next_port)"
+                ),
+            }
+            .into()),
+        },
     }
 }
 
@@ -472,6 +675,14 @@ mod tests {
     struct CapturingSession {
         inner: MockTunnelSession,
         last_listen: Option<BindAddr>,
+        last_limits: Option<ForwardRateLimits>,
+        // Outer Option = "was a forward opened?"; inner = the spec's
+        // `idle_timeout` (itself optional). Three distinct states are needed.
+        #[allow(clippy::option_option)]
+        last_idle: Option<Option<Duration>>,
+        last_bind_conflict: Option<BindConflictPolicy>,
+        last_required: Option<bool>,
+        last_uds: Option<UdsForwardSpec>,
     }
 
     impl CapturingSession {
@@ -479,6 +690,11 @@ mod tests {
             Self {
                 inner: MockTunnelSession::new(),
                 last_listen: None,
+                last_limits: None,
+                last_idle: None,
+                last_bind_conflict: None,
+                last_required: None,
+                last_uds: None,
             }
         }
     }
@@ -487,6 +703,10 @@ mod tests {
     impl TunnelSession for CapturingSession {
         async fn open_local_forward(&mut self, spec: &LocalForwardSpec) -> Result<ForwardHandle> {
             self.last_listen = Some(spec.listen.clone());
+            self.last_limits = Some(spec.limits);
+            self.last_idle = Some(spec.idle_timeout);
+            self.last_bind_conflict = Some(spec.on_bind_conflict);
+            self.last_required = Some(spec.required);
             self.inner.open_local_forward(spec).await
         }
 
@@ -505,7 +725,28 @@ mod tests {
 
         async fn open_udp_forward(&mut self, spec: &UdpForwardSpec) -> Result<ForwardHandle> {
             self.last_listen = Some(spec.listen.clone());
+            self.last_limits = Some(spec.limits);
             self.inner.open_udp_forward(spec).await
+        }
+
+        async fn open_uds_forward(&mut self, spec: &UdsForwardSpec) -> Result<ForwardHandle> {
+            // Record the UDS spec and synthesize a handle via the inner mock's
+            // local-forward path (a UDS forward is, at the handle level,
+            // indistinguishable from any other forward).
+            self.last_uds = Some(spec.clone());
+            self.last_limits = Some(spec.limits);
+            self.last_required = Some(spec.required);
+            let local = LocalForwardSpec {
+                name: spec.name.clone(),
+                listen: BindAddr::Tcp("127.0.0.1:0".parse().unwrap()),
+                target: TargetAddr::new("uds", 0),
+                max_connections: None,
+                limits: spec.limits,
+                idle_timeout: None,
+                on_bind_conflict: BindConflictPolicy::default(),
+                required: spec.required,
+            };
+            self.inner.open_local_forward(&local).await
         }
 
         async fn keepalive(&mut self) -> Result<()> {
@@ -867,6 +1108,7 @@ mod tests {
         let cfg = fwd("local", "udp", "127.0.0.1:0", "1.2.3.4:5");
         let runner_cfg = ForwardRunnerConfig {
             default_udp_idle: Some(Duration::from_secs(123)),
+            ..ForwardRunnerConfig::default()
         };
         let runner = ForwardRunner::start(&cfg, &mut session, &runner_cfg)
             .await
@@ -971,5 +1213,247 @@ mod tests {
             select_bind_addr(vec![], Some("prefer"), ListenFamily::Unknown),
             None
         );
+    }
+
+    // ---- Rate-limit / idle / bind-conflict / required wiring ----
+
+    #[tokio::test]
+    async fn spec_limits_from_profile_default_only() {
+        // No per-forward limit fields → spec.limits == runner default_limits.
+        let mut session = CapturingSession::new();
+        let cfg = fwd("local", "tcp", "127.0.0.1:0", "1.2.3.4:5");
+        let runner_cfg = ForwardRunnerConfig {
+            default_limits: ForwardRateLimits {
+                rate_bps_up: 1000,
+                rate_bps_down: 2000,
+                max_new_conns_per_sec: 9,
+                ..ForwardRateLimits::default()
+            },
+            ..ForwardRunnerConfig::default()
+        };
+        let runner = ForwardRunner::start(&cfg, &mut session, &runner_cfg)
+            .await
+            .unwrap();
+        let limits = session.last_limits.unwrap();
+        assert_eq!(limits.rate_bps_up, 1000);
+        assert_eq!(limits.rate_bps_down, 2000);
+        assert_eq!(limits.max_new_conns_per_sec, 9);
+        runner.stop().await;
+    }
+
+    #[tokio::test]
+    async fn spec_limits_per_forward_overrides_default() {
+        // Per-forward fields override the matching default component; absent
+        // components inherit the default.
+        let mut session = CapturingSession::new();
+        let mut cfg = fwd("local", "tcp", "127.0.0.1:0", "1.2.3.4:5");
+        cfg.max_bytes_per_second_out = Some("1KiB".into()); // -> rate_bps_up
+        cfg.max_bytes_per_second_in = Some("2KiB".into()); // -> rate_bps_down
+        cfg.max_burst_bytes_out = Some("4KiB".into()); // -> burst_up
+        cfg.max_new_connections_per_second = Some(7); // -> max_new_conns_per_sec
+        let runner_cfg = ForwardRunnerConfig {
+            default_limits: ForwardRateLimits {
+                rate_bps_up: 999_999,
+                burst_down: 8192, // not overridden per-forward; should survive
+                max_packets_per_sec: 11, // inherited
+                ..ForwardRateLimits::default()
+            },
+            ..ForwardRunnerConfig::default()
+        };
+        let runner = ForwardRunner::start(&cfg, &mut session, &runner_cfg)
+            .await
+            .unwrap();
+        let limits = session.last_limits.unwrap();
+        assert_eq!(limits.rate_bps_up, 1024); // overridden
+        assert_eq!(limits.rate_bps_down, 2048); // overridden
+        assert_eq!(limits.burst_up, 4096); // overridden
+        assert_eq!(limits.burst_down, 8192); // inherited from default
+        assert_eq!(limits.max_new_conns_per_sec, 7); // overridden
+        assert_eq!(limits.max_packets_per_sec, 11); // inherited from default
+        runner.stop().await;
+    }
+
+    #[tokio::test]
+    async fn spec_limits_default_is_unlimited() {
+        let mut session = CapturingSession::new();
+        let cfg = fwd("local", "tcp", "127.0.0.1:0", "1.2.3.4:5");
+        let runner = ForwardRunner::start(&cfg, &mut session, &ForwardRunnerConfig::default())
+            .await
+            .unwrap();
+        assert!(session.last_limits.unwrap().is_unlimited());
+        runner.stop().await;
+    }
+
+    #[tokio::test]
+    async fn malformed_byte_rate_string_rejected() {
+        let mut session = CapturingSession::new();
+        let mut cfg = fwd("local", "tcp", "127.0.0.1:0", "1.2.3.4:5");
+        cfg.max_bytes_per_second_in = Some("not-a-size".into());
+        let r = ForwardRunner::start(&cfg, &mut session, &ForwardRunnerConfig::default()).await;
+        assert!(matches!(r, Err(Error::InvalidConfig(_))));
+    }
+
+    #[tokio::test]
+    async fn spec_idle_timeout_threaded() {
+        let mut session = CapturingSession::new();
+        let mut cfg = fwd("local", "tcp", "127.0.0.1:0", "1.2.3.4:5");
+        cfg.idle_timeout = Some("45s".into());
+        let runner = ForwardRunner::start(&cfg, &mut session, &ForwardRunnerConfig::default())
+            .await
+            .unwrap();
+        assert_eq!(session.last_idle.unwrap(), Some(Duration::from_secs(45)));
+        runner.stop().await;
+    }
+
+    #[tokio::test]
+    async fn spec_idle_timeout_absent_is_none() {
+        let mut session = CapturingSession::new();
+        let cfg = fwd("local", "tcp", "127.0.0.1:0", "1.2.3.4:5");
+        let runner = ForwardRunner::start(&cfg, &mut session, &ForwardRunnerConfig::default())
+            .await
+            .unwrap();
+        assert_eq!(session.last_idle.unwrap(), None);
+        runner.stop().await;
+    }
+
+    #[tokio::test]
+    async fn malformed_idle_timeout_rejected() {
+        let mut session = CapturingSession::new();
+        let mut cfg = fwd("local", "tcp", "127.0.0.1:0", "1.2.3.4:5");
+        cfg.idle_timeout = Some("never".into());
+        let r = ForwardRunner::start(&cfg, &mut session, &ForwardRunnerConfig::default()).await;
+        assert!(matches!(r, Err(Error::InvalidConfig(_))));
+    }
+
+    #[tokio::test]
+    async fn spec_bind_conflict_next_port() {
+        let mut session = CapturingSession::new();
+        let mut cfg = fwd("local", "tcp", "127.0.0.1:0", "1.2.3.4:5");
+        cfg.on_bind_conflict = Some("next_port".into());
+        let runner = ForwardRunner::start(&cfg, &mut session, &ForwardRunnerConfig::default())
+            .await
+            .unwrap();
+        assert_eq!(
+            session.last_bind_conflict.unwrap(),
+            BindConflictPolicy::NextPort
+        );
+        runner.stop().await;
+    }
+
+    #[tokio::test]
+    async fn spec_bind_conflict_default_is_fail() {
+        let mut session = CapturingSession::new();
+        let cfg = fwd("local", "tcp", "127.0.0.1:0", "1.2.3.4:5");
+        let runner = ForwardRunner::start(&cfg, &mut session, &ForwardRunnerConfig::default())
+            .await
+            .unwrap();
+        assert_eq!(
+            session.last_bind_conflict.unwrap(),
+            BindConflictPolicy::Fail
+        );
+        runner.stop().await;
+    }
+
+    #[tokio::test]
+    async fn malformed_bind_conflict_rejected() {
+        let mut session = CapturingSession::new();
+        let mut cfg = fwd("local", "tcp", "127.0.0.1:0", "1.2.3.4:5");
+        cfg.on_bind_conflict = Some("explode".into());
+        let r = ForwardRunner::start(&cfg, &mut session, &ForwardRunnerConfig::default()).await;
+        assert!(matches!(r, Err(Error::InvalidConfig(_))));
+    }
+
+    #[tokio::test]
+    async fn required_threaded_and_surfaced() {
+        let mut session = CapturingSession::new();
+        let mut cfg = fwd("local", "tcp", "127.0.0.1:0", "1.2.3.4:5");
+        cfg.required = Some(true);
+        let runner = ForwardRunner::start(&cfg, &mut session, &ForwardRunnerConfig::default())
+            .await
+            .unwrap();
+        assert!(runner.required(), "runner surfaces required");
+        assert!(session.last_required.unwrap(), "spec carries required");
+        runner.stop().await;
+    }
+
+    #[tokio::test]
+    async fn required_defaults_to_false() {
+        let mut session = MockTunnelSession::new();
+        let cfg = fwd("local", "tcp", "127.0.0.1:0", "1.2.3.4:5");
+        let runner = ForwardRunner::start(&cfg, &mut session, &ForwardRunnerConfig::default())
+            .await
+            .unwrap();
+        assert!(!runner.required());
+        runner.stop().await;
+    }
+
+    // ---- UDS local_uds dispatch ----
+    //
+    // On Unix the override on `CapturingSession::open_uds_forward` records the
+    // spec and returns a handle. On non-Unix the validate step still runs
+    // (path rules are platform-agnostic) and the dispatch reaches the session;
+    // a backend that does not override `open_uds_forward` would return
+    // `UnsupportedPlatform` (covered by the spt-protocol session test). Here we
+    // assert the runner builds the spec correctly and dispatches it.
+
+    #[tokio::test]
+    async fn uds_local_uds_dispatches_to_open_uds_forward() {
+        let mut session = CapturingSession::new();
+        let mut cfg = fwd("local", "tcp", "127.0.0.1:0", "1.2.3.4:5");
+        cfg.link_kind = Some("local_uds".into());
+        cfg.local_socket_path = Some("/tmp/spt-runner-test.sock".into());
+        cfg.remote_socket_path = Some("/run/spt-remote.sock".into());
+        cfg.required = Some(true);
+        cfg.max_bytes_per_second_out = Some("1KiB".into());
+
+        let runner = ForwardRunner::start(&cfg, &mut session, &ForwardRunnerConfig::default())
+            .await
+            .unwrap();
+        let uds = session.last_uds.clone().expect("UDS spec captured");
+        assert_eq!(uds.name, "f1");
+        assert_eq!(
+            uds.listen_path,
+            std::path::PathBuf::from("/tmp/spt-runner-test.sock")
+        );
+        assert_eq!(uds.remote_socket_path, "/run/spt-remote.sock");
+        assert!(uds.required);
+        assert_eq!(uds.limits.rate_bps_up, 1024);
+        assert!(runner.required());
+        runner.stop().await;
+    }
+
+    #[tokio::test]
+    async fn uds_local_uds_missing_local_path_rejected() {
+        let mut session = CapturingSession::new();
+        let mut cfg = fwd("local", "tcp", "127.0.0.1:0", "1.2.3.4:5");
+        cfg.link_kind = Some("local_uds".into());
+        cfg.remote_socket_path = Some("/run/spt-remote.sock".into());
+        // local_socket_path missing
+        let r = ForwardRunner::start(&cfg, &mut session, &ForwardRunnerConfig::default()).await;
+        assert!(matches!(r, Err(Error::InvalidConfig(_))));
+    }
+
+    #[tokio::test]
+    async fn uds_local_uds_relative_path_rejected() {
+        let mut session = CapturingSession::new();
+        let mut cfg = fwd("local", "tcp", "127.0.0.1:0", "1.2.3.4:5");
+        cfg.link_kind = Some("local_uds".into());
+        cfg.local_socket_path = Some("relative.sock".into());
+        cfg.remote_socket_path = Some("/run/spt-remote.sock".into());
+        let r = ForwardRunner::start(&cfg, &mut session, &ForwardRunnerConfig::default()).await;
+        assert!(matches!(r, Err(Error::InvalidConfig(_))));
+    }
+
+    /// On a backend without a UDS override (the default mock), `local_uds`
+    /// dispatch surfaces `UnsupportedPlatform`.
+    #[tokio::test]
+    async fn uds_local_uds_unsupported_backend_errors() {
+        let mut session = MockTunnelSession::new();
+        let mut cfg = fwd("local", "tcp", "127.0.0.1:0", "1.2.3.4:5");
+        cfg.link_kind = Some("local_uds".into());
+        cfg.local_socket_path = Some("/tmp/spt-runner-test2.sock".into());
+        cfg.remote_socket_path = Some("/run/spt-remote2.sock".into());
+        let r = ForwardRunner::start(&cfg, &mut session, &ForwardRunnerConfig::default()).await;
+        assert!(matches!(r, Err(Error::UnsupportedPlatform(_))));
     }
 }

@@ -413,6 +413,10 @@ mod tests {
             listen: BindAddr::Tcp("127.0.0.1:0".parse().unwrap()),
             target: TargetAddr::new("h", 1),
             max_connections: None,
+            limits: spt_protocol::ForwardRateLimits::default(),
+            idle_timeout: None,
+            on_bind_conflict: spt_protocol::BindConflictPolicy::default(),
+            required: false,
         }
     }
 
@@ -456,6 +460,10 @@ mod tests {
             listen: BindAddr::Tcp("127.0.0.1:0".parse().unwrap()),
             target: TargetAddr::new("h", 1),
             max_connections: None,
+            limits: spt_protocol::ForwardRateLimits::default(),
+            idle_timeout: None,
+            on_bind_conflict: spt_protocol::BindConflictPolicy::default(),
+            required: false,
         }
     }
 
@@ -467,6 +475,7 @@ mod tests {
             target: TargetAddr::new("h", 1),
             idle_timeout_secs: 30,
             max_flows: None,
+            limits: spt_protocol::ForwardRateLimits::default(),
         }
     }
 

@@ -6401,6 +6401,7 @@ dependencies = [
  "spt-auth",
  "spt-auth-sspi",
  "spt-core",
+ "spt-forward",
  "spt-key",
  "spt-net",
  "spt-obfs",

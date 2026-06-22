@@ -23,7 +23,7 @@ use quinn::{ClientConfig, Endpoint, ServerConfig, TransportConfig};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use spt_core::BindAddr;
 use spt_protocol::endpoint::TargetAddr;
-use spt_protocol::forward::RemoteForwardSpec;
+use spt_protocol::forward::{BindConflictPolicy, ForwardRateLimits, RemoteForwardSpec};
 use spt_protocol::handle::ForwardHandle;
 use spt_protocol::session::{SessionInfo, TunnelSession};
 use spt_ssh3::frame::{
@@ -169,6 +169,10 @@ async fn register_remote_forward(
                 listen: BindAddr::Tcp(bind),
                 target,
                 max_connections: None,
+                limits: ForwardRateLimits::default(),
+                idle_timeout: None,
+                on_bind_conflict: BindConflictPolicy::default(),
+                required: false,
             })
             .await
             .unwrap()

@@ -10,13 +10,14 @@
 //!
 //! * [`UdpFlowTable`] — `.len()` bounded by `max_flows`; `evict_idle` reclaims
 //!   under churn; allocator-delta over insert/evict cycles is bounded.
-//! * **`max_flows` = 0 (unbounded default)** — a documented latent risk
-//!   (plan risk 6). With no hard cap the table can grow without bound while
-//!   flows stay live; idle eviction is the *only* thing that bounds it. The
-//!   test below proves eviction still reclaims under churn, and asserts the
-//!   live `.len()` is bounded once stale flows age out — it does NOT change the
-//!   default. Flagging this here so a future change to `max_flows`'s default is
-//!   a conscious decision.
+//! * **Default `max_flows` is now a finite cap** ([`DEFAULT_MAX_FLOWS`] =
+//!   65536) — closing the former latent unbounded-growth risk (plan risk 6).
+//!   An unset/default config bounds the table at a generous-but-finite cap, so
+//!   a runaway flood cannot grow it without bound. The legacy escape hatch is
+//!   preserved: an *explicit* `max_flows = 0` still means unbounded, where idle
+//!   eviction is the *only* thing that bounds the table. The tests below assert
+//!   both halves: the default yields a finite cap, and explicit-0 stays
+//!   unbounded while idle eviction still reclaims under churn.
 //! * bidirectional copy buffer reuse (`copy_bidirectional_throttled`) — the
 //!   16 KiB scratch buffer is allocated once per direction and reused; repeated
 //!   copies must not leak per byte.
@@ -31,7 +32,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::Duration;
 
 use spt_forward::limits::TokenBucket;
-use spt_forward::udp::{UdpFlowKey, UdpFlowTable, UdpFlowTableConfig};
+use spt_forward::udp::{UdpFlowKey, UdpFlowTable, UdpFlowTableConfig, DEFAULT_MAX_FLOWS};
 use spt_mem_hygiene::testing::CountingAllocator;
 
 #[global_allocator]
@@ -111,7 +112,7 @@ async fn flow_table_evict_idle_reclaims_under_churn() {
     let _gate = alloc_gate();
     let t: UdpFlowTable<UdpFlowKey, ()> = UdpFlowTable::new(UdpFlowTableConfig {
         idle_timeout: Duration::from_secs(10),
-        max_flows: 0, // unbounded — eviction is the only bound (see risk 6)
+        max_flows: 0, // explicit opt-out: unbounded — eviction is the only bound (see risk 6)
         ..Default::default()
     });
     // Insert a wave, age it out, evict, repeat. Each generation must be fully
@@ -133,21 +134,41 @@ async fn flow_table_evict_idle_reclaims_under_churn() {
     }
 }
 
-/// **Plan risk 6**: with `max_flows = 0` (the default) there is NO hard cap on
-/// the flow table. The table can grow without bound for as long as flows keep
-/// arriving and stay live; idle eviction is the *only* mechanism that bounds
-/// it. This test documents that behaviour and proves idle eviction still
-/// bounds the table over time under steady churn. It deliberately does NOT
-/// change the default — flagging the latent risk is the point.
-#[allow(clippy::await_holding_lock)] // serializes allocator measurements; per-test runtime cannot self-deadlock
-#[tokio::test(start_paused = true)]
-async fn max_flows_zero_is_unbounded_but_eviction_bounds_over_time() {
-    let _gate = alloc_gate();
+/// **Plan risk 6 — default half.** The default config must now carry a finite
+/// hard cap ([`DEFAULT_MAX_FLOWS`] = 65536), closing the former unbounded
+/// default. This is the conscious change flagged by the old risk note.
+#[test]
+fn default_config_yields_finite_cap() {
     let cfg = UdpFlowTableConfig::default();
     assert_eq!(
+        cfg.max_flows, DEFAULT_MAX_FLOWS,
+        "DEFAULT max_flows must be the finite cap, not 0 (unbounded)"
+    );
+    assert_eq!(DEFAULT_MAX_FLOWS, 65_536, "default cap is 65536 flows");
+    assert!(
+        cfg.max_flows > 0,
+        "default must be a hard cap; only an EXPLICIT max_flows = 0 is unbounded"
+    );
+}
+
+/// **Plan risk 6 — escape-hatch half.** With an *explicit* `max_flows = 0`
+/// (the power-user opt-out) there is NO hard cap on the flow table. The table
+/// can grow without bound for as long as flows keep arriving and stay live;
+/// idle eviction is the *only* mechanism that bounds it. This test documents
+/// that the escape hatch is preserved and proves idle eviction still bounds
+/// the table over time under steady churn.
+#[allow(clippy::await_holding_lock)] // serializes allocator measurements; per-test runtime cannot self-deadlock
+#[tokio::test(start_paused = true)]
+async fn explicit_max_flows_zero_is_unbounded_but_eviction_bounds_over_time() {
+    let _gate = alloc_gate();
+    // Explicit 0 = unbounded (escape hatch), distinct from the finite default.
+    let cfg = UdpFlowTableConfig {
+        max_flows: 0,
+        ..Default::default()
+    };
+    assert_eq!(
         cfg.max_flows, 0,
-        "DEFAULT max_flows is 0 (unbounded) — a documented latent risk; \
-         do not change without sign-off"
+        "explicit opt-out keeps unbounded behaviour"
     );
 
     let t: UdpFlowTable<UdpFlowKey, u64> = UdpFlowTable::new(cfg);

@@ -31,7 +31,7 @@ use quinn::{ClientConfig, Endpoint, ServerConfig, TransportConfig};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use spt_core::BindAddr;
 use spt_protocol::endpoint::TargetAddr;
-use spt_protocol::forward::{ForwardDirection, UdpForwardSpec};
+use spt_protocol::forward::{ForwardDirection, ForwardRateLimits, UdpForwardSpec};
 use spt_protocol::session::{SessionInfo, TunnelSession};
 use spt_ssh3::forward::{serve_datagram_demux, serve_remote_udp_forwards, SessionState};
 use spt_ssh3::frame::Ssh3Settings;
@@ -188,6 +188,7 @@ async fn remote_udp_forward_round_trips_payload() {
         target: TargetAddr::new(echo_addr.ip().to_string(), echo_addr.port()),
         idle_timeout_secs: 30,
         max_flows: None,
+        limits: ForwardRateLimits::default(),
     };
     let _h = client_session.open_udp_forward(&spec).await.unwrap();
 

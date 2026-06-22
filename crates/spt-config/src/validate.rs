@@ -1563,6 +1563,7 @@ fn check_profile(d: &mut Diagnostics, i: usize, p: &Profile, capabilities: Optio
     }
 
     check_profile_crypto(d, p, capabilities, &prefix);
+    check_profile_deferred(d, p, &prefix);
 
     for (j, hop) in p.hops.iter().enumerate() {
         let hop_prefix = format!("{prefix}.hops[{j}]");
@@ -1587,7 +1588,22 @@ fn check_profile(d: &mut Diagnostics, i: usize, p: &Profile, capabilities: Optio
             }
         }
         if let Some(resolve) = hop.target_resolve.as_deref() {
-            if !matches!(resolve, "local" | "remote" | "previous-hop") {
+            if matches!(resolve, "local" | "remote" | "previous-hop") {
+                // t-tunnel-wire B2: parsed and vocabulary-checked, but the
+                // resolution-location is fixed at runtime — surface so it is
+                // never silently ignored.
+                d.push(
+                    Diagnostic::warning(
+                        "hop_target_resolve_no_effect",
+                        format!(
+                            "hop `{}` target_resolve `{resolve}` has no effect (DNS resolution \
+                             location is not yet configurable)",
+                            hop.name
+                        ),
+                    )
+                    .at(format!("{hop_prefix}.target_resolve")),
+                );
+            } else {
                 d.push(
                     Diagnostic::error(
                         "hop_target_resolve_invalid",
@@ -1609,6 +1625,12 @@ fn check_profile(d: &mut Diagnostics, i: usize, p: &Profile, capabilities: Optio
     }
 
     // Forwards.
+    // `sni_name` only has meaning when a TLS-fronting obfuscation transport is
+    // active (MeekHttp/Websocket carry an SNI); without it the field is inert.
+    let obfuscation_present = p
+        .transport
+        .as_ref()
+        .is_some_and(|t| t.obfuscation.is_some());
     let mut fwd_names: Vec<&str> = Vec::with_capacity(p.forwards.len());
     for (j, f) in p.forwards.iter().enumerate() {
         if fwd_names.contains(&f.name.as_str()) {
@@ -1625,7 +1647,7 @@ fn check_profile(d: &mut Diagnostics, i: usize, p: &Profile, capabilities: Optio
         } else {
             fwd_names.push(&f.name);
         }
-        check_forward(d, &p.protocol, capabilities, f, i, j);
+        check_forward(d, &p.protocol, capabilities, f, obfuscation_present, i, j);
     }
 
     // SFTP mount entries.
@@ -1715,6 +1737,29 @@ fn check_profile(d: &mut Diagnostics, i: usize, p: &Profile, capabilities: Optio
                 )
                 .at(format!("{prefix}.failover.fail_after")),
             );
+        }
+        // t-tunnel-wire B2: only the four health-check styles backed by an
+        // actual probe implementation (`HealthCheckStyle` in spt-supervisor,
+        // wired by Wave C2) are accepted. Any other value would silently fall
+        // back to the default probe, defeating the operator's intent — ERROR.
+        if let Some(style) = failover.health_check.as_deref() {
+            if !matches!(
+                style,
+                "tcp_connect" | "ssh_handshake" | "ssh_auth_preflight" | "ssh3_endpoint"
+            ) {
+                d.push(
+                    Diagnostic::error(
+                        "failover_health_check_unimplemented",
+                        format!(
+                            "profile `{}` failover.health_check `{style}` has no probe \
+                             implementation; supported styles: tcp_connect, ssh_handshake, \
+                             ssh_auth_preflight, ssh3_endpoint",
+                            p.name
+                        ),
+                    )
+                    .at(format!("{prefix}.failover.health_check")),
+                );
+            }
         }
         check_duration_field(
             d,
@@ -1979,6 +2024,139 @@ fn check_profile_crypto(
                 .at(format!("{prefix}.crypto.kex_algorithms")),
             ),
             _ => {}
+        }
+    }
+}
+
+/// t-tunnel-wire B2: WARN on profile-level config that is parsed but not yet
+/// applied at runtime, so a deferred field is never silently ignored.
+///
+/// Covers the sub-tables/fields the wiring task explicitly defers:
+/// `[profiles.tls]` (ssh3/QUIC transport tuning), `[profiles.ssh3]` (deferred
+/// tuning), the **entire** `[profiles.connection]` table (Wave B1 confirmed the
+/// russh/ssh2 builder has no setter for any connection field), and
+/// `profile.dns_resolution` when it requests resolution caching.
+///
+/// The `[profiles.connection]` warnings split across two codes: the murky
+/// timeouts (`auth_timeout`/`handshake_timeout`/`read_timeout`/`write_timeout`)
+/// use `profile_connection_timeout_not_applied`; the remaining clear knobs
+/// (`connect_timeout`, `tcp_nodelay`, `socket_keepalive`, the `keepalive_*` /
+/// `channel_*` family) use `profile_connection_field_not_applied`.
+fn check_profile_deferred(d: &mut Diagnostics, p: &Profile, prefix: &str) {
+    // `[profiles.tls]` — parsed but the ssh3 build path ignores it today.
+    if p.tls.is_some() {
+        d.push(
+            Diagnostic::warning(
+                "profile_tls_not_applied",
+                format!(
+                    "profile `{}` [profiles.tls] is parsed but not yet applied (ssh3/QUIC \
+                     transport tuning; lands with ssh3 GA)",
+                    p.name
+                ),
+            )
+            .at(format!("{prefix}.tls")),
+        );
+    }
+
+    // `[profiles.ssh3]` — when any field is set the build still uses defaults.
+    if let Some(ssh3) = p.ssh3.as_ref() {
+        let non_default = ssh3.draft.is_some()
+            || ssh3.protocol_token.is_some()
+            || ssh3.enable_datagrams.is_some()
+            || ssh3.idle_timeout.is_some()
+            || ssh3.keepalive.is_some()
+            || ssh3.max_streams.is_some();
+        if non_default {
+            d.push(
+                Diagnostic::warning(
+                    "profile_ssh3_uses_defaults",
+                    format!(
+                        "profile `{}` [profiles.ssh3] is parsed but uses defaults (ssh3 tuning \
+                         deferred)",
+                        p.name
+                    ),
+                )
+                .at(format!("{prefix}.ssh3")),
+            );
+        }
+    }
+
+    // `[profiles.connection]` — the entire table is "parsed but not yet
+    // applied": Wave B1 confirmed the russh/ssh2 builder exposes NO setter for
+    // any connection field (it carries only crypto/trust/hops/backends/
+    // keepalive/obfuscation/profile_name; the *transport* keepalive is driven
+    // from `[profiles.keepalive]`, not from `[profiles.connection]`). Two WARN
+    // codes split the table so callers can distinguish:
+    //   * `profile_connection_timeout_not_applied` — the murky timeout fields
+    //     (auth/handshake/read/write) flagged by Wave B2.
+    //   * `profile_connection_field_not_applied` — the remaining "clear" knobs
+    //     (connect_timeout/tcp_nodelay/socket_keepalive/keepalive_*/channel_*)
+    //     which B1 also leaves unwired.
+    if let Some(conn) = p.connection.as_ref() {
+        for (field, set) in [
+            ("auth_timeout", conn.auth_timeout.is_some()),
+            ("handshake_timeout", conn.handshake_timeout.is_some()),
+            ("read_timeout", conn.read_timeout.is_some()),
+            ("write_timeout", conn.write_timeout.is_some()),
+        ] {
+            if set {
+                d.push(
+                    Diagnostic::warning(
+                        "profile_connection_timeout_not_applied",
+                        format!(
+                            "profile `{}` connection.{field} is parsed but not yet applied",
+                            p.name
+                        ),
+                    )
+                    .at(format!("{prefix}.connection.{field}")),
+                );
+            }
+        }
+        for (field, set) in [
+            ("connect_timeout", conn.connect_timeout.is_some()),
+            ("tcp_nodelay", conn.tcp_nodelay.is_some()),
+            ("socket_keepalive", conn.socket_keepalive.is_some()),
+            ("keepalive_idle", conn.keepalive_idle.is_some()),
+            ("keepalive_interval", conn.keepalive_interval.is_some()),
+            ("keepalive_retries", conn.keepalive_retries.is_some()),
+            ("channel_window_size", conn.channel_window_size.is_some()),
+            (
+                "channel_max_packet_size",
+                conn.channel_max_packet_size.is_some(),
+            ),
+        ] {
+            if set {
+                d.push(
+                    Diagnostic::warning(
+                        "profile_connection_field_not_applied",
+                        format!(
+                            "profile `{}` connection.{field} is parsed but not yet applied (no \
+                             builder setter wires it onto the SSH connection yet)",
+                            p.name
+                        ),
+                    )
+                    .at(format!("{prefix}.connection.{field}")),
+                );
+            }
+        }
+    }
+
+    // `profile.dns_resolution` — `once` implies resolution caching, which is
+    // not yet implemented (the runtime resolves per attempt). `per_attempt`
+    // matches current behavior and is not warned.
+    if let Some(mode) = p.dns_resolution.as_deref() {
+        if !matches!(mode, "per_attempt" | "") {
+            d.push(
+                Diagnostic::warning(
+                    "profile_dns_resolution_not_applied",
+                    format!(
+                        "profile `{}` dns_resolution `{mode}` is parsed but not yet applied \
+                         (resolution caching is not implemented; names are resolved per attempt)",
+                        p.name
+                    ),
+                )
+                .at(format!("{prefix}.dns_resolution")),
+            );
         }
     }
 }
@@ -2255,6 +2433,7 @@ fn check_forward(
     protocol: &str,
     capabilities: Option<&Capabilities>,
     f: &Forward,
+    obfuscation_present: bool,
     i: usize,
     j: usize,
 ) {
@@ -2498,6 +2677,39 @@ fn check_forward(
         format!("{prefix}.udp_idle_timeout"),
     );
     check_forward_link_kind(d, f, &prefix);
+
+    // t-tunnel-wire B2: forward fields that are parsed but not yet applied.
+    // `target_resolve` has no resolve site — surface so it is never silently
+    // ignored.
+    if f.target_resolve.is_some() {
+        d.push(
+            Diagnostic::warning(
+                "forward_target_resolve_no_effect",
+                format!(
+                    "forward `{}` target_resolve has no effect (DNS resolution location is not \
+                     yet configurable)",
+                    f.name
+                ),
+            )
+            .at(format!("{prefix}.target_resolve")),
+        );
+    }
+
+    // `sni_name` is only consumed by a TLS-fronting obfuscation transport
+    // (MeekHttp/Websocket). Without `[profiles.transport.obfuscation]` it is
+    // inert.
+    if f.sni_name.is_some() && !obfuscation_present {
+        d.push(
+            Diagnostic::warning(
+                "forward_sni_name_no_effect",
+                format!(
+                    "forward `{}` sni_name has no effect without TLS-fronting obfuscation",
+                    f.name
+                ),
+            )
+            .at(format!("{prefix}.sni_name")),
+        );
+    }
 }
 
 /// Validate the optional `Forward::link_kind` field and its coupling with
@@ -2576,6 +2788,20 @@ fn check_forward_link_kind(d: &mut Diagnostics, f: &Forward, prefix: &str) {
 
     // (4) remote_uds — needs the local socket path AND it must be absolute.
     if matches!(link_kind, Some("remote_uds")) {
+        // t-tunnel-wire B2: remote UDS forwarding has no runtime implementation
+        // (only `local_uds` is wired). ERROR so it never silently no-ops a
+        // forwarding expectation.
+        d.push(
+            Diagnostic::error(
+                "forward_remote_uds_unimplemented",
+                format!(
+                    "forward `{}` link kind `remote_uds` forwarding is not yet implemented \
+                     (local_uds is supported)",
+                    f.name
+                ),
+            )
+            .at(format!("{prefix}.kind")),
+        );
         let local = f.local_socket_path.as_deref().map_or("", str::trim);
         if local.is_empty() {
             d.push(
@@ -4666,5 +4892,462 @@ mod tests {
             .errors
             .iter()
             .any(|e| e.code == "event_binding_min_level_invalid"));
+    }
+
+    // ----------------------------------------------------------------------
+    // t-tunnel-wire B2: deferred/unwired field diagnostics.
+    // ----------------------------------------------------------------------
+
+    #[test]
+    fn forward_remote_uds_is_error() {
+        let raw = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            [[profiles.forwards]]
+            name = "f"
+            type = "local"
+            transport = "tcp"
+            bind = "127.0.0.1:1234"
+            target = "127.0.0.1:22"
+            kind = "remote_uds"
+            local_socket_path = "/tmp/local.sock"
+            remote_socket_path = "/tmp/remote.sock"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(
+            d.errors
+                .iter()
+                .any(|e| e.code == "forward_remote_uds_unimplemented"),
+            "errors: {:?}",
+            d.errors
+        );
+    }
+
+    #[test]
+    fn forward_local_uds_not_remote_uds_error() {
+        let raw = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            [[profiles.forwards]]
+            name = "f"
+            type = "local"
+            transport = "tcp"
+            bind = "127.0.0.1:1234"
+            target = "127.0.0.1:22"
+            kind = "local_uds"
+            remote_socket_path = "/tmp/remote.sock"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(
+            !d.errors
+                .iter()
+                .any(|e| e.code == "forward_remote_uds_unimplemented"),
+            "errors: {:?}",
+            d.errors
+        );
+    }
+
+    #[test]
+    fn failover_health_check_unimplemented_error() {
+        let raw = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            [profiles.failover]
+            health_check = "icmp_ping"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(
+            d.errors
+                .iter()
+                .any(|e| e.code == "failover_health_check_unimplemented"),
+            "errors: {:?}",
+            d.errors
+        );
+    }
+
+    #[test]
+    fn failover_health_check_supported_ok() {
+        let raw = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            [profiles.failover]
+            health_check = "tcp_connect"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(
+            !d.errors
+                .iter()
+                .any(|e| e.code == "failover_health_check_unimplemented"),
+            "errors: {:?}",
+            d.errors
+        );
+    }
+
+    #[test]
+    fn profile_tls_present_warns() {
+        let raw = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            [profiles.tls]
+            server_name = "vpn.example.com"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(
+            d.warnings
+                .iter()
+                .any(|w| w.code == "profile_tls_not_applied"),
+            "warnings: {:?}",
+            d.warnings
+        );
+    }
+
+    #[test]
+    fn profile_without_tls_no_warn() {
+        let raw = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(
+            !d.warnings
+                .iter()
+                .any(|w| w.code == "profile_tls_not_applied"),
+            "warnings: {:?}",
+            d.warnings
+        );
+    }
+
+    #[test]
+    fn profile_ssh3_non_default_warns() {
+        let raw = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh3"
+            endpoint = "https://x.example.com:443/ssh3"
+            acknowledge_experimental = true
+            [profiles.ssh3]
+            max_streams = 64
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(
+            d.warnings
+                .iter()
+                .any(|w| w.code == "profile_ssh3_uses_defaults"),
+            "warnings: {:?}",
+            d.warnings
+        );
+    }
+
+    #[test]
+    fn profile_without_ssh3_table_no_warn() {
+        let raw = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh3"
+            endpoint = "https://x.example.com:443/ssh3"
+            acknowledge_experimental = true
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(
+            !d.warnings
+                .iter()
+                .any(|w| w.code == "profile_ssh3_uses_defaults"),
+            "warnings: {:?}",
+            d.warnings
+        );
+    }
+
+    #[test]
+    fn profile_connection_murky_timeouts_warn() {
+        let raw = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            [profiles.connection]
+            auth_timeout = "10s"
+            handshake_timeout = "10s"
+            read_timeout = "30s"
+            write_timeout = "30s"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        let count = d
+            .warnings
+            .iter()
+            .filter(|w| w.code == "profile_connection_timeout_not_applied")
+            .count();
+        assert_eq!(count, 4, "warnings: {:?}", d.warnings);
+    }
+
+    #[test]
+    fn profile_connection_clear_knobs_warn_unapplied() {
+        // Wave B1 confirmed the russh/ssh2 builder has NO setter for any
+        // `[profiles.connection]` field, so the "clear" knobs
+        // (connect_timeout/tcp_nodelay/socket_keepalive/keepalive_*/channel_*)
+        // are parsed but never applied. Each set knob must raise exactly one
+        // `profile_connection_field_not_applied` WARN, and must NOT raise the
+        // murky-timeout code.
+        let raw = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            [profiles.connection]
+            connect_timeout = "10s"
+            tcp_nodelay = true
+            socket_keepalive = true
+            keepalive_idle = "30s"
+            keepalive_interval = "10s"
+            keepalive_retries = 3
+            channel_window_size = "2MiB"
+            channel_max_packet_size = "32KiB"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        let fired = d
+            .warnings
+            .iter()
+            .filter(|w| w.code == "profile_connection_field_not_applied")
+            .count();
+        assert_eq!(fired, 8, "warnings: {:?}", d.warnings);
+        assert!(
+            !d.warnings
+                .iter()
+                .any(|w| w.code == "profile_connection_timeout_not_applied"),
+            "clear knobs must not raise the timeout code: {:?}",
+            d.warnings
+        );
+    }
+
+    #[test]
+    fn profile_connection_clear_knobs_absent_no_warn() {
+        // With no `[profiles.connection]` table, neither connection WARN code
+        // fires.
+        let raw = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(
+            !d.warnings.iter().any(|w| {
+                w.code == "profile_connection_field_not_applied"
+                    || w.code == "profile_connection_timeout_not_applied"
+            }),
+            "warnings: {:?}",
+            d.warnings
+        );
+    }
+
+    #[test]
+    fn forward_target_resolve_warns() {
+        let raw = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            [[profiles.forwards]]
+            name = "f"
+            type = "local"
+            transport = "tcp"
+            bind = "127.0.0.1:1234"
+            target = "127.0.0.1:22"
+            target_resolve = "remote"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(
+            d.warnings
+                .iter()
+                .any(|w| w.code == "forward_target_resolve_no_effect"),
+            "warnings: {:?}",
+            d.warnings
+        );
+    }
+
+    #[test]
+    fn forward_without_target_resolve_no_warn() {
+        let raw = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            [[profiles.forwards]]
+            name = "f"
+            type = "local"
+            transport = "tcp"
+            bind = "127.0.0.1:1234"
+            target = "127.0.0.1:22"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(
+            !d.warnings
+                .iter()
+                .any(|w| w.code == "forward_target_resolve_no_effect"),
+            "warnings: {:?}",
+            d.warnings
+        );
+    }
+
+    #[test]
+    fn hop_target_resolve_warns() {
+        let raw = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            [[profiles.hops]]
+            name = "bastion"
+            protocol = "ssh2"
+            host = "bastion.example.com"
+            port = 22
+            target_resolve = "remote"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(
+            d.warnings
+                .iter()
+                .any(|w| w.code == "hop_target_resolve_no_effect"),
+            "warnings: {:?}",
+            d.warnings
+        );
+    }
+
+    #[test]
+    fn forward_sni_name_without_obfuscation_warns() {
+        let raw = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            [[profiles.forwards]]
+            name = "f"
+            type = "local"
+            transport = "tcp"
+            bind = "127.0.0.1:1234"
+            target = "127.0.0.1:22"
+            sni_name = "front.example.com"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(
+            d.warnings
+                .iter()
+                .any(|w| w.code == "forward_sni_name_no_effect"),
+            "warnings: {:?}",
+            d.warnings
+        );
+    }
+
+    #[test]
+    fn forward_sni_name_with_obfuscation_no_warn() {
+        let raw = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            [profiles.transport.obfuscation]
+            kind = "meek-http"
+            url = "https://front.example.com/"
+            [[profiles.forwards]]
+            name = "f"
+            type = "local"
+            transport = "tcp"
+            bind = "127.0.0.1:1234"
+            target = "127.0.0.1:22"
+            sni_name = "front.example.com"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(
+            !d.warnings
+                .iter()
+                .any(|w| w.code == "forward_sni_name_no_effect"),
+            "warnings: {:?}",
+            d.warnings
+        );
+    }
+
+    #[test]
+    fn profile_dns_resolution_once_warns() {
+        let raw = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            dns_resolution = "once"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(
+            d.warnings
+                .iter()
+                .any(|w| w.code == "profile_dns_resolution_not_applied"),
+            "warnings: {:?}",
+            d.warnings
+        );
+    }
+
+    #[test]
+    fn profile_dns_resolution_per_attempt_no_warn() {
+        let raw = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            dns_resolution = "per_attempt"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(
+            !d.warnings
+                .iter()
+                .any(|w| w.code == "profile_dns_resolution_not_applied"),
+            "warnings: {:?}",
+            d.warnings
+        );
     }
 }

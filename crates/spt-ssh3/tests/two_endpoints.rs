@@ -27,7 +27,8 @@ use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use spt_core::BindAddr;
 use spt_protocol::endpoint::TargetAddr;
 use spt_protocol::forward::{
-    ForwardDirection, LocalForwardSpec, RemoteForwardSpec, UdpForwardSpec,
+    BindConflictPolicy, ForwardDirection, ForwardRateLimits, LocalForwardSpec, RemoteForwardSpec,
+    UdpForwardSpec,
 };
 use spt_protocol::session::{SessionInfo, TunnelSession};
 use spt_ssh3::forward::serve_local_tcp_acceptor;
@@ -175,6 +176,10 @@ async fn local_tcp_forward_round_trips_payload() {
         listen: BindAddr::Tcp(listen_addr),
         target: TargetAddr::new("localhost", 9999), // ignored — resolver
         max_connections: None,
+        limits: ForwardRateLimits::default(),
+        idle_timeout: None,
+        on_bind_conflict: BindConflictPolicy::default(),
+        required: false,
     };
     let _handle = session.open_local_forward(&spec).await.unwrap();
 
@@ -245,6 +250,10 @@ async fn local_tcp_forward_random_payload_round_trip() {
             listen: BindAddr::Tcp(listen_addr),
             target: TargetAddr::new("localhost", 1),
             max_connections: None,
+            limits: ForwardRateLimits::default(),
+            idle_timeout: None,
+            on_bind_conflict: BindConflictPolicy::default(),
+            required: false,
         })
         .await
         .unwrap();
@@ -302,6 +311,7 @@ async fn udp_forward_demuxes_by_flow_id() {
         target: TargetAddr::new("127.0.0.1", 1234),
         idle_timeout_secs: 30,
         max_flows: None,
+        limits: ForwardRateLimits::default(),
     };
     let _h = session.open_udp_forward(&spec).await.unwrap();
 
@@ -382,6 +392,7 @@ async fn udp_forward_unsupported_when_peer_lacks_capability() {
             target: TargetAddr::new("127.0.0.1", 1),
             idle_timeout_secs: 30,
             max_flows: None,
+            limits: ForwardRateLimits::default(),
         })
         .await
         .unwrap_err();
@@ -487,6 +498,10 @@ async fn remote_forward_round_trip() {
             listen: BindAddr::Tcp(bind),
             target: TargetAddr::new(echo_addr.ip().to_string(), echo_addr.port()),
             max_connections: None,
+            limits: ForwardRateLimits::default(),
+            idle_timeout: None,
+            on_bind_conflict: BindConflictPolicy::default(),
+            required: false,
         })
         .await
         .unwrap();

@@ -391,7 +391,13 @@ mod tests {
 
     #[test]
     fn agent_method_falls_through_to_auth_error() {
-        let cfg = AuthConfig::new("u", vec![AuthMethod::Agent { socket: None }]);
+        let cfg = AuthConfig::new(
+            "u",
+            vec![AuthMethod::Agent {
+                socket: None,
+                identity_hint: None,
+            }],
+        );
         let err = build_authorization_header(&cfg).unwrap_err();
         match err {
             Error::AuthFailed(msg) => assert!(msg.contains("ssh3 requires")),

@@ -65,7 +65,7 @@ use std::time::Duration;
 use spt_auth::{AuthConfig, AuthMethod, SecretRef};
 use spt_core::BindAddr;
 use spt_protocol::endpoint::TargetAddr;
-use spt_protocol::forward::LocalForwardSpec;
+use spt_protocol::forward::{BindConflictPolicy, ForwardRateLimits, LocalForwardSpec};
 use spt_protocol::session::TunnelSession;
 use spt_ssh3::{Ssh3Config, Ssh3Session, Ssh3TlsConfig};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -244,6 +244,10 @@ async fn upstream_reference_local_forward_echo() {
         listen: BindAddr::Tcp(listen_addr),
         target: TargetAddr::new(env.echo_target.ip().to_string(), env.echo_target.port()),
         max_connections: None,
+        limits: ForwardRateLimits::default(),
+        idle_timeout: None,
+        on_bind_conflict: BindConflictPolicy::default(),
+        required: false,
     };
     let _handle = match tokio::time::timeout(
         Duration::from_secs(10),

@@ -1126,11 +1126,16 @@ mod tests {
     use spt_protocol::endpoint::TargetAddr;
 
     fn local_spec(name: &str) -> LocalForwardSpec {
+        use spt_protocol::{BindConflictPolicy, ForwardRateLimits};
         LocalForwardSpec {
             name: name.to_owned(),
             listen: BindAddr::Tcp("127.0.0.1:0".parse().unwrap()),
             target: TargetAddr::new("h", 1),
             max_connections: None,
+            limits: ForwardRateLimits::default(),
+            idle_timeout: None,
+            on_bind_conflict: BindConflictPolicy::default(),
+            required: false,
         }
     }
 

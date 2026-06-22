@@ -46,14 +46,14 @@ pub mod testing;
 
 pub use control::{BenchForward, Control, DrainReport, EndpointKey};
 pub use failover::{EndpointSelector, FailoverMode, ManualOverride, SelectorError};
-pub use instability::{InstabilityDetector, InstabilityWindow};
+pub use instability::{InstabilityAction, InstabilityDetector, InstabilityWindow};
 pub use live_connector::{
     AsyncReadWrite, BoxedStream, EchoLiveConnector, LiveConnector, SupervisorLiveConnector,
     UdpEndpoint, UnavailableConnector,
 };
 pub use mount_registry::{MountKey, MountRegistry, MountRegistryError};
 pub use orchestrator::Orchestrator;
-pub use profile::{ProfileEvent, ProfileSupervisor, ProfileSupervisorConfig};
+pub use profile::{HealthCheckStyle, ProfileEvent, ProfileSupervisor, ProfileSupervisorConfig};
 pub use reconnect::{Backoff, BackoffConfig};
 pub use reconnect_trigger::{LiveReconnectTrigger, ReconnectTrigger};
 pub use reload::{ReloadAction, ReloadPlan};

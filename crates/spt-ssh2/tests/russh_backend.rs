@@ -5,7 +5,8 @@ use std::time::Duration;
 use spt_auth::{AuthConfig, AuthMethod};
 use spt_core::BindAddr;
 use spt_protocol::{
-    DynamicForwardSpec, Endpoint, LocalForwardSpec, RemoteForwardSpec, TargetAddr, TunnelProtocol,
+    BindConflictPolicy, DynamicForwardSpec, Endpoint, ForwardRateLimits, LocalForwardSpec,
+    RemoteForwardSpec, TargetAddr, TunnelProtocol,
 };
 use spt_ssh2::testing::RusshTestServer;
 use spt_ssh2::Ssh2Protocol;
@@ -67,6 +68,10 @@ async fn russh_backend_local_forward_bridges_to_direct_tcpip() {
             listen: BindAddr::parse(&format!("127.0.0.1:{port}")).unwrap(),
             target: TargetAddr::new("server-side-echo", 7),
             max_connections: Some(4),
+            limits: ForwardRateLimits::default(),
+            idle_timeout: None,
+            on_bind_conflict: BindConflictPolicy::default(),
+            required: false,
         })
         .await
         .expect("open local forward");
@@ -99,6 +104,10 @@ async fn russh_backend_dynamic_forward_bridges_socks5_to_direct_tcpip() {
             allow_socks4a: true,
             allow_socks5: true,
             allow_http_connect: true,
+            limits: ForwardRateLimits::default(),
+            idle_timeout: None,
+            on_bind_conflict: BindConflictPolicy::default(),
+            required: false,
         })
         .await
         .expect("open dynamic forward");
@@ -147,6 +156,10 @@ async fn russh_backend_dynamic_forward_bridges_socks4_to_direct_tcpip() {
             allow_socks4a: true,
             allow_socks5: true,
             allow_http_connect: true,
+            limits: ForwardRateLimits::default(),
+            idle_timeout: None,
+            on_bind_conflict: BindConflictPolicy::default(),
+            required: false,
         })
         .await
         .expect("open dynamic forward");
@@ -189,6 +202,10 @@ async fn russh_backend_dynamic_forward_bridges_socks4a_to_direct_tcpip() {
             allow_socks4a: true,
             allow_socks5: true,
             allow_http_connect: true,
+            limits: ForwardRateLimits::default(),
+            idle_timeout: None,
+            on_bind_conflict: BindConflictPolicy::default(),
+            required: false,
         })
         .await
         .expect("open dynamic forward");
@@ -232,6 +249,10 @@ async fn russh_backend_dynamic_forward_bridges_http_connect_to_direct_tcpip() {
             allow_socks4a: true,
             allow_socks5: true,
             allow_http_connect: true,
+            limits: ForwardRateLimits::default(),
+            idle_timeout: None,
+            on_bind_conflict: BindConflictPolicy::default(),
+            required: false,
         })
         .await
         .expect("open dynamic forward");
@@ -283,6 +304,10 @@ async fn russh_backend_remote_forward_bridges_server_to_client() {
             listen: BindAddr::parse(&format!("127.0.0.1:{remote_port}")).unwrap(),
             target: TargetAddr::new("127.0.0.1", local_target_port),
             max_connections: Some(4),
+            limits: ForwardRateLimits::default(),
+            idle_timeout: None,
+            on_bind_conflict: BindConflictPolicy::default(),
+            required: false,
         })
         .await
         .expect("open remote forward");

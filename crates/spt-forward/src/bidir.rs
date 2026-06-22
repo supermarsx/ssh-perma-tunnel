@@ -9,11 +9,32 @@
 use std::future::poll_fn;
 use std::mem::MaybeUninit;
 use std::pin::Pin;
-use std::time::Instant;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, ReadBuf};
 
 use crate::limits::TokenBucket;
+
+/// Shared activity beacon for the idle watchdog. Each direction's copy loop
+/// bumps the generation counter on every non-empty read; the watchdog samples
+/// it to detect quiescence without touching the hot read/write path beyond a
+/// single relaxed atomic increment.
+#[derive(Debug, Default)]
+struct ActivityBeacon {
+    generation: AtomicU64,
+}
+
+impl ActivityBeacon {
+    fn bump(&self) {
+        self.generation.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn sample(&self) -> u64 {
+        self.generation.load(Ordering::Relaxed)
+    }
+}
 
 /// Per-side counters returned from [`copy_bidirectional_throttled`].
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -50,8 +71,8 @@ where
     let (mut a_r, mut a_w) = tokio::io::split(a);
     let (mut b_r, mut b_w) = tokio::io::split(b);
 
-    let a_to_b = copy_one(&mut a_r, &mut b_w, bucket_a_to_b);
-    let b_to_a = copy_one(&mut b_r, &mut a_w, bucket_b_to_a);
+    let a_to_b = copy_one(&mut a_r, &mut b_w, bucket_a_to_b, None);
+    let b_to_a = copy_one(&mut b_r, &mut a_w, bucket_b_to_a, None);
 
     let (ab, ba) = tokio::join!(a_to_b, b_to_a);
     Ok(CopyStats {
@@ -60,7 +81,76 @@ where
     })
 }
 
-async fn copy_one<R, W>(src: &mut R, dst: &mut W, bucket: TokenBucket) -> std::io::Result<u64>
+/// Copy bytes between two duplex streams with per-direction throttling *and* an
+/// idle timeout.
+///
+/// Behaves exactly like [`copy_bidirectional_throttled`] but additionally
+/// closes the connection if no bytes flow in *either* direction for
+/// `idle_timeout`. The timeout is reset by byte activity: every non-empty read
+/// bumps a shared activity beacon (a single relaxed atomic increment — it does
+/// not touch the per-byte hot loop), and a lightweight watchdog samples the
+/// beacon at `idle_timeout` granularity.
+///
+/// On idle expiry the copy returns the [`CopyStats`] accumulated so far with
+/// the directions' streams dropped (which shuts the halves down). A `None`
+/// timeout is equivalent to [`copy_bidirectional_throttled`] (no idle close).
+pub async fn copy_bidirectional_throttled_idle<A, B>(
+    a: &mut A,
+    b: &mut B,
+    bucket_a_to_b: TokenBucket,
+    bucket_b_to_a: TokenBucket,
+    idle_timeout: Option<Duration>,
+) -> std::io::Result<CopyStats>
+where
+    A: AsyncRead + AsyncWrite + Unpin,
+    B: AsyncRead + AsyncWrite + Unpin,
+{
+    let Some(idle) = idle_timeout.filter(|d| !d.is_zero()) else {
+        return copy_bidirectional_throttled(a, b, bucket_a_to_b, bucket_b_to_a).await;
+    };
+
+    let (mut a_r, mut a_w) = tokio::io::split(a);
+    let (mut b_r, mut b_w) = tokio::io::split(b);
+
+    let beacon = Arc::new(ActivityBeacon::default());
+
+    let a_to_b = copy_one(&mut a_r, &mut b_w, bucket_a_to_b, Some(&beacon));
+    let b_to_a = copy_one(&mut b_r, &mut a_w, bucket_b_to_a, Some(&beacon));
+    let copies = async {
+        let (ab, ba) = tokio::join!(a_to_b, b_to_a);
+        Ok::<CopyStats, std::io::Error>(CopyStats {
+            a_to_b: ab?,
+            b_to_a: ba?,
+        })
+    };
+    tokio::pin!(copies);
+
+    // Watchdog: sample the beacon at `idle` cadence. If two consecutive samples
+    // are identical, no byte moved in the whole interval → idle close.
+    let mut last_seen = beacon.sample();
+    loop {
+        tokio::select! {
+            res = &mut copies => return res,
+            () = tokio::time::sleep(idle) => {
+                let now = beacon.sample();
+                if now == last_seen {
+                    // No activity for a full idle window — close by returning
+                    // the partial stats. Dropping the split halves here shuts
+                    // both directions down.
+                    return Ok(CopyStats::default());
+                }
+                last_seen = now;
+            }
+        }
+    }
+}
+
+async fn copy_one<R, W>(
+    src: &mut R,
+    dst: &mut W,
+    bucket: TokenBucket,
+    beacon: Option<&ActivityBeacon>,
+) -> std::io::Result<u64>
 where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
@@ -89,6 +179,10 @@ where
             // EOF — half-close downstream so the peer notices.
             let _ = dst.shutdown().await;
             return Ok(total);
+        }
+        // Byte activity — reset the idle watchdog (single relaxed increment).
+        if let Some(b) = beacon {
+            b.bump();
         }
         if bucket.is_active() {
             bucket.acquire(n as u64).await;
@@ -184,6 +278,85 @@ mod tests {
             "expected throttling >=2s, got {dt:?}"
         );
         assert_eq!(got.len(), payload.len());
+        let _ = bridge.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn idle_none_behaves_like_plain_copy() {
+        let (mut left_app, mut left_tun) = duplex(64);
+        let (mut right_tun, mut right_app) = duplex(64);
+        let bridge = tokio::spawn(async move {
+            copy_bidirectional_throttled_idle(
+                &mut left_tun,
+                &mut right_tun,
+                TokenBucket::unlimited(),
+                TokenBucket::unlimited(),
+                None,
+            )
+            .await
+        });
+        left_app.write_all(b"ping").await.unwrap();
+        left_app.shutdown().await.unwrap();
+        right_app.shutdown().await.unwrap();
+        let mut got = Vec::new();
+        right_app.read_to_end(&mut got).await.unwrap();
+        assert_eq!(got, b"ping");
+        let stats = bridge.await.unwrap().unwrap();
+        assert_eq!(stats.a_to_b, 4);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn idle_closes_after_quiescence() {
+        // No bytes ever flow; with a 1s idle timeout the copy must return on
+        // its own rather than blocking forever.
+        let (_left_app, mut left_tun) = duplex(64);
+        let (mut right_tun, _right_app) = duplex(64);
+        let bridge = tokio::spawn(async move {
+            copy_bidirectional_throttled_idle(
+                &mut left_tun,
+                &mut right_tun,
+                TokenBucket::unlimited(),
+                TokenBucket::unlimited(),
+                Some(std::time::Duration::from_secs(1)),
+            )
+            .await
+        });
+        // Advance well past two idle windows so the watchdog fires.
+        tokio::time::advance(std::time::Duration::from_secs(5)).await;
+        let stats = bridge.await.unwrap().unwrap();
+        // Idle close returns default (zero) stats.
+        assert_eq!(stats, CopyStats::default());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn idle_does_not_close_while_active() {
+        // Bytes keep flowing within each idle window; the copy must NOT close
+        // until both halves shut down naturally.
+        let (mut left_app, mut left_tun) = duplex(1024);
+        let (mut right_tun, mut right_app) = duplex(1024);
+        let bridge = tokio::spawn(async move {
+            copy_bidirectional_throttled_idle(
+                &mut left_tun,
+                &mut right_tun,
+                TokenBucket::unlimited(),
+                TokenBucket::unlimited(),
+                Some(std::time::Duration::from_secs(2)),
+            )
+            .await
+        });
+        for _ in 0..3 {
+            left_app.write_all(b"tick").await.unwrap();
+            let mut buf = [0u8; 4];
+            tokio::io::AsyncReadExt::read_exact(&mut right_app, &mut buf)
+                .await
+                .unwrap();
+            assert_eq!(&buf, b"tick");
+            // Sleep less than the idle window so activity keeps resetting it.
+            tokio::time::advance(std::time::Duration::from_secs(1)).await;
+        }
+        // Now go quiet and let it idle-close.
+        left_app.shutdown().await.unwrap();
+        right_app.shutdown().await.unwrap();
         let _ = bridge.await.unwrap();
     }
 }

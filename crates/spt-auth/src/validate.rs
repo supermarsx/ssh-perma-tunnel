@@ -18,7 +18,7 @@ pub fn validate(method: &AuthMethod) -> Result<()> {
             check_file_exists("identity_file", identity_file)
         }
 
-        AuthMethod::Agent { socket } => {
+        AuthMethod::Agent { socket, .. } => {
             if let Some(path) = socket {
                 if path.as_os_str().is_empty() {
                     return Err(invalid("agent.socket must not be empty"));
@@ -179,7 +179,11 @@ mod tests {
 
     #[test]
     fn agent_ok() {
-        validate(&AuthMethod::Agent { socket: None }).unwrap();
+        validate(&AuthMethod::Agent {
+            socket: None,
+            identity_hint: None,
+        })
+        .unwrap();
     }
 
     #[test]
@@ -294,6 +298,7 @@ mod tests {
     fn agent_with_empty_socket_path_rejected() {
         let m = AuthMethod::Agent {
             socket: Some(std::path::PathBuf::from("")),
+            identity_hint: None,
         };
         let err = validate(&m).unwrap_err();
         let s = err.to_string();
@@ -305,6 +310,7 @@ mod tests {
         // Validation is shape-only — socket path is not required to exist.
         let m = AuthMethod::Agent {
             socket: Some(std::path::PathBuf::from("/never/created/spt-agent.sock")),
+            identity_hint: None,
         };
         validate(&m).unwrap();
     }

@@ -61,6 +61,16 @@ pub enum AuthMethod {
         /// Optional explicit agent socket path.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         socket: Option<PathBuf>,
+        /// Optional hint selecting which agent-held identity to prefer.
+        ///
+        /// When the agent exposes multiple keys, the ssh2 agent flow should
+        /// use this to pick a specific identity by its key **comment**
+        /// (exact match) or by a **fingerprint** (e.g. `SHA256:…`). When
+        /// `None`, the flow tries the agent's identities in their natural
+        /// order. This field is purely carried here; the consumer is the
+        /// ssh2 agent auth path (see `tw-a4.md`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        identity_hint: Option<String>,
     },
 
     /// SSH2 password auth.
@@ -197,5 +207,51 @@ mod policy_tests {
         ] {
             check_pubkey_algorithm_allowed(algo, false).unwrap();
         }
+    }
+}
+
+#[cfg(test)]
+mod agent_identity_hint_tests {
+    use super::*;
+
+    /// A bare `{"method":"agent"}` deserializes with both optional fields
+    /// defaulting to `None` (the additive field is `#[serde(default)]`), so
+    /// existing agent configs keep parsing without the new key.
+    #[test]
+    fn agent_defaults_identity_hint_to_none() {
+        let m: AuthMethod = serde_json::from_str(r#"{"method":"agent"}"#).unwrap();
+        assert_eq!(
+            m,
+            AuthMethod::Agent {
+                socket: None,
+                identity_hint: None,
+            }
+        );
+    }
+
+    /// An explicit `identity_hint` deserializes into the new field and survives
+    /// a serialize → deserialize round-trip unchanged.
+    #[test]
+    fn agent_identity_hint_round_trips() {
+        let m = AuthMethod::Agent {
+            socket: None,
+            identity_hint: Some("SHA256:abc123".to_string()),
+        };
+        let json = serde_json::to_string(&m).unwrap();
+        assert!(json.contains("identity_hint"), "{json}");
+        let back: AuthMethod = serde_json::from_str(&json).unwrap();
+        assert_eq!(m, back);
+    }
+
+    /// `identity_hint = None` is omitted from the serialized form
+    /// (`skip_serializing_if`), keeping existing configs byte-stable.
+    #[test]
+    fn agent_none_identity_hint_is_omitted_on_serialize() {
+        let m = AuthMethod::Agent {
+            socket: None,
+            identity_hint: None,
+        };
+        let json = serde_json::to_string(&m).unwrap();
+        assert!(!json.contains("identity_hint"), "{json}");
     }
 }

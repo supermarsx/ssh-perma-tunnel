@@ -111,6 +111,7 @@ fn instability_window_bounded_under_churn() {
         window: Duration::from_secs(10),
         max_disconnects: 3,
         clear_after: Duration::from_secs(30),
+        ..Default::default()
     };
     let mut d = InstabilityDetector::new(cfg);
     let base = Instant::now();
@@ -143,6 +144,7 @@ fn instability_detector_record_alloc_bounded() {
         window: Duration::from_secs(5),
         max_disconnects: 3,
         clear_after: Duration::from_secs(10),
+        ..Default::default()
     };
     let mut d = InstabilityDetector::new(cfg);
     let base = Instant::now();

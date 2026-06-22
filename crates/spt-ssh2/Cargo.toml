@@ -23,6 +23,7 @@ testing = ["dep:rand010"]
 [dependencies]
 spt-core = { workspace = true }
 spt-protocol = { workspace = true }
+spt-forward = { workspace = true }
 spt-auth = { workspace = true }
 spt-auth-sspi = { workspace = true }
 spt-key = { workspace = true }
@@ -92,6 +93,12 @@ required-features = ["testing"]
 # t7-Phase0: 3-hop russh-native multi-hop chain integration test.
 [[test]]
 name = "multi_hop_three_hops"
+required-features = ["testing"]
+
+# Wave A2: proxy-hop (SOCKS5 / HTTP CONNECT) dispatch via the kind-aware
+# chained-session path.
+[[test]]
+name = "multi_hop_proxy_dispatch"
 required-features = ["testing"]
 
 # E8-F1: scripting lifecycle hooks fire on connect/forward/disconnect.

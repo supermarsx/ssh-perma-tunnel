@@ -38,6 +38,22 @@ pub struct BackoffConfig {
     pub jitter: f32,
     /// Maximum attempts (`0` = unlimited).
     pub max_attempts: u32,
+    /// Whether an authentication failure should be treated as *retryable*
+    /// (subject to the normal backoff loop) rather than *terminal*.
+    ///
+    /// Mirrors `[profiles.reconnect].retry_auth_failures`. Default `false`:
+    /// today an auth failure flows through the same reconnect path as any
+    /// other connect error (there is no terminal-vs-retryable classifier yet),
+    /// so `false` preserves current behavior until the classifier exists.
+    ///
+    /// CONSUMER (Wave C): the reconnect/error classifier that decides whether
+    /// an auth-failure `Error` from `TunnelProtocol::connect` is terminal
+    /// (stop the profile) or retryable (continue the backoff loop). The intended
+    /// read site is the connect-failure arm in `profile.rs::ProfileTask::run`
+    /// (around the `SmEvent::ConnectFail` / `handle_session_failure` branch),
+    /// which will inspect `self.cfg.backoff.retry_auth_failures` before
+    /// deciding to `break` vs `continue`.
+    pub retry_auth_failures: bool,
 }
 
 impl Default for BackoffConfig {
@@ -48,6 +64,7 @@ impl Default for BackoffConfig {
             reset_after: Duration::from_secs(120),
             jitter: 1.0,
             max_attempts: 0,
+            retry_auth_failures: false,
         }
     }
 }
@@ -266,6 +283,25 @@ mod tests {
             ..Default::default()
         });
         assert!(!b.exhausted());
+    }
+
+    #[test]
+    fn retry_auth_failures_defaults_false() {
+        // TW-A3: the new auth-retry knob preserves today's behavior (no
+        // terminal-vs-retryable classifier) by defaulting off.
+        assert!(!BackoffConfig::default().retry_auth_failures);
+    }
+
+    #[test]
+    fn retry_auth_failures_round_trips_through_struct_update() {
+        let cfg = BackoffConfig {
+            retry_auth_failures: true,
+            ..Default::default()
+        };
+        assert!(cfg.retry_auth_failures);
+        // Copy semantics preserved (BackoffConfig is Copy).
+        let copy = cfg;
+        assert_eq!(copy.retry_auth_failures, cfg.retry_auth_failures);
     }
 }
 
