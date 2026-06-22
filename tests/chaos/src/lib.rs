@@ -21,6 +21,7 @@
 #![warn(missing_docs)]
 
 pub mod harness;
+#[cfg(test)]
 pub mod scenarios;
 
 pub use harness::{

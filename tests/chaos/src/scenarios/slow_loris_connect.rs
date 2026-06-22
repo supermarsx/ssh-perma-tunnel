@@ -48,8 +48,10 @@ async fn slow_loris_connect() {
     let _guard = ObserverGuard::install(obs.clone());
 
     let proto = Arc::new(TcpProbeProtocol::new(addr).with_timeout(Duration::from_millis(150)));
-    let mut cfg = ProfileSupervisorConfig::default();
-    cfg.backoff = fast_backoff(5);
+    let cfg = ProfileSupervisorConfig {
+        backoff: fast_backoff(5),
+        ..ProfileSupervisorConfig::default()
+    };
 
     let sup = ProfileSupervisor::spawn(
         "slow-loris",

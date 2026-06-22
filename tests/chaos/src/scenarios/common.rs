@@ -348,6 +348,7 @@ pub fn fast_backoff(max_attempts: u32) -> BackoffConfig {
         reset_after: Duration::from_secs(2),
         jitter: 1.0,
         max_attempts,
+        retry_auth_failures: false,
     }
 }
 
@@ -414,14 +415,16 @@ pub fn spawn_supervisor_with_probe_timeout(
     probe_timeout: Duration,
 ) -> ProfileSupervisor {
     let proto = Arc::new(TcpProbeProtocol::new(proxy_addr).with_timeout(probe_timeout));
-    let mut cfg = ProfileSupervisorConfig::default();
-    cfg.backoff = backoff;
-    cfg.keepalive_interval = keepalive_interval;
     // E1-F11: the supervisor's per-probe timeout is decoupled from the probe
     // cadence. Honour the scenario's chosen `probe_timeout` here so a healthy
     // slow probe (≈1 s under the latency spike) governs the SessionLost
     // decision instead of being aborted at the 250 ms keepalive interval.
-    cfg.keepalive_timeout = probe_timeout;
+    let cfg = ProfileSupervisorConfig {
+        backoff,
+        keepalive_interval,
+        keepalive_timeout: probe_timeout,
+        ..ProfileSupervisorConfig::default()
+    };
     ProfileSupervisor::spawn(
         name,
         proto,

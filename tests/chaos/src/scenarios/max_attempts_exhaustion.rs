@@ -34,8 +34,10 @@ async fn max_attempts_exhaustion() {
     let obs = CountingObserver::new();
     let _guard = ObserverGuard::install(obs.clone());
 
-    let mut cfg = ProfileSupervisorConfig::default();
-    cfg.backoff = fast_backoff(3);
+    let cfg = ProfileSupervisorConfig {
+        backoff: fast_backoff(3),
+        ..ProfileSupervisorConfig::default()
+    };
 
     let sup = ProfileSupervisor::spawn(
         "max-exhaust",

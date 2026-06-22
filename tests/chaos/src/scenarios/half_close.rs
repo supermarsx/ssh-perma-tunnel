@@ -61,9 +61,11 @@ async fn half_close() {
     let _guard = ObserverGuard::install(obs.clone());
 
     let proto = Arc::new(TcpProbeProtocol::new(addr));
-    let mut cfg = ProfileSupervisorConfig::default();
-    cfg.backoff = fast_backoff(0);
-    cfg.keepalive_interval = Duration::from_millis(100);
+    let cfg = ProfileSupervisorConfig {
+        backoff: fast_backoff(0),
+        keepalive_interval: Duration::from_millis(100),
+        ..ProfileSupervisorConfig::default()
+    };
     let sup = ProfileSupervisor::spawn(
         "half-close",
         proto,
