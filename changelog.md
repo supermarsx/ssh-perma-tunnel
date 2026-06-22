@@ -1,3 +1,11 @@
+## [26.18] - 2026-06-22
+
+# spt 26.18
+
+## Changes since 26.17
+
+- feat(profile): wire [profiles.connection] socket + channel knobs (04b1bf5)
+
 ## [26.17] - 2026-06-22
 
 # spt 26.17
