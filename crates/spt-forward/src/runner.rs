@@ -10,12 +10,12 @@ use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 
 use spt_config::schema::Forward;
-use spt_core::{BindAddr, Error, Result};
+use spt_core::{BindAddr, DnsResolution, Error, Result};
 use spt_net::bind::{resolve_bind, AutoPrefer, BindMode, Family};
 use spt_protocol::{
     BindConflictPolicy, DynamicForwardSpec, ForwardDirection, ForwardHandle, ForwardRateLimits,
     ForwardState, LocalForwardSpec, RemoteForwardSpec, RemoteUdsForwardSpec, TargetAddr,
-    TunnelSession, UdpForwardSpec, UdsForwardSpec,
+    TargetResolve, TunnelSession, UdpForwardSpec, UdsForwardSpec,
 };
 use thiserror::Error;
 use tokio::sync::watch;
@@ -155,11 +155,17 @@ impl ForwardRunner {
                         name: name.clone(),
                         reason: "missing `target`/`connect`".into(),
                     })?;
-                let target =
+                let mut target =
                     parse_target(target_str).map_err(|e| ForwardRunnerError::Malformed {
                         name: name.clone(),
                         reason: format!("invalid target `{target_str}`: {e}"),
                     })?;
+                // `[forwards].target_resolve = local`: resolve the target host
+                // CLIENT-SIDE and substitute the IP literal, so the peer dials
+                // the pre-resolved address. `remote` (default) and
+                // `previous-hop` forward the host string unchanged (the SSH peer
+                // resolves it via `direct-tcpip`).
+                target = apply_target_resolve(cfg, &name, target)?;
                 let direction =
                     parse_direction(kind).map_err(|e| ForwardRunnerError::Malformed {
                         name: name.clone(),
@@ -698,6 +704,53 @@ fn select_bind_addr(
     }
 }
 
+/// Honor `[forwards].target_resolve` on a parsed [`TargetAddr`].
+///
+/// * `local` — resolve the target host CLIENT-SIDE and replace `target.host`
+///   with the resulting IP literal, so the IP (not the name) is handed to the
+///   SSH peer. The first resolved address is used (matching the single-address
+///   dial behaviour elsewhere).
+/// * `remote` (default) / `previous-hop` — return the target unchanged; the SSH
+///   peer (resp. the previous hop) resolves the name as today.
+///
+/// Unknown values are rejected as [`ForwardRunnerError::Malformed`].
+fn apply_target_resolve(cfg: &Forward, name: &str, target: TargetAddr) -> Result<TargetAddr> {
+    let policy = match cfg.target_resolve.as_deref() {
+        None => TargetResolve::Remote,
+        Some(s) => {
+            TargetResolve::from_config_str(s).ok_or_else(|| ForwardRunnerError::Malformed {
+                name: name.to_owned(),
+                reason: format!(
+                    "unknown target_resolve `{s}` (expected `local`, `remote`, or `previous-hop`)"
+                ),
+            })?
+        }
+    };
+    if !policy.is_local() {
+        return Ok(target);
+    }
+    let addrs = spt_core::resolve_dns(&target.host, target.port, DnsResolution::PerAttempt)
+        .map_err(|e| ForwardRunnerError::Malformed {
+            name: name.to_owned(),
+            reason: format!(
+                "target_resolve=local could not resolve `{}:{}`: {e}",
+                target.host, target.port
+            ),
+        })?;
+    let ip = addrs
+        .into_iter()
+        .next()
+        .ok_or_else(|| ForwardRunnerError::Malformed {
+            name: name.to_owned(),
+            reason: format!(
+                "target_resolve=local resolved no addresses for `{}`",
+                target.host
+            ),
+        })?
+        .ip();
+    Ok(TargetAddr::new(ip.to_string(), target.port))
+}
+
 /// Parse a target string into [`TargetAddr`]. Accepts `host:port` or
 /// `[v6]:port`.
 fn parse_target(s: &str) -> Result<TargetAddr> {
@@ -741,6 +794,7 @@ mod tests {
         last_required: Option<bool>,
         last_uds: Option<UdsForwardSpec>,
         last_remote_uds: Option<RemoteUdsForwardSpec>,
+        last_target: Option<TargetAddr>,
     }
 
     impl CapturingSession {
@@ -754,6 +808,7 @@ mod tests {
                 last_required: None,
                 last_uds: None,
                 last_remote_uds: None,
+                last_target: None,
             }
         }
     }
@@ -766,11 +821,13 @@ mod tests {
             self.last_idle = Some(spec.idle_timeout);
             self.last_bind_conflict = Some(spec.on_bind_conflict);
             self.last_required = Some(spec.required);
+            self.last_target = Some(spec.target.clone());
             self.inner.open_local_forward(spec).await
         }
 
         async fn open_remote_forward(&mut self, spec: &RemoteForwardSpec) -> Result<ForwardHandle> {
             self.last_listen = Some(spec.listen.clone());
+            self.last_target = Some(spec.target.clone());
             self.inner.open_remote_forward(spec).await
         }
 
@@ -1671,5 +1728,65 @@ mod tests {
         cfg.remote_socket_path = Some("/run/spt-remote5.sock".into());
         let r = ForwardRunner::start(&cfg, &mut session, &ForwardRunnerConfig::default()).await;
         assert!(matches!(r, Err(Error::UnsupportedPlatform(_))));
+    }
+
+    // ---- t-ssh3 Wave D2: target_resolve ----
+
+    #[tokio::test]
+    async fn target_resolve_default_forwards_hostname_unchanged() {
+        // No target_resolve → `remote` (default): the host string is sent
+        // verbatim (the peer resolves it). Behaviour-preserving.
+        let mut session = CapturingSession::new();
+        let cfg = fwd("local", "tcp", "127.0.0.1:0", "example.invalid:22");
+        let runner = ForwardRunner::start(&cfg, &mut session, &ForwardRunnerConfig::default())
+            .await
+            .unwrap();
+        let target = session.last_target.unwrap();
+        assert_eq!(target.host, "example.invalid");
+        assert_eq!(target.port, 22);
+        runner.stop().await;
+    }
+
+    #[tokio::test]
+    async fn target_resolve_remote_explicit_forwards_hostname_unchanged() {
+        let mut session = CapturingSession::new();
+        let mut cfg = fwd("local", "tcp", "127.0.0.1:0", "example.invalid:22");
+        cfg.target_resolve = Some("remote".into());
+        let runner = ForwardRunner::start(&cfg, &mut session, &ForwardRunnerConfig::default())
+            .await
+            .unwrap();
+        assert_eq!(session.last_target.unwrap().host, "example.invalid");
+        runner.stop().await;
+    }
+
+    #[tokio::test]
+    async fn target_resolve_local_substitutes_ip_literal() {
+        // `local` → the runner resolves the host client-side and substitutes
+        // the IP literal in the spec passed to the session.
+        let mut session = CapturingSession::new();
+        let mut cfg = fwd("local", "tcp", "127.0.0.1:0", "localhost:22");
+        cfg.target_resolve = Some("local".into());
+        let runner = ForwardRunner::start(&cfg, &mut session, &ForwardRunnerConfig::default())
+            .await
+            .unwrap();
+        let target = session.last_target.unwrap();
+        assert_eq!(target.port, 22);
+        // The host is now an IP literal, not the hostname.
+        assert!(
+            target.host.parse::<IpAddr>().is_ok(),
+            "expected IP literal, got `{}`",
+            target.host
+        );
+        assert_ne!(target.host, "localhost");
+        runner.stop().await;
+    }
+
+    #[tokio::test]
+    async fn target_resolve_unknown_value_rejected() {
+        let mut session = CapturingSession::new();
+        let mut cfg = fwd("local", "tcp", "127.0.0.1:0", "127.0.0.1:22");
+        cfg.target_resolve = Some("sideways".into());
+        let r = ForwardRunner::start(&cfg, &mut session, &ForwardRunnerConfig::default()).await;
+        assert!(r.is_err(), "unknown target_resolve must be rejected");
     }
 }

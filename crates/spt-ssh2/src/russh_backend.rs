@@ -14,7 +14,7 @@ use russh::keys::ssh_key::HashAlg;
 use russh::keys::{PrivateKeyWithHashAlg, PublicKeyBase64 as _};
 use secrecy::ExposeSecret as _;
 use spt_auth::{AuthConfig, AuthMethod, SecretRef as AuthSecretRef};
-use spt_core::{BindAddr, Error, Result};
+use spt_core::{BindAddr, DnsResolution, Error, Result};
 use spt_forward::{
     bind_with_policy, copy_bidirectional_throttled_idle, BoundListener, RateGate, TokenBucket,
 };
@@ -338,6 +338,12 @@ pub struct ConnectionPolicy {
     /// single channel-idle bound, threaded into every forward bridge's copy
     /// loop (MIN-combined with any per-forward `idle_timeout`).
     pub channel_idle_timeout: Option<Duration>,
+    /// Client-side DNS resolution policy (`[profiles.connection].dns_resolution`).
+    /// [`DnsResolution::PerAttempt`] (default) re-resolves the endpoint on every
+    /// dial — byte-for-byte the prior behaviour. [`DnsResolution::Once`] resolves
+    /// the endpoint once per `(host, port)` and pins the result across
+    /// reconnects via the shared [`spt_core::dns`] cache.
+    pub dns: DnsResolution,
 }
 
 impl ConnectionPolicy {
@@ -455,19 +461,45 @@ async fn dial_tuned(
     port: u16,
     connection: &ConnectionPolicy,
 ) -> std::result::Result<TcpStream, russh::Error> {
-    let connect = TcpStream::connect((host, port));
-    let sock = match connection.connect_timeout {
-        Some(timeout) => tokio::time::timeout(timeout, connect)
-            .await
-            .map_err(|_| {
-                russh::Error::IO(std::io::Error::new(
-                    std::io::ErrorKind::TimedOut,
-                    format!("connect to {host}:{port} timed out after {timeout:?}"),
-                ))
-            })?
-            .map_err(russh::Error::IO)?,
-        None => connect.await.map_err(russh::Error::IO)?,
+    // Resolution policy. `PerAttempt` (default) preserves the original
+    // `TcpStream::connect((host, port))` semantics exactly (tokio resolves
+    // fresh and tries each address). `Once` resolves through the shared
+    // `spt_core::dns` cache so a `(host, port)` is pinned across reconnects.
+    let connect_result = match connection.dns {
+        DnsResolution::PerAttempt => {
+            let connect = TcpStream::connect((host, port));
+            match connection.connect_timeout {
+                Some(timeout) => tokio::time::timeout(timeout, connect)
+                    .await
+                    .map_err(|_| {
+                        russh::Error::IO(std::io::Error::new(
+                            std::io::ErrorKind::TimedOut,
+                            format!("connect to {host}:{port} timed out after {timeout:?}"),
+                        ))
+                    })?
+                    .map_err(russh::Error::IO)?,
+                None => connect.await.map_err(russh::Error::IO)?,
+            }
+        }
+        DnsResolution::Once => {
+            let addrs =
+                spt_core::resolve_dns(host, port, DnsResolution::Once).map_err(russh::Error::IO)?;
+            let connect = TcpStream::connect(&addrs[..]);
+            match connection.connect_timeout {
+                Some(timeout) => tokio::time::timeout(timeout, connect)
+                    .await
+                    .map_err(|_| {
+                        russh::Error::IO(std::io::Error::new(
+                            std::io::ErrorKind::TimedOut,
+                            format!("connect to {host}:{port} timed out after {timeout:?}"),
+                        ))
+                    })?
+                    .map_err(russh::Error::IO)?,
+                None => connect.await.map_err(russh::Error::IO)?,
+            }
+        }
     };
+    let sock = connect_result;
 
     if let Some(opts) = connection.tcp_options() {
         // Convert tokio → std → socket2 to apply options, then back to tokio.

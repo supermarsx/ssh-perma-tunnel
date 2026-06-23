@@ -50,6 +50,49 @@ impl Endpoint {
     }
 }
 
+/// Where a forward/hop target name is resolved — `[forwards].target_resolve`
+/// (§9.14) and `[profiles.hops].target_resolve` (§8.2).
+///
+/// Only [`TargetResolve::Local`] changes runtime behaviour: the client resolves
+/// the target name and passes the resulting IP literal to the peer instead of
+/// the hostname. [`TargetResolve::Remote`] (default) and
+/// [`TargetResolve::PreviousHop`] are the de-facto behaviour where the SSH peer
+/// (the `direct-tcpip` endpoint, resp. the previous hop) resolves the name; for
+/// those the host string is forwarded unchanged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TargetResolve {
+    /// The SSH peer resolves the target name (default — no client-side action).
+    #[default]
+    Remote,
+    /// The client resolves the target name and sends an IP literal.
+    Local,
+    /// The previous hop resolves the target name (multi-hop only). Treated like
+    /// [`TargetResolve::Remote`] at the dial site (the peer resolves).
+    PreviousHop,
+}
+
+impl TargetResolve {
+    /// Parse the schema string form (`local` | `remote` | `previous-hop`).
+    /// Returns `None` for any unrecognized value so callers can surface a
+    /// config error.
+    #[must_use]
+    pub fn from_config_str(s: &str) -> Option<Self> {
+        match s {
+            "remote" => Some(Self::Remote),
+            "local" => Some(Self::Local),
+            "previous-hop" | "previous_hop" => Some(Self::PreviousHop),
+            _ => None,
+        }
+    }
+
+    /// Whether the client must resolve the target name before dialing.
+    #[must_use]
+    pub const fn is_local(self) -> bool {
+        matches!(self, Self::Local)
+    }
+}
+
 /// Resolved target address handed across the tunnel ("connect there:" of §10.3).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct TargetAddr {

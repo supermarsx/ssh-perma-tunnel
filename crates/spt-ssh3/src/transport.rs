@@ -59,14 +59,14 @@
 //! decodes the QPACK-encoded HEADERS frame on the wire, and asserts the
 //! decoded `:protocol` pseudo-header value is exactly `ssh3`.
 
-use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs};
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 
 use http::{HeaderValue, Method, Request, Uri};
 use quinn::{ClientConfig as QuinnClientConfig, Endpoint, TransportConfig};
 use spt_auth::AuthConfig;
-use spt_core::{Error, Result};
+use spt_core::{DnsResolution, Error, Result};
 
 use crate::auth_header::build_authorization_header_for;
 use crate::config::Ssh3Config;
@@ -97,12 +97,16 @@ pub struct BootstrappedSession {
     pub h3_driver: tokio::task::JoinHandle<()>,
 }
 
-/// Resolve the endpoint host:port to a `SocketAddr`.
-fn resolve_addr(host: &str, port: u16) -> Result<SocketAddr> {
-    let addrs: Vec<SocketAddr> = (host, port)
-        .to_socket_addrs()
-        .map_err(|e| Error::DnsFailed(format!("ssh3 resolve `{host}:{port}`: {e}")))?
-        .collect();
+/// Resolve the endpoint host:port to a `SocketAddr`, honoring the configured
+/// DNS resolution policy.
+///
+/// [`DnsResolution::PerAttempt`] (default) resolves fresh via the OS resolver —
+/// byte-for-byte the prior behaviour. [`DnsResolution::Once`] resolves once per
+/// `(host, port)` through the shared [`spt_core::dns`] cache and pins the
+/// result across reconnects.
+fn resolve_addr(host: &str, port: u16, policy: DnsResolution) -> Result<SocketAddr> {
+    let addrs = spt_core::resolve_dns(host, port, policy)
+        .map_err(|e| Error::DnsFailed(format!("ssh3 resolve `{host}:{port}`: {e}")))?;
     addrs
         .into_iter()
         .next()
@@ -228,7 +232,7 @@ pub async fn bootstrap(
     cfg: &Ssh3Config,
     auth: &AuthConfig,
 ) -> Result<BootstrappedSession> {
-    let remote = resolve_addr(host, port)?;
+    let remote = resolve_addr(host, port, cfg.dns)?;
     let endpoint = build_quinn_endpoint(remote, cfg)?;
 
     let server_name = cfg.sni.clone().unwrap_or_else(|| host.to_string());
@@ -608,15 +612,25 @@ mod tests {
 
     #[test]
     fn resolve_addr_loopback_succeeds() {
-        let addr = resolve_addr("127.0.0.1", 7443).unwrap();
+        let addr = resolve_addr("127.0.0.1", 7443, DnsResolution::PerAttempt).unwrap();
         assert_eq!(addr.port(), 7443);
         assert!(addr.ip().is_loopback());
     }
 
     #[test]
     fn resolve_addr_unresolvable_errors() {
-        let err = resolve_addr("nope.invalid.example.invalid", 1).unwrap_err();
+        let err =
+            resolve_addr("nope.invalid.example.invalid", 1, DnsResolution::PerAttempt).unwrap_err();
         assert!(matches!(err, Error::DnsFailed(_)));
+    }
+
+    #[test]
+    fn resolve_addr_once_pins_loopback() {
+        // `Once` resolves then pins; repeated calls return the same address.
+        let a = resolve_addr("127.0.0.1", 7444, DnsResolution::Once).unwrap();
+        let b = resolve_addr("127.0.0.1", 7444, DnsResolution::Once).unwrap();
+        assert_eq!(a, b);
+        assert_eq!(a.port(), 7444);
     }
 
     #[test]

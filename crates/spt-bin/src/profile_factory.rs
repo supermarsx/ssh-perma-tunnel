@@ -24,8 +24,8 @@ use spt_config::schema::{
     ScriptConfig as SchemaScriptConfig, Trust as TrustCfg,
 };
 use spt_config_crypt::KeySource;
-use spt_core::{Diagnostic, Error, Result};
-use spt_protocol::{Endpoint, ForwardRateLimits, TunnelProtocol};
+use spt_core::{Diagnostic, DnsResolution, Error, Result};
+use spt_protocol::{Endpoint, ForwardRateLimits, TargetResolve, TunnelProtocol};
 use spt_scripting::{
     config::{ScriptConfig, ScriptHooks, ScriptLimits},
     ScriptEngine,
@@ -446,8 +446,26 @@ fn build_ssh2(
     // read/write) have no clean russh apply site and stay parsed-and-warned in
     // spt-config validate. Absent `[profiles.connection]` → default (no-op)
     // policy, so behaviour is preserved byte-for-byte for existing profiles.
-    if let Some(connection) = profile.connection.as_ref() {
-        builder = builder.connection(build_connection_policy(&profile.name, connection)?);
+    // `[profiles.connection].dns_resolution` is profile-level (not inside the
+    // `[connection]` table), and must take effect even when `[connection]` is
+    // absent — so it is threaded into the policy regardless.
+    let dns = parse_dns_resolution(&profile.name, profile.dns_resolution.as_deref())?;
+    match profile.connection.as_ref() {
+        Some(connection) => {
+            let mut policy = build_connection_policy(&profile.name, connection)?;
+            policy.dns = dns;
+            builder = builder.connection(policy);
+        }
+        None if dns != DnsResolution::PerAttempt => {
+            // No `[connection]` table but a non-default dns_resolution: still
+            // apply it via an otherwise-default policy (a default policy is a
+            // no-op for every other field).
+            builder = builder.connection(ConnectionPolicy {
+                dns,
+                ..ConnectionPolicy::default()
+            });
+        }
+        None => {}
     }
 
     for hop in &profile.hops {
@@ -466,18 +484,32 @@ fn build_ssh2(
                 "profiles.trust"
             },
         )?;
+        // `[profiles.hops].target_resolve = local`: resolve the hop host
+        // client-side and dial the IP literal through the previous leg, instead
+        // of letting the previous SSH peer resolve the name (`remote`, the
+        // default — and `previous-hop`, which the peer/previous-leg handles).
+        let hop_resolve = parse_target_resolve(
+            &profile.name,
+            &format!("hops.{}.target_resolve", hop.host),
+            hop.target_resolve.as_deref(),
+        )?;
+        let hop_host = if hop_resolve.is_local() {
+            resolve_target_local(&profile.name, &hop.host, hop.port)?
+        } else {
+            hop.host.clone()
+        };
         // t6-e3 / A2: dispatch by the hop's transport `kind`. SSH hops keep the
         // historical `direct-tcpip` + re-handshake path; SOCKS5 / HTTP CONNECT
         // proxy hops resolve their optional proxy credentials and go through
         // `hop_with_kind` so the proxy CONNECT runs before the SSH handshake.
         match hop.kind {
             SchemaHopKind::Ssh => {
-                builder = builder.hop_with_auth_trust(&hop.host, hop.port, hop_auth, hop_trust);
+                builder = builder.hop_with_auth_trust(&hop_host, hop.port, hop_auth, hop_trust);
             }
             SchemaHopKind::Socks5 | SchemaHopKind::HttpConnect => {
                 let creds = resolve_proxy_credentials(hop, resolver, &profile.name)?;
                 builder = builder.hop_with_kind(
-                    &hop.host,
+                    &hop_host,
                     hop.port,
                     map_hop_kind(hop.kind),
                     creds,
@@ -669,9 +701,69 @@ fn build_ssh3(profile: &Profile) -> Result<Ssh3Protocol> {
         // effect; intentionally ignored.
     }
 
+    // `[profiles.connection].dns_resolution` → client-side resolution policy.
+    cfg.dns = parse_dns_resolution(&profile.name, profile.dns_resolution.as_deref())?;
+
     // Fail bad combinations at profile-build time, consistent with ssh2.
     cfg.validate()?;
     Ok(Ssh3Protocol::new(cfg))
+}
+
+/// Map `[profiles.connection].dns_resolution` (`per_attempt` | `once`) onto the
+/// shared [`DnsResolution`] policy. `None`/absent → [`DnsResolution::PerAttempt`]
+/// (default, behaviour-preserving). Unknown values are rejected with
+/// [`Error::InvalidConfig`].
+fn parse_dns_resolution(profile_name: &str, raw: Option<&str>) -> Result<DnsResolution> {
+    match raw {
+        None => Ok(DnsResolution::PerAttempt),
+        Some(s) => DnsResolution::from_config_str(s).ok_or_else(|| {
+            Error::InvalidConfig(format!(
+                "profile `{profile_name}`: unknown dns_resolution `{s}` \
+                 (expected `per_attempt` or `once`)"
+            ))
+        }),
+    }
+}
+
+/// Map a `target_resolve` field (`remote` | `local` | `previous-hop`) onto the
+/// shared [`TargetResolve`] policy. `None`/absent → [`TargetResolve::Remote`]
+/// (default, behaviour-preserving). Unknown values are rejected with
+/// [`Error::InvalidConfig`], naming the config path.
+fn parse_target_resolve(profile_name: &str, at: &str, raw: Option<&str>) -> Result<TargetResolve> {
+    match raw {
+        None => Ok(TargetResolve::Remote),
+        Some(s) => TargetResolve::from_config_str(s).ok_or_else(|| {
+            Error::InvalidConfig(format!(
+                "profile `{profile_name}`: {at} has unknown target_resolve `{s}` \
+                 (expected `local`, `remote`, or `previous-hop`)"
+            ))
+        }),
+    }
+}
+
+/// Resolve a forward/hop target host CLIENT-SIDE (for `target_resolve = local`)
+/// and return the resulting IP literal as a string. The first resolved address
+/// is used (matching the existing single-address dial behaviour). Resolution
+/// failures surface as [`Error::DnsFailed`].
+fn resolve_target_local(profile_name: &str, host: &str, port: u16) -> Result<String> {
+    // `PerAttempt` here just means "resolve now via the OS resolver"; the
+    // resolved literal is then pinned into the spec/hop, so no cache entry is
+    // needed for the substitution itself.
+    let addrs = spt_core::resolve_dns(host, port, DnsResolution::PerAttempt).map_err(|e| {
+        Error::DnsFailed(format!(
+            "profile `{profile_name}`: target_resolve=local could not resolve `{host}:{port}`: {e}"
+        ))
+    })?;
+    let ip = addrs
+        .into_iter()
+        .next()
+        .ok_or_else(|| {
+            Error::DnsFailed(format!(
+                "profile `{profile_name}`: target_resolve=local resolved no addresses for `{host}`"
+            ))
+        })?
+        .ip();
+    Ok(ip.to_string())
 }
 
 /// Parse the `[profiles.tls].pin_sha256` string list into a [`TlsPin`].
@@ -967,6 +1059,9 @@ fn build_connection_policy(
         auth_timeout,
         handshake_timeout,
         channel_idle_timeout,
+        // `dns_resolution` is profile-level, not in `[connection]`; the caller
+        // (`build_ssh2`) overrides this after parsing `profile.dns_resolution`.
+        dns: DnsResolution::PerAttempt,
     })
 }
 
@@ -3911,5 +4006,91 @@ mod tests {
         assert!(proto.config().acknowledge_experimental);
         assert_eq!(proto.config().sni, None);
         assert!(proto.config().tls.pin.spki_sha256.is_empty());
+    }
+
+    // ---- t-ssh3 Wave D2: dns_resolution + target_resolve ---------------------
+
+    #[test]
+    fn parse_dns_resolution_maps_known_values() {
+        assert_eq!(
+            parse_dns_resolution("p", None).unwrap(),
+            DnsResolution::PerAttempt
+        );
+        assert_eq!(
+            parse_dns_resolution("p", Some("per_attempt")).unwrap(),
+            DnsResolution::PerAttempt
+        );
+        assert_eq!(
+            parse_dns_resolution("p", Some("once")).unwrap(),
+            DnsResolution::Once
+        );
+    }
+
+    #[test]
+    fn parse_dns_resolution_rejects_unknown() {
+        let err = parse_dns_resolution("p", Some("forever")).unwrap_err();
+        assert!(matches!(err, Error::InvalidConfig(m) if m.contains("unknown dns_resolution")));
+    }
+
+    #[test]
+    fn ssh3_profile_default_dns_is_per_attempt() {
+        let p = ssh3_profile("");
+        let proto = build_ssh3(&p).unwrap();
+        assert_eq!(proto.config().dns, DnsResolution::PerAttempt);
+    }
+
+    #[test]
+    fn ssh3_profile_dns_resolution_once_maps() {
+        let p = ssh3_profile("                dns_resolution = \"once\"");
+        let proto = build_ssh3(&p).unwrap();
+        assert_eq!(proto.config().dns, DnsResolution::Once);
+    }
+
+    #[test]
+    fn ssh3_profile_dns_resolution_unknown_rejected() {
+        let p = ssh3_profile("                dns_resolution = \"forever\"");
+        let err = build_ssh3(&p).unwrap_err();
+        assert!(matches!(err, Error::InvalidConfig(m) if m.contains("unknown dns_resolution")));
+    }
+
+    #[test]
+    fn parse_target_resolve_maps_known_values() {
+        assert_eq!(
+            parse_target_resolve("p", "at", None).unwrap(),
+            TargetResolve::Remote
+        );
+        assert_eq!(
+            parse_target_resolve("p", "at", Some("remote")).unwrap(),
+            TargetResolve::Remote
+        );
+        assert_eq!(
+            parse_target_resolve("p", "at", Some("local")).unwrap(),
+            TargetResolve::Local
+        );
+        assert_eq!(
+            parse_target_resolve("p", "at", Some("previous-hop")).unwrap(),
+            TargetResolve::PreviousHop
+        );
+    }
+
+    #[test]
+    fn parse_target_resolve_rejects_unknown() {
+        let err = parse_target_resolve("p", "hops.x.target_resolve", Some("sideways")).unwrap_err();
+        assert!(matches!(err, Error::InvalidConfig(m) if m.contains("unknown target_resolve")));
+    }
+
+    #[test]
+    fn resolve_target_local_returns_ip_literal() {
+        // A loopback literal resolves to itself — asserts the client-side
+        // substitution produces an IP string, not the hostname.
+        let ip = resolve_target_local("p", "127.0.0.1", 22).unwrap();
+        assert_eq!(ip, "127.0.0.1");
+        // `localhost` resolves to a loopback IP literal (never the name).
+        let ip = resolve_target_local("p", "localhost", 22).unwrap();
+        assert!(
+            ip.parse::<std::net::IpAddr>().is_ok(),
+            "expected IP, got {ip}"
+        );
+        assert!(ip != "localhost");
     }
 }

@@ -26,7 +26,7 @@ use spt_auth::AuthConfig;
 use spt_core::Result;
 
 pub use capabilities::ProtocolCapabilities;
-pub use endpoint::{Endpoint, TargetAddr};
+pub use endpoint::{Endpoint, TargetAddr, TargetResolve};
 pub use forward::{
     BindConflictPolicy, DynamicForwardSpec, ForwardDirection, ForwardRateLimits, ForwardState,
     ForwardTransport, LocalForwardSpec, RemoteForwardSpec, RemoteUdsForwardSpec, UdpForwardSpec,

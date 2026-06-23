@@ -1588,24 +1588,12 @@ fn check_profile(d: &mut Diagnostics, i: usize, p: &Profile, capabilities: Optio
             }
         }
         if let Some(resolve) = hop.target_resolve.as_deref() {
-            if matches!(resolve, "local" | "remote" | "previous-hop") {
-                // t-tunnel-wire-2 B2: parsed and vocabulary-checked, but hop
-                // targets are resolved by the SSH peer (the previous leg's
-                // `direct-tcpip`); `local` resolution is not supported. Surface
-                // so it is never silently ignored.
-                d.push(
-                    Diagnostic::warning(
-                        "hop_target_resolve_no_effect",
-                        format!(
-                            "hop `{}` target_resolve `{resolve}` has no effect: hop targets are \
-                             resolved by the SSH peer (direct-tcpip); `local` resolution is not \
-                             supported",
-                            hop.name
-                        ),
-                    )
-                    .at(format!("{hop_prefix}.target_resolve")),
-                );
-            } else {
+            // `local` is now honored (the factory resolves the hop host
+            // client-side and dials the IP literal through the previous leg).
+            // `remote` (default) and `previous-hop` are the de-facto
+            // peer-resolved behaviour. All three are valid → no diagnostic.
+            // Unknown values are a config ERROR.
+            if !matches!(resolve, "local" | "remote" | "previous-hop") {
                 d.push(
                     Diagnostic::error(
                         "hop_target_resolve_invalid",
@@ -2159,17 +2147,19 @@ fn check_profile_deferred(d: &mut Diagnostics, p: &Profile, prefix: &str) {
         }
     }
 
-    // `profile.dns_resolution` — `once` implies resolution caching, which is
-    // not yet implemented (the runtime resolves per attempt). `per_attempt`
-    // matches current behavior and is not warned.
+    // `profile.dns_resolution` — both `per_attempt` (default) and `once` are now
+    // wired (the factory maps them onto the shared `spt_core::DnsResolution`
+    // policy consumed by both the ssh2 and ssh3 dial sites). Unknown values are
+    // a config ERROR (matching the factory's `parse_dns_resolution`, which
+    // rejects them). `per_attempt`/`once`/empty produce no diagnostic.
     if let Some(mode) = p.dns_resolution.as_deref() {
-        if !matches!(mode, "per_attempt" | "") {
+        if !matches!(mode, "per_attempt" | "once" | "") {
             d.push(
-                Diagnostic::warning(
-                    "profile_dns_resolution_not_applied",
+                Diagnostic::error(
+                    "profile_dns_resolution_invalid",
                     format!(
-                        "profile `{}` dns_resolution `{mode}` is parsed but not yet applied \
-                         (resolution caching is not implemented; names are resolved per attempt)",
+                        "profile `{}` has unknown dns_resolution `{mode}` \
+                         (expected `per_attempt` or `once`)",
                         p.name
                     ),
                 )
@@ -2890,22 +2880,25 @@ fn check_forward(
     );
     check_forward_link_kind(d, f, &prefix);
 
-    // t-tunnel-wire-2 B2: forward targets are resolved by the SSH peer
-    // (`direct-tcpip` hands the peer a host:port and the peer resolves it), so
-    // `target_resolve` has no client-side effect; `local` resolution is not
-    // supported. Surface so it is never silently ignored.
-    if f.target_resolve.is_some() {
-        d.push(
-            Diagnostic::warning(
-                "forward_target_resolve_no_effect",
-                format!(
-                    "forward `{}` target_resolve has no effect: forward targets are resolved by \
-                     the SSH peer (direct-tcpip); `local` resolution is not supported",
-                    f.name
-                ),
-            )
-            .at(format!("{prefix}.target_resolve")),
-        );
+    // `[forwards].target_resolve` — `local` is now honored (the forward runner
+    // resolves the target client-side and substitutes the IP literal); `remote`
+    // (default) and `previous-hop` are the de-facto peer-resolved behaviour
+    // (`direct-tcpip` hands the peer a host:port that it resolves). All three
+    // are valid and produce no diagnostic. Unknown values are a config ERROR.
+    if let Some(resolve) = f.target_resolve.as_deref() {
+        if !matches!(resolve, "local" | "remote" | "previous-hop") {
+            d.push(
+                Diagnostic::error(
+                    "forward_target_resolve_invalid",
+                    format!(
+                        "forward `{}` has unknown target_resolve `{resolve}` \
+                         (expected `local`, `remote`, or `previous-hop`)",
+                        f.name
+                    ),
+                )
+                .at(format!("{prefix}.target_resolve")),
+            );
+        }
     }
 
     // `sni_name` is per-forward, but a single transport serves all forwards on a
@@ -5854,7 +5847,47 @@ mod tests {
     }
 
     #[test]
-    fn forward_target_resolve_warns() {
+    fn forward_target_resolve_local_no_warn_or_error() {
+        // `local` is now honored client-side; valid values produce no
+        // diagnostic (no WARN, no ERROR).
+        for value in ["local", "remote", "previous-hop"] {
+            let raw = format!(
+                r#"
+                version = 1
+                [[profiles]]
+                name = "p"
+                protocol = "ssh2"
+                host = "h"
+                [[profiles.forwards]]
+                name = "f"
+                type = "local"
+                transport = "tcp"
+                bind = "127.0.0.1:1234"
+                target = "127.0.0.1:22"
+                target_resolve = "{value}"
+            "#
+            );
+            let (c, _) = load_str(&raw, false).unwrap();
+            let d = validate(&c);
+            assert!(
+                !d.warnings
+                    .iter()
+                    .any(|w| w.code == "forward_target_resolve_no_effect"),
+                "value `{value}` should not WARN; warnings: {:?}",
+                d.warnings
+            );
+            assert!(
+                !d.errors
+                    .iter()
+                    .any(|e| e.code == "forward_target_resolve_invalid"),
+                "value `{value}` should not ERROR; errors: {:?}",
+                d.errors
+            );
+        }
+    }
+
+    #[test]
+    fn forward_target_resolve_unknown_errors() {
         let raw = r#"
             version = 1
             [[profiles]]
@@ -5867,16 +5900,16 @@ mod tests {
             transport = "tcp"
             bind = "127.0.0.1:1234"
             target = "127.0.0.1:22"
-            target_resolve = "remote"
+            target_resolve = "sideways"
         "#;
         let (c, _) = load_str(raw, false).unwrap();
         let d = validate(&c);
         assert!(
-            d.warnings
+            d.errors
                 .iter()
-                .any(|w| w.code == "forward_target_resolve_no_effect"),
-            "warnings: {:?}",
-            d.warnings
+                .any(|e| e.code == "forward_target_resolve_invalid"),
+            "errors: {:?}",
+            d.errors
         );
     }
 
@@ -5907,7 +5940,38 @@ mod tests {
     }
 
     #[test]
-    fn hop_target_resolve_warns() {
+    fn hop_target_resolve_local_no_warn() {
+        // `local` is honored; `remote`/`previous-hop` are de-facto — none WARN.
+        for value in ["local", "remote", "previous-hop"] {
+            let raw = format!(
+                r#"
+                version = 1
+                [[profiles]]
+                name = "p"
+                protocol = "ssh2"
+                host = "h"
+                [[profiles.hops]]
+                name = "bastion"
+                protocol = "ssh2"
+                host = "bastion.example.com"
+                port = 22
+                target_resolve = "{value}"
+            "#
+            );
+            let (c, _) = load_str(&raw, false).unwrap();
+            let d = validate(&c);
+            assert!(
+                !d.warnings
+                    .iter()
+                    .any(|w| w.code == "hop_target_resolve_no_effect"),
+                "value `{value}` should not WARN; warnings: {:?}",
+                d.warnings
+            );
+        }
+    }
+
+    #[test]
+    fn hop_target_resolve_unknown_errors() {
         let raw = r#"
             version = 1
             [[profiles]]
@@ -5919,16 +5983,16 @@ mod tests {
             protocol = "ssh2"
             host = "bastion.example.com"
             port = 22
-            target_resolve = "remote"
+            target_resolve = "sideways"
         "#;
         let (c, _) = load_str(raw, false).unwrap();
         let d = validate(&c);
         assert!(
-            d.warnings
+            d.errors
                 .iter()
-                .any(|w| w.code == "hop_target_resolve_no_effect"),
-            "warnings: {:?}",
-            d.warnings
+                .any(|e| e.code == "hop_target_resolve_invalid"),
+            "errors: {:?}",
+            d.errors
         );
     }
 
@@ -5994,7 +6058,9 @@ mod tests {
     }
 
     #[test]
-    fn profile_dns_resolution_once_warns() {
+    fn profile_dns_resolution_once_no_warn() {
+        // `once` is now wired (the factory maps it onto the shared
+        // DnsResolution policy) — it must NOT warn anymore.
         let raw = r#"
             version = 1
             [[profiles]]
@@ -6006,11 +6072,18 @@ mod tests {
         let (c, _) = load_str(raw, false).unwrap();
         let d = validate(&c);
         assert!(
-            d.warnings
+            !d.warnings
                 .iter()
                 .any(|w| w.code == "profile_dns_resolution_not_applied"),
             "warnings: {:?}",
             d.warnings
+        );
+        assert!(
+            !d.errors
+                .iter()
+                .any(|e| e.code == "profile_dns_resolution_invalid"),
+            "errors: {:?}",
+            d.errors
         );
     }
 
@@ -6032,6 +6105,27 @@ mod tests {
                 .any(|w| w.code == "profile_dns_resolution_not_applied"),
             "warnings: {:?}",
             d.warnings
+        );
+    }
+
+    #[test]
+    fn profile_dns_resolution_unknown_errors() {
+        let raw = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            dns_resolution = "cached_forever"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(
+            d.errors
+                .iter()
+                .any(|e| e.code == "profile_dns_resolution_invalid"),
+            "errors: {:?}",
+            d.errors
         );
     }
 }

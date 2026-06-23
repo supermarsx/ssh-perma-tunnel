@@ -9,7 +9,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 use spt_auth::SecretRef;
-use spt_core::{Error, Result};
+use spt_core::{DnsResolution, Error, Result};
 use spt_trust::{ChainDepthCap, TlsPin};
 use url::Url;
 
@@ -79,6 +79,15 @@ pub struct Ssh3Config {
     /// today's hard-coded behaviour).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub protocol_token: Option<String>,
+
+    /// Client-side DNS resolution policy (`[profiles.connection].dns_resolution`).
+    ///
+    /// [`DnsResolution::PerAttempt`] (default) re-resolves the endpoint host on
+    /// every bootstrap — byte-for-byte the prior behaviour.
+    /// [`DnsResolution::Once`] resolves once per `(host, port)` and pins the
+    /// result across reconnects via the shared [`spt_core::dns`] cache.
+    #[serde(default)]
+    pub dns: DnsResolution,
 }
 
 fn default_url_path() -> String {
@@ -110,6 +119,7 @@ impl Default for Ssh3Config {
             max_streams: None,
             enable_datagrams: default_enable_datagrams(),
             protocol_token: None,
+            dns: DnsResolution::PerAttempt,
         }
     }
 }

@@ -319,7 +319,7 @@ impl Ssh3Server {
 ///
 /// `listen` is a concrete [`std::net::SocketAddr`]; the caller resolves any
 /// host string first.
-#[cfg(feature = "server")]
+#[cfg(any(test, feature = "server"))]
 pub async fn serve<F>(
     listen: std::net::SocketAddr,
     server_cfg: quinn::ServerConfig,
