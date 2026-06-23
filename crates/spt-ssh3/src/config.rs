@@ -51,6 +51,34 @@ pub struct Ssh3Config {
     /// Optional QUIC keepalive interval in seconds (PING frames).
     #[serde(default = "default_keepalive_secs")]
     pub keepalive_secs: u32,
+
+    /// Optional QUIC max-idle-timeout in seconds. `None` leaves the implicit
+    /// quinn default in place (behaviour-preserving). When set, maps to
+    /// [`quinn::TransportConfig::max_idle_timeout`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idle_timeout_secs: Option<u32>,
+
+    /// Optional cap on concurrent bidirectional QUIC streams the peer may open.
+    /// `None` leaves the implicit quinn default in place
+    /// (behaviour-preserving). When set, maps to
+    /// [`quinn::TransportConfig::max_concurrent_bidi_streams`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_streams: Option<u32>,
+
+    /// Whether QUIC datagrams (the substrate for UDP forwards) are enabled.
+    ///
+    /// Default `true` — this matches today's implicit behaviour where
+    /// datagrams rely on quinn's defaults. Setting `false` explicitly disables
+    /// the datagram receive buffer so the peer cannot send datagrams, and UDP
+    /// forwards surface [`Error::UnsupportedPlatform`].
+    #[serde(default = "default_enable_datagrams")]
+    pub enable_datagrams: bool,
+
+    /// The `:protocol` pseudo-header value sent on the Extended-CONNECT
+    /// request. `None` ⇒ `"ssh3"` (the francoismichel/ssh3 reference value and
+    /// today's hard-coded behaviour).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protocol_token: Option<String>,
 }
 
 fn default_url_path() -> String {
@@ -61,6 +89,14 @@ const fn default_keepalive_secs() -> u32 {
     25
 }
 
+const fn default_enable_datagrams() -> bool {
+    true
+}
+
+/// Default `:protocol` token used when [`Ssh3Config::protocol_token`] is
+/// `None`. Matches the francoismichel/ssh3 reference.
+pub const DEFAULT_PROTOCOL_TOKEN: &str = "ssh3";
+
 impl Default for Ssh3Config {
     fn default() -> Self {
         Self {
@@ -70,6 +106,10 @@ impl Default for Ssh3Config {
             auth: Ssh3AuthExtras::default(),
             acknowledge_experimental: false,
             keepalive_secs: default_keepalive_secs(),
+            idle_timeout_secs: None,
+            max_streams: None,
+            enable_datagrams: default_enable_datagrams(),
+            protocol_token: None,
         }
     }
 }
@@ -145,6 +185,16 @@ pub struct Ssh3AuthExtras {
 }
 
 impl Ssh3Config {
+    /// The effective `:protocol` token: [`Ssh3Config::protocol_token`] when set
+    /// (and non-empty), otherwise [`DEFAULT_PROTOCOL_TOKEN`].
+    #[must_use]
+    pub fn protocol_token_value(&self) -> &str {
+        match self.protocol_token.as_deref() {
+            Some(t) if !t.is_empty() => t,
+            _ => DEFAULT_PROTOCOL_TOKEN,
+        }
+    }
+
     /// Validate the configuration shape.
     ///
     /// Currently this checks:
@@ -153,6 +203,10 @@ impl Ssh3Config {
     /// * If `tls.allow_self_signed` is `true`, `acknowledge_experimental` MUST
     ///   also be `true` (spec §9.13 — explicit dual-acknowledgment).
     /// * `keepalive_secs > 0`.
+    /// * `idle_timeout_secs`, when set, is `> 0`.
+    /// * `max_streams`, when set, is `> 0`.
+    /// * `protocol_token`, when set, is non-empty and contains only printable
+    ///   ASCII (it is sent verbatim as an HTTP/3 pseudo-header value).
     pub fn validate(&self) -> Result<()> {
         if !self.url_path.starts_with('/') {
             return Err(Error::InvalidConfig(format!(
@@ -189,6 +243,37 @@ impl Ssh3Config {
             return Err(Error::InvalidConfig(
                 "ssh3.keepalive_secs must be > 0".to_string(),
             ));
+        }
+        if self.idle_timeout_secs == Some(0) {
+            return Err(Error::InvalidConfig(
+                "ssh3.idle_timeout_secs must be > 0 when set (omit it to use the \
+                 transport default)"
+                    .to_string(),
+            ));
+        }
+        if self.max_streams == Some(0) {
+            return Err(Error::InvalidConfig(
+                "ssh3.max_streams must be > 0 when set (omit it to use the \
+                 transport default)"
+                    .to_string(),
+            ));
+        }
+        if let Some(token) = self.protocol_token.as_deref() {
+            if token.is_empty() {
+                return Err(Error::InvalidConfig(
+                    "ssh3.protocol_token must be non-empty when set (omit it to \
+                     use the default `ssh3`)"
+                        .to_string(),
+                ));
+            }
+            // The token is emitted verbatim as the `:protocol` pseudo-header
+            // value; reject anything that is not printable ASCII (no controls,
+            // no whitespace, no high bytes) so it can never inject framing.
+            if !token.bytes().all(|b| b.is_ascii_graphic() && b != b' ') {
+                return Err(Error::InvalidConfig(format!(
+                    "ssh3.protocol_token must be printable non-space ASCII (got `{token}`)"
+                )));
+            }
         }
         Ok(())
     }
@@ -284,5 +369,102 @@ mod tests {
         let de: Ssh3Config = serde_json::from_str(&s).unwrap();
         assert_eq!(de.url_path, c.url_path);
         assert_eq!(de.acknowledge_experimental, c.acknowledge_experimental);
+    }
+
+    #[test]
+    fn new_knob_defaults_are_behaviour_preserving() {
+        let c = Ssh3Config::default();
+        assert_eq!(c.idle_timeout_secs, None);
+        assert_eq!(c.max_streams, None);
+        assert!(c.enable_datagrams);
+        assert_eq!(c.protocol_token, None);
+        assert_eq!(c.protocol_token_value(), "ssh3");
+        c.validate().unwrap();
+    }
+
+    #[test]
+    fn protocol_token_value_falls_back_on_empty() {
+        let c = Ssh3Config {
+            protocol_token: Some(String::new()),
+            ..Ssh3Config::default()
+        };
+        // Accessor falls back; validate rejects the empty literal.
+        assert_eq!(c.protocol_token_value(), "ssh3");
+        assert!(c.validate().is_err());
+    }
+
+    #[test]
+    fn protocol_token_custom_value_kept() {
+        let c = Ssh3Config {
+            protocol_token: Some("ssh3-next".into()),
+            ..Ssh3Config::default()
+        };
+        assert_eq!(c.protocol_token_value(), "ssh3-next");
+        c.validate().unwrap();
+    }
+
+    #[test]
+    fn protocol_token_rejects_non_ascii_or_space() {
+        for bad in ["ssh 3", "ssh3\n", "ssh3\u{00e9}"] {
+            let c = Ssh3Config {
+                protocol_token: Some(bad.into()),
+                ..Ssh3Config::default()
+            };
+            assert!(c.validate().is_err(), "should reject `{bad}`");
+        }
+    }
+
+    #[test]
+    fn idle_timeout_and_max_streams_zero_rejected() {
+        let c = Ssh3Config {
+            idle_timeout_secs: Some(0),
+            ..Ssh3Config::default()
+        };
+        assert!(c.validate().is_err());
+        let c = Ssh3Config {
+            max_streams: Some(0),
+            ..Ssh3Config::default()
+        };
+        assert!(c.validate().is_err());
+    }
+
+    #[test]
+    fn positive_knobs_validate() {
+        let c = Ssh3Config {
+            idle_timeout_secs: Some(30),
+            max_streams: Some(64),
+            enable_datagrams: false,
+            protocol_token: Some("ssh3".into()),
+            ..Ssh3Config::default()
+        };
+        c.validate().unwrap();
+    }
+
+    #[test]
+    fn round_trip_json_preserves_new_knobs() {
+        let c = Ssh3Config {
+            idle_timeout_secs: Some(45),
+            max_streams: Some(128),
+            enable_datagrams: false,
+            protocol_token: Some("ssh3-x".into()),
+            ..Ssh3Config::default()
+        };
+        let s = serde_json::to_string(&c).unwrap();
+        let de: Ssh3Config = serde_json::from_str(&s).unwrap();
+        assert_eq!(de.idle_timeout_secs, Some(45));
+        assert_eq!(de.max_streams, Some(128));
+        assert!(!de.enable_datagrams);
+        assert_eq!(de.protocol_token.as_deref(), Some("ssh3-x"));
+    }
+
+    #[test]
+    fn omitted_new_knobs_deserialize_to_defaults() {
+        // A config TOML/JSON that predates the new fields must still parse,
+        // with the new fields taking behaviour-preserving defaults.
+        let de: Ssh3Config = serde_json::from_str(r#"{"url_path":"/ssh3"}"#).unwrap();
+        assert_eq!(de.idle_timeout_secs, None);
+        assert_eq!(de.max_streams, None);
+        assert!(de.enable_datagrams);
+        assert_eq!(de.protocol_token, None);
     }
 }

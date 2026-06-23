@@ -128,6 +128,30 @@ fn build_quinn_endpoint(remote: SocketAddr, cfg: &Ssh3Config) -> Result<Endpoint
     if cfg.keepalive_secs > 0 {
         transport.keep_alive_interval(Some(Duration::from_secs(u64::from(cfg.keepalive_secs))));
     }
+    // Optional max-idle-timeout. Left at the quinn default when unset
+    // (behaviour-preserving). A value that cannot be represented as a quinn
+    // `IdleTimeout` (overflow) is a config error.
+    if let Some(secs) = cfg.idle_timeout_secs {
+        let dur = Duration::from_secs(u64::from(secs));
+        let idle = quinn::IdleTimeout::try_from(dur).map_err(|e| {
+            Error::InvalidConfig(format!("ssh3: idle_timeout_secs={secs} out of range: {e}"))
+        })?;
+        transport.max_idle_timeout(Some(idle));
+    }
+    // Optional cap on concurrent peer-opened bidi streams. Left at the quinn
+    // default when unset (behaviour-preserving).
+    if let Some(max) = cfg.max_streams {
+        transport.max_concurrent_bidi_streams(quinn::VarInt::from(max));
+    }
+    // Datagrams gate the UDP-forward substrate. Today they are implicitly
+    // enabled by quinn's defaults; make the disable case explicit while leaving
+    // the enabled case on the quinn default (behaviour-preserving). Setting the
+    // receive buffer to `None` advertises (via transport params) that we will
+    // not accept datagrams, so the peer's `max_datagram_size()` resolves to
+    // `None` and UDP forwards surface `UnsupportedPlatform`.
+    if !cfg.enable_datagrams {
+        transport.datagram_receive_buffer_size(None);
+    }
     client_cfg.transport_config(Arc::new(transport));
     endpoint.set_default_client_config(client_cfg);
     Ok(endpoint)
@@ -220,11 +244,24 @@ pub async fn bootstrap(
     // peer's HTTP/3 stack is satisfied. The CONNECT itself goes via
     // [`h3_raw::extended_connect_raw`] on a separate raw bidi stream.
     let h3_conn = h3_quinn::Connection::new(connection.clone());
-    let (mut driver, _send_request) = h3::client::new(h3_conn)
+    let (mut driver, send_request) = h3::client::new(h3_conn)
         .await
         .map_err(|e| Error::RuntimeFailure(format!("ssh3: h3 client init: {e}")))?;
+    // CRITICAL: `h3::client::SendRequest` closes the QUIC connection with
+    // H3_NO_ERROR the moment its *last* clone is dropped (documented on the
+    // type). We never issue an h3 request (the CONNECT goes via `h3_raw`), so
+    // we must keep `send_request` alive for the connection's lifetime — move it
+    // into the driver task. The task is only aborted by
+    // `Ssh3Session::close()`, so the connection stays up until an explicit
+    // close. Without this, the connection self-closes as soon as `bootstrap`
+    // returns and `send_request` drops.
     let driver_task = tokio::spawn(async move {
+        let _keep_alive = send_request;
         let _ = std::future::poll_fn(|cx| driver.poll_close(cx)).await;
+        // Hold `send_request` until the task is aborted; if `poll_close`
+        // resolves on its own (peer-initiated close) there is nothing left to
+        // keep alive anyway.
+        std::future::pending::<()>().await;
     });
 
     let auth_header =
@@ -237,6 +274,7 @@ pub async fn bootstrap(
         &cfg.url_path,
         &auth_header,
         user_agent,
+        cfg.protocol_token_value(),
     )
     .await
     .map_err(|e| match e {
@@ -640,6 +678,90 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn build_quinn_endpoint_applies_new_knobs() {
+        // Idle-timeout + max-streams + datagram-disable must construct cleanly
+        // (the values are not externally observable on a client `Endpoint`, so
+        // we assert the builder accepts them without error — the wire effect is
+        // covered by the loopback e2e test).
+        let cfg = crate::config::Ssh3Config {
+            acknowledge_experimental: true,
+            tls: crate::config::Ssh3TlsConfig {
+                allow_self_signed: true,
+                pin: spt_trust::TlsPin {
+                    spki_sha256: vec![[0u8; 32]],
+                },
+                ..Default::default()
+            },
+            idle_timeout_secs: Some(30),
+            max_streams: Some(16),
+            enable_datagrams: false,
+            keepalive_secs: 25,
+            ..Default::default()
+        };
+        let remote: SocketAddr = "127.0.0.1:7443".parse().unwrap();
+        let ep = build_quinn_endpoint(remote, &cfg).unwrap();
+        assert!(ep.local_addr().unwrap().is_ipv4());
+    }
+
+    #[cfg(feature = "testing")]
+    #[tokio::test]
+    async fn extended_connect_raw_honors_custom_protocol_token() {
+        use crate::h3_raw::{
+            build_headers_frame, extended_connect_raw, qpack_decode, qpack_encode, read_frame_typed,
+        };
+        use crate::testing::test_support::connected_pair_public;
+
+        let (client_conn, server_conn) = connected_pair_public().await;
+        let (drop_tx, drop_rx) = tokio::sync::oneshot::channel::<()>();
+        let server = tokio::spawn(async move {
+            let (mut s_send, mut s_recv) = server_conn
+                .accept_bi()
+                .await
+                .expect("accept bootstrap bidi");
+            let payload = read_frame_typed(&mut s_recv, 0x01)
+                .await
+                .expect("read HEADERS");
+            let fields = qpack_decode(&payload).expect("qpack decode");
+            let resp_qpack = qpack_encode(&[(b":status", b"200")]);
+            s_send
+                .write_all(&build_headers_frame(&resp_qpack))
+                .await
+                .expect("write response");
+            s_send.finish().expect("finish");
+            let _ = drop_rx.await;
+            drop(server_conn);
+            fields
+        });
+
+        let outcome = extended_connect_raw(
+            &client_conn,
+            "h.test",
+            8443,
+            "/ssh3",
+            "Bearer t",
+            "spt/test",
+            "ssh3-next",
+        )
+        .await
+        .expect("connect");
+        assert_eq!(outcome.status, 200);
+        let _ = drop_tx.send(());
+        let fields = server.await.expect("server task");
+        let proto = fields
+            .iter()
+            .find(|(n, _)| n == b":protocol")
+            .map(|(_, v)| v.clone())
+            .expect(":protocol present");
+        assert_eq!(proto, b"ssh3-next");
+        let xproto = fields
+            .iter()
+            .find(|(n, _)| n == b"x-ssh3-protocol")
+            .map(|(_, v)| v.clone())
+            .expect("x-ssh3-protocol present");
+        assert_eq!(xproto, b"ssh3-next");
+    }
+
+    #[tokio::test]
     async fn build_quinn_endpoint_constructs_for_v6_remote() {
         let cfg = crate::config::Ssh3Config {
             acknowledge_experimental: true,
@@ -714,6 +836,7 @@ mod tests {
             "/ssh3",
             "Bearer tok-pin",
             "spt/test",
+            "ssh3",
         )
         .await
         .expect("extended_connect_raw");

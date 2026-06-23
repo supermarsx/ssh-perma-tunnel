@@ -39,17 +39,24 @@ pub mod session;
 pub mod tls;
 pub mod transport;
 
+/// In-repo SSH3 server end (responder). Gated behind `testing` until a later
+/// wave promotes it to an always-on `spt ssh3-serve` subcommand.
+#[cfg(any(test, feature = "testing"))]
+pub mod server;
+
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
 
 pub use auth_header::build_authorization_header;
-pub use config::{Ssh3AuthExtras, Ssh3Config, Ssh3TlsConfig};
+pub use config::{Ssh3AuthExtras, Ssh3Config, Ssh3TlsConfig, DEFAULT_PROTOCOL_TOKEN};
 pub use frame::{
     ChannelOpenPayload, ForwardOpenResponse, Ssh3Frame, Ssh3FrameKind, Ssh3Settings,
     Ssh3StreamKind, UdpAssociatePayload,
 };
 pub use protocol::{Ssh3Protocol, EXPERIMENTAL_WARNING, PARTIAL_REAL_REASON};
-pub use session::Ssh3Session;
+#[cfg(any(test, feature = "testing"))]
+pub use server::{Ssh3Server, Ssh3ServerAcl};
+pub use session::{RedialParams, Ssh3Session};
 pub use transport::{
     accept_control_stream, bootstrap, build_connect_request, open_control_stream,
     BootstrappedSession,

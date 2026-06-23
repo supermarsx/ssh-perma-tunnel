@@ -863,11 +863,13 @@ impl ProfileTask {
                     // * `SshAuthPreflight` — a connect+auth-only side dial via
                     //   `TunnelSession::preflight_connect` (Phase-1 trait method;
                     //   the spt-ssh2 backend performs the real side connection).
-                    // * `Ssh3Endpoint` — GENUINELY-BLOCKED (no ssh3 transport).
-                    //   validate.rs hard-ERRORs it at config load so it cannot
-                    //   reach runtime; defensively, if it somehow does, we treat
-                    //   the probe as a hard failure with a clear log rather than
-                    //   silently falling back to keepalive.
+                    // * `Ssh3Endpoint` — a QUIC-endpoint reachability+auth probe
+                    //   via `TunnelSession::preflight_connect` (protocol-agnostic
+                    //   trait call). For an ssh3-backed session this performs a
+                    //   fresh QUIC+TLS+HTTP/3-CONNECT+auth side-dial, dropped
+                    //   immediately. (An ssh2 session here would run ssh2's
+                    //   TCP+auth preflight instead; the validate layer rejects the
+                    //   protocol×health_check mismatch upstream.)
                     //
                     // TW2-A3: time each probe so a SUCCESSFUL outcome yields a
                     // coarse RTT sample (`Instant::now()` before/after the probe
@@ -897,14 +899,10 @@ impl ProfileTask {
                             ).await
                         }
                         HealthCheckStyle::Ssh3Endpoint => {
-                            // Not reachable in a valid config (validate.rs ERRORs
-                            // ssh3_endpoint). Defensive guard: surface a clear
-                            // error instead of a silent keepalive no-op.
-                            Ok(Err(Error::UnsupportedPlatform(
-                                "failover.health_check = ssh3_endpoint requires an \
-                                 ssh3 transport, which is not implemented"
-                                    .to_owned(),
-                            )))
+                            tokio::time::timeout(
+                                self.cfg.keepalive_timeout,
+                                session.preflight_connect(),
+                            ).await
                         }
                     };
                     match probe {
@@ -2118,6 +2116,259 @@ mod tests {
             0,
             "SshHandshake must not call preflight_connect"
         );
+    }
+
+    /// An ssh3-style `TunnelSession` whose liveness primitive is
+    /// `preflight_connect` (the QUIC-endpoint reachability+auth side-dial).
+    /// Configurable: it counts `preflight_connect` vs `keepalive` calls, can be
+    /// told to FAIL the preflight (modelling an unreachable QUIC endpoint /
+    /// rejected auth), and can sleep a fixed delay to model a slow round-trip
+    /// for latency-sample assertions. Mirrors the existing `CountingProbeSession`
+    /// / `SlowKeepaliveSession` patterns.
+    struct Ssh3ProbeSession {
+        keepalive_calls: Arc<std::sync::atomic::AtomicU32>,
+        preflight_calls: Arc<std::sync::atomic::AtomicU32>,
+        preflight_fail: Arc<std::sync::atomic::AtomicBool>,
+        preflight_delay: Duration,
+        info: spt_protocol::SessionInfo,
+    }
+
+    #[async_trait::async_trait]
+    impl spt_protocol::TunnelSession for Ssh3ProbeSession {
+        async fn open_local_forward(
+            &mut self,
+            _spec: &spt_protocol::LocalForwardSpec,
+        ) -> Result<spt_protocol::ForwardHandle> {
+            Err(Error::RuntimeFailure("no forwards".into()))
+        }
+        async fn open_remote_forward(
+            &mut self,
+            _spec: &spt_protocol::RemoteForwardSpec,
+        ) -> Result<spt_protocol::ForwardHandle> {
+            Err(Error::RuntimeFailure("no forwards".into()))
+        }
+        async fn open_dynamic_forward(
+            &mut self,
+            _spec: &spt_protocol::DynamicForwardSpec,
+        ) -> Result<spt_protocol::ForwardHandle> {
+            Err(Error::RuntimeFailure("no forwards".into()))
+        }
+        async fn open_udp_forward(
+            &mut self,
+            _spec: &spt_protocol::UdpForwardSpec,
+        ) -> Result<spt_protocol::ForwardHandle> {
+            Err(Error::RuntimeFailure("no forwards".into()))
+        }
+        async fn keepalive(&mut self) -> Result<()> {
+            self.keepalive_calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }
+        async fn preflight_connect(&mut self) -> Result<()> {
+            self.preflight_calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if !self.preflight_delay.is_zero() {
+                tokio::time::sleep(self.preflight_delay).await;
+            }
+            if self
+                .preflight_fail
+                .load(std::sync::atomic::Ordering::SeqCst)
+            {
+                Err(Error::NetworkUnreachable(
+                    "ssh3 endpoint preflight failed".into(),
+                ))
+            } else {
+                Ok(())
+            }
+        }
+        async fn close(self: Box<Self>) -> Result<()> {
+            Ok(())
+        }
+        fn session_info(&self) -> spt_protocol::SessionInfo {
+            self.info.clone()
+        }
+    }
+
+    #[derive(Debug)]
+    struct Ssh3ProbeProto {
+        keepalive_calls: Arc<std::sync::atomic::AtomicU32>,
+        preflight_calls: Arc<std::sync::atomic::AtomicU32>,
+        preflight_fail: Arc<std::sync::atomic::AtomicBool>,
+        preflight_delay: Duration,
+    }
+
+    impl Ssh3ProbeProto {
+        fn new() -> Self {
+            Self {
+                keepalive_calls: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+                preflight_calls: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+                preflight_fail: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                preflight_delay: Duration::ZERO,
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl spt_protocol::TunnelProtocol for Ssh3ProbeProto {
+        async fn connect(
+            &self,
+            _endpoint: &Endpoint,
+            _auth: &AuthConfig,
+        ) -> Result<Box<dyn spt_protocol::TunnelSession>> {
+            Ok(Box::new(Ssh3ProbeSession {
+                keepalive_calls: Arc::clone(&self.keepalive_calls),
+                preflight_calls: Arc::clone(&self.preflight_calls),
+                preflight_fail: Arc::clone(&self.preflight_fail),
+                preflight_delay: self.preflight_delay,
+                info: spt_protocol::SessionInfo {
+                    backend: "ssh3".into(),
+                    peer_version: None,
+                    negotiated: None,
+                    established_at: 0,
+                },
+            }))
+        }
+        fn capabilities(&self) -> spt_protocol::ProtocolCapabilities {
+            spt_protocol::ProtocolCapabilities::ssh3()
+        }
+        fn name(&self) -> &'static str {
+            "ssh3"
+        }
+    }
+
+    /// Wave D: `health_check = Ssh3Endpoint` must dispatch the liveness probe to
+    /// `TunnelSession::preflight_connect` (the QUIC-endpoint reachability+auth
+    /// side-dial), NOT fall through to `keepalive`. This replaces the old
+    /// defensive `UnsupportedPlatform` no-op arm.
+    #[tokio::test]
+    async fn ssh3_endpoint_dispatches_to_preflight_connect() {
+        let proto = Arc::new(Ssh3ProbeProto::new());
+        let keepalive_calls = Arc::clone(&proto.keepalive_calls);
+        let preflight_calls = Arc::clone(&proto.preflight_calls);
+
+        let cfg = ProfileSupervisorConfig {
+            health_check: HealthCheckStyle::Ssh3Endpoint,
+            keepalive_interval: Duration::from_millis(20),
+            keepalive_timeout: Duration::from_secs(2),
+            ..Default::default()
+        };
+
+        let sup =
+            ProfileSupervisor::spawn("p", proto.clone(), auth(), vec![endpoint("a")], vec![], cfg);
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        sup.stop().await;
+
+        let pf = preflight_calls.load(std::sync::atomic::Ordering::SeqCst);
+        let ka = keepalive_calls.load(std::sync::atomic::Ordering::SeqCst);
+        assert!(
+            pf >= 1,
+            "Ssh3Endpoint must call preflight_connect; got {pf} preflight, {ka} keepalive"
+        );
+        assert_eq!(
+            ka, 0,
+            "Ssh3Endpoint must NOT fall through to keepalive; got {ka} keepalive calls"
+        );
+    }
+
+    /// Wave D: a FAILED `Ssh3Endpoint` preflight (unreachable QUIC endpoint /
+    /// rejected auth) drives the same `SessionLost` → reconnect path as the other
+    /// probe styles — proving the arm is a live probe, not the old inert no-op.
+    #[tokio::test]
+    async fn ssh3_endpoint_preflight_err_triggers_reconnect() {
+        let proto = Arc::new(Ssh3ProbeProto::new());
+        // Preflight fails from the first tick → the probe outcome is `Err`.
+        proto
+            .preflight_fail
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+
+        let mut cfg = ProfileSupervisorConfig {
+            health_check: HealthCheckStyle::Ssh3Endpoint,
+            keepalive_interval: Duration::from_millis(20),
+            keepalive_timeout: Duration::from_secs(2),
+            ..Default::default()
+        };
+        cfg.backoff.initial_delay = Duration::from_millis(5);
+        cfg.backoff.max_delay = Duration::from_millis(10);
+        cfg.backoff.max_attempts = 0;
+
+        let sup =
+            ProfileSupervisor::spawn("p", proto.clone(), auth(), vec![endpoint("a")], vec![], cfg);
+        let mut events = sup.take_events().unwrap();
+
+        let attempt = wait_for_reconnect_attempt(&mut events, Duration::from_secs(2)).await;
+        assert!(
+            attempt.is_some(),
+            "a failed Ssh3Endpoint preflight must drive SessionLost → a reconnect attempt"
+        );
+        assert!(
+            proto
+                .preflight_calls
+                .load(std::sync::atomic::Ordering::SeqCst)
+                >= 1,
+            "the failure must have come from preflight_connect"
+        );
+
+        sup.stop().await;
+    }
+
+    /// Wave D: a SUCCESSFUL `Ssh3Endpoint` preflight feeds a coarse RTT latency
+    /// sample to the instability detector exactly like the other probe styles.
+    /// A slow (~120 ms) successful preflight against a 50 ms `max_latency_p95`
+    /// ceiling trips the detector (action `EmitEvent` → `InstabilityHit`),
+    /// observing the sampling end-to-end at the probe site.
+    #[tokio::test]
+    async fn ssh3_endpoint_records_latency_sample_on_success() {
+        let mut proto = Ssh3ProbeProto::new();
+        proto.preflight_delay = Duration::from_millis(120);
+        let proto = Arc::new(proto);
+
+        let mut cfg = ProfileSupervisorConfig {
+            health_check: HealthCheckStyle::Ssh3Endpoint,
+            keepalive_interval: Duration::from_millis(40),
+            keepalive_timeout: Duration::from_secs(2),
+            ..Default::default()
+        };
+        cfg.instability.max_latency_p95 = Some(Duration::from_millis(50));
+        cfg.instability.action = InstabilityAction::EmitEvent;
+
+        let sup =
+            ProfileSupervisor::spawn("p", proto.clone(), auth(), vec![endpoint("a")], vec![], cfg);
+        let mut events = sup.take_events().unwrap();
+        let state_rx = sup.watch_state();
+
+        let mut saw_hit = false;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+        while tokio::time::Instant::now() < deadline {
+            match tokio::time::timeout(Duration::from_millis(200), events.recv()).await {
+                Ok(Some(ProfileEvent::InstabilityHit { .. })) => {
+                    saw_hit = true;
+                    break;
+                }
+                Ok(Some(_)) => {}
+                Ok(None) | Err(_) => {}
+            }
+        }
+        assert!(
+            saw_hit,
+            "a successful-but-slow Ssh3Endpoint preflight (RTT > max_latency_p95) must \
+             record a latency sample that trips the detector and emits InstabilityHit"
+        );
+        // EmitEvent action: observe only, never transition to Unstable; the
+        // successful preflights keep the session alive (no SessionLost).
+        assert_ne!(
+            *state_rx.borrow(),
+            ProfileStateName::Unstable,
+            "EmitEvent action must not transition to Unstable on a latency trip"
+        );
+        assert_eq!(
+            proto
+                .keepalive_calls
+                .load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "Ssh3Endpoint must never call keepalive"
+        );
+
+        sup.stop().await;
     }
 
     #[tokio::test]

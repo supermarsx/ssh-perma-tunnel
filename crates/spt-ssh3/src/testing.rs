@@ -267,12 +267,10 @@ impl Ssh3TestServer {
             open_control_stream(&client_conn, cs_settings),
             accept_control_stream(&server_conn, sv_settings),
         );
-        let (c_send, c_recv, c_peer) = cs.map_err(|e| {
-            std::io::Error::new(std::io::ErrorKind::Other, format!("client handshake: {e}"))
-        })?;
-        let (s_send, s_recv, s_peer) = sv.map_err(|e| {
-            std::io::Error::new(std::io::ErrorKind::Other, format!("server handshake: {e}"))
-        })?;
+        let (c_send, c_recv, c_peer) =
+            cs.map_err(|e| std::io::Error::other(format!("client handshake: {e}")))?;
+        let (s_send, s_recv, s_peer) =
+            sv.map_err(|e| std::io::Error::other(format!("server handshake: {e}")))?;
 
         let session: Box<dyn spt_protocol::TunnelSession> = Box::new(Ssh3Session::from_parts(
             client_conn.clone(),

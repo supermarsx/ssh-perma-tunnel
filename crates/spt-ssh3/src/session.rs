@@ -28,6 +28,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use quinn::{Connection, RecvStream, SendStream};
+use spt_auth::AuthConfig;
 use spt_core::{Error, Result};
 use spt_protocol::forward::{
     DynamicForwardSpec, LocalForwardSpec, RemoteForwardSpec, UdpForwardSpec,
@@ -37,9 +38,29 @@ use spt_protocol::session::{SessionInfo, TunnelSession};
 use tokio::sync::Mutex as AsyncMutex;
 use tracing::{debug, warn};
 
+use crate::config::Ssh3Config;
 use crate::forward::{self, SessionState};
 use crate::frame::Ssh3Settings;
-use crate::transport::BootstrappedSession;
+use crate::transport::{bootstrap, BootstrappedSession};
+
+/// The dial parameters a live [`Ssh3Session`] retains so it can run a fresh
+/// connect+auth side-dial for [`TunnelSession::preflight_connect`].
+///
+/// Mirrors the russh backend, which clones its `connect_inner` inputs for the
+/// same purpose (`russh_backend.rs:1346`). Sessions constructed directly from
+/// parts (e.g. the loopback test rig) do not carry these and therefore report
+/// preflight as unsupported rather than silently passing.
+#[derive(Debug, Clone)]
+pub struct RedialParams {
+    /// Endpoint host the session was bootstrapped against.
+    pub host: String,
+    /// Endpoint port.
+    pub port: u16,
+    /// The validated config used for the original bootstrap.
+    pub config: Ssh3Config,
+    /// The auth config used for the original bootstrap.
+    pub auth: AuthConfig,
+}
 
 /// Live SSH3 session.
 pub struct Ssh3Session {
@@ -63,6 +84,10 @@ pub struct Ssh3Session {
     control_request: Arc<AsyncMutex<()>>,
     state: Arc<SessionState>,
     next_flow_id: Arc<std::sync::atomic::AtomicU32>,
+    /// Dial parameters for [`Self::preflight_connect`]'s fresh side-dial.
+    /// `None` for sessions constructed directly from parts (test rig) — those
+    /// report preflight as unsupported.
+    redial: Option<RedialParams>,
     /// Background dispatcher tasks (h3 driver + bidi accept + datagram
     /// reader). All `abort()`'ed on `close()`.
     background: Vec<tokio::task::JoinHandle<()>>,
@@ -83,6 +108,17 @@ impl Ssh3Session {
     /// Wrap a freshly-bootstrapped QUIC connection.
     #[must_use]
     pub fn from_bootstrap(bs: BootstrappedSession) -> Self {
+        Self::from_bootstrap_with_redial(bs, None)
+    }
+
+    /// Wrap a freshly-bootstrapped QUIC connection, retaining the dial
+    /// parameters so [`Self::preflight_connect`] can run a fresh connect+auth
+    /// side-dial. This is the path `Ssh3Protocol::connect` uses.
+    #[must_use]
+    pub fn from_bootstrap_with_redial(
+        bs: BootstrappedSession,
+        redial: Option<RedialParams>,
+    ) -> Self {
         let info = SessionInfo {
             backend: "ssh3".to_string(),
             peer_version: bs.peer_version,
@@ -92,19 +128,21 @@ impl Ssh3Session {
                 .map(|d| d.as_secs())
                 .unwrap_or_default(),
         };
-        Self::from_parts(
+        Self::from_parts_with_redial(
             bs.connection,
             bs.control_send,
             bs.control_recv,
             bs.peer_settings,
             info,
             Some(bs.h3_driver),
+            redial,
         )
     }
 
     /// Construct directly from a QUIC connection plus an already-exchanged
     /// control-stream pair. Used by tests that drive both ends locally without
-    /// going through HTTP/3.
+    /// going through HTTP/3. The resulting session has no redial parameters, so
+    /// [`Self::preflight_connect`] reports unsupported.
     #[must_use]
     pub fn from_parts(
         connection: Connection,
@@ -113,6 +151,29 @@ impl Ssh3Session {
         peer_settings: Ssh3Settings,
         info: SessionInfo,
         h3_driver: Option<tokio::task::JoinHandle<()>>,
+    ) -> Self {
+        Self::from_parts_with_redial(
+            connection,
+            control_send,
+            control_recv,
+            peer_settings,
+            info,
+            h3_driver,
+            None,
+        )
+    }
+
+    /// Like [`Self::from_parts`] but also retains [`RedialParams`] for
+    /// [`Self::preflight_connect`].
+    #[must_use]
+    pub fn from_parts_with_redial(
+        connection: Connection,
+        control_send: SendStream,
+        control_recv: RecvStream,
+        peer_settings: Ssh3Settings,
+        info: SessionInfo,
+        h3_driver: Option<tokio::task::JoinHandle<()>>,
+        redial: Option<RedialParams>,
     ) -> Self {
         // E3-F3: size the inbound-forward concurrency cap from the peer's
         // advertised `max_forwards` so a peer that opens unbounded inbound
@@ -194,6 +255,7 @@ impl Ssh3Session {
             control_request: Arc::new(AsyncMutex::new(())),
             state,
             next_flow_id,
+            redial,
             background,
         }
     }
@@ -245,6 +307,31 @@ impl TunnelSession for Ssh3Session {
             self.peer_settings.udp_datagrams,
         )
         .await
+    }
+
+    async fn preflight_connect(&mut self) -> Result<()> {
+        // Mirror the russh contract (russh_backend.rs:1346): open a FRESH
+        // QUIC + TLS + Extended-CONNECT + auth side-dial to the SAME endpoint
+        // this session targets, then drop it immediately — WITHOUT opening any
+        // forwards. A successful bootstrap proves QUIC reachability + TLS trust
+        // + CONNECT-200 + auth; that is the whole point of the probe. This
+        // never touches the live session (`self.connection` is untouched).
+        let Some(redial) = self.redial.as_ref() else {
+            return Err(Error::UnsupportedPlatform(
+                "ssh3 preflight_connect requires a session created via connect() \
+                 (no redial parameters retained)"
+                    .into(),
+            ));
+        };
+        let bs = bootstrap(&redial.host, redial.port, &redial.config, &redial.auth).await?;
+        // Best-effort graceful teardown of the side connection. The bootstrap
+        // already proved reachability + credentials; a close error does not
+        // invalidate the successful preflight. Abort the side h3 driver task so
+        // it does not outlive this probe.
+        bs.h3_driver.abort();
+        bs.connection
+            .close(0u32.into(), b"spt-ssh3: preflight close");
+        Ok(())
     }
 
     async fn keepalive(&mut self) -> Result<()> {

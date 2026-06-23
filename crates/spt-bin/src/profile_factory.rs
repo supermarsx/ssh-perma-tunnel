@@ -35,11 +35,11 @@ use spt_ssh2::{
     crypto::resolve_crypto_policy, multi_hop::HopKind, proxy_jump::ProxyCredentials,
     ConnectionPolicy, CryptoPolicy, Ssh2Protocol, TrustPolicy,
 };
-use spt_ssh3::{Ssh3Config, Ssh3Protocol};
+use spt_ssh3::{Ssh3Config, Ssh3Protocol, Ssh3TlsConfig};
 use spt_supervisor::{
     BackoffConfig, FailoverMode, HealthCheckStyle, InstabilityAction, ProfileSupervisorConfig,
 };
-use spt_trust::{KnownHosts, Sha256HostPin};
+use spt_trust::{ChainDepthCap, KnownHosts, Sha256HostPin, TlsPin};
 
 /// All the bits needed to start one profile.
 pub struct ProfileBundle {
@@ -199,7 +199,7 @@ fn build_with_capabilities(
             capabilities,
             script_engine.clone(),
         )?),
-        "ssh3" => Arc::new(build_ssh3(profile)),
+        "ssh3" => Arc::new(build_ssh3(profile)?),
         other => {
             return Err(Error::InvalidConfig(format!(
                 "profile `{}`: unknown protocol `{other}` (expected ssh2|ssh3)",
@@ -592,14 +592,132 @@ fn warn_legacy_ssh2_backend_capability(capabilities: Option<&Capabilities>) {
     }
 }
 
-fn build_ssh3(profile: &Profile) -> Ssh3Protocol {
-    // M0: only `acknowledge_experimental` is propagated; the deeper
-    // `[profiles.ssh3]` / `[profiles.tls]` knobs land with M2.
-    let cfg = Ssh3Config {
+/// Build the SSH3 protocol from a profile, fully consuming `[profiles.tls]`
+/// and `[profiles.ssh3]` into an [`Ssh3Config`] / [`Ssh3TlsConfig`].
+///
+/// Returns `Err(Error::InvalidConfig)` for unparseable durations, malformed
+/// TLS pins, or a `[profiles.tls].system_roots = false` without any trust
+/// anchor (no `ca_file`, no pins). The assembled config is run through
+/// [`Ssh3Config::validate`] before it is wrapped in the protocol, so bad
+/// combinations (e.g. `allow_self_signed` without acknowledgement) fail at
+/// profile-build time — matching the ssh2 path.
+fn build_ssh3(profile: &Profile) -> Result<Ssh3Protocol> {
+    let mut cfg = Ssh3Config {
         acknowledge_experimental: profile.acknowledge_experimental.unwrap_or(false),
         ..Ssh3Config::default()
     };
-    Ssh3Protocol::new(cfg)
+
+    // `[profiles.tls]` → `Ssh3Config.sni` + `Ssh3TlsConfig`.
+    if let Some(tls) = profile.tls.as_ref() {
+        // `server_name` → SNI / `:authority`.
+        cfg.sni.clone_from(&tls.server_name);
+
+        let mut tls_cfg = Ssh3TlsConfig {
+            // `ca_file` → optional private-CA PEM bundle.
+            ca_file: tls.ca_file.as_ref().map(std::path::PathBuf::from),
+            // `pin_sha256` → parsed SPKI pin set (see `parse_tls_pin`).
+            pin: build_tls_pin(&profile.name, tls.pin_sha256.as_deref())?,
+            // `allow_self_signed` → carried verbatim; `validate()` enforces the
+            // dual-acknowledgement + trust-anchor requirement.
+            allow_self_signed: tls.allow_self_signed.unwrap_or(false),
+            ..Ssh3TlsConfig::default()
+        };
+        // `max_cert_chain_depth` → `ChainDepthCap`. Omitted keeps the config's
+        // current default (`ChainDepthCap::default()`, set above).
+        if let Some(depth) = tls.max_cert_chain_depth {
+            tls_cfg.max_cert_chain_depth = ChainDepthCap::new(depth);
+        }
+
+        // `system_roots = false` means "do not load the OS trust store". With
+        // neither a `ca_file` nor a pin set that leaves no trust anchor at all,
+        // which we reject up-front rather than failing opaquely at connect time.
+        if tls.system_roots == Some(false)
+            && tls_cfg.ca_file.is_none()
+            && tls_cfg.pin.spki_sha256.is_empty()
+        {
+            return Err(Error::InvalidConfig(format!(
+                "profile `{}`: tls.system_roots = false requires a trust anchor — \
+                 set tls.ca_file or tls.pin_sha256",
+                profile.name
+            )));
+        }
+
+        cfg.tls = tls_cfg;
+    }
+
+    // `[profiles.ssh3]` → transport knobs.
+    if let Some(ssh3) = profile.ssh3.as_ref() {
+        // `idle_timeout` (duration string) → seconds.
+        if let Some(raw) = ssh3.idle_timeout.as_deref() {
+            let dur = parse_profile_duration(&profile.name, "ssh3.idle_timeout", raw)?;
+            cfg.idle_timeout_secs = Some(saturate_u32(dur.as_secs()));
+        }
+        // `keepalive` (duration string) → seconds (existing field).
+        if let Some(raw) = ssh3.keepalive.as_deref() {
+            let dur = parse_profile_duration(&profile.name, "ssh3.keepalive", raw)?;
+            cfg.keepalive_secs = saturate_u32(dur.as_secs());
+        }
+        // `max_streams` / `enable_datagrams` / `protocol_token` → direct map.
+        if let Some(max_streams) = ssh3.max_streams {
+            cfg.max_streams = Some(max_streams);
+        }
+        if let Some(enable_datagrams) = ssh3.enable_datagrams {
+            cfg.enable_datagrams = enable_datagrams;
+        }
+        cfg.protocol_token.clone_from(&ssh3.protocol_token);
+        // `draft` is informational (reference-draft identifier) — no runtime
+        // effect; intentionally ignored.
+    }
+
+    // Fail bad combinations at profile-build time, consistent with ssh2.
+    cfg.validate()?;
+    Ok(Ssh3Protocol::new(cfg))
+}
+
+/// Parse the `[profiles.tls].pin_sha256` string list into a [`TlsPin`].
+///
+/// Each pin is a SHA-256 SPKI digest encoded as **standard base64** (44 chars
+/// including padding for 32 bytes), with an optional `sha256:` prefix that is
+/// stripped before decoding. Anything that does not decode to exactly 32 bytes
+/// is rejected with an [`Error::InvalidConfig`] naming the offending pin.
+fn build_tls_pin(profile_name: &str, pins: Option<&[String]>) -> Result<TlsPin> {
+    let Some(pins) = pins else {
+        return Ok(TlsPin::default());
+    };
+    let mut spki_sha256 = Vec::with_capacity(pins.len());
+    for pin in pins {
+        spki_sha256.push(parse_tls_pin(profile_name, pin)?);
+    }
+    Ok(TlsPin { spki_sha256 })
+}
+
+/// Decode one `[profiles.tls].pin_sha256` entry into a 32-byte SPKI digest.
+///
+/// Accepted format: standard base64 (with padding) of the raw 32-byte SHA-256
+/// digest, optionally prefixed with a case-insensitive `sha256:` marker. The
+/// decoded length MUST be exactly 32 bytes.
+fn parse_tls_pin(profile_name: &str, pin: &str) -> Result<[u8; 32]> {
+    use base64::Engine as _;
+    let trimmed = pin.trim();
+    // Strip an optional `sha256:` prefix (case-insensitive) before decoding.
+    let b64 = trimmed
+        .strip_prefix("sha256:")
+        .or_else(|| trimmed.strip_prefix("SHA256:"))
+        .unwrap_or(trimmed);
+    let raw = base64::engine::general_purpose::STANDARD
+        .decode(b64)
+        .map_err(|e| {
+            Error::InvalidConfig(format!(
+                "profile `{profile_name}`: tls.pin_sha256 entry `{pin}` is not valid base64: {e}"
+            ))
+        })?;
+    raw.try_into().map_err(|raw: Vec<u8>| {
+        Error::InvalidConfig(format!(
+            "profile `{profile_name}`: tls.pin_sha256 entry `{pin}` decoded to {} bytes, \
+             expected 32 (a base64-encoded SHA-256 SPKI digest)",
+            raw.len()
+        ))
+    })
 }
 
 fn build_supervisor_config(profile: &Profile) -> Result<ProfileSupervisorConfig> {
@@ -3599,5 +3717,199 @@ mod tests {
         let (c, _) = load_str(cfg, false).unwrap();
         let bundle = build(&c.profiles[0], &empty_resolver()).unwrap();
         assert_eq!(bundle.protocol.name(), "ssh2");
+    }
+
+    // ---- t-ssh3 Wave B: `build_ssh3` config-surface mapping ------------------
+    //
+    // These exercise the `[profiles.tls]` / `[profiles.ssh3]` → `Ssh3Config` /
+    // `Ssh3TlsConfig` flow. `build_ssh3` returns the concrete `Ssh3Protocol`, so
+    // tests inspect the assembled config via `Ssh3Protocol::config()`.
+
+    /// A 32-byte SPKI digest (all `0xAB`) in standard base64. Decodes to
+    /// exactly 32 bytes so `build_tls_pin` accepts it.
+    const VALID_PIN_B64: &str = "q6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6s=";
+
+    fn ssh3_profile(extra: &str) -> spt_config::schema::Profile {
+        let cfg = format!(
+            r#"
+                version = 1
+                [[profiles]]
+                name = "p"
+                protocol = "ssh3"
+                host = "h"
+                user = "u"
+                acknowledge_experimental = true
+{extra}
+            "#
+        );
+        let (c, _) = load_str(&cfg, false).unwrap();
+        c.profiles.into_iter().next().unwrap()
+    }
+
+    #[test]
+    fn ssh3_tls_server_name_maps_to_sni() {
+        let p = ssh3_profile(
+            "                [profiles.tls]\n                server_name = \"vhost.example\"",
+        );
+        let proto = build_ssh3(&p).unwrap();
+        assert_eq!(proto.config().sni.as_deref(), Some("vhost.example"));
+    }
+
+    #[test]
+    fn ssh3_tls_ca_file_maps() {
+        let p = ssh3_profile(
+            "                [profiles.tls]\n                ca_file = \"/etc/spt/ca.pem\"",
+        );
+        let proto = build_ssh3(&p).unwrap();
+        assert_eq!(
+            proto.config().tls.ca_file,
+            Some(std::path::PathBuf::from("/etc/spt/ca.pem"))
+        );
+    }
+
+    #[test]
+    fn ssh3_tls_pin_base64_parses() {
+        let p = ssh3_profile(&format!(
+            "                [profiles.tls]\n                pin_sha256 = [\"{VALID_PIN_B64}\"]"
+        ));
+        let proto = build_ssh3(&p).unwrap();
+        assert_eq!(proto.config().tls.pin.spki_sha256, vec![[0xABu8; 32]]);
+    }
+
+    #[test]
+    fn ssh3_tls_pin_accepts_sha256_prefix() {
+        let p = ssh3_profile(&format!(
+            "                [profiles.tls]\n                pin_sha256 = [\"sha256:{VALID_PIN_B64}\"]"
+        ));
+        let proto = build_ssh3(&p).unwrap();
+        assert_eq!(proto.config().tls.pin.spki_sha256, vec![[0xABu8; 32]]);
+    }
+
+    #[test]
+    fn ssh3_tls_pin_rejects_bad_base64() {
+        let p = ssh3_profile(
+            "                [profiles.tls]\n                pin_sha256 = [\"!!!not-base64!!!\"]",
+        );
+        let err = build_ssh3(&p).unwrap_err();
+        assert!(matches!(err, Error::InvalidConfig(m) if m.contains("not valid base64")));
+    }
+
+    #[test]
+    fn ssh3_tls_pin_rejects_wrong_length() {
+        // Valid base64 but only 3 bytes (`AAAA` = 3 zero bytes), not 32.
+        let p =
+            ssh3_profile("                [profiles.tls]\n                pin_sha256 = [\"AAAA\"]");
+        let err = build_ssh3(&p).unwrap_err();
+        assert!(matches!(err, Error::InvalidConfig(m) if m.contains("expected 32")));
+    }
+
+    #[test]
+    fn ssh3_tls_allow_self_signed_maps_with_anchor() {
+        // `allow_self_signed` needs a pin (or ca_file) + ack to pass validate().
+        let p = ssh3_profile(&format!(
+            "                [profiles.tls]\n                allow_self_signed = true\n                pin_sha256 = [\"{VALID_PIN_B64}\"]"
+        ));
+        let proto = build_ssh3(&p).unwrap();
+        assert!(proto.config().tls.allow_self_signed);
+    }
+
+    #[test]
+    fn ssh3_tls_chain_depth_maps() {
+        let p = ssh3_profile(
+            "                [profiles.tls]\n                max_cert_chain_depth = 2",
+        );
+        let proto = build_ssh3(&p).unwrap();
+        assert_eq!(
+            proto.config().tls.max_cert_chain_depth,
+            ChainDepthCap::new(2)
+        );
+    }
+
+    #[test]
+    fn ssh3_tls_chain_depth_default_when_absent() {
+        let p = ssh3_profile("                [profiles.tls]\n                server_name = \"h\"");
+        let proto = build_ssh3(&p).unwrap();
+        assert_eq!(
+            proto.config().tls.max_cert_chain_depth,
+            ChainDepthCap::default()
+        );
+    }
+
+    #[test]
+    fn ssh3_tls_system_roots_false_without_anchor_errors() {
+        let p =
+            ssh3_profile("                [profiles.tls]\n                system_roots = false");
+        let err = build_ssh3(&p).unwrap_err();
+        assert!(matches!(err, Error::InvalidConfig(m) if m.contains("system_roots")));
+    }
+
+    #[test]
+    fn ssh3_tls_system_roots_false_with_pin_ok() {
+        let p = ssh3_profile(&format!(
+            "                [profiles.tls]\n                system_roots = false\n                pin_sha256 = [\"{VALID_PIN_B64}\"]"
+        ));
+        let proto = build_ssh3(&p).unwrap();
+        assert_eq!(proto.config().tls.pin.spki_sha256.len(), 1);
+    }
+
+    #[test]
+    fn ssh3_idle_timeout_and_keepalive_durations_map() {
+        let p = ssh3_profile(
+            "                [profiles.ssh3]\n                idle_timeout = \"45s\"\n                keepalive = \"15s\"",
+        );
+        let proto = build_ssh3(&p).unwrap();
+        assert_eq!(proto.config().idle_timeout_secs, Some(45));
+        assert_eq!(proto.config().keepalive_secs, 15);
+    }
+
+    #[test]
+    fn ssh3_idle_timeout_bad_duration_errors() {
+        let p = ssh3_profile(
+            "                [profiles.ssh3]\n                idle_timeout = \"not-a-duration\"",
+        );
+        assert!(build_ssh3(&p).is_err());
+    }
+
+    #[test]
+    fn ssh3_max_streams_maps() {
+        let p = ssh3_profile("                [profiles.ssh3]\n                max_streams = 128");
+        let proto = build_ssh3(&p).unwrap();
+        assert_eq!(proto.config().max_streams, Some(128));
+    }
+
+    #[test]
+    fn ssh3_enable_datagrams_defaults_true() {
+        // No `[profiles.ssh3]` block at all → datagrams stay enabled.
+        let p = ssh3_profile("");
+        let proto = build_ssh3(&p).unwrap();
+        assert!(proto.config().enable_datagrams);
+    }
+
+    #[test]
+    fn ssh3_enable_datagrams_explicit_false() {
+        let p = ssh3_profile(
+            "                [profiles.ssh3]\n                enable_datagrams = false",
+        );
+        let proto = build_ssh3(&p).unwrap();
+        assert!(!proto.config().enable_datagrams);
+    }
+
+    #[test]
+    fn ssh3_protocol_token_maps() {
+        let p = ssh3_profile(
+            "                [profiles.ssh3]\n                protocol_token = \"ssh3-next\"",
+        );
+        let proto = build_ssh3(&p).unwrap();
+        assert_eq!(proto.config().protocol_token.as_deref(), Some("ssh3-next"));
+    }
+
+    #[test]
+    fn ssh3_acknowledge_experimental_preserved() {
+        // No tls/ssh3 blocks: behaviour-preserving — only ack flows through.
+        let p = ssh3_profile("");
+        let proto = build_ssh3(&p).unwrap();
+        assert!(proto.config().acknowledge_experimental);
+        assert_eq!(proto.config().sni, None);
+        assert!(proto.config().tls.pin.spki_sha256.is_empty());
     }
 }

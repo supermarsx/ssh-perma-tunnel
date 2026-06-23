@@ -100,7 +100,16 @@ impl TunnelProtocol for Ssh3Protocol {
         self.emit_experimental_warning_if_needed();
         self.config.validate()?;
         let bs = bootstrap(&endpoint.host, endpoint.port, &self.config, auth).await?;
-        let session = Ssh3Session::from_bootstrap(bs);
+        // Retain the dial parameters so `preflight_connect` (used by the
+        // `ssh3_endpoint` / `ssh_auth_preflight` health-check styles) can run a
+        // fresh connect+auth side-dial without disturbing the live session.
+        let redial = crate::session::RedialParams {
+            host: endpoint.host.clone(),
+            port: endpoint.port,
+            config: self.config.clone(),
+            auth: auth.clone(),
+        };
+        let session = Ssh3Session::from_bootstrap_with_redial(bs, Some(redial));
         Ok(Box::new(session))
     }
 

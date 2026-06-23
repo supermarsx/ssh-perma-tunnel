@@ -1734,26 +1734,47 @@ fn check_profile(d: &mut Diagnostics, i: usize, p: &Profile, capabilities: Optio
                 .at(format!("{prefix}.failover.fail_after")),
             );
         }
-        // t-tunnel-wire-2 B2: health-check styles backed by a real probe are
+        // t-ssh3 Wave C: health-check styles backed by a real probe are
         // accepted. `tcp_connect` (bare TCP dial), `ssh_handshake`
-        // (`session.keepalive()`) and `ssh_auth_preflight` (a connect+auth-only
-        // side dial, wired by the supervisor peer) all have probes. Only
-        // `ssh3_endpoint` is genuinely blocked — there is no ssh3/QUIC transport
-        // to probe — so it must ERROR rather than silently fall back to
-        // keepalive. Any other value is likewise rejected.
+        // (`session.keepalive()`), `ssh_auth_preflight` (a connect+auth-only
+        // side dial) and `ssh3_endpoint` (a fresh QUIC+TLS+HTTP/3-CONNECT
+        // reachability+auth probe via `preflight_connect`, now live in the
+        // supervisor) all have probes. Any other value is rejected.
         if let Some(style) = failover.health_check.as_deref() {
             if !matches!(
                 style,
-                "tcp_connect" | "ssh_handshake" | "ssh_auth_preflight"
+                "tcp_connect" | "ssh_handshake" | "ssh_auth_preflight" | "ssh3_endpoint"
             ) {
                 d.push(
                     Diagnostic::error(
                         "failover_health_check_unimplemented",
                         format!(
                             "profile `{}` failover.health_check `{style}` has no probe \
-                             implementation (ssh3_endpoint requires an ssh3/QUIC transport \
-                             that is not implemented); supported styles: tcp_connect, \
-                             ssh_handshake, ssh_auth_preflight",
+                             implementation; supported styles: tcp_connect, ssh_handshake, \
+                             ssh_auth_preflight, ssh3_endpoint",
+                            p.name
+                        ),
+                    )
+                    .at(format!("{prefix}.failover.health_check")),
+                );
+            }
+
+            // t-ssh3 Wave C (plan §8 D-note / R9): cross-check the probe style
+            // against the profile transport. `ssh3_endpoint` is a QUIC-endpoint
+            // probe and only makes sense for an ssh3-protocol profile — running
+            // it against an ssh2 session would silently fall back to the ssh2
+            // TCP+auth preflight, which is a configuration mismatch. The
+            // ssh-specific styles (`ssh_handshake`/`ssh_auth_preflight`) map
+            // cleanly onto ssh3's keepalive/preflight, so they remain allowed on
+            // either transport; only `ssh3_endpoint` on `ssh2` is rejected.
+            if style == "ssh3_endpoint" && p.protocol == "ssh2" {
+                d.push(
+                    Diagnostic::error(
+                        "health_check_protocol_mismatch",
+                        format!(
+                            "profile `{}` failover.health_check `ssh3_endpoint` requires \
+                             protocol `ssh3` (it is a QUIC-endpoint probe); the profile uses \
+                             protocol `ssh2`",
                             p.name
                         ),
                     )
@@ -2033,9 +2054,8 @@ fn check_profile_crypto(
 /// ignored.
 ///
 /// Covers the sub-tables/fields the wiring task still defers:
-/// `[profiles.tls]` (ssh3/QUIC transport tuning), `[profiles.ssh3]` (deferred
-/// tuning), `profile.dns_resolution` when it requests resolution caching, plus
-/// the "DEAD-without-WARN" stragglers exposed by the round-2 audit:
+/// `profile.dns_resolution` when it requests resolution caching, plus the
+/// "DEAD-without-WARN" stragglers exposed by the round-2 audit:
 /// `profile.connect_timeout` (legacy alias), `connection.channel_open_timeout`,
 /// and the still-inert `[profiles.limits]` knobs.
 ///
@@ -2043,44 +2063,15 @@ fn check_profile_crypto(
 /// (`auth_timeout`/`handshake_timeout` as connect/auth deadlines,
 /// `read_timeout`/`write_timeout` as a combined channel-idle deadline), so the
 /// former `profile_connection_timeout_not_applied` WARN is RETIRED.
+///
+/// t-ssh3 Wave C: `[profiles.tls]` and `[profiles.ssh3]` are now CONSUMED by
+/// `build_ssh3` (the ssh3 transport is live), so the former
+/// `profile_tls_not_applied` / `profile_ssh3_uses_defaults` WARNs are RETIRED.
+/// They are replaced by [`check_profile_ssh3_tls`], which positively validates
+/// the now-consumed fields (pins, trust anchors, durations) for ssh3 profiles
+/// and WARNs that the tables are ignored on ssh2 profiles.
 fn check_profile_deferred(d: &mut Diagnostics, p: &Profile, prefix: &str) {
-    // `[profiles.tls]` — parsed but the ssh3 build path ignores it today.
-    if p.tls.is_some() {
-        d.push(
-            Diagnostic::warning(
-                "profile_tls_not_applied",
-                format!(
-                    "profile `{}` [profiles.tls] is parsed but not yet applied (ssh3/QUIC \
-                     transport tuning; lands with ssh3 GA)",
-                    p.name
-                ),
-            )
-            .at(format!("{prefix}.tls")),
-        );
-    }
-
-    // `[profiles.ssh3]` — when any field is set the build still uses defaults.
-    if let Some(ssh3) = p.ssh3.as_ref() {
-        let non_default = ssh3.draft.is_some()
-            || ssh3.protocol_token.is_some()
-            || ssh3.enable_datagrams.is_some()
-            || ssh3.idle_timeout.is_some()
-            || ssh3.keepalive.is_some()
-            || ssh3.max_streams.is_some();
-        if non_default {
-            d.push(
-                Diagnostic::warning(
-                    "profile_ssh3_uses_defaults",
-                    format!(
-                        "profile `{}` [profiles.ssh3] is parsed but uses defaults (ssh3 tuning \
-                         deferred)",
-                        p.name
-                    ),
-                )
-                .at(format!("{prefix}.ssh3")),
-            );
-        }
-    }
+    check_profile_ssh3_tls(d, p, prefix);
 
     // `[profiles.connection]` — conn-wire + t-tunnel-wire-2 wired this table
     // end-to-end (profile_factory → `ConnectionPolicy` → russh dial path):
@@ -2186,6 +2177,201 @@ fn check_profile_deferred(d: &mut Diagnostics, p: &Profile, prefix: &str) {
             );
         }
     }
+}
+
+/// t-ssh3 Wave C: positively validate the now-consumed `[profiles.tls]` and
+/// `[profiles.ssh3]` tables so configuration errors surface at config-validate
+/// time, not only at profile-build time. Mirrors `build_ssh3`'s parsing
+/// (`crates/spt-bin/src/profile_factory.rs`) and `Ssh3Config::validate`.
+///
+/// These positive checks only apply to `protocol = "ssh3"` profiles. When the
+/// tables appear on a non-ssh3 profile they are inert (the ssh2 build path
+/// ignores them), so a single WARN per table flags that they have no effect.
+fn check_profile_ssh3_tls(d: &mut Diagnostics, p: &Profile, prefix: &str) {
+    let is_ssh3 = p.protocol == "ssh3";
+
+    // For non-ssh3 profiles the tables are ignored — WARN once per present
+    // table so the operator is never silently surprised.
+    if !is_ssh3 {
+        if p.tls.is_some() {
+            d.push(
+                Diagnostic::warning(
+                    "profile_tls_ignored_for_protocol",
+                    format!(
+                        "profile `{}` [profiles.tls] only applies to protocol `ssh3`; it is \
+                         ignored for this profile",
+                        p.name
+                    ),
+                )
+                .at(format!("{prefix}.tls")),
+            );
+        }
+        if p.ssh3.is_some() {
+            d.push(
+                Diagnostic::warning(
+                    "profile_ssh3_ignored_for_protocol",
+                    format!(
+                        "profile `{}` [profiles.ssh3] only applies to protocol `ssh3`; it is \
+                         ignored for this profile",
+                        p.name
+                    ),
+                )
+                .at(format!("{prefix}.ssh3")),
+            );
+        }
+        return;
+    }
+
+    // protocol = "ssh3": positively validate the consumed fields.
+    if let Some(tls) = p.tls.as_ref() {
+        let has_ca = tls.ca_file.as_deref().is_some_and(|s| !s.is_empty());
+        let has_pin = tls.pin_sha256.as_deref().is_some_and(|v| !v.is_empty());
+
+        // `pin_sha256` — each entry must be base64 (optional `sha256:` prefix)
+        // decoding to exactly 32 bytes (a SHA-256 SPKI digest). Matches
+        // `build_ssh3`'s `parse_tls_pin` (base64 STANDARD with padding).
+        if let Some(pins) = tls.pin_sha256.as_deref() {
+            for pin in pins {
+                if let Err(reason) = decode_sha256_pin(pin) {
+                    d.push(
+                        Diagnostic::error(
+                            "profile_tls_pin_invalid",
+                            format!(
+                                "profile `{}` [profiles.tls].pin_sha256 entry `{pin}` is invalid: \
+                                 {reason} (expected base64 of a 32-byte SHA-256 SPKI digest, \
+                                 optional `sha256:` prefix)",
+                                p.name
+                            ),
+                        )
+                        .at(format!("{prefix}.tls.pin_sha256")),
+                    );
+                }
+            }
+        }
+
+        // `system_roots = false` with no `ca_file` and no `pin_sha256` leaves no
+        // trust anchor at all — ERROR (matches build_ssh3's InvalidConfig case).
+        if tls.system_roots == Some(false) && !has_ca && !has_pin {
+            d.push(
+                Diagnostic::error(
+                    "profile_tls_no_trust_anchor",
+                    format!(
+                        "profile `{}` [profiles.tls].system_roots = false requires a trust \
+                         anchor — set tls.ca_file or tls.pin_sha256",
+                        p.name
+                    ),
+                )
+                .at(format!("{prefix}.tls.system_roots")),
+            );
+        }
+
+        // `allow_self_signed = true` with no pin and no ca_file collapses TLS to
+        // a hostname-confirmation no-op (no trust anchor enforced) — ERROR, to
+        // match `Ssh3Config::validate`'s anchor requirement.
+        if tls.allow_self_signed == Some(true) && !has_ca && !has_pin {
+            d.push(
+                Diagnostic::error(
+                    "profile_tls_self_signed_no_anchor",
+                    format!(
+                        "profile `{}` [profiles.tls].allow_self_signed = true requires a trust \
+                         anchor (tls.pin_sha256 or tls.ca_file); otherwise no trust anchor is \
+                         enforced",
+                        p.name
+                    ),
+                )
+                .at(format!("{prefix}.tls.allow_self_signed")),
+            );
+        }
+    }
+
+    // `[profiles.ssh3]` — `idle_timeout` / `keepalive` must parse as durations
+    // (reuses the shared duration-validation helper; emits `duration_invalid`).
+    if let Some(ssh3) = p.ssh3.as_ref() {
+        check_duration_field(
+            d,
+            ssh3.idle_timeout.as_deref(),
+            format!("{prefix}.ssh3.idle_timeout"),
+        );
+        check_duration_field(
+            d,
+            ssh3.keepalive.as_deref(),
+            format!("{prefix}.ssh3.keepalive"),
+        );
+    }
+}
+
+/// Dep-free standard-base64 (RFC 4648, with padding) decoder used only to
+/// validate `[profiles.tls].pin_sha256` entries. Returns `Ok(())` iff `pin`
+/// (after stripping an optional case-insensitive `sha256:` prefix) decodes to
+/// exactly 32 bytes; otherwise an `Err` carrying a short human reason.
+///
+/// spt-config deliberately has no `base64` dependency, so this mirrors the
+/// `base64::engine::general_purpose::STANDARD` decode `build_ssh3` performs
+/// without pulling a new crate into the graph.
+fn decode_sha256_pin(pin: &str) -> std::result::Result<(), String> {
+    let trimmed = pin.trim();
+    let b64 = trimmed
+        .strip_prefix("sha256:")
+        .or_else(|| trimmed.strip_prefix("SHA256:"))
+        .unwrap_or(trimmed);
+    let bytes = decode_base64_standard(b64).map_err(|e| format!("not valid base64: {e}"))?;
+    if bytes.len() == 32 {
+        Ok(())
+    } else {
+        Err(format!("decoded to {} bytes, expected 32", bytes.len()))
+    }
+}
+
+/// Decode standard base64 (with required padding) into bytes. Minimal,
+/// allocation-light, and dep-free. Rejects non-alphabet characters, misplaced
+/// padding, and inputs whose length is not a multiple of four.
+fn decode_base64_standard(s: &str) -> std::result::Result<Vec<u8>, &'static str> {
+    fn val(c: u8) -> std::result::Result<u8, &'static str> {
+        match c {
+            b'A'..=b'Z' => Ok(c - b'A'),
+            b'a'..=b'z' => Ok(c - b'a' + 26),
+            b'0'..=b'9' => Ok(c - b'0' + 52),
+            b'+' => Ok(62),
+            b'/' => Ok(63),
+            _ => Err("invalid base64 character"),
+        }
+    }
+
+    let bytes = s.as_bytes();
+    if bytes.len() % 4 != 0 {
+        return Err("length is not a multiple of four");
+    }
+    if bytes.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Count and strip trailing padding (`=`), at most two and only at the end.
+    let pad = bytes.iter().rev().take_while(|&&c| c == b'=').count();
+    if pad > 2 {
+        return Err("too much padding");
+    }
+    let body = &bytes[..bytes.len() - pad];
+    // No `=` may appear inside the body.
+    if body.contains(&b'=') {
+        return Err("misplaced padding");
+    }
+
+    let mut out = Vec::with_capacity(bytes.len() / 4 * 3);
+    for chunk in bytes.chunks(4) {
+        let is_pad = |c: u8| c == b'=';
+        let c0 = val(chunk[0])?;
+        let c1 = val(chunk[1])?;
+        out.push((c0 << 2) | (c1 >> 4));
+        if !is_pad(chunk[2]) {
+            let c2 = val(chunk[2])?;
+            out.push(((c1 & 0x0f) << 4) | (c2 >> 2));
+            if !is_pad(chunk[3]) {
+                let c3 = val(chunk[3])?;
+                out.push(((c2 & 0x03) << 6) | c3);
+            }
+        }
+    }
+    Ok(out)
 }
 
 fn contains_any_algorithm(configured: &[String], known: &[&str]) -> bool {
@@ -2722,19 +2908,22 @@ fn check_forward(
         );
     }
 
-    // `sni_name` is per-forward, but there is a single profile-level obfs
-    // transport, so a per-forward SNI is architecturally unsupported. The SNI
-    // override that DOES work is `[profiles.transport.obfuscation].sni`
-    // (MeekHttp). Warn whenever the per-forward field is set, pointing operators
-    // at the real knob.
+    // `sni_name` is per-forward, but a single transport serves all forwards on a
+    // profile — one QUIC connection for ssh3, one obfs transport for obfs — so a
+    // per-forward SNI is architecturally unsupported. The SNI override that DOES
+    // work is profile-level: `[profiles.tls].server_name` for ssh3 profiles, and
+    // `[profiles.transport.obfuscation].sni` (MeekHttp) for obfs. Warn whenever
+    // the per-forward field is set, pointing operators at the real knob.
     if f.sni_name.is_some() {
         d.push(
             Diagnostic::warning(
                 "forward_sni_name_no_effect",
                 format!(
                     "forward `{}` sni_name has no effect: per-forward SNI is unsupported (a single \
-                     profile-level obfs transport is shared by all forwards); set \
-                     `[profiles.transport.obfuscation].sni` (MeekHttp) instead",
+                     transport serves all forwards — one QUIC connection for ssh3, one obfs \
+                     transport for obfs); set the profile-level SNI instead — \
+                     `[profiles.tls].server_name` for ssh3, or \
+                     `[profiles.transport.obfuscation].sni` (MeekHttp) for obfs",
                     f.name
                 ),
             )
@@ -5149,9 +5338,35 @@ mod tests {
     }
 
     #[test]
-    fn failover_health_check_ssh3_endpoint_errors() {
-        // t-tunnel-wire-2: ssh3_endpoint is genuinely blocked (no ssh3
-        // transport) — it must ERROR, not silently fall back to keepalive.
+    fn failover_health_check_ssh3_endpoint_ok_on_ssh3() {
+        // t-ssh3 Wave C: the ssh3 transport is live, so `ssh3_endpoint` is a
+        // real probe — accepted (no error) on an ssh3-protocol profile.
+        let raw = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh3"
+            endpoint = "https://x.example.com:443/ssh3"
+            acknowledge_experimental = true
+            [profiles.failover]
+            health_check = "ssh3_endpoint"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(
+            !d.errors
+                .iter()
+                .any(|e| e.code == "failover_health_check_unimplemented"
+                    || e.code == "health_check_protocol_mismatch"),
+            "ssh3_endpoint must be accepted on an ssh3 profile: {:?}",
+            d.errors
+        );
+    }
+
+    #[test]
+    fn failover_health_check_ssh3_endpoint_mismatch_on_ssh2() {
+        // t-ssh3 Wave C (R9): `ssh3_endpoint` is a QUIC-endpoint probe; using it
+        // on an ssh2 profile is a transport mismatch and must ERROR.
         let raw = r#"
             version = 1
             [[profiles]]
@@ -5166,14 +5381,48 @@ mod tests {
         assert!(
             d.errors
                 .iter()
+                .any(|e| e.code == "health_check_protocol_mismatch"),
+            "ssh3_endpoint on ssh2 must error: {:?}",
+            d.errors
+        );
+        // It is a real probe style, so the "unimplemented" code must NOT fire.
+        assert!(
+            !d.errors
+                .iter()
                 .any(|e| e.code == "failover_health_check_unimplemented"),
-            "ssh3_endpoint must error: {:?}",
+            "ssh3_endpoint must not be flagged unimplemented: {:?}",
             d.errors
         );
     }
 
     #[test]
-    fn profile_tls_present_warns() {
+    fn tls_table_on_ssh3_no_longer_warns() {
+        // t-ssh3 Wave C: `[profiles.tls]` is now consumed by build_ssh3 — the
+        // old `profile_tls_not_applied` WARN is RETIRED for ssh3 profiles.
+        let raw = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh3"
+            endpoint = "https://x.example.com:443/ssh3"
+            acknowledge_experimental = true
+            [profiles.tls]
+            server_name = "vpn.example.com"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(
+            !d.warnings
+                .iter()
+                .any(|w| w.code == "profile_tls_not_applied"),
+            "retired tls WARN must not fire: {:?}",
+            d.warnings
+        );
+    }
+
+    #[test]
+    fn tls_table_on_ssh2_warns_ignored() {
+        // `[profiles.tls]` only applies to ssh3 — on ssh2 it is inert and WARNs.
         let raw = r#"
             version = 1
             [[profiles]]
@@ -5188,34 +5437,16 @@ mod tests {
         assert!(
             d.warnings
                 .iter()
-                .any(|w| w.code == "profile_tls_not_applied"),
+                .any(|w| w.code == "profile_tls_ignored_for_protocol"),
             "warnings: {:?}",
             d.warnings
         );
     }
 
     #[test]
-    fn profile_without_tls_no_warn() {
-        let raw = r#"
-            version = 1
-            [[profiles]]
-            name = "p"
-            protocol = "ssh2"
-            host = "h"
-        "#;
-        let (c, _) = load_str(raw, false).unwrap();
-        let d = validate(&c);
-        assert!(
-            !d.warnings
-                .iter()
-                .any(|w| w.code == "profile_tls_not_applied"),
-            "warnings: {:?}",
-            d.warnings
-        );
-    }
-
-    #[test]
-    fn profile_ssh3_non_default_warns() {
+    fn ssh3_table_on_ssh3_no_longer_warns() {
+        // t-ssh3 Wave C: `[profiles.ssh3]` is now consumed — the old
+        // `profile_ssh3_uses_defaults` WARN is RETIRED for ssh3 profiles.
         let raw = r#"
             version = 1
             [[profiles]]
@@ -5229,16 +5460,40 @@ mod tests {
         let (c, _) = load_str(raw, false).unwrap();
         let d = validate(&c);
         assert!(
-            d.warnings
+            !d.warnings
                 .iter()
                 .any(|w| w.code == "profile_ssh3_uses_defaults"),
+            "retired ssh3 WARN must not fire: {:?}",
+            d.warnings
+        );
+    }
+
+    #[test]
+    fn ssh3_table_on_ssh2_warns_ignored() {
+        let raw = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            [profiles.ssh3]
+            max_streams = 64
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(
+            d.warnings
+                .iter()
+                .any(|w| w.code == "profile_ssh3_ignored_for_protocol"),
             "warnings: {:?}",
             d.warnings
         );
     }
 
     #[test]
-    fn profile_without_ssh3_table_no_warn() {
+    fn ssh3_tls_pin_valid_base64_no_error() {
+        // 44-char base64 of 32 bytes (here: base64 of 32×0xAB), with sha256:
+        // prefix accepted.
         let raw = r#"
             version = 1
             [[profiles]]
@@ -5246,15 +5501,171 @@ mod tests {
             protocol = "ssh3"
             endpoint = "https://x.example.com:443/ssh3"
             acknowledge_experimental = true
+            [profiles.tls]
+            pin_sha256 = ["sha256:q6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6s="]
         "#;
         let (c, _) = load_str(raw, false).unwrap();
         let d = validate(&c);
         assert!(
-            !d.warnings
+            !d.errors.iter().any(|e| e.code == "profile_tls_pin_invalid"),
+            "valid pin must not error: {:?}",
+            d.errors
+        );
+    }
+
+    #[test]
+    fn ssh3_tls_pin_bad_base64_errors() {
+        let raw = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh3"
+            endpoint = "https://x.example.com:443/ssh3"
+            acknowledge_experimental = true
+            [profiles.tls]
+            pin_sha256 = ["not valid base64!!"]
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(
+            d.errors.iter().any(|e| e.code == "profile_tls_pin_invalid"),
+            "bad base64 pin must error: {:?}",
+            d.errors
+        );
+    }
+
+    #[test]
+    fn ssh3_tls_pin_wrong_length_errors() {
+        // Valid base64 but decodes to 3 bytes ("abc"), not 32.
+        let raw = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh3"
+            endpoint = "https://x.example.com:443/ssh3"
+            acknowledge_experimental = true
+            [profiles.tls]
+            pin_sha256 = ["YWJj"]
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(
+            d.errors.iter().any(|e| e.code == "profile_tls_pin_invalid"),
+            "wrong-length pin must error: {:?}",
+            d.errors
+        );
+    }
+
+    #[test]
+    fn ssh3_tls_system_roots_false_without_anchor_errors() {
+        let raw = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh3"
+            endpoint = "https://x.example.com:443/ssh3"
+            acknowledge_experimental = true
+            [profiles.tls]
+            system_roots = false
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(
+            d.errors
                 .iter()
-                .any(|w| w.code == "profile_ssh3_uses_defaults"),
-            "warnings: {:?}",
-            d.warnings
+                .any(|e| e.code == "profile_tls_no_trust_anchor"),
+            "system_roots=false with no anchor must error: {:?}",
+            d.errors
+        );
+    }
+
+    #[test]
+    fn ssh3_tls_system_roots_false_with_pin_ok() {
+        let raw = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh3"
+            endpoint = "https://x.example.com:443/ssh3"
+            acknowledge_experimental = true
+            [profiles.tls]
+            system_roots = false
+            pin_sha256 = ["q6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6s="]
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(
+            !d.errors
+                .iter()
+                .any(|e| e.code == "profile_tls_no_trust_anchor"),
+            "system_roots=false with a pin must not error: {:?}",
+            d.errors
+        );
+    }
+
+    #[test]
+    fn ssh3_tls_self_signed_without_anchor_errors() {
+        let raw = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh3"
+            endpoint = "https://x.example.com:443/ssh3"
+            acknowledge_experimental = true
+            [profiles.tls]
+            allow_self_signed = true
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(
+            d.errors
+                .iter()
+                .any(|e| e.code == "profile_tls_self_signed_no_anchor"),
+            "allow_self_signed with no anchor must error: {:?}",
+            d.errors
+        );
+    }
+
+    #[test]
+    fn ssh3_idle_timeout_bad_duration_errors() {
+        let raw = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh3"
+            endpoint = "https://x.example.com:443/ssh3"
+            acknowledge_experimental = true
+            [profiles.ssh3]
+            idle_timeout = "not-a-duration"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(
+            d.errors.iter().any(|e| e.code == "duration_invalid"),
+            "bad ssh3.idle_timeout must error: {:?}",
+            d.errors
+        );
+    }
+
+    #[test]
+    fn ssh3_keepalive_good_duration_no_error() {
+        let raw = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh3"
+            endpoint = "https://x.example.com:443/ssh3"
+            acknowledge_experimental = true
+            [profiles.ssh3]
+            idle_timeout = "30s"
+            keepalive = "10s"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(
+            !d.errors.iter().any(|e| e.code == "duration_invalid"),
+            "valid ssh3 durations must not error: {:?}",
+            d.errors
         );
     }
 

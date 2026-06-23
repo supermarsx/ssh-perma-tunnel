@@ -415,7 +415,9 @@ async fn read_exact_from_stream(recv: &mut quinn::RecvStream, buf: &mut [u8]) ->
 /// response metadata.
 ///
 /// `auth_header` is the prebuilt `Authorization` header value (e.g.
-/// `Bearer <jwt>`). `user_agent` is the User-Agent value.
+/// `Bearer <jwt>`). `user_agent` is the User-Agent value. `protocol_token`
+/// is the `:protocol` pseudo-header value (default `ssh3`; see
+/// [`crate::config::Ssh3Config::protocol_token`]).
 ///
 /// On a non-2xx response the bidi stream is dropped and an error is
 /// returned mapped to [`Error::AuthFailed`] (401/403) or
@@ -427,20 +429,22 @@ pub(crate) async fn extended_connect_raw(
     url_path: &str,
     auth_header: &str,
     user_agent: &str,
+    protocol_token: &str,
 ) -> Result<RawConnectOutcome> {
     let authority = format!("{host}:{port}");
+    let protocol_bytes = protocol_token.as_bytes();
     let fields: Vec<(&[u8], &[u8])> = vec![
         (b":method", b"CONNECT"),
         (b":scheme", b"https"),
         (b":authority", authority.as_bytes()),
         (b":path", url_path.as_bytes()),
-        (b":protocol", b"ssh3"),
+        (b":protocol", protocol_bytes),
         (b"authorization", auth_header.as_bytes()),
         (b"user-agent", user_agent.as_bytes()),
         // Kept as a redundant marker so any responder still keyed on the
         // pre-raw-path X-header continues to interop. The pseudo-header
         // is the wire contract per RFC 9220; the X-header is a belt.
-        (b"x-ssh3-protocol", b"ssh3"),
+        (b"x-ssh3-protocol", protocol_bytes),
     ];
     let qpack = qpack_encode(&fields);
     let frame = build_headers_frame(&qpack);
@@ -490,6 +494,43 @@ pub(crate) async fn extended_connect_raw(
         send,
         recv,
     })
+}
+
+/// Open a server-side HTTP/3 control stream (a unidirectional stream whose
+/// first byte is the CONTROL stream type `0x00`) and write an empty `SETTINGS`
+/// frame on it.
+///
+/// This is the minimal peer-side h3 handshake the *client's* h3 driver
+/// (`h3::client`'s `poll_close` → `poll_control`) needs to observe so it stays
+/// alive instead of treating the connection as closeable and tearing it down
+/// when its driver task drops. The real francoismichel/ssh3 server (a full h3
+/// server) provides this implicitly; our in-repo [`crate::server::Ssh3Server`]
+/// provides it explicitly with this helper. Returns the kept-open
+/// [`quinn::SendStream`] (the caller must hold it for the connection's
+/// lifetime — dropping it finishes the control stream, which the client
+/// tolerates but which is cleaner to keep open).
+#[cfg(any(test, feature = "testing"))]
+pub(crate) async fn write_server_control_stream(
+    connection: &quinn::Connection,
+) -> Result<quinn::SendStream> {
+    /// HTTP/3 CONTROL stream type (RFC 9114 §6.2.1).
+    const STREAM_TYPE_CONTROL: u64 = 0x00;
+    /// HTTP/3 SETTINGS frame type (RFC 9114 §7.2.4).
+    const FRAME_SETTINGS: u64 = 0x04;
+
+    let mut uni = connection
+        .open_uni()
+        .await
+        .map_err(|e| Error::RuntimeFailure(format!("ssh3 h3_raw: open_uni control: {e}")))?;
+    let mut buf = BytesMut::new();
+    write_varint(&mut buf, STREAM_TYPE_CONTROL);
+    // Empty SETTINGS frame: type + length(0).
+    write_varint(&mut buf, FRAME_SETTINGS);
+    write_varint(&mut buf, 0);
+    uni.write_all(&buf)
+        .await
+        .map_err(|e| Error::RuntimeFailure(format!("ssh3 h3_raw: write control SETTINGS: {e}")))?;
+    Ok(uni)
 }
 
 /// The outcome of a [`extended_connect_raw`] call.
