@@ -1,3 +1,12 @@
+## [26.19] - 2026-06-23
+
+# spt 26.19
+
+## Changes since 26.18
+
+- style: cargo fmt the round-2 wiring (runner/russh_backend/instability) (6a1cc5a)
+- feat(profile): wire remaining deferred tunnel fields (timeouts, remote-UDS, auth-preflight, latency-instability) (d152576)
+
 ## [26.18] - 2026-06-22
 
 # spt 26.18
