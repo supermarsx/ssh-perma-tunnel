@@ -1,3 +1,11 @@
+## [26.22] - 2026-06-23
+
+# spt 26.22
+
+## Changes since 26.21
+
+- feat(dns): wire profile.dns_resolution=once and forward/hop target_resolve=local (8a8b23a)
+
 ## [26.21] - 2026-06-23
 
 # spt 26.21
