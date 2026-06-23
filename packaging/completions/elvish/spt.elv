@@ -59,6 +59,7 @@ set edit:completion:arg-completer[spt] = {|@words|
             cand diagnose 'Targeted diagnostics and support bundles'
             cand benchmark 'Controlled benchmarking against forwards'
             cand mcp 'Built-in MCP server controls'
+            cand ssh3-serve 'Run the in-repo SSH3 (QUIC + HTTP/3) server end — the responder half of an spt↔spt SSH3 tunnel'
             cand status 'Show overall app status — daemon, tunnels/profiles, forwards, and subsystems (status API, MCP, DNS, metrics, remote-config, events, services)'
             cand status-api 'Controls for the read-only HTTP status API'
             cand completion 'Generate shell completions'
@@ -6097,6 +6098,38 @@ set edit:completion:arg-completer[spt] = {|@words|
         }
         &'spt;mcp;help;help'= {
         }
+        &'spt;ssh3-serve'= {
+            cand --listen 'Address and port to bind the QUIC/UDP listener on'
+            cand --cert 'Path to the server''s TLS certificate chain (PEM, leaf first). Required unless `--self-signed` is given'
+            cand --key 'Path to the server''s TLS private key (PEM: PKCS#8, PKCS#1, or SEC1). Required unless `--self-signed` is given'
+            cand --self-signed-san 'DNS name(s) / IP literal(s) to embed as SANs in the self-signed cert. Only meaningful with `--self-signed`. Repeat for multiple SANs'
+            cand --protocol-token 'The `:protocol` token the server requires on the HTTP/3 Extended-CONNECT (default `ssh3`). A mismatch is rejected with HTTP 421'
+            cand --allow-target 'Allow-list of `host:port` forward targets the server will dial. May be repeated. When empty, every requested `direct-tcp` open is accepted and dialed as requested (open relay — use with care)'
+            cand --fixed-target 'Pin every accepted forward to this single `host:port` target regardless of what the peer requests (overrides `--allow-target`). Useful for a single-service bastion'
+            cand --require-authorization 'Require this bearer/authorization value on the CONNECT request. When set, a CONNECT whose `Authorization` header does not match is rejected with HTTP 401'
+            cand --config 'Path to a single config file'
+            cand --config-dir 'Path to a directory of `*.toml` configs (loaded in lexical order)'
+            cand --config-url 'HTTPS URL of a remote config to fetch'
+            cand --config-fingerprint 'SHA-256 fingerprint pin for `--config-url`'
+            cand --state-dir 'Override the runtime state directory'
+            cand --profile 'Restrict operations to the named profile'
+            cand --output 'Output format for command results'
+            cand --log-level 'Tracing log level'
+            cand --color 'Color policy for human output'
+            cand --self-signed 'Dev-mode only: generate a self-signed certificate at startup instead of loading `--cert`/`--key`. Requires the binary to be built with the `server-selfsigned` feature; otherwise this flag errors. The SHA-256 SPKI pin of the generated cert is logged so a peer can pin it'
+            cand --portable 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
+            cand --json 'Convenience alias for `--output json`'
+            cand -q 'Suppress non-essential output'
+            cand --quiet 'Suppress non-essential output'
+            cand -v 'Increase verbosity (repeat for more)'
+            cand --verbose 'Increase verbosity (repeat for more)'
+            cand --no-color 'Disable color (legacy convenience flag; use `--color never`)'
+            cand --dry-run 'Show what would happen without making changes'
+            cand -h 'Print help (see more with ''--help'')'
+            cand --help 'Print help (see more with ''--help'')'
+            cand -V 'Print version'
+            cand --version 'Print version'
+        }
         &'spt;status'= {
             cand --output 'Output format for the overview (overrides the global `--output`)'
             cand --config 'Path to a single config file'
@@ -6712,6 +6745,7 @@ set edit:completion:arg-completer[spt] = {|@words|
             cand diagnose 'Targeted diagnostics and support bundles'
             cand benchmark 'Controlled benchmarking against forwards'
             cand mcp 'Built-in MCP server controls'
+            cand ssh3-serve 'Run the in-repo SSH3 (QUIC + HTTP/3) server end — the responder half of an spt↔spt SSH3 tunnel'
             cand status 'Show overall app status — daemon, tunnels/profiles, forwards, and subsystems (status API, MCP, DNS, metrics, remote-config, events, services)'
             cand status-api 'Controls for the read-only HTTP status API'
             cand completion 'Generate shell completions'
@@ -7302,6 +7336,8 @@ set edit:completion:arg-completer[spt] = {|@words|
         &'spt;help;mcp;policy;show'= {
         }
         &'spt;help;mcp;policy;set'= {
+        }
+        &'spt;help;ssh3-serve'= {
         }
         &'spt;help;status'= {
         }

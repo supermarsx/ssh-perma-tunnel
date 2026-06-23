@@ -24,6 +24,7 @@ pub mod secret;
 pub mod service;
 pub mod session;
 pub mod sftp;
+pub mod ssh3;
 pub mod stats;
 pub mod status;
 pub mod tunnel;

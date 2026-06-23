@@ -82,6 +82,9 @@ _spt() {
             spt,sftp)
                 cmd="spt__subcmd__sftp"
                 ;;
+            spt,ssh3-serve)
+                cmd="spt__subcmd__ssh3__subcmd__serve"
+                ;;
             spt,stats)
                 cmd="spt__subcmd__stats"
                 ;;
@@ -888,6 +891,9 @@ _spt() {
                 ;;
             spt__subcmd__help,sftp)
                 cmd="spt__subcmd__help__subcmd__sftp"
+                ;;
+            spt__subcmd__help,ssh3-serve)
+                cmd="spt__subcmd__help__subcmd__ssh3__subcmd__serve"
                 ;;
             spt__subcmd__help,stats)
                 cmd="spt__subcmd__help__subcmd__stats"
@@ -2330,7 +2336,7 @@ _spt() {
 
     case "${cmd}" in
         spt)
-            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status status-api completion about kill update help"
+            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp ssh3-serve status status-api completion about kill update help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 1 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -9982,7 +9988,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__help)
-            opts="config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp status status-api completion about kill update help"
+            opts="config profile forward tunnel service key secret auth dns firewall log observe event stats session ftp sftp diagnose benchmark mcp ssh3-serve status status-api completion about kill update help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -12700,6 +12706,20 @@ _spt() {
         spt__subcmd__help__subcmd__sftp__subcmd__umount)
             opts=""
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        spt__subcmd__help__subcmd__ssh3__subcmd__serve)
+            opts=""
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
             fi
@@ -20082,6 +20102,88 @@ _spt() {
                 return 0
             fi
             case "${prev}" in
+                --config)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --config-dir)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --config-url)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --config-fingerprint)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --state-dir)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --profile)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --output)
+                    COMPREPLY=($(compgen -W "human json jsonl yaml" -- "${cur}"))
+                    return 0
+                    ;;
+                --log-level)
+                    COMPREPLY=($(compgen -W "error warn info debug trace" -- "${cur}"))
+                    return 0
+                    ;;
+                --color)
+                    COMPREPLY=($(compgen -W "auto always never" -- "${cur}"))
+                    return 0
+                    ;;
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        spt__subcmd__ssh3__subcmd__serve)
+            opts="-q -v -h -V --listen --cert --key --self-signed --self-signed-san --protocol-token --allow-target --fixed-target --require-authorization --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                --listen)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --cert)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --key)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --self-signed-san)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --protocol-token)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --allow-target)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --fixed-target)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --require-authorization)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
                 --config)
                     COMPREPLY=($(compgen -f "${cur}"))
                     return 0

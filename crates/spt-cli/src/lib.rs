@@ -200,6 +200,10 @@ pub enum Command {
     Benchmark(groups::benchmark::BenchmarkCmd),
     /// Built-in MCP server controls.
     Mcp(groups::mcp::McpCmd),
+    /// Run the in-repo SSH3 (QUIC + HTTP/3) server end — the responder half of
+    /// an spt↔spt SSH3 tunnel.
+    #[command(name = "ssh3-serve")]
+    Ssh3Serve(groups::ssh3::Ssh3ServeCmd),
     /// Show overall app status — daemon, tunnels/profiles, forwards, and
     /// subsystems (status API, MCP, DNS, metrics, remote-config, events,
     /// services).
@@ -459,6 +463,64 @@ mod tests {
     #[test]
     fn parses_mcp_serve() {
         Cli::try_parse_from(["spt", "mcp", "serve", "--stdio", "--read-only", "--enable"]).unwrap();
+    }
+
+    #[test]
+    fn parses_ssh3_serve() {
+        let cli = Cli::try_parse_from([
+            "spt",
+            "ssh3-serve",
+            "--listen",
+            "127.0.0.1:8443",
+            "--cert",
+            "server.pem",
+            "--key",
+            "server.key",
+            "--allow-target",
+            "db.internal:5432",
+            "--protocol-token",
+            "ssh3",
+        ])
+        .unwrap();
+        match cli.command {
+            Command::Ssh3Serve(c) => {
+                assert_eq!(c.listen, "127.0.0.1:8443");
+                assert_eq!(c.cert.as_deref(), Some(std::path::Path::new("server.pem")));
+                assert_eq!(c.key.as_deref(), Some(std::path::Path::new("server.key")));
+                assert_eq!(c.allow_targets, vec!["db.internal:5432".to_string()]);
+                assert_eq!(c.protocol_token, "ssh3");
+                assert!(!c.self_signed);
+            }
+            other => panic!("expected Command::Ssh3Serve, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_ssh3_serve_self_signed_defaults_listen() {
+        let cli = Cli::try_parse_from(["spt", "ssh3-serve", "--self-signed"]).unwrap();
+        match cli.command {
+            Command::Ssh3Serve(c) => {
+                assert_eq!(c.listen, "0.0.0.0:443");
+                assert!(c.self_signed);
+                assert!(c.cert.is_none());
+                assert_eq!(c.protocol_token, "ssh3");
+                assert_eq!(c.self_signed_sans, vec!["localhost".to_string()]);
+            }
+            other => panic!("expected Command::Ssh3Serve, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn ssh3_serve_self_signed_conflicts_with_cert() {
+        // `--self-signed` and `--cert` are mutually exclusive.
+        assert!(Cli::try_parse_from([
+            "spt",
+            "ssh3-serve",
+            "--self-signed",
+            "--cert",
+            "server.pem",
+        ])
+        .is_err());
     }
 
     #[test]

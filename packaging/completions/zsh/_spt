@@ -9589,6 +9589,49 @@ esac
     ;;
 esac
 ;;
+(ssh3-serve)
+_arguments "${_arguments_options[@]}" : \
+'--listen=[Address and port to bind the QUIC/UDP listener on]:ADDR:PORT:_default' \
+'--cert=[Path to the server'\''s TLS certificate chain (PEM, leaf first). Required unless \`--self-signed\` is given]:PEM:_files' \
+'--key=[Path to the server'\''s TLS private key (PEM\: PKCS#8, PKCS#1, or SEC1). Required unless \`--self-signed\` is given]:PEM:_files' \
+'*--self-signed-san=[DNS name(s) / IP literal(s) to embed as SANs in the self-signed cert. Only meaningful with \`--self-signed\`. Repeat for multiple SANs]:NAME:_default' \
+'--protocol-token=[The \`\:protocol\` token the server requires on the HTTP/3 Extended-CONNECT (default \`ssh3\`). A mismatch is rejected with HTTP 421]:TOKEN:_default' \
+'*--allow-target=[Allow-list of \`host\:port\` forward targets the server will dial. May be repeated. When empty, every requested \`direct-tcp\` open is accepted and dialed as requested (open relay — use with care)]:HOST:PORT:_default' \
+'(--allow-target)--fixed-target=[Pin every accepted forward to this single \`host\:port\` target regardless of what the peer requests (overrides \`--allow-target\`). Useful for a single-service bastion]:HOST:PORT:_default' \
+'--require-authorization=[Require this bearer/authorization value on the CONNECT request. When set, a CONNECT whose \`Authorization\` header does not match is rejected with HTTP 401]:TOKEN:_default' \
+'--config=[Path to a single config file]:PATH:_files' \
+'--config-dir=[Path to a directory of \`*.toml\` configs (loaded in lexical order)]:PATH:_files' \
+'--config-url=[HTTPS URL of a remote config to fetch]:URL:_default' \
+'--config-fingerprint=[SHA-256 fingerprint pin for \`--config-url\`]:SHA256:_default' \
+'--state-dir=[Override the runtime state directory]:PATH:_files' \
+'--profile=[Restrict operations to the named profile]:NAME:_default' \
+'--output=[Output format for command results]:OUTPUT:((human\:"Human-readable text (default)"
+json\:"Structured JSON"
+jsonl\:"JSON Lines (one record per line)"
+yaml\:"YAML"))' \
+'--log-level=[Tracing log level]:LOG_LEVEL:((error\:"Only errors"
+warn\:"Warnings and above"
+info\:"Informational and above (default)"
+debug\:"Debug and above"
+trace\:"Trace and above (very verbose)"))' \
+'--color=[Color policy for human output]:COLOR:((auto\:"Auto-detect based on tty"
+always\:"Always emit color escapes"
+never\:"Never emit color escapes"))' \
+'(--cert --key)--self-signed[Dev-mode only\: generate a self-signed certificate at startup instead of loading \`--cert\`/\`--key\`. Requires the binary to be built with the \`server-selfsigned\` feature; otherwise this flag errors. The SHA-256 SPKI pin of the generated cert is logged so a peer can pin it]' \
+'--portable[Portable mode\: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)]' \
+'--json[Convenience alias for \`--output json\`]' \
+'-q[Suppress non-essential output]' \
+'--quiet[Suppress non-essential output]' \
+'*-v[Increase verbosity (repeat for more)]' \
+'*--verbose[Increase verbosity (repeat for more)]' \
+'--no-color[Disable color (legacy convenience flag; use \`--color never\`)]' \
+'--dry-run[Show what would happen without making changes]' \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+'-V[Print version]' \
+'--version[Print version]' \
+&& ret=0
+;;
 (status)
 _arguments "${_arguments_options[@]}" : \
 '--output=[Output format for the overview (overrides the global \`--output\`)]:FORMAT:((human\:"Human-readable text (default)"
@@ -11822,6 +11865,10 @@ esac
     ;;
 esac
 ;;
+(ssh3-serve)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
 (status)
 _arguments "${_arguments_options[@]}" : \
 && ret=0
@@ -12002,6 +12049,7 @@ _spt_commands() {
 'diagnose:Targeted diagnostics and support bundles' \
 'benchmark:Controlled benchmarking against forwards' \
 'mcp:Built-in MCP server controls' \
+'ssh3-serve:Run the in-repo SSH3 (QUIC + HTTP/3) server end — the responder half of an spt↔spt SSH3 tunnel' \
 'status:Show overall app status — daemon, tunnels/profiles, forwards, and subsystems (status API, MCP, DNS, metrics, remote-config, events, services)' \
 'status-api:Controls for the read-only HTTP status API' \
 'completion:Generate shell completions' \
@@ -13597,6 +13645,7 @@ _spt__subcmd__help_commands() {
 'diagnose:Targeted diagnostics and support bundles' \
 'benchmark:Controlled benchmarking against forwards' \
 'mcp:Built-in MCP server controls' \
+'ssh3-serve:Run the in-repo SSH3 (QUIC + HTTP/3) server end — the responder half of an spt↔spt SSH3 tunnel' \
 'status:Show overall app status — daemon, tunnels/profiles, forwards, and subsystems (status API, MCP, DNS, metrics, remote-config, events, services)' \
 'status-api:Controls for the read-only HTTP status API' \
 'completion:Generate shell completions' \
@@ -14785,6 +14834,11 @@ _spt__subcmd__help__subcmd__sftp__subcmd__test_commands() {
 _spt__subcmd__help__subcmd__sftp__subcmd__umount_commands() {
     local commands; commands=()
     _describe -t commands 'spt help sftp umount commands' commands "$@"
+}
+(( $+functions[_spt__subcmd__help__subcmd__ssh3-serve_commands] )) ||
+_spt__subcmd__help__subcmd__ssh3-serve_commands() {
+    local commands; commands=()
+    _describe -t commands 'spt help ssh3-serve commands' commands "$@"
 }
 (( $+functions[_spt__subcmd__help__subcmd__stats_commands] )) ||
 _spt__subcmd__help__subcmd__stats_commands() {
@@ -16353,6 +16407,11 @@ _spt__subcmd__sftp__subcmd__test_commands() {
 _spt__subcmd__sftp__subcmd__umount_commands() {
     local commands; commands=()
     _describe -t commands 'spt sftp umount commands' commands "$@"
+}
+(( $+functions[_spt__subcmd__ssh3-serve_commands] )) ||
+_spt__subcmd__ssh3-serve_commands() {
+    local commands; commands=()
+    _describe -t commands 'spt ssh3-serve commands' commands "$@"
 }
 (( $+functions[_spt__subcmd__stats_commands] )) ||
 _spt__subcmd__stats_commands() {

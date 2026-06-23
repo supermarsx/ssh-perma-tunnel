@@ -63,7 +63,12 @@ spt-trust = { workspace = true }
 spt-forward = { workspace = true }
 spt-supervisor = { workspace = true }
 spt-ssh2 = { workspace = true }
-spt-ssh3 = { workspace = true }
+# `server` enables the in-repo SSH3 responder (`Ssh3Server`/`Ssh3ServerAcl`)
+# that the `spt ssh3-serve` subcommand drives. Base `server` adds NO new crate
+# to the graph (operator-supplied cert+key PEM via rustls). Dev-mode
+# `--self-signed` cert generation is the separate, opt-in `server-selfsigned`
+# feature below (re-exported as spt-bin's own `ssh3-server-selfsigned`).
+spt-ssh3 = { workspace = true, features = ["server"] }
 spt-sftp = { workspace = true }
 # t6-e6 — FTP-to-SFTP translator crate. Direct dep so `cargo build` exercises
 # it under `--locked`. t6-Bwire later registered the crate in
@@ -208,6 +213,10 @@ x25519-dalek = { version = "2", default-features = false, features = ["static_se
 [features]
 default = []
 snmp = ["dep:spt-snmp", "spt-cli/snmp"]
+# Enable dev-mode `--self-signed` certificate generation for `spt ssh3-serve`.
+# Off by default so production builds never link `rcgen`. When this feature is
+# absent, `spt ssh3-serve --self-signed` errors with a clear message.
+ssh3-server-selfsigned = ["spt-ssh3/server-selfsigned"]
 
 [lints]
 workspace = true

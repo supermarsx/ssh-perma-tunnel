@@ -39,9 +39,12 @@ pub mod session;
 pub mod tls;
 pub mod transport;
 
-/// In-repo SSH3 server end (responder). Gated behind `testing` until a later
-/// wave promotes it to an always-on `spt ssh3-serve` subcommand.
-#[cfg(any(test, feature = "testing"))]
+/// In-repo SSH3 server end (responder). Gated behind the `server` feature
+/// (also implied by `testing`); drives the `spt ssh3-serve` subcommand. The
+/// base `server` feature adds no new external dependency — server-side TLS
+/// uses operator-supplied cert+key PEM. The separate `server-selfsigned`
+/// feature adds dev-mode self-signed cert generation via `rcgen`.
+#[cfg(any(test, feature = "server"))]
 pub mod server;
 
 #[cfg(any(test, feature = "testing"))]
@@ -54,8 +57,8 @@ pub use frame::{
     Ssh3StreamKind, UdpAssociatePayload,
 };
 pub use protocol::{Ssh3Protocol, EXPERIMENTAL_WARNING, PARTIAL_REAL_REASON};
-#[cfg(any(test, feature = "testing"))]
-pub use server::{Ssh3Server, Ssh3ServerAcl};
+#[cfg(any(test, feature = "server"))]
+pub use server::{serve, Ssh3Server, Ssh3ServerAcl};
 pub use session::{RedialParams, Ssh3Session};
 pub use transport::{
     accept_control_stream, bootstrap, build_connect_request, open_control_stream,

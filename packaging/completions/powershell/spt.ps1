@@ -62,6 +62,7 @@ Register-ArgumentCompleter -Native -CommandName 'spt' -ScriptBlock {
             [CompletionResult]::new('diagnose', 'diagnose', [CompletionResultType]::ParameterValue, 'Targeted diagnostics and support bundles')
             [CompletionResult]::new('benchmark', 'benchmark', [CompletionResultType]::ParameterValue, 'Controlled benchmarking against forwards')
             [CompletionResult]::new('mcp', 'mcp', [CompletionResultType]::ParameterValue, 'Built-in MCP server controls')
+            [CompletionResult]::new('ssh3-serve', 'ssh3-serve', [CompletionResultType]::ParameterValue, 'Run the in-repo SSH3 (QUIC + HTTP/3) server end — the responder half of an spt↔spt SSH3 tunnel')
             [CompletionResult]::new('status', 'status', [CompletionResultType]::ParameterValue, 'Show overall app status — daemon, tunnels/profiles, forwards, and subsystems (status API, MCP, DNS, metrics, remote-config, events, services)')
             [CompletionResult]::new('status-api', 'status-api', [CompletionResultType]::ParameterValue, 'Controls for the read-only HTTP status API')
             [CompletionResult]::new('completion', 'completion', [CompletionResultType]::ParameterValue, 'Generate shell completions')
@@ -6599,6 +6600,39 @@ Register-ArgumentCompleter -Native -CommandName 'spt' -ScriptBlock {
         'spt;mcp;help;help' {
             break
         }
+        'spt;ssh3-serve' {
+            [CompletionResult]::new('--listen', '--listen', [CompletionResultType]::ParameterName, 'Address and port to bind the QUIC/UDP listener on')
+            [CompletionResult]::new('--cert', '--cert', [CompletionResultType]::ParameterName, 'Path to the server''s TLS certificate chain (PEM, leaf first). Required unless `--self-signed` is given')
+            [CompletionResult]::new('--key', '--key', [CompletionResultType]::ParameterName, 'Path to the server''s TLS private key (PEM: PKCS#8, PKCS#1, or SEC1). Required unless `--self-signed` is given')
+            [CompletionResult]::new('--self-signed-san', '--self-signed-san', [CompletionResultType]::ParameterName, 'DNS name(s) / IP literal(s) to embed as SANs in the self-signed cert. Only meaningful with `--self-signed`. Repeat for multiple SANs')
+            [CompletionResult]::new('--protocol-token', '--protocol-token', [CompletionResultType]::ParameterName, 'The `:protocol` token the server requires on the HTTP/3 Extended-CONNECT (default `ssh3`). A mismatch is rejected with HTTP 421')
+            [CompletionResult]::new('--allow-target', '--allow-target', [CompletionResultType]::ParameterName, 'Allow-list of `host:port` forward targets the server will dial. May be repeated. When empty, every requested `direct-tcp` open is accepted and dialed as requested (open relay — use with care)')
+            [CompletionResult]::new('--fixed-target', '--fixed-target', [CompletionResultType]::ParameterName, 'Pin every accepted forward to this single `host:port` target regardless of what the peer requests (overrides `--allow-target`). Useful for a single-service bastion')
+            [CompletionResult]::new('--require-authorization', '--require-authorization', [CompletionResultType]::ParameterName, 'Require this bearer/authorization value on the CONNECT request. When set, a CONNECT whose `Authorization` header does not match is rejected with HTTP 401')
+            [CompletionResult]::new('--config', '--config', [CompletionResultType]::ParameterName, 'Path to a single config file')
+            [CompletionResult]::new('--config-dir', '--config-dir', [CompletionResultType]::ParameterName, 'Path to a directory of `*.toml` configs (loaded in lexical order)')
+            [CompletionResult]::new('--config-url', '--config-url', [CompletionResultType]::ParameterName, 'HTTPS URL of a remote config to fetch')
+            [CompletionResult]::new('--config-fingerprint', '--config-fingerprint', [CompletionResultType]::ParameterName, 'SHA-256 fingerprint pin for `--config-url`')
+            [CompletionResult]::new('--state-dir', '--state-dir', [CompletionResultType]::ParameterName, 'Override the runtime state directory')
+            [CompletionResult]::new('--profile', '--profile', [CompletionResultType]::ParameterName, 'Restrict operations to the named profile')
+            [CompletionResult]::new('--output', '--output', [CompletionResultType]::ParameterName, 'Output format for command results')
+            [CompletionResult]::new('--log-level', '--log-level', [CompletionResultType]::ParameterName, 'Tracing log level')
+            [CompletionResult]::new('--color', '--color', [CompletionResultType]::ParameterName, 'Color policy for human output')
+            [CompletionResult]::new('--self-signed', '--self-signed', [CompletionResultType]::ParameterName, 'Dev-mode only: generate a self-signed certificate at startup instead of loading `--cert`/`--key`. Requires the binary to be built with the `server-selfsigned` feature; otherwise this flag errors. The SHA-256 SPKI pin of the generated cert is logged so a peer can pin it')
+            [CompletionResult]::new('--portable', '--portable', [CompletionResultType]::ParameterName, 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)')
+            [CompletionResult]::new('--json', '--json', [CompletionResultType]::ParameterName, 'Convenience alias for `--output json`')
+            [CompletionResult]::new('-q', '-q', [CompletionResultType]::ParameterName, 'Suppress non-essential output')
+            [CompletionResult]::new('--quiet', '--quiet', [CompletionResultType]::ParameterName, 'Suppress non-essential output')
+            [CompletionResult]::new('-v', '-v', [CompletionResultType]::ParameterName, 'Increase verbosity (repeat for more)')
+            [CompletionResult]::new('--verbose', '--verbose', [CompletionResultType]::ParameterName, 'Increase verbosity (repeat for more)')
+            [CompletionResult]::new('--no-color', '--no-color', [CompletionResultType]::ParameterName, 'Disable color (legacy convenience flag; use `--color never`)')
+            [CompletionResult]::new('--dry-run', '--dry-run', [CompletionResultType]::ParameterName, 'Show what would happen without making changes')
+            [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help (see more with ''--help'')')
+            [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help (see more with ''--help'')')
+            [CompletionResult]::new('-V', '-V ', [CompletionResultType]::ParameterName, 'Print version')
+            [CompletionResult]::new('--version', '--version', [CompletionResultType]::ParameterName, 'Print version')
+            break
+        }
         'spt;status' {
             [CompletionResult]::new('--output', '--output', [CompletionResultType]::ParameterName, 'Output format for the overview (overrides the global `--output`)')
             [CompletionResult]::new('--config', '--config', [CompletionResultType]::ParameterName, 'Path to a single config file')
@@ -7261,6 +7295,7 @@ Register-ArgumentCompleter -Native -CommandName 'spt' -ScriptBlock {
             [CompletionResult]::new('diagnose', 'diagnose', [CompletionResultType]::ParameterValue, 'Targeted diagnostics and support bundles')
             [CompletionResult]::new('benchmark', 'benchmark', [CompletionResultType]::ParameterValue, 'Controlled benchmarking against forwards')
             [CompletionResult]::new('mcp', 'mcp', [CompletionResultType]::ParameterValue, 'Built-in MCP server controls')
+            [CompletionResult]::new('ssh3-serve', 'ssh3-serve', [CompletionResultType]::ParameterValue, 'Run the in-repo SSH3 (QUIC + HTTP/3) server end — the responder half of an spt↔spt SSH3 tunnel')
             [CompletionResult]::new('status', 'status', [CompletionResultType]::ParameterValue, 'Show overall app status — daemon, tunnels/profiles, forwards, and subsystems (status API, MCP, DNS, metrics, remote-config, events, services)')
             [CompletionResult]::new('status-api', 'status-api', [CompletionResultType]::ParameterValue, 'Controls for the read-only HTTP status API')
             [CompletionResult]::new('completion', 'completion', [CompletionResultType]::ParameterValue, 'Generate shell completions')
@@ -8052,6 +8087,9 @@ Register-ArgumentCompleter -Native -CommandName 'spt' -ScriptBlock {
             break
         }
         'spt;help;mcp;policy;set' {
+            break
+        }
+        'spt;help;ssh3-serve' {
             break
         }
         'spt;help;status' {

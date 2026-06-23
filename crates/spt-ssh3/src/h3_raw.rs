@@ -509,7 +509,7 @@ pub(crate) async fn extended_connect_raw(
 /// [`quinn::SendStream`] (the caller must hold it for the connection's
 /// lifetime — dropping it finishes the control stream, which the client
 /// tolerates but which is cleaner to keep open).
-#[cfg(any(test, feature = "testing"))]
+#[cfg(any(test, feature = "server"))]
 pub(crate) async fn write_server_control_stream(
     connection: &quinn::Connection,
 ) -> Result<quinn::SendStream> {

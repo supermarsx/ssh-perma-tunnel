@@ -172,6 +172,10 @@ pub async fn dispatch(cli: Cli) -> Result<()> {
         Command::Diagnose(c) => diagnose_dispatch(&global, c).await,
         Command::Benchmark(c) => benchmark_dispatch(&global, c).await,
         Command::Mcp(c) => mcp_dispatch(&global, c).await,
+        // `ssh3-serve` runs a long-lived QUIC accept loop; box the future to
+        // keep the combined `dispatch` future under clippy's `large_futures`
+        // threshold (mirrors `Tunnel`/`Status`).
+        Command::Ssh3Serve(c) => Box::pin(crate::cli::ssh3_ops::serve(&global, c)).await,
         // The overview future builds an `OverviewReport` (runtime + snapshot)
         // and awaits the OS service-status probe; box it to keep the combined
         // `dispatch` future under clippy's `large_futures` threshold.

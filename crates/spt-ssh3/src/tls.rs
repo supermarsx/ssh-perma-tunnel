@@ -216,6 +216,90 @@ impl ServerCertVerifier for SptVerifier {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Server-side TLS (the `spt ssh3-serve` responder). Gated behind the `server`
+// feature; adds NO new external dependency (rustls + rustls-pemfile only).
+// ---------------------------------------------------------------------------
+
+/// The opaque server-side QUIC/TLS config produced by [`build_server_config`]
+/// and [`self_signed_server_config`]. Re-exported so downstream crates (e.g.
+/// `spt-bin`'s `ssh3-serve`) can hold the value and pass it to
+/// [`crate::serve`] without depending on `quinn` directly.
+#[cfg(feature = "server")]
+pub type ServerTlsConfig = quinn::ServerConfig;
+
+/// Build a [`quinn::ServerConfig`] from operator-supplied certificate-chain and
+/// private-key PEM files, advertising the SSH3 ALPN (`h3`).
+///
+/// `cert_pem` may contain a full chain (leaf first); `key_pem` must hold a
+/// single PKCS#8, PKCS#1 (RSA), or SEC1 (EC) private key. The crypto provider
+/// (`ring`) is installed idempotently.
+///
+/// Used by `spt ssh3-serve --cert <pem> --key <pem>`.
+#[cfg(feature = "server")]
+pub fn build_server_config(cert_pem: &[u8], key_pem: &[u8]) -> Result<quinn::ServerConfig> {
+    use rustls::pki_types::PrivateKeyDer;
+
+    install_default_provider();
+
+    let mut cert_cursor = std::io::Cursor::new(cert_pem);
+    let certs = rustls_pemfile::certs(&mut cert_cursor)
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(|e| Error::InvalidConfig(format!("parse server cert PEM: {e}")))?;
+    if certs.is_empty() {
+        return Err(Error::InvalidConfig(
+            "server cert PEM contained no certificates".into(),
+        ));
+    }
+
+    let mut key_cursor = std::io::Cursor::new(key_pem);
+    let key: PrivateKeyDer<'static> = rustls_pemfile::private_key(&mut key_cursor)
+        .map_err(|e| Error::InvalidConfig(format!("parse server key PEM: {e}")))?
+        .ok_or_else(|| Error::InvalidConfig("server key PEM contained no private key".into()))?;
+
+    quic_server_config_from_rustls(certs, key)
+}
+
+/// Build a dev-mode self-signed [`quinn::ServerConfig`] for the given SANs
+/// (DNS names / IP literals), returning the config alongside the SHA-256 SPKI
+/// pin of the generated leaf so a peer can pin it. **Never** use in production.
+///
+/// Gated behind `server-selfsigned` (pulls in `rcgen`).
+#[cfg(feature = "server-selfsigned")]
+pub fn self_signed_server_config(sans: Vec<String>) -> Result<(quinn::ServerConfig, [u8; 32])> {
+    use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
+
+    install_default_provider();
+
+    let cert = rcgen::generate_simple_self_signed(sans)
+        .map_err(|e| Error::InvalidConfig(format!("generate self-signed cert: {e}")))?;
+    let cert_der = CertificateDer::from(cert.cert.der().to_vec());
+    let pin = TlsPin::spki_sha256_of(&cert_der)
+        .map_err(|e| Error::InvalidConfig(format!("compute SPKI pin: {e}")))?;
+    let key_der = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(cert.key_pair.serialize_der()));
+    let server = quic_server_config_from_rustls(vec![cert_der], key_der)?;
+    Ok((server, pin))
+}
+
+/// Shared tail: assemble a [`quinn::ServerConfig`] from a parsed cert chain +
+/// key, advertising the SSH3 ALPN.
+#[cfg(feature = "server")]
+fn quic_server_config_from_rustls(
+    certs: Vec<rustls::pki_types::CertificateDer<'static>>,
+    key: rustls::pki_types::PrivateKeyDer<'static>,
+) -> Result<quinn::ServerConfig> {
+    let mut rustls_server = rustls::ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(certs, key)
+        .map_err(|e| Error::InvalidConfig(format!("build server TLS config: {e}")))?;
+    // The client (`build_client_config`) advertises `["h3"]`; the QUIC
+    // handshake fails with "no known protocol" if the server omits it.
+    rustls_server.alpn_protocols = vec![b"h3".to_vec()];
+    let quic_server = quinn::crypto::rustls::QuicServerConfig::try_from(rustls_server)
+        .map_err(|e| Error::InvalidConfig(format!("build QUIC server config: {e}")))?;
+    Ok(quinn::ServerConfig::with_crypto(Arc::new(quic_server)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

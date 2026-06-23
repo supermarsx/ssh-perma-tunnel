@@ -27,6 +27,8 @@ Commands:
   diagnose    Targeted diagnostics and support bundles
   benchmark   Controlled benchmarking against forwards
   mcp         Built-in MCP server controls
+  ssh3-serve  Run the in-repo SSH3 (QUIC + HTTP/3) server end — the responder half of an spt↔spt
+              SSH3 tunnel
   status      Show overall app status — daemon, tunnels/profiles, forwards, and subsystems (status
               API, MCP, DNS, metrics, remote-config, events, services)
   status-api  Controls for the read-only HTTP status API

@@ -16,7 +16,20 @@ workspace = true
 default = []
 # Exposes the `testing` module: Ssh3TestServer + fixtures. Pulls in `rcgen` as
 # an optional non-dev dep so downstream test crates can reuse the harness.
-testing = ["dep:rcgen"]
+# Implies `server` so the in-repo responder is available to test rigs and the
+# existing e2e harness without separately enabling it.
+testing = ["dep:rcgen", "server"]
+# Promotes the in-repo SSH3 server end (`Ssh3Server`/`Ssh3ServerAcl`) out of the
+# `testing` gate so a production `spt ssh3-serve` subcommand can drive it. The
+# base feature adds NO new external dependency — server-side TLS uses
+# operator-supplied cert+key PEM files via the rustls/rustls-pemfile crates
+# already present. Dev-mode self-signed certificate generation (rcgen) lives
+# behind the separate `server-selfsigned` opt-in below.
+server = []
+# Opt-in dev-mode `--self-signed` certificate generation for the server. Pulls
+# in `rcgen` (already an optional dep for `testing`); kept OUT of the default
+# `server` build so production server binaries never link rcgen.
+server-selfsigned = ["server", "dep:rcgen"]
 # Opt-in gate for Criterion benchmarks. This keeps `cargo test --all-targets`
 # from executing harness-free benches during normal test gates.
 bench = []

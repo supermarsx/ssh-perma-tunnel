@@ -11,10 +11,13 @@
 //! [`quinn::Endpoint::server`] and tunnel against a live [`crate::Ssh3Session`]
 //! opened via the full HTTP/3 Extended-CONNECT [`crate::bootstrap`] path.
 //!
-//! It is gated behind `#[cfg(any(test, feature = "testing"))]` for now (Wave A)
-//! but is written to be promotable to always-on by a future wave that adds the
-//! `spt ssh3-serve` subcommand — the only `testing`-specific dependency is the
-//! `quinn` server bring-up in the tests, not this module's logic.
+//! It is gated behind the `server` cargo feature (also implied by `testing`).
+//! The base `server` feature adds no new external dependency — the
+//! `spt ssh3-serve` subcommand builds its [`quinn::ServerConfig`] from
+//! operator-supplied cert+key PEM via [`crate::tls::build_server_config`].
+//! Dev-mode self-signed certificates ([`crate::tls::self_signed_server_config`])
+//! live behind the separate `server-selfsigned` feature so production server
+//! builds never link `rcgen`.
 //!
 //! ## Responder flow
 //!
@@ -36,7 +39,7 @@
 //!    listeners. The server serves all three by wiring the existing
 //!    `serve_*` helpers against one shared [`crate::forward::SessionState`].
 
-#![cfg(any(test, feature = "testing"))]
+#![cfg(any(test, feature = "server"))]
 
 use std::sync::Arc;
 
@@ -71,6 +74,11 @@ type ConnectAuthorizer = Arc<dyn Fn(&str, Option<&str>) -> bool + Send + Sync>;
 /// denies the open. This is the seam an operator-facing server uses to enforce
 /// an allow-list; the loopback test rig uses it to pin every open to one echo
 /// target.
+///
+/// Cheaply cloneable — the resolver/authorizer are `Arc`-wrapped, so a single
+/// configured ACL can be cloned per accepted connection (as
+/// [`serve`] does).
+#[derive(Clone)]
 pub struct Ssh3ServerAcl {
     /// Resolve (and authorize) a `direct-tcp` open to a dial target. `None`
     /// rejects the open.
@@ -297,4 +305,75 @@ impl Ssh3Server {
         }
         Ok(())
     }
+}
+
+/// Bind a [`quinn::Endpoint::server`] on `listen` with `server_cfg`, then accept
+/// connections in a loop, spawning one [`Ssh3Server::run`] task per accepted
+/// connection (each gets a clone of `acl`). The loop runs until the `shutdown`
+/// future resolves, at which point the endpoint is closed cleanly and the call
+/// awaits in-flight connections going idle.
+///
+/// This is the engine behind the `spt ssh3-serve` subcommand; it owns all
+/// `quinn` server plumbing so callers (e.g. `spt-bin`) need not depend on
+/// `quinn` directly. Connect/disconnect/error events are logged via `tracing`.
+///
+/// `listen` is a concrete [`std::net::SocketAddr`]; the caller resolves any
+/// host string first.
+#[cfg(feature = "server")]
+pub async fn serve<F>(
+    listen: std::net::SocketAddr,
+    server_cfg: quinn::ServerConfig,
+    acl: Ssh3ServerAcl,
+    shutdown: F,
+) -> Result<()>
+where
+    F: std::future::Future<Output = ()> + Send,
+{
+    use tracing::{info, warn};
+
+    let endpoint = quinn::Endpoint::server(server_cfg, listen)
+        .map_err(|e| Error::RuntimeFailure(format!("ssh3 server: bind {listen}: {e}")))?;
+    let bound = endpoint
+        .local_addr()
+        .map_err(|e| Error::RuntimeFailure(format!("ssh3 server: local_addr: {e}")))?;
+    info!(
+        target: "spt_ssh3::server",
+        listen = %bound, protocol_token = %acl.protocol_token,
+        "ssh3 server: listening for SSH3 (QUIC + HTTP/3) connections"
+    );
+
+    let mut shutdown = std::pin::pin!(shutdown);
+    loop {
+        tokio::select! {
+            biased;
+            () = &mut shutdown => {
+                info!(target: "spt_ssh3::server", "ssh3 server: shutdown requested — stopping accept loop");
+                break;
+            }
+            incoming = endpoint.accept() => {
+                let Some(incoming) = incoming else { break };
+                let remote = incoming.remote_address();
+                let conn_acl = acl.clone();
+                tokio::spawn(async move {
+                    let conn = match incoming.await {
+                        Ok(c) => c,
+                        Err(e) => {
+                            warn!(target: "spt_ssh3::server", peer = %remote, error = %e, "ssh3 server: handshake failed");
+                            return;
+                        }
+                    };
+                    info!(target: "spt_ssh3::server", peer = %remote, "ssh3 server: connection established");
+                    match Ssh3Server::new().run(conn, conn_acl).await {
+                        Ok(()) => info!(target: "spt_ssh3::server", peer = %remote, "ssh3 server: connection closed"),
+                        Err(e) => warn!(target: "spt_ssh3::server", peer = %remote, error = %e, "ssh3 server: connection error"),
+                    }
+                });
+            }
+        }
+    }
+
+    endpoint.close(0u32.into(), b"ssh3 server shutting down");
+    endpoint.wait_idle().await;
+    info!(target: "spt_ssh3::server", "ssh3 server: endpoint closed");
+    Ok(())
 }
