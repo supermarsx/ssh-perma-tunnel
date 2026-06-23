@@ -808,10 +808,7 @@ mod tests {
             self.inner.open_local_forward(&local).await
         }
 
-        async fn open_remote_uds(
-            &mut self,
-            spec: &RemoteUdsForwardSpec,
-        ) -> Result<ForwardHandle> {
+        async fn open_remote_uds(&mut self, spec: &RemoteUdsForwardSpec) -> Result<ForwardHandle> {
             // Record the remote-UDS spec and synthesize a handle via the inner
             // mock's local-forward path (a UDS forward is, at the handle level,
             // indistinguishable from any other forward).
@@ -1562,7 +1559,10 @@ mod tests {
         let runner = ForwardRunner::start(&cfg, &mut session, &ForwardRunnerConfig::default())
             .await
             .unwrap();
-        let uds = session.last_remote_uds.clone().expect("remote-UDS spec captured");
+        let uds = session
+            .last_remote_uds
+            .clone()
+            .expect("remote-UDS spec captured");
         assert_eq!(uds.name, "f1");
         assert_eq!(uds.remote_socket_path, "/run/spt-remote.sock");
         assert_eq!(
@@ -1590,7 +1590,10 @@ mod tests {
         let runner = ForwardRunner::start(&cfg, &mut session, &ForwardRunnerConfig::default())
             .await
             .unwrap();
-        let uds = session.last_remote_uds.clone().expect("remote-UDS spec captured");
+        let uds = session
+            .last_remote_uds
+            .clone()
+            .expect("remote-UDS spec captured");
         assert!(!uds.required);
         assert_eq!(uds.idle_timeout, None);
         assert!(!runner.required());
@@ -1615,7 +1618,10 @@ mod tests {
         let runner = ForwardRunner::start(&cfg, &mut session, &runner_cfg)
             .await
             .unwrap();
-        let uds = session.last_remote_uds.clone().expect("remote-UDS spec captured");
+        let uds = session
+            .last_remote_uds
+            .clone()
+            .expect("remote-UDS spec captured");
         assert_eq!(uds.limits.rate_bps_down, 4096);
         runner.stop().await;
     }

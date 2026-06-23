@@ -2702,7 +2702,10 @@ async fn remote_uds_loop(
         }
     }
 
-    ctx.remote_uds_forwards.lock().await.remove(&ctx.remote_path);
+    ctx.remote_uds_forwards
+        .lock()
+        .await
+        .remove(&ctx.remote_path);
     // Drop the forward guard explicitly so the server-side listener is
     // cancelled (`cancel-streamlocal-forward@openssh.com`) as the loop ends.
     drop(ctx.forward);
@@ -3698,7 +3701,10 @@ mod tests {
             ..RemoteUdsForwardSpec::default()
         };
         assert_eq!(spec.remote_socket_path, "/run/r.sock");
-        assert_eq!(spec.local_socket_path, std::path::PathBuf::from("/run/l.sock"));
+        assert_eq!(
+            spec.local_socket_path,
+            std::path::PathBuf::from("/run/l.sock")
+        );
     }
 
     // ──────── t-tunnel-wire-2 §3: preflight_connect ──────────────────────

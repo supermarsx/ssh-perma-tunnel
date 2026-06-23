@@ -268,10 +268,7 @@ impl InstabilityDetector {
                 // ceiling.
                 self.consecutive_misses = self.consecutive_misses.saturating_add(1);
                 if let Some(threshold) = self.cfg.max_keepalive_misses {
-                    if threshold > 0
-                        && self.consecutive_misses >= threshold
-                        && !self.triggered
-                    {
+                    if threshold > 0 && self.consecutive_misses >= threshold && !self.triggered {
                         self.triggered = true;
                         newly = true;
                     }
