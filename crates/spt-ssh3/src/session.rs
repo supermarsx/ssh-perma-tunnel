@@ -31,7 +31,8 @@ use quinn::{Connection, RecvStream, SendStream};
 use spt_auth::AuthConfig;
 use spt_core::{Error, Result};
 use spt_protocol::forward::{
-    DynamicForwardSpec, LocalForwardSpec, RemoteForwardSpec, UdpForwardSpec,
+    DynamicForwardSpec, LocalForwardSpec, RemoteForwardSpec, RemoteUdsForwardSpec, UdpForwardSpec,
+    UdsForwardSpec,
 };
 use spt_protocol::handle::ForwardHandle;
 use spt_protocol::session::{SessionInfo, TunnelSession};
@@ -305,6 +306,32 @@ impl TunnelSession for Ssh3Session {
             self.next_flow_id.clone(),
             spec,
             self.peer_settings.udp_datagrams,
+        )
+        .await
+    }
+
+    async fn open_uds_forward(&mut self, spec: &UdsForwardSpec) -> Result<ForwardHandle> {
+        // `local_uds`: bind a client-side AF_UNIX listener and bridge each
+        // accepted connection over a fresh UDS channel to the peer, which
+        // `UnixStream::connect`s `spec.remote_socket_path`. On `cfg(not(unix))`
+        // the forward.rs impl returns `UnsupportedPlatform` (mirrors russh).
+        forward::open_uds(self.connection.clone(), spec).await
+    }
+
+    async fn open_remote_uds(&mut self, spec: &RemoteUdsForwardSpec) -> Result<ForwardHandle> {
+        // `remote_uds`: ask the peer to bind a unix listener on
+        // `spec.remote_socket_path`, then bridge each server-opened UDS
+        // back-channel to a local `UnixStream::connect(spec.local_socket_path)`.
+        // Reuses the inbound-bidi dispatch loop (UDS opens are routed to the
+        // remote-uds registration). On `cfg(not(unix))` returns
+        // `UnsupportedPlatform`.
+        forward::open_remote_uds(
+            self.state.clone(),
+            self.control_send.clone(),
+            self.control_recv.clone(),
+            self.control_request.clone(),
+            spec,
+            self.peer_settings.remote_tcp,
         )
         .await
     }

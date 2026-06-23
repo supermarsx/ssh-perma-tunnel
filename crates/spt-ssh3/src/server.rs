@@ -49,7 +49,7 @@ use tokio::sync::Mutex as AsyncMutex;
 use tracing::debug;
 
 use crate::forward::{
-    serve_datagram_demux, serve_local_tcp_acceptor, serve_remote_udp_forwards, SessionState,
+    serve_datagram_demux, serve_inbound_opens, serve_remote_udp_forwards, SessionState,
 };
 use crate::frame::{ChannelOpenPayload, Ssh3Settings};
 use crate::h3_raw::{build_headers_frame, qpack_decode, qpack_encode, read_frame_typed};
@@ -230,10 +230,12 @@ impl Ssh3Server {
             serve_datagram_demux(dg_conn, dg_state).await;
         });
 
-        // 4. Local-TCP forward acceptor: every remaining inbound bidi is a
-        // `direct-tcp` open. Resolve via the ACL and bridge to the target.
+        // 4. Inbound-open acceptor: every remaining inbound bidi is either a
+        // `direct-tcp` open (resolved via the ACL and bridged to a TCP target)
+        // or, on `cfg(unix)`, a `uds` open (the server `UnixStream::connect`s
+        // the client-supplied path and bridges).
         let acl_for_tcp = acl.clone();
-        serve_local_tcp_acceptor(connection.clone(), move |open| {
+        serve_inbound_opens(connection.clone(), move |open| {
             (acl_for_tcp.resolve_target)(open)
         })
         .await;

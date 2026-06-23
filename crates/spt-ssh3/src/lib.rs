@@ -54,7 +54,7 @@ pub use auth_header::build_authorization_header;
 pub use config::{Ssh3AuthExtras, Ssh3Config, Ssh3TlsConfig, DEFAULT_PROTOCOL_TOKEN};
 pub use frame::{
     ChannelOpenPayload, ForwardOpenResponse, Ssh3Frame, Ssh3FrameKind, Ssh3Settings,
-    Ssh3StreamKind, UdpAssociatePayload,
+    Ssh3StreamKind, UdpAssociatePayload, UdsChannelOpenPayload,
 };
 pub use protocol::{Ssh3Protocol, EXPERIMENTAL_WARNING, PARTIAL_REAL_REASON};
 #[cfg(any(test, feature = "server"))]

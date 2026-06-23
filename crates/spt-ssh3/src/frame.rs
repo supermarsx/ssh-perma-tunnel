@@ -78,6 +78,22 @@ pub enum Ssh3FrameKind {
     /// `AppPing` already owns that tag — `0x08` is the actual on-the-wire
     /// value.
     RemoteUdpForwardRequest = 0x08,
+    /// Open a unix-domain-socket forward channel: the payload is a
+    /// [`UdsChannelOpenPayload`] carrying the target unix socket *path* the
+    /// peer should `UnixStream::connect`. Used on a fresh bidi stream for both
+    /// local-UDS (client→server, server dials the path) and remote-UDS
+    /// (server→client back-channel, client dials the path) opens — the
+    /// direction is implied by which end opened the stream, exactly as
+    /// [`Self::DirectTcpRequest`] is reused for TCP. `cfg(unix)` only; a peer
+    /// without UDS support never sees this frame.
+    UdsForwardRequest = 0x09,
+    /// Request the peer bind a remote unix-domain-socket listener: the payload
+    /// is a [`UdsChannelOpenPayload`] carrying the *bind* path. Sent on the
+    /// control stream (analogue of [`Self::RemoteUdpForwardRequest`] for UDS);
+    /// the peer answers with a [`Self::ForwardOpenResponse`] and thereafter
+    /// opens one [`Self::UdsForwardRequest`] back-channel per accepted
+    /// connection.
+    RemoteUdsForwardRequest = 0x0a,
 }
 
 impl Ssh3FrameKind {
@@ -93,6 +109,8 @@ impl Ssh3FrameKind {
             0x06 => Self::UdpAssociate,
             0x07 => Self::AppPing,
             0x08 => Self::RemoteUdpForwardRequest,
+            0x09 => Self::UdsForwardRequest,
+            0x0a => Self::RemoteUdsForwardRequest,
             _ => return None,
         })
     }
@@ -308,6 +326,53 @@ impl ChannelOpenPayload {
             .to_string();
         let port = payload.get_u16();
         Ok(Self { host, port })
+    }
+}
+
+/// Payload for [`Ssh3FrameKind::UdsForwardRequest`] and
+/// [`Ssh3FrameKind::RemoteUdsForwardRequest`]: a single unix-domain-socket
+/// *path*.
+///
+/// Wire: `[path_len:u16_be][path_utf8…]`.
+///
+/// For [`Ssh3FrameKind::UdsForwardRequest`] the path is the socket the peer
+/// should `UnixStream::connect`. For [`Ssh3FrameKind::RemoteUdsForwardRequest`]
+/// the path is the socket the peer should `UnixListener::bind`.
+///
+/// **Source**: the spt↔spt interop escape hatch — see `frame.rs`/`session.rs`
+/// top-of-file notes. Not bit-compatible with francoismichel/ssh3 (which has no
+/// UDS forwarding at all).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UdsChannelOpenPayload {
+    /// Target / bind unix socket path (UTF-8).
+    pub path: String,
+}
+
+impl UdsChannelOpenPayload {
+    /// Encode to a [`Bytes`] suitable for [`Ssh3Frame::payload`].
+    #[must_use]
+    pub fn encode(&self) -> Bytes {
+        let p = self.path.as_bytes();
+        let mut buf = BytesMut::with_capacity(2 + p.len());
+        buf.put_u16(u16::try_from(p.len()).unwrap_or(u16::MAX));
+        buf.put_slice(p);
+        buf.freeze()
+    }
+
+    /// Decode from a frame payload.
+    pub fn decode(mut payload: Bytes) -> Result<Self> {
+        if payload.remaining() < 2 {
+            return Err(Error::InvalidConfig("ssh3 uds-open: short header".into()));
+        }
+        let plen = payload.get_u16() as usize;
+        if payload.remaining() < plen {
+            return Err(Error::InvalidConfig("ssh3 uds-open: truncated".into()));
+        }
+        let path_bytes = payload.copy_to_bytes(plen);
+        let path = std::str::from_utf8(&path_bytes)
+            .map_err(|e| Error::InvalidConfig(format!("ssh3 uds-open: path utf8: {e}")))?
+            .to_string();
+        Ok(Self { path })
     }
 }
 
@@ -555,6 +620,65 @@ mod tests {
     }
 
     #[test]
+    fn uds_channel_open_round_trip() {
+        let p = UdsChannelOpenPayload {
+            path: "/run/spt/remote.sock".into(),
+        };
+        let de = UdsChannelOpenPayload::decode(p.encode()).unwrap();
+        assert_eq!(p, de);
+    }
+
+    #[test]
+    fn uds_channel_open_empty_path_round_trips() {
+        let p = UdsChannelOpenPayload {
+            path: String::new(),
+        };
+        let de = UdsChannelOpenPayload::decode(p.encode()).unwrap();
+        assert_eq!(p, de);
+    }
+
+    #[test]
+    fn uds_channel_open_decode_short_header() {
+        let err = UdsChannelOpenPayload::decode(Bytes::from_static(&[0x00])).unwrap_err();
+        assert!(matches!(err, Error::InvalidConfig(_)));
+    }
+
+    #[test]
+    fn uds_channel_open_decode_truncated_path() {
+        let mut p = Vec::new();
+        p.extend_from_slice(&10u16.to_be_bytes());
+        p.extend_from_slice(b"short");
+        let err = UdsChannelOpenPayload::decode(Bytes::from(p)).unwrap_err();
+        assert!(matches!(err, Error::InvalidConfig(_)));
+    }
+
+    #[test]
+    fn uds_channel_open_decode_bad_utf8() {
+        let mut p = Vec::new();
+        p.extend_from_slice(&3u16.to_be_bytes());
+        p.extend_from_slice(&[0xff, 0xfe, 0xfd]);
+        let err = UdsChannelOpenPayload::decode(Bytes::from(p)).unwrap_err();
+        assert!(matches!(err, Error::InvalidConfig(_)));
+    }
+
+    #[test]
+    fn uds_frame_kinds_round_trip_through_frame() {
+        for kind in [
+            Ssh3FrameKind::UdsForwardRequest,
+            Ssh3FrameKind::RemoteUdsForwardRequest,
+        ] {
+            let body = UdsChannelOpenPayload {
+                path: "/tmp/spt.sock".into(),
+            }
+            .encode();
+            let f = Ssh3Frame::new(kind, body);
+            let mut bytes = f.encode();
+            let de = Ssh3Frame::decode(&mut bytes).unwrap();
+            assert_eq!(de, f);
+        }
+    }
+
+    #[test]
     fn forward_open_response_round_trip() {
         let p = ForwardOpenResponse {
             ok: false,
@@ -669,11 +793,13 @@ mod tests {
             (0x06, Ssh3FrameKind::UdpAssociate),
             (0x07, Ssh3FrameKind::AppPing),
             (0x08, Ssh3FrameKind::RemoteUdpForwardRequest),
+            (0x09, Ssh3FrameKind::UdsForwardRequest),
+            (0x0a, Ssh3FrameKind::RemoteUdsForwardRequest),
         ] {
             assert_eq!(Ssh3FrameKind::from_u8(raw), Some(want));
         }
         assert_eq!(Ssh3FrameKind::from_u8(0x00), None);
-        assert_eq!(Ssh3FrameKind::from_u8(0x09), None);
+        assert_eq!(Ssh3FrameKind::from_u8(0x0b), None);
         assert_eq!(Ssh3FrameKind::from_u8(0xFF), None);
     }
 

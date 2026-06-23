@@ -57,6 +57,10 @@ use tracing::{debug, error, warn};
 use crate::frame::{
     ChannelOpenPayload, ForwardOpenResponse, Ssh3Frame, Ssh3FrameKind, UdpAssociatePayload,
 };
+// `UdsChannelOpenPayload` is only referenced from `cfg(unix)` UDS paths; on
+// non-unix the import would be dead.
+#[cfg(unix)]
+use crate::frame::UdsChannelOpenPayload;
 
 /// Channel-open timeout (peer must answer the open frame within this).
 const OPEN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
@@ -111,8 +115,22 @@ pub(crate) struct RemoteForwardEntry {
 pub struct SessionState {
     pub(crate) udp_flows: DashMap<u32, mpsc::UnboundedSender<Bytes>>,
     pub(crate) remote_forwards: DashMap<(String, u16), RemoteForwardEntry>,
+    /// Registered remote-UDS forwards, keyed by the *remote bind path* the peer
+    /// listens on. The peer back-channels each accepted connection as a
+    /// [`Ssh3FrameKind::UdsForwardRequest`] whose payload path is this key; the
+    /// inbound dispatcher looks it up to find the *local* socket path to
+    /// `UnixStream::connect` and bridge against (`cfg(unix)`).
+    #[cfg_attr(not(unix), allow(dead_code))]
+    pub(crate) remote_uds_forwards: DashMap<String, RemoteUdsEntry>,
     pub(crate) inbound_forward_limit: Arc<Semaphore>,
     pub(crate) remote_udp_inflight: Arc<Semaphore>,
+}
+
+/// Per-remote-UDS-forward registration: the local unix socket path the client
+/// dials on each inbound back-channel the peer opens for this forward.
+pub(crate) struct RemoteUdsEntry {
+    #[cfg_attr(not(unix), allow(dead_code))]
+    pub(crate) local_path: std::path::PathBuf,
 }
 
 impl Default for SessionState {
@@ -138,6 +156,7 @@ impl SessionState {
         Self {
             udp_flows: DashMap::new(),
             remote_forwards: DashMap::new(),
+            remote_uds_forwards: DashMap::new(),
             inbound_forward_limit: Arc::new(Semaphore::new(cap)),
             remote_udp_inflight: Arc::new(Semaphore::new(MAX_REMOTE_UDP_INFLIGHT)),
         }
@@ -149,6 +168,7 @@ impl std::fmt::Debug for SessionState {
         f.debug_struct("SessionState")
             .field("udp_flows", &self.udp_flows.len())
             .field("remote_forwards", &self.remote_forwards.len())
+            .field("remote_uds_forwards", &self.remote_uds_forwards.len())
             .field(
                 "inbound_forward_permits_available",
                 &self.inbound_forward_limit.available_permits(),
@@ -658,6 +678,14 @@ pub(crate) async fn dispatch_inbound_bidi(
             return;
         }
     };
+    // A peer-opened bidi carrying a UDS forward back-channel (remote-UDS:
+    // the *server* accepted a connection on its remote unix listener and is
+    // opening a stream back to us, the requester, to be bridged to our local
+    // unix socket). `cfg(unix)` only — the path is meaningless on Windows.
+    if frame.kind == Ssh3FrameKind::UdsForwardRequest {
+        dispatch_inbound_uds(state, send, recv, frame.payload).await;
+        return;
+    }
     if frame.kind != Ssh3FrameKind::DirectTcpRequest {
         warn!(
             target: "spt_ssh3::forward",
@@ -740,6 +768,578 @@ pub(crate) async fn dispatch_inbound_bidi(
     });
 }
 
+/// Dispatch one inbound bidi stream the peer opened as a UDS forward
+/// back-channel (remote-UDS: the server accepted a connection on its remote
+/// unix listener and is bridging it back to our local unix socket).
+///
+/// Looks up the remote-UDS forward by the `remote bind path` the peer echoes in
+/// the [`UdsChannelOpenPayload`], `UnixStream::connect`s the registered local
+/// path, ACKs `ok:true` on success, and bridges the QUIC stream against the
+/// local socket. On no-match / dial failure it rejects with `ok:false`.
+#[cfg(unix)]
+async fn dispatch_inbound_uds(
+    state: Arc<SessionState>,
+    mut send: SendStream,
+    mut recv: RecvStream,
+    payload: Bytes,
+) {
+    let open = match UdsChannelOpenPayload::decode(payload) {
+        Ok(o) => o,
+        Err(e) => {
+            warn!(target: "spt_ssh3::forward", error = %e, "inbound uds: bad open payload");
+            return;
+        }
+    };
+    let Some(entry) = state.remote_uds_forwards.get(&open.path) else {
+        debug!(
+            target: "spt_ssh3::forward",
+            path = %open.path,
+            "inbound uds: no matching remote-uds forward — rejecting"
+        );
+        reject_inbound(send, "no remote-uds forward registered for that path").await;
+        return;
+    };
+    let local_path = entry.local_path.clone();
+    drop(entry);
+
+    let Ok(permit) = state.inbound_forward_limit.clone().try_acquire_owned() else {
+        warn!(target: "spt_ssh3::forward", path = %open.path, "inbound uds: max_forwards reached — rejecting");
+        reject_inbound(send, "max_forwards reached").await;
+        return;
+    };
+
+    let mut local = match tokio::net::UnixStream::connect(&local_path).await {
+        Ok(s) => s,
+        Err(e) => {
+            debug!(
+                target: "spt_ssh3::forward",
+                path = %local_path.display(), error = %e,
+                "inbound uds: local dial failed — rejecting"
+            );
+            reject_inbound(send, &format!("local uds dial failed: {e}")).await;
+            return;
+        }
+    };
+
+    if Ssh3Frame::new(
+        Ssh3FrameKind::ForwardOpenResponse,
+        ForwardOpenResponse {
+            ok: true,
+            reason: String::new(),
+        }
+        .encode(),
+    )
+    .write_async(&mut send)
+    .await
+    .is_err()
+    {
+        return;
+    }
+
+    // Bridge the QUIC stream (remote→client) against the local unix socket.
+    let _permit = permit;
+    let (mut sr, mut sw) = local.split();
+    let to_local = async {
+        let _ = tokio::io::copy(&mut recv, &mut sw).await;
+        let _ = sw.shutdown().await;
+    };
+    let from_local = async {
+        let _ = tokio::io::copy(&mut sr, &mut send).await;
+        let _ = send.finish();
+    };
+    tokio::join!(to_local, from_local);
+}
+
+#[cfg(not(unix))]
+#[allow(clippy::unused_async)]
+async fn dispatch_inbound_uds(
+    _state: Arc<SessionState>,
+    send: SendStream,
+    _recv: RecvStream,
+    _payload: Bytes,
+) {
+    // UDS forwarding is Unix-only; a peer should never open a UDS back-channel
+    // to a Windows requester (we never advertise/register one), but reject
+    // defensively rather than leak the stream.
+    reject_inbound(send, "uds forwards are not supported on this platform").await;
+}
+
+/// Open a `local_uds` forward (`cfg(unix)`): bind a client-side
+/// [`tokio::net::UnixListener`] on `spec.listen_path` and, for each accepted
+/// connection, open a fresh bidi QUIC stream carrying a
+/// [`Ssh3FrameKind::UdsForwardRequest`] frame whose payload is the *remote*
+/// unix socket path; the peer `UnixStream::connect`s it and the two are bridged.
+///
+/// Mirrors the russh `open_uds` contract (`russh_backend.rs:2509`). On
+/// `cfg(not(unix))` returns [`Error::UnsupportedPlatform`] (binding `AF_UNIX` is
+/// Unix-only).
+///
+/// `async` is kept for signature symmetry with the non-unix stub and the trait
+/// method (`tokio::net::UnixListener::bind` is itself synchronous, so the body
+/// has no `await`).
+#[cfg(unix)]
+#[allow(clippy::unused_async)]
+pub async fn open_uds(
+    conn: Connection,
+    spec: &spt_protocol::forward::UdsForwardSpec,
+) -> Result<ForwardHandle> {
+    let listen_path = spec.listen_path.clone();
+    unlink_existing_socket(&listen_path);
+    let listener =
+        tokio::net::UnixListener::bind(&listen_path).map_err(|e| Error::LocalBindFailed {
+            address: listen_path.display().to_string(),
+            reason: e.to_string(),
+        })?;
+
+    let (state_tx, state_rx) = watch::channel(ForwardState::Listening);
+    let (close_tx, close_rx) = oneshot::channel();
+    let id = ForwardId::new();
+    let name = spec.name.clone();
+    let remote_path = spec.remote_socket_path.clone();
+
+    tokio::spawn(uds_local_loop(
+        conn,
+        listener,
+        remote_path,
+        state_tx,
+        close_rx,
+        name.clone(),
+    ));
+
+    Ok(ForwardHandle::new(id, name, state_rx, close_tx))
+}
+
+/// `cfg(not(unix))` stub for [`open_uds`]: binding an `AF_UNIX` listener is
+/// Unix-only, so this surfaces [`Error::UnsupportedPlatform`] (mirrors russh).
+#[cfg(not(unix))]
+#[allow(clippy::unused_async)]
+pub async fn open_uds(
+    _conn: Connection,
+    _spec: &spt_protocol::forward::UdsForwardSpec,
+) -> Result<ForwardHandle> {
+    Err(Error::UnsupportedPlatform(
+        "ssh3 local UNIX-socket forward requires a Unix target: binding an \
+         AF_UNIX listener is not supported on this platform"
+            .into(),
+    ))
+}
+
+/// Best-effort: remove a stale socket file left by an unclean shutdown so the
+/// bind does not spuriously fail with `AddrInUse`. Only unlinks paths that are
+/// actually sockets.
+#[cfg(unix)]
+fn unlink_existing_socket(path: &std::path::Path) {
+    use std::os::unix::fs::FileTypeExt;
+    if let Ok(meta) = std::fs::symlink_metadata(path) {
+        if meta.file_type().is_socket() {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
+#[cfg(unix)]
+async fn uds_local_loop(
+    conn: Connection,
+    listener: tokio::net::UnixListener,
+    remote_path: String,
+    state_tx: watch::Sender<ForwardState>,
+    mut close_rx: oneshot::Receiver<()>,
+    name: String,
+) {
+    let _ = state_tx.send(ForwardState::Active);
+    loop {
+        tokio::select! {
+            _ = &mut close_rx => {
+                debug!(target: "spt_ssh3::forward", forward = %name, "local uds forward shutdown signal");
+                break;
+            }
+            accept = listener.accept() => {
+                let (sock, _addr) = match accept {
+                    Ok(v) => v,
+                    Err(e) => {
+                        error!(target: "spt_ssh3::forward", forward = %name, error = %e, "uds accept failed");
+                        continue;
+                    }
+                };
+                let conn = conn.clone();
+                let remote_path = remote_path.clone();
+                let name_t = name.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = bridge_local_uds(conn, sock, &remote_path).await {
+                        warn!(target: "spt_ssh3::forward", forward = %name_t, error = %e, "local uds conn failed");
+                    }
+                });
+            }
+        }
+    }
+    let _ = state_tx.send(ForwardState::Stopped);
+}
+
+/// Bridge one accepted local `UnixStream` onto a fresh UDS channel to
+/// `remote_path` on the peer.
+#[cfg(unix)]
+async fn bridge_local_uds(
+    conn: Connection,
+    mut sock: tokio::net::UnixStream,
+    remote_path: &str,
+) -> Result<()> {
+    let (mut send, mut recv) = open_uds_channel(&conn, remote_path).await?;
+    let (mut sock_r, mut sock_w) = sock.split();
+    let to_peer = async {
+        let n = tokio::io::copy(&mut sock_r, &mut send).await;
+        let _ = send.finish();
+        n
+    };
+    let from_peer = async {
+        let n = tokio::io::copy(&mut recv, &mut sock_w).await;
+        let _ = sock_w.shutdown().await;
+        n
+    };
+    let (a, b) = tokio::join!(to_peer, from_peer);
+    a.map_err(|e| Error::RuntimeFailure(format!("ssh3 local-uds→peer copy: {e}")))?;
+    b.map_err(|e| Error::RuntimeFailure(format!("ssh3 peer→local-uds copy: {e}")))?;
+    Ok(())
+}
+
+/// Open a UDS channel-open exchange on a fresh bidi stream (the UDS analogue of
+/// [`open_channel`]): write a [`Ssh3FrameKind::UdsForwardRequest`] frame
+/// carrying `path` and await the peer's [`Ssh3FrameKind::ForwardOpenResponse`].
+#[cfg(unix)]
+async fn open_uds_channel(conn: &Connection, path: &str) -> Result<(SendStream, RecvStream)> {
+    let (mut send, mut recv) = conn
+        .open_bi()
+        .await
+        .map_err(|e| Error::RuntimeFailure(format!("ssh3 open_bi (uds): {e}")))?;
+    let req = Ssh3Frame::new(
+        Ssh3FrameKind::UdsForwardRequest,
+        UdsChannelOpenPayload {
+            path: path.to_string(),
+        }
+        .encode(),
+    );
+    req.write_async(&mut send).await?;
+
+    let resp = tokio::time::timeout(OPEN_TIMEOUT, Ssh3Frame::read_async(&mut recv))
+        .await
+        .map_err(|_| {
+            Error::RuntimeFailure("ssh3 uds channel-open: timeout waiting for response".into())
+        })??;
+    if resp.kind != Ssh3FrameKind::ForwardOpenResponse {
+        return Err(Error::RuntimeFailure(format!(
+            "ssh3 uds channel-open: expected ForwardOpenResponse, got {:?}",
+            resp.kind
+        )));
+    }
+    let parsed = ForwardOpenResponse::decode(resp.payload)?;
+    if !parsed.ok {
+        return Err(Error::NetworkUnreachable(format!(
+            "ssh3 uds channel-open rejected by peer: {}",
+            parsed.reason
+        )));
+    }
+    Ok((send, recv))
+}
+
+/// Open a `remote_uds` forward (`cfg(unix)`): ask the peer (via a
+/// [`Ssh3FrameKind::RemoteUdsForwardRequest`] control frame) to bind a unix
+/// listener on `spec.remote_socket_path`, register an inbound entry so the peer
+/// can back-channel each accepted connection as a
+/// [`Ssh3FrameKind::UdsForwardRequest`] bidi (handled by
+/// [`dispatch_inbound_uds`]), and bridge each back-channel to a local
+/// `UnixStream::connect(spec.local_socket_path)`.
+///
+/// Mirrors the russh `open_remote_uds` contract (`russh_backend.rs:2633`). On
+/// `cfg(not(unix))` returns [`Error::UnsupportedPlatform`].
+#[cfg(unix)]
+#[allow(clippy::too_many_arguments)]
+pub async fn open_remote_uds(
+    state: Arc<SessionState>,
+    control_send: Arc<AsyncMutex<SendStream>>,
+    control_recv: Arc<AsyncMutex<RecvStream>>,
+    control_request: Arc<AsyncMutex<()>>,
+    spec: &spt_protocol::forward::RemoteUdsForwardSpec,
+    peer_supports_remote: bool,
+) -> Result<ForwardHandle> {
+    if !peer_supports_remote {
+        return Err(Error::UnsupportedPlatform(
+            "ssh3 peer does not advertise remote_tcp capability (required for remote-uds)".into(),
+        ));
+    }
+    let remote_path = spec.remote_socket_path.clone();
+
+    // E3-F5: serialize the control-stream request/response exchange.
+    let _ctl_guard = control_request.lock().await;
+
+    // Register the inbound dispatch entry *before* sending the request so a
+    // peer that races to open back-channels the moment it ACKs is not lost.
+    state.remote_uds_forwards.insert(
+        remote_path.clone(),
+        RemoteUdsEntry {
+            local_path: spec.local_socket_path.clone(),
+        },
+    );
+
+    let req = Ssh3Frame::new(
+        Ssh3FrameKind::RemoteUdsForwardRequest,
+        UdsChannelOpenPayload {
+            path: remote_path.clone(),
+        }
+        .encode(),
+    );
+    let send_result = async {
+        let mut g = control_send.lock().await;
+        req.write_async(&mut *g).await
+    }
+    .await;
+    if let Err(e) = send_result {
+        state.remote_uds_forwards.remove(&remote_path);
+        return Err(e);
+    }
+    let resp = {
+        let mut g = control_recv.lock().await;
+        tokio::time::timeout(OPEN_TIMEOUT, Ssh3Frame::read_async(&mut *g))
+            .await
+            .map_err(|_| Error::RuntimeFailure("ssh3 remote-uds: timeout".into()))?
+    };
+    let resp = match resp {
+        Ok(r) => r,
+        Err(e) => {
+            state.remote_uds_forwards.remove(&remote_path);
+            return Err(e);
+        }
+    };
+    if resp.kind != Ssh3FrameKind::ForwardOpenResponse {
+        state.remote_uds_forwards.remove(&remote_path);
+        return Err(Error::RuntimeFailure(format!(
+            "ssh3 remote-uds: unexpected kind {:?}",
+            resp.kind
+        )));
+    }
+    let parsed = ForwardOpenResponse::decode(resp.payload)?;
+    if !parsed.ok {
+        state.remote_uds_forwards.remove(&remote_path);
+        return Err(Error::RemoteBindFailed {
+            address: remote_path,
+            reason: parsed.reason,
+        });
+    }
+
+    let (state_tx, state_rx) = watch::channel(ForwardState::Active);
+    let (close_tx, close_rx) = oneshot::channel();
+    let id = ForwardId::new();
+    let name = spec.name.clone();
+
+    tokio::spawn(remote_uds_loop(
+        state.clone(),
+        close_rx,
+        state_tx,
+        name.clone(),
+        remote_path,
+    ));
+
+    Ok(ForwardHandle::new(id, name, state_rx, close_tx))
+}
+
+/// `cfg(not(unix))` stub for [`open_remote_uds`]: connecting an `AF_UNIX` socket
+/// is Unix-only, so this surfaces [`Error::UnsupportedPlatform`] (mirrors
+/// russh).
+#[cfg(not(unix))]
+#[allow(clippy::unused_async, clippy::too_many_arguments)]
+pub async fn open_remote_uds(
+    _state: Arc<SessionState>,
+    _control_send: Arc<AsyncMutex<SendStream>>,
+    _control_recv: Arc<AsyncMutex<RecvStream>>,
+    _control_request: Arc<AsyncMutex<()>>,
+    _spec: &spt_protocol::forward::RemoteUdsForwardSpec,
+    _peer_supports_remote: bool,
+) -> Result<ForwardHandle> {
+    Err(Error::UnsupportedPlatform(
+        "ssh3 remote UNIX-socket forward requires a Unix target: bridging \
+         inbound UDS channels to a local AF_UNIX socket is not supported on this platform"
+            .into(),
+    ))
+}
+
+/// Lifecycle loop for a `remote_uds` forward: holds the inbound registration
+/// alive until close, then deregisters it. The actual per-connection bridging
+/// happens in [`dispatch_inbound_uds`] (driven by the session's inbound-bidi
+/// accept loop), exactly as remote-TCP bridging happens in the inbound
+/// dispatcher rather than this loop.
+#[cfg(unix)]
+async fn remote_uds_loop(
+    state: Arc<SessionState>,
+    close_rx: oneshot::Receiver<()>,
+    state_tx: watch::Sender<ForwardState>,
+    name: String,
+    remote_path: String,
+) {
+    let _ = close_rx.await;
+    debug!(target: "spt_ssh3::forward", forward = %name, "remote uds forward shutdown signal");
+    state.remote_uds_forwards.remove(&remote_path);
+    let _ = state_tx.send(ForwardState::Stopped);
+}
+
+/// Server-side helper (`cfg(unix)`): drain inbound `UdsForwardRequest` opens on
+/// freshly-accepted bidi streams that are *local-uds* opens (client → server,
+/// the server `UnixStream::connect`s the requested path) and bridge them.
+///
+/// This is the UDS analogue of [`serve_local_tcp_acceptor`]; the
+/// [`crate::server::Ssh3Server`] dispatches inbound bidis by their first frame
+/// kind, routing `UdsForwardRequest` here.
+#[cfg(unix)]
+pub async fn serve_local_uds_open(mut send: SendStream, mut recv: RecvStream, payload: Bytes) {
+    let open = match UdsChannelOpenPayload::decode(payload) {
+        Ok(o) => o,
+        Err(e) => {
+            warn!(target: "spt_ssh3::forward", error = %e, "server uds: bad open payload");
+            return;
+        }
+    };
+    let mut sock = match tokio::net::UnixStream::connect(&open.path).await {
+        Ok(s) => s,
+        Err(e) => {
+            let _ = Ssh3Frame::new(
+                Ssh3FrameKind::ForwardOpenResponse,
+                ForwardOpenResponse {
+                    ok: false,
+                    reason: format!("uds dial {}: {e}", open.path),
+                }
+                .encode(),
+            )
+            .write_async(&mut send)
+            .await;
+            return;
+        }
+    };
+    if Ssh3Frame::new(
+        Ssh3FrameKind::ForwardOpenResponse,
+        ForwardOpenResponse {
+            ok: true,
+            reason: String::new(),
+        }
+        .encode(),
+    )
+    .write_async(&mut send)
+    .await
+    .is_err()
+    {
+        return;
+    }
+    let (mut sr, mut sw) = sock.split();
+    let a = async {
+        let _ = tokio::io::copy(&mut recv, &mut sw).await;
+        let _ = sw.shutdown().await;
+    };
+    let b = async {
+        let _ = tokio::io::copy(&mut sr, &mut send).await;
+        let _ = send.finish();
+    };
+    tokio::join!(a, b);
+}
+
+/// Server-side helper (`cfg(unix)`): handle a client's
+/// [`Ssh3FrameKind::RemoteUdsForwardRequest`] control frame by binding a unix
+/// listener on the requested path and opening one
+/// [`Ssh3FrameKind::UdsForwardRequest`] back-channel toward the client per
+/// accepted connection. ACKs the request (`ok:true`/`ok:false`) on
+/// `control_send`.
+///
+/// `bind_path` is the remote path the client asked the server to listen on;
+/// it is also the key the back-channel echoes so the client can map the
+/// inbound stream to its local socket. The listener runs until `conn` closes.
+#[cfg(unix)]
+pub async fn serve_remote_uds_request(
+    conn: Connection,
+    control_send: Arc<AsyncMutex<SendStream>>,
+    bind_path: String,
+) {
+    unlink_existing_socket(std::path::Path::new(&bind_path));
+    let listener = match tokio::net::UnixListener::bind(&bind_path) {
+        Ok(l) => l,
+        Err(e) => {
+            let _ = async {
+                let mut g = control_send.lock().await;
+                Ssh3Frame::new(
+                    Ssh3FrameKind::ForwardOpenResponse,
+                    ForwardOpenResponse {
+                        ok: false,
+                        reason: format!("remote-uds bind {bind_path}: {e}"),
+                    }
+                    .encode(),
+                )
+                .write_async(&mut *g)
+                .await
+            }
+            .await;
+            return;
+        }
+    };
+    // ACK success on the control stream.
+    if async {
+        let mut g = control_send.lock().await;
+        Ssh3Frame::new(
+            Ssh3FrameKind::ForwardOpenResponse,
+            ForwardOpenResponse {
+                ok: true,
+                reason: String::new(),
+            }
+            .encode(),
+        )
+        .write_async(&mut *g)
+        .await
+    }
+    .await
+    .is_err()
+    {
+        return;
+    }
+
+    loop {
+        let (sock, _addr) = match listener.accept().await {
+            Ok(v) => v,
+            Err(e) => {
+                debug!(target: "spt_ssh3::forward", error = %e, "server remote-uds accept ended");
+                break;
+            }
+        };
+        let conn = conn.clone();
+        let bind_path = bind_path.clone();
+        tokio::spawn(async move {
+            if let Err(e) = bridge_server_remote_uds(conn, sock, &bind_path).await {
+                warn!(target: "spt_ssh3::forward", error = %e, "server remote-uds bridge failed");
+            }
+        });
+    }
+}
+
+/// Bridge one server-accepted `UnixStream` back to the client over a fresh bidi
+/// UDS back-channel keyed by `bind_path`.
+#[cfg(unix)]
+async fn bridge_server_remote_uds(
+    conn: Connection,
+    mut sock: tokio::net::UnixStream,
+    bind_path: &str,
+) -> Result<()> {
+    // The back-channel echoes the *remote bind path* so the client's inbound
+    // dispatcher can map it to the registered local socket path.
+    let (mut send, mut recv) = open_uds_channel(&conn, bind_path).await?;
+    let (mut sr, mut sw) = sock.split();
+    let to_client = async {
+        let n = tokio::io::copy(&mut sr, &mut send).await;
+        let _ = send.finish();
+        n
+    };
+    let from_client = async {
+        let n = tokio::io::copy(&mut recv, &mut sw).await;
+        let _ = sw.shutdown().await;
+        n
+    };
+    let (a, b) = tokio::join!(to_client, from_client);
+    a.map_err(|e| Error::RuntimeFailure(format!("ssh3 server-uds→client copy: {e}")))?;
+    b.map_err(|e| Error::RuntimeFailure(format!("ssh3 client→server-uds copy: {e}")))?;
+    Ok(())
+}
+
 /// Server-side helper: accept inbound bidi streams that are local-tcp opens
 /// (initiator → peer) and bridge to a local TCP target. Used by the test
 /// harness "fake server" — and would be the entry point for an spt instance
@@ -750,7 +1350,7 @@ pub async fn serve_local_tcp_acceptor(
 ) {
     let resolver = Arc::new(target_resolver);
     loop {
-        let Ok((mut send, mut recv)) = conn.accept_bi().await else {
+        let Ok((send, mut recv)) = conn.accept_bi().await else {
             break;
         };
         let resolver = resolver.clone();
@@ -761,64 +1361,98 @@ pub async fn serve_local_tcp_acceptor(
             if frame.kind != Ssh3FrameKind::DirectTcpRequest {
                 return;
             }
-            let Ok(open) = ChannelOpenPayload::decode(frame.payload) else {
-                return;
-            };
-            let Some(target) = resolver(&open) else {
-                let _ = Ssh3Frame::new(
-                    Ssh3FrameKind::ForwardOpenResponse,
-                    ForwardOpenResponse {
-                        ok: false,
-                        reason: "denied by acl".into(),
-                    }
-                    .encode(),
-                )
-                .write_async(&mut send)
-                .await;
-                return;
-            };
-            let mut sock = match TcpStream::connect((target.host.as_str(), target.port)).await {
-                Ok(s) => s,
-                Err(e) => {
-                    let _ = Ssh3Frame::new(
-                        Ssh3FrameKind::ForwardOpenResponse,
-                        ForwardOpenResponse {
-                            ok: false,
-                            reason: format!("dial: {e}"),
-                        }
-                        .encode(),
-                    )
-                    .write_async(&mut send)
-                    .await;
-                    return;
-                }
-            };
-            if Ssh3Frame::new(
-                Ssh3FrameKind::ForwardOpenResponse,
-                ForwardOpenResponse {
-                    ok: true,
-                    reason: String::new(),
-                }
-                .encode(),
-            )
-            .write_async(&mut send)
-            .await
-            .is_err()
-            {
-                return;
-            }
-            let (mut sr, mut sw) = sock.split();
-            let a = async {
-                let _ = tokio::io::copy(&mut recv, &mut sw).await;
-                let _ = sw.shutdown().await;
-            };
-            let b = async {
-                let _ = tokio::io::copy(&mut sr, &mut send).await;
-                let _ = send.finish();
-            };
-            tokio::join!(a, b);
+            serve_tcp_open(send, recv, frame.payload, &*resolver).await;
         });
     }
+}
+
+/// Server-side acceptor that handles BOTH local-TCP (`DirectTcpRequest`) and,
+/// on `cfg(unix)`, local-UDS (`UdsForwardRequest`) inbound bidi opens by
+/// reading the first frame and routing accordingly. TCP opens resolve their
+/// target via `target_resolver`; UDS opens `UnixStream::connect` the path the
+/// client supplied (path-based ACL is the caller's responsibility — the server
+/// only dials paths the client sent).
+///
+/// This is the superset of [`serve_local_tcp_acceptor`] the
+/// [`crate::server::Ssh3Server`] uses so a single accept loop serves both
+/// forward kinds.
+pub async fn serve_inbound_opens(
+    conn: Connection,
+    target_resolver: impl Fn(&ChannelOpenPayload) -> Option<TargetAddr> + Send + Sync + 'static,
+) {
+    let resolver = Arc::new(target_resolver);
+    loop {
+        let Ok((send, mut recv)) = conn.accept_bi().await else {
+            break;
+        };
+        let resolver = resolver.clone();
+        tokio::spawn(async move {
+            let Ok(frame) = Ssh3Frame::read_async(&mut recv).await else {
+                return;
+            };
+            match frame.kind {
+                Ssh3FrameKind::DirectTcpRequest => {
+                    serve_tcp_open(send, recv, frame.payload, &*resolver).await;
+                }
+                #[cfg(unix)]
+                Ssh3FrameKind::UdsForwardRequest => {
+                    serve_local_uds_open(send, recv, frame.payload).await;
+                }
+                _ => {
+                    reject_inbound(send, "unexpected open frame").await;
+                }
+            }
+        });
+    }
+}
+
+/// Serve one already-read local-TCP open frame: resolve the target, dial it,
+/// and bridge. Shared by [`serve_inbound_opens`] and
+/// [`serve_local_tcp_acceptor`].
+async fn serve_tcp_open(
+    mut send: SendStream,
+    mut recv: RecvStream,
+    payload: Bytes,
+    resolver: &(impl Fn(&ChannelOpenPayload) -> Option<TargetAddr> + Send + Sync),
+) {
+    let Ok(open) = ChannelOpenPayload::decode(payload) else {
+        return;
+    };
+    let Some(target) = resolver(&open) else {
+        reject_inbound(send, "denied by acl").await;
+        return;
+    };
+    let mut sock = match TcpStream::connect((target.host.as_str(), target.port)).await {
+        Ok(s) => s,
+        Err(e) => {
+            reject_inbound(send, &format!("dial: {e}")).await;
+            return;
+        }
+    };
+    if Ssh3Frame::new(
+        Ssh3FrameKind::ForwardOpenResponse,
+        ForwardOpenResponse {
+            ok: true,
+            reason: String::new(),
+        }
+        .encode(),
+    )
+    .write_async(&mut send)
+    .await
+    .is_err()
+    {
+        return;
+    }
+    let (mut sr, mut sw) = sock.split();
+    let a = async {
+        let _ = tokio::io::copy(&mut recv, &mut sw).await;
+        let _ = sw.shutdown().await;
+    };
+    let b = async {
+        let _ = tokio::io::copy(&mut sr, &mut send).await;
+        let _ = send.finish();
+    };
+    tokio::join!(a, b);
 }
 
 /// Pull a one-shot ack frame off `recv` (used after writing a control frame
@@ -1004,9 +1638,26 @@ pub async fn serve_remote_udp_forwards(
                 return;
             }
         };
+        // Remote-UDS request: bind a server-side unix listener and back-channel
+        // each accepted connection toward the client (`cfg(unix)`).
+        #[cfg(unix)]
+        if frame.kind == Ssh3FrameKind::RemoteUdsForwardRequest {
+            let path = match UdsChannelOpenPayload::decode(frame.payload) {
+                Ok(p) => p.path,
+                Err(e) => {
+                    warn!(target: "spt_ssh3::forward", error = %e, "remote-uds: bad payload");
+                    continue;
+                }
+            };
+            let conn = conn.clone();
+            let ctl = control_send.clone();
+            tokio::spawn(serve_remote_uds_request(conn, ctl, path));
+            continue;
+        }
         if frame.kind != Ssh3FrameKind::RemoteUdpForwardRequest {
-            // Ignore other control frames here; the test harness only cares
-            // about the remote-UDP path.
+            // Ignore other control frames here (e.g. AppPing keepalives, or a
+            // RemoteUdsForwardRequest on a non-unix server which cannot honour
+            // it).
             continue;
         }
         let payload = match UdpAssociatePayload::decode(frame.payload) {

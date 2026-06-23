@@ -17,6 +17,14 @@ pub struct ProtocolCapabilities {
     pub local_udp: bool,
     /// Can request server-listener UDP forwards.
     pub remote_udp: bool,
+    /// Can open client-initiated unix-domain-socket forwards (`cfg(unix)`): bind
+    /// a local `AF_UNIX` listener and bridge each accepted connection to a remote
+    /// unix socket path.
+    pub local_uds: bool,
+    /// Can request server-listener unix-domain-socket forwards (`cfg(unix)`):
+    /// ask the peer to bind a remote `AF_UNIX` listener and bridge each accepted
+    /// connection back to a local unix socket path.
+    pub remote_uds: bool,
     /// Can open client-side SOCKS4/SOCKS4A/SOCKS5/HTTP CONNECT dynamic TCP
     /// proxy listeners.
     pub dynamic_tcp: bool,
@@ -39,6 +47,14 @@ impl ProtocolCapabilities {
             remote_tcp: true,
             local_udp: false,
             remote_udp: false,
+            // russh implements local/remote UDS forwards on Unix targets
+            // (`cfg(unix)`); on Windows the backend surfaces
+            // `UnsupportedPlatform` at open time. The capability advertises the
+            // backend's support, not the current host's, mirroring how the
+            // supervisor uses caps to reject configurations the *protocol*
+            // cannot honour.
+            local_uds: true,
+            remote_uds: true,
             dynamic_tcp: true,
             multi_hop: true,
             agent_forwarding: true,
@@ -55,6 +71,11 @@ impl ProtocolCapabilities {
             remote_tcp: true,
             local_udp: true,
             remote_udp: true,
+            // SSH3 carries UDS forwards over a dedicated channel-open frame
+            // convention (`cfg(unix)`); on Windows the backend surfaces
+            // `UnsupportedPlatform` at open time.
+            local_uds: true,
+            remote_uds: true,
             dynamic_tcp: false,
             multi_hop: false,
             agent_forwarding: false,
@@ -74,6 +95,7 @@ mod tests {
         assert!(c.local_tcp && c.remote_tcp && c.host_keys);
         assert!(c.dynamic_tcp);
         assert!(!c.local_udp && !c.remote_udp);
+        assert!(c.local_uds && c.remote_uds);
     }
 
     #[test]
@@ -81,5 +103,6 @@ mod tests {
         let c = ProtocolCapabilities::ssh3();
         assert!(c.local_udp && c.remote_udp && !c.host_keys);
         assert!(!c.dynamic_tcp);
+        assert!(c.local_uds && c.remote_uds);
     }
 }

@@ -248,23 +248,33 @@ pub async fn bootstrap(
     // peer's HTTP/3 stack is satisfied. The CONNECT itself goes via
     // [`h3_raw::extended_connect_raw`] on a separate raw bidi stream.
     let h3_conn = h3_quinn::Connection::new(connection.clone());
-    let (mut driver, send_request) = h3::client::new(h3_conn)
+    let (driver, send_request) = h3::client::new(h3_conn)
         .await
         .map_err(|e| Error::RuntimeFailure(format!("ssh3: h3 client init: {e}")))?;
-    // CRITICAL: `h3::client::SendRequest` closes the QUIC connection with
-    // H3_NO_ERROR the moment its *last* clone is dropped (documented on the
-    // type). We never issue an h3 request (the CONNECT goes via `h3_raw`), so
-    // we must keep `send_request` alive for the connection's lifetime — move it
-    // into the driver task. The task is only aborted by
-    // `Ssh3Session::close()`, so the connection stays up until an explicit
-    // close. Without this, the connection self-closes as soon as `bootstrap`
-    // returns and `send_request` drops.
+    // CRITICAL: the h3 layer is vestigial for spt after the CONNECT handshake —
+    // the CONNECT itself goes via [`h3_raw`] on a raw bidi and every forward
+    // rides a raw QUIC stream, so the `h3::client` machinery is never used to
+    // issue a request. Two h3 behaviours would otherwise tear the QUIC
+    // connection down out from under our raw streams, and BOTH must be
+    // suppressed for the connection's lifetime:
+    //
+    //  1. `h3::client::SendRequest` closes the connection with `H3_NO_ERROR`
+    //     the moment its last clone drops (documented on the type) — so we must
+    //     keep `send_request` alive.
+    //  2. Driving `driver.poll_close` to completion makes the h3 `Connection`
+    //     gracefully close the QUIC connection (observed as `LocallyClosed`).
+    //     This races against an *idle* client: a forward that opens a raw bidi
+    //     promptly wins, but a client that merely waits for the server to
+    //     open back-channels (e.g. a `remote`/`remote_uds` forward) loses and
+    //     the connection self-closes. We therefore must NOT poll the driver to
+    //     completion — we just hold both `driver` and `send_request` alive,
+    //     parked on `pending()`, until `Ssh3Session::close()` aborts the task.
+    //     Our raw QUIC streams operate independently of the unpolled h3 driver.
     let driver_task = tokio::spawn(async move {
-        let _keep_alive = send_request;
-        let _ = std::future::poll_fn(|cx| driver.poll_close(cx)).await;
-        // Hold `send_request` until the task is aborted; if `poll_close`
-        // resolves on its own (peer-initiated close) there is nothing left to
-        // keep alive anyway.
+        // Hold BOTH alive (dropping either closes the QUIC connection) without
+        // driving the driver to completion. Parked on `pending()` until
+        // `Ssh3Session::close()` aborts the task.
+        let _keep_alive = (send_request, driver);
         std::future::pending::<()>().await;
     });
 
