@@ -1,3 +1,11 @@
+## [26.21] - 2026-06-23
+
+# spt 26.21
+
+## Changes since 26.20
+
+- feat(ssh3): add `spt ssh3-serve` subcommand (the spt<->spt server end) (3d820c1)
+
 ## [26.20] - 2026-06-23
 
 # spt 26.20
