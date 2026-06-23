@@ -5,7 +5,8 @@ use serde::{Deserialize, Serialize};
 use spt_core::Result;
 
 use crate::forward::{
-    DynamicForwardSpec, LocalForwardSpec, RemoteForwardSpec, UdpForwardSpec, UdsForwardSpec,
+    DynamicForwardSpec, LocalForwardSpec, RemoteForwardSpec, RemoteUdsForwardSpec, UdpForwardSpec,
+    UdsForwardSpec,
 };
 use crate::handle::ForwardHandle;
 
@@ -42,6 +43,43 @@ pub trait TunnelSession: Send + Sync {
         Err(spt_core::Error::UnsupportedPlatform(
             "this backend does not support unix-domain-socket forwards".to_owned(),
         ))
+    }
+
+    /// Open a **remote** unix-domain-socket forward (`cfg(unix)` capability).
+    ///
+    /// Asks the remote peer to listen on `spec.remote_socket_path` and bridges
+    /// each accepted connection back to a local unix socket at
+    /// `spec.local_socket_path`. Like [`Self::open_uds_forward`], the default
+    /// implementation reports the forward as unsupported, so backends that have
+    /// not implemented remote-UDS forwarding compile unchanged.
+    ///
+    /// The real implementation lives in `spt-ssh2` (t-tunnel-wire-2 Phase 2),
+    /// which drains the server-opened `forwarded-streamlocal@openssh.com`
+    /// channels and bridges each to `local_socket_path`. Inert today.
+    async fn open_remote_uds(&mut self, spec: &RemoteUdsForwardSpec) -> Result<ForwardHandle> {
+        let _ = spec;
+        Err(spt_core::Error::UnsupportedPlatform(
+            "this backend does not support remote unix-domain-socket forwards".to_owned(),
+        ))
+    }
+
+    /// Run a connect+auth-only liveness preflight against the session's
+    /// endpoint, returning `Ok(())` when a fresh side connection authenticates
+    /// successfully.
+    ///
+    /// This is the primitive the supervisor's `failover.health_check =
+    /// ssh_auth_preflight` style calls (it holds the session as a
+    /// `&mut dyn TunnelSession`, exactly as it calls [`Self::keepalive`]). It is
+    /// distinct from [`Self::keepalive`], which probes the *live* session: a
+    /// preflight opens a fresh auth-only dial to the candidate endpoint and
+    /// drops it, without disturbing the established forwards.
+    ///
+    /// The default implementation is a harmless `Ok(())` no-op so backends that
+    /// have not implemented it compile unchanged. The real implementation lives
+    /// in `spt-ssh2` (t-tunnel-wire-2 Phase 2), reusing `connect_inner`'s
+    /// connect+auth machinery without opening any forwards. Inert today.
+    async fn preflight_connect(&mut self) -> Result<()> {
+        Ok(())
     }
 
     /// Send a protocol-level keepalive. May be a no-op for transports with

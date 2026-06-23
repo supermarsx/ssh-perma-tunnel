@@ -759,11 +759,16 @@ fn parse_profile_size(profile_name: &str, field: &str, raw: &str) -> Result<u64>
 /// * `channel_window_size` / `channel_max_packet_size` → russh
 ///   `Config::window_size` / `maximum_packet_size` (the latter clamped to
 ///   russh's 65535 ceiling at apply time).
+/// * `auth_timeout` / `handshake_timeout` → per-operation SSH deadlines
+///   (t-tunnel-wire-2; `tokio::time::timeout` wraps in the ssh2 backend).
+/// * `read_timeout` / `write_timeout` → COMBINED into a single
+///   `channel_idle_timeout` (russh 0.61 has no directional per-op deadline):
+///   the tighter (MIN) of the two when both are set, otherwise whichever is set.
 ///
 /// **Deliberately NOT wired** (no clean russh 0.61 apply site; still
-/// validate-warned): `auth_timeout`, `handshake_timeout`, `read_timeout`,
-/// `write_timeout`, and the channel-open timeout. Channel sizes are parsed with
-/// [`spt_core::size::parse_size`] and clamped to `u32`.
+/// validate-warned): the channel-open timeout. Channel sizes are parsed with
+/// [`spt_core::size::parse_size`] and clamped to `u32`; durations with
+/// [`parse_profile_duration`].
 fn build_connection_policy(
     profile_name: &str,
     connection: &ConnectionCfg,
@@ -799,6 +804,39 @@ fn build_connection_policy(
                 .map(saturate_u32)
         })
         .transpose()?;
+    // t-tunnel-wire-2 (Phase 2, B1): per-operation SSH deadlines. Parsed exactly
+    // like `connect_timeout` above (same `parse_profile_duration` humantime
+    // helper, same `InvalidConfig` error path).
+    let auth_timeout = connection
+        .auth_timeout
+        .as_deref()
+        .map(|raw| parse_profile_duration(profile_name, "connection.auth_timeout", raw))
+        .transpose()?;
+    let handshake_timeout = connection
+        .handshake_timeout
+        .as_deref()
+        .map(|raw| parse_profile_duration(profile_name, "connection.handshake_timeout", raw))
+        .transpose()?;
+    let read_timeout = connection
+        .read_timeout
+        .as_deref()
+        .map(|raw| parse_profile_duration(profile_name, "connection.read_timeout", raw))
+        .transpose()?;
+    let write_timeout = connection
+        .write_timeout
+        .as_deref()
+        .map(|raw| parse_profile_duration(profile_name, "connection.write_timeout", raw))
+        .transpose()?;
+    // russh 0.61 exposes no directional per-operation deadline, so `read_timeout`
+    // and `write_timeout` are applied as a SINGLE combined channel-idle deadline
+    // (`ConnectionPolicy.channel_idle_timeout`). When both are set we use the
+    // tighter (MIN) of the two; if only one is set we use it; if neither, `None`.
+    let channel_idle_timeout = match (read_timeout, write_timeout) {
+        (Some(r), Some(w)) => Some(r.min(w)),
+        (Some(r), None) => Some(r),
+        (None, Some(w)) => Some(w),
+        (None, None) => None,
+    };
     Ok(ConnectionPolicy {
         tcp_nodelay: connection.tcp_nodelay,
         channel_window_size,
@@ -808,6 +846,9 @@ fn build_connection_policy(
         keepalive_idle,
         keepalive_interval,
         keepalive_retries: connection.keepalive_retries,
+        auth_timeout,
+        handshake_timeout,
+        channel_idle_timeout,
     })
 }
 
@@ -3415,6 +3456,123 @@ mod tests {
             matches!(err, Error::InvalidConfig(_)),
             "expected InvalidConfig, got {err:?}"
         );
+    }
+
+    // t-tunnel-wire-2 (Phase 2, B1): per-operation SSH deadline mappings.
+
+    #[test]
+    fn connection_policy_auth_timeout_flows_into_auth_timeout() {
+        let conn = connection_from_toml(r#"auth_timeout = "12s""#);
+        let policy = build_connection_policy("p", &conn).unwrap();
+        assert_eq!(policy.auth_timeout, Some(Duration::from_secs(12)));
+        // No read/write means no combined channel-idle deadline.
+        assert!(policy.handshake_timeout.is_none());
+        assert!(policy.channel_idle_timeout.is_none());
+    }
+
+    #[test]
+    fn connection_policy_handshake_timeout_flows_into_handshake_timeout() {
+        let conn = connection_from_toml(r#"handshake_timeout = "1500ms""#);
+        let policy = build_connection_policy("p", &conn).unwrap();
+        assert_eq!(policy.handshake_timeout, Some(Duration::from_millis(1500)));
+        assert!(policy.auth_timeout.is_none());
+        assert!(policy.channel_idle_timeout.is_none());
+    }
+
+    #[test]
+    fn connection_policy_read_timeout_only_becomes_channel_idle() {
+        let conn = connection_from_toml(r#"read_timeout = "20s""#);
+        let policy = build_connection_policy("p", &conn).unwrap();
+        // read/write_timeout are folded into the single combined channel-idle
+        // deadline; with only `read_timeout` set it is used directly.
+        assert_eq!(policy.channel_idle_timeout, Some(Duration::from_secs(20)));
+        assert!(policy.auth_timeout.is_none());
+        assert!(policy.handshake_timeout.is_none());
+    }
+
+    #[test]
+    fn connection_policy_write_timeout_only_becomes_channel_idle() {
+        let conn = connection_from_toml(r#"write_timeout = "25s""#);
+        let policy = build_connection_policy("p", &conn).unwrap();
+        // With only `write_timeout` set it becomes the combined channel-idle.
+        assert_eq!(policy.channel_idle_timeout, Some(Duration::from_secs(25)));
+        assert!(policy.auth_timeout.is_none());
+        assert!(policy.handshake_timeout.is_none());
+    }
+
+    #[test]
+    fn connection_policy_read_and_write_timeout_combine_to_min() {
+        // When BOTH directional timeouts are set the combined channel-idle
+        // deadline is the tighter (MIN) of the two.
+        let conn = connection_from_toml(
+            r#"
+            read_timeout = "30s"
+            write_timeout = "10s"
+        "#,
+        );
+        let policy = build_connection_policy("p", &conn).unwrap();
+        assert_eq!(policy.channel_idle_timeout, Some(Duration::from_secs(10)));
+    }
+
+    #[test]
+    fn connection_policy_read_and_write_timeout_min_picks_read_when_smaller() {
+        // MIN selection is symmetric: read smaller than write picks read.
+        let conn = connection_from_toml(
+            r#"
+            read_timeout = "5s"
+            write_timeout = "40s"
+        "#,
+        );
+        let policy = build_connection_policy("p", &conn).unwrap();
+        assert_eq!(policy.channel_idle_timeout, Some(Duration::from_secs(5)));
+    }
+
+    #[test]
+    fn connection_policy_no_read_or_write_timeout_is_none() {
+        // Neither directional timeout set → no combined channel-idle deadline.
+        let conn = connection_from_toml(r#"connect_timeout = "3s""#);
+        let policy = build_connection_policy("p", &conn).unwrap();
+        assert!(policy.channel_idle_timeout.is_none());
+        assert!(policy.auth_timeout.is_none());
+        assert!(policy.handshake_timeout.is_none());
+    }
+
+    #[test]
+    fn connection_policy_all_three_new_timeouts_together() {
+        let conn = connection_from_toml(
+            r#"
+            auth_timeout = "8s"
+            handshake_timeout = "9s"
+            read_timeout = "11s"
+            write_timeout = "7s"
+        "#,
+        );
+        let policy = build_connection_policy("p", &conn).unwrap();
+        assert_eq!(policy.auth_timeout, Some(Duration::from_secs(8)));
+        assert_eq!(policy.handshake_timeout, Some(Duration::from_secs(9)));
+        // 11s read vs 7s write → MIN = 7s combined channel-idle.
+        assert_eq!(policy.channel_idle_timeout, Some(Duration::from_secs(7)));
+    }
+
+    #[test]
+    fn connection_policy_rejects_bad_auth_timeout() {
+        let conn = connection_from_toml(r#"auth_timeout = "not-a-duration""#);
+        let err = build_connection_policy("p", &conn).unwrap_err();
+        assert!(matches!(err, Error::InvalidConfig(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn connection_policy_rejects_bad_handshake_timeout() {
+        let conn = connection_from_toml(r#"handshake_timeout = "nope""#);
+        let err = build_connection_policy("p", &conn).unwrap_err();
+        assert!(matches!(err, Error::InvalidConfig(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn connection_policy_rejects_bad_read_timeout() {
+        let conn = connection_from_toml(r#"read_timeout = "bogus""#);
+        let err = build_connection_policy("p", &conn).unwrap_err();
+        assert!(matches!(err, Error::InvalidConfig(_)), "got {err:?}");
     }
 
     #[test]

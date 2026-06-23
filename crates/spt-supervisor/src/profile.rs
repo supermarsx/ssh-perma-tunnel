@@ -854,15 +854,29 @@ impl ProfileTask {
                 _ = keepalive.tick() => {
                     // E1-F11: bound the probe so a black-holed connection can't
                     // wedge the control channel. Treat timeout as failure.
-                    // TW-C2: select the liveness probe by `health_check` style.
-                    // `SshHandshake` (default) is the SSH-level keepalive
-                    // round-trip — today's fixed behavior. `TcpConnect` is a bare
-                    // TCP reachability check to the live endpoint. The
-                    // SSH-connect/auth-preflight styles (`SshAuthPreflight`,
-                    // `Ssh3Endpoint`) are not tractable over an established
-                    // session and are rejected upstream by validate.rs (Wave B2);
-                    // defensively they fall back to the SSH keepalive here so an
-                    // un-rejected value can never silently no-op.
+                    // TW-C2 / TW2-A3: select the liveness probe by `health_check`
+                    // style.
+                    // * `SshHandshake` (default) — SSH-level keepalive round-trip
+                    //   over the live session (today's fixed behavior).
+                    // * `TcpConnect` — bare TCP reachability check to the live
+                    //   endpoint.
+                    // * `SshAuthPreflight` — a connect+auth-only side dial via
+                    //   `TunnelSession::preflight_connect` (Phase-1 trait method;
+                    //   the spt-ssh2 backend performs the real side connection).
+                    // * `Ssh3Endpoint` — GENUINELY-BLOCKED (no ssh3 transport).
+                    //   validate.rs hard-ERRORs it at config load so it cannot
+                    //   reach runtime; defensively, if it somehow does, we treat
+                    //   the probe as a hard failure with a clear log rather than
+                    //   silently falling back to keepalive.
+                    //
+                    // TW2-A3: time each probe so a SUCCESSFUL outcome yields a
+                    // coarse RTT sample (`Instant::now()` before/after the probe
+                    // future) fed to the instability detector's rolling-p95
+                    // latency estimator, while a FAILED/timed-out outcome is
+                    // recorded as a keepalive miss. The RTT is coarse — it
+                    // includes tokio scheduler jitter and the `timeout` wrapper
+                    // overhead.
+                    let probe_started = Instant::now();
                     let probe = match self.cfg.health_check {
                         HealthCheckStyle::TcpConnect => {
                             tokio::time::timeout(
@@ -870,17 +884,39 @@ impl ProfileTask {
                                 probe_tcp_connect(self.current_endpoint.as_ref()),
                             ).await
                         }
-                        HealthCheckStyle::SshHandshake
-                        | HealthCheckStyle::SshAuthPreflight
-                        | HealthCheckStyle::Ssh3Endpoint => {
+                        HealthCheckStyle::SshAuthPreflight => {
+                            tokio::time::timeout(
+                                self.cfg.keepalive_timeout,
+                                session.preflight_connect(),
+                            ).await
+                        }
+                        HealthCheckStyle::SshHandshake => {
                             tokio::time::timeout(
                                 self.cfg.keepalive_timeout,
                                 session.keepalive(),
                             ).await
                         }
+                        HealthCheckStyle::Ssh3Endpoint => {
+                            // Not reachable in a valid config (validate.rs ERRORs
+                            // ssh3_endpoint). Defensive guard: surface a clear
+                            // error instead of a silent keepalive no-op.
+                            Ok(Err(Error::UnsupportedPlatform(
+                                "failover.health_check = ssh3_endpoint requires an \
+                                 ssh3 transport, which is not implemented"
+                                    .to_owned(),
+                            )))
+                        }
                     };
                     match probe {
                         Ok(Ok(())) => {
+                            // TW2-A3: feed a coarse RTT sample for the rolling
+                            // p95 latency trip condition. A successful probe also
+                            // resets the consecutive-miss counter inside the
+                            // detector.
+                            let rtt = probe_started.elapsed();
+                            if self.instability.record_probe(Some(rtt)) {
+                                self.on_instability_trip();
+                            }
                             // E1-F8: a healthy probe accrues clean-uptime for
                             // the instability detector. When enough clean time
                             // has elapsed the Unstable flag clears.
@@ -903,17 +939,27 @@ impl ProfileTask {
                             // 1.88 lint: redundant_continue
                         }
                         Ok(Err(e)) => {
+                            // TW2-A3: a failed probe is a keepalive miss. Feed it
+                            // to the detector (consecutive-miss trip condition)
+                            // before we tear the session down for reconnect.
+                            if self.instability.record_probe(None) {
+                                self.on_instability_trip();
+                            }
                             tracing::warn!(
                                 profile = %self.name,
                                 error = %e,
-                                "session keepalive failed; triggering reconnect"
+                                "health probe failed; triggering reconnect"
                             );
                             break ActiveDecision::SessionLost;
                         }
                         Err(_) => {
+                            // TW2-A3: a timed-out probe is also a keepalive miss.
+                            if self.instability.record_probe(None) {
+                                self.on_instability_trip();
+                            }
                             tracing::warn!(
                                 profile = %self.name,
-                                "session keepalive timed out; triggering reconnect"
+                                "health probe timed out; triggering reconnect"
                             );
                             break ActiveDecision::SessionLost;
                         }
@@ -1905,6 +1951,175 @@ mod tests {
         sup.stop().await;
     }
 
+    /// A `TunnelSession` that counts which liveness method the supervisor calls.
+    /// `keepalive` and `preflight_connect` both succeed; the counters let a test
+    /// assert the `health_check` dispatch routes to the intended primitive.
+    struct CountingProbeSession {
+        keepalive_calls: Arc<std::sync::atomic::AtomicU32>,
+        preflight_calls: Arc<std::sync::atomic::AtomicU32>,
+        info: spt_protocol::SessionInfo,
+    }
+
+    impl CountingProbeSession {
+        fn new(
+            keepalive_calls: Arc<std::sync::atomic::AtomicU32>,
+            preflight_calls: Arc<std::sync::atomic::AtomicU32>,
+        ) -> Self {
+            Self {
+                keepalive_calls,
+                preflight_calls,
+                info: spt_protocol::SessionInfo {
+                    backend: "counting".into(),
+                    peer_version: None,
+                    negotiated: None,
+                    established_at: 0,
+                },
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl spt_protocol::TunnelSession for CountingProbeSession {
+        async fn open_local_forward(
+            &mut self,
+            _spec: &spt_protocol::LocalForwardSpec,
+        ) -> Result<spt_protocol::ForwardHandle> {
+            Err(Error::RuntimeFailure("no forwards".into()))
+        }
+        async fn open_remote_forward(
+            &mut self,
+            _spec: &spt_protocol::RemoteForwardSpec,
+        ) -> Result<spt_protocol::ForwardHandle> {
+            Err(Error::RuntimeFailure("no forwards".into()))
+        }
+        async fn open_dynamic_forward(
+            &mut self,
+            _spec: &spt_protocol::DynamicForwardSpec,
+        ) -> Result<spt_protocol::ForwardHandle> {
+            Err(Error::RuntimeFailure("no forwards".into()))
+        }
+        async fn open_udp_forward(
+            &mut self,
+            _spec: &spt_protocol::UdpForwardSpec,
+        ) -> Result<spt_protocol::ForwardHandle> {
+            Err(Error::RuntimeFailure("no forwards".into()))
+        }
+        async fn keepalive(&mut self) -> Result<()> {
+            self.keepalive_calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }
+        async fn preflight_connect(&mut self) -> Result<()> {
+            self.preflight_calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }
+        async fn close(self: Box<Self>) -> Result<()> {
+            Ok(())
+        }
+        fn session_info(&self) -> spt_protocol::SessionInfo {
+            self.info.clone()
+        }
+    }
+
+    #[derive(Debug)]
+    struct CountingProbeProto {
+        keepalive_calls: Arc<std::sync::atomic::AtomicU32>,
+        preflight_calls: Arc<std::sync::atomic::AtomicU32>,
+    }
+
+    #[async_trait::async_trait]
+    impl spt_protocol::TunnelProtocol for CountingProbeProto {
+        async fn connect(
+            &self,
+            _endpoint: &Endpoint,
+            _auth: &AuthConfig,
+        ) -> Result<Box<dyn spt_protocol::TunnelSession>> {
+            Ok(Box::new(CountingProbeSession::new(
+                Arc::clone(&self.keepalive_calls),
+                Arc::clone(&self.preflight_calls),
+            )))
+        }
+        fn capabilities(&self) -> spt_protocol::ProtocolCapabilities {
+            spt_protocol::ProtocolCapabilities::ssh3()
+        }
+        fn name(&self) -> &'static str {
+            "counting"
+        }
+    }
+
+    /// TW2-A3: `health_check = SshAuthPreflight` must dispatch the probe to
+    /// `TunnelSession::preflight_connect`, NOT silently fall through to
+    /// `keepalive`.
+    #[tokio::test]
+    async fn ssh_auth_preflight_dispatches_to_preflight_connect() {
+        let keepalive_calls = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let preflight_calls = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let proto = Arc::new(CountingProbeProto {
+            keepalive_calls: Arc::clone(&keepalive_calls),
+            preflight_calls: Arc::clone(&preflight_calls),
+        });
+
+        let cfg = ProfileSupervisorConfig {
+            health_check: HealthCheckStyle::SshAuthPreflight,
+            keepalive_interval: Duration::from_millis(20),
+            keepalive_timeout: Duration::from_secs(2),
+            ..Default::default()
+        };
+
+        let sup =
+            ProfileSupervisor::spawn("p", proto.clone(), auth(), vec![endpoint("a")], vec![], cfg);
+
+        // Let several probe ticks fire.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        sup.stop().await;
+
+        let pf = preflight_calls.load(std::sync::atomic::Ordering::SeqCst);
+        let ka = keepalive_calls.load(std::sync::atomic::Ordering::SeqCst);
+        assert!(
+            pf >= 1,
+            "SshAuthPreflight must call preflight_connect; got {pf} preflight, {ka} keepalive"
+        );
+        assert_eq!(
+            ka, 0,
+            "SshAuthPreflight must NOT fall through to keepalive; got {ka} keepalive calls"
+        );
+    }
+
+    /// TW2-A3: `health_check = SshHandshake` (default) keeps calling `keepalive`
+    /// and never `preflight_connect` — the dispatch split is exclusive.
+    #[tokio::test]
+    async fn ssh_handshake_dispatches_to_keepalive() {
+        let keepalive_calls = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let preflight_calls = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let proto = Arc::new(CountingProbeProto {
+            keepalive_calls: Arc::clone(&keepalive_calls),
+            preflight_calls: Arc::clone(&preflight_calls),
+        });
+
+        let cfg = ProfileSupervisorConfig {
+            health_check: HealthCheckStyle::SshHandshake,
+            keepalive_interval: Duration::from_millis(20),
+            keepalive_timeout: Duration::from_secs(2),
+            ..Default::default()
+        };
+
+        let sup =
+            ProfileSupervisor::spawn("p", proto.clone(), auth(), vec![endpoint("a")], vec![], cfg);
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        sup.stop().await;
+
+        assert!(
+            keepalive_calls.load(std::sync::atomic::Ordering::SeqCst) >= 1,
+            "SshHandshake must call keepalive"
+        );
+        assert_eq!(
+            preflight_calls.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "SshHandshake must not call preflight_connect"
+        );
+    }
+
     #[tokio::test]
     async fn reset_after_short_uptime_does_not_reset() {
         // Session is up only briefly (< reset_after) before keepalive
@@ -2780,6 +2995,95 @@ mod tests {
             *state_rx.borrow(),
             ProfileStateName::Unstable,
             "EmitEvent action must not transition to Unstable"
+        );
+        sup.stop().await;
+    }
+
+    /// TW2-A3: a healthy-but-slow probe whose coarse RTT exceeds
+    /// `max_latency_p95` trips the instability detector, and the trip selects the
+    /// configured `InstabilityAction` (here `EmitEvent` → emit the InstabilityHit
+    /// event but do NOT transition to Unstable). This exercises the latency
+    /// sampling path end-to-end at the probe site.
+    #[tokio::test]
+    async fn high_latency_probe_trips_with_configured_action() {
+        // Each keepalive succeeds but takes ~120 ms → RTT sample ~120 ms.
+        let proto = Arc::new(SlowKeepaliveProto {
+            probe_delay: Duration::from_millis(120),
+        });
+        let mut cfg = ProfileSupervisorConfig {
+            keepalive_interval: Duration::from_millis(40),
+            keepalive_timeout: Duration::from_secs(2),
+            ..Default::default()
+        };
+        // Ceiling 50 ms — the ~120 ms RTT p95 exceeds it on the first sample.
+        cfg.instability.max_latency_p95 = Some(Duration::from_millis(50));
+        cfg.instability.action = InstabilityAction::EmitEvent;
+
+        let sup =
+            ProfileSupervisor::spawn("p", proto.clone(), auth(), vec![endpoint("a")], vec![], cfg);
+        let mut events = sup.take_events().unwrap();
+        let state_rx = sup.watch_state();
+
+        let mut saw_hit = false;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+        while tokio::time::Instant::now() < deadline {
+            match tokio::time::timeout(Duration::from_millis(200), events.recv()).await {
+                Ok(Some(ProfileEvent::InstabilityHit { .. })) => {
+                    saw_hit = true;
+                    break;
+                }
+                Ok(Some(_)) => {}
+                Ok(None) | Err(_) => {}
+            }
+        }
+        assert!(
+            saw_hit,
+            "a high-latency probe (p95 > max_latency_p95) must trip the detector \
+             and emit InstabilityHit"
+        );
+        // EmitEvent action: observe only, never transition to Unstable.
+        assert_ne!(
+            *state_rx.borrow(),
+            ProfileStateName::Unstable,
+            "EmitEvent action must not transition to Unstable on a latency trip"
+        );
+        sup.stop().await;
+    }
+
+    /// TW2-A3: with `max_latency_p95 = None` (default) a slow-but-healthy probe
+    /// never trips on latency — preserving today's behavior.
+    #[tokio::test]
+    async fn high_latency_probe_inert_when_threshold_unset() {
+        let proto = Arc::new(SlowKeepaliveProto {
+            probe_delay: Duration::from_millis(120),
+        });
+        let cfg = ProfileSupervisorConfig {
+            keepalive_interval: Duration::from_millis(40),
+            keepalive_timeout: Duration::from_secs(2),
+            ..Default::default()
+        };
+        // max_latency_p95 left None (default).
+        assert_eq!(cfg.instability.max_latency_p95, None);
+
+        let sup =
+            ProfileSupervisor::spawn("p", proto.clone(), auth(), vec![endpoint("a")], vec![], cfg);
+        let mut events = sup.take_events().unwrap();
+
+        let mut saw_hit = false;
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(800);
+        while tokio::time::Instant::now() < deadline {
+            match tokio::time::timeout(Duration::from_millis(150), events.recv()).await {
+                Ok(Some(ProfileEvent::InstabilityHit { .. })) => {
+                    saw_hit = true;
+                    break;
+                }
+                Ok(Some(_)) => {}
+                Ok(None) | Err(_) => {}
+            }
+        }
+        assert!(
+            !saw_hit,
+            "with max_latency_p95 = None a slow-but-healthy probe must not trip"
         );
         sup.stop().await;
     }

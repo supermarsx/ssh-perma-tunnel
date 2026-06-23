@@ -1589,15 +1589,17 @@ fn check_profile(d: &mut Diagnostics, i: usize, p: &Profile, capabilities: Optio
         }
         if let Some(resolve) = hop.target_resolve.as_deref() {
             if matches!(resolve, "local" | "remote" | "previous-hop") {
-                // t-tunnel-wire B2: parsed and vocabulary-checked, but the
-                // resolution-location is fixed at runtime — surface so it is
-                // never silently ignored.
+                // t-tunnel-wire-2 B2: parsed and vocabulary-checked, but hop
+                // targets are resolved by the SSH peer (the previous leg's
+                // `direct-tcpip`); `local` resolution is not supported. Surface
+                // so it is never silently ignored.
                 d.push(
                     Diagnostic::warning(
                         "hop_target_resolve_no_effect",
                         format!(
-                            "hop `{}` target_resolve `{resolve}` has no effect (DNS resolution \
-                             location is not yet configurable)",
+                            "hop `{}` target_resolve `{resolve}` has no effect: hop targets are \
+                             resolved by the SSH peer (direct-tcpip); `local` resolution is not \
+                             supported",
                             hop.name
                         ),
                     )
@@ -1625,12 +1627,6 @@ fn check_profile(d: &mut Diagnostics, i: usize, p: &Profile, capabilities: Optio
     }
 
     // Forwards.
-    // `sni_name` only has meaning when a TLS-fronting obfuscation transport is
-    // active (MeekHttp/Websocket carry an SNI); without it the field is inert.
-    let obfuscation_present = p
-        .transport
-        .as_ref()
-        .is_some_and(|t| t.obfuscation.is_some());
     let mut fwd_names: Vec<&str> = Vec::with_capacity(p.forwards.len());
     for (j, f) in p.forwards.iter().enumerate() {
         if fwd_names.contains(&f.name.as_str()) {
@@ -1647,7 +1643,7 @@ fn check_profile(d: &mut Diagnostics, i: usize, p: &Profile, capabilities: Optio
         } else {
             fwd_names.push(&f.name);
         }
-        check_forward(d, &p.protocol, capabilities, f, obfuscation_present, i, j);
+        check_forward(d, &p.protocol, capabilities, f, i, j);
     }
 
     // SFTP mount entries.
@@ -1738,22 +1734,26 @@ fn check_profile(d: &mut Diagnostics, i: usize, p: &Profile, capabilities: Optio
                 .at(format!("{prefix}.failover.fail_after")),
             );
         }
-        // t-tunnel-wire B2: only the four health-check styles backed by an
-        // actual probe implementation (`HealthCheckStyle` in spt-supervisor,
-        // wired by Wave C2) are accepted. Any other value would silently fall
-        // back to the default probe, defeating the operator's intent — ERROR.
+        // t-tunnel-wire-2 B2: health-check styles backed by a real probe are
+        // accepted. `tcp_connect` (bare TCP dial), `ssh_handshake`
+        // (`session.keepalive()`) and `ssh_auth_preflight` (a connect+auth-only
+        // side dial, wired by the supervisor peer) all have probes. Only
+        // `ssh3_endpoint` is genuinely blocked — there is no ssh3/QUIC transport
+        // to probe — so it must ERROR rather than silently fall back to
+        // keepalive. Any other value is likewise rejected.
         if let Some(style) = failover.health_check.as_deref() {
             if !matches!(
                 style,
-                "tcp_connect" | "ssh_handshake" | "ssh_auth_preflight" | "ssh3_endpoint"
+                "tcp_connect" | "ssh_handshake" | "ssh_auth_preflight"
             ) {
                 d.push(
                     Diagnostic::error(
                         "failover_health_check_unimplemented",
                         format!(
                             "profile `{}` failover.health_check `{style}` has no probe \
-                             implementation; supported styles: tcp_connect, ssh_handshake, \
-                             ssh_auth_preflight, ssh3_endpoint",
+                             implementation (ssh3_endpoint requires an ssh3/QUIC transport \
+                             that is not implemented); supported styles: tcp_connect, \
+                             ssh_handshake, ssh_auth_preflight",
                             p.name
                         ),
                     )
@@ -2028,20 +2028,21 @@ fn check_profile_crypto(
     }
 }
 
-/// t-tunnel-wire B2: WARN on profile-level config that is parsed but not yet
-/// applied at runtime, so a deferred field is never silently ignored.
+/// t-tunnel-wire B2 / t-tunnel-wire-2 B2: WARN on profile-level config that is
+/// parsed but not yet applied at runtime, so a deferred field is never silently
+/// ignored.
 ///
-/// Covers the sub-tables/fields the wiring task explicitly defers:
+/// Covers the sub-tables/fields the wiring task still defers:
 /// `[profiles.tls]` (ssh3/QUIC transport tuning), `[profiles.ssh3]` (deferred
-/// tuning), the **murky timeout** fields of `[profiles.connection]`, and
-/// `profile.dns_resolution` when it requests resolution caching.
+/// tuning), `profile.dns_resolution` when it requests resolution caching, plus
+/// the "DEAD-without-WARN" stragglers exposed by the round-2 audit:
+/// `profile.connect_timeout` (legacy alias), `connection.channel_open_timeout`,
+/// and the still-inert `[profiles.limits]` knobs.
 ///
-/// conn-wire wired the socket-/channel-level subset of `[profiles.connection]`
-/// (`connect_timeout`, `tcp_nodelay`, `socket_keepalive` + `keepalive_*`,
-/// `channel_window_size`, `channel_max_packet_size`) end to end, so those no
-/// longer warn. Only the murky SSH-level timeouts
-/// (`auth_timeout`/`handshake_timeout`/`read_timeout`/`write_timeout`) remain
-/// deferred, emitting `profile_connection_timeout_not_applied`.
+/// t-tunnel-wire-2 wired the four `[profiles.connection]` SSH-level timeouts
+/// (`auth_timeout`/`handshake_timeout` as connect/auth deadlines,
+/// `read_timeout`/`write_timeout` as a combined channel-idle deadline), so the
+/// former `profile_connection_timeout_not_applied` WARN is RETIRED.
 fn check_profile_deferred(d: &mut Diagnostics, p: &Profile, prefix: &str) {
     // `[profiles.tls]` — parsed but the ssh3 build path ignores it today.
     if p.tls.is_some() {
@@ -2081,40 +2082,87 @@ fn check_profile_deferred(d: &mut Diagnostics, p: &Profile, prefix: &str) {
         }
     }
 
-    // `[profiles.connection]` — conn-wire wired the *socket- and channel-level*
-    // subset of this table end-to-end (profile_factory → `ConnectionPolicy` →
-    // russh dial path):
+    // `[profiles.connection]` — conn-wire + t-tunnel-wire-2 wired this table
+    // end-to-end (profile_factory → `ConnectionPolicy` → russh dial path):
     //   * `connect_timeout` (timed TCP dial),
+    //   * `auth_timeout` / `handshake_timeout` (connect/auth deadlines),
+    //   * `read_timeout` / `write_timeout` (combined channel-idle deadline),
     //   * `tcp_nodelay` (russh `Config::nodelay` + dialed socket),
     //   * `socket_keepalive` + `keepalive_idle`/`keepalive_interval`/
     //     `keepalive_retries` (socket-level `TcpKeepalive`),
     //   * `channel_window_size` / `channel_max_packet_size` (russh
     //     `Config::window_size` / `maximum_packet_size`).
-    // Those fields are LIVE and no longer warned.
-    //
-    // The murky SSH-level timeouts remain unwired: russh 0.61 exposes no clean
-    // apply site for per-operation deadlines (its `Limits` are rekey byte/time
-    // limits, not auth/handshake/read/write timeouts), so they keep emitting
-    // `profile_connection_timeout_not_applied` to avoid silently ignoring them.
+    // Those fields are LIVE and not warned. The lone exception is
+    // `channel_open_timeout`: russh exposes no channel-open deadline, so it is
+    // a DEAD-without-WARN straggler — surface it so it is never silently
+    // dropped.
     if let Some(conn) = p.connection.as_ref() {
+        if conn.channel_open_timeout.is_some() {
+            d.push(
+                Diagnostic::warning(
+                    "profile_connection_channel_open_timeout_not_applied",
+                    format!(
+                        "profile `{}` connection.channel_open_timeout is parsed but not applied \
+                         (russh exposes no channel-open deadline)",
+                        p.name
+                    ),
+                )
+                .at(format!("{prefix}.connection.channel_open_timeout")),
+            );
+        }
+    }
+
+    // `profile.connect_timeout` — legacy top-level alias; superseded by the
+    // wired `[profiles.connection].connect_timeout`. Parsed but never read.
+    if p.connect_timeout.is_some() {
+        d.push(
+            Diagnostic::warning(
+                "profile_connect_timeout_superseded",
+                format!(
+                    "profile `{}` top-level connect_timeout is not applied; use \
+                     `[profiles.connection].connect_timeout` instead",
+                    p.name
+                ),
+            )
+            .at(format!("{prefix}.connect_timeout")),
+        );
+    }
+
+    // `[profiles.limits]` — the byte-rate (`max_bytes_per_second_*`) and
+    // new-connection (`max_new_connections_per_second`) knobs are wired into the
+    // forward rate-limiter; the remaining knobs have no consumer. Surface each
+    // so it is never silently dropped.
+    if let Some(limits) = p.limits.as_ref() {
         for (field, set) in [
-            ("auth_timeout", conn.auth_timeout.is_some()),
-            ("handshake_timeout", conn.handshake_timeout.is_some()),
-            ("read_timeout", conn.read_timeout.is_some()),
-            ("write_timeout", conn.write_timeout.is_some()),
+            (
+                "max_active_connections",
+                limits.max_active_connections.is_some(),
+            ),
+            (
+                "max_bits_per_second_in",
+                limits.max_bits_per_second_in.is_some(),
+            ),
+            (
+                "max_bits_per_second_out",
+                limits.max_bits_per_second_out.is_some(),
+            ),
+            ("throttle_algorithm", limits.throttle_algorithm.is_some()),
+            (
+                "max_connection_lifetime",
+                limits.max_connection_lifetime.is_some(),
+            ),
         ] {
             if set {
                 d.push(
                     Diagnostic::warning(
-                        "profile_connection_timeout_not_applied",
+                        "profile_limits_not_applied",
                         format!(
-                            "profile `{}` connection.{field} is parsed but not yet applied \
-                             (russh 0.61 exposes no per-operation deadline; socket-level \
-                             knobs in this table ARE applied)",
+                            "profile `{}` limits.{field} is parsed but not applied (only the \
+                             byte-rate and new-connection-rate limits are wired)",
                             p.name
                         ),
                     )
-                    .at(format!("{prefix}.connection.{field}")),
+                    .at(format!("{prefix}.limits.{field}")),
                 );
             }
         }
@@ -2412,7 +2460,6 @@ fn check_forward(
     protocol: &str,
     capabilities: Option<&Capabilities>,
     f: &Forward,
-    obfuscation_present: bool,
     i: usize,
     j: usize,
 ) {
@@ -2657,16 +2704,17 @@ fn check_forward(
     );
     check_forward_link_kind(d, f, &prefix);
 
-    // t-tunnel-wire B2: forward fields that are parsed but not yet applied.
-    // `target_resolve` has no resolve site — surface so it is never silently
-    // ignored.
+    // t-tunnel-wire-2 B2: forward targets are resolved by the SSH peer
+    // (`direct-tcpip` hands the peer a host:port and the peer resolves it), so
+    // `target_resolve` has no client-side effect; `local` resolution is not
+    // supported. Surface so it is never silently ignored.
     if f.target_resolve.is_some() {
         d.push(
             Diagnostic::warning(
                 "forward_target_resolve_no_effect",
                 format!(
-                    "forward `{}` target_resolve has no effect (DNS resolution location is not \
-                     yet configurable)",
+                    "forward `{}` target_resolve has no effect: forward targets are resolved by \
+                     the SSH peer (direct-tcpip); `local` resolution is not supported",
                     f.name
                 ),
             )
@@ -2674,15 +2722,19 @@ fn check_forward(
         );
     }
 
-    // `sni_name` is only consumed by a TLS-fronting obfuscation transport
-    // (MeekHttp/Websocket). Without `[profiles.transport.obfuscation]` it is
-    // inert.
-    if f.sni_name.is_some() && !obfuscation_present {
+    // `sni_name` is per-forward, but there is a single profile-level obfs
+    // transport, so a per-forward SNI is architecturally unsupported. The SNI
+    // override that DOES work is `[profiles.transport.obfuscation].sni`
+    // (MeekHttp). Warn whenever the per-forward field is set, pointing operators
+    // at the real knob.
+    if f.sni_name.is_some() {
         d.push(
             Diagnostic::warning(
                 "forward_sni_name_no_effect",
                 format!(
-                    "forward `{}` sni_name has no effect without TLS-fronting obfuscation",
+                    "forward `{}` sni_name has no effect: per-forward SNI is unsupported (a single \
+                     profile-level obfs transport is shared by all forwards); set \
+                     `[profiles.transport.obfuscation].sni` (MeekHttp) instead",
                     f.name
                 ),
             )
@@ -2765,22 +2817,28 @@ fn check_forward_link_kind(d: &mut Diagnostics, f: &Forward, prefix: &str) {
         }
     }
 
-    // (4) remote_uds — needs the local socket path AND it must be absolute.
+    // (4) remote_uds — now WIRED (runner + ssh2 forwarded-streamlocal accept
+    // loop). t-tunnel-wire-2 B2: a well-formed remote_uds forward PASSES; only
+    // the path shape is policed. It needs the remote socket path (the
+    // server-side `streamlocal-forward` bind) AND the local socket path the
+    // accepted channels bridge to, which must be an absolute POSIX path.
     if matches!(link_kind, Some("remote_uds")) {
-        // t-tunnel-wire B2: remote UDS forwarding has no runtime implementation
-        // (only `local_uds` is wired). ERROR so it never silently no-ops a
-        // forwarding expectation.
-        d.push(
-            Diagnostic::error(
-                "forward_remote_uds_unimplemented",
-                format!(
-                    "forward `{}` link kind `remote_uds` forwarding is not yet implemented \
-                     (local_uds is supported)",
-                    f.name
-                ),
-            )
-            .at(format!("{prefix}.kind")),
-        );
+        let remote_empty = f
+            .remote_socket_path
+            .as_deref()
+            .is_none_or(|s| s.trim().is_empty());
+        if remote_empty {
+            d.push(
+                Diagnostic::error(
+                    "forward_remote_uds_requires_remote_socket_path",
+                    format!(
+                        "forward `{}` has link kind `remote_uds` but `remote_socket_path` is missing or empty",
+                        f.name
+                    ),
+                )
+                .at(format!("{prefix}.remote_socket_path")),
+            );
+        }
         let local = f.local_socket_path.as_deref().map_or("", str::trim);
         if local.is_empty() {
             d.push(
@@ -4878,7 +4936,10 @@ mod tests {
     // ----------------------------------------------------------------------
 
     #[test]
-    fn forward_remote_uds_is_error() {
+    fn forward_remote_uds_well_formed_passes() {
+        // t-tunnel-wire-2: remote_uds is now WIRED. A well-formed forward
+        // (non-empty remote_socket_path + absolute local_socket_path) must NOT
+        // error.
         let raw = r#"
             version = 1
             [[profiles]]
@@ -4898,7 +4959,92 @@ mod tests {
         let (c, _) = load_str(raw, false).unwrap();
         let d = validate(&c);
         assert!(
+            d.errors.is_empty(),
+            "well-formed remote_uds must validate clean: {:?}",
             d.errors
+        );
+    }
+
+    #[test]
+    fn forward_remote_uds_missing_remote_socket_path_errors() {
+        let raw = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            [[profiles.forwards]]
+            name = "f"
+            type = "local"
+            transport = "tcp"
+            bind = "127.0.0.1:1234"
+            target = "127.0.0.1:22"
+            kind = "remote_uds"
+            local_socket_path = "/tmp/local.sock"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(
+            d.errors
+                .iter()
+                .any(|e| e.code == "forward_remote_uds_requires_remote_socket_path"),
+            "errors: {:?}",
+            d.errors
+        );
+    }
+
+    #[test]
+    fn forward_remote_uds_relative_local_socket_path_errors() {
+        let raw = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            [[profiles.forwards]]
+            name = "f"
+            type = "local"
+            transport = "tcp"
+            bind = "127.0.0.1:1234"
+            target = "127.0.0.1:22"
+            kind = "remote_uds"
+            local_socket_path = "relative.sock"
+            remote_socket_path = "/tmp/remote.sock"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(
+            d.errors
+                .iter()
+                .any(|e| e.code == "forward_remote_uds_local_socket_path_relative"),
+            "errors: {:?}",
+            d.errors
+        );
+    }
+
+    #[test]
+    fn forward_remote_uds_no_longer_unimplemented_error() {
+        // The retired `forward_remote_uds_unimplemented` code must never fire.
+        let raw = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            [[profiles.forwards]]
+            name = "f"
+            type = "local"
+            transport = "tcp"
+            bind = "127.0.0.1:1234"
+            target = "127.0.0.1:22"
+            kind = "remote_uds"
+            local_socket_path = "/tmp/local.sock"
+            remote_socket_path = "/tmp/remote.sock"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(
+            !d.errors
                 .iter()
                 .any(|e| e.code == "forward_remote_uds_unimplemented"),
             "errors: {:?}",
@@ -4974,6 +5120,54 @@ mod tests {
                 .iter()
                 .any(|e| e.code == "failover_health_check_unimplemented"),
             "errors: {:?}",
+            d.errors
+        );
+    }
+
+    #[test]
+    fn failover_health_check_ssh_auth_preflight_ok() {
+        // t-tunnel-wire-2: ssh_auth_preflight is being wired by the supervisor
+        // peer — accept it (no error).
+        let raw = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            [profiles.failover]
+            health_check = "ssh_auth_preflight"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(
+            !d.errors
+                .iter()
+                .any(|e| e.code == "failover_health_check_unimplemented"),
+            "ssh_auth_preflight must be accepted: {:?}",
+            d.errors
+        );
+    }
+
+    #[test]
+    fn failover_health_check_ssh3_endpoint_errors() {
+        // t-tunnel-wire-2: ssh3_endpoint is genuinely blocked (no ssh3
+        // transport) — it must ERROR, not silently fall back to keepalive.
+        let raw = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            [profiles.failover]
+            health_check = "ssh3_endpoint"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(
+            d.errors
+                .iter()
+                .any(|e| e.code == "failover_health_check_unimplemented"),
+            "ssh3_endpoint must error: {:?}",
             d.errors
         );
     }
@@ -5065,7 +5259,9 @@ mod tests {
     }
 
     #[test]
-    fn profile_connection_murky_timeouts_warn() {
+    fn profile_connection_timeouts_now_wired_no_warn() {
+        // t-tunnel-wire-2: auth/handshake/read/write timeouts are now wired —
+        // the `profile_connection_timeout_not_applied` WARN is RETIRED.
         let raw = r#"
             version = 1
             [[profiles]]
@@ -5080,12 +5276,106 @@ mod tests {
         "#;
         let (c, _) = load_str(raw, false).unwrap();
         let d = validate(&c);
+        assert!(
+            !d.warnings
+                .iter()
+                .any(|w| w.code == "profile_connection_timeout_not_applied"),
+            "retired timeout WARN must not fire: {:?}",
+            d.warnings
+        );
+    }
+
+    #[test]
+    fn profile_connection_channel_open_timeout_warns() {
+        let raw = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            [profiles.connection]
+            channel_open_timeout = "5s"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(
+            d.warnings
+                .iter()
+                .any(|w| w.code == "profile_connection_channel_open_timeout_not_applied"),
+            "warnings: {:?}",
+            d.warnings
+        );
+    }
+
+    #[test]
+    fn profile_connect_timeout_legacy_warns() {
+        let raw = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            connect_timeout = "10s"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(
+            d.warnings
+                .iter()
+                .any(|w| w.code == "profile_connect_timeout_superseded"),
+            "warnings: {:?}",
+            d.warnings
+        );
+    }
+
+    #[test]
+    fn profile_limits_unwired_knobs_warn() {
+        let raw = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            [profiles.limits]
+            max_active_connections = 10
+            max_bits_per_second_in = "100Mbit"
+            max_bits_per_second_out = "100Mbit"
+            throttle_algorithm = "token_bucket"
+            max_connection_lifetime = "1h"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
         let count = d
             .warnings
             .iter()
-            .filter(|w| w.code == "profile_connection_timeout_not_applied")
+            .filter(|w| w.code == "profile_limits_not_applied")
             .count();
-        assert_eq!(count, 4, "warnings: {:?}", d.warnings);
+        assert_eq!(count, 5, "warnings: {:?}", d.warnings);
+    }
+
+    #[test]
+    fn profile_limits_wired_knobs_no_warn() {
+        // The byte-rate + new-connection-rate limits ARE wired and must not warn.
+        let raw = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            [profiles.limits]
+            max_bytes_per_second_in = "10MiB"
+            max_bytes_per_second_out = "10MiB"
+            max_new_connections_per_second = 100
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(
+            !d.warnings
+                .iter()
+                .any(|w| w.code == "profile_limits_not_applied"),
+            "wired limits must not warn: {:?}",
+            d.warnings
+        );
     }
 
     #[test]
@@ -5259,7 +5549,11 @@ mod tests {
     }
 
     #[test]
-    fn forward_sni_name_with_obfuscation_no_warn() {
+    fn forward_sni_name_with_obfuscation_still_warns() {
+        // t-tunnel-wire-2: per-forward SNI is architecturally unsupported (one
+        // profile-level obfs transport is shared by all forwards), so the WARN
+        // fires even when obfuscation is present — operators must use
+        // `[profiles.transport.obfuscation].sni` instead.
         let raw = r#"
             version = 1
             [[profiles]]
@@ -5280,7 +5574,7 @@ mod tests {
         let (c, _) = load_str(raw, false).unwrap();
         let d = validate(&c);
         assert!(
-            !d.warnings
+            d.warnings
                 .iter()
                 .any(|w| w.code == "forward_sni_name_no_effect"),
             "warnings: {:?}",

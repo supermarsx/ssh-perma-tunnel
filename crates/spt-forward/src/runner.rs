@@ -14,8 +14,8 @@ use spt_core::{BindAddr, Error, Result};
 use spt_net::bind::{resolve_bind, AutoPrefer, BindMode, Family};
 use spt_protocol::{
     BindConflictPolicy, DynamicForwardSpec, ForwardDirection, ForwardHandle, ForwardRateLimits,
-    ForwardState, LocalForwardSpec, RemoteForwardSpec, TargetAddr, TunnelSession, UdpForwardSpec,
-    UdsForwardSpec,
+    ForwardState, LocalForwardSpec, RemoteForwardSpec, RemoteUdsForwardSpec, TargetAddr,
+    TunnelSession, UdpForwardSpec, UdsForwardSpec,
 };
 use thiserror::Error;
 use tokio::sync::watch;
@@ -81,14 +81,24 @@ impl ForwardRunner {
         let name = cfg.name.clone();
         let required = cfg.required.unwrap_or(false);
 
-        // ---- UDS dispatch (link_kind == "local_uds") -----------------------
+        // ---- UDS dispatch (link_kind == "local_uds" / "remote_uds") --------
         // Handled before the TCP/UDP path because UDS forwards use socket
-        // *paths*, not `bind`/`listen` host:port addresses. `remote_uds` is
-        // DEFERRED (validate.rs rejects it); only `local_uds` is wired here.
+        // *paths*, not `bind`/`listen` host:port addresses. Both directions
+        // are wired here; the backend returns `UnsupportedPlatform` on
+        // non-Unix targets (the cfg(unix) split lives in the ssh2 impl).
         if let Some(link_kind) = cfg.link_kind.as_deref() {
             if link_kind == "local_uds" {
                 let handle =
                     Self::start_local_uds(cfg, session, runner_cfg, &name, required).await?;
+                return Ok(Self {
+                    name,
+                    handle,
+                    required,
+                });
+            }
+            if link_kind == "remote_uds" {
+                let handle =
+                    Self::start_remote_uds(cfg, session, runner_cfg, &name, required).await?;
                 return Ok(Self {
                     name,
                     handle,
@@ -274,6 +284,53 @@ impl ForwardRunner {
             required,
         };
         session.open_uds_forward(&spec).await
+    }
+
+    /// Build and open a `remote_uds` forward (the symmetric counterpart of
+    /// [`Self::start_local_uds`]).
+    ///
+    /// The *server* binds a listener on `remote_socket_path` and the backend
+    /// bridges accepted remote connections to the local `local_socket_path`.
+    /// The local path is validated with the same rules the listener enforces
+    /// (absolute, non-empty, no NUL, length cap). On non-Unix targets the
+    /// session's default [`TunnelSession::open_remote_uds`] returns
+    /// `UnsupportedPlatform`; the spt-ssh2 backend overrides it on `cfg(unix)`.
+    async fn start_remote_uds(
+        cfg: &Forward,
+        session: &mut dyn TunnelSession,
+        runner_cfg: &ForwardRunnerConfig,
+        name: &str,
+        required: bool,
+    ) -> Result<ForwardHandle> {
+        let local_path =
+            cfg.local_socket_path
+                .as_deref()
+                .ok_or_else(|| ForwardRunnerError::Malformed {
+                    name: name.to_owned(),
+                    reason: "link_kind `remote_uds` requires `local_socket_path`".into(),
+                })?;
+        let remote_path =
+            cfg.remote_socket_path
+                .as_deref()
+                .ok_or_else(|| ForwardRunnerError::Malformed {
+                    name: name.to_owned(),
+                    reason: "link_kind `remote_uds` requires `remote_socket_path`".into(),
+                })?;
+        // Validate the local bridge path with the same rules the listener
+        // enforces at bind time (absolute, non-empty, no NUL, length cap).
+        crate::uds_listener::validate_local_path(local_path)?;
+
+        let limits = effective_limits(cfg, runner_cfg)?;
+        let idle_timeout = parse_idle_timeout(cfg)?;
+        let spec = RemoteUdsForwardSpec {
+            name: name.to_owned(),
+            remote_socket_path: remote_path.to_owned(),
+            local_socket_path: std::path::PathBuf::from(local_path),
+            limits,
+            idle_timeout,
+            required,
+        };
+        session.open_remote_uds(&spec).await
     }
 
     /// Forward name (config id).
@@ -683,6 +740,7 @@ mod tests {
         last_bind_conflict: Option<BindConflictPolicy>,
         last_required: Option<bool>,
         last_uds: Option<UdsForwardSpec>,
+        last_remote_uds: Option<RemoteUdsForwardSpec>,
     }
 
     impl CapturingSession {
@@ -695,6 +753,7 @@ mod tests {
                 last_bind_conflict: None,
                 last_required: None,
                 last_uds: None,
+                last_remote_uds: None,
             }
         }
     }
@@ -743,6 +802,30 @@ mod tests {
                 max_connections: None,
                 limits: spec.limits,
                 idle_timeout: None,
+                on_bind_conflict: BindConflictPolicy::default(),
+                required: spec.required,
+            };
+            self.inner.open_local_forward(&local).await
+        }
+
+        async fn open_remote_uds(
+            &mut self,
+            spec: &RemoteUdsForwardSpec,
+        ) -> Result<ForwardHandle> {
+            // Record the remote-UDS spec and synthesize a handle via the inner
+            // mock's local-forward path (a UDS forward is, at the handle level,
+            // indistinguishable from any other forward).
+            self.last_remote_uds = Some(spec.clone());
+            self.last_limits = Some(spec.limits);
+            self.last_idle = Some(spec.idle_timeout);
+            self.last_required = Some(spec.required);
+            let local = LocalForwardSpec {
+                name: spec.name.clone(),
+                listen: BindAddr::Tcp("127.0.0.1:0".parse().unwrap()),
+                target: TargetAddr::new("uds", 0),
+                max_connections: None,
+                limits: spec.limits,
+                idle_timeout: spec.idle_timeout,
                 on_bind_conflict: BindConflictPolicy::default(),
                 required: spec.required,
             };
@@ -1453,6 +1536,133 @@ mod tests {
         cfg.link_kind = Some("local_uds".into());
         cfg.local_socket_path = Some("/tmp/spt-runner-test2.sock".into());
         cfg.remote_socket_path = Some("/run/spt-remote2.sock".into());
+        let r = ForwardRunner::start(&cfg, &mut session, &ForwardRunnerConfig::default()).await;
+        assert!(matches!(r, Err(Error::UnsupportedPlatform(_))));
+    }
+
+    // ---- UDS remote_uds dispatch (symmetric counterpart of local_uds) ----
+    //
+    // The `remote_uds` arm mirrors `local_uds`: it builds a
+    // `RemoteUdsForwardSpec` (remote_socket_path/local_socket_path/limits/
+    // idle/required) and dispatches via `open_remote_uds`. The
+    // `CapturingSession` override records the spec; the default mock
+    // surfaces `UnsupportedPlatform`.
+
+    #[tokio::test]
+    async fn uds_remote_uds_dispatches_to_open_remote_uds() {
+        let mut session = CapturingSession::new();
+        let mut cfg = fwd("local", "tcp", "127.0.0.1:0", "1.2.3.4:5");
+        cfg.link_kind = Some("remote_uds".into());
+        cfg.local_socket_path = Some("/tmp/spt-remote-uds-test.sock".into());
+        cfg.remote_socket_path = Some("/run/spt-remote.sock".into());
+        cfg.required = Some(true);
+        cfg.idle_timeout = Some("45s".into());
+        cfg.max_bytes_per_second_out = Some("1KiB".into());
+
+        let runner = ForwardRunner::start(&cfg, &mut session, &ForwardRunnerConfig::default())
+            .await
+            .unwrap();
+        let uds = session.last_remote_uds.clone().expect("remote-UDS spec captured");
+        assert_eq!(uds.name, "f1");
+        assert_eq!(uds.remote_socket_path, "/run/spt-remote.sock");
+        assert_eq!(
+            uds.local_socket_path,
+            std::path::PathBuf::from("/tmp/spt-remote-uds-test.sock")
+        );
+        assert!(uds.required);
+        assert_eq!(uds.idle_timeout, Some(Duration::from_secs(45)));
+        assert_eq!(uds.limits.rate_bps_up, 1024);
+        assert!(runner.required());
+        // The local_uds path must NOT have been taken.
+        assert!(session.last_uds.is_none());
+        runner.stop().await;
+    }
+
+    #[tokio::test]
+    async fn uds_remote_uds_non_required_defaults_false() {
+        let mut session = CapturingSession::new();
+        let mut cfg = fwd("local", "tcp", "127.0.0.1:0", "1.2.3.4:5");
+        cfg.link_kind = Some("remote_uds".into());
+        cfg.local_socket_path = Some("/tmp/spt-remote-uds-test2.sock".into());
+        cfg.remote_socket_path = Some("/run/spt-remote2.sock".into());
+        // required + idle_timeout omitted
+
+        let runner = ForwardRunner::start(&cfg, &mut session, &ForwardRunnerConfig::default())
+            .await
+            .unwrap();
+        let uds = session.last_remote_uds.clone().expect("remote-UDS spec captured");
+        assert!(!uds.required);
+        assert_eq!(uds.idle_timeout, None);
+        assert!(!runner.required());
+        runner.stop().await;
+    }
+
+    #[tokio::test]
+    async fn uds_remote_uds_inherits_default_limits() {
+        // Absent per-forward limit fields → spec.limits == runner default_limits.
+        let mut session = CapturingSession::new();
+        let mut cfg = fwd("local", "tcp", "127.0.0.1:0", "1.2.3.4:5");
+        cfg.link_kind = Some("remote_uds".into());
+        cfg.local_socket_path = Some("/tmp/spt-remote-uds-test3.sock".into());
+        cfg.remote_socket_path = Some("/run/spt-remote3.sock".into());
+        let runner_cfg = ForwardRunnerConfig {
+            default_limits: ForwardRateLimits {
+                rate_bps_down: 4096,
+                ..ForwardRateLimits::default()
+            },
+            ..ForwardRunnerConfig::default()
+        };
+        let runner = ForwardRunner::start(&cfg, &mut session, &runner_cfg)
+            .await
+            .unwrap();
+        let uds = session.last_remote_uds.clone().expect("remote-UDS spec captured");
+        assert_eq!(uds.limits.rate_bps_down, 4096);
+        runner.stop().await;
+    }
+
+    #[tokio::test]
+    async fn uds_remote_uds_missing_local_path_rejected() {
+        let mut session = CapturingSession::new();
+        let mut cfg = fwd("local", "tcp", "127.0.0.1:0", "1.2.3.4:5");
+        cfg.link_kind = Some("remote_uds".into());
+        cfg.remote_socket_path = Some("/run/spt-remote.sock".into());
+        // local_socket_path missing
+        let r = ForwardRunner::start(&cfg, &mut session, &ForwardRunnerConfig::default()).await;
+        assert!(matches!(r, Err(Error::InvalidConfig(_))));
+    }
+
+    #[tokio::test]
+    async fn uds_remote_uds_missing_remote_path_rejected() {
+        let mut session = CapturingSession::new();
+        let mut cfg = fwd("local", "tcp", "127.0.0.1:0", "1.2.3.4:5");
+        cfg.link_kind = Some("remote_uds".into());
+        cfg.local_socket_path = Some("/tmp/spt-remote-uds-test4.sock".into());
+        // remote_socket_path missing
+        let r = ForwardRunner::start(&cfg, &mut session, &ForwardRunnerConfig::default()).await;
+        assert!(matches!(r, Err(Error::InvalidConfig(_))));
+    }
+
+    #[tokio::test]
+    async fn uds_remote_uds_relative_local_path_rejected() {
+        let mut session = CapturingSession::new();
+        let mut cfg = fwd("local", "tcp", "127.0.0.1:0", "1.2.3.4:5");
+        cfg.link_kind = Some("remote_uds".into());
+        cfg.local_socket_path = Some("relative.sock".into());
+        cfg.remote_socket_path = Some("/run/spt-remote.sock".into());
+        let r = ForwardRunner::start(&cfg, &mut session, &ForwardRunnerConfig::default()).await;
+        assert!(matches!(r, Err(Error::InvalidConfig(_))));
+    }
+
+    /// On a backend without a remote-UDS override (the default mock),
+    /// `remote_uds` dispatch surfaces `UnsupportedPlatform` (the
+    /// required-vs-optional gate is applied by the supervisor on this error).
+    #[tokio::test]
+    async fn uds_remote_uds_unsupported_backend_errors() {
+        let mut session = MockTunnelSession::new();
+        let mut cfg = fwd("local", "tcp", "127.0.0.1:0", "1.2.3.4:5");
+        cfg.link_kind = Some("remote_uds".into());
+        cfg.local_socket_path = Some("/tmp/spt-remote-uds-test5.sock".into());
+        cfg.remote_socket_path = Some("/run/spt-remote5.sock".into());
         let r = ForwardRunner::start(&cfg, &mut session, &ForwardRunnerConfig::default()).await;
         assert!(matches!(r, Err(Error::UnsupportedPlatform(_))));
     }

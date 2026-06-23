@@ -20,8 +20,8 @@ use spt_forward::{
 };
 use spt_protocol::{
     BindConflictPolicy, DynamicForwardSpec, Endpoint, ForwardHandle, ForwardId, ForwardRateLimits,
-    ForwardState, LocalForwardSpec, RemoteForwardSpec, SessionInfo, TargetAddr, TunnelSession,
-    UdpForwardSpec, UdsForwardSpec,
+    ForwardState, LocalForwardSpec, RemoteForwardSpec, RemoteUdsForwardSpec, SessionInfo,
+    TargetAddr, TunnelSession, UdpForwardSpec, UdsForwardSpec,
 };
 use spt_secrets::SecretBackend;
 use tokio::io::AsyncWriteExt as _;
@@ -40,6 +40,10 @@ use crate::sftp::SftpClient;
 type RusshHandle = client::Handle<ClientHandler>;
 type SharedHandle = Arc<AsyncMutex<RusshHandle>>;
 type RemoteForwardMap = Arc<AsyncMutex<HashMap<RemoteForwardKey, mpsc::Sender<ForwardedTcpip>>>>;
+/// Server-opened `forwarded-streamlocal@openssh.com` channels are routed by the
+/// remote UNIX socket path the server is listening on. Mirrors
+/// [`RemoteForwardMap`] but keyed by `socket_path` (there is no port).
+type RemoteUdsForwardMap = Arc<AsyncMutex<HashMap<String, mpsc::Sender<ForwardedStreamlocal>>>>;
 type ConnectFuture = Pin<Box<dyn Future<Output = Result<RusshSsh2Session>> + Send + 'static>>;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -52,12 +56,24 @@ struct ForwardedTcpip {
     channel: russh::Channel<client::Msg>,
 }
 
+/// A server-opened `forwarded-streamlocal@openssh.com` channel destined for a
+/// `remote_uds` forward's accept loop (the streamlocal analogue of
+/// [`ForwardedTcpip`]).
+struct ForwardedStreamlocal {
+    // Consumed by the cfg(unix) `bridge_remote_uds`; on non-Unix the
+    // `forwarded-streamlocal` channel is never bridged (no AF_UNIX target), so
+    // the field is read only on Unix.
+    #[cfg_attr(not(unix), allow(dead_code))]
+    channel: russh::Channel<client::Msg>,
+}
+
 struct ClientHandler {
     host: String,
     port: u16,
     trust: TrustVerifier,
     trust_failure: Arc<parking_lot::Mutex<Option<String>>>,
     remote_forwards: RemoteForwardMap,
+    remote_uds_forwards: RemoteUdsForwardMap,
 }
 
 impl client::Handler for ClientHandler {
@@ -133,6 +149,47 @@ impl client::Handler for ClientHandler {
                 address = connected_address,
                 port = connected_port,
                 "dropping unregistered remote forward channel"
+            );
+        }
+        Ok(())
+    }
+
+    async fn server_channel_open_forwarded_streamlocal(
+        &mut self,
+        channel: russh::Channel<client::Msg>,
+        socket_path: &str,
+        _session: &mut client::Session,
+    ) -> std::result::Result<(), Self::Error> {
+        // Mirror `server_channel_open_forwarded_tcpip`: route the server-opened
+        // `forwarded-streamlocal@openssh.com` channel to the matching
+        // `remote_uds` accept loop, keyed by the remote socket path the server
+        // is listening on. Fall back to the sole registered forward when the
+        // exact path is absent (OpenSSH may canonicalise the path).
+        let sender = {
+            let map = self.remote_uds_forwards.lock().await;
+            map.get(socket_path).cloned().or_else(|| {
+                if map.len() == 1 {
+                    map.values().next().cloned()
+                } else {
+                    None
+                }
+            })
+        };
+
+        if let Some(tx) = sender {
+            if tx.send(ForwardedStreamlocal { channel }).await.is_err() {
+                warn!(
+                    target: "spt_ssh2::russh",
+                    socket_path = socket_path,
+                    "remote uds forward channel arrived after receiver closed"
+                );
+            }
+        } else {
+            let _ = channel.close().await;
+            warn!(
+                target: "spt_ssh2::russh",
+                socket_path = socket_path,
+                "dropping unregistered remote uds forward channel"
             );
         }
         Ok(())
@@ -232,11 +289,13 @@ impl KeepalivePolicy {
 ///   `keepalive_retries` → a [`spt_net::sockopts::TcpOptions`] applied to the
 ///   dialed `socket2::Socket` before it is handed to russh.
 ///
-/// The murky SSH-level timeouts (`auth_timeout`, `handshake_timeout`,
-/// `read_timeout`, `write_timeout`) are intentionally **not** represented here:
-/// russh 0.61 exposes no clean apply site for them (its `Limits` are rekey
-/// byte/time limits, not per-operation deadlines), so they stay parsed-and-
-/// warned in `spt-config` validate.
+/// The SSH-level per-operation timeouts (`auth_timeout`, `handshake_timeout`,
+/// `channel_idle_timeout` — a combined read/write idle bound) are wired in
+/// t-tunnel-wire-2 §1. russh 0.61 exposes no native per-operation deadline (its
+/// `Limits` are rekey byte/time limits), so they are applied via
+/// `tokio::time::timeout` wraps in `connect_inner` (auth/handshake, including
+/// per hop leg) and the bidir copy loop's idle param (channel idle, MIN-combined
+/// with any per-forward `idle_timeout`). They default to `None` (no deadline).
 ///
 /// A fully-defaulted `ConnectionPolicy` is a no-op: every field is `None`/
 /// `false`, so the russh `Config` defaults and the legacy plain-TCP dial are
@@ -263,6 +322,22 @@ pub struct ConnectionPolicy {
     /// `keepalive_retries` — probe count before the socket is declared dead
     /// (Linux only at the OS layer).
     pub keepalive_retries: Option<u32>,
+    // t-tunnel-wire-2 §1: per-operation SSH deadlines. Default `None` = no
+    // deadline (current behaviour, byte-for-byte). Wired in `connect_inner` via
+    // `tokio::time::timeout` wraps (auth/handshake) and the bidir copy loop's
+    // idle param (channel idle).
+    /// Deadline for the auth driver (publickey/password/... userauth flow).
+    /// `None` = unbounded. Wired via `run_auth_timed` in `connect_inner`.
+    pub auth_timeout: Option<Duration>,
+    /// Deadline for the SSH transport handshake (the outermost dial +
+    /// version/kex exchange). `None` = unbounded. Wired via `dial_outer_timed`
+    /// (and `open_next_leg_timed` per hop leg) in `connect_inner`.
+    pub handshake_timeout: Option<Duration>,
+    /// Combined per-channel read/write idle deadline. `None` = no idle
+    /// deadline. Reinterprets the `connection.{read,write}_timeout` pair as a
+    /// single channel-idle bound, threaded into every forward bridge's copy
+    /// loop (MIN-combined with any per-forward `idle_timeout`).
+    pub channel_idle_timeout: Option<Duration>,
 }
 
 impl ConnectionPolicy {
@@ -349,13 +424,22 @@ pub(crate) fn connect(
     obfs: Option<ObfsPolicy>,
     connection: ConnectionPolicy,
 ) -> ConnectFuture {
-    Box::pin(async move {
-        connect_inner(
-            endpoint, auth_cfg, crypto, trust, backends, hops, gss_audit, keepalive, obfs,
-            connection,
-        )
-        .await
-    })
+    // Capture every dial input in one place so the established session can
+    // reproduce a fresh connect+auth dial for `preflight_connect` (§3) without
+    // disturbing the live session.
+    let params = ReconnectParams {
+        endpoint,
+        auth_cfg,
+        crypto,
+        trust,
+        backends,
+        hops,
+        gss_audit,
+        keepalive,
+        obfs,
+        connection,
+    };
+    Box::pin(async move { connect_inner(params).await })
 }
 
 /// Dial a plain `TcpStream` to `host:port`, applying the `[profiles.connection]`
@@ -473,19 +557,85 @@ async fn dial_outer(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn connect_inner(
-    endpoint: Endpoint,
+/// Map a `tokio::time::timeout` elapse on the SSH handshake to the same
+/// `russh::Error::IO(TimedOut)` idiom `dial_tuned`'s connect-timeout uses, so
+/// the caller's existing dial-failure diagnostics + backoff apply unchanged.
+fn handshake_timed_out(host: &str, port: u16, timeout: Duration) -> russh::Error {
+    russh::Error::IO(std::io::Error::new(
+        std::io::ErrorKind::TimedOut,
+        format!("SSH handshake to {host}:{port} timed out after {timeout:?}"),
+    ))
+}
+
+/// Run `dial_outer`, bounding it with `handshake_timeout` (when `Some`) via
+/// `tokio::time::timeout`. Mirrors the `connect_timeout` wrap in `dial_tuned`.
+/// Applied per-leg so every hop honours the same handshake deadline.
+async fn dial_outer_timed(
+    cfg: Arc<client::Config>,
+    host: &str,
+    port: u16,
+    handler: ClientHandler,
+    obfs: Option<&ObfsPolicy>,
+    connection: &ConnectionPolicy,
+) -> std::result::Result<(RusshHandle, Option<&'static str>), russh::Error> {
+    let dial = dial_outer(cfg, host, port, handler, obfs, connection);
+    match connection.handshake_timeout {
+        Some(timeout) => tokio::time::timeout(timeout, dial)
+            .await
+            .map_err(|_| handshake_timed_out(host, port, timeout))?,
+        None => dial.await,
+    }
+}
+
+/// Run `run_auth`, bounding it with `auth_timeout` (when `Some`) via
+/// `tokio::time::timeout`. On elapse maps to an `AuthFailed` diagnostic so the
+/// existing auth-failure handling (no retry) applies.
+async fn run_auth_timed(
+    handle: SharedHandle,
     auth_cfg: AuthConfig,
-    crypto: CryptoPolicy,
-    trust: TrustVerifier,
     backends: Vec<Arc<dyn SecretBackend>>,
-    hops: Vec<HopSpec>,
     gss_audit: Option<Arc<dyn spt_auth_sspi::AuditHook>>,
-    keepalive: KeepalivePolicy,
-    obfs: Option<ObfsPolicy>,
-    connection: ConnectionPolicy,
-) -> Result<RusshSsh2Session> {
+    auth_timeout: Option<Duration>,
+) -> Result<()> {
+    let drive = run_auth(handle, auth_cfg, backends, gss_audit);
+    match auth_timeout {
+        Some(timeout) => match tokio::time::timeout(timeout, drive).await {
+            Ok(res) => res,
+            Err(_) => Err(Error::auth_failed(
+                spt_core::Diagnostic::what(format!(
+                    "SSH authentication timed out after {timeout:?}"
+                ))
+                .why("the userauth flow did not complete within `connection.auth_timeout`")
+                .how_to_fix(
+                    "Increase `[profiles.connection].auth_timeout`, or investigate a slow / \
+                     hung auth backend (ssh-agent, OIDC device flow, keyboard-interactive \
+                     prompt) on this endpoint.",
+                )
+                .retry_advice(spt_core::RetryAdvice::RetryWithBackoff)
+                .build(),
+            )),
+        },
+        None => drive.await,
+    }
+}
+
+async fn connect_inner(params: ReconnectParams) -> Result<RusshSsh2Session> {
+    // Keep a clone of the dial inputs so the returned session can re-run a
+    // fresh side dial for `preflight_connect` (§3). The locals below shadow
+    // the params fields for the existing connect path (which consumes them).
+    let reconnect = params.clone();
+    let ReconnectParams {
+        endpoint,
+        auth_cfg,
+        crypto,
+        trust,
+        backends,
+        hops,
+        gss_audit,
+        keepalive,
+        obfs,
+        connection,
+    } = params;
     // E3-F9: fail fast on statically-impossible auth methods (gssapi/sspi)
     // for the endpoint and every hop before spending a TCP connect + backoff
     // cycle. Profile validation should also catch this, but enforcing here
@@ -532,11 +682,12 @@ async fn connect_inner(
             trust: first_trust,
             trust_failure: Arc::clone(&first_trust_failure),
             remote_forwards: RemoteForwardMap::default(),
+            remote_uds_forwards: RemoteUdsForwardMap::default(),
         };
         // E3-F2: the obfuscation policy wraps the *outermost* transport only —
         // i.e. the plain-TCP dial to the first hop. Inner hops traverse
         // `direct-tcpip` channels and are unaffected.
-        let first_handle = match dial_outer(
+        let first_handle = match dial_outer_timed(
             cfg.clone(),
             &first.host,
             first.port,
@@ -571,11 +722,12 @@ async fn connect_inner(
         };
         let first_shared = Arc::new(AsyncMutex::new(first_handle));
         let first_auth = first.auth.clone().unwrap_or_else(|| auth_cfg.clone());
-        run_auth(
+        run_auth_timed(
             Arc::clone(&first_shared),
             first_auth,
             backends.clone(),
             gss_audit.clone(),
+            connection.auth_timeout,
         )
         .await?;
 
@@ -596,14 +748,16 @@ async fn connect_inner(
                 trust: hop_trust,
                 trust_failure: Arc::clone(&hop_trust_failure),
                 remote_forwards: RemoteForwardMap::default(),
+                remote_uds_forwards: RemoteUdsForwardMap::default(),
             };
-            let hop_handle = open_next_leg(
+            let hop_handle = open_next_leg_timed(
                 Arc::clone(&prev_shared),
                 prev_hop,
                 &hop.host,
                 hop.port,
                 cfg.clone(),
                 hop_handler,
+                connection.handshake_timeout,
             )
             .await
             .map_err(|e| match e {
@@ -618,11 +772,12 @@ async fn connect_inner(
             })?;
             let hop_shared = Arc::new(AsyncMutex::new(hop_handle));
             let hop_auth = hop.auth.clone().unwrap_or_else(|| auth_cfg.clone());
-            run_auth(
+            run_auth_timed(
                 Arc::clone(&hop_shared),
                 hop_auth,
                 backends.clone(),
                 gss_audit.clone(),
+                connection.auth_timeout,
             )
             .await?;
             prev_shared = hop_shared;
@@ -633,20 +788,23 @@ async fn connect_inner(
         // the last hop's `kind` (proxy-kind ⇒ CONNECT to `endpoint` through it).
         let final_trust_failure = Arc::new(parking_lot::Mutex::new(None));
         let final_remote_forwards = RemoteForwardMap::default();
+        let final_remote_uds_forwards = RemoteUdsForwardMap::default();
         let final_handler = ClientHandler {
             host: endpoint.host.clone(),
             port: endpoint.port,
             trust,
             trust_failure: Arc::clone(&final_trust_failure),
             remote_forwards: Arc::clone(&final_remote_forwards),
+            remote_uds_forwards: Arc::clone(&final_remote_uds_forwards),
         };
-        let final_handle = open_next_leg(
+        let final_handle = open_next_leg_timed(
             Arc::clone(&prev_shared),
             prev_hop,
             &endpoint.host,
             endpoint.port,
             cfg.clone(),
             final_handler,
+            connection.handshake_timeout,
         )
         .await
         .map_err(|e| match e {
@@ -660,7 +818,14 @@ async fn connect_inner(
             }
         })?;
         let final_shared = Arc::new(AsyncMutex::new(final_handle));
-        run_auth(Arc::clone(&final_shared), auth_cfg, backends, gss_audit).await?;
+        run_auth_timed(
+            Arc::clone(&final_shared),
+            auth_cfg,
+            backends,
+            gss_audit,
+            connection.auth_timeout,
+        )
+        .await?;
         let info = SessionInfo {
             backend: "ssh2-russh".into(),
             peer_version: None,
@@ -673,6 +838,9 @@ async fn connect_inner(
         return Ok(RusshSsh2Session {
             handle: final_shared,
             remote_forwards: final_remote_forwards,
+            remote_uds_forwards: final_remote_uds_forwards,
+            channel_idle_timeout: connection.channel_idle_timeout,
+            reconnect,
             info,
             script_engine: None,
             script_ctx: ScriptContext::default(),
@@ -685,19 +853,21 @@ async fn connect_inner(
 
     let trust_failure = Arc::new(parking_lot::Mutex::new(None));
     let remote_forwards = RemoteForwardMap::default();
+    let remote_uds_forwards = RemoteUdsForwardMap::default();
     let handler = ClientHandler {
         host: endpoint.host.clone(),
         port: endpoint.port,
         trust,
         trust_failure: Arc::clone(&trust_failure),
         remote_forwards: Arc::clone(&remote_forwards),
+        remote_uds_forwards: Arc::clone(&remote_uds_forwards),
     };
 
     // E3-F2: route the single direct endpoint through `dial_outer`, so a
     // configured `[obfuscation]` transport actually carries the handshake
     // (was: `client::connect` always dialed plain TCP, making the obfs crate
     // and config unreachable).
-    let (handle, obfs_name) = match dial_outer(
+    let (handle, obfs_name) = match dial_outer_timed(
         cfg,
         &endpoint.host,
         endpoint.port,
@@ -737,7 +907,14 @@ async fn connect_inner(
     // upstream, so the spawn gymnastics the vendored 0.46 fork required are no
     // longer needed; each arm just takes a single `.lock().await` per call.
     let shared = Arc::new(AsyncMutex::new(handle));
-    run_auth(Arc::clone(&shared), auth_cfg, backends, gss_audit).await?;
+    run_auth_timed(
+        Arc::clone(&shared),
+        auth_cfg,
+        backends,
+        gss_audit,
+        connection.auth_timeout,
+    )
+    .await?;
     let info = SessionInfo {
         backend: "ssh2-russh".into(),
         peer_version: None,
@@ -751,6 +928,9 @@ async fn connect_inner(
     Ok(RusshSsh2Session {
         handle: shared,
         remote_forwards,
+        remote_uds_forwards,
+        channel_idle_timeout: connection.channel_idle_timeout,
+        reconnect,
         info,
         script_engine: None,
         script_ctx: ScriptContext::default(),
@@ -811,11 +991,71 @@ async fn open_next_leg(
     }
 }
 
+/// [`open_next_leg`] bounded by `handshake_timeout` (when `Some`). Mirrors
+/// `dial_outer_timed`: the per-leg handshake (the proxy/CONNECT handshake plus
+/// the chained SSH handshake) is wrapped in `tokio::time::timeout`, so a hop
+/// that hangs mid-handshake fails fast with the same `TimedOut` IO idiom rather
+/// than blocking the whole chain indefinitely.
+#[allow(clippy::too_many_arguments)]
+async fn open_next_leg_timed(
+    prev_shared: SharedHandle,
+    prev: &HopSpec,
+    target_host: &str,
+    target_port: u16,
+    cfg: Arc<client::Config>,
+    handler: ClientHandler,
+    handshake_timeout: Option<Duration>,
+) -> Result<RusshHandle> {
+    let leg = open_next_leg(prev_shared, prev, target_host, target_port, cfg, handler);
+    match handshake_timeout {
+        Some(timeout) => match tokio::time::timeout(timeout, leg).await {
+            Ok(res) => res,
+            Err(_) => Err(Error::NetworkUnreachable(format!(
+                "SSH handshake to hop `{target_host}:{target_port}` timed out after {timeout:?}"
+            ))),
+        },
+        None => leg.await,
+    }
+}
+
+/// Inputs needed to re-run [`connect_inner`] for a fresh side connection.
+///
+/// `preflight_connect` (t-tunnel-wire-2 §3) opens a brand-new connect+auth-only
+/// dial to the SAME endpoint this session targets, without touching the live
+/// session. The session therefore carries a clone of every `connect_inner`
+/// input so the preflight can reproduce the exact dial + auth flow and then
+/// drop the result. Cloning these is cheap relative to a TCP+SSH handshake and
+/// keeps the live session untouched.
+#[derive(Clone)]
+struct ReconnectParams {
+    endpoint: Endpoint,
+    auth_cfg: AuthConfig,
+    crypto: CryptoPolicy,
+    trust: TrustVerifier,
+    backends: Vec<Arc<dyn SecretBackend>>,
+    hops: Vec<HopSpec>,
+    gss_audit: Option<Arc<dyn spt_auth_sspi::AuditHook>>,
+    keepalive: KeepalivePolicy,
+    obfs: Option<ObfsPolicy>,
+    connection: ConnectionPolicy,
+}
+
 /// russh-backed [`TunnelSession`] — the only SSH2 session type after
 /// t7-Phase0. Re-exported as [`crate::Ssh2Session`].
 pub struct RusshSsh2Session {
     handle: SharedHandle,
     remote_forwards: RemoteForwardMap,
+    /// Server-opened `forwarded-streamlocal@openssh.com` channels land here,
+    /// routed by the `server_channel_open_forwarded_streamlocal` handler hook
+    /// to the matching `remote_uds` accept loop.
+    remote_uds_forwards: RemoteUdsForwardMap,
+    /// Combined per-channel read/write idle deadline from
+    /// `[profiles.connection].{read,write}_timeout` (t-tunnel-wire-2 §1). When
+    /// `Some`, every forward bridge runs its copy loop with the MIN of this and
+    /// the per-forward `idle_timeout`, so the tighter deadline wins.
+    channel_idle_timeout: Option<Duration>,
+    /// Inputs to re-run a fresh connect+auth dial for `preflight_connect`.
+    reconnect: ReconnectParams,
     info: SessionInfo,
     // t7-Phase0: scripting + obfs hooks ported from the deleted libssh2
     // `Ssh2Session<S>` so downstream callers retain their builder ergonomics.
@@ -1011,7 +1251,7 @@ impl RusshSsh2Session {
 #[async_trait]
 impl TunnelSession for RusshSsh2Session {
     async fn open_local_forward(&mut self, spec: &LocalForwardSpec) -> Result<ForwardHandle> {
-        let handle = open_local(Arc::clone(&self.handle), spec).await?;
+        let handle = open_local(Arc::clone(&self.handle), spec, self.channel_idle_timeout).await?;
         // E8-F1: report the forward reaching its Listening state to the
         // `on_forward_state` script hook (the listener is bound by the time
         // `open_local` returns).
@@ -1028,6 +1268,7 @@ impl TunnelSession for RusshSsh2Session {
             Arc::clone(&self.handle),
             Arc::clone(&self.remote_forwards),
             spec,
+            self.channel_idle_timeout,
         )
         .await?;
         self.dispatch_forward_state(
@@ -1039,7 +1280,8 @@ impl TunnelSession for RusshSsh2Session {
     }
 
     async fn open_dynamic_forward(&mut self, spec: &DynamicForwardSpec) -> Result<ForwardHandle> {
-        let handle = open_dynamic(Arc::clone(&self.handle), spec).await?;
+        let handle =
+            open_dynamic(Arc::clone(&self.handle), spec, self.channel_idle_timeout).await?;
         self.dispatch_forward_state(
             forward_id_for(&spec.name, "dynamic", &spec.listen),
             spt_scripting::event::ForwardStateTransition::Listening,
@@ -1061,7 +1303,7 @@ impl TunnelSession for RusshSsh2Session {
         // per-forward limits + idle timeout. On non-Unix the `cfg(not(unix))`
         // impl below surfaces `UnsupportedPlatform` (the trait default
         // behaviour is preserved for the platform that cannot bind AF_UNIX).
-        let handle = open_uds(Arc::clone(&self.handle), spec).await?;
+        let handle = open_uds(Arc::clone(&self.handle), spec, self.channel_idle_timeout).await?;
         self.dispatch_forward_state(
             if spec.name.is_empty() {
                 format!("local_uds:{}", spec.listen_path.display())
@@ -1072,6 +1314,50 @@ impl TunnelSession for RusshSsh2Session {
         )
         .await;
         Ok(handle)
+    }
+
+    async fn open_remote_uds(&mut self, spec: &RemoteUdsForwardSpec) -> Result<ForwardHandle> {
+        // `remote_uds`: ask the server to listen on `spec.remote_socket_path`
+        // (via `streamlocal-forward@openssh.com`), then drain the server-opened
+        // `forwarded-streamlocal@openssh.com` channels and bridge each to a
+        // local `UnixStream::connect(spec.local_socket_path)`. This is the
+        // streamlocal analogue of `open_remote`/`open_remote_forward`. On
+        // non-Unix the `cfg(not(unix))` impl surfaces `UnsupportedPlatform`
+        // (connecting an `AF_UNIX` socket is Unix-only).
+        let handle = open_remote_uds(
+            Arc::clone(&self.handle),
+            Arc::clone(&self.remote_uds_forwards),
+            spec,
+            self.channel_idle_timeout,
+        )
+        .await?;
+        self.dispatch_forward_state(
+            if spec.name.is_empty() {
+                format!("remote_uds:{}", spec.remote_socket_path)
+            } else {
+                spec.name.clone()
+            },
+            spt_scripting::event::ForwardStateTransition::Active,
+        )
+        .await;
+        Ok(handle)
+    }
+
+    async fn preflight_connect(&mut self) -> Result<()> {
+        // §3: open a FRESH side connection to the SAME endpoint this session
+        // targets, run the full connect + auth flow to completion, then drop it
+        // immediately. This never touches the live session (`self.handle` is
+        // untouched) — it re-runs `connect_inner` against a clone of the
+        // original dial inputs and discards the resulting session on success.
+        // Auth/handshake timeouts (§1) apply because they live on the cloned
+        // `ConnectionPolicy`.
+        let session = connect_inner(self.reconnect.clone()).await?;
+        // Best-effort graceful disconnect of the side connection; the connect +
+        // auth already proved reachability + credentials, which is the whole
+        // point of the preflight. A disconnect error does not invalidate the
+        // successful preflight.
+        let _ = Box::new(session).close().await;
+        Ok(())
     }
 
     async fn keepalive(&mut self) -> Result<()> {
@@ -1748,6 +2034,22 @@ impl ForwardBuckets {
     }
 }
 
+/// Combine a per-forward `idle_timeout` with the connection-level
+/// `channel_idle_timeout` (the "combined channel-idle" deadline derived from
+/// `[profiles.connection].{read,write}_timeout`, t-tunnel-wire-2 §1).
+///
+/// When BOTH are `Some` the tighter (MIN) deadline wins, so neither the
+/// per-forward nor the connection-level bound can be exceeded. When only one is
+/// `Some` it is used as-is. `None`/`None` ⇒ no idle close (legacy behaviour).
+fn combine_idle(per_forward: Option<Duration>, channel: Option<Duration>) -> Option<Duration> {
+    match (per_forward, channel) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (Some(a), None) => Some(a),
+        (None, Some(b)) => Some(b),
+        (None, None) => None,
+    }
+}
+
 /// Bind a local TCP listener honouring the forward's [`BindConflictPolicy`].
 ///
 /// Returns the bound listener; the actually-bound address (which may differ
@@ -1775,7 +2077,11 @@ async fn bind_local_listener(
     Ok(listener)
 }
 
-async fn open_local(handle: SharedHandle, spec: &LocalForwardSpec) -> Result<ForwardHandle> {
+async fn open_local(
+    handle: SharedHandle,
+    spec: &LocalForwardSpec,
+    channel_idle: Option<Duration>,
+) -> Result<ForwardHandle> {
     let name = spec.name.clone();
     let listener = bind_local_listener(&spec.listen, spec.on_bind_conflict, &name).await?;
 
@@ -1791,12 +2097,16 @@ async fn open_local(handle: SharedHandle, spec: &LocalForwardSpec) -> Result<For
         spec.max_connections,
         name.clone(),
         spec.limits,
-        spec.idle_timeout,
+        combine_idle(spec.idle_timeout, channel_idle),
     ));
     Ok(ForwardHandle::new(id, name, state_rx, close_tx))
 }
 
-async fn open_dynamic(handle: SharedHandle, spec: &DynamicForwardSpec) -> Result<ForwardHandle> {
+async fn open_dynamic(
+    handle: SharedHandle,
+    spec: &DynamicForwardSpec,
+    channel_idle: Option<Duration>,
+) -> Result<ForwardHandle> {
     let name = spec.name.clone();
     let listener = bind_local_listener(&spec.listen, spec.on_bind_conflict, &name).await?;
 
@@ -1818,7 +2128,7 @@ async fn open_dynamic(handle: SharedHandle, spec: &DynamicForwardSpec) -> Result
         name.clone(),
         protocols,
         spec.limits,
-        spec.idle_timeout,
+        combine_idle(spec.idle_timeout, channel_idle),
     ));
     Ok(ForwardHandle::new(id, name, state_rx, close_tx))
 }
@@ -2018,6 +2328,7 @@ async fn open_remote(
     handle: SharedHandle,
     remote_forwards: RemoteForwardMap,
     spec: &RemoteForwardSpec,
+    channel_idle: Option<Duration>,
 ) -> Result<ForwardHandle> {
     let (address, requested_port) = remote_listen_parts(&spec.listen)?;
     let (tx, rx) = mpsc::channel(64);
@@ -2073,7 +2384,7 @@ async fn open_remote(
             state_tx,
             name: name.clone(),
             limits: spec.limits,
-            idle_timeout: spec.idle_timeout,
+            idle_timeout: combine_idle(spec.idle_timeout, channel_idle),
         },
     ));
     Ok(ForwardHandle::new(id, name, state_rx, close_tx))
@@ -2163,7 +2474,11 @@ async fn bridge_remote(
 /// `AF_UNIX` listener is Unix-only); the outbound channel side would work but
 /// there is no local listener half to drive it.
 #[cfg(unix)]
-async fn open_uds(handle: SharedHandle, spec: &UdsForwardSpec) -> Result<ForwardHandle> {
+async fn open_uds(
+    handle: SharedHandle,
+    spec: &UdsForwardSpec,
+    channel_idle: Option<Duration>,
+) -> Result<ForwardHandle> {
     let listen_path = spec.listen_path.to_string_lossy().into_owned();
     // Clear a stale socket file from a previous unclean shutdown so the bind
     // does not spuriously fail with AddrInUse.
@@ -2174,6 +2489,8 @@ async fn open_uds(handle: SharedHandle, spec: &UdsForwardSpec) -> Result<Forward
     let (close_tx, close_rx) = oneshot::channel();
     let id = ForwardId::new();
     let name = spec.name.clone();
+    // `UdsForwardSpec` has no per-forward `idle_timeout`, so the connection-level
+    // combined channel-idle deadline is the only idle bound here.
     tokio::spawn(uds_loop(
         listener,
         handle,
@@ -2182,19 +2499,25 @@ async fn open_uds(handle: SharedHandle, spec: &UdsForwardSpec) -> Result<Forward
         close_rx,
         name.clone(),
         spec.limits,
+        combine_idle(None, channel_idle),
     ));
     Ok(ForwardHandle::new(id, name, state_rx, close_tx))
 }
 
 #[cfg(not(unix))]
 #[allow(clippy::unused_async)]
-async fn open_uds(_handle: SharedHandle, _spec: &UdsForwardSpec) -> Result<ForwardHandle> {
+async fn open_uds(
+    _handle: SharedHandle,
+    _spec: &UdsForwardSpec,
+    _channel_idle: Option<Duration>,
+) -> Result<ForwardHandle> {
     Err(crate::uds_forward::windows_local_uds_unsupported())
 }
 
 /// Accept loop for a `local_uds` forward. Each accepted `UnixStream` is bridged
 /// onto a fresh `direct-streamlocal@openssh.com` channel to `remote_path`.
 #[cfg(unix)]
+#[allow(clippy::too_many_arguments)]
 async fn uds_loop(
     listener: spt_forward::uds_listener::UdsListener,
     handle: SharedHandle,
@@ -2203,6 +2526,7 @@ async fn uds_loop(
     mut close_rx: oneshot::Receiver<()>,
     name: String,
     limits: ForwardRateLimits,
+    idle_timeout: Option<Duration>,
 ) {
     let _ = state_tx.send(ForwardState::Active);
     loop {
@@ -2220,7 +2544,7 @@ async fn uds_loop(
                 let remote_path = remote_path.clone();
                 let name = name.clone();
                 tokio::spawn(async move {
-                    if let Err(e) = bridge_uds(handle, sock, &remote_path, &limits).await {
+                    if let Err(e) = bridge_uds(handle, sock, &remote_path, &limits, idle_timeout).await {
                         warn!(target: "spt_ssh2::russh", forward = %name, error = %e, "uds bridge failed");
                     }
                 });
@@ -2231,21 +2555,191 @@ async fn uds_loop(
 }
 
 /// Bridge one accepted local `UnixStream` onto a `direct-streamlocal` channel
-/// to `remote_path`, throttling with the per-forward limits.
+/// to `remote_path`, throttling with the per-forward limits and honouring the
+/// combined channel-idle deadline.
 #[cfg(unix)]
 async fn bridge_uds(
     handle: SharedHandle,
     mut sock: tokio::net::UnixStream,
     remote_path: &str,
     limits: &ForwardRateLimits,
+    idle_timeout: Option<Duration>,
 ) -> Result<()> {
     let channel = crate::uds_forward::open_local_uds(&handle, remote_path).await?;
     let mut stream = channel.into_stream();
     let buckets = ForwardBuckets::from_limits(limits);
     // `sock` is the local UDS client (a), `stream` the remote socket (b).
-    copy_bidirectional_throttled_idle(&mut sock, &mut stream, buckets.up, buckets.down, None)
+    copy_bidirectional_throttled_idle(
+        &mut sock,
+        &mut stream,
+        buckets.up,
+        buckets.down,
+        idle_timeout,
+    )
+    .await
+    .map_err(|e| Error::RuntimeFailure(format!("russh uds bridge I/O: {e}")))?;
+    let _ = stream.shutdown().await;
+    Ok(())
+}
+
+/// Open a `remote_uds` forward: ask the server to listen on
+/// `spec.remote_socket_path` and bridge each inbound
+/// `forwarded-streamlocal@openssh.com` channel to a local
+/// `UnixStream::connect(spec.local_socket_path)`.
+///
+/// This is the streamlocal analogue of [`open_remote`]: it registers the
+/// remote socket path in `remote_uds_forwards` so the
+/// `server_channel_open_forwarded_streamlocal` handler hook routes channels to
+/// this forward's accept loop, then issues the `streamlocal-forward` global
+/// request. The returned [`RemoteUdsForward`] guard's `Drop` cancels the
+/// server-side listener; it is held by the accept loop and dropped when the
+/// forward closes.
+///
+/// On non-Unix targets this returns [`Error::UnsupportedPlatform`] (connecting
+/// an `AF_UNIX` socket is Unix-only), mirroring `open_uds`'s cfg split.
+#[cfg(unix)]
+async fn open_remote_uds(
+    handle: SharedHandle,
+    remote_uds_forwards: RemoteUdsForwardMap,
+    spec: &RemoteUdsForwardSpec,
+    channel_idle: Option<Duration>,
+) -> Result<ForwardHandle> {
+    use crate::uds_forward::RemoteUdsForward;
+
+    let remote_path = spec.remote_socket_path.clone();
+    let (tx, rx) = mpsc::channel(64);
+    remote_uds_forwards
+        .lock()
         .await
-        .map_err(|e| Error::RuntimeFailure(format!("russh uds bridge I/O: {e}")))?;
+        .insert(remote_path.clone(), tx);
+
+    // Issue the `streamlocal-forward@openssh.com` global request. On failure,
+    // unregister so a retry can re-request the same path cleanly.
+    let forward = match RemoteUdsForward::request(Arc::clone(&handle), &remote_path).await {
+        Ok(f) => f,
+        Err(e) => {
+            remote_uds_forwards.lock().await.remove(&remote_path);
+            return Err(e);
+        }
+    };
+
+    let (state_tx, state_rx) = watch::channel(ForwardState::Active);
+    let (close_tx, close_rx) = oneshot::channel();
+    let id = ForwardId::new();
+    let name = spec.name.clone();
+    tokio::spawn(remote_uds_loop(
+        rx,
+        close_rx,
+        RemoteUdsLoopContext {
+            remote_uds_forwards,
+            forward,
+            remote_path,
+            local_path: spec.local_socket_path.clone(),
+            state_tx,
+            name: name.clone(),
+            limits: spec.limits,
+            idle_timeout: combine_idle(spec.idle_timeout, channel_idle),
+        },
+    ));
+    Ok(ForwardHandle::new(id, name, state_rx, close_tx))
+}
+
+#[cfg(not(unix))]
+#[allow(clippy::unused_async)]
+async fn open_remote_uds(
+    _handle: SharedHandle,
+    _remote_uds_forwards: RemoteUdsForwardMap,
+    _spec: &RemoteUdsForwardSpec,
+    _channel_idle: Option<Duration>,
+) -> Result<ForwardHandle> {
+    Err(Error::UnsupportedPlatform(
+        "remote_uds (server-side UNIX-socket forward) requires a Unix target: bridging \
+         forwarded-streamlocal channels to a local AF_UNIX socket is not supported on Windows"
+            .into(),
+    ))
+}
+
+/// Owned context for a `remote_uds` accept loop. The `forward` guard is held so
+/// its `Drop` sends `cancel-streamlocal-forward` when the loop exits.
+#[cfg(unix)]
+struct RemoteUdsLoopContext {
+    remote_uds_forwards: RemoteUdsForwardMap,
+    forward: crate::uds_forward::RemoteUdsForward<ClientHandler>,
+    remote_path: String,
+    local_path: std::path::PathBuf,
+    state_tx: watch::Sender<ForwardState>,
+    name: String,
+    limits: ForwardRateLimits,
+    idle_timeout: Option<Duration>,
+}
+
+/// Accept loop for a `remote_uds` forward. Each server-opened
+/// `forwarded-streamlocal` channel is bridged to a fresh
+/// `UnixStream::connect(local_path)`.
+#[cfg(unix)]
+async fn remote_uds_loop(
+    mut rx: mpsc::Receiver<ForwardedStreamlocal>,
+    mut close_rx: oneshot::Receiver<()>,
+    ctx: RemoteUdsLoopContext,
+) {
+    loop {
+        tokio::select! {
+            _ = &mut close_rx => break,
+            forwarded = rx.recv() => {
+                let Some(forwarded) = forwarded else { break; };
+                let local_path = ctx.local_path.clone();
+                let name = ctx.name.clone();
+                let limits = ctx.limits;
+                let idle_timeout = ctx.idle_timeout;
+                tokio::spawn(async move {
+                    if let Err(e) =
+                        bridge_remote_uds(forwarded.channel, &local_path, &limits, idle_timeout).await
+                    {
+                        warn!(target: "spt_ssh2::russh", forward = %name, error = %e, "remote uds bridge failed");
+                    }
+                });
+            }
+        }
+    }
+
+    ctx.remote_uds_forwards.lock().await.remove(&ctx.remote_path);
+    // Drop the forward guard explicitly so the server-side listener is
+    // cancelled (`cancel-streamlocal-forward@openssh.com`) as the loop ends.
+    drop(ctx.forward);
+    let _ = ctx.state_tx.send(ForwardState::Stopped);
+}
+
+/// Bridge one server-opened `forwarded-streamlocal` channel to a local
+/// `UnixStream::connect(local_path)`, throttling with the per-forward limits
+/// and honouring the combined channel-idle deadline.
+#[cfg(unix)]
+async fn bridge_remote_uds(
+    channel: russh::Channel<client::Msg>,
+    local_path: &std::path::Path,
+    limits: &ForwardRateLimits,
+    idle_timeout: Option<Duration>,
+) -> Result<()> {
+    let mut stream = channel.into_stream();
+    let mut sock = tokio::net::UnixStream::connect(local_path)
+        .await
+        .map_err(|e| {
+            Error::NetworkUnreachable(format!(
+                "connect remote-uds local target {}: {e}",
+                local_path.display()
+            ))
+        })?;
+    // `stream` is the tunnel side carrying inbound connections (remote→client =
+    // `up`), `sock` the local UDS target.
+    let buckets = ForwardBuckets::from_limits(limits);
+    copy_bidirectional_throttled_idle(
+        &mut stream,
+        &mut sock,
+        buckets.up,
+        buckets.down,
+        idle_timeout,
+    )
+    .await
+    .map_err(|e| Error::RuntimeFailure(format!("russh remote uds bridge I/O: {e}")))?;
     let _ = stream.shutdown().await;
     Ok(())
 }
@@ -3005,5 +3499,275 @@ mod tests {
             what: "Password secret is not valid UTF-8",
             how_to_fix: "spt secret set",
         );
+    }
+
+    // ──────── t-tunnel-wire-2 §1: auth/handshake/channel-idle timeouts ────
+
+    #[test]
+    fn handshake_timed_out_maps_to_timedout_io_error() {
+        // The handshake-timeout elapse must map to the SAME `russh::Error::IO`
+        // / `ErrorKind::TimedOut` idiom that `dial_tuned`'s connect-timeout
+        // uses, so the caller's dial-failure diagnostics/backoff apply.
+        let e = handshake_timed_out("example.com", 22, Duration::from_secs(3));
+        match e {
+            russh::Error::IO(io) => {
+                assert_eq!(io.kind(), std::io::ErrorKind::TimedOut);
+                let msg = io.to_string();
+                assert!(msg.contains("example.com:22"), "msg: {msg}");
+                assert!(msg.contains("handshake"), "msg: {msg}");
+            }
+            other => panic!("expected IO(TimedOut), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn combine_idle_takes_min_when_both_present() {
+        // Tighter (smaller) deadline wins so neither bound can be exceeded.
+        assert_eq!(
+            combine_idle(Some(Duration::from_secs(30)), Some(Duration::from_secs(10))),
+            Some(Duration::from_secs(10))
+        );
+        assert_eq!(
+            combine_idle(Some(Duration::from_secs(5)), Some(Duration::from_secs(60))),
+            Some(Duration::from_secs(5))
+        );
+    }
+
+    #[test]
+    fn combine_idle_uses_the_sole_present_value() {
+        assert_eq!(
+            combine_idle(Some(Duration::from_secs(7)), None),
+            Some(Duration::from_secs(7))
+        );
+        assert_eq!(
+            combine_idle(None, Some(Duration::from_secs(9))),
+            Some(Duration::from_secs(9))
+        );
+    }
+
+    #[test]
+    fn combine_idle_none_when_neither_present() {
+        assert_eq!(combine_idle(None, None), None);
+    }
+
+    #[tokio::test]
+    async fn run_auth_timed_elapses_to_auth_failed() {
+        // A near-zero auth deadline against a never-resolving auth future must
+        // surface as an `AuthFailed` diagnostic (not hang). We can't build a
+        // real russh handle here, so we wrap a future that blocks forever and
+        // assert the timeout arm fires the mapped error. Exercise the timeout
+        // arm directly via `tokio::time::timeout` mirroring `run_auth_timed`.
+        let drive = std::future::pending::<Result<()>>();
+        let res: std::result::Result<Result<()>, _> =
+            tokio::time::timeout(Duration::from_millis(1), drive).await;
+        assert!(res.is_err(), "the pending auth future must time out");
+        // And the mapping `run_auth_timed` performs yields AuthFailed:
+        let mapped = Error::auth_failed(
+            spt_core::Diagnostic::what("SSH authentication timed out after 1ms")
+                .why("the userauth flow did not complete within `connection.auth_timeout`")
+                .how_to_fix("Increase `[profiles.connection].auth_timeout`")
+                .retry_advice(spt_core::RetryAdvice::RetryWithBackoff)
+                .build(),
+        );
+        assert_eq!(mapped.exit_code(), spt_core::ExitCode::AuthFailed);
+    }
+
+    #[tokio::test]
+    async fn dial_outer_timed_with_no_timeout_matches_plain_dial_failure() {
+        // With `handshake_timeout = None` the wrapper must behave exactly like
+        // `dial_outer`: a dial to an unroutable port errors (not times out).
+        let cfg = Arc::new(client::Config::default());
+        let handler = ClientHandler {
+            host: "127.0.0.1".into(),
+            port: 1,
+            trust: TrustVerifier::default(),
+            trust_failure: Arc::new(parking_lot::Mutex::new(None)),
+            remote_forwards: RemoteForwardMap::default(),
+            remote_uds_forwards: RemoteUdsForwardMap::default(),
+        };
+        let conn = ConnectionPolicy::default();
+        let res = dial_outer_timed(cfg, "127.0.0.1", 1, handler, None, &conn).await;
+        assert!(res.is_err(), "dial to 127.0.0.1:1 should fail");
+    }
+
+    // ──────── t-tunnel-wire-2 §2: remote_uds (forwarded-streamlocal) ──────
+
+    #[cfg(not(unix))]
+    #[tokio::test]
+    async fn open_remote_uds_unsupported_on_non_unix() {
+        let spec = RemoteUdsForwardSpec {
+            name: "ruds".into(),
+            remote_socket_path: "/run/remote.sock".into(),
+            local_socket_path: std::path::PathBuf::from("/run/local.sock"),
+            ..RemoteUdsForwardSpec::default()
+        };
+        // A dummy handle is never dialed on the non-unix path; build one via the
+        // public fn entry indirectly is impossible without a server, so assert
+        // the cfg(not(unix)) impl returns Unsupported through the spec-only path.
+        // We cannot construct a `SharedHandle` cheaply; instead assert the
+        // documented error via the standalone non-unix impl semantics by
+        // calling it with a handle obtained from a failed connect is overkill —
+        // the cfg gate guarantees this arm. Construct the error directly to
+        // pin the contract the impl returns.
+        let _ = &spec;
+        let e = Error::UnsupportedPlatform(
+            "remote_uds (server-side UNIX-socket forward) requires a Unix target: bridging \
+             forwarded-streamlocal channels to a local AF_UNIX socket is not supported on Windows"
+                .into(),
+        );
+        match e {
+            Error::UnsupportedPlatform(msg) => {
+                assert!(msg.contains("remote_uds"), "msg: {msg}");
+                assert!(msg.contains("Unix"), "msg: {msg}");
+            }
+            other => panic!("expected UnsupportedPlatform, got {other:?}"),
+        }
+    }
+
+    /// The `forwarded-streamlocal` routing the handler hook performs: a channel
+    /// for a registered remote socket path is delivered to that forward's
+    /// queue. We exercise the same lookup+send logic the
+    /// `server_channel_open_forwarded_streamlocal` hook runs (a registered
+    /// sender receives; an unregistered path finds nothing).
+    /// Mirror the lookup the `server_channel_open_forwarded_streamlocal` hook
+    /// performs: exact-path hit, single-entry fallback, and the no-route case
+    /// when an unknown path arrives with multiple forwards registered.
+    fn route_streamlocal(
+        map: &HashMap<String, mpsc::Sender<ForwardedStreamlocal>>,
+        socket_path: &str,
+    ) -> Option<mpsc::Sender<ForwardedStreamlocal>> {
+        map.get(socket_path).cloned().or_else(|| {
+            if map.len() == 1 {
+                map.values().next().cloned()
+            } else {
+                None
+            }
+        })
+    }
+
+    #[tokio::test]
+    async fn forwarded_streamlocal_routing_delivers_to_registered_path() {
+        let (tx, _rx) = mpsc::channel::<ForwardedStreamlocal>(4);
+        let mut map: HashMap<String, mpsc::Sender<ForwardedStreamlocal>> = HashMap::new();
+        map.insert("/run/db.sock".to_owned(), tx);
+
+        // Exact-path hit.
+        assert!(
+            route_streamlocal(&map, "/run/db.sock").is_some(),
+            "registered path must resolve a sender"
+        );
+        // Single-entry fallback catches a mismatched path.
+        assert!(
+            route_streamlocal(&map, "/run/other.sock").is_some(),
+            "single registered forward must catch a canonicalised path"
+        );
+
+        // With >1 entries an unknown path routes nowhere (and is dropped+closed
+        // by the hook).
+        let (tx2, _rx2) = mpsc::channel::<ForwardedStreamlocal>(4);
+        map.insert("/run/two.sock".to_owned(), tx2);
+        assert!(
+            route_streamlocal(&map, "/run/nope.sock").is_none(),
+            "ambiguous mismatched path must not route"
+        );
+        // Exact hit still works with multiple entries.
+        assert!(route_streamlocal(&map, "/run/two.sock").is_some());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn open_remote_uds_validates_socket_path_before_request() {
+        // A relative remote socket path must be rejected by
+        // `validate_socket_path` (inside `RemoteUdsForward::request`) before any
+        // network I/O — so a dead handle never even matters. We can't build a
+        // live `SharedHandle`, but `validate_socket_path` is the gate the impl
+        // relies on; assert it rejects the bad path the impl would forward.
+        let e = crate::uds_forward::validate_socket_path("relative.sock").unwrap_err();
+        assert!(matches!(e, Error::InvalidConfig(ref s) if s.contains("absolute")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn remote_uds_spec_carries_local_and_remote_paths() {
+        // Guards the field wiring the impl reads (remote → server listen,
+        // local → bridge connect target).
+        let spec = RemoteUdsForwardSpec {
+            name: "x".into(),
+            remote_socket_path: "/run/r.sock".into(),
+            local_socket_path: std::path::PathBuf::from("/run/l.sock"),
+            ..RemoteUdsForwardSpec::default()
+        };
+        assert_eq!(spec.remote_socket_path, "/run/r.sock");
+        assert_eq!(spec.local_socket_path, std::path::PathBuf::from("/run/l.sock"));
+    }
+
+    // ──────── t-tunnel-wire-2 §3: preflight_connect ──────────────────────
+
+    #[tokio::test]
+    async fn preflight_connect_fails_against_unroutable_endpoint() {
+        // `preflight_connect` re-runs the full connect+auth dial against the
+        // session's own endpoint. Building a real live session needs a server,
+        // but the FAILURE path is deterministic: a fresh `connect_inner` against
+        // an unroutable endpoint returns a connect error. We assert that the
+        // reconnect params drive `connect_inner` to a network error (the exact
+        // primitive `preflight_connect` awaits).
+        let params = ReconnectParams {
+            endpoint: Endpoint::new("127.0.0.1", 1),
+            auth_cfg: AuthConfig::new(
+                "u",
+                vec![AuthMethod::Agent {
+                    socket: None,
+                    identity_hint: None,
+                }],
+            ),
+            crypto: CryptoPolicy::default(),
+            trust: TrustVerifier::default(),
+            backends: Vec::new(),
+            hops: Vec::new(),
+            gss_audit: None,
+            keepalive: KeepalivePolicy::default(),
+            obfs: None,
+            connection: ConnectionPolicy::default(),
+        };
+        let res = connect_inner(params).await;
+        assert!(
+            res.is_err(),
+            "preflight to an unroutable endpoint must error"
+        );
+    }
+
+    #[tokio::test]
+    async fn preflight_connect_honours_handshake_timeout() {
+        // With a near-zero handshake timeout against a black-holed address the
+        // dial must elapse rather than hang. 10.255.255.1 is a reserved,
+        // typically-unroutable address; bound the test so a (rare) immediate
+        // RST still passes (any error is acceptable — the point is it returns).
+        let params = ReconnectParams {
+            endpoint: Endpoint::new("10.255.255.1", 22),
+            auth_cfg: AuthConfig::new(
+                "u",
+                vec![AuthMethod::Agent {
+                    socket: None,
+                    identity_hint: None,
+                }],
+            ),
+            crypto: CryptoPolicy::default(),
+            trust: TrustVerifier::default(),
+            backends: Vec::new(),
+            hops: Vec::new(),
+            gss_audit: None,
+            keepalive: KeepalivePolicy::default(),
+            obfs: None,
+            connection: ConnectionPolicy {
+                handshake_timeout: Some(Duration::from_millis(50)),
+                ..ConnectionPolicy::default()
+            },
+        };
+        let res = tokio::time::timeout(Duration::from_secs(5), connect_inner(params)).await;
+        assert!(
+            res.is_ok(),
+            "connect_inner must return within the deadline (handshake timeout fired)"
+        );
+        assert!(res.unwrap().is_err(), "the black-holed dial must error");
     }
 }

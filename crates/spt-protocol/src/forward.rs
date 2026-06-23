@@ -223,6 +223,41 @@ pub struct UdsForwardSpec {
     pub required: bool,
 }
 
+/// Specification for a **remote** unix-domain-socket forward.
+///
+/// Mirrors [`UdsForwardSpec`] but in the reverse direction: the *remote* peer
+/// is asked (via the SSH `streamlocal-forward@openssh.com` global request) to
+/// listen on `remote_socket_path`, and each accepted connection is bridged back
+/// to a local unix socket at `local_socket_path`. Remote UDS forwarding is a
+/// `cfg(unix)` capability; backends that cannot honour it return
+/// [`spt_core::Error::UnsupportedPlatform`] from
+/// [`TunnelSession::open_remote_uds`](crate::TunnelSession::open_remote_uds).
+///
+/// The real implementation lands in `spt-ssh2` (t-tunnel-wire-2 Phase 2); this
+/// type is inert today and only exists so the trait method and the
+/// `spt-forward` runner dispatch can be written against a stable signature.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct RemoteUdsForwardSpec {
+    /// User-facing forward name.
+    pub name: String,
+    /// Remote unix socket path the *server* is asked to bind a listener on.
+    pub remote_socket_path: String,
+    /// Local filesystem path the backend bridges accepted remote connections
+    /// to.
+    pub local_socket_path: PathBuf,
+    /// Per-forward rate limits (`Default` = unlimited).
+    #[serde(default)]
+    pub limits: ForwardRateLimits,
+    /// Idle timeout for an established bridged connection; `None` = no idle
+    /// timeout.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idle_timeout: Option<Duration>,
+    /// Whether failing to open this forward should fail the whole profile
+    /// (`true`) versus degrade-and-continue (`false`, default).
+    #[serde(default)]
+    pub required: bool,
+}
+
 /// Public state of a forward as exposed via [`crate::ForwardHandle`].
 ///
 /// Mirrors spec §11.1 forward states.

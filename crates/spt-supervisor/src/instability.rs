@@ -64,26 +64,33 @@ pub struct InstabilityWindow {
     pub max_disconnects: u32,
     /// Continuous healthy time required before the unstable flag is cleared.
     pub clear_after: Duration,
-    /// Optional secondary trip condition: keepalive misses within the window.
+    /// Optional secondary trip condition: consecutive keepalive misses.
     ///
     /// Mirrors `[profiles.instability].max_keepalive_misses`. `None` (default)
-    /// disables this condition — today only disconnect *count* trips the
-    /// detector, so `None` preserves current behavior.
+    /// disables this condition — only disconnect *count* trips the detector, so
+    /// `None` preserves current behavior.
     ///
-    /// CONSUMER (Wave C): a keepalive-miss feeder in
-    /// `profile.rs::ProfileTask::run_active` (the keepalive `Err`/timeout arm)
-    /// that accrues misses and trips the detector when the count exceeds this
-    /// threshold.
+    /// CONSUMER: the health-probe feeder in
+    /// `profile.rs::ProfileTask::run_active` calls
+    /// [`InstabilityDetector::record_probe`] on every probe; a failed probe
+    /// (`rtt == None`) increments a consecutive-miss counter and trips the
+    /// detector when the count reaches this threshold. A successful probe resets
+    /// the counter.
     pub max_keepalive_misses: Option<u32>,
     /// Optional secondary trip condition: p95 latency ceiling.
     ///
     /// Mirrors `[profiles.instability].max_latency_p95`. `None` (default)
-    /// disables this condition. NOTE: there is no latency sampling source in
-    /// the supervisor today — Wave C must flag/provide a latency source before
-    /// this can trip.
+    /// disables this condition.
     ///
-    /// CONSUMER (Wave C): a latency feeder (source TBD) in `profile.rs` that
-    /// trips the detector when observed p95 exceeds this duration.
+    /// CONSUMER: the health-probe feeder in `profile.rs::ProfileTask::run_active`
+    /// captures a coarse round-trip-time sample around each *successful* probe
+    /// (`Instant::now()` before/after `session.keepalive()` /
+    /// `preflight_connect()` / `probe_tcp_connect`) and feeds it via
+    /// [`InstabilityDetector::record_probe`]. The detector keeps a bounded
+    /// rolling window (the last [`LATENCY_WINDOW`] samples), computes p95, and
+    /// trips when the rolling p95 exceeds this duration. The RTT is COARSE: it
+    /// includes tokio scheduler jitter and the timeout-future wrapping overhead,
+    /// so it is a relative health signal, not a precise network measurement.
     pub max_latency_p95: Option<Duration>,
     /// Response action taken when the detector trips. See [`InstabilityAction`].
     ///
@@ -106,6 +113,50 @@ impl Default for InstabilityWindow {
     }
 }
 
+/// Number of most-recent round-trip-time samples retained by the rolling
+/// latency estimator. A small bounded window keeps the per-probe sort cheap and
+/// makes the p95 reflect *recent* link behavior rather than the whole session.
+pub const LATENCY_WINDOW: usize = 64;
+
+/// Bounded rolling latency estimator.
+///
+/// Keeps the last [`LATENCY_WINDOW`] round-trip-time samples in insertion order
+/// and computes the p95 by sorting a copy on demand. The sorted-window approach
+/// is O(N log N) per query over a tiny fixed N (64), which is deterministic and
+/// trivial to reason about — preferred here over a streaming P² estimator.
+#[derive(Debug, Clone, Default)]
+struct LatencyEstimator {
+    samples: VecDeque<Duration>,
+}
+
+impl LatencyEstimator {
+    /// Record one RTT sample, evicting the oldest if the window is full.
+    fn record(&mut self, rtt: Duration) {
+        if self.samples.len() == LATENCY_WINDOW {
+            self.samples.pop_front();
+        }
+        self.samples.push_back(rtt);
+    }
+
+    /// Current p95 over the rolling window, or `None` if no samples yet.
+    ///
+    /// Uses the nearest-rank method: index `ceil(0.95 * n) - 1` into the sorted
+    /// samples (clamped to the last element). For small windows this is the
+    /// pragmatic, fully-deterministic choice.
+    fn p95(&self) -> Option<Duration> {
+        let n = self.samples.len();
+        if n == 0 {
+            return None;
+        }
+        let mut sorted: Vec<Duration> = self.samples.iter().copied().collect();
+        sorted.sort_unstable();
+        // Nearest-rank: smallest index whose sample is >= 95% of the data.
+        let rank = ((0.95_f64 * n as f64).ceil() as usize).max(1);
+        let idx = rank.min(n) - 1;
+        Some(sorted[idx])
+    }
+}
+
 /// Sliding-window detector.
 #[derive(Debug, Clone)]
 pub struct InstabilityDetector {
@@ -113,6 +164,11 @@ pub struct InstabilityDetector {
     events: VecDeque<Instant>,
     triggered: bool,
     last_clean: Option<Instant>,
+    /// Rolling RTT estimator feeding the `max_latency_p95` trip condition.
+    latency: LatencyEstimator,
+    /// Consecutive failed-probe count feeding the `max_keepalive_misses` trip
+    /// condition. Reset to 0 on any successful probe.
+    consecutive_misses: u32,
 }
 
 impl InstabilityDetector {
@@ -124,6 +180,8 @@ impl InstabilityDetector {
             events: VecDeque::new(),
             triggered: false,
             last_clean: None,
+            latency: LatencyEstimator::default(),
+            consecutive_misses: 0,
         }
     }
 
@@ -165,6 +223,77 @@ impl InstabilityDetector {
         newly
     }
 
+    /// Record the outcome of one health probe.
+    ///
+    /// `rtt` carries the coarse round-trip-time of a *successful* probe
+    /// (captured as `Instant::now()` before/after the probe future at the
+    /// `profile.rs` health-probe site); `None` signals a FAILED/timed-out probe
+    /// (a "keepalive miss").
+    ///
+    /// Feeds the two secondary trip conditions:
+    /// * `max_latency_p95` — a successful probe pushes its RTT into the rolling
+    ///   window; if the configured ceiling is `Some` and the rolling p95 now
+    ///   exceeds it, the detector trips.
+    /// * `max_keepalive_misses` — a failed probe increments the consecutive-miss
+    ///   counter; if the configured threshold is `Some` and the counter reaches
+    ///   it, the detector trips. A successful probe resets the counter to 0.
+    ///
+    /// Returns `true` if this call NEWLY tripped the detector. When the detector
+    /// is disabled (`enabled == false`) this is an inert no-op that never trips
+    /// and records nothing — mirroring [`Self::record_disconnect`]. With both
+    /// thresholds `None` (the default) no probe outcome can trip, preserving
+    /// today's behavior.
+    pub fn record_probe(&mut self, rtt: Option<Duration>) -> bool {
+        if !self.cfg.enabled {
+            return false;
+        }
+        let mut newly = false;
+        match rtt {
+            Some(sample) => {
+                // Successful probe: reset the miss streak, fold the RTT into the
+                // rolling p95 window, and check the latency ceiling.
+                self.consecutive_misses = 0;
+                self.latency.record(sample);
+                if let Some(ceiling) = self.cfg.max_latency_p95 {
+                    if let Some(p95) = self.latency.p95() {
+                        if p95 > ceiling && !self.triggered {
+                            self.triggered = true;
+                            newly = true;
+                        }
+                    }
+                }
+            }
+            None => {
+                // Failed/timed-out probe: count it against the consecutive-miss
+                // ceiling.
+                self.consecutive_misses = self.consecutive_misses.saturating_add(1);
+                if let Some(threshold) = self.cfg.max_keepalive_misses {
+                    if threshold > 0
+                        && self.consecutive_misses >= threshold
+                        && !self.triggered
+                    {
+                        self.triggered = true;
+                        newly = true;
+                    }
+                }
+            }
+        }
+        newly
+    }
+
+    /// Current rolling p95 latency, if any samples have been recorded. Exposed
+    /// for diagnostics/tests.
+    #[must_use]
+    pub fn latency_p95(&self) -> Option<Duration> {
+        self.latency.p95()
+    }
+
+    /// Current consecutive failed-probe count. Exposed for diagnostics/tests.
+    #[must_use]
+    pub fn consecutive_misses(&self) -> u32 {
+        self.consecutive_misses
+    }
+
     /// Tick a heartbeat at `now` indicating the session is healthy. Clears
     /// the unstable flag once enough continuous health has accrued.
     ///
@@ -183,6 +312,10 @@ impl InstabilityDetector {
         if now.duration_since(started) >= self.cfg.clear_after {
             self.triggered = false;
             self.events.clear();
+            // Start the secondary trip conditions fresh once health is restored
+            // so a stale latency window / miss streak can't immediately re-trip.
+            self.latency = LatencyEstimator::default();
+            self.consecutive_misses = 0;
             true
         } else {
             false
@@ -299,6 +432,153 @@ mod tests {
         }
         assert!(!d.is_unstable());
         assert_eq!(d.count(), 0, "disabled detector records no events");
+    }
+
+    fn ms(n: u64) -> Duration {
+        Duration::from_millis(n)
+    }
+
+    #[test]
+    fn p95_estimator_nearest_rank() {
+        // 100 samples 1..=100 ms → p95 (nearest-rank, ceil(0.95*100)=95th value).
+        let mut est = LatencyEstimator::default();
+        // Window holds only the last LATENCY_WINDOW=64; feed exactly 64 known
+        // samples 1..=64 so the math is fully deterministic.
+        for v in 1..=64u64 {
+            est.record(ms(v));
+        }
+        // ceil(0.95 * 64) = ceil(60.8) = 61 → index 60 (0-based) → value 61ms.
+        assert_eq!(est.p95(), Some(ms(61)));
+        assert_eq!(est.samples.len(), LATENCY_WINDOW);
+    }
+
+    #[test]
+    fn p95_estimator_evicts_oldest() {
+        let mut est = LatencyEstimator::default();
+        // Overflow the window: feed 1..=128. Only the last 64 (65..=128) remain.
+        for v in 1..=128u64 {
+            est.record(ms(v));
+        }
+        assert_eq!(est.samples.len(), LATENCY_WINDOW);
+        // Smallest retained sample is 65ms (older ones evicted).
+        assert_eq!(est.samples.iter().copied().min(), Some(ms(65)));
+        // p95 over 65..=128: ceil(0.95*64)=61 → 61st of sorted 65..=128 = 125ms.
+        assert_eq!(est.p95(), Some(ms(125)));
+    }
+
+    #[test]
+    fn p95_estimator_empty_is_none() {
+        let est = LatencyEstimator::default();
+        assert_eq!(est.p95(), None);
+    }
+
+    #[test]
+    fn latency_p95_trips_at_threshold() {
+        // Ceiling 100ms. Below-ceiling samples must NOT trip; an above-ceiling
+        // p95 must trip exactly once.
+        let mut d = InstabilityDetector::new(InstabilityWindow {
+            max_latency_p95: Some(ms(100)),
+            ..Default::default()
+        });
+        // Feed 64 samples all at 50ms → p95 = 50ms < 100ms → no trip.
+        for _ in 0..LATENCY_WINDOW {
+            assert!(!d.record_probe(Some(ms(50))));
+        }
+        assert!(!d.is_unstable());
+        assert_eq!(d.latency_p95(), Some(ms(50)));
+
+        // Now flood with 200ms samples; once enough of the window is high the
+        // p95 crosses 100ms and the detector newly trips. Track that exactly one
+        // call reports the new trip.
+        let mut newly_count = 0;
+        for _ in 0..LATENCY_WINDOW {
+            if d.record_probe(Some(ms(200))) {
+                newly_count += 1;
+            }
+        }
+        assert_eq!(newly_count, 1, "latency trip fires exactly once");
+        assert!(d.is_unstable());
+    }
+
+    #[test]
+    fn latency_p95_none_never_trips() {
+        // Default max_latency_p95 = None → no latency trip regardless of RTT.
+        let mut d = InstabilityDetector::new(InstabilityWindow::default());
+        for _ in 0..LATENCY_WINDOW {
+            assert!(!d.record_probe(Some(ms(10_000))));
+        }
+        assert!(!d.is_unstable());
+    }
+
+    #[test]
+    fn keepalive_misses_trip_at_threshold_and_reset_on_success() {
+        // Trip after 3 consecutive misses.
+        let mut d = InstabilityDetector::new(InstabilityWindow {
+            max_keepalive_misses: Some(3),
+            ..Default::default()
+        });
+        assert!(!d.record_probe(None)); // 1
+        assert!(!d.record_probe(None)); // 2
+        assert_eq!(d.consecutive_misses(), 2);
+        // A success resets the streak before we reach the threshold.
+        assert!(!d.record_probe(Some(ms(5))));
+        assert_eq!(d.consecutive_misses(), 0);
+        assert!(!d.is_unstable());
+
+        // Three fresh consecutive misses now trip, exactly once.
+        assert!(!d.record_probe(None)); // 1
+        assert!(!d.record_probe(None)); // 2
+        assert!(d.record_probe(None)); // 3 → trip
+        assert!(d.is_unstable());
+        assert_eq!(d.consecutive_misses(), 3);
+        // Further misses do not re-report a new trip.
+        assert!(!d.record_probe(None));
+    }
+
+    #[test]
+    fn keepalive_misses_none_never_trips() {
+        // Default max_keepalive_misses = None → misses accrue but never trip.
+        let mut d = InstabilityDetector::new(InstabilityWindow::default());
+        for _ in 0..50 {
+            assert!(!d.record_probe(None));
+        }
+        assert!(!d.is_unstable());
+        assert_eq!(d.consecutive_misses(), 50);
+    }
+
+    #[test]
+    fn disabled_detector_ignores_probes() {
+        let mut d = InstabilityDetector::new(InstabilityWindow {
+            enabled: false,
+            max_keepalive_misses: Some(1),
+            max_latency_p95: Some(ms(1)),
+            ..Default::default()
+        });
+        assert!(!d.record_probe(None));
+        assert!(!d.record_probe(Some(ms(10_000))));
+        assert!(!d.is_unstable());
+        assert_eq!(d.consecutive_misses(), 0);
+        assert_eq!(d.latency_p95(), None);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn tick_healthy_clears_secondary_state() {
+        // After a keepalive-miss trip, sustained health clears the flag AND
+        // resets the miss streak / latency window.
+        let mut d = InstabilityDetector::new(InstabilityWindow {
+            max_keepalive_misses: Some(1),
+            clear_after: Duration::from_secs(30),
+            ..Default::default()
+        });
+        assert!(d.record_probe(None)); // trips immediately (threshold 1)
+        assert!(d.is_unstable());
+        let t0 = Instant::now();
+        d.tick_healthy(t0); // start clean window
+        let cleared = d.tick_healthy(t0 + Duration::from_secs(40));
+        assert!(cleared);
+        assert!(!d.is_unstable());
+        assert_eq!(d.consecutive_misses(), 0);
+        assert_eq!(d.latency_p95(), None);
     }
 
     #[tokio::test(start_paused = true)]

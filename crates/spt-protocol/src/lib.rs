@@ -29,7 +29,8 @@ pub use capabilities::ProtocolCapabilities;
 pub use endpoint::{Endpoint, TargetAddr};
 pub use forward::{
     BindConflictPolicy, DynamicForwardSpec, ForwardDirection, ForwardRateLimits, ForwardState,
-    ForwardTransport, LocalForwardSpec, RemoteForwardSpec, UdpForwardSpec, UdsForwardSpec,
+    ForwardTransport, LocalForwardSpec, RemoteForwardSpec, RemoteUdsForwardSpec, UdpForwardSpec,
+    UdsForwardSpec,
 };
 pub use handle::{ForwardHandle, ForwardId};
 pub use session::{SessionInfo, TunnelSession};
