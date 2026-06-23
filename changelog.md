@@ -1,3 +1,11 @@
+## [26.23] - 2026-06-23
+
+# spt 26.23
+
+## Changes since 26.22
+
+- feat(ssh3): UDS (unix-socket) forwarding over the ssh3 transport (77ce6bb)
+
 ## [26.22] - 2026-06-23
 
 # spt 26.22
