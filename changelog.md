@@ -1,3 +1,11 @@
+## [26.20] - 2026-06-23
+
+# spt 26.20
+
+## Changes since 26.19
+
+- feat(ssh3): make the SSH3 (QUIC/TLS/HTTP3) transport fully live (5e18589)
+
 ## [26.19] - 2026-06-23
 
 # spt 26.19
