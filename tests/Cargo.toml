@@ -41,6 +41,10 @@ path = "e2e/ssh2_multi_forward.rs"
 name = "ssh2_keepalive"
 path = "e2e/ssh2_keepalive.rs"
 
+[[test]]
+name = "cfgcrypt_tunnel_up"
+path = "e2e/cfgcrypt_tunnel_up.rs"
+
 # `dependencies` (NOT dev-dependencies) so the lib in `support/mod.rs` —
 # which re-exports the SharedLogProtocol used by every ssh2_*.rs test —
 # can compile against them. Tests link both the lib and the dev-deps below.
@@ -71,3 +75,11 @@ spt-forward = { workspace = true, features = ["testing"] }
 spt-ssh2 = { workspace = true, features = ["testing"] }
 tokio = { workspace = true, features = ["full"] }
 parking_lot = { workspace = true }
+# Config-crypt true e2e (`cfgcrypt_tunnel_up.rs`): seal/unseal + the
+# remote-config fetch+pin seam + sha256 pin + secret expose. All are internal
+# path/workspace edges to crates already in the graph — no version bump.
+spt-config-crypt = { workspace = true }
+spt-remote-config = { workspace = true }
+secrecy = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
