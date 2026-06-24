@@ -107,6 +107,7 @@ Register-ArgumentCompleter -Native -CommandName 'spt' -ScriptBlock {
             [CompletionResult]::new('decrypt', 'decrypt', [CompletionResultType]::ParameterValue, 'Decrypt a sealed `SPTENC1` envelope back to plaintext TOML')
             [CompletionResult]::new('edit', 'edit', [CompletionResultType]::ParameterValue, 'Open a sealed config in `$EDITOR`; re-seal on save')
             [CompletionResult]::new('crypt', 'crypt', [CompletionResultType]::ParameterValue, 'Re-seal a sealed config under a new key (key rotation)')
+            [CompletionResult]::new('gen-key', 'gen-key', [CompletionResultType]::ParameterValue, 'Generate a config-encryption key (X25519 keypair or raw PSK)')
             [CompletionResult]::new('help', 'help', [CompletionResultType]::ParameterValue, 'Print this message or the help of the given subcommand(s)')
             break
         }
@@ -388,6 +389,7 @@ Register-ArgumentCompleter -Native -CommandName 'spt' -ScriptBlock {
             [CompletionResult]::new('--out', '--out', [CompletionResultType]::ParameterName, 'Output path (default: `<IN>.sealed`)')
             [CompletionResult]::new('--passphrase-from', '--passphrase-from', [CompletionResultType]::ParameterName, 'Read passphrase from a secret reference (e.g. `secret://env/SPT_PP`)')
             [CompletionResult]::new('--recipient', '--recipient', [CompletionResultType]::ParameterName, 'One or more X25519 recipient public keys (base64)')
+            [CompletionResult]::new('--psk-from', '--psk-from', [CompletionResultType]::ParameterName, 'Seal under a raw 32-byte PSK resolved from a secret reference (`secret://ns/name`, `env:NAME`, or `file:PATH`). The bytes may be raw-32, base64, or hex')
             [CompletionResult]::new('--vault-path', '--vault-path', [CompletionResultType]::ParameterName, 'Vault directory or `vault.spt` file used for `secret://` passphrases and `--use-vault-master`')
             [CompletionResult]::new('--vault-passphrase-from', '--vault-passphrase-from', [CompletionResultType]::ParameterName, 'Unlock the vault with a passphrase source instead of the keychain (`stdin`, `env:NAME`, `file:<path>`, or `file:///path`)')
             [CompletionResult]::new('--config', '--config', [CompletionResultType]::ParameterName, 'Path to a single config file')
@@ -419,6 +421,7 @@ Register-ArgumentCompleter -Native -CommandName 'spt' -ScriptBlock {
             [CompletionResult]::new('--out', '--out', [CompletionResultType]::ParameterName, 'Output path. If unset, write the cleartext to stdout')
             [CompletionResult]::new('--passphrase-from', '--passphrase-from', [CompletionResultType]::ParameterName, 'Read passphrase from a secret reference')
             [CompletionResult]::new('--recipient-key', '--recipient-key', [CompletionResultType]::ParameterName, 'Path to an X25519 private-key file (32 raw bytes or base64 line)')
+            [CompletionResult]::new('--psk-from', '--psk-from', [CompletionResultType]::ParameterName, 'Unseal under a raw 32-byte PSK resolved from a secret reference (`secret://ns/name`, `env:NAME`, or `file:PATH`). The bytes may be raw-32, base64, or hex')
             [CompletionResult]::new('--vault-path', '--vault-path', [CompletionResultType]::ParameterName, 'Vault directory or `vault.spt` file used for `secret://` passphrases and vault-master envelopes')
             [CompletionResult]::new('--vault-passphrase-from', '--vault-passphrase-from', [CompletionResultType]::ParameterName, 'Unlock the vault with a passphrase source instead of the keychain')
             [CompletionResult]::new('--config', '--config', [CompletionResultType]::ParameterName, 'Path to a single config file')
@@ -500,6 +503,8 @@ Register-ArgumentCompleter -Native -CommandName 'spt' -ScriptBlock {
         'spt;config;crypt;rotate' {
             [CompletionResult]::new('--new-passphrase-from', '--new-passphrase-from', [CompletionResultType]::ParameterName, 'New passphrase, read from a secret reference')
             [CompletionResult]::new('--new-recipient', '--new-recipient', [CompletionResultType]::ParameterName, 'New X25519 recipient public keys (base64)')
+            [CompletionResult]::new('--old-psk-from', '--old-psk-from', [CompletionResultType]::ParameterName, 'Unseal the *current* envelope using a raw 32-byte PSK resolved from a secret reference (when the existing config was sealed under a PSK)')
+            [CompletionResult]::new('--new-psk-from', '--new-psk-from', [CompletionResultType]::ParameterName, 'Re-seal under a raw 32-byte PSK resolved from a secret reference (`secret://ns/name`, `env:NAME`, or `file:PATH`). The bytes may be raw-32, base64, or hex')
             [CompletionResult]::new('--vault-path', '--vault-path', [CompletionResultType]::ParameterName, 'Vault directory or `vault.spt` file used for `secret://` passphrases and vault-master envelopes')
             [CompletionResult]::new('--vault-passphrase-from', '--vault-passphrase-from', [CompletionResultType]::ParameterName, 'Unlock the vault with a passphrase source instead of the keychain')
             [CompletionResult]::new('--config', '--config', [CompletionResultType]::ParameterName, 'Path to a single config file')
@@ -536,6 +541,34 @@ Register-ArgumentCompleter -Native -CommandName 'spt' -ScriptBlock {
         'spt;config;crypt;help;help' {
             break
         }
+        'spt;config;gen-key' {
+            [CompletionResult]::new('--type', '--type', [CompletionResultType]::ParameterName, 'Key kind to mint')
+            [CompletionResult]::new('--out', '--out', [CompletionResultType]::ParameterName, 'Output path. For `x25519` the private scalar is written here and the public key to `<PATH>.pub`. For `psk` the key is written here, or to stdout when omitted')
+            [CompletionResult]::new('--config', '--config', [CompletionResultType]::ParameterName, 'Path to a single config file')
+            [CompletionResult]::new('--config-dir', '--config-dir', [CompletionResultType]::ParameterName, 'Path to a directory of `*.toml` configs (loaded in lexical order)')
+            [CompletionResult]::new('--config-url', '--config-url', [CompletionResultType]::ParameterName, 'HTTPS URL of a remote config to fetch')
+            [CompletionResult]::new('--config-fingerprint', '--config-fingerprint', [CompletionResultType]::ParameterName, 'SHA-256 fingerprint pin for `--config-url`')
+            [CompletionResult]::new('--state-dir', '--state-dir', [CompletionResultType]::ParameterName, 'Override the runtime state directory')
+            [CompletionResult]::new('--profile', '--profile', [CompletionResultType]::ParameterName, 'Restrict operations to the named profile')
+            [CompletionResult]::new('--output', '--output', [CompletionResultType]::ParameterName, 'Output format for command results')
+            [CompletionResult]::new('--log-level', '--log-level', [CompletionResultType]::ParameterName, 'Tracing log level')
+            [CompletionResult]::new('--color', '--color', [CompletionResultType]::ParameterName, 'Color policy for human output')
+            [CompletionResult]::new('--hex', '--hex', [CompletionResultType]::ParameterName, 'Encode the PSK as hex instead of base64 (psk only)')
+            [CompletionResult]::new('--force', '--force', [CompletionResultType]::ParameterName, 'Overwrite existing output file(s)')
+            [CompletionResult]::new('--portable', '--portable', [CompletionResultType]::ParameterName, 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)')
+            [CompletionResult]::new('--json', '--json', [CompletionResultType]::ParameterName, 'Convenience alias for `--output json`')
+            [CompletionResult]::new('-q', '-q', [CompletionResultType]::ParameterName, 'Suppress non-essential output')
+            [CompletionResult]::new('--quiet', '--quiet', [CompletionResultType]::ParameterName, 'Suppress non-essential output')
+            [CompletionResult]::new('-v', '-v', [CompletionResultType]::ParameterName, 'Increase verbosity (repeat for more)')
+            [CompletionResult]::new('--verbose', '--verbose', [CompletionResultType]::ParameterName, 'Increase verbosity (repeat for more)')
+            [CompletionResult]::new('--no-color', '--no-color', [CompletionResultType]::ParameterName, 'Disable color (legacy convenience flag; use `--color never`)')
+            [CompletionResult]::new('--dry-run', '--dry-run', [CompletionResultType]::ParameterName, 'Show what would happen without making changes')
+            [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help (see more with ''--help'')')
+            [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help (see more with ''--help'')')
+            [CompletionResult]::new('-V', '-V ', [CompletionResultType]::ParameterName, 'Print version')
+            [CompletionResult]::new('--version', '--version', [CompletionResultType]::ParameterName, 'Print version')
+            break
+        }
         'spt;config;help' {
             [CompletionResult]::new('init', 'init', [CompletionResultType]::ParameterValue, 'Initialize a new config file from a template')
             [CompletionResult]::new('validate', 'validate', [CompletionResultType]::ParameterValue, 'Validate config syntax, schema, and obvious mistakes')
@@ -550,6 +583,7 @@ Register-ArgumentCompleter -Native -CommandName 'spt' -ScriptBlock {
             [CompletionResult]::new('decrypt', 'decrypt', [CompletionResultType]::ParameterValue, 'Decrypt a sealed `SPTENC1` envelope back to plaintext TOML')
             [CompletionResult]::new('edit', 'edit', [CompletionResultType]::ParameterValue, 'Open a sealed config in `$EDITOR`; re-seal on save')
             [CompletionResult]::new('crypt', 'crypt', [CompletionResultType]::ParameterValue, 'Re-seal a sealed config under a new key (key rotation)')
+            [CompletionResult]::new('gen-key', 'gen-key', [CompletionResultType]::ParameterValue, 'Generate a config-encryption key (X25519 keypair or raw PSK)')
             [CompletionResult]::new('help', 'help', [CompletionResultType]::ParameterValue, 'Print this message or the help of the given subcommand(s)')
             break
         }
@@ -598,6 +632,9 @@ Register-ArgumentCompleter -Native -CommandName 'spt' -ScriptBlock {
             break
         }
         'spt;config;help;crypt;rotate' {
+            break
+        }
+        'spt;config;help;gen-key' {
             break
         }
         'spt;config;help;help' {
@@ -7319,6 +7356,7 @@ Register-ArgumentCompleter -Native -CommandName 'spt' -ScriptBlock {
             [CompletionResult]::new('decrypt', 'decrypt', [CompletionResultType]::ParameterValue, 'Decrypt a sealed `SPTENC1` envelope back to plaintext TOML')
             [CompletionResult]::new('edit', 'edit', [CompletionResultType]::ParameterValue, 'Open a sealed config in `$EDITOR`; re-seal on save')
             [CompletionResult]::new('crypt', 'crypt', [CompletionResultType]::ParameterValue, 'Re-seal a sealed config under a new key (key rotation)')
+            [CompletionResult]::new('gen-key', 'gen-key', [CompletionResultType]::ParameterValue, 'Generate a config-encryption key (X25519 keypair or raw PSK)')
             break
         }
         'spt;help;config;init' {
@@ -7366,6 +7404,9 @@ Register-ArgumentCompleter -Native -CommandName 'spt' -ScriptBlock {
             break
         }
         'spt;help;config;crypt;rotate' {
+            break
+        }
+        'spt;help;config;gen-key' {
             break
         }
         'spt;help;profile' {

@@ -233,6 +233,23 @@ pub struct RuntimeRemoteConfig {
     /// `DEFAULT_CHAIN_DEPTH_CAP` (`Some(5)`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_cert_chain_depth: Option<u32>,
+
+    // ---------------- Config-encryption surface (t-cfgcrypt) ----------------
+    /// Opt-in decrypt key for a sealed (`SPTENC1`) remote config body. A
+    /// secret reference (`secret://ns/name`, `env:NAME`, or `file:PATH`)
+    /// resolving to either a raw 32-byte PSK (raw/base64/hex) or an X25519
+    /// private key. When set, a fetched body that begins with the `SPTENC1`
+    /// magic is unsealed (mode auto-detected from the envelope) before the
+    /// TOML is parsed; the fingerprint pin still covers the *sealed* bytes.
+    /// Unset (default) → bodies are used verbatim (behavior-preserving).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub encryption_key_from: Option<String>,
+    /// When `true`, a fetched remote-config body that is *not* a sealed
+    /// `SPTENC1` envelope is rejected. Defends against an origin serving
+    /// cleartext where encryption is expected. Default (`None`/`false`) →
+    /// cleartext bodies are accepted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub require_encrypted: Option<bool>,
 }
 
 // ---------------------------------------------------------------------------

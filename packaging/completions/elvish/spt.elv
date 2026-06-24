@@ -103,6 +103,7 @@ set edit:completion:arg-completer[spt] = {|@words|
             cand decrypt 'Decrypt a sealed `SPTENC1` envelope back to plaintext TOML'
             cand edit 'Open a sealed config in `$EDITOR`; re-seal on save'
             cand crypt 'Re-seal a sealed config under a new key (key rotation)'
+            cand gen-key 'Generate a config-encryption key (X25519 keypair or raw PSK)'
             cand help 'Print this message or the help of the given subcommand(s)'
         }
         &'spt;config;init'= {
@@ -370,6 +371,7 @@ set edit:completion:arg-completer[spt] = {|@words|
             cand --out 'Output path (default: `<IN>.sealed`)'
             cand --passphrase-from 'Read passphrase from a secret reference (e.g. `secret://env/SPT_PP`)'
             cand --recipient 'One or more X25519 recipient public keys (base64)'
+            cand --psk-from 'Seal under a raw 32-byte PSK resolved from a secret reference (`secret://ns/name`, `env:NAME`, or `file:PATH`). The bytes may be raw-32, base64, or hex'
             cand --vault-path 'Vault directory or `vault.spt` file used for `secret://` passphrases and `--use-vault-master`'
             cand --vault-passphrase-from 'Unlock the vault with a passphrase source instead of the keychain (`stdin`, `env:NAME`, `file:<path>`, or `file:///path`)'
             cand --config 'Path to a single config file'
@@ -400,6 +402,7 @@ set edit:completion:arg-completer[spt] = {|@words|
             cand --out 'Output path. If unset, write the cleartext to stdout'
             cand --passphrase-from 'Read passphrase from a secret reference'
             cand --recipient-key 'Path to an X25519 private-key file (32 raw bytes or base64 line)'
+            cand --psk-from 'Unseal under a raw 32-byte PSK resolved from a secret reference (`secret://ns/name`, `env:NAME`, or `file:PATH`). The bytes may be raw-32, base64, or hex'
             cand --vault-path 'Vault directory or `vault.spt` file used for `secret://` passphrases and vault-master envelopes'
             cand --vault-passphrase-from 'Unlock the vault with a passphrase source instead of the keychain'
             cand --config 'Path to a single config file'
@@ -478,6 +481,8 @@ set edit:completion:arg-completer[spt] = {|@words|
         &'spt;config;crypt;rotate'= {
             cand --new-passphrase-from 'New passphrase, read from a secret reference'
             cand --new-recipient 'New X25519 recipient public keys (base64)'
+            cand --old-psk-from 'Unseal the *current* envelope using a raw 32-byte PSK resolved from a secret reference (when the existing config was sealed under a PSK)'
+            cand --new-psk-from 'Re-seal under a raw 32-byte PSK resolved from a secret reference (`secret://ns/name`, `env:NAME`, or `file:PATH`). The bytes may be raw-32, base64, or hex'
             cand --vault-path 'Vault directory or `vault.spt` file used for `secret://` passphrases and vault-master envelopes'
             cand --vault-passphrase-from 'Unlock the vault with a passphrase source instead of the keychain'
             cand --config 'Path to a single config file'
@@ -510,6 +515,33 @@ set edit:completion:arg-completer[spt] = {|@words|
         }
         &'spt;config;crypt;help;help'= {
         }
+        &'spt;config;gen-key'= {
+            cand --type 'Key kind to mint'
+            cand --out 'Output path. For `x25519` the private scalar is written here and the public key to `<PATH>.pub`. For `psk` the key is written here, or to stdout when omitted'
+            cand --config 'Path to a single config file'
+            cand --config-dir 'Path to a directory of `*.toml` configs (loaded in lexical order)'
+            cand --config-url 'HTTPS URL of a remote config to fetch'
+            cand --config-fingerprint 'SHA-256 fingerprint pin for `--config-url`'
+            cand --state-dir 'Override the runtime state directory'
+            cand --profile 'Restrict operations to the named profile'
+            cand --output 'Output format for command results'
+            cand --log-level 'Tracing log level'
+            cand --color 'Color policy for human output'
+            cand --hex 'Encode the PSK as hex instead of base64 (psk only)'
+            cand --force 'Overwrite existing output file(s)'
+            cand --portable 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
+            cand --json 'Convenience alias for `--output json`'
+            cand -q 'Suppress non-essential output'
+            cand --quiet 'Suppress non-essential output'
+            cand -v 'Increase verbosity (repeat for more)'
+            cand --verbose 'Increase verbosity (repeat for more)'
+            cand --no-color 'Disable color (legacy convenience flag; use `--color never`)'
+            cand --dry-run 'Show what would happen without making changes'
+            cand -h 'Print help (see more with ''--help'')'
+            cand --help 'Print help (see more with ''--help'')'
+            cand -V 'Print version'
+            cand --version 'Print version'
+        }
         &'spt;config;help'= {
             cand init 'Initialize a new config file from a template'
             cand validate 'Validate config syntax, schema, and obvious mistakes'
@@ -524,6 +556,7 @@ set edit:completion:arg-completer[spt] = {|@words|
             cand decrypt 'Decrypt a sealed `SPTENC1` envelope back to plaintext TOML'
             cand edit 'Open a sealed config in `$EDITOR`; re-seal on save'
             cand crypt 'Re-seal a sealed config under a new key (key rotation)'
+            cand gen-key 'Generate a config-encryption key (X25519 keypair or raw PSK)'
             cand help 'Print this message or the help of the given subcommand(s)'
         }
         &'spt;config;help;init'= {
@@ -557,6 +590,8 @@ set edit:completion:arg-completer[spt] = {|@words|
             cand rotate 'Re-seal a sealed config under a new key'
         }
         &'spt;config;help;crypt;rotate'= {
+        }
+        &'spt;config;help;gen-key'= {
         }
         &'spt;config;help;help'= {
         }
@@ -6768,6 +6803,7 @@ set edit:completion:arg-completer[spt] = {|@words|
             cand decrypt 'Decrypt a sealed `SPTENC1` envelope back to plaintext TOML'
             cand edit 'Open a sealed config in `$EDITOR`; re-seal on save'
             cand crypt 'Re-seal a sealed config under a new key (key rotation)'
+            cand gen-key 'Generate a config-encryption key (X25519 keypair or raw PSK)'
         }
         &'spt;help;config;init'= {
         }
@@ -6800,6 +6836,8 @@ set edit:completion:arg-completer[spt] = {|@words|
             cand rotate 'Re-seal a sealed config under a new key'
         }
         &'spt;help;config;crypt;rotate'= {
+        }
+        &'spt;help;config;gen-key'= {
         }
         &'spt;help;profile'= {
             cand list 'List configured profiles'

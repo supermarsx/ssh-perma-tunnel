@@ -1,0 +1,77 @@
+# Encrypted remote configuration — fetch a sealed (SPTENC1) config over HTTPS,
+# verify its fingerprint pin, then decrypt it locally before applying.
+#
+# See docs/remote-config.md for the full reference.
+#
+# -----------------------------------------------------------------------------
+# Publish loop (run once on the publisher side):
+# -----------------------------------------------------------------------------
+#   1. Mint a key:
+#        # symmetric PSK (base64 by default; --hex for hex):
+#        spt config gen-key --type psk --out psk.key
+#        # OR a dedicated asymmetric X25519 config keypair:
+#        spt config gen-key --type x25519 --out config.key   # writes config.key + config.key.pub
+#
+#   2. Seal the cleartext config under that key:
+#        # PSK (symmetric):
+#        spt config encrypt config.toml --psk-from file:///etc/spt/psk.key --out config.sealed
+#        # OR X25519 (asymmetric, encrypt-to-public-key):
+#        spt config encrypt config.toml --recipient "$(cat config.key.pub)" --out config.sealed
+#
+#   3. Host `config.sealed` on your HTTPS origin and record its SHA-256:
+#        sha256sum config.sealed
+#
+#   4. On each client, set `url` + `fingerprint_sha256` (over the SEALED bytes)
+#      and `encryption_key_from` (a secret ref to the PSK / X25519 private key),
+#      as below. The pin covers the ciphertext you intended to host; the client
+#      unseals after fetch, so `spt config pull` and the background poller both
+#      apply PLAINTEXT.
+# -----------------------------------------------------------------------------
+
+version = 1
+
+[[profiles]]
+name = "edge"
+enabled = true
+protocol = "ssh2"
+host = "bastion.example.com"
+port = 22
+user = "alice"
+
+[profiles.auth]
+method = "agent"
+
+[profiles.trust]
+mode = "known_hosts"
+known_hosts_file = "~/.ssh/known_hosts"
+strict = true
+
+[[profiles.forwards]]
+name = "web"
+type = "local"
+transport = "tcp"
+bind = "127.0.0.1:8080"
+target = "service.internal:80"
+required = true
+
+# -----------------------------------------------------------------------------
+# Encrypted remote config.
+# -----------------------------------------------------------------------------
+[runtime.remote_config]
+enabled = true
+url = "https://cfg.example.com/edge/config.sealed"
+# SHA-256 of the SEALED (SPTENC1) bytes hosted at `url` (pin-only per spec).
+fingerprint_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+poll_interval = "5m"
+allow_cached_on_failure = true
+
+# Opt-in decrypt key. A secret reference (`secret://ns/name`, `env:NAME`, or
+# `file:///path`) resolving to either a raw 32-byte PSK (raw/base64/hex) or an
+# X25519 private key. When set, a fetched body that begins with the SPTENC1
+# magic is unsealed (mode auto-detected from the envelope) before the TOML is
+# parsed. Leave unset to use bodies verbatim (cleartext remote configs).
+encryption_key_from = "file:///etc/spt/psk.key"
+
+# When true, a fetched body that is NOT a sealed SPTENC1 envelope is rejected —
+# defends against an origin serving cleartext where encryption is expected.
+require_encrypted = true

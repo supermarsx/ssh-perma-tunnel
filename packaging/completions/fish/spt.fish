@@ -78,46 +78,47 @@ complete -c spt -n "__fish_spt_needs_command" -f -a "about" -d 'List bundled lib
 complete -c spt -n "__fish_spt_needs_command" -f -a "kill" -d 'Terminate every running `spt` instance on this host'
 complete -c spt -n "__fish_spt_needs_command" -f -a "update" -d 'Embedded auto-updater (off by default). Manual commands work regardless of the `[updater].enabled` flag; the background polling thread is only spawned when explicitly enabled'
 complete -c spt -n "__fish_spt_needs_command" -f -a "help" -d 'Print this message or the help of the given subcommand(s)'
-complete -c spt -n "__fish_spt_using_subcommand config; and not __fish_seen_subcommand_from init validate doctor render diff migrate reload pull trust encrypt decrypt edit crypt help" -l config -d 'Path to a single config file' -r -F
-complete -c spt -n "__fish_spt_using_subcommand config; and not __fish_seen_subcommand_from init validate doctor render diff migrate reload pull trust encrypt decrypt edit crypt help" -l config-dir -d 'Path to a directory of `*.toml` configs (loaded in lexical order)' -r -F
-complete -c spt -n "__fish_spt_using_subcommand config; and not __fish_seen_subcommand_from init validate doctor render diff migrate reload pull trust encrypt decrypt edit crypt help" -l config-url -d 'HTTPS URL of a remote config to fetch' -r
-complete -c spt -n "__fish_spt_using_subcommand config; and not __fish_seen_subcommand_from init validate doctor render diff migrate reload pull trust encrypt decrypt edit crypt help" -l config-fingerprint -d 'SHA-256 fingerprint pin for `--config-url`' -r
-complete -c spt -n "__fish_spt_using_subcommand config; and not __fish_seen_subcommand_from init validate doctor render diff migrate reload pull trust encrypt decrypt edit crypt help" -l state-dir -d 'Override the runtime state directory' -r -F
-complete -c spt -n "__fish_spt_using_subcommand config; and not __fish_seen_subcommand_from init validate doctor render diff migrate reload pull trust encrypt decrypt edit crypt help" -l profile -d 'Restrict operations to the named profile' -r
-complete -c spt -n "__fish_spt_using_subcommand config; and not __fish_seen_subcommand_from init validate doctor render diff migrate reload pull trust encrypt decrypt edit crypt help" -l output -d 'Output format for command results' -r -f -a "human\t'Human-readable text (default)'
+complete -c spt -n "__fish_spt_using_subcommand config; and not __fish_seen_subcommand_from init validate doctor render diff migrate reload pull trust encrypt decrypt edit crypt gen-key help" -l config -d 'Path to a single config file' -r -F
+complete -c spt -n "__fish_spt_using_subcommand config; and not __fish_seen_subcommand_from init validate doctor render diff migrate reload pull trust encrypt decrypt edit crypt gen-key help" -l config-dir -d 'Path to a directory of `*.toml` configs (loaded in lexical order)' -r -F
+complete -c spt -n "__fish_spt_using_subcommand config; and not __fish_seen_subcommand_from init validate doctor render diff migrate reload pull trust encrypt decrypt edit crypt gen-key help" -l config-url -d 'HTTPS URL of a remote config to fetch' -r
+complete -c spt -n "__fish_spt_using_subcommand config; and not __fish_seen_subcommand_from init validate doctor render diff migrate reload pull trust encrypt decrypt edit crypt gen-key help" -l config-fingerprint -d 'SHA-256 fingerprint pin for `--config-url`' -r
+complete -c spt -n "__fish_spt_using_subcommand config; and not __fish_seen_subcommand_from init validate doctor render diff migrate reload pull trust encrypt decrypt edit crypt gen-key help" -l state-dir -d 'Override the runtime state directory' -r -F
+complete -c spt -n "__fish_spt_using_subcommand config; and not __fish_seen_subcommand_from init validate doctor render diff migrate reload pull trust encrypt decrypt edit crypt gen-key help" -l profile -d 'Restrict operations to the named profile' -r
+complete -c spt -n "__fish_spt_using_subcommand config; and not __fish_seen_subcommand_from init validate doctor render diff migrate reload pull trust encrypt decrypt edit crypt gen-key help" -l output -d 'Output format for command results' -r -f -a "human\t'Human-readable text (default)'
 json\t'Structured JSON'
 jsonl\t'JSON Lines (one record per line)'
 yaml\t'YAML'"
-complete -c spt -n "__fish_spt_using_subcommand config; and not __fish_seen_subcommand_from init validate doctor render diff migrate reload pull trust encrypt decrypt edit crypt help" -l log-level -d 'Tracing log level' -r -f -a "error\t'Only errors'
+complete -c spt -n "__fish_spt_using_subcommand config; and not __fish_seen_subcommand_from init validate doctor render diff migrate reload pull trust encrypt decrypt edit crypt gen-key help" -l log-level -d 'Tracing log level' -r -f -a "error\t'Only errors'
 warn\t'Warnings and above'
 info\t'Informational and above (default)'
 debug\t'Debug and above'
 trace\t'Trace and above (very verbose)'"
-complete -c spt -n "__fish_spt_using_subcommand config; and not __fish_seen_subcommand_from init validate doctor render diff migrate reload pull trust encrypt decrypt edit crypt help" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
+complete -c spt -n "__fish_spt_using_subcommand config; and not __fish_seen_subcommand_from init validate doctor render diff migrate reload pull trust encrypt decrypt edit crypt gen-key help" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
 always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
-complete -c spt -n "__fish_spt_using_subcommand config; and not __fish_seen_subcommand_from init validate doctor render diff migrate reload pull trust encrypt decrypt edit crypt help" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
-complete -c spt -n "__fish_spt_using_subcommand config; and not __fish_seen_subcommand_from init validate doctor render diff migrate reload pull trust encrypt decrypt edit crypt help" -l json -d 'Convenience alias for `--output json`'
-complete -c spt -n "__fish_spt_using_subcommand config; and not __fish_seen_subcommand_from init validate doctor render diff migrate reload pull trust encrypt decrypt edit crypt help" -s q -l quiet -d 'Suppress non-essential output'
-complete -c spt -n "__fish_spt_using_subcommand config; and not __fish_seen_subcommand_from init validate doctor render diff migrate reload pull trust encrypt decrypt edit crypt help" -s v -l verbose -d 'Increase verbosity (repeat for more)'
-complete -c spt -n "__fish_spt_using_subcommand config; and not __fish_seen_subcommand_from init validate doctor render diff migrate reload pull trust encrypt decrypt edit crypt help" -l no-color -d 'Disable color (legacy convenience flag; use `--color never`)'
-complete -c spt -n "__fish_spt_using_subcommand config; and not __fish_seen_subcommand_from init validate doctor render diff migrate reload pull trust encrypt decrypt edit crypt help" -l dry-run -d 'Show what would happen without making changes'
-complete -c spt -n "__fish_spt_using_subcommand config; and not __fish_seen_subcommand_from init validate doctor render diff migrate reload pull trust encrypt decrypt edit crypt help" -s h -l help -d 'Print help (see more with \'--help\')'
-complete -c spt -n "__fish_spt_using_subcommand config; and not __fish_seen_subcommand_from init validate doctor render diff migrate reload pull trust encrypt decrypt edit crypt help" -s V -l version -d 'Print version'
-complete -c spt -n "__fish_spt_using_subcommand config; and not __fish_seen_subcommand_from init validate doctor render diff migrate reload pull trust encrypt decrypt edit crypt help" -f -a "init" -d 'Initialize a new config file from a template'
-complete -c spt -n "__fish_spt_using_subcommand config; and not __fish_seen_subcommand_from init validate doctor render diff migrate reload pull trust encrypt decrypt edit crypt help" -f -a "validate" -d 'Validate config syntax, schema, and obvious mistakes'
-complete -c spt -n "__fish_spt_using_subcommand config; and not __fish_seen_subcommand_from init validate doctor render diff migrate reload pull trust encrypt decrypt edit crypt help" -f -a "doctor" -d 'Run environment checks against the loaded config'
-complete -c spt -n "__fish_spt_using_subcommand config; and not __fish_seen_subcommand_from init validate doctor render diff migrate reload pull trust encrypt decrypt edit crypt help" -f -a "render" -d 'Render the canonical (optionally redacted) config'
-complete -c spt -n "__fish_spt_using_subcommand config; and not __fish_seen_subcommand_from init validate doctor render diff migrate reload pull trust encrypt decrypt edit crypt help" -f -a "diff" -d 'Diff two config files'
-complete -c spt -n "__fish_spt_using_subcommand config; and not __fish_seen_subcommand_from init validate doctor render diff migrate reload pull trust encrypt decrypt edit crypt help" -f -a "migrate" -d 'Migrate a config between schema versions'
-complete -c spt -n "__fish_spt_using_subcommand config; and not __fish_seen_subcommand_from init validate doctor render diff migrate reload pull trust encrypt decrypt edit crypt help" -f -a "reload" -d 'Reload the running service\'s config'
-complete -c spt -n "__fish_spt_using_subcommand config; and not __fish_seen_subcommand_from init validate doctor render diff migrate reload pull trust encrypt decrypt edit crypt help" -f -a "pull" -d 'Pull a remote config over HTTPS with pinning'
-complete -c spt -n "__fish_spt_using_subcommand config; and not __fish_seen_subcommand_from init validate doctor render diff migrate reload pull trust encrypt decrypt edit crypt help" -f -a "trust" -d 'Manage remote-config trust pins'
-complete -c spt -n "__fish_spt_using_subcommand config; and not __fish_seen_subcommand_from init validate doctor render diff migrate reload pull trust encrypt decrypt edit crypt help" -f -a "encrypt" -d 'Encrypt a plaintext config to a sealed `SPTENC1` envelope'
-complete -c spt -n "__fish_spt_using_subcommand config; and not __fish_seen_subcommand_from init validate doctor render diff migrate reload pull trust encrypt decrypt edit crypt help" -f -a "decrypt" -d 'Decrypt a sealed `SPTENC1` envelope back to plaintext TOML'
-complete -c spt -n "__fish_spt_using_subcommand config; and not __fish_seen_subcommand_from init validate doctor render diff migrate reload pull trust encrypt decrypt edit crypt help" -f -a "edit" -d 'Open a sealed config in `$EDITOR`; re-seal on save'
-complete -c spt -n "__fish_spt_using_subcommand config; and not __fish_seen_subcommand_from init validate doctor render diff migrate reload pull trust encrypt decrypt edit crypt help" -f -a "crypt" -d 'Re-seal a sealed config under a new key (key rotation)'
-complete -c spt -n "__fish_spt_using_subcommand config; and not __fish_seen_subcommand_from init validate doctor render diff migrate reload pull trust encrypt decrypt edit crypt help" -f -a "help" -d 'Print this message or the help of the given subcommand(s)'
+complete -c spt -n "__fish_spt_using_subcommand config; and not __fish_seen_subcommand_from init validate doctor render diff migrate reload pull trust encrypt decrypt edit crypt gen-key help" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
+complete -c spt -n "__fish_spt_using_subcommand config; and not __fish_seen_subcommand_from init validate doctor render diff migrate reload pull trust encrypt decrypt edit crypt gen-key help" -l json -d 'Convenience alias for `--output json`'
+complete -c spt -n "__fish_spt_using_subcommand config; and not __fish_seen_subcommand_from init validate doctor render diff migrate reload pull trust encrypt decrypt edit crypt gen-key help" -s q -l quiet -d 'Suppress non-essential output'
+complete -c spt -n "__fish_spt_using_subcommand config; and not __fish_seen_subcommand_from init validate doctor render diff migrate reload pull trust encrypt decrypt edit crypt gen-key help" -s v -l verbose -d 'Increase verbosity (repeat for more)'
+complete -c spt -n "__fish_spt_using_subcommand config; and not __fish_seen_subcommand_from init validate doctor render diff migrate reload pull trust encrypt decrypt edit crypt gen-key help" -l no-color -d 'Disable color (legacy convenience flag; use `--color never`)'
+complete -c spt -n "__fish_spt_using_subcommand config; and not __fish_seen_subcommand_from init validate doctor render diff migrate reload pull trust encrypt decrypt edit crypt gen-key help" -l dry-run -d 'Show what would happen without making changes'
+complete -c spt -n "__fish_spt_using_subcommand config; and not __fish_seen_subcommand_from init validate doctor render diff migrate reload pull trust encrypt decrypt edit crypt gen-key help" -s h -l help -d 'Print help (see more with \'--help\')'
+complete -c spt -n "__fish_spt_using_subcommand config; and not __fish_seen_subcommand_from init validate doctor render diff migrate reload pull trust encrypt decrypt edit crypt gen-key help" -s V -l version -d 'Print version'
+complete -c spt -n "__fish_spt_using_subcommand config; and not __fish_seen_subcommand_from init validate doctor render diff migrate reload pull trust encrypt decrypt edit crypt gen-key help" -f -a "init" -d 'Initialize a new config file from a template'
+complete -c spt -n "__fish_spt_using_subcommand config; and not __fish_seen_subcommand_from init validate doctor render diff migrate reload pull trust encrypt decrypt edit crypt gen-key help" -f -a "validate" -d 'Validate config syntax, schema, and obvious mistakes'
+complete -c spt -n "__fish_spt_using_subcommand config; and not __fish_seen_subcommand_from init validate doctor render diff migrate reload pull trust encrypt decrypt edit crypt gen-key help" -f -a "doctor" -d 'Run environment checks against the loaded config'
+complete -c spt -n "__fish_spt_using_subcommand config; and not __fish_seen_subcommand_from init validate doctor render diff migrate reload pull trust encrypt decrypt edit crypt gen-key help" -f -a "render" -d 'Render the canonical (optionally redacted) config'
+complete -c spt -n "__fish_spt_using_subcommand config; and not __fish_seen_subcommand_from init validate doctor render diff migrate reload pull trust encrypt decrypt edit crypt gen-key help" -f -a "diff" -d 'Diff two config files'
+complete -c spt -n "__fish_spt_using_subcommand config; and not __fish_seen_subcommand_from init validate doctor render diff migrate reload pull trust encrypt decrypt edit crypt gen-key help" -f -a "migrate" -d 'Migrate a config between schema versions'
+complete -c spt -n "__fish_spt_using_subcommand config; and not __fish_seen_subcommand_from init validate doctor render diff migrate reload pull trust encrypt decrypt edit crypt gen-key help" -f -a "reload" -d 'Reload the running service\'s config'
+complete -c spt -n "__fish_spt_using_subcommand config; and not __fish_seen_subcommand_from init validate doctor render diff migrate reload pull trust encrypt decrypt edit crypt gen-key help" -f -a "pull" -d 'Pull a remote config over HTTPS with pinning'
+complete -c spt -n "__fish_spt_using_subcommand config; and not __fish_seen_subcommand_from init validate doctor render diff migrate reload pull trust encrypt decrypt edit crypt gen-key help" -f -a "trust" -d 'Manage remote-config trust pins'
+complete -c spt -n "__fish_spt_using_subcommand config; and not __fish_seen_subcommand_from init validate doctor render diff migrate reload pull trust encrypt decrypt edit crypt gen-key help" -f -a "encrypt" -d 'Encrypt a plaintext config to a sealed `SPTENC1` envelope'
+complete -c spt -n "__fish_spt_using_subcommand config; and not __fish_seen_subcommand_from init validate doctor render diff migrate reload pull trust encrypt decrypt edit crypt gen-key help" -f -a "decrypt" -d 'Decrypt a sealed `SPTENC1` envelope back to plaintext TOML'
+complete -c spt -n "__fish_spt_using_subcommand config; and not __fish_seen_subcommand_from init validate doctor render diff migrate reload pull trust encrypt decrypt edit crypt gen-key help" -f -a "edit" -d 'Open a sealed config in `$EDITOR`; re-seal on save'
+complete -c spt -n "__fish_spt_using_subcommand config; and not __fish_seen_subcommand_from init validate doctor render diff migrate reload pull trust encrypt decrypt edit crypt gen-key help" -f -a "crypt" -d 'Re-seal a sealed config under a new key (key rotation)'
+complete -c spt -n "__fish_spt_using_subcommand config; and not __fish_seen_subcommand_from init validate doctor render diff migrate reload pull trust encrypt decrypt edit crypt gen-key help" -f -a "gen-key" -d 'Generate a config-encryption key (X25519 keypair or raw PSK)'
+complete -c spt -n "__fish_spt_using_subcommand config; and not __fish_seen_subcommand_from init validate doctor render diff migrate reload pull trust encrypt decrypt edit crypt gen-key help" -f -a "help" -d 'Print this message or the help of the given subcommand(s)'
 complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from init" -l path -d 'Output path for the generated config' -r -F
 complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from init" -l example -d 'Template to seed the config from' -r -f -a "smtp\t''
 jump\t''
@@ -385,6 +386,7 @@ complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcomma
 complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from encrypt" -l out -d 'Output path (default: `<IN>.sealed`)' -r -F
 complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from encrypt" -l passphrase-from -d 'Read passphrase from a secret reference (e.g. `secret://env/SPT_PP`)' -r
 complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from encrypt" -l recipient -d 'One or more X25519 recipient public keys (base64)' -r
+complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from encrypt" -l psk-from -d 'Seal under a raw 32-byte PSK resolved from a secret reference (`secret://ns/name`, `env:NAME`, or `file:PATH`). The bytes may be raw-32, base64, or hex' -r
 complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from encrypt" -l vault-path -d 'Vault directory or `vault.spt` file used for `secret://` passphrases and `--use-vault-master`' -r -F
 complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from encrypt" -l vault-passphrase-from -d 'Unlock the vault with a passphrase source instead of the keychain (`stdin`, `env:NAME`, `file:<path>`, or `file:///path`)' -r
 complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from encrypt" -l config -d 'Path to a single config file' -r -F
@@ -418,6 +420,7 @@ complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcomma
 complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from decrypt" -l out -d 'Output path. If unset, write the cleartext to stdout' -r -F
 complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from decrypt" -l passphrase-from -d 'Read passphrase from a secret reference' -r
 complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from decrypt" -l recipient-key -d 'Path to an X25519 private-key file (32 raw bytes or base64 line)' -r -F
+complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from decrypt" -l psk-from -d 'Unseal under a raw 32-byte PSK resolved from a secret reference (`secret://ns/name`, `env:NAME`, or `file:PATH`). The bytes may be raw-32, base64, or hex' -r
 complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from decrypt" -l vault-path -d 'Vault directory or `vault.spt` file used for `secret://` passphrases and vault-master envelopes' -r -F
 complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from decrypt" -l vault-passphrase-from -d 'Unlock the vault with a passphrase source instead of the keychain' -r
 complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from decrypt" -l config -d 'Path to a single config file' -r -F
@@ -503,6 +506,37 @@ complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcomma
 complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from crypt" -s V -l version -d 'Print version'
 complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from crypt" -f -a "rotate" -d 'Re-seal a sealed config under a new key'
 complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from crypt" -f -a "help" -d 'Print this message or the help of the given subcommand(s)'
+complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from gen-key" -l type -d 'Key kind to mint' -r -f -a "x25519\t'A dedicated X25519 config keypair (private scalar + `<out>.pub`)'
+psk\t'A raw 32-byte pre-shared symmetric key (PSK)'"
+complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from gen-key" -l out -d 'Output path. For `x25519` the private scalar is written here and the public key to `<PATH>.pub`. For `psk` the key is written here, or to stdout when omitted' -r -F
+complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from gen-key" -l config -d 'Path to a single config file' -r -F
+complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from gen-key" -l config-dir -d 'Path to a directory of `*.toml` configs (loaded in lexical order)' -r -F
+complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from gen-key" -l config-url -d 'HTTPS URL of a remote config to fetch' -r
+complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from gen-key" -l config-fingerprint -d 'SHA-256 fingerprint pin for `--config-url`' -r
+complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from gen-key" -l state-dir -d 'Override the runtime state directory' -r -F
+complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from gen-key" -l profile -d 'Restrict operations to the named profile' -r
+complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from gen-key" -l output -d 'Output format for command results' -r -f -a "human\t'Human-readable text (default)'
+json\t'Structured JSON'
+jsonl\t'JSON Lines (one record per line)'
+yaml\t'YAML'"
+complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from gen-key" -l log-level -d 'Tracing log level' -r -f -a "error\t'Only errors'
+warn\t'Warnings and above'
+info\t'Informational and above (default)'
+debug\t'Debug and above'
+trace\t'Trace and above (very verbose)'"
+complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from gen-key" -l color -d 'Color policy for human output' -r -f -a "auto\t'Auto-detect based on tty'
+always\t'Always emit color escapes'
+never\t'Never emit color escapes'"
+complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from gen-key" -l hex -d 'Encode the PSK as hex instead of base64 (psk only)'
+complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from gen-key" -l force -d 'Overwrite existing output file(s)'
+complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from gen-key" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
+complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from gen-key" -l json -d 'Convenience alias for `--output json`'
+complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from gen-key" -s q -l quiet -d 'Suppress non-essential output'
+complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from gen-key" -s v -l verbose -d 'Increase verbosity (repeat for more)'
+complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from gen-key" -l no-color -d 'Disable color (legacy convenience flag; use `--color never`)'
+complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from gen-key" -l dry-run -d 'Show what would happen without making changes'
+complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from gen-key" -s h -l help -d 'Print help (see more with \'--help\')'
+complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from gen-key" -s V -l version -d 'Print version'
 complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from help" -f -a "init" -d 'Initialize a new config file from a template'
 complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from help" -f -a "validate" -d 'Validate config syntax, schema, and obvious mistakes'
 complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from help" -f -a "doctor" -d 'Run environment checks against the loaded config'
@@ -516,6 +550,7 @@ complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcomma
 complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from help" -f -a "decrypt" -d 'Decrypt a sealed `SPTENC1` envelope back to plaintext TOML'
 complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from help" -f -a "edit" -d 'Open a sealed config in `$EDITOR`; re-seal on save'
 complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from help" -f -a "crypt" -d 'Re-seal a sealed config under a new key (key rotation)'
+complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from help" -f -a "gen-key" -d 'Generate a config-encryption key (X25519 keypair or raw PSK)'
 complete -c spt -n "__fish_spt_using_subcommand config; and __fish_seen_subcommand_from help" -f -a "help" -d 'Print this message or the help of the given subcommand(s)'
 complete -c spt -n "__fish_spt_using_subcommand profile; and not __fish_seen_subcommand_from list show add configure set enable disable remove test help" -l config -d 'Path to a single config file' -r -F
 complete -c spt -n "__fish_spt_using_subcommand profile; and not __fish_seen_subcommand_from list show add configure set enable disable remove test help" -l config-dir -d 'Path to a directory of `*.toml` configs (loaded in lexical order)' -r -F
@@ -5494,6 +5529,7 @@ complete -c spt -n "__fish_spt_using_subcommand help; and __fish_seen_subcommand
 complete -c spt -n "__fish_spt_using_subcommand help; and __fish_seen_subcommand_from config" -f -a "decrypt" -d 'Decrypt a sealed `SPTENC1` envelope back to plaintext TOML'
 complete -c spt -n "__fish_spt_using_subcommand help; and __fish_seen_subcommand_from config" -f -a "edit" -d 'Open a sealed config in `$EDITOR`; re-seal on save'
 complete -c spt -n "__fish_spt_using_subcommand help; and __fish_seen_subcommand_from config" -f -a "crypt" -d 'Re-seal a sealed config under a new key (key rotation)'
+complete -c spt -n "__fish_spt_using_subcommand help; and __fish_seen_subcommand_from config" -f -a "gen-key" -d 'Generate a config-encryption key (X25519 keypair or raw PSK)'
 complete -c spt -n "__fish_spt_using_subcommand help; and __fish_seen_subcommand_from profile" -f -a "list" -d 'List configured profiles'
 complete -c spt -n "__fish_spt_using_subcommand help; and __fish_seen_subcommand_from profile" -f -a "show" -d 'Show the resolved profile (optionally redacted)'
 complete -c spt -n "__fish_spt_using_subcommand help; and __fish_seen_subcommand_from profile" -f -a "add" -d 'Add a new profile'

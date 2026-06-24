@@ -49,10 +49,12 @@
 
 mod envelope;
 mod kdf;
+mod keygen;
 mod sealing;
 mod signing;
 
-pub use envelope::{Meta, MAGIC};
+pub use envelope::{Meta, PskParams, MAGIC};
+pub use keygen::{generate_psk, generate_x25519, psk_id};
 pub use sealing::{
     is_sealed, peek_meta, seal, unseal, KeySource, Passphrase, SecretSlice, X25519PublicKey,
 };

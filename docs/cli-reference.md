@@ -33,7 +33,7 @@ surfaces, completion support, and exit-code contract.
 
 | Group | Command surface |
 |-------|-----------------|
-| `config` | `init`, `validate`, `doctor`, `render`, `diff`, `migrate`, `reload`, `pull`, `trust add-url`, `encrypt`, `decrypt`, `edit`, `crypt rotate` |
+| `config` | `init`, `validate`, `doctor`, `render`, `diff`, `migrate`, `reload`, `pull`, `trust add-url`, `encrypt`, `decrypt`, `edit`, `crypt rotate`, `gen-key` |
 | `profile` | `list`, `show`, `add`, `configure`, `set`, `enable`, `disable`, `remove`, `test` |
 | `forward` | `list`, `show`, `add local`, `add remote`, `explain`, `test`, `throttle`, `remove` |
 | `tunnel` | `run`, `status`, `stats`, `sessions`, `stop`, `reload`, `health`, `failover` |

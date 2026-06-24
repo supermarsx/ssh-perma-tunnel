@@ -207,6 +207,8 @@ mod tests {
             pin_spki_sha256: vec!["SHA256:AAAA".into(), "SHA256:BBBB".into()],
             allow_self_signed: Some(true),
             max_cert_chain_depth: Some(3),
+            encryption_key_from: None,
+            require_encrypted: None,
         };
         let plan = RemoteConfigSpec::plan_from_runtime(&rc, None, None, Some(2_000_000)).unwrap();
         // The configured fingerprint flows into the spec.

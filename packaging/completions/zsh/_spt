@@ -498,6 +498,7 @@ _arguments "${_arguments_options[@]}" : \
 '--out=[Output path (default\: \`<IN>.sealed\`)]:PATH:_files' \
 '--passphrase-from=[Read passphrase from a secret reference (e.g. \`secret\://env/SPT_PP\`)]:REF:_default' \
 '*--recipient=[One or more X25519 recipient public keys (base64)]:PUBKEY:_default' \
+'--psk-from=[Seal under a raw 32-byte PSK resolved from a secret reference (\`secret\://ns/name\`, \`env\:NAME\`, or \`file\:PATH\`). The bytes may be raw-32, base64, or hex]:REF:_default' \
 '--vault-path=[Vault directory or \`vault.spt\` file used for \`secret\://\` passphrases and \`--use-vault-master\`]:PATH:_files' \
 '--vault-passphrase-from=[Unlock the vault with a passphrase source instead of the keychain (\`stdin\`, \`env\:NAME\`, \`file\:<path>\`, or \`file\:///path\`)]:SOURCE:_default' \
 '--config=[Path to a single config file]:PATH:_files' \
@@ -540,6 +541,7 @@ _arguments "${_arguments_options[@]}" : \
 '--out=[Output path. If unset, write the cleartext to stdout]:PATH:_files' \
 '--passphrase-from=[Read passphrase from a secret reference]:REF:_default' \
 '--recipient-key=[Path to an X25519 private-key file (32 raw bytes or base64 line)]:PATH:_files' \
+'--psk-from=[Unseal under a raw 32-byte PSK resolved from a secret reference (\`secret\://ns/name\`, \`env\:NAME\`, or \`file\:PATH\`). The bytes may be raw-32, base64, or hex]:REF:_default' \
 '--vault-path=[Vault directory or \`vault.spt\` file used for \`secret\://\` passphrases and vault-master envelopes]:PATH:_files' \
 '--vault-passphrase-from=[Unlock the vault with a passphrase source instead of the keychain]:SOURCE:_default' \
 '--config=[Path to a single config file]:PATH:_files' \
@@ -659,6 +661,8 @@ never\:"Never emit color escapes"))' \
 _arguments "${_arguments_options[@]}" : \
 '--new-passphrase-from=[New passphrase, read from a secret reference]:REF:_default' \
 '*--new-recipient=[New X25519 recipient public keys (base64)]:PUBKEY:_default' \
+'--old-psk-from=[Unseal the *current* envelope using a raw 32-byte PSK resolved from a secret reference (when the existing config was sealed under a PSK)]:REF:_default' \
+'--new-psk-from=[Re-seal under a raw 32-byte PSK resolved from a secret reference (\`secret\://ns/name\`, \`env\:NAME\`, or \`file\:PATH\`). The bytes may be raw-32, base64, or hex]:REF:_default' \
 '--vault-path=[Vault directory or \`vault.spt\` file used for \`secret\://\` passphrases and vault-master envelopes]:PATH:_files' \
 '--vault-passphrase-from=[Unlock the vault with a passphrase source instead of the keychain]:SOURCE:_default' \
 '--config=[Path to a single config file]:PATH:_files' \
@@ -721,6 +725,45 @@ esac
         esac
     ;;
 esac
+;;
+(gen-key)
+_arguments "${_arguments_options[@]}" : \
+'--type=[Key kind to mint]:TYPE:((x25519\:"A dedicated X25519 config keypair (private scalar + \`<out>.pub\`)"
+psk\:"A raw 32-byte pre-shared symmetric key (PSK)"))' \
+'--out=[Output path. For \`x25519\` the private scalar is written here and the public key to \`<PATH>.pub\`. For \`psk\` the key is written here, or to stdout when omitted]:PATH:_files' \
+'--config=[Path to a single config file]:PATH:_files' \
+'--config-dir=[Path to a directory of \`*.toml\` configs (loaded in lexical order)]:PATH:_files' \
+'--config-url=[HTTPS URL of a remote config to fetch]:URL:_default' \
+'--config-fingerprint=[SHA-256 fingerprint pin for \`--config-url\`]:SHA256:_default' \
+'--state-dir=[Override the runtime state directory]:PATH:_files' \
+'--profile=[Restrict operations to the named profile]:NAME:_default' \
+'--output=[Output format for command results]:OUTPUT:((human\:"Human-readable text (default)"
+json\:"Structured JSON"
+jsonl\:"JSON Lines (one record per line)"
+yaml\:"YAML"))' \
+'--log-level=[Tracing log level]:LOG_LEVEL:((error\:"Only errors"
+warn\:"Warnings and above"
+info\:"Informational and above (default)"
+debug\:"Debug and above"
+trace\:"Trace and above (very verbose)"))' \
+'--color=[Color policy for human output]:COLOR:((auto\:"Auto-detect based on tty"
+always\:"Always emit color escapes"
+never\:"Never emit color escapes"))' \
+'--hex[Encode the PSK as hex instead of base64 (psk only)]' \
+'--force[Overwrite existing output file(s)]' \
+'--portable[Portable mode\: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)]' \
+'--json[Convenience alias for \`--output json\`]' \
+'-q[Suppress non-essential output]' \
+'--quiet[Suppress non-essential output]' \
+'*-v[Increase verbosity (repeat for more)]' \
+'*--verbose[Increase verbosity (repeat for more)]' \
+'--no-color[Disable color (legacy convenience flag; use \`--color never\`)]' \
+'--dry-run[Show what would happen without making changes]' \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+'-V[Print version]' \
+'--version[Print version]' \
+&& ret=0
 ;;
 (help)
 _arguments "${_arguments_options[@]}" : \
@@ -817,6 +860,10 @@ _arguments "${_arguments_options[@]}" : \
         esac
     ;;
 esac
+;;
+(gen-key)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
 ;;
 (help)
 _arguments "${_arguments_options[@]}" : \
@@ -10713,6 +10760,10 @@ _arguments "${_arguments_options[@]}" : \
     ;;
 esac
 ;;
+(gen-key)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
         esac
     ;;
 esac
@@ -12383,6 +12434,7 @@ _spt__subcmd__config_commands() {
 'decrypt:Decrypt a sealed \`SPTENC1\` envelope back to plaintext TOML' \
 'edit:Open a sealed config in \`\$EDITOR\`; re-seal on save' \
 'crypt:Re-seal a sealed config under a new key (key rotation)' \
+'gen-key:Generate a config-encryption key (X25519 keypair or raw PSK)' \
 'help:Print this message or the help of the given subcommand(s)' \
     )
     _describe -t commands 'spt config commands' commands "$@"
@@ -12443,6 +12495,11 @@ _spt__subcmd__config__subcmd__encrypt_commands() {
     local commands; commands=()
     _describe -t commands 'spt config encrypt commands' commands "$@"
 }
+(( $+functions[_spt__subcmd__config__subcmd__gen-key_commands] )) ||
+_spt__subcmd__config__subcmd__gen-key_commands() {
+    local commands; commands=()
+    _describe -t commands 'spt config gen-key commands' commands "$@"
+}
 (( $+functions[_spt__subcmd__config__subcmd__help_commands] )) ||
 _spt__subcmd__config__subcmd__help_commands() {
     local commands; commands=(
@@ -12459,6 +12516,7 @@ _spt__subcmd__config__subcmd__help_commands() {
 'decrypt:Decrypt a sealed \`SPTENC1\` envelope back to plaintext TOML' \
 'edit:Open a sealed config in \`\$EDITOR\`; re-seal on save' \
 'crypt:Re-seal a sealed config under a new key (key rotation)' \
+'gen-key:Generate a config-encryption key (X25519 keypair or raw PSK)' \
 'help:Print this message or the help of the given subcommand(s)' \
     )
     _describe -t commands 'spt config help commands' commands "$@"
@@ -12499,6 +12557,11 @@ _spt__subcmd__config__subcmd__help__subcmd__edit_commands() {
 _spt__subcmd__config__subcmd__help__subcmd__encrypt_commands() {
     local commands; commands=()
     _describe -t commands 'spt config help encrypt commands' commands "$@"
+}
+(( $+functions[_spt__subcmd__config__subcmd__help__subcmd__gen-key_commands] )) ||
+_spt__subcmd__config__subcmd__help__subcmd__gen-key_commands() {
+    local commands; commands=()
+    _describe -t commands 'spt config help gen-key commands' commands "$@"
 }
 (( $+functions[_spt__subcmd__config__subcmd__help__subcmd__help_commands] )) ||
 _spt__subcmd__config__subcmd__help__subcmd__help_commands() {
@@ -13799,6 +13862,7 @@ _spt__subcmd__help__subcmd__config_commands() {
 'decrypt:Decrypt a sealed \`SPTENC1\` envelope back to plaintext TOML' \
 'edit:Open a sealed config in \`\$EDITOR\`; re-seal on save' \
 'crypt:Re-seal a sealed config under a new key (key rotation)' \
+'gen-key:Generate a config-encryption key (X25519 keypair or raw PSK)' \
     )
     _describe -t commands 'spt help config commands' commands "$@"
 }
@@ -13838,6 +13902,11 @@ _spt__subcmd__help__subcmd__config__subcmd__edit_commands() {
 _spt__subcmd__help__subcmd__config__subcmd__encrypt_commands() {
     local commands; commands=()
     _describe -t commands 'spt help config encrypt commands' commands "$@"
+}
+(( $+functions[_spt__subcmd__help__subcmd__config__subcmd__gen-key_commands] )) ||
+_spt__subcmd__help__subcmd__config__subcmd__gen-key_commands() {
+    local commands; commands=()
+    _describe -t commands 'spt help config gen-key commands' commands "$@"
 }
 (( $+functions[_spt__subcmd__help__subcmd__config__subcmd__init_commands] )) ||
 _spt__subcmd__help__subcmd__config__subcmd__init_commands() {

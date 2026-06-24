@@ -49,6 +49,36 @@ pub enum ConfigSub {
     Edit(ConfigEdit),
     /// Re-seal a sealed config under a new key (key rotation).
     Crypt(ConfigCrypt),
+    /// Generate a config-encryption key (X25519 keypair or raw PSK).
+    GenKey(ConfigGenKey),
+}
+
+/// Key kinds mintable by `spt config gen-key`.
+#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
+pub enum KeyKindCrypt {
+    /// A dedicated X25519 config keypair (private scalar + `<out>.pub`).
+    X25519,
+    /// A raw 32-byte pre-shared symmetric key (PSK).
+    Psk,
+}
+
+/// `spt config gen-key`.
+#[derive(Args, Debug)]
+pub struct ConfigGenKey {
+    /// Key kind to mint.
+    #[arg(long = "type", value_enum, value_name = "TYPE")]
+    pub r#type: KeyKindCrypt,
+    /// Output path. For `x25519` the private scalar is written here and the
+    /// public key to `<PATH>.pub`. For `psk` the key is written here, or to
+    /// stdout when omitted.
+    #[arg(long, value_name = "PATH")]
+    pub out: Option<PathBuf>,
+    /// Encode the PSK as hex instead of base64 (psk only).
+    #[arg(long)]
+    pub hex: bool,
+    /// Overwrite existing output file(s).
+    #[arg(long)]
+    pub force: bool,
 }
 
 /// `spt config crypt`.
@@ -81,6 +111,11 @@ pub struct ConfigEncrypt {
     /// One or more X25519 recipient public keys (base64).
     #[arg(long, value_name = "PUBKEY")]
     pub recipient: Vec<String>,
+    /// Seal under a raw 32-byte PSK resolved from a secret reference
+    /// (`secret://ns/name`, `env:NAME`, or `file:PATH`). The bytes may be
+    /// raw-32, base64, or hex.
+    #[arg(long, value_name = "REF")]
+    pub psk_from: Option<String>,
     /// Use the keychain-resident vault master key.
     #[arg(long)]
     pub use_vault_master: bool,
@@ -112,6 +147,11 @@ pub struct ConfigDecrypt {
     /// Path to an X25519 private-key file (32 raw bytes or base64 line).
     #[arg(long, value_name = "PATH")]
     pub recipient_key: Option<PathBuf>,
+    /// Unseal under a raw 32-byte PSK resolved from a secret reference
+    /// (`secret://ns/name`, `env:NAME`, or `file:PATH`). The bytes may be
+    /// raw-32, base64, or hex.
+    #[arg(long, value_name = "REF")]
+    pub psk_from: Option<String>,
     /// Vault directory or `vault.spt` file used for `secret://` passphrases
     /// and vault-master envelopes.
     #[arg(long, value_name = "PATH")]
@@ -151,6 +191,15 @@ pub struct ConfigCryptRotate {
     /// New X25519 recipient public keys (base64).
     #[arg(long, value_name = "PUBKEY")]
     pub new_recipient: Vec<String>,
+    /// Unseal the *current* envelope using a raw 32-byte PSK resolved from a
+    /// secret reference (when the existing config was sealed under a PSK).
+    #[arg(long, value_name = "REF")]
+    pub old_psk_from: Option<String>,
+    /// Re-seal under a raw 32-byte PSK resolved from a secret reference
+    /// (`secret://ns/name`, `env:NAME`, or `file:PATH`). The bytes may be
+    /// raw-32, base64, or hex.
+    #[arg(long, value_name = "REF")]
+    pub new_psk_from: Option<String>,
     /// Vault directory or `vault.spt` file used for `secret://` passphrases
     /// and vault-master envelopes.
     #[arg(long, value_name = "PATH")]

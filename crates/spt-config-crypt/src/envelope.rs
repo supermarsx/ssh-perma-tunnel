@@ -32,7 +32,7 @@ pub struct Meta {
     pub version: u32,
     /// AEAD algorithm tag. Always `"aes-256-gcm"` for this crate.
     pub aead: String,
-    /// KDF discriminant: `"argon2id"`, `"vault"`, or `"x25519"`.
+    /// KDF discriminant: `"argon2id"`, `"vault"`, `"x25519"`, or `"psk"`.
     pub kdf: String,
 
     /// Argon2id parameters — present iff `kdf == "argon2id"`.
@@ -51,6 +51,26 @@ pub struct Meta {
     /// out-of-band by the caller.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vault: Option<VaultParams>,
+
+    /// Raw-PSK parameters — present (optionally) iff `kdf == "psk"`.
+    ///
+    /// Carries **nothing secret**: only an optional non-secret `psk_id`
+    /// label so an operator can tell which pre-shared key sealed a blob
+    /// without trying keys. The 32-byte PSK itself is supplied out-of-band
+    /// and used directly as the AES-256-GCM body key (no KDF).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub psk: Option<PskParams>,
+}
+
+/// Raw-PSK KDF parameters (`[meta.psk]`).
+///
+/// Holds no secret material — just an optional key-fingerprint label.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PskParams {
+    /// Optional non-secret key label: the first 8 hex characters of
+    /// `SHA-256(psk)`. Lets operators identify which PSK sealed a blob.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub psk_id: Option<String>,
 }
 
 /// Argon2id parameters as serialized into `[meta.argon2id]`.

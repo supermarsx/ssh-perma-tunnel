@@ -7,6 +7,7 @@
 use rand::RngCore;
 
 use crate::envelope::{Meta, MAGIC};
+use crate::keygen::{generate_psk, generate_x25519, psk_id};
 use crate::sealing::{is_sealed, peek_meta, seal, unseal, KeySource, Passphrase, X25519PublicKey};
 use crate::signing::{sign, verify, verify_with_options, SigningKey, VerifyingKey};
 
@@ -233,6 +234,7 @@ fn argon2id_parameter_out_of_bounds_rejected() {
         }),
         recipients: vec![],
         vault: None,
+        psk: None,
     };
     let meta_b = meta_to_bytes(&meta).unwrap();
     let body = Body {
@@ -473,6 +475,176 @@ fn resign_replaces_previous_signature() {
     // sk_a should no longer be accepted as the signer.
     let err = verify(&signed_ab, &[sk_a.verifying_key()]).unwrap_err();
     matches::assert_matches!(err, spt_core::Error::TrustFailed(_));
+}
+
+fn fresh_psk() -> [u8; 32] {
+    let mut k = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut k);
+    k
+}
+
+// ---------------------------------------------------------------------------
+// 26. PSK round-trip: seal → unseal is byte-identical.
+// ---------------------------------------------------------------------------
+#[test]
+fn roundtrip_psk() {
+    let plaintext = b"[server]\nhost = \"psk.example.com\"\n";
+    let key = fresh_psk();
+    let sealed = seal(plaintext, &KeySource::Psk(key)).unwrap();
+    assert!(is_sealed(&sealed));
+    let out = unseal(&sealed, &KeySource::Psk(key)).unwrap();
+    use secrecy::ExposeSecret;
+    assert_eq!(out.expose_secret().as_slice(), plaintext);
+}
+
+// ---------------------------------------------------------------------------
+// 27. Wrong PSK → InvalidConfig (not a panic, not silent).
+// ---------------------------------------------------------------------------
+#[test]
+fn wrong_psk_rejects_with_invalid_config() {
+    let sealed = seal(b"sensitive", &KeySource::Psk(fresh_psk())).unwrap();
+    let err = unseal(&sealed, &KeySource::Psk(fresh_psk())).unwrap_err();
+    matches::assert_matches!(err, spt_core::Error::InvalidConfig(_));
+}
+
+// ---------------------------------------------------------------------------
+// 28. PSK tamper: flip a ciphertext byte → AEAD fail (InvalidConfig).
+// ---------------------------------------------------------------------------
+#[test]
+fn psk_tampered_ciphertext_rejects() {
+    let key = fresh_psk();
+    let mut sealed = seal(b"sensitive", &KeySource::Psk(key)).unwrap();
+    // Flip a byte near the end, inside the base64-encoded ciphertext.
+    let len = sealed.len();
+    sealed[len - 8] ^= 0x01;
+    let err = unseal(&sealed, &KeySource::Psk(key)).unwrap_err();
+    // AEAD-tag failure (or b64 shape change) — wrong-PSK/tamper path.
+    matches::assert_matches!(
+        err,
+        spt_core::Error::InvalidConfig(_) | spt_core::Error::SecretCryptoFailed(_)
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 29. PSK tamper: flip a meta byte → AAD binding fails the body AEAD.
+// ---------------------------------------------------------------------------
+#[test]
+fn psk_tampered_meta_breaks_aad() {
+    let key = fresh_psk();
+    let sealed = seal(b"hello", &KeySource::Psk(key)).unwrap();
+    // First byte of meta TOML.
+    let meta_start = MAGIC.len() + 4;
+    let mut tampered = sealed.clone();
+    tampered[meta_start] ^= 0x80;
+    let err = unseal(&tampered, &KeySource::Psk(key)).unwrap_err();
+    // The mutated meta still parses as TOML in some flips → AAD mismatch
+    // → InvalidConfig; a shape-breaking flip → SecretCryptoFailed. Both OK.
+    matches::assert_matches!(
+        err,
+        spt_core::Error::InvalidConfig(_) | spt_core::Error::SecretCryptoFailed(_)
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 30. peek_meta on a PSK envelope reports kdf="psk" and leaks no secret.
+// ---------------------------------------------------------------------------
+#[test]
+fn peek_meta_psk_reports_kdf_and_no_secret() {
+    let key = fresh_psk();
+    let sealed = seal(b"x", &KeySource::Psk(key)).unwrap();
+    let meta = peek_meta(&sealed).unwrap();
+    assert_eq!(meta.version, 1);
+    assert_eq!(meta.aead, "aes-256-gcm");
+    assert_eq!(meta.kdf, "psk");
+    assert!(meta.argon2id.is_none());
+    assert!(meta.vault.is_none());
+    assert!(meta.recipients.is_empty());
+    // psk_id is recorded (non-secret label) and matches the deterministic id.
+    let params = meta.psk.expect("psk params present");
+    assert_eq!(params.psk_id.as_deref(), Some(psk_id(&key).as_str()));
+
+    // The raw PSK must NOT appear anywhere in the on-disk meta bytes.
+    use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
+    let key_b64 = B64.encode(key);
+    let sealed_str = String::from_utf8_lossy(&sealed);
+    assert!(
+        !sealed_str.contains(&key_b64),
+        "raw PSK leaked into envelope"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 31. Cross-mode reject: PSK key against an x25519 envelope → mismatch.
+// ---------------------------------------------------------------------------
+#[test]
+fn psk_against_x25519_envelope_rejected() {
+    let secret = fresh_x25519_secret();
+    let sealed = seal(
+        b"x",
+        &KeySource::X25519Recipients(vec![pub_from_secret(&secret)]),
+    )
+    .unwrap();
+    let err = unseal(&sealed, &KeySource::Psk(fresh_psk())).unwrap_err();
+    matches::assert_matches!(err, spt_core::Error::InvalidConfig(msg) if msg.contains("kdf"));
+}
+
+// ---------------------------------------------------------------------------
+// 32. Cross-mode reject: x25519 secret against a PSK envelope → mismatch.
+// ---------------------------------------------------------------------------
+#[test]
+fn x25519_secret_against_psk_envelope_rejected() {
+    let sealed = seal(b"x", &KeySource::Psk(fresh_psk())).unwrap();
+    let err = unseal(
+        &sealed,
+        &KeySource::X25519Secrets(vec![fresh_x25519_secret()]),
+    )
+    .unwrap_err();
+    matches::assert_matches!(err, spt_core::Error::InvalidConfig(msg) if msg.contains("kdf"));
+}
+
+// ---------------------------------------------------------------------------
+// 33. keygen: two generate_psk() calls differ.
+// ---------------------------------------------------------------------------
+#[test]
+fn generate_psk_produces_distinct_keys() {
+    let a = generate_psk();
+    let b = generate_psk();
+    assert_ne!(a, b);
+    // A generated PSK round-trips through seal/unseal.
+    let sealed = seal(b"gen", &KeySource::Psk(a)).unwrap();
+    let out = unseal(&sealed, &KeySource::Psk(a)).unwrap();
+    use secrecy::ExposeSecret;
+    assert_eq!(out.expose_secret().as_slice(), b"gen");
+}
+
+// ---------------------------------------------------------------------------
+// 34. keygen: generate_x25519 public == PublicKey::from(&private).
+// ---------------------------------------------------------------------------
+#[test]
+fn generate_x25519_public_matches_private() {
+    let (private, public) = generate_x25519();
+    let rederived = pub_from_secret(&private);
+    assert_eq!(public.as_bytes(), rederived.as_bytes());
+
+    // The generated keypair feeds the existing asymmetric path end-to-end.
+    let sealed = seal(b"asym", &KeySource::X25519Recipients(vec![public])).unwrap();
+    let out = unseal(&sealed, &KeySource::X25519Secrets(vec![private])).unwrap();
+    use secrecy::ExposeSecret;
+    assert_eq!(out.expose_secret().as_slice(), b"asym");
+}
+
+// ---------------------------------------------------------------------------
+// 35. keygen: psk_id is deterministic and differs for different PSKs.
+// ---------------------------------------------------------------------------
+#[test]
+fn psk_id_deterministic_and_distinct() {
+    let a = fresh_psk();
+    let b = fresh_psk();
+    assert_eq!(psk_id(&a), psk_id(&a));
+    assert_ne!(psk_id(&a), psk_id(&b));
+    // 8 hex chars.
+    assert_eq!(psk_id(&a).len(), 8);
+    assert!(psk_id(&a).chars().all(|c| c.is_ascii_hexdigit()));
 }
 
 // Stub external crate used in matches::assert_matches!.

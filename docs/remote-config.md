@@ -19,6 +19,32 @@ ETag-based 304 responses are supported and reduce network load.
     allow_cached_on_failure = true
     poll_interval = "5m"
 
+## Encrypted remote configs
+
+The fetched body may be a sealed `SPTENC1` envelope (see
+[`spt config encrypt`](#cli)). Decryption is **opt-in** and happens at the
+consumer boundary — after the fingerprint pin verifies the *sealed* bytes,
+the client unseals locally, so `spt config pull` emits plaintext and the
+poller applies plaintext.
+
+    [runtime.remote_config]
+    # ... url / fingerprint_sha256 (over the SEALED bytes) / poll_interval ...
+
+    # A secret ref (`secret://ns/name`, `env:NAME`, or `file:///path`) to the
+    # raw 32-byte PSK (raw/base64/hex) or X25519 private key. When set, a body
+    # beginning with the SPTENC1 magic is unsealed (mode auto-detected from the
+    # envelope) before the TOML is parsed. Unset → bodies used verbatim.
+    encryption_key_from = "file:///etc/spt/psk.key"
+
+    # When true, a fetched body that is NOT a sealed envelope is rejected —
+    # defends against an origin serving cleartext where encryption is expected.
+    require_encrypted = true
+
+The pin still covers the ciphertext you intended to host. See
+`examples/remote-config-encrypted.toml` for the full publish loop
+(`config gen-key` → `config encrypt --psk-from`/`--recipient` → host → set the
+fingerprint + `encryption_key_from`).
+
 ## Refresh
 
 > **Not yet implemented: background polling.** Remote-config background

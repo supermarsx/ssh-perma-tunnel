@@ -292,6 +292,7 @@ async fn config_dispatch(global: &GlobalOpts, c: groups::config::ConfigCmd) -> R
                 ConfigCryptSub::Rotate(a) => crate::cli::config_ops::crypt_rotate(global, a).await,
             }
         }
+        ConfigSub::GenKey(args) => crate::cli::config_ops::gen_key(global, args).await,
     }
 }
 
@@ -444,13 +445,23 @@ async fn config_pull(global: &GlobalOpts, args: groups::config::ConfigPull) -> R
     let result = spt_remote_config::fetch_with_plan(&plan, &state_dir)
         .await
         .map_err(map_remote_config_err)?;
+    // Opt-in decrypt: if `[runtime.remote_config].encryption_key_from` is set
+    // and the fetched body is a sealed SPTENC1 envelope, unseal it before
+    // writing/printing so `config pull` emits PLAINTEXT. The fingerprint pin
+    // still covered the *sealed* bytes (verified inside `fetch_with_plan`).
+    let plaintext = crate::cli::config_ops::decrypt_if_sealed(
+        &result.body,
+        rc.encryption_key_from.as_deref(),
+        rc.require_encrypted.unwrap_or(false),
+        global,
+    )?;
     if let Some(out) = &args.out {
-        std::fs::write(out, &result.body)
+        std::fs::write(out, &plaintext)
             .map_err(|e| Error::InvalidConfig(format!("write `{}`: {e}", out.display())))?;
         println!("wrote {} ({:?})", out.display(), result.outcome);
     } else {
         std::io::stdout()
-            .write_all(&result.body)
+            .write_all(&plaintext)
             .map_err(|e| Error::RuntimeFailure(format!("stdout: {e}")))?;
     }
     let _ = args.cache; // already cached side-effect of fetch()
@@ -1189,8 +1200,14 @@ async fn tunnel_run(global: &GlobalOpts, args: groups::tunnel::TunnelRun) -> Res
     // as a tokio task and funnels each changed remote body through the SAME
     // reload pipeline as SIGHUP (`ConfigCell::reload`). Off unless
     // `[runtime.remote_config].enabled = true` with a positive poll_interval.
-    let remote_config_handle =
-        maybe_spawn_remote_config_poller(&cfg, &state_dir, &resolver, &orchestrator, &config_cell);
+    let remote_config_handle = maybe_spawn_remote_config_poller(
+        global,
+        &cfg,
+        &state_dir,
+        &resolver,
+        &orchestrator,
+        &config_cell,
+    );
 
     // GAP 3: bring up the embedded DNS resolver when `[dns]` is enabled with a
     // listener mode. Honors mode / auto_records / health-gating; a misconfig
@@ -2190,6 +2207,7 @@ async fn maybe_spawn_status_api(
 /// error, or a rejected reload is logged and skipped; the poller never crashes
 /// the supervisor.
 fn maybe_spawn_remote_config_poller(
+    global: &GlobalOpts,
     cfg: &spt_config::schema::Config,
     state_dir: &Path,
     resolver: &std::sync::Arc<spt_secrets::Resolver>,
@@ -2252,16 +2270,39 @@ fn maybe_spawn_remote_config_poller(
     };
 
     // Apply callback: clones captured per the driver's `Fn` bound. On each
-    // changed body, parse + funnel through the shared reload pipeline.
+    // changed body, decrypt-if-sealed, parse, + funnel through the shared
+    // reload pipeline.
     let resolver = resolver.clone();
     let orchestrator = orchestrator.clone();
     let config_cell = config_cell.clone();
+    let global = global.clone();
+    let encryption_key_from = rc.encryption_key_from.clone();
+    let require_encrypted = rc.require_encrypted.unwrap_or(false);
     let apply_cb = move |body: Vec<u8>| {
         let resolver = resolver.clone();
         let orchestrator = orchestrator.clone();
         let config_cell = config_cell.clone();
+        let global = global.clone();
+        let encryption_key_from = encryption_key_from.clone();
         async move {
-            let text = match std::str::from_utf8(&body) {
+            // Opt-in decrypt: unseal a sealed SPTENC1 body before parsing.
+            let plaintext = match crate::cli::config_ops::decrypt_if_sealed(
+                &body,
+                encryption_key_from.as_deref(),
+                require_encrypted,
+                &global,
+            ) {
+                Ok(pt) => pt,
+                Err(e) => {
+                    tracing::error!(
+                        target: "spt_remote_config",
+                        error = %e,
+                        "remote config decrypt failed — skipping this update"
+                    );
+                    return;
+                }
+            };
+            let text = match std::str::from_utf8(&plaintext) {
                 Ok(t) => t,
                 Err(e) => {
                     tracing::error!(
@@ -5478,6 +5519,28 @@ mod tests {
         Cli::try_parse_from(args).unwrap_or_else(|e| panic!("parse failed for {args:?}: {e}"))
     }
 
+    /// A quiet, JSON-output `GlobalOpts` for unit tests that need one.
+    fn test_global() -> GlobalOpts {
+        use spt_cli::{ColorMode, LogLevel, OutputFormat};
+        GlobalOpts {
+            config: None,
+            config_dir: None,
+            config_url: None,
+            config_fingerprint: None,
+            state_dir: None,
+            profile: None,
+            output: OutputFormat::Json,
+            json: false,
+            log_level: LogLevel::Error,
+            color: ColorMode::Never,
+            quiet: true,
+            verbose: 0,
+            no_color: true,
+            dry_run: false,
+            portable: false,
+        }
+    }
+
     /// Write a minimal valid config TOML and return its path inside the tempdir.
     fn minimal_config(dir: &Path) -> std::path::PathBuf {
         let path = dir.join("spt.toml");
@@ -8673,12 +8736,21 @@ mod tests {
         let resolver = Arc::new(spt_secrets::Resolver::new(vec![]));
         let orchestrator = Arc::new(spt_supervisor::Orchestrator::new());
 
+        let global = test_global();
+
         // (a) No `[runtime.remote_config]` table at all.
         let (cfg, _w) = spt_config::load_str("version = 1\n", false).unwrap();
         let cell = crate::controller::ConfigCell::new(cfg.clone());
         assert!(
-            maybe_spawn_remote_config_poller(&cfg, td.path(), &resolver, &orchestrator, &cell)
-                .is_none(),
+            maybe_spawn_remote_config_poller(
+                &global,
+                &cfg,
+                td.path(),
+                &resolver,
+                &orchestrator,
+                &cell
+            )
+            .is_none(),
             "absent remote_config must not spawn a poller"
         );
 
@@ -8693,8 +8765,15 @@ mod tests {
         let (cfg, _w) = spt_config::load_str(toml, false).unwrap();
         let cell = crate::controller::ConfigCell::new(cfg.clone());
         assert!(
-            maybe_spawn_remote_config_poller(&cfg, td.path(), &resolver, &orchestrator, &cell)
-                .is_none(),
+            maybe_spawn_remote_config_poller(
+                &global,
+                &cfg,
+                td.path(),
+                &resolver,
+                &orchestrator,
+                &cell
+            )
+            .is_none(),
             "disabled remote_config must not spawn a poller"
         );
     }
@@ -8799,6 +8878,107 @@ mod tests {
         assert!(
             advanced,
             "the poller must funnel the changed body through ConfigCell::reload, advancing the cell"
+        );
+    }
+
+    /// The poll apply callback decrypts a SEALED body (via `decrypt_if_sealed`
+    /// with a configured PSK ref) before parse+reload. Mirrors the production
+    /// callback in `maybe_spawn_remote_config_poller`. The fingerprint pin
+    /// still covers the SEALED bytes.
+    #[tokio::test]
+    async fn poll_apply_cb_decrypts_sealed_body() {
+        use base64::Engine as _;
+        use spt_config_crypt::{generate_psk, seal, KeySource};
+        use spt_remote_config::cache::hex_sha256;
+        use std::sync::Arc;
+
+        let td = tempfile::tempdir().unwrap();
+        let resolver = Arc::new(spt_secrets::Resolver::new(vec![]));
+        let orchestrator = Arc::new(spt_supervisor::Orchestrator::new());
+        let global = test_global();
+
+        let (boot, _w) = spt_config::load_str("version = 1\n", false).unwrap();
+        let cell = crate::controller::ConfigCell::new(boot.clone());
+
+        // Seal a CHANGED config under a PSK; host the sealed bytes; pin them.
+        let psk = generate_psk();
+        let psk_path = td.path().join("psk.key");
+        std::fs::write(
+            &psk_path,
+            base64::engine::general_purpose::STANDARD.encode(psk),
+        )
+        .unwrap();
+        let psk_ref = format!(
+            "file:///{}",
+            psk_path
+                .display()
+                .to_string()
+                .replace('\\', "/")
+                .trim_start_matches('/')
+        );
+        let plaintext = b"version = 1\n[logging]\nlevel = \"debug\"\n".to_vec();
+        let sealed = seal(&plaintext, &KeySource::Psk(psk)).unwrap();
+
+        let plan = spt_config::remote::RemoteConfigPlan {
+            spec: spt_config::remote::RemoteConfigSpec {
+                url: "https://cfg.example/spt.toml".into(),
+                fingerprint_sha256: hex_sha256(&sealed),
+                allow_cached_on_failure: false,
+                max_size_bytes: Some(1_000_000),
+                etag_cache: None,
+            },
+            ..Default::default()
+        };
+
+        // Production-equivalent apply_cb: decrypt_if_sealed -> parse -> reload.
+        let cb_resolver = resolver.clone();
+        let cb_orch = orchestrator.clone();
+        let cb_cell = cell.clone();
+        let cb_global = global.clone();
+        let cb_key = Some(psk_ref);
+        let apply_cb = move |body: Vec<u8>| {
+            let resolver = cb_resolver.clone();
+            let orchestrator = cb_orch.clone();
+            let config_cell = cb_cell.clone();
+            let global = cb_global.clone();
+            let key = cb_key.clone();
+            async move {
+                let pt = crate::cli::config_ops::decrypt_if_sealed(
+                    &body,
+                    key.as_deref(),
+                    false,
+                    &global,
+                )
+                .expect("decrypt sealed body");
+                let text = std::str::from_utf8(&pt).expect("utf8");
+                let (new_cfg, warnings) = spt_config::load_str(text, false).expect("parse");
+                Box::pin(config_cell.reload(new_cfg, &warnings, &resolver, &orchestrator))
+                    .await
+                    .expect("reload");
+            }
+        };
+
+        let handle = spt_remote_config::spawn_with_fetcher(
+            plan,
+            td.path().to_path_buf(),
+            std::time::Duration::from_millis(20),
+            StaticFetcher { body: sealed },
+            apply_cb,
+        );
+
+        let mut advanced = false;
+        for _ in 0..50 {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            let snap = cell.snapshot().await;
+            if snap.logging.as_ref().and_then(|l| l.level.as_deref()) == Some("debug") {
+                advanced = true;
+                break;
+            }
+        }
+        handle.shutdown().await;
+        assert!(
+            advanced,
+            "apply_cb must decrypt the sealed body and apply the plaintext config"
         );
     }
 

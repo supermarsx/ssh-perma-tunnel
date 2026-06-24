@@ -40,7 +40,10 @@ use serde::Serialize;
 use serde_json::json;
 use spt_cli::{groups, GlobalOpts, OutputFormat};
 use spt_config::schema::Config;
-use spt_config_crypt::{is_sealed, peek_meta, seal, unseal, KeySource, X25519PublicKey};
+use spt_config_crypt::{
+    generate_psk, generate_x25519, is_sealed, peek_meta, psk_id, seal, unseal, KeySource,
+    X25519PublicKey,
+};
 use spt_core::{Error, Result};
 use spt_diagnostics::check::{Check, Severity, Status};
 use spt_diagnostics::framework::{DiagnosticReport, ReportCounts};
@@ -639,6 +642,7 @@ pub async fn encrypt(global: &GlobalOpts, args: groups::config::ConfigEncrypt) -
         global,
         args.passphrase_from.as_deref(),
         &args.recipient,
+        args.psk_from.as_deref(),
         args.use_vault_master,
         args.vault_path.as_deref(),
         args.vault_passphrase_from.as_deref(),
@@ -670,6 +674,7 @@ pub async fn decrypt(global: &GlobalOpts, args: groups::config::ConfigDecrypt) -
         &sealed,
         args.passphrase_from.as_deref(),
         args.recipient_key.as_deref(),
+        args.psk_from.as_deref(),
         args.vault_path.as_deref(),
         args.vault_passphrase_from.as_deref(),
     )?;
@@ -702,6 +707,7 @@ pub async fn edit(global: &GlobalOpts, args: groups::config::ConfigEdit) -> Resu
         global,
         &sealed,
         args.passphrase_from.as_deref(),
+        None,
         None,
         args.vault_path.as_deref(),
         args.vault_passphrase_from.as_deref(),
@@ -751,6 +757,7 @@ pub async fn crypt_rotate(
         &sealed,
         None,
         None,
+        args.old_psk_from.as_deref(),
         args.vault_path.as_deref(),
         args.vault_passphrase_from.as_deref(),
     )?;
@@ -760,6 +767,7 @@ pub async fn crypt_rotate(
         global,
         args.new_passphrase_from.as_deref(),
         &args.new_recipient,
+        args.new_psk_from.as_deref(),
         false,
         args.vault_path.as_deref(),
         args.vault_passphrase_from.as_deref(),
@@ -770,7 +778,155 @@ pub async fn crypt_rotate(
     Ok(())
 }
 
+/// `spt config gen-key` — mint a config-encryption key.
+///
+/// * `--type x25519` → a fresh dedicated X25519 config keypair: the raw 32-byte
+///   private scalar is written to `--out` (mode 0600) and the base64 public key
+///   to `<out>.pub` (the exact format `config encrypt --recipient` consumes).
+///   The public key is also printed.
+/// * `--type psk` → 32 CSPRNG bytes encoded base64 (default) or hex (`--hex`),
+///   written to `--out` (mode 0600) or to stdout when `--out` is omitted. The
+///   non-secret `psk_id` label is printed to stderr.
+pub async fn gen_key(_global: &GlobalOpts, args: groups::config::ConfigGenKey) -> Result<()> {
+    use groups::config::KeyKindCrypt;
+    match args.r#type {
+        KeyKindCrypt::X25519 => {
+            let out = args
+                .out
+                .as_deref()
+                .ok_or_else(|| Error::InvalidArgs("--out is required for --type x25519".into()))?;
+            let pub_path = {
+                let mut s = out.as_os_str().to_owned();
+                s.push(".pub");
+                PathBuf::from(s)
+            };
+            if !args.force {
+                for p in [out, pub_path.as_path()] {
+                    if p.exists() {
+                        return Err(Error::InvalidArgs(format!(
+                            "refusing to overwrite `{}` without --force",
+                            p.display()
+                        )));
+                    }
+                }
+            }
+            let (private, public) = generate_x25519();
+            let pub_b64 = base64::engine::general_purpose::STANDARD.encode(public.as_bytes());
+            write_secret_0600(out, &private, args.force)?;
+            write_bytes_atomic(&pub_path, format!("{pub_b64}\n").as_bytes())?;
+            println!("{pub_b64}");
+            eprintln!(
+                "wrote x25519 private key -> {} (0600), public key -> {}",
+                out.display(),
+                pub_path.display()
+            );
+            Ok(())
+        }
+        KeyKindCrypt::Psk => {
+            let psk = generate_psk();
+            let id = psk_id(&psk);
+            let encoded = if args.hex {
+                encode_hex(&psk)
+            } else {
+                base64::engine::general_purpose::STANDARD.encode(psk)
+            };
+            if let Some(out) = args.out.as_deref() {
+                if out.exists() && !args.force {
+                    return Err(Error::InvalidArgs(format!(
+                        "refusing to overwrite `{}` without --force",
+                        out.display()
+                    )));
+                }
+                write_secret_0600(out, format!("{encoded}\n").as_bytes(), args.force)?;
+                eprintln!("wrote psk (id {id}) -> {} (0600)", out.display());
+            } else {
+                println!("{encoded}");
+                eprintln!("psk id {id}");
+            }
+            Ok(())
+        }
+    }
+}
+
+/// Decrypt a config body that may be a sealed `SPTENC1` envelope.
+///
+/// * If the body is sealed and `key_ref` is configured → resolve the ref, build
+///   the unseal [`KeySource`] (mode auto-detected via `peek_meta`), and return
+///   the plaintext.
+/// * If the body is sealed but no key is configured → error.
+/// * If the body is NOT sealed and `require_encrypted` → error.
+/// * Otherwise → return the body unchanged.
+///
+/// Shared by `config pull` and the remote-config poll apply callback so both
+/// paths emit/apply plaintext.
+pub(crate) fn decrypt_if_sealed(
+    body: &[u8],
+    key_ref: Option<&str>,
+    require_encrypted: bool,
+    global: &GlobalOpts,
+) -> Result<Vec<u8>> {
+    if is_sealed(body) {
+        let key_ref = key_ref.ok_or_else(|| {
+            Error::InvalidConfig(
+                "fetched config is a sealed SPTENC1 envelope but no \
+                 [runtime.remote_config].encryption_key_from is configured"
+                    .into(),
+            )
+        })?;
+        // `encryption_key_from` is a single secret ref that may resolve to
+        // either a raw PSK or an X25519 private key. Select the right key
+        // source from the envelope's declared kdf.
+        let meta = peek_meta(body)?;
+        let key = match meta.kdf.as_str() {
+            "psk" => build_psk_key_source(global, key_ref, None, None)?,
+            "x25519" => {
+                let raw = resolve_ref_to_bytes(global, key_ref, None, None)?;
+                let scalar = decode_x25519_secret_bytes(key_ref, &raw)?;
+                KeySource::X25519Secrets(vec![scalar])
+            }
+            other => {
+                return Err(Error::InvalidConfig(format!(
+                    "remote config is sealed with kdf `{other}`, which \
+                     [runtime.remote_config].encryption_key_from cannot supply \
+                     (only `psk` and `x25519` are decryptable via a key ref)"
+                )));
+            }
+        };
+        let pt = unseal(body, &key)?;
+        Ok(pt.expose_secret().as_slice().to_vec())
+    } else {
+        if require_encrypted {
+            return Err(Error::InvalidConfig(
+                "fetched config is cleartext but \
+                 [runtime.remote_config].require_encrypted = true"
+                    .into(),
+            ));
+        }
+        Ok(body.to_vec())
+    }
+}
+
 // ----- helpers --------------------------------------------------------------
+
+/// Write secret bytes with mode 0600 on unix, honoring `force` (overwrite).
+fn write_secret_0600(path: &Path, bytes: &[u8], force: bool) -> Result<()> {
+    if force && path.exists() {
+        std::fs::remove_file(path)
+            .map_err(|e| Error::RuntimeFailure(format!("remove `{}`: {e}", path.display())))?;
+    }
+    write_mode_0600(path, bytes)
+}
+
+/// Encode bytes as lowercase hex (dep-free; mirror of [`decode_hex`]).
+fn encode_hex(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for &b in bytes {
+        out.push(HEX[(b >> 4) as usize] as char);
+        out.push(HEX[(b & 0x0f) as usize] as char);
+    }
+    out
+}
 
 fn derive_sealed_path(input: &Path) -> PathBuf {
     let mut s = input.as_os_str().to_owned();
@@ -1000,20 +1156,26 @@ fn parse_x25519_pub(b64: &str) -> Result<X25519PublicKey> {
 fn load_x25519_secret(path: &Path) -> Result<[u8; 32]> {
     let raw = std::fs::read(path)
         .map_err(|e| Error::InvalidConfig(format!("read `{}`: {e}", path.display())))?;
+    decode_x25519_secret_bytes(&path.display().to_string(), &raw)
+}
+
+/// Decode X25519 private-key material to 32 bytes, auto-detecting raw-32 vs a
+/// base64 line. Shared by `load_x25519_secret` (file path) and the
+/// remote-config decrypt path (resolved secret ref).
+fn decode_x25519_secret_bytes(label: &str, raw: &[u8]) -> Result<[u8; 32]> {
     if raw.len() == 32 {
         let mut arr = [0u8; 32];
-        arr.copy_from_slice(&raw);
+        arr.copy_from_slice(raw);
         return Ok(arr);
     }
-    let text = std::str::from_utf8(&raw).map_err(|e| {
-        Error::InvalidConfig(format!("recipient key `{}` not UTF-8: {e}", path.display()))
-    })?;
+    let text = std::str::from_utf8(raw)
+        .map_err(|e| Error::InvalidConfig(format!("x25519 key `{label}` not UTF-8: {e}")))?;
     let decoded = base64::engine::general_purpose::STANDARD
         .decode(text.trim())
-        .map_err(|e| Error::InvalidConfig(format!("recipient key b64 decode: {e}")))?;
+        .map_err(|e| Error::InvalidConfig(format!("x25519 key `{label}` b64 decode: {e}")))?;
     if decoded.len() != 32 {
         return Err(Error::InvalidConfig(format!(
-            "recipient key must decode to 32 bytes, got {}",
+            "x25519 key `{label}` must decode to 32 bytes, got {}",
             decoded.len()
         )));
     }
@@ -1022,10 +1184,85 @@ fn load_x25519_secret(path: &Path) -> Result<[u8; 32]> {
     Ok(arr)
 }
 
+/// Decode a resolved PSK reference's bytes to exactly 32 bytes, auto-detecting
+/// the encoding by length like [`load_x25519_secret`]: raw-32 bytes pass
+/// through; otherwise the (trimmed) text is decoded as base64 or hex. A
+/// 64-char hex string and a 44-char base64 string both decode to 32 bytes.
+fn decode_psk_bytes(reference: &str, raw: &[u8]) -> Result<[u8; 32]> {
+    if raw.len() == 32 {
+        let mut arr = [0u8; 32];
+        arr.copy_from_slice(raw);
+        return Ok(arr);
+    }
+    let text = std::str::from_utf8(raw)
+        .map_err(|e| Error::InvalidArgs(format!("PSK `{reference}` is not UTF-8: {e}")))?
+        .trim();
+    // Try base64 first (the codebase default encoding), then hex.
+    if let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(text) {
+        if decoded.len() == 32 {
+            let mut arr = [0u8; 32];
+            arr.copy_from_slice(&decoded);
+            return Ok(arr);
+        }
+    }
+    if text.len() == 64 {
+        if let Ok(decoded) = decode_hex(text) {
+            if decoded.len() == 32 {
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(&decoded);
+                return Ok(arr);
+            }
+        }
+    }
+    Err(Error::InvalidArgs(format!(
+        "PSK `{reference}` must be exactly 32 raw bytes, base64, or 64 hex chars"
+    )))
+}
+
+/// Decode a hex string to bytes. Returns an error on odd length or non-hex
+/// digits. Kept dep-free (no new crate).
+fn decode_hex(s: &str) -> Result<Vec<u8>> {
+    if s.len() % 2 != 0 {
+        return Err(Error::InvalidArgs("hex string has odd length".into()));
+    }
+    let mut out = Vec::with_capacity(s.len() / 2);
+    let bytes = s.as_bytes();
+    let nibble = |c: u8| -> Result<u8> {
+        match c {
+            b'0'..=b'9' => Ok(c - b'0'),
+            b'a'..=b'f' => Ok(c - b'a' + 10),
+            b'A'..=b'F' => Ok(c - b'A' + 10),
+            _ => Err(Error::InvalidArgs(format!(
+                "invalid hex digit `{}`",
+                c as char
+            ))),
+        }
+    };
+    for pair in bytes.chunks(2) {
+        out.push((nibble(pair[0])? << 4) | nibble(pair[1])?);
+    }
+    Ok(out)
+}
+
+/// Resolve a `--psk-from` reference through the existing resolver chain and
+/// decode it to a `KeySource::Psk([u8; 32])`.
+fn build_psk_key_source(
+    global: &GlobalOpts,
+    psk_from: &str,
+    vault_path: Option<&Path>,
+    vault_passphrase_from: Option<&str>,
+) -> Result<KeySource> {
+    let raw = resolve_ref_to_bytes(global, psk_from, vault_path, vault_passphrase_from)?;
+    let key = decode_psk_bytes(psk_from, &raw)?;
+    Ok(KeySource::Psk(key))
+}
+
+#[allow(clippy::too_many_arguments)]
 fn build_seal_key_source(
     global: &GlobalOpts,
     passphrase_from: Option<&str>,
     recipients: &[String],
+    psk_from: Option<&str>,
     use_vault_master: bool,
     vault_path: Option<&Path>,
     vault_passphrase_from: Option<&str>,
@@ -1037,13 +1274,21 @@ fn build_seal_key_source(
     if !recipients.is_empty() {
         variants += 1;
     }
+    if psk_from.is_some() {
+        variants += 1;
+    }
     if use_vault_master {
         variants += 1;
     }
     if variants > 1 {
         return Err(Error::InvalidArgs(
-            "pick exactly one of: --passphrase-from / --recipient / --use-vault-master".into(),
+            "pick exactly one of: --passphrase-from / --recipient / --psk-from / \
+             --use-vault-master"
+                .into(),
         ));
+    }
+    if let Some(psk_from) = psk_from {
+        return build_psk_key_source(global, psk_from, vault_path, vault_passphrase_from);
     }
     if !recipients.is_empty() {
         let pks: Result<Vec<X25519PublicKey>> =
@@ -1068,11 +1313,13 @@ fn build_seal_key_source(
     Ok(KeySource::Passphrase(pp))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_unseal_key_source(
     global: &GlobalOpts,
     sealed: &[u8],
     passphrase_from: Option<&str>,
     recipient_key: Option<&Path>,
+    psk_from: Option<&str>,
     vault_path: Option<&Path>,
     vault_passphrase_from: Option<&str>,
 ) -> Result<KeySource> {
@@ -1096,6 +1343,12 @@ fn build_unseal_key_source(
             })?;
             let s = load_x25519_secret(path)?;
             Ok(KeySource::X25519Secrets(vec![s]))
+        }
+        "psk" => {
+            let psk_from = psk_from.ok_or_else(|| {
+                Error::InvalidArgs("sealed config uses a raw PSK — pass --psk-from <REF>".into())
+            })?;
+            build_psk_key_source(global, psk_from, vault_path, vault_passphrase_from)
         }
         "vault" => Ok(KeySource::VaultMaster(load_vault_master_key(
             global,
@@ -1782,6 +2035,7 @@ host = "h.example.com"
             out: None,
             passphrase_from: None,
             recipient: vec![recipient_b64],
+            psk_from: None,
             use_vault_master: false,
             vault_path: None,
             vault_passphrase_from: None,
@@ -1799,6 +2053,7 @@ host = "h.example.com"
             out,
             passphrase_from: None,
             recipient_key: Some(key_path),
+            psk_from: None,
             vault_path: None,
             vault_passphrase_from: None,
         }
@@ -1857,6 +2112,7 @@ host = "h.example.com"
                 out: Some(sealed.clone()),
                 passphrase_from: Some("secret://cfg/seal-passphrase".into()),
                 recipient: Vec::new(),
+                psk_from: None,
                 use_vault_master: false,
                 vault_path: Some(vault_dir.clone()),
                 vault_passphrase_from: Some(unlock.clone()),
@@ -1873,6 +2129,7 @@ host = "h.example.com"
                 out: Some(out.clone()),
                 passphrase_from: Some("secret://cfg/seal-passphrase".into()),
                 recipient_key: None,
+                psk_from: None,
                 vault_path: Some(vault_dir),
                 vault_passphrase_from: Some(unlock),
             },
@@ -1903,6 +2160,7 @@ host = "h.example.com"
                 out: Some(sealed.clone()),
                 passphrase_from: None,
                 recipient: Vec::new(),
+                psk_from: None,
                 use_vault_master: true,
                 vault_path: Some(vault_dir.clone()),
                 vault_passphrase_from: Some(unlock.clone()),
@@ -1922,6 +2180,7 @@ host = "h.example.com"
                 out: Some(out.clone()),
                 passphrase_from: None,
                 recipient_key: None,
+                psk_from: None,
                 vault_path: Some(vault_dir),
                 vault_passphrase_from: Some(unlock),
             },
@@ -2290,5 +2549,425 @@ host = "h.example.com"
         assert!(!scc_is_sealed(SAMPLE_CONFIG.as_bytes()));
         let meta = peek_meta(&sealed).unwrap();
         assert_eq!(meta.kdf, "x25519");
+    }
+
+    // ========================================================================
+    // t-cfgcrypt: gen-key + PSK CLI tests
+    // ========================================================================
+
+    /// Build a `file:///` secret reference for an absolute path, normalizing
+    /// Windows backslashes to forward slashes (the form `SecretRef::parse`
+    /// accepts).
+    fn file_ref(path: &Path) -> String {
+        let s = path.display().to_string().replace('\\', "/");
+        format!("file:///{}", s.trim_start_matches('/'))
+    }
+
+    fn gen_key_args(
+        r#type: groups::config::KeyKindCrypt,
+        out: Option<PathBuf>,
+        hex: bool,
+        force: bool,
+    ) -> groups::config::ConfigGenKey {
+        groups::config::ConfigGenKey {
+            r#type,
+            out,
+            hex,
+            force,
+        }
+    }
+
+    /// `gen-key --type psk` -> `encrypt --psk-from` -> `decrypt --psk-from`
+    /// round-trips byte-identically.
+    #[tokio::test]
+    async fn gen_key_psk_encrypt_decrypt_roundtrip() {
+        use groups::config::KeyKindCrypt;
+        let tmp = tempfile::tempdir().unwrap();
+        let psk_path = tmp.path().join("psk.key");
+        gen_key(
+            &opts(None),
+            gen_key_args(KeyKindCrypt::Psk, Some(psk_path.clone()), false, false),
+        )
+        .await
+        .expect("gen-key psk");
+        assert!(psk_path.exists());
+
+        let plain = tmp.path().join("c.toml");
+        std::fs::write(&plain, SAMPLE_CONFIG).unwrap();
+        let sealed = tmp.path().join("c.sealed");
+        let psk_ref = file_ref(&psk_path);
+
+        encrypt(
+            &opts(None),
+            groups::config::ConfigEncrypt {
+                input: plain,
+                out: Some(sealed.clone()),
+                passphrase_from: None,
+                recipient: Vec::new(),
+                psk_from: Some(psk_ref.clone()),
+                use_vault_master: false,
+                vault_path: None,
+                vault_passphrase_from: None,
+                force: false,
+            },
+        )
+        .await
+        .expect("encrypt --psk-from");
+
+        let sealed_bytes = std::fs::read(&sealed).unwrap();
+        assert_eq!(peek_meta(&sealed_bytes).unwrap().kdf, "psk");
+
+        let out = tmp.path().join("out.toml");
+        decrypt(
+            &opts(None),
+            groups::config::ConfigDecrypt {
+                input: sealed,
+                out: Some(out.clone()),
+                passphrase_from: None,
+                recipient_key: None,
+                psk_from: Some(psk_ref),
+                vault_path: None,
+                vault_passphrase_from: None,
+            },
+        )
+        .await
+        .expect("decrypt --psk-from");
+        assert_eq!(std::fs::read_to_string(&out).unwrap(), SAMPLE_CONFIG);
+    }
+
+    /// A hex-encoded PSK (via `--hex`) round-trips too (input auto-detect).
+    #[tokio::test]
+    async fn gen_key_psk_hex_roundtrips() {
+        use groups::config::KeyKindCrypt;
+        let tmp = tempfile::tempdir().unwrap();
+        let psk_path = tmp.path().join("psk.hex");
+        gen_key(
+            &opts(None),
+            gen_key_args(KeyKindCrypt::Psk, Some(psk_path.clone()), true, false),
+        )
+        .await
+        .expect("gen-key psk --hex");
+        let text = std::fs::read_to_string(&psk_path).unwrap();
+        assert_eq!(text.trim().len(), 64, "hex psk must be 64 chars");
+
+        let plain = tmp.path().join("c.toml");
+        std::fs::write(&plain, SAMPLE_CONFIG).unwrap();
+        let sealed = tmp.path().join("c.sealed");
+        let psk_ref = file_ref(&psk_path);
+        encrypt(
+            &opts(None),
+            groups::config::ConfigEncrypt {
+                input: plain,
+                out: Some(sealed.clone()),
+                passphrase_from: None,
+                recipient: Vec::new(),
+                psk_from: Some(psk_ref.clone()),
+                use_vault_master: false,
+                vault_path: None,
+                vault_passphrase_from: None,
+                force: false,
+            },
+        )
+        .await
+        .expect("encrypt --psk-from (hex)");
+        let out = tmp.path().join("out.toml");
+        decrypt(
+            &opts(None),
+            groups::config::ConfigDecrypt {
+                input: sealed,
+                out: Some(out.clone()),
+                passphrase_from: None,
+                recipient_key: None,
+                psk_from: Some(psk_ref),
+                vault_path: None,
+                vault_passphrase_from: None,
+            },
+        )
+        .await
+        .expect("decrypt --psk-from (hex)");
+        assert_eq!(std::fs::read_to_string(&out).unwrap(), SAMPLE_CONFIG);
+    }
+
+    /// `gen-key --type x25519` writes a private scalar + `<out>.pub`, and the
+    /// generated keypair feeds the EXISTING asymmetric encrypt/decrypt path.
+    #[tokio::test]
+    async fn gen_key_x25519_feeds_asymmetric_path() {
+        use groups::config::KeyKindCrypt;
+        let tmp = tempfile::tempdir().unwrap();
+        let key_path = tmp.path().join("cfg.key");
+        gen_key(
+            &opts(None),
+            gen_key_args(KeyKindCrypt::X25519, Some(key_path.clone()), false, false),
+        )
+        .await
+        .expect("gen-key x25519");
+        let pub_path = {
+            let mut s = key_path.as_os_str().to_owned();
+            s.push(".pub");
+            PathBuf::from(s)
+        };
+        assert!(key_path.exists(), "private scalar written");
+        assert!(pub_path.exists(), "<out>.pub written");
+        let recipient_b64 = std::fs::read_to_string(&pub_path)
+            .unwrap()
+            .trim()
+            .to_string();
+
+        let plain = tmp.path().join("c.toml");
+        std::fs::write(&plain, SAMPLE_CONFIG).unwrap();
+        let sealed = tmp.path().join("c.sealed");
+        encrypt(
+            &opts(None),
+            groups::config::ConfigEncrypt {
+                input: plain,
+                out: Some(sealed.clone()),
+                passphrase_from: None,
+                recipient: vec![recipient_b64],
+                psk_from: None,
+                use_vault_master: false,
+                vault_path: None,
+                vault_passphrase_from: None,
+                force: false,
+            },
+        )
+        .await
+        .expect("encrypt --recipient <gen-key.pub>");
+        let sealed_bytes = std::fs::read(&sealed).unwrap();
+        assert_eq!(peek_meta(&sealed_bytes).unwrap().kdf, "x25519");
+
+        let out = tmp.path().join("out.toml");
+        decrypt(
+            &opts(None),
+            cfg_decrypt_args(sealed, Some(out.clone()), key_path),
+        )
+        .await
+        .expect("decrypt --recipient-key <gen-key priv>");
+        assert_eq!(std::fs::read_to_string(&out).unwrap(), SAMPLE_CONFIG);
+    }
+
+    /// `gen-key` refuses to overwrite without `--force`, and honors `--force`.
+    #[tokio::test]
+    async fn gen_key_psk_force_overwrite() {
+        use groups::config::KeyKindCrypt;
+        let tmp = tempfile::tempdir().unwrap();
+        let psk_path = tmp.path().join("psk.key");
+        gen_key(
+            &opts(None),
+            gen_key_args(KeyKindCrypt::Psk, Some(psk_path.clone()), false, false),
+        )
+        .await
+        .expect("first gen-key");
+        let first = std::fs::read(&psk_path).unwrap();
+
+        // Without --force: refuse.
+        let err = gen_key(
+            &opts(None),
+            gen_key_args(KeyKindCrypt::Psk, Some(psk_path.clone()), false, false),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, Error::InvalidArgs(_)));
+
+        // With --force: overwrites.
+        gen_key(
+            &opts(None),
+            gen_key_args(KeyKindCrypt::Psk, Some(psk_path.clone()), false, true),
+        )
+        .await
+        .expect("force gen-key");
+        let second = std::fs::read(&psk_path).unwrap();
+        assert_ne!(first, second, "force overwrote with a fresh psk");
+    }
+
+    /// `crypt rotate --new-psk-from`: rotate a passphrase envelope onto a PSK.
+    /// The OLD passphrase no longer decrypts; the NEW psk does.
+    #[tokio::test]
+    async fn crypt_rotate_to_psk_old_fails_new_works() {
+        use groups::config::KeyKindCrypt;
+        let tmp = tempfile::tempdir().unwrap();
+
+        // Seal under a PSK so the rotate can unseal it via --old-psk-from.
+        let old_psk_path = tmp.path().join("old.key");
+        gen_key(
+            &opts(None),
+            gen_key_args(KeyKindCrypt::Psk, Some(old_psk_path.clone()), false, false),
+        )
+        .await
+        .expect("gen old psk");
+        let new_psk_path = tmp.path().join("new.key");
+        gen_key(
+            &opts(None),
+            gen_key_args(KeyKindCrypt::Psk, Some(new_psk_path.clone()), false, false),
+        )
+        .await
+        .expect("gen new psk");
+
+        let plain = tmp.path().join("c.toml");
+        std::fs::write(&plain, SAMPLE_CONFIG).unwrap();
+        let sealed = tmp.path().join("c.sealed");
+        let old_ref = file_ref(&old_psk_path);
+        let new_ref = file_ref(&new_psk_path);
+        encrypt(
+            &opts(None),
+            groups::config::ConfigEncrypt {
+                input: plain,
+                out: Some(sealed.clone()),
+                passphrase_from: None,
+                recipient: Vec::new(),
+                psk_from: Some(old_ref.clone()),
+                use_vault_master: false,
+                vault_path: None,
+                vault_passphrase_from: None,
+                force: false,
+            },
+        )
+        .await
+        .expect("seal under old psk");
+
+        crypt_rotate(
+            &opts(None),
+            groups::config::ConfigCryptRotate {
+                sealed: sealed.clone(),
+                new_passphrase_from: None,
+                new_recipient: Vec::new(),
+                old_psk_from: Some(old_ref.clone()),
+                new_psk_from: Some(new_ref.clone()),
+                vault_path: None,
+                vault_passphrase_from: None,
+            },
+        )
+        .await
+        .expect("rotate onto new psk");
+
+        // OLD psk now fails.
+        let out = tmp.path().join("out.toml");
+        let err = decrypt(
+            &opts(None),
+            groups::config::ConfigDecrypt {
+                input: sealed.clone(),
+                out: Some(out.clone()),
+                passphrase_from: None,
+                recipient_key: None,
+                psk_from: Some(old_ref),
+                vault_path: None,
+                vault_passphrase_from: None,
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, Error::InvalidConfig(_)), "old psk must fail");
+
+        // NEW psk works.
+        decrypt(
+            &opts(None),
+            groups::config::ConfigDecrypt {
+                input: sealed,
+                out: Some(out.clone()),
+                passphrase_from: None,
+                recipient_key: None,
+                psk_from: Some(new_ref),
+                vault_path: None,
+                vault_passphrase_from: None,
+            },
+        )
+        .await
+        .expect("new psk decrypts");
+        assert_eq!(std::fs::read_to_string(&out).unwrap(), SAMPLE_CONFIG);
+    }
+
+    /// `decode_psk_bytes` auto-detects raw-32 / base64 / hex.
+    #[test]
+    fn decode_psk_bytes_auto_detects_encoding() {
+        let key = [7u8; 32];
+        // raw-32
+        assert_eq!(decode_psk_bytes("raw", &key).unwrap(), key);
+        // base64
+        let b64 = base64::engine::general_purpose::STANDARD.encode(key);
+        assert_eq!(decode_psk_bytes("b64", b64.as_bytes()).unwrap(), key);
+        // hex
+        let hex = encode_hex(&key);
+        assert_eq!(decode_psk_bytes("hex", hex.as_bytes()).unwrap(), key);
+        // garbage
+        assert!(decode_psk_bytes("bad", b"not-a-key").is_err());
+    }
+
+    /// `encode_hex`/`decode_hex` round-trip.
+    #[test]
+    fn hex_codec_roundtrips() {
+        let key = [0xABu8; 32];
+        assert_eq!(decode_hex(&encode_hex(&key)).unwrap(), key.to_vec());
+        assert!(decode_hex("zz").is_err());
+        assert!(decode_hex("abc").is_err()); // odd length
+    }
+
+    /// `decrypt_if_sealed`: passes cleartext through; unseals a sealed body
+    /// with a configured PSK ref; errors when sealed-without-key; errors when
+    /// require_encrypted + cleartext.
+    #[test]
+    fn decrypt_if_sealed_behaviors() {
+        let tmp = tempfile::tempdir().unwrap();
+        let psk = spt_config_crypt::generate_psk();
+        let psk_path = tmp.path().join("psk.key");
+        std::fs::write(
+            &psk_path,
+            base64::engine::general_purpose::STANDARD.encode(psk),
+        )
+        .unwrap();
+        let psk_ref = file_ref(&psk_path);
+        let sealed =
+            spt_config_crypt::seal(SAMPLE_CONFIG.as_bytes(), &KeySource::Psk(psk)).unwrap();
+
+        // cleartext passthrough (no key, not required).
+        let pt = decrypt_if_sealed(SAMPLE_CONFIG.as_bytes(), None, false, &opts(None)).unwrap();
+        assert_eq!(pt, SAMPLE_CONFIG.as_bytes());
+
+        // sealed + key ref -> plaintext.
+        let pt = decrypt_if_sealed(&sealed, Some(&psk_ref), false, &opts(None)).unwrap();
+        assert_eq!(pt, SAMPLE_CONFIG.as_bytes());
+
+        // sealed + no key -> error.
+        assert!(decrypt_if_sealed(&sealed, None, false, &opts(None)).is_err());
+
+        // cleartext + require_encrypted -> error.
+        assert!(decrypt_if_sealed(SAMPLE_CONFIG.as_bytes(), None, true, &opts(None)).is_err());
+
+        // sealed + WRONG key -> error.
+        let wrong = spt_config_crypt::generate_psk();
+        let wrong_path = tmp.path().join("wrong.key");
+        std::fs::write(
+            &wrong_path,
+            base64::engine::general_purpose::STANDARD.encode(wrong),
+        )
+        .unwrap();
+        let wrong_ref = file_ref(&wrong_path);
+        assert!(decrypt_if_sealed(&sealed, Some(&wrong_ref), false, &opts(None)).is_err());
+    }
+
+    /// On unix, `gen-key` writes secret output with mode 0600.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn gen_key_psk_is_mode_0600() {
+        use groups::config::KeyKindCrypt;
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let psk_path = tmp.path().join("psk.key");
+        gen_key(
+            &opts(None),
+            gen_key_args(KeyKindCrypt::Psk, Some(psk_path.clone()), false, false),
+        )
+        .await
+        .expect("gen-key psk");
+        let mode = std::fs::metadata(&psk_path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "psk key must be 0600");
+
+        let key_path = tmp.path().join("cfg.key");
+        gen_key(
+            &opts(None),
+            gen_key_args(KeyKindCrypt::X25519, Some(key_path.clone()), false, false),
+        )
+        .await
+        .expect("gen-key x25519");
+        let mode = std::fs::metadata(&key_path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "x25519 private scalar must be 0600");
     }
 }

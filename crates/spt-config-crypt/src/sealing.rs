@@ -12,9 +12,10 @@ use zeroize::Zeroizing;
 
 use crate::envelope::{
     body_to_bytes, meta_to_bytes, write_envelope, Argon2idParams, Body, Meta, ParsedEnvelope,
-    Recipient, VaultParams, FORMAT_VERSION, MAGIC,
+    PskParams, Recipient, VaultParams, FORMAT_VERSION, MAGIC,
 };
 use crate::kdf::{derive_argon2id, hkdf_sha256};
+use crate::keygen::psk_id;
 
 /// Re-export the X25519 public key newtype.
 pub use x25519_dalek::PublicKey as X25519PublicKey;
@@ -56,6 +57,12 @@ pub enum KeySource {
     /// supplies one or more candidate static secrets (raw 32-byte
     /// scalars). Any recipient that matches is used.
     X25519Secrets(Vec<[u8; 32]>),
+    /// Raw 32-byte pre-shared symmetric key, used **directly** as the
+    /// AES-256-GCM body key (no KDF — it *is* the key). Same value seals
+    /// and unseals. On `seal`, the non-secret `psk_id` label (first 8 hex
+    /// of `SHA-256(psk)`) is recorded in `[meta.psk]` so operators can
+    /// identify which PSK sealed a blob.
+    Psk([u8; 32]),
 }
 
 impl KeySource {
@@ -64,6 +71,7 @@ impl KeySource {
             Self::Passphrase(_) => "argon2id",
             Self::VaultMaster(_) => "vault",
             Self::X25519Recipients(_) | Self::X25519Secrets(_) => "x25519",
+            Self::Psk(_) => "psk",
         }
     }
 }
@@ -117,6 +125,7 @@ pub fn seal(plaintext: &[u8], key: &KeySource) -> Result<Vec<u8>, Error> {
                     argon2id: Some(params),
                     recipients: Vec::new(),
                     vault: None,
+                    psk: None,
                 },
                 key,
             )
@@ -133,6 +142,7 @@ pub fn seal(plaintext: &[u8], key: &KeySource) -> Result<Vec<u8>, Error> {
                     argon2id: None,
                     recipients: Vec::new(),
                     vault: Some(vault),
+                    psk: None,
                 },
                 derived,
             )
@@ -182,6 +192,26 @@ pub fn seal(plaintext: &[u8], key: &KeySource) -> Result<Vec<u8>, Error> {
                     argon2id: None,
                     recipients: recs,
                     vault: None,
+                    psk: None,
+                },
+                body_key,
+            )
+        }
+        KeySource::Psk(psk) => {
+            // The PSK is used directly as the 32-byte AEAD body key — no
+            // KDF. The only meta recorded is the non-secret psk_id label.
+            let body_key = Zeroizing::new(*psk);
+            (
+                Meta {
+                    version: FORMAT_VERSION,
+                    aead: "aes-256-gcm".into(),
+                    kdf: "psk".into(),
+                    argon2id: None,
+                    recipients: Vec::new(),
+                    vault: None,
+                    psk: Some(PskParams {
+                        psk_id: Some(psk_id(psk)),
+                    }),
                 },
                 body_key,
             )
@@ -283,6 +313,11 @@ pub fn unseal(sealed: &[u8], key: &KeySource) -> Result<SecretSlice, Error> {
             hkdf_sha256(master, &salt, b"spt-config-crypt/v1/vault")
         }
         (KeySource::X25519Secrets(secrets), "x25519") => x25519_unwrap_body_key(&meta, secrets)?,
+        (KeySource::Psk(psk), "psk") => {
+            // The PSK is the AEAD key directly. A wrong PSK produces an
+            // AEAD-tag failure below, mapped to InvalidConfig.
+            Zeroizing::new(*psk)
+        }
         (KeySource::X25519Recipients(_), "x25519") => {
             return Err(Error::InvalidArgs(
                 "unsealing under X25519 requires private keys — use KeySource::X25519Secrets"
@@ -319,6 +354,8 @@ pub fn unseal(sealed: &[u8], key: &KeySource) -> Result<SecretSlice, Error> {
             // a helpful exit code.
             if meta.kdf == "argon2id" {
                 Error::InvalidConfig("decrypt failed: wrong passphrase or tampered envelope".into())
+            } else if meta.kdf == "psk" {
+                Error::InvalidConfig("decrypt failed: wrong PSK or tampered envelope".into())
             } else {
                 Error::SecretCryptoFailed("aead decrypt failed".into())
             }

@@ -256,6 +256,9 @@ _spt() {
             spt__subcmd__config,encrypt)
                 cmd="spt__subcmd__config__subcmd__encrypt"
                 ;;
+            spt__subcmd__config,gen-key)
+                cmd="spt__subcmd__config__subcmd__gen__subcmd__key"
+                ;;
             spt__subcmd__config,help)
                 cmd="spt__subcmd__config__subcmd__help"
                 ;;
@@ -309,6 +312,9 @@ _spt() {
                 ;;
             spt__subcmd__config__subcmd__help,encrypt)
                 cmd="spt__subcmd__config__subcmd__help__subcmd__encrypt"
+                ;;
+            spt__subcmd__config__subcmd__help,gen-key)
+                cmd="spt__subcmd__config__subcmd__help__subcmd__gen__subcmd__key"
                 ;;
             spt__subcmd__config__subcmd__help,help)
                 cmd="spt__subcmd__config__subcmd__help__subcmd__help"
@@ -978,6 +984,9 @@ _spt() {
                 ;;
             spt__subcmd__help__subcmd__config,encrypt)
                 cmd="spt__subcmd__help__subcmd__config__subcmd__encrypt"
+                ;;
+            spt__subcmd__help__subcmd__config,gen-key)
+                cmd="spt__subcmd__help__subcmd__config__subcmd__gen__subcmd__key"
                 ;;
             spt__subcmd__help__subcmd__config,init)
                 cmd="spt__subcmd__help__subcmd__config__subcmd__init"
@@ -3954,7 +3963,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__config)
-            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version init validate doctor render diff migrate reload pull trust encrypt decrypt edit crypt help"
+            opts="-q -v -h -V --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version init validate doctor render diff migrate reload pull trust encrypt decrypt edit crypt gen-key help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -4096,7 +4105,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__config__subcmd__crypt__subcmd__rotate)
-            opts="-q -v -h -V --new-passphrase-from --new-recipient --vault-path --vault-passphrase-from --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <SEALED>"
+            opts="-q -v -h -V --new-passphrase-from --new-recipient --old-psk-from --new-psk-from --vault-path --vault-passphrase-from --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <SEALED>"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -4107,6 +4116,14 @@ _spt() {
                     return 0
                     ;;
                 --new-recipient)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --old-psk-from)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --new-psk-from)
                     COMPREPLY=($(compgen -f "${cur}"))
                     return 0
                     ;;
@@ -4162,7 +4179,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__config__subcmd__decrypt)
-            opts="-q -v -h -V --out --passphrase-from --recipient-key --vault-path --vault-passphrase-from --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <IN>"
+            opts="-q -v -h -V --out --passphrase-from --recipient-key --psk-from --vault-path --vault-passphrase-from --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <IN>"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -4177,6 +4194,10 @@ _spt() {
                     return 0
                     ;;
                 --recipient-key)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --psk-from)
                     COMPREPLY=($(compgen -f "${cur}"))
                     return 0
                     ;;
@@ -4402,7 +4423,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__config__subcmd__encrypt)
-            opts="-q -v -h -V --out --passphrase-from --recipient --use-vault-master --vault-path --vault-passphrase-from --force --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <IN>"
+            opts="-q -v -h -V --out --passphrase-from --recipient --psk-from --use-vault-master --vault-path --vault-passphrase-from --force --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version <IN>"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -4417,6 +4438,10 @@ _spt() {
                     return 0
                     ;;
                 --recipient)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --psk-from)
                     COMPREPLY=($(compgen -f "${cur}"))
                     return 0
                     ;;
@@ -4471,8 +4496,66 @@ _spt() {
             COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
             return 0
             ;;
+        spt__subcmd__config__subcmd__gen__subcmd__key)
+            opts="-q -v -h -V --type --out --hex --force --config --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                --type)
+                    COMPREPLY=($(compgen -W "x25519 psk" -- "${cur}"))
+                    return 0
+                    ;;
+                --out)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --config)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --config-dir)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --config-url)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --config-fingerprint)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --state-dir)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --profile)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --output)
+                    COMPREPLY=($(compgen -W "human json jsonl yaml" -- "${cur}"))
+                    return 0
+                    ;;
+                --log-level)
+                    COMPREPLY=($(compgen -W "error warn info debug trace" -- "${cur}"))
+                    return 0
+                    ;;
+                --color)
+                    COMPREPLY=($(compgen -W "auto always never" -- "${cur}"))
+                    return 0
+                    ;;
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
         spt__subcmd__config__subcmd__help)
-            opts="init validate doctor render diff migrate reload pull trust encrypt decrypt edit crypt help"
+            opts="init validate doctor render diff migrate reload pull trust encrypt decrypt edit crypt gen-key help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -4570,6 +4653,20 @@ _spt() {
             return 0
             ;;
         spt__subcmd__config__subcmd__help__subcmd__encrypt)
+            opts=""
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        spt__subcmd__config__subcmd__help__subcmd__gen__subcmd__key)
             opts=""
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
@@ -10296,7 +10393,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__help__subcmd__config)
-            opts="init validate doctor render diff migrate reload pull trust encrypt decrypt edit crypt"
+            opts="init validate doctor render diff migrate reload pull trust encrypt decrypt edit crypt gen-key"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -10394,6 +10491,20 @@ _spt() {
             return 0
             ;;
         spt__subcmd__help__subcmd__config__subcmd__encrypt)
+            opts=""
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        spt__subcmd__help__subcmd__config__subcmd__gen__subcmd__key)
             opts=""
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
