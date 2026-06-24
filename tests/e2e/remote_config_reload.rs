@@ -171,6 +171,7 @@ impl QueueFetcher {
             calls: AtomicUsize::new(0),
         }
     }
+    #[allow(clippy::unnecessary_wraps)] // mirrors err(); both build Result-typed queue entries
     fn ok(body: &[u8]) -> Result<HttpResponse, spt_remote_config::http::HttpError> {
         Ok(HttpResponse {
             status: 200,

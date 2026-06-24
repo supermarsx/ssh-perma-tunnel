@@ -97,9 +97,8 @@ async fn start_tcp_echo() -> SocketAddr {
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
         loop {
-            let (mut sock, _) = match listener.accept().await {
-                Ok(v) => v,
-                Err(_) => return,
+            let Ok((mut sock, _)) = listener.accept().await else {
+                return;
             };
             tokio::spawn(async move {
                 let (mut r, mut w) = sock.split();
@@ -116,13 +115,8 @@ async fn start_udp_echo() -> SocketAddr {
     let addr = socket.local_addr().unwrap();
     tokio::spawn(async move {
         let mut buf = [0u8; 2048];
-        loop {
-            match socket.recv_from(&mut buf).await {
-                Ok((n, peer)) => {
-                    let _ = socket.send_to(&buf[..n], peer).await;
-                }
-                Err(_) => break,
-            }
+        while let Ok((n, peer)) = socket.recv_from(&mut buf).await {
+            let _ = socket.send_to(&buf[..n], peer).await;
         }
     });
     addr
@@ -593,8 +587,7 @@ async fn serve_acl_deny_blocks_bridge() {
             "ACL-denied open must not echo any bytes, got {} bytes",
             got.len()
         ),
-        Ok(Err(_)) => { /* connection reset / error — acceptable: no echo */ }
-        Err(_) => { /* timed out with no echo — acceptable: deny held */ }
+        Ok(Err(_)) | Err(_) => { /* connection reset/error or timeout — acceptable: no echo */ }
     }
 
     let _ = Box::new(client.session).close().await;

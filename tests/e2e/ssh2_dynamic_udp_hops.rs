@@ -328,7 +328,9 @@ async fn dynamic_socks5_refused_target_real_russh() {
         // Or the proxy closed the stream (EOF) without a success reply — also
         // an acceptable failure surfacing for a refused target.
         Ok(Err(_)) => {}
-        Err(_) => panic!("SOCKS proxy hung on a refused target instead of failing"),
+        Err(elapsed) => {
+            panic!("SOCKS proxy hung on a refused target instead of failing ({elapsed})")
+        }
     }
 
     handle.close().await;
