@@ -324,7 +324,13 @@ impl Ssh2ProtocolBuilder {
         config: Option<Arc<spt_obfs::ObfsConfig>>,
         audit: Option<Arc<dyn spt_obfs::AuditHook>>,
     ) -> Self {
-        self.obfuscation = config.map(|config| ObfsPolicy { config, audit });
+        self.obfuscation = config.map(|config| ObfsPolicy {
+            config,
+            audit,
+            // Resolved per-dial in `connect_inner` from the secrets backend
+            // chain; not known at builder time.
+            resolved_secret: None,
+        });
         self
     }
 

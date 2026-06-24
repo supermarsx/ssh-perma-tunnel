@@ -66,6 +66,28 @@ pub fn transport_for_with_audit(
     cfg: &ObfsConfig,
     audit: Arc<dyn AuditHook>,
 ) -> Result<Box<dyn ObfsTransport>> {
+    transport_for_with_secret(cfg, audit, None)
+}
+
+/// Like [`transport_for_with_audit`] but threads an already-resolved obfs
+/// secret into the transport.
+///
+/// Only the Shadowsocks transport consumes a secret: its `[obfuscation]`
+/// `password` is a `secret://`/vault-backed [`spt_secrets::SecretRef`] that
+/// the caller must resolve to bytes (via the same secrets backend chain the
+/// SSH auth path uses) *before* the transport dials. When
+/// `resolved_password` is `Some`, those bytes are injected as the
+/// transport's direct password; when `None`, the transport falls back to its
+/// own (test-only) direct password and otherwise fails the handshake with
+/// "password not resolved" — preserving the prior behaviour for callers that
+/// do not supply a secret.
+///
+/// Every other transport ignores `resolved_password`.
+pub fn transport_for_with_secret(
+    cfg: &ObfsConfig,
+    audit: Arc<dyn AuditHook>,
+    resolved_password: Option<Vec<u8>>,
+) -> Result<Box<dyn ObfsTransport>> {
     cfg.validate()
         .map_err(|e| Error::InvalidConfig(e.to_string()))?;
     match cfg {
@@ -77,10 +99,13 @@ pub fn transport_for_with_audit(
             cfg.clone(),
             audit,
         )?)),
-        ObfsConfig::Shadowsocks { .. } => Ok(Box::new(shadowsocks::ShadowsocksTransport::new(
-            cfg.clone(),
-            audit,
-        )?)),
+        ObfsConfig::Shadowsocks { .. } => {
+            let mut t = shadowsocks::ShadowsocksTransport::new(cfg.clone(), audit)?;
+            if let Some(pw) = resolved_password {
+                t = t.with_direct_password(pw);
+            }
+            Ok(Box::new(t))
+        }
     }
 }
 

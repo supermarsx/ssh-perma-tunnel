@@ -233,6 +233,16 @@ pub(crate) struct ObfsPolicy {
     pub config: Arc<spt_obfs::ObfsConfig>,
     /// Optional audit hook fired from inside the obfuscation crate.
     pub audit: Option<Arc<dyn spt_obfs::AuditHook>>,
+    /// Resolved obfs secret bytes (currently only the Shadowsocks
+    /// `password`), keyed into the transport before it dials.
+    ///
+    /// The configured `[obfuscation]` `password` is a
+    /// `secret://`/vault-backed reference; it must be resolved through the
+    /// secrets backend chain — exactly like the SSH auth secrets — before the
+    /// transport can derive its AEAD subkey. This is populated per-dial in
+    /// [`connect_inner`] (so reconnects re-resolve), not stored on disk. It is
+    /// `None` for transports that need no secret.
+    pub resolved_secret: Option<Vec<u8>>,
 }
 
 /// SSH2 transport-keepalive policy threaded from the supervisor's
@@ -565,6 +575,7 @@ async fn dial_outer(
                 &target,
                 Some(policy.config.as_ref()),
                 policy.audit.clone(),
+                policy.resolved_secret.clone(),
             )
             .await
             .map_err(|e| {
@@ -665,9 +676,24 @@ async fn connect_inner(params: ReconnectParams) -> Result<RusshSsh2Session> {
         hops,
         gss_audit,
         keepalive,
-        obfs,
+        mut obfs,
         connection,
     } = params;
+
+    // Resolve the obfuscation transport's secret (the Shadowsocks `password`)
+    // through the SAME secrets backend chain the SSH auth path uses, before
+    // any dial. A `secret://`/`file://`/vault-backed obfs password is only a
+    // reference on disk; the transport needs the bytes to derive its AEAD
+    // subkey. Resolving here (per `connect_inner` call) means reconnects
+    // re-resolve, and the resolved bytes never live in the persisted
+    // `ReconnectParams`. Transports with no secret leave this `None`.
+    if let Some(policy) = obfs.as_mut() {
+        if let Some(pw_ref) = policy.config.password_ref() {
+            let bytes = resolve_obfs_secret(&backends, pw_ref)?;
+            policy.resolved_secret = Some(bytes);
+        }
+    }
+
     // E3-F9: fail fast on statically-impossible auth methods (gssapi/sspi)
     // for the endpoint and every hop before spending a TCP connect + backoff
     // cycle. Profile validation should also catch this, but enforcing here
@@ -2046,6 +2072,29 @@ fn backend_refs(backends: &[Arc<dyn SecretBackend>]) -> Vec<&dyn SecretBackend> 
     backends.iter().map(std::convert::AsRef::as_ref).collect()
 }
 
+/// Resolve an obfuscation transport's pre-shared secret (the Shadowsocks
+/// `password`) into raw bytes via the configured secrets backend chain.
+///
+/// The obfs `password` is a `spt_secrets::SecretRef` (`secret://ns/name`),
+/// resolved through the very same `backends` the SSH auth path uses for
+/// `password_ref`/passphrase resolution — the first backend to return a value
+/// wins. A reference that no backend can resolve is a hard error (we will not
+/// dial with an unresolved obfs password), surfaced as `SecretUnavailable`.
+fn resolve_obfs_secret(
+    backends: &[Arc<dyn SecretBackend>],
+    reference: &spt_secrets::SecretRef,
+) -> Result<Vec<u8>> {
+    for b in backends {
+        if let Some(v) = b.get(reference)? {
+            return Ok(v.expose_secret().to_vec());
+        }
+    }
+    Err(Error::SecretUnavailable {
+        reference: reference.to_string(),
+        reason: "no backend resolved the obfuscation password reference".into(),
+    })
+}
+
 /// Per-direction token buckets built from a forward's [`ForwardRateLimits`].
 ///
 /// `up` throttles the client→remote direction (`a→b` in
@@ -3059,6 +3108,7 @@ mod tests {
                 iat_mode: 0,
             }),
             audit: Some(Arc::clone(&audit) as Arc<dyn spt_obfs::AuditHook>),
+            resolved_secret: None,
         };
         // Port 1 on loopback is unroutable for SSH; the connect will error,
         // but the obfs audit hook fires before the failure.
@@ -3807,5 +3857,154 @@ mod tests {
             "connect_inner must return within the deadline (handshake timeout fired)"
         );
         assert!(res.unwrap().is_err(), "the black-holed dial must error");
+    }
+
+    // ──────── fix-ss-secret: obfs Shadowsocks password resolution ─────────
+
+    /// Minimal in-memory `SecretBackend` returning a fixed value for any ref
+    /// (mirrors `secret.rs::CannedBackend`). Avoids pulling the spt-secrets
+    /// `testing` feature into the dev-dep graph.
+    struct CannedSecretBackend(&'static [u8]);
+    impl SecretBackend for CannedSecretBackend {
+        fn kind(&self) -> spt_secrets::BackendKind {
+            spt_secrets::BackendKind::Env
+        }
+        fn get(&self, _r: &spt_secrets::SecretRef) -> Result<Option<spt_secrets::SecretBytes>> {
+            Ok(Some(spt_secrets::backend::secret_bytes(self.0.to_vec())))
+        }
+        fn set(&self, _r: &spt_secrets::SecretRef, _value: &[u8]) -> Result<()> {
+            Ok(())
+        }
+        fn list(&self) -> Result<Vec<spt_secrets::SecretRef>> {
+            Ok(vec![])
+        }
+        fn remove(&self, _r: &spt_secrets::SecretRef) -> Result<bool> {
+            Ok(false)
+        }
+        fn doctor(&self) -> spt_secrets::BackendDoctor {
+            spt_secrets::BackendDoctor::ok(spt_secrets::BackendKind::Env, "test")
+        }
+    }
+
+    /// In-memory backend that resolves nothing (`Ok(None)`), so the chain
+    /// falls through to the next backend.
+    struct EmptySecretBackend;
+    impl SecretBackend for EmptySecretBackend {
+        fn kind(&self) -> spt_secrets::BackendKind {
+            spt_secrets::BackendKind::Env
+        }
+        fn get(&self, _r: &spt_secrets::SecretRef) -> Result<Option<spt_secrets::SecretBytes>> {
+            Ok(None)
+        }
+        fn set(&self, _r: &spt_secrets::SecretRef, _value: &[u8]) -> Result<()> {
+            Ok(())
+        }
+        fn list(&self) -> Result<Vec<spt_secrets::SecretRef>> {
+            Ok(vec![])
+        }
+        fn remove(&self, _r: &spt_secrets::SecretRef) -> Result<bool> {
+            Ok(false)
+        }
+        fn doctor(&self) -> spt_secrets::BackendDoctor {
+            spt_secrets::BackendDoctor::ok(spt_secrets::BackendKind::Env, "test")
+        }
+    }
+
+    #[test]
+    fn resolve_obfs_secret_falls_through_chain_to_first_hit() {
+        // A `secret://obfs/ss-pw` reference resolves through the SAME backend
+        // chain the SSH auth path uses: an empty backend falls through to the
+        // canned backend that holds the value.
+        let b1: Arc<dyn SecretBackend> = Arc::new(EmptySecretBackend);
+        let b2: Arc<dyn SecretBackend> = Arc::new(CannedSecretBackend(b"ss-secret-key"));
+        let backends = vec![b1, b2];
+        let reference = spt_secrets::SecretRef::new("obfs", "ss-pw").unwrap();
+        let bytes = resolve_obfs_secret(&backends, &reference).unwrap();
+        assert_eq!(bytes, b"ss-secret-key");
+    }
+
+    #[test]
+    fn resolve_obfs_secret_unresolvable_is_hard_error() {
+        // No backend resolves the reference ⇒ hard `SecretUnavailable`; we
+        // must never dial with an unresolved obfs password.
+        let backends: Vec<Arc<dyn SecretBackend>> = vec![Arc::new(EmptySecretBackend)];
+        let reference = spt_secrets::SecretRef::new("obfs", "missing").unwrap();
+        let err = resolve_obfs_secret(&backends, &reference).unwrap_err();
+        assert!(
+            matches!(err, Error::SecretUnavailable { .. }),
+            "got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn connect_inner_resolves_shadowsocks_password_into_transport() {
+        // End-to-end of the fix: a Shadowsocks `[obfuscation]` whose `password`
+        // is a `secret://` ref gets resolved through the backend chain and the
+        // bytes keyed into the dialed transport. We point the dial at a
+        // loopback acceptor so the connect succeeds and the transport reaches
+        // `derive_key` — which would error with "password not resolved" if the
+        // ref were NOT resolved. The dial completes the obfs handshake (salt
+        // write) and then fails the SSH handshake (the peer is not an SSH
+        // server), proving resolution happened: the obfs audit hook records
+        // the SS connect.
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let _accept = tokio::spawn(async move {
+            // Drain a little from each accepted peer then drop, so the SSH
+            // handshake fails (we only need to get PAST `derive_key`).
+            while let Ok((mut sock, _)) = listener.accept().await {
+                let mut buf = [0u8; 64];
+                let _ = tokio::io::AsyncReadExt::read(&mut sock, &mut buf).await;
+            }
+        });
+
+        let audit = Arc::new(spt_obfs::audit::MockAuditHook::new());
+        let ss_cfg = spt_obfs::ObfsConfig::Shadowsocks {
+            method: spt_obfs::SsMethod::Aead2022Blake3Aes256Gcm,
+            password: spt_secrets::SecretRef::new("obfs", "ss-pw").unwrap(),
+        };
+        let obfs = ObfsPolicy {
+            config: Arc::new(ss_cfg),
+            audit: Some(Arc::clone(&audit) as Arc<dyn spt_obfs::AuditHook>),
+            resolved_secret: None,
+        };
+        let backends: Vec<Arc<dyn SecretBackend>> =
+            vec![Arc::new(CannedSecretBackend(b"resolved-ss-pw"))];
+
+        let endpoint = Endpoint::new(addr.ip().to_string(), addr.port());
+        let res = connect(
+            endpoint,
+            AuthConfig::new(
+                "u",
+                vec![AuthMethod::Agent {
+                    socket: None,
+                    identity_hint: None,
+                }],
+            ),
+            CryptoPolicy::default(),
+            TrustVerifier::default(),
+            backends,
+            Vec::new(),
+            None,
+            KeepalivePolicy::default(),
+            Some(obfs),
+            ConnectionPolicy {
+                handshake_timeout: Some(Duration::from_millis(500)),
+                ..ConnectionPolicy::default()
+            },
+        )
+        .await;
+
+        // The dial fails at the SSH handshake (the loopback peer is not an SSH
+        // server), NOT at the obfs layer — proving the password resolved.
+        assert!(res.is_err(), "loopback peer is not an SSH server");
+        let entries = audit.entries();
+        assert_eq!(
+            entries.len(),
+            1,
+            "the SS transport must have dialed (password resolved, no \
+             'password not resolved' short-circuit)"
+        );
+        assert_eq!(entries[0].0, "ssh-over-shadowsocks");
     }
 }

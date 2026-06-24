@@ -24,7 +24,7 @@ use spt_obfs::transport::ObfsTransport;
 use spt_obfs::websocket::{
     decode_binary_frame, encode_binary_frame, WebsocketTransport, SSH_SUBPROTOCOL,
 };
-use spt_obfs::{transport_for, transport_for_with_audit};
+use spt_obfs::{transport_for, transport_for_with_audit, transport_for_with_secret};
 use spt_secrets::SecretRef;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
@@ -645,6 +645,61 @@ fn shadowsocks_stream_truncation_detection() {
     let sealed = t.seal(b"x").unwrap();
     let truncated = &sealed[..sealed.len() - 8];
     assert!(t.open(truncated).is_err());
+}
+
+// 34b — fix-ss-secret: `transport_for_with_secret(Some(pw))` injects the
+// resolved Shadowsocks password so the transport can dial, while the same
+// dispatch with `None` reaches `derive_key` and fails closed with "password
+// not resolved". The dial points at a loopback acceptor that completes the TCP
+// connect (so we exercise `derive_key`, which runs AFTER the connect) and then
+// drops the connection.
+#[tokio::test]
+async fn transport_for_with_secret_injects_shadowsocks_password() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    // Accept-and-drop loop so the client's `TcpStream::connect` succeeds.
+    let _accept = tokio::spawn(async move {
+        loop {
+            if listener.accept().await.is_err() {
+                break;
+            }
+        }
+    });
+
+    let cfg = ObfsConfig::Shadowsocks {
+        method: SsMethod::Aead2022Blake3Aes256Gcm,
+        password: SecretRef::new("ns", "ss").unwrap(),
+    };
+
+    // With the resolved password injected, the transport derives its subkey
+    // and proceeds past the salt write — no "password not resolved" error.
+    let mut with_pw =
+        transport_for_with_secret(&cfg, Arc::new(NoopAuditHook), Some(b"resolved-pw".to_vec()))
+            .unwrap();
+    let target = addr.to_string();
+    let ok = tokio::time::timeout(Duration::from_millis(500), with_pw.connect(&target))
+        .await
+        .expect("connect should not hang");
+    assert!(
+        ok.is_ok(),
+        "injected password must let the transport dial: {:?}",
+        ok.err()
+    );
+
+    // Without a resolved password, the same dispatch fails closed at
+    // `derive_key` with the documented message.
+    let mut no_pw = transport_for_with_secret(&cfg, Arc::new(NoopAuditHook), None).unwrap();
+    let res = tokio::time::timeout(Duration::from_millis(500), no_pw.connect(&target))
+        .await
+        .expect("connect should not hang");
+    let err = match res {
+        Ok(_) => panic!("missing password must fail closed"),
+        Err(e) => e,
+    };
+    assert!(
+        err.to_string().contains("password not resolved"),
+        "unexpected error: {err}"
+    );
 }
 
 // ============================================================================

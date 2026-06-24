@@ -18,7 +18,7 @@ use std::sync::Arc;
 
 use spt_core::{Error, Result};
 use spt_obfs::transport::AsyncReadWrite;
-use spt_obfs::{transport_for_with_audit, AuditHook, NoopAuditHook, ObfsConfig};
+use spt_obfs::{transport_for_with_secret, AuditHook, NoopAuditHook, ObfsConfig};
 use tokio::net::TcpStream;
 
 /// Outcome of a connect attempt.
@@ -48,10 +48,19 @@ impl ConnectStream {
 /// obfuscation transport.
 ///
 /// `obfs_cfg = None` selects the legacy plain-TCP path.
+///
+/// `obfs_secret` carries the already-resolved obfs secret (currently only the
+/// Shadowsocks `password`). The caller resolves the transport's
+/// [`ObfsConfig::password_ref`] through the secrets backend chain — the same
+/// chain the SSH auth path uses — and passes the resulting bytes here. The
+/// bytes are threaded into the transport so a `secret://`/`file://`-backed
+/// Shadowsocks password actually keys the AEAD framing. Transports that need
+/// no secret ignore it.
 pub async fn connect_to_endpoint(
     target: &str,
     obfs_cfg: Option<&ObfsConfig>,
     audit: Option<Arc<dyn AuditHook>>,
+    obfs_secret: Option<Vec<u8>>,
 ) -> Result<ConnectStream> {
     match obfs_cfg {
         None => {
@@ -62,7 +71,7 @@ pub async fn connect_to_endpoint(
         }
         Some(cfg) => {
             let audit = audit.unwrap_or_else(|| Arc::new(NoopAuditHook));
-            let mut transport = transport_for_with_audit(cfg, audit)?;
+            let mut transport = transport_for_with_secret(cfg, audit, obfs_secret)?;
             let stream = transport.connect(target).await?;
             Ok(ConnectStream::Obfuscated(stream))
         }
@@ -81,7 +90,7 @@ mod tests {
         // None branch to the point where it would call TcpStream::connect
         // by passing a clearly-bad target — the error type confirms we
         // took the plain path.
-        let r = connect_to_endpoint("127.0.0.1:1", None, None).await;
+        let r = connect_to_endpoint("127.0.0.1:1", None, None, None).await;
         match r {
             Err(Error::NetworkUnreachable(_)) | Ok(ConnectStream::Plain(_)) => {}
             Err(other) => panic!("unexpected error: {other:?}"),
@@ -97,7 +106,7 @@ mod tests {
             iat_mode: 0,
         };
         let audit = Arc::new(MockAuditHook::new());
-        let _ = connect_to_endpoint("x:22", Some(&cfg), Some(audit.clone())).await;
+        let _ = connect_to_endpoint("x:22", Some(&cfg), Some(audit.clone()), None).await;
         let entries = audit.entries();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].0, "obfs4");

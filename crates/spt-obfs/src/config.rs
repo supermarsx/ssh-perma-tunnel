@@ -182,6 +182,21 @@ impl ObfsConfig {
             ObfsConfig::Shadowsocks { .. } => "ssh-over-shadowsocks",
         }
     }
+
+    /// The secret reference this transport needs resolved before it can dial,
+    /// if any.
+    ///
+    /// Only the Shadowsocks transport carries a pre-shared `password`
+    /// reference; every other transport returns `None`. Callers (the SSH dial
+    /// path) resolve the returned reference through the secrets backend chain
+    /// and hand the bytes to [`crate::transport_for_with_secret`].
+    #[must_use]
+    pub fn password_ref(&self) -> Option<&SecretRef> {
+        match self {
+            ObfsConfig::Shadowsocks { password, .. } => Some(password),
+            _ => None,
+        }
+    }
 }
 
 #[cfg(test)]
