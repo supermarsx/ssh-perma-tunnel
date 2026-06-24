@@ -144,7 +144,7 @@ pub async fn public(_global: &GlobalOpts, args: KeyPublicArgs) -> Result<()> {
 /// 3. Atomic write via `spt_key::change_passphrase` (creates `<key>.bak`).
 /// 4. Round-trip verify by re-loading the new file with the new passphrase.
 #[allow(clippy::needless_pass_by_value)]
-pub async fn change_passphrase(_global: &GlobalOpts, args: KeyChangePassphraseArgs) -> Result<()> {
+pub async fn change_passphrase(global: &GlobalOpts, args: KeyChangePassphraseArgs) -> Result<()> {
     if !args.key.exists() {
         return Err(Error::InvalidArgs(format!(
             "key file `{}` not found",
@@ -158,7 +158,7 @@ pub async fn change_passphrase(_global: &GlobalOpts, args: KeyChangePassphraseAr
     let _ = spt_key::load(&args.key, Some(&old_pw))?;
 
     let new_pw = match args.new_passphrase_from {
-        Some(reference) => resolve_secret_ref_to_string(&reference)?,
+        Some(reference) => resolve_secret_ref_to_string(global, &reference)?,
         None => {
             let a = prompt_passphrase("new passphrase: ")?;
             let b = prompt_passphrase("confirm new passphrase: ")?;
@@ -342,7 +342,7 @@ fn load_trusted_cas(path: &Path) -> Result<Vec<PublicKey>> {
 /// by `spt-ssh2`'s integration suite). The function returns a structured
 /// error when neither `--target` nor `--profile` is given.
 #[allow(clippy::needless_pass_by_value)]
-pub async fn install_public(_global: &GlobalOpts, args: KeyInstallPublicArgs) -> Result<()> {
+pub async fn install_public(global: &GlobalOpts, args: KeyInstallPublicArgs) -> Result<()> {
     let public_line = read_public_key_line(&args.key)?;
 
     if args.profile.is_none() && args.target.is_none() {
@@ -351,14 +351,16 @@ pub async fn install_public(_global: &GlobalOpts, args: KeyInstallPublicArgs) ->
         ));
     }
 
-    if let Some(_profile) = args.profile.as_deref() {
-        // Profile dispatch is wired in Phase B once `cli_dispatch` exposes
-        // the supervisor handle. For now, instruct the caller.
-        return Err(Error::RuntimeFailure(
-            "install-public via --profile requires the running supervisor; not yet wired \
-             (Phase B). Use --target <user@host[:port]> for a direct connection."
-                .into(),
-        ));
+    if let Some(profile) = args.profile.as_deref() {
+        // Resolve the named profile from config to its connection target
+        // (host/user/port), then perform the install through the SAME path the
+        // `--target` flow uses (`install_public_via_direct_ssh`). This is the
+        // mechanism profile-targeting key ops use: the profile's endpoint
+        // config is the source of truth for where the key lands. `--target`
+        // and `--profile` are mutually exclusive (clap enforces), so a profile
+        // never combines with an explicit target.
+        let parsed = resolve_profile_target(global, profile)?;
+        return install_public_via_direct_ssh(&parsed, &public_line).await;
     }
 
     let target = args
@@ -368,6 +370,50 @@ pub async fn install_public(_global: &GlobalOpts, args: KeyInstallPublicArgs) ->
     let parsed = parse_user_host_port(target)?;
 
     install_public_via_direct_ssh(&parsed, &public_line).await
+}
+
+/// Resolve a `--profile <name>` to its connection target by loading the
+/// configured profile and reading its endpoint config.
+///
+/// The target host/user/port come from the profile's top-level
+/// `host`/`user`/`port` fields, falling back to its first
+/// `[[profiles.endpoints]]` entry (the same precedence the connect flow uses
+/// to pick a primary endpoint). A profile with no resolvable host, or an
+/// `ssh3`-only profile (URL endpoint, no host), is rejected with a clear
+/// error.
+fn resolve_profile_target(global: &GlobalOpts, profile: &str) -> Result<UserHostPort> {
+    let path = global.config.clone().ok_or_else(|| {
+        Error::InvalidArgs(
+            "install-public --profile requires a config (pass --config or set $SPT_CONFIG)".into(),
+        )
+    })?;
+    let (cfg, _) =
+        spt_config::load(&path, false).map_err(|e| Error::InvalidConfig(format!("load: {e}")))?;
+    let p = cfg
+        .profiles
+        .iter()
+        .find(|p| p.name == profile)
+        .ok_or_else(|| Error::InvalidArgs(format!("no profile `{profile}` in config")))?;
+
+    // Primary endpoint precedence: top-level host, else first endpoint.
+    let (host, port, ep_user) = if let Some(h) = p.host.clone() {
+        (h, p.port.unwrap_or(22), None)
+    } else if let Some(ep) = p.endpoints.first() {
+        (ep.host.clone(), ep.port, ep.user.clone())
+    } else {
+        return Err(Error::InvalidConfig(format!(
+            "profile `{profile}` has no host/endpoint to install the key on \
+             (ssh3 URL-only profiles are not supported by install-public; use --target)"
+        )));
+    };
+
+    let user = p
+        .user
+        .clone()
+        .or(ep_user)
+        .ok_or_else(|| Error::InvalidConfig(format!("profile `{profile}` has no `user`")))?;
+
+    Ok(UserHostPort { user, host, port })
 }
 
 #[derive(Debug, Clone)]
@@ -504,7 +550,7 @@ fn prompt_passphrase(prompt: &str) -> Result<String> {
         .to_string())
 }
 
-fn resolve_secret_ref_to_string(reference: &str) -> Result<String> {
+fn resolve_secret_ref_to_string(global: &GlobalOpts, reference: &str) -> Result<String> {
     use spt_auth::SecretRef;
     let r = SecretRef::parse(reference).map_err(|e| {
         Error::InvalidArgs(format!("invalid --new-passphrase-from `{reference}`: {e}"))
@@ -523,12 +569,37 @@ fn resolve_secret_ref_to_string(reference: &str) -> Result<String> {
                 reference: format!("file://{p}"),
                 reason: e.to_string(),
             }),
-        SecretRef::Vault { .. } => Err(Error::SecretUnavailable {
-            reference: reference.to_string(),
-            reason: "secret:// resolution from `key change-passphrase` not yet wired (Phase B)"
-                .into(),
-        }),
+        // `secret://ns/name` references resolve through the same multi-backend
+        // resolver the rest of the binary uses (built from the `[secrets]`
+        // config table, rooted at the state dir).
+        SecretRef::Vault { .. } => resolve_vault_ref_to_string(global, &r),
     }
+}
+
+/// Resolve a `secret://ns/name` reference to a UTF-8 passphrase string using
+/// the shared [`spt_secrets::Resolver`]. Unsupported / unresolvable references
+/// surface a clear [`Error::SecretUnavailable`].
+fn resolve_vault_ref_to_string(
+    global: &GlobalOpts,
+    auth_ref: &spt_auth::SecretRef,
+) -> Result<String> {
+    use secrecy::ExposeSecret as _;
+
+    let resolver_ref = crate::secrets_bridge::auth_ref_to_resolver_ref(auth_ref)?;
+    let state_dir = spt_state::resolve_state_dir(global.state_dir.as_deref())?;
+    let secrets_cfg = global
+        .config
+        .as_deref()
+        .and_then(|p| spt_config::load(p, false).ok())
+        .and_then(|(cfg, _)| cfg.secrets.clone());
+    let resolver = crate::secrets_bridge::build_resolver(secrets_cfg.as_ref(), &state_dir)?;
+    let bytes = resolver.resolve(&resolver_ref)?;
+    let s = std::str::from_utf8(bytes.expose_secret()).map_err(|e| Error::SecretUnavailable {
+        reference: auth_ref.to_string(),
+        reason: format!("secret is not valid UTF-8: {e}"),
+    })?;
+    Ok(s.trim_end_matches(|c: char| c == '\n' || c == '\r')
+        .to_string())
 }
 
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
@@ -776,6 +847,242 @@ mod tests {
         )
         .await;
         assert!(matches!(r, Err(Error::InvalidArgs(_))));
+    }
+
+    // ------------------------------------------------------------------
+    // B1: install-public --profile resolves the profile's endpoint config
+    // and routes through the same install path as --target.
+    // ------------------------------------------------------------------
+
+    fn opts_with_config(config: PathBuf) -> GlobalOpts {
+        GlobalOpts {
+            config: Some(config),
+            ..opts()
+        }
+    }
+
+    fn write_pubkey(dir: &Path) -> PathBuf {
+        let kp = deterministic_keypair(42, KeyAlgorithm::Ed25519).unwrap();
+        let pub_path = dir.join("id.pub");
+        fs::write(
+            &pub_path,
+            format!("{}\n", kp.public_ref().to_openssh().unwrap()),
+        )
+        .unwrap();
+        pub_path
+    }
+
+    #[test]
+    fn resolve_profile_target_uses_top_level_host_user_port() {
+        let dir = tempdir().unwrap();
+        let cfg = dir.path().join("c.toml");
+        fs::write(
+            &cfg,
+            "version = 1\n\
+             [[profiles]]\n\
+             name = \"prod\"\n\
+             protocol = \"ssh2\"\n\
+             host = \"host.example\"\n\
+             port = 2200\n\
+             user = \"deploy\"\n",
+        )
+        .unwrap();
+        let g = opts_with_config(cfg);
+        let t = super::resolve_profile_target(&g, "prod").unwrap();
+        assert_eq!(t.host, "host.example");
+        assert_eq!(t.port, 2200);
+        assert_eq!(t.user, "deploy");
+    }
+
+    #[test]
+    fn resolve_profile_target_falls_back_to_first_endpoint() {
+        let dir = tempdir().unwrap();
+        let cfg = dir.path().join("c.toml");
+        fs::write(
+            &cfg,
+            "version = 1\n\
+             [[profiles]]\n\
+             name = \"ha\"\n\
+             protocol = \"ssh2\"\n\
+             user = \"svc\"\n\
+             [[profiles.endpoints]]\n\
+             name = \"ep1\"\n\
+             host = \"ep1.example\"\n\
+             port = 2022\n",
+        )
+        .unwrap();
+        let g = opts_with_config(cfg);
+        let t = super::resolve_profile_target(&g, "ha").unwrap();
+        assert_eq!(t.host, "ep1.example");
+        assert_eq!(t.port, 2022);
+        assert_eq!(t.user, "svc");
+    }
+
+    #[test]
+    fn resolve_profile_target_unknown_profile_errors() {
+        let dir = tempdir().unwrap();
+        let cfg = dir.path().join("c.toml");
+        fs::write(&cfg, "version = 1\n").unwrap();
+        let g = opts_with_config(cfg);
+        let err = super::resolve_profile_target(&g, "nope").unwrap_err();
+        assert!(matches!(err, Error::InvalidArgs(_)));
+    }
+
+    #[test]
+    fn resolve_profile_target_no_host_errors() {
+        let dir = tempdir().unwrap();
+        let cfg = dir.path().join("c.toml");
+        fs::write(
+            &cfg,
+            "version = 1\n\
+             [[profiles]]\n\
+             name = \"u\"\n\
+             protocol = \"ssh3\"\n\
+             endpoint = \"https://x/\"\n\
+             user = \"u\"\n",
+        )
+        .unwrap();
+        let g = opts_with_config(cfg);
+        let err = super::resolve_profile_target(&g, "u").unwrap_err();
+        assert!(matches!(err, Error::InvalidConfig(_)));
+    }
+
+    #[tokio::test]
+    async fn install_public_profile_routes_through_install_path() {
+        // A resolvable profile reaches the shared direct-SSH install path
+        // (which today returns a typed UnsupportedPlatform until channel-exec
+        // lands) — proving --profile is wired through the install path rather
+        // than the old "not yet wired (Phase B)" RuntimeFailure.
+        let dir = tempdir().unwrap();
+        let cfg = dir.path().join("c.toml");
+        fs::write(
+            &cfg,
+            "version = 1\n\
+             [[profiles]]\n\
+             name = \"prod\"\n\
+             protocol = \"ssh2\"\n\
+             host = \"host.example\"\n\
+             user = \"deploy\"\n",
+        )
+        .unwrap();
+        let pub_path = write_pubkey(dir.path());
+        let g = opts_with_config(cfg);
+        let r = super::install_public(
+            &g,
+            KeyInstallPublicArgs {
+                key: pub_path,
+                target: None,
+                profile: Some("prod".into()),
+            },
+        )
+        .await;
+        // Routed to the install path: the error is the shared install path's
+        // typed error, NOT the legacy Phase-B RuntimeFailure.
+        match r {
+            Err(Error::UnsupportedPlatform(_)) => {}
+            other => panic!("expected UnsupportedPlatform from install path, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn install_public_unknown_profile_errors() {
+        let dir = tempdir().unwrap();
+        let cfg = dir.path().join("c.toml");
+        fs::write(&cfg, "version = 1\n").unwrap();
+        let pub_path = write_pubkey(dir.path());
+        let g = opts_with_config(cfg);
+        let r = super::install_public(
+            &g,
+            KeyInstallPublicArgs {
+                key: pub_path,
+                target: None,
+                profile: Some("ghost".into()),
+            },
+        )
+        .await;
+        assert!(matches!(r, Err(Error::InvalidArgs(_))));
+    }
+
+    // ------------------------------------------------------------------
+    // B2: secret:// resolution in `key change-passphrase`.
+    // ------------------------------------------------------------------
+
+    /// Write a secret to the file backend at `<state_dir>/secrets/<ns>/<name>`
+    /// with owner-only permissions so the resolver's Unix mode check passes.
+    fn put_file_secret(state_dir: &Path, ns: &str, name: &str, value: &[u8]) {
+        let p = state_dir.join("secrets").join(ns).join(name);
+        fs::create_dir_all(p.parent().unwrap()).unwrap();
+        fs::write(&p, value).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&p, fs::Permissions::from_mode(0o600)).unwrap();
+        }
+    }
+
+    fn opts_with_state(state: PathBuf) -> GlobalOpts {
+        GlobalOpts {
+            state_dir: Some(state),
+            ..opts()
+        }
+    }
+
+    #[test]
+    fn resolve_secret_ref_resolves_vault_reference_from_file_backend() {
+        let dir = tempdir().unwrap();
+        put_file_secret(dir.path(), "keys", "newpw", b"vault-passphrase\n");
+        let g = opts_with_state(dir.path().to_path_buf());
+        let got = super::resolve_secret_ref_to_string(&g, "secret://keys/newpw").unwrap();
+        // Trailing newline trimmed.
+        assert_eq!(got, "vault-passphrase");
+    }
+
+    #[test]
+    fn resolve_secret_ref_rejects_unresolvable_vault_reference() {
+        let dir = tempdir().unwrap();
+        let g = opts_with_state(dir.path().to_path_buf());
+        let err = super::resolve_secret_ref_to_string(&g, "secret://keys/absent").unwrap_err();
+        assert!(matches!(err, Error::SecretUnavailable { .. }));
+    }
+
+    #[test]
+    fn resolve_secret_ref_rejects_malformed_reference() {
+        let dir = tempdir().unwrap();
+        let g = opts_with_state(dir.path().to_path_buf());
+        // A malformed secret:// ref (empty name) is rejected up front.
+        let err = super::resolve_secret_ref_to_string(&g, "secret://").unwrap_err();
+        assert!(matches!(err, Error::InvalidArgs(_)));
+    }
+
+    #[tokio::test]
+    async fn change_passphrase_resolves_secret_ref_for_new_passphrase() {
+        let kp = deterministic_keypair(11, KeyAlgorithm::Ed25519).unwrap();
+        let dir = tempdir().unwrap();
+        let p = dir.path().join("id");
+        spt_key::save_encrypted(&kp, &p, Some("old-pw")).unwrap();
+        put_file_secret(dir.path(), "keys", "newpw", b"resolved-new-pw");
+
+        // SAFETY: tests run single-threaded over this env-mutating block.
+        let old = std::env::var("SPT_KEY_PASSPHRASE").ok();
+        std::env::set_var("SPT_KEY_PASSPHRASE", "old-pw");
+        let g = opts_with_state(dir.path().to_path_buf());
+        let r = super::change_passphrase(
+            &g,
+            KeyChangePassphraseArgs {
+                key: p.clone(),
+                new_passphrase_from: Some("secret://keys/newpw".into()),
+            },
+        )
+        .await;
+        match old {
+            Some(v) => std::env::set_var("SPT_KEY_PASSPHRASE", v),
+            None => std::env::remove_var("SPT_KEY_PASSPHRASE"),
+        }
+        r.unwrap();
+
+        // New passphrase (from the vault secret) decrypts; old one no longer does.
+        assert!(spt_key::load(&p, Some("resolved-new-pw")).is_ok());
+        assert!(spt_key::load(&p, Some("old-pw")).is_err());
     }
 
     /// End-to-end install against a real SSH server. Needs a russh-server

@@ -212,47 +212,44 @@ impl UpdaterConfig {
             }
         };
 
-        let verify = s
-            .verify
-            .as_ref()
-            .map(|v| VerifyConfig {
-                require_minisign: v.require_minisign.unwrap_or(true),
-                minisign_pubkey: v.minisign_pubkey.clone().map(PathBuf::from),
-                require_sha256sums: v.require_sha256sums.unwrap_or(true),
-                gpg_pubkey: v.gpg_pubkey.clone().map(PathBuf::from),
-            })
-            .unwrap_or_else(|| VerifyConfig {
+        let verify = s.verify.as_ref().map_or_else(
+            || VerifyConfig {
                 require_minisign: true,
                 minisign_pubkey: None,
                 require_sha256sums: true,
                 gpg_pubkey: None,
-            });
+            },
+            |v| VerifyConfig {
+                require_minisign: v.require_minisign.unwrap_or(true),
+                minisign_pubkey: v.minisign_pubkey.clone().map(PathBuf::from),
+                require_sha256sums: v.require_sha256sums.unwrap_or(true),
+                gpg_pubkey: v.gpg_pubkey.clone().map(PathBuf::from),
+            },
+        );
 
-        let action = s
-            .action
-            .as_ref()
-            .map(|a| ActionConfig {
-                restart_supervisor: a.restart_supervisor.unwrap_or(true),
-                notify_audit: a.notify_audit.unwrap_or(true),
-                post_install_hook: a.post_install_hook.clone().map(PathBuf::from),
-            })
-            .unwrap_or_else(|| ActionConfig {
+        let action = s.action.as_ref().map_or_else(
+            || ActionConfig {
                 restart_supervisor: true,
                 notify_audit: true,
                 post_install_hook: None,
-            });
+            },
+            |a| ActionConfig {
+                restart_supervisor: a.restart_supervisor.unwrap_or(true),
+                notify_audit: a.notify_audit.unwrap_or(true),
+                post_install_hook: a.post_install_hook.clone().map(PathBuf::from),
+            },
+        );
 
-        let staging = s
-            .staging
-            .as_ref()
-            .map(|sx| StagingConfig {
-                dir: sx.dir.clone().map(PathBuf::from),
-                keep_last: sx.keep_last.unwrap_or(DEFAULT_KEEP_LAST),
-            })
-            .unwrap_or_else(|| StagingConfig {
+        let staging = s.staging.as_ref().map_or_else(
+            || StagingConfig {
                 dir: None,
                 keep_last: DEFAULT_KEEP_LAST,
-            });
+            },
+            |sx| StagingConfig {
+                dir: sx.dir.clone().map(PathBuf::from),
+                keep_last: sx.keep_last.unwrap_or(DEFAULT_KEEP_LAST),
+            },
+        );
 
         let window =
             s.window

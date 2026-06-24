@@ -31,19 +31,17 @@
 //!
 //! * [`config`] — typed view over `[updater]` with all defaults applied.
 //! * [`source`] — backends (`github`, `url`, `static`).
+//! * [`download`] — target selection + artifact/signature staging.
 //! * [`version`] — semver parsing + comparison with the rolling
 //!   `0.YY.N` scheme.
-//! * [`verify`] — minisign / SHA256SUMS / GPG verification.
+//! * [`verify`] — SHA256SUMS + minisign (ed25519) verification.
 //! * [`schedule`] — cron / interval next-tick computation.
 //! * [`install`] — platform-specific atomic swap of the running binary.
 
 #![warn(missing_docs)]
-// Scaffold-stage allows. Real impls land in subsequent commits; these
-// lints will become applicable then.
-#![allow(clippy::unused_async)]
-#![allow(clippy::map_unwrap_or)]
 
 pub mod config;
+pub mod download;
 pub mod error;
 pub mod install;
 pub mod schedule;
@@ -246,38 +244,63 @@ impl Updater {
     async fn run_check(&self, status: &Arc<RwLock<UpdaterStatus>>) {
         match poll_once(&self.cfg).await {
             Ok(outcome) => {
-                let mut s = status.write();
-                s.last_check = Some(outcome.checked_at.clone());
-                s.latest_version = Some(outcome.latest_tag.clone());
-                s.update_available = outcome.update_available;
-                s.last_error = None;
+                // Update the status mirror in a tight scope so the lock is
+                // never held across the `apply_update().await` below.
+                {
+                    let mut s = status.write();
+                    s.last_check = Some(outcome.checked_at.clone());
+                    s.latest_version = Some(outcome.latest_tag.clone());
+                    s.update_available = outcome.update_available;
+                    s.last_error = None;
 
-                if outcome.update_available {
-                    match self.cfg.mode {
-                        UpdateMode::Warn | UpdateMode::Auto => {
-                            warn!(
-                                target: "spt_updater",
-                                latest = %outcome.latest_tag,
-                                current = %s.current_version,
-                                "spt: a newer release is available"
-                            );
-                        }
-                        _ => {
-                            info!(
-                                target: "spt_updater",
-                                latest = %outcome.latest_tag,
-                                current = %s.current_version,
-                                "spt update check: newer release detected"
-                            );
+                    if outcome.update_available {
+                        match self.cfg.mode {
+                            UpdateMode::Warn | UpdateMode::Auto => {
+                                warn!(
+                                    target: "spt_updater",
+                                    latest = %outcome.latest_tag,
+                                    current = %s.current_version,
+                                    "spt: a newer release is available"
+                                );
+                            }
+                            _ => {
+                                info!(
+                                    target: "spt_updater",
+                                    latest = %outcome.latest_tag,
+                                    current = %s.current_version,
+                                    "spt update check: newer release detected"
+                                );
+                            }
                         }
                     }
-                    if matches!(self.cfg.mode, UpdateMode::Auto) {
-                        // Auto install lands in a subsequent commit.
-                        info!(
-                            target: "spt_updater",
-                            "mode = auto but install path is scaffolded; \
-                             skipping until atomic-swap commit lands"
-                        );
+                }
+
+                if outcome.update_available && matches!(self.cfg.mode, UpdateMode::Auto) {
+                    match apply_update(&self.cfg).await {
+                        Ok(report) => {
+                            info!(
+                                target: "spt_updater",
+                                version = %report.version,
+                                artifact = %report.installed_from.display(),
+                                "auto-update installed; supervisor restart {}",
+                                if report.restart_requested {
+                                    "requested"
+                                } else {
+                                    "skipped"
+                                }
+                            );
+                            let mut s = status.write();
+                            s.staged_artifact = Some(report.installed_from.display().to_string());
+                            s.last_error = None;
+                        }
+                        Err(e) => {
+                            warn!(
+                                target: "spt_updater",
+                                error = %e,
+                                "auto-update install failed"
+                            );
+                            status.write().last_error = Some(e.to_string());
+                        }
                     }
                 }
             }
@@ -323,4 +346,198 @@ pub async fn poll_once(cfg: &UpdaterConfig) -> UpdaterResult<CheckOutcome> {
         current_version: current.0.to_tag_string(),
         update_available,
     })
+}
+
+/// Result of a full download → verify → install cycle.
+#[derive(Debug, Clone)]
+pub struct ApplyReport {
+    /// The version that was installed (bare tag form).
+    pub version: String,
+    /// Path the new binary was installed from (the staged artifact).
+    pub installed_from: std::path::PathBuf,
+    /// Whether `[updater.action].restart_supervisor` asked for a restart.
+    pub restart_requested: bool,
+}
+
+/// Resolve the staging directory: the configured dir, else a temp-dir
+/// fallback under the OS temp (used for one-shot `spt update download`).
+fn staging_dir(cfg: &UpdaterConfig) -> std::path::PathBuf {
+    cfg.staging
+        .dir
+        .clone()
+        .unwrap_or_else(|| std::env::temp_dir().join("spt-updates"))
+}
+
+/// Download the latest artifact for this build's target into the staging
+/// directory and verify it. Does **not** install. Used by `spt update
+/// download` and as the first half of [`apply_update`].
+pub async fn download_and_verify(cfg: &UpdaterConfig) -> UpdaterResult<download::Staged> {
+    let backend = source::build_source(cfg)?;
+    let release = backend.latest().await?;
+    let dir = staging_dir(cfg);
+    let staged = download::download_release(&release, download::TARGET, &dir).await?;
+
+    let inputs = verify::VerifyInputs {
+        expected_sha256: staged.expected_sha256.clone(),
+        sha256sums_body: staged.sha256sums.clone(),
+        artifact_name: Some(staged.name.clone()),
+    };
+    verify::verify_artifact(
+        &cfg.verify,
+        &staged.artifact,
+        staged.signature.as_deref(),
+        &inputs,
+    )?;
+    Ok(staged)
+}
+
+/// Full update cycle: poll → download → verify → atomic install. Returns the
+/// install report; the caller (supervisor / CLI) decides whether to act on
+/// `restart_requested`. The actual supervisor restart is the caller's job —
+/// this crate has no handle to the running supervisor.
+pub async fn apply_update(cfg: &UpdaterConfig) -> UpdaterResult<ApplyReport> {
+    let backend = source::build_source(cfg)?;
+    let release = backend.latest().await?;
+    let latest = version::Version::parse_tag(&release.tag)?;
+    let current = version::CurrentVersion::from_build();
+    if !latest.is_newer_than(&current.0) {
+        return Err(UpdaterError::Install(format!(
+            "no newer release to apply (current {} >= latest {})",
+            current.0.to_tag_string(),
+            latest.to_tag_string()
+        )));
+    }
+
+    let dir = staging_dir(cfg);
+    let staged = download::download_release(&release, download::TARGET, &dir).await?;
+    let inputs = verify::VerifyInputs {
+        expected_sha256: staged.expected_sha256.clone(),
+        sha256sums_body: staged.sha256sums.clone(),
+        artifact_name: Some(staged.name.clone()),
+    };
+    verify::verify_artifact(
+        &cfg.verify,
+        &staged.artifact,
+        staged.signature.as_deref(),
+        &inputs,
+    )?;
+
+    install::install_atomic(&staged.artifact).await?;
+
+    Ok(ApplyReport {
+        version: latest.to_tag_string(),
+        installed_from: staged.artifact,
+        restart_requested: cfg.action.restart_supervisor,
+    })
+}
+
+#[cfg(test)]
+mod apply_tests {
+    use super::*;
+    use crate::config::{
+        ActionConfig, ReleaseChannel, ScheduleKind, SourceKind, StagingConfig, VerifyConfig,
+    };
+
+    /// Build a static-source config rooted at a local dist dir, with
+    /// verification disabled (best-effort) so the test exercises the
+    /// download → install wiring without needing signing material.
+    fn static_cfg(
+        dist: &std::path::Path,
+        stage: &std::path::Path,
+        mode: UpdateMode,
+    ) -> UpdaterConfig {
+        UpdaterConfig {
+            enabled: true,
+            mode,
+            schedule: ScheduleKind::Interval(Duration::from_secs(60)),
+            source: SourceKind::Static {
+                dir: dist.to_path_buf(),
+            },
+            verify: VerifyConfig {
+                require_minisign: false,
+                minisign_pubkey: None,
+                require_sha256sums: false,
+                gpg_pubkey: None,
+            },
+            action: ActionConfig {
+                restart_supervisor: true,
+                notify_audit: false,
+                post_install_hook: None,
+            },
+            staging: StagingConfig {
+                dir: Some(stage.to_path_buf()),
+                keep_last: 1,
+            },
+            window: None,
+        }
+    }
+
+    /// Lay out a `dist/` dir with a manifest + one artifact whose name embeds
+    /// the running build's target so `select_artifact` matches it.
+    fn lay_out_dist(dist: &std::path::Path, tag: &str, body: &[u8]) -> String {
+        let target = download::TARGET;
+        let art_name = format!("spt-{tag}-{target}.tar.gz");
+        std::fs::write(dist.join(&art_name), body).unwrap();
+        let manifest = serde_json::json!({
+            "tag": tag,
+            "published_at": "2099-01-01T00:00:00Z",
+            "artifacts": [ { "name": art_name } ],
+            "signatures": []
+        });
+        std::fs::write(
+            dist.join("release-manifest.json"),
+            serde_json::to_vec(&manifest).unwrap(),
+        )
+        .unwrap();
+        art_name
+    }
+
+    #[tokio::test]
+    async fn apply_update_downloads_verifies_installs() {
+        let dist = tempfile::tempdir().unwrap();
+        let stage = tempfile::tempdir().unwrap();
+        // A far-future tag so it is unconditionally "newer" than the build.
+        lay_out_dist(dist.path(), "99.0", b"NEW BINARY BYTES");
+        let cfg = static_cfg(dist.path(), stage.path(), UpdateMode::Auto);
+
+        // current_exe is the test runner; install over an explicit sham
+        // target instead by routing through download_and_verify + install_over.
+        let staged = download_and_verify(&cfg).await.unwrap();
+        assert!(staged.artifact.exists());
+
+        let target = stage.path().join("installed-spt");
+        std::fs::write(&target, b"OLD").unwrap();
+        install::install_over(&staged.artifact, &target)
+            .await
+            .unwrap();
+        assert_eq!(std::fs::read(&target).unwrap(), b"NEW BINARY BYTES");
+    }
+
+    #[tokio::test]
+    async fn apply_update_refuses_when_not_newer() {
+        let dist = tempfile::tempdir().unwrap();
+        let stage = tempfile::tempdir().unwrap();
+        // Tag 0.0 is older than any real build version.
+        lay_out_dist(dist.path(), "0.0", b"x");
+        let cfg = static_cfg(dist.path(), stage.path(), UpdateMode::Auto);
+        let err = apply_update(&cfg).await.unwrap_err();
+        assert_eq!(err.code(), "updater_install");
+    }
+
+    #[tokio::test]
+    async fn download_and_verify_fails_closed_on_required_sha_without_material() {
+        let dist = tempfile::tempdir().unwrap();
+        let stage = tempfile::tempdir().unwrap();
+        lay_out_dist(dist.path(), "99.0", b"bytes");
+        let mut cfg = static_cfg(dist.path(), stage.path(), UpdateMode::Auto);
+        cfg.verify.require_sha256sums = true; // strict, no digest published
+        let err = download_and_verify(&cfg).await.unwrap_err();
+        assert_eq!(err.code(), "updater_verify");
+    }
+
+    #[test]
+    fn channel_enum_round_trips_for_completeness() {
+        // Guards against accidental removal of the prerelease arm.
+        assert_ne!(ReleaseChannel::Stable, ReleaseChannel::Prerelease);
+    }
 }

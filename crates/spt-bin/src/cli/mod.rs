@@ -45,6 +45,7 @@ pub mod config_ops;
 pub mod diag_ops;
 pub mod dns_ops;
 pub mod event_ops;
+pub mod event_sink_fire;
 pub mod firewall_ops;
 pub mod forward_ops;
 // t6-e6:start

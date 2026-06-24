@@ -94,10 +94,22 @@ pub async fn replay(global: &GlobalOpts, args: EventReplayArgs) -> Result<()> {
             .collect()
     };
 
+    let commands = cfg
+        .events
+        .as_ref()
+        .map(|e| e.commands.clone())
+        .unwrap_or_default();
+
     let event_arc = Arc::new(evt);
     let mut results = Vec::new();
     for sc in &target_sinks {
-        let outcome = fire_through_sink(sc, Arc::clone(&event_arc)).await;
+        let outcome = crate::cli::event_sink_fire::fire_event_through_sink(
+            global,
+            sc,
+            &commands,
+            Arc::clone(&event_arc),
+        )
+        .await;
         results.push(json!({
             "sink": sc.name,
             "kind": sc.kind,
@@ -260,60 +272,9 @@ fn kind_matches_pattern(kind: &spt_events::event::EventKind, pat: &str) -> bool 
     kind.matches_pattern(pat)
 }
 
-async fn fire_through_sink(
-    sc: &EventSink,
-    evt: Arc<spt_events::event::Event>,
-) -> std::result::Result<(), String> {
-    use spt_events::Sink;
-    match sc.kind.as_str() {
-        "webpush" => {
-            use spt_events::sinks::push::{Subscription, VapidIdentity, WebPushSink};
-            let key = sc
-                .vapid_private_key
-                .as_deref()
-                .ok_or_else(|| "webpush: missing vapid_private_key".to_owned())?;
-            let subject = sc
-                .vapid_subject
-                .as_deref()
-                .ok_or_else(|| "webpush: missing vapid_subject".to_owned())?;
-            let vapid = VapidIdentity::from_base64url(key, subject)
-                .map_err(|e| format!("webpush: vapid: {e}"))?;
-            let subs_cfg = sc
-                .subscriptions
-                .as_ref()
-                .ok_or_else(|| "webpush: missing subscriptions".to_owned())?;
-            let subs: Vec<Subscription> = subs_cfg
-                .iter()
-                .map(|s| Subscription {
-                    endpoint: s.endpoint.clone(),
-                    p256dh_key: s.p256dh.clone(),
-                    // `s.auth` is a `RedactedString` (t5-e7) — we pull the
-                    // cleartext via `expose()` to feed `Subscription`'s
-                    // `String` field. The `RedactedString` original keeps
-                    // its zeroize-on-drop guarantee.
-                    auth_secret: s.auth.expose().to_owned(),
-                })
-                .collect();
-            let transport: Arc<dyn spt_events::sinks::http::HttpTransport> = Arc::new(
-                spt_events::sinks::http::reqwest_transport::ReqwestTransport::new(
-                    std::time::Duration::from_secs(10),
-                )
-                .map_err(|e| format!("webpush: transport: {e}"))?,
-            );
-            let body = sc
-                .body_template
-                .clone()
-                .unwrap_or_else(|| "{{message}}".into());
-            let sink = WebPushSink::new(sc.name.clone(), body, subs, vapid, transport);
-            sink.deliver(evt).await.map_err(|e| e.to_string())
-        }
-        other => Err(format!(
-            "sink kind `{other}` is not yet wired through `event replay` \
-             (today: webpush). Other kinds are exercised via \
-             `spt event sink test`."
-        )),
-    }
-}
+// The construct-and-fire path lives in `crate::cli::event_sink_fire`, shared
+// with `spt event test`. Every configured sink kind is built via
+// `spt_events::build_sink` with real transports.
 
 // ---------------------------------------------------------------------------
 // Tests

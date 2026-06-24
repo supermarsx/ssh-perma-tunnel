@@ -4008,7 +4008,15 @@ async fn event_test(global: &GlobalOpts, args: groups::event::EventTest) -> Resu
     for action in &binding.actions {
         let sink_cfg = events.sinks.iter().find(|s| s.name == *action);
         let outcome = match sink_cfg {
-            Some(sc) => fire_synthetic_through_sink(sc).await,
+            Some(sc) => {
+                crate::cli::event_sink_fire::fire_event_through_sink(
+                    global,
+                    sc,
+                    &events.commands,
+                    crate::cli::event_sink_fire::synthetic_event(),
+                )
+                .await
+            }
             None => Err(format!(
                 "sink `{action}` referenced by binding but not configured"
             )),
@@ -4033,12 +4041,23 @@ async fn event_sink_test(global: &GlobalOpts, args: groups::event::EventSinkTest
     let path = require_config_path(global)?;
     let (cfg, _) =
         spt_config::load(&path, false).map_err(|e| Error::InvalidConfig(format!("load: {e}")))?;
+    let commands = cfg
+        .events
+        .as_ref()
+        .map(|e| e.commands.clone())
+        .unwrap_or_default();
     let sink_cfg = cfg
         .events
         .as_ref()
         .and_then(|e| e.sinks.iter().find(|s| s.name == args.sink).cloned())
         .ok_or_else(|| Error::InvalidArgs(format!("no sink `{}`", args.sink)))?;
-    let outcome = fire_synthetic_through_sink(&sink_cfg).await;
+    let outcome = crate::cli::event_sink_fire::fire_event_through_sink(
+        global,
+        &sink_cfg,
+        &commands,
+        crate::cli::event_sink_fire::synthetic_event(),
+    )
+    .await;
     let v = serde_json::json!({
         "sink": sink_cfg.name,
         "kind": sink_cfg.kind,
@@ -4058,68 +4077,10 @@ async fn event_sink_test(global: &GlobalOpts, args: groups::event::EventSinkTest
     Ok(())
 }
 
-/// Build a sink from `[[events.sinks]]` and fire one synthetic event through
-/// it. Returns `Err(message)` on construction or delivery failure. WebPush
-/// sinks (`kind = "webpush"`) instantiate via `WebPushSink::new`.
-async fn fire_synthetic_through_sink(
-    sc: &spt_config::schema::EventSink,
-) -> std::result::Result<(), String> {
-    use spt_events::{
-        event::{EventBuilder, EventKind, Severity},
-        Sink,
-    };
-    use std::sync::Arc;
-
-    let evt = Arc::new(
-        EventBuilder::new(EventKind::new("synthetic.test"), Severity::Info)
-            .message("synthetic event from `spt event test`")
-            .build(),
-    );
-
-    match sc.kind.as_str() {
-        "webpush" => {
-            use spt_events::sinks::push::{Subscription, VapidIdentity, WebPushSink};
-            let key = sc
-                .vapid_private_key
-                .as_deref()
-                .ok_or_else(|| "webpush: missing vapid_private_key".to_owned())?;
-            let subject = sc
-                .vapid_subject
-                .as_deref()
-                .ok_or_else(|| "webpush: missing vapid_subject".to_owned())?;
-            let vapid = VapidIdentity::from_base64url(key, subject)
-                .map_err(|e| format!("webpush: vapid: {e}"))?;
-            let subs_cfg = sc
-                .subscriptions
-                .as_ref()
-                .ok_or_else(|| "webpush: missing subscriptions".to_owned())?;
-            let subs: Vec<Subscription> = subs_cfg
-                .iter()
-                .map(|s| Subscription {
-                    endpoint: s.endpoint.clone(),
-                    p256dh_key: s.p256dh.clone(),
-                    auth_secret: s.auth.expose().to_owned(),
-                })
-                .collect();
-            // Build a reqwest-backed HTTP transport with a short test timeout.
-            let transport: Arc<dyn spt_events::sinks::http::HttpTransport> = Arc::new(
-                spt_events::sinks::http::reqwest_transport::ReqwestTransport::new(
-                    std::time::Duration::from_secs(10),
-                )
-                .map_err(|e| format!("webpush: transport: {e}"))?,
-            );
-            let body = sc
-                .body_template
-                .clone()
-                .unwrap_or_else(|| "{{message}}".into());
-            let sink = WebPushSink::new(sc.name.clone(), body, subs, vapid, transport);
-            sink.deliver(evt).await.map_err(|e| e.to_string())
-        }
-        other => Err(format!(
-            "sink kind `{other}` not yet wired in `event test` (M3 fills the rest)"
-        )),
-    }
-}
+// The construct-and-fire path lives in `crate::cli::event_sink_fire`, shared
+// with `spt event replay`. Every configured sink kind is built via
+// `spt_events::build_sink` with real transports (M3 closed the
+// webpush-only gap).
 
 fn event_list(global: &GlobalOpts, json: bool) -> Result<()> {
     let path = require_config_path(global)?;
