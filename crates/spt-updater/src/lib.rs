@@ -46,6 +46,8 @@ pub mod error;
 pub mod install;
 pub mod schedule;
 pub mod source;
+#[cfg(feature = "testing")]
+pub mod testing;
 pub mod verify;
 pub mod version;
 

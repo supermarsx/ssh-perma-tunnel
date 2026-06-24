@@ -45,6 +45,33 @@ path = "e2e/ssh2_keepalive.rs"
 name = "cfgcrypt_tunnel_up"
 path = "e2e/cfgcrypt_tunnel_up.rs"
 
+# t-e2e Waves B-G: six new targets registered up-front as empty-but-valid
+# placeholders so parallel content executors can fill the `.rs` files WITHOUT
+# touching this manifest. See `.orchestration/plans/t-e2e.md`.
+[[test]]
+name = "ssh2_dynamic_udp_hops"
+path = "e2e/ssh2_dynamic_udp_hops.rs"
+
+[[test]]
+name = "remote_config_reload"
+path = "e2e/remote_config_reload.rs"
+
+[[test]]
+name = "ssh3_supervised_serve"
+path = "e2e/ssh3_supervised_serve.rs"
+
+[[test]]
+name = "health_probes"
+path = "e2e/health_probes.rs"
+
+[[test]]
+name = "obfs_secret_tunnel"
+path = "e2e/obfs_secret_tunnel.rs"
+
+[[test]]
+name = "update_eventsink"
+path = "e2e/update_eventsink.rs"
+
 # `dependencies` (NOT dev-dependencies) so the lib in `support/mod.rs` —
 # which re-exports the SharedLogProtocol used by every ssh2_*.rs test —
 # can compile against them. Tests link both the lib and the dev-deps below.
@@ -83,3 +110,22 @@ spt-remote-config = { workspace = true }
 secrecy = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
+# t-e2e Waves C-F dev-deps. All are existing workspace members already in the
+# graph/lock — additive edges only, NO new package, NO version bump. The
+# `testing` feature is enabled where the crate gates its test fixtures behind
+# it (verified each crate's `[features]`):
+#   spt-ssh3   — Ssh3TestServer/serve() (Wave C)
+#   spt-obfs   — obfs acceptor/MockAuditHook fixtures (Wave E)
+#   spt-secrets— vault/keychain test backends (Wave E)
+#   spt-key    — key fixtures (rand_chacha/tempfile) (Wave E)
+#   spt-updater— mock ReleaseSource (Wave F; feature declared, body TBD by executor)
+#   spt-events — CapturingSink/AlwaysFailSink (Wave F)
+# Multi-hop (Wave B) needs no new crate: it chains multiple `RusshTestServer`s
+# from spt-ssh2 (already a dev-dep above). `spt-chaos-proxy` is NOT added — it
+# has no `testing` feature and is not required by the planned tests.
+spt-ssh3 = { workspace = true, features = ["testing"] }
+spt-obfs = { workspace = true, features = ["testing"] }
+spt-secrets = { workspace = true, features = ["testing"] }
+spt-key = { workspace = true, features = ["testing"] }
+spt-updater = { workspace = true, features = ["testing"] }
+spt-events = { workspace = true, features = ["testing"] }

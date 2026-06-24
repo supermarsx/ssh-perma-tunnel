@@ -5981,11 +5981,17 @@ dependencies = [
  "spt-config",
  "spt-config-crypt",
  "spt-core",
+ "spt-events",
  "spt-forward",
+ "spt-key",
+ "spt-obfs",
  "spt-protocol",
  "spt-remote-config",
+ "spt-secrets",
  "spt-ssh2",
+ "spt-ssh3",
  "spt-supervisor",
+ "spt-updater",
  "tokio",
 ]
 
