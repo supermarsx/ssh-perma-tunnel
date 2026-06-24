@@ -1,3 +1,12 @@
+## [26.26] - 2026-06-24
+
+# spt 26.26
+
+## Changes since 26.25
+
+- chore: remove tracked clippy files (clippy.toml + stray artifact) (1cc90de)
+- test(e2e): config-crypt tunnel-up end-to-end (PSK + X25519) (c09e29f)
+
 ## [26.25] - 2026-06-24
 
 # spt 26.25
