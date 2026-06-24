@@ -1,3 +1,0 @@
-avoid-breaking-exported-api = false
-# t9-Bump: aligned with workspace.package.rust-version (1.88).
-msrv = "1.88.0"
