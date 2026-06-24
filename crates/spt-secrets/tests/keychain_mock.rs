@@ -21,9 +21,13 @@ use std::sync::{Mutex, OnceLock};
 use keyring::credential::{
     Credential, CredentialApi, CredentialBuilder, CredentialBuilderApi, CredentialPersistence,
 };
+use std::sync::Arc;
+
 use secrecy::ExposeSecret;
 use spt_core::Error;
-use spt_secrets::{BackendKind, BackendStatus, KeychainBackend, SecretBackend, SecretRef};
+use spt_secrets::{
+    BackendKind, BackendStatus, FileBackend, KeychainBackend, Resolver, SecretBackend, SecretRef,
+};
 
 // ---------------------------------------------------------------------------
 // Local mock with fault injection.
@@ -229,34 +233,35 @@ fn full_lifecycle_set_get_remove() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn get_with_platform_failure_returns_secret_unavailable() {
+fn get_with_platform_failure_falls_through_to_none() {
     let svc = "spt-kchn-it-get-platfail";
     setup(svc);
     let kc = KeychainBackend::with_service(svc);
     let r = fresh_ref("k");
 
+    // A `PlatformFailure` on `get` means the platform secret store is
+    // entirely unavailable (e.g. no D-Bus/Secret Service on a headless
+    // server). The keychain backend must NOT abort the resolver chain in
+    // that case — it returns `Ok(None)` so env/file backends still resolve.
     set_fault(svc, "kchn-it:k", FaultKind::PlatformFailure);
-    let err = kc.get(&r).unwrap_err();
-    match err {
-        Error::SecretUnavailable { reference, reason } => {
-            assert_eq!(reference, "secret://kchn-it/k");
-            assert!(reason.contains("keychain get"));
-        }
-        other => panic!("unexpected error: {other:?}"),
-    }
+    assert!(
+        kc.get(&r).unwrap().is_none(),
+        "unavailable platform store must fall through to None, not error"
+    );
     clear_fault(svc, "kchn-it:k");
 }
 
 #[test]
-fn get_with_no_storage_access_returns_secret_unavailable() {
+fn get_with_no_storage_access_falls_through_to_none() {
     let svc = "spt-kchn-it-get-nsa";
     setup(svc);
     let kc = KeychainBackend::with_service(svc);
     let r = fresh_ref("k");
 
+    // `NoStorageAccess` likewise means the store can't be reached at all;
+    // it must fall through rather than short-circuit the resolver.
     set_fault(svc, "kchn-it:k", FaultKind::NoStorageAccess);
-    let err = kc.get(&r).unwrap_err();
-    assert!(matches!(err, Error::SecretUnavailable { .. }));
+    assert!(kc.get(&r).unwrap().is_none());
     clear_fault(svc, "kchn-it:k");
 }
 
@@ -271,6 +276,36 @@ fn get_with_bad_encoding_returns_secret_unavailable() {
     let err = kc.get(&r).unwrap_err();
     assert!(matches!(err, Error::SecretUnavailable { .. }));
     clear_fault(svc, "kchn-it:k");
+}
+
+#[test]
+fn unavailable_keychain_does_not_abort_resolver_chain() {
+    // Regression for the headless-Linux CI failure: with the keychain first
+    // in the resolver chain and the platform store unavailable
+    // (`PlatformFailure`, e.g. no D-Bus session), resolution must fall
+    // through to the file backend instead of short-circuiting with an error.
+    let svc = "spt-kchn-it-chain-fallthrough";
+    setup(svc);
+
+    let r = SecretRef::new("kchn-it", "chained").unwrap();
+
+    // File backend rooted at a temp dir, seeded with the secret. `set`
+    // writes the file with owner-only (0o600) permissions, which satisfies
+    // the backend's own mode check on read.
+    let dir = tempfile::tempdir().unwrap();
+    let file = Arc::new(FileBackend::new(dir.path().to_path_buf()));
+    file.set(&r, b"from-file").unwrap();
+
+    let keychain: Arc<dyn SecretBackend> = Arc::new(KeychainBackend::with_service(svc));
+    set_fault(svc, "kchn-it:chained", FaultKind::PlatformFailure);
+
+    let resolver = Resolver::new(vec![keychain, file]);
+    let got = resolver
+        .resolve(&r)
+        .expect("chain must resolve via file backend when keychain is unavailable");
+    assert_eq!(got.expose_secret().as_slice(), b"from-file");
+
+    clear_fault(svc, "kchn-it:chained");
 }
 
 #[test]

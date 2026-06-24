@@ -19,6 +19,8 @@
 //!   Credentials API. Storage is per-user and per-machine; roaming profiles
 //!   may not roam credentials.
 
+use std::sync::Once;
+
 use keyring::Entry;
 use spt_core::{Error, Result};
 use tracing::warn;
@@ -92,7 +94,22 @@ impl SecretBackend for KeychainBackend {
         let entry = self.entry_for(r)?;
         match entry.get_secret() {
             Ok(bytes) => Ok(Some(secret_bytes(bytes))),
+            // The reference has no entry in this store → fall through.
             Err(keyring::Error::NoEntry) => Ok(None),
+            // The platform secret store is entirely unavailable — no running
+            // Secret Service / D-Bus session (the common case on headless
+            // Linux servers) or the store can't be accessed at all. The
+            // keychain simply can't serve *any* reference here, so it must NOT
+            // abort the resolver chain: env/file backends still need a shot.
+            // We translate these to `Ok(None)` ("this backend has nothing for
+            // you, keep looking") and warn once so the condition is visible.
+            Err(e @ (keyring::Error::PlatformFailure(_) | keyring::Error::NoStorageAccess(_))) => {
+                warn_keychain_unavailable_once(&e);
+                Ok(None)
+            }
+            // Any other error means the entry *exists* but could not be read
+            // correctly (e.g. a malformed/ambiguous credential). That is a
+            // genuine failure that must halt resolution loudly.
             Err(e) => Err(Error::SecretUnavailable {
                 reference: r.to_string(),
                 reason: format!("keychain get: {e}"),
@@ -162,6 +179,22 @@ impl SecretBackend for KeychainBackend {
             ),
         }
     }
+}
+
+/// Emit a single `warn!` the first time the OS keychain is found to be
+/// entirely unavailable during a `get`. On headless servers this is the
+/// expected steady state (no Secret Service / D-Bus), so we deliberately log
+/// it once rather than on every resolution to avoid log spam while still
+/// surfacing the condition for operators who expected a keychain.
+fn warn_keychain_unavailable_once(e: &keyring::Error) {
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| {
+        warn!(
+            error = %e,
+            "OS keychain unavailable; falling through to remaining secret \
+             backends (env/file). This is expected on headless servers."
+        );
+    });
 }
 
 #[cfg(target_os = "linux")]
