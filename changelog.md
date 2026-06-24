@@ -1,3 +1,11 @@
+## [26.25] - 2026-06-24
+
+# spt 26.25
+
+## Changes since 26.24
+
+- feat(config-crypt): raw-PSK AES mode, key generation, and remote-config decrypt-on-fetch (903a524)
+
 ## [26.24] - 2026-06-24
 
 # spt 26.24
