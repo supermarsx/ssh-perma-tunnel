@@ -1,3 +1,12 @@
+## [26.24] - 2026-06-24
+
+# spt 26.24
+
+## Changes since 26.23
+
+- fix(secrets): keychain unavailability falls through instead of aborting the resolver chain (7c5b5c5)
+- feat: implement pending in-code TODOs (updater + CLI phase-B + event sinks) (8f45de0)
+
 ## [26.23] - 2026-06-23
 
 # spt 26.23
