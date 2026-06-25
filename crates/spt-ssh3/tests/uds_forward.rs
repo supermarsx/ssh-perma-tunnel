@@ -136,18 +136,25 @@ async fn connect(server_addr: SocketAddr, pin: [u8; 32]) -> Box<dyn TunnelSessio
         .expect("ssh3 bootstrap should succeed against loopback server")
 }
 
-/// Unique per-test socket path under the OS temp dir.
+/// Unique per-test socket path, kept SHORT.
+///
+/// macOS caps `sun_path` at ~104 bytes and its `std::env::temp_dir()`
+/// (`/var/folders/…/T/`) is long enough that the old verbose name tipped over
+/// the limit (flaky `bind` failures, aarch64-apple-darwin only). Bind under
+/// `/tmp` (short, present on all unix) with a compact name to stay well within
+/// the limit; fall back to `temp_dir()` only if `/tmp` is unavailable.
 fn sock_path(tag: &str) -> PathBuf {
-    let mut p = std::env::temp_dir();
-    let uniq = format!(
-        "spt-ssh3-uds-{tag}-{}-{}.sock",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    );
-    p.push(uniq);
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static SEQ: AtomicU32 = AtomicU32::new(0);
+    let mut p = PathBuf::from("/tmp");
+    if !p.is_dir() {
+        p = std::env::temp_dir();
+    }
+    p.push(format!(
+        "s3{tag}{}-{}.sock",
+        std::process::id() % 100_000,
+        SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
     p
 }
 
