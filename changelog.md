@@ -1,3 +1,11 @@
+## [26.30] - 2026-06-25
+
+# spt 26.30
+
+## Changes since 26.29
+
+- chore: remove stray crates/spt-tui/<memory> artifact (9a92823)
+
 ## [26.29] - 2026-06-25
 
 # spt 26.29
