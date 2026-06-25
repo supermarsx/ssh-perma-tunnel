@@ -22,6 +22,9 @@ use tokio::sync::Mutex;
 
 use crate::client::SftpClient;
 
+/// A synthetic hostile READDIR entry: `(file_name, attrs, symlink_target)`.
+type EvilEntry = (String, FileAttributes, Option<String>);
+
 /// File handle state tracked inside the mock server.
 #[derive(Debug)]
 struct OpenFile {
@@ -48,6 +51,12 @@ pub struct MockHandler {
     /// When set, the next operation matching `inject_failure_op` returns
     /// `Failure` with `inject_failure_msg`. Used to exercise error mapping.
     inject: Arc<Mutex<Option<(String, String)>>>,
+    /// Synthetic READDIR entries appended to every `readdir` response.
+    /// Lets path-traversal tests emit hostile entry names (e.g.
+    /// `../../escape`, absolute paths, drive/UNC prefixes, or symlinks with
+    /// escaping targets) that a real filesystem could never produce as a
+    /// single dir entry. Each tuple is `(file_name, attrs, symlink_target)`.
+    extra_entries: Arc<Mutex<Vec<EvilEntry>>>,
 }
 
 impl MockHandler {
@@ -58,6 +67,7 @@ impl MockHandler {
             dirs: HashMap::new(),
             next: Arc::new(AtomicU64::new(1)),
             inject: Arc::new(Mutex::new(None)),
+            extra_entries: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -142,6 +152,13 @@ impl Handler for MockHandler {
                 .await
                 .map_err(|_| StatusCode::Failure)?;
             entries.push((name, metadata_to_attrs(&m)));
+        }
+        // Append any synthetic hostile entries the test injected. These are
+        // emitted by EVERY opendir so a one-call recursive walk surfaces
+        // them; production servers never do this — the recursive walker's
+        // sanitiser is what must reject them.
+        for (name, attrs, _target) in self.extra_entries.lock().await.iter() {
+            entries.push((name.clone(), attrs.clone()));
         }
         let handle = self.handle_id();
         let _ = resolved;
@@ -440,6 +457,27 @@ impl Handler for MockHandler {
     }
 
     async fn readlink(&mut self, id: u32, path: String) -> Result<Name, Self::Error> {
+        // Synthetic symlink entries injected by tests resolve by their
+        // trailing path component, so the recursive walker (which calls
+        // `readlink` on `<remote_dir>/<entry_name>`) gets the hostile target.
+        let leaf = path.rsplit('/').next().unwrap_or(path.as_str());
+        if let Some((_, _, Some(target))) = self
+            .extra_entries
+            .lock()
+            .await
+            .iter()
+            .find(|(n, _, t)| n == leaf && t.is_some())
+        {
+            let target = target.clone();
+            return Ok(Name {
+                id,
+                files: vec![File {
+                    filename: target.clone(),
+                    longname: target,
+                    attrs: FileAttributes::default(),
+                }],
+            });
+        }
         let resolved = self.resolve(&path);
         let target = fs::read_link(&resolved)
             .await
@@ -525,8 +563,42 @@ impl MockSftpServer {
     /// Construct a server rooted at `root` and return both the harness and
     /// an already-connected [`SftpClient`].
     pub async fn start(root: &Path) -> (Self, SftpClient) {
+        Self::start_with_evil_entries(root, Vec::new()).await
+    }
+
+    /// Like [`start`](Self::start), but the server appends the supplied
+    /// synthetic READDIR entries to **every** directory listing — letting
+    /// path-traversal tests emit hostile server-controlled entry names and
+    /// symlink targets that a real filesystem could never produce.
+    ///
+    /// Each entry is `(file_name, kind, symlink_target)`:
+    /// * `file_name` — the raw name the server reports (e.g. `../../escape`,
+    ///   `/etc/passwd`, `C:\\evil`, `\\\\srv\\share`).
+    /// * `kind` — what the server claims the entry is.
+    /// * `symlink_target` — for [`EvilKind::Symlink`], the (hostile) target
+    ///   string `readlink` returns for this entry; ignored otherwise.
+    pub async fn start_with_evil_entries(
+        root: &Path,
+        evil: Vec<(String, EvilKind, Option<String>)>,
+    ) -> (Self, SftpClient) {
         let (client_io, server_io) = tokio::io::duplex(64 * 1024);
         let handler = MockHandler::new(root.to_owned());
+        {
+            let mut guard = handler.extra_entries.lock().await;
+            for (name, kind, target) in evil {
+                let mut attrs = FileAttributes {
+                    size: Some(0),
+                    permissions: Some(0),
+                    ..FileAttributes::default()
+                };
+                match kind {
+                    EvilKind::File => attrs.set_regular(true),
+                    EvilKind::Dir => attrs.set_dir(true),
+                    EvilKind::Symlink => attrs.set_symlink(true),
+                }
+                guard.push((name, attrs, target));
+            }
+        }
         russh_sftp::server::run(server_io, handler).await;
         let session = SftpSession::new(client_io).await.expect("client init");
         (
@@ -536,4 +608,16 @@ impl MockSftpServer {
             SftpClient::from_russh(session),
         )
     }
+}
+
+/// The kind a [synthetic hostile entry](MockSftpServer::start_with_evil_entries)
+/// claims to be in its READDIR attributes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EvilKind {
+    /// A regular file.
+    File,
+    /// A directory.
+    Dir,
+    /// A symbolic link (its `readlink` target is the tuple's third field).
+    Symlink,
 }

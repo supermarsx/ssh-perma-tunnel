@@ -243,39 +243,44 @@ impl<'a> Decoder<'a> {
         self.pos >= self.bytes.len()
     }
 
-    fn need(&self, n: usize) -> Result<()> {
-        if self.pos + n > self.bytes.len() {
-            Err(Error::Ber(format!(
-                "truncated: need {n} byte(s) at offset {}",
-                self.pos
-            )))
-        } else {
-            Ok(())
-        }
-    }
-
     fn read_byte(&mut self) -> Result<u8> {
-        self.need(1)?;
-        let b = self.bytes[self.pos];
+        // `.get()` rather than raw indexing: never panic on wire-controlled
+        // positions even if an invariant is ever broken upstream.
+        let b = *self
+            .bytes
+            .get(self.pos)
+            .ok_or_else(|| Error::Ber(format!("truncated: need 1 byte at offset {}", self.pos)))?;
         self.pos += 1;
         Ok(b)
     }
 
     /// Peeks the next tag byte without advancing.
     pub fn peek_tag(&self) -> Result<Tag> {
-        if self.pos >= self.bytes.len() {
-            return Err(Error::Ber("expected tag, got EOF".into()));
-        }
-        Ok(Tag(self.bytes[self.pos]))
+        // `.get()` rather than raw indexing on a wire-controlled position.
+        self.bytes
+            .get(self.pos)
+            .map(|&b| Tag(b))
+            .ok_or_else(|| Error::Ber("expected tag, got EOF".into()))
     }
 
     /// Reads a `(tag, value)` pair.
     pub fn read_tlv(&mut self) -> Result<(Tag, &'a [u8])> {
         let tag = Tag(self.read_byte()?);
         let len = read_length(self)?;
-        self.need(len)?;
-        let v = &self.bytes[self.pos..self.pos + len];
-        self.pos += len;
+        // `pos + len` via `checked_add`, and the value bytes are extracted with
+        // `.get(range)` — both guard against a wire-controlled `len` wrapping
+        // and panicking on an out-of-bounds slice (the SNMP BER panic-DoS).
+        let end = self
+            .pos
+            .checked_add(len)
+            .ok_or_else(|| Error::Ber(format!("length overflow: {len} byte(s) at {}", self.pos)))?;
+        let v = self.bytes.get(self.pos..end).ok_or_else(|| {
+            Error::Ber(format!(
+                "truncated: need {len} byte(s) at offset {}",
+                self.pos
+            ))
+        })?;
+        self.pos = end;
         Ok((tag, v))
     }
 
@@ -865,6 +870,101 @@ mod tests {
         let bytes = [0x02u8, 0x00];
         let mut d = Decoder::new(&bytes);
         assert!(d.read_i64().is_err());
+    }
+
+    // --- Hostile / malformed-input regression tests (panic-DoS class) ---
+
+    #[test]
+    fn malformed_oversized_length_does_not_panic() {
+        // The exact panic-DoS datagram class: SEQUENCE tag with an 8-byte
+        // long-form length of 0xFFFF_FFFF_FFFF_FFFF (near usize::MAX) and no
+        // body. Pre-fix this wrapped `pos + len` and panicked on an
+        // out-of-bounds slice (fatal under panic = "abort"). It must now
+        // return Err with no panic.
+        let bytes = [0x30u8, 0x88, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF];
+        let mut d = Decoder::new(&bytes);
+        assert!(d.read_tlv().is_err());
+    }
+
+    #[test]
+    fn oversized_length_claims_more_than_buffer() {
+        // Short-form length claims 200 bytes but only a few follow.
+        let bytes = [0x04u8, 0x81, 200, 0x01, 0x02, 0x03];
+        let mut d = Decoder::new(&bytes);
+        assert!(d.read_tlv().is_err());
+    }
+
+    #[test]
+    fn length_at_usize_max_wraparound_rejected() {
+        // 8-byte length of exactly usize::MAX on a 64-bit target. `pos + len`
+        // would wrap to a small value with a plain add; checked_add rejects it.
+        let mut bytes = vec![0x04u8, 0x88];
+        bytes.extend_from_slice(&usize::MAX.to_be_bytes()[..8]);
+        let mut d = Decoder::new(&bytes);
+        assert!(d.read_tlv().is_err());
+    }
+
+    #[test]
+    fn truncated_tlv_value_rejected() {
+        // Tag + length=4 but only 2 value bytes present.
+        let bytes = [0x04u8, 0x04, 0xAA, 0xBB];
+        let mut d = Decoder::new(&bytes);
+        assert!(d.read_tlv().is_err());
+    }
+
+    #[test]
+    fn empty_input_reads_error_not_panic() {
+        let mut d = Decoder::new(&[]);
+        assert!(d.read_tlv().is_err());
+        assert!(d.peek_tag().is_err());
+        assert!(d.read_i64().is_err());
+        assert!(d.is_empty());
+        assert_eq!(d.remaining(), 0);
+    }
+
+    #[test]
+    fn tag_only_no_length_rejected() {
+        // A lone tag byte with no length octet must error, not panic.
+        let bytes = [0x30u8];
+        let mut d = Decoder::new(&bytes);
+        assert!(d.read_tlv().is_err());
+    }
+
+    #[test]
+    fn deeply_nested_sequences_bounded_no_stack_overflow() {
+        // A "depth bomb": N nested zero-extra-payload SEQUENCE wrappers. The
+        // decoder is iterative (each read_sequence returns a sub-decoder; the
+        // caller does not recurse), so unwrapping N levels must complete in
+        // bounded stack without overflow and without panic.
+        const DEPTH: usize = 50_000;
+        // Build innermost-out: each layer is `30 <len> <inner>`. Lengths here
+        // stay < 128 only at the bottom; use a helper that emits long-form as
+        // needed via the encoder.
+        let mut buf: Vec<u8> = Vec::new();
+        for _ in 0..DEPTH {
+            let mut e = Encoder::new();
+            e.write_raw(&buf);
+            let inner = e.finish();
+            let mut wrap = Encoder::new();
+            wrap.write_tlv(Tag::SEQUENCE, &inner);
+            buf = wrap.finish();
+        }
+        // Iteratively peel: must terminate, never overflow the stack. The
+        // loop is hard-bounded by `DEPTH + 1` iterations so a runaway would
+        // surface as a count mismatch rather than a hang.
+        let mut current = buf;
+        let mut levels = 0usize;
+        for _ in 0..=DEPTH {
+            let mut d = Decoder::new(&current);
+            let Ok(inner) = d.read_sequence() else { break };
+            levels += 1;
+            let body = inner.bytes.to_vec();
+            if body.is_empty() {
+                break;
+            }
+            current = body;
+        }
+        assert_eq!(levels, DEPTH);
     }
 
     #[test]

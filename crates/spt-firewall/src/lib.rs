@@ -119,6 +119,186 @@ pub struct Rule {
     pub interface: Option<String>,
 }
 
+/// Maximum length of a rule `id` (and any other interpolated identifier-like
+/// field). Bounds the rendered command length and rejects absurd inputs.
+pub const MAX_ID_LEN: usize = 128;
+
+/// Maximum length of an interface name. Linux `IFNAMSIZ` is 16 incl. NUL; we
+/// allow a generous bound to also cover Windows adapter aliases without ever
+/// permitting a value long enough to be abused.
+pub const MAX_INTERFACE_LEN: usize = 64;
+
+/// Why a [`Rule`] was rejected by [`validate_rule`]. Every variant is a
+/// fail-closed rejection of operator/config-controlled input that would
+/// otherwise be interpolated raw into a rendered `nft` / `pf` / `iptables` /
+/// `netsh` command (where a stray space, quote, `;`, newline, or shell
+/// metacharacter could inject an additional rule field or directive).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RuleValidationError {
+    /// The rule `id` is empty.
+    EmptyId,
+    /// The rule `id` exceeds [`MAX_ID_LEN`].
+    IdTooLong {
+        /// The offending length.
+        len: usize,
+    },
+    /// The rule `id` contains a character outside the `[A-Za-z0-9._-]`
+    /// allowlist (the offending char is reported).
+    IdBadChar {
+        /// The first disallowed character found.
+        ch: char,
+    },
+    /// The `interface` name is empty.
+    EmptyInterface,
+    /// The `interface` name exceeds [`MAX_INTERFACE_LEN`].
+    InterfaceTooLong {
+        /// The offending length.
+        len: usize,
+    },
+    /// The `interface` name contains a disallowed character.
+    InterfaceBadChar {
+        /// The first disallowed character found.
+        ch: char,
+    },
+    /// A source/destination CIDR did not parse as a valid `ip`/`ipnet` value.
+    /// Anything that is not a strict address or CIDR is rejected (this also
+    /// rejects spaces, quotes, `;`, newlines, and other injection payloads).
+    BadCidr {
+        /// `"source"` or `"dest"`.
+        which: &'static str,
+        /// The rejected value.
+        value: String,
+    },
+}
+
+impl fmt::Display for RuleValidationError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::EmptyId => f.write_str("firewall rule id is empty"),
+            Self::IdTooLong { len } => {
+                write!(f, "firewall rule id is too long ({len} > {MAX_ID_LEN})")
+            }
+            Self::IdBadChar { ch } => write!(
+                f,
+                "firewall rule id contains disallowed character {ch:?} (allowed: A-Z a-z 0-9 . _ -)"
+            ),
+            Self::EmptyInterface => f.write_str("firewall rule interface name is empty"),
+            Self::InterfaceTooLong { len } => write!(
+                f,
+                "firewall rule interface name is too long ({len} > {MAX_INTERFACE_LEN})"
+            ),
+            Self::InterfaceBadChar { ch } => write!(
+                f,
+                "firewall rule interface name contains disallowed character {ch:?} (allowed: A-Z a-z 0-9 . _ - : @)"
+            ),
+            Self::BadCidr { which, value } => write!(
+                f,
+                "firewall rule {which} address {value:?} is not a valid IP or CIDR"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for RuleValidationError {}
+
+impl From<RuleValidationError> for Error {
+    fn from(e: RuleValidationError) -> Self {
+        Error::InvalidConfig(e.to_string())
+    }
+}
+
+/// True when every character of `id` is in the strict identifier allowlist
+/// `[A-Za-z0-9._-]`. ASCII-only by construction, so no multibyte char can
+/// smuggle a separator or shell metacharacter past the renderers.
+fn is_allowed_id_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-')
+}
+
+/// Interface names accept the id allowlist plus `:` (VLAN/sub-interface, e.g.
+/// `eth0:1`) and `@` (nft/macOS aliasing). Still ASCII-only, no whitespace,
+/// quotes, or shell metacharacters.
+fn is_allowed_interface_char(c: char) -> bool {
+    is_allowed_id_char(c) || matches!(c, ':' | '@')
+}
+
+/// Validate a single [`Rule`]'s operator-controlled, raw-interpolated fields
+/// (`id`, `interface`, `source_cidr`, `dest_cidr`) against strict allowlists
+/// **before** any renderer interpolates them into a native firewall command.
+///
+/// This is the security boundary for the firewall renderers: the `id` flows
+/// from `profile.name`/`forward.name` and the interface/CIDRs from `[firewall]`
+/// config, all of which would otherwise be embedded verbatim into
+/// `name="spt:<id>"` (netsh), `comment "spt:<id>"` / `iif "<iface>"` (nft),
+/// `label "spt:<id>"` / `on <iface>` (pf), and `-i <iface>` / `-s <cidr>`
+/// (iptables). A value containing a space, quote, `;`, newline, `&`, backtick,
+/// `$()`, `..`, or other metacharacter could inject an additional rule field
+/// or break out of a quoted token. We reject anything outside the allowlist.
+///
+/// CIDRs are validated by parsing as an [`ipnet::IpNet`] or bare [`IpAddr`];
+/// a bare IP is accepted (the renderers tolerate it) but any non-address form
+/// (including injection payloads) is rejected.
+///
+/// # Errors
+/// Returns the first [`RuleValidationError`] encountered. Fail-closed: callers
+/// should reject the whole apply rather than rendering a partially-valid set.
+pub fn validate_rule(rule: &Rule) -> std::result::Result<(), RuleValidationError> {
+    if rule.id.is_empty() {
+        return Err(RuleValidationError::EmptyId);
+    }
+    if rule.id.len() > MAX_ID_LEN {
+        return Err(RuleValidationError::IdTooLong { len: rule.id.len() });
+    }
+    if let Some(ch) = rule.id.chars().find(|c| !is_allowed_id_char(*c)) {
+        return Err(RuleValidationError::IdBadChar { ch });
+    }
+
+    if let Some(iface) = &rule.interface {
+        if iface.is_empty() {
+            return Err(RuleValidationError::EmptyInterface);
+        }
+        if iface.len() > MAX_INTERFACE_LEN {
+            return Err(RuleValidationError::InterfaceTooLong { len: iface.len() });
+        }
+        if let Some(ch) = iface.chars().find(|c| !is_allowed_interface_char(*c)) {
+            return Err(RuleValidationError::InterfaceBadChar { ch });
+        }
+    }
+
+    validate_cidr("source", rule.source_cidr.as_deref())?;
+    validate_cidr("dest", rule.dest_cidr.as_deref())?;
+
+    Ok(())
+}
+
+/// Validate every rule in `rules`. Returns the first failure.
+///
+/// # Errors
+/// Returns the first [`RuleValidationError`] encountered, fail-closed.
+pub fn validate_rules(rules: &[Rule]) -> std::result::Result<(), RuleValidationError> {
+    for r in rules {
+        validate_rule(r)?;
+    }
+    Ok(())
+}
+
+/// Parse a CIDR/address field, rejecting anything that is neither a strict
+/// `ipnet::IpNet` nor a bare `IpAddr`. Catches whitespace/quote/`;`/newline
+/// injection payloads (none parse as an address).
+fn validate_cidr(
+    which: &'static str,
+    value: Option<&str>,
+) -> std::result::Result<(), RuleValidationError> {
+    let Some(v) = value else { return Ok(()) };
+    if v.parse::<ipnet::IpNet>().is_ok() || v.parse::<std::net::IpAddr>().is_ok() {
+        Ok(())
+    } else {
+        Err(RuleValidationError::BadCidr {
+            which,
+            value: v.to_string(),
+        })
+    }
+}
+
 /// A rendered firewall plan, ready to be `apply()`d or printed in dry-run.
 ///
 /// The plan is captured as a single multi-line string so tests can snapshot
@@ -362,8 +542,25 @@ pub(crate) fn run_native(program: &str, args: &[&str], stdin: Option<&str>) -> R
 }
 
 /// Sort + dedupe rules so plans are deterministic regardless of caller order.
+///
+/// **Fail-closed renderer defense:** any rule that does not pass
+/// [`validate_rule`] is dropped here so a malformed/injection-bearing field can
+/// never reach a rendered `nft` / `pf` / `iptables` / `netsh` command, even if
+/// a caller forgot to validate at its own boundary. Callers SHOULD still call
+/// [`validate_rules`] up-front to surface a clear error to the operator; this
+/// is the last line of defense, not the primary one. A dropped rule is logged
+/// at `warn`.
 pub(crate) fn normalize(rules: &[Rule]) -> Vec<&Rule> {
-    let mut out: Vec<&Rule> = rules.iter().collect();
+    let mut out: Vec<&Rule> = rules
+        .iter()
+        .filter(|r| match validate_rule(r) {
+            Ok(()) => true,
+            Err(e) => {
+                tracing::warn!(rule_id = %r.id, error = %e, "spt-firewall: dropping invalid rule");
+                false
+            }
+        })
+        .collect();
     out.sort_by(|a, b| a.id.cmp(&b.id));
     out.dedup_by(|a, b| a.id == b.id);
     out

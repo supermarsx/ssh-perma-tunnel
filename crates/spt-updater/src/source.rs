@@ -7,6 +7,8 @@
 //! `impl ReleaseSource for FooSource` and a one-line dispatch in
 //! [`build_source`].
 
+use std::time::Duration;
+
 use async_trait::async_trait;
 use reqwest::header::{ACCEPT, USER_AGENT};
 use reqwest::Client;
@@ -79,12 +81,31 @@ pub fn build_source(cfg: &UpdaterConfig) -> UpdaterResult<Box<dyn ReleaseSource>
 /// Shared user-agent for every HTTP backend.
 const UA: &str = concat!("spt-updater/", env!("CARGO_PKG_VERSION"));
 
+/// Connect timeout for source polling — fail fast on an unreachable host.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+/// Overall per-request timeout for a manifest / release-list fetch.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
+/// Bounded redirect budget; combined with `https_only` this rejects any
+/// redirect-to-HTTP downgrade and caps redirect-loop hops.
+const MAX_REDIRECTS: usize = 5;
+
+/// Apply the shared hardening to a reqwest client builder: connect + overall
+/// timeout, `https_only` (no plaintext / redirect-to-HTTP downgrade), and a
+/// bounded redirect policy. Used by every HTTP source backend so the security
+/// posture cannot drift between them.
+fn harden(builder: reqwest::ClientBuilder) -> reqwest::ClientBuilder {
+    builder
+        .connect_timeout(CONNECT_TIMEOUT)
+        .timeout(REQUEST_TIMEOUT)
+        .https_only(true)
+        .redirect(reqwest::redirect::Policy::limited(MAX_REDIRECTS))
+}
+
 /// Build the same reqwest client the GitHub backend uses (anonymous, with
 /// the spt-updater user-agent). Centralised so the `url` backend reuses the
 /// identical HTTP stack — no second client configuration to drift.
 fn http_client() -> UpdaterResult<Client> {
-    Client::builder()
-        .user_agent(UA)
+    harden(Client::builder().user_agent(UA))
         .build()
         .map_err(|e| UpdaterError::Source(format!("reqwest build: {e}")))
 }
@@ -106,8 +127,9 @@ impl GitHubSource {
     /// Build a new client. Picks up `GITHUB_TOKEN` from the environment
     /// for private repos / rate-limit relief; falls back to anonymous.
     pub fn new(repo: String, channel: ReleaseChannel) -> UpdaterResult<Self> {
-        let mut builder =
-            Client::builder().user_agent(concat!("spt-updater/", env!("CARGO_PKG_VERSION")));
+        let mut builder = harden(
+            Client::builder().user_agent(concat!("spt-updater/", env!("CARGO_PKG_VERSION"))),
+        );
         if let Ok(token) = std::env::var("GITHUB_TOKEN") {
             let mut headers = reqwest::header::HeaderMap::new();
             let value = format!("Bearer {token}");

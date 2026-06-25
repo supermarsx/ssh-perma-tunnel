@@ -22,7 +22,7 @@
 
 use std::collections::HashSet;
 use std::io::SeekFrom;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
 use tokio::fs;
@@ -296,11 +296,17 @@ pub async fn get_recursive(
             detail: format!("{}: {e}", local_dir.display()),
         })?;
     report.directories += 1;
+    // The download root every server-returned name must stay within. We
+    // normalise it once lexically so the per-entry containment check is a
+    // pure prefix test (the root itself is created above and exists, but we
+    // avoid `canonicalize` to keep the check identical on all platforms).
+    let local_root = local_dir.to_path_buf();
     let mut visited: HashSet<String> = HashSet::new();
     get_dir_inner(
         client,
         remote_dir,
         local_dir,
+        &local_root,
         opts,
         &bucket,
         &mut report,
@@ -310,10 +316,12 @@ pub async fn get_recursive(
     Ok(report)
 }
 
+#[allow(clippy::too_many_arguments)] // walker threads root + bucket + report + visited.
 async fn get_dir_inner(
     client: &SftpClient,
     remote_dir: &str,
     local_dir: &Path,
+    local_root: &Path,
     opts: &RecursiveOptions,
     bucket: &Arc<TokenBucket>,
     report: &mut RecursiveReport,
@@ -333,8 +341,38 @@ async fn get_dir_inner(
         if entry.file_name == "." || entry.file_name == ".." {
             continue;
         }
+
+        // SECURITY: the entry name is server-controlled and the server is the
+        // untrusted side of this product. Reject (skip-with-warning, matching
+        // the walker's continue-on-skip policy) any name that is not a single
+        // benign local component — `..`, absolute, drive/UNC-prefixed, or
+        // separator-bearing names would otherwise escape the download root.
+        if let Err(reason) = sanitize_entry_name(&entry.file_name) {
+            tracing::warn!(
+                target: "spt_sftp::recursive",
+                remote_dir = %remote_dir,
+                entry = %entry.file_name.escape_default(),
+                reason = %reason,
+                "skipping SFTP entry with unsafe server-supplied name (path-traversal guard)",
+            );
+            continue;
+        }
+
         let remote_child = join_remote(remote_dir, &entry.file_name);
         let local_child = local_dir.join(&entry.file_name);
+
+        // Defence in depth: even after component sanitisation, assert the
+        // joined target stays within the original download root before any
+        // create/write touches the local filesystem.
+        if !is_within_root(local_root, &local_child) {
+            tracing::warn!(
+                target: "spt_sftp::recursive",
+                local_child = %local_child.display(),
+                local_root = %local_root.display(),
+                "skipping SFTP entry whose local target escapes the download root",
+            );
+            continue;
+        }
 
         if entry.metadata.is_symlink {
             if opts.follow_symlinks {
@@ -352,6 +390,7 @@ async fn get_dir_inner(
                         client,
                         &remote_child,
                         &local_child,
+                        local_root,
                         opts,
                         bucket,
                         report,
@@ -364,6 +403,21 @@ async fn get_dir_inner(
                 }
             } else {
                 let target = client.readlink(remote_child.clone()).await?;
+                // SECURITY: never recreate a symlink whose (resolved,
+                // relative-to-jail) target leaves the download root. A server
+                // returning `../../etc/passwd` or an absolute target would
+                // otherwise plant an escaping symlink that a later read/write
+                // through it lands outside the jail. Skip-with-warning.
+                let link_parent = local_child.parent().unwrap_or(local_root);
+                if !symlink_target_within_root(local_root, link_parent, &target) {
+                    tracing::warn!(
+                        target: "spt_sftp::recursive",
+                        local_child = %local_child.display(),
+                        link_target = %target.display(),
+                        "skipping SFTP symlink whose target escapes the download root",
+                    );
+                    continue;
+                }
                 #[cfg(unix)]
                 {
                     tokio::fs::symlink(&target, &local_child)
@@ -401,6 +455,7 @@ async fn get_dir_inner(
                 client,
                 &remote_child,
                 &local_child,
+                local_root,
                 opts,
                 bucket,
                 report,
@@ -523,6 +578,110 @@ fn join_remote(base: &str, child: &str) -> String {
     }
 }
 
+/// Validate that a server-returned READDIR entry name is a single, benign
+/// local path component before it is joined onto the local download root.
+///
+/// The remote SFTP server is the *untrusted* side of this product: a
+/// malicious or compromised server can return an entry named
+/// `../../../../etc/passwd`, an absolute path, a Windows drive/UNC path, or
+/// a name embedding path separators, all of which would escape the intended
+/// local destination directory when naively `Path::join`-ed.
+///
+/// Returns `Ok(())` only for names that are exactly one safe path component.
+/// Rejected (with the reason as the error string):
+/// * empty / `.` / `..`
+/// * any name containing a `/` or `\` separator (would introduce extra
+///   components, including traversal like `a/../..`)
+/// * any name containing an embedded NUL or ASCII control character
+/// * absolute paths, or names with a root / drive (`C:`) / UNC (`\\srv`)
+///   prefix — including the bare drive-relative `C:foo` form
+///
+/// This is the same class of defense `spt-ftp-translator` applies to FTP
+/// verb arguments ([`validate_path_argument`]), specialised here to a single
+/// component because READDIR returns leaf names, not paths.
+///
+/// [`validate_path_argument`]: ../../spt_ftp_translator/server/fn.validate_path_argument.html
+fn sanitize_entry_name(name: &str) -> Result<(), String> {
+    if name.is_empty() {
+        return Err("empty entry name".to_owned());
+    }
+    if name == "." || name == ".." {
+        return Err(format!("traversal component `{name}`"));
+    }
+    if name.contains('/') || name.contains('\\') {
+        return Err("embedded path separator".to_owned());
+    }
+    if name.bytes().any(|b| b < 0x20 || b == 0x7f) {
+        return Err("embedded control/NUL byte".to_owned());
+    }
+    // Reject a Windows drive-letter prefix (`C:`, `C:foo`) explicitly and on
+    // every platform: `Path` only parses it as a `Prefix` component on
+    // Windows, so a Linux client of a hostile server would otherwise accept
+    // `C:foo` as a plain leaf. It is never a legitimate single component, so
+    // refuse it uniformly for defence-in-depth and cross-platform parity.
+    let bytes = name.as_bytes();
+    if bytes.len() >= 2 && bytes[1] == b':' && bytes[0].is_ascii_alphabetic() {
+        return Err("windows drive-letter prefix".to_owned());
+    }
+    // Reject anything that `Path` would not treat as a single `Normal`
+    // component: absolute paths, root dirs, Windows drive prefixes
+    // (`C:`, `C:foo`), UNC / verbatim prefixes, and the `.`/`..` forms
+    // (already handled above, but kept defensively for cross-platform
+    // parsing differences).
+    let mut comps = Path::new(name).components();
+    match (comps.next(), comps.next()) {
+        (Some(Component::Normal(c)), None) if c == std::ffi::OsStr::new(name) => Ok(()),
+        _ => Err("not a single normal path component".to_owned()),
+    }
+}
+
+/// Lexically test whether `candidate` stays within `root` without touching
+/// the filesystem (the target may not exist yet, so `canonicalize` is not an
+/// option). Both paths are normalised by resolving `.`/`..` against the
+/// component stack; a `candidate` that pops above `root` fails containment.
+fn is_within_root(root: &Path, candidate: &Path) -> bool {
+    fn normalise(p: &Path) -> Option<PathBuf> {
+        let mut out = PathBuf::new();
+        for comp in p.components() {
+            match comp {
+                Component::CurDir => {}
+                Component::ParentDir => {
+                    // Refuse to pop above a prefix/root anchor.
+                    if !out.pop() {
+                        return None;
+                    }
+                }
+                other => out.push(other.as_os_str()),
+            }
+        }
+        Some(out)
+    }
+    match (normalise(root), normalise(candidate)) {
+        (Some(r), Some(c)) => c.starts_with(&r),
+        _ => false,
+    }
+}
+
+/// Resolve a server-supplied symlink `target` (which may be relative to the
+/// link's parent directory, or absolute) against `link_parent`, then confirm
+/// the result stays within `local_root`. A server returning a symlink to
+/// `../../etc/passwd` or `/etc/passwd` must NOT be recreated locally.
+///
+/// Returns `true` only when the link is safe to materialise.
+fn symlink_target_within_root(local_root: &Path, link_parent: &Path, target: &Path) -> bool {
+    // An absolute target escapes any relative jail by definition. A target
+    // with a Windows drive/UNC prefix likewise.
+    let has_anchor = target
+        .components()
+        .next()
+        .is_some_and(|c| matches!(c, Component::RootDir | Component::Prefix(_)));
+    if has_anchor {
+        return false;
+    }
+    let joined = link_parent.join(target);
+    is_within_root(local_root, &joined)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -532,5 +691,86 @@ mod tests {
         assert_eq!(join_remote("/a", "b"), "/a/b");
         assert_eq!(join_remote("/a/", "b"), "/a/b");
         assert_eq!(join_remote("", "b"), "b");
+    }
+
+    #[test]
+    fn sanitize_entry_name_accepts_benign_leaf_names() {
+        assert!(sanitize_entry_name("file.txt").is_ok());
+        assert!(sanitize_entry_name("sub").is_ok());
+        // A literal double-dot is fine when it is not the WHOLE component.
+        assert!(sanitize_entry_name("..hidden").is_ok());
+        assert!(sanitize_entry_name("file..bak").is_ok());
+        assert!(sanitize_entry_name("a b c").is_ok());
+    }
+
+    #[test]
+    fn sanitize_entry_name_rejects_traversal_and_empty() {
+        assert!(sanitize_entry_name("").is_err());
+        assert!(sanitize_entry_name(".").is_err());
+        assert!(sanitize_entry_name("..").is_err());
+    }
+
+    #[test]
+    fn sanitize_entry_name_rejects_embedded_separators() {
+        assert!(sanitize_entry_name("../escape").is_err());
+        assert!(sanitize_entry_name("a/b").is_err());
+        assert!(sanitize_entry_name("a\\b").is_err());
+        assert!(sanitize_entry_name("..\\escape").is_err());
+        assert!(sanitize_entry_name("sub/../..").is_err());
+    }
+
+    #[test]
+    fn sanitize_entry_name_rejects_absolute_and_prefixed() {
+        assert!(sanitize_entry_name("/etc/passwd").is_err());
+        // Windows drive + UNC + drive-relative forms.
+        assert!(sanitize_entry_name("C:\\evil").is_err());
+        assert!(sanitize_entry_name("C:evil").is_err());
+        assert!(sanitize_entry_name("\\\\srv\\share").is_err());
+    }
+
+    #[test]
+    fn sanitize_entry_name_rejects_control_bytes() {
+        assert!(sanitize_entry_name("foo\0bar").is_err());
+        assert!(sanitize_entry_name("foo\nbar").is_err());
+        assert!(sanitize_entry_name("foo\u{7f}bar").is_err());
+    }
+
+    #[test]
+    fn is_within_root_basic_containment() {
+        let root = Path::new("/dl/root");
+        assert!(is_within_root(root, Path::new("/dl/root/sub/file")));
+        assert!(is_within_root(root, Path::new("/dl/root")));
+        assert!(is_within_root(root, Path::new("/dl/root/a/./b")));
+        assert!(!is_within_root(root, Path::new("/dl/root/../escape")));
+        assert!(!is_within_root(root, Path::new("/dl/other")));
+        assert!(!is_within_root(root, Path::new("/etc/passwd")));
+    }
+
+    #[test]
+    fn symlink_target_within_root_rejects_escapes() {
+        let root = Path::new("/dl/root");
+        let parent = Path::new("/dl/root/sub");
+        // Benign relative target inside the jail.
+        assert!(symlink_target_within_root(
+            root,
+            parent,
+            Path::new("sibling.txt")
+        ));
+        assert!(symlink_target_within_root(
+            root,
+            parent,
+            Path::new("../other-sub/x")
+        ));
+        // Escapes.
+        assert!(!symlink_target_within_root(
+            root,
+            parent,
+            Path::new("../../etc/passwd")
+        ));
+        assert!(!symlink_target_within_root(
+            root,
+            parent,
+            Path::new("/etc/passwd")
+        ));
     }
 }

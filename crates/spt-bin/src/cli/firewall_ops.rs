@@ -850,6 +850,11 @@ fn compute_rules(
             out.extend(forward_to_rules(prof, fwd)?);
         }
     }
+    // Security boundary: reject any rule whose operator/config-controlled
+    // fields (id, interface, CIDRs) fall outside the strict allowlist before
+    // they are interpolated raw into a rendered nft/pf/iptables/netsh command.
+    // Fail-closed with a clear error rather than silently dropping the rule.
+    spt_firewall::validate_rules(&out).map_err(Error::from)?;
     Ok(out)
 }
 
@@ -1172,5 +1177,73 @@ target = "internal:3"
         let only_f3 = compute_rules(&cfg, None, Some("f3")).unwrap();
         assert_eq!(only_f3.len(), 1);
         assert_eq!(only_f3[0].id, "p2-f3-1");
+    }
+
+    /// Security boundary: a profile/forward name that would produce an
+    /// injection-bearing rule `id` (`name="spt:<id>"`) must be rejected by
+    /// `compute_rules` (which calls `spt_firewall::validate_rules`) with a clear
+    /// `InvalidConfig` error rather than rendering a poisoned command. The id is
+    /// built as `"{profile}-{forward}-{idx}"`, so a space/quote/`;` in either
+    /// name lands in the id.
+    #[test]
+    fn compute_rules_rejects_injection_in_profile_or_forward_name() {
+        for (pname, fname) in [
+            ("p\" enable=yes name=\"x", "f1"),
+            ("p1", "f; rm -rf /"),
+            ("p 1", "f1"),
+            ("p1", "f\nnetsh delete all"),
+            ("p1", "f`whoami`"),
+        ] {
+            let s = format!(
+                r#"
+version = 1
+[[profiles]]
+name = "{pname}"
+protocol = "ssh2"
+host = "h1"
+port = 22
+[[profiles.forwards]]
+name = "{fname}"
+type = "local"
+transport = "tcp"
+listen = "127.0.0.1:1111"
+target = "internal:1"
+"#
+            );
+            // Some of these names may already be rejected by config validation;
+            // either way the firewall preview must NOT yield a rule for them.
+            // If the config parses, compute_rules must fail-closed.
+            if let Ok((cfg, _)) = spt_config::load_str(&s, false) {
+                let res = compute_rules(&cfg, None, None);
+                assert!(
+                    matches!(res, Err(Error::InvalidConfig(_))),
+                    "injection name (profile={pname:?}, forward={fname:?}) must be rejected, got {res:?}"
+                );
+            }
+        }
+    }
+
+    /// A legitimate profile/forward name still produces a valid rule id and
+    /// passes the validation boundary unchanged (no regression).
+    #[test]
+    fn compute_rules_accepts_well_formed_names() {
+        let s = r#"
+version = 1
+[[profiles]]
+name = "edge-1"
+protocol = "ssh2"
+host = "h1"
+port = 22
+[[profiles.forwards]]
+name = "db.primary"
+type = "local"
+transport = "tcp"
+listen = "127.0.0.1:5432"
+target = "internal:5432"
+"#;
+        let (cfg, _) = spt_config::load_str(s, false).unwrap();
+        let rules = compute_rules(&cfg, None, None).expect("well-formed names accepted");
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].id, "edge-1-db.primary-1");
     }
 }

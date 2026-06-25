@@ -98,3 +98,7 @@ required-features = ["testing"]
 [[test]]
 name = "mount"
 required-features = ["testing"]
+
+[[test]]
+name = "recursive_traversal"
+required-features = ["testing"]
