@@ -128,7 +128,7 @@ fn write_prefix_int(buf: &mut BytesMut, top: u8, n: u8, value: u64) {
 }
 
 /// RFC 7541 §5.1 prefix-int reader.
-fn read_prefix_int(buf: &[u8], n: u8) -> Result<(u64, usize)> {
+pub(crate) fn read_prefix_int(buf: &[u8], n: u8) -> Result<(u64, usize)> {
     debug_assert!((1..=8).contains(&n));
     if buf.is_empty() {
         return Err(Error::RuntimeFailure(
@@ -323,7 +323,7 @@ pub(crate) fn qpack_decode(mut buf: &[u8]) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
 }
 
 /// Read a `H | Length(7+) | bytes` literal string. Rejects Huffman.
-fn read_literal_string(buf: &[u8]) -> Result<(Vec<u8>, usize)> {
+pub(crate) fn read_literal_string(buf: &[u8]) -> Result<(Vec<u8>, usize)> {
     if buf.is_empty() {
         return Err(Error::RuntimeFailure("ssh3 qpack: value underflow".into()));
     }

@@ -3,6 +3,7 @@
 use std::fs;
 use std::path::Path;
 
+#[cfg(not(unix))]
 use atomicwrites::{AtomicFile, OverwriteBehavior};
 use rand::rngs::OsRng;
 use ssh_key::{LineEnding, PrivateKey};
@@ -46,21 +47,64 @@ pub fn save_encrypted(kp: &KeyPair, path: &Path, passphrase: Option<&str>) -> Re
         _ => kp.private().to_openssh(LineEnding::LF).map_err(map_err)?,
     };
 
-    let af = AtomicFile::new(path, OverwriteBehavior::AllowOverwrite);
-    af.write(|f| {
-        use std::io::Write;
-        f.write_all(encoded.as_bytes())
-    })
-    .map_err(|e| {
-        Error::RuntimeFailure(format!("atomic write of `{}` failed: {e}", path.display()))
-    })?;
+    write_secret_file(path, encoded.as_bytes())
+}
 
+/// Write `bytes` to `path`, atomically, with `0600` perms from creation on Unix.
+///
+/// sec-hardening (M5): the secret must NEVER touch disk with broader-than-`0600`
+/// permissions, not even for the brief window between an atomic rename and a
+/// follow-up `chmod`. On Unix we therefore open a sibling temp file with
+/// `.mode(0o600)` BEFORE writing the secret bytes, then rename it into place —
+/// mirroring `spt-secrets`' `write_master_key`. The umask can only narrow the
+/// mode further, never widen it, so the key is never world-readable. On
+/// non-Unix platforms we keep the existing `atomicwrites` behavior (ACL
+/// inheritance handles confidentiality there).
+fn write_secret_file(path: &Path, bytes: &[u8]) -> Result<()> {
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+
+        let tmp = with_extension_appended(path, "tmp");
+        let mut f = fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&tmp)
+            .map_err(|e| {
+                Error::RuntimeFailure(format!("open temp key `{}` failed: {e}", tmp.display()))
+            })?;
+        f.write_all(bytes).map_err(|e| {
+            Error::RuntimeFailure(format!("write temp key `{}` failed: {e}", tmp.display()))
+        })?;
+        f.sync_all().ok();
+        drop(f);
+        fs::rename(&tmp, path).map_err(|e| {
+            // best-effort cleanup of the temp file so a failed rename doesn't
+            // leave a stray (0600) secret behind.
+            let _ = fs::remove_file(&tmp);
+            Error::RuntimeFailure(format!(
+                "atomic rename of `{}` -> `{}` failed: {e}",
+                tmp.display(),
+                path.display()
+            ))
+        })?;
+        Ok(())
     }
-    Ok(())
+
+    #[cfg(not(unix))]
+    {
+        let af = AtomicFile::new(path, OverwriteBehavior::AllowOverwrite);
+        af.write(|f| {
+            use std::io::Write;
+            f.write_all(bytes)
+        })
+        .map_err(|e| {
+            Error::RuntimeFailure(format!("atomic write of `{}` failed: {e}", path.display()))
+        })
+    }
 }
 
 /// Load a (possibly encrypted) OpenSSH-format private key from `path`.
@@ -143,6 +187,41 @@ mod tests {
         // correct passphrase succeeds
         let loaded = load(&p, Some("hunter2")).unwrap();
         assert_eq!(fingerprint_sha256(loaded.public_ref()), fp);
+    }
+
+    // sec-hardening (M5): the freshly-written key file must be 0600 the moment
+    // it appears on disk — there must be no window where it is world-readable.
+    // We can only assert the FINAL mode here, but the implementation creates the
+    // temp with mode 0600 before any secret byte is written and renames it into
+    // place, so the file is never observable with broader perms. (An encrypted
+    // key still must not leak its ciphertext/KDF salt with loose perms either.)
+    #[cfg(unix)]
+    #[test]
+    fn freshly_written_key_is_mode_0600() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let kp = generate(KeyAlgorithm::Ed25519).unwrap();
+        let dir = tempdir().unwrap();
+
+        // unencrypted arm (the one M5 specifically calls out)
+        let plain = dir.path().join("id_plain_perm");
+        save_encrypted(&kp, &plain, None).unwrap();
+        let mode = fs::metadata(&plain).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "unencrypted key must be 0600, got 0{mode:o}");
+
+        // encrypted arm
+        let enc = dir.path().join("id_enc_perm");
+        save_encrypted(&kp, &enc, Some("pw")).unwrap();
+        let mode = fs::metadata(&enc).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "encrypted key must be 0600, got 0{mode:o}");
+
+        // overwrite path also lands at 0600 (no leftover temp, mode preserved)
+        let kp2 = generate(KeyAlgorithm::Ed25519).unwrap();
+        save_encrypted(&kp2, &plain, None).unwrap();
+        let mode = fs::metadata(&plain).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "overwritten key must be 0600, got 0{mode:o}");
+        // the sibling temp must not survive a successful write
+        assert!(!with_extension_appended(&plain, "tmp").exists());
     }
 
     #[test]

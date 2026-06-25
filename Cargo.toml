@@ -392,6 +392,13 @@ lto = "thin"
 codegen-units = 1
 strip = "symbols"
 panic = "abort"
+# sec-hardening: convert any UNDISCOVERED integer overflow into a clean,
+# deterministic panic rather than a silent wrap-then-OOB/logic error. For a
+# security-sensitive network daemon parsing untrusted wire bytes this turns the
+# silent-wrap-then-crash DoS class (e.g. QPACK/SNMP length arithmetic) into a
+# caught/aborted panic. Intentional wraps must use `wrapping_*`/`Wrapping`/
+# `saturating_*` explicitly. See `.orchestration/logs/sec-hardening.md`.
+overflow-checks = true
 
 [profile.dev]
 opt-level = 0

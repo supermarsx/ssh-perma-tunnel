@@ -68,6 +68,36 @@ pub mod fixtures {
     }
 }
 
+/// Thin re-export shim over the hand-rolled QPACK/h3 decoders so the
+/// out-of-crate fuzz harness (`tests/fuzz_h3.rs`) can drive the
+/// `pub(crate)` decode entry points directly. These are decode-only and
+/// take/return plain byte slices — no production logic lives here.
+///
+/// Exposed deliberately narrow: the three wire-decode functions the
+/// offensive audit flagged as top fuzz targets (`qpack_decode`,
+/// `read_literal_string`, `read_prefix_int`). The frame decoder
+/// (`Ssh3Frame::decode`) is already `pub` via [`crate::frame`].
+#[doc(hidden)]
+pub mod fuzz {
+    use spt_core::Result;
+
+    /// See [`crate::h3_raw::qpack_decode`].
+    #[allow(clippy::type_complexity)]
+    pub fn qpack_decode(buf: &[u8]) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
+        crate::h3_raw::qpack_decode(buf)
+    }
+
+    /// See [`crate::h3_raw::read_literal_string`].
+    pub fn read_literal_string(buf: &[u8]) -> Result<(Vec<u8>, usize)> {
+        crate::h3_raw::read_literal_string(buf)
+    }
+
+    /// See [`crate::h3_raw::read_prefix_int`].
+    pub fn read_prefix_int(buf: &[u8], n: u8) -> Result<(u64, usize)> {
+        crate::h3_raw::read_prefix_int(buf, n)
+    }
+}
+
 // -----------------------------------------------------------------------------
 // QUIC plumbing — only compiled when the `testing` feature pulls rcgen in.
 // -----------------------------------------------------------------------------

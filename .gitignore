@@ -38,3 +38,6 @@ desktop.ini
 
 # stray path-mangled redirect artifacts
 FProjects*
+
+# stray placeholder-path artifact (LLM <memory> leak, NTFS-remapped brackets)
+crates/spt-tui/memory
