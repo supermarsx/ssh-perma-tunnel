@@ -1,3 +1,11 @@
+## [26.29] - 2026-06-25
+
+# spt 26.29
+
+## Changes since 26.28
+
+- fix(security): batch 2 — offensive deep-dive fixes (DoS, injection, authenticity) (4da81ce)
+
 ## [26.28] - 2026-06-25
 
 # spt 26.28
