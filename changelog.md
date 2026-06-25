@@ -1,3 +1,11 @@
+## [26.32] - 2026-06-25
+
+# spt 26.32
+
+## Changes since 26.31
+
+- test: extensive coverage for high-risk under-tested modules (~179 tests) (e558f4e)
+
 ## [26.31] - 2026-06-25
 
 # spt 26.31
