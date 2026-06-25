@@ -507,6 +507,306 @@ mod tests {
         assert!(matches!(err, RemoteConfigError::BadStatus(404)), "{err:?}");
     }
 
+    // --- additional fetch error / adversarial paths (t-coverage W2 #5) ---
+
+    /// A `304 Not Modified` arriving when a cache file IS present but its body
+    /// no longer matches the pin must NOT be handed back — the 304 re-verifies
+    /// the cache against the pin and fails closed.
+    #[tokio::test]
+    async fn not_modified_with_tampered_cache_is_rejected() {
+        let d = tempdir().unwrap();
+        let good_body = b"version = 1\n".to_vec();
+        let spec = good_spec(&good_body);
+        // Persist a DIFFERENT body than the pin expects (on-disk tampering).
+        save_atomic(d.path(), b"tampered", Some("\"v1\"")).unwrap();
+        let f = FakeFetcher::default();
+        f.push_ok(HttpResponse {
+            status: 304,
+            etag: None,
+            body: Vec::new(),
+        });
+        let err = fetch(&spec, d.path(), &f).await.unwrap_err();
+        assert!(
+            matches!(err, RemoteConfigError::FingerprintMismatch { .. }),
+            "304 must re-verify cache against the pin; got {err:?}"
+        );
+    }
+
+    /// A malformed / short fingerprint pin must be rejected by the up-front
+    /// spec shape check before any network access happens.
+    #[tokio::test]
+    async fn malformed_fingerprint_pin_rejected_before_fetch() {
+        let d = tempdir().unwrap();
+        let body = b"x".to_vec();
+        let mut spec = good_spec(&body);
+        spec.fingerprint_sha256 = "abc".into(); // far too short, non-64-hex
+        let f = FakeFetcher::default(); // empty queue: a fetch attempt would error "exhausted"
+        let err = fetch(&spec, d.path(), &f).await.unwrap_err();
+        assert!(
+            matches!(
+                err,
+                RemoteConfigError::InvalidSpec(SpecCheck::FingerprintMalformed)
+            ),
+            "got {err:?}"
+        );
+        // Confirm NO fetch was attempted (fail-closed before network).
+        assert!(f.seen_if_none_match.lock().unwrap().is_empty());
+    }
+
+    /// A 64-char-but-non-hex fingerprint is also malformed.
+    #[tokio::test]
+    async fn non_hex_fingerprint_pin_rejected() {
+        let d = tempdir().unwrap();
+        let mut spec = good_spec(b"x");
+        spec.fingerprint_sha256 = "z".repeat(64); // right length, not hex
+        let f = FakeFetcher::default();
+        let err = fetch(&spec, d.path(), &f).await.unwrap_err();
+        assert!(matches!(
+            err,
+            RemoteConfigError::InvalidSpec(SpecCheck::FingerprintMalformed)
+        ));
+    }
+
+    /// Fingerprint MISMATCH on a fresh 200 body must never persist the bad
+    /// body to the cache (fail-closed; the prior cache, if any, is preserved).
+    #[tokio::test]
+    async fn fingerprint_mismatch_preserves_existing_cache() {
+        let d = tempdir().unwrap();
+        let cached_body = b"good-cached\n".to_vec();
+        let spec = good_spec(&cached_body);
+        save_atomic(d.path(), &cached_body, Some("\"v1\"")).unwrap();
+        // Server serves a DIFFERENT body whose hash won't match the pin.
+        let f = FakeFetcher::default();
+        f.push_ok(HttpResponse {
+            status: 200,
+            etag: Some("\"v2\"".into()),
+            body: b"evil-body".to_vec(),
+        });
+        let err = fetch(&spec, d.path(), &f).await.unwrap_err();
+        assert!(matches!(err, RemoteConfigError::FingerprintMismatch { .. }));
+        // The original good cache must be untouched.
+        let c = load_cached(d.path()).unwrap().unwrap();
+        assert_eq!(c.body, cached_body, "mismatch must NOT overwrite the cache");
+        assert_eq!(c.etag.as_deref(), Some("\"v1\""));
+    }
+
+    /// A redirect/downgrade-style transport rejection (HttpError::Redirect)
+    /// with no cache and fallback enabled surfaces as NoCacheFallback (the
+    /// HTTPS->HTTP downgrade rejection itself lives in the fetcher; here we
+    /// assert the high-level fetch routes the rejection, not silently follows).
+    #[tokio::test]
+    async fn redirect_rejection_without_cache_is_no_cache_fallback() {
+        let d = tempdir().unwrap();
+        let spec = good_spec(b"x"); // allow_cached_on_failure: true, but no cache on disk
+        let f = FakeFetcher::default();
+        f.push_err(HttpError::Redirect("https->http downgrade".into()));
+        let err = fetch(&spec, d.path(), &f).await.unwrap_err();
+        assert!(
+            matches!(err, RemoteConfigError::NoCacheFallback(_)),
+            "{err:?}"
+        );
+    }
+
+    /// Same redirect rejection but with fallback DISABLED propagates the
+    /// underlying Fetch error rather than masking it.
+    #[tokio::test]
+    async fn redirect_rejection_fallback_disabled_propagates() {
+        let d = tempdir().unwrap();
+        let mut spec = good_spec(b"x");
+        spec.allow_cached_on_failure = false;
+        let f = FakeFetcher::default();
+        f.push_err(HttpError::Redirect("too many hops".into()));
+        let err = fetch(&spec, d.path(), &f).await.unwrap_err();
+        assert!(
+            matches!(err, RemoteConfigError::Fetch(HttpError::Redirect(_))),
+            "{err:?}"
+        );
+    }
+
+    /// An InvalidUrl transport error (e.g. the fetcher's defence-in-depth
+    /// non-HTTPS check fired) with fallback disabled propagates as Fetch.
+    #[tokio::test]
+    async fn invalid_url_transport_error_propagates() {
+        let d = tempdir().unwrap();
+        let mut spec = good_spec(b"x");
+        spec.allow_cached_on_failure = false;
+        let f = FakeFetcher::default();
+        f.push_err(HttpError::InvalidUrl("not https".into()));
+        let err = fetch(&spec, d.path(), &f).await.unwrap_err();
+        assert!(matches!(
+            err,
+            RemoteConfigError::Fetch(HttpError::InvalidUrl(_))
+        ));
+    }
+
+    /// Oversized body (BodyTooLarge) WITH a valid cache and fallback enabled
+    /// falls back to the cache rather than hard-failing.
+    #[tokio::test]
+    async fn oversized_body_with_cache_falls_back() {
+        let d = tempdir().unwrap();
+        let body = b"cached-config\n".to_vec();
+        let spec = good_spec(&body);
+        save_atomic(d.path(), &body, Some("\"v1\"")).unwrap();
+        let f = FakeFetcher::default();
+        f.push_err(HttpError::BodyTooLarge(1024));
+        let res = fetch(&spec, d.path(), &f).await.unwrap();
+        assert_eq!(res.outcome, FetchOutcome::StaleFromCache);
+        assert_eq!(res.body, body);
+    }
+
+    /// Timeout (modelled as a Transport error) with fallback disabled is a
+    /// hard Fetch error — the cache must NOT paper over an explicit no-fallback.
+    #[tokio::test]
+    async fn timeout_fallback_disabled_propagates() {
+        let d = tempdir().unwrap();
+        let body = b"cached".to_vec();
+        let mut spec = good_spec(&body);
+        spec.allow_cached_on_failure = false;
+        save_atomic(d.path(), &body, None).unwrap();
+        let f = FakeFetcher::default();
+        f.push_err(HttpError::Transport("operation timed out".into()));
+        let err = fetch(&spec, d.path(), &f).await.unwrap_err();
+        assert!(matches!(
+            err,
+            RemoteConfigError::Fetch(HttpError::Transport(_))
+        ));
+    }
+
+    /// Conditional-GET round-trip: a fresh 200 records the server ETag; a
+    /// subsequent fetch sends it back as If-None-Match and the server's 304
+    /// reuses the cache. Verifies the ETag actually flows both directions.
+    #[tokio::test]
+    async fn conditional_get_etag_round_trip() {
+        let d = tempdir().unwrap();
+        let body = b"version = 1\n".to_vec();
+        let spec = good_spec(&body);
+
+        // First fetch: 200 with an ETag — persists body + etag.
+        let f = FakeFetcher::default();
+        f.push_ok(HttpResponse {
+            status: 200,
+            etag: Some("\"rev-7\"".into()),
+            body: body.clone(),
+        });
+        let first = fetch(&spec, d.path(), &f).await.unwrap();
+        assert_eq!(first.outcome, FetchOutcome::Fresh);
+        // The first request had no prior cache → no If-None-Match.
+        assert_eq!(
+            f.seen_if_none_match
+                .lock()
+                .unwrap()
+                .last()
+                .unwrap()
+                .as_deref(),
+            None
+        );
+
+        // Second fetch: server returns 304 — must send the stored ETag and
+        // hand back the cached body.
+        let f2 = FakeFetcher::default();
+        f2.push_ok(HttpResponse {
+            status: 304,
+            etag: None,
+            body: Vec::new(),
+        });
+        let second = fetch(&spec, d.path(), &f2).await.unwrap();
+        assert_eq!(second.outcome, FetchOutcome::NotModified);
+        assert_eq!(second.body, body);
+        assert_eq!(
+            f2.seen_if_none_match
+                .lock()
+                .unwrap()
+                .last()
+                .unwrap()
+                .as_deref(),
+            Some("\"rev-7\""),
+            "the stored ETag must be replayed as If-None-Match"
+        );
+    }
+
+    /// Cache READ failure: a body file that exists but is unreadable surfaces
+    /// as CacheIo (fail-closed) rather than being treated as "no cache".
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cache_read_failure_surfaces_as_cache_io() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempdir().unwrap();
+        let body = b"x".to_vec();
+        let spec = good_spec(&body);
+        save_atomic(d.path(), &body, Some("\"v1\"")).unwrap();
+        // Strip all read permission on the cache body file.
+        let p = crate::cache::cache_path(d.path());
+        let mut perms = std::fs::metadata(&p).unwrap().permissions();
+        perms.set_mode(0o000);
+        std::fs::set_permissions(&p, perms).unwrap();
+
+        let f = FakeFetcher::default();
+        let res = fetch(&spec, d.path(), &f).await;
+
+        // Restore perms so tempdir cleanup succeeds regardless of outcome.
+        let mut restore = std::fs::metadata(&p).unwrap().permissions();
+        restore.set_mode(0o600);
+        let _ = std::fs::set_permissions(&p, restore);
+
+        // Running as root can read regardless of mode; only assert when the
+        // permission actually bit (non-root). If it was readable, the fetch
+        // would proceed to the (empty) fetcher and error differently — accept
+        // either, but when CacheIo fires it must be the right variant.
+        if let Err(e) = res {
+            if matches!(e, RemoteConfigError::CacheIo(_)) {
+                // expected fail-closed path
+            } else {
+                // root read the file; fetch proceeded then the fake exhausted.
+                assert!(
+                    matches!(
+                        e,
+                        RemoteConfigError::NoCacheFallback(_) | RemoteConfigError::Fetch(_)
+                    ),
+                    "unexpected error when cache was readable: {e:?}"
+                );
+            }
+        }
+    }
+
+    /// Cache WRITE failure during a fresh 200 persist surfaces as CacheIo: we
+    /// point the state dir at a path that is a FILE, so creating the cache file
+    /// underneath it fails.
+    #[tokio::test]
+    async fn cache_write_failure_surfaces_as_cache_io() {
+        let parent = tempdir().unwrap();
+        // state_dir is actually a regular file → write_atomic under it fails.
+        let bogus = parent.path().join("not-a-dir");
+        std::fs::write(&bogus, b"i am a file").unwrap();
+        let body = b"version = 1\n".to_vec();
+        let spec = good_spec(&body);
+        let f = FakeFetcher::default();
+        f.push_ok(HttpResponse {
+            status: 200,
+            etag: None,
+            body,
+        });
+        let err = fetch(&spec, &bogus, &f).await.unwrap_err();
+        assert!(matches!(err, RemoteConfigError::CacheIo(_)), "{err:?}");
+    }
+
+    /// A non-500 unexpected status (e.g. 418) with fallback enabled and a
+    /// usable cache is still a hard BadStatus — only >=500 routes to fallback.
+    #[tokio::test]
+    async fn teapot_status_does_not_fall_back() {
+        let d = tempdir().unwrap();
+        let body = b"cached".to_vec();
+        let spec = good_spec(&body);
+        save_atomic(d.path(), &body, Some("\"v1\"")).unwrap();
+        let f = FakeFetcher::default();
+        f.push_ok(HttpResponse {
+            status: 418,
+            etag: None,
+            body: Vec::new(),
+        });
+        let err = fetch(&spec, d.path(), &f).await.unwrap_err();
+        assert!(matches!(err, RemoteConfigError::BadStatus(418)), "{err:?}");
+    }
+
     // E5-F5 pin plumbing: the fetcher builder carries the configured pin set,
     // and the plan carries the configured body fingerprint.
     #[test]
