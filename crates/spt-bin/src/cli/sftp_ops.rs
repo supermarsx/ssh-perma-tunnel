@@ -12,7 +12,7 @@ use serde_json::json;
 use spt_cli::{groups, GlobalOpts};
 use spt_config::mutate::{Document, SftpMountMutation};
 use spt_config::schema::{Config, Profile, SftpMount};
-use spt_core::{Error, Result};
+use spt_core::{escape_control, Error, Result};
 use spt_sftp::{
     get_recursive as do_get_recursive, put_recursive as do_put_recursive, ChecksumMode,
     RecursiveOptions,
@@ -150,6 +150,12 @@ pub async fn list(global: &GlobalOpts, args: SftpPathArgs) -> Result<()> {
         println!("(empty)");
     } else {
         for entry in views {
+            // SECURITY (O5): `entry.name` is a server-returned READDIR leaf
+            // name and the SFTP server is the untrusted side of this product.
+            // Neutralize control/ANSI bytes before printing to the operator's
+            // terminal so a malicious name can't emit escape sequences (clear
+            // screen, cursor moves, hyperlink/clipboard injection). The
+            // download path escapes the same field at recursive.rs:354.
             println!(
                 "{}\t{}\t{}",
                 entry.metadata.kind,
@@ -157,7 +163,7 @@ pub async fn list(global: &GlobalOpts, args: SftpPathArgs) -> Result<()> {
                     .metadata
                     .size
                     .map_or_else(|| "-".to_owned(), |size| size.to_string()),
-                entry.name
+                escape_control(&entry.name)
             );
         }
     }

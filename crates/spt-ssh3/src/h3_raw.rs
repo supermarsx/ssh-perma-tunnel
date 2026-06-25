@@ -334,14 +334,65 @@ fn read_literal_string(buf: &[u8]) -> Result<(Vec<u8>, usize)> {
     }
     let (len, n) = read_prefix_int(buf, 7)?;
     let len = len as usize;
-    if buf.len() < n + len {
-        return Err(Error::RuntimeFailure(format!(
-            "ssh3 qpack: value wants {len} bytes after header, have {}",
-            buf.len() - n
+    // SECURITY (O1): `n + len` must be a *checked* add and range-checked
+    // against `buf.len()` BEFORE it is used to slice. The release profile has
+    // overflow-checks OFF and `panic = "abort"`, so a hostile `len ≈
+    // usize::MAX` (encodable in ~10 QPACK bytes) would wrap `n + len` to a
+    // tiny value, pass a naive `buf.len() < n + len` guard, and then panic in
+    // `buf[n..n + len]` (start > end / out of range) — crashing the whole
+    // process. `read_prefix_int`'s `checked_add` only guards its accumulator,
+    // not this downstream sum. A literal can never exceed the remaining
+    // buffer, so reject on overflow OR out-of-range with a decode error.
+    let end = n
+        .checked_add(len)
+        .filter(|e| *e <= buf.len())
+        .ok_or_else(|| {
+            Error::RuntimeFailure(format!(
+                "ssh3 qpack: value wants {len} bytes after {n}-byte header, have {} remaining",
+                buf.len().saturating_sub(n)
+            ))
+        })?;
+    let value = buf[n..end].to_vec();
+    Ok((value, end))
+}
+
+/// SECURITY (O3): reject any header NAME/VALUE byte that could smuggle a
+/// second header / control sequence into the CONNECT request before it is
+/// QPACK-encoded.
+///
+/// QPACK length-prefixes field lines (it is not CRLF-framed), so a CR/LF in a
+/// value does NOT split a header on a conformant RFC-9114 peer. But a lenient
+/// intermediary, an HTTP/1-reserializing proxy, or a server that logs raw
+/// header values can still be attacked with embedded CR/LF/NUL/control bytes —
+/// and the live `extended_connect_raw` wire path performed ZERO validation
+/// (the validated `http`-builder path in `transport.rs` is dead code). Reject
+/// any byte `< 0x20` (controls incl. CR/LF/NUL/TAB) or `== 0x7f` (DEL).
+///
+/// `what` names the field for the error message.
+fn validate_header_value(what: &str, value: &[u8]) -> Result<()> {
+    if let Some(pos) = value.iter().position(|&b| b < 0x20 || b == 0x7f) {
+        return Err(Error::InvalidConfig(format!(
+            "ssh3 CONNECT: {what} contains a forbidden control byte 0x{:02x} at offset {pos} \
+             (CR/LF/NUL/control/DEL are rejected to prevent header injection)",
+            value[pos]
         )));
     }
-    let value = buf[n..n + len].to_vec();
-    Ok((value, n + len))
+    Ok(())
+}
+
+/// SECURITY (O3): validate a value destined for the `:authority`
+/// pseudo-header. In addition to the control-byte check, an authority must
+/// not contain whitespace or other characters that a lenient parser could
+/// treat as a separator. We keep this conservative: reject controls (via
+/// [`validate_header_value`]) plus space.
+fn validate_authority(value: &[u8]) -> Result<()> {
+    validate_header_value(":authority", value)?;
+    if let Some(pos) = value.iter().position(|&b| b == b' ') {
+        return Err(Error::InvalidConfig(format!(
+            "ssh3 CONNECT: :authority contains a space at offset {pos}",
+        )));
+    }
+    Ok(())
 }
 
 /// Wrap a QPACK-encoded payload in an HTTP/3 HEADERS frame.
@@ -432,6 +483,16 @@ pub(crate) async fn extended_connect_raw(
     protocol_token: &str,
 ) -> Result<RawConnectOutcome> {
     let authority = format!("{host}:{port}");
+    // SECURITY (O3): validate every attacker-influenceable value that goes
+    // onto the wire BEFORE encoding. `host` comes from endpoint config,
+    // `url_path`/`protocol_token` from ssh3 config, and `auth_header` embeds a
+    // (possibly OIDC-sourced) Bearer token — a crafted token/host/path must
+    // not inject a second header or control sequence against a lenient peer.
+    validate_authority(authority.as_bytes())?;
+    validate_header_value(":path", url_path.as_bytes())?;
+    validate_header_value(":protocol", protocol_token.as_bytes())?;
+    validate_header_value("authorization", auth_header.as_bytes())?;
+    validate_header_value("user-agent", user_agent.as_bytes())?;
     let protocol_bytes = protocol_token.as_bytes();
     let fields: Vec<(&[u8], &[u8])> = vec![
         (b":method", b"CONNECT"),
@@ -680,5 +741,124 @@ mod tests {
         let payload = vec![0x00, 0x00, 0b1000_0001];
         let err = qpack_decode(&payload).unwrap_err();
         assert!(matches!(err, Error::RuntimeFailure(_)));
+    }
+
+    // ---- O1: QPACK literal-string length overflow / out-of-range ----
+
+    /// Encode a 7-bit prefix-int (top bits = 0, the `read_literal_string`
+    /// length encoding) for an arbitrary `value`, mirroring `write_prefix_int`.
+    fn encode_prefix_int_7(value: u64) -> Vec<u8> {
+        let mut buf = BytesMut::new();
+        write_prefix_int(&mut buf, 0x00, 7, value);
+        buf.to_vec()
+    }
+
+    #[test]
+    fn read_literal_string_rejects_overflow_len_no_panic() {
+        // The O1 exploit: a literal-string whose 7-bit prefix-int encodes
+        // `len = usize::MAX`. A naive `n + len` wraps (release: overflow-checks
+        // OFF), passes the guard, then `buf[n..n+len]` panics → process abort.
+        // The fixed decoder MUST return Err with NO panic. This test asserts
+        // the same in BOTH debug and release (the wrap is release-semantics);
+        // it works either way because we use checked_add, not debug overflow.
+        let mut payload = encode_prefix_int_7(u64::MAX);
+        // No body bytes follow — irrelevant; the check happens before slicing.
+        payload.push(0xAB);
+        let err = read_literal_string(&payload).unwrap_err();
+        assert!(matches!(err, Error::RuntimeFailure(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn read_literal_string_rejects_len_gt_remaining() {
+        // len = 5 but only 2 body bytes remain → Err, not panic.
+        let mut payload = encode_prefix_int_7(5);
+        payload.extend_from_slice(b"ab");
+        let err = read_literal_string(&payload).unwrap_err();
+        assert!(matches!(err, Error::RuntimeFailure(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn read_literal_string_accepts_exact_len() {
+        // len = 3, exactly 3 body bytes → Ok, consumes header + body.
+        let mut payload = encode_prefix_int_7(3);
+        let header_len = payload.len();
+        payload.extend_from_slice(b"xyz");
+        let (value, consumed) = read_literal_string(&payload).unwrap();
+        assert_eq!(value, b"xyz");
+        assert_eq!(consumed, header_len + 3);
+    }
+
+    #[test]
+    fn qpack_decode_literal_value_overflow_len_is_err_not_panic() {
+        // End-to-end through qpack_decode: literal-name-ref field (static
+        // name idx 0 = :authority) followed by a value whose 7-bit length
+        // prefix encodes usize::MAX. Must be Err, no panic.
+        let mut payload = vec![0x00, 0x00, 0x50]; // prefix + literal-name-ref idx 0
+        payload.extend_from_slice(&encode_prefix_int_7(u64::MAX));
+        let err = qpack_decode(&payload).unwrap_err();
+        assert!(matches!(err, Error::RuntimeFailure(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn qpack_decode_literal_name_len_gt_remaining_is_err() {
+        // Literal-with-literal-name: name length 200 but no name bytes follow.
+        // The name path uses a single comparison (no add) — confirm it's Err.
+        let mut payload = vec![0x00, 0x00];
+        // 0x20 = literal-with-literal-name opcode, prefix=3 for name length.
+        let mut name_len = BytesMut::new();
+        write_prefix_int(&mut name_len, 0x20, 3, 200);
+        payload.extend_from_slice(&name_len);
+        let err = qpack_decode(&payload).unwrap_err();
+        assert!(matches!(err, Error::RuntimeFailure(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn qpack_decode_truncated_prefix_int_is_err() {
+        // A field-section prefix that begins a multi-byte prefix-int but is
+        // truncated mid-continuation → Err (no panic).
+        // 0xFF as the RIC prefix (prefix=8 → max=255, so value==max forces a
+        // continuation read), then EOF.
+        let payload = vec![0xFF];
+        let err = qpack_decode(&payload).unwrap_err();
+        assert!(matches!(err, Error::RuntimeFailure(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn read_frame_typed_cap_bounds_frame_len() {
+        // The frame-length cap is a constant; a length above it must be a
+        // bounded Err (covered structurally — this asserts the constant is
+        // the small bound we expect so the vec alloc can't be hostile-sized).
+        assert_eq!(RESPONSE_HEADERS_MAX_LEN, 64 * 1024);
+    }
+
+    // ---- O3: CONNECT header/control-char injection ----
+
+    #[test]
+    fn validate_header_value_rejects_crlf() {
+        for bad in [b"foo\r\nevil: 1".as_slice(), b"a\rb", b"a\nb"] {
+            let err = validate_header_value("x", bad).unwrap_err();
+            assert!(matches!(err, Error::InvalidConfig(_)), "got {err:?}");
+        }
+    }
+
+    #[test]
+    fn validate_header_value_rejects_nul_and_controls() {
+        for bad in [b"a\0b".as_slice(), b"a\tb", b"a\x1bb", b"a\x7fb"] {
+            assert!(validate_header_value("x", bad).is_err());
+        }
+    }
+
+    #[test]
+    fn validate_header_value_accepts_clean() {
+        validate_header_value("x", b"Bearer abc.def.ghi").unwrap();
+        validate_header_value("x", b"/ssh3").unwrap();
+        validate_header_value("x", b"spt/0.1").unwrap();
+    }
+
+    #[test]
+    fn validate_authority_rejects_space_and_controls() {
+        assert!(validate_authority(b"ho st:443").is_err());
+        assert!(validate_authority(b"host\r\n:443").is_err());
+        validate_authority(b"host.example:443").unwrap();
     }
 }

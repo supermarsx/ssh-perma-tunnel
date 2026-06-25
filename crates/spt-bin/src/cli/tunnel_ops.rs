@@ -39,7 +39,7 @@ use spt_cli::{GlobalOpts, OutputFormat};
 use crate::cli::style::Styler;
 use spt_config::openssh_config::parse_user_host_port;
 use spt_config::schema::{Config, Hop};
-use spt_core::{Error, Result};
+use spt_core::{escape_control, Error, Result};
 use spt_state::status::{LastError, ProfileStatus, StatusSnapshot};
 
 // ---------------------------------------------------------------------------
@@ -781,13 +781,16 @@ fn render_health_human(report: &HealthReport, now: DateTime<Utc>, st: Styler) ->
     for p in &report.profiles {
         let last = p.last_error.as_deref().unwrap_or("-");
         let state_cell = st.state(&format!("{:<13}", p.state));
+        // SECURITY (O7): `last_error` is free-form text persisted in
+        // status.json and may carry server-supplied banner/error text.
+        // Neutralize control/ANSI bytes before printing to the terminal.
         let _ = writeln!(
             out,
             "  {:<width$}  {} uptime {}    last error: {}",
             format!("{}:", p.id),
             state_cell,
             p.uptime.as_ref().cloned().unwrap_or_else(|| "-".into()),
-            last,
+            escape_control(last),
             width = name_w + 1,
         );
     }
@@ -796,7 +799,15 @@ fn render_health_human(report: &HealthReport, now: DateTime<Utc>, st: Styler) ->
         out.push_str("\n  Recent events (last 10m):\n");
         for ev in &report.recent_events {
             let when = ev.at.map_or_else(|| "-".to_string(), |t| fmt_clock(t));
-            let _ = writeln!(out, "    - {}  {}  {}", when, ev.scope, ev.message);
+            // SECURITY (O7): event `message` (and `scope`) are free-form and
+            // may carry server-supplied text — neutralize control/ANSI bytes.
+            let _ = writeln!(
+                out,
+                "    - {}  {}  {}",
+                when,
+                escape_control(&ev.scope),
+                escape_control(&ev.message)
+            );
         }
     }
 

@@ -14,7 +14,7 @@ use russh::keys::ssh_key::HashAlg;
 use russh::keys::{PrivateKeyWithHashAlg, PublicKeyBase64 as _};
 use secrecy::ExposeSecret as _;
 use spt_auth::{AuthConfig, AuthMethod, SecretRef as AuthSecretRef};
-use spt_core::{BindAddr, DnsResolution, Error, Result};
+use spt_core::{escape_control, BindAddr, DnsResolution, Error, Result};
 use spt_forward::{
     bind_with_policy, copy_bidirectional_throttled_idle, BoundListener, RateGate, TokenBucket,
 };
@@ -137,7 +137,7 @@ impl client::Handler for ClientHandler {
             if tx.send(ForwardedTcpip { channel }).await.is_err() {
                 warn!(
                     target: "spt_ssh2::russh",
-                    address = connected_address,
+                    address = %escape_control(connected_address),
                     port = connected_port,
                     "remote forward channel arrived after receiver closed"
                 );
@@ -146,7 +146,7 @@ impl client::Handler for ClientHandler {
             let _ = channel.close().await;
             warn!(
                 target: "spt_ssh2::russh",
-                address = connected_address,
+                address = %escape_control(connected_address),
                 port = connected_port,
                 "dropping unregistered remote forward channel"
             );
@@ -180,7 +180,7 @@ impl client::Handler for ClientHandler {
             if tx.send(ForwardedStreamlocal { channel }).await.is_err() {
                 warn!(
                     target: "spt_ssh2::russh",
-                    socket_path = socket_path,
+                    socket_path = %escape_control(socket_path),
                     "remote uds forward channel arrived after receiver closed"
                 );
             }
@@ -188,7 +188,7 @@ impl client::Handler for ClientHandler {
             let _ = channel.close().await;
             warn!(
                 target: "spt_ssh2::russh",
-                socket_path = socket_path,
+                socket_path = %escape_control(socket_path),
                 "dropping unregistered remote uds forward channel"
             );
         }

@@ -30,6 +30,8 @@ use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 
+use spt_core::escape_control;
+
 use super::{MountEvent, MountHandle, MountOpts, SftpMounter};
 use crate::client::SftpClient;
 use crate::error::SftpError;
@@ -227,7 +229,14 @@ impl SftpMounter for SshfsMounter {
                     use std::io::{BufRead, BufReader};
                     let reader = BufReader::new(stderr);
                     for line in reader.lines().map_while(Result::ok) {
-                        tracing::debug!(target: "spt_sftp::mount::macos", "sshfs: {line}");
+                        // SECURITY (O8): sshfs stderr can echo remote server
+                        // error text carrying control/ANSI bytes — neutralize
+                        // before logging so it can't forge log lines.
+                        tracing::debug!(
+                            target: "spt_sftp::mount::macos",
+                            "sshfs: {}",
+                            escape_control(&line)
+                        );
                         if let Ok(mut q) = tail.lock() {
                             if q.len() == STDERR_TAIL_LINES {
                                 q.pop_front();
@@ -269,9 +278,12 @@ impl SftpMounter for SshfsMounter {
                     let tail = self.stderr_tail.lock().ok();
                     if let Some(tail) = tail {
                         for line in tail.iter() {
+                            // SECURITY (O8): neutralize control/ANSI bytes in
+                            // remote-sourced stderr before logging.
                             tracing::debug!(
                                 target: "spt_sftp::mount::macos",
-                                "sshfs (exited {status}): {line}"
+                                "sshfs (exited {status}): {}",
+                                escape_control(line)
                             );
                         }
                     }

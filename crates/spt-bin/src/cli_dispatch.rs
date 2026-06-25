@@ -445,6 +445,17 @@ async fn config_pull(global: &GlobalOpts, args: groups::config::ConfigPull) -> R
     let result = spt_remote_config::fetch_with_plan(&plan, &state_dir)
         .await
         .map_err(map_remote_config_err)?;
+    // Opt-in authenticity: if `[runtime.remote_config].signing_pubkey` is set
+    // (and/or require_signature), verify the SPTENC1 envelope's Ed25519
+    // `[signature]` against that anchor BEFORE unsealing/parsing. Fail-closed.
+    // The signature covers `magic||meta||body`, so this is checked against the
+    // sealed bytes that the fingerprint pin also covered.
+    crate::cli::config_ops::verify_sigverify_anchor(
+        &result.body,
+        rc.signing_pubkey.as_deref(),
+        rc.require_signature.unwrap_or(false),
+        global,
+    )?;
     // Opt-in decrypt: if `[runtime.remote_config].encryption_key_from` is set
     // and the fetched body is a sealed SPTENC1 envelope, unseal it before
     // writing/printing so `config pull` emits PLAINTEXT. The fingerprint pin
@@ -2278,13 +2289,32 @@ fn maybe_spawn_remote_config_poller(
     let global = global.clone();
     let encryption_key_from = rc.encryption_key_from.clone();
     let require_encrypted = rc.require_encrypted.unwrap_or(false);
+    let signing_pubkey = rc.signing_pubkey.clone();
+    let require_signature = rc.require_signature.unwrap_or(false);
     let apply_cb = move |body: Vec<u8>| {
         let resolver = resolver.clone();
         let orchestrator = orchestrator.clone();
         let config_cell = config_cell.clone();
         let global = global.clone();
         let encryption_key_from = encryption_key_from.clone();
+        let signing_pubkey = signing_pubkey.clone();
         async move {
+            // Opt-in authenticity: verify the SPTENC1 Ed25519 `[signature]`
+            // against the configured anchor BEFORE unseal/parse. Fail-closed —
+            // a rejected signature skips this update (keeps previous config).
+            if let Err(e) = crate::cli::config_ops::verify_sigverify_anchor(
+                &body,
+                signing_pubkey.as_deref(),
+                require_signature,
+                &global,
+            ) {
+                tracing::error!(
+                    target: "spt_remote_config",
+                    error = %e,
+                    "remote config signature verification failed — skipping this update"
+                );
+                return;
+            }
             // Opt-in decrypt: unseal a sealed SPTENC1 body before parsing.
             let plaintext = match crate::cli::config_ops::decrypt_if_sealed(
                 &body,

@@ -250,6 +250,27 @@ pub struct RuntimeRemoteConfig {
     /// cleartext bodies are accepted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub require_encrypted: Option<bool>,
+
+    // ---------------- Config-authenticity surface (sec-fix-sigverify) -------
+    /// Opt-in Ed25519 *authenticity* anchor for a fetched remote-config body.
+    /// The expected signer's public key, given as raw base64 (32-byte Ed25519
+    /// verifying key) OR a secret reference (`secret://ns/name`, `env:NAME`,
+    /// `file:PATH`) resolving to that base64. When set, a fetched `SPTENC1`
+    /// envelope's `[signature]` block is verified against THIS key (the only
+    /// trust anchor) BEFORE the body is unsealed/parsed; verification covers
+    /// `magic || meta || body`, so it also detects tampering with the sealed
+    /// envelope. Unset (default) → no signature check (pin-only,
+    /// behavior-preserving).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signing_pubkey: Option<String>,
+    /// When `true`, a fetched remote-config body MUST be a signed `SPTENC1`
+    /// envelope whose `[signature]` verifies against `signing_pubkey`. A body
+    /// that is cleartext, an unsigned envelope, or signed by an untrusted key
+    /// is rejected. Requires `signing_pubkey` to be set (an empty allow-list
+    /// fails closed). Default (`None`/`false`) → signatures are verified only
+    /// when present and `signing_pubkey` is configured.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub require_signature: Option<bool>,
 }
 
 // ---------------------------------------------------------------------------

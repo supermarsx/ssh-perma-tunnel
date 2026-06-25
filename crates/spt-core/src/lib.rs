@@ -41,4 +41,4 @@ pub use error::{Error, Result};
 pub use exit_code::ExitCode;
 pub use id::{ConnectionId, EventId, ForwardId, ProfileId, RunId, SessionId};
 pub use redacted_string::{RedactedString, REDACTED_DEBUG};
-pub use redaction::{redact, RedactionMode};
+pub use redaction::{escape_control, redact, RedactionMode};

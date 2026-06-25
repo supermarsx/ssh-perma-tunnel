@@ -785,6 +785,101 @@ mod tests {
         assert_eq!(xproto, b"ssh3-next");
     }
 
+    /// SECURITY (O3): `extended_connect_raw` must reject any value containing
+    /// CR/LF/NUL/control bytes BEFORE it opens a stream or encodes the
+    /// request. Each crafted field below must produce an `Err` (the validation
+    /// short-circuits before `open_bi`, so a live server is unnecessary — we
+    /// just need a connected client handle).
+    #[cfg(feature = "testing")]
+    #[tokio::test]
+    async fn extended_connect_raw_rejects_control_char_injection() {
+        use crate::h3_raw::extended_connect_raw;
+        use crate::testing::test_support::connected_pair_public;
+
+        let (client_conn, _server_conn) = connected_pair_public().await;
+
+        // host (→ :authority) with CRLF.
+        assert!(
+            extended_connect_raw(
+                &client_conn,
+                "h.test\r\nevil: 1",
+                8443,
+                "/ssh3",
+                "Bearer t",
+                "spt/test",
+                "ssh3",
+            )
+            .await
+            .is_err(),
+            "CRLF in host must be rejected"
+        );
+
+        // url_path (→ :path) with CRLF.
+        assert!(
+            extended_connect_raw(
+                &client_conn,
+                "h.test",
+                8443,
+                "/x\r\nevil: 1",
+                "Bearer t",
+                "spt/test",
+                "ssh3",
+            )
+            .await
+            .is_err(),
+            "CRLF in url_path must be rejected"
+        );
+
+        // auth_header (→ authorization) with an injected header — models a
+        // crafted Bearer/OIDC token smuggling a second header.
+        assert!(
+            extended_connect_raw(
+                &client_conn,
+                "h.test",
+                8443,
+                "/ssh3",
+                "Bearer abc\r\nx-admin: 1",
+                "spt/test",
+                "ssh3",
+            )
+            .await
+            .is_err(),
+            "CRLF in authorization must be rejected"
+        );
+
+        // user-agent with NUL.
+        assert!(
+            extended_connect_raw(
+                &client_conn,
+                "h.test",
+                8443,
+                "/ssh3",
+                "Bearer t",
+                "spt\0/x",
+                "ssh3",
+            )
+            .await
+            .is_err(),
+            "NUL in user-agent must be rejected"
+        );
+
+        // protocol_token with a control byte.
+        assert!(
+            extended_connect_raw(
+                &client_conn,
+                "h.test",
+                8443,
+                "/ssh3",
+                "Bearer t",
+                "spt/test",
+                "ssh3\x1b",
+            )
+            .await
+            .is_err(),
+            "control byte in protocol_token must be rejected"
+        );
+    }
+
     #[tokio::test]
     async fn build_quinn_endpoint_constructs_for_v6_remote() {
         let cfg = crate::config::Ssh3Config {

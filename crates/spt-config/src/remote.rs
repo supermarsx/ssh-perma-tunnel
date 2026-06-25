@@ -209,6 +209,8 @@ mod tests {
             max_cert_chain_depth: Some(3),
             encryption_key_from: None,
             require_encrypted: None,
+            signing_pubkey: None,
+            require_signature: None,
         };
         let plan = RemoteConfigSpec::plan_from_runtime(&rc, None, None, Some(2_000_000)).unwrap();
         // The configured fingerprint flows into the spec.

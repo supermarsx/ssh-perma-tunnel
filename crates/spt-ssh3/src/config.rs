@@ -224,6 +224,17 @@ impl Ssh3Config {
                 self.url_path
             )));
         }
+        // SECURITY (O3): `url_path` is emitted verbatim as the `:path`
+        // pseudo-header value; apply the same control-char strictness as
+        // `protocol_token` (below) so a path like "/x\r\nevil: 1" or one with
+        // a NUL can never inject a second header / control sequence against a
+        // lenient intermediary. (`extended_connect_raw` re-validates on the
+        // wire path as defense-in-depth, but reject early with a clear error.)
+        if let Some(b) = self.url_path.bytes().find(|&b| b < 0x20 || b == 0x7f) {
+            return Err(Error::InvalidConfig(format!(
+                "ssh3.url_path must not contain control bytes (found 0x{b:02x})"
+            )));
+        }
         if self.tls.allow_self_signed {
             // `acknowledge_experimental` keeps the "I know what I'm doing"
             // gate, but on its own it does NOT make `allow_self_signed`
@@ -305,6 +316,29 @@ mod tests {
             ..Ssh3Config::default()
         };
         assert!(c.validate().is_err());
+    }
+
+    #[test]
+    fn url_path_rejects_control_bytes() {
+        // SECURITY (O3): a path that smuggles CR/LF (or NUL) must be rejected,
+        // matching the strictness already applied to `protocol_token`.
+        for bad in ["/x\r\nevil: 1", "/a\nb", "/a\rb", "/a\0b", "/a\x7fb"] {
+            let c = Ssh3Config {
+                url_path: bad.into(),
+                ..Ssh3Config::default()
+            };
+            let err = c.validate().unwrap_err();
+            assert!(matches!(err, Error::InvalidConfig(_)), "{bad:?} -> {err:?}");
+        }
+    }
+
+    #[test]
+    fn url_path_accepts_clean_path() {
+        let c = Ssh3Config {
+            url_path: "/ssh3".into(),
+            ..Ssh3Config::default()
+        };
+        assert!(c.validate().is_ok());
     }
 
     #[test]

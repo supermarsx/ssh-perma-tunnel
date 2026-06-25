@@ -84,6 +84,64 @@ pub fn validate_production_enterprise_pen(pen: u32) -> Result<()> {
 /// Maximum UDP datagram we will accept (matches `msgMaxSize` default).
 pub const MAX_DATAGRAM: usize = 65_507;
 
+/// Hard upper bound on a GetBulk `max-repetitions` we will honour, regardless
+/// of the (attacker-controlled) value on the wire.
+///
+/// `max-repetitions` is an `i32` taken straight from the request; an unbounded
+/// `for _ in 0..max_rep` loop over a registered table subtree lets a single
+/// ~50-byte UDP datagram drive billions of iterations and unbounded `Vec`
+/// growth (memory-exhaustion DoS, reachable by any USM user including
+/// `noAuthNoPriv`). Clamping the per-request repetition count to a small
+/// constant — combined with [`MAX_BULK_RESPONSE_BYTES`] — bounds both the work
+/// and the allocation. RFC 3416 §4.2.3 lets the responder return fewer
+/// repetitions than requested.
+pub const MAX_BULK_REPETITIONS: usize = 100;
+
+/// Hard upper bound on a GetBulk `non-repeaters` we will honour. The
+/// non-repeating part is additionally bounded by the number of varbinds the
+/// peer actually sent, but we clamp it as defence-in-depth against a bogus
+/// `non-repeaters` count.
+pub const MAX_BULK_NON_REPEATERS: usize = 100;
+
+/// Cap on the cumulative *estimated* encoded size of the varbinds we will
+/// accumulate into a GetBulk / GetNext response before we stop walking and
+/// return a partial (truncated) response.
+///
+/// This is the byte-budget half of the GetBulk DoS fix: even with the
+/// repetition clamp, a small number of repetitions over OIDs/values with large
+/// encodings could still grow the response without a size bound. We stop adding
+/// varbinds once the projected response would exceed this budget — standard
+/// SNMP "return what fits" behaviour rather than allocating unboundedly. The
+/// effective budget for any one request is further reduced to the peer's
+/// advertised `msgMaxSize` when that is smaller (see [`bulk_response_budget`]).
+pub const MAX_BULK_RESPONSE_BYTES: usize = MAX_DATAGRAM;
+
+/// Reserved headroom (envelope + USM security parameters + scoped-PDU framing)
+/// subtracted from the response budget so the *encoded message* — not just the
+/// varbind list — stays within the datagram cap.
+const BULK_RESPONSE_OVERHEAD: usize = 512;
+
+/// Returns the byte budget for accumulated varbinds in a bulk/walk response,
+/// derived from `min(MAX_BULK_RESPONSE_BYTES, peer msgMaxSize)` minus framing
+/// overhead. Never returns zero (a single varbind may always be attempted).
+fn bulk_response_budget(peer_msg_max_size: i32) -> usize {
+    let peer = usize::try_from(peer_msg_max_size.max(0)).unwrap_or(MAX_BULK_RESPONSE_BYTES);
+    let cap = MAX_BULK_RESPONSE_BYTES.min(peer.max(484));
+    cap.saturating_sub(BULK_RESPONSE_OVERHEAD).max(64)
+}
+
+/// Best-effort estimate of a varbind's encoded size, used to enforce the
+/// response byte budget. Encodes into a scratch buffer; on the (practically
+/// impossible) encode error, falls back to a conservative non-zero estimate so
+/// the budget logic still makes progress and terminates.
+fn encoded_varbind_len(vb: &VarBind) -> usize {
+    let mut enc = crate::ber::Encoder::new();
+    match vb.encode(&mut enc) {
+        Ok(()) => enc.as_slice().len(),
+        Err(_) => 32,
+    }
+}
+
 /// Agent builder: configure addresses, users and the MIB then `run()`.
 #[derive(Default)]
 pub struct AgentBuilder {
@@ -379,8 +437,11 @@ impl Agent {
         let user_name = String::from_utf8_lossy(&msg.security.user_name).to_string();
         let writable = self.users.get(&user_name).is_some_and(|k| k.user.writable);
 
-        // Dispatch the PDU.
-        let response = self.dispatch_pdu(scoped.pdu, writable).await?;
+        // Dispatch the PDU. Pass the peer's advertised msgMaxSize so bulk/walk
+        // responses can be size-capped (DoS mitigation).
+        let response = self
+            .dispatch_pdu(scoped.pdu, writable, msg.global.msg_max_size)
+            .await?;
         let resp_scoped = ScopedPdu {
             context_engine_id: self.engine_id.as_bytes().to_vec(),
             context_name: scoped.context_name.clone(),
@@ -497,11 +558,11 @@ impl Agent {
     ///
     /// `writable` reflects the authenticated user's write permission; a
     /// `SetRequest` from a user without it is rejected before any handler runs.
-    async fn dispatch_pdu(&self, req: Pdu, writable: bool) -> Result<Pdu> {
+    async fn dispatch_pdu(&self, req: Pdu, writable: bool, msg_max_size: i32) -> Result<Pdu> {
         match req.kind {
             PduKind::GetRequest => Ok(self.handle_get(req).await),
-            PduKind::GetNextRequest => Ok(self.handle_get_next(req).await),
-            PduKind::GetBulkRequest => Ok(self.handle_get_bulk(req).await),
+            PduKind::GetNextRequest => Ok(self.handle_get_next(req, msg_max_size).await),
+            PduKind::GetBulkRequest => Ok(self.handle_get_bulk(req, msg_max_size).await),
             PduKind::SetRequest => Ok(self.handle_set(req, writable).await),
             PduKind::Response | PduKind::Report => {
                 // Agents shouldn't normally receive these. Drop with a no-op.
@@ -548,8 +609,14 @@ impl Agent {
         }
     }
 
-    async fn handle_get_next(&self, req: Pdu) -> Pdu {
+    async fn handle_get_next(&self, req: Pdu, msg_max_size: i32) -> Pdu {
+        // GetNext is bounded by the number of varbinds the peer sent (one
+        // successor each), which is itself datagram-bounded. We still enforce
+        // the response byte budget so a request packed with many varbinds whose
+        // successors encode large values cannot blow the response size.
+        let budget = bulk_response_budget(msg_max_size);
         let mut bindings = Vec::with_capacity(req.variable_bindings.len());
+        let mut used: usize = 0;
         for vb in &req.variable_bindings {
             let resp = match self.registry.next(&vb.name).await {
                 Ok(Some((oid, v))) => VarBind {
@@ -561,6 +628,11 @@ impl Agent {
                     value: Value::EndOfMibView,
                 },
             };
+            let est = encoded_varbind_len(&resp);
+            if !bindings.is_empty() && used.saturating_add(est) > budget {
+                break;
+            }
+            used = used.saturating_add(est);
             bindings.push(resp);
         }
         Pdu {
@@ -572,55 +644,97 @@ impl Agent {
         }
     }
 
-    async fn handle_get_bulk(&self, req: Pdu) -> Pdu {
+    async fn handle_get_bulk(&self, req: Pdu, msg_max_size: i32) -> Pdu {
         // RFC 3416 §4.2.3: error_status -> non_repeaters, error_index -> max_repetitions.
-        let n = usize::try_from(req.error_status.max(0)).unwrap_or(0);
-        let max_rep = usize::try_from(req.error_index.max(0)).unwrap_or(0);
+        //
+        // SECURITY: both counts arrive as attacker-controlled `i32`s (up to
+        // `i32::MAX`). Left unclamped, `max-repetitions` drives an unbounded
+        // loop pushing varbinds into an uncapped `Vec`, so one tiny UDP
+        // datagram causes an enormous allocation/spin (OOM/abort under
+        // `panic=abort`). We therefore:
+        //   (a) clamp `non-repeaters` and `max-repetitions` to small constants
+        //       (and to the number of varbinds actually sent), and
+        //   (b) stop accumulating once the projected encoded response would
+        //       exceed the byte budget — returning a partial response, which is
+        //       valid GetBulk behaviour (RFC 3416 §4.2.3).
+        // Negative / zero / oversized values are all handled: `.max(0)` floors
+        // negatives, `try_from` can't panic, and the clamps bound the rest.
         let total = req.variable_bindings.len();
-        let n = n.min(total);
+        let n = usize::try_from(req.error_status.max(0))
+            .unwrap_or(0)
+            .min(MAX_BULK_NON_REPEATERS)
+            .min(total);
+        let max_rep = usize::try_from(req.error_index.max(0))
+            .unwrap_or(0)
+            .min(MAX_BULK_REPETITIONS);
 
+        let budget = bulk_response_budget(msg_max_size);
         let mut bindings: Vec<VarBind> = Vec::new();
+        let mut used: usize = 0;
+
+        // `try_push` adds a varbind unless doing so would exceed the byte
+        // budget (always allowing the very first one). Returns `false` once the
+        // budget is reached so callers stop walking.
+        macro_rules! try_push {
+            ($vb:expr) => {{
+                let vb = $vb;
+                let est = encoded_varbind_len(&vb);
+                if !bindings.is_empty() && used.saturating_add(est) > budget {
+                    false
+                } else {
+                    used = used.saturating_add(est);
+                    bindings.push(vb);
+                    true
+                }
+            }};
+        }
 
         // Non-repeating part.
+        let mut budget_hit = false;
         for vb in req.variable_bindings.iter().take(n) {
-            match self.registry.next(&vb.name).await {
-                Ok(Some((oid, v))) => bindings.push(VarBind {
+            let resp = match self.registry.next(&vb.name).await {
+                Ok(Some((oid, v))) => VarBind {
                     name: oid,
                     value: v,
-                }),
-                _ => bindings.push(VarBind {
+                },
+                _ => VarBind {
                     name: vb.name.clone(),
                     value: Value::EndOfMibView,
-                }),
+                },
+            };
+            if !try_push!(resp) {
+                budget_hit = true;
+                break;
             }
         }
 
         // Repeating part.
-        if total > n && max_rep > 0 {
+        if !budget_hit && total > n && max_rep > 0 {
             let mut cursors: Vec<ObjectIdentifier> = req
                 .variable_bindings
                 .iter()
                 .skip(n)
                 .map(|vb| vb.name.clone())
                 .collect();
-            for _ in 0..max_rep {
+            'outer: for _ in 0..max_rep {
                 let mut all_end = true;
                 for cur in &mut cursors {
-                    match self.registry.next(cur).await {
+                    let resp = match self.registry.next(cur).await {
                         Ok(Some((oid, v))) => {
                             *cur = oid.clone();
-                            bindings.push(VarBind {
+                            all_end = false;
+                            VarBind {
                                 name: oid,
                                 value: v,
-                            });
-                            all_end = false;
+                            }
                         }
-                        _ => {
-                            bindings.push(VarBind {
-                                name: cur.clone(),
-                                value: Value::EndOfMibView,
-                            });
-                        }
+                        _ => VarBind {
+                            name: cur.clone(),
+                            value: Value::EndOfMibView,
+                        },
+                    };
+                    if !try_push!(resp) {
+                        break 'outer;
                     }
                 }
                 if all_end {

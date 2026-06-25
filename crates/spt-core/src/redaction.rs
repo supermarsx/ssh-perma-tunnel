@@ -161,6 +161,54 @@ pub fn redact(input: &str, mode: RedactionMode) -> Cow<'_, str> {
     current
 }
 
+/// Neutralize control characters in a string destined for a terminal or a log
+/// line, returning a display-safe form.
+///
+/// Untrusted data — filenames, addresses, error banners, stderr — handed to a
+/// server or peer can carry C0/C1 control bytes. Written raw to a log they
+/// forge new log lines (embedded `\n`/`\r`); written raw to an operator's
+/// terminal they emit ANSI escape sequences (cursor moves, color, title-set,
+/// clipboard, hyperlink injection) via `ESC` (`0x1b`). This function renders
+/// every such byte as a visible Rust-style escape (`\n`, `\r`, `\t`,
+/// `\u{0}`, `\u{1b}`, …) so the bytes are seen, not executed.
+///
+/// Specifically neutralized: all C0 controls `0x00..=0x1f` (including ESC, CR,
+/// LF, TAB, BEL `0x07`, backspace `0x08`), DEL `0x7f`, and the C1 range
+/// `0x80..=0x9f` (which can act as escapes on some terminals).
+///
+/// Printable ASCII and printable multi-byte UTF-8 (e.g. `世界`, `café`) pass
+/// through unchanged — this only touches control/escape bytes, never legitimate
+/// text. Returns [`Cow::Borrowed`] (zero allocation) when the input is already
+/// clean.
+///
+/// This is *additive* to [`redact`]: it neutralizes control characters but does
+/// not scrub secrets. Apply [`redact`] for secret-bearing data and
+/// `escape_control` for display safety; they compose.
+#[must_use]
+pub fn escape_control(input: &str) -> Cow<'_, str> {
+    fn needs_escape(c: char) -> bool {
+        let u = c as u32;
+        // C0 controls (incl. ESC/CR/LF/TAB/BEL/BS/NUL), DEL, and C1 controls.
+        u < 0x20 || u == 0x7f || (0x80..=0x9f).contains(&u)
+    }
+
+    if !input.chars().any(needs_escape) {
+        return Cow::Borrowed(input);
+    }
+
+    let mut out = String::with_capacity(input.len() + 8);
+    for c in input.chars() {
+        if needs_escape(c) {
+            // `char::escape_default` renders control chars as `\n`, `\r`,
+            // `\t`, `\u{0}`, or `\u{1b}` — all visible, all ASCII.
+            out.extend(c.escape_default());
+        } else {
+            out.push(c);
+        }
+    }
+    Cow::Owned(out)
+}
+
 fn apply<'a>(
     current: Cow<'a, str>,
     re: &Regex,
@@ -183,7 +231,8 @@ fn apply<'a>(
 #[cfg(test)]
 mod tests {
     use super::{
-        redact, RedactionMode, BASIC, BEARER, EMAIL, IPV4, IPV6, KV_SECRET, PEM_BLOCK, STRICT_SET,
+        escape_control, redact, RedactionMode, BASIC, BEARER, EMAIL, IPV4, IPV6, KV_SECRET,
+        PEM_BLOCK, STRICT_SET,
     };
     use regex::Regex;
 
@@ -447,5 +496,134 @@ mod tests {
         assert!(!out.contains("a@b.com"));
         assert!(out.contains("token="));
         assert!(out.contains("password="));
+    }
+
+    // --- escape_control ----------------------------------------------------
+
+    #[test]
+    fn escape_control_neutralizes_esc_cr_lf_nul_bel_bs() {
+        // Each control byte must render to a visible escape and must NOT
+        // survive as its raw form in the output.
+        let cases: &[(&str, &str)] = &[
+            ("a\x1bb", "\\u{1b}"), // ESC
+            ("a\rb", "\\r"),       // CR
+            ("a\nb", "\\n"),       // LF
+            ("a\x00b", "\\u{0}"),  // NUL
+            ("a\x07b", "\\u{7}"),  // BEL
+            ("a\x08b", "\\u{8}"),  // backspace
+            ("a\tb", "\\t"),       // TAB
+        ];
+        for (input, expect_marker) in cases {
+            let out = escape_control(input);
+            assert!(
+                out.contains(expect_marker),
+                "input={input:?} expected marker {expect_marker:?} in {out:?}"
+            );
+            // No raw control byte may remain.
+            assert!(
+                !out.chars().any(|c| (c as u32) < 0x20),
+                "raw control byte survived for input={input:?}: {out:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn escape_control_neutralizes_real_ansi_clear_screen() {
+        // `ESC [ 2J` (clear screen) must not reach the terminal as raw bytes.
+        let evil = "innocent\x1b[2Jhidden";
+        let out = escape_control(evil);
+        assert!(!out.contains('\x1b'), "raw ESC survived: {out:?}");
+        assert!(out.contains("\\u{1b}[2J"), "got {out:?}");
+        // The visible-text parts are preserved.
+        assert!(out.contains("innocent"));
+        assert!(out.contains("hidden"));
+    }
+
+    #[test]
+    fn escape_control_neutralizes_osc_title_set() {
+        // OSC window-title set: ESC ] 0 ; pwned BEL
+        let evil = "file\x1b]0;pwned\x07.txt";
+        let out = escape_control(evil);
+        assert!(!out.contains('\x1b'));
+        assert!(!out.contains('\x07'));
+        assert!(out.contains("\\u{1b}]0;pwned\\u{7}.txt"), "got {out:?}");
+    }
+
+    #[test]
+    fn escape_control_neutralizes_osc8_hyperlink() {
+        // OSC 8 hyperlink injection: ESC ] 8 ; ; http://evil ESC \
+        let evil = "link\x1b]8;;http://evil.example\x1b\\text";
+        let out = escape_control(evil);
+        assert!(!out.contains('\x1b'), "raw ESC survived: {out:?}");
+        assert!(out.contains("http://evil.example"));
+    }
+
+    #[test]
+    fn escape_control_forges_log_line_neutralized() {
+        // A would-be forged log line with an embedded newline becomes a single
+        // line carrying a visible `\n`.
+        let evil = "ok\nfake-auth: succeeded";
+        let out = escape_control(evil);
+        assert!(!out.contains('\n'), "embedded newline survived: {out:?}");
+        assert_eq!(out, "ok\\nfake-auth: succeeded");
+    }
+
+    #[test]
+    fn escape_control_neutralizes_del_and_c1() {
+        // DEL (0x7f) and a C1 control (0x9b = CSI) are both neutralized.
+        let evil = "a\x7fb\u{9b}c";
+        let out = escape_control(evil);
+        assert!(!out.contains('\x7f'));
+        assert!(!out.contains('\u{9b}'));
+        assert!(out.contains("\\u{7f}"));
+        assert!(out.contains("\\u{9b}"));
+    }
+
+    #[test]
+    fn escape_control_leaves_printable_ascii_unchanged() {
+        let s = "plain text 123 -_./:@ OK!";
+        match escape_control(s) {
+            std::borrow::Cow::Borrowed(b) => assert_eq!(b, s),
+            std::borrow::Cow::Owned(o) => panic!("expected borrowed, got owned {o:?}"),
+        }
+    }
+
+    #[test]
+    fn escape_control_leaves_utf8_unchanged() {
+        // Printable multi-byte UTF-8 must pass through untouched.
+        let s = "café 世界 naïve Ω π";
+        match escape_control(s) {
+            std::borrow::Cow::Borrowed(b) => assert_eq!(b, s),
+            std::borrow::Cow::Owned(o) => panic!("expected borrowed, got owned {o:?}"),
+        }
+    }
+
+    #[test]
+    fn escape_control_empty_is_borrowed() {
+        match escape_control("") {
+            std::borrow::Cow::Borrowed(b) => assert_eq!(b, ""),
+            std::borrow::Cow::Owned(_) => panic!("expected borrowed"),
+        }
+    }
+
+    #[test]
+    fn escape_control_does_not_redact_secrets() {
+        // escape_control is additive — it must NOT scrub secret content; that
+        // is `redact`'s job. A clean secret string passes through verbatim.
+        let s = "password=hunter2";
+        assert_eq!(escape_control(s).as_ref(), s);
+    }
+
+    #[test]
+    fn escape_control_is_idempotent() {
+        let evil = "x\x1b[2J\ny\r\x00";
+        let once = escape_control(evil).into_owned();
+        let twice = escape_control(&once).into_owned();
+        assert_eq!(once, twice, "escape_control must be idempotent");
+        // The escaped form is pure printable ASCII, so a second pass borrows.
+        assert!(matches!(
+            escape_control(&once),
+            std::borrow::Cow::Borrowed(_)
+        ));
     }
 }

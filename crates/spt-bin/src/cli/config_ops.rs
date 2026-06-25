@@ -41,8 +41,8 @@ use serde_json::json;
 use spt_cli::{groups, GlobalOpts, OutputFormat};
 use spt_config::schema::Config;
 use spt_config_crypt::{
-    generate_psk, generate_x25519, is_sealed, peek_meta, psk_id, seal, unseal, KeySource,
-    X25519PublicKey,
+    generate_psk, generate_x25519, is_sealed, peek_meta, psk_id, seal, unseal, verify_with_options,
+    KeySource, VerifyingKey, X25519PublicKey,
 };
 use spt_core::{Error, Result};
 use spt_diagnostics::check::{Check, Severity, Status};
@@ -859,6 +859,11 @@ pub async fn gen_key(_global: &GlobalOpts, args: groups::config::ConfigGenKey) -
 ///
 /// Shared by `config pull` and the remote-config poll apply callback so both
 /// paths emit/apply plaintext.
+///
+/// Authenticity is enforced by [`verify_sigverify_anchor`] *before* this is
+/// called (see the two call sites). Keep that ordering: the signature covers
+/// the sealed `SPTENC1` bytes, so it must be checked against `body` while it is
+/// still the on-the-wire envelope.
 pub(crate) fn decrypt_if_sealed(
     body: &[u8],
     key_ref: Option<&str>,
@@ -904,6 +909,113 @@ pub(crate) fn decrypt_if_sealed(
         }
         Ok(body.to_vec())
     }
+}
+
+/// Decode a single Ed25519 verifying key from a base64 string (32 raw bytes).
+fn decode_ed25519_pubkey(label: &str, b64: &str) -> Result<VerifyingKey> {
+    let raw = base64::engine::general_purpose::STANDARD
+        .decode(b64.trim())
+        .map_err(|e| {
+            Error::InvalidConfig(format!(
+                "[runtime.remote_config].signing_pubkey `{label}` is not valid base64: {e}"
+            ))
+        })?;
+    let arr: [u8; 32] = raw.as_slice().try_into().map_err(|_| {
+        Error::InvalidConfig(format!(
+            "[runtime.remote_config].signing_pubkey `{label}` must decode to 32 bytes, got {}",
+            raw.len()
+        ))
+    })?;
+    VerifyingKey::from_bytes(&arr).map_err(|e| {
+        Error::InvalidConfig(format!(
+            "[runtime.remote_config].signing_pubkey `{label}` is not a valid Ed25519 key: {e}"
+        ))
+    })
+}
+
+/// Resolve the configured `signing_pubkey` into the Ed25519 trust anchor.
+///
+/// `value` is either a raw base64 Ed25519 verifying key OR a secret reference
+/// (`secret://ns/name`, `env:NAME`, `file:PATH`) that resolves to that base64
+/// — mirroring how `encryption_key_from` is resolved. The resolved bytes are
+/// treated as UTF-8 base64 text (trailing newlines stripped by the file
+/// reader), consistent with how `config gen-key` emits public keys.
+fn resolve_signing_pubkey(global: &GlobalOpts, value: &str) -> Result<VerifyingKey> {
+    use spt_auth::SecretRef;
+    // A bare base64 literal is not a valid SecretRef (no `env:`/`file:`/
+    // `secret://` scheme), so fall back to treating `value` as the key itself.
+    match SecretRef::parse(value) {
+        Ok(_) => {
+            let raw = resolve_ref_to_bytes(global, value, None, None)?;
+            let text = String::from_utf8(raw).map_err(|e| {
+                Error::InvalidConfig(format!(
+                    "[runtime.remote_config].signing_pubkey ref `{value}` did not \
+                     resolve to UTF-8 base64: {e}"
+                ))
+            })?;
+            decode_ed25519_pubkey(value, text.trim())
+        }
+        Err(_) => decode_ed25519_pubkey(value, value),
+    }
+}
+
+/// Enforce the optional Ed25519 *authenticity* layer on a fetched remote-config
+/// body, BEFORE it is unsealed/parsed.
+///
+/// Behavior (fail-closed):
+/// * `signing_pubkey` unset and `require_signature` false → no-op (pin-only,
+///   behavior-preserving).
+/// * `require_signature` true but `signing_pubkey` unset → reject (an empty
+///   trust anchor cannot authenticate anything).
+/// * `require_signature` true and the body is not a sealed `SPTENC1` envelope →
+///   reject (a cleartext / unsigned body carries no verifiable signature).
+/// * `signing_pubkey` set and the body is sealed → verify the envelope
+///   `[signature]` against that single key (the only allow-list entry). Rejects
+///   a missing signature, a signer not equal to the anchor, or a bad signature.
+/// * `signing_pubkey` set but `require_signature` false and the body is *not*
+///   sealed → no-op (cleartext is permitted unless `require_signature`/
+///   `require_encrypted` says otherwise — the encryption layer owns that).
+pub(crate) fn verify_sigverify_anchor(
+    body: &[u8],
+    signing_pubkey: Option<&str>,
+    require_signature: bool,
+    global: &GlobalOpts,
+) -> Result<()> {
+    let anchor = match signing_pubkey {
+        Some(p) if !p.trim().is_empty() => Some(resolve_signing_pubkey(global, p)?),
+        _ => None,
+    };
+
+    if anchor.is_none() {
+        if require_signature {
+            return Err(Error::TrustFailed(
+                "[runtime.remote_config].require_signature = true but no \
+                 signing_pubkey trust anchor is configured (fail-closed)"
+                    .into(),
+            ));
+        }
+        // Not configured → pin-only, unchanged.
+        return Ok(());
+    }
+    let anchor = anchor.expect("anchor checked above");
+
+    if !is_sealed(body) {
+        if require_signature {
+            return Err(Error::TrustFailed(
+                "[runtime.remote_config].require_signature = true but the fetched \
+                 config is not a signed SPTENC1 envelope"
+                    .into(),
+            ));
+        }
+        // Anchor set but signatures live only inside SPTENC1 envelopes; a
+        // cleartext body has nothing to verify and require_signature is off.
+        return Ok(());
+    }
+
+    // The allow-list is exactly the configured anchor; verify rejects a
+    // missing signature, an untrusted signer, or a bad signature. Pass
+    // `any_signed_ok = false` so a (non-empty) allow-list is strictly enforced.
+    verify_with_options(body, &[anchor], false)
 }
 
 // ----- helpers --------------------------------------------------------------
@@ -2941,6 +3053,181 @@ host = "h.example.com"
         .unwrap();
         let wrong_ref = file_ref(&wrong_path);
         assert!(decrypt_if_sealed(&sealed, Some(&wrong_ref), false, &opts(None)).is_err());
+    }
+
+    // ---- sec-fix-sigverify: Ed25519 authenticity on the remote-config path ----
+
+    /// Deterministic signing key from a fixed seed (avoids a `rand` dep here).
+    fn signing_key(seed_byte: u8) -> spt_config_crypt::SigningKey {
+        spt_config_crypt::SigningKey::from_bytes(&[seed_byte; 32])
+    }
+
+    /// Base64 of an Ed25519 verifying key (the `signing_pubkey` literal form).
+    fn pubkey_b64(sk: &spt_config_crypt::SigningKey) -> String {
+        base64::engine::general_purpose::STANDARD.encode(sk.verifying_key().as_bytes())
+    }
+
+    /// Seal SAMPLE_CONFIG with `psk`, then sign the envelope with `sk`.
+    fn signed_sealed(psk: [u8; 32], sk: &spt_config_crypt::SigningKey) -> Vec<u8> {
+        let sealed =
+            spt_config_crypt::seal(SAMPLE_CONFIG.as_bytes(), &KeySource::Psk(psk)).unwrap();
+        spt_config_crypt::sign(&sealed, sk).unwrap()
+    }
+
+    /// A correctly signed+sealed body with a matching `signing_pubkey` is
+    /// accepted, and the inner config decrypts to the original plaintext.
+    #[test]
+    fn sigverify_signed_matching_pubkey_accepted() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sk = signing_key(7);
+        let psk = spt_config_crypt::generate_psk();
+        let body = signed_sealed(psk, &sk);
+        let pk = pubkey_b64(&sk);
+
+        // Accepted with require_signature on and off.
+        verify_sigverify_anchor(&body, Some(&pk), false, &opts(None)).unwrap();
+        verify_sigverify_anchor(&body, Some(&pk), true, &opts(None)).unwrap();
+
+        // And the body still unseals to the original config.
+        let psk_path = tmp.path().join("psk.key");
+        std::fs::write(
+            &psk_path,
+            base64::engine::general_purpose::STANDARD.encode(psk),
+        )
+        .unwrap();
+        let psk_ref = file_ref(&psk_path);
+        let pt = decrypt_if_sealed(&body, Some(&psk_ref), false, &opts(None)).unwrap();
+        assert_eq!(pt, SAMPLE_CONFIG.as_bytes());
+    }
+
+    /// A body signed by a DIFFERENT key than the configured anchor is rejected.
+    #[test]
+    fn sigverify_wrong_signer_rejected() {
+        let signer = signing_key(11);
+        let other = signing_key(22);
+        let psk = spt_config_crypt::generate_psk();
+        let body = signed_sealed(psk, &signer);
+        let anchor = pubkey_b64(&other);
+
+        assert!(verify_sigverify_anchor(&body, Some(&anchor), false, &opts(None)).is_err());
+        assert!(verify_sigverify_anchor(&body, Some(&anchor), true, &opts(None)).is_err());
+    }
+
+    /// require_signature=true with an unsigned (sealed-but-not-signed) body is
+    /// rejected.
+    #[test]
+    fn sigverify_required_unsigned_sealed_rejected() {
+        let sk = signing_key(33);
+        let psk = spt_config_crypt::generate_psk();
+        let sealed =
+            spt_config_crypt::seal(SAMPLE_CONFIG.as_bytes(), &KeySource::Psk(psk)).unwrap();
+        let anchor = pubkey_b64(&sk);
+        // Sealed but never signed → no [signature] block → rejected.
+        assert!(verify_sigverify_anchor(&sealed, Some(&anchor), true, &opts(None)).is_err());
+        // Same applies when require_signature is off but an anchor is set
+        // (verify_with_options rejects a missing signature).
+        assert!(verify_sigverify_anchor(&sealed, Some(&anchor), false, &opts(None)).is_err());
+    }
+
+    /// require_signature=true with a cleartext (non-SPTENC1) body is rejected.
+    #[test]
+    fn sigverify_required_cleartext_rejected() {
+        let sk = signing_key(44);
+        let anchor = pubkey_b64(&sk);
+        assert!(verify_sigverify_anchor(
+            SAMPLE_CONFIG.as_bytes(),
+            Some(&anchor),
+            true,
+            &opts(None)
+        )
+        .is_err());
+    }
+
+    /// require_signature=true with NO configured anchor fails closed.
+    #[test]
+    fn sigverify_required_without_anchor_rejected() {
+        let sk = signing_key(55);
+        let psk = spt_config_crypt::generate_psk();
+        let body = signed_sealed(psk, &sk);
+        // require=true but signing_pubkey=None → reject (even a valid sig).
+        assert!(verify_sigverify_anchor(&body, None, true, &opts(None)).is_err());
+        // Empty/whitespace anchor is treated as unset → same rejection.
+        assert!(verify_sigverify_anchor(&body, Some("   "), true, &opts(None)).is_err());
+    }
+
+    /// A tampered signed envelope (body bytes mutated after signing) is
+    /// rejected by the underlying ed25519 verify.
+    #[test]
+    fn sigverify_tampered_envelope_rejected() {
+        let sk = signing_key(66);
+        let psk = spt_config_crypt::generate_psk();
+        let mut body = signed_sealed(psk, &sk);
+        let anchor = pubkey_b64(&sk);
+        // Flip a byte well inside the envelope (past the magic) — this lands in
+        // meta/body which the signature covers.
+        let idx = body.len() / 2;
+        body[idx] ^= 0xff;
+        assert!(verify_sigverify_anchor(&body, Some(&anchor), true, &opts(None)).is_err());
+    }
+
+    /// NOT configured (no anchor, require off) → no-op, both cleartext and
+    /// sealed bodies pass through (pin-only back-compat).
+    #[test]
+    fn sigverify_unconfigured_is_noop() {
+        let psk = spt_config_crypt::generate_psk();
+        let sealed =
+            spt_config_crypt::seal(SAMPLE_CONFIG.as_bytes(), &KeySource::Psk(psk)).unwrap();
+        verify_sigverify_anchor(SAMPLE_CONFIG.as_bytes(), None, false, &opts(None)).unwrap();
+        verify_sigverify_anchor(&sealed, None, false, &opts(None)).unwrap();
+        // Even a signed body passes when unconfigured (signature ignored).
+        let sk = signing_key(77);
+        let body = signed_sealed(spt_config_crypt::generate_psk(), &sk);
+        verify_sigverify_anchor(&body, None, false, &opts(None)).unwrap();
+    }
+
+    /// Anchor configured, require off, cleartext body → no-op (cleartext has no
+    /// signature to verify; require_encrypted/require_signature own that gate).
+    #[test]
+    fn sigverify_anchor_set_cleartext_optional_passes() {
+        let sk = signing_key(88);
+        let anchor = pubkey_b64(&sk);
+        verify_sigverify_anchor(SAMPLE_CONFIG.as_bytes(), Some(&anchor), false, &opts(None))
+            .unwrap();
+    }
+
+    /// The `signing_pubkey` anchor resolves via a `file:` secret reference
+    /// (the same resolver chain as `encryption_key_from`), not just a literal.
+    #[test]
+    fn sigverify_pubkey_via_file_ref() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sk = signing_key(99);
+        let psk = spt_config_crypt::generate_psk();
+        let body = signed_sealed(psk, &sk);
+
+        let pk_path = tmp.path().join("signer.pub");
+        std::fs::write(&pk_path, format!("{}\n", pubkey_b64(&sk))).unwrap();
+        let pk_ref = file_ref(&pk_path);
+
+        verify_sigverify_anchor(&body, Some(&pk_ref), true, &opts(None)).unwrap();
+
+        // A file ref to a different signer's key → rejected.
+        let other = signing_key(100);
+        let other_path = tmp.path().join("other.pub");
+        std::fs::write(&other_path, format!("{}\n", pubkey_b64(&other))).unwrap();
+        let other_ref = file_ref(&other_path);
+        assert!(verify_sigverify_anchor(&body, Some(&other_ref), true, &opts(None)).is_err());
+    }
+
+    /// A malformed `signing_pubkey` (bad base64 / wrong length) is a config
+    /// error, not a silent pass.
+    #[test]
+    fn sigverify_malformed_pubkey_errors() {
+        let psk = spt_config_crypt::generate_psk();
+        let body = signed_sealed(psk, &signing_key(101));
+        assert!(verify_sigverify_anchor(&body, Some("not-base64-!!!"), true, &opts(None)).is_err());
+        // Valid base64 but wrong length (16 bytes).
+        let short = base64::engine::general_purpose::STANDARD.encode([0u8; 16]);
+        assert!(verify_sigverify_anchor(&body, Some(&short), true, &opts(None)).is_err());
     }
 
     /// On unix, `gen-key` writes secret output with mode 0600.

@@ -372,10 +372,23 @@ pub(crate) fn render_unit(spec: &ServiceSpec, user_scope: bool) -> String {
         .map(|a| shell_escape(a))
         .collect::<Vec<_>>()
         .join(" ");
+    // SECURITY (O6): `k`/`v` are operator/root-supplied at install time but
+    // are NOT escaped by the bare `Environment="k=v"` form — an embedded
+    // newline would terminate the line and inject an arbitrary unit directive
+    // (e.g. `ExecStartPre=`), and a `"`/`\` would break the quoting. Escape
+    // them the same way the `args` path uses `shell_escape`: render control
+    // chars as systemd C-style escapes (so no newline survives) and escape
+    // backslash/double-quote inside the quoted value.
     let env_lines = spec
         .env
         .iter()
-        .map(|(k, v)| format!("Environment=\"{k}={v}\""))
+        .map(|(k, v)| {
+            format!(
+                "Environment=\"{}={}\"",
+                systemd_env_escape(k),
+                systemd_env_escape(v)
+            )
+        })
         .collect::<Vec<_>>()
         .join("\n");
     let user_line = spec
@@ -451,6 +464,34 @@ pub(crate) fn render_unit(spec: &ServiceSpec, user_scope: bool) -> String {
     template::render(TEMPLATE, &vars)
 }
 
+/// Escape a value for inclusion inside a double-quoted systemd `Environment="…"`
+/// directive.
+///
+/// Neutralizes injection vectors: any control character (CR/LF/TAB/…) is
+/// rendered as a systemd-recognised C-style escape so it cannot terminate the
+/// line and inject a new unit directive, and `\` / `"` are escaped so they
+/// cannot break out of the quoting. Printable ASCII and UTF-8 pass through.
+fn systemd_env_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 || c as u32 == 0x7f => {
+                // Other C0 controls / DEL: emit a visible escaped form using
+                // the char's default escape (`\u{..}`), guaranteeing no raw
+                // control byte reaches the unit file.
+                out.extend(c.escape_default());
+            }
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 fn shell_escape(s: &str) -> String {
     if s.chars()
         .all(|c| c.is_ascii_alphanumeric() || "-_./=:".contains(c))
@@ -473,6 +514,45 @@ mod tests {
             stdout: stdout.into(),
             stderr: String::new(),
         }
+    }
+
+    #[test]
+    fn systemd_env_escape_neutralizes_newline_injection() {
+        // An embedded newline must NOT terminate the Environment line and
+        // inject a new directive — it must become a visible `\n`.
+        let escaped = systemd_env_escape("val\nExecStartPre=/bin/rm");
+        assert!(!escaped.contains('\n'), "raw newline survived: {escaped:?}");
+        assert_eq!(escaped, "val\\nExecStartPre=/bin/rm");
+    }
+
+    #[test]
+    fn systemd_env_escape_escapes_quote_and_backslash() {
+        assert_eq!(systemd_env_escape(r#"a"b\c"#), r#"a\"b\\c"#);
+    }
+
+    #[test]
+    fn systemd_env_escape_passes_through_plain_and_utf8() {
+        assert_eq!(
+            systemd_env_escape("KEY=value-1.2/path:x"),
+            "KEY=value-1.2/path:x"
+        );
+        assert_eq!(systemd_env_escape("café世界"), "café世界");
+    }
+
+    #[test]
+    fn render_unit_env_line_is_injection_safe() {
+        let mut spec = sample_spec();
+        spec.env
+            .insert("EVIL".into(), "x\nExecStartPre=/bin/touch /tmp/pwn".into());
+        let out = render_unit(&spec, false);
+        // The malicious value must appear escaped on a single Environment line,
+        // never as a standalone ExecStartPre directive.
+        assert!(out.contains(r#"Environment="EVIL=x\nExecStartPre=/bin/touch /tmp/pwn""#));
+        assert!(
+            !out.lines()
+                .any(|l| l.trim_start().starts_with("ExecStartPre=/bin/touch")),
+            "injected directive leaked: {out}"
+        );
     }
 
     #[test]
