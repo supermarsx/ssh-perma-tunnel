@@ -1,3 +1,14 @@
+## [26.27] - 2026-06-25
+
+# spt 26.27
+
+## Changes since 26.26
+
+- fix(test): shorten ssh3 UDS socket paths (macOS sun_path limit, flaky aarch64-darwin) (79656d1)
+- fix(ssh2): resolve the shadowsocks obfuscation password SecretRef before dialing (7448e22)
+- fix(e2e): clear clippy lints in the new e2e tests (CI was red) (d1a6ab3)
+- test(e2e): broaden end-to-end coverage (~46 tests) + spt-updater test mock (42dbae1)
+
 ## [26.26] - 2026-06-24
 
 # spt 26.26
