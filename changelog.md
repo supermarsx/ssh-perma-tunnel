@@ -1,3 +1,11 @@
+## [26.28] - 2026-06-25
+
+# spt 26.28
+
+## Changes since 26.27
+
+- fix(security): batch 1 — quinn CVE bump + SNMP/updater/SFTP/firewall hardening (b065326)
+
 ## [26.27] - 2026-06-25
 
 # spt 26.27
