@@ -1,3 +1,11 @@
+## [26.31] - 2026-06-25
+
+# spt 26.31
+
+## Changes since 26.30
+
+- fix(security): batch 3 — overflow-checks on release, decoder fuzz harnesses, key chmod (f96a903)
+
 ## [26.30] - 2026-06-25
 
 # spt 26.30
