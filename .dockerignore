@@ -1,0 +1,97 @@
+# .dockerignore — keep the build context tiny and prevent leaking local
+# artifacts or secrets into the image. The builder only needs the workspace
+# manifests + Rust sources to run `cargo build --release --locked`.
+
+# Build artifacts (huge; rebuilt inside the image via BuildKit cache mounts).
+target/
+**/target/
+**/*.rs.bk
+
+# VCS metadata — not needed by cargo for a --locked build, and large.
+.git/
+.gitattributes
+
+# Orchestration scratch (plans/state/logs — never ship these).
+.orchestration/
+.docker-tmp/
+
+# NOTE on what is deliberately KEPT in the context (do NOT add blanket excludes
+# for these):
+#   * tests/, tools/, vendor/, crates/ — the root Cargo.toml lists `tests`,
+#     `tests/conformance`, `tests/stress` as workspace members and
+#     `[patch.crates-io]` routes libgssapi to vendor/libgssapi-fork, so cargo
+#     must read those manifests even for a `-p spt-bin` build.
+#   * examples/ — spt-bin's `config_ops.rs` embeds the example TOMLs via
+#     `include_str!` at COMPILE time.
+#   * packaging/{launchd,openrc,systemd,sysv}/*.tmpl — spt-service embeds these
+#     service templates via `include_str!` at COMPILE time.
+# Their build artifacts are already stripped via the target/ rules above.
+
+# fuzz/ is a separate, non-member crate tree — not needed by the release build.
+fuzz/
+
+# Docs, MIBs, binary assets — not compiled into the binary.
+docs/
+mibs/
+assets/
+
+# packaging/: KEEP the four service-template dirs (compile-time include_str!),
+# exclude the heavy/irrelevant rest (39M security bundle, 4.4M completions,
+# per-distro manifests, icons) so the context stays small.
+packaging/security/
+packaging/completions/
+packaging/man/
+packaging/docker/
+packaging/aur/
+packaging/choco/
+packaging/deb/
+packaging/flathub/
+packaging/flatpak/
+packaging/homebrew/
+packaging/msi/
+packaging/nix/
+packaging/pkg/
+packaging/rpm/
+packaging/scoop/
+packaging/snap/
+packaging/snapcraft/
+packaging/winget/
+packaging/windows-gpo/
+packaging/*.desktop
+packaging/*.pub
+packaging/*.md
+
+# Markdown / project meta (none are needed for the build).
+*.md
+changelog.md
+spec.md
+
+# Local Docker scaffolding (this file set defines its own context).
+Dockerfile
+.dockerignore
+docker-compose.yml
+
+# Coverage / profiling / verify logs.
+*.profraw
+coverage*
+*.stderr.log
+codecov.yml
+
+# Environment / secrets — MUST never enter the build context or image.
+.env
+.env.*
+*.pem
+*.key
+
+# Editor / OS junk.
+.vscode/
+.idea/
+*.iml
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# CI config (not needed to build the binary).
+.github/

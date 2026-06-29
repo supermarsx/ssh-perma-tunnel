@@ -334,6 +334,8 @@ fn dynamic_forward_spec_round_trip_all_socks_flags() {
         allow_socks4a: true,
         allow_socks5: true,
         allow_http_connect: true,
+        allow_targets: Vec::new(),
+        deny_targets: Vec::new(),
         limits: ForwardRateLimits::default(),
         idle_timeout: Some(Duration::from_millis(1)),
         on_bind_conflict: BindConflictPolicy::Fail,

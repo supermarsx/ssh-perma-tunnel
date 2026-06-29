@@ -60,7 +60,7 @@ pub async fn connect_to_endpoint(
     target: &str,
     obfs_cfg: Option<&ObfsConfig>,
     audit: Option<Arc<dyn AuditHook>>,
-    obfs_secret: Option<Vec<u8>>,
+    obfs_secret: Option<zeroize::Zeroizing<Vec<u8>>>,
 ) -> Result<ConnectStream> {
     match obfs_cfg {
         None => {

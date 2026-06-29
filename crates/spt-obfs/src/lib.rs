@@ -86,7 +86,7 @@ pub fn transport_for_with_audit(
 pub fn transport_for_with_secret(
     cfg: &ObfsConfig,
     audit: Arc<dyn AuditHook>,
-    resolved_password: Option<Vec<u8>>,
+    resolved_password: Option<zeroize::Zeroizing<Vec<u8>>>,
 ) -> Result<Box<dyn ObfsTransport>> {
     cfg.validate()
         .map_err(|e| Error::InvalidConfig(e.to_string()))?;
@@ -102,7 +102,7 @@ pub fn transport_for_with_secret(
         ObfsConfig::Shadowsocks { .. } => {
             let mut t = shadowsocks::ShadowsocksTransport::new(cfg.clone(), audit)?;
             if let Some(pw) = resolved_password {
-                t = t.with_direct_password(pw);
+                t = t.with_direct_password_secret(pw);
             }
             Ok(Box::new(t))
         }

@@ -58,10 +58,15 @@ futures = { workspace = true }
 
 # Linux FUSE session loop. Gated behind `mount-fuse` so workspace builds on
 # hosts without `libfuse-dev` installed; the platform `cfg` keeps the dep
-# off non-Linux targets entirely. `fuser 0.15` MSRV is 1.74 (workspace
-# MSRV 1.85 is well above).
+# off non-Linux targets entirely. Pinned to `fuser 0.16` to clear
+# RUSTSEC-2021-0154 (fixed in >=0.16.0; the unsound `Session::new` NULL
+# op-list bug). 0.16 keeps the `&mut self` / plain-`u64` `Filesystem` trait
+# and the `spawn_mount2` / `FileAttr` shapes identical to 0.15, so the
+# backend below is unchanged. (0.17 introduces newtype wrappers
+# `INodeNo`/`FileHandle` with no further advisory benefit, so it is not
+# adopted.) Workspace MSRV 1.88 is well above fuser 0.16's requirement.
 [target.'cfg(target_os = "linux")'.dependencies]
-fuser = { version = "0.15", optional = true }
+fuser = { version = "0.16", optional = true }
 libc = { version = "0.2", optional = true }
 
 # Windows Dokan / Dokany2 backend (t7-P2). MIT-licensed Rust crates; the

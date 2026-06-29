@@ -104,6 +104,8 @@ async fn russh_backend_dynamic_forward_bridges_socks5_to_direct_tcpip() {
             allow_socks4a: true,
             allow_socks5: true,
             allow_http_connect: true,
+            allow_targets: Vec::new(),
+            deny_targets: Vec::new(),
             limits: ForwardRateLimits::default(),
             idle_timeout: None,
             on_bind_conflict: BindConflictPolicy::default(),
@@ -156,6 +158,8 @@ async fn russh_backend_dynamic_forward_bridges_socks4_to_direct_tcpip() {
             allow_socks4a: true,
             allow_socks5: true,
             allow_http_connect: true,
+            allow_targets: Vec::new(),
+            deny_targets: Vec::new(),
             limits: ForwardRateLimits::default(),
             idle_timeout: None,
             on_bind_conflict: BindConflictPolicy::default(),
@@ -202,6 +206,8 @@ async fn russh_backend_dynamic_forward_bridges_socks4a_to_direct_tcpip() {
             allow_socks4a: true,
             allow_socks5: true,
             allow_http_connect: true,
+            allow_targets: Vec::new(),
+            deny_targets: Vec::new(),
             limits: ForwardRateLimits::default(),
             idle_timeout: None,
             on_bind_conflict: BindConflictPolicy::default(),
@@ -249,6 +255,8 @@ async fn russh_backend_dynamic_forward_bridges_http_connect_to_direct_tcpip() {
             allow_socks4a: true,
             allow_socks5: true,
             allow_http_connect: true,
+            allow_targets: Vec::new(),
+            deny_targets: Vec::new(),
             limits: ForwardRateLimits::default(),
             idle_timeout: None,
             on_bind_conflict: BindConflictPolicy::default(),
@@ -274,6 +282,115 @@ async fn russh_backend_dynamic_forward_bridges_http_connect_to_direct_tcpip() {
     let mut echoed = [0_u8; 4];
     sock.read_exact(&mut echoed).await.expect("read echo");
     assert_eq!(&echoed, b"http");
+
+    handle.close().await;
+    server.shutdown().await;
+}
+
+/// SSRF-mitigation ACL: a SOCKS5 target on the deny-list is rejected at the
+/// SOCKS layer with reply code 0x02 ("connection not allowed by ruleset")
+/// before any channel is opened.
+#[tokio::test]
+async fn russh_backend_dynamic_forward_acl_denies_target_with_socks5_code_02() {
+    let (server, mut session) = connect_russh_session().await;
+    let port = free_loopback_port().await;
+
+    let handle = session
+        .open_dynamic_forward(&DynamicForwardSpec {
+            name: "dynamic-acl-deny".into(),
+            listen: BindAddr::parse(&format!("127.0.0.1:{port}")).unwrap(),
+            max_connections: Some(4),
+            allow_socks4: true,
+            allow_socks4a: true,
+            allow_socks5: true,
+            allow_http_connect: true,
+            allow_targets: Vec::new(),
+            deny_targets: vec!["server-side-echo".to_string()],
+            limits: ForwardRateLimits::default(),
+            idle_timeout: None,
+            on_bind_conflict: BindConflictPolicy::default(),
+            required: false,
+        })
+        .await
+        .expect("open dynamic forward");
+
+    let mut sock = TcpStream::connect(("127.0.0.1", port))
+        .await
+        .expect("connect dynamic forward");
+    sock.write_all(&[0x05, 0x01, 0x00])
+        .await
+        .expect("write SOCKS greeting");
+    let mut method = [0_u8; 2];
+    sock.read_exact(&mut method)
+        .await
+        .expect("read SOCKS method");
+    assert_eq!(method, [0x05, 0x00]);
+
+    let host = b"server-side-echo";
+    let mut request = vec![0x05, 0x01, 0x00, 0x03, host.len() as u8];
+    request.extend_from_slice(host);
+    request.extend_from_slice(&7_u16.to_be_bytes());
+    sock.write_all(&request).await.expect("write SOCKS connect");
+    let mut reply = [0_u8; 10];
+    sock.read_exact(&mut reply).await.expect("read SOCKS reply");
+    // 0x02 == connection not allowed by ruleset.
+    assert_eq!(&reply[..2], &[0x05, 0x02], "denied target must reply 0x02");
+
+    handle.close().await;
+    server.shutdown().await;
+}
+
+/// SSRF-mitigation ACL: a SOCKS5 target matching the allow-list is bridged
+/// normally (positive-match path preserved when an allow-list is configured).
+#[tokio::test]
+async fn russh_backend_dynamic_forward_acl_allows_listed_target() {
+    let (server, mut session) = connect_russh_session().await;
+    let port = free_loopback_port().await;
+
+    let handle = session
+        .open_dynamic_forward(&DynamicForwardSpec {
+            name: "dynamic-acl-allow".into(),
+            listen: BindAddr::parse(&format!("127.0.0.1:{port}")).unwrap(),
+            max_connections: Some(4),
+            allow_socks4: true,
+            allow_socks4a: true,
+            allow_socks5: true,
+            allow_http_connect: true,
+            allow_targets: vec!["server-*".to_string()],
+            deny_targets: Vec::new(),
+            limits: ForwardRateLimits::default(),
+            idle_timeout: None,
+            on_bind_conflict: BindConflictPolicy::default(),
+            required: false,
+        })
+        .await
+        .expect("open dynamic forward");
+
+    let mut sock = TcpStream::connect(("127.0.0.1", port))
+        .await
+        .expect("connect dynamic forward");
+    sock.write_all(&[0x05, 0x01, 0x00])
+        .await
+        .expect("write SOCKS greeting");
+    let mut method = [0_u8; 2];
+    sock.read_exact(&mut method)
+        .await
+        .expect("read SOCKS method");
+    assert_eq!(method, [0x05, 0x00]);
+
+    let host = b"server-side-echo";
+    let mut request = vec![0x05, 0x01, 0x00, 0x03, host.len() as u8];
+    request.extend_from_slice(host);
+    request.extend_from_slice(&7_u16.to_be_bytes());
+    sock.write_all(&request).await.expect("write SOCKS connect");
+    let mut reply = [0_u8; 10];
+    sock.read_exact(&mut reply).await.expect("read SOCKS reply");
+    assert_eq!(&reply[..2], &[0x05, 0x00], "allowed target must succeed");
+
+    sock.write_all(b"acl!").await.expect("write payload");
+    let mut echoed = [0_u8; 4];
+    sock.read_exact(&mut echoed).await.expect("read echo");
+    assert_eq!(&echoed, b"acl!");
 
     handle.close().await;
     server.shutdown().await;

@@ -241,8 +241,11 @@ pub(crate) struct ObfsPolicy {
     /// secrets backend chain — exactly like the SSH auth secrets — before the
     /// transport can derive its AEAD subkey. This is populated per-dial in
     /// [`connect_inner`] (so reconnects re-resolve), not stored on disk. It is
-    /// `None` for transports that need no secret.
-    pub resolved_secret: Option<Vec<u8>>,
+    /// `None` for transports that need no secret. Wrapped in
+    /// [`zeroize::Zeroizing`] so the resolved PSK is scrubbed from the heap on
+    /// drop instead of lingering for the connection lifetime
+    /// (defense-in-depth against core-dump / swap residue).
+    pub resolved_secret: Option<zeroize::Zeroizing<Vec<u8>>>,
 }
 
 /// SSH2 transport-keepalive policy threaded from the supervisor's
@@ -2083,10 +2086,10 @@ fn backend_refs(backends: &[Arc<dyn SecretBackend>]) -> Vec<&dyn SecretBackend> 
 fn resolve_obfs_secret(
     backends: &[Arc<dyn SecretBackend>],
     reference: &spt_secrets::SecretRef,
-) -> Result<Vec<u8>> {
+) -> Result<zeroize::Zeroizing<Vec<u8>>> {
     for b in backends {
         if let Some(v) = b.get(reference)? {
-            return Ok(v.expose_secret().to_vec());
+            return Ok(zeroize::Zeroizing::new(v.expose_secret().to_vec()));
         }
     }
     Err(Error::SecretUnavailable {
@@ -2200,6 +2203,16 @@ async fn open_dynamic(
         socks5: spec.allow_socks5,
         http_connect: spec.allow_http_connect,
     };
+    // SSRF mitigation: build the destination ACL from the spec. Bad patterns
+    // are rejected at open time (fail-closed) so a typo never silently
+    // degrades into allow-all.
+    let target_acl = Arc::new(
+        crate::target_acl::TargetAcl::from_patterns(
+            Some(&spec.allow_targets),
+            Some(&spec.deny_targets),
+        )
+        .map_err(|e| Error::InvalidConfig(format!("dynamic forward `{name}` target ACL: {e}")))?,
+    );
     tokio::spawn(dynamic_loop(
         listener,
         handle,
@@ -2208,6 +2221,7 @@ async fn open_dynamic(
         spec.max_connections,
         name.clone(),
         protocols,
+        target_acl,
         spec.limits,
         combine_idle(spec.idle_timeout, channel_idle),
     ));
@@ -2277,6 +2291,7 @@ async fn dynamic_loop(
     max_connections: Option<u32>,
     name: String,
     protocols: crate::dynamic::DynamicProxyProtocolSet,
+    target_acl: Arc<crate::target_acl::TargetAcl>,
     limits: ForwardRateLimits,
     idle_timeout: Option<Duration>,
 ) {
@@ -2307,9 +2322,10 @@ async fn dynamic_loop(
                 active.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 let handle = Arc::clone(&handle);
                 let active = Arc::clone(&active);
+                let target_acl = Arc::clone(&target_acl);
                 let name = name.clone();
                 tokio::spawn(async move {
-                    if let Err(e) = bridge_dynamic(handle, sock, peer, protocols, &limits, idle_timeout).await {
+                    if let Err(e) = bridge_dynamic(handle, sock, peer, protocols, &target_acl, &limits, idle_timeout).await {
                         warn!(target: "spt_ssh2::russh", forward = %name, error = %e, "dynamic bridge failed");
                     }
                     active.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
@@ -2357,15 +2373,28 @@ async fn bridge_local(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn bridge_dynamic(
     handle: SharedHandle,
     mut sock: TcpStream,
     peer: SocketAddr,
     protocols: crate::dynamic::DynamicProxyProtocolSet,
+    target_acl: &crate::target_acl::TargetAcl,
     limits: &ForwardRateLimits,
     idle_timeout: Option<Duration>,
 ) -> Result<()> {
     let request = crate::dynamic::read_request(&mut sock, protocols).await?;
+    // SSRF mitigation: enforce the destination ACL BEFORE opening any channel.
+    // A forbidden target is rejected at the SOCKS layer (code 0x02 for SOCKS5)
+    // and the connection closed without ever asking the server to dial.
+    if !target_acl.permits(&request.target.host, request.target.port) {
+        let _ = crate::dynamic::reply_denied(&mut sock, request.protocol).await;
+        return Err(Error::RuntimeFailure(format!(
+            "dynamic proxy target {}:{} denied by ruleset",
+            escape_control(&request.target.host),
+            request.target.port
+        )));
+    }
     let channel = {
         let handle = handle.lock().await;
         handle
@@ -3920,7 +3949,7 @@ mod tests {
         let backends = vec![b1, b2];
         let reference = spt_secrets::SecretRef::new("obfs", "ss-pw").unwrap();
         let bytes = resolve_obfs_secret(&backends, &reference).unwrap();
-        assert_eq!(bytes, b"ss-secret-key");
+        assert_eq!(&bytes[..], b"ss-secret-key");
     }
 
     #[test]

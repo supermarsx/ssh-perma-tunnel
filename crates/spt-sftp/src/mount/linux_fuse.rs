@@ -2,7 +2,7 @@
 //!
 //! When the `mount-fuse` cargo feature is **enabled** *and* the build target
 //! is `linux`, this module wires [`SftpClient`] callbacks to the kernel via
-//! the `fuser` crate (0.15). The session is hosted by
+//! the `fuser` crate (0.16). The session is hosted by
 //! `fuser::BackgroundSession`, which owns a dedicated [`std::thread`]
 //! driving the kernel IO loop. Each `fuser::Filesystem` callback is
 //! synchronous; the backend captures a [`tokio::runtime::Handle`] at mount
@@ -145,19 +145,16 @@ impl SftpMounter for FuseMounter {
         // the async `SftpClient`. The caller is expected to invoke `mount`
         // from inside a tokio context (the CLI's `#[tokio::main]` runtime
         // or a `Runtime::block_on` shell).
-        let handle = match tokio::runtime::Handle::try_current() {
-            Ok(h) => h,
-            Err(_) => {
-                let err = SftpError::Local {
-                    op: "mount",
-                    detail: "FuseMounter::mount must be called from inside a tokio runtime".into(),
-                };
-                opts.emit(&MountEvent::MountFailed {
-                    target: opts.mountpoint.clone(),
-                    reason: err.to_string(),
-                });
-                return Err(err);
-            }
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            let err = SftpError::Local {
+                op: "mount",
+                detail: "FuseMounter::mount must be called from inside a tokio runtime".into(),
+            };
+            opts.emit(&MountEvent::MountFailed {
+                target: opts.mountpoint.clone(),
+                reason: err.to_string(),
+            });
+            return Err(err);
         };
 
         let fs = FuseFs::new(self.sftp.clone(), handle, &opts);
@@ -485,10 +482,9 @@ impl FuseFs {
             FileType::RegularFile
         };
         let size = meta.size.unwrap_or(0);
-        let mtime = meta
-            .modified_unix
-            .map(|s| UNIX_EPOCH + Duration::from_secs(u64::from(s)))
-            .unwrap_or(UNIX_EPOCH);
+        let mtime = meta.modified_unix.map_or(UNIX_EPOCH, |s| {
+            UNIX_EPOCH + Duration::from_secs(u64::from(s))
+        });
         let perm = meta
             .permissions
             .unwrap_or(if meta.is_dir { 0o755 } else { 0o644 }) as u16
@@ -539,7 +535,7 @@ impl Filesystem for FuseFs {
         let result = catch_fuse_callback("lookup", || {
             let parent_path = self.ino_to_path(parent).ok_or(SftpError::NoSuchFile {
                 op: "lookup",
-                path: format!("ino={parent}"),
+                detail: format!("ino={parent}"),
             })?;
             let name_str = name.to_str().ok_or(SftpError::Local {
                 op: "lookup",
@@ -1207,7 +1203,7 @@ mod boundary_tests {
         let err = catch_fuse_callback("lookup", || {
             Err::<(), _>(SftpError::NoSuchFile {
                 op: "lookup",
-                path: "/missing".into(),
+                detail: "/missing".into(),
             })
         })
         .expect_err("err");

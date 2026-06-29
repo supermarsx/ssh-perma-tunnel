@@ -241,10 +241,13 @@ pub async fn token_rotate(global: &GlobalOpts, args: StatusApiTokenRotateArgs) -
         }
     };
 
-    // Generate a fresh token.
-    let mut raw = vec![0u8; args.bytes];
+    // Generate a fresh token. Both the random bytes and the encoded token are
+    // secret-bearing; wrap in `Zeroizing` so they are scrubbed from the heap on
+    // drop (defense-in-depth against core-dump / swap residue).
+    let mut raw = zeroize::Zeroizing::new(vec![0u8; args.bytes]);
     rand::thread_rng().fill_bytes(&mut raw);
-    let token = base64::engine::general_purpose::STANDARD_NO_PAD.encode(&raw);
+    let token =
+        zeroize::Zeroizing::new(base64::engine::general_purpose::STANDARD_NO_PAD.encode(&*raw));
 
     // Write to the vault. Prefer the keychain-unlocked open path so we don't
     // prompt unnecessarily; fall back to a passphrase prompt if unavailable.
@@ -271,7 +274,7 @@ pub async fn token_rotate(global: &GlobalOpts, args: StatusApiTokenRotateArgs) -
                 "bytes": args.bytes,
             });
             if args.print_token {
-                v["token"] = json!(token);
+                v["token"] = json!(token.as_str());
             }
             println!("{}", serde_json::to_string_pretty(&v).unwrap());
         }
@@ -279,14 +282,14 @@ pub async fn token_rotate(global: &GlobalOpts, args: StatusApiTokenRotateArgs) -
             println!("rotated: true");
             println!("ref: {token_ref}");
             if args.print_token {
-                println!("token: {token}");
+                println!("token: {}", token.as_str());
             }
         }
         OutputFormat::Human => {
             if !global.quiet {
                 println!("rotated bearer token at {token_ref}");
                 if args.print_token {
-                    println!("token: {token}");
+                    println!("token: {}", token.as_str());
                 }
             }
         }

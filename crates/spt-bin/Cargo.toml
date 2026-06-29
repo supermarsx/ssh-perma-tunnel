@@ -130,6 +130,9 @@ chrono = { workspace = true }
 rand = { workspace = true }
 url = { workspace = true }
 secrecy = { workspace = true }
+# Scrub freshly-minted status-api bearer tokens from the heap on drop. Already
+# in the lock via spt-secrets et al., so this only adds a dependency *edge*.
+zeroize = { workspace = true }
 ssh-key = { workspace = true }
 tempfile = { workspace = true }
 

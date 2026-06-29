@@ -617,7 +617,7 @@ fn shadowsocks_blake3_kdf_matches_reference_call() {
         .unwrap()
         .with_direct_password(pw.to_vec());
     let got = t.derive_key(&salt).unwrap();
-    assert_eq!(got, expected[..32].to_vec());
+    assert_eq!(&got[..], &expected[..32]);
 }
 
 // 33
@@ -673,9 +673,12 @@ async fn transport_for_with_secret_injects_shadowsocks_password() {
 
     // With the resolved password injected, the transport derives its subkey
     // and proceeds past the salt write — no "password not resolved" error.
-    let mut with_pw =
-        transport_for_with_secret(&cfg, Arc::new(NoopAuditHook), Some(b"resolved-pw".to_vec()))
-            .unwrap();
+    let mut with_pw = transport_for_with_secret(
+        &cfg,
+        Arc::new(NoopAuditHook),
+        Some(zeroize::Zeroizing::new(b"resolved-pw".to_vec())),
+    )
+    .unwrap();
     let target = addr.to_string();
     let ok = tokio::time::timeout(Duration::from_millis(500), with_pw.connect(&target))
         .await

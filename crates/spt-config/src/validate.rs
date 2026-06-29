@@ -2630,6 +2630,60 @@ fn normalize_dynamic_proxy_protocol(value: &str) -> Option<&'static str> {
     }
 }
 
+/// Validate the optional destination ACL (`allow_targets`/`deny_targets`) of a
+/// dynamic SOCKS forward. Each pattern is a host glob or a CIDR/IP rule; this
+/// mirrors `spt_ssh2::target_acl::TargetAcl::from_patterns` so a bad pattern is
+/// caught at config load instead of only fail-closed at forward open.
+fn check_dynamic_target_acl(d: &mut Diagnostics, f: &Forward, prefix: &str) {
+    for (field, list) in [
+        ("allow_targets", f.allow_targets.as_ref()),
+        ("deny_targets", f.deny_targets.as_ref()),
+    ] {
+        let Some(patterns) = list else { continue };
+        for (idx, raw) in patterns.iter().enumerate() {
+            if let Err(reason) = check_target_acl_pattern(raw) {
+                d.push(
+                    Diagnostic::error(
+                        "target_acl_pattern_invalid",
+                        format!(
+                            "dynamic forward `{}` has invalid {field} pattern `{raw}`: {reason}",
+                            f.name
+                        ),
+                    )
+                    .at(format!("{prefix}.{field}[{idx}]")),
+                );
+            }
+        }
+    }
+}
+
+/// Returns `Err(reason)` if `pattern` is empty or a malformed CIDR. A pattern
+/// is a CIDR when the part before `/` parses as an IP address; the prefix must
+/// then be numeric and within the family's bit width (≤32 v4, ≤128 v6). Host
+/// globs (no leading-IP `/`) always validate.
+fn check_target_acl_pattern(pattern: &str) -> Result<(), String> {
+    use std::net::IpAddr;
+    let p = pattern.trim();
+    if p.is_empty() {
+        return Err("pattern cannot be empty".into());
+    }
+    if let Some((addr, prefix)) = p.split_once('/') {
+        // Only treat it as a CIDR when the address part is a real IP — a host
+        // glob may legitimately contain `/` only if its prefix is non-IP, but
+        // host names never contain `/`, so this is purely the CIDR guard.
+        if let Ok(ip) = addr.parse::<IpAddr>() {
+            let max: u8 = if ip.is_ipv4() { 32 } else { 128 };
+            let bits = prefix
+                .parse::<u8>()
+                .map_err(|_| format!("CIDR prefix `{prefix}` is not a number"))?;
+            if bits > max {
+                return Err(format!("CIDR prefix /{bits} exceeds maximum /{max}"));
+            }
+        }
+    }
+    Ok(())
+}
+
 #[allow(clippy::many_single_char_names)]
 fn check_forward(
     d: &mut Diagnostics,
@@ -2712,17 +2766,32 @@ fn check_forward(
             );
         }
         check_dynamic_proxy_protocols(d, f, &prefix);
-    } else if f.proxy_protocols.is_some() {
-        d.push(
-            Diagnostic::error(
-                "dynamic_proxy_protocols_require_dynamic_forward",
-                format!(
-                    "forward `{}` sets proxy_protocols but is not a dynamic forward",
-                    f.name
-                ),
-            )
-            .at(format!("{prefix}.proxy_protocols")),
-        );
+        check_dynamic_target_acl(d, f, &prefix);
+    } else {
+        if f.proxy_protocols.is_some() {
+            d.push(
+                Diagnostic::error(
+                    "dynamic_proxy_protocols_require_dynamic_forward",
+                    format!(
+                        "forward `{}` sets proxy_protocols but is not a dynamic forward",
+                        f.name
+                    ),
+                )
+                .at(format!("{prefix}.proxy_protocols")),
+            );
+        }
+        if f.allow_targets.is_some() || f.deny_targets.is_some() {
+            d.push(
+                Diagnostic::error(
+                    "target_acl_requires_dynamic_forward",
+                    format!(
+                        "forward `{}` sets allow_targets/deny_targets but is not a dynamic forward",
+                        f.name
+                    ),
+                )
+                .at(format!("{prefix}.allow_targets")),
+            );
+        }
     }
     if f.transport == "udp" && protocol != "ssh3" {
         d.push(
@@ -3410,6 +3479,106 @@ mod tests {
             .errors
             .iter()
             .any(|e| e.code == "dynamic_proxy_protocol_invalid"));
+    }
+
+    #[test]
+    fn dynamic_forward_accepts_valid_target_acl() {
+        let raw = r#"
+            version = 1
+            [capabilities]
+            allow_dynamic_proxy = true
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            [[profiles.forwards]]
+            name = "proxy"
+            type = "dynamic"
+            transport = "tcp"
+            bind = "127.0.0.1:1080"
+            allow_targets = ["*.internal.example", "10.0.0.0/8", "127.0.0.1"]
+            deny_targets = ["169.254.169.254", "::1/128"]
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(d.is_ok(), "errors: {:?}", d.errors);
+    }
+
+    #[test]
+    fn dynamic_forward_rejects_bad_cidr_in_target_acl() {
+        let raw = r#"
+            version = 1
+            [capabilities]
+            allow_dynamic_proxy = true
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            [[profiles.forwards]]
+            name = "proxy"
+            type = "dynamic"
+            transport = "tcp"
+            bind = "127.0.0.1:1080"
+            allow_targets = ["10.0.0.0/33"]
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(
+            d.errors
+                .iter()
+                .any(|e| e.code == "target_acl_pattern_invalid"),
+            "errors: {:?}",
+            d.errors
+        );
+    }
+
+    #[test]
+    fn dynamic_forward_rejects_empty_target_acl_pattern() {
+        let raw = r#"
+            version = 1
+            [capabilities]
+            allow_dynamic_proxy = true
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            [[profiles.forwards]]
+            name = "proxy"
+            type = "dynamic"
+            transport = "tcp"
+            bind = "127.0.0.1:1080"
+            deny_targets = ["   "]
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(d
+            .errors
+            .iter()
+            .any(|e| e.code == "target_acl_pattern_invalid"));
+    }
+
+    #[test]
+    fn target_acl_requires_dynamic_forward() {
+        let raw = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            [[profiles.forwards]]
+            name = "fwd"
+            type = "local"
+            transport = "tcp"
+            bind = "127.0.0.1:2222"
+            target = "127.0.0.1:22"
+            allow_targets = ["*.example.com"]
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(d
+            .errors
+            .iter()
+            .any(|e| e.code == "target_acl_requires_dynamic_forward"));
     }
 
     #[test]

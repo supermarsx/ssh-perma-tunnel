@@ -132,6 +132,8 @@ impl ForwardRunner {
                     allow_socks4a: protocols.socks4a,
                     allow_socks5: protocols.socks5,
                     allow_http_connect: protocols.http_connect,
+                    allow_targets: cfg.allow_targets.clone().unwrap_or_default(),
+                    deny_targets: cfg.deny_targets.clone().unwrap_or_default(),
                     limits,
                     idle_timeout,
                     on_bind_conflict,

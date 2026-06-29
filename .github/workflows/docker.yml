@@ -1,0 +1,74 @@
+# =============================================================================
+# docker — build the hardened image + scan it for vulnerabilities
+# =============================================================================
+#
+# Builds the root Dockerfile (debian-slim, default features, non-root) and runs a
+# Trivy vulnerability scan against the BUILT image, failing on HIGH/CRITICAL.
+#
+# Deliberately NOT a per-PR gate (a full release compile is slow): runs on push
+# to main, on tags, and on manual dispatch. It NEVER pushes to a registry — no
+# credentials are assumed; the image is loaded locally purely so Trivy can scan
+# it. Mirrors the repo's other workflows: least-privilege permissions, no
+# pull_request_target, pinned action majors, a concurrency guard.
+# =============================================================================
+
+name: docker
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*', '[0-9]+.*']
+  workflow_dispatch: {}
+
+# Least privilege: the build+scan needs only to read the repo. No registry push,
+# no issue/PR writes.
+permissions:
+  contents: read
+
+concurrency:
+  group: docker-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-scan:
+    name: build + trivy scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Build with the committed Cargo.lock (--locked is in the Dockerfile) and
+      # LOAD the result into the local docker daemon so Trivy can scan it. No
+      # push: no registry credentials are configured or required.
+      - name: Build image (load locally, no push)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          load: true
+          push: false
+          tags: spt:ci
+          # GitHub Actions cache for the layer cache — keeps repeat builds from
+          # recompiling the whole workspace every run.
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Smoke test: the binary runs. `--version` exits 0 and prints; if the
+      # runtime image could not link the binary (missing .so) this fails.
+      - name: Smoke test (binary runs)
+        run: docker run --rm spt:ci --version
+
+      # Vulnerability scan of the BUILT image. Fails the job on HIGH/CRITICAL
+      # with an available fix. Pinned to a tag per the repo's action-pinning
+      # convention.
+      - name: Trivy image scan (fail on HIGH/CRITICAL)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: spt:ci
+          format: table
+          exit-code: '1'
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          vuln-type: os,library

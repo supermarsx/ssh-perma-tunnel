@@ -48,6 +48,7 @@ use rand::RngCore;
 use sha2::Sha256;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, ReadBuf};
 use tokio::net::TcpStream;
+use zeroize::Zeroizing;
 
 use spt_core::Result;
 use spt_secrets::SecretRef;
@@ -71,8 +72,10 @@ pub struct ShadowsocksTransport {
     cfg: ObfsConfig,
     audit: Arc<dyn AuditHook>,
     /// Direct (in-memory) password override used by tests and by the
-    /// runtime once the configured `SecretRef` has been resolved.
-    direct_password: Option<Vec<u8>>,
+    /// runtime once the configured `SecretRef` has been resolved. Wrapped in
+    /// [`Zeroizing`] so the PSK is scrubbed from the heap on drop
+    /// (defense-in-depth against core-dump / swap residue).
+    direct_password: Option<Zeroizing<Vec<u8>>>,
     /// Optional override for the TCP target. When `None` the `target`
     /// argument supplied to `connect()` is used verbatim.
     server_override: Option<String>,
@@ -117,7 +120,16 @@ impl ShadowsocksTransport {
     /// Inject a direct password value for tests and live-secret callers.
     #[must_use]
     pub fn with_direct_password(mut self, pw: impl Into<Vec<u8>>) -> Self {
-        self.direct_password = Some(pw.into());
+        self.direct_password = Some(Zeroizing::new(pw.into()));
+        self
+    }
+
+    /// Inject an already-`Zeroizing`-wrapped password without re-copying the
+    /// bytes into a plain `Vec` first. Preferred on the runtime path where the
+    /// resolved secret is carried in a zeroizing envelope end-to-end.
+    #[must_use]
+    pub fn with_direct_password_secret(mut self, pw: Zeroizing<Vec<u8>>) -> Self {
+        self.direct_password = Some(pw);
         self
     }
 
@@ -137,10 +149,11 @@ impl ShadowsocksTransport {
     ///   and truncate to the method's key length.
     /// * Legacy AEAD variants use an HMAC-SHA256 counter-mode KDF
     ///   (preserved for interop with pre-2022 servers).
-    pub fn derive_key(&self, salt: &[u8]) -> std::result::Result<Vec<u8>, ObfsError> {
-        let pw = self
+    pub fn derive_key(&self, salt: &[u8]) -> std::result::Result<Zeroizing<Vec<u8>>, ObfsError> {
+        let pw: &[u8] = self
             .direct_password
             .as_deref()
+            .map(Vec::as_slice)
             .ok_or_else(|| ObfsError::Handshake("shadowsocks: password not resolved".into()))?;
         if pw.is_empty() {
             return Err(ObfsError::Handshake("shadowsocks: empty password".into()));
@@ -148,18 +161,20 @@ impl ShadowsocksTransport {
         let key_len = self.method().key_len();
 
         if self.method().is_aead_2022() {
-            // Spec: session_subkey = blake3::derive_key(ctx, key || salt)
-            let mut material = Vec::with_capacity(pw.len() + salt.len());
+            // Spec: session_subkey = blake3::derive_key(ctx, key || salt).
+            // `material` carries the PSK; keep it zeroizing so the key copy is
+            // scrubbed on drop.
+            let mut material = Zeroizing::new(Vec::with_capacity(pw.len() + salt.len()));
             material.extend_from_slice(pw);
             material.extend_from_slice(salt);
-            let derived = blake3::derive_key(AEAD2022_SESSION_CONTEXT, &material);
+            let derived = Zeroizing::new(blake3::derive_key(AEAD2022_SESSION_CONTEXT, &material));
             // BLAKE3 derive_key emits 32 bytes; AES-128-GCM keys are 16,
             // others are 32. Truncate per method.
-            return Ok(derived[..key_len].to_vec());
+            return Ok(Zeroizing::new(derived[..key_len].to_vec()));
         }
 
         // Legacy KDF: HMAC-SHA256 counter mode (interop with pre-2022).
-        let mut out = Vec::with_capacity(key_len);
+        let mut out = Zeroizing::new(Vec::with_capacity(key_len));
         let mut counter: u32 = 0;
         while out.len() < key_len {
             let mut mac = <HmacSha256 as Mac>::new_from_slice(pw)
@@ -334,7 +349,8 @@ const REPLAY_WINDOW: usize = 1024;
 pub struct AeadStream {
     inner: Box<dyn AsyncReadWrite>,
     method: SsMethod,
-    key: Vec<u8>,
+    /// Derived AEAD subkey. Zeroized on drop (defense-in-depth).
+    key: Zeroizing<Vec<u8>>,
     write_nonce: u64,
     read_nonce: u64,
     /// Inbound replay window — exact nonce reuse rejected.
@@ -354,7 +370,7 @@ enum RxState {
 
 impl AeadStream {
     /// Construct a new framed stream.
-    pub fn new(inner: Box<dyn AsyncReadWrite>, method: SsMethod, key: Vec<u8>) -> Self {
+    pub fn new(inner: Box<dyn AsyncReadWrite>, method: SsMethod, key: Zeroizing<Vec<u8>>) -> Self {
         Self {
             inner,
             method,
@@ -636,6 +652,17 @@ mod tests {
         let k2 = t.derive_key(&salt).unwrap();
         assert_eq!(k1, k2);
         assert_eq!(k1.len(), 32);
+    }
+
+    /// Compile-level assertion that the derived subkey is carried in a
+    /// `Zeroizing` envelope (scrubbed on drop), not a plain `Vec<u8>`.
+    #[test]
+    fn derive_key_returns_zeroizing_subkey() {
+        let t = ShadowsocksTransport::new(cfg(), Arc::new(NoopAuditHook))
+            .unwrap()
+            .with_direct_password(b"pw".to_vec());
+        let key: Zeroizing<Vec<u8>> = t.derive_key(&[0xAA; 32]).unwrap();
+        assert_eq!(key.len(), 32);
     }
 
     #[test]

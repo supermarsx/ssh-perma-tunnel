@@ -140,6 +140,8 @@ pub fn dynamic_forward_spec(port: u16) -> DynamicForwardSpec {
         allow_socks4a: true,
         allow_socks5: true,
         allow_http_connect: true,
+        allow_targets: Vec::new(),
+        deny_targets: Vec::new(),
         limits: ForwardRateLimits::default(),
         idle_timeout: None,
         on_bind_conflict: BindConflictPolicy::default(),

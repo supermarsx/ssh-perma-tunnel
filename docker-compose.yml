@@ -1,0 +1,139 @@
+# docker-compose.yml — HARDENED single-service deployment of `spt`.
+#
+# Pairs with the root Dockerfile (minimal debian-slim, non-root, default
+# features). Every
+# hardening line is commented so operators understand WHY it is there before
+# they relax it.
+#
+# Quickstart:
+#   docker build -t spt:hardened .
+#   mkdir -p config
+#   cp packaging/docker/example-config/spt.toml config/spt.toml   # or your own
+#   docker compose up -d
+#
+# Validate without running:
+#   docker compose -f docker-compose.yml config
+---
+services:
+  spt:
+    # Built locally by the root Dockerfile. Pin to a digest in production.
+    image: ${SPT_IMAGE:-spt:hardened}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: spt
+
+    # Restart unless the operator explicitly stopped it (survives reboots /
+    # crashes without masking a deliberate `docker compose down`).
+    restart: unless-stopped
+
+    # ----- environment ----------------------------------------------------
+    # NO secrets here. Private keys / bearer tokens come from a mounted secret
+    # file or the host's secret manager at runtime, never baked into the image
+    # or committed to this file. See docs/docker.md "Supplying secrets safely".
+    environment:
+      SPT_LOG_LEVEL: ${SPT_LOG_LEVEL:-info}
+      RUST_LOG: ${RUST_LOG:-info}
+      RUST_BACKTRACE: "1"
+
+    # ----- identity -------------------------------------------------------
+    # Run as the image's non-root UID (65532). Belt-and-suspenders with the
+    # image's own USER directive; makes the non-root guarantee explicit and
+    # survives `--user` overrides being forgotten.
+    user: "65532:65532"
+
+    # ----- filesystem hardening -------------------------------------------
+    # Immutable root filesystem: nothing in the image can be modified at
+    # runtime. Everything writable must be an explicit tmpfs or volume below.
+    read_only: true
+
+    tmpfs:
+      # Scratch space. noexec/nosuid/nodev block running or escalating via
+      # anything dropped here. Capped so a runaway can't exhaust host memory.
+      - /tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777
+
+    volumes:
+      # Config: READ-ONLY bind mount. Operators edit on the host; the container
+      # can never rewrite its own config.
+      - type: bind
+        source: ./config
+        target: /etc/spt
+        read_only: true
+
+      # Durable, WRITABLE state: known_hosts cache, supervisor lock, snapshots.
+      # A named volume (not a tmpfs) so state survives restarts. This is the
+      # one writable persistent path the read-only rootfs permits.
+      - type: volume
+        source: spt-state
+        target: /var/lib/spt
+
+      # Optional secrets bind mount (READ-ONLY). Uncomment and point at a host
+      # dir holding key/token files referenced by your config. NEVER bake these
+      # into the image.
+      # - type: bind
+      #   source: ./secrets
+      #   target: /run/secrets
+      #   read_only: true
+
+    # ----- privilege hardening --------------------------------------------
+    security_opt:
+      # Block setuid/privilege escalation for the process and all children.
+      - no-new-privileges:true
+
+    cap_drop:
+      # Drop ALL Linux capabilities. spt does not need any for >=1024 forwards.
+      - ALL
+    # Re-add ONLY if spt must bind a privileged (<1024) source port INSIDE the
+    # container. Most deployments map host ports instead and need nothing here.
+    # cap_add:
+    #   - NET_BIND_SERVICE
+
+    # ----- network --------------------------------------------------------
+    # Expose only the forwards you actually need, bound to loopback on the host
+    # so they are not world-reachable by default. One line per forward.
+    ports:
+      - "${SPT_FORWARD_PORT_1:-127.0.0.1:8080}:8080"
+      # - "${SPT_FORWARD_PORT_2:-127.0.0.1:8443}:8443"
+
+    # ----- healthcheck ----------------------------------------------------
+    # Re-declared from the image so `docker compose ps` shows it and the
+    # start-period applies during rolling updates. Exec form (no shell).
+    healthcheck:
+      test:
+        - "CMD"
+        - "/usr/local/bin/spt"
+        - "tunnel"
+        - "health"
+        - "--output"
+        - "json"
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+
+    # ----- resource limits ------------------------------------------------
+    # Bound blast radius: a compromised or buggy container cannot starve the
+    # host of memory, CPU, or PIDs (fork-bomb protection).
+    mem_limit: 256m
+    pids_limit: 256
+    cpus: 0.50
+
+    # ----- logging --------------------------------------------------------
+    # Cap on-disk logs so a chatty/attacked container can't fill the host disk.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+    # ----- ulimits --------------------------------------------------------
+    # Many forwards => many fds. 4096 fits ~200 concurrent forwards with
+    # headroom; the hard cap prevents unbounded fd consumption.
+    ulimits:
+      nofile:
+        soft: 4096
+        hard: 8192
+
+volumes:
+  spt-state:
+    name: spt-state

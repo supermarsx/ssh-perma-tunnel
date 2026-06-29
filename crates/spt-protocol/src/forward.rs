@@ -163,6 +163,16 @@ pub struct DynamicForwardSpec {
     pub allow_socks5: bool,
     /// Accept HTTP CONNECT requests.
     pub allow_http_connect: bool,
+    /// Optional destination allow-list (host globs and/or CIDR/IP rules). When
+    /// non-empty, a proxied target must match an allow rule (and no deny rule)
+    /// or the SOCKS request is rejected before any channel is opened. `None`/
+    /// empty ⇒ allow every target (pre-ACL behaviour). SSRF mitigation.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allow_targets: Vec<String>,
+    /// Optional destination deny-list (host globs and/or CIDR/IP rules).
+    /// Deny rules always win over allow rules. `None`/empty ⇒ no denials.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub deny_targets: Vec<String>,
     /// Per-forward rate limits (`Default` = unlimited).
     #[serde(default)]
     pub limits: ForwardRateLimits,
@@ -403,6 +413,8 @@ mod tests {
             allow_socks4a: false,
             allow_socks5: true,
             allow_http_connect: false,
+            allow_targets: Vec::new(),
+            deny_targets: Vec::new(),
             limits: ForwardRateLimits {
                 max_new_conns_per_sec: 3,
                 ..Default::default()

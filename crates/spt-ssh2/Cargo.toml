@@ -40,6 +40,10 @@ async-trait = { workspace = true }
 # the dialed stream. Already in the lock via tokio/mio's transitive graph, so
 # this only adds a dependency *edge* (no new crate version).
 socket2 = { workspace = true }
+# Target-ACL CIDR matching for dynamic SOCKS forwards. Already in the lock via
+# spt-net/spt-firewall, so this only adds a dependency *edge* (no new crate
+# version).
+ipnet = { workspace = true }
 ssh-key = { workspace = true }
 secrecy = { workspace = true }
 zeroize = { workspace = true }

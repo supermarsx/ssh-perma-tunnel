@@ -146,7 +146,7 @@ fn ss_transport(pw: &[u8]) -> ShadowsocksTransport {
 
 /// Derive the 32-byte AEAD subkey the `AeadStream` will use for a given
 /// password + salt, via the public `derive_key` on the transport.
-fn ss_subkey(pw: &[u8], salt: &[u8]) -> Vec<u8> {
+fn ss_subkey(pw: &[u8], salt: &[u8]) -> zeroize::Zeroizing<Vec<u8>> {
     ss_transport(pw).derive_key(salt).unwrap()
 }
 
@@ -156,7 +156,11 @@ fn ss_subkey(pw: &[u8], salt: &[u8]) -> Vec<u8> {
 /// nonce/AEAD wire shape stays an implementation detail.
 async fn ss_wire_frames(key: &[u8], payloads: &[&[u8]]) -> Vec<u8> {
     let sink = MockDuplex::capturing();
-    let mut w = AeadStream::new(Box::new(sink.clone()), SS_METHOD, key.to_vec());
+    let mut w = AeadStream::new(
+        Box::new(sink.clone()),
+        SS_METHOD,
+        zeroize::Zeroizing::new(key.to_vec()),
+    );
     for p in payloads {
         w.write_all(p).await.unwrap();
     }

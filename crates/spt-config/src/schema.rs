@@ -2080,6 +2080,19 @@ pub struct Forward {
     /// `all|socks4|socks4a|socks5|http_connect`. Omitted means all.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proxy_protocols: Option<Vec<String>>,
+    /// Optional destination allow-list for `type = "dynamic"` (SOCKS) forwards.
+    /// Each entry is a host glob (`*` wildcard, case-insensitive) or a
+    /// CIDR/IP rule (matched against IP-literal targets). When set, a proxied
+    /// target must match an allow rule (and no deny rule) or the SOCKS request
+    /// is rejected before any channel is opened. Omitted/empty ⇒ allow every
+    /// target (back-compat). SSRF/abuse mitigation. §9.14.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow_targets: Option<Vec<String>>,
+    /// Optional destination deny-list for `type = "dynamic"` forwards. Deny
+    /// rules always win over allow rules. Same pattern grammar as
+    /// [`Forward::allow_targets`]. Omitted/empty ⇒ no denials. §9.14.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deny_targets: Option<Vec<String>>,
     /// Bind conflict policy: `fail|retry|next_port`. §9.14.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on_bind_conflict: Option<String>,

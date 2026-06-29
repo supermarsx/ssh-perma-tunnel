@@ -325,8 +325,13 @@ caps = "0.5"
 socket2 = { version = "0.6", features = ["all"] }
 
 # TUI
-ratatui = "0.28"
-crossterm = "0.28"
+# ratatui 0.30 (via ratatui-core) moved off the lru `^0.12` hard-pin to an
+# unbounded `lru` req, so the lockfile now resolves lru 0.18.0 (>= the 0.16.3
+# fix for RUSTSEC-2026-0002), clearing the advisory. It also dropped `paste`.
+# MSRV 1.88.0 matches our floor. crossterm bumped to 0.29 to match ratatui
+# 0.30's re-exported crossterm.
+ratatui = "0.30"
+crossterm = "0.29"
 
 # Networking helpers
 ipnet = { version = "2", features = ["serde"] }

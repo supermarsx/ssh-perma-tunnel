@@ -34,6 +34,7 @@ pub(crate) mod russh_backend;
 pub(crate) mod secret;
 pub mod session;
 pub mod sftp;
+pub mod target_acl;
 pub mod udp_tcp_framed;
 pub mod udp_uds_mode;
 pub mod uds_forward;

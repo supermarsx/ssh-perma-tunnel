@@ -17,6 +17,7 @@ Index of user-facing documentation for `spt` (SSH Permanent Tunnel).
 - [Obfuscation](obfuscation.md) — obfs4, meek-http, ssh-over-websocket, shadowsocks
 - [Scripting](scripting.md) — rhai-based hook engine (`pre_connect`, `post_connect`, ...)
 - [Service Integration](service-integration.md) — systemd, launchd, SCM, Task Scheduler
+- [Docker](docker.md) — hardened distroless container, compose security profile, secrets at runtime
 - [DNS](dns.md) — transparent resolver and hosts-file integration
 - [Firewall](firewall.md) — nft, pf, and Windows Firewall integration
 - [Observability](observability.md) — logs, metrics, OTLP, SNMP

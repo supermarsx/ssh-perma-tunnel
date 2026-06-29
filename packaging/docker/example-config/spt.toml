@@ -22,7 +22,7 @@ user = "alice"
 # Public-key auth using a key mounted from the host secrets dir. Swap to
 # `method = "agent"` if you forward the host's ssh-agent socket instead.
 method = "publickey"
-private_key_file = "/run/secrets/id_ed25519"
+identity_file = "/run/secrets/id_ed25519"
 # private_key_passphrase = "secret://docker/id-ed25519-passphrase"
 
 [profiles.trust]
@@ -37,7 +37,10 @@ type = "local"
 transport = "tcp"
 # Bind 0.0.0.0 inside the container so the compose `ports:` mapping reaches
 # it from the host. Restrict host-side exposure via the `ports:` line.
+# `expose = true` acknowledges the intentional wildcard bind (the compose
+# `ports:` mapping is the real, loopback-scoped exposure gate).
 bind = "0.0.0.0:8080"
+expose = true
 target = "service.internal:80"
 target_resolve = "remote"
 required = true

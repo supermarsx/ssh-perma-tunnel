@@ -162,6 +162,48 @@ pub(crate) async fn reply_failure(
     Ok(())
 }
 
+/// Reject a parsed request whose target is forbidden by the destination ACL,
+/// using each protocol's "not allowed by ruleset" code where one exists:
+///
+/// * SOCKS5 → reply code `0x02` ("connection not allowed by ruleset", RFC 1928).
+/// * SOCKS4/4A → request rejected (`0x5b`; SOCKS4 has no distinct ACL code).
+/// * HTTP CONNECT → `403 Forbidden`.
+///
+/// Best-effort: write errors are ignored by the caller (the connection is
+/// closed regardless).
+pub(crate) async fn reply_denied(
+    sock: &mut TcpStream,
+    protocol: DynamicProxyProtocol,
+) -> Result<()> {
+    match protocol {
+        DynamicProxyProtocol::Socks4 | DynamicProxyProtocol::Socks4a => {
+            write_socks4_reply(sock, false).await?;
+        }
+        DynamicProxyProtocol::Socks5 => {
+            sock.write_all(&[
+                SOCKS5_VERSION,
+                0x02, // connection not allowed by ruleset
+                0x00,
+                SOCKS5_ATYP_IPV4,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+            ])
+            .await
+            .map_err(|e| Error::RuntimeFailure(format!("SOCKS5 deny reply: {e}")))?;
+        }
+        DynamicProxyProtocol::HttpConnect => {
+            sock.write_all(b"HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n")
+                .await
+                .map_err(|e| Error::RuntimeFailure(format!("HTTP CONNECT deny reply: {e}")))?;
+        }
+    }
+    Ok(())
+}
+
 async fn write_socks4_reply(sock: &mut TcpStream, granted: bool) -> Result<()> {
     let status = if granted {
         SOCKS4_GRANTED
