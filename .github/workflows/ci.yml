@@ -461,7 +461,7 @@ jobs:
       - name: Cache WiX 3 binaries (windows-11-arm)
         id: wix-cache
         if: ${{ matrix.os == 'windows' && matrix.target == 'aarch64-pc-windows-msvc' }}
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ${{ runner.temp }}\wix314
           # Bump the version suffix when WIX_VERSION below changes.
