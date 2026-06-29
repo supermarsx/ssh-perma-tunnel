@@ -1,3 +1,11 @@
+## [26.33] - 2026-06-29
+
+# spt 26.33
+
+## Changes since 26.32
+
+- chore(security): dep RUSTSEC fixes, SOCKS target ACL, secret zeroization, hardened Docker (ad39c14)
+
 ## [26.32] - 2026-06-25
 
 # spt 26.32
