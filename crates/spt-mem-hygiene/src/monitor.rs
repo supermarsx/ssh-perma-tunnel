@@ -329,7 +329,21 @@ impl MemoryMonitor {
             let mut armed = true;
             let mut flagged_baseline: u64 = 0;
 
-            let mut ticker = tokio::time::interval(config.interval);
+            // M-2 (defensive): `tokio::time::interval` PANICS on a zero period.
+            // Config validation rejects a zero `mem_hygiene.interval`, but a
+            // config built programmatically (bypassing validation) could still
+            // carry one; clamp a non-positive interval up to the default cadence
+            // so the sample loop can never abort the process.
+            let tick_period = if config.interval.is_zero() {
+                tracing::warn!(
+                    "mem_hygiene.interval is zero; clamping to 60s (a zero interval would panic \
+                     tokio::time::interval)"
+                );
+                Duration::from_secs(60)
+            } else {
+                config.interval
+            };
+            let mut ticker = tokio::time::interval(tick_period);
             // Avoid a burst of catch-up ticks if the task is ever delayed.
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
@@ -625,6 +639,23 @@ mod tests {
         tokio::time::advance(Duration::from_secs(60)).await;
         tokio::task::yield_now().await;
         handle.shutdown().await; // returns cleanly; trailing Drop sees None
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn zero_interval_does_not_panic_at_interval_site() {
+        // M-2 (defensive): a zero `interval` reaching `tokio::time::interval`
+        // panics (release abort). The monitor clamps it to the default cadence,
+        // so spawning the sample loop must succeed without panicking. Fails
+        // against the unclamped code (the spawned task panics on
+        // `interval(ZERO)`); passes after the clamp.
+        let mut c = cfg(5);
+        c.interval = Duration::ZERO;
+        let handle = MemoryMonitor::spawn_with_sampler(c, 1, || 100 * MIB, |_g| {});
+        // Let the task construct its ticker (would panic here pre-fix).
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_secs(60)).await;
+        tokio::task::yield_now().await;
+        handle.shutdown().await;
     }
 
     #[tokio::test(start_paused = true)]

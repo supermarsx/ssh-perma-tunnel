@@ -411,43 +411,67 @@ impl Document {
     }
 }
 
-/// Coerce a CLI-supplied string into its natural TOML value type (M3).
+/// Declared scalar type of a top-level `[[profiles]]` field, used to drive
+/// type-correct coercion in [`coerce_toml_value`]. Fields not listed here
+/// (string-typed fields like `host`/`user`/`endpoint`, and any unknown key)
+/// are treated as [`ScalarKind::Str`] and written verbatim — never
+/// numerically reinterpreted.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ScalarKind {
+    /// Boolean-typed field (`enabled`, `acknowledge_experimental`, ...).
+    Bool,
+    /// Integer-typed field (`port`).
+    Int,
+    /// String-typed field (default): keep the value verbatim.
+    Str,
+}
+
+/// Declared scalar type of a top-level `[[profiles]]` field per the schema
+/// (`spt_config::schema::Profile`). Only `bool`- and integer-typed fields are
+/// listed; everything else (string fields and unknown keys) falls through to
+/// [`ScalarKind::Str`].
+fn profile_field_kind(field: &str) -> ScalarKind {
+    match field {
+        // `Option<bool>` fields on `Profile`.
+        "enabled" | "acknowledge_experimental" | "network_change_reconnect" => ScalarKind::Bool,
+        // `Option<u16>` field on `Profile`.
+        "port" => ScalarKind::Int,
+        // `name`, `host`, `user`, `endpoint`, `protocol`, `connect_timeout`,
+        // `dns_resolution`, `startup`, `failure_policy`, `description`, and any
+        // unrecognized key are string-destined → keep verbatim.
+        _ => ScalarKind::Str,
+    }
+}
+
+/// Coerce a CLI-supplied string into the TOML value type declared by the
+/// target field's schema (M-4).
 ///
 /// `spt config set` passes every value as a string, but writing a typed field
 /// as a quoted string corrupts the config (e.g. `acknowledge_experimental =
-/// "true"` fails to deserialize as a bool). This maps the raw text to the
-/// closest TOML scalar:
-/// * `"true"` / `"false"` → boolean
-/// * a value that parses as an `i64` → integer
-/// * a value that parses as an `f64` (and isn't an integer) → float
-/// * everything else → string (verbatim)
-///
-/// `name` is always written as a string — a profile name is an identifier even
-/// when it looks numeric (e.g. `"123"`) — so it is never coerced.
+/// "true"` fails to deserialize as a bool). Coercion is **schema-driven**: it
+/// consults [`profile_field_kind`] for the target field's declared type and
+/// only narrows to `bool` / integer when that is the field's actual type. A
+/// string-typed field (or any unknown key) keeps the verbatim string — so
+/// `spt config set p user 0123` stays `user = "0123"` (no leading-zero loss,
+/// no type flip) and `spt config set p host 123` stays `host = "123"`. A
+/// bool-typed field only narrows for the literal `true`/`false`; anything else
+/// is preserved verbatim.
 fn coerce_toml_value(field: &str, val: &str) -> Item {
-    if field == "name" {
-        return value(val);
+    match profile_field_kind(field) {
+        ScalarKind::Bool => match val {
+            "true" => value(true),
+            "false" => value(false),
+            // Not a bool literal — keep verbatim rather than guess.
+            _ => value(val),
+        },
+        ScalarKind::Int => match val.parse::<i64>() {
+            Ok(i) => value(i),
+            // Not parseable as an integer — keep verbatim (validation will
+            // surface the type error rather than us silently mangling it).
+            Err(_) => value(val),
+        },
+        ScalarKind::Str => value(val),
     }
-    match val {
-        "true" => return value(true),
-        "false" => return value(false),
-        _ => {}
-    }
-    // Integer before float so e.g. "42" stays an integer, not 42.0.
-    if let Ok(i) = val.parse::<i64>() {
-        return value(i);
-    }
-    // Only treat as float when it parses AND carries a fractional/exponent
-    // marker, so plain integers that overflow i64 don't silently become floats
-    // and bare tokens like "inf"/"nan" (which f64 accepts) stay strings.
-    if (val.contains('.') || val.contains('e') || val.contains('E'))
-        && val.parse::<f64>().map(f64::is_finite).unwrap_or(false)
-    {
-        if let Ok(f) = val.parse::<f64>() {
-            return value(f);
-        }
-    }
-    value(val)
 }
 
 /// Friendly trait impl for `print!` etc.
@@ -560,24 +584,13 @@ host = "h"
 
     #[test]
     fn set_field_preserves_integer_type() {
-        // M3: an integer value must be written as a TOML integer.
+        // M3/M-4: an integer-typed schema field (`port`) must be written as a
+        // TOML integer, not a quoted string.
         let mut doc = Document::parse(RAW).unwrap();
-        doc.set_profile_field("p", "max_connections", "5").unwrap();
+        doc.set_profile_field("p", "port", "2222").unwrap();
         let out = doc.to_string();
-        assert!(
-            out.contains("max_connections = 5"),
-            "int not preserved: {out}"
-        );
-        assert!(!out.contains(r#"max_connections = "5""#));
-    }
-
-    #[test]
-    fn set_field_preserves_float_type() {
-        let mut doc = Document::parse(RAW).unwrap();
-        doc.set_profile_field("p", "ratio", "1.5").unwrap();
-        let out = doc.to_string();
-        assert!(out.contains("ratio = 1.5"), "float not preserved: {out}");
-        assert!(!out.contains(r#"ratio = "1.5""#));
+        assert!(out.contains("port = 2222"), "int not preserved: {out}");
+        assert!(!out.contains(r#"port = "2222""#));
     }
 
     #[test]
@@ -587,6 +600,73 @@ host = "h"
             .unwrap();
         let out = doc.to_string();
         assert!(out.contains(r#"host = "bastion.example.com""#));
+    }
+
+    // ──────── M-4: schema-driven coercion (no string-field over-coercion) ────
+
+    #[test]
+    fn set_string_field_numeric_value_keeps_leading_zero_string() {
+        // M-4 regression: `user` is a STRING-typed field. A numeric-looking
+        // value like `0123` must NOT be coerced to the integer `123` (which
+        // drops the leading zero AND flips the type so the next load fails to
+        // deserialize the `String` field). Fails against the over-coercing
+        // code; passes after the schema-driven fix.
+        let mut doc = Document::parse(RAW).unwrap();
+        doc.set_profile_field("p", "user", "0123").unwrap();
+        let out = doc.to_string();
+        assert!(
+            out.contains(r#"user = "0123""#),
+            "string field over-coerced: {out}"
+        );
+        assert!(!out.contains("user = 123"), "user flipped to int: {out}");
+    }
+
+    #[test]
+    fn set_string_field_plain_integer_stays_string() {
+        // M-4 regression: `host` is string-typed; a bare `123` must stay the
+        // string "123", not become the integer 123.
+        let mut doc = Document::parse(RAW).unwrap();
+        doc.set_profile_field("p", "host", "123").unwrap();
+        let out = doc.to_string();
+        assert!(out.contains(r#"host = "123""#), "host coerced: {out}");
+        assert!(!out.contains("host = 123\n"), "host flipped to int: {out}");
+    }
+
+    #[test]
+    fn set_string_field_bool_literal_stays_string() {
+        // M-4 regression: a string-typed field whose value happens to be
+        // `true`/`false` must remain a quoted string (a user literally named
+        // "true" is a string, not a bool).
+        let mut doc = Document::parse(RAW).unwrap();
+        doc.set_profile_field("p", "user", "true").unwrap();
+        let out = doc.to_string();
+        assert!(
+            out.contains(r#"user = "true""#),
+            "user coerced to bool: {out}"
+        );
+    }
+
+    #[test]
+    fn set_int_field_non_numeric_value_stays_string() {
+        // M-4: an int-typed field given a non-numeric value is preserved
+        // verbatim (validation surfaces the type error, we don't mangle it).
+        let mut doc = Document::parse(RAW).unwrap();
+        doc.set_profile_field("p", "port", "auto").unwrap();
+        let out = doc.to_string();
+        assert!(out.contains(r#"port = "auto""#), "port mangled: {out}");
+    }
+
+    #[test]
+    fn set_bool_field_non_bool_value_stays_string() {
+        // M-4: a bool-typed field given a non-bool value is preserved verbatim
+        // rather than guessed.
+        let mut doc = Document::parse(RAW).unwrap();
+        doc.set_profile_field("p", "enabled", "maybe").unwrap();
+        let out = doc.to_string();
+        assert!(
+            out.contains(r#"enabled = "maybe""#),
+            "enabled mangled: {out}"
+        );
     }
 
     #[test]

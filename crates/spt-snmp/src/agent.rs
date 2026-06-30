@@ -479,7 +479,22 @@ impl Agent {
         };
 
         let configured = keys.user.security_level();
-        if level > configured {
+        // The user's provisioned level is BOTH a ceiling and a floor (RFC 3414
+        // §3.2 / usmUserSecurityLevel semantics).
+        //
+        // Ceiling: a request may not claim a HIGHER level than the user is
+        // provisioned for — we have no keys for it (e.g. authPriv against a
+        // noAuthNoPriv user).
+        //
+        // Floor (the C1 fix): a request MUST meet the user's required level.
+        // Without this, a `msgFlags=0` (noAuthNoPriv) plaintext request against
+        // an authNoPriv/authPriv user took the unauthenticated plaintext branch
+        // below — processing the PDU with NO HMAC verification and NO knowledge
+        // of any password (a security-level DOWNGRADE auth bypass). Rejecting
+        // `level < configured` here, BEFORE the PDU is decoded or acted on,
+        // forces the auth (HMAC) and priv (decrypt) checks to actually run when
+        // the user requires them.
+        if level != configured {
             return Err(Error::Usm(UsmError::UnsupportedSecLevel));
         }
 
@@ -560,7 +575,7 @@ impl Agent {
     /// `SetRequest` from a user without it is rejected before any handler runs.
     async fn dispatch_pdu(&self, req: Pdu, writable: bool, msg_max_size: i32) -> Result<Pdu> {
         match req.kind {
-            PduKind::GetRequest => Ok(self.handle_get(req).await),
+            PduKind::GetRequest => Ok(self.handle_get(req, msg_max_size).await),
             PduKind::GetNextRequest => Ok(self.handle_get_next(req, msg_max_size).await),
             PduKind::GetBulkRequest => Ok(self.handle_get_bulk(req, msg_max_size).await),
             PduKind::SetRequest => Ok(self.handle_set(req, writable).await),
@@ -587,18 +602,44 @@ impl Agent {
         }
     }
 
-    async fn handle_get(&self, req: Pdu) -> Pdu {
+    async fn handle_get(&self, req: Pdu, msg_max_size: i32) -> Pdu {
+        // SECURITY (work/response budget): a plain Get must be bounded just like
+        // the get-next / get-bulk walk paths. A single ~65 KB datagram can pack
+        // thousands of varbinds; on a table whose handler walks O(rows) per
+        // lookup the cost is O(varbinds × rows), and the response could grow
+        // past the datagram cap — an amplification / DoS vector reachable by any
+        // (now properly authenticated) user. We accumulate under the same byte
+        // budget and stop performing lookups the moment the projected response
+        // would exceed it, returning `tooBig` (RFC 3416 §4.2.1) with no
+        // varbinds so neither the work nor the allocation is unbounded.
+        let budget = bulk_response_budget(msg_max_size);
         let mut bindings = Vec::with_capacity(req.variable_bindings.len());
+        let mut used: usize = 0;
         for vb in &req.variable_bindings {
             let value = match self.registry.get(&vb.name).await {
                 Ok(Some(v)) => v,
                 Ok(None) => Value::NoSuchObject,
                 Err(_) => Value::NoSuchObject,
             };
-            bindings.push(VarBind {
+            let resp = VarBind {
                 name: vb.name.clone(),
                 value,
-            });
+            };
+            let est = encoded_varbind_len(&resp);
+            if !bindings.is_empty() && used.saturating_add(est) > budget {
+                // Response won't fit: RFC 3416 mandates `tooBig` with an empty
+                // variable-binding list. Stop walking so the per-varbind
+                // registry lookups (the expensive part) are also bounded.
+                return Pdu {
+                    kind: PduKind::Response,
+                    request_id: req.request_id,
+                    error_status: ErrorStatus::TooBig as i32,
+                    error_index: 0,
+                    variable_bindings: vec![],
+                };
+            }
+            used = used.saturating_add(est);
+            bindings.push(resp);
         }
         Pdu {
             kind: PduKind::Response,

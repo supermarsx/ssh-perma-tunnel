@@ -97,16 +97,41 @@ impl TrustVerifier {
         // returned `Err`).
         if self.accept_new {
             if let Some(path) = &self.known_hosts_path {
-                append_known_hosts(path, host, port, key)?;
                 let fp = key.fingerprint(HashAlg::Sha256);
-                warn!(
-                    target: "spt_ssh2::trust",
-                    host = host,
-                    port = port,
-                    fingerprint = %fp,
-                    path = %path.display(),
-                    "TOFU: accepted new host key and persisted to known_hosts"
-                );
+                // M-7: the trust DECISION (key accepted on first use) is separate
+                // from PERSISTING it. A transient known_hosts write failure
+                // (read-only fs, ENOSPC, EACCES, momentarily-absent dir — more
+                // likely under a hardened read-only Docker rootfs) must NOT be a
+                // terminal `TrustFailed`: the connection is genuinely trusted, we
+                // just couldn't cache it. Log a warning and proceed so the next
+                // connect retries the append rather than killing the profile
+                // forever. A real key MISMATCH/revocation is still terminal — it
+                // is handled above and never reaches this branch.
+                match append_known_hosts(path, host, port, key) {
+                    Ok(()) => {
+                        warn!(
+                            target: "spt_ssh2::trust",
+                            host = host,
+                            port = port,
+                            fingerprint = %fp,
+                            path = %path.display(),
+                            "TOFU: accepted new host key and persisted to known_hosts"
+                        );
+                    }
+                    Err(e) => {
+                        warn!(
+                            target: "spt_ssh2::trust",
+                            host = host,
+                            port = port,
+                            fingerprint = %fp,
+                            path = %path.display(),
+                            error = %e,
+                            "TOFU: accepted new host key but failed to persist it to \
+                             known_hosts; proceeding without caching (will retry on \
+                             next connect)"
+                        );
+                    }
+                }
                 return Ok(HostKeyOutcome::TofuAdded);
             }
         }
@@ -240,6 +265,33 @@ mod tests {
         v.verify("other.example", 22, &key2).unwrap();
         let body2 = std::fs::read_to_string(&path).unwrap();
         assert!(body2.lines().count() == 2);
+    }
+
+    #[test]
+    fn tofu_persist_failure_is_not_terminal() {
+        // M-7 regression: a transient known_hosts WRITE failure (here: the
+        // parent directory does not exist, so the append/create `open` fails)
+        // must NOT yield a terminal `TrustFailed`. The trust DECISION (accept
+        // on first use) is separate from PERSISTING it — the connection is
+        // trusted, we just couldn't cache it, so `verify` returns Ok(TofuAdded)
+        // and the profile keeps running. Fails against the pre-fix code (which
+        // propagated the write error as `TrustFailed`); passes after the fix.
+        let key = fresh_pub();
+        let dir = tempfile::tempdir().unwrap();
+        // A path whose parent directory does not exist → `open(append|create)`
+        // fails (NotFound) without creating intermediate dirs.
+        let bad = dir.path().join("missing_subdir").join("known_hosts");
+        let v = TrustVerifier {
+            accept_new: true,
+            known_hosts_path: Some(bad.clone()),
+            ..Default::default()
+        };
+        let outcome = v
+            .verify("new.example", 22, &key)
+            .expect("a known_hosts persist failure must be non-terminal");
+        assert_eq!(outcome, HostKeyOutcome::TofuAdded);
+        // The write genuinely failed: nothing was persisted.
+        assert!(!bad.exists());
     }
 
     #[test]

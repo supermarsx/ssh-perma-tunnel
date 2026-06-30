@@ -3550,6 +3550,12 @@ mod tests {
         }));
         // Auth failures are handled by the separate `retry_auth_failures` gate.
         assert!(!is_terminal_connect_error(&Error::AuthFailed("x".into())));
+        // H-1: a transient key/cert-file I/O error is now surfaced by the ssh2
+        // backend as `RuntimeFailure` (not `KeyFailure`), so it must be
+        // RETRYABLE — a key briefly unreadable during rotation heals on retry.
+        assert!(!is_terminal_connect_error(&Error::RuntimeFailure(
+            "transient key-file I/O (NotFound)".into()
+        )));
     }
 
     #[tokio::test]

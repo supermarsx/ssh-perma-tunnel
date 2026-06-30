@@ -1670,7 +1670,7 @@ async fn try_auth_method(
         } => {
             let passphrase = resolve_passphrase(&backends, passphrase.as_ref())?;
             let key = russh::keys::load_secret_key(&identity_file, passphrase.as_deref())
-                .map_err(|e| Error::KeyFailure(format!("load private key: {e}")))?;
+                .map_err(|e| classify_key_load_error("load private key", e))?;
             let key = PrivateKeyWithHashAlg::new(Arc::new(key), RSA_AUTH_HASH_ALG);
             let mut h = handle.lock().await;
             let user_for_msg = username.clone();
@@ -1700,9 +1700,9 @@ async fn try_auth_method(
         } => {
             let passphrase = resolve_passphrase(&backends, passphrase.as_ref())?;
             let key = russh::keys::load_secret_key(&key, passphrase.as_deref())
-                .map_err(|e| Error::KeyFailure(format!("load private key: {e}")))?;
+                .map_err(|e| classify_key_load_error("load private key", e))?;
             let cert = russh::keys::load_openssh_certificate(&cert)
-                .map_err(|e| Error::KeyFailure(format!("load OpenSSH certificate: {e}")))?;
+                .map_err(|e| classify_cert_load_error("load OpenSSH certificate", e))?;
             let mut h = handle.lock().await;
             let user_for_msg = username.clone();
             h.authenticate_openssh_cert(username, Arc::new(key), cert)
@@ -2899,6 +2899,62 @@ fn remote_listen_parts(addr: &BindAddr) -> Result<(String, u16)> {
 fn russh_key_to_ssh_key(key: &russh::keys::ssh_key::PublicKey) -> Result<ssh_key::PublicKey> {
     ssh_key::PublicKey::from_bytes(&key.public_key_bytes())
         .map_err(|e| Error::TrustFailed(format!("parse russh host key: {e}")))
+}
+
+/// `std::io::ErrorKind`s that indicate a *transient* filesystem failure when
+/// loading a key / certificate file: the file is momentarily unreadable during
+/// an atomic key-rotation `rename` gap, a permission race, or a network-FS
+/// hiccup (NFS/SMB `ESTALE`, which maps to `Other` on most platforms). Such a
+/// failure can heal on the next reconnect, so it must be classified RETRYABLE
+/// rather than permanently killing the profile (H-1).
+fn is_transient_key_io(kind: std::io::ErrorKind) -> bool {
+    use std::io::ErrorKind;
+    matches!(
+        kind,
+        ErrorKind::NotFound
+            | ErrorKind::PermissionDenied
+            | ErrorKind::Interrupted
+            | ErrorKind::TimedOut
+            | ErrorKind::WouldBlock
+            | ErrorKind::UnexpectedEof
+            | ErrorKind::ConnectionReset
+            | ErrorKind::ConnectionAborted
+            | ErrorKind::BrokenPipe
+            | ErrorKind::Other
+    )
+}
+
+/// Classify a private-key load error from [`russh::keys::load_secret_key`].
+///
+/// A transient filesystem I/O error (see [`is_transient_key_io`]) maps to the
+/// RETRYABLE [`Error::RuntimeFailure`] so the supervisor's reconnect loop backs
+/// off and tries again — a key briefly unreadable during rotation or a
+/// permission race must not kill the profile forever (H-1). A genuine parse /
+/// passphrase / unsupported-type failure is UNRECOVERABLE and maps to terminal
+/// [`Error::KeyFailure`], so the supervisor stops the profile instead of
+/// hammering a host with a key that can never succeed.
+fn classify_key_load_error(what: &str, e: russh::keys::Error) -> Error {
+    match e {
+        russh::keys::Error::IO(io) if is_transient_key_io(io.kind()) => {
+            let kind = io.kind();
+            Error::RuntimeFailure(format!("{what}: transient key-file I/O ({kind}): {io}"))
+        }
+        other => Error::KeyFailure(format!("{what}: {other}")),
+    }
+}
+
+/// Classify an OpenSSH-certificate load error from
+/// [`russh::keys::load_openssh_certificate`]. Same transient-vs-terminal split
+/// as [`classify_key_load_error`]: a transient cert-file I/O error is RETRYABLE
+/// ([`Error::RuntimeFailure`]); a malformed / unparseable certificate is
+/// terminal ([`Error::KeyFailure`]) (H-1).
+fn classify_cert_load_error(what: &str, e: russh::keys::ssh_key::Error) -> Error {
+    match e {
+        russh::keys::ssh_key::Error::Io(kind) if is_transient_key_io(kind) => {
+            Error::RuntimeFailure(format!("{what}: transient cert-file I/O ({kind})"))
+        }
+        other => Error::KeyFailure(format!("{what}: {other}")),
+    }
 }
 
 fn method_name(method: &AuthMethod) -> &'static str {
@@ -4129,5 +4185,81 @@ mod tests {
             dynamic_dial_failure_msg("svc.internal", 8080, &"timed out"),
             "russh dynamic direct-tcpip to svc.internal:8080: timed out"
         );
+    }
+
+    // ──────── H-1: transient key/cert-file I/O is RETRYABLE, not terminal ──
+    //
+    // The supervisor reconnect classifier treats `KeyFailure` as TERMINAL
+    // (stop the profile forever). A key/cert file briefly unreadable during an
+    // atomic rotation or a permission race must therefore NOT map to
+    // `KeyFailure` — it must map to a retryable variant so the profile heals.
+    // A genuinely-bad (malformed / wrong-passphrase) key must stay terminal.
+
+    #[test]
+    fn transient_key_io_error_is_retryable_not_terminal() {
+        for kind in [
+            std::io::ErrorKind::NotFound,
+            std::io::ErrorKind::PermissionDenied,
+            std::io::ErrorKind::Interrupted,
+            std::io::ErrorKind::UnexpectedEof,
+        ] {
+            let e = russh::keys::Error::IO(std::io::Error::new(kind, "rotation race"));
+            let mapped = classify_key_load_error("load private key", e);
+            assert!(
+                matches!(mapped, Error::RuntimeFailure(_)),
+                "transient {kind:?} must be retryable, got {mapped:?}"
+            );
+            // Crucially NOT the terminal variant.
+            assert!(!matches!(mapped, Error::KeyFailure(_)));
+        }
+    }
+
+    #[test]
+    fn malformed_key_error_is_terminal_key_failure() {
+        // A genuine parse failure (corrupt key) must remain terminal so we do
+        // not infinite-retry a key that will never load (H-2 must not regress).
+        let mapped = classify_key_load_error("load private key", russh::keys::Error::KeyIsCorrupt);
+        assert!(
+            matches!(mapped, Error::KeyFailure(_)),
+            "corrupt key must be terminal, got {mapped:?}"
+        );
+        // An encrypted key with the wrong/missing passphrase is also terminal.
+        let mapped =
+            classify_key_load_error("load private key", russh::keys::Error::KeyIsEncrypted);
+        assert!(matches!(mapped, Error::KeyFailure(_)));
+    }
+
+    #[test]
+    fn non_transient_key_io_error_stays_terminal() {
+        // An `InvalidData` I/O error (e.g. the file is not UTF-8 / not a key)
+        // is not a transient race; keep it terminal so we don't retry forever.
+        let e = russh::keys::Error::IO(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "not a key",
+        ));
+        let mapped = classify_key_load_error("load private key", e);
+        assert!(matches!(mapped, Error::KeyFailure(_)), "got {mapped:?}");
+    }
+
+    #[test]
+    fn transient_cert_io_error_is_retryable_not_terminal() {
+        let mapped = classify_cert_load_error(
+            "load OpenSSH certificate",
+            russh::keys::ssh_key::Error::Io(std::io::ErrorKind::PermissionDenied),
+        );
+        assert!(
+            matches!(mapped, Error::RuntimeFailure(_)),
+            "transient cert I/O must be retryable, got {mapped:?}"
+        );
+        assert!(!matches!(mapped, Error::KeyFailure(_)));
+    }
+
+    #[test]
+    fn malformed_cert_error_is_terminal_key_failure() {
+        let mapped = classify_cert_load_error(
+            "load OpenSSH certificate",
+            russh::keys::ssh_key::Error::FormatEncoding,
+        );
+        assert!(matches!(mapped, Error::KeyFailure(_)), "got {mapped:?}");
     }
 }

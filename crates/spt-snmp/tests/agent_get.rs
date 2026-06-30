@@ -803,12 +803,13 @@ async fn handler_dispatch_actually_runs() {
 }
 
 #[tokio::test]
-async fn authpriv_user_handles_noauth_request_under_priv_only_rejected() {
-    // A user configured at authPriv should refuse a request that arrives at
-    // a lower security level only when the message claims more than configured.
-    // Since `level > configured` triggers UnsupportedSecLevel, send a no-auth
-    // request to a user configured for noAuth: should succeed (the user is
-    // configured at NoAuthNoPriv).
+async fn authnopriv_user_rejects_noauth_downgrade_request() {
+    // C1 regression: a user provisioned at authNoPriv must REJECT a plaintext
+    // (msgFlags=0, noAuthNoPriv) request — the security level is a FLOOR, not
+    // just a ceiling (RFC 3414). Pre-fix this took the unauthenticated
+    // plaintext branch and returned the scalar value with no HMAC check; now it
+    // must be rejected with a usmStatsUnsupportedSecLevels Report and the
+    // varbind value must NOT be returned.
     let user = UsmUser::auth_only(
         "ap",
         AuthProtocol::HmacSha256,
@@ -826,10 +827,6 @@ async fn authpriv_user_handles_noauth_request_under_priv_only_rejected() {
         .await
         .unwrap();
 
-    // Force noAuth: configured user is auth_only, so noAuth is `<= configured`,
-    // which is the permitted path. But the agent's user has no priv configured;
-    // sending a noAuthNoPriv request from this user name should be accepted at
-    // the lower level, and the scalar should be readable.
     let mut client = Client::new(agent.local_addr(), user).await;
     client.discover().await;
     let req = Pdu {
@@ -839,8 +836,28 @@ async fn authpriv_user_handles_noauth_request_under_priv_only_rejected() {
         error_index: 0,
         variable_bindings: vec![VarBind::null(oid("1.3.6.1.4.1.32473.14.1.0"))],
     };
+    // The request is reportable, so the agent answers the rejected downgrade
+    // with a Report-PDU (never a Response carrying the scalar).
     let r = client.request_noauth(req).await;
-    assert_eq!(r.variable_bindings[0].value, Value::Integer(99));
+    assert_eq!(
+        r.kind,
+        PduKind::Report,
+        "noAuth downgrade against an authNoPriv user must be rejected, not processed"
+    );
+    // The secret scalar value must NOT appear in the reply.
+    assert!(
+        !r.variable_bindings
+            .iter()
+            .any(|vb| vb.value == Value::Integer(99)),
+        "rejected request must not leak the scalar value"
+    );
+
+    let snap = agent.agent().counters_snapshot().await;
+    assert!(
+        snap.unsupported_sec_levels >= 1,
+        "unsupported_sec_levels = {}",
+        snap.unsupported_sec_levels
+    );
     agent.shutdown().await.unwrap();
 }
 

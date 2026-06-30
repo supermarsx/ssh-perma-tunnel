@@ -522,7 +522,9 @@ fn check_events(d: &mut Diagnostics, c: &Config) {
             .at("events.ring_capacity"),
         );
     }
-    check_duration_field(d, events.retry_interval.as_deref(), "events.retry_interval");
+    // M-1: `retry_interval` drives `tokio::time::interval` in the events
+    // dispatcher's spool-retry task; a zero value panics it (release abort).
+    check_positive_duration_field(d, events.retry_interval.as_deref(), "events.retry_interval");
     check_size_field(
         d,
         events.spool_max_bytes.as_deref(),
@@ -1299,7 +1301,9 @@ fn check_mem_hygiene(d: &mut Diagnostics, c: &Config) {
         return;
     };
 
-    check_duration_field(d, mh.interval.as_deref(), "mem_hygiene.interval");
+    // M-2: `interval` drives `tokio::time::interval` in the memory monitor's
+    // sample loop; a zero value panics it (release abort).
+    check_positive_duration_field(d, mh.interval.as_deref(), "mem_hygiene.interval");
     check_size_field(
         d,
         mh.growth_threshold.as_deref(),
@@ -3286,6 +3290,96 @@ mod tests {
             [profiles.keepalive]
             interval = "30s"
             timeout = "10s"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(d.is_ok(), "errors: {:?}", d.errors);
+    }
+
+    #[test]
+    fn zero_events_retry_interval_rejected() {
+        // M-1: `events.retry_interval = "0s"` reaches `tokio::time::interval`
+        // in the events dispatcher and panics it (release abort). Validation
+        // must reject a zero value.
+        let raw = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            [events]
+            retry_interval = "0s"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(!d.is_ok());
+        assert!(
+            d.errors
+                .iter()
+                .any(|e| e.code == "duration_must_be_positive"
+                    && e.path.as_deref() == Some("events.retry_interval")),
+            "errors: {:?}",
+            d.errors
+        );
+    }
+
+    #[test]
+    fn positive_events_retry_interval_accepted() {
+        // Behavior-preserving: a normal, positive retry_interval still passes.
+        let raw = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            [events]
+            retry_interval = "30s"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(d.is_ok(), "errors: {:?}", d.errors);
+    }
+
+    #[test]
+    fn zero_mem_hygiene_interval_rejected() {
+        // M-2: `mem_hygiene.interval = "0s"` reaches `tokio::time::interval` in
+        // the memory monitor and panics it (release abort). Validation must
+        // reject a zero value.
+        let raw = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            [mem_hygiene]
+            enabled = true
+            interval = "0s"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(!d.is_ok());
+        assert!(
+            d.errors
+                .iter()
+                .any(|e| e.code == "duration_must_be_positive"
+                    && e.path.as_deref() == Some("mem_hygiene.interval")),
+            "errors: {:?}",
+            d.errors
+        );
+    }
+
+    #[test]
+    fn positive_mem_hygiene_interval_accepted() {
+        // Behavior-preserving: a normal, positive interval still passes.
+        let raw = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            [mem_hygiene]
+            enabled = true
+            interval = "60s"
         "#;
         let (c, _) = load_str(raw, false).unwrap();
         let d = validate(&c);

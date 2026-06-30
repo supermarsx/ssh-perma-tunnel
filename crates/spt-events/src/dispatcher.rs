@@ -152,7 +152,20 @@ impl Dispatcher {
         // Spool-retry task: every `retry_interval`, attempt to drain each
         // sink whose spool is non-empty. A sink that has healed redelivers its
         // backlog; a sink still failing re-spools and we try again next tick.
-        let retry_interval = inner.cfg.retry_interval;
+        // M-1 (defensive): `tokio::time::interval` PANICS on a zero period.
+        // Config validation rejects a zero `events.retry_interval`, but a config
+        // built programmatically (bypassing validation) could still carry one;
+        // clamp a non-positive interval up to the default cadence so spawning the
+        // dispatcher can never abort the process.
+        let retry_interval = if inner.cfg.retry_interval.is_zero() {
+            tracing::warn!(
+                "events.retry_interval is zero; clamping to 30s (a zero interval would panic \
+                 tokio::time::interval)"
+            );
+            std::time::Duration::from_secs(30)
+        } else {
+            inner.cfg.retry_interval
+        };
         let (retry_sd_tx, mut retry_sd_rx) = oneshot::channel();
         let inner_for_retry = inner.clone();
         let retry_join = tokio::spawn(async move {
@@ -701,6 +714,29 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
         assert_eq!(t.requests().len(), 1);
+        d.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn zero_retry_interval_does_not_panic_at_interval_site() {
+        // M-1 (defensive): a zero `retry_interval` reaching
+        // `tokio::time::interval` panics (release abort). The dispatcher clamps
+        // it to the default cadence, so spawning + emitting must succeed without
+        // panicking. Fails against the unclamped code (the spawned retry task
+        // panics on `interval(ZERO)`); passes after the clamp.
+        let tmp = tempdir().unwrap();
+        let cfg = DispatcherConfig {
+            spool_root: tmp.path().into(),
+            retry_interval: Duration::ZERO,
+            ..DispatcherConfig::default()
+        };
+        let bus = EventBus::new(&crate::bus::EventBusConfig::default());
+        let d = Dispatcher::spawn(&bus, Vec::new(), HashMap::new(), cfg).unwrap();
+        bus.emit(Event::builder("k", Severity::Info).build());
+        // Yield so the spawned retry task gets a chance to construct its ticker.
+        for _ in 0..5 {
+            tokio::task::yield_now().await;
+        }
         d.shutdown().await;
     }
 
