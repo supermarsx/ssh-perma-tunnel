@@ -78,9 +78,17 @@ impl SecretRef {
 }
 
 fn is_valid_segment(s: &str) -> bool {
-    !s.is_empty()
-        && s.chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
+    // Reject the path-traversal tokens `.` and `..` outright: a segment of
+    // those would let `<root>/<ns>/<name>` escape the secrets root in the file
+    // backend (`secret://../foo` → `<root>/../foo`). The ASCII allowlist below
+    // already excludes every path separator (`/`, `\`), the drive/scheme marker
+    // (`:`), and NUL, so a validated segment is always a single in-root
+    // filesystem component and can never start an absolute path or traverse.
+    if s.is_empty() || s == "." || s == ".." {
+        return false;
+    }
+    s.chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
 }
 
 impl fmt::Display for SecretRef {
@@ -183,6 +191,56 @@ mod tests {
             let err = input.parse::<SecretRef>().unwrap_err();
             assert_eq!(err, expected, "input={input:?}");
         }
+    }
+
+    #[test]
+    fn rejects_path_traversal_segments() {
+        // `secret://../foo` parses to ns="..", which must be rejected so the
+        // file backend cannot resolve `<root>/../foo` outside the secrets root.
+        assert_eq!(
+            "secret://../foo".parse::<SecretRef>().unwrap_err(),
+            ReferenceError::InvalidNamespace("..".into()),
+        );
+        // A `..` (or `.`) leaf name is rejected too.
+        assert_eq!(
+            "secret://ns/..".parse::<SecretRef>().unwrap_err(),
+            ReferenceError::InvalidName("..".into()),
+        );
+        assert_eq!(
+            "secret://ns/.".parse::<SecretRef>().unwrap_err(),
+            ReferenceError::InvalidName(".".into()),
+        );
+        assert_eq!(
+            "secret://./name".parse::<SecretRef>().unwrap_err(),
+            ReferenceError::InvalidNamespace(".".into()),
+        );
+        // A nested traversal still trips the `/`-in-name guard first.
+        assert_eq!(
+            "secret://ns/../../etc/x".parse::<SecretRef>().unwrap_err(),
+            ReferenceError::InvalidPath,
+        );
+    }
+
+    #[test]
+    fn new_rejects_traversal_separators_and_nul() {
+        // Direct construction (bypassing the scheme parser) must reject the same
+        // dangerous components: traversal tokens, both separators, an absolute
+        // marker, and an embedded NUL.
+        for bad in ["..", ".", "", "a/b", "a\\b", "/abs", "a\0b", "ns:name"] {
+            assert!(
+                SecretRef::new(bad, "name").is_err(),
+                "ns segment {bad:?} must be rejected"
+            );
+            assert!(
+                SecretRef::new("ns", bad).is_err(),
+                "name segment {bad:?} must be rejected"
+            );
+        }
+        // A normal reference is unaffected.
+        let r = SecretRef::new("ns", "name").unwrap();
+        assert_eq!((r.ns(), r.name()), ("ns", "name"));
+        // Interior dots remain legal (only a bare `.`/`..` is rejected).
+        assert!(SecretRef::new("a.b", "c.d.v2").is_ok());
     }
 
     #[test]

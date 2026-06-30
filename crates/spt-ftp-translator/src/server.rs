@@ -24,6 +24,7 @@ use std::pin::Pin;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::task::{Context, Poll};
+use std::time::Duration;
 
 use tokio::io::{
     AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader, ReadBuf,
@@ -44,6 +45,11 @@ use crate::factory::SftpFactory;
 use crate::reply::{feat_block, Reply};
 use crate::state::{ControlState, LoginPhase, SessionState, TransferType};
 use crate::verbs::{parse_command, Verb};
+
+/// Hard cap on a single control-channel line. RFC 959 commands are short;
+/// the read itself is bounded to this many bytes so a pre-login client
+/// streaming data with no CRLF cannot exhaust memory (H2).
+const MAX_CONTROL_LINE: usize = 8 * 1024;
 
 /// Handle returned by [`Server::start`] so tests can shut down cleanly.
 #[derive(Debug)]
@@ -191,12 +197,35 @@ pub enum ControlStream {
     Tls(BufReader<TlsStream<TcpStream>>),
 }
 
+/// Outcome of a bounded control-line read ([`ControlStream::read_line_capped`]).
+enum LineOutcome {
+    /// A complete (`\n`-terminated) or final unterminated line was read into
+    /// the caller's buffer.
+    Line,
+    /// EOF was reached before any byte was read.
+    Eof,
+    /// The line exceeded the byte cap before a `\n` terminator was seen. The
+    /// session must be torn down rather than buffering further (H2).
+    TooLong,
+}
+
 impl ControlStream {
-    /// Read one CRLF-terminated line into `buf`.
-    async fn read_line(&mut self, buf: &mut String) -> std::io::Result<usize> {
+    /// Read one `\n`-terminated control line into `buf`, refusing to buffer
+    /// more than `cap` bytes.
+    ///
+    /// Unlike [`AsyncBufReadExt::read_line`] — which grows its `String`
+    /// without bound until a newline/EOF — this bounds the read ITSELF: a
+    /// pre-auth client streaming gigabytes with no CRLF is rejected via
+    /// [`LineOutcome::TooLong`] before `cap` bytes are buffered, closing the
+    /// H2 pre-login OOM vector.
+    async fn read_line_capped(
+        &mut self,
+        buf: &mut String,
+        cap: usize,
+    ) -> std::io::Result<LineOutcome> {
         match self {
-            Self::Plain(br) => br.read_line(buf).await,
-            Self::Tls(br) => br.read_line(buf).await,
+            Self::Plain(br) => read_capped_line(br, buf, cap).await,
+            Self::Tls(br) => read_capped_line(br, buf, cap).await,
         }
     }
 
@@ -207,6 +236,58 @@ impl ControlStream {
             Self::Plain(br) => br.buffer().is_empty(),
             Self::Tls(br) => br.buffer().is_empty(),
         }
+    }
+}
+
+/// Bounded line reader shared by both [`ControlStream`] variants. Pulls bytes
+/// from the buffered reader a chunk at a time via `fill_buf`/`consume`,
+/// appending to `out` until a `\n` is seen or EOF. If the accumulated length
+/// would exceed `cap` before the terminator, returns [`LineOutcome::TooLong`]
+/// WITHOUT buffering the overflow — bounding peak memory to roughly `cap`
+/// regardless of how much a malicious peer streams.
+async fn read_capped_line<R>(
+    reader: &mut R,
+    out: &mut String,
+    cap: usize,
+) -> std::io::Result<LineOutcome>
+where
+    R: tokio::io::AsyncBufRead + Unpin,
+{
+    let mut raw: Vec<u8> = Vec::new();
+    let mut hit_newline = false;
+    loop {
+        let available = reader.fill_buf().await?;
+        if available.is_empty() {
+            break; // EOF
+        }
+        if let Some(pos) = available.iter().position(|&b| b == b'\n') {
+            if raw.len() + pos + 1 > cap {
+                return Ok(LineOutcome::TooLong);
+            }
+            raw.extend_from_slice(&available[..=pos]);
+            reader.consume(pos + 1);
+            hit_newline = true;
+            break;
+        }
+        let take = available.len();
+        if raw.len() + take > cap {
+            return Ok(LineOutcome::TooLong);
+        }
+        raw.extend_from_slice(available);
+        reader.consume(take);
+    }
+    if raw.is_empty() && !hit_newline {
+        return Ok(LineOutcome::Eof);
+    }
+    match String::from_utf8(raw) {
+        Ok(s) => {
+            out.push_str(&s);
+            Ok(LineOutcome::Line)
+        }
+        Err(_) => Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "control line was not valid UTF-8",
+        )),
     }
 }
 
@@ -274,17 +355,23 @@ impl DataStream {
         }
     }
 
-    async fn read_to_end(&mut self, buf: &mut Vec<u8>) -> std::io::Result<usize> {
-        match self {
-            Self::Plain(s) => s.read_to_end(buf).await,
-            Self::Tls(s) => s.read_to_end(buf).await,
-        }
-    }
-
     async fn shutdown(&mut self) -> std::io::Result<()> {
         match self {
             Self::Plain(s) => s.shutdown().await,
             Self::Tls(s) => s.shutdown().await,
+        }
+    }
+}
+
+impl AsyncRead for DataStream {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        match self.get_mut() {
+            Self::Plain(s) => Pin::new(s).poll_read(cx, buf),
+            Self::Tls(s) => Pin::new(s).poll_read(cx, buf),
         }
     }
 }
@@ -325,9 +412,13 @@ async fn run_session(
 
     loop {
         line.clear();
-        let read = timeout(cfg.idle_timeout, control.read_line(&mut line)).await;
-        let n = match read {
-            Ok(Ok(n)) => n,
+        let read = timeout(
+            cfg.idle_timeout,
+            control.read_line_capped(&mut line, MAX_CONTROL_LINE),
+        )
+        .await;
+        let outcome = match read {
+            Ok(Ok(o)) => o,
             Ok(Err(e)) => return Err(e.into()),
             Err(_) => {
                 // Idle timeout — RFC 959 §5.1 hints 421.
@@ -339,14 +430,21 @@ async fn run_session(
                 return Err(TranslatorError::IdleTimeout);
             }
         };
-        if n == 0 {
+        match outcome {
             // EOF without QUIT.
-            return Ok(());
-        }
-        // Reject excessively long lines defensively (8 KiB).
-        if n > 8 * 1024 {
-            write_reply(&mut control, &Reply::new(500, "Command line too long.")).await?;
-            continue;
+            LineOutcome::Eof => return Ok(()),
+            // H2: the read was bounded — we never buffered past the cap. An
+            // over-long line (pre-auth or otherwise) is a protocol violation;
+            // reply 500 and close rather than draining an unbounded stream.
+            LineOutcome::TooLong => {
+                let _ = write_reply(
+                    &mut control,
+                    &Reply::new(500, "Command line too long; closing control connection."),
+                )
+                .await;
+                return Ok(());
+            }
+            LineOutcome::Line => {}
         }
         let verb = parse_command(&line);
         debug!(peer = %peer, tag = verb.tag(), "ftp verb");
@@ -861,6 +959,7 @@ async fn dispatch(
                 ListMode::List,
                 control_peer_ip,
                 tls_acceptor,
+                cfg.data_timeout,
             )
             .await
         }
@@ -885,6 +984,7 @@ async fn dispatch(
                 ListMode::Nlst,
                 control_peer_ip,
                 tls_acceptor,
+                cfg.data_timeout,
             )
             .await
         }
@@ -909,6 +1009,7 @@ async fn dispatch(
                 ListMode::Mlsd,
                 control_peer_ip,
                 tls_acceptor,
+                cfg.data_timeout,
             )
             .await
         }
@@ -944,7 +1045,15 @@ async fn dispatch(
                 Some(l) => l,
                 None => return (Reply::err_503("Use PASV/EPSV before RETR."), false, false),
             };
-            run_retr_transfer(state, listener, target, control_peer_ip, tls_acceptor).await
+            run_retr_transfer(
+                state,
+                listener,
+                target,
+                control_peer_ip,
+                tls_acceptor,
+                cfg.data_timeout,
+            )
+            .await
         }
         Verb::Stor(p) => {
             if let Err(r) = validate_path_argument(p) {
@@ -962,6 +1071,7 @@ async fn dispatch(
                 false,
                 control_peer_ip,
                 tls_acceptor,
+                cfg.data_timeout,
             )
             .await
         }
@@ -974,7 +1084,16 @@ async fn dispatch(
                 Some(l) => l,
                 None => return (Reply::err_503("Use PASV/EPSV before APPE."), false, false),
             };
-            run_stor_transfer(state, listener, target, true, control_peer_ip, tls_acceptor).await
+            run_stor_transfer(
+                state,
+                listener,
+                target,
+                true,
+                control_peer_ip,
+                tls_acceptor,
+                cfg.data_timeout,
+            )
+            .await
         }
         Verb::Stou(_) => {
             // Generate a unique name based on epoch nanos.
@@ -994,6 +1113,7 @@ async fn dispatch(
                 false,
                 control_peer_ip,
                 tls_acceptor,
+                cfg.data_timeout,
             )
             .await
         }
@@ -1061,6 +1181,7 @@ async fn run_list_transfer(
     mode: ListMode,
     control_peer_ip: IpAddr,
     tls_acceptor: Option<&TlsAcceptor>,
+    data_timeout: Duration,
 ) -> (Reply, bool, bool) {
     let sftp = state.sftp.as_ref().unwrap().clone();
     // Accept the data connection (no real client deadline here — the
@@ -1080,34 +1201,47 @@ async fn run_list_transfer(
             )
         }
     };
-    let entries = match sftp.read_dir(target.clone()).await {
-        Ok(e) => e,
-        Err(e) => {
-            return (Reply::err_550(format!("LIST: {e}")), false, false);
+    // MED: bound the whole transfer so a stalled/trickling peer can't pin the
+    // session + passive port indefinitely (the control idle timeout does not
+    // cover an in-flight transfer).
+    let transfer = async {
+        let entries = match sftp.read_dir(target.clone()).await {
+            Ok(e) => e,
+            Err(e) => {
+                return (Reply::err_550(format!("LIST: {e}")), false, false);
+            }
+        };
+        let mut body = String::new();
+        for entry in &entries {
+            match mode {
+                ListMode::List => {
+                    body.push_str(&format_unix_ls_line(&entry.file_name, &entry.metadata));
+                    body.push_str("\r\n");
+                }
+                ListMode::Nlst => {
+                    body.push_str(&entry.file_name);
+                    body.push_str("\r\n");
+                }
+                ListMode::Mlsd => {
+                    body.push_str(&mlsx_fact_line(&entry.file_name, &entry.metadata));
+                    body.push_str("\r\n");
+                }
+            }
         }
+        if let Err(e) = data.write_all(body.as_bytes()).await {
+            return (Reply::new(426, format!("LIST aborted: {e}")), false, false);
+        }
+        let _ = data.shutdown().await;
+        (Reply::new(226, "Listing complete."), false, false)
     };
-    let mut body = String::new();
-    for entry in &entries {
-        match mode {
-            ListMode::List => {
-                body.push_str(&format_unix_ls_line(&entry.file_name, &entry.metadata));
-                body.push_str("\r\n");
-            }
-            ListMode::Nlst => {
-                body.push_str(&entry.file_name);
-                body.push_str("\r\n");
-            }
-            ListMode::Mlsd => {
-                body.push_str(&mlsx_fact_line(&entry.file_name, &entry.metadata));
-                body.push_str("\r\n");
-            }
-        }
+    match timeout(data_timeout, transfer).await {
+        Ok(reply) => reply,
+        Err(_) => (
+            Reply::new(426, "LIST data transfer timed out."),
+            false,
+            false,
+        ),
     }
-    if let Err(e) = data.write_all(body.as_bytes()).await {
-        return (Reply::new(426, format!("LIST aborted: {e}")), false, false);
-    }
-    let _ = data.shutdown().await;
-    (Reply::new(226, "Listing complete."), false, false)
 }
 
 async fn run_retr_transfer(
@@ -1116,6 +1250,7 @@ async fn run_retr_transfer(
     target: String,
     control_peer_ip: IpAddr,
     tls_acceptor: Option<&TlsAcceptor>,
+    data_timeout: Duration,
 ) -> (Reply, bool, bool) {
     let sftp = state.sftp.as_ref().unwrap().clone();
     let data = match accept_data_connection(&listener, control_peer_ip).await {
@@ -1137,33 +1272,45 @@ async fn run_retr_transfer(
     // client issuing `RETR bigfile` used to OOM the translator; now peak
     // memory is bounded by `STREAM_CHUNK` regardless of file size. Opening
     // first preserves the original error split: a remote read failure → 550,
-    // a data-connection write failure → 426 (transfer aborted).
-    let mut remote = match sftp.open_for_read(target.clone()).await {
-        Ok(f) => f,
-        Err(e) => return (Reply::err_550(format!("RETR: {e}")), false, false),
-    };
-    let mut buf = vec![0u8; spt_sftp::STREAM_CHUNK];
-    loop {
-        let n = match remote.read(&mut buf).await {
-            Ok(0) => break,
-            Ok(n) => n,
+    // a data-connection write failure → 426 (transfer aborted). The whole
+    // transfer is bounded by `data_timeout` (MED).
+    let transfer = async {
+        let mut remote = match sftp.open_for_read(target.clone()).await {
+            Ok(f) => f,
             Err(e) => return (Reply::err_550(format!("RETR: {e}")), false, false),
         };
-        if let Err(e) = data.write_all(&buf[..n]).await {
-            return (Reply::new(426, format!("RETR aborted: {e}")), false, false);
+        let mut buf = vec![0u8; spt_sftp::STREAM_CHUNK];
+        loop {
+            let n = match remote.read(&mut buf).await {
+                Ok(0) => break,
+                Ok(n) => n,
+                Err(e) => return (Reply::err_550(format!("RETR: {e}")), false, false),
+            };
+            if let Err(e) = data.write_all(&buf[..n]).await {
+                return (Reply::new(426, format!("RETR aborted: {e}")), false, false);
+            }
         }
+        let _ = data.shutdown().await;
+        (Reply::new(226, "Transfer complete."), false, false)
+    };
+    match timeout(data_timeout, transfer).await {
+        Ok(reply) => reply,
+        Err(_) => (
+            Reply::new(426, "RETR data transfer timed out."),
+            false,
+            false,
+        ),
     }
-    let _ = data.shutdown().await;
-    (Reply::new(226, "Transfer complete."), false, false)
 }
 
 async fn run_stor_transfer(
     state: &mut SessionState,
     listener: tokio::net::TcpListener,
     target: String,
-    _append: bool,
+    append: bool,
     control_peer_ip: IpAddr,
     tls_acceptor: Option<&TlsAcceptor>,
+    data_timeout: Duration,
 ) -> (Reply, bool, bool) {
     let sftp = state.sftp.as_ref().unwrap().clone();
     let data = match accept_data_connection(&listener, control_peer_ip).await {
@@ -1180,15 +1327,40 @@ async fn run_stor_transfer(
             )
         }
     };
-    let mut buf = Vec::new();
-    if let Err(e) = data.read_to_end(&mut buf).await {
-        return (Reply::new(426, format!("STOR read: {e}")), false, false);
+    // H3: stream the upload to the backend in bounded chunks instead of
+    // buffering the whole transfer in RAM (`read_to_end`). Peak memory is
+    // bounded by `STREAM_CHUNK` regardless of upload size. STOR/STOU create
+    // or truncate; APPE appends (L19 — the append flag was previously
+    // ignored). The error split is preserved: a data-connection read failure
+    // → 426, a remote SFTP write failure → 550. The whole transfer is bounded
+    // by `data_timeout` (MED).
+    let transfer = async {
+        let result = if append {
+            sftp.append_file_from(target.clone(), &mut data).await
+        } else {
+            sftp.write_file_from(target.clone(), &mut data).await
+        };
+        match result {
+            Ok(_) => {
+                let _ = data.shutdown().await;
+                (Reply::new(226, "Transfer complete."), false, false)
+            }
+            Err(spt_sftp::UploadError::Source(e)) => {
+                (Reply::new(426, format!("STOR read: {e}")), false, false)
+            }
+            Err(spt_sftp::UploadError::Remote(e)) => {
+                (Reply::err_550(format!("STOR write: {e}")), false, false)
+            }
+        }
+    };
+    match timeout(data_timeout, transfer).await {
+        Ok(reply) => reply,
+        Err(_) => (
+            Reply::new(426, "STOR data transfer timed out."),
+            false,
+            false,
+        ),
     }
-    if let Err(e) = sftp.write_file(target.clone(), &buf).await {
-        return (Reply::err_550(format!("STOR write: {e}")), false, false);
-    }
-    let _ = data.shutdown().await;
-    (Reply::new(226, "Transfer complete."), false, false)
 }
 
 /// Helper: strip the leading 3-digit code so we can re-wrap with our
@@ -1300,41 +1472,20 @@ fn state_has_utf8(_state: &SessionState) -> bool {
     true
 }
 
-/// Stash a passive listener in session state until the next data verb
-/// picks it up. We hold it in a `Mutex<Option<_>>` so the dispatch
-/// branch (which has `&mut SessionState`) and the parallel borrow of
-/// `state.sftp` don't collide.
+/// Stash a passive listener in the per-session state until the next
+/// data-using verb consumes it.
+///
+/// H1: keyed strictly per session (in `SessionState`), so two FTP sessions
+/// multiplexed onto the same Tokio worker thread can never observe or
+/// overwrite each other's data channel — a session can only ever use the
+/// listener it bound itself. This replaces the prior shared thread-local,
+/// which was unsound under the multi-thread scheduler.
 fn state_attach_listener(state: &mut SessionState, pl: crate::data::PassiveListener) {
-    PENDING_LISTENER.with(|cell| {
-        *cell.borrow_mut() = Some(pl.listener);
-    });
-    let _ = state; // Keep symmetry — listener lives in TLS-cell, not state.
+    state.pending_listener = Some(pl.listener);
 }
 
 fn state_take_listener(state: &mut SessionState) -> Option<tokio::net::TcpListener> {
-    let _ = state;
-    PENDING_LISTENER.with(|cell| cell.borrow_mut().take())
-}
-
-thread_local! {
-    /// One-shot pending-listener slot per session task. Each session
-    /// task has its own thread-local because Tokio's `LocalSet` model
-    /// runs tasks on their own logical scopes — but in our case the
-    /// session is multi-threaded so we instead key by `tokio::task::id`
-    /// (see fallback below). For the current single-listener-per-
-    /// session contract this `RefCell` is sufficient because a single
-    /// session task only ever has one outstanding passive bind at a
-    /// time and runs on at most one thread between PASV and the
-    /// follow-up data verb.
-    ///
-    /// NOTE: this *does* assume `tokio::spawn`-ed session tasks are not
-    /// migrated mid-session between two data verbs by the multi-thread
-    /// scheduler. Tokio does migrate tasks across worker threads, so
-    /// for production we'd key by `task::id()`. The integration tests
-    /// cover the single-thread runtime + multi-thread runtime cases;
-    /// see translator.rs::pasv_returned_port_in_range.
-    static PENDING_LISTENER: std::cell::RefCell<Option<tokio::net::TcpListener>> =
-        const { std::cell::RefCell::new(None) };
+    state.pending_listener.take()
 }
 
 /// Resolve a CWD-relative or absolute path to an absolute SFTP path.

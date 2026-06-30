@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use russh_sftp::client::fs::File as RusshFile;
 use russh_sftp::client::SftpSession as RusshSftpSession;
 use russh_sftp::protocol::{FileAttributes, OpenFlags};
-use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeekExt, AsyncWrite, AsyncWriteExt};
 
 use crate::error::SftpError;
 
@@ -19,6 +19,25 @@ pub const DEFAULT_CAT_SIZE_CAP: u64 = 4 * 1024 * 1024;
 /// Chunk size for streaming reads/copies (64 KiB). Matches the recursive
 /// downloader and checksum hasher so bounded-memory transfers are uniform.
 pub const STREAM_CHUNK: usize = 64 * 1024;
+
+/// Error returned by the streaming upload methods
+/// ([`SftpClient::write_file_from`] / [`SftpClient::append_file_from`]),
+/// distinguishing a failure reading the local source from a failure writing
+/// to the remote SFTP file.
+///
+/// The split matters to callers that report the two halves of a transfer
+/// differently — the FTP-translator maps [`Source`](UploadError::Source) to a
+/// `426` (data-connection) reply and [`Remote`](UploadError::Remote) to a
+/// `550` (server/file error).
+#[derive(Debug, thiserror::Error)]
+pub enum UploadError {
+    /// Reading from the source `reader` (e.g. an FTP data connection) failed.
+    #[error("upload source read: {0}")]
+    Source(#[source] std::io::Error),
+    /// Writing the upload to the remote SFTP file failed.
+    #[error("upload remote write: {0}")]
+    Remote(#[source] SftpError),
+}
 
 /// High-level SFTP client used by the CLI and runtime management surfaces.
 pub struct SftpClient {
@@ -216,6 +235,93 @@ impl SftpClient {
             op: "close_written_file",
             detail: format!("{e}"),
         })
+    }
+
+    /// Stream `reader`'s full contents into a freshly created/truncated
+    /// remote file at `path`, in bounded [`STREAM_CHUNK`]-sized chunks.
+    /// Returns the total number of bytes written.
+    ///
+    /// Unlike [`write_file`](Self::write_file), peak memory is bounded by the
+    /// chunk size regardless of the source length, so an arbitrarily large
+    /// upload (e.g. an FTP `STOR` data connection) cannot OOM the process.
+    /// Errors are split via [`UploadError`] so callers can distinguish a
+    /// source-read failure from a remote-write failure. Mirrors the
+    /// [`read_file_to`](Self::read_file_to) streaming reader.
+    pub async fn write_file_from<R>(
+        &self,
+        path: impl Into<String>,
+        reader: &mut R,
+    ) -> Result<u64, UploadError>
+    where
+        R: AsyncRead + Unpin,
+    {
+        let path_str: String = path.into();
+        // start_offset == 0 → WRITE | CREATE | TRUNCATE (overwrite semantics).
+        let file = self
+            .open_for_resume_write(path_str.clone(), 0)
+            .await
+            .map_err(UploadError::Remote)?;
+        self.stream_upload(file, &path_str, reader).await
+    }
+
+    /// Like [`write_file_from`](Self::write_file_from) but appends to the end
+    /// of the remote file at `path` (creating it if absent), preserving the
+    /// FTP `APPE` semantics. Returns the number of bytes appended.
+    pub async fn append_file_from<R>(
+        &self,
+        path: impl Into<String>,
+        reader: &mut R,
+    ) -> Result<u64, UploadError>
+    where
+        R: AsyncRead + Unpin,
+    {
+        let path_str: String = path.into();
+        // Resume from the current remote size so writes land at EOF. A
+        // missing target starts at offset 0 (APPE creates it).
+        let start = match self.metadata(path_str.clone()).await {
+            Ok(md) => md.size.unwrap_or(0),
+            Err(SftpError::NoSuchFile { .. }) => 0,
+            Err(e) => return Err(UploadError::Remote(e)),
+        };
+        let file = self
+            .open_for_resume_write(path_str.clone(), start)
+            .await
+            .map_err(UploadError::Remote)?;
+        self.stream_upload(file, &path_str, reader).await
+    }
+
+    /// Shared bounded-chunk copy loop backing the streaming upload methods.
+    async fn stream_upload<R>(
+        &self,
+        mut file: RusshFile,
+        path_str: &str,
+        reader: &mut R,
+    ) -> Result<u64, UploadError>
+    where
+        R: AsyncRead + Unpin,
+    {
+        let mut buf = vec![0u8; STREAM_CHUNK];
+        let mut total: u64 = 0;
+        loop {
+            let n = reader.read(&mut buf).await.map_err(UploadError::Source)?;
+            if n == 0 {
+                break;
+            }
+            file.write_all(&buf[..n]).await.map_err(|e| {
+                UploadError::Remote(SftpError::Local {
+                    op: "write_file_from-write",
+                    detail: format!("{path_str}: {e}"),
+                })
+            })?;
+            total += n as u64;
+        }
+        file.shutdown().await.map_err(|e| {
+            UploadError::Remote(SftpError::Local {
+                op: "write_file_from-close",
+                detail: format!("{path_str}: {e}"),
+            })
+        })?;
+        Ok(total)
     }
 
     /// Open a remote file for reading.

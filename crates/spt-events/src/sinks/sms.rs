@@ -60,7 +60,14 @@ impl Sink for SmsSink {
     }
 
     async fn deliver(&self, event: Arc<Event>) -> Result<(), SinkError> {
-        let (body, _) = template::render_template(&self.body_template, &event);
+        // The provider body is `application/x-www-form-urlencoded`; form-encode
+        // substituted values so a field containing `&`/`=` cannot inject or
+        // override sibling provider parameters (e.g. append `&To=...`).
+        let (body, _) = template::render_template_escaped(
+            &self.body_template,
+            &event,
+            template::EscapeMode::Form,
+        );
         let req = HttpRequest {
             method: "POST".into(),
             url: self.url.clone(),
@@ -138,6 +145,34 @@ mod tests {
             .unwrap();
         let req = &t.requests()[0];
         assert_eq!(req.content_type, "application/x-www-form-urlencoded");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn form_param_injection_is_neutralised() {
+        // A field value trying to append `&To=+1900...` must be form-encoded so
+        // it stays inside the `Body` parameter and cannot add/override params.
+        let t = Arc::new(RecordingTransport::new());
+        let sink = SmsSink::new(
+            "oncall",
+            "twilio",
+            "https://api.twilio.com/x/Messages",
+            "Body={{message}}",
+            HttpAuth::None,
+            t.clone(),
+        );
+        let ev = Event::builder("k", Severity::Error)
+            .message("hi&To=+1900555&x=1")
+            .build();
+        sink.deliver(Arc::new(ev)).await.unwrap();
+        let body = std::str::from_utf8(&t.requests()[0].body)
+            .unwrap()
+            .to_string();
+        // Exactly one `&`/`=`-delimited parameter survives (the literal Body=).
+        let params: Vec<&str> = body.split('&').collect();
+        assert_eq!(params.len(), 1, "extra params injected: {body}");
+        assert!(params[0].starts_with("Body="));
+        // The injected `To` must not appear as a bare parameter.
+        assert!(!body.contains("&To="), "To param injected: {body}");
     }
 
     #[tokio::test(flavor = "current_thread")]

@@ -74,7 +74,13 @@ impl Sink for PushSink {
     }
 
     async fn deliver(&self, event: Arc<Event>) -> Result<(), SinkError> {
-        let (body, _) = template::render_template(&self.body_template, &event);
+        // The body is posted as `application/json`; escape substituted values
+        // as JSON string content so a field cannot inject sibling keys.
+        let (body, _) = template::render_template_escaped(
+            &self.body_template,
+            &event,
+            template::EscapeMode::JsonString,
+        );
         self.transport
             .send(HttpRequest {
                 method: "POST".into(),
@@ -353,7 +359,14 @@ impl Sink for WebPushSink {
             ));
         }
 
-        let (body, _) = template::render_template(&self.body_template, &event);
+        // The Web Push payload is conventionally a JSON document; escape
+        // substituted values as JSON string content so an attacker-influenced
+        // field cannot inject sibling keys into the (encrypted) payload.
+        let (body, _) = template::render_template_escaped(
+            &self.body_template,
+            &event,
+            template::EscapeMode::JsonString,
+        );
         let plaintext = body.into_bytes();
 
         let mut last_transient: Option<SinkError> = None;

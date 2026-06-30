@@ -220,6 +220,49 @@ fn file_directory_where_file_expected_is_clean_error_windows() {
 }
 
 // ===========================================================================
+// File backend — path-traversal containment (M4). All platforms.
+// ===========================================================================
+
+/// A `secret://../foo` reference must be rejected at parse time so the file
+/// backend can never resolve a path outside its root. Covers `..`, a leaf `..`,
+/// nested traversal, an absolute-looking segment, separators, and NUL — every
+/// form that could otherwise escape `<root>`.
+#[test]
+fn secret_ref_traversal_forms_are_rejected_at_parse() {
+    use std::str::FromStr;
+    let rejected = [
+        "secret://../foo",
+        "secret://ns/..",
+        "secret://ns/.",
+        "secret://./name",
+        "secret://ns/../../etc/x",
+    ];
+    for raw in rejected {
+        assert!(
+            SecretRef::from_str(raw).is_err(),
+            "traversal reference {raw:?} must be rejected"
+        );
+    }
+    // Direct construction is guarded too (separators, absolute marker, NUL).
+    for seg in ["..", ".", "a/b", "a\\b", "/abs", "a\0b"] {
+        assert!(
+            SecretRef::new(seg, "name").is_err(),
+            "ns segment {seg:?} must be rejected"
+        );
+        assert!(
+            SecretRef::new("ns", seg).is_err(),
+            "name segment {seg:?} must be rejected"
+        );
+    }
+    // A normal reference still resolves and round-trips through the backend.
+    let dir = tempdir().unwrap();
+    let b = FileBackend::new(dir.path());
+    let r = SecretRef::new("ns", "name").unwrap();
+    b.set(&r, b"ok").unwrap();
+    assert!(b.get(&r).unwrap().is_some());
+}
+
+// ===========================================================================
 // Vault — corruption / truncation / meta / argon2 edges. All platforms.
 // ===========================================================================
 

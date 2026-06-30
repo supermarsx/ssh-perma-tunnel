@@ -40,6 +40,54 @@ impl FileBackend {
     pub fn path_for(&self, r: &SecretRef) -> PathBuf {
         self.root.join(r.ns()).join(r.name())
     }
+
+    /// Build the on-disk path for a reference, re-verifying that it stays
+    /// lexically within the configured root before any I/O.
+    ///
+    /// [`SecretRef`] already rejects `.`/`..`, path separators, absolute/drive
+    /// markers, and NUL at construction, so a traversal cannot reach this point
+    /// through the normal parse path. This containment check is defense in
+    /// depth: a future change to the reference grammar (or a hand-built
+    /// reference) can never make the backend read or write outside `<root>`.
+    fn resolve_within_root(&self, r: &SecretRef) -> Result<PathBuf> {
+        let path = self.path_for(r);
+        if !path_within_root(&self.root, &path) {
+            return Err(Error::PermissionDenied(format!(
+                "secret reference `{r}` resolves outside the secrets root `{}`",
+                self.root.display()
+            )));
+        }
+        Ok(path)
+    }
+}
+
+/// Lexical (no-filesystem) containment check: does `candidate` stay within
+/// `root` after folding `.`/`..` components purely textually? The file need not
+/// exist. Fails closed — anything that would ascend above `root` (or any path
+/// we cannot normalize) returns `false`.
+fn path_within_root(root: &Path, candidate: &Path) -> bool {
+    use std::path::Component;
+    fn lexical(p: &Path) -> Option<PathBuf> {
+        let mut out = PathBuf::new();
+        for comp in p.components() {
+            match comp {
+                Component::ParentDir => {
+                    // Refuse to ascend past the accumulated prefix — a `..` that
+                    // pops nothing means the path escapes its root.
+                    if !out.pop() {
+                        return None;
+                    }
+                }
+                Component::CurDir => {}
+                other => out.push(other.as_os_str()),
+            }
+        }
+        Some(out)
+    }
+    match (lexical(root), lexical(candidate)) {
+        (Some(root), Some(candidate)) => candidate.starts_with(&root),
+        _ => false,
+    }
 }
 
 /// Enforce owner-only permissions on a secret file before reading it.
@@ -227,7 +275,7 @@ impl SecretBackend for FileBackend {
     }
 
     fn get(&self, r: &SecretRef) -> Result<Option<SecretBytes>> {
-        let path = self.path_for(r);
+        let path = self.resolve_within_root(r)?;
         if !path.exists() {
             return Ok(None);
         }
@@ -240,7 +288,7 @@ impl SecretBackend for FileBackend {
     }
 
     fn set(&self, r: &SecretRef, value: &[u8]) -> Result<()> {
-        let path = self.path_for(r);
+        let path = self.resolve_within_root(r)?;
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).map_err(|e| Error::SecretUnavailable {
                 reference: r.to_string(),
@@ -338,7 +386,7 @@ impl SecretBackend for FileBackend {
     }
 
     fn remove(&self, r: &SecretRef) -> Result<bool> {
-        let path = self.path_for(r);
+        let path = self.resolve_within_root(r)?;
         match fs::remove_file(&path) {
             Ok(()) => Ok(true),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
@@ -377,6 +425,40 @@ mod tests {
         let r = SecretRef::new("ns", "name").unwrap();
         let p = b.path_for(&r);
         assert!(p.ends_with(Path::new("ns").join("name")));
+    }
+
+    #[test]
+    fn path_within_root_accepts_in_root_and_rejects_escape() {
+        let root = Path::new("/var/lib/spt/secrets");
+        // Normal, in-root paths.
+        assert!(path_within_root(root, &root.join("ns").join("name")));
+        assert!(path_within_root(root, root));
+        // A `..` that climbs out of the root is rejected.
+        assert!(!path_within_root(
+            root,
+            Path::new("/var/lib/spt/secrets/../foo")
+        ));
+        assert!(!path_within_root(
+            root,
+            Path::new("/var/lib/spt/secrets/ns/../../../etc/passwd")
+        ));
+        // A sibling directory that merely shares a prefix string is rejected.
+        assert!(!path_within_root(
+            root,
+            Path::new("/var/lib/spt/secrets-evil/x")
+        ));
+        // Relative roots work symmetrically (used in tests / portable layouts).
+        let rel = Path::new("secrets");
+        assert!(path_within_root(rel, &rel.join("ns").join("name")));
+        assert!(!path_within_root(rel, Path::new("secrets/../escape")));
+    }
+
+    #[test]
+    fn resolve_within_root_allows_valid_reference() {
+        let b = FileBackend::new("/var/lib/spt/secrets");
+        let r = SecretRef::new("ns", "name").unwrap();
+        let p = b.resolve_within_root(&r).unwrap();
+        assert_eq!(p, b.path_for(&r));
     }
 
     #[test]

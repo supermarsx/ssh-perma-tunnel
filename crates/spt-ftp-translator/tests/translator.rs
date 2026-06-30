@@ -1168,3 +1168,245 @@ async fn ssh2_sftp_factory_pools_sessions_across_open_for() {
     drop(sftp2);
     drop(factory);
 }
+
+// ---------------------------------------------------------------------------
+// 17. STOR streams a multi-chunk upload byte-identically (H3: no whole-upload
+//     RAM buffering). The payload spans several STREAM_CHUNK reads plus a
+//     partial tail so chunk-boundary handling is exercised.
+// ---------------------------------------------------------------------------
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stor_streams_multichunk_upload_verbatim() {
+    let (addr, handle, dir) = spawn_translator(|_| {}).await;
+    let len = spt_sftp::STREAM_CHUNK * 3 + 4096 + 77;
+    let mut payload = Vec::with_capacity(len);
+    let mut x: u32 = 0x1234_5678;
+    for _ in 0..len {
+        x ^= x << 13;
+        x ^= x >> 17;
+        x ^= x << 5;
+        payload.push((x & 0xff) as u8);
+    }
+
+    let (mut br, mut wr) = connect(addr).await;
+    login(&mut br, &mut wr).await;
+    send(&mut wr, "TYPE I").await;
+    let _ = recv_line(&mut br).await;
+    let port = pasv(&mut br, &mut wr).await;
+    send(&mut wr, "STOR big.bin").await;
+    let mut dc = TcpStream::connect(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port))
+        .await
+        .expect("data connect");
+    dc.write_all(&payload).await.expect("write payload");
+    dc.shutdown().await.expect("shutdown data");
+
+    let r = recv_line(&mut br).await;
+    assert!(r.starts_with("226"), "STOR → `{r}`");
+    let got = std::fs::read(dir.path().join("big.bin")).expect("read uploaded");
+    assert_eq!(got.len(), payload.len(), "streamed upload length mismatch");
+    assert_eq!(got, payload, "streamed STOR body diverged");
+    handle.shutdown();
+}
+
+// ---------------------------------------------------------------------------
+// 18. APPE appends to an existing file (preserving append-vs-truncate
+//     semantics — the append flag was previously ignored).
+// ---------------------------------------------------------------------------
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn appe_appends_to_existing_file() {
+    let (addr, handle, dir) = spawn_translator(|_| {}).await;
+    std::fs::write(dir.path().join("log.txt"), b"HEAD").unwrap();
+
+    let (mut br, mut wr) = connect(addr).await;
+    login(&mut br, &mut wr).await;
+    send(&mut wr, "TYPE I").await;
+    let _ = recv_line(&mut br).await;
+    let port = pasv(&mut br, &mut wr).await;
+    send(&mut wr, "APPE log.txt").await;
+    let mut dc = TcpStream::connect(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port))
+        .await
+        .expect("data connect");
+    dc.write_all(b"TAIL").await.expect("write data");
+    dc.shutdown().await.expect("shutdown data");
+
+    let r = recv_line(&mut br).await;
+    assert!(r.starts_with("226"), "APPE → `{r}`");
+    let got = std::fs::read(dir.path().join("log.txt")).expect("read appended");
+    assert_eq!(got, b"HEADTAIL", "APPE must append, not overwrite");
+    handle.shutdown();
+}
+
+// ---------------------------------------------------------------------------
+// 19. APPE on a missing file creates it (RFC 959 — APPE creates if absent).
+// ---------------------------------------------------------------------------
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn appe_creates_when_absent() {
+    let (addr, handle, dir) = spawn_translator(|_| {}).await;
+    let (mut br, mut wr) = connect(addr).await;
+    login(&mut br, &mut wr).await;
+    send(&mut wr, "TYPE I").await;
+    let _ = recv_line(&mut br).await;
+    let port = pasv(&mut br, &mut wr).await;
+    send(&mut wr, "APPE new.txt").await;
+    let mut dc = TcpStream::connect(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port))
+        .await
+        .expect("data connect");
+    dc.write_all(b"fresh").await.expect("write data");
+    dc.shutdown().await.expect("shutdown data");
+
+    let r = recv_line(&mut br).await;
+    assert!(r.starts_with("226"), "APPE → `{r}`");
+    let got = std::fs::read(dir.path().join("new.txt")).expect("read created");
+    assert_eq!(got, b"fresh");
+    handle.shutdown();
+}
+
+// ---------------------------------------------------------------------------
+// 20. STOR truncates an existing file (overwrite semantics — no stale tail).
+// ---------------------------------------------------------------------------
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stor_truncates_existing_file() {
+    let (addr, handle, dir) = spawn_translator(|_| {}).await;
+    std::fs::write(dir.path().join("f.bin"), b"AAAAAAAAAAAAAAAA").unwrap();
+
+    let (mut br, mut wr) = connect(addr).await;
+    login(&mut br, &mut wr).await;
+    send(&mut wr, "TYPE I").await;
+    let _ = recv_line(&mut br).await;
+    let port = pasv(&mut br, &mut wr).await;
+    send(&mut wr, "STOR f.bin").await;
+    let mut dc = TcpStream::connect(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port))
+        .await
+        .expect("data connect");
+    dc.write_all(b"xy").await.expect("write data");
+    dc.shutdown().await.expect("shutdown data");
+
+    let r = recv_line(&mut br).await;
+    assert!(r.starts_with("226"), "STOR → `{r}`");
+    let got = std::fs::read(dir.path().join("f.bin")).expect("read overwritten");
+    assert_eq!(got, b"xy", "STOR must truncate, leaving no stale bytes");
+    handle.shutdown();
+}
+
+// ---------------------------------------------------------------------------
+// 21. H1: two concurrent sessions get ISOLATED data channels. Run on a single
+//     worker thread so the two session tasks share one OS thread — the prior
+//     thread-local listener slot would have let session B's PASV overwrite
+//     session A's, cross-wiring their data connections. With the per-session
+//     listener, each session can only ever use the port it bound itself.
+// ---------------------------------------------------------------------------
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn concurrent_sessions_have_isolated_data_channels() {
+    let (addr, handle, dir) = spawn_translator(|_| {}).await;
+
+    let (mut br_a, mut wr_a) = connect(addr).await;
+    login(&mut br_a, &mut wr_a).await;
+    let (mut br_b, mut wr_b) = connect(addr).await;
+    login(&mut br_b, &mut wr_b).await;
+
+    send(&mut wr_a, "TYPE I").await;
+    let _ = recv_line(&mut br_a).await;
+    send(&mut wr_b, "TYPE I").await;
+    let _ = recv_line(&mut br_b).await;
+
+    // Interleave the PASV binds: a shared listener slot would be clobbered by
+    // session B's bind before session A consumes its own.
+    let port_a = pasv(&mut br_a, &mut wr_a).await;
+    let port_b = pasv(&mut br_b, &mut wr_b).await;
+    assert_ne!(
+        port_a, port_b,
+        "each session must bind its own distinct passive port",
+    );
+
+    send(&mut wr_a, "STOR a.bin").await;
+    send(&mut wr_b, "STOR b.bin").await;
+
+    let mut dc_a = TcpStream::connect(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port_a))
+        .await
+        .expect("data connect A");
+    dc_a.write_all(b"AAAA").await.expect("write A");
+    dc_a.shutdown().await.expect("shutdown A");
+    let mut dc_b = TcpStream::connect(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port_b))
+        .await
+        .expect("data connect B");
+    dc_b.write_all(b"BBBB").await.expect("write B");
+    dc_b.shutdown().await.expect("shutdown B");
+
+    let ra = recv_line(&mut br_a).await;
+    assert!(ra.starts_with("226"), "session A STOR → `{ra}`");
+    let rb = recv_line(&mut br_b).await;
+    assert!(rb.starts_with("226"), "session B STOR → `{rb}`");
+
+    // Each session's bytes landed ONLY in its own file — no cross-wiring.
+    assert_eq!(std::fs::read(dir.path().join("a.bin")).unwrap(), b"AAAA");
+    assert_eq!(std::fs::read(dir.path().join("b.bin")).unwrap(), b"BBBB");
+    handle.shutdown();
+}
+
+// ---------------------------------------------------------------------------
+// 22. H2: a pre-login control line longer than the 8 KiB cap is rejected with
+//     500 and the connection closed — WITHOUT buffering the whole stream. The
+//     read is bounded itself; a client streaming GB with no CRLF cannot OOM
+//     the process. Exercised pre-auth (no USER/PASS sent).
+// ---------------------------------------------------------------------------
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pre_login_overlong_control_line_rejected_and_closed() {
+    let (addr, handle, _dir) = spawn_translator(|_| {}).await;
+    let (mut br, mut wr) = connect(addr).await;
+
+    // 12 KiB with no CRLF — over the 8 KiB cap, but small enough to fit the
+    // socket send buffer so the write completes before the server closes.
+    let blob = vec![b'A'; 12 * 1024];
+    let _ = wr.write_all(&blob).await;
+    let _ = wr.flush().await;
+
+    let r = recv_line(&mut br).await;
+    assert!(
+        r.starts_with("500"),
+        "over-long pre-login line must be rejected with 500, got `{r}`",
+    );
+
+    // The server closes the control connection after the 500.
+    let mut tail = String::new();
+    let n = tokio::time::timeout(Duration::from_secs(3), br.read_line(&mut tail))
+        .await
+        .expect("read timeout")
+        .expect("read");
+    assert_eq!(
+        n, 0,
+        "control connection must close after an over-long line"
+    );
+    handle.shutdown();
+}
+
+// ---------------------------------------------------------------------------
+// 23. MED: a stalled data transfer fires the per-transfer timeout. The client
+//     opens the data connection but never sends a byte; the server's STOR
+//     read blocks, and `data_timeout` aborts it with 426 rather than pinning
+//     the session + passive port forever.
+// ---------------------------------------------------------------------------
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn data_transfer_timeout_aborts_stalled_stor() {
+    let (addr, handle, _dir) = spawn_translator(|c| {
+        c.data_timeout = Duration::from_millis(300);
+    })
+    .await;
+    let (mut br, mut wr) = connect(addr).await;
+    login(&mut br, &mut wr).await;
+    send(&mut wr, "TYPE I").await;
+    let _ = recv_line(&mut br).await;
+    let port = pasv(&mut br, &mut wr).await;
+    send(&mut wr, "STOR stalled.bin").await;
+
+    // Open the data connection but send nothing and keep it open.
+    let dc = TcpStream::connect(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port))
+        .await
+        .expect("data connect");
+
+    let r = recv_line(&mut br).await;
+    assert!(
+        r.starts_with("426"),
+        "stalled STOR must time out with 426, got `{r}`",
+    );
+    drop(dc);
+    handle.shutdown();
+}

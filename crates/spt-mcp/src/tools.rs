@@ -19,7 +19,7 @@ use crate::sources::{DynConfigSource, DynStateSource};
 use async_trait::async_trait;
 use serde_json::{json, Value};
 use spt_config::schema::Forward;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 /// Bundle of dependencies passed to every tool handler.
@@ -282,25 +282,168 @@ tool!(
 );
 tool!(
     read_cfg,
-    KeyInspect,
-    "key_inspect",
-    "Inspect configured key references.",
-    effective
-);
-tool!(
-    read_cfg,
-    SecretList,
-    "secret_list",
-    "List secret refs (never values).",
-    effective
-);
-tool!(
-    read_cfg,
     DnsQuery,
     "dns_query",
     "Inspect the configured DNS records.",
     dns_records
 );
+
+// --- scoped read-only tools (config-exposure hardening) ----------------------
+//
+// `secret_list` and `key_inspect` previously returned the WHOLE effective
+// config (every field, every value) and relied solely on the central
+// redaction pass. That maximizes exposure. They now project the effective
+// config down to the minimal, non-sensitive surface each tool actually needs:
+// `secret_list` returns only `secret://` reference URIs, and `key_inspect`
+// returns only key-reference metadata (paths / refs) with any inline key
+// material redacted. Neither can return a resolved secret or key bytes.
+
+/// Recursively collect every `secret://ns/name` reference string found
+/// anywhere in `value` into a sorted, de-duplicated set. Only reference URIs
+/// are collected — no other scalar is ever emitted, so the result cannot
+/// contain a plaintext secret.
+fn collect_secret_refs(value: &Value, out: &mut BTreeSet<String>) {
+    match value {
+        Value::String(s) if s.starts_with("secret://") => {
+            out.insert(s.clone());
+        }
+        Value::Array(arr) => {
+            for v in arr {
+                collect_secret_refs(v, out);
+            }
+        }
+        Value::Object(map) => {
+            for v in map.values() {
+                collect_secret_refs(v, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Object-key substrings that mark a field as a *key reference* (a path to,
+/// or reference for, cryptographic key/certificate material).
+const KEY_REF_HINTS: &[&str] = &[
+    "identity_file",
+    "identity",
+    "private_key",
+    "privkey",
+    "public_key",
+    "pubkey",
+    "key_file",
+    "keyfile",
+    "key_path",
+    "host_key",
+    "cert",
+    "certificate",
+];
+
+fn key_name_is_key_ref(key: &str) -> bool {
+    let lower = key.to_lowercase();
+    KEY_REF_HINTS.iter().any(|hint| lower.contains(hint))
+}
+
+/// Classify a key-reference field's value into something safe to surface.
+///
+/// * a `secret://` URI is a reference → kept verbatim;
+/// * anything that looks like inline key material (PEM markers, embedded
+///   newlines, or a long blob) → redacted to `"***"`;
+/// * a short single-line string (a file path or fingerprint) → kept;
+/// * non-string values → not surfaced (the recursive walk handles nesting).
+fn classify_key_value(value: &Value) -> Option<String> {
+    let s = value.as_str()?;
+    if s.starts_with("secret://") {
+        return Some(s.to_owned());
+    }
+    let looks_like_material = s.contains("BEGIN")
+        || s.contains("PRIVATE KEY")
+        || s.contains('\n')
+        || s.contains('\r')
+        || s.len() > 200;
+    if looks_like_material {
+        Some("***".to_owned())
+    } else {
+        Some(s.to_owned())
+    }
+}
+
+/// Recursively collect key-reference entries. For every object field whose
+/// name matches [`KEY_REF_HINTS`] and whose value is a string, emit a
+/// `{path, key, ref}` entry (with inline material redacted). The walk also
+/// descends into all nested values.
+fn collect_key_refs(value: &Value, path: &str, out: &mut Vec<Value>) {
+    match value {
+        Value::Object(map) => {
+            for (k, v) in map {
+                let child_path = if path.is_empty() {
+                    k.clone()
+                } else {
+                    format!("{path}.{k}")
+                };
+                if key_name_is_key_ref(k) {
+                    if let Some(reference) = classify_key_value(v) {
+                        out.push(json!({"path": child_path, "key": k, "ref": reference}));
+                    }
+                }
+                collect_key_refs(v, &child_path, out);
+            }
+        }
+        Value::Array(arr) => {
+            for (i, v) in arr.iter().enumerate() {
+                let child_path = format!("{path}[{i}]");
+                collect_key_refs(v, &child_path, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// `secret_list`: enumerate the `secret://` references in the effective
+/// config. Never returns resolved secret values — only the reference URIs.
+pub struct SecretList;
+#[async_trait]
+impl ToolHandler for SecretList {
+    fn name(&self) -> &'static str {
+        "secret_list"
+    }
+    fn descriptor(&self) -> ToolDescriptor {
+        ToolDescriptor {
+            name: self.name().to_owned(),
+            description: "List secret refs (never values).".to_owned(),
+            input_schema: empty_schema(),
+        }
+    }
+    async fn call(&self, ctx: &ToolContext, _args: Value) -> crate::Result<Value> {
+        let cfg = ctx.config.effective().await?;
+        let mut refs = BTreeSet::new();
+        collect_secret_refs(&cfg, &mut refs);
+        Ok(json!({ "secret_refs": refs.into_iter().collect::<Vec<_>>() }))
+    }
+}
+
+/// `key_inspect`: enumerate configured key references (file paths / secret
+/// refs). Never returns inline key material — PEM blobs and other inline key
+/// bytes are redacted.
+pub struct KeyInspect;
+#[async_trait]
+impl ToolHandler for KeyInspect {
+    fn name(&self) -> &'static str {
+        "key_inspect"
+    }
+    fn descriptor(&self) -> ToolDescriptor {
+        ToolDescriptor {
+            name: self.name().to_owned(),
+            description: "Inspect configured key references.".to_owned(),
+            input_schema: empty_schema(),
+        }
+    }
+    async fn call(&self, ctx: &ToolContext, _args: Value) -> crate::Result<Value> {
+        let cfg = ctx.config.effective().await?;
+        let mut keys = Vec::new();
+        collect_key_refs(&cfg, "", &mut keys);
+        Ok(json!({ "keys": keys }))
+    }
+}
 
 // --- mutating tools ----------------------------------------------------------
 
@@ -1252,6 +1395,123 @@ mod tests {
         assert_eq!(SessionDrain.name(), "session_drain");
         assert_eq!(BenchmarkRun.name(), "benchmark_run");
         assert_eq!(LogSetLevel.name(), "log_set_level");
+    }
+
+    /// A `ConfigSource` whose effective config is riddled with resolved
+    /// secrets and inline key material — used to prove `secret_list` /
+    /// `key_inspect` never surface any of it.
+    struct SecretLadenConfig;
+    #[async_trait]
+    impl crate::sources::ConfigSource for SecretLadenConfig {
+        async fn effective(&self) -> crate::Result<Value> {
+            Ok(json!({
+                "profiles": [{
+                    "name": "alpha",
+                    "auth": {
+                        "password": "PLAINTEXT_PASSWORD",
+                        "token": "PLAINTEXT_TOKEN",
+                        "passphrase_ref": "secret://ns/pass",
+                        "identity_file": "/home/me/.ssh/id_ed25519",
+                        "private_key": "-----BEGIN OPENSSH PRIVATE KEY-----\nABCDEF\n-----END OPENSSH PRIVATE KEY-----",
+                        "private_key_ref": "secret://ns/key"
+                    }
+                }],
+                "secret": "secret://ns/top",
+                "other": "not-a-secret"
+            }))
+        }
+        async fn redacted(&self) -> crate::Result<Value> {
+            Ok(json!({}))
+        }
+        async fn profiles(&self) -> crate::Result<Value> {
+            Ok(json!([]))
+        }
+        async fn forwards(&self) -> crate::Result<Value> {
+            Ok(json!([]))
+        }
+        async fn dns_records(&self) -> crate::Result<Value> {
+            Ok(json!([]))
+        }
+        async fn mcp_policy(&self) -> crate::Result<Value> {
+            Ok(json!({}))
+        }
+        async fn service_definition(&self) -> crate::Result<Value> {
+            Ok(json!({}))
+        }
+        async fn snmp_mib(&self) -> crate::Result<Value> {
+            Ok(json!({}))
+        }
+    }
+
+    fn ctx_with_config(cfg: Arc<dyn crate::sources::ConfigSource>) -> ToolContext {
+        let state = Arc::new(NoopSources);
+        ToolContext {
+            config: cfg,
+            state: state as DynStateSource,
+            controller: Arc::new(NoopController),
+            notification_sender: None,
+            log_reload: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn secret_list_returns_only_refs_no_values() {
+        let ctx = ctx_with_config(Arc::new(SecretLadenConfig));
+        let v = SecretList.call(&ctx, json!({})).await.expect("ok");
+        let body = serde_json::to_string(&v).unwrap();
+        // No resolved secret material may appear anywhere.
+        assert!(!body.contains("PLAINTEXT_PASSWORD"), "leaked: {body}");
+        assert!(!body.contains("PLAINTEXT_TOKEN"), "leaked: {body}");
+        assert!(!body.contains("BEGIN OPENSSH"), "leaked key: {body}");
+        // Only `secret://` reference URIs are surfaced.
+        let refs = v["secret_refs"].as_array().expect("secret_refs array");
+        let refs: Vec<&str> = refs.iter().filter_map(Value::as_str).collect();
+        assert!(refs.contains(&"secret://ns/pass"));
+        assert!(refs.contains(&"secret://ns/key"));
+        assert!(refs.contains(&"secret://ns/top"));
+        // Nothing that is not a reference.
+        assert!(refs.iter().all(|r| r.starts_with("secret://")));
+    }
+
+    #[tokio::test]
+    async fn key_inspect_redacts_inline_material_keeps_paths_and_refs() {
+        let ctx = ctx_with_config(Arc::new(SecretLadenConfig));
+        let v = KeyInspect.call(&ctx, json!({})).await.expect("ok");
+        let body = serde_json::to_string(&v).unwrap();
+        // Inline key material must never be returned.
+        assert!(
+            !body.contains("BEGIN OPENSSH"),
+            "leaked key material: {body}"
+        );
+        assert!(!body.contains("ABCDEF"), "leaked key bytes: {body}");
+        // It must also not echo password/token values.
+        assert!(!body.contains("PLAINTEXT_PASSWORD"), "leaked: {body}");
+        assert!(!body.contains("PLAINTEXT_TOKEN"), "leaked: {body}");
+        let keys = v["keys"].as_array().expect("keys array");
+        // The file-path identity reference is surfaced as a path.
+        let has_path = keys
+            .iter()
+            .any(|e| e["key"] == "identity_file" && e["ref"] == "/home/me/.ssh/id_ed25519");
+        assert!(has_path, "expected identity_file path entry: {keys:?}");
+        // The inline private key is redacted.
+        let inline = keys
+            .iter()
+            .find(|e| e["key"] == "private_key")
+            .expect("private_key entry");
+        assert_eq!(inline["ref"], "***");
+        // The secret-ref private key is surfaced as a reference.
+        let ref_entry = keys
+            .iter()
+            .find(|e| e["key"] == "private_key_ref")
+            .expect("private_key_ref entry");
+        assert_eq!(ref_entry["ref"], "secret://ns/key");
+    }
+
+    #[tokio::test]
+    async fn secret_list_empty_config_is_empty() {
+        let ctx = ctx_with_config(Arc::new(NoopSources));
+        let v = SecretList.call(&ctx, json!({})).await.expect("ok");
+        assert_eq!(v["secret_refs"].as_array().unwrap().len(), 0);
     }
 }
 

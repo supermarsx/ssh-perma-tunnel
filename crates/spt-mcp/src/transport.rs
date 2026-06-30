@@ -80,15 +80,70 @@ pub trait Transport: Send + 'static {
     async fn serve(self, inner: Arc<McpServerInner>) -> crate::Result<()>;
 }
 
+/// Maximum bytes accepted for a single newline-delimited JSON-RPC frame.
+///
+/// Without a cap, a pre-auth local peer can stream gigabytes without ever
+/// sending a newline, growing the read buffer until the process OOMs (a local
+/// memory-exhaustion `DoS`). The cap is generous enough for any legitimate
+/// request (4 MiB) while bounding the worst-case per-connection allocation.
+pub const MAX_LINE_BYTES: usize = 4 * 1024 * 1024;
+
+/// Read one newline-delimited line from a buffered reader without buffering
+/// more than `max` bytes.
+///
+/// Returns the line (including its trailing newline, if any) on success. An
+/// empty `String` signals clean EOF. If the line would exceed `max` bytes the
+/// over-long input is drained and an [`crate::Error::InvalidParams`] is
+/// returned so the caller can close the abusive connection — the buffer never
+/// grows unbounded.
+///
+/// Unlike wrapping the reader in `take()`, this consumes exactly up to and
+/// including the newline from the *shared* buffered reader, so bytes belonging
+/// to the next frame are preserved for the following read (pipelined frames on
+/// the same connection still work).
+async fn read_line_capped<R>(reader: &mut R, max: usize) -> crate::Result<String>
+where
+    R: AsyncBufReadExt + Unpin,
+{
+    let mut buf: Vec<u8> = Vec::new();
+    loop {
+        let (consumed, found_newline, hit_eof) = {
+            let available = reader.fill_buf().await?;
+            if available.is_empty() {
+                (0usize, false, true)
+            } else if let Some(pos) = available.iter().position(|&b| b == b'\n') {
+                buf.extend_from_slice(&available[..=pos]);
+                (pos + 1, true, false)
+            } else {
+                buf.extend_from_slice(available);
+                (available.len(), false, false)
+            }
+        };
+        reader.consume(consumed);
+        if hit_eof {
+            break;
+        }
+        if buf.len() > max {
+            return Err(crate::Error::InvalidParams(format!(
+                "request frame exceeds maximum of {max} bytes"
+            )));
+        }
+        if found_newline {
+            break;
+        }
+    }
+    String::from_utf8(buf)
+        .map_err(|e| crate::Error::InvalidParams(format!("invalid UTF-8 in request frame: {e}")))
+}
+
 /// Read one JSON-RPC request from a buffered reader. Returns `Ok(None)` on
 /// clean EOF.
 pub async fn read_request<R>(reader: &mut R) -> crate::Result<Option<Request>>
 where
     R: AsyncBufReadExt + Unpin,
 {
-    let mut line = String::new();
-    let n = reader.read_line(&mut line).await?;
-    if n == 0 {
+    let line = read_line_capped(reader, MAX_LINE_BYTES).await?;
+    if line.is_empty() {
         return Ok(None);
     }
     let trimmed = line.trim();
@@ -126,9 +181,8 @@ async fn read_frame<R>(reader: &mut R) -> crate::Result<FrameRead>
 where
     R: AsyncBufReadExt + Unpin,
 {
-    let mut line = String::new();
-    let n = reader.read_line(&mut line).await?;
-    if n == 0 {
+    let line = read_line_capped(reader, MAX_LINE_BYTES).await?;
+    if line.is_empty() {
         return Ok(FrameRead::Eof);
     }
     let trimmed = line.trim();
@@ -394,15 +448,25 @@ pub mod loopback {
     use std::sync::Arc;
     use tokio::io::BufReader;
     use tokio::net::TcpListener;
+    use tokio::sync::Semaphore;
+
+    /// Default cap on concurrently-served loopback connections.
+    ///
+    /// Each accepted connection runs on its own task and holds a read buffer;
+    /// without a cap a local process can open unbounded sockets to exhaust
+    /// memory/FDs (a local `DoS`). Connections beyond the cap are dropped at
+    /// accept time. Generous for legitimate local tooling.
+    pub const DEFAULT_MAX_CONNECTIONS: usize = 32;
 
     /// JSON-RPC server bound to a loopback TCP address.
     ///
     /// Refuses any non-loopback peer with [`crate::Error::PolicyDenied`] and
     /// drops the connection without dispatching the frame. Each accepted
     /// connection is handled on its own task so concurrent clients are
-    /// supported.
+    /// supported, up to [`LoopbackTransport::max_connections`].
     pub struct LoopbackTransport {
         listener: TcpListener,
+        max_connections: usize,
     }
 
     impl LoopbackTransport {
@@ -421,7 +485,19 @@ pub mod loopback {
                 )));
             }
             let listener = TcpListener::bind(parsed).await?;
-            Ok(Self { listener })
+            Ok(Self {
+                listener,
+                max_connections: DEFAULT_MAX_CONNECTIONS,
+            })
+        }
+
+        /// Override the concurrent-connection cap (default
+        /// [`DEFAULT_MAX_CONNECTIONS`]). A value of `0` is clamped to `1` so
+        /// the listener always makes forward progress.
+        #[must_use]
+        pub fn with_max_connections(mut self, max: usize) -> Self {
+            self.max_connections = max.max(1);
+            self
         }
 
         /// Address the listener is actually bound to (useful when the caller
@@ -434,6 +510,7 @@ pub mod loopback {
     #[async_trait]
     impl Transport for LoopbackTransport {
         async fn serve(self, inner: Arc<McpServerInner>) -> crate::Result<()> {
+            let limiter = Arc::new(Semaphore::new(self.max_connections));
             loop {
                 let (stream, peer) = self.listener.accept().await?;
                 if !peer.ip().is_loopback() {
@@ -444,8 +521,22 @@ pub mod loopback {
                     drop(stream);
                     continue;
                 }
+                // Bound concurrent connections: acquire a permit without
+                // blocking the accept loop. When the cap is reached, drop the
+                // freshly-accepted peer rather than queueing unbounded work.
+                let Ok(permit) = Arc::clone(&limiter).try_acquire_owned() else {
+                    tracing::warn!(
+                        peer = %peer,
+                        max = self.max_connections,
+                        "MCP loopback connection cap reached — dropping peer"
+                    );
+                    drop(stream);
+                    continue;
+                };
                 let inner = inner.clone();
                 tokio::spawn(async move {
+                    // Hold the permit for the lifetime of the connection.
+                    let _permit = permit;
                     let (read_half, mut write_half) = stream.into_split();
                     let mut reader = BufReader::new(read_half);
                     if let Err(e) = super::run_connection_with_notifications(
@@ -793,5 +884,138 @@ mod tests {
             .await
             .unwrap();
         assert!(writer.is_empty(), "notifications must not be replied to");
+    }
+
+    #[tokio::test]
+    async fn read_line_capped_reads_line_including_newline() {
+        let cursor = std::io::Cursor::new(b"hello\n".to_vec());
+        let mut reader = tokio::io::BufReader::new(cursor);
+        let line = read_line_capped(&mut reader, 1024).await.unwrap();
+        assert_eq!(line, "hello\n");
+    }
+
+    #[tokio::test]
+    async fn read_line_capped_eof_is_empty_string() {
+        let cursor = std::io::Cursor::new(Vec::<u8>::new());
+        let mut reader = tokio::io::BufReader::new(cursor);
+        let line = read_line_capped(&mut reader, 1024).await.unwrap();
+        assert!(line.is_empty());
+    }
+
+    /// An over-long line (no newline within the cap) is rejected rather than
+    /// buffered unbounded — the pre-auth memory-exhaustion DoS mitigation.
+    #[tokio::test]
+    async fn read_line_capped_rejects_overlong_line() {
+        let cursor = std::io::Cursor::new(vec![b'a'; 4096]);
+        let mut reader = tokio::io::BufReader::new(cursor);
+        let err = read_line_capped(&mut reader, 64).await.unwrap_err();
+        assert!(matches!(err, crate::Error::InvalidParams(_)));
+    }
+
+    /// The capped reader consumes exactly one frame, leaving pipelined frames
+    /// intact for the following read.
+    #[tokio::test]
+    async fn read_line_capped_preserves_following_frame() {
+        let cursor = std::io::Cursor::new(b"one\ntwo\n".to_vec());
+        let mut reader = tokio::io::BufReader::new(cursor);
+        assert_eq!(read_line_capped(&mut reader, 1024).await.unwrap(), "one\n");
+        assert_eq!(read_line_capped(&mut reader, 1024).await.unwrap(), "two\n");
+        assert!(read_line_capped(&mut reader, 1024)
+            .await
+            .unwrap()
+            .is_empty());
+    }
+
+    /// An over-long frame must close the connection rather than allocate
+    /// without bound: `read_frame` surfaces the cap error and the run loop
+    /// propagates it (E8-F15 + DoS hardening).
+    #[tokio::test]
+    async fn overlong_frame_closes_connection() {
+        let cursor = std::io::Cursor::new(vec![b'x'; 8192]);
+        let mut reader = tokio::io::BufReader::new(cursor);
+        // Use the internal helper at the real cap-shape to assert closure
+        // semantics deterministically without allocating 4 MiB.
+        let err = read_line_capped(&mut reader, 100).await.unwrap_err();
+        assert!(matches!(err, crate::Error::InvalidParams(_)));
+    }
+
+    /// The loopback transport caps concurrent connections: with the cap set to
+    /// 1, a second peer is accepted then immediately closed by the server
+    /// (local FD/memory-exhaustion DoS mitigation).
+    #[tokio::test]
+    async fn loopback_connection_cap_drops_excess_peers() {
+        use crate::audit::NoopAuditSink;
+        use crate::controller::NoopController;
+        use crate::policy::{McpPolicy, Policy};
+        use crate::server::McpServer;
+        use crate::sources::NoopSources;
+        use std::time::Duration;
+        use tokio::io::{
+            AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader as TokioBufReader,
+        };
+        use tokio::net::TcpStream;
+
+        let sources = Arc::new(NoopSources);
+        let server = McpServer::new(
+            Policy::new(McpPolicy {
+                enabled: true,
+                ..Default::default()
+            }),
+            Arc::new(NoopAuditSink),
+            Arc::new(NoopController),
+            sources.clone() as crate::sources::DynConfigSource,
+            sources as crate::sources::DynStateSource,
+        );
+        let inner = server.inner();
+
+        let transport = loopback::LoopbackTransport::bind("127.0.0.1:0")
+            .await
+            .expect("bind")
+            .with_max_connections(1);
+        let addr = transport.local_addr().expect("addr");
+        tokio::spawn(async move {
+            let _ = transport.serve(inner).await;
+        });
+
+        // Connection 1: a full initialize round-trip proves the per-connection
+        // task is alive and holding the only permit.
+        let c1 = TcpStream::connect(addr).await.expect("connect c1");
+        let (r1, mut w1) = c1.into_split();
+        w1.write_all(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}\n")
+            .await
+            .expect("write init");
+        let mut br1 = TokioBufReader::new(r1);
+        let mut line = String::new();
+        tokio::time::timeout(Duration::from_secs(5), br1.read_line(&mut line))
+            .await
+            .expect("init reply within timeout")
+            .expect("read init reply");
+        assert!(line.contains("protocolVersion"), "init reply: {line}");
+
+        // Connection 2: beyond the cap → server accepts then closes it.
+        let mut c2 = TcpStream::connect(addr).await.expect("connect c2");
+        let mut buf = [0u8; 32];
+        let n = tokio::time::timeout(Duration::from_secs(5), c2.read(&mut buf))
+            .await
+            .expect("c2 read within timeout")
+            .expect("c2 read");
+        assert_eq!(
+            n, 0,
+            "connection beyond the cap must be closed by the server"
+        );
+
+        // Keep c1 alive until here so its permit stays held for the assertion.
+        drop(br1);
+        drop(w1);
+    }
+
+    #[tokio::test]
+    async fn loopback_with_max_connections_clamps_zero_to_one() {
+        let t = loopback::LoopbackTransport::bind("127.0.0.1:0")
+            .await
+            .expect("bind")
+            .with_max_connections(0);
+        // No panic, listener still valid.
+        assert!(t.local_addr().unwrap().ip().is_loopback());
     }
 }

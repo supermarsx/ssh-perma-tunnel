@@ -2,6 +2,8 @@
 
 use std::sync::Arc;
 
+use tokio::net::TcpListener;
+
 /// Where the session is in the USER/PASS login sequence.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum LoginPhase {
@@ -41,7 +43,10 @@ pub enum ControlState {
 
 /// Per-session state. Owned by the session task; mutated only from there
 /// (no interior mutability needed).
-#[derive(Clone)]
+///
+/// Deliberately NOT `Clone`: it owns the session's pending passive
+/// [`TcpListener`], which must never be duplicated or shared across sessions
+/// (see [`Self::pending_listener`]).
 pub struct SessionState {
     /// Login phase.
     pub login: LoginPhase,
@@ -67,6 +72,14 @@ pub struct SessionState {
     /// The SFTP client opened on behalf of `user`. `None` until login
     /// completes successfully.
     pub sftp: Option<Arc<spt_sftp::SftpClient>>,
+    /// Pending passive-mode data listener bound by `PASV`/`EPSV`, consumed by
+    /// the next data-transfer verb (LIST/RETR/STOR/APPE/...).
+    ///
+    /// H1: this lives in the per-session state — NOT a shared thread-local —
+    /// so two sessions multiplexed onto the same Tokio worker thread can never
+    /// observe or overwrite each other's data channel. A session can only ever
+    /// use the listener it bound itself.
+    pub pending_listener: Option<TcpListener>,
 }
 
 impl Default for SessionState {
@@ -83,6 +96,7 @@ impl Default for SessionState {
             cwd: "/".to_string(),
             rnfr: None,
             sftp: None,
+            pending_listener: None,
         }
     }
 }

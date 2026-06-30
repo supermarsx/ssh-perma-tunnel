@@ -62,6 +62,9 @@ pub async fn translator_serve(global: &GlobalOpts, args: FtpServeArgs) -> Result
         tls,
         max_clients: args.max_clients,
         idle_timeout: idle,
+        // Reuse the operator's single timeout knob as the per-transfer data
+        // timeout as well; both default to the same value.
+        data_timeout: idle,
         user_profiles: std::collections::HashMap::new(),
     };
     cfg.validate()

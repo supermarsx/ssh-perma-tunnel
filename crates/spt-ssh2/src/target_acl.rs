@@ -160,6 +160,21 @@ impl TargetAcl {
         //   (`::ffff:10.0.0.1`) collapses to its v4 address and is tested
         //   against v4 CIDR/IP rules (closes the deny-list family-mismatch
         //   bypass). `to_canonical` is a no-op for plain v4 / non-mapped v6.
+        //
+        // NUMERIC-ENCODING LIMITATION (documented, fail-closed via allow-list):
+        // Rust's `IpAddr` parser only accepts canonical dotted-quad / colon
+        // forms. The legacy `inet_aton`-style encodings — zero-padded
+        // (`127.000.000.001`), hex (`0x7f.0.0.1`), 32-bit decimal-dword
+        // (`2130706433`), and classful-short (`127.1`) — therefore do NOT parse
+        // here, so `host_ip` is `None` and no `Net` (CIDR/IP) rule can match
+        // them. They are passed through as opaque host strings and resolved on
+        // the SSH server. Consequence: a *deny-only* IP rule does not cover
+        // these forms (a server whose resolver accepts `inet_aton` could still
+        // be steered at the denied address), but an *allow-list* fails closed —
+        // an unrecognized form matches no allow rule and is denied. The
+        // allow-list is the safe mode; deny-by-IP is best-effort. Note the
+        // mapped-IPv6 hex-group form (`::ffff:7f00:1`) DOES parse and IS
+        // canonicalized to its v4 address, so it is not a bypass (see tests).
         let host = host.strip_suffix('.').unwrap_or(host);
         let host_ip = host.parse::<IpAddr>().ok().map(|ip| ip.to_canonical());
         if self.deny.iter().any(|r| r.matches(host, host_ip)) {
@@ -401,6 +416,68 @@ mod tests {
         assert!(acl.permits("10.1.2.3", 22));
         assert!(!acl.permits("::ffff:8.8.8.8", 22));
         assert!(!acl.permits("8.8.8.8", 22));
+    }
+
+    #[test]
+    fn numeric_ip_encodings_are_not_parsed_as_ip() {
+        // Pin the actual behavior: Rust's `IpAddr` parser rejects the legacy
+        // `inet_aton`-style encodings, so none of these match a v4 CIDR/IP rule
+        // (host_ip is None → no Net match). Under a DENY-ONLY policy they pass
+        // through (documented limitation — server-side resolution may still
+        // resolve them, so deny-by-IP is best-effort).
+        let deny = TargetAcl::from_patterns(None, Some(&["127.0.0.0/8".to_string()])).unwrap();
+        for form in [
+            "127.000.000.001", // zero-padded octets
+            "0x7f.0.0.1",      // hex octet
+            "2130706433",      // 32-bit decimal dword
+            "127.1",           // classful short form
+        ] {
+            assert!(
+                deny.permits(form, 22),
+                "{form:?} does not parse as an IP, so the v4 deny rule cannot \
+                 match it; it is treated as a hostname (documented limitation)"
+            );
+        }
+        // The canonical loopback IS parsed and denied — the rule itself works.
+        assert!(!deny.permits("127.0.0.1", 22));
+    }
+
+    #[test]
+    fn numeric_ip_encodings_fail_closed_under_allow_list() {
+        // The SAFE mode: with an allow-list set, an unrecognized numeric form
+        // matches no allow rule and is denied. This is the fail-closed posture
+        // the docs recommend for SSRF-sensitive deployments.
+        let allow =
+            TargetAcl::from_patterns(Some(&["*.internal.example".to_string()]), None).unwrap();
+        for form in [
+            "127.000.000.001",
+            "0x7f.0.0.1",
+            "2130706433",
+            "127.1",
+            "169.254.169.254", // the metadata IP, canonical — still not allowed
+        ] {
+            assert!(
+                !allow.permits(form, 80),
+                "{form:?} matches no allow rule and must be denied (fail-closed)"
+            );
+        }
+        // A genuinely allowed host still passes.
+        assert!(allow.permits("db.internal.example", 5432));
+    }
+
+    #[test]
+    fn mapped_v6_hex_group_form_is_canonicalized_not_bypassed() {
+        // The mapped-IPv6 form written with hex groups (`::ffff:7f00:1`) is a
+        // valid IPv6 literal that DOES parse, and `to_canonical` collapses it to
+        // 127.0.0.1 — so a v4 CIDR deny catches it. This pins that the one
+        // numeric form std parses is not a deny-list bypass.
+        let deny = TargetAcl::from_patterns(None, Some(&["127.0.0.0/8".to_string()])).unwrap();
+        assert!(!deny.permits("::ffff:7f00:1", 22));
+        assert!(!deny.permits("::ffff:127.0.0.1", 22));
+        // And the metadata IP in mapped hex-group form against its own deny.
+        let deny_md =
+            TargetAcl::from_patterns(None, Some(&["169.254.169.254".to_string()])).unwrap();
+        assert!(!deny_md.permits("::ffff:a9fe:a9fe", 80));
     }
 
     #[test]

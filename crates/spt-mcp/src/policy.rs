@@ -167,13 +167,24 @@ fn looks_like_secret_uri(s: &str) -> bool {
 
 fn redact_value(value: Value, sensitive_parent: bool) -> Value {
     match value {
-        Value::String(s) if sensitive_parent && !looks_like_secret_uri(&s) => {
+        // A `secret://ns/name` reference is a reference, not a value — keep it
+        // verbatim even under a sensitive key.
+        Value::String(s) if sensitive_parent && looks_like_secret_uri(&s) => Value::String(s),
+        // Under a sensitive key/parent, redact ANY scalar value — strings,
+        // numbers, and bools all leak a secret if returned verbatim
+        // (e.g. `{"token": 1234567}`). `null` carries nothing and is left
+        // as-is via the `other` arm below.
+        Value::String(_) | Value::Number(_) | Value::Bool(_) if sensitive_parent => {
             Value::String("***".to_owned())
         }
         Value::Object(map) => {
             let mut out = Map::with_capacity(map.len());
             for (k, v) in map {
-                let child_sensitive = key_is_sensitive(&k);
+                // Propagate the inherited sensitivity: once we are inside a
+                // sensitive key, every nested value stays sensitive. Without
+                // this, `{"password": {"plain": "hunter2"}}` would restart
+                // sensitivity from the inner key and leak `hunter2` verbatim.
+                let child_sensitive = key_is_sensitive(&k) || sensitive_parent;
                 out.insert(k, redact_value(v, child_sensitive));
             }
             Value::Object(out)
@@ -241,5 +252,88 @@ mod tests {
         let v = json!({"password": "secret://ns/db"});
         let r = p.redact(v);
         assert_eq!(r["password"], "secret://ns/db");
+    }
+
+    /// A secret nested inside an object under a sensitive key must be redacted
+    /// at every depth — the inherited sensitivity flag must propagate into the
+    /// recursive object walk (the High finding).
+    #[test]
+    fn redacts_nested_object_under_sensitive_key() {
+        let p = Policy::new(McpPolicy::default());
+        let v = json!({"password": {"plain": "hunter2", "deeper": {"again": "s3cr3t"}}});
+        let r = p.redact(v);
+        assert_eq!(r["password"]["plain"], "***");
+        assert_eq!(r["password"]["deeper"]["again"], "***");
+        assert!(
+            !serde_json::to_string(&r).unwrap().contains("hunter2"),
+            "nested secret leaked: {r}"
+        );
+        assert!(!serde_json::to_string(&r).unwrap().contains("s3cr3t"));
+    }
+
+    /// An array of objects under a sensitive key must have every element
+    /// redacted, including nested object values.
+    #[test]
+    fn redacts_array_of_objects_under_sensitive_key() {
+        let p = Policy::new(McpPolicy::default());
+        let v = json!({"credential": [{"inner": "a"}, {"inner": "b"}, "raw"]});
+        let r = p.redact(v);
+        assert_eq!(r["credential"][0]["inner"], "***");
+        assert_eq!(r["credential"][1]["inner"], "***");
+        assert_eq!(r["credential"][2], "***");
+    }
+
+    /// Non-string scalars (numbers, bools) under a sensitive key must also be
+    /// redacted — a numeric token leaks just as badly as a string (the Med
+    /// companion finding).
+    #[test]
+    fn redacts_non_string_scalar_secrets() {
+        let p = Policy::new(McpPolicy::default());
+        let v = json!({"token": 1_234_567, "secret": true, "api_key": 9.5});
+        let r = p.redact(v);
+        assert_eq!(r["token"], "***");
+        assert_eq!(r["secret"], "***");
+        assert_eq!(r["api_key"], "***");
+    }
+
+    /// A numeric/bool value nested under a sensitive parent object must also be
+    /// redacted, exercising both propagation and the scalar arm together.
+    #[test]
+    fn redacts_nested_non_string_scalar_under_sensitive_parent() {
+        let p = Policy::new(McpPolicy::default());
+        let v = json!({"password": {"pin": 4242, "enabled": true}});
+        let r = p.redact(v);
+        assert_eq!(r["password"]["pin"], "***");
+        assert_eq!(r["password"]["enabled"], "***");
+    }
+
+    /// Non-sensitive values — including non-sensitive scalars and nested
+    /// non-sensitive objects — must pass through untouched.
+    #[test]
+    fn leaves_non_sensitive_values_untouched() {
+        let p = Policy::new(McpPolicy::default());
+        let v = json!({
+            "user": "alice",
+            "port": 22,
+            "enabled": true,
+            "nested": {"host": "example.com", "retries": 3}
+        });
+        let r = p.redact(v);
+        assert_eq!(r["user"], "alice");
+        assert_eq!(r["port"], 22);
+        assert_eq!(r["enabled"], true);
+        assert_eq!(r["nested"]["host"], "example.com");
+        assert_eq!(r["nested"]["retries"], 3);
+    }
+
+    /// A `secret://` reference nested under a sensitive parent is still a
+    /// reference, not a value, and must be preserved.
+    #[test]
+    fn preserves_nested_secret_uri_under_sensitive_parent() {
+        let p = Policy::new(McpPolicy::default());
+        let v = json!({"password": {"ref": "secret://ns/db", "value": "leak"}});
+        let r = p.redact(v);
+        assert_eq!(r["password"]["ref"], "secret://ns/db");
+        assert_eq!(r["password"]["value"], "***");
     }
 }

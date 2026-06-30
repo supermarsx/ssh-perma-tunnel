@@ -8,13 +8,29 @@
 #![cfg(feature = "testing")]
 
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
+use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
 use spt_sftp::error::SftpError;
 use spt_sftp::mock::MockSftpServer;
 #[cfg(unix)]
 use spt_sftp::{get_recursive, put_recursive, ChecksumMode, RecursiveOptions};
-use spt_sftp::{sha256_local_file, sha256_remote_file, TokenBucket};
+use spt_sftp::{sha256_local_file, sha256_remote_file, TokenBucket, UploadError};
+use tokio::io::{AsyncRead, ReadBuf};
+
+/// An `AsyncRead` that always fails — drives the `UploadError::Source` path.
+struct ErrReader;
+
+impl AsyncRead for ErrReader {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+        _buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Poll::Ready(Err(std::io::Error::other("boom")))
+    }
+}
 
 async fn setup() -> (tempfile::TempDir, MockSftpServer, spt_sftp::SftpClient) {
     let dir = tempfile::tempdir().unwrap();
@@ -107,6 +123,65 @@ async fn read_file_to_errors_on_missing_remote() {
     assert!(sink.is_empty(), "nothing should be written on open failure");
     // open failure surfaces as a russh-mapped error.
     let _ = err;
+}
+
+// H3 — `write_file_from` streams an upload of arbitrary size into the remote
+// in bounded chunks, byte-identically, without buffering the whole upload.
+#[tokio::test]
+async fn write_file_from_round_trips_multichunk_upload() {
+    let (dir, _server, client) = setup().await;
+    let payload = patterned(spt_sftp::STREAM_CHUNK * 3 + 777);
+    let mut src = std::io::Cursor::new(payload.clone());
+    let n = client.write_file_from("/up.bin", &mut src).await.unwrap();
+    assert_eq!(n as usize, payload.len(), "reported byte count");
+    let on_disk = std::fs::read(dir.path().join("up.bin")).unwrap();
+    assert_eq!(on_disk, payload, "streamed upload must be byte-identical");
+}
+
+#[tokio::test]
+async fn write_file_from_truncates_existing_file() {
+    let (dir, _server, client) = setup().await;
+    write_local(dir.path(), "f.bin", b"AAAAAAAAAAAAAAAA");
+    let mut src = std::io::Cursor::new(b"xy".to_vec());
+    client.write_file_from("/f.bin", &mut src).await.unwrap();
+    assert_eq!(
+        std::fs::read(dir.path().join("f.bin")).unwrap(),
+        b"xy",
+        "write_file_from must truncate, leaving no stale bytes"
+    );
+}
+
+#[tokio::test]
+async fn append_file_from_appends_to_existing_file() {
+    let (dir, _server, client) = setup().await;
+    write_local(dir.path(), "log.txt", b"HEAD");
+    let mut src = std::io::Cursor::new(b"TAIL".to_vec());
+    let n = client.append_file_from("/log.txt", &mut src).await.unwrap();
+    assert_eq!(n, 4);
+    assert_eq!(
+        std::fs::read(dir.path().join("log.txt")).unwrap(),
+        b"HEADTAIL",
+        "append_file_from must append at EOF"
+    );
+}
+
+#[tokio::test]
+async fn append_file_from_creates_when_absent() {
+    let (dir, _server, client) = setup().await;
+    let mut src = std::io::Cursor::new(b"fresh".to_vec());
+    client.append_file_from("/new.txt", &mut src).await.unwrap();
+    assert_eq!(std::fs::read(dir.path().join("new.txt")).unwrap(), b"fresh");
+}
+
+#[tokio::test]
+async fn write_file_from_source_error_maps_to_source_variant() {
+    let (_dir, _server, client) = setup().await;
+    let mut src = ErrReader;
+    let err = client
+        .write_file_from("/x.bin", &mut src)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, UploadError::Source(_)), "got {err:?}");
 }
 
 #[tokio::test]

@@ -28,9 +28,14 @@ pub struct TranslatorConfig {
     pub tls: Option<TlsConfig>,
     /// Maximum concurrent control sessions; further accepts return 421.
     pub max_clients: usize,
-    /// Idle timeout for the control channel. The data channel uses a
-    /// derived per-transfer timeout.
+    /// Idle timeout for the control channel.
     pub idle_timeout: Duration,
+    /// Maximum wall-clock duration a single data transfer (LIST/NLST/MLSD/
+    /// RETR/STOR/APPE/STOU) may run before the data connection is torn down
+    /// with `426`. Prevents a stalled or trickling peer from pinning a
+    /// session and its passive port indefinitely (the control idle timeout
+    /// does not cover an in-flight transfer).
+    pub data_timeout: Duration,
     /// Mapping from FTP username to backing SSH `[[profiles]]` name.
     ///
     /// Consumed by the spt-bin glue that constructs the production
@@ -54,6 +59,7 @@ impl TranslatorConfig {
             tls: None,
             max_clients: 32,
             idle_timeout: Duration::from_secs(300),
+            data_timeout: Duration::from_secs(300),
             user_profiles: HashMap::new(),
         }
     }
