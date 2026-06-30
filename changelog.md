@@ -1,3 +1,12 @@
+## [26.37] - 2026-06-30
+
+# spt 26.37
+
+## Changes since 26.36
+
+- fix(ci): macOS sshfs umount compile error + property sub-workspace lock sync (98026a1)
+- fix(security): ultra-review wave 3 — Windows file ACLs, lifecycle/DoS, obfs perf, + rescue false-green security tests (b601aba)
+
 ## [26.36] - 2026-06-30
 
 # spt 26.36
