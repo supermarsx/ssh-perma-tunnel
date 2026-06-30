@@ -1,3 +1,11 @@
+## [26.34] - 2026-06-30
+
+# spt 26.34
+
+## Changes since 26.33
+
+- fix: hardcore review — ssh3 leak (Critical), supervisor/correctness, DoS, crypto, injection (30a86ed)
+
 ## [26.33] - 2026-06-29
 
 # spt 26.33

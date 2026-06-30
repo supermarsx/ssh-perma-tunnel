@@ -6114,7 +6114,7 @@ dependencies = [
 
 [[package]]
 name = "spt-auth"
-version = "0.26.33"
+version = "0.26.34"
 dependencies = [
  "axum",
  "hmac 0.12.1",
@@ -6140,7 +6140,7 @@ dependencies = [
 
 [[package]]
 name = "spt-auth-sspi"
-version = "0.26.33"
+version = "0.26.34"
 dependencies = [
  "libgssapi",
  "parking_lot",
@@ -6156,7 +6156,7 @@ dependencies = [
 
 [[package]]
 name = "spt-benchmark"
-version = "0.26.33"
+version = "0.26.34"
 dependencies = [
  "async-trait",
  "chrono",
@@ -6178,7 +6178,7 @@ dependencies = [
 
 [[package]]
 name = "spt-bin"
-version = "0.26.33"
+version = "0.26.34"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -6267,7 +6267,7 @@ dependencies = [
 
 [[package]]
 name = "spt-chaos-proxy"
-version = "0.26.33"
+version = "0.26.34"
 dependencies = [
  "parking_lot",
  "rand 0.8.6",
@@ -6279,7 +6279,7 @@ dependencies = [
 
 [[package]]
 name = "spt-cli"
-version = "0.26.33"
+version = "0.26.34"
 dependencies = [
  "clap",
  "clap_complete",
@@ -6290,7 +6290,7 @@ dependencies = [
 
 [[package]]
 name = "spt-config"
-version = "0.26.33"
+version = "0.26.34"
 dependencies = [
  "atomicwrites",
  "criterion",
@@ -6343,7 +6343,7 @@ dependencies = [
 
 [[package]]
 name = "spt-core"
-version = "0.26.33"
+version = "0.26.34"
 dependencies = [
  "bytesize",
  "chrono",
@@ -6369,7 +6369,7 @@ dependencies = [
 
 [[package]]
 name = "spt-diagnostics"
-version = "0.26.33"
+version = "0.26.34"
 dependencies = [
  "async-trait",
  "base64",
@@ -6401,7 +6401,7 @@ dependencies = [
 
 [[package]]
 name = "spt-dns"
-version = "0.26.33"
+version = "0.26.34"
 dependencies = [
  "async-trait",
  "hickory-proto",
@@ -6446,7 +6446,7 @@ dependencies = [
 
 [[package]]
 name = "spt-events"
-version = "0.26.33"
+version = "0.26.34"
 dependencies = [
  "async-trait",
  "base64ct",
@@ -6481,7 +6481,7 @@ dependencies = [
 
 [[package]]
 name = "spt-firewall"
-version = "0.26.33"
+version = "0.26.34"
 dependencies = [
  "insta",
  "ipnet",
@@ -6496,7 +6496,7 @@ dependencies = [
 
 [[package]]
 name = "spt-forward"
-version = "0.26.33"
+version = "0.26.34"
 dependencies = [
  "async-trait",
  "bytes",
@@ -6523,7 +6523,7 @@ dependencies = [
 
 [[package]]
 name = "spt-ftp-translator"
-version = "0.26.33"
+version = "0.26.34"
 dependencies = [
  "async-trait",
  "futures",
@@ -6549,7 +6549,7 @@ dependencies = [
 
 [[package]]
 name = "spt-key"
-version = "0.26.33"
+version = "0.26.34"
 dependencies = [
  "atomicwrites",
  "base64",
@@ -6574,7 +6574,7 @@ dependencies = [
 
 [[package]]
 name = "spt-mcp"
-version = "0.26.33"
+version = "0.26.34"
 dependencies = [
  "async-trait",
  "parking_lot",
@@ -6589,7 +6589,7 @@ dependencies = [
 
 [[package]]
 name = "spt-mem-hygiene"
-version = "0.26.33"
+version = "0.26.34"
 dependencies = [
  "libc",
  "nix 0.29.0",
@@ -6603,7 +6603,7 @@ dependencies = [
 
 [[package]]
 name = "spt-net"
-version = "0.26.33"
+version = "0.26.34"
 dependencies = [
  "caps",
  "if-addrs",
@@ -6620,7 +6620,7 @@ dependencies = [
 
 [[package]]
 name = "spt-obfs"
-version = "0.26.33"
+version = "0.26.34"
 dependencies = [
  "aes-gcm 0.10.3",
  "async-trait",
@@ -6657,7 +6657,7 @@ dependencies = [
 
 [[package]]
 name = "spt-observability"
-version = "0.26.33"
+version = "0.26.34"
 dependencies = [
  "chrono",
  "criterion",
@@ -6693,7 +6693,7 @@ dependencies = [
 
 [[package]]
 name = "spt-protocol"
-version = "0.26.33"
+version = "0.26.34"
 dependencies = [
  "async-trait",
  "criterion",
@@ -6708,7 +6708,7 @@ dependencies = [
 
 [[package]]
 name = "spt-remote-config"
-version = "0.26.33"
+version = "0.26.34"
 dependencies = [
  "async-trait",
  "axum",
@@ -6737,7 +6737,7 @@ dependencies = [
 
 [[package]]
 name = "spt-scripting"
-version = "0.26.33"
+version = "0.26.34"
 dependencies = [
  "parking_lot",
  "rhai",
@@ -6752,7 +6752,7 @@ dependencies = [
 
 [[package]]
 name = "spt-secrets"
-version = "0.26.33"
+version = "0.26.34"
 dependencies = [
  "aes-gcm 0.10.3",
  "argon2 0.5.3",
@@ -6778,7 +6778,7 @@ dependencies = [
 
 [[package]]
 name = "spt-service"
-version = "0.26.33"
+version = "0.26.34"
 dependencies = [
  "async-trait",
  "chrono",
@@ -6798,7 +6798,7 @@ dependencies = [
 
 [[package]]
 name = "spt-sftp"
-version = "0.26.33"
+version = "0.26.34"
 dependencies = [
  "dokan",
  "dokan-sys",
@@ -6820,7 +6820,7 @@ dependencies = [
 
 [[package]]
 name = "spt-snmp"
-version = "0.26.33"
+version = "0.26.34"
 dependencies = [
  "aes 0.8.4",
  "async-trait",
@@ -6845,7 +6845,7 @@ dependencies = [
 
 [[package]]
 name = "spt-ssh2"
-version = "0.26.33"
+version = "0.26.34"
 dependencies = [
  "async-trait",
  "base64",
@@ -6882,7 +6882,7 @@ dependencies = [
 
 [[package]]
 name = "spt-ssh3"
-version = "0.26.33"
+version = "0.26.34"
 dependencies = [
  "async-trait",
  "base64",
@@ -6920,7 +6920,7 @@ dependencies = [
 
 [[package]]
 name = "spt-state"
-version = "0.26.33"
+version = "0.26.34"
 dependencies = [
  "atomicwrites",
  "chrono",
@@ -6940,7 +6940,7 @@ dependencies = [
 
 [[package]]
 name = "spt-stats"
-version = "0.26.33"
+version = "0.26.34"
 dependencies = [
  "chrono",
  "criterion",
@@ -6954,7 +6954,7 @@ dependencies = [
 
 [[package]]
 name = "spt-status-api"
-version = "0.26.33"
+version = "0.26.34"
 dependencies = [
  "async-trait",
  "axum",
@@ -6988,7 +6988,7 @@ dependencies = [
 
 [[package]]
 name = "spt-supervisor"
-version = "0.26.33"
+version = "0.26.34"
 dependencies = [
  "async-trait",
  "chrono",
@@ -7019,7 +7019,7 @@ dependencies = [
 
 [[package]]
 name = "spt-trust"
-version = "0.26.33"
+version = "0.26.34"
 dependencies = [
  "atomicwrites",
  "base64",
@@ -7052,7 +7052,7 @@ dependencies = [
 
 [[package]]
 name = "spt-tui"
-version = "0.26.33"
+version = "0.26.34"
 dependencies = [
  "arboard",
  "crossterm",
@@ -7074,7 +7074,7 @@ dependencies = [
 
 [[package]]
 name = "spt-updater"
-version = "0.26.33"
+version = "0.26.34"
 dependencies = [
  "async-trait",
  "chrono",
@@ -7101,7 +7101,7 @@ dependencies = [
 
 [[package]]
 name = "spt-winevent"
-version = "0.26.33"
+version = "0.26.34"
 dependencies = [
  "parking_lot",
  "serde",
