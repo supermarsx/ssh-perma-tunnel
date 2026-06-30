@@ -390,7 +390,12 @@ fn parse_pid_from_status(text: &str) -> Option<u32> {
 }
 
 fn render_script(spec: &ServiceSpec) -> String {
-    let args = spec.args.join(" ");
+    // M2: shell-quote each arg with POSIX single-quote escaping so an arg
+    // containing a space (CONFIRMED breakage) or a shell metacharacter
+    // (`;`, `$(...)`, backtick) cannot word-split or inject when the init
+    // script expands `DAEMON_ARGS`. The template pairs this with
+    // `eval "set -- ${DAEMON_ARGS}"` + `-- "$@"` so the quoting is honoured.
+    let args = crate::openrc::shell_single_quote_args(&spec.args);
     let mut vars: BTreeMap<&str, String> = BTreeMap::new();
     vars.insert("name", spec.name.clone());
     vars.insert("description", spec.description.clone());
@@ -426,6 +431,31 @@ mod tests {
             stdout: String::new(),
             stderr: stderr.into(),
         }
+    }
+
+    // M2: SysV args must be single-quoted so the `eval "set -- ${DAEMON_ARGS}"`
+    // in the init script preserves spaces and neutralizes metacharacters.
+    #[test]
+    fn render_single_quotes_args_with_spaces_and_metachars() {
+        let mgr = SysVManager::new();
+        let mut spec = sample_spec();
+        spec.args = vec!["run".into(), "with space".into(), "; rm -rf /".into()];
+        let out = mgr.render(&spec);
+        let line = out
+            .lines()
+            .find(|l| l.starts_with("DAEMON_ARGS="))
+            .expect("DAEMON_ARGS line");
+        assert!(
+            line.contains("'with space'"),
+            "space arg not quoted: {line}"
+        );
+        assert!(
+            line.contains("'; rm -rf /'"),
+            "metachar arg not quoted: {line}"
+        );
+        // The init body must eval the single-quoted args into "$@".
+        assert!(out.contains("eval \"set -- ${DAEMON_ARGS}\""));
+        assert!(out.contains("-- \"$@\""));
     }
 
     #[test]

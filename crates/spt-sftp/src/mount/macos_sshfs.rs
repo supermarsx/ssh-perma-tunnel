@@ -54,6 +54,9 @@ pub struct SshfsMounter {
     sshfs_bin: Option<PathBuf>,
     /// Live child process from a successful `mount`. `umount` takes this out.
     child: Option<Child>,
+    /// Mountpoint of a live mount, stashed so `Drop` can best-effort
+    /// `umount(8)` it on non-explicit teardown (M5). Cleared by `umount`.
+    mountpoint: Option<PathBuf>,
     /// Ring of the last `STDERR_TAIL_LINES` lines from `sshfs` stderr;
     /// shared with the drainer thread.
     stderr_tail: Arc<Mutex<VecDeque<String>>>,
@@ -101,6 +104,7 @@ impl SshfsMounter {
             construct_error,
             sshfs_bin,
             child: None,
+            mountpoint: None,
             stderr_tail: Arc::new(Mutex::new(VecDeque::with_capacity(STDERR_TAIL_LINES))),
             audit_hook: None,
         }
@@ -249,6 +253,7 @@ impl SftpMounter for SshfsMounter {
         }
 
         self.child = Some(child);
+        self.mountpoint = Some(opts.mountpoint.clone());
         self.audit_hook.clone_from(&opts.audit_hook);
         let mut handle = MountHandle::new(opts.mountpoint.clone(), "macos-sshfs");
         handle.helper_pid = Some(pid);
@@ -299,6 +304,9 @@ impl SftpMounter for SshfsMounter {
         // a helper that `umount` knows how to dispatch to. Errors are
         // swallowed so a stale handle / already-umounted mount stays benign.
         let _ = Command::new("umount").arg(&handle.mountpoint).output();
+        // The explicit umount above owns teardown now, so clear the stashed
+        // mountpoint to keep `Drop` from issuing a redundant second umount.
+        self.mountpoint = None;
 
         if let Some(hook) = &self.audit_hook {
             hook(&MountEvent::UmountSucceeded {
@@ -318,6 +326,34 @@ impl Drop for SshfsMounter {
         if let Some(mut child) = self.child.take() {
             let _ = child.kill();
             let _ = child.wait();
+        }
+        // M5: a mounter dropped without an explicit `umount()` (early return /
+        // error unwind) would otherwise leave the macFUSE mountpoint
+        // registered until the killed helper detaches, producing a stale/hung
+        // mount. Best-effort unmount here mirrors the explicit umount path.
+        // Gated to macOS so the command never runs during cross-platform unit
+        // tests on other OSes (where `mountpoint` is always None in practice).
+        if let Some(mountpoint) = self.mountpoint.take() {
+            #[cfg(target_os = "macos")]
+            {
+                if Command::new("umount")
+                    .arg(&mountpoint)
+                    .output()
+                    .map(|o| o.status.success())
+                    != Ok(true)
+                {
+                    // Fall back to `diskutil unmount`, which can detach macFUSE
+                    // volumes `umount(8)` sometimes refuses.
+                    let _ = Command::new("diskutil")
+                        .arg("unmount")
+                        .arg(&mountpoint)
+                        .output();
+                }
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                let _ = &mountpoint;
+            }
         }
     }
 }

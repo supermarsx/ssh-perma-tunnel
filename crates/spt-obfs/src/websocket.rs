@@ -35,6 +35,10 @@ use crate::transport::{AsyncReadWrite, ObfsTransport};
 /// The WebSocket subprotocol name required by every spt-over-WS server.
 pub const SSH_SUBPROTOCOL: &str = "ssh";
 
+/// Generous deadline for the TCP/TLS + WebSocket upgrade handshake (M10: a
+/// stalled relay must not pin the dial forever).
+const WS_HANDSHAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// ssh-over-websocket transport handle.
 pub struct WebsocketTransport {
     cfg: ObfsConfig,
@@ -321,9 +325,15 @@ impl ObfsTransport for WebsocketTransport {
         self.audit.on_connect(self.name(), target);
         let req = self.build_http_request().map_err(spt_core::Error::from)?;
         let cfg = WebSocketConfig::default();
-        let (ws, _resp) = connect_async_with_config(req, Some(cfg), false)
-            .await
-            .map_err(|e| ObfsError::Handshake(format!("ws connect: {e}")))?;
+        // M10: bound the TCP/TLS + WebSocket upgrade so a stalled relay cannot
+        // pin the dial indefinitely.
+        let (ws, _resp) = tokio::time::timeout(
+            WS_HANDSHAKE_TIMEOUT,
+            connect_async_with_config(req, Some(cfg), false),
+        )
+        .await
+        .map_err(|_| ObfsError::Handshake("ws connect: handshake timed out".into()))?
+        .map_err(|e| ObfsError::Handshake(format!("ws connect: {e}")))?;
         tracing::debug!(
             transport = self.name(),
             url = self.url_override.as_deref().unwrap_or_else(|| self.url()),

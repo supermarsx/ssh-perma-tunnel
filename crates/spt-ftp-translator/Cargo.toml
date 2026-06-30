@@ -49,6 +49,14 @@ rustls-pemfile = { workspace = true }
 rustls-pki-types = { workspace = true }
 
 [dev-dependencies]
+# Self dev-dep enables this crate's own `testing` feature for its integration
+# tests, mirroring the spt-auth-sspi / spt-dns / spt-obfs convention. Without
+# it, `path_traversal.rs` (`#![cfg(feature = "testing")]`) compiled to a 0-test
+# binary and `translator.rs` (`required-features = ["testing"]`) was skipped
+# entirely under the default `cargo test --workspace` CI invocation — the
+# FTP-layer path-traversal security suite never ran. The feature unifies ON for
+# this crate's test build (and the workspace build) so those suites now execute.
+spt-ftp-translator = { path = ".", version = "0.26.1", features = ["testing"] }
 tokio = { workspace = true }
 tempfile = { workspace = true }
 spt-sftp = { workspace = true, features = ["testing"] }

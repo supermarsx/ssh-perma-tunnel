@@ -298,7 +298,10 @@ fn read_pidfile(name: &str) -> Option<u32> {
 }
 
 fn render_script(spec: &ServiceSpec) -> String {
-    let args = spec.args.join(" ");
+    // M2: shell-quote each arg (POSIX single-quote escaping) so spaces and
+    // shell metacharacters in operator-supplied args cannot word-split or
+    // inject when OpenRC expands `command_args`.
+    let args = shell_single_quote_args(&spec.args);
     let mut vars: BTreeMap<&str, String> = BTreeMap::new();
     vars.insert("name", spec.name.clone());
     vars.insert("description", spec.description.clone());
@@ -327,6 +330,36 @@ pub(crate) fn render_env_exports(spec: &ServiceSpec) -> String {
         .map(|(k, v)| format!("export {k}=\"{}\"", shell_double_quote_escape(v)))
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// Shell-quote each arg with POSIX single-quote escaping and join with spaces.
+///
+/// Each arg is wrapped in single quotes; any embedded `'` is rendered as the
+/// canonical `'\''` sequence (close-quote, escaped-quote, re-open-quote). The
+/// result is safe to expand under `eval` / `OpenRC`'s `command_args`: no space,
+/// `;`, `$(...)`, backtick, or other metacharacter can word-split or be
+/// interpreted as shell syntax. An empty arg becomes `''` (a preserved empty
+/// argument). Shared by the `OpenRC` and `SysV` renderers (M2).
+pub(crate) fn shell_single_quote_args(args: &[String]) -> String {
+    args.iter()
+        .map(|a| shell_single_quote(a))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Single-quote one argument for a POSIX shell. See [`shell_single_quote_args`].
+pub(crate) fn shell_single_quote(arg: &str) -> String {
+    let mut out = String::with_capacity(arg.len() + 2);
+    out.push('\'');
+    for c in arg.chars() {
+        if c == '\'' {
+            out.push_str("'\\''");
+        } else {
+            out.push(c);
+        }
+    }
+    out.push('\'');
+    out
 }
 
 /// Escape a value for inclusion inside a POSIX double-quoted string.
@@ -379,6 +412,50 @@ mod tests {
         let mgr = OpenRcManager::new();
         let out = mgr.render(&sample_spec());
         insta::assert_snapshot!("openrc_init", out);
+    }
+
+    #[test]
+    fn shell_single_quote_wraps_and_escapes() {
+        assert_eq!(shell_single_quote("plain"), "'plain'");
+        assert_eq!(shell_single_quote("a b"), "'a b'");
+        assert_eq!(shell_single_quote(""), "''");
+        // Embedded single quote → close, escaped-quote, reopen.
+        assert_eq!(shell_single_quote("a'b"), "'a'\\''b'");
+    }
+
+    // M2: an arg with a space and an arg laced with shell metacharacters must
+    // each be single-quoted so OpenRC cannot word-split or interpret them.
+    #[test]
+    fn render_single_quotes_args_with_spaces_and_metachars() {
+        let mut spec = sample_spec();
+        spec.args = vec![
+            "run".into(),
+            "--note".into(),
+            "with space".into(),
+            "; touch /tmp/pwn".into(),
+            "$(id)".into(),
+            "`id`".into(),
+        ];
+        let out = OpenRcManager::new().render(&spec);
+        let line = out
+            .lines()
+            .find(|l| l.starts_with("command_args="))
+            .expect("command_args line");
+        assert!(
+            line.contains("'with space'"),
+            "space arg not quoted: {line}"
+        );
+        assert!(
+            line.contains("'; touch /tmp/pwn'"),
+            "metachar arg not quoted: {line}"
+        );
+        assert!(line.contains("'$(id)'"), "subshell arg not quoted: {line}");
+        assert!(line.contains("'`id`'"), "backtick arg not quoted: {line}");
+        // No bare (unquoted) injection survives outside the quoting.
+        assert!(
+            !line.contains("= touch") && !out.contains("\ntouch /tmp/pwn"),
+            "metachar leaked unquoted: {out}"
+        );
     }
 
     #[test]

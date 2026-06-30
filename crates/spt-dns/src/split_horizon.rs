@@ -27,6 +27,7 @@ use hickory_server::server::{Request, RequestHandler, ResponseHandler, ResponseI
 use hickory_server::zone_handler::MessageResponseBuilder;
 use tracing::{debug, warn};
 
+use crate::forward_acl::ForwardScope;
 use crate::health::HealthSource;
 use crate::mode::DnsMode;
 use crate::zone::{AnswerPolicy, ManagedZone, Record, RecordKind};
@@ -37,6 +38,11 @@ pub struct SplitHorizonHandler {
     upstream: Option<Arc<TokioResolver>>,
     health: Arc<dyn HealthSource>,
     mode: DnsMode,
+    /// Source-address scope gating the upstream-forwarding (recursion) path.
+    /// Default-safe (loopback only) so the listener cannot be abused as an
+    /// open resolver/amplifier; authoritative managed-zone answers are not
+    /// gated by this.
+    forward_scope: ForwardScope,
 }
 
 impl SplitHorizonHandler {
@@ -78,7 +84,18 @@ impl SplitHorizonHandler {
             upstream,
             health,
             mode,
+            forward_scope: ForwardScope::default(),
         }
+    }
+
+    /// Set the source-address [`ForwardScope`] gating the upstream-forwarding
+    /// path (defaults to [`ForwardScope::LoopbackOnly`]). Out-of-scope clients
+    /// receive `REFUSED` instead of a recursive answer; authoritative
+    /// managed-zone answers are unaffected.
+    #[must_use]
+    pub fn with_forward_scope(mut self, scope: ForwardScope) -> Self {
+        self.forward_scope = scope;
+        self
     }
 
     /// First zone whose suffix contains `name`, or `None` for unmanaged names.
@@ -179,6 +196,18 @@ impl RequestHandler for SplitHorizonHandler {
         }
 
         if let Some(upstream) = self.upstream.clone() {
+            // M12 (amplification): only recurse upstream for clients inside the
+            // configured source scope. An out-of-scope client must not be able
+            // to use us as an open resolver / reflection amplifier, so it gets
+            // REFUSED rather than a recursive answer.
+            let src = request.src().ip();
+            if !self.forward_scope.allows(src) {
+                debug!(
+                    name = %qname_str, %src, scope = ?self.forward_scope,
+                    "forwarder: client out of scope -> REFUSED (not an open resolver)"
+                );
+                return send_simple(&mut response_handle, request, ResponseCode::Refused).await;
+            }
             return forward_to_upstream(
                 &upstream,
                 request,
@@ -959,6 +988,118 @@ mod tests {
                 "expected at least 2 chunks, got {chunk_count}"
             );
             resolver.shutdown().await;
+        });
+    }
+
+    // ---- Forwarder source-scope (open-resolver / amplification) gate -------
+    //
+    // These drive `handle_request` directly with a forged client source
+    // address so we can simulate an out-of-scope (non-loopback) peer without a
+    // real non-loopback socket. The upstream resolver is configured but is
+    // never actually contacted on the REFUSED path, so the tests are
+    // deterministic and network-free.
+
+    use crate::forward_acl::ForwardScope;
+    use hickory_resolver::net::runtime::TokioTime;
+
+    /// Like `request_for` but with a caller-chosen client source address.
+    fn request_for_src(qname: &str, src: &str) -> Request {
+        let mut msg = Message::new(0x4242, ProtoMsgType::Query, ProtoOpCode::Query);
+        msg.metadata.recursion_desired = true;
+        let name = Name::from_utf8(qname).unwrap();
+        msg.add_query(Query::query(name, RecordType::A));
+        let wire = msg.to_vec().unwrap();
+        Request::from_bytes(wire, src.parse().unwrap(), Protocol::Udp).unwrap()
+    }
+
+    /// A handler with an upstream wired (so the forwarder path is *reachable*)
+    /// and the given source scope.
+    fn forwarder_handler(scope: ForwardScope) -> SplitHorizonHandler {
+        // Bogus upstream — only constructed to populate `Some(..)`; the gate
+        // refuses out-of-scope clients before any lookup is issued.
+        let upstream = crate::build_tokio_resolver(
+            "127.0.0.1:1".parse().unwrap(),
+            StdDuration::from_millis(50),
+            ResolveHosts::Never,
+        )
+        .unwrap();
+        let zone = FakeZone::new("tunnel.local.")
+            .a("a.tunnel.local.", "10.0.0.1".parse().unwrap())
+            .build();
+        SplitHorizonHandler::with_mode(
+            vec![zone],
+            Some(std::sync::Arc::new(upstream)),
+            std::sync::Arc::new(crate::health::NoHealth),
+            DnsMode::TransparentForwarder,
+        )
+        .with_forward_scope(scope)
+    }
+
+    #[test]
+    fn out_of_scope_client_is_refused_not_forwarded() {
+        rt().block_on(async {
+            // Default scope = loopback-only. A public client asking for an
+            // unmanaged name must be REFUSED (not recursed) — otherwise we'd be
+            // an open resolver/amplifier.
+            let handler = forwarder_handler(ForwardScope::LoopbackOnly);
+            let capture = CapturingHandler::new();
+            let request = request_for_src("victim.example.com.", "8.8.8.8:30000");
+            handler
+                .handle_request::<_, TokioTime>(&request, capture.clone())
+                .await;
+            let msg = capture.parsed();
+            assert_eq!(
+                msg.metadata.response_code,
+                ResponseCode::Refused,
+                "out-of-scope client must be REFUSED, not forwarded"
+            );
+        });
+    }
+
+    #[test]
+    fn managed_zone_answer_not_gated_by_forward_scope() {
+        rt().block_on(async {
+            // The scope gate applies only to the forwarder path; an
+            // authoritative managed-zone answer is served to any client.
+            let handler = forwarder_handler(ForwardScope::LoopbackOnly);
+            let capture = CapturingHandler::new();
+            let request = request_for_src("a.tunnel.local.", "203.0.113.9:30000");
+            handler
+                .handle_request::<_, TokioTime>(&request, capture.clone())
+                .await;
+            let msg = capture.parsed();
+            assert_eq!(msg.metadata.response_code, ResponseCode::NoError);
+            assert!(
+                msg.metadata.authoritative,
+                "managed-zone answer must be authoritative (AA=1)"
+            );
+            assert!(
+                msg.answers.iter().any(|r| matches!(&r.data,
+                    RData::A(a) if a.0 == Ipv4Addr::new(10, 0, 0, 1))),
+                "out-of-scope client must still receive the managed A record"
+            );
+        });
+    }
+
+    #[test]
+    fn any_scope_lets_public_client_reach_forwarder() {
+        rt().block_on(async {
+            // With ForwardScope::Any the public client passes the gate and
+            // reaches the (bogus) upstream — which fails to resolve, so the
+            // handler returns ServFail/NXDOMAIN, NOT the pre-forward REFUSED.
+            // That distinguishes "passed the gate" from "refused at the gate".
+            let handler = forwarder_handler(ForwardScope::Any);
+            let capture = CapturingHandler::new();
+            let request = request_for_src("nothing.example.org.", "8.8.8.8:30000");
+            handler
+                .handle_request::<_, TokioTime>(&request, capture.clone())
+                .await;
+            let msg = capture.parsed();
+            assert_ne!(
+                msg.metadata.response_code,
+                ResponseCode::Refused,
+                "Any scope must let the client reach the forwarder (gate not fired)"
+            );
         });
     }
 }

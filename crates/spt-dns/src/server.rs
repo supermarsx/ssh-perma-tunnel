@@ -17,6 +17,7 @@ use tokio::task::JoinHandle;
 use tracing::info;
 
 use crate::error::{DnsError, Result};
+use crate::forward_acl::ForwardScope;
 use crate::health::{HealthSource, NoHealth};
 use crate::mode::DnsMode;
 use crate::split_horizon::SplitHorizonHandler;
@@ -70,6 +71,7 @@ pub struct DnsServerBuilder {
     health: Arc<dyn HealthSource>,
     tcp_timeout: Duration,
     mode: DnsMode,
+    forward_scope: ForwardScope,
 }
 
 impl Default for DnsServerBuilder {
@@ -81,6 +83,7 @@ impl Default for DnsServerBuilder {
             health: Arc::new(NoHealth),
             tcp_timeout: DEFAULT_TCP_TIMEOUT,
             mode: DnsMode::default(),
+            forward_scope: ForwardScope::default(),
         }
     }
 }
@@ -142,6 +145,17 @@ impl DnsServerBuilder {
         self
     }
 
+    /// Set the source-address [`ForwardScope`] gating the upstream-forwarding
+    /// (recursion) path. Defaults to [`ForwardScope::LoopbackOnly`] so a
+    /// listener is never an open resolver/amplifier out of the box; widen it
+    /// for a trusted LAN/operator deployment. Authoritative managed-zone
+    /// answers are served to every client regardless of this scope.
+    #[must_use]
+    pub fn forward_scope(mut self, scope: ForwardScope) -> Self {
+        self.forward_scope = scope;
+        self
+    }
+
     /// Bind sockets and start the server.
     ///
     /// Returns a [`DnsHandle`] that controls the lifetime; dropping the
@@ -162,7 +176,8 @@ impl DnsServerBuilder {
             Some(Arc::new(resolver))
         };
 
-        let handler = SplitHorizonHandler::with_mode(self.zones, upstream, self.health, self.mode);
+        let handler = SplitHorizonHandler::with_mode(self.zones, upstream, self.health, self.mode)
+            .with_forward_scope(self.forward_scope);
         let mut server = Server::new(handler);
 
         let udp = UdpSocket::bind(bind).await?;

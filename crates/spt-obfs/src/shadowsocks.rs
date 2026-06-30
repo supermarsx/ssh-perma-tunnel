@@ -17,8 +17,13 @@
 //! `chacha20-poly1305`) fall back to an HMAC-SHA256 counter-mode KDF for
 //! interoperability with pre-2022 servers.
 //!
-//! Replay protection: a bounded `BTreeSet` of recently-seen 12-byte
-//! nonces is maintained per session and rejects exact reuse.
+//! Replay protection: within a session, the monotonic counter nonce IS the
+//! replay defense — every frame is sealed/opened under a strictly increasing
+//! nonce, and a captured frame re-injected at any other position decrypts
+//! under the wrong nonce and fails the AEAD tag (desyncing the stream). An
+//! earlier revision also carried a `seen: BTreeSet<u64>` "sliding window", but
+//! it tracked the same *local* counter (never a wire value), so its reuse
+//! check was unreachable dead code; it has been removed.
 //!
 //! The runtime path opens a TCP connection to the configured upstream
 //! Shadowsocks server (resolved via `target`) and wraps the duplex
@@ -46,10 +51,10 @@
 //! so this stays a pure spt<->spt wire convention with no external interop to
 //! break.
 
-use std::collections::BTreeSet;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
+use std::time::Duration;
 
 use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::{Aes128Gcm, Aes256Gcm};
@@ -79,6 +84,11 @@ pub const AEAD2022_SESSION_CONTEXT: &str = "shadowsocks 2022 session subkey";
 /// ss-2022 EIH (extended identity headers) subkey context.
 pub const AEAD2022_EIH_CONTEXT: &str = "shadowsocks 2022 identity subkey";
 
+/// Generous default deadline for the TCP connect + salt-write handshake. A
+/// half-open or stalled peer cannot pin the dialing task past this bound; a
+/// legit slow-but-progressing dial completes well within it.
+const DEFAULT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// ssh-over-shadowsocks transport handle.
 pub struct ShadowsocksTransport {
     cfg: ObfsConfig,
@@ -91,6 +101,8 @@ pub struct ShadowsocksTransport {
     /// Optional override for the TCP target. When `None` the `target`
     /// argument supplied to `connect()` is used verbatim.
     server_override: Option<String>,
+    /// Deadline for the connect + salt-write handshake.
+    handshake_timeout: Duration,
 }
 
 impl ShadowsocksTransport {
@@ -108,7 +120,16 @@ impl ShadowsocksTransport {
             audit,
             direct_password: None,
             server_override: None,
+            handshake_timeout: DEFAULT_HANDSHAKE_TIMEOUT,
         })
+    }
+
+    /// Override the connect/handshake deadline (default 30s). Primarily a test
+    /// hook for asserting the stalled-peer timeout fires.
+    #[must_use]
+    pub fn with_handshake_timeout(mut self, d: Duration) -> Self {
+        self.handshake_timeout = d;
+        self
     }
 
     /// Cipher selector.
@@ -307,109 +328,101 @@ pub fn direction_keys(
     }
 }
 
+/// A constructed AEAD cipher for one direction's subkey.
+///
+/// P1 (perf): building the cipher runs the AES key schedule **and** precomputes
+/// the GHASH H-table (for the GCM variants) — wasteful when redone for every
+/// frame on the data plane. [`AeadStream`] builds this **once per direction**
+/// in [`AeadStream::new`] and reuses it for every `seal`/`open`. Boxed variants
+/// keep the enum small (avoids `clippy::large_enum_variant`).
+enum AeadCipher {
+    Aes128(Box<Aes128Gcm>),
+    Aes256(Box<Aes256Gcm>),
+    ChaCha(Box<ChaCha20Poly1305>),
+}
+
+impl AeadCipher {
+    /// Build the cipher for `method` from `key`. Fallible only on a wrong key
+    /// length (the AES variants need exactly 16/32 bytes); callers that derive
+    /// the key via [`direction_keys`] always pass the correct length.
+    fn new(method: SsMethod, key: &[u8]) -> std::result::Result<Self, ObfsError> {
+        Ok(match method {
+            SsMethod::Aes128Gcm | SsMethod::Aead2022Blake3Aes128Gcm => {
+                AeadCipher::Aes128(Box::new(
+                    Aes128Gcm::new_from_slice(key)
+                        .map_err(|e| ObfsError::Handshake(format!("aes-128: {e}")))?,
+                ))
+            }
+            SsMethod::Aes256Gcm | SsMethod::Aead2022Blake3Aes256Gcm => {
+                AeadCipher::Aes256(Box::new(
+                    Aes256Gcm::new_from_slice(key)
+                        .map_err(|e| ObfsError::Handshake(format!("aes-256: {e}")))?,
+                ))
+            }
+            SsMethod::ChaCha20Poly1305 | SsMethod::Aead2022Blake3ChaCha20Poly1305 => {
+                AeadCipher::ChaCha(Box::new(
+                    ChaCha20Poly1305::new_from_slice(key)
+                        .map_err(|e| ObfsError::Handshake(format!("chacha: {e}")))?,
+                ))
+            }
+        })
+    }
+
+    /// Seal `plaintext` under SIP022 §3.3 wire shape (empty AAD, 12-byte
+    /// nonce). Returns `ciphertext || tag`.
+    fn seal(&self, nonce: &[u8; 12], plaintext: &[u8]) -> Result<Vec<u8>> {
+        // SIP022 specifies the AEAD additional-authenticated-data as the empty
+        // byte string for every chunk (length-prefix AND body). Do NOT pass any
+        // protocol-specific AAD here — `shadowsocks-rust` interop depends on it.
+        let aad: &[u8] = b"";
+        let msg = Payload {
+            msg: plaintext,
+            aad,
+        };
+        match self {
+            AeadCipher::Aes128(c) => c.encrypt(aes_gcm::Nonce::from_slice(nonce), msg),
+            AeadCipher::Aes256(c) => c.encrypt(aes_gcm::Nonce::from_slice(nonce), msg),
+            AeadCipher::ChaCha(c) => c.encrypt(chacha20poly1305::Nonce::from_slice(nonce), msg),
+        }
+        .map_err(|e| ObfsError::Handshake(format!("seal: {e}")).into())
+    }
+
+    /// Open: inverse of [`AeadCipher::seal`]. AAD is empty per SIP022.
+    fn open(&self, nonce: &[u8; 12], ciphertext: &[u8]) -> Result<Vec<u8>> {
+        let aad: &[u8] = b"";
+        let msg = Payload {
+            msg: ciphertext,
+            aad,
+        };
+        match self {
+            AeadCipher::Aes128(c) => c.decrypt(aes_gcm::Nonce::from_slice(nonce), msg),
+            AeadCipher::Aes256(c) => c.decrypt(aes_gcm::Nonce::from_slice(nonce), msg),
+            AeadCipher::ChaCha(c) => c.decrypt(chacha20poly1305::Nonce::from_slice(nonce), msg),
+        }
+        .map_err(|e| ObfsError::Handshake(format!("open: {e}")).into())
+    }
+}
+
 /// AEAD seal under SIP022 §3.3 wire shape: empty additional-authenticated-data,
 /// 12-byte nonce, method-specific cipher. Returns `ciphertext || tag`.
+///
+/// Builds the cipher per call — used by the one-shot public `seal`/`open`
+/// helpers and the contract tests. The streaming hot path uses a cached
+/// [`AeadCipher`] (P1) but produces byte-identical output, since both go
+/// through the same [`AeadCipher::seal`]/[`AeadCipher::open`].
 fn aead_seal(method: SsMethod, key: &[u8], nonce: &[u8; 12], plaintext: &[u8]) -> Result<Vec<u8>> {
-    // SIP022 specifies the AEAD additional-authenticated-data as the empty
-    // byte string for every chunk (length-prefix AND body). Do NOT pass any
-    // protocol-specific AAD here — `shadowsocks-rust` interop depends on it.
-    let aad: &[u8] = b"";
-    let n = aes_gcm::Nonce::from_slice(nonce);
-    match method {
-        SsMethod::Aes128Gcm | SsMethod::Aead2022Blake3Aes128Gcm => {
-            let cipher = Aes128Gcm::new_from_slice(key)
-                .map_err(|e| ObfsError::Handshake(format!("aes-128: {e}")))?;
-            cipher
-                .encrypt(
-                    n,
-                    Payload {
-                        msg: plaintext,
-                        aad,
-                    },
-                )
-                .map_err(|e| ObfsError::Handshake(format!("seal: {e}")).into())
-        }
-        SsMethod::Aes256Gcm | SsMethod::Aead2022Blake3Aes256Gcm => {
-            let cipher = Aes256Gcm::new_from_slice(key)
-                .map_err(|e| ObfsError::Handshake(format!("aes-256: {e}")))?;
-            cipher
-                .encrypt(
-                    n,
-                    Payload {
-                        msg: plaintext,
-                        aad,
-                    },
-                )
-                .map_err(|e| ObfsError::Handshake(format!("seal: {e}")).into())
-        }
-        SsMethod::ChaCha20Poly1305 | SsMethod::Aead2022Blake3ChaCha20Poly1305 => {
-            let n = chacha20poly1305::Nonce::from_slice(nonce);
-            let cipher = ChaCha20Poly1305::new_from_slice(key)
-                .map_err(|e| ObfsError::Handshake(format!("chacha: {e}")))?;
-            cipher
-                .encrypt(
-                    n,
-                    Payload {
-                        msg: plaintext,
-                        aad,
-                    },
-                )
-                .map_err(|e| ObfsError::Handshake(format!("seal: {e}")).into())
-        }
-    }
+    AeadCipher::new(method, key)
+        .map_err(spt_core::Error::from)?
+        .seal(nonce, plaintext)
 }
 
 /// AEAD open: inverse of [`aead_seal`]. AAD is empty per SIP022 — see
 /// the security note on `aead_seal`.
 fn aead_open(method: SsMethod, key: &[u8], nonce: &[u8; 12], ciphertext: &[u8]) -> Result<Vec<u8>> {
-    let aad: &[u8] = b"";
-    let n = aes_gcm::Nonce::from_slice(nonce);
-    match method {
-        SsMethod::Aes128Gcm | SsMethod::Aead2022Blake3Aes128Gcm => {
-            let cipher = Aes128Gcm::new_from_slice(key)
-                .map_err(|e| ObfsError::Handshake(format!("aes-128: {e}")))?;
-            cipher
-                .decrypt(
-                    n,
-                    Payload {
-                        msg: ciphertext,
-                        aad,
-                    },
-                )
-                .map_err(|e| ObfsError::Handshake(format!("open: {e}")).into())
-        }
-        SsMethod::Aes256Gcm | SsMethod::Aead2022Blake3Aes256Gcm => {
-            let cipher = Aes256Gcm::new_from_slice(key)
-                .map_err(|e| ObfsError::Handshake(format!("aes-256: {e}")))?;
-            cipher
-                .decrypt(
-                    n,
-                    Payload {
-                        msg: ciphertext,
-                        aad,
-                    },
-                )
-                .map_err(|e| ObfsError::Handshake(format!("open: {e}")).into())
-        }
-        SsMethod::ChaCha20Poly1305 | SsMethod::Aead2022Blake3ChaCha20Poly1305 => {
-            let n = chacha20poly1305::Nonce::from_slice(nonce);
-            let cipher = ChaCha20Poly1305::new_from_slice(key)
-                .map_err(|e| ObfsError::Handshake(format!("chacha: {e}")))?;
-            cipher
-                .decrypt(
-                    n,
-                    Payload {
-                        msg: ciphertext,
-                        aad,
-                    },
-                )
-                .map_err(|e| ObfsError::Handshake(format!("open: {e}")).into())
-        }
-    }
+    AeadCipher::new(method, key)
+        .map_err(spt_core::Error::from)?
+        .open(nonce, ciphertext)
 }
-
-/// Replay-protection window: keeps the last [`REPLAY_WINDOW`] nonces.
-const REPLAY_WINDOW: usize = 1024;
 
 /// Streaming AEAD wrapper. Each outbound `poll_write` emits one frame:
 ///
@@ -429,10 +442,13 @@ pub struct AeadStream {
     /// (defense-in-depth).
     tx_key: Zeroizing<Vec<u8>>,
     rx_key: Zeroizing<Vec<u8>>,
+    /// Per-direction ciphers built once from `tx_key`/`rx_key` (P1). `None` only
+    /// if construction failed (wrong key length), in which case the per-frame
+    /// fallback (`aead_seal`/`aead_open`) is used so behavior is preserved.
+    tx_cipher: Option<AeadCipher>,
+    rx_cipher: Option<AeadCipher>,
     write_nonce: u64,
     read_nonce: u64,
-    /// Inbound replay window — exact nonce reuse rejected.
-    seen: BTreeSet<u64>,
     /// Read state machine.
     rx: RxState,
     /// Read scratch.
@@ -458,14 +474,20 @@ impl AeadStream {
         tx_key: Zeroizing<Vec<u8>>,
         rx_key: Zeroizing<Vec<u8>>,
     ) -> Self {
+        // P1: build each direction's cipher once. On the (caller-misuse-only)
+        // wrong-key-length path this is `None` and we fall back to per-frame
+        // construction, preserving the prior error behavior without panicking.
+        let tx_cipher = AeadCipher::new(method, &tx_key).ok();
+        let rx_cipher = AeadCipher::new(method, &rx_key).ok();
         Self {
             inner,
             method,
             tx_key,
             rx_key,
+            tx_cipher,
+            rx_cipher,
             write_nonce: 0,
             read_nonce: 0,
-            seen: BTreeSet::new(),
             rx: RxState::Length,
             rx_buf: Vec::new(),
             pending: Vec::new(),
@@ -479,20 +501,39 @@ impl AeadStream {
         nonce
     }
 
-    fn next_read_nonce(&mut self) -> std::result::Result<[u8; 12], ObfsError> {
-        if !self.seen.insert(self.read_nonce) {
-            return Err(ObfsError::Handshake("ss: replay nonce".into()));
-        }
-        if self.seen.len() > REPLAY_WINDOW {
-            // Evict the oldest entry to bound memory.
-            if let Some(&oldest) = self.seen.iter().next() {
-                self.seen.remove(&oldest);
-            }
-        }
+    /// Advance and return the next read nonce.
+    ///
+    /// Replay protection within a session comes from this monotonic counter
+    /// nonce, not a seen-set: each frame is opened under a strictly increasing
+    /// nonce, and the AEAD tag only validates at the exact expected counter
+    /// position. A captured frame re-injected at a later position decrypts
+    /// under the wrong nonce and fails the tag (desyncing the stream); it can
+    /// never be silently accepted. (The earlier `seen: BTreeSet<u64>` window
+    /// was dead code — it tracked this same local counter, so `insert` always
+    /// reported "unseen" and the reuse branch was unreachable.)
+    fn next_read_nonce(&mut self) -> [u8; 12] {
         let mut nonce = [0u8; 12];
         nonce[..8].copy_from_slice(&self.read_nonce.to_le_bytes());
         self.read_nonce = self.read_nonce.wrapping_add(1);
-        Ok(nonce)
+        nonce
+    }
+
+    /// Seal one frame on the tx direction, using the cached cipher when
+    /// available (P1) and falling back to a per-frame build otherwise.
+    fn seal_tx(&self, nonce: &[u8; 12], plaintext: &[u8]) -> Result<Vec<u8>> {
+        match &self.tx_cipher {
+            Some(c) => c.seal(nonce, plaintext),
+            None => aead_seal(self.method, &self.tx_key, nonce, plaintext),
+        }
+    }
+
+    /// Open one frame on the rx direction, using the cached cipher when
+    /// available (P1) and falling back to a per-frame build otherwise.
+    fn open_rx(&self, nonce: &[u8; 12], ciphertext: &[u8]) -> Result<Vec<u8>> {
+        match &self.rx_cipher {
+            Some(c) => c.open(nonce, ciphertext),
+            None => aead_open(self.method, &self.rx_key, nonce, ciphertext),
+        }
     }
 }
 
@@ -505,8 +546,10 @@ impl AsyncRead for AeadStream {
         loop {
             if !self.pending.is_empty() {
                 let n = buf.remaining().min(self.pending.len());
-                let drained: Vec<u8> = self.pending.drain(..n).collect();
-                buf.put_slice(&drained);
+                // P2: copy directly from `pending` then drain — no per-read
+                // intermediate `Vec` allocation.
+                buf.put_slice(&self.pending[..n]);
+                self.pending.drain(..n);
                 return Poll::Ready(Ok(()));
             }
 
@@ -538,17 +581,9 @@ impl AsyncRead for AeadStream {
             // We have a complete chunk for the current state.
             match self.rx {
                 RxState::Length => {
-                    let nonce = match self.next_read_nonce() {
-                        Ok(n) => n,
-                        Err(e) => {
-                            return Poll::Ready(Err(std::io::Error::new(
-                                std::io::ErrorKind::InvalidData,
-                                e.to_string(),
-                            )))
-                        }
-                    };
+                    let nonce = self.next_read_nonce();
                     let chunk: Vec<u8> = self.rx_buf.drain(..target_len).collect();
-                    let pt = aead_open(self.method, &self.rx_key, &nonce, &chunk).map_err(|e| {
+                    let pt = self.open_rx(&nonce, &chunk).map_err(|e| {
                         std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string())
                     })?;
                     if pt.len() != 2 {
@@ -569,17 +604,9 @@ impl AsyncRead for AeadStream {
                     };
                 }
                 RxState::Body { plaintext_len } => {
-                    let nonce = match self.next_read_nonce() {
-                        Ok(n) => n,
-                        Err(e) => {
-                            return Poll::Ready(Err(std::io::Error::new(
-                                std::io::ErrorKind::InvalidData,
-                                e.to_string(),
-                            )))
-                        }
-                    };
+                    let nonce = self.next_read_nonce();
                     let chunk: Vec<u8> = self.rx_buf.drain(..target_len).collect();
-                    let pt = aead_open(self.method, &self.rx_key, &nonce, &chunk).map_err(|e| {
+                    let pt = self.open_rx(&nonce, &chunk).map_err(|e| {
                         std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string())
                     })?;
                     if pt.len() != plaintext_len {
@@ -608,14 +635,17 @@ impl AsyncWrite for AeadStream {
         let chunk_len = data.len().min(0x3fff);
         let chunk = &data[..chunk_len];
 
+        // Compute both nonces first (they need `&mut self`), then seal with the
+        // cached cipher via `&self` — no per-frame key clone (P3) and no
+        // per-frame cipher rebuild (P1).
         let len_nonce = self.next_write_nonce();
         let body_nonce = self.next_write_nonce();
-        let key = self.tx_key.clone();
-        let method = self.method;
         let len_be = (chunk_len as u16).to_be_bytes();
-        let len_ct = aead_seal(method, &key, &len_nonce, &len_be)
+        let len_ct = self
+            .seal_tx(&len_nonce, &len_be)
             .map_err(|e| std::io::Error::other(e.to_string()))?; // 1.88 lint: io_other_error
-        let body_ct = aead_seal(method, &key, &body_nonce, chunk)
+        let body_ct = self
+            .seal_tx(&body_nonce, chunk)
             .map_err(|e| std::io::Error::other(e.to_string()))?; // 1.88 lint: io_other_error
 
         let mut buf = Vec::with_capacity(len_ct.len() + body_ct.len());
@@ -669,19 +699,22 @@ impl ObfsTransport for ShadowsocksTransport {
             target = %addr,
             "ss: dialing upstream"
         );
-        let mut tcp = TcpStream::connect(addr).await.map_err(ObfsError::Io)?;
-
         // Per-session salt.
         let mut salt = vec![0u8; salt_len(self.method())];
         rand::thread_rng().fill_bytes(&mut salt);
         let session_key = self.derive_key(&salt).map_err(spt_core::Error::from)?;
 
-        // We pre-write the salt header to the peer so the receiver can
-        // derive the same subkey. The peer is assumed to mirror our
-        // framing — used as a permanent SSH tunnel inside an ss server.
-        // For loopback fixtures the salt is the only handshake byte
-        // exchanged before AEAD framing begins.
-        tcp.write_all(&salt).await.map_err(ObfsError::Io)?;
+        // Wrap the TCP connect + salt-write handshake in a deadline so a
+        // half-open / stalled peer cannot pin this dial indefinitely. We
+        // pre-write the salt header to the peer so the receiver can derive the
+        // same subkey; the peer is assumed to mirror our framing.
+        let tcp = tokio::time::timeout(self.handshake_timeout, async {
+            let mut tcp = TcpStream::connect(addr).await.map_err(ObfsError::Io)?;
+            tcp.write_all(&salt).await.map_err(ObfsError::Io)?;
+            Ok::<_, ObfsError>(tcp)
+        })
+        .await
+        .map_err(|_| ObfsError::Handshake("shadowsocks: handshake timed out".into()))??;
 
         // Dialing side = client role: transmit on c2s, receive on s2c. Each
         // direction uses a distinct subkey so the two nonce-0 sequences never
@@ -838,6 +871,38 @@ mod tests {
         let (tx, rx) = direction_keys(&session, SsMethod::Aead2022Blake3Aes128Gcm, SsRole::Client);
         assert_eq!(tx.len(), 16, "AES-128 subkey must be 16 bytes");
         assert_eq!(rx.len(), 16, "AES-128 subkey must be 16 bytes");
+    }
+
+    #[test]
+    fn cached_cipher_seal_matches_per_frame_build() {
+        // P1 perf change must be byte-identical: one cached `AeadCipher` reused
+        // across frames must produce exactly the same ciphertext as building a
+        // fresh cipher for every frame, for the same key + nonce sequence.
+        for method in [
+            SsMethod::Aead2022Blake3Aes256Gcm,
+            SsMethod::Aead2022Blake3Aes128Gcm,
+            SsMethod::Aead2022Blake3ChaCha20Poly1305,
+        ] {
+            let key_len = method.key_len();
+            let key: Vec<u8> = (0..key_len).map(|i| i as u8).collect();
+            let cached = AeadCipher::new(method, &key).unwrap();
+            for ctr in 0u64..5 {
+                let mut nonce = [0u8; 12];
+                nonce[..8].copy_from_slice(&ctr.to_le_bytes());
+                let pt = format!("frame-{ctr}-payload").into_bytes();
+                // Cached reuse.
+                let from_cached = cached.seal(&nonce, &pt).unwrap();
+                // Fresh per-frame build (the old hot-path behavior).
+                let fresh = aead_seal(method, &key, &nonce, &pt).unwrap();
+                assert_eq!(
+                    from_cached, fresh,
+                    "cached vs per-frame ciphertext diverged ({method:?}, ctr={ctr})"
+                );
+                // And the cached cipher round-trips its own output.
+                let back = cached.open(&nonce, &from_cached).unwrap();
+                assert_eq!(back, pt);
+            }
+        }
     }
 
     #[test]

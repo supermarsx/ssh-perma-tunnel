@@ -663,15 +663,25 @@ fn render_plist(spec: &ServiceSpec) -> String {
         .as_ref()
         .map_or_else(|| "/dev/null".to_string(), |p| p.display().to_string());
 
+    // M3: every path field is interpolated inside a `<string>…</string>` plist
+    // element. Unescaped `<`/`&`/`"`/`'` would break the XML (mount fails) or,
+    // with crafted content, smuggle a key — so XML-escape them like the args /
+    // env / user paths already are.
     let mut vars: BTreeMap<&str, String> = BTreeMap::new();
     vars.insert("label", label);
-    vars.insert("exec_path", spec.exec_path.display().to_string());
+    vars.insert(
+        "exec_path",
+        xml_escape(&spec.exec_path.display().to_string()),
+    );
     vars.insert("args_array", args_array);
-    vars.insert("working_dir", spec.working_dir.display().to_string());
+    vars.insert(
+        "working_dir",
+        xml_escape(&spec.working_dir.display().to_string()),
+    );
     vars.insert("keep_alive", keep_alive.to_string());
     vars.insert("keep_alive_block", keep_alive_block);
-    vars.insert("stdout_path", stdout_path);
-    vars.insert("stderr_path", stderr_path);
+    vars.insert("stdout_path", xml_escape(&stdout_path));
+    vars.insert("stderr_path", xml_escape(&stderr_path));
     vars.insert("env_dict", env_dict);
     vars.insert("user_keys", user_keys);
     template::render(TEMPLATE, &vars)
@@ -698,10 +708,14 @@ fn keep_alive_element(policy: crate::RestartPolicy) -> String {
 }
 
 fn xml_escape(s: &str) -> String {
+    // `&` first so the entity ampersands we introduce are not re-escaped.
+    // `'` is included (M3) — omitting it left `&apos;`-class content able to
+    // alter attribute/text quoting in some XML consumers.
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('"', "&quot;")
+        .replace('\'', "&apos;")
 }
 
 // `Path` is referenced only via `PathBuf` in this module; suppress the
@@ -745,6 +759,28 @@ mod tests {
         assert!(out.contains("<string>io.spt.spt-relay</string>"));
         assert!(out.contains("<string>--config</string>"));
         assert!(out.contains("<key>UserName</key>"));
+    }
+
+    // M3: XML metacharacters in path fields must be escaped so they cannot
+    // break the plist or smuggle a key.
+    #[test]
+    fn render_plist_path_fields_are_xml_escaped() {
+        let mut s = sample_spec();
+        s.scope = Scope::System;
+        s.exec_path = "/opt/sp&t/<bin>".into();
+        s.working_dir = "/var/lib/\"spt\"".into();
+        s.stdout_path = Some("/var/log/it's.log".into());
+        let out = LaunchdManager::new().render(&s);
+        assert!(out.contains("<string>/opt/sp&amp;t/&lt;bin&gt;</string>"));
+        assert!(out.contains("<string>/var/lib/&quot;spt&quot;</string>"));
+        assert!(out.contains("<string>/var/log/it&apos;s.log</string>"));
+        // No raw metacharacter survived in the rendered path elements.
+        assert!(!out.contains("<bin>"), "raw '<' leaked: {out}");
+    }
+
+    #[test]
+    fn xml_escape_covers_apostrophe() {
+        assert_eq!(xml_escape("a'b&c"), "a&apos;b&amp;c");
     }
 
     #[test]

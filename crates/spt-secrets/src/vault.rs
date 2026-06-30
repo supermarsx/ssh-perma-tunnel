@@ -445,6 +445,10 @@ fn write_vault(path: &Path, file: &VaultFile) -> Result<()> {
         use std::os::unix::fs::PermissionsExt;
         let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
     }
+    // H2: Windows has no mode bit — restrict the DACL to owner + SYSTEM/
+    // Administrators so the encrypted vault is not readable by all local Users
+    // when written under a shared path.
+    crate::file::restrict_to_owner(path);
     Ok(())
 }
 
@@ -466,6 +470,8 @@ fn write_meta(path: &Path, meta: &VaultMeta) -> Result<()> {
         use std::os::unix::fs::PermissionsExt;
         let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
     }
+    // H2: restrict the meta file's DACL on Windows (carries the Argon2id salt).
+    crate::file::restrict_to_owner(path);
     Ok(())
 }
 

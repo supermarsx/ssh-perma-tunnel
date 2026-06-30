@@ -447,12 +447,24 @@ pub(crate) fn render_unit(spec: &ServiceSpec, user_scope: bool) -> String {
     };
 
     let mut vars: BTreeMap<&str, String> = BTreeMap::new();
-    vars.insert("description", spec.description.clone());
+    // M3: `description`, `exec_path`, and `working_dir` land on their own unit
+    // lines verbatim. A newline (or other control char) in any of them would
+    // terminate the line and inject an arbitrary directive (e.g. a second
+    // `ExecStartPre=`). Escape control characters so no raw newline survives;
+    // printable chars (incl. spaces) pass through since directive values are
+    // otherwise taken literally.
+    vars.insert("description", systemd_value_escape(&spec.description));
     vars.insert("service_type", svc_type.to_string());
     vars.insert("notify_access", notify_access.to_string());
-    vars.insert("exec_path", spec.exec_path.display().to_string());
+    vars.insert(
+        "exec_path",
+        systemd_value_escape(&spec.exec_path.display().to_string()),
+    );
     vars.insert("args", args);
-    vars.insert("working_dir", spec.working_dir.display().to_string());
+    vars.insert(
+        "working_dir",
+        systemd_value_escape(&spec.working_dir.display().to_string()),
+    );
     vars.insert("state_hardening", state_hardening);
     vars.insert("ambient_caps", ambient_caps);
     vars.insert("env_lines", env_lines);
@@ -487,6 +499,26 @@ fn systemd_env_escape(s: &str) -> String {
                 out.extend(c.escape_default());
             }
             c => out.push(c),
+        }
+    }
+    out
+}
+
+/// Escape a value for a bare (unquoted) systemd directive line such as
+/// `Description=`, `WorkingDirectory=`, or the `ExecStart=` program path (M3).
+///
+/// Only control characters are neutralized — any byte `< 0x20` or `0x7f` is
+/// rendered with its Rust default escape (so a newline becomes a visible `\n`)
+/// and can no longer terminate the line to inject a new directive. Printable
+/// characters, including spaces, quotes, and backslashes, pass through so a
+/// legitimate path or description is preserved exactly.
+fn systemd_value_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        if (c as u32) < 0x20 || c as u32 == 0x7f {
+            out.extend(c.escape_default());
+        } else {
+            out.push(c);
         }
     }
     out
@@ -553,6 +585,37 @@ mod tests {
                 .any(|l| l.trim_start().starts_with("ExecStartPre=/bin/touch")),
             "injected directive leaked: {out}"
         );
+    }
+
+    // M3: a newline in `description`/`working_dir` must NOT inject a new unit
+    // directive — it must be escaped to a visible `\n` on the original line.
+    #[test]
+    fn render_unit_description_and_workdir_are_injection_safe() {
+        let mut spec = sample_spec();
+        spec.description = "ok\nExecStartPre=/bin/touch /tmp/pwn".into();
+        spec.working_dir = "/var/lib/spt\nExecStopPost=/bin/rm".into();
+        let out = render_unit(&spec, false);
+        assert!(
+            out.contains(r"Description=ok\nExecStartPre=/bin/touch /tmp/pwn"),
+            "description not escaped: {out}"
+        );
+        assert!(
+            !out.lines()
+                .any(|l| l.trim_start().starts_with("ExecStartPre=/bin/touch")),
+            "injected ExecStartPre leaked: {out}"
+        );
+        assert!(
+            !out.lines()
+                .any(|l| l.trim_start().starts_with("ExecStopPost=/bin/rm")),
+            "injected ExecStopPost leaked: {out}"
+        );
+    }
+
+    #[test]
+    fn systemd_value_escape_neutralizes_controls_keeps_printable() {
+        assert_eq!(systemd_value_escape("a\nb"), "a\\nb");
+        assert_eq!(systemd_value_escape("/path/with space"), "/path/with space");
+        assert_eq!(systemd_value_escape("café世界"), "café世界");
     }
 
     #[test]

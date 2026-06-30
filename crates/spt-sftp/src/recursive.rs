@@ -630,6 +630,15 @@ fn sanitize_entry_name(name: &str) -> Result<(), String> {
     if name.bytes().any(|b| b < 0x20 || b == 0x7f) {
         return Err("embedded control/NUL byte".to_owned());
     }
+    // M1: reject Windows reserved device names (CON, PRN, AUX, NUL, COM1-9,
+    // LPT1-9, including `name.ext` and trailing dot/space variants). A hostile
+    // server could otherwise make a recursive download write to a device
+    // (`local_dir.join("CON")` resolves to the console/NUL device on Windows),
+    // hanging or destroying data. Refused on every platform for parity and
+    // defence-in-depth, matching the cross-platform drive-letter rejection.
+    if is_windows_reserved_name(name) {
+        return Err("windows reserved device name".to_owned());
+    }
     // Reject a Windows drive-letter prefix (`C:`, `C:foo`) explicitly and on
     // every platform: `Path` only parses it as a `Prefix` component on
     // Windows, so a Linux client of a hostile server would otherwise accept
@@ -649,6 +658,36 @@ fn sanitize_entry_name(name: &str) -> Result<(), String> {
         (Some(Component::Normal(c)), None) if c == std::ffi::OsStr::new(name) => Ok(()),
         _ => Err("not a single normal path component".to_owned()),
     }
+}
+
+/// `true` when `name` is (a variant of) a Windows reserved device name.
+///
+/// Windows treats `CON`, `PRN`, `AUX`, `NUL`, `COM1`..`COM9`, and `LPT1`..`LPT9`
+/// as device names *regardless of extension* and *ignoring trailing dots and
+/// spaces*, so `CON`, `con.txt`, `NUL.`, and `aux ` all resolve to a device.
+/// The comparison is case-insensitive and made against the base name (the part
+/// before the first `.`), with trailing spaces/dots stripped first.
+fn is_windows_reserved_name(name: &str) -> bool {
+    // Strip trailing dots/spaces (Windows ignores them when resolving), then
+    // take the portion before the first '.' as the base device candidate.
+    let trimmed = name.trim_end_matches(['.', ' ']);
+    let base = trimmed.split('.').next().unwrap_or(trimmed);
+    let base = base.trim_end_matches([' ']);
+    if base.is_empty() {
+        return false;
+    }
+    let upper = base.to_ascii_uppercase();
+    if matches!(upper.as_str(), "CON" | "PRN" | "AUX" | "NUL") {
+        return true;
+    }
+    // COMn / LPTn where n is a single 1-9 digit.
+    let rest = upper
+        .strip_prefix("COM")
+        .or_else(|| upper.strip_prefix("LPT"));
+    matches!(
+        rest,
+        Some("1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9")
+    )
 }
 
 /// Lexically test whether `candidate` stays within `root` without touching
@@ -742,6 +781,41 @@ mod tests {
         assert!(sanitize_entry_name("C:\\evil").is_err());
         assert!(sanitize_entry_name("C:evil").is_err());
         assert!(sanitize_entry_name("\\\\srv\\share").is_err());
+    }
+
+    #[test]
+    fn sanitize_entry_name_rejects_windows_reserved_devices() {
+        // Bare device names (any case).
+        for n in ["CON", "con", "PRN", "aux", "NUL", "COM1", "lpt9"] {
+            assert!(sanitize_entry_name(n).is_err(), "should reject {n}");
+        }
+        // With extensions and trailing dots/spaces.
+        for n in ["nul.txt", "CON.", "aux ", "COM1.log", "Lpt3.dat"] {
+            assert!(sanitize_entry_name(n).is_err(), "should reject {n}");
+        }
+        // Not reserved: a digit out of range, or a longer/different name.
+        for n in [
+            "COM0",
+            "COM10",
+            "LPT0",
+            "console",
+            "communicate",
+            "nullable",
+        ] {
+            assert!(sanitize_entry_name(n).is_ok(), "should allow {n}");
+        }
+    }
+
+    #[test]
+    fn is_windows_reserved_name_matrix() {
+        assert!(is_windows_reserved_name("CON"));
+        assert!(is_windows_reserved_name("NuL.TXT"));
+        assert!(is_windows_reserved_name("com5"));
+        assert!(is_windows_reserved_name("LPT7.dat"));
+        assert!(!is_windows_reserved_name("com"));
+        assert!(!is_windows_reserved_name("com12"));
+        assert!(!is_windows_reserved_name("contents"));
+        assert!(!is_windows_reserved_name(""));
     }
 
     #[test]

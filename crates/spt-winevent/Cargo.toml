@@ -36,5 +36,11 @@ windows = { version = "0.58", features = [
 zerocopy = { workspace = true }
 
 [dev-dependencies]
+# Self dev-dep enables the `testing` feature (MockEventLogBackend + fault
+# injection) for this crate's integration tests, mirroring the spt-auth-sspi /
+# spt-dns / spt-obfs convention. Without it, `tests/mock_backend.rs`
+# (`#![cfg(feature = "testing")]`) compiled to a 0-test binary under the default
+# `cargo test --workspace` CI invocation. The feature now unifies ON.
+spt-winevent = { path = ".", version = "0.26.1", features = ["testing"] }
 tempfile = { workspace = true }
 serde_json = { workspace = true }

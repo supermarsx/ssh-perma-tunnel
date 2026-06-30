@@ -9,7 +9,7 @@ expression: out
 name="spt-relay"
 description="spt — SMTP relay tunnel"
 command="/usr/local/bin/spt"
-command_args="service run --config /etc/spt/relay.toml"
+command_args="'service' 'run' '--config' '/etc/spt/relay.toml'"
 command_user="spt:spt"
 command_background=true
 pidfile="/run/spt-relay.pid"

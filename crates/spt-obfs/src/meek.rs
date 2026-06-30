@@ -41,6 +41,13 @@ use crate::transport::{AsyncReadWrite, ObfsTransport};
 /// legitimate per-POST burst for an SSH tunnel.
 pub const MAX_MEEK_BODY_BYTES: usize = 4 * 1024 * 1024;
 
+/// TCP/TLS connect deadline for the meek front (M10: a stalled front must not
+/// pin the dial).
+const MEEK_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// Per-request round-trip deadline (covers the probe POST and each later POST).
+const MEEK_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// Bounded accumulator for an HTTP response body. Rejects up front if a
 /// declared `Content-Length` exceeds the cap, and again while streaming if the
 /// running total would exceed it — so the peer can never force an unbounded
@@ -235,6 +242,11 @@ impl ObfsTransport for MeekHttpTransport {
 
         let client = ClientBuilder::new()
             .default_headers(default_headers.clone())
+            // M10: bound the TCP/TLS connect and the per-request round-trip so a
+            // stalled / half-open front cannot pin the probe (and later POSTs)
+            // indefinitely.
+            .connect_timeout(MEEK_CONNECT_TIMEOUT)
+            .timeout(MEEK_REQUEST_TIMEOUT)
             // meek explicitly does NOT pool connections — each POST is
             // independent. But reqwest pools by default; that's still
             // wire-compatible with meek-server.

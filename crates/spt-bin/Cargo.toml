@@ -184,6 +184,11 @@ humantime = { workspace = true }
 # audit bridge unit tests can isolate the process-global sink slot.
 spt-core = { workspace = true, features = ["testing"] }
 base64 = { workspace = true }
+# it_diagnose_redaction.rs decompresses the diagnostic bundle (gzip'd tar) to
+# assert seeded secrets are redacted in the archived config text. Both crates
+# are already in Cargo.lock via spt-diagnostics, so this adds no new lock entry.
+flate2 = "1"
+tar = "0.4"
 futures = { workspace = true }
 rand = { workspace = true }
 serde = { workspace = true }

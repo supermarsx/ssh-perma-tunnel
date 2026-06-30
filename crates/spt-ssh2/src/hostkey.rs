@@ -333,6 +333,63 @@ mod tests {
     }
 
     #[test]
+    fn unknown_and_changed_keys_never_yield_an_accept_outcome() {
+        // Pins the contract the production russh handler
+        // (`ClientHandler::check_server_key`) relies on: an unknown host in
+        // strict, non-TOFU mode and a key that differs from a stored entry must
+        // BOTH be rejected — they may never resolve to an "accept" outcome
+        // (`Match`/`TofuAdded`). If `verify` ever regressed to returning an
+        // accept variant for these inputs, the handler would auto-trust an
+        // unknown/changed server key. `NotFound` is the only non-error outcome
+        // an unknown host may produce (non-strict), and the handler refuses it.
+        let presented = fresh_pub();
+
+        // 1. Unknown host, strict, no TOFU → reject (Err), not any Ok variant.
+        let strict = TrustVerifier {
+            strict: true,
+            accept_new: false,
+            ..Default::default()
+        };
+        let r = strict.verify("unknown.example", 22, &presented);
+        assert!(
+            r.is_err(),
+            "strict unknown host must be rejected, got {r:?}"
+        );
+
+        // 2. Unknown host, non-strict → NotFound (the handler treats this as a
+        //    refusal). Crucially NOT Match/TofuAdded.
+        let lax = TrustVerifier::default();
+        let outcome = lax.verify("unknown.example", 22, &presented).unwrap();
+        assert_eq!(outcome, HostKeyOutcome::NotFound);
+        assert_ne!(outcome, HostKeyOutcome::Match);
+        assert_ne!(outcome, HostKeyOutcome::TofuAdded);
+
+        // 3. Changed key against a stored entry → reject, even with TOFU on and
+        //    a writable path (TOFU must never override a mismatch).
+        let stored = fresh_pub();
+        let mut kh = KnownHosts::default();
+        kh.add("host.example", 22, stored, false);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("known_hosts");
+        let with_tofu = TrustVerifier {
+            known_hosts: Some(kh),
+            accept_new: true,
+            known_hosts_path: Some(path.clone()),
+            ..Default::default()
+        };
+        let r = with_tofu.verify("host.example", 22, &presented);
+        assert!(
+            matches!(r, Err(Error::TrustFailed(_))),
+            "changed key must be rejected as TrustFailed, got {r:?}"
+        );
+        // A rejected mismatch must not have been persisted to known_hosts.
+        assert!(
+            !path.exists(),
+            "rejected key must not be written to known_hosts"
+        );
+    }
+
+    #[test]
     fn pin_match_via_sha256() {
         use ssh_key::HashAlg;
         let key = fresh_pub();

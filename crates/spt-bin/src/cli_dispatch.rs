@@ -1653,10 +1653,21 @@ async fn maybe_spawn_dns_server(
         state_dir.to_path_buf(),
     )) as std::sync::Arc<dyn spt_dns::HealthSource>;
 
+    // Default-safe forwarder scope (M12 amplification): a loopback bind only
+    // recurses for loopback clients; a non-loopback bind widens to private
+    // networks so a LAN deployment keeps working, but never becomes an open
+    // resolver for arbitrary public clients.
+    let forward_scope = if bind.ip().is_loopback() {
+        spt_dns::ForwardScope::LoopbackOnly
+    } else {
+        spt_dns::ForwardScope::PrivateNetworks
+    };
+
     let mut builder = spt_dns::DnsServerBuilder::new()
         .bind(bind)
         .mode(mode)
         .upstream(upstream)
+        .forward_scope(forward_scope)
         .health_source(health);
     if !zone.records.is_empty() {
         builder = builder.add_zone(zone);

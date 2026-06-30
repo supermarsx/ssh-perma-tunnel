@@ -5,31 +5,35 @@
 //! The `AeadStream` in `crates/spt-obfs/src/shadowsocks.rs` uses a
 //! *monotonic counter* for nonces, not server-supplied random nonces.
 //! Each side maintains independent `read_nonce` / `write_nonce` counters
-//! initialised to zero; both sides advance them in lockstep. The
-//! `seen: BTreeSet<u64>` field exists and rejects exact nonce reuse, but
-//! the only way it would be exercised in practice is if a peer somehow
-//! resends the *same numbered frame* — which the AEAD itself would also
-//! reject because the keystream/tag won't validate twice with desynced
-//! state.
+//! initialised to zero; both sides advance them in lockstep.
 //!
 //! These tests confirm the practical security property: an off-the-wire
 //! attacker who captures a frame and replays it onto a fresh session
-//! cannot decrypt under the new salt, and an attacker who tries to
-//! re-send a frame inside the same session causes AEAD decrypt failure
-//! at the next frame boundary (counter desync).
+//! cannot decrypt under the new salt, and an attacker who re-sends a frame
+//! inside the same session causes an AEAD decrypt failure at the frame
+//! boundary (counter desync).
 //!
-//! ## `ReplayWindow` status (per t8-A6 brief)
+//! ## Replay protection = the counter nonce (no separate window)
 //!
-//! `ReplayWindow` (`BTreeSet`) **exists** — see `shadowsocks.rs:298`.
-//! Capacity: 1024 (`REPLAY_WINDOW` const). Implementation: bounded
-//! `BTreeSet`, oldest-entry eviction.
+//! Replay protection within a session IS the monotonic counter nonce: each
+//! frame is opened under a strictly increasing nonce and the AEAD tag only
+//! validates at the exact expected position, so a re-injected frame fails the
+//! tag. An earlier revision also carried a `seen: BTreeSet<u64>` "sliding
+//! window", but it tracked the same *local* counter (never a wire value), so
+//! its reuse check was unreachable dead code — it has been **removed**. The
+//! `in_session_frame_replay_desyncs_and_fails` test below exercises the real
+//! property end-to-end through a live `AeadStream` pair.
 
-use std::sync::Arc;
+use std::collections::VecDeque;
+use std::pin::Pin;
+use std::sync::{Arc, Mutex};
+use std::task::{Context, Poll};
 
 use spt_obfs::audit::NoopAuditHook;
 use spt_obfs::config::{ObfsConfig, SsMethod};
-use spt_obfs::shadowsocks::ShadowsocksTransport;
+use spt_obfs::shadowsocks::{direction_keys, AeadStream, ShadowsocksTransport, SsRole};
 use spt_secrets::SecretRef;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 
 fn ss_cfg(method: SsMethod) -> ObfsConfig {
     ObfsConfig::Shadowsocks {
@@ -94,17 +98,149 @@ fn tampered_ciphertext_rejected() {
     );
 }
 
-#[test]
-fn replay_window_exists_in_source() {
-    // Structural assertion: the source file declares `REPLAY_WINDOW` and
-    // a `seen: BTreeSet<u64>`. We can't reach in to call internal
-    // `AeadStream` methods from an integration test (those are private),
-    // so we document the contract by exercising the public surface and
-    // noting the source pin in the test name.
-    //
-    // The replay window is exercised end-to-end via the live transport in
-    // `tests/contract.rs::shadowsocks_loopback_round_trip` (when present).
-    let _ = std::any::type_name::<spt_obfs::shadowsocks::AeadStream>();
+/// Minimal in-memory duplex: serves a fixed inbound byte queue to the reader
+/// and discards writes. Returns EOF (Ready+empty) once the queue drains so a
+/// reader does not hang.
+#[derive(Clone)]
+struct ReplayDuplex {
+    inbound: Arc<Mutex<VecDeque<u8>>>,
+}
+
+impl ReplayDuplex {
+    fn new(inbound: Vec<u8>) -> Self {
+        Self {
+            inbound: Arc::new(Mutex::new(inbound.into_iter().collect())),
+        }
+    }
+}
+
+impl AsyncRead for ReplayDuplex {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        let mut q = self.inbound.lock().unwrap();
+        let n = buf.remaining().min(q.len());
+        for _ in 0..n {
+            buf.put_slice(&[q.pop_front().unwrap()]);
+        }
+        // Empty + nothing filled => EOF.
+        Poll::Ready(Ok(()))
+    }
+}
+
+impl AsyncWrite for ReplayDuplex {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+        data: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        Poll::Ready(Ok(data.len()))
+    }
+    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+    fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+}
+
+/// A write sink that captures everything written, used to harvest the on-wire
+/// frame bytes a client-role `AeadStream` emits.
+#[derive(Clone)]
+struct CaptureSink(Arc<Mutex<Vec<u8>>>);
+
+impl AsyncRead for CaptureSink {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+        _buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+}
+
+impl AsyncWrite for CaptureSink {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+        data: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        self.0.lock().unwrap().extend_from_slice(data);
+        Poll::Ready(Ok(data.len()))
+    }
+    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+    fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+}
+
+/// Produce the on-wire frames a client-role `AeadStream` emits for `payloads`,
+/// one entry per payload (split by the byte delta after each write).
+async fn wire_frames(session_key: &[u8], method: SsMethod, payloads: &[&[u8]]) -> Vec<Vec<u8>> {
+    let captured = Arc::new(Mutex::new(Vec::<u8>::new()));
+    let (tx, rx) = direction_keys(session_key, method, SsRole::Client);
+    let mut w = AeadStream::new(Box::new(CaptureSink(captured.clone())), method, tx, rx);
+    let mut frames = Vec::new();
+    let mut prev_len = 0usize;
+    for p in payloads {
+        w.write_all(p).await.unwrap();
+        let snap = captured.lock().unwrap().clone();
+        frames.push(snap[prev_len..].to_vec());
+        prev_len = snap.len();
+    }
+    frames
+}
+
+#[tokio::test]
+async fn in_session_frame_replay_desyncs_and_fails() {
+    // Real replay property (replacing the former zero-assertion tautology):
+    // re-injecting an already-consumed frame at a later position fails the AEAD
+    // tag because the reader's monotonic counter nonce has advanced.
+    let method = SsMethod::Aead2022Blake3Aes256Gcm;
+    let key = transport(method, b"replay-pw")
+        .derive_key(&[0x33; 32])
+        .unwrap();
+
+    let frames = wire_frames(&key, method, &[b"frame-one", b"frame-two"]).await;
+    assert_eq!(frames.len(), 2);
+
+    // Honest baseline: [A][B] reads back both payloads.
+    let mut ok_wire = frames[0].clone();
+    ok_wire.extend_from_slice(&frames[1]);
+    let (s_tx, s_rx) = direction_keys(&key, method, SsRole::Server);
+    let mut reader = AeadStream::new(Box::new(ReplayDuplex::new(ok_wire)), method, s_tx, s_rx);
+    let mut got = vec![0u8; b"frame-one".len()];
+    reader.read_exact(&mut got).await.unwrap();
+    assert_eq!(got, b"frame-one");
+    let mut got2 = vec![0u8; b"frame-two".len()];
+    reader.read_exact(&mut got2).await.unwrap();
+    assert_eq!(got2, b"frame-two");
+
+    // Attack: [A][A] — replay frame A in B's slot. The first read succeeds;
+    // the second must fail (counter desync → AEAD tag mismatch).
+    let mut replay_wire = frames[0].clone();
+    replay_wire.extend_from_slice(&frames[0]);
+    let (s_tx2, s_rx2) = direction_keys(&key, method, SsRole::Server);
+    let mut reader2 = AeadStream::new(
+        Box::new(ReplayDuplex::new(replay_wire)),
+        method,
+        s_tx2,
+        s_rx2,
+    );
+    let mut first = vec![0u8; b"frame-one".len()];
+    reader2.read_exact(&mut first).await.unwrap();
+    assert_eq!(first, b"frame-one");
+    // Reading the replayed frame must error (not silently accept the replay).
+    let mut buf = [0u8; 64];
+    let res = reader2.read(&mut buf).await;
+    assert!(
+        res.is_err(),
+        "a replayed frame must fail the AEAD tag at the advanced counter, got {res:?}"
+    );
 }
 
 #[test]

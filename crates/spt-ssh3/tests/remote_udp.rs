@@ -217,3 +217,199 @@ async fn remote_udp_forward_round_trips_payload() {
     let _ = client_conn.close(0u32.into(), b"done");
     let _ = server_conn.close(0u32.into(), b"done");
 }
+
+/// M5: a peer flooding `RemoteUdpForwardRequest` frames must be bounded by the
+/// `inbound_forward_limit` semaphore. With `max_forwards = 1` the server binds
+/// the first requested listener (which holds the only permit for its lifetime)
+/// and silently drops every later request — so only the first forward works.
+#[tokio::test]
+async fn remote_udp_forward_flood_bounded_by_semaphore() {
+    let (client_conn, server_conn) = connected_pair().await;
+
+    let (cs_res, sv_res) = tokio::join!(
+        open_control_stream(&client_conn, local_settings()),
+        accept_control_stream(&server_conn, local_settings()),
+    );
+    let (c_send, c_recv, c_peer) = cs_res.unwrap();
+    let (s_send, s_recv, _s_peer) = sv_res.unwrap();
+
+    // Server caps inbound forwards at ONE.
+    let server_state = Arc::new(SessionState::with_max_forwards(Some(1)));
+    let server_send = Arc::new(AsyncMutex::new(s_send));
+    let acceptor = tokio::spawn(serve_remote_udp_forwards(
+        server_conn.clone(),
+        s_recv,
+        server_send,
+        server_state.clone(),
+    ));
+    let demux = tokio::spawn(serve_datagram_demux(
+        server_conn.clone(),
+        server_state.clone(),
+    ));
+
+    let mut client_session: Box<dyn TunnelSession> = Box::new(Ssh3Session::from_parts(
+        client_conn.clone(),
+        c_send,
+        c_recv,
+        c_peer,
+        dummy_info("client"),
+        None,
+    ));
+
+    // One local echo socket; both forwards point their client-side target at it.
+    let echo = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0u16)).await.unwrap();
+    let echo_addr = echo.local_addr().unwrap();
+    let echo_task = tokio::spawn(async move {
+        let mut buf = [0u8; 2048];
+        loop {
+            match echo.recv_from(&mut buf).await {
+                Ok((n, peer)) => {
+                    let _ = echo.send_to(&buf[..n], peer).await;
+                }
+                Err(_) => break,
+            }
+        }
+    });
+
+    // Claim two distinct server-bind ports.
+    let probe_a = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0u16)).await.unwrap();
+    let bind_a = probe_a.local_addr().unwrap();
+    drop(probe_a);
+    let probe_b = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0u16)).await.unwrap();
+    let bind_b = probe_b.local_addr().unwrap();
+    drop(probe_b);
+
+    let mk_spec = |name: &str, bind: SocketAddr| UdpForwardSpec {
+        name: name.into(),
+        direction: ForwardDirection::Remote,
+        listen: BindAddr::Tcp(bind),
+        target: TargetAddr::new(echo_addr.ip().to_string(), echo_addr.port()),
+        idle_timeout_secs: 30,
+        max_flows: None,
+        limits: ForwardRateLimits::default(),
+    };
+
+    // Forward A is requested first → acquires the single permit and binds.
+    let _ha = client_session
+        .open_udp_forward(&mk_spec("rudp-a", bind_a))
+        .await
+        .unwrap();
+    // Forward B is requested second → semaphore is exhausted → dropped server-side.
+    let _hb = client_session
+        .open_udp_forward(&mk_spec("rudp-b", bind_b))
+        .await
+        .unwrap();
+
+    tokio::time::sleep(Duration::from_millis(250)).await;
+
+    // A must round-trip (its listener bound).
+    let ext_a = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0u16)).await.unwrap();
+    ext_a.connect(bind_a).await.unwrap();
+    ext_a.send(b"to-a").await.unwrap();
+    let mut buf = [0u8; 64];
+    let got_a = tokio::time::timeout(Duration::from_secs(5), ext_a.recv(&mut buf))
+        .await
+        .expect("forward A (within cap) must echo")
+        .unwrap();
+    assert_eq!(&buf[..got_a], b"to-a");
+
+    // B must NOT round-trip — no listener was bound for it (over the cap), so
+    // the datagram goes nowhere and the recv times out.
+    let ext_b = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0u16)).await.unwrap();
+    ext_b.connect(bind_b).await.unwrap();
+    ext_b.send(b"to-b").await.unwrap();
+    let mut buf_b = [0u8; 64];
+    let res_b = tokio::time::timeout(Duration::from_millis(800), ext_b.recv(&mut buf_b)).await;
+    // B must NOT echo: acceptable outcomes are a timeout (no listener bound) or
+    // a recv error (e.g. ICMP port-unreachable / WSAECONNRESET on Windows). The
+    // only failure is a *successful* echo of the payload, which would mean the
+    // over-cap forward bound a listener.
+    let b_echoed = matches!(res_b, Ok(Ok(n)) if &buf_b[..n] == b"to-b");
+    assert!(
+        !b_echoed,
+        "forward B (over cap) must NOT bind/echo — semaphore should have dropped it (got {res_b:?})"
+    );
+
+    echo_task.abort();
+    acceptor.abort();
+    demux.abort();
+    let _ = client_conn.close(0u32.into(), b"done");
+    let _ = server_conn.close(0u32.into(), b"done");
+}
+
+/// M5 (UDS path): a peer flooding `RemoteUdsForwardRequest` frames is bounded
+/// by the same `inbound_forward_limit` semaphore. With `max_forwards = 1` one
+/// request is ACKed `ok:true` (binds the listener, holds the permit) and the
+/// over-cap request is rejected `ok:false` — so across two requests we observe
+/// exactly one accept and one rejection (ACK order races, but content does
+/// not).
+#[cfg(unix)]
+#[tokio::test]
+async fn remote_uds_forward_flood_bounded_by_semaphore() {
+    use spt_ssh3::frame::{ForwardOpenResponse, Ssh3Frame, Ssh3FrameKind, UdsChannelOpenPayload};
+
+    let (client_conn, server_conn) = connected_pair().await;
+
+    let (cs_res, sv_res) = tokio::join!(
+        open_control_stream(&client_conn, local_settings()),
+        accept_control_stream(&server_conn, local_settings()),
+    );
+    let (mut c_send, mut c_recv, _c_peer) = cs_res.unwrap();
+    let (s_send, s_recv, _s_peer) = sv_res.unwrap();
+
+    let server_state = Arc::new(SessionState::with_max_forwards(Some(1)));
+    let server_send = Arc::new(AsyncMutex::new(s_send));
+    let acceptor = tokio::spawn(serve_remote_udp_forwards(
+        server_conn.clone(),
+        s_recv,
+        server_send,
+        server_state.clone(),
+    ));
+
+    // Two distinct remote bind paths in the temp dir.
+    let uniq = std::process::id();
+    let path_a = std::env::temp_dir().join(format!("spt-ssh3-uds-flood-a-{uniq}.sock"));
+    let path_b = std::env::temp_dir().join(format!("spt-ssh3-uds-flood-b-{uniq}.sock"));
+    let _ = std::fs::remove_file(&path_a);
+    let _ = std::fs::remove_file(&path_b);
+
+    for p in [&path_a, &path_b] {
+        let frame = Ssh3Frame::new(
+            Ssh3FrameKind::RemoteUdsForwardRequest,
+            UdsChannelOpenPayload {
+                path: p.to_string_lossy().into_owned(),
+            }
+            .encode(),
+        );
+        frame.write_async(&mut c_send).await.unwrap();
+    }
+
+    // Read both ACKs (order between the accept task and the cap-reject path is
+    // not deterministic, so collect and assert on the multiset).
+    let mut oks = Vec::new();
+    for _ in 0..2 {
+        let frame =
+            tokio::time::timeout(Duration::from_secs(5), Ssh3Frame::read_async(&mut c_recv))
+                .await
+                .expect("ack within deadline")
+                .expect("ack frame");
+        assert_eq!(frame.kind, Ssh3FrameKind::ForwardOpenResponse);
+        oks.push(ForwardOpenResponse::decode(frame.payload).unwrap().ok);
+    }
+    let accepted = oks.iter().filter(|&&ok| ok).count();
+    let rejected = oks.iter().filter(|&&ok| !ok).count();
+    assert_eq!(
+        accepted, 1,
+        "exactly one remote-uds forward accepted under cap=1"
+    );
+    assert_eq!(
+        rejected, 1,
+        "the over-cap remote-uds forward must be rejected"
+    );
+
+    acceptor.abort();
+    let _ = std::fs::remove_file(&path_a);
+    let _ = std::fs::remove_file(&path_b);
+    let _ = client_conn.close(0u32.into(), b"done");
+    let _ = server_conn.close(0u32.into(), b"done");
+}

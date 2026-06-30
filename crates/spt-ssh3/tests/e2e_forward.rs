@@ -251,3 +251,74 @@ async fn preflight_connect_err_against_dead_endpoint() {
     );
     let _ = Box::new(session).close().await;
 }
+
+/// M6: the server-side handshake must not hang on a half-open peer. A client
+/// that completes the QUIC handshake but never opens the CONNECT bidi must
+/// cause `Ssh3Server::run` to return an error once the (short, test-configured)
+/// handshake timeout elapses — not pin the task forever.
+#[tokio::test]
+async fn server_handshake_times_out_on_stalled_peer() {
+    install_ring();
+    // Self-contained quinn pair (server + trusting client over one cert).
+    let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+    let cert_der = CertificateDer::from(cert.cert.der().to_vec());
+    let key_der = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(cert.key_pair.serialize_der()));
+
+    let mut rustls_server = rustls::ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(vec![cert_der.clone()], key_der)
+        .unwrap();
+    rustls_server.alpn_protocols = vec![b"h3".to_vec()];
+    let quic_server = quinn::crypto::rustls::QuicServerConfig::try_from(rustls_server).unwrap();
+    let mut server_cfg = quinn::ServerConfig::with_crypto(Arc::new(quic_server));
+    let mut tcfg = quinn::TransportConfig::default();
+    tcfg.max_idle_timeout(Some(Duration::from_secs(30).try_into().unwrap()));
+    server_cfg.transport_config(Arc::new(tcfg));
+
+    let server_endpoint =
+        quinn::Endpoint::server(server_cfg, (Ipv4Addr::LOCALHOST, 0).into()).unwrap();
+    let server_addr = server_endpoint.local_addr().unwrap();
+
+    // Server: accept one connection and run the responder with a short
+    // handshake deadline.
+    let server_task = tokio::spawn(async move {
+        let incoming = server_endpoint.accept().await.unwrap();
+        let conn = incoming.await.unwrap();
+        let acl = Ssh3ServerAcl::fixed_target(TargetAddr::new("127.0.0.1".to_string(), 9));
+        Ssh3Server::new()
+            .with_handshake_timeout(Duration::from_millis(200))
+            .run(conn, acl)
+            .await
+    });
+
+    // Client: complete the QUIC handshake, then do NOTHING (never open the
+    // CONNECT bidi).
+    let mut roots = rustls::RootCertStore::empty();
+    roots.add(cert_der).unwrap();
+    let mut rustls_client = rustls::ClientConfig::builder()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    rustls_client.alpn_protocols = vec![b"h3".to_vec()];
+    let quic_client = quinn::crypto::rustls::QuicClientConfig::try_from(rustls_client).unwrap();
+    let mut client_endpoint = quinn::Endpoint::client((Ipv4Addr::LOCALHOST, 0).into()).unwrap();
+    client_endpoint.set_default_client_config(quinn::ClientConfig::new(Arc::new(quic_client)));
+    let client_conn = client_endpoint
+        .connect(server_addr, "localhost")
+        .unwrap()
+        .await
+        .unwrap();
+
+    // The server must return an error promptly (handshake timeout), not hang.
+    let outcome = tokio::time::timeout(Duration::from_secs(5), server_task)
+        .await
+        .expect("server task must finish (handshake timeout), not hang")
+        .expect("server task should not panic");
+    assert!(
+        outcome.is_err(),
+        "stalled CONNECT must make the server handshake time out, got {outcome:?}"
+    );
+
+    // Keep the client connection alive until here so QUIC stays up during the
+    // server's handshake wait.
+    drop(client_conn);
+}

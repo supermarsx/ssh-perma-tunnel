@@ -21,9 +21,13 @@ WORKDIR="{{working_dir}}"
 case "$1" in
     start)
         echo "Starting ${NAME}"
+        # DAEMON_ARGS is single-quoted per argument by the generator; eval it
+        # into the positional params so args with spaces / metacharacters are
+        # passed through intact rather than word-split.
+        eval "set -- ${DAEMON_ARGS}"
         start-stop-daemon --start --background --pidfile "${PIDFILE}" --make-pidfile \
             --chuid "${DAEMON_USER}" --chdir "${WORKDIR}" \
-            --exec "${DAEMON}" -- ${DAEMON_ARGS}
+            --exec "${DAEMON}" -- "$@"
         ;;
     stop)
         echo "Stopping ${NAME}"

@@ -42,6 +42,7 @@
 #![cfg(any(test, feature = "server"))]
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use spt_core::{Error, Result};
 use spt_protocol::endpoint::TargetAddr;
@@ -57,6 +58,13 @@ use crate::transport::accept_control_stream;
 
 /// HTTP/3 HEADERS frame type (RFC 9114 §7.2.2).
 const FRAME_HEADERS: u64 = 0x01;
+
+/// Generous default deadline for the server-side accept→CONNECT→control-ready
+/// handshake. A half-open peer (stalled CONNECT, or an endless stream of
+/// non-HEADERS frames that defeats the idle timeout) cannot pin the
+/// per-connection task past this bound; a legit slow-but-progressing handshake
+/// completes well within it. Matches the client-side CONNECT timeout (30s).
+const DEFAULT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Resolver/authorizer for a peer-requested `direct-tcp` open: maps the open to
 /// a dial target, or `None` to deny.
@@ -148,6 +156,8 @@ pub struct Ssh3Server {
     /// Capabilities advertised to the client on the control stream. Gates which
     /// forward kinds the client will attempt.
     settings: Ssh3Settings,
+    /// Deadline for the accept→CONNECT→control-ready handshake.
+    handshake_timeout: Duration,
 }
 
 impl Default for Ssh3Server {
@@ -170,6 +180,7 @@ impl Ssh3Server {
                 version: Some(concat!("spt-ssh3-server/", env!("CARGO_PKG_VERSION")).to_string()),
                 extras: Vec::new(),
             },
+            handshake_timeout: DEFAULT_HANDSHAKE_TIMEOUT,
         }
     }
 
@@ -177,6 +188,15 @@ impl Ssh3Server {
     #[must_use]
     pub fn with_settings(mut self, settings: Ssh3Settings) -> Self {
         self.settings = settings;
+        self
+    }
+
+    /// Override the accept→CONNECT→control-ready handshake deadline (default
+    /// 30s). Primarily a test hook for asserting the stalled-peer timeout
+    /// fires quickly.
+    #[must_use]
+    pub fn with_handshake_timeout(mut self, d: Duration) -> Self {
+        self.handshake_timeout = d;
         self
     }
 
@@ -189,19 +209,39 @@ impl Ssh3Server {
     pub async fn run(self, connection: quinn::Connection, acl: Ssh3ServerAcl) -> Result<()> {
         let acl = Arc::new(acl);
 
-        // 0. Open the server-side HTTP/3 control stream + SETTINGS so the
-        // client's h3 driver (`poll_close`) observes a live peer and does NOT
-        // tear the QUIC connection down when its driver task drops. Held for the
-        // connection's lifetime. The real francoismichel/ssh3 server provides
-        // this implicitly (it is a full h3 server).
-        let _h3_control = crate::h3_raw::write_server_control_stream(&connection).await?;
+        // Steps 0–2 form the server-side handshake. Wrap them in a deadline so a
+        // half-open peer (stalled CONNECT, or endless non-HEADERS frames that
+        // defeat the idle timeout) cannot pin this per-connection task forever
+        // (M6). `_h3_control` must outlive the handshake (held for the
+        // connection's lifetime), so it is returned from the timed block and
+        // bound in the outer scope.
+        let settings = self.settings.clone();
+        let handshake = async {
+            // 0. Open the server-side HTTP/3 control stream + SETTINGS so the
+            // client's h3 driver (`poll_close`) observes a live peer and does
+            // NOT tear the QUIC connection down when its driver task drops. The
+            // real francoismichel/ssh3 server provides this implicitly (it is a
+            // full h3 server).
+            let h3_control = crate::h3_raw::write_server_control_stream(&connection).await?;
 
-        // 1. HTTP/3 Extended-CONNECT bootstrap bidi (client's first bidi).
-        self.handle_connect(&connection, &acl).await?;
+            // 1. HTTP/3 Extended-CONNECT bootstrap bidi (client's first bidi).
+            self.handle_connect(&connection, &acl).await?;
 
-        // 2. Control stream (client's second bidi): exchange Settings.
-        let (control_send, control_recv, _peer) =
-            accept_control_stream(&connection, self.settings.clone()).await?;
+            // 2. Control stream (client's second bidi): exchange Settings.
+            let (control_send, control_recv, _peer) =
+                accept_control_stream(&connection, settings).await?;
+            Ok::<_, Error>((h3_control, control_send, control_recv))
+        };
+        let (_h3_control, control_send, control_recv) =
+            match tokio::time::timeout(self.handshake_timeout, handshake).await {
+                Ok(Ok(parts)) => parts,
+                Ok(Err(e)) => return Err(e),
+                Err(_) => {
+                    return Err(Error::RuntimeFailure(
+                        "ssh3 server: handshake timed out".into(),
+                    ))
+                }
+            };
         let control_send = Arc::new(AsyncMutex::new(control_send));
 
         // Shared per-connection state — one SessionState wires the local-TCP

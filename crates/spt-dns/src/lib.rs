@@ -31,6 +31,7 @@
 #![warn(missing_docs)]
 
 pub mod error;
+pub mod forward_acl;
 pub mod health;
 pub mod hosts;
 pub mod mode;
@@ -43,6 +44,7 @@ pub mod zone;
 pub mod testing;
 
 pub use error::{DnsError, Result};
+pub use forward_acl::ForwardScope;
 pub use health::{AlwaysHealthy, ForwardHealth, HealthSource, NoHealth};
 pub use hosts::{HostsApplyReport, HostsEntry, HostsManager, HOSTS_BEGIN_MARKER, HOSTS_END_MARKER};
 pub use mode::DnsMode;

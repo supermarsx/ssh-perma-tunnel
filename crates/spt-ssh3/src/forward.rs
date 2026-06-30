@@ -1263,6 +1263,9 @@ pub async fn serve_remote_uds_request(
     conn: Connection,
     control_send: Arc<AsyncMutex<SendStream>>,
     bind_path: String,
+    // Held for the listener's lifetime so the `inbound_forward_limit` cap
+    // reflects this live remote-UDS forward (M5); released on return.
+    _permit: tokio::sync::OwnedSemaphorePermit,
 ) {
     unlink_existing_socket(std::path::Path::new(&bind_path));
     let listener = match tokio::net::UnixListener::bind(&bind_path) {
@@ -1663,9 +1666,32 @@ pub async fn serve_remote_udp_forwards(
                     continue;
                 }
             };
+            // M5: gate remote-UDS forward listeners behind the same
+            // `inbound_forward_limit` semaphore that bounds the matched-forward
+            // TCP path, so a peer flooding RemoteUdsForwardRequest frames cannot
+            // spawn unbounded listeners/tasks. The permit is held for the
+            // listener's lifetime and released when `serve_remote_uds_request`
+            // returns.
+            let Ok(permit) = state.inbound_forward_limit.clone().try_acquire_owned() else {
+                warn!(target: "spt_ssh3::forward", path = %path, "remote-uds: max_forwards reached — rejecting");
+                // The client awaits a ForwardOpenResponse ACK, so reject
+                // explicitly rather than letting it time out.
+                let mut g = control_send.lock().await;
+                let _ = Ssh3Frame::new(
+                    Ssh3FrameKind::ForwardOpenResponse,
+                    ForwardOpenResponse {
+                        ok: false,
+                        reason: "max_forwards reached".into(),
+                    }
+                    .encode(),
+                )
+                .write_async(&mut *g)
+                .await;
+                continue;
+            };
             let conn = conn.clone();
             let ctl = control_send.clone();
-            tokio::spawn(serve_remote_uds_request(conn, ctl, path));
+            tokio::spawn(serve_remote_uds_request(conn, ctl, path, permit));
             continue;
         }
         if frame.kind != Ssh3FrameKind::RemoteUdpForwardRequest {
@@ -1680,6 +1706,20 @@ pub async fn serve_remote_udp_forwards(
                 warn!(target: "spt_ssh3::forward", error = %e, "remote-udp: bad payload");
                 continue;
             }
+        };
+        // M5: gate remote-UDP forward listeners behind the same
+        // `inbound_forward_limit` semaphore that bounds the matched-forward TCP
+        // path. Acquire BEFORE binding so a flood of RemoteUdpForwardRequest
+        // frames cannot even open sockets. The client does not await an ACK on
+        // this path (see `open_remote_udp`), so an over-cap request is dropped
+        // with a warning. The permit is held for the listener's lifetime.
+        let Ok(permit) = state.inbound_forward_limit.clone().try_acquire_owned() else {
+            warn!(
+                target: "spt_ssh3::forward",
+                bind = %format!("{}:{}", payload.host, payload.port),
+                "remote-udp: max_forwards reached — dropping request"
+            );
+            continue;
         };
         let socket = match UdpSocket::bind((payload.host.as_str(), payload.port)).await {
             Ok(s) => s,
@@ -1696,7 +1736,13 @@ pub async fn serve_remote_udp_forwards(
         let conn = conn.clone();
         let state = state.clone();
         let _ctl = control_send.clone();
-        tokio::spawn(server_remote_udp_loop(socket, conn, state, payload.flow_id));
+        tokio::spawn(server_remote_udp_loop(
+            socket,
+            conn,
+            state,
+            payload.flow_id,
+            permit,
+        ));
     }
 }
 
@@ -1705,6 +1751,9 @@ async fn server_remote_udp_loop(
     conn: Connection,
     state: Arc<SessionState>,
     flow_id: u32,
+    // Held for the loop's lifetime so the `inbound_forward_limit` cap reflects
+    // this live remote-UDP forward (M5); released on return.
+    _permit: tokio::sync::OwnedSemaphorePermit,
 ) {
     let socket = Arc::new(socket);
     // Track the most recent external source so replies can be delivered.

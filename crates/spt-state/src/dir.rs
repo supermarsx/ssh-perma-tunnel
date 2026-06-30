@@ -83,6 +83,12 @@ fn default_state_dir() -> Result<PathBuf> {
 }
 
 fn ensure_dir(dir: &Path) -> Result<()> {
+    // Whether the leaf already existed governs the Windows tightening below
+    // (mirrors the Unix "tighten on first creation" intent and avoids an
+    // `icacls` shell-out on every CLI invocation).
+    #[cfg(windows)]
+    let freshly_created = !dir.exists();
+
     std::fs::create_dir_all(dir).map_err(|e| Error::StateLockFailed {
         path: dir.to_path_buf(),
         reason: format!("create state directory failed: {e}"),
@@ -102,7 +108,69 @@ fn ensure_dir(dir: &Path) -> Result<()> {
         }
     }
 
+    // H2: Windows has no `0700` mode bit. The default per-user state dir
+    // (`%LOCALAPPDATA%\spt\state`) is safe, but operators routinely point
+    // `--state-dir` / `SPT_STATE_DIR` at a machine-wide path, and the SCM
+    // service runs as LocalSystem — so state files created under
+    // `C:\ProgramData` would inherit `Users:Read`. On fresh creation, set an
+    // explicit, inheritable owner + SYSTEM/Administrators DACL so the dir AND
+    // the files later created inside it (status/lock/event/spool) are not
+    // readable by all local users.
+    #[cfg(windows)]
+    if freshly_created {
+        windows_acl::restrict_dir(dir);
+    }
+
     Ok(())
+}
+
+/// Restrict a freshly-created state directory's DACL on Windows to owner +
+/// SYSTEM + Administrators, with the grants made inheritable so files created
+/// inside are protected too. Implemented via `icacls` (always present on
+/// Windows) so no new crate dependency is added. Best-effort: failures are
+/// logged, never fatal.
+#[cfg(windows)]
+mod windows_acl {
+    use std::path::Path;
+    use std::process::Command;
+
+    pub(super) fn restrict_dir(dir: &Path) {
+        // `(OI)(CI)(F)` = object+container inherit, full control — so child
+        // files/dirs inherit the owner-only DACL. Well-known SIDs keep the
+        // grant locale-independent (*S-1-5-18 = Local System,
+        // *S-1-5-32-544 = BUILTIN\Administrators).
+        let mut cmd = Command::new("icacls");
+        cmd.arg(dir)
+            .arg("/inheritance:r")
+            .arg("/grant:r")
+            .arg("*S-1-5-18:(OI)(CI)(F)")
+            .arg("/grant:r")
+            .arg("*S-1-5-32-544:(OI)(CI)(F)");
+        if let Ok(user) = std::env::var("USERNAME") {
+            if !user.is_empty() {
+                let principal = match std::env::var("USERDOMAIN") {
+                    Ok(dom) if !dom.is_empty() => format!("{dom}\\{user}"),
+                    _ => user,
+                };
+                cmd.arg("/grant:r").arg(format!("{principal}:(OI)(CI)(F)"));
+            }
+        }
+        match cmd.output() {
+            Ok(out) if out.status.success() => {}
+            Ok(out) => tracing::warn!(
+                path = %dir.display(),
+                code = ?out.status.code(),
+                stderr = %String::from_utf8_lossy(&out.stderr).trim(),
+                "icacls could not restrict the state directory DACL; \
+                 state files may be readable by non-owner principals"
+            ),
+            Err(e) => tracing::warn!(
+                path = %dir.display(),
+                error = %e,
+                "could not run icacls to restrict the state directory DACL"
+            ),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -214,6 +282,31 @@ mod tests {
         assert!(resolved.is_dir());
         // Portable's state dir must NOT have been touched.
         assert!(!exe_dir.join("data").join("state").exists());
+    }
+
+    // H2: a freshly-created state dir on Windows must have its DACL restricted
+    // so the Users group / Everyone lose read. We read the DACL back via
+    // `icacls`. (GitHub-hosted Windows runners are en-US, so the group names
+    // below match; the inheritance-removed `(I)` check is locale-independent.)
+    #[cfg(windows)]
+    #[test]
+    fn windows_fresh_state_dir_drops_users_read() {
+        use std::process::Command;
+        let tmp = tempdir().unwrap();
+        let target = tmp.path().join("win-state");
+        let _ = resolve_state_dir(Some(&target)).unwrap();
+
+        let out = Command::new("icacls").arg(&target).output().unwrap();
+        assert!(out.status.success(), "icacls readback failed");
+        let text = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            !text.contains("\\Users:") && !text.contains("Everyone:"),
+            "Users/Everyone still present in state-dir DACL: {text}"
+        );
+        assert!(
+            text.contains("SYSTEM"),
+            "SYSTEM grant missing from restricted state-dir DACL: {text}"
+        );
     }
 
     #[cfg(unix)]

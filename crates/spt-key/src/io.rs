@@ -103,9 +103,65 @@ fn write_secret_file(path: &Path, bytes: &[u8]) -> Result<()> {
         })
         .map_err(|e| {
             Error::RuntimeFailure(format!("atomic write of `{}` failed: {e}", path.display()))
-        })
+        })?;
+        // H2: Windows has no `0600` mode bit. A private key written under a
+        // shared path (e.g. a LocalSystem service pointed at `C:\ProgramData`)
+        // would inherit `Users:Read`. Tighten the DACL to owner + SYSTEM/
+        // Administrators, removing inherited access. Best-effort + no-op on
+        // non-windows non-unix targets.
+        restrict_to_owner(path);
+        Ok(())
     }
 }
+
+/// Restrict a freshly-written key file's DACL on Windows (owner + SYSTEM +
+/// Administrators only, inheritance removed). No-op on non-Windows. See the
+/// `spt-secrets` equivalent for the full rationale (H1/H2). Implemented via
+/// `icacls` (always present on Windows) so no new crate dependency is added.
+#[cfg(windows)]
+fn restrict_to_owner(path: &Path) {
+    use std::process::Command;
+
+    // Well-known SIDs avoid locale-dependent group names:
+    //   *S-1-5-18     = Local System
+    //   *S-1-5-32-544 = BUILTIN\Administrators
+    let mut cmd = Command::new("icacls");
+    cmd.arg(path)
+        .arg("/inheritance:r")
+        .arg("/grant:r")
+        .arg("*S-1-5-18:(F)")
+        .arg("/grant:r")
+        .arg("*S-1-5-32-544:(F)");
+    if let Ok(user) = std::env::var("USERNAME") {
+        if !user.is_empty() {
+            let principal = match std::env::var("USERDOMAIN") {
+                Ok(dom) if !dom.is_empty() => format!("{dom}\\{user}"),
+                _ => user,
+            };
+            cmd.arg("/grant:r").arg(format!("{principal}:(F)"));
+        }
+    }
+    match cmd.output() {
+        Ok(out) if out.status.success() => {}
+        Ok(out) => tracing::warn!(
+            path = %path.display(),
+            code = ?out.status.code(),
+            stderr = %String::from_utf8_lossy(&out.stderr).trim(),
+            "icacls could not restrict DACL on a key file; it may be readable by non-owner principals"
+        ),
+        Err(e) => tracing::warn!(
+            path = %path.display(),
+            error = %e,
+            "could not run icacls to restrict key file DACL"
+        ),
+    }
+}
+
+// Only the `not(unix)` write arm calls this; on unix neither definition is
+// compiled (nor is the call site), so the no-op is gated to non-unix non-windows
+// targets to avoid a dead-code warning on unix.
+#[cfg(all(not(unix), not(windows)))]
+fn restrict_to_owner(_path: &Path) {}
 
 /// Load a (possibly encrypted) OpenSSH-format private key from `path`.
 pub fn load(path: &Path, passphrase: Option<&str>) -> Result<KeyPair> {
@@ -222,6 +278,34 @@ mod tests {
         assert_eq!(mode, 0o600, "overwritten key must be 0600, got 0{mode:o}");
         // the sibling temp must not survive a successful write
         assert!(!with_extension_appended(&plain, "tmp").exists());
+    }
+
+    // H2: a key written on Windows must have its DACL restricted so the Users
+    // group / Everyone lose read. We read the DACL back via `icacls`.
+    // (GitHub-hosted Windows runners are en-US; the `(I)` inheritance check is
+    // locale-independent.)
+    #[cfg(windows)]
+    #[test]
+    fn windows_written_key_drops_users_read() {
+        use std::process::Command;
+        let kp = generate(KeyAlgorithm::Ed25519).unwrap();
+        let dir = tempdir().unwrap();
+        let p = dir.path().join("id_win");
+        save_encrypted(&kp, &p, None).unwrap();
+
+        let out = Command::new("icacls").arg(&p).output().unwrap();
+        assert!(out.status.success(), "icacls readback failed");
+        let text = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            !text.contains("\\Users:") && !text.contains("Everyone:"),
+            "Users/Everyone still present in key DACL: {text}"
+        );
+        assert!(
+            !text.contains("(I)"),
+            "inherited ACEs survived key restriction: {text}"
+        );
+        // The key is still loadable by the owner after restriction.
+        assert!(load(&p, None).is_ok());
     }
 
     #[test]

@@ -176,9 +176,26 @@ fn write_master_key(path: &Path, key: &[u8]) -> Result<()> {
     }
     #[cfg(not(unix))]
     {
-        std::fs::write(path, key).map_err(|e| Error::SecretUnavailable {
+        // H1: on Windows the bare `fs::write` left the 32-byte vault root key
+        // with the inherited DACL of the (often shared/removable) portable
+        // tree — world-readable on `Program Files` / a USB stick. Write to a
+        // sibling temp, restrict its DACL to owner + SYSTEM/Administrators,
+        // then rename into place so the key is never observable with broad
+        // permissions. Mirrors the Unix temp+rename+0600 path. On non-windows,
+        // non-unix targets `restrict_to_owner` is a no-op and this degrades to
+        // an atomic temp+rename.
+        let tmp = path.with_extension("key.tmp");
+        std::fs::write(&tmp, key).map_err(|e| Error::SecretUnavailable {
             reference: format!("portable-vault://{}", path.display()),
-            reason: format!("write master key: {e}"),
+            reason: format!("write temp master key: {e}"),
+        })?;
+        crate::file::restrict_to_owner(&tmp);
+        std::fs::rename(&tmp, path).map_err(|e| {
+            let _ = std::fs::remove_file(&tmp);
+            Error::SecretUnavailable {
+                reference: format!("portable-vault://{}", path.display()),
+                reason: format!("rename master key into place: {e}"),
+            }
         })?;
         Ok(())
     }

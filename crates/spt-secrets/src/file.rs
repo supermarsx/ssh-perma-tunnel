@@ -269,6 +269,89 @@ mod windows_dacl {
     }
 }
 
+/// Tighten a freshly-written secret/key file's DACL to owner + SYSTEM +
+/// Administrators on Windows, removing inherited (e.g. `Users:Read`) access
+/// (H1/H2).
+///
+/// On Unix the confidentiality model is the `0600`-file-in-`0700`-dir scheme
+/// enforced elsewhere; this helper is a no-op there. On Windows there is no
+/// mode bit, and a file created by a `LocalSystem` service under a shared path
+/// such as `C:\ProgramData` inherits `Users:Read & Execute` — leaving private
+/// keys and the vault master key readable by every local user. We mirror the
+/// Unix intent by setting an explicit, non-inherited DACL.
+///
+/// Implemented via `icacls` (shipped with every supported Windows, so no new
+/// crate dependency) using **well-known SIDs** (`*S-1-5-18` = Local System,
+/// `*S-1-5-32-544` = BUILTIN\Administrators) so the grant is locale-independent.
+/// The invoking user is additionally granted full control so a non-service
+/// (per-user) install keeps access. Best-effort: a failure is logged, never
+/// fatal, because NTFS ACL behaviour is environment dependent and the file was
+/// already written.
+#[cfg(windows)]
+pub(crate) fn restrict_to_owner(path: &Path) {
+    windows_acl::restrict(path, false);
+}
+
+#[cfg(not(windows))]
+pub(crate) fn restrict_to_owner(_path: &Path) {}
+
+#[cfg(windows)]
+mod windows_acl {
+    use std::path::Path;
+    use std::process::Command;
+
+    use tracing::warn;
+
+    /// Set a restrictive, non-inherited DACL on `path`. When `is_dir` is true
+    /// the grants are made inheritable (`(OI)(CI)`) so files later created in
+    /// the directory are protected too — mirroring the Unix `0700` parent dir.
+    pub(super) fn restrict(path: &Path, is_dir: bool) {
+        let perm = if is_dir { "(OI)(CI)(F)" } else { "(F)" };
+        let mut cmd = Command::new("icacls");
+        cmd.arg(path)
+            // Remove inherited ACEs (drops the inherited Users:Read) and
+            // convert any remaining to explicit.
+            .arg("/inheritance:r")
+            // Replace grants for these principals with full control.
+            .arg("/grant:r")
+            .arg(format!("*S-1-5-18:{perm}")) // Local System
+            .arg("/grant:r")
+            .arg(format!("*S-1-5-32-544:{perm}")); // BUILTIN\Administrators
+        if let Some(user) = current_user_principal() {
+            cmd.arg("/grant:r").arg(format!("{user}:{perm}"));
+        }
+        // No shell is involved (Command spawns icacls directly), so a path with
+        // spaces or metacharacters is passed as a single argv entry safely.
+        match cmd.output() {
+            Ok(out) if out.status.success() => {}
+            Ok(out) => warn!(
+                path = %path.display(),
+                code = ?out.status.code(),
+                stderr = %String::from_utf8_lossy(&out.stderr).trim(),
+                "icacls could not restrict DACL on a secret file; \
+                 it may be readable by non-owner principals"
+            ),
+            Err(e) => warn!(
+                path = %path.display(),
+                error = %e,
+                "could not run icacls to restrict secret file DACL"
+            ),
+        }
+    }
+
+    /// Build a principal string for the invoking user from the environment
+    /// (`USERDOMAIN\USERNAME`, or bare `USERNAME`). Returns `None` when the
+    /// user is unknown (e.g. some service contexts) — SYSTEM/Administrators
+    /// grants still apply in that case.
+    fn current_user_principal() -> Option<String> {
+        let user = std::env::var("USERNAME").ok().filter(|s| !s.is_empty())?;
+        match std::env::var("USERDOMAIN") {
+            Ok(dom) if !dom.is_empty() => Some(format!("{dom}\\{user}")),
+            _ => Some(user),
+        }
+    }
+}
+
 impl SecretBackend for FileBackend {
     fn kind(&self) -> BackendKind {
         BackendKind::File
@@ -339,6 +422,9 @@ impl SecretBackend for FileBackend {
                     reference: r.to_string(),
                     reason: format!("write `{}`: {e}", path.display()),
                 })?;
+            // H2: tighten the DACL to owner + SYSTEM/Administrators so a secret
+            // written under a shared path is not left readable by all Users.
+            restrict_to_owner(&path);
         }
         Ok(())
     }
@@ -662,6 +748,40 @@ mod tests {
         assert!(
             matches!(err, Error::SecretUnavailable { .. }),
             "got {err:?}"
+        );
+    }
+
+    // H1/H2: after restriction, the file's DACL must no longer grant read to
+    // the Users group / Everyone (only owner + SYSTEM + Administrators). We
+    // read the DACL back via `icacls` and via the existing DACL inspector.
+    // (GitHub-hosted Windows runners are en-US, so the group names below match;
+    // the inheritance-removed check below is locale-independent.)
+    #[cfg(windows)]
+    #[test]
+    fn windows_restrict_to_owner_removes_users_read() {
+        use std::process::Command;
+        let dir = tempdir().unwrap();
+        let p = dir.path().join("secret.bin");
+        fs::write(&p, b"top-secret").unwrap();
+        restrict_to_owner(&p);
+
+        let out = Command::new("icacls").arg(&p).output().unwrap();
+        assert!(out.status.success(), "icacls readback failed");
+        let text = String::from_utf8_lossy(&out.stdout);
+        // No broad principal retains access after restriction.
+        assert!(
+            !text.contains("\\Users:") && !text.contains("Everyone:"),
+            "Users/Everyone still present in DACL: {text}"
+        );
+        // Inheritance was stripped: no inherited `(I)` ACE remains.
+        assert!(
+            !text.contains("(I)"),
+            "inherited ACEs survived restriction: {text}"
+        );
+        // SYSTEM (the service identity) retains access by design.
+        assert!(
+            text.contains("SYSTEM"),
+            "SYSTEM grant missing from restricted DACL: {text}"
         );
     }
 }

@@ -57,12 +57,20 @@ pub const OBFS4_PROTOID: &[u8] = b"ntor-curve25519-sha256-1";
 /// Maximum plaintext frame length (per obfs4-spec, conservative).
 pub const MAX_FRAME_PT: usize = 1448;
 
+/// Generous default deadline for the TCP connect + NTOR handshake. A malicious
+/// or half-open peer that accepts then stalls (e.g. sends 63 of 64 bytes)
+/// cannot pin the dialing task past this bound; a legit slow-but-progressing
+/// handshake completes well within it.
+const DEFAULT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// obfs4 transport wrapper.
 pub struct Obfs4Transport {
     cfg: ObfsConfig,
     audit: Arc<dyn AuditHook>,
     /// Test-only target override.
     server_override: Option<String>,
+    /// Deadline for the connect + NTOR handshake.
+    handshake_timeout: Duration,
 }
 
 impl Obfs4Transport {
@@ -79,6 +87,7 @@ impl Obfs4Transport {
             cfg,
             audit,
             server_override: None,
+            handshake_timeout: DEFAULT_HANDSHAKE_TIMEOUT,
         })
     }
 
@@ -86,6 +95,14 @@ impl Obfs4Transport {
     #[must_use]
     pub fn with_server(mut self, addr: impl Into<String>) -> Self {
         self.server_override = Some(addr.into());
+        self
+    }
+
+    /// Override the connect/NTOR-handshake deadline (default 30s). Primarily a
+    /// test hook for asserting the stalled-peer timeout fires.
+    #[must_use]
+    pub fn with_handshake_timeout(mut self, d: Duration) -> Self {
+        self.handshake_timeout = d;
         self
     }
 
@@ -342,6 +359,10 @@ pub struct Obfs4Stream {
     inner: Box<dyn AsyncReadWrite>,
     c2s_key: [u8; 32],
     s2c_key: [u8; 32],
+    /// Per-direction ciphers built once from the NTOR keys (P1) so the
+    /// `XSalsa20` key schedule is not redone for every frame.
+    tx_cipher: XSalsa20Poly1305,
+    rx_cipher: XSalsa20Poly1305,
     /// Outbound counter (LE, lower 8 bytes of the 24-byte nonce).
     tx_ctr: u64,
     rx_ctr: u64,
@@ -362,10 +383,18 @@ enum RxState {
 impl Obfs4Stream {
     /// Construct from a connected inner duplex and NTOR keys.
     pub fn new(inner: Box<dyn AsyncReadWrite>, keys: NtorKeys, iat_delay: Duration) -> Self {
+        // NTOR keys are fixed 32-byte arrays, so `new_from_slice` is infallible
+        // here (XSalsa20Poly1305's key size is exactly 32). Build once (P1).
+        let tx_cipher =
+            XSalsa20Poly1305::new_from_slice(&keys.c2s_key).expect("32-byte XSalsa20 key");
+        let rx_cipher =
+            XSalsa20Poly1305::new_from_slice(&keys.s2c_key).expect("32-byte XSalsa20 key");
         Self {
             inner,
             c2s_key: keys.c2s_key,
             s2c_key: keys.s2c_key,
+            tx_cipher,
+            rx_cipher,
             tx_ctr: 0,
             rx_ctr: 0,
             rx_state: RxState::Length,
@@ -424,14 +453,33 @@ pub fn seal_frame(
     nonce_ctr: u64,
     plaintext: &[u8],
 ) -> std::result::Result<Vec<u8>, ObfsError> {
+    let cipher = build_cipher(key)?;
+    seal_frame_with(&cipher, key, nonce_ctr, plaintext)
+}
+
+/// Build the `XSalsa20Poly1305` cipher for `key`. A 32-byte key is mandatory;
+/// [`Obfs4Stream`] caches the result (P1) so the key schedule runs once.
+fn build_cipher(key: &[u8; 32]) -> std::result::Result<XSalsa20Poly1305, ObfsError> {
+    XSalsa20Poly1305::new_from_slice(key)
+        .map_err(|e| ObfsError::Handshake(format!("xsalsa20poly1305: {e}")))
+}
+
+/// Seal a frame with an already-built cipher (P1: avoids rebuilding the
+/// `XSalsa20` key schedule per frame). The length-prefix obfuscation mask still
+/// depends on the per-frame nonce so it is recomputed each call. Byte-identical
+/// to the per-frame [`seal_frame`] for the same `(key, nonce_ctr, plaintext)`.
+fn seal_frame_with(
+    cipher: &XSalsa20Poly1305,
+    key: &[u8; 32],
+    nonce_ctr: u64,
+    plaintext: &[u8],
+) -> std::result::Result<Vec<u8>, ObfsError> {
     if plaintext.len() > MAX_FRAME_PT {
         return Err(ObfsError::Handshake(format!(
             "obfs4: frame too big: {}",
             plaintext.len()
         )));
     }
-    let cipher = XSalsa20Poly1305::new_from_slice(key)
-        .map_err(|e| ObfsError::Handshake(format!("xsalsa20poly1305: {e}")))?;
     let nonce_bytes = obfs4_nonce_from_ctr(nonce_ctr);
     let nonce = XNonce::from_slice(&nonce_bytes);
     let ct = cipher
@@ -458,6 +506,18 @@ pub fn open_frame(
     nonce_ctr: u64,
     framed: &[u8],
 ) -> std::result::Result<Vec<u8>, ObfsError> {
+    let cipher = build_cipher(key)?;
+    open_frame_with(&cipher, key, nonce_ctr, framed)
+}
+
+/// Open a frame with an already-built cipher (P1). Byte-identical to the
+/// per-frame [`open_frame`].
+fn open_frame_with(
+    cipher: &XSalsa20Poly1305,
+    key: &[u8; 32],
+    nonce_ctr: u64,
+    framed: &[u8],
+) -> std::result::Result<Vec<u8>, ObfsError> {
     if framed.len() < 2 + 16 {
         return Err(ObfsError::Handshake("obfs4: short frame".into()));
     }
@@ -474,8 +534,6 @@ pub fn open_frame(
             2 + plen + 16
         )));
     }
-    let cipher = XSalsa20Poly1305::new_from_slice(key)
-        .map_err(|e| ObfsError::Handshake(format!("xsalsa20poly1305: {e}")))?;
     let nonce = XNonce::from_slice(&nonce_bytes);
     let pt = cipher
         .decrypt(
@@ -501,8 +559,9 @@ impl AsyncRead for Obfs4Stream {
         loop {
             if !self.pending.is_empty() {
                 let n = buf.remaining().min(self.pending.len());
-                let drained: Vec<u8> = self.pending.drain(..n).collect();
-                buf.put_slice(&drained);
+                // P2: copy directly then drain — no per-read intermediate Vec.
+                buf.put_slice(&self.pending[..n]);
+                self.pending.drain(..n);
                 return Poll::Ready(Ok(()));
             }
 
@@ -559,9 +618,10 @@ impl AsyncRead for Obfs4Stream {
                     let total = 2 + plaintext_len + 16;
                     let framed: Vec<u8> = self.rx_buf.drain(..total).collect();
                     let ctr = self.next_rx_ctr();
-                    let pt = open_frame(&self.s2c_key, ctr, &framed).map_err(|e| {
-                        std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string())
-                    })?;
+                    let pt = open_frame_with(&self.rx_cipher, &self.s2c_key, ctr, &framed)
+                        .map_err(|e| {
+                            std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string())
+                        })?;
                     self.pending = pt;
                     self.rx_state = RxState::Length;
                 }
@@ -601,7 +661,7 @@ impl AsyncWrite for Obfs4Stream {
         let chunk_len = data.len().min(MAX_FRAME_PT);
         let chunk = &data[..chunk_len];
         let ctr = self.next_tx_ctr();
-        let frame = seal_frame(&self.c2s_key, ctr, chunk)
+        let frame = seal_frame_with(&self.tx_cipher, &self.c2s_key, ctr, chunk)
             .map_err(|e| std::io::Error::other(e.to_string()))?; // 1.88 lint: io_other_error
 
         let mut written = 0;
@@ -640,11 +700,18 @@ impl ObfsTransport for Obfs4Transport {
     async fn connect(&mut self, target: &str) -> Result<Box<dyn AsyncReadWrite>> {
         self.audit.on_connect(self.name(), target);
         let addr = self.server_override.as_deref().unwrap_or(target);
-        let tcp = TcpStream::connect(addr).await.map_err(ObfsError::Io)?;
-        let mut tcp = tcp;
-        let keys = ntor_handshake(&mut tcp, self.node_id(), self.public_key())
-            .await
-            .map_err(spt_core::Error::from)?;
+        // Wrap the connect + NTOR handshake in a deadline so a half-open /
+        // stalled peer cannot pin this dial indefinitely (M10).
+        let node_id = *self.node_id();
+        let public_key = *self.public_key();
+        let (tcp, keys) = tokio::time::timeout(self.handshake_timeout, async move {
+            let mut tcp = TcpStream::connect(addr).await.map_err(ObfsError::Io)?;
+            let keys = ntor_handshake(&mut tcp, &node_id, &public_key).await?;
+            Ok::<_, ObfsError>((tcp, keys))
+        })
+        .await
+        .map_err(|_| ObfsError::Handshake("obfs4: handshake timed out".into()))?
+        .map_err(spt_core::Error::from)?;
         let stream = Obfs4Stream::new(Box::new(tcp), keys, self.iat_delay());
         Ok(Box::new(stream))
     }
@@ -707,6 +774,49 @@ mod tests {
         let framed = seal_frame(&key, 0, &pt).unwrap();
         let back = open_frame(&key, 0, &framed).unwrap();
         assert_eq!(back, pt);
+    }
+
+    #[test]
+    fn cached_cipher_seal_matches_per_frame_build() {
+        // P1 perf change must be byte-identical: a cached cipher reused across
+        // frames produces exactly the same wire bytes as a per-frame build for
+        // the same (key, counter, plaintext).
+        let key = [0x5Au8; 32];
+        let cipher = build_cipher(&key).unwrap();
+        for ctr in 0u64..6 {
+            let pt = format!("obfs4-frame-{ctr}").into_bytes();
+            let cached = seal_frame_with(&cipher, &key, ctr, &pt).unwrap();
+            let fresh = seal_frame(&key, ctr, &pt).unwrap();
+            assert_eq!(
+                cached, fresh,
+                "cached vs per-frame frame diverged (ctr={ctr})"
+            );
+            // Cached open round-trips its own output.
+            let back = open_frame_with(&cipher, &key, ctr, &cached).unwrap();
+            assert_eq!(back, pt);
+        }
+    }
+
+    #[tokio::test]
+    async fn handshake_times_out_against_stalled_peer() {
+        // A TCP server that accepts but never sends the ServerHello must not pin
+        // the dial forever — the handshake timeout fires and surfaces an error.
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let addr = listener.local_addr().unwrap();
+        // Accept and hold the connection open without responding.
+        let _accept = tokio::spawn(async move {
+            let (_sock, _) = listener.accept().await.unwrap();
+            tokio::time::sleep(Duration::from_secs(30)).await;
+        });
+        let mut t = Obfs4Transport::new(cfg(0), Arc::new(NoopAuditHook))
+            .unwrap()
+            .with_server(addr.to_string())
+            .with_handshake_timeout(Duration::from_millis(200));
+        let res = tokio::time::timeout(Duration::from_secs(5), t.connect(&addr.to_string())).await;
+        let inner = res.expect("connect() must return, not hang");
+        assert!(inner.is_err(), "stalled handshake must error via timeout");
     }
 
     #[test]
