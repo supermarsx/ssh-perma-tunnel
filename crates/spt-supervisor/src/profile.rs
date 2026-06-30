@@ -673,6 +673,35 @@ impl ProfileTask {
                     s
                 }
                 Err(e) => {
+                    // H2: genuinely unrecoverable connect errors must be terminal
+                    // regardless of `retry_auth_failures`. A host-key / trust
+                    // mismatch (`TrustFailed`) will NEVER be accepted on retry —
+                    // hammering the host both wastes effort and is a security
+                    // concern — and a private-key load/parse/permission failure
+                    // (`KeyFailure`) is a static config error that cannot heal by
+                    // retrying. Transient network/DNS/bind errors stay retryable.
+                    if is_terminal_connect_error(&e) {
+                        self.fire(SmEvent::ConnectFail);
+                        tracing::error!(
+                            profile = %self.name,
+                            error = %e,
+                            "connect failed with an unrecoverable trust/key error; \
+                             treating as terminal and stopping the profile"
+                        );
+                        self.cfg.observers.emit_lifecycle(
+                            "profile.connect_failed_terminal",
+                            spt_events::Severity::Error,
+                            &self.name,
+                            format!(
+                                "profile `{}` connect failed unrecoverably ({e}); \
+                                 stopping (fix the host key / key file and restart)",
+                                self.name
+                            ),
+                            &[],
+                        );
+                        self.handle_session_failure(&endpoint, &e);
+                        break;
+                    }
                     // TW-C2: terminal-vs-retryable classifier for auth failures.
                     // `[profiles.reconnect].retry_auth_failures` (default false)
                     // decides whether an `AuthFailed*` error from `connect` ends
@@ -771,7 +800,34 @@ impl ProfileTask {
         // failures and trigger replacement. We drive
         // `TunnelSession::keepalive` on `cfg.keepalive_interval` and
         // treat any `Err` *or* timeout as "session dead → reconnect now".
-        let mut keepalive = tokio::time::interval(self.cfg.keepalive_interval);
+        //
+        // H1 (defensive): `tokio::time::interval` PANICS on a zero period.
+        // Config validation rejects a zero `keepalive.interval`, but a config
+        // built programmatically (bypassing validation) could still carry one;
+        // clamp a non-positive interval up to the default cadence so the probe
+        // loop can never crash the profile task.
+        let keepalive_period = if self.cfg.keepalive_interval.is_zero() {
+            tracing::warn!(
+                profile = %self.name,
+                "keepalive_interval is zero; clamping to 30s (a zero interval would panic)"
+            );
+            Duration::from_secs(30)
+        } else {
+            self.cfg.keepalive_interval
+        };
+        // M1 (defensive): a zero per-probe timeout elapses immediately, so every
+        // probe is recorded as a miss → permanent reconnect storm. Validation
+        // rejects it; clamp defensively to the default for non-validated configs.
+        let keepalive_timeout = if self.cfg.keepalive_timeout.is_zero() {
+            tracing::warn!(
+                profile = %self.name,
+                "keepalive_timeout is zero; clamping to 10s (a zero timeout would storm-reconnect)"
+            );
+            Duration::from_secs(10)
+        } else {
+            self.cfg.keepalive_timeout
+        };
+        let mut keepalive = tokio::time::interval(keepalive_period);
         // The first interval tick fires immediately; consume it so we
         // don't probe the moment we enter the loop.
         keepalive.set_missed_tick_behavior(MissedTickBehavior::Delay);
@@ -882,25 +938,25 @@ impl ProfileTask {
                     let probe = match self.cfg.health_check {
                         HealthCheckStyle::TcpConnect => {
                             tokio::time::timeout(
-                                self.cfg.keepalive_timeout,
+                                keepalive_timeout,
                                 probe_tcp_connect(self.current_endpoint.as_ref()),
                             ).await
                         }
                         HealthCheckStyle::SshAuthPreflight => {
                             tokio::time::timeout(
-                                self.cfg.keepalive_timeout,
+                                keepalive_timeout,
                                 session.preflight_connect(),
                             ).await
                         }
                         HealthCheckStyle::SshHandshake => {
                             tokio::time::timeout(
-                                self.cfg.keepalive_timeout,
+                                keepalive_timeout,
                                 session.keepalive(),
                             ).await
                         }
                         HealthCheckStyle::Ssh3Endpoint => {
                             tokio::time::timeout(
-                                self.cfg.keepalive_timeout,
+                                keepalive_timeout,
                                 session.preflight_connect(),
                             ).await
                         }
@@ -1525,6 +1581,25 @@ async fn probe_tcp_connect(endpoint: Option<&Endpoint>) -> Result<()> {
 /// the legacy string variant and the structured-diagnostic sibling.
 fn is_auth_failure(e: &Error) -> bool {
     matches!(e, Error::AuthFailed(_) | Error::AuthFailedDiagnostic(_))
+}
+
+/// Classify whether an [`Error`] from [`TunnelProtocol::connect`] is genuinely
+/// UNRECOVERABLE, so the reconnect loop must stop instead of retrying forever
+/// against a host that will never accept the connection (H2).
+///
+/// Terminal:
+/// * [`Error::TrustFailed`] — host-key / certificate / TLS-pin verification
+///   failed. A retry against the same (changed/untrusted) key is futile and is
+///   a security concern (hammering a host whose key no longer matches).
+/// * [`Error::KeyFailure`] — private-key generation / parse / permission
+///   failure. A static local-config error that cannot heal by reconnecting.
+///
+/// Everything else — network unreachable, DNS, bind, timeouts, generic runtime
+/// failures — stays RETRYABLE so a transient outage still recovers. Auth
+/// failures are handled separately ([`is_auth_failure`]) because their terminal
+/// behavior is gated by `[profiles.reconnect].retry_auth_failures`.
+fn is_terminal_connect_error(e: &Error) -> bool {
+    matches!(e, Error::TrustFailed(_) | Error::KeyFailure(_))
 }
 
 fn parse_endpoint_key(s: &str) -> Result<(String, u16)> {
@@ -3408,6 +3483,176 @@ mod tests {
             keepalive_count.load(std::sync::atomic::Ordering::SeqCst) >= 1,
             "SshHandshake style must drive the session keepalive probe"
         );
+        sup.stop().await;
+    }
+
+    // ──────── H1 / H2: zero-duration guards + terminal classifier ─────────
+
+    /// H2: a `connect()` that fails with a configurable error, counting
+    /// attempts. Lets a test assert that an unrecoverable error stops the
+    /// profile after exactly one attempt while a transient one keeps retrying.
+    #[derive(Debug)]
+    struct ConnectErrProto {
+        kind: ConnectErrKind,
+        attempts: Arc<std::sync::atomic::AtomicU32>,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    enum ConnectErrKind {
+        Trust,
+        Key,
+        Network,
+    }
+
+    impl ConnectErrProto {
+        fn new(kind: ConnectErrKind) -> Self {
+            Self {
+                kind,
+                attempts: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl spt_protocol::TunnelProtocol for ConnectErrProto {
+        async fn connect(
+            &self,
+            _endpoint: &Endpoint,
+            _auth: &AuthConfig,
+        ) -> Result<Box<dyn spt_protocol::TunnelSession>> {
+            self.attempts
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Err(match self.kind {
+                ConnectErrKind::Trust => Error::TrustFailed("host key mismatch".into()),
+                ConnectErrKind::Key => Error::KeyFailure("cannot load private key".into()),
+                ConnectErrKind::Network => Error::NetworkUnreachable("connection refused".into()),
+            })
+        }
+        fn capabilities(&self) -> spt_protocol::ProtocolCapabilities {
+            spt_protocol::ProtocolCapabilities::ssh3()
+        }
+        fn name(&self) -> &'static str {
+            "connect-err"
+        }
+    }
+
+    #[test]
+    fn is_terminal_connect_error_classifies_trust_and_key_only() {
+        assert!(is_terminal_connect_error(&Error::TrustFailed("x".into())));
+        assert!(is_terminal_connect_error(&Error::KeyFailure("x".into())));
+        // Transient / retryable errors are NOT terminal.
+        assert!(!is_terminal_connect_error(&Error::NetworkUnreachable(
+            "x".into()
+        )));
+        assert!(!is_terminal_connect_error(&Error::DnsFailed("x".into())));
+        assert!(!is_terminal_connect_error(&Error::KeepaliveTimeout {
+            after_ms: 0
+        }));
+        // Auth failures are handled by the separate `retry_auth_failures` gate.
+        assert!(!is_terminal_connect_error(&Error::AuthFailed("x".into())));
+    }
+
+    #[tokio::test]
+    async fn trust_failure_is_terminal_and_does_not_retry() {
+        // H2: a host-key/trust mismatch must stop the profile, not reconnect
+        // forever. Default backoff is unlimited attempts; a non-terminal error
+        // would loop indefinitely.
+        let proto = Arc::new(ConnectErrProto::new(ConnectErrKind::Trust));
+        let attempts = Arc::clone(&proto.attempts);
+        let cfg = ProfileSupervisorConfig {
+            backoff: BackoffConfig {
+                initial_delay: Duration::from_millis(1),
+                max_delay: Duration::from_millis(2),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let sup = ProfileSupervisor::spawn("p", proto, auth(), vec![endpoint("a")], vec![], cfg);
+        let mut rx = sup.watch_state();
+        wait_for_state(&mut rx, ProfileStateName::Stopped).await;
+        // Give the loop a beat to (incorrectly) retry, then assert it did not.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(
+            attempts.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "TrustFailed must be terminal: exactly one connect attempt"
+        );
+        sup.stop().await;
+    }
+
+    #[tokio::test]
+    async fn key_failure_is_terminal_and_does_not_retry() {
+        // H2: a private-key load failure is a static config error — terminal.
+        let proto = Arc::new(ConnectErrProto::new(ConnectErrKind::Key));
+        let attempts = Arc::clone(&proto.attempts);
+        let cfg = ProfileSupervisorConfig {
+            backoff: BackoffConfig {
+                initial_delay: Duration::from_millis(1),
+                max_delay: Duration::from_millis(2),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let sup = ProfileSupervisor::spawn("p", proto, auth(), vec![endpoint("a")], vec![], cfg);
+        let mut rx = sup.watch_state();
+        wait_for_state(&mut rx, ProfileStateName::Stopped).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(
+            attempts.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "KeyFailure must be terminal: exactly one connect attempt"
+        );
+        sup.stop().await;
+    }
+
+    #[tokio::test]
+    async fn network_failure_still_retries() {
+        // H2 (negative): a transient network error must STAY retryable.
+        let proto = Arc::new(ConnectErrProto::new(ConnectErrKind::Network));
+        let attempts = Arc::clone(&proto.attempts);
+        let cfg = ProfileSupervisorConfig {
+            backoff: BackoffConfig {
+                initial_delay: Duration::from_millis(1),
+                max_delay: Duration::from_millis(2),
+                max_attempts: 5,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let sup = ProfileSupervisor::spawn("p", proto, auth(), vec![endpoint("a")], vec![], cfg);
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+        while attempts.load(std::sync::atomic::Ordering::SeqCst) < 2
+            && tokio::time::Instant::now() < deadline
+        {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(
+            attempts.load(std::sync::atomic::Ordering::SeqCst) >= 2,
+            "NetworkUnreachable must remain retryable (more than one attempt)"
+        );
+        sup.stop().await;
+    }
+
+    #[tokio::test]
+    async fn zero_keepalive_interval_does_not_panic() {
+        // H1 / M1: a programmatically-built config with zero keepalive
+        // interval/timeout (bypassing validation) must NOT panic
+        // `tokio::time::interval`; the supervisor clamps defensively and still
+        // reaches Active.
+        let proto = Arc::new(MockTunnelProtocol::new());
+        let cfg = ProfileSupervisorConfig {
+            keepalive_interval: Duration::ZERO,
+            keepalive_timeout: Duration::ZERO,
+            ..Default::default()
+        };
+        let sup =
+            ProfileSupervisor::spawn("p", proto.clone(), auth(), vec![endpoint("a")], vec![], cfg);
+        let mut rx = sup.watch_state();
+        wait_for_state(&mut rx, ProfileStateName::Active).await;
+        // Hold the active loop briefly: the clamped interval keeps it alive
+        // rather than crashing or storm-reconnecting.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(*rx.borrow(), ProfileStateName::Active);
         sup.stop().await;
     }
 }

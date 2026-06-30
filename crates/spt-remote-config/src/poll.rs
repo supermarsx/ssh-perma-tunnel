@@ -12,6 +12,13 @@
 //! - `304 Not Modified` (the body is the unchanged cached one), or
 //! - `StaleFromCache` fallbacks whose body matches the last applied one.
 //!
+//! The callback returns a `bool`: `true` when the body was applied
+//! successfully (so the driver records its SHA and won't re-apply it), `false`
+//! when the apply FAILED (M2). On failure the driver does NOT advance the
+//! recorded SHA, so the same body is retried on the next poll instead of being
+//! permanently skipped — a transient apply failure (e.g. a momentary reload
+//! rejection) self-heals.
+//!
 //! # Entry points
 //! - [`spawn`] — production: builds the pinned fetcher from a
 //!   [`RemoteConfigPlan`] via [`crate::fetch::fetcher_for_plan`].
@@ -78,7 +85,7 @@ pub fn spawn<C, Fut>(
 ) -> Result<RemoteConfigPollHandle, crate::fetch::RemoteConfigError>
 where
     C: Fn(Vec<u8>) -> Fut + Send + Sync + 'static,
-    Fut: Future<Output = ()> + Send + 'static,
+    Fut: Future<Output = bool> + Send + 'static,
 {
     let fetcher = fetcher_for_plan(&plan)?;
     Ok(spawn_with_fetcher(
@@ -99,16 +106,18 @@ where
 ///   backoff after failures.
 /// - `fetcher`: the HTTP transport (owned by the task for its lifetime).
 /// - `apply_cb`: invoked with the raw body bytes **only** when the fetched
-///   body differs (by SHA-256) from the last body applied. Boxed internally so
-///   large callback futures don't bloat the loop future (clippy
+///   body differs (by SHA-256) from the last body applied. Returns `true` on a
+///   successful apply (advance the recorded SHA) or `false` on failure (M2:
+///   keep the previous SHA so the body is retried next poll). Boxed internally
+///   so large callback futures don't bloat the loop future (clippy
 ///   `large_futures`).
 ///
 /// # Loop semantics
 /// `select! { shutdown => return, sleep(delay) => fetch }`. On `Ok` the
 /// backoff resets; if the body is new the callback runs and the recorded SHA
-/// advances. On `Err` a bounded log is emitted (first at `warn`, repeats at
-/// `debug`, recovery at `warn`) and the next delay grows exponentially with
-/// jitter, capped at `interval`.
+/// advances **only when the callback returns `true`**. On `Err` a bounded log
+/// is emitted (first at `warn`, repeats at `debug`, recovery at `warn`) and the
+/// next delay grows exponentially with jitter, capped at `interval`.
 pub fn spawn_with_fetcher<F, C, Fut>(
     plan: RemoteConfigPlan,
     state_dir: impl Into<PathBuf>,
@@ -119,7 +128,7 @@ pub fn spawn_with_fetcher<F, C, Fut>(
 where
     F: HttpFetcher + Send + Sync + 'static,
     C: Fn(Vec<u8>) -> Fut + Send + Sync + 'static,
-    Fut: Future<Output = ()> + Send + 'static,
+    Fut: Future<Output = bool> + Send + 'static,
 {
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
     let state_dir = state_dir.into();
@@ -145,7 +154,7 @@ async fn run_loop<F, C, Fut>(
 ) where
     F: HttpFetcher + Send + Sync + 'static,
     C: Fn(Vec<u8>) -> Fut + Send + Sync + 'static,
-    Fut: Future<Output = ()> + Send + 'static,
+    Fut: Future<Output = bool> + Send + 'static,
 {
     let mut last_body_sha: Option<String> = None;
     // Consecutive failure counter: 0 == healthy. Drives both backoff and the
@@ -185,8 +194,18 @@ async fn run_loop<F, C, Fut>(
                             debug!(?outcome, "remote-config body unchanged; skipping apply");
                         } else {
                             debug!(?outcome, "remote-config body changed; applying");
-                            apply_cb(res.body).await;
-                            last_body_sha = Some(sha);
+                            // M2: only record the SHA when the apply SUCCEEDS.
+                            // A failed apply leaves `last_body_sha` unchanged so
+                            // the identical body is retried on the next poll
+                            // rather than skipped forever.
+                            if apply_cb(res.body).await {
+                                last_body_sha = Some(sha);
+                            } else {
+                                debug!(
+                                    ?outcome,
+                                    "remote-config apply failed; not recording SHA (will retry)"
+                                );
+                            }
                         }
                     }
                 }
@@ -332,10 +351,11 @@ mod tests {
     /// Collects the bodies handed to the apply callback.
     type Sink = Arc<Mutex<Vec<Vec<u8>>>>;
 
-    fn sink_cb(sink: Sink) -> impl Fn(Vec<u8>) -> std::future::Ready<()> + Send + Sync + 'static {
+    fn sink_cb(sink: Sink) -> impl Fn(Vec<u8>) -> std::future::Ready<bool> + Send + Sync + 'static {
         move |body: Vec<u8>| {
             sink.lock().unwrap().push(body);
-            std::future::ready(())
+            // Always reports success: the body is "applied" by being collected.
+            std::future::ready(true)
         }
     }
 
@@ -419,6 +439,43 @@ mod tests {
             sink.lock().unwrap().len(),
             1,
             "identical body across ticks must apply only once"
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_apply_is_retried_until_success() {
+        // M2: a body whose apply FAILS must NOT advance the recorded SHA, so the
+        // identical body is retried on the next poll until the apply succeeds.
+        let body = b"version = 7\n".to_vec();
+        let d = tempdir().unwrap();
+        // Same body returned forever.
+        let f = Arc::new(FakeFetcher::new(vec![Ok(FakeFetcher::ok(
+            200, &body, None,
+        ))]));
+        // Callback fails the first two attempts, succeeds on the third.
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let attempts_cb = attempts.clone();
+        let cb = move |_body: Vec<u8>| {
+            let n = attempts_cb.fetch_add(1, Ordering::SeqCst) + 1;
+            std::future::ready(n >= 3)
+        };
+
+        let handle = spawn_with_fetcher(
+            plan_for(&body),
+            d.path().to_path_buf(),
+            Duration::from_millis(8),
+            ArcFetcher(f.clone()),
+            cb,
+        );
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        handle.shutdown().await;
+
+        // Exactly three apply attempts: two failures (SHA not advanced → retry)
+        // then one success (SHA advanced → subsequent identical bodies skipped).
+        assert_eq!(
+            attempts.load(Ordering::SeqCst),
+            3,
+            "failed applies must be retried, and a successful apply must stop the retries"
         );
     }
 

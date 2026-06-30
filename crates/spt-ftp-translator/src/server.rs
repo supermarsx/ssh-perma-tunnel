@@ -1132,12 +1132,26 @@ async fn run_retr_transfer(
             )
         }
     };
-    let bytes = match sftp.read_file(target.clone()).await {
-        Ok(b) => b,
+    // H3: stream the remote file to the data connection in bounded chunks
+    // instead of buffering the whole file in RAM (`sftp.read_file`). An FTP
+    // client issuing `RETR bigfile` used to OOM the translator; now peak
+    // memory is bounded by `STREAM_CHUNK` regardless of file size. Opening
+    // first preserves the original error split: a remote read failure → 550,
+    // a data-connection write failure → 426 (transfer aborted).
+    let mut remote = match sftp.open_for_read(target.clone()).await {
+        Ok(f) => f,
         Err(e) => return (Reply::err_550(format!("RETR: {e}")), false, false),
     };
-    if let Err(e) = data.write_all(&bytes).await {
-        return (Reply::new(426, format!("RETR aborted: {e}")), false, false);
+    let mut buf = vec![0u8; spt_sftp::STREAM_CHUNK];
+    loop {
+        let n = match remote.read(&mut buf).await {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(e) => return (Reply::err_550(format!("RETR: {e}")), false, false),
+        };
+        if let Err(e) = data.write_all(&buf[..n]).await {
+            return (Reply::new(426, format!("RETR aborted: {e}")), false, false);
+        }
     }
     let _ = data.shutdown().await;
     (Reply::new(226, "Transfer complete."), false, false)

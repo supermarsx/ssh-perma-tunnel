@@ -33,6 +33,18 @@
 //! `shadowsocks-rust` `ssserver` depends on this. (An earlier revision
 //! of this code used ad-hoc AAD strings `b"spt-obfs/ss/len"` /
 //! `b"spt-obfs/ss/body"`; those have been removed.)
+//!
+//! ## Per-direction subkeys (AEAD key/nonce-reuse fix)
+//!
+//! Both directions start their nonce counter at 0, so the two directions
+//! MUST NOT share an AEAD key — otherwise the same `(key, nonce)` pair seals
+//! two distinct plaintexts (the classic catastrophic AEAD misuse). The single
+//! session key derived from the salt is therefore split into two distinct
+//! per-direction subkeys via [`direction_keys`]: the client transmits on the
+//! c2s subkey / receives on the s2c subkey, and the accepting spt peer is the
+//! mirror. Both ends derive the pair identically from the shared session key,
+//! so this stays a pure spt<->spt wire convention with no external interop to
+//! break.
 
 use std::collections::BTreeSet;
 use std::pin::Pin;
@@ -233,6 +245,68 @@ pub fn salt_len(m: SsMethod) -> usize {
     }
 }
 
+/// Per-direction subkey labels. Client→server and server→client traffic each
+/// derive a distinct AEAD subkey from the shared session key so the two
+/// directions never share a `(key, nonce)` pair (both nonce counters start at
+/// 0). Both spt peers derive the same labels; only the role assignment differs.
+const DIR_LABEL_C2S: &[u8] = b"spt-obfs/ss/dir/c2s";
+const DIR_LABEL_S2C: &[u8] = b"spt-obfs/ss/dir/s2c";
+
+/// Connection role used to assign the per-direction subkeys.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SsRole {
+    /// Dialing side: writes the salt, transmits on the c2s subkey, receives on
+    /// the s2c subkey.
+    Client,
+    /// Accepting side (the mirror spt peer): transmits on the s2c subkey,
+    /// receives on the c2s subkey.
+    Server,
+}
+
+/// Derive one per-direction subkey from the session key using HMAC-SHA256 in
+/// counter mode (the same PRF family as the legacy KDF — no new dependency).
+/// Exactly `key_len` bytes are emitted.
+fn direction_subkey(session_key: &[u8], label: &[u8], key_len: usize) -> Zeroizing<Vec<u8>> {
+    let mut out = Zeroizing::new(Vec::with_capacity(key_len));
+    let mut counter: u32 = 0;
+    while out.len() < key_len {
+        // HMAC-SHA256 accepts a key of any length; `new_from_slice` only
+        // returns the `InvalidLength` error for algorithms with a fixed key
+        // size, which HMAC is not — so this never fails.
+        let mut mac = <HmacSha256 as Mac>::new_from_slice(session_key)
+            .expect("HMAC-SHA256 accepts any key length");
+        mac.update(label);
+        mac.update(&counter.to_be_bytes());
+        let chunk = mac.finalize().into_bytes();
+        out.extend_from_slice(&chunk);
+        counter = counter.wrapping_add(1);
+    }
+    out.truncate(key_len);
+    out
+}
+
+/// Derive the `(tx_key, rx_key)` pair for `role` from a session key.
+///
+/// The two directions use DISTINCT subkeys so that, even though both nonce
+/// counters start at 0, no `(key, nonce)` pair is ever reused across the two
+/// directions. The client transmits on the c2s subkey and receives on the s2c
+/// subkey; the server is the mirror. Both spt peers MUST call this identically
+/// (same session key + method) so the wire stays consistent.
+#[must_use]
+pub fn direction_keys(
+    session_key: &[u8],
+    method: SsMethod,
+    role: SsRole,
+) -> (Zeroizing<Vec<u8>>, Zeroizing<Vec<u8>>) {
+    let key_len = method.key_len();
+    let c2s = direction_subkey(session_key, DIR_LABEL_C2S, key_len);
+    let s2c = direction_subkey(session_key, DIR_LABEL_S2C, key_len);
+    match role {
+        SsRole::Client => (c2s, s2c),
+        SsRole::Server => (s2c, c2s),
+    }
+}
+
 /// AEAD seal under SIP022 §3.3 wire shape: empty additional-authenticated-data,
 /// 12-byte nonce, method-specific cipher. Returns `ciphertext || tag`.
 fn aead_seal(method: SsMethod, key: &[u8], nonce: &[u8; 12], plaintext: &[u8]) -> Result<Vec<u8>> {
@@ -349,8 +423,12 @@ const REPLAY_WINDOW: usize = 1024;
 pub struct AeadStream {
     inner: Box<dyn AsyncReadWrite>,
     method: SsMethod,
-    /// Derived AEAD subkey. Zeroized on drop (defense-in-depth).
-    key: Zeroizing<Vec<u8>>,
+    /// Per-direction AEAD subkeys. `tx_key` seals outbound frames and `rx_key`
+    /// opens inbound frames; they are DISTINCT (see [`direction_keys`]) so the
+    /// two directions never share a `(key, nonce)`. Both zeroized on drop
+    /// (defense-in-depth).
+    tx_key: Zeroizing<Vec<u8>>,
+    rx_key: Zeroizing<Vec<u8>>,
     write_nonce: u64,
     read_nonce: u64,
     /// Inbound replay window — exact nonce reuse rejected.
@@ -369,12 +447,22 @@ enum RxState {
 }
 
 impl AeadStream {
-    /// Construct a new framed stream.
-    pub fn new(inner: Box<dyn AsyncReadWrite>, method: SsMethod, key: Zeroizing<Vec<u8>>) -> Self {
+    /// Construct a new framed stream from the per-direction subkeys.
+    ///
+    /// `tx_key` seals outbound frames; `rx_key` opens inbound frames. Derive
+    /// the pair with [`direction_keys`] (`SsRole::Client` on the dialing side,
+    /// `SsRole::Server` on the accepting peer) so both ends agree.
+    pub fn new(
+        inner: Box<dyn AsyncReadWrite>,
+        method: SsMethod,
+        tx_key: Zeroizing<Vec<u8>>,
+        rx_key: Zeroizing<Vec<u8>>,
+    ) -> Self {
         Self {
             inner,
             method,
-            key,
+            tx_key,
+            rx_key,
             write_nonce: 0,
             read_nonce: 0,
             seen: BTreeSet::new(),
@@ -460,7 +548,7 @@ impl AsyncRead for AeadStream {
                         }
                     };
                     let chunk: Vec<u8> = self.rx_buf.drain(..target_len).collect();
-                    let pt = aead_open(self.method, &self.key, &nonce, &chunk).map_err(|e| {
+                    let pt = aead_open(self.method, &self.rx_key, &nonce, &chunk).map_err(|e| {
                         std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string())
                     })?;
                     if pt.len() != 2 {
@@ -491,7 +579,7 @@ impl AsyncRead for AeadStream {
                         }
                     };
                     let chunk: Vec<u8> = self.rx_buf.drain(..target_len).collect();
-                    let pt = aead_open(self.method, &self.key, &nonce, &chunk).map_err(|e| {
+                    let pt = aead_open(self.method, &self.rx_key, &nonce, &chunk).map_err(|e| {
                         std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string())
                     })?;
                     if pt.len() != plaintext_len {
@@ -522,7 +610,7 @@ impl AsyncWrite for AeadStream {
 
         let len_nonce = self.next_write_nonce();
         let body_nonce = self.next_write_nonce();
-        let key = self.key.clone();
+        let key = self.tx_key.clone();
         let method = self.method;
         let len_be = (chunk_len as u16).to_be_bytes();
         let len_ct = aead_seal(method, &key, &len_nonce, &len_be)
@@ -586,7 +674,7 @@ impl ObfsTransport for ShadowsocksTransport {
         // Per-session salt.
         let mut salt = vec![0u8; salt_len(self.method())];
         rand::thread_rng().fill_bytes(&mut salt);
-        let key = self.derive_key(&salt).map_err(spt_core::Error::from)?;
+        let session_key = self.derive_key(&salt).map_err(spt_core::Error::from)?;
 
         // We pre-write the salt header to the peer so the receiver can
         // derive the same subkey. The peer is assumed to mirror our
@@ -595,7 +683,11 @@ impl ObfsTransport for ShadowsocksTransport {
         // exchanged before AEAD framing begins.
         tcp.write_all(&salt).await.map_err(ObfsError::Io)?;
 
-        let stream = AeadStream::new(Box::new(tcp), self.method(), key);
+        // Dialing side = client role: transmit on c2s, receive on s2c. Each
+        // direction uses a distinct subkey so the two nonce-0 sequences never
+        // share a key (the accepting spt peer mirrors with `SsRole::Server`).
+        let (tx_key, rx_key) = direction_keys(&session_key, self.method(), SsRole::Client);
+        let stream = AeadStream::new(Box::new(tcp), self.method(), tx_key, rx_key);
         Ok(Box::new(stream))
     }
 
@@ -681,6 +773,71 @@ mod tests {
         let k2022 = t_2022.derive_key(&salt).unwrap();
         let kleg = t_legacy.derive_key(&salt[..16]).unwrap();
         assert_ne!(k2022, kleg);
+    }
+
+    #[test]
+    fn direction_subkeys_distinct_per_direction() {
+        // c2s and s2c subkeys must differ from each other AND from the session
+        // key — this is the property that prevents (key, nonce) reuse across
+        // the two directions (both nonce counters start at 0).
+        let t = ShadowsocksTransport::new(cfg(), Arc::new(NoopAuditHook))
+            .unwrap()
+            .with_direct_password(b"pw".to_vec());
+        let session = t.derive_key(&[0x5A; 32]).unwrap();
+        let (tx, rx) = direction_keys(&session, SsMethod::Aead2022Blake3Aes256Gcm, SsRole::Client);
+        assert_ne!(
+            tx.as_slice(),
+            rx.as_slice(),
+            "c2s and s2c subkeys must differ"
+        );
+        assert_ne!(
+            tx.as_slice(),
+            session.as_slice(),
+            "tx subkey must differ from the session key"
+        );
+        assert_ne!(
+            rx.as_slice(),
+            session.as_slice(),
+            "rx subkey must differ from the session key"
+        );
+    }
+
+    #[test]
+    fn client_server_roles_mirror_subkeys() {
+        // The client's transmit key must equal the server's receive key (and
+        // vice versa) so both spt peers agree on the per-direction keys.
+        let t = ShadowsocksTransport::new(cfg(), Arc::new(NoopAuditHook))
+            .unwrap()
+            .with_direct_password(b"pw".to_vec());
+        let session = t.derive_key(&[0x5A; 32]).unwrap();
+        let m = SsMethod::Aead2022Blake3Aes256Gcm;
+        let (c_tx, c_rx) = direction_keys(&session, m, SsRole::Client);
+        let (s_tx, s_rx) = direction_keys(&session, m, SsRole::Server);
+        assert_eq!(
+            c_tx.as_slice(),
+            s_rx.as_slice(),
+            "client.tx must == server.rx"
+        );
+        assert_eq!(
+            c_rx.as_slice(),
+            s_tx.as_slice(),
+            "client.rx must == server.tx"
+        );
+    }
+
+    #[test]
+    fn direction_key_len_tracks_method() {
+        let c128 = ObfsConfig::Shadowsocks {
+            method: SsMethod::Aead2022Blake3Aes128Gcm,
+            password: SecretRef::new("ns", "ss").unwrap(),
+        };
+        let t = ShadowsocksTransport::new(c128, Arc::new(NoopAuditHook))
+            .unwrap()
+            .with_direct_password(b"pw".to_vec());
+        let session = t.derive_key(&[0u8; 16]).unwrap();
+        let (tx, rx) = direction_keys(&session, SsMethod::Aead2022Blake3Aes128Gcm, SsRole::Client);
+        assert_eq!(tx.len(), 16, "AES-128 subkey must be 16 bytes");
+        assert_eq!(rx.len(), 16, "AES-128 subkey must be 16 bytes");
     }
 
     #[test]

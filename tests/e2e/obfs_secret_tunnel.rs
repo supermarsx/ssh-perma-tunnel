@@ -57,7 +57,7 @@ use std::time::Duration;
 use spt_auth::{AuthConfig, AuthMethod, SecretRef};
 use spt_core::BindAddr;
 use spt_obfs::config::{ObfsConfig, SsMethod};
-use spt_obfs::shadowsocks::{salt_len, AeadStream, ShadowsocksTransport};
+use spt_obfs::shadowsocks::{direction_keys, salt_len, AeadStream, ShadowsocksTransport, SsRole};
 use spt_obfs::transport::ObfsTransport;
 use spt_obfs::NoopAuditHook;
 use spt_protocol::{
@@ -171,11 +171,14 @@ async fn spawn_ss_acceptor(
                 else {
                     return;
                 };
-                let Ok(key) = mirror.derive_key(&salt) else {
+                let Ok(session_key) = mirror.derive_key(&salt) else {
                     return;
                 };
+                // Acceptor = server role: the mirror of the client's per-
+                // direction subkeys (transmit on s2c, receive on c2s).
+                let (tx, rx) = direction_keys(&session_key, SS_METHOD, SsRole::Server);
                 // 3. Wrap the framed socket; everything past the salt is AEAD.
-                let mut deobf = AeadStream::new(Box::new(client), SS_METHOD, key);
+                let mut deobf = AeadStream::new(Box::new(client), SS_METHOD, tx, rx);
 
                 // 4. Dial the upstream russh server and bridge plaintext both
                 //    ways. Bytes the client AEAD-framed are decrypted here and

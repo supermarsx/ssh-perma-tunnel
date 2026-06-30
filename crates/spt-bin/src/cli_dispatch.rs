@@ -2299,6 +2299,9 @@ fn maybe_spawn_remote_config_poller(
         let encryption_key_from = encryption_key_from.clone();
         let signing_pubkey = signing_pubkey.clone();
         async move {
+            // M2: the callback returns `true` when the body was applied
+            // successfully (driver records its SHA) or `false` on failure
+            // (driver keeps the previous SHA so the body is retried next poll).
             // Opt-in authenticity: verify the SPTENC1 Ed25519 `[signature]`
             // against the configured anchor BEFORE unseal/parse. Fail-closed —
             // a rejected signature skips this update (keeps previous config).
@@ -2313,7 +2316,7 @@ fn maybe_spawn_remote_config_poller(
                     error = %e,
                     "remote config signature verification failed — skipping this update"
                 );
-                return;
+                return false;
             }
             // Opt-in decrypt: unseal a sealed SPTENC1 body before parsing.
             let plaintext = match crate::cli::config_ops::decrypt_if_sealed(
@@ -2329,7 +2332,7 @@ fn maybe_spawn_remote_config_poller(
                         error = %e,
                         "remote config decrypt failed — skipping this update"
                     );
-                    return;
+                    return false;
                 }
             };
             let text = match std::str::from_utf8(&plaintext) {
@@ -2340,7 +2343,7 @@ fn maybe_spawn_remote_config_poller(
                         error = %e,
                         "remote config body is not valid UTF-8 — skipping this update"
                     );
-                    return;
+                    return false;
                 }
             };
             let (new_cfg, warnings) = match spt_config::load_str(text, false) {
@@ -2351,7 +2354,7 @@ fn maybe_spawn_remote_config_poller(
                         error = %e,
                         "remote config failed to parse — skipping this update"
                     );
-                    return;
+                    return false;
                 }
             };
             // SAME pipeline as SIGHUP. Box::pin preserves the Phase-1
@@ -2371,6 +2374,8 @@ fn maybe_spawn_remote_config_poller(
                         target: "spt_remote_config",
                         "applied updated remote config"
                     );
+                    // M2: applied — record this body's SHA so it isn't re-applied.
+                    true
                 }
                 Err(e) => {
                     tracing::error!(
@@ -2378,6 +2383,9 @@ fn maybe_spawn_remote_config_poller(
                         error = %e,
                         "remote reload rejected; keeping previous config"
                     );
+                    // M2: a (possibly transient) reload rejection must NOT advance
+                    // the recorded SHA, so the same body is retried next poll.
+                    false
                 }
             }
         }
@@ -8882,6 +8890,7 @@ mod tests {
                 Box::pin(config_cell.reload(new_cfg, &warnings, &resolver, &orchestrator))
                     .await
                     .expect("reload");
+                true
             }
         };
 
@@ -8985,6 +8994,7 @@ mod tests {
                 Box::pin(config_cell.reload(new_cfg, &warnings, &resolver, &orchestrator))
                     .await
                     .expect("reload");
+                true
             }
         };
 

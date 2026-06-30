@@ -229,7 +229,12 @@ impl Ssh3Session {
                             ]);
                             let body = payload.slice(4..);
                             if let Some(tx) = state2.udp_flows.get(&flow_id) {
-                                let _ = tx.value().send(body);
+                                // M1: bounded per-flow channel; `try_send` drops
+                                // on a full queue (UDP is lossy) so a flooding
+                                // peer cannot grow memory without bound. The
+                                // DashMap `Ref` is held only across this
+                                // non-blocking send (no await under the guard).
+                                let _ = tx.value().try_send(body);
                             } else {
                                 debug!(
                                     target: "spt_ssh3::session",
@@ -265,6 +270,31 @@ impl Ssh3Session {
     #[must_use]
     pub fn peer_settings(&self) -> &Ssh3Settings {
         &self.peer_settings
+    }
+}
+
+impl Drop for Ssh3Session {
+    /// H1: abort the background dispatch tasks (h3 driver + `accept_bi` loop +
+    /// datagram demux) and best-effort close the QUIC connection on ANY drop.
+    ///
+    /// Graceful teardown goes through [`TunnelSession::close`], which already
+    /// aborts these tasks and awaits `connection.closed()`. But non-graceful
+    /// paths drop the session WITHOUT calling `close()` — e.g. the
+    /// `ProfileSupervisor::drop` abort backstop, or `Orchestrator` dropping a
+    /// displaced session on reload. Without this `Drop` those paths would leak
+    /// the background tasks (which each hold a `Connection` clone) and keep the
+    /// QUIC connection + UDP FD alive until the idle timeout.
+    ///
+    /// Idempotent with `close()`: aborting an already-finished handle and
+    /// closing an already-closed connection are both harmless no-ops, so
+    /// `close()` followed by this `Drop` never double-panics.
+    fn drop(&mut self) {
+        for h in &self.background {
+            h.abort();
+        }
+        // Cannot `await connection.closed()` in Drop; abort + close + dropping
+        // the `Connection` clones is enough to release the socket/FD.
+        self.connection.close(0u32.into(), b"spt-ssh3: drop");
     }
 }
 
@@ -386,5 +416,118 @@ impl TunnelSession for Ssh3Session {
 
     fn session_info(&self) -> SessionInfo {
         self.info.clone()
+    }
+}
+
+#[cfg(all(test, feature = "testing"))]
+mod drop_tests {
+    use super::*;
+    use crate::testing::test_support::connected_pair_public;
+    use crate::transport::{accept_control_stream, open_control_stream};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    fn test_settings() -> Ssh3Settings {
+        Ssh3Settings {
+            direct_tcp: true,
+            remote_tcp: true,
+            udp_datagrams: true,
+            agent_forwarding: false,
+            max_forwards: Some(8),
+            version: Some("test/0.1".into()),
+            extras: vec![],
+        }
+    }
+
+    fn test_info() -> SessionInfo {
+        SessionInfo {
+            backend: "ssh3".into(),
+            peer_version: Some("client".into()),
+            negotiated: Some("test".into()),
+            established_at: 0,
+        }
+    }
+
+    /// A `pending()`-parked task standing in for the h3 driver. It signals
+    /// readiness (so the test can guarantee it was polled, and thus the
+    /// drop-sentinel constructed, before aborting) and flips `flag` when its
+    /// future is dropped (= the task was aborted).
+    fn parked_driver() -> (
+        tokio::task::JoinHandle<()>,
+        Arc<AtomicBool>,
+        tokio::sync::oneshot::Receiver<()>,
+    ) {
+        let flag = Arc::new(AtomicBool::new(false));
+        let f = flag.clone();
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel::<()>();
+        let handle = tokio::spawn(async move {
+            struct Sentinel(Arc<AtomicBool>);
+            impl Drop for Sentinel {
+                fn drop(&mut self) {
+                    self.0.store(true, Ordering::SeqCst);
+                }
+            }
+            let _s = Sentinel(f);
+            let _ = ready_tx.send(());
+            std::future::pending::<()>().await;
+        });
+        (handle, flag, ready_rx)
+    }
+
+    async fn build_session(
+        driver: Option<tokio::task::JoinHandle<()>>,
+    ) -> (Ssh3Session, quinn::Connection) {
+        let (client, server) = connected_pair_public().await;
+        let (cs, sv) = tokio::join!(
+            open_control_stream(&client, test_settings()),
+            accept_control_stream(&server, test_settings()),
+        );
+        let (c_send, c_recv, c_peer) = cs.expect("client handshake");
+        let _sv = sv.expect("server handshake");
+        let session =
+            Ssh3Session::from_parts(client.clone(), c_send, c_recv, c_peer, test_info(), driver);
+        (session, server)
+    }
+
+    /// H1: dropping a session WITHOUT calling `close()` (the non-graceful
+    /// supervisor/orchestrator teardown path) MUST abort the background
+    /// dispatch tasks and close the QUIC connection.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn drop_without_close_aborts_background_and_closes_connection() {
+        let (driver, dropped, ready_rx) = parked_driver();
+        ready_rx.await.expect("driver started");
+        let (session, server) = build_session(Some(driver)).await;
+
+        drop(session); // non-graceful teardown.
+
+        // The injected driver task's future must have been dropped (aborted),
+        // proving Drop reaped the `background` handles.
+        let mut flipped = false;
+        for _ in 0..100 {
+            if dropped.load(Ordering::SeqCst) {
+                flipped = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(flipped, "Drop must abort the background driver task");
+
+        // The peer must observe the connection close promptly (Drop closed it).
+        tokio::time::timeout(Duration::from_secs(5), server.closed())
+            .await
+            .expect("peer must observe close after session drop");
+    }
+
+    /// `close()` followed by the implicit `Drop` must be idempotent — no
+    /// double-abort/close panic. (`close()` consumes the `Box`, then `Drop`
+    /// runs on the same value.)
+    #[tokio::test]
+    async fn close_then_drop_is_idempotent() {
+        let (session, server) = build_session(None).await;
+        let boxed: Box<dyn spt_protocol::TunnelSession> = Box::new(session);
+        boxed.close().await.expect("graceful close");
+        // No panic implies idempotency; the peer is closed either way.
+        let _ = tokio::time::timeout(Duration::from_secs(5), server.closed()).await;
     }
 }

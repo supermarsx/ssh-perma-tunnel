@@ -24,7 +24,7 @@ pub mod mock;
 
 pub use bw::TokenBucket;
 pub use checksum::{sha256_local_file, sha256_remote_file};
-pub use client::{SftpClient, SftpDirEntry, SftpMetadata};
+pub use client::{SftpClient, SftpDirEntry, SftpMetadata, STREAM_CHUNK};
 pub use error::SftpError;
 pub use mount::{
     mounter_for_current_os, unsupported_platform_error, AuditHook, MountEvent, MountHandle,

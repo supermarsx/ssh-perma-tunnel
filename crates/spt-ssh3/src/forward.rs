@@ -78,6 +78,17 @@ const DEFAULT_MAX_INBOUND_FORWARDS: u32 = 256;
 /// (E3-F3). Bounded fan-out drops excess datagrams instead.
 const MAX_REMOTE_UDP_INFLIGHT: usize = 1024;
 
+/// Bound on each per-flow inbound UDP datagram queue (`udp_flows`).
+///
+/// M1: the session datagram demux loop (`session.rs` / [`serve_datagram_demux`])
+/// `try_send`s every inbound QUIC datagram into the matching flow's channel and
+/// DROPS on a full queue, matching UDP's inherently lossy semantics. A bounded
+/// channel ensures a fast or hostile peer that outruns the local socket-send
+/// path cannot drive unbounded memory growth (the prior `unbounded_channel`
+/// grew without limit). Sized to absorb transient bursts while the consumer
+/// drains, consistent with how the UDP flow table caps elsewhere.
+const UDP_INBOUND_CHANNEL_CAP: usize = 1024;
+
 /// What the inbound-bidi dispatcher hands off to the remote-forward loop once
 /// it has accepted an inbound `forwarded-tcp` open *and* successfully dialed
 /// the local target (E3-F8): the already-connected local socket plus the QUIC
@@ -113,7 +124,7 @@ pub(crate) struct RemoteForwardEntry {
 /// * `remote_udp_inflight` bounds the per-datagram remote-UDP dial fan-out
 ///   (E3-F3).
 pub struct SessionState {
-    pub(crate) udp_flows: DashMap<u32, mpsc::UnboundedSender<Bytes>>,
+    pub(crate) udp_flows: DashMap<u32, mpsc::Sender<Bytes>>,
     pub(crate) remote_forwards: DashMap<(String, u16), RemoteForwardEntry>,
     /// Registered remote-UDS forwards, keyed by the *remote bind path* the peer
     /// listens on. The peer back-channels each accepted connection as a
@@ -563,7 +574,7 @@ pub async fn open_udp(
         assoc.write_async(&mut *g).await?;
     }
 
-    let (inbound_tx, mut inbound_rx) = mpsc::unbounded_channel::<Bytes>();
+    let (inbound_tx, mut inbound_rx) = mpsc::channel::<Bytes>(UDP_INBOUND_CHANNEL_CAP);
     state.udp_flows.insert(flow_id, inbound_tx);
 
     let (state_tx, state_rx) = watch::channel(ForwardState::Active);
@@ -1507,7 +1518,7 @@ async fn open_remote_udp(
 
     // Register flow demux entry so any datagrams the peer races to deliver
     // before our response arrives aren't dropped.
-    let (inbound_tx, mut inbound_rx) = mpsc::unbounded_channel::<Bytes>();
+    let (inbound_tx, mut inbound_rx) = mpsc::channel::<Bytes>(UDP_INBOUND_CHANNEL_CAP);
     state.udp_flows.insert(flow_id, inbound_tx);
 
     let (state_tx, state_rx) = watch::channel(ForwardState::Active);
@@ -1608,7 +1619,10 @@ pub async fn serve_datagram_demux(conn: Connection, state: Arc<SessionState>) {
         let flow_id = u32::from_be_bytes([payload[0], payload[1], payload[2], payload[3]]);
         let body = payload.slice(4..);
         if let Some(tx) = state.udp_flows.get(&flow_id) {
-            let _ = tx.value().send(body);
+            // M1: bounded channel; `try_send` drops on a full queue (UDP is
+            // lossy) so a flooding peer cannot grow memory without bound. The
+            // DashMap `Ref` is held only across this non-blocking send.
+            let _ = tx.value().try_send(body);
         }
     }
 }
@@ -1698,7 +1712,7 @@ async fn server_remote_udp_loop(
 
     // Register an inbound channel so the session-level datagram dispatch
     // can deliver replies (if the client sends back via the same flow_id).
-    let (reply_tx, mut reply_rx) = mpsc::unbounded_channel::<Bytes>();
+    let (reply_tx, mut reply_rx) = mpsc::channel::<Bytes>(UDP_INBOUND_CHANNEL_CAP);
     state.udp_flows.insert(flow_id, reply_tx);
 
     // External → QUIC.
@@ -1826,6 +1840,85 @@ mod tests {
         let dbg = format!("{s:?}");
         assert!(dbg.contains("udp_flows"));
         assert!(dbg.contains("remote_forwards"));
+    }
+
+    /// M1: the per-flow inbound UDP channel is BOUNDED. Mirroring the datagram
+    /// demux producer (`state.udp_flows.get(flow).try_send(body)`), a flood that
+    /// outruns the (here: never-draining) consumer is dropped once the queue is
+    /// full — memory cannot grow without bound.
+    #[test]
+    fn udp_flows_try_send_is_bounded_and_drops_on_flood() {
+        let state = SessionState::default();
+        let (tx, _rx) = mpsc::channel::<Bytes>(UDP_INBOUND_CHANNEL_CAP);
+        state.udp_flows.insert(7, tx);
+
+        let mut accepted = 0usize;
+        let mut dropped = 0usize;
+        // Flood far beyond the cap without ever draining `_rx`.
+        for _ in 0..(UDP_INBOUND_CHANNEL_CAP * 4) {
+            if let Some(s) = state.udp_flows.get(&7) {
+                match s.value().try_send(Bytes::from(vec![0u8; 16])) {
+                    Ok(()) => accepted += 1,
+                    Err(_) => dropped += 1,
+                }
+            }
+        }
+        // The queue accepts at most its capacity, then drops the rest.
+        assert_eq!(
+            accepted, UDP_INBOUND_CHANNEL_CAP,
+            "bounded channel must cap buffered datagrams at its capacity"
+        );
+        assert_eq!(accepted + dropped, UDP_INBOUND_CHANNEL_CAP * 4);
+        assert!(
+            dropped >= UDP_INBOUND_CHANNEL_CAP * 3,
+            "excess must be dropped"
+        );
+    }
+
+    /// M1 (end-to-end demux): `serve_datagram_demux` routes inbound QUIC
+    /// datagrams into the per-flow bounded channel via `try_send`; a peer that
+    /// floods a flow whose consumer never drains cannot push the buffered count
+    /// past the channel capacity.
+    #[cfg(feature = "testing")]
+    #[tokio::test]
+    async fn serve_datagram_demux_flood_stays_bounded() {
+        use crate::testing::test_support::connected_pair_public;
+
+        let (client, server) = connected_pair_public().await;
+        let state = Arc::new(SessionState::default());
+        let flow_id: u32 = 42;
+        let (tx, mut rx) = mpsc::channel::<Bytes>(UDP_INBOUND_CHANNEL_CAP);
+        state.udp_flows.insert(flow_id, tx);
+
+        // Run the real demux against the server side; never drain `rx`.
+        let demux = tokio::spawn(serve_datagram_demux(server.clone(), state.clone()));
+
+        // Flood many more datagrams than the channel cap from the client.
+        let flood = UDP_INBOUND_CHANNEL_CAP * 8;
+        for _ in 0..flood {
+            let mut payload = Vec::with_capacity(4 + 16);
+            payload.extend_from_slice(&flow_id.to_be_bytes());
+            payload.extend_from_slice(&[1u8; 16]);
+            // Best-effort: QUIC may drop datagrams under load — irrelevant, we
+            // only assert the buffered count never exceeds the cap.
+            let _ = client.send_datagram(Bytes::from(payload));
+            tokio::task::yield_now().await;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+        // Drain and count: a bounded channel can never hold more than its cap.
+        let mut buffered = 0usize;
+        while rx.try_recv().is_ok() {
+            buffered += 1;
+        }
+        assert!(
+            buffered <= UDP_INBOUND_CHANNEL_CAP,
+            "buffered datagrams {buffered} exceeded bounded cap {UDP_INBOUND_CHANNEL_CAP}"
+        );
+
+        demux.abort();
+        client.close(0u32.into(), b"done");
+        server.close(0u32.into(), b"done");
     }
 
     #[test]

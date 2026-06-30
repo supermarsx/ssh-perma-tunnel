@@ -1791,16 +1791,13 @@ async fn try_keyboard_interactive(
                         .iter()
                         .position(|re| re.is_match(&prompt.prompt))
                         .ok_or_else(|| {
-                            Error::AuthFailed(format!(
-                                "no keyboard-interactive responder matched prompt `{}`",
-                                prompt.prompt
-                            ))
+                            Error::AuthFailed(kbi_unmatched_prompt_msg(&prompt.prompt))
                         })?;
                     let r = &responder[idx];
                     if r.echo != prompt.echo {
                         warn!(
                             target: "spt_ssh2::russh",
-                            prompt = %prompt.prompt,
+                            prompt = %escape_control(&prompt.prompt),
                             configured_echo = r.echo,
                             server_echo = prompt.echo,
                             "keyboard-interactive echo flag mismatch"
@@ -2389,10 +2386,9 @@ async fn bridge_dynamic(
     // and the connection closed without ever asking the server to dial.
     if !target_acl.permits(&request.target.host, request.target.port) {
         let _ = crate::dynamic::reply_denied(&mut sock, request.protocol).await;
-        return Err(Error::RuntimeFailure(format!(
-            "dynamic proxy target {}:{} denied by ruleset",
-            escape_control(&request.target.host),
-            request.target.port
+        return Err(Error::RuntimeFailure(dynamic_target_denied_msg(
+            &request.target.host,
+            request.target.port,
         )));
     }
     let channel = {
@@ -2413,9 +2409,10 @@ async fn bridge_dynamic(
         }
         Err(e) => {
             let _ = crate::dynamic::reply_failure(&mut sock, request.protocol).await;
-            return Err(Error::RuntimeFailure(format!(
-                "russh dynamic direct-tcpip to {}:{}: {e}",
-                request.target.host, request.target.port
+            return Err(Error::RuntimeFailure(dynamic_dial_failure_msg(
+                &request.target.host,
+                request.target.port,
+                &e,
             )));
         }
     };
@@ -2917,6 +2914,46 @@ fn method_name(method: &AuthMethod) -> &'static str {
         AuthMethod::Basic { .. } => "basic",
         AuthMethod::OidcDeviceFlow { .. } => "oidc_device_flow",
     }
+}
+
+// ── Server-controlled-data error/log formatters ─────────────────────────────
+//
+// These build operator-facing messages from SSH-server-controlled strings
+// (keyboard-interactive prompt text per RFC 4256; dynamic-forward SOCKS/CONNECT
+// target hosts). The server-supplied field is always passed through
+// `escape_control` so a malicious peer cannot inject ANSI/terminal escape
+// sequences (or forge log lines) into the operator's terminal/log. They are
+// behavior-preserving for clean input. Kept as small free functions so the
+// escaping is unit-testable in isolation.
+
+/// Error message for a keyboard-interactive prompt that matched no configured
+/// responder. `prompt` is fully server-controlled (RFC 4256) → escaped.
+fn kbi_unmatched_prompt_msg(prompt: &str) -> String {
+    format!(
+        "no keyboard-interactive responder matched prompt `{}`",
+        escape_control(prompt)
+    )
+}
+
+/// Error message for a dynamic-proxy target rejected by the destination ACL.
+/// `host` originates from the client SOCKS/CONNECT request → escaped.
+fn dynamic_target_denied_msg(host: &str, port: u16) -> String {
+    format!(
+        "dynamic proxy target {}:{} denied by ruleset",
+        escape_control(host),
+        port
+    )
+}
+
+/// Error message for a failed dynamic-forward channel-open. `host` originates
+/// from the client SOCKS/CONNECT request → escaped (mirrors the success/deny
+/// paths). `err` is the backend error rendered via `Display`.
+fn dynamic_dial_failure_msg<D: std::fmt::Display>(host: &str, port: u16, err: &D) -> String {
+    format!(
+        "russh dynamic direct-tcpip to {}:{}: {err}",
+        escape_control(host),
+        port
+    )
 }
 
 #[cfg(test)]
@@ -4035,5 +4072,62 @@ mod tests {
              'password not resolved' short-circuit)"
         );
         assert_eq!(entries[0].0, "ssh-over-shadowsocks");
+    }
+
+    // ──────── M2/Low: escape server-controlled data at log/error sinks ──────
+
+    #[test]
+    fn kbi_unmatched_prompt_msg_escapes_control_bytes() {
+        // A malicious server prompt with ESC + CR + newline must be neutralized.
+        let evil = "Password:\x1b[31m\r\nFAKE";
+        let msg = kbi_unmatched_prompt_msg(evil);
+        assert!(!msg.contains('\x1b'), "ESC must be escaped: {msg:?}");
+        assert!(!msg.contains('\n'), "newline must be escaped: {msg:?}");
+        assert!(!msg.contains('\r'), "CR must be escaped: {msg:?}");
+        assert!(msg.contains("\\u{1b}"), "ESC rendered visibly: {msg:?}");
+        assert!(msg.contains("\\n") && msg.contains("\\r"));
+    }
+
+    #[test]
+    fn kbi_unmatched_prompt_msg_clean_input_unchanged() {
+        let msg = kbi_unmatched_prompt_msg("Verification code:");
+        assert_eq!(
+            msg,
+            "no keyboard-interactive responder matched prompt `Verification code:`"
+        );
+    }
+
+    #[test]
+    fn dynamic_target_denied_msg_escapes_host() {
+        let evil = "10.0.0.1\x1b]0;pwned\x07";
+        let msg = dynamic_target_denied_msg(evil, 22);
+        assert!(!msg.contains('\x1b'), "ESC must be escaped: {msg:?}");
+        assert!(!msg.contains('\x07'), "BEL must be escaped: {msg:?}");
+        assert!(msg.ends_with(":22 denied by ruleset"));
+    }
+
+    #[test]
+    fn dynamic_target_denied_msg_clean_input_unchanged() {
+        assert_eq!(
+            dynamic_target_denied_msg("example.com", 443),
+            "dynamic proxy target example.com:443 denied by ruleset"
+        );
+    }
+
+    #[test]
+    fn dynamic_dial_failure_msg_escapes_host() {
+        let evil = "host\ninjected: line";
+        let msg = dynamic_dial_failure_msg(evil, 80, &"connection refused");
+        assert!(!msg.contains('\n'), "newline must be escaped: {msg:?}");
+        assert!(msg.contains("\\n"));
+        assert!(msg.contains("connection refused"));
+    }
+
+    #[test]
+    fn dynamic_dial_failure_msg_clean_input_unchanged() {
+        assert_eq!(
+            dynamic_dial_failure_msg("svc.internal", 8080, &"timed out"),
+            "russh dynamic direct-tcpip to svc.internal:8080: timed out"
+        );
     }
 }

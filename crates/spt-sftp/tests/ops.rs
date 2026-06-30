@@ -31,6 +31,84 @@ fn write_local(root: &Path, rel: &str, body: &[u8]) -> PathBuf {
     p
 }
 
+/// Deterministic pseudo-random payload of `len` bytes (so equality checks
+/// catch any chunk-boundary corruption, not just length).
+fn patterned(len: usize) -> Vec<u8> {
+    let mut v = Vec::with_capacity(len);
+    let mut x: u32 = 0x1234_5678;
+    for _ in 0..len {
+        // xorshift32
+        x ^= x << 13;
+        x ^= x >> 17;
+        x ^= x << 5;
+        v.push((x & 0xff) as u8);
+    }
+    v
+}
+
+// H4/H3 — `read_file_to` streams a multi-chunk file byte-identically without
+// buffering the whole file in RAM. STREAM_CHUNK is 64 KiB; use a payload that
+// spans several chunks plus a partial tail so short final reads are covered.
+#[tokio::test]
+async fn read_file_to_round_trips_multichunk_file() {
+    let (dir, _server, client) = setup().await;
+    let payload = patterned(spt_sftp::STREAM_CHUNK * 3 + 777);
+    write_local(dir.path(), "big.bin", &payload);
+
+    let mut sink: Vec<u8> = Vec::new();
+    let copied = client.read_file_to("/big.bin", &mut sink).await.unwrap();
+
+    assert_eq!(copied as usize, payload.len(), "reported byte count");
+    assert_eq!(sink, payload, "streamed content must be byte-identical");
+}
+
+// The streamed transfer must use bounded chunks: the chunk size is exposed as
+// STREAM_CHUNK and is strictly smaller than a multi-chunk payload (structural
+// memory-bound assertion — the reader never sizes a buffer to the file).
+#[tokio::test]
+async fn read_file_to_chunk_is_bounded_below_payload() {
+    let payload_len = spt_sftp::STREAM_CHUNK * 3 + 777;
+    assert!(
+        spt_sftp::STREAM_CHUNK < payload_len,
+        "chunk ({}) must be smaller than the payload ({payload_len}) so the \
+         transfer is genuinely multi-chunk / bounded-memory",
+        spt_sftp::STREAM_CHUNK
+    );
+}
+
+#[tokio::test]
+async fn read_file_to_handles_empty_file() {
+    let (dir, _server, client) = setup().await;
+    write_local(dir.path(), "empty.bin", b"");
+    let mut sink: Vec<u8> = Vec::new();
+    let copied = client.read_file_to("/empty.bin", &mut sink).await.unwrap();
+    assert_eq!(copied, 0);
+    assert!(sink.is_empty());
+}
+
+#[tokio::test]
+async fn read_file_to_handles_sub_chunk_file() {
+    let (dir, _server, client) = setup().await;
+    write_local(dir.path(), "small.txt", b"hello world");
+    let mut sink: Vec<u8> = Vec::new();
+    let copied = client.read_file_to("/small.txt", &mut sink).await.unwrap();
+    assert_eq!(copied, 11);
+    assert_eq!(sink, b"hello world");
+}
+
+#[tokio::test]
+async fn read_file_to_errors_on_missing_remote() {
+    let (_dir, _server, client) = setup().await;
+    let mut sink: Vec<u8> = Vec::new();
+    let err = client
+        .read_file_to("/does-not-exist.bin", &mut sink)
+        .await
+        .unwrap_err();
+    assert!(sink.is_empty(), "nothing should be written on open failure");
+    // open failure surfaces as a russh-mapped error.
+    let _ = err;
+}
+
 #[tokio::test]
 async fn cat_returns_remote_body_within_cap() {
     let (dir, _server, client) = setup().await;

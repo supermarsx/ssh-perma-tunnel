@@ -196,10 +196,19 @@ struct Shared {
 ///
 /// Holds accessors for live status and an async [`MemoryMonitorHandle::shutdown`]
 /// that aborts the sampling task and joins it cleanly (no leaked task).
+///
+/// Dropping the handle **also** aborts the background task (see the [`Drop`]
+/// impl), so a handle that is dropped without an explicit `shutdown()` — early
+/// return, error unwind, `let _ = …` — does not leak a detached sampler that
+/// would otherwise run for the whole process lifetime.
 #[derive(Debug)]
 pub struct MemoryMonitorHandle {
     shared: Arc<Shared>,
-    task: JoinHandle<()>,
+    /// `Some` while the task is owned by this handle; `take`n by `shutdown` so
+    /// it can be awaited (you cannot move a field out of a `Drop` type). After
+    /// `shutdown` it is `None`, which makes the `Drop` abort a no-op — so
+    /// `shutdown()` then `Drop` (or a double `Drop` path) never double-stops.
+    task: Option<JoinHandle<()>>,
 }
 
 impl MemoryMonitorHandle {
@@ -223,11 +232,31 @@ impl MemoryMonitorHandle {
 
     /// Stop the monitor and join its task. Idempotent in effect: aborting an
     /// already-finished task is a no-op. Safe to call from async teardown.
-    pub async fn shutdown(self) {
-        self.task.abort();
-        // Await the join; an aborted task resolves to a `JoinError` with
-        // `is_cancelled()` — that is the expected, clean outcome.
-        let _ = self.task.await;
+    ///
+    /// Takes the [`JoinHandle`] out of the handle before awaiting it (a field
+    /// cannot be moved out of a `Drop` type), so the subsequent `Drop` sees
+    /// `None` and does not abort a second time.
+    pub async fn shutdown(mut self) {
+        if let Some(task) = self.task.take() {
+            task.abort();
+            // Await the join; an aborted task resolves to a `JoinError` with
+            // `is_cancelled()` — that is the expected, clean outcome.
+            let _ = task.await;
+        }
+    }
+}
+
+impl Drop for MemoryMonitorHandle {
+    /// Abort the background sampling task when the handle is dropped, so a
+    /// handle dropped without an explicit [`MemoryMonitorHandle::shutdown`]
+    /// never leaks a forever-running detached task. Idempotent: after
+    /// `shutdown` (which `take`s the handle) this is `None` and does nothing,
+    /// and aborting an already-finished task is itself a no-op. `abort` is
+    /// non-blocking and safe to call from a `Drop` (no `.await`).
+    fn drop(&mut self) {
+        if let Some(task) = &self.task {
+            task.abort();
+        }
     }
 }
 
@@ -333,7 +362,10 @@ impl MemoryMonitor {
             }
         });
 
-        MemoryMonitorHandle { shared, task }
+        MemoryMonitorHandle {
+            shared,
+            task: Some(task),
+        }
     }
 }
 
@@ -509,6 +541,90 @@ mod tests {
         let _ = flagged; // accessor smoke-check
         assert!(h.samples_taken() > 0, "must have sampled before shutdown");
         h.shutdown().await; // returns => task joined
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn drop_without_shutdown_aborts_background_task() {
+        // H6 regression: dropping the handle (no explicit shutdown) must abort
+        // the sampling task so it does not run forever. Observe that the
+        // sampler stops being invoked once the handle is dropped.
+        let c = cfg(5);
+        let count = Arc::new(AtomicUsize::new(0));
+        let count2 = Arc::clone(&count);
+        let handle = MemoryMonitor::spawn_with_sampler(
+            c,
+            1,
+            move || {
+                count2.fetch_add(1, Ordering::Relaxed);
+                100 * MIB // flat
+            },
+            |_g| {},
+        );
+
+        // Let it sample a few times.
+        for _ in 0..5 {
+            tokio::time::advance(Duration::from_secs(60)).await;
+            tokio::task::yield_now().await;
+        }
+        let before = count.load(Ordering::Relaxed);
+        assert!(before > 0, "should have sampled before drop");
+
+        // Drop without calling shutdown(): the Drop impl must abort the task.
+        drop(handle);
+        // Let the runtime process the abort.
+        tokio::task::yield_now().await;
+
+        // Advance well past many more intervals; an aborted task must not run.
+        for _ in 0..20 {
+            tokio::time::advance(Duration::from_secs(60)).await;
+            tokio::task::yield_now().await;
+        }
+        let after = count.load(Ordering::Relaxed);
+        assert_eq!(
+            before, after,
+            "background task must stop sampling after the handle is dropped"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn immediate_drop_does_not_panic_and_stops_task() {
+        // Dropping a freshly-spawned handle (idempotent stop path) must not
+        // panic and must leave nothing running.
+        let c = cfg(5);
+        let count = Arc::new(AtomicUsize::new(0));
+        let count2 = Arc::clone(&count);
+        let handle = MemoryMonitor::spawn_with_sampler(
+            c,
+            1,
+            move || {
+                count2.fetch_add(1, Ordering::Relaxed);
+                100 * MIB
+            },
+            |_g| {},
+        );
+        drop(handle);
+        tokio::task::yield_now().await;
+        for _ in 0..10 {
+            tokio::time::advance(Duration::from_secs(60)).await;
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(
+            count.load(Ordering::Relaxed),
+            0,
+            "task aborted before its first tick must never sample"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn shutdown_then_implicit_drop_is_idempotent() {
+        // shutdown() consumes self (task taken) then self is dropped at end of
+        // shutdown with task == None — the Drop abort must be a no-op (no
+        // double-stop panic, no hang).
+        let c = cfg(5);
+        let handle = MemoryMonitor::spawn_with_sampler(c, 1, || 100 * MIB, |_g| {});
+        tokio::time::advance(Duration::from_secs(60)).await;
+        tokio::task::yield_now().await;
+        handle.shutdown().await; // returns cleanly; trailing Drop sees None
     }
 
     #[tokio::test(start_paused = true)]

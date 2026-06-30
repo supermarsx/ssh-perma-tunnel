@@ -9,12 +9,16 @@ use std::path::PathBuf;
 use russh_sftp::client::fs::File as RusshFile;
 use russh_sftp::client::SftpSession as RusshSftpSession;
 use russh_sftp::protocol::{FileAttributes, OpenFlags};
-use tokio::io::{AsyncSeekExt, AsyncWriteExt};
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWrite, AsyncWriteExt};
 
 use crate::error::SftpError;
 
 /// Default cap on `cat`-style whole-file reads (4 MiB).
 pub const DEFAULT_CAT_SIZE_CAP: u64 = 4 * 1024 * 1024;
+
+/// Chunk size for streaming reads/copies (64 KiB). Matches the recursive
+/// downloader and checksum hasher so bounded-memory transfers are uniform.
+pub const STREAM_CHUNK: usize = 64 * 1024;
 
 /// High-level SFTP client used by the CLI and runtime management surfaces.
 pub struct SftpClient {
@@ -68,12 +72,65 @@ impl SftpClient {
             .collect())
     }
 
-    /// Read a whole remote file.
+    /// Read a whole remote file into memory.
+    ///
+    /// WARNING: this buffers the entire remote file in RAM — a large file can
+    /// OOM the process. Prefer [`read_file_to`](Self::read_file_to) (bounded
+    /// streaming) for transfers of unknown / arbitrary size; use this only for
+    /// small, size-checked reads.
     pub async fn read_file(&self, path: impl Into<String>) -> Result<Vec<u8>, SftpError> {
         self.inner
             .read(path)
             .await
             .map_err(|e| SftpError::from_russh("read_file", e))
+    }
+
+    /// Stream a remote file's contents into `writer` in bounded
+    /// [`STREAM_CHUNK`]-sized chunks, returning the total number of bytes
+    /// copied.
+    ///
+    /// Unlike [`read_file`](Self::read_file), peak memory use is bounded by the
+    /// chunk size regardless of the remote file's size, so a multi-gigabyte
+    /// remote file cannot OOM the caller. Used by `spt sftp get` and the
+    /// FTP-translator's `RETR` path.
+    pub async fn read_file_to<W>(
+        &self,
+        path: impl Into<String>,
+        writer: &mut W,
+    ) -> Result<u64, SftpError>
+    where
+        W: AsyncWrite + Unpin,
+    {
+        let path_str: String = path.into();
+        let mut file = self
+            .inner
+            .open(path_str.clone())
+            .await
+            .map_err(|e| SftpError::from_russh("read_file_to-open", e))?;
+        let mut buf = vec![0u8; STREAM_CHUNK];
+        let mut total: u64 = 0;
+        loop {
+            let n = file.read(&mut buf).await.map_err(|e| SftpError::Local {
+                op: "read_file_to-read",
+                detail: format!("{path_str}: {e}"),
+            })?;
+            if n == 0 {
+                break;
+            }
+            writer
+                .write_all(&buf[..n])
+                .await
+                .map_err(|e| SftpError::Local {
+                    op: "read_file_to-write",
+                    detail: format!("{path_str}: {e}"),
+                })?;
+            total += n as u64;
+        }
+        writer.flush().await.map_err(|e| SftpError::Local {
+            op: "read_file_to-flush",
+            detail: format!("{path_str}: {e}"),
+        })?;
+        Ok(total)
     }
 
     /// `cat` a remote file, refusing to read more than `size_cap` bytes.

@@ -1687,12 +1687,15 @@ fn check_profile(d: &mut Diagnostics, i: usize, p: &Profile, capabilities: Optio
         );
     }
     if let Some(k) = p.keepalive.as_ref() {
-        check_duration_field(
+        // H1 / M1: a zero keepalive interval panics `tokio::time::interval`, and
+        // a zero keepalive timeout makes every probe time out instantly (an
+        // endless reconnect storm). Both must be strictly positive.
+        check_positive_duration_field(
             d,
             k.interval.as_deref(),
             format!("{prefix}.keepalive.interval"),
         );
-        check_duration_field(
+        check_positive_duration_field(
             d,
             k.timeout.as_deref(),
             format!("{prefix}.keepalive.timeout"),
@@ -3159,6 +3162,39 @@ fn check_duration_field<P: Into<String>>(d: &mut Diagnostics, val: Option<&str>,
     }
 }
 
+/// Like [`check_duration_field`] but additionally rejects a *zero* duration.
+///
+/// A syntactically-valid `"0s"` parses to [`std::time::Duration::ZERO`], which
+/// is catastrophic for fields that drive a cadence or a per-probe timeout: a
+/// zero keepalive interval panics `tokio::time::interval` the moment a tunnel
+/// comes up, and a zero keepalive timeout makes every probe time out instantly,
+/// producing a permanent reconnect storm. Such fields must be strictly
+/// positive.
+fn check_positive_duration_field<P: Into<String>>(d: &mut Diagnostics, val: Option<&str>, path: P) {
+    if let Some(s) = val {
+        if !s.is_empty() {
+            match parse_duration(s) {
+                Err(e) => {
+                    d.push(
+                        Diagnostic::error("duration_invalid", format!("`{s}`: {e}"))
+                            .at(path.into()),
+                    );
+                }
+                Ok(dur) if dur.is_zero() => {
+                    d.push(
+                        Diagnostic::error(
+                            "duration_must_be_positive",
+                            format!("`{s}`: value must be greater than zero"),
+                        )
+                        .at(path.into()),
+                    );
+                }
+                Ok(_) => {}
+            }
+        }
+    }
+}
+
 fn check_size_field<P: Into<String>>(d: &mut Diagnostics, val: Option<&str>, path: P) {
     if let Some(s) = val {
         if !s.is_empty() {
@@ -3182,6 +3218,74 @@ mod tests {
             name = "p"
             protocol = "ssh2"
             host = "h.example.com"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(d.is_ok(), "errors: {:?}", d.errors);
+    }
+
+    #[test]
+    fn zero_keepalive_interval_rejected() {
+        // H1: `keepalive.interval = "0s"` parses but is catastrophic (panics
+        // `tokio::time::interval`). Validation must reject it.
+        let raw = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            [profiles.keepalive]
+            interval = "0s"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(!d.is_ok());
+        assert!(
+            d.errors
+                .iter()
+                .any(|e| e.code == "duration_must_be_positive"),
+            "errors: {:?}",
+            d.errors
+        );
+    }
+
+    #[test]
+    fn zero_keepalive_timeout_rejected() {
+        // M1: `keepalive.timeout = "0s"` → every probe times out instantly →
+        // permanent reconnect storm. Validation must reject it.
+        let raw = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            [profiles.keepalive]
+            timeout = "0s"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(!d.is_ok());
+        assert!(
+            d.errors
+                .iter()
+                .any(|e| e.code == "duration_must_be_positive"),
+            "errors: {:?}",
+            d.errors
+        );
+    }
+
+    #[test]
+    fn positive_keepalive_durations_accepted() {
+        // Behavior-preserving: a normal, positive keepalive config still passes.
+        let raw = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            [profiles.keepalive]
+            interval = "30s"
+            timeout = "10s"
         "#;
         let (c, _) = load_str(raw, false).unwrap();
         let d = validate(&c);

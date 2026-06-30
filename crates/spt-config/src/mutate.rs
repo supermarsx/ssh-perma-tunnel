@@ -139,7 +139,15 @@ impl Document {
         true
     }
 
-    /// Set a top-level profile field to a string value.
+    /// Set a top-level profile field, preserving the value's TOML type.
+    ///
+    /// M3: the value string is coerced to its natural TOML type
+    /// (`bool` / integer / float / string) via [`coerce_toml_value`] so a typed
+    /// field — e.g. `acknowledge_experimental` (bool) or a numeric field — is
+    /// written as the correct type rather than always as a quoted string (which
+    /// would fail to deserialize on the next load). Renaming via `field ==
+    /// "name"` is rejected when the new name collides with another profile, so
+    /// `set` can never create a duplicate-name config (mirrors `add_profile`).
     pub fn set_profile_field(&mut self, profile: &str, field: &str, val: &str) -> Result<()> {
         let idx = self.find_profile_index(profile).ok_or_else(|| {
             Error::invalid_config(
@@ -154,6 +162,28 @@ impl Document {
                 .build(),
             )
         })?;
+        // M3: reject a rename that would collide with an existing profile name.
+        if field == "name" && val != profile {
+            if let Some(other) = self.find_profile_index(val) {
+                if other != idx {
+                    return Err(Error::invalid_config(
+                        spt_core::Diagnostic::what(format!(
+                            "Cannot rename profile `{profile}` to `{val}`"
+                        ))
+                        .why(
+                            "another `[[profiles]]` entry already uses that name; profile \
+                             names must be unique within a config",
+                        )
+                        .how_to_fix(format!(
+                            "Pick a different name, or remove the existing `{val}` profile first \
+                             (`spt profile remove {val}`).",
+                        ))
+                        .build(),
+                    ));
+                }
+            }
+        }
+        let coerced = coerce_toml_value(field, val);
         let arr = self.profiles_array_mut();
         let tbl = arr.get_mut(idx).ok_or_else(|| {
             Error::invalid_config(
@@ -166,7 +196,7 @@ impl Document {
                     .build(),
             )
         })?;
-        tbl[field] = value(val);
+        tbl[field] = coerced;
         Ok(())
     }
 
@@ -381,6 +411,45 @@ impl Document {
     }
 }
 
+/// Coerce a CLI-supplied string into its natural TOML value type (M3).
+///
+/// `spt config set` passes every value as a string, but writing a typed field
+/// as a quoted string corrupts the config (e.g. `acknowledge_experimental =
+/// "true"` fails to deserialize as a bool). This maps the raw text to the
+/// closest TOML scalar:
+/// * `"true"` / `"false"` → boolean
+/// * a value that parses as an `i64` → integer
+/// * a value that parses as an `f64` (and isn't an integer) → float
+/// * everything else → string (verbatim)
+///
+/// `name` is always written as a string — a profile name is an identifier even
+/// when it looks numeric (e.g. `"123"`) — so it is never coerced.
+fn coerce_toml_value(field: &str, val: &str) -> Item {
+    if field == "name" {
+        return value(val);
+    }
+    match val {
+        "true" => return value(true),
+        "false" => return value(false),
+        _ => {}
+    }
+    // Integer before float so e.g. "42" stays an integer, not 42.0.
+    if let Ok(i) = val.parse::<i64>() {
+        return value(i);
+    }
+    // Only treat as float when it parses AND carries a fractional/exponent
+    // marker, so plain integers that overflow i64 don't silently become floats
+    // and bare tokens like "inf"/"nan" (which f64 accepts) stay strings.
+    if (val.contains('.') || val.contains('e') || val.contains('E'))
+        && val.parse::<f64>().map(f64::is_finite).unwrap_or(false)
+    {
+        if let Ok(f) = val.parse::<f64>() {
+            return value(f);
+        }
+    }
+    value(val)
+}
+
 /// Friendly trait impl for `print!` etc.
 impl std::fmt::Display for Document {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -472,6 +541,96 @@ host = "h"
         let mut doc = Document::parse(RAW).unwrap();
         assert!(doc.remove_profile("p"));
         assert!(!doc.remove_profile("p"));
+    }
+
+    #[test]
+    fn set_field_preserves_bool_type() {
+        // M3: a bool value must be written as a TOML boolean, not a string
+        // (a quoted "true" fails to deserialize as a bool on next load).
+        let mut doc = Document::parse(RAW).unwrap();
+        doc.set_profile_field("p", "acknowledge_experimental", "true")
+            .unwrap();
+        let out = doc.to_string();
+        assert!(
+            out.contains("acknowledge_experimental = true"),
+            "bool not preserved: {out}"
+        );
+        assert!(!out.contains(r#"acknowledge_experimental = "true""#));
+    }
+
+    #[test]
+    fn set_field_preserves_integer_type() {
+        // M3: an integer value must be written as a TOML integer.
+        let mut doc = Document::parse(RAW).unwrap();
+        doc.set_profile_field("p", "max_connections", "5").unwrap();
+        let out = doc.to_string();
+        assert!(
+            out.contains("max_connections = 5"),
+            "int not preserved: {out}"
+        );
+        assert!(!out.contains(r#"max_connections = "5""#));
+    }
+
+    #[test]
+    fn set_field_preserves_float_type() {
+        let mut doc = Document::parse(RAW).unwrap();
+        doc.set_profile_field("p", "ratio", "1.5").unwrap();
+        let out = doc.to_string();
+        assert!(out.contains("ratio = 1.5"), "float not preserved: {out}");
+        assert!(!out.contains(r#"ratio = "1.5""#));
+    }
+
+    #[test]
+    fn set_field_keeps_string_for_textual_values() {
+        let mut doc = Document::parse(RAW).unwrap();
+        doc.set_profile_field("p", "host", "bastion.example.com")
+            .unwrap();
+        let out = doc.to_string();
+        assert!(out.contains(r#"host = "bastion.example.com""#));
+    }
+
+    #[test]
+    fn set_name_stays_string_even_if_numeric() {
+        // M3: `name` is an identifier — never coerced to an int, even "123".
+        let mut doc = Document::parse(RAW).unwrap();
+        doc.set_profile_field("p", "name", "123").unwrap();
+        let out = doc.to_string();
+        assert!(
+            out.contains(r#"name = "123""#),
+            "name coerced wrongly: {out}"
+        );
+    }
+
+    #[test]
+    fn rename_to_existing_name_rejected() {
+        // M3: renaming a profile onto another profile's name must be rejected.
+        let mut doc = Document::parse(RAW).unwrap();
+        doc.add_profile("q", "ssh2").unwrap();
+        let err = doc.set_profile_field("p", "name", "q").unwrap_err();
+        assert!(
+            format!("{err}").contains("Cannot rename"),
+            "unexpected error: {err}"
+        );
+        // The original name is untouched.
+        let out = doc.to_string();
+        assert!(out.contains(r#"name = "p""#));
+    }
+
+    #[test]
+    fn rename_to_unique_name_allowed() {
+        let mut doc = Document::parse(RAW).unwrap();
+        doc.set_profile_field("p", "name", "renamed").unwrap();
+        let out = doc.to_string();
+        assert!(out.contains(r#"name = "renamed""#));
+    }
+
+    #[test]
+    fn rename_to_self_is_noop_allowed() {
+        // Setting name to the current name must not be rejected as a duplicate.
+        let mut doc = Document::parse(RAW).unwrap();
+        doc.set_profile_field("p", "name", "p").unwrap();
+        let out = doc.to_string();
+        assert!(out.contains(r#"name = "p""#));
     }
 
     #[test]

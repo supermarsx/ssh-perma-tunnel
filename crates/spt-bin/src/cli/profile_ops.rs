@@ -34,7 +34,7 @@ use std::time::{Duration, Instant};
 use serde_json::json;
 use spt_cli::{groups::profile, GlobalOpts, OutputFormat};
 use spt_config::mutate::Document;
-use spt_core::{Error, Result};
+use spt_core::{escape_control, Error, Result};
 use spt_protocol::Endpoint;
 use toml_edit::{value, Item, Value};
 
@@ -482,25 +482,38 @@ fn emit_test_report(global: &GlobalOpts, profile: &str, results: &[EndpointResul
     } else {
         let st = crate::styler(global);
         for r in results {
-            match &r.status {
-                EndpointStatus::Connected { peer_version } => println!(
-                    "endpoint {id}: {status} in {ms}ms{peer}",
-                    id = r.id,
-                    status = st.green("connected"),
-                    ms = r.latency_ms,
-                    peer = peer_version
-                        .as_ref()
-                        .map(|v| format!(" (peer: {v})"))
-                        .unwrap_or_default(),
-                ),
-                EndpointStatus::Failed(err) => println!(
-                    "endpoint {id}: {status} in {ms}ms — {err}",
-                    id = r.id,
-                    status = st.red("failed"),
-                    ms = r.latency_ms,
-                ),
-            }
+            println!("{}", format_test_line(st, r));
         }
+    }
+}
+
+/// Render one endpoint test result as a human-facing line.
+///
+/// Server-controlled fields — the peer SSH identification banner
+/// (`peer_version`) and the connect-error text (which can embed
+/// server-supplied strings) — are passed through [`escape_control`] so a
+/// malicious peer cannot inject ANSI/terminal escape sequences into the
+/// operator's terminal. The endpoint id is operator-derived (`host:port` from
+/// config) and left as-is. Behavior-preserving for clean input.
+fn format_test_line(st: crate::cli::style::Styler, r: &EndpointResult) -> String {
+    match &r.status {
+        EndpointStatus::Connected { peer_version } => format!(
+            "endpoint {id}: {status} in {ms}ms{peer}",
+            id = r.id,
+            status = st.green("connected"),
+            ms = r.latency_ms,
+            peer = peer_version
+                .as_ref()
+                .map(|v| format!(" (peer: {})", escape_control(v)))
+                .unwrap_or_default(),
+        ),
+        EndpointStatus::Failed(err) => format!(
+            "endpoint {id}: {status} in {ms}ms — {err}",
+            id = r.id,
+            status = st.red("failed"),
+            ms = r.latency_ms,
+            err = escape_control(err),
+        ),
     }
 }
 
@@ -1187,5 +1200,89 @@ user = "bob"
     fn backup_path_appends_bak_suffix() {
         let p = Path::new("/etc/spt/spt.toml");
         assert_eq!(backup_path(p), Path::new("/etc/spt/spt.toml.bak"));
+    }
+
+    // ──────── M2: escape server-controlled peer banner / error text ─────────
+
+    fn plain_styler() -> crate::cli::style::Styler {
+        crate::cli::style::Styler::new(false)
+    }
+
+    #[test]
+    fn format_test_line_escapes_peer_banner() {
+        // A malicious SSH identification banner with ESC/CR/newline must be
+        // neutralized before it reaches the operator's terminal.
+        let r = EndpointResult {
+            id: "evil.example:22".into(),
+            host: "evil.example".into(),
+            port: 22,
+            status: EndpointStatus::Connected {
+                peer_version: Some("SSH-2.0-x\x1b[31m\r\nLEAK".into()),
+            },
+            latency_ms: 12,
+        };
+        let line = format_test_line(plain_styler(), &r);
+        assert!(!line.contains('\x1b'), "ESC must be escaped: {line:?}");
+        assert!(!line.contains('\n'), "newline must be escaped: {line:?}");
+        assert!(!line.contains('\r'), "CR must be escaped: {line:?}");
+        assert!(line.contains("\\u{1b}") && line.contains("\\r") && line.contains("\\n"));
+    }
+
+    #[test]
+    fn format_test_line_escapes_failure_text() {
+        let r = EndpointResult {
+            id: "h:22".into(),
+            host: "h".into(),
+            port: 22,
+            status: EndpointStatus::Failed("auth failed\x1b]0;pwned\x07".into()),
+            latency_ms: 5,
+        };
+        let line = format_test_line(plain_styler(), &r);
+        assert!(!line.contains('\x1b'), "ESC must be escaped: {line:?}");
+        assert!(!line.contains('\x07'), "BEL must be escaped: {line:?}");
+    }
+
+    #[test]
+    fn format_test_line_clean_input_preserved() {
+        let connected = EndpointResult {
+            id: "ok:22".into(),
+            host: "ok".into(),
+            port: 22,
+            status: EndpointStatus::Connected {
+                peer_version: Some("SSH-2.0-OpenSSH_9.6".into()),
+            },
+            latency_ms: 7,
+        };
+        assert_eq!(
+            format_test_line(plain_styler(), &connected),
+            "endpoint ok:22: connected in 7ms (peer: SSH-2.0-OpenSSH_9.6)"
+        );
+
+        let failed = EndpointResult {
+            id: "ok:22".into(),
+            host: "ok".into(),
+            port: 22,
+            status: EndpointStatus::Failed("connection refused".into()),
+            latency_ms: 3,
+        };
+        assert_eq!(
+            format_test_line(plain_styler(), &failed),
+            "endpoint ok:22: failed in 3ms — connection refused"
+        );
+    }
+
+    #[test]
+    fn format_test_line_no_peer_version() {
+        let r = EndpointResult {
+            id: "ok:22".into(),
+            host: "ok".into(),
+            port: 22,
+            status: EndpointStatus::Connected { peer_version: None },
+            latency_ms: 1,
+        };
+        assert_eq!(
+            format_test_line(plain_styler(), &r),
+            "endpoint ok:22: connected in 1ms"
+        );
     }
 }

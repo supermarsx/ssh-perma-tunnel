@@ -61,14 +61,23 @@ jobs:
         run: docker run --rm spt:ci --version
 
       # Vulnerability scan of the BUILT image. Fails the job on HIGH/CRITICAL
-      # with an available fix. Pinned to a tag per the repo's action-pinning
-      # convention.
-      - name: Trivy image scan (fail on HIGH/CRITICAL)
-        uses: aquasecurity/trivy-action@0.28.0
-        with:
-          image-ref: spt:ci
-          format: table
-          exit-code: '1'
-          severity: HIGH,CRITICAL
-          ignore-unfixed: true
-          vuln-type: os,library
+      # that have an available fix (--ignore-unfixed). Trivy is installed via its
+      # official installer rather than a marketplace action so the scan can't
+      # break on an action-version resolution mismatch and adds no third-party
+      # action to CI. The scanner is intentionally unpinned (always latest
+      # engine + vuln DB) — correct for a security scanner.
+      - name: Install Trivy
+        run: |
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
+            | sh -s -- -b /usr/local/bin
+          trivy --version
+
+      - name: Trivy image scan (fail on fixable HIGH/CRITICAL)
+        run: |
+          trivy image \
+            --exit-code 1 \
+            --severity HIGH,CRITICAL \
+            --ignore-unfixed \
+            --pkg-types os,library \
+            --format table \
+            spt:ci

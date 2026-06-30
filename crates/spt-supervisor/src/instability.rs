@@ -275,6 +275,17 @@ impl InstabilityDetector {
                 }
             }
         }
+        if newly {
+            // H3: restart the clean-window clock at trip time, mirroring
+            // `record_disconnect`. Without this, `last_clean` was set on the
+            // FIRST healthy probe of the session (many intervals earlier, while
+            // the p95 window filled). The probe cycle calls `record_probe` then
+            // `tick_healthy` back-to-back, so a freshly-tripped latency state
+            // would be cleared in the SAME cycle (`now - last_clean >=
+            // clear_after`). Resetting `last_clean` here makes the trip HOLD for
+            // the full `clear_after` of sustained health before clearing.
+            self.last_clean = None;
+        }
         newly
     }
 
@@ -576,6 +587,59 @@ mod tests {
         assert!(!d.is_unstable());
         assert_eq!(d.consecutive_misses(), 0);
         assert_eq!(d.latency_p95(), None);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn latency_trip_holds_across_probe_cycle() {
+        // H3: reproduce the real `run_active` probe cycle — `record_probe` then
+        // `tick_healthy` back-to-back — and prove a freshly-tripped latency
+        // state HOLDS instead of self-clearing the same cycle.
+        let mut d = InstabilityDetector::new(InstabilityWindow {
+            max_latency_p95: Some(ms(100)),
+            clear_after: Duration::from_secs(120),
+            ..Default::default()
+        });
+
+        // Fill the rolling window with healthy 50ms probes, ticking healthy
+        // after each (as the loop does). This sets `last_clean` EARLY — the
+        // condition that used to let `tick_healthy` clear a later trip.
+        for _ in 0..LATENCY_WINDOW {
+            assert!(!d.record_probe(Some(ms(50))));
+            d.tick_healthy(Instant::now());
+        }
+        assert!(!d.is_unstable());
+
+        // Let far more than `clear_after` of (clean) time pass: `last_clean` is
+        // now stale by >clear_after.
+        tokio::time::advance(Duration::from_secs(300)).await;
+
+        // The link degrades. Feed high-latency probes; mirror the loop by
+        // calling `tick_healthy` immediately after each `record_probe`.
+        let mut tripped = false;
+        for _ in 0..LATENCY_WINDOW {
+            if d.record_probe(Some(ms(500))) {
+                tripped = true;
+                d.tick_healthy(Instant::now());
+                break;
+            }
+            d.tick_healthy(Instant::now());
+        }
+        assert!(tripped, "sustained high p95 must trip the detector");
+        assert!(
+            d.is_unstable(),
+            "H3: a freshly-tripped latency state must HOLD, not self-clear"
+        );
+
+        // And it keeps holding on subsequent healthy ticks until `clear_after`
+        // of sustained health actually elapses.
+        d.tick_healthy(Instant::now());
+        assert!(d.is_unstable());
+        tokio::time::advance(Duration::from_secs(10)).await;
+        d.tick_healthy(Instant::now());
+        assert!(
+            d.is_unstable(),
+            "still well within clear_after — must remain unstable"
+        );
     }
 
     #[tokio::test(start_paused = true)]

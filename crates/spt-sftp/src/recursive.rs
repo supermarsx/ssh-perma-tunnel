@@ -28,12 +28,28 @@ use std::sync::Arc;
 use tokio::fs;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 
+use spt_core::escape_control;
+
 use crate::bw::TokenBucket;
 use crate::checksum::{sha256_local_file, sha256_remote_file};
 use crate::client::SftpClient;
 use crate::error::SftpError;
 
 const CHUNK: usize = 64 * 1024;
+
+/// Render a server-controlled `readlink` target for safe inclusion in an
+/// operator-facing log line.
+///
+/// SECURITY (M2): the SFTP server is the untrusted side of this product and a
+/// malicious server can return a symlink target containing control / ANSI /
+/// newline bytes. Logging it verbatim (`target.display()`) would let the
+/// server forge log lines or emit terminal escape sequences (clear-screen,
+/// cursor moves, hyperlink/clipboard injection). [`escape_control`]
+/// neutralizes those bytes, matching how the entry name is escaped at the
+/// READDIR sites.
+fn display_link_target(target: &Path) -> String {
+    escape_control(&target.to_string_lossy()).into_owned()
+}
 
 /// Optional features for [`put_recursive`] / [`get_recursive`].
 #[derive(Debug, Clone, Default)]
@@ -413,7 +429,7 @@ async fn get_dir_inner(
                     tracing::warn!(
                         target: "spt_sftp::recursive",
                         local_child = %local_child.display(),
-                        link_target = %target.display(),
+                        link_target = %display_link_target(&target),
                         "skipping SFTP symlink whose target escapes the download root",
                     );
                     continue;
@@ -733,6 +749,41 @@ mod tests {
         assert!(sanitize_entry_name("foo\0bar").is_err());
         assert!(sanitize_entry_name("foo\nbar").is_err());
         assert!(sanitize_entry_name("foo\u{7f}bar").is_err());
+    }
+
+    #[test]
+    fn display_link_target_escapes_esc_and_newline() {
+        // A malicious server returns a symlink target laced with an ANSI
+        // escape sequence and a newline (log-forging / terminal injection).
+        let hostile = Path::new("/safe\u{1b}[2Jevil\ntarget");
+        let rendered = display_link_target(hostile);
+        // No raw control bytes survive into the log string.
+        assert!(
+            !rendered.contains('\u{1b}'),
+            "ESC byte must be escaped: {rendered:?}"
+        );
+        assert!(
+            !rendered.contains('\n'),
+            "newline must be escaped: {rendered:?}"
+        );
+        // The escaped, human-readable forms are present instead.
+        assert!(
+            rendered.contains("\\x1b") || rendered.contains("\\u{1b}"),
+            "ESC must appear in escaped form: {rendered:?}"
+        );
+        assert!(
+            rendered.contains("\\n"),
+            "newline escaped form: {rendered:?}"
+        );
+        // Benign content is preserved verbatim.
+        assert!(rendered.contains("evil"));
+        assert!(rendered.contains("target"));
+    }
+
+    #[test]
+    fn display_link_target_passes_benign_path_through() {
+        let benign = Path::new("../sibling/file.txt");
+        assert_eq!(display_link_target(benign), "../sibling/file.txt");
     }
 
     #[test]

@@ -277,6 +277,11 @@ pub async fn bootstrap(
         let _keep_alive = (send_request, driver);
         std::future::pending::<()>().await;
     });
+    // C1: from here on, ANY early `?` return or cancellation of this future must
+    // abort the parked driver task and release the QUIC connection. The guard
+    // does exactly that on drop; it is disarmed only on the successful `Ok` path
+    // below, where ownership transfers into the returned `BootstrappedSession`.
+    let guard = BootstrapGuard::new(driver_task, connection.clone());
 
     let auth_header =
         crate::auth_header::build_authorization_header_for(auth, host, port, &cfg.url_path)?;
@@ -302,7 +307,7 @@ pub async fn bootstrap(
     drop(raw.send);
     drop(raw.recv);
     if !(200..300).contains(&status) {
-        driver_task.abort();
+        // `guard` drops here → aborts the driver task + closes the connection.
         let body = format!("ssh3: CONNECT returned HTTP {status}");
         return Err(if matches!(status, 401 | 403) {
             Error::AuthFailed(body)
@@ -318,6 +323,9 @@ pub async fn bootstrap(
     let (control_send, control_recv, peer_settings) =
         open_control_stream(&connection, default_local_settings()).await?;
 
+    // SUCCESS: transfer ownership of the driver handle + connection into the
+    // session and disarm the guard so it no longer aborts/closes them.
+    let h3_driver = guard.disarm();
     Ok(BootstrappedSession {
         connection,
         status,
@@ -326,7 +334,7 @@ pub async fn bootstrap(
         control_send,
         control_recv,
         peer_settings,
-        h3_driver: driver_task,
+        h3_driver,
     })
 }
 
@@ -419,6 +427,61 @@ pub async fn accept_control_stream(
     let ours = Ssh3Frame::new(Ssh3FrameKind::Settings, local.encode_payload());
     ours.write_async(&mut send).await?;
     Ok((send, recv, peer))
+}
+
+/// Abort-on-drop RAII guard for the parked h3 driver task and the QUIC
+/// connection during [`bootstrap`].
+///
+/// The h3 driver task is parked on `std::future::pending()` holding clones of
+/// the [`quinn::Connection`] (via `send_request` + `driver`); it can ONLY be
+/// stopped by `.abort()`. Until [`Self::disarm`] is called — on the successful
+/// bootstrap path, when ownership of the handle + connection moves into the
+/// returned [`BootstrappedSession`] — dropping this guard aborts the driver
+/// task and closes the connection.
+///
+/// This closes **C1**: every early `?` return between the spawn and the `Ok`
+/// arm, *and* any cancellation of `bootstrap().await` (a health-probe timeout
+/// cancelling `preflight_connect`, or a `Shutdown`/`Failover` `select!`
+/// cancelling `connect()`), drops the guard and therefore aborts the otherwise
+/// unreapable task and releases the QUIC connection + UDP socket/FD. Without it
+/// the parked task would live forever, leaking one task + connection + FD per
+/// failed/cancelled attempt — recurring every keepalive/backoff cycle.
+struct BootstrapGuard {
+    driver: Option<tokio::task::JoinHandle<()>>,
+    connection: Option<quinn::Connection>,
+}
+
+impl BootstrapGuard {
+    fn new(driver: tokio::task::JoinHandle<()>, connection: quinn::Connection) -> Self {
+        Self {
+            driver: Some(driver),
+            connection: Some(connection),
+        }
+    }
+
+    /// Disarm the guard on the successful path and return the driver handle.
+    /// Ownership of both the handle and the connection now belongs to the live
+    /// [`BootstrappedSession`]; the extra connection clone the guard held is
+    /// dropped *without* closing, and the guard's `Drop` becomes a no-op.
+    fn disarm(mut self) -> tokio::task::JoinHandle<()> {
+        // Drop the guard's extra connection clone WITHOUT closing — the session
+        // owns the real connection now.
+        let _ = self.connection.take();
+        self.driver.take().expect("BootstrapGuard disarmed twice")
+    }
+}
+
+impl Drop for BootstrapGuard {
+    fn drop(&mut self) {
+        if let Some(h) = self.driver.take() {
+            // Aborting an already-finished handle is a harmless no-op.
+            h.abort();
+        }
+        if let Some(c) = self.connection.take() {
+            // Best-effort: closing an already-closed connection is a no-op.
+            c.close(0u32.into(), b"spt-ssh3: bootstrap aborted");
+        }
+    }
 }
 
 fn map_connection_error(e: quinn::ConnectionError) -> Error {
@@ -991,5 +1054,243 @@ mod tests {
         assert_eq!(by_name(b"x-ssh3-protocol"), b"ssh3");
         // Authorization travels through QPACK literal-name-ref (static idx 84).
         assert_eq!(by_name(b"authorization"), b"Bearer tok-pin");
+    }
+
+    // -------------------------------------------------------------------------
+    // C1 — BootstrapGuard + bootstrap leak coverage.
+    // -------------------------------------------------------------------------
+
+    /// A future-drop sentinel: flips an `AtomicBool` when the future holding it
+    /// is dropped. Spawned into a `pending()`-parked task that mirrors the real
+    /// h3 driver — the ONLY way the sentinel flips is `JoinHandle::abort()`
+    /// causing the task's future to be dropped.
+    #[cfg(feature = "testing")]
+    fn parked_task_with_drop_flag() -> (
+        tokio::task::JoinHandle<()>,
+        std::sync::Arc<std::sync::atomic::AtomicBool>,
+        tokio::sync::oneshot::Receiver<()>,
+    ) {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+        let flag = Arc::new(AtomicBool::new(false));
+        let f = flag.clone();
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel::<()>();
+        let handle = tokio::spawn(async move {
+            struct Sentinel(Arc<AtomicBool>);
+            impl Drop for Sentinel {
+                fn drop(&mut self) {
+                    self.0.store(true, Ordering::SeqCst);
+                }
+            }
+            // Construct the sentinel BEFORE parking and signal readiness, so the
+            // task is guaranteed to have been polled (and the sentinel created)
+            // before the test aborts it — otherwise an abort-before-first-poll
+            // would drop a future whose sentinel was never constructed.
+            let _s = Sentinel(f);
+            let _ = ready_tx.send(());
+            std::future::pending::<()>().await;
+        });
+        (handle, flag, ready_rx)
+    }
+
+    /// Dropping an armed `BootstrapGuard` (the early-return / cancellation path)
+    /// MUST abort the parked driver task AND close the QUIC connection. This is
+    /// the exact mechanism that closes C1.
+    #[cfg(feature = "testing")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn bootstrap_guard_drop_aborts_driver_and_closes_connection() {
+        use crate::testing::test_support::connected_pair_public;
+        use std::sync::atomic::Ordering;
+
+        let (client, server) = connected_pair_public().await;
+        let (handle, dropped, ready_rx) = parked_task_with_drop_flag();
+        ready_rx.await.expect("driver task started");
+        assert!(!handle.is_finished());
+
+        let guard = BootstrapGuard::new(handle, client.clone());
+        drop(guard); // simulate an early `?` return / cancellation.
+
+        // The guard's explicit close propagates to the peer promptly.
+        tokio::time::timeout(Duration::from_secs(5), server.closed())
+            .await
+            .expect("peer must observe the connection close after guard drop");
+
+        // The parked driver task's future must have been dropped (aborted).
+        let mut flipped = false;
+        for _ in 0..100 {
+            if dropped.load(Ordering::SeqCst) {
+                flipped = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(flipped, "driver task future must be dropped (task aborted)");
+        drop(client);
+    }
+
+    /// Disarming the guard on the success path MUST NOT abort the driver task or
+    /// close the connection — ownership transfers to the live session.
+    #[cfg(feature = "testing")]
+    #[tokio::test]
+    async fn bootstrap_guard_disarm_preserves_driver_and_connection() {
+        use crate::testing::test_support::connected_pair_public;
+
+        let (client, server) = connected_pair_public().await;
+        let (handle, _flag, ready_rx) = parked_task_with_drop_flag();
+        ready_rx.await.expect("driver task started");
+
+        let guard = BootstrapGuard::new(handle, client.clone());
+        let h = guard.disarm();
+
+        // Driver still parked; connection NOT closed (the test still holds a
+        // live `client` handle and the guard's close never fired).
+        assert!(!h.is_finished(), "disarm must not abort the driver task");
+        let closed = tokio::time::timeout(Duration::from_millis(400), server.closed()).await;
+        assert!(closed.is_err(), "disarm must not close the connection");
+
+        h.abort();
+        drop(client);
+    }
+
+    /// Build a self-signed, ALPN-`h3` QUIC server endpoint on loopback that the
+    /// real [`bootstrap`] client config (allow-self-signed, empty pin) accepts.
+    /// Returns the bound port and the server `Endpoint`.
+    #[cfg(feature = "testing")]
+    fn fake_server_endpoint() -> (u16, quinn::Endpoint) {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+        let cert_pem = cert.cert.pem().into_bytes();
+        let key_pem = cert.key_pair.serialize_pem().into_bytes();
+        let server_cfg = crate::tls::build_server_config(&cert_pem, &key_pem).unwrap();
+
+        let probe = std::net::UdpSocket::bind(("127.0.0.1", 0)).unwrap();
+        let listen = probe.local_addr().unwrap();
+        drop(probe);
+        let endpoint = quinn::Endpoint::server(server_cfg, listen).unwrap();
+        (listen.port(), endpoint)
+    }
+
+    #[cfg(feature = "testing")]
+    fn leak_test_client_config() -> Ssh3Config {
+        Ssh3Config {
+            sni: Some("localhost".into()),
+            acknowledge_experimental: true,
+            tls: crate::config::Ssh3TlsConfig {
+                allow_self_signed: true,
+                ..crate::config::Ssh3TlsConfig::default()
+            },
+            ..Ssh3Config::default()
+        }
+    }
+
+    #[cfg(feature = "testing")]
+    fn leak_test_auth() -> AuthConfig {
+        std::env::set_var("SPT_SSH3_LEAK_TOK", "tok");
+        AuthConfig::new(
+            "alice",
+            vec![AuthMethod::Bearer {
+                token: SecretRef::parse("env:SPT_SSH3_LEAK_TOK").unwrap(),
+            }],
+        )
+    }
+
+    /// End-to-end C1: when `bootstrap` fails AFTER spawning the parked driver
+    /// (here: the peer accepts the CONNECT bidi but finishes it without a
+    /// response, so `extended_connect_raw` errors), the guard aborts the driver
+    /// and closes the connection — the peer observes the close promptly instead
+    /// of the connection lingering on a leaked task.
+    #[cfg(feature = "testing")]
+    #[tokio::test]
+    async fn bootstrap_error_after_spawn_does_not_leak_driver_or_connection() {
+        let (port, endpoint) = fake_server_endpoint();
+        let (closed_tx, closed_rx) = tokio::sync::oneshot::channel::<()>();
+
+        let server = tokio::spawn(async move {
+            let incoming = endpoint.accept().await.expect("incoming");
+            let conn = incoming.await.expect("server handshake");
+            // Mirror the real server's h3 control stream so the client h3 layer
+            // is satisfied; hold it for the connection's lifetime.
+            let _ctrl = crate::h3_raw::write_server_control_stream(&conn).await.ok();
+            // Accept the CONNECT bidi, read the HEADERS request, then finish the
+            // send half WITHOUT a response → client `extended_connect_raw` errors.
+            if let Ok((mut send, mut recv)) = conn.accept_bi().await {
+                let _ = crate::h3_raw::read_frame_typed(&mut recv, 0x01).await;
+                let _ = send.finish();
+            }
+            // Hold the connection and wait until the client side closes it.
+            conn.closed().await;
+            let _ = closed_tx.send(());
+            // Keep the endpoint alive until the test releases us.
+            endpoint
+        });
+
+        let cfg = leak_test_client_config();
+        let auth = leak_test_auth();
+        let res = tokio::time::timeout(
+            Duration::from_secs(15),
+            bootstrap("127.0.0.1", port, &cfg, &auth),
+        )
+        .await
+        .expect("bootstrap must not hang");
+        assert!(
+            res.is_err(),
+            "bootstrap should fail on the missing response"
+        );
+
+        // The guard's abort+close must make the peer observe the close quickly;
+        // a leaked driver task would hold a connection clone open instead.
+        tokio::time::timeout(Duration::from_secs(5), closed_rx)
+            .await
+            .expect("peer must observe connection close after failed bootstrap (no leak)")
+            .expect("server signalled close");
+
+        let _ = server.await;
+        std::env::remove_var("SPT_SSH3_LEAK_TOK");
+    }
+
+    /// End-to-end C1 (cancellation): the peer accepts the connection but never
+    /// answers the CONNECT, so `bootstrap` is parked mid-handshake. Cancelling
+    /// `bootstrap().await` (modeled by a tight `timeout`) drops the guard, which
+    /// aborts the parked driver and closes the connection — the peer observes
+    /// the close promptly. This is the health-probe / Shutdown-Failover cancel
+    /// scenario.
+    #[cfg(feature = "testing")]
+    #[tokio::test]
+    async fn bootstrap_cancellation_does_not_leak_driver_or_connection() {
+        let (port, endpoint) = fake_server_endpoint();
+        let (closed_tx, closed_rx) = tokio::sync::oneshot::channel::<()>();
+
+        let server = tokio::spawn(async move {
+            let incoming = endpoint.accept().await.expect("incoming");
+            let conn = incoming.await.expect("server handshake");
+            let _ctrl = crate::h3_raw::write_server_control_stream(&conn).await.ok();
+            // Deliberately never accept the CONNECT bidi → the client parks on
+            // its response read until cancelled.
+            conn.closed().await;
+            let _ = closed_tx.send(());
+            endpoint
+        });
+
+        let cfg = leak_test_client_config();
+        let auth = leak_test_auth();
+        // Cancel bootstrap mid-handshake by dropping the future when the timeout
+        // elapses.
+        let cancelled = tokio::time::timeout(
+            Duration::from_millis(800),
+            bootstrap("127.0.0.1", port, &cfg, &auth),
+        )
+        .await;
+        assert!(
+            cancelled.is_err(),
+            "bootstrap should still be in-flight (cancelled)"
+        );
+
+        tokio::time::timeout(Duration::from_secs(5), closed_rx)
+            .await
+            .expect("peer must observe connection close after cancelled bootstrap (no leak)")
+            .expect("server signalled close");
+
+        let _ = server.await;
+        std::env::remove_var("SPT_SSH3_LEAK_TOK");
     }
 }

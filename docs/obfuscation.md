@@ -150,13 +150,19 @@ AEAD shape, but a complete `ssserver` round-trip still requires:
 * **Dual-salt handshake** — client sends REQUEST_SALT, server replies
   with a separate RESPONSE_SALT; client→server and server→client
   subkeys are derived from different salts. The current code uses a
-  single client-supplied salt for both directions.
+  single client-supplied salt, but now splits it into **distinct
+  per-direction subkeys** (`direction_keys`, HMAC-SHA256 over the
+  session key with `c2s` / `s2c` labels) so the two directions never
+  share a `(key, nonce)` pair even though both nonce counters start at
+  0. Full SIP022 dual-salt interop remains deferred.
 * **Fixed-length header chunk** — the first AEAD chunk per direction
   carries a type byte + u64 BE timestamp + variable length / padding
   fields per SIP022 §3.2.
-* **Per-direction nonce counters** — separate length / body counters
-  per direction (the current AeadStream uses one read counter and one
-  write counter, no length/body separation).
+* **Per-direction nonce counters** — the `AeadStream` already keeps
+  separate read and write nonce counters; combined with the
+  per-direction subkeys above, client→server and server→client streams
+  are cryptographically independent. Separate length/body counters per
+  SIP022 §3 are not yet split out.
 
 These are tracked for a follow-up; full shadowsocks-rust end-to-end interop
 is deferred. KDF wire-shape (`ss_2022_kdf_known_vector_matches_reference`)

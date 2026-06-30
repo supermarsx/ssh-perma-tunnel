@@ -307,6 +307,45 @@ async fn retr_streams_via_sftp() {
 }
 
 // ---------------------------------------------------------------------------
+// 7b. RETR streams a multi-chunk file byte-identically (H3: no whole-file RAM
+//     buffering). The payload spans several STREAM_CHUNK reads plus a partial
+//     tail so chunk-boundary handling is exercised.
+// ---------------------------------------------------------------------------
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn retr_streams_multichunk_file_verbatim() {
+    let (addr, handle, dir) = spawn_translator(|_| {}).await;
+    // Deterministic pseudo-random payload bigger than the streaming chunk so
+    // the transfer is genuinely multi-chunk.
+    let len = spt_sftp::STREAM_CHUNK * 3 + 4096 + 123;
+    let mut payload = Vec::with_capacity(len);
+    let mut x: u32 = 0x9e37_79b9;
+    for _ in 0..len {
+        x ^= x << 13;
+        x ^= x >> 17;
+        x ^= x << 5;
+        payload.push((x & 0xff) as u8);
+    }
+    std::fs::write(dir.path().join("big.bin"), &payload).unwrap();
+
+    let (mut br, mut wr) = connect(addr).await;
+    login(&mut br, &mut wr).await;
+    send(&mut wr, "TYPE I").await;
+    let _ = recv_line(&mut br).await;
+    let port = pasv(&mut br, &mut wr).await;
+    send(&mut wr, "RETR big.bin").await;
+    let mut dc = TcpStream::connect(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port))
+        .await
+        .unwrap();
+    let mut got = Vec::new();
+    dc.read_to_end(&mut got).await.unwrap();
+    let r = recv_line(&mut br).await;
+    assert!(r.starts_with("226"), "RETR → `{r}`");
+    assert_eq!(got.len(), payload.len(), "streamed length mismatch");
+    assert_eq!(got, payload, "streamed RETR body diverged");
+    handle.shutdown();
+}
+
+// ---------------------------------------------------------------------------
 // 8. LIST + MLSD well-formed listings (mock SFTP)
 // ---------------------------------------------------------------------------
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -36,7 +36,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 use spt_obfs::config::{ObfsConfig, SsMethod};
 use spt_obfs::meek::MeekHttpTransport;
 use spt_obfs::obfs4::{seal_frame, NtorKeys, Obfs4Stream, MAX_FRAME_PT};
-use spt_obfs::shadowsocks::{AeadStream, ShadowsocksTransport};
+use spt_obfs::shadowsocks::{direction_keys, AeadStream, ShadowsocksTransport, SsRole};
 use spt_obfs::transport::ObfsTransport;
 use spt_obfs::NoopAuditHook;
 use spt_secrets::SecretRef;
@@ -156,15 +156,22 @@ fn ss_subkey(pw: &[u8], salt: &[u8]) -> zeroize::Zeroizing<Vec<u8>> {
 /// nonce/AEAD wire shape stays an implementation detail.
 async fn ss_wire_frames(key: &[u8], payloads: &[&[u8]]) -> Vec<u8> {
     let sink = MockDuplex::capturing();
-    let mut w = AeadStream::new(
-        Box::new(sink.clone()),
-        SS_METHOD,
-        zeroize::Zeroizing::new(key.to_vec()),
-    );
+    // Writer = client role (transmits on the c2s subkey).
+    let (tx, rx) = direction_keys(key, SS_METHOD, SsRole::Client);
+    let mut w = AeadStream::new(Box::new(sink.clone()), SS_METHOD, tx, rx);
     for p in payloads {
         w.write_all(p).await.unwrap();
     }
     sink.captured()
+}
+
+/// Build a SERVER-role reader for wire produced by a client-role writer: the
+/// server's rx subkey equals the client's tx subkey, so client→server frames
+/// decode. (Per-direction subkeys mean a writer and reader can no longer share
+/// one key — they must take mirrored roles.)
+fn ss_reader(inner: MockDuplex, session_key: &[u8]) -> AeadStream {
+    let (tx, rx) = direction_keys(session_key, SS_METHOD, SsRole::Server);
+    AeadStream::new(Box::new(inner), SS_METHOD, tx, rx)
 }
 
 // ---------------------------------------------------------------------------
@@ -181,7 +188,7 @@ async fn ss_fragmented_read_reassembles_single_byte_chunks() {
     // Feed the wire one byte per poll_read.
     let inner = MockDuplex::new(wire, 1);
     inner.set_eof();
-    let mut r = AeadStream::new(Box::new(inner), SS_METHOD, key.clone());
+    let mut r = ss_reader(inner, &key);
 
     let mut got = vec![0u8; payload.len()];
     r.read_exact(&mut got).await.expect("reassemble frame");
@@ -202,7 +209,7 @@ async fn ss_partial_frame_parks_not_panics() {
     // a full body, and no EOF — so the reader can never complete a frame.
     let partial = wire[..(2 + 16) + 4].to_vec();
     let inner = MockDuplex::new(partial, 1); // no set_eof: stays pending
-    let mut r = AeadStream::new(Box::new(inner), SS_METHOD, key);
+    let mut r = ss_reader(inner, &key);
 
     let mut buf = [0u8; 64];
     let res = tokio::time::timeout(Duration::from_millis(200), r.read(&mut buf)).await;
@@ -230,7 +237,7 @@ async fn ss_cap_sized_frame_round_trips_without_overread() {
     let wire = ss_wire_frames(&key, &[&payload]).await;
     let inner = MockDuplex::new(wire, 7); // odd chunk size to stress reassembly
     inner.set_eof();
-    let mut r = AeadStream::new(Box::new(inner), SS_METHOD, key);
+    let mut r = ss_reader(inner, &key);
     let mut got = vec![0u8; 0x3fff];
     r.read_exact(&mut got).await.expect("cap-sized frame ok");
     assert_eq!(got, payload);
@@ -249,7 +256,7 @@ async fn ss_bad_tag_in_length_block_rejected() {
     wire[5] ^= 0xFF;
     let inner = MockDuplex::new(wire, 4096);
     inner.set_eof();
-    let mut r = AeadStream::new(Box::new(inner), SS_METHOD, key);
+    let mut r = ss_reader(inner, &key);
     let mut buf = [0u8; 32];
     let err = r.read(&mut buf).await.expect_err("bad tag must error");
     assert_eq!(err.kind(), io::ErrorKind::InvalidData, "got {err:?}");
@@ -269,7 +276,7 @@ async fn ss_bad_tag_in_body_block_rejected() {
     wire[last] ^= 0x01;
     let inner = MockDuplex::new(wire, 4096);
     inner.set_eof();
-    let mut r = AeadStream::new(Box::new(inner), SS_METHOD, key);
+    let mut r = ss_reader(inner, &key);
     let mut buf = [0u8; 32];
     let err = r.read(&mut buf).await.expect_err("bad body tag must error");
     assert_eq!(err.kind(), io::ErrorKind::InvalidData, "got {err:?}");
@@ -293,7 +300,7 @@ async fn ss_replayed_frame_in_session_rejected() {
     wire.extend_from_slice(&frame0);
     let inner = MockDuplex::new(wire, 4096);
     inner.set_eof();
-    let mut r = AeadStream::new(Box::new(inner), SS_METHOD, key);
+    let mut r = ss_reader(inner, &key);
 
     // First frame decrypts fine.
     let mut got0 = vec![0u8; b"frame-zero".len()];
@@ -323,7 +330,7 @@ async fn ss_many_frames_advance_nonce_without_desync() {
 
     let inner = MockDuplex::new(wire, 3);
     inner.set_eof();
-    let mut r = AeadStream::new(Box::new(inner), SS_METHOD, key);
+    let mut r = ss_reader(inner, &key);
     for expect in &payloads {
         let mut got = vec![0u8; expect.len()];
         r.read_exact(&mut got).await.expect("frame decodes");
@@ -344,6 +351,61 @@ fn ss_open_truncated_aead_rejected() {
     let err = t.open(trunc).unwrap_err();
     let msg = format!("{err}");
     assert!(!msg.is_empty(), "truncated AEAD must surface an error");
+}
+
+// ---------------------------------------------------------------------------
+// 8b. shadowsocks: the server→client direction round-trips under its own (s2c)
+//     subkey — a server-role writer's frames decode on a client-role reader,
+//     proving BOTH directions work with the per-direction subkeys.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn ss_server_to_client_direction_round_trips() {
+    let key = ss_subkey(b"s2c-pw", &[0x88; 32]);
+    // Server-role writer (transmits on the s2c subkey).
+    let sink = MockDuplex::capturing();
+    let (s_tx, s_rx) = direction_keys(&key, SS_METHOD, SsRole::Server);
+    let mut w = AeadStream::new(Box::new(sink.clone()), SS_METHOD, s_tx, s_rx);
+    let payload = b"server-to-client-bytes".to_vec();
+    w.write_all(&payload).await.unwrap();
+    let wire = sink.captured();
+
+    // Client-role reader (receives on the s2c subkey) must decode it.
+    let inner = MockDuplex::new(wire, 5);
+    inner.set_eof();
+    let (c_tx, c_rx) = direction_keys(&key, SS_METHOD, SsRole::Client);
+    let mut r = AeadStream::new(Box::new(inner), SS_METHOD, c_tx, c_rx);
+    let mut got = vec![0u8; payload.len()];
+    r.read_exact(&mut got)
+        .await
+        .expect("s2c frame decodes on the client");
+    assert_eq!(got, payload);
+}
+
+// ---------------------------------------------------------------------------
+// 8c. shadowsocks: a frame sealed for ONE direction does NOT decrypt under the
+//     other direction's key (the core of the per-direction-subkey fix). A
+//     client-role writer's c2s frame fed to a client-role reader (which opens
+//     under the s2c subkey) must fail the AEAD tag → InvalidData.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn ss_frame_for_one_direction_not_decryptable_by_other() {
+    let key = ss_subkey(b"crossdir-pw", &[0x99; 32]);
+    // Client writes a c2s frame.
+    let wire = ss_wire_frames(&key, &[b"c2s-only"]).await;
+
+    // A client-role reader opens under the s2c subkey → must reject.
+    let inner = MockDuplex::new(wire, 4096);
+    inner.set_eof();
+    let (c_tx, c_rx) = direction_keys(&key, SS_METHOD, SsRole::Client);
+    let mut r = AeadStream::new(Box::new(inner), SS_METHOD, c_tx, c_rx);
+    let mut buf = [0u8; 32];
+    let err = r
+        .read(&mut buf)
+        .await
+        .expect_err("cross-direction frame must not decrypt");
+    assert_eq!(err.kind(), io::ErrorKind::InvalidData, "got {err:?}");
 }
 
 // ---------------------------------------------------------------------------

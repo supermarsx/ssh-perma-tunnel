@@ -122,7 +122,7 @@ impl ApplyState {
 fn apply_cb(
     state: Arc<ApplyState>,
     notify: Arc<Notify>,
-) -> impl Fn(Vec<u8>) -> std::future::Ready<()> + Send + Sync + 'static {
+) -> impl Fn(Vec<u8>) -> std::future::Ready<bool> + Send + Sync + 'static {
     move |body: Vec<u8>| {
         state.bodies.lock().unwrap().push(body.clone());
         if let Ok(text) = std::str::from_utf8(&body) {
@@ -131,7 +131,9 @@ fn apply_cb(
             }
         }
         notify.notify_one();
-        std::future::ready(())
+        // Apply succeeded -> the poller may advance its last-applied hash (the
+        // M2 contract: callback returns whether the apply was accepted).
+        std::future::ready(true)
     }
 }
 

@@ -195,8 +195,6 @@ pub async fn stat(global: &GlobalOpts, args: SftpPathArgs) -> Result<()> {
 
 pub async fn get(global: &GlobalOpts, args: SftpGetArgs) -> Result<()> {
     let client = open_client(global, &args.profile).await?;
-    let data = client.read_file(args.remote.clone()).await?;
-    let _ = client.close().await;
     if let Some(parent) = args.out.parent() {
         if !parent.as_os_str().is_empty() {
             tokio::fs::create_dir_all(parent).await.map_err(|e| {
@@ -204,9 +202,17 @@ pub async fn get(global: &GlobalOpts, args: SftpGetArgs) -> Result<()> {
             })?;
         }
     }
-    tokio::fs::write(&args.out, data)
+    // H4: stream the remote file to disk in bounded chunks rather than
+    // buffering the whole file in RAM — a large remote file used to OOM the
+    // client. `read_file_to` reads `STREAM_CHUNK` at a time and writes each
+    // chunk straight to the local file, so peak memory is bounded regardless
+    // of file size.
+    let mut out = tokio::fs::File::create(&args.out)
         .await
-        .map_err(|e| Error::RuntimeFailure(format!("write `{}`: {e}", args.out.display())))?;
+        .map_err(|e| Error::RuntimeFailure(format!("create `{}`: {e}", args.out.display())))?;
+    let copied = client.read_file_to(args.remote.clone(), &mut out).await;
+    let _ = client.close().await;
+    copied?;
     println!("wrote {}", args.out.display());
     Ok(())
 }

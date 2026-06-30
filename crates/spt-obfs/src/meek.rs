@@ -31,6 +31,71 @@ use crate::config::ObfsConfig;
 use crate::error::ObfsError;
 use crate::transport::{AsyncReadWrite, ObfsTransport};
 
+/// Maximum bytes accepted from a single meek HTTP response body.
+///
+/// A meek POST response carries one downstream burst of SSH bytes; without a
+/// cap a malicious/compromised meek relay or MITM CDN could return a multi-GB
+/// body and OOM the client (the sibling transports all cap their frames —
+/// obfs4 `MAX_FRAME_PT`, shadowsocks `0x3fff`; meek was the only one missing a
+/// bound). 4 MiB matches the remote-config download cap and is far above any
+/// legitimate per-POST burst for an SSH tunnel.
+pub const MAX_MEEK_BODY_BYTES: usize = 4 * 1024 * 1024;
+
+/// Bounded accumulator for an HTTP response body. Rejects up front if a
+/// declared `Content-Length` exceeds the cap, and again while streaming if the
+/// running total would exceed it — so the peer can never force an unbounded
+/// allocation regardless of whether it sends a (possibly lying) length header.
+#[derive(Debug)]
+struct MeekBodyCap {
+    cap: usize,
+    buf: Vec<u8>,
+}
+
+impl MeekBodyCap {
+    fn new(cap: usize, content_length: Option<u64>) -> std::io::Result<Self> {
+        if let Some(len) = content_length {
+            if len > cap as u64 {
+                return Err(std::io::Error::other(format!(
+                    "meek response body Content-Length {len} exceeds cap {cap}"
+                )));
+            }
+        }
+        Ok(Self {
+            cap,
+            buf: Vec::new(),
+        })
+    }
+
+    fn push(&mut self, chunk: &[u8]) -> std::io::Result<()> {
+        if self.buf.len().saturating_add(chunk.len()) > self.cap {
+            return Err(std::io::Error::other(format!(
+                "meek response body exceeds cap {}",
+                self.cap
+            )));
+        }
+        self.buf.extend_from_slice(chunk);
+        Ok(())
+    }
+
+    fn into_inner(self) -> Vec<u8> {
+        self.buf
+    }
+}
+
+/// Read a reqwest response body, streaming it chunk-by-chunk through a
+/// [`MeekBodyCap`] so an oversized body is rejected without buffering it whole.
+async fn read_body_capped(mut resp: reqwest::Response, cap: usize) -> std::io::Result<Vec<u8>> {
+    let mut acc = MeekBodyCap::new(cap, resp.content_length())?;
+    while let Some(chunk) = resp
+        .chunk()
+        .await
+        .map_err(|e| std::io::Error::other(format!("meek body: {e}")))?
+    {
+        acc.push(&chunk)?;
+    }
+    Ok(acc.into_inner())
+}
+
 /// meek-http transport handle.
 pub struct MeekHttpTransport {
     cfg: ObfsConfig,
@@ -190,11 +255,9 @@ impl ObfsTransport for MeekHttpTransport {
                 ObfsError::Handshake(format!("meek-http front returned HTTP {status}")).into(),
             );
         }
-        let initial_body = probe
-            .bytes()
+        let initial_body = read_body_capped(probe, MAX_MEEK_BODY_BYTES)
             .await
-            .map_err(|e| ObfsError::Handshake(format!("meek body: {e}")))?
-            .to_vec();
+            .map_err(|e| ObfsError::Handshake(format!("meek body: {e}")))?;
 
         let stream = MeekStream::new(client, real_url, default_headers, initial_body);
         Ok(Box::new(stream))
@@ -259,11 +322,7 @@ impl MeekStream {
                 // 1.88 lint: io_other_error
                 return Err(std::io::Error::other(format!("meek HTTP {status}")));
             }
-            let bytes = r
-                .bytes()
-                .await
-                .map_err(|e| std::io::Error::other(format!("{e}")))?; // 1.88 lint: io_other_error
-            Ok(bytes.to_vec())
+            read_body_capped(r, MAX_MEEK_BODY_BYTES).await
         })
     }
 }
@@ -373,6 +432,52 @@ mod tests {
         assert_eq!(t.sni(), "front.cdn.example");
         assert_eq!(t.host_header(), "hidden.example");
         assert!(t.is_fronted());
+    }
+
+    #[test]
+    fn body_cap_const_is_sane() {
+        // A regression guard pinning the cap: generous enough for a legitimate
+        // SSH burst, but bounded (4 MiB, matching the remote-config cap).
+        assert_eq!(MAX_MEEK_BODY_BYTES, 4 * 1024 * 1024);
+    }
+
+    #[test]
+    fn body_cap_rejects_oversized_content_length_up_front() {
+        // A declared Content-Length over the cap is rejected before a single
+        // byte is buffered (no unbounded allocation).
+        let cap = 1024;
+        let err = MeekBodyCap::new(cap, Some(cap as u64 + 1)).unwrap_err();
+        assert!(format!("{err}").contains("Content-Length"), "got {err:?}");
+    }
+
+    #[test]
+    fn body_cap_accepts_small_body() {
+        // A valid small body within the cap accumulates correctly.
+        let mut acc = MeekBodyCap::new(1024, Some(8)).unwrap();
+        acc.push(b"hello").unwrap();
+        acc.push(b"!!!").unwrap();
+        assert_eq!(acc.into_inner(), b"hello!!!");
+    }
+
+    #[test]
+    fn body_cap_accepts_body_exactly_at_cap() {
+        let cap = 16;
+        let mut acc = MeekBodyCap::new(cap, None).unwrap();
+        acc.push(&vec![0xAB; cap]).unwrap();
+        assert_eq!(acc.into_inner().len(), cap);
+    }
+
+    #[test]
+    fn body_cap_rejects_streaming_overflow_without_content_length() {
+        // Even when the peer sends NO Content-Length, the running total is
+        // bounded: once the accumulated body would exceed the cap, push errors.
+        let cap = 10;
+        let mut acc = MeekBodyCap::new(cap, None).unwrap();
+        acc.push(&[0u8; 6]).unwrap();
+        let err = acc.push(&[0u8; 6]).unwrap_err();
+        assert!(format!("{err}").contains("exceeds cap"), "got {err:?}");
+        // The accumulator did not grow past what was accepted before the error.
+        assert_eq!(acc.into_inner().len(), 6);
     }
 
     #[test]
