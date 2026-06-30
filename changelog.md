@@ -1,3 +1,11 @@
+## [26.36] - 2026-06-30
+
+# spt 26.36
+
+## Changes since 26.35
+
+- fix(security): ultra-review wave 2 — MCP secret leak, FTP, events injection, SecretRef traversal (76b406c)
+
 ## [26.35] - 2026-06-30
 
 # spt 26.35
