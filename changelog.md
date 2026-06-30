@@ -1,3 +1,11 @@
+## [26.35] - 2026-06-30
+
+# spt 26.35
+
+## Changes since 26.34
+
+- fix(security): SNMP USM auth-bypass (Critical) + ultra-review regression fixes (11eae8d)
+
 ## [26.34] - 2026-06-30
 
 # spt 26.34
