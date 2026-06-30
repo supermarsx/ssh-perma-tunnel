@@ -336,11 +336,11 @@ impl Drop for SshfsMounter {
         if let Some(mountpoint) = self.mountpoint.take() {
             #[cfg(target_os = "macos")]
             {
-                if Command::new("umount")
+                if !Command::new("umount")
                     .arg(&mountpoint)
                     .output()
                     .map(|o| o.status.success())
-                    != Ok(true)
+                    .unwrap_or(false)
                 {
                     // Fall back to `diskutil unmount`, which can detach macFUSE
                     // volumes `umount(8)` sometimes refuses.
