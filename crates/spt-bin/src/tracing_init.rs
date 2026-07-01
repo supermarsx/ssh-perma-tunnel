@@ -246,14 +246,14 @@ fn convert_remote_sink(
 #[cfg(test)]
 mod tests {
     use super::{resolve_filter_directive, GlobalOpts};
-    use std::sync::Mutex;
+    use crate::test_locks::spt_log_env;
 
-    // SPT_LOG env-var mutation is process-global. Cargo runs intra-module
-    // tests in parallel by default, so without this mutex one test's
-    // `set_env` races with another's `resolve_filter_directive` read. Each
-    // test acquires this guard for its full body, serializing access to
-    // the env var.
-    static ENV_GUARD: Mutex<()> = Mutex::new(());
+    // SPT_LOG env-var mutation is process-global. Cargo runs tests in parallel
+    // by default, so without a mutex one test's `set_env` races with another's
+    // `resolve_filter_directive` read. The lock is CRATE-shared (not a local
+    // static) so it also serialises against `signals.rs`, which mutates the
+    // same `SPT_LOG` var in the same test binary. Each test holds the guard
+    // for its full body.
 
     fn defaults() -> GlobalOpts {
         // Parse an empty arg list through clap to get a GlobalOpts populated
@@ -279,9 +279,7 @@ mod tests {
 
     #[test]
     fn resolve_filter_falls_back_to_cli_when_env_unset() {
-        let _g = ENV_GUARD
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _g = spt_log_env();
         set_env("SPT_LOG", None);
         let g = defaults();
         assert_eq!(resolve_filter_directive(&g), "info");
@@ -289,9 +287,7 @@ mod tests {
 
     #[test]
     fn resolve_filter_uses_env_per_module_syntax() {
-        let _guard = ENV_GUARD
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _guard = spt_log_env();
         set_env("SPT_LOG", Some("warn,spt_ssh2=trace,spt_supervisor=debug"));
         let g = defaults();
         let d = resolve_filter_directive(&g);
@@ -302,9 +298,7 @@ mod tests {
 
     #[test]
     fn resolve_filter_ignores_bad_env_value() {
-        let _guard = ENV_GUARD
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _guard = spt_log_env();
         // `=garbage` is rejected by EnvFilter; we fall back to CLI defaults.
         set_env("SPT_LOG", Some("=garbage"));
         let mut g = defaults();
@@ -315,9 +309,7 @@ mod tests {
 
     #[test]
     fn resolve_filter_simple_module_level() {
-        let _guard = ENV_GUARD
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _guard = spt_log_env();
         set_env("SPT_LOG", Some("spt_supervisor=debug"));
         let g = defaults();
         let d = resolve_filter_directive(&g);
@@ -327,9 +319,7 @@ mod tests {
 
     #[test]
     fn resolve_filter_global_off_then_per_module_on() {
-        let _guard = ENV_GUARD
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _guard = spt_log_env();
         set_env("SPT_LOG", Some("off,spt_ssh2=info"));
         let g = defaults();
         let d = resolve_filter_directive(&g);
@@ -340,9 +330,7 @@ mod tests {
 
     #[test]
     fn resolve_filter_three_module_combination() {
-        let _guard = ENV_GUARD
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _guard = spt_log_env();
         set_env(
             "SPT_LOG",
             Some("info,spt_ssh2=trace,spt_supervisor=debug,spt_mcp=warn"),
@@ -355,9 +343,7 @@ mod tests {
 
     #[test]
     fn resolve_filter_with_verbose_two_flag_only() {
-        let _guard = ENV_GUARD
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _guard = spt_log_env();
         set_env("SPT_LOG", None);
         let mut g = defaults();
         g.verbose = 2;
@@ -366,9 +352,7 @@ mod tests {
 
     #[test]
     fn resolve_filter_env_takes_precedence_over_verbose() {
-        let _guard = ENV_GUARD
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _guard = spt_log_env();
         set_env("SPT_LOG", Some("warn"));
         let mut g = defaults();
         g.verbose = 2;

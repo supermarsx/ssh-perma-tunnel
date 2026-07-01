@@ -104,6 +104,11 @@ pub fn vault_passphrase_from_file(
     use rand::RngCore;
 
     let path = layout.master_key_file();
+    // F6: on Windows, create + owner-restrict the vault directory FIRST so the
+    // master key (and its temp) are born with a restrictive DACL and an
+    // attacker cannot pre-create the predictable target. No-op on Unix, so the
+    // Unix `create_dir_all` below is unchanged.
+    crate::file::restrict_parent_dir(&path);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| Error::SecretUnavailable {
             reference: format!("portable-vault://{}", path.display()),
@@ -176,15 +181,19 @@ fn write_master_key(path: &Path, key: &[u8]) -> Result<()> {
     }
     #[cfg(not(unix))]
     {
-        // H1: on Windows the bare `fs::write` left the 32-byte vault root key
-        // with the inherited DACL of the (often shared/removable) portable
-        // tree — world-readable on `Program Files` / a USB stick. Write to a
-        // sibling temp, restrict its DACL to owner + SYSTEM/Administrators,
-        // then rename into place so the key is never observable with broad
-        // permissions. Mirrors the Unix temp+rename+0600 path. On non-windows,
-        // non-unix targets `restrict_to_owner` is a no-op and this degrades to
-        // an atomic temp+rename.
-        let tmp = path.with_extension("key.tmp");
+        use rand::RngCore;
+        // H1/F6: on Windows the bare `fs::write` left the 32-byte vault root
+        // key with the inherited DACL of the (often shared/removable) portable
+        // tree — world-readable on `Program Files` / a USB stick. The vault
+        // directory is now pre-restricted (see `vault_passphrase_from_file`),
+        // so the file is born owner-only; we still write to a sibling temp,
+        // restrict its DACL, then rename into place as defense in depth. The
+        // temp name carries a random suffix so a predictable pre-created target
+        // cannot be squatted. On non-windows non-unix targets `restrict_to_owner`
+        // is a no-op and this degrades to an atomic temp+rename.
+        let mut suffix = [0u8; 8];
+        rand::thread_rng().fill_bytes(&mut suffix);
+        let tmp = path.with_extension(format!("{}.tmp", hex::encode(suffix)));
         std::fs::write(&tmp, key).map_err(|e| Error::SecretUnavailable {
             reference: format!("portable-vault://{}", path.display()),
             reason: format!("write temp master key: {e}"),

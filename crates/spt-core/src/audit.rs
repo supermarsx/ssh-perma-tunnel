@@ -493,11 +493,23 @@ mod tests {
             }
         });
 
-        // Give the recorder time to land some events on `first`, then
-        // swap to `second`, then let the recorder land some more.
-        thread::sleep(Duration::from_millis(10));
+        // Deterministic instead of wall-clock: spin (bounded) until the
+        // recorder has landed at least one event on `first`, THEN swap, THEN
+        // spin until `second` sees at least one. A fixed sleep flaked under
+        // parallel CPU contention when the recorder thread was starved.
+        let spin_until = |f: &dyn Fn() -> bool| {
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            while !f() {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "recorder thread made no progress within the deadline"
+                );
+                thread::yield_now();
+            }
+        };
+        spin_until(&|| !first.events().is_empty());
         register_audit_sink(second.clone());
-        thread::sleep(Duration::from_millis(10));
+        spin_until(&|| !second.events().is_empty());
         stop.store(1, Ordering::SeqCst);
         recorder.join().unwrap();
 

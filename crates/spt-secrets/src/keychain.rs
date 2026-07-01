@@ -231,23 +231,22 @@ mod tests {
     //! ## Isolation strategy
     //!
     //! These tests live in the `spt-secrets` lib-test binary, which also
-    //! runs `vault::tests`. Both modules call
-    //! `keyring::set_default_credential_builder` via their own
-    //! `OnceLock<()>` guards, so whichever module's test thread reaches it
-    //! first pins the global builder. Both builders share equivalent
-    //! semantics (a `HashMap<(service,user), Vec<u8>>`), so basic
-    //! round-trip tests work regardless of which one wins.
+    //! runs `vault::tests` and `testing::tests`. All three modules now share
+    //! the crate's single mock builder + store (`testing::keymock`) and drive
+    //! it through [`seeded_keychain`] / `install_mock_keyring`, whose guards
+    //! hold a process-wide `Mutex` for the whole test body. So keyring-touching
+    //! tests run serially within the binary and never observe another test's
+    //! install or store reset mid-run — there is no longer a builder-identity
+    //! race between competing per-module mocks.
     //!
     //! What we **do not** do here:
     //!
-    //! * Rely on fault injection. The fault map lives in `testing::keymock`'s
-    //!   `OnceLock`, and the active builder may be `vault::tests`'s
-    //!   non-fault-aware one. Fault-injection-dependent assertions live
+    //! * Rely on fault injection. Fault-injection-dependent assertions live
     //!   in the IT file (`tests/keychain_mock.rs`), which runs as its own
-    //!   process and fully owns the global builder.
+    //!   process. `seeded_keychain` intentionally programs no faults.
     //! * Share service names with `vault::tests` (which use
     //!   `"spt-test-vault-*"`). All names here are prefixed `"spt-kchn-*"`
-    //!   to keep the per-module shared stores disjoint.
+    //!   so entries remain readable even though the store is now shared.
 
     use super::*;
     use crate::backend::BackendStatus;

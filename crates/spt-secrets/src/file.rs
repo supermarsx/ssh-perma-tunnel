@@ -295,6 +295,47 @@ pub(crate) fn restrict_to_owner(path: &Path) {
 #[cfg(not(windows))]
 pub(crate) fn restrict_to_owner(_path: &Path) {}
 
+/// Ensure the directory that will hold a freshly-written secret/key/vault file
+/// exists and — when *we* create it — carries an inheritable, non-inherited
+/// owner + SYSTEM/Administrators DACL (mirrors `spt-state::dir`).
+///
+/// This is the F6 hardening: tightening a file's DACL *after* `fs::write`
+/// (the previous approach) leaves a TOCTOU window where the file is
+/// world-readable, and `icacls /inheritance:r /grant:r` does NOT remove a
+/// pre-existing *explicit* third-party ACE — so an attacker who pre-creates a
+/// predictable target on a shared/writable path (the `C:\ProgramData` threat
+/// model) keeps Read. Pre-restricting the parent directory closes both holes:
+/// files born inside inherit the owner-only DACL (no post-create window), and
+/// an attacker cannot pre-create a target inside an owner-only directory.
+///
+/// Restriction is applied only on the transition where this call creates the
+/// directory (matching `spt-state::dir`), so an operator's deliberately-broad
+/// existing directory is not clobbered; the per-file [`restrict_to_owner`]
+/// stays as defense in depth.
+///
+/// No-op on non-Windows: the Unix confidentiality model is the
+/// `0600`-file-in-`0700`-dir scheme enforced elsewhere, so the Unix write
+/// paths are byte-unchanged.
+#[cfg(windows)]
+pub(crate) fn restrict_parent_dir(path: &Path) {
+    let Some(parent) = path.parent() else { return };
+    if parent.as_os_str().is_empty() {
+        return;
+    }
+    let freshly_created = !parent.exists();
+    if std::fs::create_dir_all(parent).is_err() {
+        // A genuine create failure is surfaced by the caller's own
+        // `create_dir_all`/write; here we only best-effort tighten.
+        return;
+    }
+    if freshly_created {
+        windows_acl::restrict(parent, true);
+    }
+}
+
+#[cfg(not(windows))]
+pub(crate) fn restrict_parent_dir(_path: &Path) {}
+
 #[cfg(windows)]
 mod windows_acl {
     use std::path::Path;
@@ -372,6 +413,10 @@ impl SecretBackend for FileBackend {
 
     fn set(&self, r: &SecretRef, value: &[u8]) -> Result<()> {
         let path = self.resolve_within_root(r)?;
+        // F6: on Windows, create + owner-restrict the parent directory FIRST so
+        // the secret file is born with a restrictive DACL (no post-write TOCTOU
+        // window) and an attacker cannot pre-create it. No-op on Unix.
+        restrict_parent_dir(&path);
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).map_err(|e| Error::SecretUnavailable {
                 reference: r.to_string(),
@@ -756,6 +801,56 @@ mod tests {
     // read the DACL back via `icacls` and via the existing DACL inspector.
     // (GitHub-hosted Windows runners are en-US, so the group names below match;
     // the inheritance-removed check below is locale-independent.)
+    // F6: the containing directory must be owner-only BEFORE any secret file is
+    // written into it, so (a) the file is born restricted (no post-write TOCTOU
+    // window) and (b) an attacker cannot pre-create a target inside an
+    // owner-only directory (the explicit-ACE-survival vector). We assert the
+    // directory DACL directly, standing in for "before the file is written".
+    #[cfg(windows)]
+    #[test]
+    fn windows_parent_dir_is_owner_only_before_file_write() {
+        use std::process::Command;
+        let dir = tempdir().unwrap();
+        // A brand-new nested dir that `set` (via restrict_parent_dir) creates.
+        let root = dir.path().join("fresh-root");
+        let target = root.join("ns").join("name"); // FileBackend layout
+        assert!(!root.exists());
+
+        // This is exactly the pre-write step `set` performs.
+        restrict_parent_dir(&target);
+
+        let parent = target.parent().unwrap();
+        assert!(parent.is_dir(), "parent dir must have been created");
+        // No file has been written yet.
+        assert!(!target.exists());
+
+        let out = Command::new("icacls").arg(parent).output().unwrap();
+        assert!(out.status.success(), "icacls readback failed");
+        let text = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            !text.contains("\\Users:") && !text.contains("Everyone:"),
+            "Users/Everyone present on parent dir before write: {text}"
+        );
+        assert!(
+            !text.contains("(I)"),
+            "inherited ACEs survived on parent dir: {text}"
+        );
+        assert!(
+            text.contains("SYSTEM"),
+            "SYSTEM grant missing from parent-dir DACL: {text}"
+        );
+
+        // And a full `set` into that fresh tree leaves the file readable to the
+        // owner while the containing dir stays owner-only.
+        let b = FileBackend::new(&root);
+        let r = SecretRef::new("ns", "name").unwrap();
+        b.set(&r, b"payload").unwrap();
+        assert_eq!(
+            b.get(&r).unwrap().unwrap().expose_secret().as_slice(),
+            b"payload"
+        );
+    }
+
     #[cfg(windows)]
     #[test]
     fn windows_restrict_to_owner_removes_users_read() {

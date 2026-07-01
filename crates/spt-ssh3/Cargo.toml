@@ -68,7 +68,15 @@ serde_json = { workspace = true }
 rand = { workspace = true }
 rcgen = { version = "0.13", optional = true }
 
+# Self dev-dep so `cargo test`/`cargo test --workspace` activates
+# `spt-ssh3/testing` for THIS crate's own integration suites
+# (`tests/uds_forward.rs`, `serve_endpoint.rs`, `e2e_forward.rs`, all
+# `#![cfg(feature = "testing")]`). Without it, those SSH-over-QUIC security
+# suites only compiled when a sibling (`tests/Cargo.toml`) happened to enable
+# the feature; removing that single edge would silently drop them to 0 tests.
+# Mirrors the spt-ftp-translator / spt-winevent / spt-remote-config idiom.
 [dev-dependencies]
+spt-ssh3 = { path = ".", features = ["testing"] }
 tracing-test = "0.2"
 tokio = { workspace = true }
 serde_json = { workspace = true }

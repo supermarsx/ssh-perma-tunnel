@@ -12,7 +12,7 @@
 //!   tests so external test code can round-trip through the keychain.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 
 use secrecy::ExposeSecret;
 use spt_core::{Error, Result};
@@ -589,12 +589,36 @@ mod keymock {
     }
 }
 
+/// Process-wide serialization lock for the keyring mock.
+///
+/// The `keyring` crate exposes a *single* global default credential builder,
+/// and the mock's backing store + fault map are process-global
+/// (`OnceLock`-backed statics). A guard that installs the mock therefore also
+/// resets (`clear_store`) that global state on setup and on drop. If two
+/// keyring-touching tests ran concurrently in the same test binary, one
+/// test's install/drop would wipe another's programmed store/faults mid-run
+/// (the F-T1 flake). Every guard returned by [`seeded_keychain`] /
+/// [`install_mock_keyring`] holds this lock for its whole lifetime, so all
+/// keyring-touching tests in a binary run one-at-a-time — the repo's
+/// `static Mutex` test-lock idiom. `unique-service-per-test` is NOT sufficient
+/// on its own: the race is the global reset, not a key collision.
+fn keyring_lock() -> MutexGuard<'static, ()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+        .lock()
+        // A panicking test poisons the lock; recover the guard so the poison
+        // does not cascade into spurious failures of every later keyring test.
+        .unwrap_or_else(PoisonError::into_inner)
+}
+
 /// Install a process-wide `keyring` mock that uses a shared in-memory store.
 ///
 /// Idempotent — installation runs at most once per process. Returns a guard
-/// whose `Drop` impl clears the store so successive tests don't leak state
-/// across each other. The mock itself remains installed (the `keyring` crate
-/// only allows the default builder to be set once per process).
+/// that (a) holds the process-wide [`keyring_lock`] so keyring-touching tests
+/// run serially, and (b) clears the store on drop so successive tests don't
+/// leak state across each other. The mock itself remains installed (the
+/// `keyring` crate only allows the default builder to be set once per
+/// process).
 ///
 /// # Examples
 ///
@@ -606,15 +630,16 @@ mod keymock {
 /// ```
 #[must_use]
 pub fn seeded_keychain() -> KeychainTestGuard {
+    let lock = keyring_lock();
     keymock::install_once();
     keymock::clear_store();
-    KeychainTestGuard { _priv: () }
+    KeychainTestGuard { _lock: lock }
 }
 
-/// RAII guard returned by [`seeded_keychain`]. Clears the shared mock store
-/// on drop.
+/// RAII guard returned by [`seeded_keychain`]. Holds the process-wide keyring
+/// test lock and clears the shared mock store on drop.
 pub struct KeychainTestGuard {
-    _priv: (),
+    _lock: MutexGuard<'static, ()>,
 }
 
 impl Drop for KeychainTestGuard {
@@ -664,16 +689,17 @@ impl From<MockFaultKind> for keymock::FaultKind {
 /// [`MockKeychainGuard::clear_fault`] to program per-entry error returns.
 #[must_use]
 pub fn install_mock_keyring() -> MockKeychainGuard {
+    let lock = keyring_lock();
     keymock::install_force();
     keymock::clear_store();
-    MockKeychainGuard { _priv: () }
+    MockKeychainGuard { _lock: lock }
 }
 
 /// Stronger sibling of [`KeychainTestGuard`] returned by
-/// [`install_mock_keyring`]. Programs per-entry fault injection and clears
-/// the shared store on drop.
+/// [`install_mock_keyring`]. Holds the process-wide keyring test lock,
+/// programs per-entry fault injection, and clears the shared store on drop.
 pub struct MockKeychainGuard {
-    _priv: (),
+    _lock: MutexGuard<'static, ()>,
 }
 
 impl MockKeychainGuard {
@@ -872,8 +898,15 @@ mod tests {
     // overwrites the global keyring builder — so even if another module's
     // install ran first, the `keymock` store/fault map are guaranteed to
     // be the ones consulted on subsequent `Entry` calls within this test.
-    // Every test uses a unique service prefix to avoid shared-store
-    // collisions with parallel tests.
+    //
+    // Isolation is NOT achieved by the unique service prefixes alone: the
+    // real hazard is that `install_mock_keyring()`/`seeded_keychain()` reset
+    // the *global* store + fault map on setup and on drop, so a concurrent
+    // guard would wipe this test's programmed state mid-run. The guard
+    // returned below holds a process-wide `Mutex` (see `keyring_lock`) for the
+    // whole test body, serializing every keyring-touching test in this binary
+    // and eliminating that race. The unique prefixes remain as defense in
+    // depth / readability.
     // -----------------------------------------------------------------
 
     #[test]

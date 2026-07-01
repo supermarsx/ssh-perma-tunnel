@@ -30,6 +30,31 @@ mod signals;
 mod status_api_tls;
 mod tracing_init;
 
+#[cfg(test)]
+pub(crate) mod test_locks {
+    //! Process-global env locks shared across the crate's unit-test modules.
+    //!
+    //! All of `spt-bin`'s unit tests compile into a SINGLE test binary and run
+    //! in parallel by default, so tests in DIFFERENT modules that mutate the
+    //! SAME process env var must serialise on ONE mutex. Keying the lock here
+    //! (rather than a per-module static) is what stops e.g. `signals.rs` and
+    //! `tracing_init.rs` — which both mutate `SPT_LOG` — from racing when run
+    //! WITHOUT `--test-threads=1`.
+    use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
+
+    fn guard(cell: &'static OnceLock<Mutex<()>>) -> MutexGuard<'static, ()> {
+        cell.get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Serialises any test that reads or mutates the `SPT_LOG` env var.
+    pub(crate) fn spt_log_env() -> MutexGuard<'static, ()> {
+        static L: OnceLock<Mutex<()>> = OnceLock::new();
+        guard(&L)
+    }
+}
+
 pub(crate) use benchmark_bridge::run_live_benchmark;
 
 use std::path::PathBuf;

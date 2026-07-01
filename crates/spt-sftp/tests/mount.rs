@@ -24,6 +24,21 @@ async fn make_client() -> (tempfile::TempDir, SftpClient) {
     (dir, client)
 }
 
+/// Serialises the macOS sshfs tests that mutate the process-global
+/// `SPT_SSHFS_BIN` / `SPT_MACFUSE_FS` detection-override env vars. This is an
+/// integration binary, so its tests run in parallel even under CI's
+/// `--test-threads=1` (which only serialises WITHIN a binary at the crate
+/// level, but these two `#[tokio::test]`s still race without a shared lock).
+#[cfg(target_os = "macos")]
+static SSHFS_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(target_os = "macos")]
+fn lock_sshfs_env() -> std::sync::MutexGuard<'static, ()> {
+    SSHFS_ENV_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 fn unix_target(p: &str) -> PathBuf {
     if cfg!(windows) {
         PathBuf::from(format!("C:/mnt/{p}"))
@@ -120,6 +135,7 @@ async fn windows_winfsp_backend_surfaces_unsupported_with_named_blocker() {
 #[tokio::test]
 async fn macos_sshfs_missing_binary_returns_diagnostic_not_panic() {
     use spt_sftp::mount::macos_sshfs::SshfsMounter;
+    let _env = lock_sshfs_env();
     // Force both probes to fail so detection caches `UnsupportedPlatform`.
     std::env::set_var("SPT_SSHFS_BIN", "/nonexistent/sshfs");
     std::env::set_var("SPT_MACFUSE_FS", "/nonexistent/macfuse.fs");
@@ -140,6 +156,7 @@ async fn macos_sshfs_missing_binary_returns_diagnostic_not_panic() {
 #[tokio::test]
 async fn macos_sshfs_emits_mount_failed_when_detection_fails() {
     use spt_sftp::mount::macos_sshfs::SshfsMounter;
+    let _env = lock_sshfs_env();
     std::env::set_var("SPT_SSHFS_BIN", "/nonexistent/sshfs");
     std::env::set_var("SPT_MACFUSE_FS", "/nonexistent/macfuse.fs");
     let (_dir, client) = make_client().await;

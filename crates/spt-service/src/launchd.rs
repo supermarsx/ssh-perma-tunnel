@@ -1036,14 +1036,23 @@ mod tests {
 
     // ---- E7-F4: install/uninstall path agreement for user scope ----------
 
+    // The env-lock guard is deliberately held across the install/uninstall
+    // awaits so HOME stays pinned for the whole test; `#[tokio::test]` runs on
+    // a current-thread runtime, so no other task can observe the held guard.
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn user_install_writes_agent_path_matching_uninstall() {
         // Install a user-scope agent and confirm both install (load -w <path>)
         // and uninstall (unload -w <path>) target the SAME LaunchAgents path —
         // previously install used spec.scope and the rest used self.scope, so a
         // --user install was orphaned under /Library/LaunchDaemons.
+        // F9: serialize on the shared crate env-lock (systemd_user mutates the
+        // same process-global HOME in this binary) and use a unique tempdir
+        // instead of a fixed shared path.
+        let _guard = crate::tests::lock_env();
+        let home_dir = tempfile::tempdir().unwrap();
         let prev_home = std::env::var_os("HOME");
-        let home = std::env::temp_dir().join("spt-launchd-test-home");
+        let home = home_dir.path().to_path_buf();
         std::env::set_var("HOME", &home);
         let expected = format!(
             "{}/Library/LaunchAgents/io.spt.relay.plist",

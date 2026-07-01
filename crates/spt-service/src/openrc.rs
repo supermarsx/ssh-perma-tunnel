@@ -303,13 +303,32 @@ fn render_script(spec: &ServiceSpec) -> String {
     // inject when OpenRC expands `command_args`.
     let args = shell_single_quote_args(&spec.args);
     let mut vars: BTreeMap<&str, String> = BTreeMap::new();
-    vars.insert("name", spec.name.clone());
-    vars.insert("description", spec.description.clone());
-    vars.insert("exec_path", spec.exec_path.display().to_string());
+    // F5: `name`/`description`/`exec_path`/`user`/`group`/`working_dir` are
+    // interpolated into double-quoted shell assignments in the template
+    // (e.g. `description="{{description}}"`). In a POSIX double-quoted string
+    // `$(...)`, backticks, and an embedded `"` still expand / break out, so a
+    // value like `$(touch /tmp/pwn)` or `"; evil` would execute when OpenRC
+    // sources the script. Escape them for the double-quoted context (mirrors
+    // M2's arg quoting decision that these fields warrant neutralizing).
+    vars.insert("name", shell_double_quote_escape(&spec.name));
+    vars.insert("description", shell_double_quote_escape(&spec.description));
+    vars.insert(
+        "exec_path",
+        shell_double_quote_escape(&spec.exec_path.display().to_string()),
+    );
     vars.insert("args", args);
-    vars.insert("user", spec.user.clone().unwrap_or_else(|| "root".into()));
-    vars.insert("group", spec.group.clone().unwrap_or_else(|| "root".into()));
-    vars.insert("working_dir", spec.working_dir.display().to_string());
+    vars.insert(
+        "user",
+        shell_double_quote_escape(spec.user.as_deref().unwrap_or("root")),
+    );
+    vars.insert(
+        "group",
+        shell_double_quote_escape(spec.group.as_deref().unwrap_or("root")),
+    );
+    vars.insert(
+        "working_dir",
+        shell_double_quote_escape(&spec.working_dir.display().to_string()),
+    );
     // E7-F9: render `[profiles].env` as `export K="V"` lines so OpenRC honours
     // ServiceSpec.env (previously dropped — only systemd/launchd applied env).
     // Rendered into the `{{env_exports}}` template placeholder; the template
@@ -324,12 +343,34 @@ fn render_script(spec: &ServiceSpec) -> String {
 /// `` ` `` and `\` backslash-escaped so the shell treats them literally.
 /// Returns an empty string when there is no env (so the template line
 /// collapses).
+///
+/// F5: the env-var **NAME** (`k`) is emitted OUTSIDE any quoting
+/// (`export {k}="…"`), so a name like `K;rm -rf /` or `K$(id)` would inject
+/// shell after the `export` word — and there is no way to safely quote an
+/// arbitrary shell variable *name*. Names that are not valid POSIX shell
+/// identifiers (`[A-Za-z_][A-Za-z0-9_]*`) are therefore rejected (skipped)
+/// rather than escaped. Legitimate names (`RUST_LOG`, `SPT_STATE_DIR`, …) are
+/// unaffected.
 pub(crate) fn render_env_exports(spec: &ServiceSpec) -> String {
     spec.env
         .iter()
+        .filter(|(k, _)| is_valid_shell_name(k))
         .map(|(k, v)| format!("export {k}=\"{}\"", shell_double_quote_escape(v)))
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// True iff `name` is a valid POSIX shell/environment variable identifier:
+/// a leading letter or underscore, then letters, digits, or underscores.
+/// Anything else (`;`, `=`, space, `$`, `.`, empty, …) is invalid and would
+/// be a shell-injection vector if emitted as an `export` target.
+fn is_valid_shell_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 /// Shell-quote each arg with POSIX single-quote escaping and join with spaces.
@@ -456,6 +497,79 @@ mod tests {
             !line.contains("= touch") && !out.contains("\ntouch /tmp/pwn"),
             "metachar leaked unquoted: {out}"
         );
+    }
+
+    // F5: `description`/`exec_path`/`user`/`group`/`working_dir` land in
+    // double-quoted shell assignments. `$(...)`, backticks, and `"` must be
+    // neutralized so nothing executes / breaks out when OpenRC sources the
+    // script. Fails against the pre-fix raw interpolation.
+    #[test]
+    fn render_neutralizes_shell_injection_in_assignments() {
+        let mut spec = sample_spec();
+        spec.description = "$(touch /tmp/pwn)".into();
+        spec.exec_path = "/bin/sh\"; touch /tmp/pwn; :\"".into();
+        spec.user = Some("`id`".into());
+        spec.working_dir = "/var/lib/spt$(id)".into();
+        let out = OpenRcManager::new().render(&spec);
+        // Command-substitution / backticks are backslash-escaped (inert in a
+        // double-quoted string), and the injected `"` cannot close the quote.
+        assert!(
+            out.contains(r#"description="\$(touch /tmp/pwn)""#),
+            "description not escaped: {out}"
+        );
+        assert!(out.contains(r"\`id\`"), "user not escaped: {out}");
+        assert!(
+            out.contains(r"/var/lib/spt\$(id)"),
+            "workdir not escaped: {out}"
+        );
+        assert!(
+            out.contains(r#"/bin/sh\"; touch /tmp/pwn; :\""#),
+            "exec_path quote not escaped: {out}"
+        );
+        // No bare `touch /tmp/pwn` command survives on its own line, and every
+        // `$(` is backslash-escaped (removing escaped `\$` leaves no live `$(`).
+        assert!(
+            !out.lines().any(|l| l.trim_start().starts_with("touch ")),
+            "injected command leaked: {out}"
+        );
+        assert!(
+            !out.replace("\\$", "").contains("$(touch"),
+            "unescaped command sub leaked: {out}"
+        );
+    }
+
+    // F5: an env-var NAME that is not a valid shell identifier is a shell
+    // injection vector (`export K;rm -rf /="…"`) and cannot be safely quoted;
+    // it must be rejected/skipped. Fails against the pre-fix code.
+    #[test]
+    fn render_env_exports_rejects_injecting_name() {
+        let mut spec = sample_spec();
+        spec.env.clear();
+        spec.env.insert("K;touch /tmp/pwn".into(), "v".into());
+        spec.env.insert("GOOD".into(), "1".into());
+        let out = render_env_exports(&spec);
+        assert!(
+            !out.contains("touch /tmp/pwn"),
+            "injecting env name leaked: {out}"
+        );
+        assert!(!out.contains("K;"), "invalid name emitted: {out}");
+        // The valid sibling is still exported.
+        assert!(
+            out.contains("export GOOD=\"1\""),
+            "valid name dropped: {out}"
+        );
+    }
+
+    #[test]
+    fn is_valid_shell_name_accepts_ids_rejects_injection() {
+        assert!(is_valid_shell_name("RUST_LOG"));
+        assert!(is_valid_shell_name("_x9"));
+        assert!(!is_valid_shell_name(""));
+        assert!(!is_valid_shell_name("1BAD"));
+        assert!(!is_valid_shell_name("K;rm"));
+        assert!(!is_valid_shell_name("K=v"));
+        assert!(!is_valid_shell_name("K$(id)"));
+        assert!(!is_valid_shell_name("K X"));
     }
 
     #[test]

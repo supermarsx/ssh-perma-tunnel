@@ -56,9 +56,9 @@ pub fn generate(
             "TOTP time_step_s must be non-zero".into(),
         ));
     }
-    if !(1..=10).contains(&digits) {
+    if !(1..=9).contains(&digits) {
         return Err(Error::InvalidConfig(format!(
-            "TOTP digits must be in 1..=10; got {digits}"
+            "TOTP digits must be in 1..=9; got {digits}"
         )));
     }
     let counter = now_s / time_step_s;
@@ -84,9 +84,9 @@ pub fn verify(
             "TOTP time_step_s must be non-zero".into(),
         ));
     }
-    if !(1..=10).contains(&digits) {
+    if !(1..=9).contains(&digits) {
         return Err(Error::InvalidConfig(format!(
-            "TOTP digits must be in 1..=10; got {digits}"
+            "TOTP digits must be in 1..=9; got {digits}"
         )));
     }
     let want_len = digits as usize;
@@ -291,5 +291,28 @@ mod tests {
         assert!(matches!(e, Error::InvalidConfig(_)));
         let e = generate(&s, 30, 0, TotpAlgo::Sha1, 0).unwrap_err();
         assert!(matches!(e, Error::InvalidConfig(_)));
+    }
+
+    #[test]
+    fn digits_10_returns_error_and_does_not_abort() {
+        // Regression for the `10u32.pow(10)` overflow: under the release
+        // profile (`overflow-checks = true`, `panic = "abort"`) reaching the
+        // `pow` with `digits == 10` would abort the process. The guard must
+        // reject `digits == 10` with `InvalidConfig` BEFORE the `pow`.
+        let s = seed(TotpAlgo::Sha1);
+        let e = generate(&s, 30, 10, TotpAlgo::Sha1, 0).unwrap_err();
+        assert!(matches!(e, Error::InvalidConfig(_)));
+        let e = verify(&s, "0000000000", 30, 10, TotpAlgo::Sha1, 0, 0).unwrap_err();
+        assert!(matches!(e, Error::InvalidConfig(_)));
+    }
+
+    #[test]
+    fn digits_9_still_works() {
+        // 9 is the largest value that fits `10u32.pow(digits)` (1e9 < u32::MAX)
+        // and must remain valid for both generate and verify.
+        let s = seed(TotpAlgo::Sha1);
+        let code = generate(&s, 30, 9, TotpAlgo::Sha1, 59).unwrap();
+        assert_eq!(code.len(), 9);
+        assert!(verify(&s, &code, 30, 9, TotpAlgo::Sha1, 59, 0).unwrap());
     }
 }

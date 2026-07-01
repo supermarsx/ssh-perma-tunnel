@@ -182,6 +182,9 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn read_sighup_log_filter_prefers_env() {
+        // Shared with `tracing_init.rs`, which mutates the same `SPT_LOG` var
+        // in this same test binary — serialise so parallel runs don't race.
+        let _log = crate::test_locks::spt_log_env();
         let prev = std::env::var_os("SPT_LOG");
         std::env::set_var("SPT_LOG", "warn,spt_ssh2=trace");
         let v = read_sighup_log_filter(None).unwrap();
@@ -195,6 +198,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn read_sighup_log_filter_reads_state_file_when_env_unset() {
+        let _log = crate::test_locks::spt_log_env();
         let prev = std::env::var_os("SPT_LOG");
         std::env::remove_var("SPT_LOG");
         let tmp = tempfile::tempdir().unwrap();
@@ -213,6 +217,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn read_sighup_log_filter_returns_none_when_missing() {
+        let _log = crate::test_locks::spt_log_env();
         let prev = std::env::var_os("SPT_LOG");
         std::env::remove_var("SPT_LOG");
         let tmp = tempfile::tempdir().unwrap();
@@ -226,6 +231,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn read_sighup_log_filter_empty_file_returns_none() {
+        let _log = crate::test_locks::spt_log_env();
         let prev = std::env::var_os("SPT_LOG");
         std::env::remove_var("SPT_LOG");
         let tmp = tempfile::tempdir().unwrap();

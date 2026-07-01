@@ -96,6 +96,11 @@ fn write_secret_file(path: &Path, bytes: &[u8]) -> Result<()> {
 
     #[cfg(not(unix))]
     {
+        // F6: on Windows, create + owner-restrict the parent directory FIRST so
+        // the key file is born with a restrictive DACL (no post-write TOCTOU
+        // window) and an attacker cannot pre-create a predictable target inside
+        // an owner-only directory. No-op on non-windows non-unix targets.
+        restrict_parent_dir(path);
         let af = AtomicFile::new(path, OverwriteBehavior::AllowOverwrite);
         af.write(|f| {
             use std::io::Write;
@@ -108,7 +113,8 @@ fn write_secret_file(path: &Path, bytes: &[u8]) -> Result<()> {
         // shared path (e.g. a LocalSystem service pointed at `C:\ProgramData`)
         // would inherit `Users:Read`. Tighten the DACL to owner + SYSTEM/
         // Administrators, removing inherited access. Best-effort + no-op on
-        // non-windows non-unix targets.
+        // non-windows non-unix targets. Defense in depth on top of the
+        // pre-restricted parent directory above.
         restrict_to_owner(path);
         Ok(())
     }
@@ -162,6 +168,68 @@ fn restrict_to_owner(path: &Path) {
 // targets to avoid a dead-code warning on unix.
 #[cfg(all(not(unix), not(windows)))]
 fn restrict_to_owner(_path: &Path) {}
+
+/// F6: ensure the directory that will hold a freshly-written key exists and —
+/// when *we* create it — carries an inheritable, non-inherited owner + SYSTEM/
+/// Administrators DACL (mirrors `spt-state::dir` and the `spt-secrets`
+/// equivalent). This makes the key file born owner-only (closing the
+/// post-write TOCTOU window) and prevents an attacker from pre-creating a
+/// predictable target inside an owner-only directory (the explicit-ACE
+/// survival vector). Restriction is applied only on the transition where this
+/// call creates the directory, so an operator's existing directory is not
+/// clobbered; the per-file [`restrict_to_owner`] stays as defense in depth.
+#[cfg(windows)]
+fn restrict_parent_dir(path: &Path) {
+    use std::process::Command;
+
+    let Some(parent) = path.parent() else { return };
+    if parent.as_os_str().is_empty() {
+        return;
+    }
+    let freshly_created = !parent.exists();
+    if fs::create_dir_all(parent).is_err() {
+        // A genuine create failure is surfaced by the caller's atomic write.
+        return;
+    }
+    if !freshly_created {
+        return;
+    }
+    // `(OI)(CI)(F)` = object+container inherit, full control — so child files
+    // inherit the owner-only DACL. Well-known SIDs keep it locale-independent.
+    let mut cmd = Command::new("icacls");
+    cmd.arg(parent)
+        .arg("/inheritance:r")
+        .arg("/grant:r")
+        .arg("*S-1-5-18:(OI)(CI)(F)")
+        .arg("/grant:r")
+        .arg("*S-1-5-32-544:(OI)(CI)(F)");
+    if let Ok(user) = std::env::var("USERNAME") {
+        if !user.is_empty() {
+            let principal = match std::env::var("USERDOMAIN") {
+                Ok(dom) if !dom.is_empty() => format!("{dom}\\{user}"),
+                _ => user,
+            };
+            cmd.arg("/grant:r").arg(format!("{principal}:(OI)(CI)(F)"));
+        }
+    }
+    match cmd.output() {
+        Ok(out) if out.status.success() => {}
+        Ok(out) => tracing::warn!(
+            path = %parent.display(),
+            code = ?out.status.code(),
+            stderr = %String::from_utf8_lossy(&out.stderr).trim(),
+            "icacls could not restrict the key directory DACL; key files may be readable by non-owner principals"
+        ),
+        Err(e) => tracing::warn!(
+            path = %parent.display(),
+            error = %e,
+            "could not run icacls to restrict the key directory DACL"
+        ),
+    }
+}
+
+#[cfg(all(not(unix), not(windows)))]
+fn restrict_parent_dir(_path: &Path) {}
 
 /// Load a (possibly encrypted) OpenSSH-format private key from `path`.
 pub fn load(path: &Path, passphrase: Option<&str>) -> Result<KeyPair> {
@@ -284,6 +352,43 @@ mod tests {
     // group / Everyone lose read. We read the DACL back via `icacls`.
     // (GitHub-hosted Windows runners are en-US; the `(I)` inheritance check is
     // locale-independent.)
+    // F6: the directory a key is written into must be owner-only BEFORE the
+    // key file is created, so the file is born restricted and an attacker
+    // cannot pre-create a predictable target inside an owner-only directory.
+    #[cfg(windows)]
+    #[test]
+    fn windows_key_parent_dir_is_owner_only_before_write() {
+        use std::process::Command;
+        let dir = tempdir().unwrap();
+        let subdir = dir.path().join("fresh-keydir");
+        let target = subdir.join("id_ed25519");
+        assert!(!subdir.exists());
+
+        // Pre-write step performed by `write_secret_file`.
+        restrict_parent_dir(&target);
+
+        assert!(subdir.is_dir(), "key dir must have been created");
+        assert!(!target.exists(), "no key file written yet");
+
+        let out = Command::new("icacls").arg(&subdir).output().unwrap();
+        assert!(out.status.success(), "icacls readback failed");
+        let text = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            !text.contains("\\Users:") && !text.contains("Everyone:"),
+            "Users/Everyone present on key dir before write: {text}"
+        );
+        assert!(
+            !text.contains("(I)"),
+            "inherited ACEs survived on key dir: {text}"
+        );
+        assert!(text.contains("SYSTEM"), "SYSTEM grant missing: {text}");
+
+        // A real save into the fresh dir still round-trips for the owner.
+        let kp = generate(KeyAlgorithm::Ed25519).unwrap();
+        save_encrypted(&kp, &target, None).unwrap();
+        assert!(load(&target, None).is_ok());
+    }
+
     #[cfg(windows)]
     #[test]
     fn windows_written_key_drops_users_read() {

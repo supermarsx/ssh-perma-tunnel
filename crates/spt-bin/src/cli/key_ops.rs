@@ -621,6 +621,15 @@ mod tests {
     use spt_key::KeyAlgorithm;
     use tempfile::tempdir;
 
+    /// Serialises tests that mutate the process-global `SPT_KEY_PASSPHRASE` /
+    /// `SPT_KEY_NEW` env vars (read back by `change_passphrase`). Held across
+    /// the awaited call so the values are stable for the whole flow — lets
+    /// `cargo test -p spt-bin` pass without `--test-threads=1`.
+    fn key_env_lock() -> &'static std::sync::Mutex<()> {
+        static L: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+        L.get_or_init(|| std::sync::Mutex::new(()))
+    }
+
     fn opts() -> GlobalOpts {
         GlobalOpts {
             config: None,
@@ -668,13 +677,16 @@ mod tests {
 
     #[tokio::test]
     async fn change_passphrase_round_trip_via_env() {
+        let _env = key_env_lock()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let kp = deterministic_keypair(7, KeyAlgorithm::Ed25519).unwrap();
         let dir = tempdir().unwrap();
         let p = dir.path().join("id");
         spt_key::save_encrypted(&kp, &p, Some("old-pw")).unwrap();
 
         // Old passphrase: env. New passphrase: --new-passphrase-from env:NEW.
-        // SAFETY: tests run single-threaded over env-mutating block.
+        // The `key_env_lock` guard serialises the env mutation below.
         let old = std::env::var("SPT_KEY_PASSPHRASE").ok();
         let new = std::env::var("SPT_KEY_NEW").ok();
         std::env::set_var("SPT_KEY_PASSPHRASE", "old-pw");
@@ -1062,7 +1074,10 @@ mod tests {
         spt_key::save_encrypted(&kp, &p, Some("old-pw")).unwrap();
         put_file_secret(dir.path(), "keys", "newpw", b"resolved-new-pw");
 
-        // SAFETY: tests run single-threaded over this env-mutating block.
+        // The `key_env_lock` guard serialises the env mutation below.
+        let _env = key_env_lock()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let old = std::env::var("SPT_KEY_PASSPHRASE").ok();
         std::env::set_var("SPT_KEY_PASSPHRASE", "old-pw");
         let g = opts_with_state(dir.path().to_path_buf());

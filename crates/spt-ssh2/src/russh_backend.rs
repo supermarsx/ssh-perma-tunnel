@@ -27,7 +27,7 @@ use spt_secrets::SecretBackend;
 use tokio::io::AsyncWriteExt as _;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, oneshot, watch, Mutex as AsyncMutex};
-use tracing::warn;
+use tracing::{debug, warn};
 
 use crate::agent::Agent;
 use crate::crypto::CryptoPolicy;
@@ -2431,6 +2431,78 @@ async fn bridge_dynamic(
     Ok(())
 }
 
+/// Concurrency + new-connection-rate admission gate for the reverse
+/// (remote / remote-UDS) forward accept loops.
+///
+/// This is the *same* mechanism the hardened `local_loop`/`dynamic_loop` apply
+/// inline — an `active` [`AtomicU32`](std::sync::atomic::AtomicU32) concurrency
+/// counter plus a [`RateGate`] for `max_new_conns_per_sec` — packaged so the two
+/// reverse loops can share it and so a slot is released via RAII
+/// ([`ConnPermit`]'s `Drop`) even if the per-connection bridge task panics
+/// (`local_loop`'s manual `fetch_sub` would leak a slot on panic).
+struct ConnLimiter {
+    active: Arc<std::sync::atomic::AtomicU32>,
+    /// `None` ⇒ no concurrency cap (unlimited), matching an absent
+    /// `max_connections` in the forward spec.
+    max_connections: Option<u32>,
+    /// `max_new_conns_per_sec == 0` ⇒ unlimited gate (preserves prior
+    /// behaviour for specs that omit the limit).
+    rate_gate: RateGate,
+}
+
+impl ConnLimiter {
+    fn new(max_connections: Option<u32>, max_new_conns_per_sec: u32) -> Self {
+        Self {
+            active: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+            max_connections,
+            rate_gate: RateGate::new(max_new_conns_per_sec, max_new_conns_per_sec),
+        }
+    }
+
+    /// Try to admit one inbound connection. Returns an RAII [`ConnPermit`] that
+    /// decrements the active count on drop, or `None` when the new-connection
+    /// rate gate or the `max_connections` cap rejects it.
+    ///
+    /// Order mirrors `local_loop`/`dynamic_loop` exactly: the rate gate is
+    /// consulted first, then the concurrency cap. Admission runs on the single
+    /// accept-loop task (never concurrently), so the `load` + `fetch_add` pair
+    /// is race-free.
+    fn try_admit(&self) -> Option<ConnPermit> {
+        if !self.rate_gate.admit() {
+            return None;
+        }
+        if let Some(limit) = self.max_connections {
+            if self.active.load(std::sync::atomic::Ordering::Relaxed) >= limit {
+                return None;
+            }
+        }
+        self.active
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Some(ConnPermit {
+            active: Arc::clone(&self.active),
+        })
+    }
+
+    #[cfg(test)]
+    fn active_count(&self) -> u32 {
+        self.active.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+/// RAII slot for one admitted reverse-forward connection. Dropping it (when the
+/// bridge task ends — cleanly, by error, or by panic) frees the slot so the
+/// limiter never wedges.
+struct ConnPermit {
+    active: Arc<std::sync::atomic::AtomicU32>,
+}
+
+impl Drop for ConnPermit {
+    fn drop(&mut self) {
+        self.active
+            .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
 async fn open_remote(
     handle: SharedHandle,
     remote_forwards: RemoteForwardMap,
@@ -2490,6 +2562,7 @@ async fn open_remote(
             target: spec.target.clone(),
             state_tx,
             name: name.clone(),
+            max_connections: spec.max_connections,
             limits: spec.limits,
             idle_timeout: combine_idle(spec.idle_timeout, channel_idle),
         },
@@ -2504,6 +2577,8 @@ struct RemoteLoopContext {
     target: TargetAddr,
     state_tx: watch::Sender<ForwardState>,
     name: String,
+    /// Concurrency cap for inbound (reverse) connections; `None` ⇒ unlimited.
+    max_connections: Option<u32>,
     limits: ForwardRateLimits,
     idle_timeout: Option<Duration>,
 }
@@ -2513,16 +2588,32 @@ async fn remote_loop(
     mut close_rx: oneshot::Receiver<()>,
     ctx: RemoteLoopContext,
 ) {
+    // Enforce `max_connections` + `max_new_conns_per_sec` on the reverse path,
+    // mirroring `local_loop`/`dynamic_loop`. Without this, every server-pushed
+    // `forwarded-tcpip` channel spawned an unbounded bridge (client-side DoS).
+    let limiter = ConnLimiter::new(ctx.max_connections, ctx.limits.max_new_conns_per_sec);
     loop {
         tokio::select! {
             _ = &mut close_rx => break,
             forwarded = rx.recv() => {
                 let Some(forwarded) = forwarded else { break; };
+                let Some(permit) = limiter.try_admit() else {
+                    debug!(
+                        target: "spt_ssh2::russh",
+                        forward = %ctx.name,
+                        "reverse forward at max_connections / new-conn rate cap, closing inbound channel"
+                    );
+                    let _ = forwarded.channel.close().await;
+                    continue;
+                };
                 let target = ctx.target.clone();
                 let name = ctx.name.clone();
                 let limits = ctx.limits;
                 let idle_timeout = ctx.idle_timeout;
                 tokio::spawn(async move {
+                    // Hold the permit for the bridge's lifetime; its `Drop`
+                    // releases the concurrency slot when the bridge ends.
+                    let _permit = permit;
                     if let Err(e) = bridge_remote(forwarded.channel, &target, &limits, idle_timeout).await {
                         warn!(target: "spt_ssh2::russh", forward = %name, error = %e, "remote bridge failed");
                     }
@@ -2744,6 +2835,10 @@ async fn open_remote_uds(
             local_path: spec.local_socket_path.clone(),
             state_tx,
             name: name.clone(),
+            // `RemoteUdsForwardSpec` carries no `max_connections` field (unlike
+            // `RemoteForwardSpec`), so the concurrency cap is `None` here; the
+            // `max_new_conns_per_sec` rate gate from `limits` is still enforced.
+            max_connections: None,
             limits: spec.limits,
             idle_timeout: combine_idle(spec.idle_timeout, channel_idle),
         },
@@ -2776,6 +2871,8 @@ struct RemoteUdsLoopContext {
     local_path: std::path::PathBuf,
     state_tx: watch::Sender<ForwardState>,
     name: String,
+    /// Concurrency cap for inbound (reverse) connections; `None` ⇒ unlimited.
+    max_connections: Option<u32>,
     limits: ForwardRateLimits,
     idle_timeout: Option<Duration>,
 }
@@ -2789,16 +2886,31 @@ async fn remote_uds_loop(
     mut close_rx: oneshot::Receiver<()>,
     ctx: RemoteUdsLoopContext,
 ) {
+    // Enforce the reverse-path concurrency + new-conn rate gate, mirroring
+    // `remote_loop`. `max_connections` is `None` here (the spec has no such
+    // field), but the `max_new_conns_per_sec` rate gate is applied.
+    let limiter = ConnLimiter::new(ctx.max_connections, ctx.limits.max_new_conns_per_sec);
     loop {
         tokio::select! {
             _ = &mut close_rx => break,
             forwarded = rx.recv() => {
                 let Some(forwarded) = forwarded else { break; };
+                let Some(permit) = limiter.try_admit() else {
+                    debug!(
+                        target: "spt_ssh2::russh",
+                        forward = %ctx.name,
+                        "reverse uds forward at max_connections / new-conn rate cap, closing inbound channel"
+                    );
+                    let _ = forwarded.channel.close().await;
+                    continue;
+                };
                 let local_path = ctx.local_path.clone();
                 let name = ctx.name.clone();
                 let limits = ctx.limits;
                 let idle_timeout = ctx.idle_timeout;
                 tokio::spawn(async move {
+                    // Permit's `Drop` frees the slot when the bridge ends.
+                    let _permit = permit;
                     if let Err(e) =
                         bridge_remote_uds(forwarded.channel, &local_path, &limits, idle_timeout).await
                     {
@@ -3015,6 +3127,59 @@ fn dynamic_dial_failure_msg<D: std::fmt::Display>(host: &str, port: u16, err: &D
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn conn_limiter_caps_concurrency_and_releases_on_permit_drop() {
+        // The reverse-forward admission gate: with `max_connections = 2` the
+        // third concurrent admit is rejected while two permits are live, the
+        // active count never exceeds the cap, and dropping a permit frees a
+        // slot so the limiter never wedges. Rate gate disabled (0 = unlimited)
+        // to isolate the concurrency cap.
+        let limiter = ConnLimiter::new(Some(2), 0);
+        let p1 = limiter.try_admit().expect("first admit");
+        let p2 = limiter.try_admit().expect("second admit");
+        assert_eq!(limiter.active_count(), 2);
+        // Over the cap: rejected, count unchanged.
+        assert!(
+            limiter.try_admit().is_none(),
+            "third admit must be rejected"
+        );
+        assert_eq!(limiter.active_count(), 2);
+        // Releasing a slot re-opens capacity (RAII decrement).
+        drop(p1);
+        assert_eq!(limiter.active_count(), 1);
+        let p3 = limiter.try_admit().expect("admit after release");
+        assert_eq!(limiter.active_count(), 2);
+        drop(p2);
+        drop(p3);
+        assert_eq!(limiter.active_count(), 0);
+    }
+
+    #[test]
+    fn conn_limiter_none_cap_is_unlimited() {
+        // `None` cap (e.g. remote-UDS, which has no `max_connections` field)
+        // admits without a concurrency ceiling; permits still track active
+        // count for release accounting.
+        let limiter = ConnLimiter::new(None, 0);
+        let permits: Vec<_> = (0..8)
+            .map(|_| limiter.try_admit().expect("admit"))
+            .collect();
+        assert_eq!(limiter.active_count(), 8);
+        drop(permits);
+        assert_eq!(limiter.active_count(), 0);
+    }
+
+    #[test]
+    fn conn_limiter_rate_gate_rejects_burst() {
+        // With `max_new_conns_per_sec = 1` and no concurrency cap, the second
+        // immediate admit is rate-limited even though a slot is free.
+        let limiter = ConnLimiter::new(None, 1);
+        let _p1 = limiter.try_admit().expect("first admit within rate");
+        assert!(
+            limiter.try_admit().is_none(),
+            "second immediate admit must be rate-limited"
+        );
+    }
 
     #[test]
     fn maps_supported_algorithm_names() {

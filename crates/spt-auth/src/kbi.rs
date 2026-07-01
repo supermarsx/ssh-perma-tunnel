@@ -104,6 +104,19 @@ impl KbiResponder {
     /// failure so callers can surface invalid regex at `config validate` time
     /// rather than at prompt time.
     pub fn compile(&self) -> spt_core::Result<Regex> {
+        // Defense-in-depth: reject an out-of-range TOTP `digits` at
+        // `config validate` time rather than letting it surface as a runtime
+        // auth error. `digits` must be 1..=9 — `spt_auth::totp` computes
+        // `10u32.pow(digits)`, and 10^10 overflows `u32` (which aborts the
+        // process under the release profile's `overflow-checks`). >9 digits is
+        // meaningless anyway (dynamic truncation yields only 31 bits).
+        if let KbiAnswer::Totp { digits, .. } = &self.answer {
+            if !(1..=9).contains(digits) {
+                return Err(spt_core::Error::InvalidConfig(format!(
+                    "keyboard-interactive TOTP digits must be in 1..=9; got {digits}"
+                )));
+            }
+        }
         Regex::new(&self.prompt_regex).map_err(|e| {
             spt_core::Error::InvalidConfig(format!(
                 "invalid keyboard-interactive prompt_regex `{}`: {e}",
@@ -181,6 +194,38 @@ mod tests {
         };
         let err = r.compile().unwrap_err();
         assert!(matches!(err, spt_core::Error::InvalidConfig(_)));
+    }
+
+    #[test]
+    fn totp_digits_out_of_range_rejected_by_compile() {
+        // A remote-config `digits = 10` must be rejected at config-validate
+        // time (compile) with a typed error, never reaching the overflowing
+        // `10u32.pow(10)` in `spt_auth::totp`.
+        let r = KbiResponder {
+            prompt_regex: "(?i)otp:".into(),
+            answer: KbiAnswer::Totp {
+                secret_ref: SecretRef::Env("T".into()),
+                digits: 10,
+                period: 30,
+                algo: TotpAlgo::Sha1,
+            },
+            echo: false,
+        };
+        let err = r.compile().unwrap_err();
+        assert!(matches!(err, spt_core::Error::InvalidConfig(_)));
+
+        // A valid `digits = 6` still compiles.
+        let ok = KbiResponder {
+            prompt_regex: "(?i)otp:".into(),
+            answer: KbiAnswer::Totp {
+                secret_ref: SecretRef::Env("T".into()),
+                digits: 6,
+                period: 30,
+                algo: TotpAlgo::Sha1,
+            },
+            echo: false,
+        };
+        assert!(ok.compile().is_ok());
     }
 
     #[test]

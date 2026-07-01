@@ -184,7 +184,7 @@ impl Default for ProfileSupervisorConfig {
 pub struct ProfileSupervisor {
     name: String,
     state_rx: watch::Receiver<ProfileStateName>,
-    events_rx: Mutex<Option<mpsc::UnboundedReceiver<ProfileEvent>>>,
+    events_rx: Mutex<Option<mpsc::Receiver<ProfileEvent>>>,
     control: mpsc::Sender<Control>,
     join: Mutex<Option<JoinHandle<()>>>,
     /// External access to the live failover selector for tests.
@@ -255,7 +255,7 @@ impl ProfileSupervisor {
         // bench live connector can gate its UDP driver (E1-F13 live bench).
         let supports_udp = protocol.capabilities().local_udp;
         let (state_tx, state_rx) = watch::channel(ProfileStateName::Idle);
-        let (events_tx, events_rx) = mpsc::unbounded_channel();
+        let (events_tx, events_rx) = mpsc::channel(PROFILE_EVENTS_CHANNEL_CAP);
         let (control_tx, control_rx) = mpsc::channel(16);
 
         let selector = Arc::new(Mutex::new(
@@ -329,7 +329,7 @@ impl ProfileSupervisor {
     }
 
     /// Take the events stream — only the first caller succeeds.
-    pub fn take_events(&self) -> Option<mpsc::UnboundedReceiver<ProfileEvent>> {
+    pub fn take_events(&self) -> Option<mpsc::Receiver<ProfileEvent>> {
         self.events_rx.lock().take()
     }
 
@@ -465,7 +465,7 @@ struct ProfileTask {
     forwards: Vec<Forward>,
     cfg: ProfileSupervisorConfig,
     state_tx: watch::Sender<ProfileStateName>,
-    events_tx: mpsc::UnboundedSender<ProfileEvent>,
+    events_tx: mpsc::Sender<ProfileEvent>,
     sm: ProfileStateMachine,
     backoff: Backoff,
     instability: InstabilityDetector,
@@ -517,6 +517,16 @@ impl ForwardSlot {
 
 /// Small fixed backoff between per-forward reopen attempts (E1-F4).
 const FORWARD_REOPEN_BACKOFF: Duration = Duration::from_millis(500);
+
+/// Capacity of the per-profile lifecycle events channel (F3).
+///
+/// The channel is bounded so that a missing or slow `take_events()` consumer
+/// cannot accumulate lifecycle events for the profile's entire lifetime (a slow
+/// leak). On saturation, [`ProfileTask::emit_event`] drops the event with a
+/// debug log rather than awaiting (which would stall the supervisor loop) or
+/// growing without bound. Lifecycle events are advisory, so bounded-drop is the
+/// correct trade-off — consistent with the lossy `try_send` UDP/demux paths.
+const PROFILE_EVENTS_CHANNEL_CAP: usize = 256;
 
 /// Outcome of one supervised session — drives the outer `run` loop.
 enum LoopAction {
@@ -570,7 +580,7 @@ impl ProfileTask {
             }
 
             if self.backoff.exhausted() {
-                let _ = self.events_tx.send(ProfileEvent::BackoffExhausted {
+                self.emit_event(ProfileEvent::BackoffExhausted {
                     profile: self.name.clone(),
                 });
                 self.cfg.observers.emit_lifecycle(
@@ -975,7 +985,7 @@ impl ProfileTask {
                             // the instability detector. When enough clean time
                             // has elapsed the Unstable flag clears.
                             if self.instability.tick_healthy(Instant::now()) {
-                                let _ = self.events_tx.send(ProfileEvent::InstabilityCleared {
+                                self.emit_event(ProfileEvent::InstabilityCleared {
                                     profile: self.name.clone(),
                                 });
                                 self.cfg.observers.emit_lifecycle(
@@ -1028,7 +1038,7 @@ impl ProfileTask {
                         if !degraded {
                             degraded = true;
                             self.fire(SmEvent::ForwardDown);
-                            let _ = self.events_tx.send(ProfileEvent::StateChanged {
+                            self.emit_event(ProfileEvent::StateChanged {
                                 profile: self.name.clone(),
                                 from: ProfileStateName::Active,
                                 to: ProfileStateName::Degraded,
@@ -1070,7 +1080,7 @@ impl ProfileTask {
             ActiveDecision::Failover { override_to, reply } => {
                 let res = self.apply_manual_override(override_to.as_deref());
                 self.emit_failover(override_to.as_deref());
-                let _ = self.events_tx.send(ProfileEvent::FailoverRequested {
+                self.emit_event(ProfileEvent::FailoverRequested {
                     profile: self.name.clone(),
                     override_to,
                 });
@@ -1147,6 +1157,32 @@ impl ProfileTask {
         }
     }
 
+    /// Emit a lifecycle [`ProfileEvent`] on the bounded events channel without
+    /// blocking the supervisor loop (F3).
+    ///
+    /// If no consumer ever called `take_events()`, or a slow consumer has let
+    /// the channel fill, we drop the event and log at debug rather than
+    /// awaiting (which would stall the profile task) or growing memory without
+    /// bound. This mirrors the best-effort semantics of the previous unbounded
+    /// `let _ = send(..)` while capping the channel at
+    /// [`PROFILE_EVENTS_CHANNEL_CAP`].
+    fn emit_event(&self, event: ProfileEvent) {
+        match self.events_tx.try_send(event) {
+            Ok(()) => {}
+            Err(mpsc::error::TrySendError::Full(ev)) => {
+                tracing::debug!(
+                    profile = %self.name,
+                    event = ?ev,
+                    "profile events channel full; dropping lifecycle event (no/slow consumer)"
+                );
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                // Receiver was dropped — nothing to deliver, same as the old
+                // best-effort `let _ = send(..)`.
+            }
+        }
+    }
+
     /// E1-F1: advance honestly out of `Reconnecting` / `FailingOver` into
     /// `Resolving` before the next connect attempt. No-op from `Idle` (the
     /// initial `Start` already moved us to `Resolving`).
@@ -1168,7 +1204,7 @@ impl ProfileTask {
             Control::Failover { override_to, reply } => {
                 let res = self.apply_manual_override(override_to.as_deref());
                 self.emit_failover(override_to.as_deref());
-                let _ = self.events_tx.send(ProfileEvent::FailoverRequested {
+                self.emit_event(ProfileEvent::FailoverRequested {
                     profile: self.name.clone(),
                     override_to,
                 });
@@ -1275,7 +1311,7 @@ impl ProfileTask {
     ///   tear down independently, so degrade is the correct conservative response.
     fn on_instability_trip(&mut self) {
         // Always-observable: event-bus lifecycle event + supervisor event.
-        let _ = self.events_tx.send(ProfileEvent::InstabilityHit {
+        self.emit_event(ProfileEvent::InstabilityHit {
             profile: self.name.clone(),
         });
         self.cfg.observers.emit_lifecycle(
@@ -1299,7 +1335,7 @@ impl ProfileTask {
                 // sibling. We still mark Unstable so backoff escalation applies
                 // while we rotate.
                 self.emit_failover(None);
-                let _ = self.events_tx.send(ProfileEvent::FailoverRequested {
+                self.emit_event(ProfileEvent::FailoverRequested {
                     profile: self.name.clone(),
                     override_to: None,
                 });
@@ -1362,7 +1398,7 @@ impl ProfileTask {
         }
         let attempt = self.backoff.attempt() + 1;
         let delay = self.backoff.next_delay_default();
-        let _ = self.events_tx.send(ProfileEvent::ReconnectScheduled {
+        self.emit_event(ProfileEvent::ReconnectScheduled {
             profile: self.name.clone(),
             delay,
             attempt,
@@ -1414,7 +1450,7 @@ impl ProfileTask {
                     Some(Control::Failover { override_to, reply }) => {
                         let res = self.apply_manual_override(override_to.as_deref());
                         self.emit_failover(override_to.as_deref());
-                        let _ = self.events_tx.send(ProfileEvent::FailoverRequested {
+                        self.emit_event(ProfileEvent::FailoverRequested {
                             profile: self.name.clone(),
                             override_to,
                         });
@@ -1467,7 +1503,7 @@ impl ProfileTask {
         if let Ok(new) = self.sm.step(ev) {
             if new != prev {
                 let _ = self.state_tx.send(new);
-                let _ = self.events_tx.send(ProfileEvent::StateChanged {
+                self.emit_event(ProfileEvent::StateChanged {
                     profile: self.name.clone(),
                     from: prev,
                     to: new,
@@ -1701,6 +1737,38 @@ mod tests {
         Endpoint::new(host, 22)
     }
 
+    #[tokio::test]
+    async fn events_channel_is_bounded_and_drops_when_no_consumer() {
+        // F3 regression: the per-profile events channel is BOUNDED, so a
+        // missing/slow `take_events()` consumer cannot accumulate lifecycle
+        // events for the profile's whole lifetime. Emulate `emit_event`'s
+        // drop-on-full `try_send` path against the real capacity and assert the
+        // buffered depth never exceeds the cap regardless of how many events
+        // are produced with no consumer draining.
+        let (tx, mut rx) = mpsc::channel::<ProfileEvent>(PROFILE_EVENTS_CHANNEL_CAP);
+        let mut delivered = 0usize;
+        let mut dropped = 0usize;
+        for _ in 0..(PROFILE_EVENTS_CHANNEL_CAP * 4) {
+            match tx.try_send(ProfileEvent::InstabilityHit {
+                profile: "p".into(),
+            }) {
+                Ok(()) => delivered += 1,
+                Err(mpsc::error::TrySendError::Full(_)) => dropped += 1,
+                Err(mpsc::error::TrySendError::Closed(_)) => unreachable!(),
+            }
+        }
+        // The channel never queued more than the cap; the surplus was dropped
+        // (bounded), not retained (which an unbounded channel would do).
+        assert_eq!(delivered, PROFILE_EVENTS_CHANNEL_CAP);
+        assert_eq!(dropped, PROFILE_EVENTS_CHANNEL_CAP * 3);
+        // Exactly `cap` items are actually buffered for the eventual consumer.
+        let mut count = 0usize;
+        while rx.try_recv().is_ok() {
+            count += 1;
+        }
+        assert_eq!(count, PROFILE_EVENTS_CHANNEL_CAP);
+    }
+
     #[test]
     fn config_health_check_defaults_to_ssh_handshake() {
         // TW-A3: the new failover health-probe style defaults to today's fixed
@@ -1885,7 +1953,7 @@ mod tests {
     /// Wait for the next `ProfileEvent::ReconnectScheduled` and
     /// return its `attempt` field. Times out after `deadline`.
     async fn wait_for_reconnect_attempt(
-        events: &mut mpsc::UnboundedReceiver<ProfileEvent>,
+        events: &mut mpsc::Receiver<ProfileEvent>,
         deadline: Duration,
     ) -> Option<u32> {
         let until = tokio::time::Instant::now() + deadline;

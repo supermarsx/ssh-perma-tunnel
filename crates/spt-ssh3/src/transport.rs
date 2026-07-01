@@ -1194,6 +1194,19 @@ mod tests {
         )
     }
 
+    /// Serialises the leak tests that mutate the process-global
+    /// `SPT_SSH3_LEAK_TOK` env var (set by `leak_test_auth`, removed at each
+    /// test's end). Without this, one test's `remove_var` can fire while the
+    /// other's `bootstrap` is resolving `env:SPT_SSH3_LEAK_TOK`, so that
+    /// bootstrap errors early instead of parking mid-handshake — the exact
+    /// flake seen on parallel `cargo test -p spt-ssh3`. Held across the awaited
+    /// `bootstrap` call so the token stays resolvable for the whole flow.
+    #[cfg(feature = "testing")]
+    fn leak_env_lock() -> &'static std::sync::Mutex<()> {
+        static L: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+        L.get_or_init(|| std::sync::Mutex::new(()))
+    }
+
     /// End-to-end C1: when `bootstrap` fails AFTER spawning the parked driver
     /// (here: the peer accepts the CONNECT bidi but finishes it without a
     /// response, so `extended_connect_raw` errors), the guard aborts the driver
@@ -1201,7 +1214,14 @@ mod tests {
     /// of the connection lingering on a leaked task.
     #[cfg(feature = "testing")]
     #[tokio::test]
+    // The env-lock guard is intentionally held across the awaited `bootstrap`
+    // so a sibling test's `SPT_SSH3_LEAK_TOK` mutation cannot race our token
+    // resolution (repo idiom: cf. `cli/mod.rs` + `audit.rs`).
+    #[allow(clippy::await_holding_lock)]
     async fn bootstrap_error_after_spawn_does_not_leak_driver_or_connection() {
+        let _env = leak_env_lock()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let (port, endpoint) = fake_server_endpoint();
         let (closed_tx, closed_rx) = tokio::sync::oneshot::channel::<()>();
 
@@ -1256,7 +1276,13 @@ mod tests {
     /// scenario.
     #[cfg(feature = "testing")]
     #[tokio::test]
+    // See the sibling test: the env-lock guard is intentionally held across the
+    // awaited `bootstrap` to serialise `SPT_SSH3_LEAK_TOK` access.
+    #[allow(clippy::await_holding_lock)]
     async fn bootstrap_cancellation_does_not_leak_driver_or_connection() {
+        let _env = leak_env_lock()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let (port, endpoint) = fake_server_endpoint();
         let (closed_tx, closed_rx) = tokio::sync::oneshot::channel::<()>();
 

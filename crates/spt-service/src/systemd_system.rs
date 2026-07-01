@@ -391,16 +391,25 @@ pub(crate) fn render_unit(spec: &ServiceSpec, user_scope: bool) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n");
+    // M3 (F4): `User=`/`Group=` land on their own directive line exactly like
+    // `Description=`/`WorkingDirectory=`, so a newline (or other control char)
+    // in `spec.user`/`spec.group` would terminate the line and inject a
+    // root-run directive (e.g. `ExecStartPre=`). Escape control chars the same
+    // way as the sibling own-line fields.
     let user_line = spec
         .user
         .as_ref()
         .filter(|_| !user_scope)
-        .map_or(String::new(), |u| format!("User={u}"));
+        .map_or(String::new(), |u| {
+            format!("User={}", systemd_value_escape(u))
+        });
     let group_line = spec
         .group
         .as_ref()
         .filter(|_| !user_scope)
-        .map_or(String::new(), |g| format!("Group={g}"));
+        .map_or(String::new(), |g| {
+            format!("Group={}", systemd_value_escape(g))
+        });
     let svc_type = if spec.sd_notify { "notify" } else { "simple" };
     // For Type=notify, restrict readiness notifications to the main process and
     // emit the line just before ExecStart. spt sends READY=1 / STOPPING=1 over
@@ -608,6 +617,35 @@ mod tests {
             !out.lines()
                 .any(|l| l.trim_start().starts_with("ExecStopPost=/bin/rm")),
             "injected ExecStopPost leaked: {out}"
+        );
+    }
+
+    // F4: a newline in `user`/`group` must NOT inject a new (root-run) unit
+    // directive — it must be escaped to a visible `\n` on the `User=`/`Group=`
+    // line. Fails against the pre-fix raw `format!("User={u}")`.
+    #[test]
+    fn render_unit_user_and_group_are_injection_safe() {
+        let mut spec = sample_spec();
+        spec.user = Some("spt\nExecStartPre=/bin/touch /tmp/pwn".into());
+        spec.group = Some("grp\nExecStopPost=/bin/rm".into());
+        let out = render_unit(&spec, false);
+        assert!(
+            out.contains(r"User=spt\nExecStartPre=/bin/touch /tmp/pwn"),
+            "user not escaped: {out}"
+        );
+        assert!(
+            out.contains(r"Group=grp\nExecStopPost=/bin/rm"),
+            "group not escaped: {out}"
+        );
+        assert!(
+            !out.lines()
+                .any(|l| l.trim_start().starts_with("ExecStartPre=/bin/touch")),
+            "injected ExecStartPre leaked via user: {out}"
+        );
+        assert!(
+            !out.lines()
+                .any(|l| l.trim_start().starts_with("ExecStopPost=/bin/rm")),
+            "injected ExecStopPost leaked via group: {out}"
         );
     }
 

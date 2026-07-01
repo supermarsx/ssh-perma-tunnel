@@ -19,7 +19,7 @@ use async_trait::async_trait;
 use spt_core::error::{Error, Result};
 use tokio::sync::OnceCell;
 
-use crate::openrc::render_env_exports;
+use crate::openrc::{render_env_exports, shell_double_quote_escape};
 use crate::task_scheduler::validate_service_name;
 use crate::{
     template, unsupported, CommandRunner, ServiceCapabilities, ServiceManager, ServiceSpec,
@@ -397,12 +397,25 @@ fn render_script(spec: &ServiceSpec) -> String {
     // `eval "set -- ${DAEMON_ARGS}"` + `-- "$@"` so the quoting is honoured.
     let args = crate::openrc::shell_single_quote_args(&spec.args);
     let mut vars: BTreeMap<&str, String> = BTreeMap::new();
-    vars.insert("name", spec.name.clone());
-    vars.insert("description", spec.description.clone());
-    vars.insert("exec_path", spec.exec_path.display().to_string());
+    // F5: these fields land in double-quoted shell assignments in the template
+    // (e.g. `DAEMON_DESC="{{description}}"`). `$(...)`, backticks, and `"` all
+    // expand / break out of a POSIX double-quoted string, so escape them for
+    // that context — same rationale as the OpenRC renderer.
+    vars.insert("name", shell_double_quote_escape(&spec.name));
+    vars.insert("description", shell_double_quote_escape(&spec.description));
+    vars.insert(
+        "exec_path",
+        shell_double_quote_escape(&spec.exec_path.display().to_string()),
+    );
     vars.insert("args", args);
-    vars.insert("user", spec.user.clone().unwrap_or_else(|| "root".into()));
-    vars.insert("working_dir", spec.working_dir.display().to_string());
+    vars.insert(
+        "user",
+        shell_double_quote_escape(spec.user.as_deref().unwrap_or("root")),
+    );
+    vars.insert(
+        "working_dir",
+        shell_double_quote_escape(&spec.working_dir.display().to_string()),
+    );
     // E7-F9: render `[profiles].env` as `export K="V"` lines so SysV honours
     // ServiceSpec.env (previously dropped). Shares the OpenRC implementation.
     // Rendered into the `{{env_exports}}` placeholder; the template is owned
@@ -456,6 +469,41 @@ mod tests {
         // The init body must eval the single-quoted args into "$@".
         assert!(out.contains("eval \"set -- ${DAEMON_ARGS}\""));
         assert!(out.contains("-- \"$@\""));
+    }
+
+    // F5: `description`/`exec_path`/`user`/`working_dir` land in double-quoted
+    // shell assignments; `$(...)`, backticks, and `"` must be neutralized so
+    // nothing executes / breaks out when the init script is sourced. Fails
+    // against the pre-fix raw interpolation.
+    #[test]
+    fn render_neutralizes_shell_injection_in_assignments() {
+        let mut spec = sample_spec();
+        spec.description = "$(touch /tmp/pwn)".into();
+        spec.exec_path = "/bin/sh\"; touch /tmp/pwn; :\"".into();
+        spec.working_dir = "/var/lib/spt`id`".into();
+        let out = SysVManager::new().render(&spec);
+        assert!(
+            out.contains(r#"DAEMON="/bin/sh\"; touch /tmp/pwn; :\"""#),
+            "exec_path quote not escaped: {out}"
+        );
+        assert!(
+            out.contains(r"/var/lib/spt\`id\`"),
+            "workdir backticks not escaped: {out}"
+        );
+        assert!(
+            out.contains(r"\$(touch /tmp/pwn)"),
+            "desc not escaped: {out}"
+        );
+        assert!(
+            !out.lines().any(|l| l.trim_start().starts_with("touch ")),
+            "injected command leaked: {out}"
+        );
+        // Scope the unescaped-`$(` check to the injected marker so the
+        // template's own legitimate `$(cat …)` constructs are not flagged.
+        assert!(
+            !out.replace("\\$", "").contains("$(touch"),
+            "unescaped command sub leaked: {out}"
+        );
     }
 
     #[test]

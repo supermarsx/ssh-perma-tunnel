@@ -39,3 +39,9 @@ insta = { workspace = true }
 tempfile = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
+# Self dev-dep so the `#![cfg(feature = "testing")]` integration suite
+# (`tests/windows_scm_mock.rs`) is self-activating. Without this the `testing`
+# feature is enabled only by a sibling (spt-diagnostics) dev-dep edge; if that
+# edge is removed the suite silently compiles to 0 tests under a green CI.
+# Mirrors the spt-ftp-translator / spt-remote-config convention.
+spt-service = { path = ".", features = ["testing"] }

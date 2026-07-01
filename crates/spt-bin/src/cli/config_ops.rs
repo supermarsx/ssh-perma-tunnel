@@ -1650,6 +1650,16 @@ mod tests {
     use super::*;
     use spt_cli::{ColorMode, LogLevel, OutputFormat};
 
+    /// Serialises tests that mutate the process-global `EDITOR_OVERRIDE_ENV`
+    /// (one installs a succeeding editor, another a failing one — they clobber
+    /// each other's value without this). Held across the `edit(...)` await so
+    /// the override is stable for the whole flow. Lets `cargo test -p spt-bin`
+    /// pass without `--test-threads=1`.
+    fn editor_env_lock() -> &'static std::sync::Mutex<()> {
+        static L: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+        L.get_or_init(|| std::sync::Mutex::new(()))
+    }
+
     fn opts(config: Option<PathBuf>) -> GlobalOpts {
         GlobalOpts {
             config,
@@ -2331,6 +2341,9 @@ host = "h.example.com"
     /// 3. edit happy path: spawn a no-op editor that leaves the file intact.
     #[tokio::test]
     async fn edit_happy_path_no_op_editor() {
+        let _editor = editor_env_lock()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let tmp = tempfile::tempdir().unwrap();
         let sealed_path = tmp.path().join("c.toml.sealed");
 
@@ -2429,6 +2442,9 @@ host = "h.example.com"
     /// non-zero must NOT replace the original.
     #[tokio::test]
     async fn edit_cancelled_leaves_original_intact() {
+        let _editor = editor_env_lock()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let tmp = tempfile::tempdir().unwrap();
         let sealed_path = tmp.path().join("c.toml.sealed");
         let pp = "cancel-pp";

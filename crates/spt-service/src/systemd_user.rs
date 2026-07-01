@@ -343,14 +343,10 @@ mod tests {
         let _ = mgr.status("nonexistent-spt-test").await;
     }
 
-    /// Lock guarding tests that mutate the process-wide HOME var.
-    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-    fn lock_env() -> std::sync::MutexGuard<'static, ()> {
-        ENV_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
+    /// Shared process-wide lock guarding tests that mutate `HOME` (F9): the
+    /// same lock is used by the `launchd` tests in this binary, so the two
+    /// modules cannot race on `HOME` under default `cargo test` parallelism.
+    use crate::tests::lock_env;
 
     #[test]
     fn resolve_unit_root_falls_back_to_home() {

@@ -761,11 +761,33 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn vapid_identity_debug_redacts_keypair() {
-        let v = fresh_vapid();
+        // Seed a KNOWN private scalar so we can assert its material is absent
+        // from the Debug output (not merely that the "<redacted>" marker is
+        // present, which the hard-coded Debug impl can never fail).
+        use std::fmt::Write as _;
+        let kp = ES256KeyPair::generate();
+        let raw = kp.to_bytes();
+        let b64 = Base64UrlUnpadded::encode_string(&raw);
+        let mut hex = String::with_capacity(raw.len() * 2);
+        for b in &raw {
+            write!(hex, "{b:02x}").unwrap();
+        }
+        let v = VapidIdentity::from_base64url(&b64, "mailto:ops@example.com").unwrap();
+
         let s = format!("{v:?}");
         assert!(s.contains("redacted"));
         // Subject text should remain visible.
         assert!(s.contains("mailto:"));
+
+        // The 32-byte ES256 private scalar must NOT leak in any encoding.
+        assert!(
+            !s.contains(&b64),
+            "base64url private scalar leaked in Debug output: {s}"
+        );
+        assert!(
+            !s.contains(&hex),
+            "hex private scalar leaked in Debug output: {s}"
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]

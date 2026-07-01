@@ -68,6 +68,12 @@ impl std::fmt::Debug for TrapSender {
             .field("dest", &self.dest)
             .field("engine_id", &self.engine_id)
             .field("user", &self.user.name)
+            // Never render the derived localized key material. Emit explicit
+            // redaction markers so the omission is intentional and testable
+            // (F-T2): a future change that swaps a marker for the real bytes
+            // is caught by `debug_redacts_credentials`.
+            .field("auth_kul", &"<redacted>")
+            .field("priv_kul", &"<redacted>")
             .finish()
     }
 }
@@ -279,14 +285,57 @@ mod tests {
 
     #[tokio::test]
     async fn debug_redacts_credentials() {
-        let user = UsmUser::no_auth("alice");
-        let sender = TrapSender::new(local_dest(), user).await.unwrap();
+        // F-T2: build an authPriv user so `derive_keys` yields NON-empty
+        // localized key material (kuls). A `no_auth` user derives EMPTY kuls,
+        // so redaction would never be exercised and the test would be vacuous.
+        let user = UsmUser::auth_priv(
+            "alice",
+            AuthProtocol::HmacSha256,
+            SecretBytes::from("the-quick-brown-fox-jumped-over"),
+            PrivProtocol::Aes128,
+            SecretBytes::from("the-quick-brown-fox-jumped-over"),
+        );
+        let id = EngineId::new(vec![0x80, 0, 0, 0, 1]).unwrap();
+        let sender = TrapSender::with_engine_id(local_dest(), user, id)
+            .await
+            .unwrap();
+
+        // Sanity: the derived secret material actually exists, so the leak
+        // assertions below are non-vacuous.
+        assert!(
+            !sender.auth_kul.is_empty(),
+            "authPriv user must derive a non-empty auth_kul"
+        );
+        assert!(
+            !sender.priv_kul.is_empty(),
+            "authPriv user must derive a non-empty priv_kul"
+        );
+
         let dbg = format!("{sender:?}");
         assert!(dbg.contains("alice"));
         assert!(dbg.contains("TrapSender"));
-        // The auth/priv KUL bytes must not surface in debug output.
-        assert!(!dbg.contains("auth_kul"));
-        assert!(!dbg.contains("priv_kul"));
+
+        // The ACTUAL derived key bytes must not surface anywhere in the debug
+        // output. If someone re-adds `.field("auth_kul", &self.auth_kul)` to
+        // the Debug impl, the `Vec<u8>` renders as `[b1, b2, ...]`; that exact
+        // substring is what we assert is ABSENT, so such a regression fails
+        // this test (unlike the old field-name-only check).
+        let auth_leak = format!("{:?}", sender.auth_kul);
+        let priv_leak = format!("{:?}", sender.priv_kul);
+        assert!(
+            !dbg.contains(&auth_leak),
+            "derived auth_kul bytes leaked into Debug output: {dbg}"
+        );
+        assert!(
+            !dbg.contains(&priv_leak),
+            "derived priv_kul bytes leaked into Debug output: {dbg}"
+        );
+
+        // And an explicit redaction marker IS present for the omitted secrets.
+        assert!(
+            dbg.contains("<redacted>"),
+            "Debug output must carry an explicit redaction marker: {dbg}"
+        );
     }
 
     #[tokio::test]

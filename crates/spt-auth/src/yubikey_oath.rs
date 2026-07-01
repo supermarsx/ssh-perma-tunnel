@@ -39,7 +39,7 @@ pub fn fetch_code(serial: Option<&str>, oath_name: &str) -> Result<String> {
                 "ykman oath accounts code returned empty output".into(),
             ));
         }
-        return Ok(stdout);
+        Ok(stdout)
     }
     #[cfg(not(feature = "yubikey"))]
     {
@@ -49,12 +49,15 @@ pub fn fetch_code(serial: Option<&str>, oath_name: &str) -> Result<String> {
     }
 }
 
+// The only test here exercises the no-feature fallback, so gate the whole
+// module on `not(yubikey)` — otherwise `use super::*` is unused under
+// `--all-features` and trips `-D warnings`.
 #[cfg(test)]
+#[cfg(not(feature = "yubikey"))]
 mod tests {
     use super::*;
 
     #[test]
-    #[cfg(not(feature = "yubikey"))]
     fn without_feature_returns_unsupported() {
         let e = fetch_code(None, "anything").unwrap_err();
         assert!(matches!(e, Error::UnsupportedPlatform(_)));

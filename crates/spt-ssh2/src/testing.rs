@@ -1125,6 +1125,15 @@ mod tests {
     use spt_core::BindAddr;
     use spt_protocol::endpoint::TargetAddr;
 
+    /// Serializes tests that read or mutate the process-global `PATH`
+    /// environment variable (the repo's `static Mutex` env-lock idiom). Without
+    /// it, `openssh_start_returns_none_when_path_strips_sshd` (which sets
+    /// `PATH=""`) races any concurrent binary-resolving test in this binary.
+    ///
+    /// Gated to match its only users (the `cfg(unix)` OpenSSH-server tests).
+    #[cfg(all(unix, feature = "testing"))]
+    static PATH_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     fn local_spec(name: &str) -> LocalForwardSpec {
         use spt_protocol::{BindConflictPolicy, ForwardRateLimits};
         LocalForwardSpec {
@@ -1256,12 +1265,25 @@ mod tests {
         // The function returns None when sshd is absent (e.g. on Windows or
         // a stripped container). We only assert it doesn't panic; the actual
         // value depends on the build host.
+        // Shares PATH_ENV_LOCK with the PATH="" test so the two never race.
+        let _env_guard = PATH_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let _ = OpenSshTestServer::locate_sshd();
     }
 
     #[cfg(all(unix, feature = "testing"))]
     #[tokio::test]
+    // The env guard must span the `.start().await` below so no concurrent
+    // PATH-reading test observes the transient empty PATH. Holding the std
+    // Mutex across the await is intentional and safe here (test-only, no
+    // re-entrancy); mirrors the repo idiom in spt-ssh3/spt-bin env-lock tests.
+    #[allow(clippy::await_holding_lock)]
     async fn openssh_start_returns_none_when_path_strips_sshd() {
+        // Serialize against any other PATH-reading test in this binary.
+        let _env_guard = PATH_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         // Stash the original PATH; restore at end. Override to an empty
         // string so locate_sshd cannot find sshd (also unset SHELL well-known
         // alternative paths via empty PATH).

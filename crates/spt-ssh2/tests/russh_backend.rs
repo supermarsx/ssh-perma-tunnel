@@ -446,6 +446,145 @@ async fn russh_backend_remote_forward_bridges_server_to_client() {
     server.shutdown().await;
 }
 
+/// Regression guard for the reverse-forward DoS (`remote_loop` ignored
+/// `max_connections`). With `max_connections = 2`, driving 5 concurrent inbound
+/// connections to the server-bound remote port must land at most 2 concurrent
+/// bridges at the local target; the surplus inbound channels are closed by the
+/// gate and never reach the target. A permit is then released when a bridge
+/// ends, so a later inbound connection is admitted.
+///
+/// Against the pre-fix unbounded code every inbound channel spawned a bridge, so
+/// all 5 would connect to the target and the `<= 2` assertion below fails.
+#[tokio::test]
+async fn russh_backend_remote_forward_enforces_max_connections() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    let (server, mut session) = connect_russh_session().await;
+
+    // Local target: track concurrent + total accepted connections. Each accepted
+    // stream is held open (read until EOF) so an admitted bridge stays alive and
+    // keeps its concurrency slot occupied.
+    let local_target = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind local target");
+    let local_target_port = local_target.local_addr().unwrap().port();
+    let active = Arc::new(AtomicUsize::new(0));
+    let total = Arc::new(AtomicUsize::new(0));
+    let peak = Arc::new(AtomicUsize::new(0));
+    {
+        let active = Arc::clone(&active);
+        let total = Arc::clone(&total);
+        let peak = Arc::clone(&peak);
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, _)) = local_target.accept().await else {
+                    break;
+                };
+                total.fetch_add(1, Ordering::SeqCst);
+                let cur = active.fetch_add(1, Ordering::SeqCst) + 1;
+                peak.fetch_max(cur, Ordering::SeqCst);
+                let active = Arc::clone(&active);
+                tokio::spawn(async move {
+                    // Drain until the bridge closes (EOF), then free the slot.
+                    let mut buf = [0u8; 256];
+                    loop {
+                        match sock.read(&mut buf).await {
+                            Ok(0) | Err(_) => break,
+                            Ok(_) => {}
+                        }
+                    }
+                    active.fetch_sub(1, Ordering::SeqCst);
+                });
+            }
+        });
+    }
+
+    let remote_port = free_loopback_port().await;
+    let handle = session
+        .open_remote_forward(&RemoteForwardSpec {
+            name: "remote-capped".into(),
+            listen: BindAddr::parse(&format!("127.0.0.1:{remote_port}")).unwrap(),
+            target: TargetAddr::new("127.0.0.1", local_target_port),
+            max_connections: Some(2),
+            // Default limits => max_new_conns_per_sec = 0 (unlimited rate), so
+            // only the concurrency cap is under test.
+            limits: ForwardRateLimits::default(),
+            idle_timeout: None,
+            on_bind_conflict: BindConflictPolicy::default(),
+            required: false,
+        })
+        .await
+        .expect("open remote forward");
+
+    // Drive 5 concurrent inbound connections; hold them open so their bridges
+    // (the admitted ones) stay alive and occupy slots.
+    let mut inbound = Vec::new();
+    for _ in 0..5 {
+        let mut sock = connect_with_retry(remote_port).await;
+        // A byte of traffic ensures the forwarded-tcpip channel is live.
+        let _ = sock.write_all(b"x").await;
+        inbound.push(sock);
+    }
+
+    // Wait for the admitted bridges to reach the target.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while active.load(Ordering::SeqCst) < 2 && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    // Let any (erroneously) surplus bridges settle, then assert the cap held.
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert_eq!(
+        active.load(Ordering::SeqCst),
+        2,
+        "reverse forward must hold exactly max_connections=2 concurrent bridges"
+    );
+    assert_eq!(
+        peak.load(Ordering::SeqCst),
+        2,
+        "concurrent bridge count must never exceed max_connections"
+    );
+    assert_eq!(
+        total.load(Ordering::SeqCst),
+        2,
+        "surplus inbound channels must be closed by the gate, not bridged to the target"
+    );
+
+    // Release a slot: dropping all inbound connections ends the live bridges.
+    inbound.clear();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while active.load(Ordering::SeqCst) > 0 && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert_eq!(
+        active.load(Ordering::SeqCst),
+        0,
+        "bridges must release their slots when the inbound connections close"
+    );
+
+    // A fresh inbound connection is now admitted (the limiter did not wedge).
+    let mut sock = connect_with_retry(remote_port).await;
+    let _ = sock.write_all(b"y").await;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while active.load(Ordering::SeqCst) < 1 && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert_eq!(
+        active.load(Ordering::SeqCst),
+        1,
+        "a freed slot must admit a new inbound connection"
+    );
+    assert_eq!(
+        total.load(Ordering::SeqCst),
+        3,
+        "exactly one further bridge should have been admitted after release"
+    );
+
+    drop(sock);
+    handle.close().await;
+    server.shutdown().await;
+}
+
 async fn connect_with_retry(port: u16) -> TcpStream {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     loop {

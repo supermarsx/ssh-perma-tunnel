@@ -149,6 +149,17 @@ mod tests {
     use super::expand;
     use std::path::PathBuf;
 
+    /// Serialises tests that mutate the process-global `HOME`/`USERPROFILE`
+    /// env vars so `cargo test -p spt-core` is race-free WITHOUT
+    /// `--test-threads=1`.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn lock_env() -> std::sync::MutexGuard<'static, ()> {
+        ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     #[test]
     fn passthrough_when_no_specials() {
         assert_eq!(expand("/a/b/c"), PathBuf::from("/a/b/c"));
@@ -156,6 +167,7 @@ mod tests {
 
     #[test]
     fn expands_tilde_with_home() {
+        let _guard = lock_env();
         let prev = std::env::var_os("HOME");
         let prev_userprofile = std::env::var_os("USERPROFILE");
         std::env::set_var("HOME", "/h");

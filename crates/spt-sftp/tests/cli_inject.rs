@@ -32,9 +32,21 @@ async fn setup() -> (tempfile::TempDir, MockSftpServer, spt_sftp::SftpClient) {
 
 #[tokio::test]
 async fn shell_metachar_in_path_treated_as_literal() {
-    let (_dir, _server, client) = setup().await;
-    // None of these are interpreted as shell metacharacters because the
-    // SFTP wire format doesn't tokenise.
+    let (dir, _server, client) = setup().await;
+
+    // Positive control: prove `try_exists` actually reports presence, so the
+    // `Ok(false)` assertions below are meaningful (not vacuously always-false).
+    std::fs::write(dir.path().join("real.txt"), b"x").unwrap();
+    assert!(
+        client.try_exists("/real.txt").await.unwrap(),
+        "control: a real file must be reported present"
+    );
+
+    // None of these are interpreted as shell metacharacters because the SFTP
+    // wire format doesn't tokenise: each is a literal path the backend either
+    // reports absent (`Ok(false)`) or rejects at the filesystem layer (`Err`,
+    // e.g. Windows disallows `|`/`"` in names). What it must NEVER do is claim
+    // the path is present, and it must never shell-expand into a host effect.
     let paths = [
         "/nope; rm -rf /",
         "/nope && touch /tmp/evil",
@@ -43,44 +55,40 @@ async fn shell_metachar_in_path_treated_as_literal() {
         "/nope $(id)",
     ];
     for p in paths {
-        // The path either errors with NoSuchFile or succeeds as a literal
-        // tempdir path — both outcomes prove no shell expansion happened
-        // (no side-effect on the host).
         let res = client.try_exists(p).await;
-        // try_exists returns Ok(false) for nonexistent, Ok(true) for present;
-        // and Err only for protocol failures. Adversarial paths must not
-        // panic.
-        match res {
-            Ok(false | true) => {}
-            Err(e) => {
-                // SftpError is fine here; we're proving no shell happened.
-                let _ = e;
-            }
-        }
+        assert!(
+            !matches!(res, Ok(true)),
+            "adversarial path `{p}` must not be reported present (no shell expansion): {res:?}"
+        );
     }
+
+    // No side-effect appeared on the host from any metachar path: the only
+    // entry under the served root is the control file we created.
+    let entries: Vec<_> = std::fs::read_dir(dir.path())
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .collect();
+    assert_eq!(entries, [std::ffi::OsString::from("real.txt")]);
 }
 
 #[tokio::test]
 async fn newline_in_remote_path_handled_opaquely() {
     let (_dir, _server, client) = setup().await;
-    // A path containing LF or CR — must not be interpreted as a command
-    // separator; the wire protocol passes it through as bytes.
-    let res = client.try_exists("/foo\nbar").await;
-    // No panic; result is Ok(false) (nonexistent) or Err on protocol.
-    assert!(res.is_ok() || res.is_err());
-    let res = client.try_exists("/foo\r\nbar").await;
-    assert!(res.is_ok() || res.is_err());
+    // A path containing LF or CR must be a single literal path component, not
+    // a command separator. It is never reported present (it is absent, or the
+    // OS rejects the control bytes in a filename with an error).
+    assert!(!matches!(client.try_exists("/foo\nbar").await, Ok(true)));
+    assert!(!matches!(client.try_exists("/foo\r\nbar").await, Ok(true)));
 }
 
 #[tokio::test]
 async fn backslash_in_remote_path_is_a_literal_char() {
     let (dir, _server, client) = setup().await;
-    // On Windows-rooted backends, backslash is a path separator; on the
-    // mock server (which mirrors a Unix-style tempdir) it's a literal char.
+    // Backslash is a literal filename char on Unix and a separator on Windows;
+    // either way the path is not present and nothing is created for it.
     let p = "/back\\slash";
-    let res = client.try_exists(p).await;
-    assert!(res.is_ok() || res.is_err());
-    // Sanity: nothing got created under a Windows-style path.
+    assert!(!matches!(client.try_exists(p).await, Ok(true)));
+    // Sanity: nothing got created under a Windows-style split path.
     assert!(!dir.path().join("back").exists());
 }
 
@@ -89,19 +97,25 @@ async fn quote_in_remote_path_is_a_literal_char() {
     let (_dir, _server, client) = setup().await;
     for p in ["/single'quote", "/double\"quote", "/back`tick"] {
         let res = client.try_exists(p).await;
-        assert!(res.is_ok() || res.is_err());
+        assert!(
+            !matches!(res, Ok(true)),
+            "quote path `{p}` must never be reported present: {res:?}"
+        );
     }
 }
 
 #[tokio::test]
 async fn null_byte_in_path_rejected_or_truncated_safely() {
-    let (_dir, _server, client) = setup().await;
-    // SFTP paths are length-prefixed UTF-8; a NUL is allowed by the wire
-    // format but most backends treat it as path-terminator. Either result
-    // (NoSuchFile or protocol error) is acceptable; the requirement is
-    // "no panic and no escape".
+    let (dir, _server, client) = setup().await;
+    // SFTP paths are length-prefixed UTF-8; a NUL is a valid wire byte but the
+    // filesystem rejects interior NULs. The requirement: the path is NEVER
+    // reported present, and no host file materialises from it (no escape).
     let res = client.try_exists("/file\0name").await;
-    let _ = res;
+    assert!(
+        !matches!(res, Ok(true)),
+        "NUL-containing path must never be reported present, got {res:?}"
+    );
+    assert!(!dir.path().join("file").exists());
 }
 
 #[tokio::test]

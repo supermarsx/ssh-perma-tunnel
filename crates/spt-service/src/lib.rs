@@ -310,6 +310,21 @@ mod tests {
     use super::*;
     use std::collections::BTreeMap;
 
+    /// Process-wide lock guarding tests that mutate shared environment
+    /// variables (`HOME`, …). All modules in this crate's unit-test binary
+    /// that touch process-global env state must serialize on THIS lock so they
+    /// cannot race under default (multi-threaded) `cargo test` parallelism
+    /// (F9). Shared by `systemd_user` and `launchd`.
+    pub(crate) static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Acquire [`ENV_LOCK`], recovering from a poisoned mutex (a panicking
+    /// test elsewhere must not wedge the rest of the suite).
+    pub(crate) fn lock_env() -> std::sync::MutexGuard<'static, ()> {
+        ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     pub(crate) fn sample_spec() -> ServiceSpec {
         let mut env = BTreeMap::new();
         env.insert("RUST_LOG".into(), "info".into());

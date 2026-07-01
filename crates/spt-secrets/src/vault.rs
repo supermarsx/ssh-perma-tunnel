@@ -437,6 +437,9 @@ fn read_vault(path: &Path) -> Result<VaultFile> {
 fn write_vault(path: &Path, file: &VaultFile) -> Result<()> {
     let bytes = serde_json::to_vec(file)
         .map_err(|e| Error::SecretCryptoFailed(format!("encode vault: {e}")))?;
+    // F6: on Windows, ensure the containing directory is owner-only before the
+    // vault blob lands, so it is born with a restrictive DACL. No-op on Unix.
+    crate::file::restrict_parent_dir(path);
     AtomicFile::new(path, AllowOverwrite)
         .write(|f| std::io::Write::write_all(f, &bytes))
         .map_err(|e| Error::SecretCryptoFailed(format!("write vault `{}`: {e}", path.display())))?;
@@ -462,6 +465,9 @@ fn read_meta(path: &Path) -> Result<VaultMeta> {
 fn write_meta(path: &Path, meta: &VaultMeta) -> Result<()> {
     let s = toml::to_string_pretty(meta)
         .map_err(|e| Error::SecretCryptoFailed(format!("encode meta: {e}")))?;
+    // F6: pre-restrict the containing directory on Windows (the meta sidecar
+    // carries the Argon2id salt). No-op on Unix.
+    crate::file::restrict_parent_dir(path);
     AtomicFile::new(path, AllowOverwrite)
         .write(|f| std::io::Write::write_all(f, s.as_bytes()))
         .map_err(|e| Error::SecretCryptoFailed(format!("write meta `{}`: {e}", path.display())))?;
@@ -601,99 +607,18 @@ mod tests {
     use secrecy::ExposeSecret;
     use tempfile::tempdir;
 
-    use keyring::credential::{
-        Credential, CredentialApi, CredentialBuilder, CredentialBuilderApi, CredentialPersistence,
-    };
-    use std::collections::HashMap;
-    use std::sync::{Mutex, OnceLock};
-
-    /// A mock that, unlike `keyring::mock`, *shares* its store across
-    /// every `Entry::new` for the same `(service, user)` pair. This is
-    /// what `init_with_keychain` + `open_with_keychain` need to round-trip.
-    type MockStore = Mutex<HashMap<(String, String), Vec<u8>>>;
-    fn shared_store() -> &'static MockStore {
-        static S: OnceLock<MockStore> = OnceLock::new();
-        S.get_or_init(|| Mutex::new(HashMap::new()))
-    }
-
-    #[derive(Debug)]
-    struct SharedMockCred {
-        service: String,
-        user: String,
-    }
-
-    impl CredentialApi for SharedMockCred {
-        fn set_password(&self, password: &str) -> keyring::Result<()> {
-            self.set_secret(password.as_bytes())
-        }
-        fn set_secret(&self, secret: &[u8]) -> keyring::Result<()> {
-            shared_store()
-                .lock()
-                .unwrap()
-                .insert((self.service.clone(), self.user.clone()), secret.to_vec());
-            Ok(())
-        }
-        fn get_password(&self) -> keyring::Result<String> {
-            let bytes = self.get_secret()?;
-            String::from_utf8(bytes).map_err(|_| keyring::Error::BadEncoding(Vec::new()))
-        }
-        fn get_secret(&self) -> keyring::Result<Vec<u8>> {
-            shared_store()
-                .lock()
-                .unwrap()
-                .get(&(self.service.clone(), self.user.clone()))
-                .cloned()
-                .ok_or(keyring::Error::NoEntry)
-        }
-        fn delete_credential(&self) -> keyring::Result<()> {
-            let mut g = shared_store().lock().unwrap();
-            if g.remove(&(self.service.clone(), self.user.clone()))
-                .is_some()
-            {
-                Ok(())
-            } else {
-                Err(keyring::Error::NoEntry)
-            }
-        }
-        fn as_any(&self) -> &dyn std::any::Any {
-            self
-        }
-    }
-
-    struct SharedMockBuilder;
-
-    impl CredentialBuilderApi for SharedMockBuilder {
-        fn build(
-            &self,
-            _target: Option<&str>,
-            service: &str,
-            user: &str,
-        ) -> keyring::Result<Box<Credential>> {
-            Ok(Box::new(SharedMockCred {
-                service: service.to_owned(),
-                user: user.to_owned(),
-            }))
-        }
-        fn as_any(&self) -> &dyn std::any::Any {
-            self
-        }
-        fn persistence(&self) -> CredentialPersistence {
-            CredentialPersistence::ProcessOnly
-        }
-    }
-
-    fn install_mock_keyring() {
-        static ONCE: OnceLock<()> = OnceLock::new();
-        ONCE.get_or_init(|| {
-            keyring::set_default_credential_builder(
-                Box::new(SharedMockBuilder) as Box<CredentialBuilder>
-            );
-        });
-    }
+    // Keychain-backed tests share the crate's single mock builder + store
+    // (`crate::testing::keymock`) rather than a second, private one. Two
+    // competing builders would fight over `keyring`'s one global default and
+    // race on which store an `Entry` routes to. `install_mock_keyring()`
+    // returns a guard that holds a process-wide lock for the whole test body,
+    // so every keychain test in this binary runs serially and never observes
+    // another test's install/reset mid-run.
+    use crate::testing::install_mock_keyring;
 
     #[test]
     fn round_trip_keychain() {
-        install_mock_keyring();
+        let _g = install_mock_keyring();
         let dir = tempdir().unwrap();
         let kc = KeychainBackend::with_service("spt-test-vault");
         let v = VaultBackend::init_with_keychain(dir.path(), &kc).unwrap();
@@ -711,7 +636,7 @@ mod tests {
 
     #[test]
     fn list_and_remove() {
-        install_mock_keyring();
+        let _g = install_mock_keyring();
         let dir = tempdir().unwrap();
         let kc = KeychainBackend::with_service("spt-test-vault-list");
         let v = VaultBackend::init_with_keychain(dir.path(), &kc).unwrap();
@@ -729,7 +654,7 @@ mod tests {
 
     #[test]
     fn aad_binds_record_to_reference() {
-        install_mock_keyring();
+        let _g = install_mock_keyring();
         let dir = tempdir().unwrap();
         let kc = KeychainBackend::with_service("spt-test-vault-aad");
         let v = VaultBackend::init_with_keychain(dir.path(), &kc).unwrap();
@@ -750,7 +675,7 @@ mod tests {
 
     #[test]
     fn rotate_master_key_preserves_records() {
-        install_mock_keyring();
+        let _g = install_mock_keyring();
         let dir = tempdir().unwrap();
         let kc = KeychainBackend::with_service("spt-test-vault-rotate");
         let mut v = VaultBackend::init_with_keychain(dir.path(), &kc).unwrap();
@@ -796,7 +721,7 @@ mod tests {
 
     #[test]
     fn list_refs_filters_by_namespace() {
-        install_mock_keyring();
+        let _g = install_mock_keyring();
         let dir = tempdir().unwrap();
         let kc = KeychainBackend::with_service("spt-test-vault-list-refs");
         let v = VaultBackend::init_with_keychain(dir.path(), &kc).unwrap();
@@ -824,7 +749,7 @@ mod tests {
 
     #[test]
     fn double_init_rejected() {
-        install_mock_keyring();
+        let _g = install_mock_keyring();
         let dir = tempdir().unwrap();
         let kc = KeychainBackend::with_service("spt-test-vault-double");
         VaultBackend::init_with_keychain(dir.path(), &kc).unwrap();
@@ -956,9 +881,30 @@ mod tests {
     fn debug_redacts_master_key() {
         let dir = tempdir().unwrap();
         let v = VaultBackend::init_with_passphrase(dir.path(), b"pw").unwrap();
+        // The actual 32-byte master key derived for this vault. A marker-only
+        // assertion ("[REDACTED]" present) would still pass if a second field
+        // leaked the real key bytes, so assert the bytes are genuinely ABSENT.
+        let key = v.config_crypt_master_key();
+        let key_bytes: &[u8] = &key[..];
+        assert_eq!(key_bytes.len(), KEY_LEN);
+
         let s = format!("{v:?}");
         assert!(s.contains("VaultBackend"));
         assert!(s.contains("[REDACTED]"));
+
+        // Not present as a hex encoding...
+        let hex_key = hex::encode(key_bytes);
+        assert!(
+            !s.to_lowercase().contains(&hex_key),
+            "master key leaked (hex) in Debug output"
+        );
+        // ...nor as the raw byte sequence anywhere in the rendered string.
+        assert!(
+            !s.as_bytes()
+                .windows(key_bytes.len())
+                .any(|w| w == key_bytes),
+            "master key leaked (raw bytes) in Debug output"
+        );
     }
 
     #[test]
