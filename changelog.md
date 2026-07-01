@@ -1,3 +1,11 @@
+## [26.38] - 2026-07-01
+
+# spt 26.38
+
+## Changes since 26.37
+
+- fix(security): hardcore round-2 — reverse-forward DoS cap, unit-file & ACL hardening, TOTP overflow, + test-integrity (keychain flake, vacuous redaction tests) (9294998)
+
 ## [26.37] - 2026-06-30
 
 # spt 26.37
