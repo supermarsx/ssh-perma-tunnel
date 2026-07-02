@@ -13,14 +13,16 @@
 # To run privileged-port forwards (<1024) on the host, add the port mapping
 # under `ports:` AND uncomment the NET_BIND_SERVICE capability below.
 ---
-version: "3.9"
-
 services:
   spt:
     image: ${SPT_IMAGE:-ghcr.io/mariana/spt:${SPT_VERSION:-latest}}
     container_name: spt
     restart: unless-stopped
     init: false   # tini already runs as PID 1 inside the image
+
+    # Run as the image's non-root UID (1000); belt-and-suspenders with the
+    # image's own USER directive and matches the tmpfs uid/gid below.
+    user: "1000:1000"
 
     # Give the graceful-shutdown path time to flush. spt's stop budget is
     # ~45s (RECOMMENDED_STOP_TIMEOUT_SECS; the systemd unit uses
@@ -91,10 +93,14 @@ services:
     # ----- hardening ------------------------------------------------------
     read_only: true
     tmpfs:
-      - /tmp:size=64m,mode=1777,uid=1000,gid=1000
-      - /run/spt:size=16m,mode=0750,uid=1000,gid=1000
+      # Bounded (size=) so a fill can't exhaust host RAM, plus
+      # noexec/nosuid/nodev so nothing dropped here can be executed or used to
+      # escalate. These are the ONLY writable non-volume paths.
+      - /tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777,uid=1000,gid=1000
+      - /run/spt:rw,noexec,nosuid,nodev,size=16m,mode=0750,uid=1000,gid=1000
     security_opt:
       - no-new-privileges:true
+      # Default Docker seccomp profile stays APPLIED (never `seccomp:unconfined`).
     cap_drop:
       - ALL
     # Only required if spt has to bind a privileged source port on the
@@ -102,20 +108,35 @@ services:
     # cap_add:
     #   - NET_BIND_SERVICE
 
+    # Containment invariants (deliberately ABSENT): no `privileged: true`, no
+    # `network_mode: host`, no `pid: host` / `ipc: host`, no Docker-socket
+    # mount. A compromise stays confined to this container.
+
     # ----- resource limits ------------------------------------------------
-    # Tune these. spt's RSS is dominated by the russh channel buffers; a few
-    # tens of MiB plus ~5 MiB per active forward is a reasonable starting
+    # Tune these. spt's RSS is dominated by the russh/libssh2 channel buffers;
+    # a few tens of MiB plus ~5 MiB per active forward is a reasonable starting
     # point. Keep the deploy.resources.limits values in sync with the legacy
     # keys below — Compose v5 rejects distinct values for the same limit.
+    #
+    # Memory-leak / OOM safety: mem_limit is the hard ceiling; memswap_limit ==
+    # mem_limit disables swap so a runaway leak is OOM-killed at 256m (not
+    # allowed to thrash host swap), and `restart: unless-stopped` above brings
+    # the container back. Raise mem_limit + memswap_limit + limits.memory
+    # together. PIDs 256 caps a fork-bomb; each forward is an async task, not a
+    # PID, so 256 covers hundreds of forwards. See docs/docker.md.
     deploy:
       resources:
         limits:
           memory: 256m
           cpus: "0.50"
           pids: 256
-    # Outside Swarm, the deploy.resources block is advisory; uncomment the
-    # legacy keys below when running plain `docker compose up`.
+        reservations:
+          memory: 64m
+    # Outside Swarm the deploy block is advisory; the legacy keys below are what
+    # plain `docker compose up` actually enforces. Keep them IN SYNC.
     mem_limit: 256m
+    memswap_limit: 256m      # == mem_limit → no swap escape; OOM-kill is real
+    mem_reservation: 64m     # soft floor, matches reservations.memory
     cpus: 0.5
     pids_limit: 256
 

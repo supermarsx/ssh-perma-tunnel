@@ -85,6 +85,10 @@ services:
     security_opt:
       # Block setuid/privilege escalation for the process and all children.
       - no-new-privileges:true
+      # The default Docker seccomp profile stays APPLIED (we never set
+      # `seccomp:unconfined`), so the ~44 dangerous syscalls it blocks remain
+      # blocked. Only override if a syscall spt genuinely needs is denied — it
+      # is not, for the default feature set.
 
     cap_drop:
       # Drop ALL Linux capabilities. spt does not need any for >=1024 forwards.
@@ -93,6 +97,12 @@ services:
     # container. Most deployments map host ports instead and need nothing here.
     # cap_add:
     #   - NET_BIND_SERVICE
+
+    # Containment invariants (deliberately ABSENT — do not add without
+    # understanding the blast radius): no `privileged: true`, no
+    # `network_mode: host`, no `pid: host` / `ipc: host`, and the Docker socket
+    # is NEVER mounted. A compromise stays confined to this container's own
+    # namespaces, dropped caps, and read-only rootfs.
 
     # ----- network --------------------------------------------------------
     # Expose only the forwards you actually need, bound to loopback on the host
@@ -118,11 +128,42 @@ services:
       retries: 3
 
     # ----- resource limits ------------------------------------------------
-    # Bound blast radius: a compromised or buggy container cannot starve the
-    # host of memory, CPU, or PIDs (fork-bomb protection).
+    # Bound blast radius: a compromised, buggy, or memory-LEAKING container
+    # cannot starve the host of memory, CPU, or PIDs (fork-bomb protection).
+    #
+    # Memory-leak / OOM safety (the key control):
+    #   * mem_limit is the HARD ceiling. A runaway leak grows RSS until it hits
+    #     256m, then the kernel OOM-kills THIS container (not a host process);
+    #     `restart: unless-stopped` above brings it straight back — the leak is
+    #     self-healing at the container boundary.
+    #   * memswap_limit == mem_limit DISABLES the swap escape hatch, so the
+    #     limit is real. Without it the container could balloon into host swap
+    #     and the OOM-kill would never fire (it would just thrash the host).
+    #   * mem_reservation is the soft floor the scheduler keeps available.
+    # To give spt more headroom, raise mem_limit AND memswap_limit together
+    # (keep them EQUAL) plus deploy.resources.limits.memory below — see
+    # docs/docker.md "Resource limits & hardening".
+    #
+    # PIDs: 256 caps a fork-bomb. spt is one process plus a handful of async
+    # worker threads; each forward is an async task (not a new PID) using a few
+    # fds, so 256 PIDs covers hundreds of forwards with wide headroom.
     mem_limit: 256m
-    pids_limit: 256
+    memswap_limit: 256m      # == mem_limit → no swap escape; OOM-kill is real
+    mem_reservation: 64m     # soft floor
+    pids_limit: 256          # fork-bomb cap
     cpus: 0.50
+    # Compose v5 rejects DISTINCT values for the same limit across the legacy
+    # keys above and the deploy block below — keep them IN SYNC. (Outside Swarm
+    # the deploy block is advisory; the legacy keys are what `compose up`
+    # actually enforces. Both are declared so the file is correct either way.)
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+          cpus: "0.50"
+          pids: 256
+        reservations:
+          memory: 64m
 
     # ----- logging --------------------------------------------------------
     # Cap on-disk logs so a chatty/attacked container can't fill the host disk.
