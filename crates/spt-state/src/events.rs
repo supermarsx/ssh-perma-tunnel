@@ -74,10 +74,16 @@ impl Default for EventRingConfig {
 }
 
 /// Non-blocking event ring writer.
+///
+/// Handles are commonly shared behind an `Arc` (the [`crate::EventRing`] is
+/// held by the bus and cloned into event appenders), so the shutdown/join state
+/// lives behind `Mutex<Option<..>>`: the writer can be signalled and its final
+/// drain awaited through a shared `&self` reference (see
+/// [`EventRing::stop_bounded_shared`]) without requiring sole ownership.
 pub struct EventRing {
     tx: mpsc::Sender<Msg>,
-    join: Option<JoinHandle<()>>,
-    shutdown: Option<oneshot::Sender<()>>,
+    join: std::sync::Mutex<Option<JoinHandle<()>>>,
+    shutdown: std::sync::Mutex<Option<oneshot::Sender<()>>>,
 }
 
 enum Msg {
@@ -112,8 +118,8 @@ impl EventRing {
 
         Ok(Self {
             tx,
-            join: Some(join),
-            shutdown: Some(sd_tx),
+            join: std::sync::Mutex::new(Some(join)),
+            shutdown: std::sync::Mutex::new(Some(sd_tx)),
         })
     }
 
@@ -131,23 +137,78 @@ impl EventRing {
         }
     }
 
-    /// Stop the writer and wait for it to flush.
-    pub async fn stop(mut self) {
-        if let Some(tx) = self.shutdown.take() {
+    /// Signal the writer to stop. Idempotent: the shutdown sender is taken on
+    /// the first call, so later calls (and [`Drop`]) are no-ops. Never blocks.
+    fn signal_shutdown(&self) {
+        // Recover from a poisoned lock: the only thing guarded is an `Option`
+        // we `take`, so a prior panic-while-locked can't leave it inconsistent.
+        let taken = self
+            .shutdown
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(tx) = taken {
             let _ = tx.send(());
         }
-        if let Some(j) = self.join.take() {
+    }
+
+    /// Take the writer's join handle, if it hasn't already been taken.
+    fn take_join(&self) -> Option<JoinHandle<()>> {
+        self.join
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+    }
+
+    /// Stop the writer and wait for it to flush.
+    pub async fn stop(self) {
+        self.signal_shutdown();
+        if let Some(j) = self.take_join() {
             let _ = j.await;
+        }
+    }
+
+    /// Stop the writer and await its final drain, bounded by `timeout`
+    /// (by-value convenience wrapper over [`Self::stop_bounded_shared`]).
+    pub async fn stop_bounded(self, timeout: std::time::Duration) -> bool {
+        self.stop_bounded_shared(timeout).await
+    }
+
+    /// Stop the writer and await its final drain through a **shared** `&self`
+    /// reference, bounded by `timeout`.
+    ///
+    /// F-L3: callers that shut the ring down as part of an orderly teardown
+    /// should call this (and `await` it) rather than relying on [`Drop`], which
+    /// only signals the writer and detaches it — leaving the final drain to race
+    /// the runtime's shutdown timeout and lose history events under backlog.
+    ///
+    /// Because the ring is typically held behind an `Arc` with outstanding
+    /// clones (bus + event appenders), sole ownership can't be assumed, so this
+    /// takes `&self`: the join handle is moved out of its `Mutex` and awaited.
+    /// It is idempotent — a second call (or the by-value [`Self::stop_bounded`],
+    /// or [`Drop`]) finds the handle already taken and returns `true`. The await
+    /// is capped so a slow disk / large backlog can never hang teardown; if the
+    /// drain does not finish within `timeout` the writer is left to complete
+    /// detached (the runtime join reaps it). Returns `true` if the drain
+    /// completed within the budget (or there was nothing left to await).
+    pub async fn stop_bounded_shared(&self, timeout: std::time::Duration) -> bool {
+        self.signal_shutdown();
+        // Move the handle out and drop the lock guard BEFORE awaiting — never
+        // hold a std Mutex guard across an `.await`.
+        let handle = self.take_join();
+        if let Some(j) = handle {
+            tokio::time::timeout(timeout, j).await.is_ok()
+        } else {
+            true
         }
     }
 }
 
 impl Drop for EventRing {
     fn drop(&mut self) {
-        if let Some(tx) = self.shutdown.take() {
-            let _ = tx.send(());
-        }
-        // Detach; runtime shutdown will join.
+        // Signal the writer to stop; detach — runtime shutdown will join. If a
+        // `stop*` call already took the sender this is a no-op.
+        self.signal_shutdown();
     }
 }
 
@@ -486,6 +547,87 @@ mod tests {
         // Cannot append after stop() consumes self; instead verify drop sends shutdown.
         drop(ring);
         // No panic == pass.
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn stop_bounded_awaits_and_flushes_buffered_events() {
+        // F-L3: an explicitly-awaited bounded final drain flushes events still
+        // buffered in the channel before returning — they are not left to a
+        // detached Drop that races the runtime shutdown timeout.
+        let tmp = tempdir().unwrap();
+        let clock = Arc::new(TestClock::new(
+            Utc.with_ymd_and_hms(2026, 5, 5, 12, 0, 0).unwrap(),
+        ));
+        let ring = EventRing::spawn_with_clock(
+            tmp.path().to_path_buf(),
+            EventRingConfig {
+                channel_capacity: 64,
+                retain_days: 7,
+            },
+            clock.clone(),
+        )
+        .unwrap();
+        for i in 0..10 {
+            ring.append(Event::new(clock.now(), format!("k{i}"), "info"));
+        }
+        let completed = ring.stop_bounded(std::time::Duration::from_secs(5)).await;
+        assert!(completed, "bounded drain should complete within the budget");
+        let body = std::fs::read_to_string(paths::events_file(tmp.path(), "2026-05-05")).unwrap();
+        assert_eq!(
+            body.lines().count(),
+            10,
+            "all buffered events flushed on bounded stop, body:\n{body}"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn stop_bounded_shared_flushes_via_arc_with_outstanding_clone() {
+        // F-L3 wiring: the ring is held behind an `Arc` with clones alive (the
+        // bus + event appenders), so it is NOT sole-owned. The bounded final
+        // drain must be reachable through a shared `&self` handle and still
+        // flush every buffered event — an `Arc::try_unwrap` + by-value approach
+        // would fail here and silently fall back to Drop.
+        let tmp = tempdir().unwrap();
+        let clock = Arc::new(TestClock::new(
+            Utc.with_ymd_and_hms(2026, 5, 5, 12, 0, 0).unwrap(),
+        ));
+        let ring = Arc::new(
+            EventRing::spawn_with_clock(
+                tmp.path().to_path_buf(),
+                EventRingConfig {
+                    channel_capacity: 64,
+                    retain_days: 7,
+                },
+                clock.clone(),
+            )
+            .unwrap(),
+        );
+        // An outstanding clone stays alive, exactly as an appender handle would.
+        let appender = ring.clone();
+        for i in 0..10 {
+            appender.append(Event::new(clock.now(), format!("k{i}"), "info"));
+        }
+
+        // Drain through `&self` on the shared `Arc` (the call the spt-bin
+        // `EventsPipeline::shutdown` will make on its `Arc<EventRing>`).
+        let completed = ring
+            .stop_bounded_shared(std::time::Duration::from_secs(5))
+            .await;
+        assert!(
+            completed,
+            "shared bounded drain should complete within budget"
+        );
+        let body = std::fs::read_to_string(paths::events_file(tmp.path(), "2026-05-05")).unwrap();
+        assert_eq!(
+            body.lines().count(),
+            10,
+            "all buffered events flushed via shared drain, body:\n{body}"
+        );
+
+        // The surviving clone dropping after the drain must not panic (the
+        // shutdown sender/join were already taken; Drop is a no-op).
+        drop(appender);
+        drop(ring);
     }
 
     #[tokio::test(flavor = "current_thread")]

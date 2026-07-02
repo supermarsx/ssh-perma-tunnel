@@ -72,16 +72,19 @@ pub struct Ssh3Session {
     control_recv: Arc<AsyncMutex<RecvStream>>,
     /// Serializes control-stream *request/response* exchanges (E3-F5).
     ///
-    /// The control bidi multiplexes several frame kinds (forward-open acks,
-    /// UDP-associate requests, `AppPing` keepalives) with no per-request
+    /// The control bidi multiplexes several request/response frame kinds
+    /// (forward-open acks, UDP-associate requests) with no per-request
     /// correlation id in the wire format. A full demux would require extending
     /// the frame header, which the wire-compat constraint forbids touching
-    /// here. As a scoped mitigation we (a) keep keepalive `AppPing` strictly
-    /// fire-and-forget — it never consumes a frame off `control_recv` — and
-    /// (b) hold this mutex across the only request that *does* read a response
-    /// ([`forward::open_remote`]), so two such requests can never have their
-    /// `ForwardOpenResponse` frames mis-routed to each other. Full
-    /// correlation-id demux is tracked as a follow-up.
+    /// here. As a scoped mitigation we hold this mutex across the only request
+    /// that *does* read a response ([`forward::open_remote`]), so two such
+    /// requests can never have their `ForwardOpenResponse` frames mis-routed to
+    /// each other. Full correlation-id demux is tracked as a follow-up.
+    ///
+    /// Note: app-level keepalive pings (F-R2) no longer share this stream — they
+    /// run over a dedicated echo stream ([`Self::keepalive_send`]) so their
+    /// pong-tracking reader can own its own `RecvStream` without contending with
+    /// forward-open responses here.
     control_request: Arc<AsyncMutex<()>>,
     state: Arc<SessionState>,
     next_flow_id: Arc<std::sync::atomic::AtomicU32>,
@@ -89,9 +92,54 @@ pub struct Ssh3Session {
     /// `None` for sessions constructed directly from parts (test rig) — those
     /// report preflight as unsupported.
     redial: Option<RedialParams>,
+    /// Dedicated bidi stream for app-level keepalive ping/echo liveness (F-R2).
+    /// Lazily opened by the first [`TunnelSession::keepalive`] call; `None` until
+    /// then, so a session that is never probed opens no extra stream
+    /// (behaviour-preserving).
+    keepalive_send: Option<SendStream>,
+    /// Consecutive keepalive pings written but not yet echoed by the peer.
+    /// Bumped once per ping sent and reset to zero by [`keepalive_reader`] on
+    /// every echo received; reaching [`MAX_MISSED_KEEPALIVES`] means the peer's
+    /// application layer has stopped draining the stream while QUIC stayed up,
+    /// so the session is declared dead.
+    keepalive_missed: Arc<std::sync::atomic::AtomicU32>,
     /// Background dispatcher tasks (h3 driver + bidi accept + datagram
-    /// reader). All `abort()`'ed on `close()`.
+    /// reader + keepalive echo reader). All `abort()`'ed on `close()`.
     background: Vec<tokio::task::JoinHandle<()>>,
+}
+
+/// Consecutive unanswered application-level keepalive pings tolerated before a
+/// session is declared dead (F-R2).
+///
+/// Each [`TunnelSession::keepalive`] call writes one `AppPing` on the dedicated
+/// keepalive stream and bumps [`Ssh3Session::keepalive_missed`]; the background
+/// [`keepalive_reader`] resets that counter to zero on every echo the peer
+/// returns. If the counter reaches this threshold the peer has ignored this many
+/// consecutive pings while QUIC stayed up (an application-layer stall), so
+/// `keepalive` returns an error and the supervisor reconnects — the same signal
+/// a network drop produces. This is a fixed miss count rather than a new config
+/// knob: the supervisor already spaces calls by its `keepalive_interval` and
+/// wraps each in `keepalive_timeout`, so N misses ≈ N intervals of app-level
+/// silence. Kept small so healthy sessions (echo round-trips well inside one
+/// interval) never trip.
+const MAX_MISSED_KEEPALIVES: u32 = 3;
+
+/// Background reader for a session's dedicated keepalive stream (F-R2).
+///
+/// Every frame the peer echoes back resets the outstanding-ping counter to
+/// zero; a read error (stream reset / connection closed) ends the task. Spawned
+/// lazily by the first [`Ssh3Session::keepalive`] call and reaped by [`Drop`]
+/// via the session's `background` vector.
+async fn keepalive_reader(mut recv: RecvStream, missed: Arc<std::sync::atomic::AtomicU32>) {
+    loop {
+        match crate::frame::Ssh3Frame::read_async(&mut recv).await {
+            Ok(_) => missed.store(0, std::sync::atomic::Ordering::Release),
+            Err(e) => {
+                debug!(target: "spt_ssh3::session", error = %e, "keepalive echo reader ended");
+                break;
+            }
+        }
+    }
 }
 
 impl std::fmt::Debug for Ssh3Session {
@@ -262,6 +310,8 @@ impl Ssh3Session {
             state,
             next_flow_id,
             redial,
+            keepalive_send: None,
+            keepalive_missed: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             background,
         }
     }
@@ -392,16 +442,63 @@ impl TunnelSession for Ssh3Session {
     }
 
     async fn keepalive(&mut self) -> Result<()> {
+        // Refresh the QUIC RTT estimate and honour the transport-level backstop:
+        // a closed / idle-timed-out connection is unconditionally dead,
+        // regardless of the app-layer liveness check below.
         let _ = self.connection.rtt();
         if self.connection.close_reason().is_some() {
             return Err(Error::RuntimeFailure("ssh3 connection closed".into()));
         }
-        // Send an application-level AppPing on the control stream. Best-effort
-        // — if the write fails we surface that as a runtime failure.
+
+        // F-R2: app-layer liveness. The previous implementation wrote a
+        // fire-and-forget `AppPing` on the shared control stream and returned
+        // `Ok` without ever confirming the peer processed it — so a peer whose
+        // application layer had stalled while its QUIC connection stayed alive
+        // was never detected (unlike the ssh2 backend, which does a real
+        // channel-open round-trip). We now run pings over a dedicated bidi
+        // "keepalive" stream that a healthy peer echoes
+        // (`forward::serve_keepalive_stream`) and track how many consecutive
+        // pings have gone unanswered.
+        //
+        // The check is deliberately non-blocking: we never await a pong inside
+        // this call. A background reader task ([`keepalive_reader`]) resets the
+        // miss counter whenever an echo arrives; each call just writes one ping
+        // and inspects the counter. Using a dedicated stream (rather than the
+        // control stream) keeps the echo reader from contending with
+        // `open_remote`'s `ForwardOpenResponse` reads on `control_recv`.
+        if self.keepalive_send.is_none() {
+            let (send, recv) =
+                self.connection.open_bi().await.map_err(|e| {
+                    Error::RuntimeFailure(format!("ssh3 keepalive: open stream: {e}"))
+                })?;
+            let missed = self.keepalive_missed.clone();
+            self.background
+                .push(tokio::spawn(keepalive_reader(recv, missed)));
+            self.keepalive_send = Some(send);
+        }
+
         let frame =
             crate::frame::Ssh3Frame::new(crate::frame::Ssh3FrameKind::AppPing, bytes::Bytes::new());
-        let mut g = self.control_send.lock().await;
-        frame.write_async(&mut *g).await?;
+        let send = self
+            .keepalive_send
+            .as_mut()
+            .expect("keepalive_send initialized above");
+        frame.write_async(send).await?;
+
+        // Count this ping as outstanding. The reader resets the counter to zero
+        // on every echo; if it reaches the threshold the peer has ignored
+        // MAX_MISSED_KEEPALIVES consecutive pings while QUIC stayed up — treat
+        // the session as dead so the supervisor reconnects (the same failure
+        // signal a network drop produces via `close_reason` above).
+        let missed = self
+            .keepalive_missed
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel)
+            + 1;
+        if missed >= MAX_MISSED_KEEPALIVES {
+            return Err(Error::RuntimeFailure(format!(
+                "ssh3 keepalive: peer unresponsive ({missed} consecutive app-level pings unanswered)"
+            )));
+        }
         Ok(())
     }
 
@@ -529,5 +626,150 @@ mod drop_tests {
         boxed.close().await.expect("graceful close");
         // No panic implies idempotency; the peer is closed either way.
         let _ = tokio::time::timeout(Duration::from_secs(5), server.closed()).await;
+    }
+}
+
+/// F-R2: app-layer keepalive liveness — a stalled-but-QUIC-alive peer must be
+/// detected via unanswered pings, an echoing peer must stay alive, and the QUIC
+/// transport backstop must still fire.
+#[cfg(all(test, feature = "testing"))]
+mod keepalive_tests {
+    use super::*;
+    use crate::forward::serve_inbound_opens;
+    use crate::testing::test_support::connected_pair_public;
+    use crate::transport::{accept_control_stream, open_control_stream};
+    use std::sync::atomic::Ordering;
+    use std::time::Duration;
+
+    fn test_settings() -> Ssh3Settings {
+        Ssh3Settings {
+            direct_tcp: true,
+            remote_tcp: true,
+            udp_datagrams: true,
+            agent_forwarding: false,
+            max_forwards: Some(8),
+            version: Some("test/0.1".into()),
+            extras: vec![],
+        }
+    }
+
+    fn test_info() -> SessionInfo {
+        SessionInfo {
+            backend: "ssh3".into(),
+            peer_version: Some("client".into()),
+            negotiated: Some("test".into()),
+            established_at: 0,
+        }
+    }
+
+    /// Build a client [`Ssh3Session`] plus the raw server-side QUIC connection so
+    /// the test can decide whether to echo keepalive pings (healthy peer) or
+    /// ignore them (app-layer stall). The control-stream handshake is completed
+    /// so the keepalive stream is the *second* bidi (the control stream is the
+    /// first), matching production ordering.
+    async fn build_session() -> (Ssh3Session, quinn::Connection) {
+        let (client, server) = connected_pair_public().await;
+        let (cs, sv) = tokio::join!(
+            open_control_stream(&client, test_settings()),
+            accept_control_stream(&server, test_settings()),
+        );
+        let (c_send, c_recv, c_peer) = cs.expect("client handshake");
+        let _sv = sv.expect("server handshake");
+        let session = Ssh3Session::from_parts(client, c_send, c_recv, c_peer, test_info(), None);
+        (session, server)
+    }
+
+    /// A peer that echoes keepalive pings (via the production
+    /// `serve_inbound_opens` accept loop) keeps the session alive indefinitely:
+    /// the outstanding-ping counter is reset by each echo and never approaches
+    /// the death threshold.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn answered_keepalive_keeps_session_alive() {
+        let (mut session, server) = build_session().await;
+        // Production echo responder: `serve_inbound_opens` now echoes AppPing
+        // streams (F-R2). The `|_| None` resolver denies every TCP open — only
+        // the keepalive path is exercised here.
+        let responder = tokio::spawn(serve_inbound_opens(server.clone(), |_| None));
+
+        for i in 0..(MAX_MISSED_KEEPALIVES * 3) {
+            session
+                .keepalive()
+                .await
+                .unwrap_or_else(|e| panic!("answered keepalive #{i} must stay alive: {e:?}"));
+            // Wait for the echo to reset the miss counter before the next ping,
+            // so a healthy peer never lets the counter climb toward the death
+            // threshold.
+            let mut reset = false;
+            for _ in 0..200 {
+                if session.keepalive_missed.load(Ordering::Acquire) == 0 {
+                    reset = true;
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            assert!(
+                reset,
+                "echo must reset the outstanding-ping counter (iteration {i})"
+            );
+        }
+
+        responder.abort();
+    }
+
+    /// A peer whose application layer never drains / echoes the keepalive stream
+    /// — while its QUIC connection stays fully alive — must be detected as dead
+    /// after [`MAX_MISSED_KEEPALIVES`] consecutive unanswered pings. This is the
+    /// gap F-R2 closes: the pre-fix fire-and-forget keepalive returned `Ok`
+    /// forever in exactly this scenario.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn unanswered_keepalive_marks_session_lost() {
+        // `_server` is held (never dropped) so the QUIC connection stays alive:
+        // no responder ever accepts/echoes the keepalive stream (app-layer
+        // stall), but the transport is healthy.
+        let (mut session, _server) = build_session().await;
+
+        let mut last = Ok(());
+        for _ in 0..MAX_MISSED_KEEPALIVES {
+            last = session.keepalive().await;
+        }
+
+        // Detection must be app-layer, NOT the QUIC backstop: the connection is
+        // still open at the moment we declare the session dead.
+        assert!(
+            session.connection.close_reason().is_none(),
+            "QUIC must still be alive — detection is app-layer, not transport"
+        );
+        let err = last.expect_err("consecutive unanswered pings must mark the session lost");
+        assert!(
+            matches!(err, Error::RuntimeFailure(_)),
+            "expected RuntimeFailure (SessionLost signal), got {err:?}"
+        );
+    }
+
+    /// The QUIC transport backstop still works: once the peer closes the
+    /// connection (or it idle-times-out), `close_reason` is set and `keepalive`
+    /// fails regardless of the app-layer miss counter.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn keepalive_errors_when_quic_connection_closed() {
+        let (mut session, server) = build_session().await;
+        // Close the peer; once the client observes it, `close_reason` is set.
+        server.close(0u32.into(), b"bye");
+        let mut observed = false;
+        for _ in 0..300 {
+            if session.connection.close_reason().is_some() {
+                observed = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(observed, "client must observe the peer close");
+        let err = session
+            .keepalive()
+            .await
+            .expect_err("closed QUIC connection must fail keepalive");
+        assert!(
+            matches!(err, Error::RuntimeFailure(_)),
+            "expected RuntimeFailure, got {err:?}"
+        );
     }
 }

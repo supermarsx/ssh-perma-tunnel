@@ -653,6 +653,27 @@ pub async fn open_udp(
     Ok(ForwardHandle::new(id, name, state_rx, close_tx))
 }
 
+/// Serve a peer-opened *keepalive* stream (F-R2): the peer opened a dedicated
+/// bidi whose first frame is an [`Ssh3FrameKind::AppPing`]. We echo that ping
+/// and every subsequent ping straight back so the peer's keepalive reader can
+/// confirm our application layer is still draining streams — not merely that
+/// QUIC is up. Runs until the stream is reset / closed or a write fails.
+async fn serve_keepalive_stream(mut send: SendStream, mut recv: RecvStream, first: Ssh3Frame) {
+    if first.write_async(&mut send).await.is_err() {
+        return;
+    }
+    loop {
+        match Ssh3Frame::read_async(&mut recv).await {
+            Ok(frame) => {
+                if frame.write_async(&mut send).await.is_err() {
+                    return;
+                }
+            }
+            Err(_) => return,
+        }
+    }
+}
+
 /// Send a `ForwardOpenResponse { ok: false, reason }` and half-close `send`.
 async fn reject_inbound(mut send: SendStream, reason: &str) {
     let _ = Ssh3Frame::new(
@@ -689,6 +710,12 @@ pub(crate) async fn dispatch_inbound_bidi(
             return;
         }
     };
+    // F-R2: a peer-opened keepalive stream — echo pings so the peer can verify
+    // our application layer is live (not just the QUIC transport).
+    if frame.kind == Ssh3FrameKind::AppPing {
+        serve_keepalive_stream(send, recv, frame).await;
+        return;
+    }
     // A peer-opened bidi carrying a UDS forward back-channel (remote-UDS:
     // the *server* accepted a connection on its remote unix listener and is
     // opening a stream back to us, the requester, to be bridged to our local
@@ -1411,6 +1438,11 @@ pub async fn serve_inbound_opens(
                 #[cfg(unix)]
                 Ssh3FrameKind::UdsForwardRequest => {
                     serve_local_uds_open(send, recv, frame.payload).await;
+                }
+                // F-R2: echo keepalive pings so the client's liveness reader
+                // sees our application layer is still draining streams.
+                Ssh3FrameKind::AppPing => {
+                    serve_keepalive_stream(send, recv, frame).await;
                 }
                 _ => {
                     reject_inbound(send, "unexpected open frame").await;

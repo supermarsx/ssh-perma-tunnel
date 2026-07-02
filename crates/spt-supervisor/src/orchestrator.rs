@@ -357,11 +357,72 @@ impl Orchestrator {
         }
     }
 
-    /// Stop every profile.
+    /// Stop every profile CONCURRENTLY, without an aggregate deadline.
+    ///
+    /// Backward-compatible entrypoint. Every profile's own stop path is still
+    /// bounded per-profile (by `keepalive_interval`), but there is no overall
+    /// cap, so with N black-holed sessions the teardown is bounded by the
+    /// SLOWEST profile rather than their sum (the pre-F-L1 code stopped
+    /// profiles sequentially, so the total scaled with profile count).
+    ///
+    /// On the signal path prefer [`Self::shutdown_within`], which additionally
+    /// enforces a single global deadline so the whole teardown completes within
+    /// a bound the caller can size to systemd's `TimeoutStopSec` (F-L1).
     pub async fn shutdown(&self) {
-        let names: Vec<String> = self.profiles.lock().keys().cloned().collect();
-        for n in names {
-            self.stop_profile(&n).await;
+        self.shutdown_deadline(None).await;
+    }
+
+    /// F-L1: stop every profile CONCURRENTLY under an aggregate `deadline`.
+    ///
+    /// Returns as soon as all profiles have stopped OR `deadline` elapses,
+    /// whichever comes first. Any profile that has not finished stopping when
+    /// the deadline fires is abandoned (drop-and-move-on) so the whole teardown
+    /// completes within `deadline` — a single black-holed `session.close()`
+    /// can no longer serialize past the process's stop budget and get the
+    /// daemon SIGKILLed mid-flush. The spt-bin signal handler passes systemd's
+    /// `TimeoutStopSec` budget (minus a flush margin) here.
+    pub async fn shutdown_within(&self, deadline: Duration) {
+        self.shutdown_deadline(Some(deadline)).await;
+    }
+
+    /// Shared implementation of [`Self::shutdown`] / [`Self::shutdown_within`].
+    async fn shutdown_deadline(&self, deadline: Option<Duration>) {
+        // Take every profile out of the map under the lock, then stop them
+        // outside the lock. `stop_profile` would re-lock per profile and run
+        // sequentially; here we drain once and fan the stops out concurrently.
+        let profiles: Vec<Arc<ProfileSupervisor>> = {
+            let mut g = self.profiles.lock();
+            g.drain().map(|(_, sup)| sup).collect()
+        };
+        self.live_overrides.lock().clear();
+        if profiles.is_empty() {
+            return;
+        }
+
+        let stop_all = async {
+            let mut joins = Vec::with_capacity(profiles.len());
+            for sup in profiles {
+                joins.push(tokio::spawn(async move {
+                    sup.stop().await;
+                }));
+            }
+            for j in joins {
+                let _ = j.await;
+            }
+        };
+
+        match deadline {
+            Some(d) => {
+                if tokio::time::timeout(d, stop_all).await.is_err() {
+                    tracing::warn!(
+                        deadline = ?d,
+                        "orchestrator shutdown exceeded its deadline; abandoning the \
+                         remaining profile teardowns so the process can flush and exit \
+                         within budget"
+                    );
+                }
+            }
+            None => stop_all.await,
         }
     }
 
@@ -855,6 +916,148 @@ mod tests {
             how_to_fix: "spt profile list",
         );
         assert_eq!(e.exit_code(), spt_core::ExitCode::RuntimeFailure);
+    }
+
+    // ──────── F-L1: bounded, concurrent shutdown ─────────────────────
+
+    /// A session whose `close()` blocks for a fixed duration — models a
+    /// black-holed peer that stalls `session.close()`.
+    #[derive(Debug)]
+    struct SlowCloseSession {
+        close_delay: Duration,
+        info: spt_protocol::SessionInfo,
+    }
+
+    #[async_trait::async_trait]
+    impl spt_protocol::TunnelSession for SlowCloseSession {
+        async fn open_local_forward(
+            &mut self,
+            _spec: &spt_protocol::LocalForwardSpec,
+        ) -> Result<spt_protocol::ForwardHandle> {
+            Err(Error::RuntimeFailure("no forwards".into()))
+        }
+        async fn open_remote_forward(
+            &mut self,
+            _spec: &spt_protocol::RemoteForwardSpec,
+        ) -> Result<spt_protocol::ForwardHandle> {
+            Err(Error::RuntimeFailure("no forwards".into()))
+        }
+        async fn open_dynamic_forward(
+            &mut self,
+            _spec: &spt_protocol::DynamicForwardSpec,
+        ) -> Result<spt_protocol::ForwardHandle> {
+            Err(Error::RuntimeFailure("no forwards".into()))
+        }
+        async fn open_udp_forward(
+            &mut self,
+            _spec: &spt_protocol::UdpForwardSpec,
+        ) -> Result<spt_protocol::ForwardHandle> {
+            Err(Error::RuntimeFailure("no forwards".into()))
+        }
+        async fn keepalive(&mut self) -> Result<()> {
+            Ok(())
+        }
+        async fn close(self: Box<Self>) -> Result<()> {
+            tokio::time::sleep(self.close_delay).await;
+            Ok(())
+        }
+        fn session_info(&self) -> spt_protocol::SessionInfo {
+            self.info.clone()
+        }
+    }
+
+    #[derive(Debug)]
+    struct SlowCloseProto {
+        close_delay: Duration,
+    }
+
+    #[async_trait::async_trait]
+    impl TunnelProtocol for SlowCloseProto {
+        async fn connect(
+            &self,
+            _endpoint: &Endpoint,
+            _auth: &AuthConfig,
+        ) -> Result<Box<dyn spt_protocol::TunnelSession>> {
+            Ok(Box::new(SlowCloseSession {
+                close_delay: self.close_delay,
+                info: spt_protocol::SessionInfo {
+                    backend: "slow-close".into(),
+                    peer_version: None,
+                    negotiated: None,
+                    established_at: 0,
+                },
+            }))
+        }
+        fn capabilities(&self) -> spt_protocol::ProtocolCapabilities {
+            spt_protocol::ProtocolCapabilities::ssh3()
+        }
+        fn name(&self) -> &'static str {
+            "slow-close"
+        }
+    }
+
+    /// F-L1: `shutdown_within` stops N profiles CONCURRENTLY under a single
+    /// aggregate deadline. Four profiles each stall `session.close()` for 2 s;
+    /// sequential teardown (the pre-fix behavior) would take ~8 s, but the
+    /// bounded concurrent teardown must return within the ~400 ms deadline.
+    #[tokio::test]
+    async fn shutdown_within_bounds_concurrent_teardown() {
+        let orch = Orchestrator::new();
+        let proto = Arc::new(SlowCloseProto {
+            close_delay: Duration::from_secs(2),
+        });
+
+        let names = ["p0", "p1", "p2", "p3"];
+        for name in names {
+            let cfg = format!(
+                r#"
+                version = 1
+                [[profiles]]
+                name = "{name}"
+                protocol = "ssh2"
+                host = "h"
+                "#
+            );
+            let (c, _) = load_str(&cfg, false).unwrap();
+            // Large keepalive so the per-profile close bound does NOT itself
+            // cap the stall — the aggregate deadline is what must bound it.
+            let sup_cfg = ProfileSupervisorConfig {
+                keepalive_interval: Duration::from_secs(60),
+                ..Default::default()
+            };
+            orch.start_profile(
+                &c.profiles[0],
+                proto.clone(),
+                auth(),
+                vec![Endpoint::new("h", 22)],
+                sup_cfg,
+            );
+        }
+
+        // Wait until every profile has a live session (so close() will run).
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            if orch.session_list().len() == names.len() {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "not all profiles came up: {} sessions",
+                orch.session_list().len()
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+
+        let started = tokio::time::Instant::now();
+        orch.shutdown_within(Duration::from_millis(400)).await;
+        let elapsed = started.elapsed();
+
+        assert!(orch.is_empty(), "all profiles must be removed from the map");
+        assert!(
+            elapsed < Duration::from_millis(1500),
+            "bounded concurrent shutdown must complete within ~deadline, not the \
+             sum of N×2s sequential closes; took {elapsed:?}"
+        );
     }
 
     #[tokio::test]

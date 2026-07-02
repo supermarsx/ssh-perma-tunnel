@@ -1049,6 +1049,16 @@ async fn tunnel_run(global: &GlobalOpts, args: groups::tunnel::TunnelRun) -> Res
             .with_metrics(metrics_exporter.standard().clone()),
     );
 
+    // F-L4: install the shutdown/reload signal handlers NOW — before any
+    // profile or subsystem is started — so a SIGTERM/SIGINT that races startup
+    // triggers an orderly teardown of whatever has come up, instead of a hard
+    // default-disposition kill that orphans helpers/listeners. `signals::spawn`
+    // registers the OS handlers synchronously and latches an early shutdown on
+    // the watch channel; the orchestrator already exists here, so the teardown
+    // reached via the main loop below is well-defined even for a signal that
+    // arrives mid-startup.
+    let signal_rx = crate::signals::spawn();
+
     // Embedded auto-updater. Off by default — `Updater::spawn` returns
     // `Ok(None)` when `[updater].enabled = false` or `[updater].mode = "off"`,
     // so the dedicated polling thread is only created when the operator has
@@ -1249,13 +1259,19 @@ async fn tunnel_run(global: &GlobalOpts, args: groups::tunnel::TunnelRun) -> Res
         }
     }
 
-    let signal_rx = crate::signals::spawn();
-
     // GAP 5 (systemd): the orchestrator is up, forwards are bound, and the
     // control surfaces (MCP/status-api/remote-config poller) are spawned —
     // signal readiness to the service manager. No-op when `$NOTIFY_SOCKET` is
     // unset (i.e. not launched under `Type=notify`), so unconditionally safe.
     spt_service::sd_notify_ready();
+
+    // F-S3 (systemd watchdog): start the WATCHDOG=1 pinger. Returns `None`
+    // (no-op) unless the unit set `WatchdogSec=` (i.e. systemd exported
+    // `WATCHDOG_USEC`), and always `None` on non-systemd platforms. Held for
+    // the run lifetime; dropped on teardown, which aborts the pinger. Without
+    // this, a hardened unit with `WatchdogSec=` would kill+restart the healthy
+    // daemon every interval.
+    let _watchdog = spt_service::spawn_watchdog();
 
     if args.once {
         // `--once`: wait until every selected profile reaches startup readiness
@@ -1274,7 +1290,13 @@ async fn tunnel_run(global: &GlobalOpts, args: groups::tunnel::TunnelRun) -> Res
                 startup_errors.join("; ")
             )))
         };
-        orchestrator.shutdown().await;
+        // F-L1(a): bound `--once` teardown identically so a stalled endpoint
+        // cannot hang the one-shot run indefinitely. Fast path is unchanged.
+        // `shutdown_within` stops profiles concurrently under one aggregate
+        // deadline and logs a WARN internally on expiry (see rfix-supervisor.md).
+        let shutdown_deadline =
+            std::time::Duration::from_secs(spt_service::RECOMMENDED_STOP_TIMEOUT_SECS * 4 / 5);
+        orchestrator.shutdown_within(shutdown_deadline).await;
         if let Some(h) = mcp_handle {
             h.shutdown(&state_dir).await;
         }
@@ -1360,7 +1382,24 @@ async fn tunnel_run(global: &GlobalOpts, args: groups::tunnel::TunnelRun) -> Res
     // doesn't treat the teardown window as an unexpected exit. No-op when
     // `$NOTIFY_SOCKET` is unset.
     spt_service::sd_notify_stopping();
-    orchestrator.shutdown().await;
+    // F-L1(b): write a truthful "stopping" state to disk BEFORE the
+    // potentially-slow session teardown, so that even a SIGKILL after
+    // `TimeoutStopSec` leaves status.json/runtime.json correct (not a stale
+    // RUNNING). The critical flush happens inside the guaranteed-fast window.
+    flush_stopping_state(&writer, &state_dir).await;
+    // F-L1(a): bound the aggregate teardown to ~80% of the systemd stop budget
+    // (`TimeoutStopSec` in the unit) so a black-holed multi-profile session
+    // can't overrun it and get SIGKILLed mid-flush. The happy path completes
+    // well under the deadline, so fast shutdown is unchanged.
+    //
+    // Uses the peer's bounded `Orchestrator::shutdown_within(deadline)` (see
+    // rfix-supervisor.md): it drains the profile map then stops every profile
+    // CONCURRENTLY under a single `tokio::time::timeout(deadline, ..)`, and on
+    // expiry logs a WARN and returns (abandoned teardowns are detached — fine,
+    // the process exits right after). Status is already flushed as "stopping".
+    let shutdown_deadline =
+        std::time::Duration::from_secs(spt_service::RECOMMENDED_STOP_TIMEOUT_SECS * 4 / 5);
+    orchestrator.shutdown_within(shutdown_deadline).await;
     if let Some(h) = mcp_handle {
         h.shutdown(&state_dir).await;
     }
@@ -1523,14 +1562,43 @@ fn remove_runtime_status(state_dir: &Path) {
     }
 }
 
+/// F-L1(b): perform the critical, guaranteed-fast part of graceful shutdown
+/// BEFORE the potentially-slow session teardown.
+///
+/// Marks every still-live profile as `"stopping"` and synchronously flushes
+/// `status.json`, then clears `runtime.json` so the `spt status` overview no
+/// longer reports the daemon RUNNING. Doing this first means that even if the
+/// subsequent (bounded) `Orchestrator::shutdown()` overruns and systemd
+/// escalates to `SIGKILL`, the on-disk state is already truthful rather than a
+/// stale RUNNING snapshot. Terminal `"failed"` profile states are preserved.
+async fn flush_stopping_state(writer: &spt_state::StatusWriter, state_dir: &Path) {
+    writer
+        .update(|s| {
+            for p in &mut s.profiles {
+                if p.state != "failed" {
+                    p.state = "stopping".into();
+                }
+            }
+        })
+        .await;
+    if let Err(e) = writer.flush().await {
+        tracing::warn!(error = %e, "failed to flush 'stopping' status before teardown");
+    }
+    // Idempotent with the final teardown cleanup; clearing it now guarantees a
+    // correct overview even under a post-timeout SIGKILL.
+    remove_runtime_status(state_dir);
+}
+
 /// Handle bundling the live events pipeline (E6-F1): the `EventBus` injected
 /// into the orchestrator and the `Dispatcher` task draining it to the
 /// configured `[[events.sinks]]`. Held for the lifetime of `tunnel run`;
 /// dropped/shut down on teardown so the dispatcher + retry tasks stop cleanly.
 struct EventsPipeline {
     dispatcher: Option<spt_events::Dispatcher>,
-    /// Kept alive so the persistence ring writer task isn't dropped early.
-    _ring: std::sync::Arc<spt_state::EventRing>,
+    /// Kept alive so the persistence ring writer task isn't dropped early, and
+    /// drained (bounded) on `shutdown` so history events aren't lost under
+    /// backlog when the runtime tears down.
+    ring: std::sync::Arc<spt_state::EventRing>,
     /// Live MCP notifier backing any `mcp_notify` sink (GAP 1). Held so the
     /// broadcast channel stays open for the lifetime of the run; MCP clients
     /// subscribe to it via the `events_subscribe` MCP tool, which the loopback
@@ -1550,6 +1618,15 @@ impl EventsPipeline {
         if let Some(d) = self.dispatcher.take() {
             d.shutdown().await;
         }
+        // F-L3: await the persistence ring's final drain (bounded) instead of
+        // leaving it to `Drop`, which only signals the writer and detaches it —
+        // racing the runtime shutdown timeout and losing history events under
+        // backlog. Runs after the dispatcher drain (which may still append to
+        // the ring). `stop_bounded_shared` works through the `Arc` even with
+        // appender clones alive, and is idempotent w.r.t. the later `Drop`.
+        self.ring
+            .stop_bounded_shared(std::time::Duration::from_secs(3))
+            .await;
     }
 }
 
@@ -1862,7 +1939,7 @@ fn build_events_pipeline(
         bus,
         EventsPipeline {
             dispatcher,
-            _ring: ring,
+            ring,
             mcp_notifier,
         },
     ))
@@ -5588,6 +5665,92 @@ mod tests {
             dry_run: false,
             portable: false,
         }
+    }
+
+    /// F-L1(b): `flush_stopping_state` marks live profiles as `stopping`,
+    /// preserves terminal `failed` states, flushes `status.json`, and clears
+    /// `runtime.json`.
+    #[tokio::test]
+    async fn flush_stopping_state_marks_stopping_and_clears_runtime() {
+        let dir = tempfile::tempdir().unwrap();
+        let state_dir = dir.path().to_path_buf();
+
+        // Seed a runtime.json to prove it gets cleared.
+        spt_state::write_runtime(&state_dir, &spt_state::RuntimeStatus::default()).unwrap();
+        assert!(spt_state::paths::runtime_path(&state_dir).exists());
+
+        let writer = spt_state::StatusWriter::new(
+            state_dir.clone(),
+            spt_state::StatusWriterConfig::default(),
+        );
+        writer
+            .update(|s| {
+                s.profiles = vec![
+                    spt_state::status::ProfileStatus {
+                        id: "live".into(),
+                        state: "running".into(),
+                        ..Default::default()
+                    },
+                    spt_state::status::ProfileStatus {
+                        id: "dead".into(),
+                        state: "failed".into(),
+                        ..Default::default()
+                    },
+                ];
+            })
+            .await;
+
+        flush_stopping_state(&writer, &state_dir).await;
+
+        // runtime.json cleared.
+        assert!(!spt_state::paths::runtime_path(&state_dir).exists());
+        // status.json reflects the stopping transition, failed preserved.
+        let body = std::fs::read_to_string(spt_state::paths::status_path(&state_dir)).unwrap();
+        assert!(body.contains("stopping"), "status.json: {body}");
+        assert!(body.contains("failed"), "status.json: {body}");
+        assert!(!body.contains("running"), "status.json: {body}");
+    }
+
+    /// F-L1(a)+(b): the on-disk `stopping` state is committed BEFORE the slow
+    /// session teardown, so even when the (bounded) teardown is force-cut at
+    /// the deadline, `status.json` is already truthful. Mirrors the real
+    /// teardown ordering: flush first, then a deadline-bounded shutdown.
+    #[tokio::test]
+    async fn stopping_state_persists_even_when_teardown_is_cut_at_deadline() {
+        let dir = tempfile::tempdir().unwrap();
+        let state_dir = dir.path().to_path_buf();
+        let writer = spt_state::StatusWriter::new(
+            state_dir.clone(),
+            spt_state::StatusWriterConfig::default(),
+        );
+        writer
+            .update(|s| {
+                s.profiles = vec![spt_state::status::ProfileStatus {
+                    id: "p".into(),
+                    state: "running".into(),
+                    ..Default::default()
+                }];
+            })
+            .await;
+
+        // Critical flush happens first.
+        flush_stopping_state(&writer, &state_dir).await;
+
+        // Simulate a black-holed teardown bounded by a short deadline.
+        let deadline = std::time::Duration::from_millis(30);
+        let start = std::time::Instant::now();
+        let cut = tokio::time::timeout(
+            deadline,
+            tokio::time::sleep(std::time::Duration::from_secs(30)),
+        )
+        .await
+        .is_err();
+        assert!(cut, "slow teardown should hit the deadline");
+        assert!(start.elapsed() < std::time::Duration::from_secs(5));
+
+        // Despite the cut-off teardown, disk state already says stopping.
+        let body = std::fs::read_to_string(spt_state::paths::status_path(&state_dir)).unwrap();
+        assert!(body.contains("stopping"), "status.json: {body}");
     }
 
     /// Write a minimal valid config TOML and return its path inside the tempdir.

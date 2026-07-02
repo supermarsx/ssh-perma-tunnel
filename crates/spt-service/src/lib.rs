@@ -35,7 +35,11 @@ pub mod windows_scm;
 pub mod testing;
 
 pub use runner::{CommandRunner, MockRunner, RunOutput, TokioRunner};
-pub use systemd_notify::{sd_notify, sd_notify_ready, sd_notify_stopping, NOTIFY_SOCKET_ENV};
+pub use systemd_notify::{
+    sd_notify, sd_notify_ready, sd_notify_stopping, sd_notify_watchdog, spawn_watchdog,
+    WatchdogHandle, NOTIFY_SOCKET_ENV, RECOMMENDED_STOP_TIMEOUT_SECS, WATCHDOG_PID_ENV,
+    WATCHDOG_USEC_ENV,
+};
 
 /// Whether a service runs at the system or per-user scope.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -24,6 +24,11 @@ User=spt
 Group=spt
 Restart=on-failure
 RestartSec=5s
+# Graceful-stop budget. spt bounds its own aggregate teardown to ~80% of this
+# and flushes final status before the slow session teardown, so a clean stop
+# always finishes before systemd escalates to SIGKILL. Keep in sync with
+# spt_service::RECOMMENDED_STOP_TIMEOUT_SECS.
+TimeoutStopSec=45s
 LimitNOFILE=65536
 NoNewPrivileges=true
 PrivateTmp=true

@@ -212,8 +212,22 @@ impl SelectorCore {
     }
 
     /// Resolve the manual pin, if any, into an [`EndpointPick`].
+    ///
+    /// F-R1: the pin is only honored while the pinned endpoint is currently
+    /// SELECTABLE. If it is in cooldown / known-dead, this returns `None` so the
+    /// caller's `next()` falls through to normal policy and picks a healthy
+    /// sibling — mirroring the legacy selector's E1-F12 dead-pin protection
+    /// (`failover.rs`). Returning the dead pin unconditionally (the pre-fix
+    /// behavior) made a round-robin-policy profile retry a dead pinned endpoint
+    /// forever, never failing over. The pin resumes automatically once the
+    /// endpoint recovers: `next()` calls `refresh_health` before this, so an
+    /// expired cooldown is promoted back to `Healthy` and the pin is honored
+    /// again.
     fn manual_pick(&self) -> Option<EndpointPick> {
         let id = self.manual.as_ref()?;
+        if !self.is_healthy(id) {
+            return None;
+        }
         self.endpoints
             .iter()
             .find(|e| endpoint_id(e) == *id)
@@ -947,6 +961,90 @@ mod tests {
         s.manual_override("");
         // Cleared — round-robin resumes.
         let _ = s.next();
+    }
+
+    // ------- F-R1: manual pin must not wedge on a dead endpoint -------
+
+    #[test]
+    fn manual_pin_falls_through_when_dead_and_resumes_on_recovery() {
+        // F-R1: with a round-robin policy attached, an operator-pinned endpoint
+        // that dies must NOT be retried forever — the selector falls through to
+        // a healthy sibling while the pin is cooling, and resumes the pin once
+        // the endpoint recovers (cooldown expiry). Pre-fix, `manual_pick`
+        // returned the pin unconditionally so `next()` always yielded the dead
+        // endpoint.
+        let clock = Arc::new(FakeInstantClock::new(Instant::now()));
+        let cfg = RoundRobinConfig {
+            enabled: true,
+            policy: SelectionPolicy::RoundRobin,
+            cooldown_after_failure: Duration::from_secs(30),
+            ..Default::default()
+        };
+        let mut s = RoundRobinSelector::new(vec![ep("a", 22, 1), ep("b", 22, 1)], &cfg)
+            .with_clock(clock.clone());
+
+        s.manual_override("a:22");
+        // Pin healthy → honored.
+        assert_eq!(s.next().unwrap().id, "a:22");
+
+        // Pin dies → cooldown.
+        s.record_failure("a:22", &Error::NetworkUnreachable("a down".into()));
+
+        // Must fail over to the healthy sibling, not wedge on the dead pin.
+        assert_eq!(s.next().unwrap().id, "b:22");
+        assert_eq!(s.next().unwrap().id, "b:22");
+
+        // Recovery: cooldown expires → the pin resumes.
+        clock.advance(Duration::from_secs(31));
+        assert_eq!(
+            s.next().unwrap().id,
+            "a:22",
+            "pin must resume once the pinned endpoint recovers"
+        );
+    }
+
+    #[test]
+    fn legacy_selector_dead_manual_pin_fails_over_to_sibling() {
+        // F-R1 (integration): the round-robin policy attached to the legacy
+        // `failover::EndpointSelector`. A manually-pinned endpoint that is
+        // cooling must fall through to a sibling instead of returning the dead
+        // pin (the exact wedge E1-F12 was written to prevent, defeated by the
+        // policy's unconditional `manual_pick`).
+        use crate::failover::{EndpointSelector as LegacySelector, FailoverMode};
+        use rand::rngs::StdRng;
+        use rand::SeedableRng;
+
+        let endpoints = vec![ep("a", 22, 1), ep("b", 22, 1)];
+        let cfg = RoundRobinConfig {
+            enabled: true,
+            policy: SelectionPolicy::RoundRobin,
+            cooldown_after_failure: Duration::from_secs(60),
+            ..Default::default()
+        };
+        let policy = make_selector(endpoints.clone(), &cfg).expect("enabled");
+        let mut legacy = LegacySelector::new(FailoverMode::Priority, endpoints)
+            .with_fail_after(1)
+            .with_cooldown(60)
+            .with_policy_selector(Some(policy));
+
+        let mut rng = StdRng::seed_from_u64(0);
+        let now = Instant::now();
+
+        // Pin to "a", then "a" dies (cooling in both the legacy entries and the
+        // mirrored policy health map).
+        legacy.set_manual(Some(crate::failover::ManualOverride {
+            host: "a".into(),
+            port: 22,
+        }));
+        legacy.record_failure("a", 22, now);
+
+        // The pin is cooling → legacy falls through to the policy, whose
+        // `manual_pick` now also declines the dead pin → sibling "b".
+        let pick = legacy.pick(&mut rng, now).unwrap();
+        assert_eq!(
+            pick.host, "b",
+            "a dead manual pin must fail over to a healthy sibling, not wedge on the pin"
+        );
     }
 
     // ------- Cooldown edge: all in cooldown -> None -------

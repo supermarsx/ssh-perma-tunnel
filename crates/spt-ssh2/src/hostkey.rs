@@ -144,10 +144,24 @@ impl TrustVerifier {
     }
 }
 
-/// Append a single OpenSSH `known_hosts` line. `O_APPEND` makes the write
-/// atomic for line-length writes on POSIX, and `FILE_APPEND_DATA` likewise
-/// on Windows, so a concurrent reconnect appending another TOFU line cannot
-/// interleave with this one.
+/// Persist a single OpenSSH `known_hosts` line for a newly-accepted TOFU key.
+///
+/// Crash-safety: a raw `O_APPEND` + `write_all` is **not** crash-atomic — a
+/// crash or partial fs flush mid-append can leave a truncated final line and
+/// poison the file. Instead this reads the current file, appends the new
+/// entry, and rewrites the whole file via a temp-file + fsync + atomic rename
+/// (plus a directory fsync on unix). Readers therefore only ever observe the
+/// old complete file or the new complete file; a torn intermediate state is
+/// impossible. If the existing file's final line lacks a trailing newline
+/// (e.g. a pre-existing torn write), a separator is inserted first so the new
+/// entry always lands on its own parseable line — and the defensive parser in
+/// `spt-trust` skips the stale partial line rather than rejecting the file.
+///
+/// The temp file is created with 0600 (born-restricted on unix) and that mode
+/// carries over to the target on rename, preserving the private permissions.
+///
+/// Only genuinely-new keys reach here (a mismatch is terminal and handled by
+/// the caller before this function is called).
 fn append_known_hosts(path: &Path, host: &str, port: u16, key: &PublicKey) -> Result<()> {
     let host_prefix = if port == 22 {
         host.to_string()
@@ -158,22 +172,94 @@ fn append_known_hosts(path: &Path, host: &str, port: u16, key: &PublicKey) -> Re
         .to_openssh()
         .map_err(|e| Error::TrustFailed(format!("encode host key for TOFU append: {e}")))?;
     let line = format!("{host_prefix} {encoded}\n");
-    let mut f = std::fs::OpenOptions::new()
-        .append(true)
-        .create(true)
-        .open(path)
+
+    // Read the current contents, tolerating a missing file (first TOFU write
+    // creates it).
+    let mut content = match std::fs::read(path) {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(e) => {
+            return Err(Error::TrustFailed(format!(
+                "read known_hosts {} for TOFU append: {e}",
+                path.display()
+            )));
+        }
+    };
+    // Guard against a prior torn write: ensure the new entry begins on its own
+    // line even if the file's final line was truncated without a newline.
+    if !content.is_empty() && !content.ends_with(b"\n") {
+        content.push(b'\n');
+    }
+    content.extend_from_slice(line.as_bytes());
+
+    write_atomic_known_hosts(path, &content)
+}
+
+/// Rewrite `path` with `content` crash-atomically and durably: write to a
+/// sibling temp file (0600, born-restricted on unix), fsync it, atomically
+/// rename it over the target, then fsync the directory (unix). No new deps —
+/// uses the `tempfile` crate already in this crate's dependency graph.
+fn write_atomic_known_hosts(path: &Path, content: &[u8]) -> Result<()> {
+    let dir = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
+
+    let mut tmp = tempfile::Builder::new()
+        .prefix(".known_hosts.spt-tofu.")
+        .tempfile_in(&dir)
         .map_err(|e| {
             Error::TrustFailed(format!(
-                "open known_hosts {} for TOFU append: {e}",
+                "create temp for known_hosts {}: {e}",
                 path.display()
             ))
         })?;
-    f.write_all(line.as_bytes()).map_err(|e| {
+
+    // Born-restricted 0600 on unix (tempfile already creates 0600, but be
+    // explicit so the target keeps private perms after the rename).
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(tmp.path(), std::fs::Permissions::from_mode(0o600)).map_err(
+            |e| {
+                Error::TrustFailed(format!(
+                    "set 0600 on temp for known_hosts {}: {e}",
+                    path.display()
+                ))
+            },
+        )?;
+    }
+
+    tmp.write_all(content).map_err(|e| {
         Error::TrustFailed(format!(
-            "write known_hosts {} for TOFU append: {e}",
+            "write temp for known_hosts {}: {e}",
             path.display()
         ))
     })?;
+    // fsync the file data+metadata before the rename so the bytes are durable.
+    tmp.as_file().sync_all().map_err(|e| {
+        Error::TrustFailed(format!(
+            "fsync temp for known_hosts {}: {e}",
+            path.display()
+        ))
+    })?;
+
+    // Atomic replace of the target (overwrites any existing file).
+    tmp.persist(path).map_err(|e| {
+        Error::TrustFailed(format!(
+            "atomically replace known_hosts {}: {}",
+            path.display(),
+            e.error
+        ))
+    })?;
+
+    // fsync the directory so the rename itself is durable across a crash.
+    #[cfg(unix)]
+    {
+        if let Ok(d) = std::fs::File::open(&dir) {
+            let _ = d.sync_all();
+        }
+    }
     Ok(())
 }
 
@@ -386,6 +472,77 @@ mod tests {
         assert!(
             !path.exists(),
             "rejected key must not be written to known_hosts"
+        );
+    }
+
+    #[test]
+    fn tofu_append_onto_torn_file_heals_and_stays_parseable() {
+        // (e) Atomic/durable append integrity + torn-line healing. A file whose
+        // final line was truncated by a prior crash (no trailing newline) must
+        // NOT have the new TOFU entry glued onto it. The read-modify-write path
+        // inserts a separator so the new entry lands on its own parseable line,
+        // and the file reloads cleanly with the new host verifying Match. Fails
+        // against pre-fix code (raw O_APPEND glued the bytes → the merged line
+        // was unparseable → `KnownHosts::load` Err-ed on the whole file).
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("known_hosts");
+        // Pre-existing torn final line (partial base64, no newline).
+        std::fs::write(&path, "torn.example ssh-ed25519 AAAAC3Nz").unwrap();
+
+        let key = fresh_pub();
+        let v = TrustVerifier {
+            accept_new: true,
+            known_hosts_path: Some(path.clone()),
+            ..Default::default()
+        };
+        assert_eq!(
+            v.verify("fresh.example", 22, &key).unwrap(),
+            HostKeyOutcome::TofuAdded
+        );
+
+        // The new entry is on its own line, separated from the torn one.
+        let body = std::fs::read_to_string(&path).unwrap();
+        assert!(body.contains("\nfresh.example ssh-ed25519 "));
+
+        // Reloads cleanly (torn line skipped) and the new host verifies.
+        let loaded = KnownHosts::load(&path).expect("healed file must load");
+        assert_eq!(
+            loaded.verify("fresh.example", 22, &key),
+            KnownHostsResult::Match
+        );
+
+        // Atomic temp+rename leaves no litter behind in the directory.
+        let leftover: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(std::result::Result::ok)
+            .filter(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .starts_with(".known_hosts.spt-tofu.")
+            })
+            .collect();
+        assert!(leftover.is_empty(), "atomic append left a temp file behind");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn tofu_append_creates_file_with_0600() {
+        // The born-restricted 0600 mode must survive the temp+rename.
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("known_hosts");
+        let key = fresh_pub();
+        let v = TrustVerifier {
+            accept_new: true,
+            known_hosts_path: Some(path.clone()),
+            ..Default::default()
+        };
+        v.verify("new.example", 22, &key).unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(
+            mode & 0o777,
+            0o600,
+            "known_hosts must be 0600, got {mode:o}"
         );
     }
 

@@ -290,6 +290,7 @@ impl ProfileSupervisor {
             session_up_since: None,
             rng,
             current_endpoint: None,
+            last_instability_action: None,
         };
         let join = tokio::spawn(task.run(control_rx));
 
@@ -486,6 +487,12 @@ struct ProfileTask {
     /// time so a keepalive-detected loss can charge the failure to the right
     /// endpoint (E1-F3).
     current_endpoint: Option<Endpoint>,
+    /// F-S1: timestamp of the last instability-driven LIVE failover/restart.
+    /// Used as a storm guard so a live-session instability trip that drives a
+    /// real teardown cannot fire more often than
+    /// [`INSTABILITY_ACTION_MIN_INTERVAL`], independent of the detector's own
+    /// trip latch. `None` until the first such action fires.
+    last_instability_action: Option<Instant>,
 }
 
 /// A per-forward slot inside [`ProfileTask::run_active`]: the owned runner,
@@ -528,6 +535,31 @@ const FORWARD_REOPEN_BACKOFF: Duration = Duration::from_millis(500);
 /// correct trade-off — consistent with the lossy `try_send` UDP/demux paths.
 const PROFILE_EVENTS_CHANNEL_CAP: usize = 256;
 
+/// F-S1 storm guard: minimum wall-clock interval between two instability-driven
+/// LIVE failovers/restarts. The instability detector already latches (`triggered`
+/// stays set until `clear_after` of sustained health), so a single episode trips
+/// once; this is a belt-and-suspenders floor ensuring that even a rapidly
+/// re-arming detector cannot make the supervisor tear the live session down in a
+/// tight loop.
+const INSTABILITY_ACTION_MIN_INTERVAL: Duration = Duration::from_secs(10);
+
+/// F-S1 / F-S4: what the caller of [`ProfileTask::on_instability_trip`] must do
+/// to the LIVE session after a trip. Only the live-session (latency / keepalive)
+/// probe path acts on this; the connect-failure / `SessionLost` paths are
+/// already reconnecting and ignore it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InstabilityOutcome {
+    /// No live-session teardown required (observe-only, degrade, or a variant
+    /// that has no live remediation and was warned about at load time).
+    Handled,
+    /// `Failover` action: tear the live session down, cool the current endpoint,
+    /// and rotate to a sibling on the next pick.
+    FailoverRotate,
+    /// `RestartSession` action: tear the live session down and reconnect to the
+    /// same endpoint (no cooling / rotation).
+    RestartSession,
+}
+
 /// Outcome of one supervised session — drives the outer `run` loop.
 enum LoopAction {
     /// Continue the reconnect loop after `delay`.
@@ -557,12 +589,25 @@ enum ActiveDecision {
     /// The session-health probe failed (keepalive `Err` or timeout) — the
     /// session is dead and must be replaced via the reconnect path.
     SessionLost,
+    /// F-S1 / F-S4: an instability trip on the LIVE session selected a real
+    /// remediation (`Failover` or `RestartSession`). Tear the session down and
+    /// reconnect; `cool` charges the current endpoint a failure first so the
+    /// next pick rotates to a sibling (Failover) rather than reusing it
+    /// (RestartSession).
+    InstabilityAction {
+        /// Cool the current endpoint before reconnecting (Failover semantics).
+        cool: bool,
+    },
 }
 
 impl ProfileTask {
     async fn run(mut self, mut control: mpsc::Receiver<Control>) {
         self.backoff = Backoff::new(self.cfg.backoff);
         self.instability = InstabilityDetector::new(self.cfg.instability);
+
+        // F-S2 / F-S4: surface load-time warnings for options that cannot be
+        // honored on the live-session path (shallow probes, no-op actions).
+        self.warn_unsupported_config();
 
         // Kick off
         self.fire(SmEvent::Start);
@@ -979,7 +1024,20 @@ impl ProfileTask {
                             // detector.
                             let rtt = probe_started.elapsed();
                             if self.instability.record_probe(Some(rtt)) {
-                                self.on_instability_trip();
+                                // F-S1 / F-S4: a latency-p95 trip on the LIVE
+                                // session can now drive a real remediation
+                                // (Failover cools + rotates; RestartSession
+                                // tears down + reconnects) instead of only
+                                // relabelling to Unstable / emitting an event.
+                                match self.on_instability_trip() {
+                                    InstabilityOutcome::Handled => {}
+                                    InstabilityOutcome::FailoverRotate => {
+                                        break ActiveDecision::InstabilityAction { cool: true };
+                                    }
+                                    InstabilityOutcome::RestartSession => {
+                                        break ActiveDecision::InstabilityAction { cool: false };
+                                    }
+                                }
                             }
                             // E1-F8: a healthy probe accrues clean-uptime for
                             // the instability detector. When enough clean time
@@ -1006,8 +1064,11 @@ impl ProfileTask {
                             // TW2-A3: a failed probe is a keepalive miss. Feed it
                             // to the detector (consecutive-miss trip condition)
                             // before we tear the session down for reconnect.
+                            // We're already breaking to SessionLost (which cools
+                            // the endpoint + reconnects), so the trip outcome is
+                            // moot here — ignore it.
                             if self.instability.record_probe(None) {
-                                self.on_instability_trip();
+                                let _ = self.on_instability_trip();
                             }
                             tracing::warn!(
                                 profile = %self.name,
@@ -1018,8 +1079,10 @@ impl ProfileTask {
                         }
                         Err(_) => {
                             // TW2-A3: a timed-out probe is also a keepalive miss.
+                            // As in the `Err` arm, we're breaking to SessionLost
+                            // regardless, so ignore the trip outcome.
                             if self.instability.record_probe(None) {
-                                self.on_instability_trip();
+                                let _ = self.on_instability_trip();
                             }
                             tracing::warn!(
                                 profile = %self.name,
@@ -1117,6 +1180,30 @@ impl ProfileTask {
                 }
                 let delay = self.next_backoff();
                 LoopAction::Retry(delay)
+            }
+            ActiveDecision::InstabilityAction { cool } => {
+                // F-S1 / F-S4: a live-session instability trip drove a real
+                // remediation. Route it through the same teardown + reconnect
+                // machinery as a session loss so forwards and the session are
+                // closed cleanly, then reconnect. For the `Failover` action we
+                // charge the current endpoint a failure first (cooling it) so
+                // the next `pick_endpoint` rotates to a healthy sibling; for
+                // `RestartSession` we leave the endpoint uncooled so the
+                // reconnect targets the same endpoint.
+                self.fire(SmEvent::SessionLost);
+                stop_runners_bounded(runners, self.cfg.keepalive_interval).await;
+                let _ = close_session_bounded(session, self.cfg.keepalive_interval).await;
+                if cool {
+                    if let Some(ep) = self.current_endpoint.clone() {
+                        self.selector
+                            .lock()
+                            .record_failure(&ep.host, ep.port, Instant::now());
+                    }
+                }
+                // Reconnect promptly (rotate). A zero delay mirrors the
+                // operator-initiated failover path; connect latency still paces
+                // the loop and the endpoint cooldown biases the pick.
+                LoopAction::Retry(Duration::from_millis(0))
             }
         }
     }
@@ -1281,7 +1368,10 @@ impl ProfileTask {
             .lock()
             .record_failure(&endpoint.host, endpoint.port, now);
         if self.instability.record_disconnect(now) {
-            self.on_instability_trip();
+            // Already on the failure/reconnect path (the endpoint was just
+            // cooled above), so the live-teardown outcome is not actionable
+            // here — ignore it.
+            let _ = self.on_instability_trip();
         }
     }
 
@@ -1295,21 +1385,24 @@ impl ProfileTask {
     /// * `MarkDegraded` (default) — fire `SmEvent::InstabilityHit` (→ `Unstable`)
     ///   and let backoff escalate. This is the pre-TW-C2 fixed behavior.
     /// * `EmitEvent` — observe only: emit the event, do NOT change state.
-    /// * `Failover` — emit a `FailoverRequested` event so the orchestrator/UI
-    ///   sees the failover intent. The endpoint is already charged a failure
-    ///   (cooled) by `handle_session_failure` above, which biases the next
-    ///   `pick_endpoint` toward a sibling — i.e. the reconnect path fails over.
+    /// * `Failover` (F-S1) — emit a `FailoverRequested` event AND, when called
+    ///   from the LIVE session path, return [`InstabilityOutcome::FailoverRotate`]
+    ///   so the caller cools the current endpoint and rotates to a sibling. On
+    ///   the connect-failure / `SessionLost` path the endpoint is already cooled
+    ///   and the reconnect is already underway, so the caller ignores the
+    ///   outcome. A storm guard ([`INSTABILITY_ACTION_MIN_INTERVAL`]) bounds how
+    ///   often a live teardown can fire.
+    /// * `RestartSession` (F-S4) — on the LIVE path, return
+    ///   [`InstabilityOutcome::RestartSession`] so the caller tears the session
+    ///   down and reconnects to the SAME endpoint (no cooling).
     ///
-    /// Fallback to `MarkDegraded` (with a note) for variants whose dedicated
-    /// machinery does not exist in the supervisor yet:
-    /// * `IncreaseKeepalive` — no live mechanism to mutate the keepalive cadence
-    ///   of the running `run_active` loop from here.
-    /// * `IncreaseBackoff` — `Backoff`/`BackoffConfig` ceilings are immutable
-    ///   after construction; there is no runtime escalation hook.
-    /// * `RestartSession` — the trip site (`handle_session_failure`) is already
-    ///   on the failure/reconnect path; there is no live session handle here to
-    ///   tear down independently, so degrade is the correct conservative response.
-    fn on_instability_trip(&mut self) {
+    /// `IncreaseKeepalive` / `IncreaseBackoff` have no live-session mechanism
+    /// (the keepalive cadence and backoff ceilings are fixed after
+    /// construction), so they degrade like `MarkDegraded`. This is NOT silent:
+    /// [`Self::warn_unsupported_config`] emits a load-time validation WARN for
+    /// them so operators aren't misled that a no-op remediation is active
+    /// (F-S4).
+    fn on_instability_trip(&mut self) -> InstabilityOutcome {
         // Always-observable: event-bus lifecycle event + supervisor event.
         self.emit_event(ProfileEvent::InstabilityHit {
             profile: self.name.clone(),
@@ -1328,27 +1421,118 @@ impl ProfileTask {
         match self.cfg.instability.action {
             InstabilityAction::EmitEvent => {
                 // Observe only — no state change.
+                InstabilityOutcome::Handled
             }
             InstabilityAction::Failover => {
-                // Signal failover intent. The failing endpoint was already
-                // recorded (cooled) by the caller, so the next pick rotates to a
-                // sibling. We still mark Unstable so backoff escalation applies
-                // while we rotate.
+                // Signal failover intent, mark Unstable (so backoff escalation
+                // applies while we rotate), and — subject to the storm guard —
+                // ask the caller to actually cool the current endpoint and
+                // rotate. On the failure/reconnect path the caller ignores the
+                // returned outcome (the endpoint is already cooled).
                 self.emit_failover(None);
                 self.emit_event(ProfileEvent::FailoverRequested {
                     profile: self.name.clone(),
                     override_to: None,
                 });
                 self.fire(SmEvent::InstabilityHit);
+                if self.allow_instability_action() {
+                    InstabilityOutcome::FailoverRotate
+                } else {
+                    InstabilityOutcome::Handled
+                }
             }
-            // MarkDegraded (default) + fallbacks (IncreaseKeepalive /
-            // IncreaseBackoff / RestartSession) all degrade.
+            InstabilityAction::RestartSession => {
+                // F-S4: force a real session restart via the reconnect path.
+                self.fire(SmEvent::InstabilityHit);
+                if self.allow_instability_action() {
+                    InstabilityOutcome::RestartSession
+                } else {
+                    InstabilityOutcome::Handled
+                }
+            }
+            // MarkDegraded (default) + the two variants with no live mechanism
+            // (IncreaseKeepalive / IncreaseBackoff) all degrade. The latter two
+            // are warned about at load time (warn_unsupported_config) so they
+            // are never SILENTLY cosmetic.
             InstabilityAction::MarkDegraded
             | InstabilityAction::IncreaseKeepalive
-            | InstabilityAction::IncreaseBackoff
-            | InstabilityAction::RestartSession => {
+            | InstabilityAction::IncreaseBackoff => {
                 self.fire(SmEvent::InstabilityHit);
+                InstabilityOutcome::Handled
             }
+        }
+    }
+
+    /// F-S1 storm guard: return `true` (and arm the timer) at most once per
+    /// [`INSTABILITY_ACTION_MIN_INTERVAL`], so a live-session instability
+    /// remediation can't tear the session down in a tight loop.
+    fn allow_instability_action(&mut self) -> bool {
+        let now = Instant::now();
+        let allow = self
+            .last_instability_action
+            .map(|t| now.duration_since(t) >= INSTABILITY_ACTION_MIN_INTERVAL)
+            .unwrap_or(true);
+        if allow {
+            self.last_instability_action = Some(now);
+        }
+        allow
+    }
+
+    /// F-S2 / F-S4: emit load-time configuration WARNs for options that cannot
+    /// be honored on the live-session path. Called once at task start. These
+    /// are advisory (the profile still runs) but ensure no configured option is
+    /// SILENTLY cosmetic / weaker than an operator expects. Warnings surface on
+    /// the canonical event bus (`profile.config_warning`) when one is injected,
+    /// and always via `tracing::warn!`.
+    fn warn_unsupported_config(&self) {
+        // F-S4: live-session instability actions with no runtime mechanism.
+        let action_warning = match self.cfg.instability.action {
+            InstabilityAction::IncreaseKeepalive => Some(
+                "instability action `increase_keepalive` has no live mechanism to mutate the \
+                 running keepalive cadence; it degrades to `mark_degraded`. Use `failover` or \
+                 `restart_session` for an active remediation.",
+            ),
+            InstabilityAction::IncreaseBackoff => Some(
+                "instability action `increase_backoff` cannot mutate the immutable backoff \
+                 ceiling at runtime; it degrades to `mark_degraded`. Use `failover` or \
+                 `restart_session` for an active remediation.",
+            ),
+            _ => None,
+        };
+        if let Some(msg) = action_warning {
+            tracing::warn!(profile = %self.name, "{msg}");
+            self.cfg.observers.emit_lifecycle(
+                "profile.config_warning",
+                spt_events::Severity::Warn,
+                &self.name,
+                format!("profile `{}`: {msg}", self.name),
+                &[("kind", serde_json::Value::from("instability_action"))],
+            );
+        }
+
+        // F-S2: shallow health-check styles side-dial and never touch the live
+        // session, so a silently-dead session whose host stays reachable never
+        // trips SessionLost. Recommend the end-to-end SshHandshake probe.
+        let shallow_probe = match self.cfg.health_check {
+            HealthCheckStyle::TcpConnect => Some("tcp_connect"),
+            HealthCheckStyle::SshAuthPreflight => Some("ssh_auth_preflight"),
+            HealthCheckStyle::Ssh3Endpoint => Some("ssh3_endpoint"),
+            HealthCheckStyle::SshHandshake => None,
+        };
+        if let Some(style) = shallow_probe {
+            let msg = format!(
+                "health_check `{style}` is a side-dial probe that does not exercise the live \
+                 session, so it cannot detect a silently-dead session whose host stays \
+                 reachable; `ssh_handshake` is recommended for end-to-end liveness"
+            );
+            tracing::warn!(profile = %self.name, "{msg}");
+            self.cfg.observers.emit_lifecycle(
+                "profile.config_warning",
+                spt_events::Severity::Warn,
+                &self.name,
+                format!("profile `{}`: {msg}", self.name),
+                &[("kind", serde_json::Value::from("health_check"))],
+            );
         }
     }
 
@@ -3727,6 +3911,244 @@ mod tests {
         // rather than crashing or storm-reconnecting.
         tokio::time::sleep(Duration::from_millis(100)).await;
         assert_eq!(*rx.borrow(), ProfileStateName::Active);
+        sup.stop().await;
+    }
+
+    // ──────── F-S1 / F-S4: real instability remediation ───────────────
+
+    /// A protocol that counts connects, records the last endpoint host it was
+    /// asked to reach, and hands out a session whose `keepalive` succeeds but
+    /// takes `probe_delay` to round-trip — modelling a healthy-but-degraded
+    /// (high-latency) link that trips the `max_latency_p95` condition on the
+    /// LIVE session.
+    #[derive(Debug)]
+    struct CountingSlowProto {
+        probe_delay: Duration,
+        connect_count: Arc<std::sync::atomic::AtomicU32>,
+        last_host: Arc<Mutex<Option<String>>>,
+    }
+
+    impl CountingSlowProto {
+        fn new(probe_delay: Duration) -> Self {
+            Self {
+                probe_delay,
+                connect_count: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+                last_host: Arc::new(Mutex::new(None)),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl spt_protocol::TunnelProtocol for CountingSlowProto {
+        async fn connect(
+            &self,
+            endpoint: &Endpoint,
+            _auth: &AuthConfig,
+        ) -> Result<Box<dyn spt_protocol::TunnelSession>> {
+            self.connect_count
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            *self.last_host.lock() = Some(endpoint.host.clone());
+            Ok(Box::new(SlowKeepaliveSession::new(self.probe_delay)))
+        }
+        fn capabilities(&self) -> spt_protocol::ProtocolCapabilities {
+            spt_protocol::ProtocolCapabilities::ssh3()
+        }
+        fn name(&self) -> &'static str {
+            "counting-slow"
+        }
+    }
+
+    /// F-S1: a latency-p95 instability trip with `action = Failover` on a LIVE
+    /// (slow-but-healthy) session must perform REAL remediation — cool the
+    /// current endpoint and rotate to a healthy sibling — not merely relabel to
+    /// `Unstable` / emit an event. Pre-fix the profile served over the degraded
+    /// link forever (`connect_count` stuck at 1, never leaving endpoint "a").
+    #[tokio::test]
+    async fn failover_action_latency_trip_cools_and_rotates() {
+        let proto = Arc::new(CountingSlowProto::new(Duration::from_millis(60)));
+
+        let mut cfg = ProfileSupervisorConfig::default();
+        cfg.backoff.initial_delay = Duration::from_millis(1);
+        cfg.backoff.max_delay = Duration::from_millis(2);
+        cfg.backoff.max_attempts = 0;
+        cfg.keepalive_interval = Duration::from_millis(20);
+        cfg.keepalive_timeout = Duration::from_secs(2);
+        // Keep the cooled endpoint out of rotation long enough that the pick
+        // after the trip lands on the sibling.
+        cfg.failover_cooldown = Duration::from_secs(30);
+        // A 60 ms probe RTT trips a 10 ms p95 ceiling on the first sample.
+        cfg.instability.max_latency_p95 = Some(Duration::from_millis(10));
+        cfg.instability.action = InstabilityAction::Failover;
+
+        let sup = ProfileSupervisor::spawn(
+            "p",
+            proto.clone(),
+            auth(),
+            vec![endpoint("a"), endpoint("b")],
+            vec![],
+            cfg,
+        );
+
+        // The Failover action must cool "a" and rotate to "b": a second connect
+        // whose target is the sibling.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let count = proto
+                .connect_count
+                .load(std::sync::atomic::Ordering::SeqCst);
+            let last = proto.last_host.lock().clone();
+            if count >= 2 && last.as_deref() == Some("b") {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "Failover action did not cool+rotate off the degraded endpoint: \
+                 connect_count={count}, last_host={last:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+
+        sup.stop().await;
+    }
+
+    /// F-S4: `action = RestartSession` on a LIVE latency trip must actually tear
+    /// the session down and reconnect (a real restart via the reconnect path),
+    /// not silently degrade. With a single endpoint the reconnect targets the
+    /// same host, so a second connect proves the restart happened. Pre-fix
+    /// RestartSession fell through to `MarkDegraded` and never reconnected
+    /// (`connect_count` stuck at 1).
+    #[tokio::test]
+    async fn restart_session_action_latency_trip_reconnects() {
+        let proto = Arc::new(CountingSlowProto::new(Duration::from_millis(60)));
+
+        let mut cfg = ProfileSupervisorConfig::default();
+        cfg.backoff.initial_delay = Duration::from_millis(1);
+        cfg.backoff.max_delay = Duration::from_millis(2);
+        cfg.backoff.max_attempts = 0;
+        cfg.keepalive_interval = Duration::from_millis(20);
+        cfg.keepalive_timeout = Duration::from_secs(2);
+        cfg.instability.max_latency_p95 = Some(Duration::from_millis(10));
+        cfg.instability.action = InstabilityAction::RestartSession;
+
+        let sup =
+            ProfileSupervisor::spawn("p", proto.clone(), auth(), vec![endpoint("a")], vec![], cfg);
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            if proto
+                .connect_count
+                .load(std::sync::atomic::Ordering::SeqCst)
+                >= 2
+            {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "RestartSession action did not restart the live session (no reconnect)"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+
+        sup.stop().await;
+    }
+
+    /// F-S4: an instability action with no live-session mechanism
+    /// (`IncreaseKeepalive` / `IncreaseBackoff`) must NOT be silently cosmetic —
+    /// it emits a load-time `profile.config_warning` on the injected event bus so
+    /// operators aren't misled that a no-op remediation is active.
+    #[tokio::test]
+    async fn cosmetic_instability_action_emits_config_warning() {
+        use spt_events::EventBus;
+
+        let bus = EventBus::default();
+        let mut rx = bus.subscribe();
+
+        let proto = Arc::new(MockTunnelProtocol::new());
+        let mut cfg = ProfileSupervisorConfig {
+            observers: crate::stats::SupervisorObservers {
+                event_bus: Some(bus),
+                metrics: None,
+            },
+            ..Default::default()
+        };
+        cfg.instability.action = InstabilityAction::IncreaseKeepalive;
+
+        let sup = ProfileSupervisor::spawn(
+            "warned",
+            proto.clone(),
+            auth(),
+            vec![endpoint("a")],
+            vec![],
+            cfg,
+        );
+
+        let mut saw_warning = false;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        while tokio::time::Instant::now() < deadline {
+            if let Ok(Ok(ev)) = tokio::time::timeout(Duration::from_millis(200), rx.recv()).await {
+                if ev.kind.as_str() == "profile.config_warning" {
+                    assert_eq!(ev.severity, spt_events::Severity::Warn);
+                    assert_eq!(
+                        ev.profile_id.as_ref().map(spt_core::ProfileId::as_str),
+                        Some("warned")
+                    );
+                    saw_warning = true;
+                    break;
+                }
+            }
+        }
+        assert!(
+            saw_warning,
+            "a cosmetic instability action must emit a load-time profile.config_warning"
+        );
+
+        sup.stop().await;
+    }
+
+    /// F-S2: a shallow health-check style (`TcpConnect`) must emit a load-time
+    /// `profile.config_warning` recommending `SshHandshake`, because it can't
+    /// detect a silently-dead session whose host stays reachable.
+    #[tokio::test]
+    async fn shallow_health_check_emits_config_warning() {
+        use spt_events::EventBus;
+
+        let bus = EventBus::default();
+        let mut rx = bus.subscribe();
+
+        let proto = Arc::new(MockTunnelProtocol::new());
+        let cfg = ProfileSupervisorConfig {
+            health_check: HealthCheckStyle::TcpConnect,
+            observers: crate::stats::SupervisorObservers {
+                event_bus: Some(bus),
+                metrics: None,
+            },
+            ..Default::default()
+        };
+
+        let sup = ProfileSupervisor::spawn(
+            "shallow",
+            proto.clone(),
+            auth(),
+            vec![endpoint("a")],
+            vec![],
+            cfg,
+        );
+
+        let mut saw_warning = false;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        while tokio::time::Instant::now() < deadline {
+            if let Ok(Ok(ev)) = tokio::time::timeout(Duration::from_millis(200), rx.recv()).await {
+                if ev.kind.as_str() == "profile.config_warning" {
+                    saw_warning = true;
+                    break;
+                }
+            }
+        }
+        assert!(
+            saw_warning,
+            "a shallow health_check must emit a load-time profile.config_warning"
+        );
+
         sup.stop().await;
     }
 }

@@ -8,6 +8,11 @@ Wants=network-online.target
 # Type=notify: the spt binary sends sd_notify READY=1 once the orchestrator is
 # up and STOPPING=1 at the start of an orderly shutdown, via $NOTIFY_SOCKET
 # (see spt-service::systemd_notify; no libsystemd dependency).
+#
+# WatchdogSec is supported: when set, spt reads $WATCHDOG_USEC and sends
+# WATCHDOG=1 at half the interval (a bounded, non-blocking pinger). It is safe
+# to add e.g. `WatchdogSec=30s` here for liveness-based restarts; leaving it
+# unset simply disables the watchdog (no pings sent).
 Type=notify
 # Only the main process emits notifications.
 NotifyAccess=main
@@ -20,6 +25,11 @@ User=spt
 Group=spt
 Restart=on-failure
 RestartSec=5s
+# Graceful-stop budget. spt bounds its own aggregate teardown to ~80% of this
+# and flushes final status before the slow session teardown, so a clean stop
+# always finishes before systemd escalates to SIGKILL. Keep in sync with
+# spt_service::RECOMMENDED_STOP_TIMEOUT_SECS.
+TimeoutStopSec=45s
 LimitNOFILE=65536
 NoNewPrivileges=true
 PrivateTmp=true

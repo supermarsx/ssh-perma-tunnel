@@ -15,7 +15,7 @@
 //!   X.509 (DER) cert minted with `rcgen`. Two cases:
 //!     - `match`    — the pin set contains the cert's SPKI digest.
 //!     - `mismatch` — the pin set contains only a non-matching digest,
-//!                    so verify fails with `TrustFailed` after the SHA-256.
+//!       so verify fails with `TrustFailed` after the SHA-256.
 //!
 //! Run explicitly with:
 //!

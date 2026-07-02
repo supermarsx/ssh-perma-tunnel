@@ -4,10 +4,23 @@
 //! `…2.bin`, etc. — fixed-width 20-digit zero-padded sequence numbers so that
 //! lexicographic order = insertion order.
 //!
-//! ## Atomicity
+//! ## Atomicity & durability
 //!
-//! `push` writes `<n>.bin.tmp` then renames to `<n>.bin`. Readers never see a
-//! half-written file.
+//! `push` writes `<n>.bin.tmp`, **fsyncs** it, renames to `<n>.bin`, then
+//! **fsyncs the directory**. Readers never see a half-written file, and — the
+//! reason for the fsyncs — once `push` returns the entry is crash-durable: a
+//! rename's directory entry is only durable after both the file's data blocks
+//! and the containing directory are flushed. This is the same guarantee
+//! `atomicwrites` gives the status/runtime paths, applied here so an ack'd
+//! event survives a crash.
+//!
+//! ## At-least-once drain
+//!
+//! Readers should [`DiskSpool::peek`] an entry, deliver it, and only then
+//! [`DiskSpool::remove`] it (passing the peeked seq). A crash between peek and a
+//! successful delivery re-delivers rather than losing the event. A permanently
+//! undeliverable / undecodable entry can be moved aside with
+//! [`DiskSpool::quarantine`] so it cannot wedge the drain in an infinite loop.
 //!
 //! ## Eviction
 //!
@@ -15,6 +28,8 @@
 //! oldest entries are deleted FIFO until both limits are satisfied.
 
 use std::collections::VecDeque;
+use std::fs::File;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use spt_core::{Error, Result};
@@ -64,6 +79,27 @@ pub struct DiskSpool {
 const SEQ_WIDTH: usize = 20;
 const SUFFIX: &str = ".bin";
 const TMP_SUFFIX: &str = ".bin.tmp";
+const POISON_SUFFIX: &str = ".bin.poison";
+
+/// Best-effort fsync of a directory so a completed `rename` is crash-durable.
+///
+/// On POSIX the renamed directory entry only becomes durable once the
+/// containing directory is fsync'd. Opening a directory as a file is not
+/// supported on Windows (and NTFS does not require it here), so this is a no-op
+/// there. Failures are ignored: durability is best-effort and must never fail a
+/// push that already succeeded.
+fn fsync_dir(dir: &Path) {
+    #[cfg(unix)]
+    {
+        if let Ok(f) = File::open(dir) {
+            let _ = f.sync_all();
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = dir;
+    }
+}
 
 impl DiskSpool {
     /// Open or create a spool at `dir`. Pre-existing files are restored to the
@@ -142,14 +178,30 @@ impl DiskSpool {
         let final_path = self.path_for(seq);
         let tmp_path = self.tmp_path_for(seq);
 
-        std::fs::write(&tmp_path, payload).map_err(|e| Error::StateLockFailed {
-            path: tmp_path.clone(),
-            reason: format!("spool write tmp: {e}"),
-        })?;
+        // Durability: fsync the temp file BEFORE the rename and fsync the
+        // directory AFTER, so an ack'd (returned) push survives a crash. Without
+        // the fsyncs the rename can be durable while the data blocks are not,
+        // yielding a zero-length/garbage `.bin` that drains as a silently lost
+        // event.
+        {
+            let mut f = File::create(&tmp_path).map_err(|e| Error::StateLockFailed {
+                path: tmp_path.clone(),
+                reason: format!("spool create tmp: {e}"),
+            })?;
+            f.write_all(payload).map_err(|e| Error::StateLockFailed {
+                path: tmp_path.clone(),
+                reason: format!("spool write tmp: {e}"),
+            })?;
+            f.sync_all().map_err(|e| Error::StateLockFailed {
+                path: tmp_path.clone(),
+                reason: format!("spool fsync tmp: {e}"),
+            })?;
+        }
         std::fs::rename(&tmp_path, &final_path).map_err(|e| Error::StateLockFailed {
             path: final_path.clone(),
             reason: format!("spool rename: {e}"),
         })?;
+        fsync_dir(&self.dir);
 
         self.queue.push_back(seq);
         self.total_bytes += size;
@@ -169,6 +221,64 @@ impl DiskSpool {
         self.total_bytes = self.total_bytes.saturating_sub(payload.len() as u64);
         let _ = std::fs::remove_file(&path);
         Ok(Some(SpoolEntry { payload, seq, path }))
+    }
+
+    /// Read the oldest entry WITHOUT removing it from the queue or disk.
+    ///
+    /// Enables at-least-once drains: deliver the peeked entry, then call
+    /// [`Self::remove`] (with the peeked seq) only after delivery succeeds. A
+    /// crash between the peek and a successful delivery re-delivers rather than
+    /// losing the event. Returns `Ok(None)` if empty.
+    pub fn peek(&self) -> Result<Option<SpoolEntry>> {
+        let Some(&seq) = self.queue.front() else {
+            return Ok(None);
+        };
+        let path = self.path_for(seq);
+        let payload = std::fs::read(&path).map_err(|e| Error::StateLockFailed {
+            path: path.clone(),
+            reason: format!("spool peek read: {e}"),
+        })?;
+        Ok(Some(SpoolEntry { payload, seq, path }))
+    }
+
+    /// Remove the front entry *iff* it still carries `seq`, deleting the file.
+    ///
+    /// Returns `true` if the entry was removed. A `false` result means the front
+    /// has moved on (e.g. the peeked entry was FIFO-evicted under cap pressure
+    /// while a delivery was in flight), in which case there is nothing to do —
+    /// the seq guard prevents deleting the wrong entry.
+    pub fn remove(&mut self, seq: u64) -> bool {
+        if self.queue.front() != Some(&seq) {
+            return false;
+        }
+        self.queue.pop_front();
+        let path = self.path_for(seq);
+        let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        let _ = std::fs::remove_file(&path);
+        self.total_bytes = self.total_bytes.saturating_sub(size);
+        true
+    }
+
+    /// Move the front entry aside as a `.poison` file *iff* it still carries
+    /// `seq`, so a permanently undeliverable / undecodable entry can never wedge
+    /// the drain in an infinite redelivery loop.
+    ///
+    /// The bytes are retained for forensics but drop out of the FIFO queue and
+    /// are not reloaded on [`Self::open`]. Returns `true` if quarantined.
+    pub fn quarantine(&mut self, seq: u64) -> bool {
+        if self.queue.front() != Some(&seq) {
+            return false;
+        }
+        self.queue.pop_front();
+        let path = self.path_for(seq);
+        let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        let poison = self.dir.join(format!("{seq:0SEQ_WIDTH$}{POISON_SUFFIX}"));
+        if std::fs::rename(&path, &poison).is_err() {
+            // Move-aside failed: delete instead so the queue still unblocks.
+            let _ = std::fs::remove_file(&path);
+        }
+        self.total_bytes = self.total_bytes.saturating_sub(size);
+        true
     }
 
     /// Number of pending entries.
@@ -369,6 +479,71 @@ mod tests {
         assert_eq!(a.payload, vec![0]);
         assert_eq!(b.payload, vec![1]);
         assert_eq!(c.payload, vec![2]);
+    }
+
+    #[test]
+    fn push_leaves_entry_present_and_intact_after_return() {
+        // MED-1 durability: after `push` returns the entry must be on disk,
+        // named `<seq>.bin`, with the exact payload — the fsync'd temp file is
+        // renamed into place before the ack. (Regression guard; the fsync
+        // itself is not directly observable in a unit test.)
+        let tmp = tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
+        let mut s = DiskSpool::open(dir.clone(), SpoolConfig::default()).unwrap();
+        let seq = s.push(b"durable-payload").unwrap();
+        let path = dir.join(format!("{seq:0SEQ_WIDTH$}{SUFFIX}"));
+        assert!(path.exists(), "spooled file must exist after push returns");
+        assert_eq!(std::fs::read(&path).unwrap(), b"durable-payload");
+        // No leftover temp file.
+        let tmp_path = dir.join(format!("{seq:0SEQ_WIDTH$}{TMP_SUFFIX}"));
+        assert!(!tmp_path.exists(), "temp file must be gone after rename");
+    }
+
+    #[test]
+    fn peek_does_not_remove_and_remove_deletes_by_seq() {
+        let tmp = tempdir().unwrap();
+        let mut s = DiskSpool::open(tmp.path().to_path_buf(), SpoolConfig::default()).unwrap();
+        let seq0 = s.push(&[0]).unwrap();
+        s.push(&[1]).unwrap();
+
+        // Peek returns the front without removing it.
+        let e = s.peek().unwrap().unwrap();
+        assert_eq!(e.seq, seq0);
+        assert_eq!(e.payload, vec![0]);
+        assert_eq!(s.len(), 2, "peek must not remove the entry");
+        // A second peek still sees the same front.
+        assert_eq!(s.peek().unwrap().unwrap().seq, seq0);
+
+        // remove with a non-matching seq is a no-op (guards against deleting the
+        // wrong entry after an in-flight eviction).
+        assert!(!s.remove(99), "remove of absent seq must be a no-op");
+        assert_eq!(s.len(), 2);
+
+        // remove with the front seq deletes exactly that entry, preserving order.
+        assert!(s.remove(seq0));
+        assert_eq!(s.len(), 1);
+        assert_eq!(s.peek().unwrap().unwrap().payload, vec![1]);
+    }
+
+    #[test]
+    fn quarantine_moves_entry_aside_and_out_of_queue() {
+        let tmp = tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
+        let mut s = DiskSpool::open(dir.clone(), SpoolConfig::default()).unwrap();
+        let seq = s.push(b"poison").unwrap();
+        assert!(s.quarantine(seq));
+        assert_eq!(s.len(), 0, "quarantined entry leaves the FIFO queue");
+
+        // The `.bin` is gone; a `.bin.poison` sidecar retains the bytes.
+        let bin = dir.join(format!("{seq:0SEQ_WIDTH$}{SUFFIX}"));
+        let poison = dir.join(format!("{seq:0SEQ_WIDTH$}{POISON_SUFFIX}"));
+        assert!(!bin.exists());
+        assert!(poison.exists());
+        assert_eq!(std::fs::read(&poison).unwrap(), b"poison");
+
+        // Poison files are NOT reloaded into the queue on reopen.
+        let s2 = DiskSpool::open(dir, SpoolConfig::default()).unwrap();
+        assert_eq!(s2.len(), 0);
     }
 
     #[test]

@@ -21,10 +21,15 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use parking_lot::Mutex;
-use tokio::sync::oneshot;
+use tokio::sync::{broadcast, oneshot};
 use tokio::task::JoinHandle;
 
 use spt_state::{DiskSpool, SpoolConfig};
+
+/// Best-effort budget for draining events already buffered in the broadcast
+/// receiver when the dispatcher is told to shut down (F-L2). Bounds teardown so
+/// a slow/black-holed sink can never hang shutdown.
+const SHUTDOWN_DRAIN_BUDGET: Duration = Duration::from_secs(2);
 
 use crate::binding::{Binding, DedupeState};
 use crate::bus::EventBus;
@@ -133,7 +138,20 @@ impl Dispatcher {
             loop {
                 tokio::select! {
                     biased;
-                    _ = &mut sd_rx => break,
+                    _ = &mut sd_rx => {
+                        // F-L2: before exiting, drain events still buffered in
+                        // the broadcast receiver (last-gasp lifecycle/profile-stop
+                        // events emitted during orchestrator shutdown). Each is
+                        // delivered to its sinks or spooled on failure — not
+                        // silently dropped. Bounded by SHUTDOWN_DRAIN_BUDGET so
+                        // teardown cannot hang.
+                        let _ = tokio::time::timeout(
+                            SHUTDOWN_DRAIN_BUDGET,
+                            inner_for_task.drain_buffered(&mut rx),
+                        )
+                        .await;
+                        break;
+                    }
                     msg = rx.recv() => {
                         match msg {
                             Ok(ev) => {
@@ -273,25 +291,71 @@ impl DispatcherInner {
             return;
         };
         loop {
+            // Peek WITHOUT removing (at-least-once): only delete after the sink
+            // confirms delivery, so a crash mid-delivery re-delivers instead of
+            // losing the event.
             let entry = {
-                let mut g = spool.lock();
-                match g.pop() {
+                let g = spool.lock();
+                match g.peek() {
                     Ok(Some(e)) => e,
                     Ok(None) | Err(_) => return,
                 }
             };
             let Ok(ev) = serde_json::from_slice::<Event>(&entry.payload) else {
+                // Undecodable payload: it can never be delivered, and leaving it
+                // at the front would loop forever. Quarantine (move-aside) so the
+                // drain makes progress — bounded: one entry leaves per pass.
+                tracing::warn!(
+                    sink = %sink_name,
+                    seq = entry.seq,
+                    "spool entry is undecodable; quarantining poison entry"
+                );
+                spool.lock().quarantine(entry.seq);
                 continue;
             };
             let arc = Arc::new(ev);
-            if let Err(e) = sink.deliver(arc.clone()).await {
-                // Re-spool and stop draining on transient failure.
-                if e.is_retryable() {
-                    let mut g = spool.lock();
-                    let bytes = serde_json::to_vec(&*arc).unwrap_or_default();
-                    let _ = g.push(&bytes);
+            match sink.deliver(arc).await {
+                Ok(()) => {
+                    // Delivered: now safe to delete. Passing the peeked seq keeps
+                    // FIFO intact and avoids deleting an entry evicted meanwhile.
+                    spool.lock().remove(entry.seq);
                 }
-                return;
+                Err(e) if e.is_retryable() => {
+                    // Transient: leave the entry spooled in place (original seq,
+                    // original position) and stop draining. The retry task tries
+                    // again next tick — ordering across retries is preserved.
+                    return;
+                }
+                Err(e) => {
+                    // Permanent failure: this entry will never be accepted.
+                    // Remove it so it cannot wedge the drain, and log.
+                    tracing::warn!(
+                        sink = %sink_name,
+                        seq = entry.seq,
+                        error = %e,
+                        "spooled event rejected permanently; dropping"
+                    );
+                    spool.lock().remove(entry.seq);
+                }
+            }
+        }
+    }
+
+    /// Drain events already buffered in `rx` on shutdown, dispatching each
+    /// through the normal binding/sink path (delivered, or spooled on transient
+    /// failure). Stops as soon as the receiver is empty or closed. Callers bound
+    /// the total time (see [`SHUTDOWN_DRAIN_BUDGET`]); this method itself does
+    /// not block on new events.
+    pub async fn drain_buffered(&self, rx: &mut broadcast::Receiver<Arc<Event>>) {
+        loop {
+            match rx.try_recv() {
+                Ok(ev) => self.dispatch(ev).await,
+                Err(broadcast::error::TryRecvError::Lagged(n)) => {
+                    tracing::warn!(skipped = n, "event dispatcher lagged during shutdown drain");
+                }
+                Err(
+                    broadcast::error::TryRecvError::Empty | broadcast::error::TryRecvError::Closed,
+                ) => break,
             }
         }
     }
@@ -375,6 +439,51 @@ mod tests {
     use crate::sinks::http::{HttpAuth, HttpSink, RecordingTransport};
     use crate::sinks::SinkError;
     use tempfile::tempdir;
+
+    /// Test sink that records delivered event kinds in order and can be told to
+    /// fail its next `n` deliveries with a transient (retryable) error.
+    struct RecordingSink {
+        name: String,
+        delivered: Mutex<Vec<String>>,
+        fail_next: Mutex<usize>,
+    }
+
+    impl RecordingSink {
+        fn new(name: &str) -> Arc<Self> {
+            Arc::new(Self {
+                name: name.into(),
+                delivered: Mutex::new(Vec::new()),
+                fail_next: Mutex::new(0),
+            })
+        }
+        fn fail_next(&self, n: usize) {
+            *self.fail_next.lock() = n;
+        }
+        fn kinds(&self) -> Vec<String> {
+            self.delivered.lock().clone()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Sink for RecordingSink {
+        fn name(&self) -> &str {
+            &self.name
+        }
+        fn kind(&self) -> &'static str {
+            "recording"
+        }
+        async fn deliver(&self, event: Arc<Event>) -> Result<(), SinkError> {
+            {
+                let mut n = self.fail_next.lock();
+                if *n > 0 {
+                    *n -= 1;
+                    return Err(SinkError::Transient("boom".into()));
+                }
+            }
+            self.delivered.lock().push(event.kind.as_str().to_string());
+            Ok(())
+        }
+    }
 
     fn make_binding(kinds: Vec<&str>, sinks: Vec<&str>) -> Binding {
         Binding {
@@ -561,6 +670,169 @@ mod tests {
         t.fail_once(SinkError::Transient("still down".into()));
         d.drain_spool("alerts").await;
         assert_eq!(d.spool_len("alerts"), 1);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn drain_delivers_before_delete_and_preserves_fifo_order() {
+        // MED-1: two events spool via the live path (transient failures), then
+        // the healed sink redelivers them in their ORIGINAL order on drain and
+        // the spool empties. Pre-fix the re-spool assigned a new back-of-queue
+        // seq, breaking FIFO; here order is preserved and nothing is lost.
+        let tmp = tempdir().unwrap();
+        let cfg = DispatcherConfig {
+            spool_root: tmp.path().into(),
+            ..DispatcherConfig::default()
+        };
+        let sink = RecordingSink::new("r");
+        sink.fail_next(2); // fail both live deliveries so both spool
+        let mut sinks: HashMap<String, Arc<dyn Sink>> = HashMap::new();
+        sinks.insert("r".into(), sink.clone() as Arc<dyn Sink>);
+        let bindings = vec![make_binding(vec!["k*"], vec!["r"])];
+        let d = build_for_test(bindings, sinks, cfg).unwrap();
+
+        d.dispatch(Arc::new(Event::builder("k1", Severity::Info).build()))
+            .await;
+        d.dispatch(Arc::new(Event::builder("k2", Severity::Info).build()))
+            .await;
+        assert_eq!(d.spool_len("r"), 2, "both transient failures spool");
+        assert!(sink.kinds().is_empty(), "nothing delivered yet");
+
+        // Healed: drain redelivers in FIFO order and clears the spool.
+        d.drain_spool("r").await;
+        assert_eq!(d.spool_len("r"), 0, "spool drained clean");
+        assert_eq!(
+            sink.kinds(),
+            vec!["k1".to_string(), "k2".to_string()],
+            "redelivered in original order"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn drain_leaves_entry_spooled_on_transient_and_redelivers_next_drain() {
+        // MED-1: a delivery failure during drain must LEAVE the entry spooled
+        // (deliver-before-delete), and a later drain redelivers it. Pre-fix the
+        // entry was popped (deleted) before delivery, so a failure lost it.
+        let tmp = tempdir().unwrap();
+        let cfg = DispatcherConfig {
+            spool_root: tmp.path().into(),
+            ..DispatcherConfig::default()
+        };
+        let sink = RecordingSink::new("r");
+        sink.fail_next(1); // fail the initial live delivery so it spools
+        let mut sinks: HashMap<String, Arc<dyn Sink>> = HashMap::new();
+        sinks.insert("r".into(), sink.clone() as Arc<dyn Sink>);
+        let bindings = vec![make_binding(vec!["k*"], vec!["r"])];
+        let d = build_for_test(bindings, sinks, cfg).unwrap();
+
+        d.dispatch(Arc::new(Event::builder("k1", Severity::Info).build()))
+            .await;
+        assert_eq!(d.spool_len("r"), 1);
+
+        // Drain while the sink is still failing: entry stays spooled.
+        sink.fail_next(1);
+        d.drain_spool("r").await;
+        assert_eq!(
+            d.spool_len("r"),
+            1,
+            "transient failure leaves entry spooled"
+        );
+        assert!(sink.kinds().is_empty(), "not delivered while failing");
+
+        // Now healed: the very same event redelivers and the spool clears.
+        d.drain_spool("r").await;
+        assert_eq!(d.spool_len("r"), 0);
+        assert_eq!(sink.kinds(), vec!["k1".to_string()]);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn drain_quarantines_poison_entry_without_infinite_loop() {
+        // MED-1: an undecodable spool entry must be moved aside (quarantined)
+        // so the drain makes progress and terminates — pre-fix `pop` deleted it
+        // silently, but with peek-based drains a non-quarantining loop would spin
+        // forever on the same front entry.
+        let tmp = tempdir().unwrap();
+        let sink_dir = tmp.path().join("r");
+        std::fs::create_dir_all(&sink_dir).unwrap();
+        // Write a garbage entry directly into the sink's spool dir so `open`
+        // loads it into the queue.
+        let garbage = sink_dir.join(format!("{:020}.bin", 1));
+        std::fs::write(&garbage, b"not json at all").unwrap();
+
+        let cfg = DispatcherConfig {
+            spool_root: tmp.path().into(),
+            ..DispatcherConfig::default()
+        };
+        let sink = RecordingSink::new("r");
+        let mut sinks: HashMap<String, Arc<dyn Sink>> = HashMap::new();
+        sinks.insert("r".into(), sink.clone() as Arc<dyn Sink>);
+        let bindings = vec![make_binding(vec!["k*"], vec!["r"])];
+        let d = build_for_test(bindings, sinks, cfg).unwrap();
+        assert_eq!(d.spool_len("r"), 1, "garbage entry loaded on open");
+
+        // Must terminate (bounded), quarantine the poison, and never deliver.
+        d.drain_spool("r").await;
+        assert_eq!(d.spool_len("r"), 0, "poison entry removed from queue");
+        assert!(sink.kinds().is_empty(), "poison never delivered");
+        assert!(
+            sink_dir.join(format!("{:020}.bin.poison", 1)).exists(),
+            "poison bytes retained in a .poison sidecar"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn shutdown_drain_delivers_buffered_events_not_dropped() {
+        // F-L2: events already buffered in the broadcast receiver at shutdown
+        // must be delivered, not silently dropped. Pre-fix the loop broke
+        // immediately on the shutdown signal and never drained `rx`.
+        let tmp = tempdir().unwrap();
+        let cfg = DispatcherConfig {
+            spool_root: tmp.path().into(),
+            ..DispatcherConfig::default()
+        };
+        let sink = RecordingSink::new("r");
+        let mut sinks: HashMap<String, Arc<dyn Sink>> = HashMap::new();
+        sinks.insert("r".into(), sink.clone() as Arc<dyn Sink>);
+        let bindings = vec![make_binding(vec!["k*"], vec!["r"])];
+
+        let bus = EventBus::new(&crate::bus::EventBusConfig::default());
+        let mut rx = bus.subscribe();
+        let d = build_for_test(bindings, sinks, cfg).unwrap();
+
+        // Buffer several events with no live consumer draining them.
+        for i in 0..5 {
+            bus.emit(Event::builder(format!("k{i}"), Severity::Info).build());
+        }
+        // Simulate the shutdown-time drain.
+        d.drain_buffered(&mut rx).await;
+        assert_eq!(
+            sink.kinds().len(),
+            5,
+            "all buffered events delivered on shutdown drain"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn shutdown_drain_spools_failed_delivery_not_dropped() {
+        // F-L2: a buffered event whose delivery fails transiently during the
+        // shutdown drain must be spooled (durable), not dropped.
+        let tmp = tempdir().unwrap();
+        let cfg = DispatcherConfig {
+            spool_root: tmp.path().into(),
+            ..DispatcherConfig::default()
+        };
+        let sink = RecordingSink::new("r");
+        sink.fail_next(1);
+        let mut sinks: HashMap<String, Arc<dyn Sink>> = HashMap::new();
+        sinks.insert("r".into(), sink.clone() as Arc<dyn Sink>);
+        let bindings = vec![make_binding(vec!["k*"], vec!["r"])];
+
+        let bus = EventBus::new(&crate::bus::EventBusConfig::default());
+        let mut rx = bus.subscribe();
+        let d = build_for_test(bindings, sinks, cfg).unwrap();
+
+        bus.emit(Event::builder("k1", Severity::Info).build());
+        d.drain_buffered(&mut rx).await;
+        assert_eq!(d.spool_len("r"), 1, "failed shutdown delivery is spooled");
     }
 
     #[tokio::test(flavor = "current_thread")]

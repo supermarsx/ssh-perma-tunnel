@@ -29,22 +29,43 @@ pub enum Signal {
 
 /// Spawn a task that bridges OS signals onto a `watch::Receiver<Option<Signal>>`.
 ///
-/// Returns the receiver and a join handle. Drop the receiver to stop
-/// processing.
+/// Returns the receiver. Drop the receiver to stop processing.
+///
+/// On unix the OS signal handlers (`SIGTERM`/`SIGINT`/`SIGHUP`) are registered
+/// **synchronously, before this function returns** — not lazily inside the
+/// spawned task — so a signal delivered during early startup is captured
+/// instead of taking the default (immediate-terminate) disposition. Callers
+/// that install this before starting profiles/subsystems therefore get an
+/// orderly teardown even for a SIGTERM that races startup (F-L4): the shutdown
+/// is latched on the `watch` channel and observed the moment the caller reaches
+/// its select loop.
 pub fn spawn() -> watch::Receiver<Option<Signal>> {
     let (tx, rx) = watch::channel(None);
-    tokio::spawn(async move {
-        run_signal_task(tx).await;
-    });
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        // Register handlers now (inside the caller's runtime context) so the
+        // window between "handlers installed" and "task scheduled" cannot drop
+        // an early signal.
+        let term = signal(SignalKind::terminate()).expect("install SIGTERM");
+        let int = signal(SignalKind::interrupt()).expect("install SIGINT");
+        let hup = signal(SignalKind::hangup()).expect("install SIGHUP");
+        tokio::spawn(run_signal_task(tx, term, int, hup));
+    }
+    #[cfg(windows)]
+    {
+        tokio::spawn(run_signal_task(tx));
+    }
     rx
 }
 
 #[cfg(unix)]
-async fn run_signal_task(tx: watch::Sender<Option<Signal>>) {
-    use tokio::signal::unix::{signal, SignalKind};
-    let mut term = signal(SignalKind::terminate()).expect("install SIGTERM");
-    let mut int = signal(SignalKind::interrupt()).expect("install SIGINT");
-    let mut hup = signal(SignalKind::hangup()).expect("install SIGHUP");
+async fn run_signal_task(
+    tx: watch::Sender<Option<Signal>>,
+    mut term: tokio::signal::unix::Signal,
+    mut int: tokio::signal::unix::Signal,
+    mut hup: tokio::signal::unix::Signal,
+) {
     loop {
         tokio::select! {
             _ = term.recv() => {
@@ -178,6 +199,22 @@ pub fn install_sighup_log_reload(
 mod tests {
     #[cfg(unix)]
     use super::*;
+
+    /// F-L4: `spawn` registers the OS handlers synchronously, so a signal
+    /// raised right after it returns is latched on the watch channel (rather
+    /// than taking the default disposition). SIGHUP → `Reload` is used because
+    /// it is non-fatal regardless of handler timing.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn spawn_latches_signal_raised_immediately() {
+        let mut rx = spawn();
+        nix::sys::signal::raise(nix::sys::signal::Signal::SIGHUP).expect("raise SIGHUP");
+        tokio::time::timeout(std::time::Duration::from_secs(2), rx.changed())
+            .await
+            .expect("signal not observed within timeout")
+            .expect("signal sender dropped");
+        assert_eq!(*rx.borrow(), Some(Signal::Reload));
+    }
 
     #[cfg(unix)]
     #[test]

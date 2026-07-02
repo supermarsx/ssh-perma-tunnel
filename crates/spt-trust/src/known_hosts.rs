@@ -91,6 +91,21 @@ struct HostIndex {
 
 impl KnownHosts {
     /// Parse a `known_hosts`-formatted string.
+    ///
+    /// Parses defensively like OpenSSH: blank lines and `#` comments are
+    /// ignored, and any line that fails to parse (truncated/torn final line
+    /// from a crash, a hand-edit typo, or an unrecognised format) is
+    /// **skipped with a warning** rather than rejecting the whole file. This
+    /// prevents a single corrupt line — e.g. from a crash mid-write — from
+    /// poisoning the file and permanently wedging the profile that loads it.
+    /// An empty or all-garbage file therefore parses into an empty set (never
+    /// an error); TOFU can then repopulate it.
+    ///
+    /// Security is preserved: skipping applies only to lines that cannot be
+    /// parsed at all. A well-formed entry whose key differs from the presented
+    /// key is still loaded and still reported by [`Self::verify`] as a
+    /// `Mismatch`; revocation and CA markers are honoured as before. The line
+    /// number is logged but never the key material.
     pub fn parse(text: &str) -> Result<Self> {
         let mut entries = Vec::new();
         for (lineno, raw) in text.lines().enumerate() {
@@ -98,7 +113,18 @@ impl KnownHosts {
             if line.is_empty() || line.starts_with('#') {
                 continue;
             }
-            entries.push(parse_line(line, lineno + 1)?);
+            match parse_line(line, lineno + 1) {
+                Ok(entry) => entries.push(entry),
+                Err(_) => {
+                    // Do NOT include the error/line contents — that could echo
+                    // key material. Only the 1-based line number is logged.
+                    tracing::warn!(
+                        target: "spt_trust::known_hosts",
+                        line = lineno + 1,
+                        "skipping unparseable known_hosts line"
+                    );
+                }
+            }
         }
         let index = Some(build_index(&entries));
         Ok(Self {
@@ -726,9 +752,12 @@ mod tests {
     }
 
     #[test]
-    fn parse_line_missing_key_errors() {
-        let r = KnownHosts::parse("example.com\n");
-        let err = r.unwrap_err();
+    fn parse_line_missing_key_is_skipped_not_errored() {
+        // Defensive parse (OpenSSH semantics): a line missing its key field is
+        // skipped, not fatal. `parse_line` itself still surfaces the reason.
+        let kh = KnownHosts::parse("example.com\n").expect("must not error on a bad line");
+        assert!(kh.entries.is_empty(), "malformed line must be skipped");
+        let err = parse_line("example.com", 1).unwrap_err();
         match err {
             spt_core::Error::InvalidConfig(msg) => {
                 assert!(msg.contains("missing key"), "got: {msg}");
@@ -738,15 +767,118 @@ mod tests {
     }
 
     #[test]
-    fn parse_line_bad_key_errors() {
-        let r = KnownHosts::parse("example.com ssh-ed25519 NOT-BASE64-AT-ALL\n");
-        let err = r.unwrap_err();
+    fn parse_line_bad_key_is_skipped_not_errored() {
+        let kh = KnownHosts::parse("example.com ssh-ed25519 NOT-BASE64-AT-ALL\n")
+            .expect("must not error on a bad key blob");
+        assert!(
+            kh.entries.is_empty(),
+            "unparseable key line must be skipped"
+        );
+        let err = parse_line("example.com ssh-ed25519 NOT-BASE64-AT-ALL", 1).unwrap_err();
         match err {
             spt_core::Error::InvalidConfig(msg) => {
                 assert!(msg.contains("parse key") || msg.contains("known_hosts line"));
             }
             other => panic!("expected InvalidConfig, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn truncated_final_line_still_loads_preceding_valid_entries() {
+        // (a) A file whose last line is a truncated/torn entry (no newline,
+        // partial base64 — exactly what a crash mid-append leaves behind) must
+        // still load every preceding valid entry instead of Err-ing on the
+        // whole file. Fails against pre-fix code (which returned Err).
+        let good_a = one_key();
+        let good_b = one_key();
+        let text = format!(
+            "{}\n{}\nexample.com ssh-ed25519 AAAAC3Nz",
+            entry_text("alpha.example", &good_a),
+            entry_text("beta.example", &good_b),
+        );
+        let kh = KnownHosts::parse(&text).expect("torn final line must not fail the load");
+        assert_eq!(
+            kh.entries.len(),
+            2,
+            "both valid entries load, torn one skipped"
+        );
+        assert_eq!(
+            kh.verify("alpha.example", 22, &good_a),
+            KnownHostsResult::Match
+        );
+        assert_eq!(
+            kh.verify("beta.example", 22, &good_b),
+            KnownHostsResult::Match
+        );
+    }
+
+    #[test]
+    fn all_garbage_or_empty_loads_as_empty_not_error() {
+        // (b) An all-garbage file and an empty file both load as an empty
+        // known-hosts set (TOFU then re-adds), never an error. The all-garbage
+        // case fails against pre-fix code (Err on the first bad line).
+        let garbage = "this is not a known_hosts line\n@@@ neither is this\n||| nor this\n";
+        let kh = KnownHosts::parse(garbage).expect("all-garbage must load as empty, not error");
+        assert!(kh.entries.is_empty());
+        assert_eq!(
+            kh.verify("anything.example", 22, &one_key()),
+            KnownHostsResult::NotFound
+        );
+
+        let empty = KnownHosts::parse("").expect("empty must load as empty");
+        assert!(empty.entries.is_empty());
+    }
+
+    #[test]
+    fn changed_key_still_detected_as_mismatch_despite_skipped_bad_line() {
+        // (d) Security preservation: a well-formed entry whose key differs from
+        // the presented key is STILL a Mismatch even when the same file also
+        // contains an unparseable (skipped) line. Skipping unparseable lines
+        // must never weaken mismatch detection. Fails against pre-fix code
+        // (the bad line would make `parse` Err before verify could run).
+        let stored = one_key();
+        let presented = one_key();
+        let text = format!(
+            "garbage-unparseable-line\n{}\n",
+            entry_text("host.example", &stored)
+        );
+        let kh = KnownHosts::parse(&text).expect("bad line skipped, good line kept");
+        assert_eq!(kh.entries.len(), 1);
+        assert!(matches!(
+            kh.verify("host.example", 22, &presented),
+            KnownHostsResult::Mismatch { .. }
+        ));
+        // And the correct key still matches.
+        assert_eq!(
+            kh.verify("host.example", 22, &stored),
+            KnownHostsResult::Match
+        );
+    }
+
+    #[test]
+    fn simulated_torn_append_then_load_succeeds() {
+        // (c) After a simulated torn append (a good file gains a truncated
+        // final line, as a crash mid-append would leave), `load` from disk
+        // succeeds — which is exactly the call `profile_factory` relies on to
+        // rebuild the profile. Fails against pre-fix code (load → Err → the
+        // profile could never build again).
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("known_hosts");
+        let key = one_key();
+        // Torn write: a valid entry followed by a partial line with no newline.
+        std::fs::write(
+            &p,
+            format!(
+                "{}\nother.example ssh-ed25519 AAAAC3",
+                entry_text("h.example", &key)
+            ),
+        )
+        .unwrap();
+        let loaded = KnownHosts::load(&p).expect("torn known_hosts must still load");
+        assert_eq!(
+            loaded.verify("h.example", 22, &key),
+            KnownHostsResult::Match
+        );
     }
 
     #[test]
