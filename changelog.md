@@ -1,3 +1,11 @@
+## [26.43] - 2026-07-02
+
+# spt 26.43
+
+## Changes since 26.42
+
+- fix(wiring): Wave 1 — dangerous CLI + SFTP safety + OOM P1 + 3 leaks (dcf1356)
+
 ## [26.42] - 2026-07-02
 
 # spt 26.42
