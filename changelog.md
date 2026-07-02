@@ -1,3 +1,11 @@
+## [26.42] - 2026-07-02
+
+# spt 26.42
+
+## Changes since 26.41
+
+- harden(docker): resource limits for exhaustion/leak/compromise safety (e86e11c)
+
 ## [26.41] - 2026-07-02
 
 # spt 26.41
