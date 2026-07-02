@@ -1,3 +1,11 @@
+## [26.40] - 2026-07-02
+
+# spt 26.40
+
+## Changes since 26.39
+
+- fix(resilience): self-healing/persistence/lifecycle hardening (ultra review) (52dc470)
+
 ## [26.39] - 2026-07-02
 
 # spt 26.39
