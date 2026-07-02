@@ -1,3 +1,11 @@
+## [26.39] - 2026-07-02
+
+# spt 26.39
+
+## Changes since 26.38
+
+- chore(deps): bump anyhow 1.0.103 + crypto-bigint 0.7.5 (clear audit warnings) (ec4aa3e)
+
 ## [26.38] - 2026-07-01
 
 # spt 26.38
