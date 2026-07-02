@@ -33,7 +33,7 @@ use std::time::Duration;
 use spt_config::schema::UdpMode;
 use tokio::sync::Mutex;
 
-use crate::udp::{UdpFlowKey, UdpFlowTable, UdpFlowTableConfig};
+use crate::udp::{UdpFlowKey, UdpFlowTable, UdpFlowTableConfig, DEFAULT_MAX_FLOWS};
 
 /// Default per-peer idle TTL: 60 seconds (matches the task brief).
 pub const DEFAULT_IDLE_TTL: Duration = Duration::from_secs(60);
@@ -77,14 +77,33 @@ impl<V> PeerTable<V>
 where
     V: Send + Sync + 'static,
 {
-    /// New peer table with the given idle TTL.
+    /// New peer table with the given idle TTL, bounded by the finite default
+    /// flow cap ([`DEFAULT_MAX_FLOWS`]).
+    ///
+    /// The cap is *not* `0` (unbounded): a UDP peer table fed by unauthenticated
+    /// datagrams is attacker-influenced (each distinct source `(ip, port)` is a
+    /// fresh flow), so a hard cap must bound worst-case memory even before idle
+    /// eviction runs. `DEFAULT_MAX_FLOWS` (65536) never limits a realistic
+    /// forward while still capping a runaway flood. Use
+    /// [`PeerTable::with_max_flows`] to override (`0` = opt back into unbounded).
+    ///
+    /// If this table is ever wired onto a live data path, a periodic
+    /// [`PeerTable::evict_idle`] sweep must still be scheduled to reclaim idle
+    /// flows below the cap.
     #[must_use]
     pub fn new(idle_ttl: Duration) -> Self {
+        Self::with_max_flows(idle_ttl, DEFAULT_MAX_FLOWS)
+    }
+
+    /// New peer table with an explicit concurrent-flow cap. `max_flows = 0`
+    /// opts back into unbounded (idle eviction becomes the only bound).
+    #[must_use]
+    pub fn with_max_flows(idle_ttl: Duration, max_flows: u32) -> Self {
         Self {
             inner: UdpFlowTable::new(UdpFlowTableConfig {
                 idle_timeout: idle_ttl,
                 max_datagram_size: MAX_FRAME_BYTES,
-                max_flows: 0,
+                max_flows,
             }),
         }
     }
@@ -108,6 +127,11 @@ where
     /// Count of oversized datagrams rejected by [`Self::admit_size`].
     pub fn oversized_count(&self) -> u64 {
         self.inner.oversized_count()
+    }
+
+    /// Count of peers rejected because the concurrent-flow cap was full.
+    pub fn rejected_full_count(&self) -> u64 {
+        self.inner.rejected_full_count()
     }
 
     /// Touch (or insert via `make`) the peer entry.
@@ -258,6 +282,38 @@ mod tests {
         assert_eq!(table.len(), 0);
         assert!(table.is_empty());
     }
+
+    /// `peer-table: bounded by finite default cap` — the default `PeerTable`
+    /// is NOT unbounded; once the flow cap is reached, further distinct peers
+    /// are rejected (and counted) rather than growing the table without bound.
+    #[tokio::test]
+    async fn peer_table_is_bounded_by_flow_cap() {
+        // A real forward uses DEFAULT_MAX_FLOWS; use a tiny cap here so the
+        // rejection path is reachable without inserting 65536 peers.
+        let table: PeerTable<()> = PeerTable::with_max_flows(Duration::from_secs(60), 2);
+        assert!(table.touch_or_insert(peer(1), || PeerEntry {
+            value: (),
+            local_port: 1,
+        }));
+        assert!(table.touch_or_insert(peer(2), || PeerEntry {
+            value: (),
+            local_port: 2,
+        }));
+        // Third distinct peer is over cap → rejected and counted.
+        assert!(!table.touch_or_insert(peer(3), || PeerEntry {
+            value: (),
+            local_port: 3,
+        }));
+        assert_eq!(table.len(), 2);
+        assert_eq!(table.rejected_full_count(), 1);
+    }
+
+    /// `new` wires the finite default cap ([`DEFAULT_MAX_FLOWS`]), not the
+    /// unbounded (`0`) escape hatch — the peer table is bounded by default.
+    const _: () = assert!(
+        DEFAULT_MAX_FLOWS > 0,
+        "default peer-table cap must be finite, not unbounded"
+    );
 
     /// Oversized-frame admission counter check.
     #[tokio::test]

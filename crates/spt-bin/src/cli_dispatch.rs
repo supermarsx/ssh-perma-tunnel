@@ -901,7 +901,7 @@ async fn tunnel_dispatch(global: &GlobalOpts, c: groups::tunnel::TunnelCmd) -> R
             )
             .await
         }
-        TunnelSub::Stop(_) => tunnel_stop(global).await,
+        TunnelSub::Stop(args) => tunnel_stop(global, args).await,
         TunnelSub::Reload(_) => tunnel_reload(global).await,
         TunnelSub::Health(args) => {
             crate::cli::tunnel_ops::health(
@@ -952,6 +952,33 @@ async fn tunnel_run(global: &GlobalOpts, args: groups::tunnel::TunnelRun) -> Res
     // never silently stripped by a SIGHUP/MCP reload.
     // See `crates/spt-bin/src/policy/`.
     let _overlay_report = crate::policy::overlay::apply(&mut cfg);
+    // t6-e3: consume `-J/--jump`. Parse the OpenSSH-style chain and splat it
+    // into every selected profile's `hops` table (CLI takes precedence over
+    // profile-file hops) BEFORE validation, so injected hops are validated and
+    // the multi-hop transport (profile_factory → spt-ssh2) actually traverses
+    // the bastion(s). Previously `args.jump` was parsed nowhere and connections
+    // went DIRECT while the operator believed they were jumping (silent
+    // security no-op).
+    if let Some(jump) = args.jump.as_deref() {
+        let chain = crate::cli::tunnel_ops::parse_jump_chain(jump)?;
+        if chain.is_empty() {
+            tracing::warn!(
+                jump = %jump,
+                "-J/--jump parsed to an empty chain — ignoring (no jump hosts applied)"
+            );
+        } else {
+            let n = crate::cli::tunnel_ops::apply_jump_chain_to_config(
+                &mut cfg,
+                &args.profiles,
+                &chain,
+            );
+            tracing::info!(
+                hops = chain.len(),
+                profiles = n,
+                "applied -J jump chain to selected profiles",
+            );
+        }
+    }
     let diags = spt_config::validate(&cfg);
     if !diags.errors.is_empty() {
         let msg = diags
@@ -981,7 +1008,13 @@ async fn tunnel_run(global: &GlobalOpts, args: groups::tunnel::TunnelRun) -> Res
             warning.message
         );
     }
-    let _lock = spt_state::StateLock::acquire(&state_dir)?;
+    let state_lock = spt_state::StateLock::acquire(&state_dir)?;
+    // OOM P1 (leak-oom.md §B-P1): a stale `spt.pid` that survived into this
+    // successful lock acquisition marks a previous run that died without a
+    // clean shutdown (OOM-kill / SIGKILL / power-loss). Captured here, BEFORE
+    // the pid file was overwritten inside `acquire`; surfaced as a WARN + a
+    // `process.unclean_shutdown` event once the event bus is up (below).
+    let previous_unclean_pid = state_lock.previous_unclean_pid();
     let selected_profile_names = cfg
         .profiles
         .iter()
@@ -1021,6 +1054,27 @@ async fn tunnel_run(global: &GlobalOpts, args: groups::tunnel::TunnelRun) -> Res
     // Dispatcher subscribed to the bus. The bus is injected into the
     // orchestrator below so ProfileEvents re-emit as canonical Events.
     let (event_bus, events_pipeline) = build_events_pipeline(&cfg, &state_dir, &resolver)?;
+
+    // OOM P1: now that the event bus exists, surface any previous unclean
+    // shutdown detected at lock-acquire time (a stale `spt.pid` with no live
+    // holder). WARN for operators + a `process.unclean_shutdown` event so
+    // sinks/alerts fire. See `state_lock.previous_unclean_pid()` above.
+    if let Some(prev_pid) = previous_unclean_pid {
+        tracing::warn!(
+            previous_pid = prev_pid,
+            "previous run (pid {prev_pid}) terminated abnormally without clean \
+             shutdown — possible OOM-kill or crash"
+        );
+        let _ = event_bus.emit(
+            spt_events::Event::builder("process.unclean_shutdown", spt_events::Severity::Warn)
+                .message(format!(
+                    "previous run (pid {prev_pid}) terminated abnormally without clean \
+                     shutdown — possible OOM-kill or crash"
+                ))
+                .field("previous_pid", u64::from(prev_pid))
+                .build(),
+        );
+    }
 
     // E6-F4: instantiate the Prometheus exporter and spawn its periodic writer
     // task (writes `<state_dir>/metrics.prom`). HOLD `metrics_handle` for the
@@ -2805,7 +2859,34 @@ fn tunnel_status(global: &GlobalOpts, args: groups::tunnel::TunnelStatus) -> Res
     Ok(())
 }
 
-async fn tunnel_stop(global: &GlobalOpts) -> Result<()> {
+async fn tunnel_stop(global: &GlobalOpts, args: groups::tunnel::TunnelStop) -> Result<()> {
+    // SAFETY (t6-e1): `tunnel stop` signals the supervisor's recorded PID,
+    // which stops the ENTIRE supervisor (every profile). `--profile X`
+    // therefore CANNOT be honoured by this path — historically it silently
+    // stopped ALL tunnels, the exact opposite of the operator's intent.
+    //
+    // Per-profile stop would require a control-surface tool that targets a
+    // single profile. The MCP loopback control surface DOES exist, and the
+    // `OrchestratorController` can stop one profile, but there is no
+    // CLI-reachable MCP *tool* wired to it today. Rather than stop everything
+    // while the operator believes only one profile was stopped, fail loudly.
+    if let Some(profile) = args.profile.as_deref() {
+        return Err(Error::InvalidArgs(format!(
+            "`tunnel stop --profile {profile}` is not supported: this path signals the \
+             whole supervisor and would stop ALL tunnels, not just `{profile}`. \
+             Per-profile targeting requires a control-surface stop tool that is not \
+             wired in this build. To stop everything run `tunnel stop` (no --profile); \
+             to take a single profile down, disable it in the config and reload."
+        )));
+    }
+    // `--grace` is not honoured by the signal path (the supervisor applies its
+    // own shutdown-grace budget); flag it so operators are not misled.
+    if args.grace.is_some() {
+        tracing::warn!(
+            "`tunnel stop --grace` is ignored on this path — the supervisor uses its \
+             configured shutdown grace budget"
+        );
+    }
     // Best-effort: signal the running supervisor by sending a Unix signal to
     // the recorded PID. Windows uses a console event which requires the
     // service path; manual stop is tracked in M9.
@@ -6552,6 +6633,40 @@ mod tests {
         ]);
         // No pid file -> RuntimeFailure.
         let _ = dispatch_err(cli).await;
+    }
+
+    #[tokio::test]
+    async fn tunnel_stop_profile_fails_loudly_not_kill_all() {
+        // SAFETY regression (t6-e1): `tunnel stop --profile X` must NOT fall
+        // through to signalling the whole supervisor (which would stop every
+        // tunnel). It must fail loudly with an actionable InvalidArgs error.
+        let td = tempfile::tempdir().unwrap();
+        // Write a live-looking pid file so, if the guard were missing, the
+        // handler would proceed to signal it (stopping ALL tunnels).
+        let state_dir = td.path();
+        std::fs::write(
+            spt_state::paths::pid_path(state_dir),
+            std::process::id().to_string(),
+        )
+        .unwrap();
+        let cli = parse(&[
+            "spt",
+            "--state-dir",
+            state_dir.to_str().unwrap(),
+            "tunnel",
+            "stop",
+            "--profile",
+            "edge",
+        ]);
+        let err = dispatch_err(cli).await;
+        assert!(
+            matches!(err, Error::InvalidArgs(_)),
+            "expected InvalidArgs, got {err:?}"
+        );
+        assert!(
+            err.to_string().contains("edge") && err.to_string().contains("not supported"),
+            "error must name the profile and explain: {err}"
+        );
     }
 
     #[tokio::test]

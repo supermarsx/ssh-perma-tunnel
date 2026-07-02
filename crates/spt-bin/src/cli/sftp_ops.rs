@@ -576,7 +576,10 @@ pub async fn mount_start(global: &GlobalOpts, args: SftpMountStartArgs) -> Resul
     });
 
     let mut opts = MountOpts::new(&local, &remote);
-    opts.readonly = args.read_only;
+    // Honour the effective read-only flag (CLI `--read-only` OR config
+    // `read_only = true`), not just the CLI flag — the mount layer enforces
+    // it (EROFS / WRITE_PROTECT guards on every backend).
+    opts.readonly = resolved.read_only;
     opts.allow_other = resolved.allow_other;
     opts.volume_name = args.volume.clone();
     opts.audit_hook = Some(hook);
@@ -722,6 +725,12 @@ struct ResolvedMountTargets {
     local: PathBuf,
     remote: PathBuf,
     allow_other: bool,
+    /// Effective read-only flag: the CLI `--read-only` flag OR the mount
+    /// entry's `read_only = true`. Previously `mount start` took read-only
+    /// from the CLI flag alone, so a mount configured `read_only = true` and
+    /// started via config mounted READ-WRITE while `plan`/`list` reported
+    /// read-only (a safety-relevant lie). Honoured end-to-end now.
+    read_only: bool,
 }
 
 fn resolve_mount_targets(
@@ -730,10 +739,13 @@ fn resolve_mount_targets(
     args: &SftpMountStartArgs,
 ) -> Result<ResolvedMountTargets> {
     if let (Some(local), Some(remote)) = (args.local.clone(), args.remote.clone()) {
+        // Explicit CLI targets skip the config load entirely (as with
+        // `allow_other`), so only the CLI `--read-only` flag applies here.
         return Ok(ResolvedMountTargets {
             local,
             remote,
             allow_other: false,
+            read_only: args.read_only,
         });
     }
     let path = require_config_path(global)?;
@@ -762,6 +774,10 @@ fn resolve_mount_targets(
         local,
         remote,
         allow_other: mount.allow_other.unwrap_or(false),
+        // Honour `read_only = true` from the mount entry, OR the CLI flag.
+        // Either one makes the live mount read-only (fail-safe: the stricter
+        // of the two wins), matching what `plan`/`list` report.
+        read_only: args.read_only || mount.read_only.unwrap_or(false),
     })
 }
 
@@ -1272,6 +1288,70 @@ allow_other = true
         assert_eq!(mount.allow_other, None);
         let plan = build_plan(&cfg, profile, &mount, MountKind::Mount).unwrap();
         assert!(!plan.allow_other);
+    }
+
+    fn start_args(profile: &str, read_only: bool) -> SftpMountStartArgs {
+        SftpMountStartArgs {
+            profile: Some(profile.to_owned()),
+            local: None,
+            remote: None,
+            read_only,
+            volume: None,
+            json: false,
+        }
+    }
+
+    #[test]
+    fn resolve_mount_targets_honours_config_read_only() {
+        // SAFETY regression: a mount configured `read_only = true` must resolve
+        // read-only even when the CLI `--read-only` flag is NOT passed.
+        // Previously `mount start` took read-only from the CLI flag alone, so
+        // this mounted READ-WRITE while plan/list reported read-only.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("spt.toml");
+        std::fs::write(
+            &path,
+            r#"
+version = 1
+[capabilities]
+allow_sftp = true
+allow_filesystem_mounts = true
+[[profiles]]
+name = "edge"
+protocol = "ssh2"
+host = "localhost"
+user = "alice"
+[[profiles.sftp_mounts]]
+name = "data"
+remote_path = "/srv/data"
+mount_point = "/mnt/data"
+read_only = true
+"#,
+        )
+        .unwrap();
+        let global = global_with_config(&path);
+
+        let resolved = resolve_mount_targets(&global, "edge", &start_args("edge", false)).unwrap();
+        assert!(
+            resolved.read_only,
+            "config read_only = true must be honoured without the CLI flag"
+        );
+    }
+
+    #[test]
+    fn resolve_mount_targets_read_write_default_and_cli_override() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("spt.toml");
+        std::fs::write(&path, allow_other_config_text()).unwrap();
+        let global = global_with_config(&path);
+
+        // No config read_only + no CLI flag → read-write (pre-wire default).
+        let resolved = resolve_mount_targets(&global, "edge", &start_args("edge", false)).unwrap();
+        assert!(!resolved.read_only);
+
+        // CLI `--read-only` still forces read-only (fail-safe: stricter wins).
+        let resolved = resolve_mount_targets(&global, "edge", &start_args("edge", true)).unwrap();
+        assert!(resolved.read_only);
     }
 
     #[test]

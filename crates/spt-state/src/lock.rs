@@ -36,6 +36,7 @@ pub struct StateLock {
     file: Option<File>,
     lock_path: PathBuf,
     pid_path: PathBuf,
+    previous_unclean_pid: Option<u32>,
 }
 
 impl StateLock {
@@ -80,6 +81,18 @@ impl StateLock {
             }
         }
 
+        // OOM P1 (leak-oom.md §B-P1): capture any pre-existing pid file BEFORE
+        // we overwrite it. We only reach this point because the exclusive lock
+        // was free — a *genuinely running* instance holds the lock and would
+        // have failed the `try_lock` contention path above. The OS releases the
+        // `fs4` lock on process death regardless of how the process died, so a
+        // surviving `spt.pid` here means the previous holder terminated WITHOUT
+        // running `Drop` (OOM-kill / SIGKILL / power-loss). A clean exit removes
+        // the file in `Drop`, and a first-ever run has no file — both yield
+        // `None`, so this never false-positives on a live or cleanly-stopped
+        // instance.
+        let previous_unclean_pid = read_pid_file(&pid_path);
+
         // Write PID after lock acquisition. If this fails, surface as
         // StateLockFailed and release the lock via Drop.
         let pid = std::process::id().to_string();
@@ -89,7 +102,22 @@ impl StateLock {
             file: Some(file),
             lock_path,
             pid_path,
+            previous_unclean_pid,
         })
+    }
+
+    /// Pid recorded by a previous run that terminated **without** a clean
+    /// shutdown (OOM-kill, `SIGKILL`, or power-loss — anything that skips
+    /// [`StateLock`]'s `Drop`).
+    ///
+    /// Returns `Some(pid)` only when a stale `spt.pid` survived into this
+    /// *successful* acquisition; `None` on a first-ever run or after a clean
+    /// prior shutdown (where `Drop` removed the file). This can never report a
+    /// genuinely-running instance: a live lock holder fails
+    /// [`StateLock::acquire`] on the contention path before this value is read.
+    #[must_use]
+    pub fn previous_unclean_pid(&self) -> Option<u32> {
+        self.previous_unclean_pid
     }
 
     /// Path of the underlying lock file.
@@ -103,6 +131,17 @@ impl StateLock {
     pub fn pid_path(&self) -> &Path {
         &self.pid_path
     }
+}
+
+/// Read and parse the pid recorded in `pid_path`, if any.
+///
+/// Returns `None` when the file is absent, unreadable, or does not hold a
+/// valid non-zero pid. Kept infallible so a corrupt marker never blocks
+/// lock acquisition — it just means "no detectable previous holder".
+fn read_pid_file(pid_path: &Path) -> Option<u32> {
+    let raw = std::fs::read_to_string(pid_path).ok()?;
+    let pid = raw.trim().parse::<u32>().ok()?;
+    (pid != 0).then_some(pid)
 }
 
 /// Classify an `io::Error` from `try_lock_exclusive` as lock contention.
@@ -220,6 +259,47 @@ mod tests {
                 "expected contention for raw os error {code}"
             );
         }
+    }
+
+    #[test]
+    fn detects_previous_unclean_pid_from_stale_file() {
+        let tmp = tempdir().unwrap();
+        let dir = tmp.path();
+
+        // Simulate an OOM/SIGKILL: a pid file survives with no live lock
+        // holder (Drop never ran). The lock itself is free, so acquire
+        // succeeds and must report the stale pid as an unclean prior exit.
+        std::fs::write(paths::pid_path(dir), "424242\n").unwrap();
+        let lock = StateLock::acquire(dir).unwrap();
+        assert_eq!(lock.previous_unclean_pid(), Some(424_242));
+        // The current run overwrote the marker with its own pid.
+        let now = std::fs::read_to_string(lock.pid_path()).unwrap();
+        assert_eq!(now.trim(), std::process::id().to_string());
+    }
+
+    #[test]
+    fn no_previous_unclean_pid_on_first_or_clean_run() {
+        let tmp = tempdir().unwrap();
+        let dir = tmp.path();
+
+        // First-ever run: no pid file at all.
+        let lock = StateLock::acquire(dir).unwrap();
+        assert_eq!(lock.previous_unclean_pid(), None);
+        // Clean exit removes the pid file.
+        drop(lock);
+        // Second run after a clean shutdown still sees no stale marker.
+        let lock2 = StateLock::acquire(dir).unwrap();
+        assert_eq!(lock2.previous_unclean_pid(), None);
+        drop(lock2);
+    }
+
+    #[test]
+    fn corrupt_pid_file_is_not_reported_as_unclean() {
+        let tmp = tempdir().unwrap();
+        let dir = tmp.path();
+        std::fs::write(paths::pid_path(dir), "not-a-pid").unwrap();
+        let lock = StateLock::acquire(dir).unwrap();
+        assert_eq!(lock.previous_unclean_pid(), None);
     }
 
     #[test]

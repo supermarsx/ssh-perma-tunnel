@@ -3422,6 +3422,44 @@ mod tests {
     }
 
     #[test]
+    fn cli_jump_chain_flows_into_transport_build() {
+        // Simulate `spt tunnel run -J alice@bastion.example:2222` against a
+        // profile that has NO hops in its file. The parsed chain is splatted
+        // into `profile.hops`, which is exactly the field the factory's hop
+        // loop (`build_hop_chain`, ~line 471) consumes to build the multi-hop
+        // transport. Before this fix `-J` was parsed nowhere → direct connect.
+        let cfg = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            user = "u"
+            [profiles.auth]
+            method = "agent"
+            [profiles.trust]
+            pin_sha256 = ["SHA256:dummy"]
+        "#;
+        let (mut c, _) = load_str(cfg, false).unwrap();
+        assert!(c.profiles[0].hops.is_empty(), "fixture must start hop-less");
+
+        let chain = crate::cli::tunnel_ops::parse_jump_chain("alice@bastion.example:2222").unwrap();
+        let n = crate::cli::tunnel_ops::apply_jump_chain_to_config(&mut c, &[], &chain);
+        assert_eq!(n, 1);
+
+        // The jump host now lives in the exact field the transport reads.
+        assert_eq!(c.profiles[0].hops.len(), 1);
+        assert_eq!(c.profiles[0].hops[0].host, "bastion.example");
+        assert_eq!(c.profiles[0].hops[0].port, 2222);
+        assert_eq!(c.profiles[0].hops[0].user.as_deref(), Some("alice"));
+
+        // A successful build proves the injected hop is dispatched through the
+        // hop loop into the SSH2 transport rather than silently dropped.
+        let bundle = build(&c.profiles[0], &empty_resolver()).unwrap();
+        assert_eq!(bundle.protocol.name(), "ssh2");
+    }
+
+    #[test]
     fn socks5_hop_resolves_proxy_creds() {
         let hop = HopCfgTy {
             name: "proxy".into(),

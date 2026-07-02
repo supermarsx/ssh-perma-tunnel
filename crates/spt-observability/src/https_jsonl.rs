@@ -5,6 +5,7 @@
 //! `application/x-ndjson`. Failures spool to disk for retry.
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -101,9 +102,35 @@ pub enum HttpsJsonlError {
     PinnedTls(String),
 }
 
+/// Capacity of the in-memory record queue feeding the writer task.
+///
+/// The queue is *bounded* so a slow or stalled HTTPS collector cannot grow RAM
+/// without limit: while the writer blocks on a network `post()`, incoming log
+/// records queue here, and once the queue is full further records are dropped
+/// (newest-drop) and counted rather than buffered forever. Records are small
+/// serialised NDJSON lines, so this bounds the in-flight backlog to a few MB.
+/// Mirrors the bounded `events_tx` / UDP-inbound channels fixed elsewhere.
+const LOG_CHANNEL_CAP: usize = 8192;
+
+/// Minimum spacing between "dropped records" WARN logs, so the warning about a
+/// stalled collector cannot itself become a log flood.
+const DROPPED_REPORT_INTERVAL: Duration = Duration::from_secs(30);
+
+/// Enqueue a serialised record onto the bounded writer channel.
+///
+/// Uses `try_send` so a full queue (stalled/slow collector) never blocks the
+/// logging hot path: the record is dropped and the `dropped` counter bumped.
+/// A `Closed` error means the writer has exited — nothing to count.
+fn enqueue(tx: &mpsc::Sender<Vec<u8>>, dropped: &AtomicU64, bytes: Vec<u8>) {
+    if let Err(mpsc::error::TrySendError::Full(_)) = tx.try_send(bytes) {
+        dropped.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
 /// Tracing layer that posts NDJSON batches to an HTTPS endpoint.
 pub struct HttpsJsonlLayer {
-    tx: mpsc::UnboundedSender<Vec<u8>>,
+    tx: mpsc::Sender<Vec<u8>>,
+    dropped: Arc<AtomicU64>,
     redact: RedactionMode,
 }
 
@@ -111,7 +138,7 @@ pub struct HttpsJsonlLayer {
 pub struct HttpsJsonlHandle {
     /// Background task join handle.
     pub join: tokio::task::JoinHandle<()>,
-    tx_keepalive: PlMutex<Option<mpsc::UnboundedSender<Vec<u8>>>>,
+    tx_keepalive: PlMutex<Option<mpsc::Sender<Vec<u8>>>>,
 }
 
 impl HttpsJsonlHandle {
@@ -152,15 +179,17 @@ pub fn spawn(
         .timeout(cfg.timeout)
         .build()?;
 
-    let (tx, rx) = mpsc::unbounded_channel::<Vec<u8>>();
+    let (tx, rx) = mpsc::channel::<Vec<u8>>(LOG_CHANNEL_CAP);
+    let dropped = Arc::new(AtomicU64::new(0));
     let layer = HttpsJsonlLayer {
         tx: tx.clone(),
+        dropped: Arc::clone(&dropped),
         redact: cfg.redact,
     };
 
     let task_cfg = cfg.clone();
     let join = tokio::spawn(async move {
-        if let Err(e) = run_writer(task_cfg, client, rx, spool).await {
+        if let Err(e) = run_writer(task_cfg, client, rx, spool, dropped).await {
             tracing::warn!(error=%e, "https-jsonl writer exited");
         }
     });
@@ -185,14 +214,21 @@ fn auth_header(auth: &HttpsAuth) -> Option<HeaderValue> {
 async fn run_writer(
     cfg: HttpsJsonlConfig,
     client: Client,
-    mut rx: mpsc::UnboundedReceiver<Vec<u8>>,
+    mut rx: mpsc::Receiver<Vec<u8>>,
     spool: DiskSpool,
+    dropped: Arc<AtomicU64>,
 ) -> Result<(), HttpsJsonlError> {
     let spool = Arc::new(Mutex::new(spool));
     let mut buf: Vec<Vec<u8>> = Vec::with_capacity(cfg.batch_size);
     let mut tick = interval(cfg.flush_interval);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     tick.tick().await; // skip first
+
+    // Rate-limited reporting of records dropped because the bounded in-memory
+    // queue was full (collector slow/unreachable). Reported from the writer
+    // (not the logging hot path) to avoid re-entrant tracing dispatch.
+    let mut reported_dropped: u64 = 0;
+    let mut last_report = tokio::time::Instant::now();
 
     loop {
         tokio::select! {
@@ -220,6 +256,21 @@ async fn run_writer(
                     flush(&client, &cfg, &mut buf, &spool).await;
                 }
                 drain_spool(&client, &cfg, &spool).await;
+
+                // Rate-limited WARN if records were dropped since last report.
+                let total = dropped.load(Ordering::Relaxed);
+                if total > reported_dropped && last_report.elapsed() >= DROPPED_REPORT_INTERVAL {
+                    let delta = total - reported_dropped;
+                    tracing::warn!(
+                        target: "spt_observability::https_jsonl",
+                        dropped_since_last = delta,
+                        dropped_total = total,
+                        queue_capacity = LOG_CHANNEL_CAP,
+                        "https-jsonl in-memory queue full; dropped log records (collector slow or unreachable)"
+                    );
+                    reported_dropped = total;
+                    last_report = tokio::time::Instant::now();
+                }
             }
         }
     }
@@ -313,7 +364,7 @@ where
             fields,
         };
         if let Ok(bytes) = serde_json::to_vec(&rec) {
-            let _ = self.tx.send(bytes);
+            enqueue(&self.tx, &self.dropped, bytes);
         }
     }
 }
@@ -365,6 +416,31 @@ mod tests {
     }
 
     #[test]
+    fn stalled_consumer_stays_bounded_and_counts_drops() {
+        // A stalled/absent consumer: the receiver is held but never drains.
+        // The queue must NOT grow past its capacity — excess records are
+        // dropped (newest-drop) and counted rather than buffered without bound.
+        let cap = 4;
+        let (tx, _rx) = mpsc::channel::<Vec<u8>>(cap);
+        let dropped = AtomicU64::new(0);
+
+        let total = 100;
+        for _ in 0..total {
+            enqueue(&tx, &dropped, vec![0u8; 16]);
+        }
+
+        // Bounded: the receiver holds at most `cap` records (0 remaining cap).
+        assert_eq!(tx.max_capacity(), cap);
+        assert_eq!(tx.capacity(), 0, "queue must be full, not unbounded");
+        // Every record beyond the first `cap` was dropped and counted.
+        assert_eq!(
+            dropped.load(Ordering::Relaxed),
+            (total - cap) as u64,
+            "drops must be counted",
+        );
+    }
+
+    #[test]
     fn auth_header_bearer() {
         let h = auth_header(&HttpsAuth::Bearer("xyz".into())).unwrap();
         assert_eq!(h.to_str().unwrap(), "Bearer xyz");
@@ -393,7 +469,7 @@ mod tests {
         let (layer, handle) = spawn(cfg).unwrap();
         // Push 4 records → 2 batches → both should fail and spool.
         for _ in 0..4 {
-            let _ = layer.tx.send(br#"{"x":1}"#.to_vec());
+            let _ = layer.tx.try_send(br#"{"x":1}"#.to_vec());
         }
         // Wait for at least one tick + flush.
         tokio::time::sleep(Duration::from_millis(300)).await;

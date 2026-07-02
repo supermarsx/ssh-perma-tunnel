@@ -1088,7 +1088,11 @@ pub fn parse_jump_chain(raw: &str) -> Result<Vec<Hop>> {
         }
         let mut hop = Hop::default();
         hop.name = format!("cli-jump-{}", out.len() + 1);
-        hop.protocol = "ssh".to_string();
+        // Must be the canonical `ssh2` token: `validate` gates hop.protocol to
+        // ssh2/ssh3 and runs immediately after the -J chain is injected, so
+        // emitting bare "ssh" here makes every `tunnel run -J` abort with
+        // [hop_protocol_invalid] before connecting.
+        hop.protocol = "ssh2".to_string();
         hop.host = host;
         hop.port = port.unwrap_or(22);
         hop.user = user;

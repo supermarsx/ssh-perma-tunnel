@@ -433,6 +433,19 @@ impl FuseFs {
         self.inode_table.lock().ok()?.path(ino)
     }
 
+    /// Read-only enforcement chokepoint shared by every mutating FUSE callback
+    /// (`setattr` / `mkdir` / `unlink` / `rmdir` / `symlink` / `rename` /
+    /// `create` / `write`, and the write path of `open`).
+    ///
+    /// Returns `Some(EROFS)` when the mount was created read-only, so writes
+    /// are rejected at the VFS boundary rather than after a round-trip to the
+    /// server. Centralised so the read-only policy is exercised by a single
+    /// unit test (see `readonly_mount_rejects_writes`).
+    #[must_use]
+    fn readonly_reject(&self) -> Option<i32> {
+        self.readonly.then_some(libc::EROFS)
+    }
+
     fn alloc_ino(&self, path: &str) -> u64 {
         self.inode_table
             .lock()
@@ -613,8 +626,8 @@ impl Filesystem for FuseFs {
         _flags: Option<u32>,
         reply: ReplyAttr,
     ) {
-        if self.readonly {
-            reply.error(libc::EROFS);
+        if let Some(errno) = self.readonly_reject() {
+            reply.error(errno);
             return;
         }
         let Some(path) = self.ino_to_path(ino) else {
@@ -680,8 +693,8 @@ impl Filesystem for FuseFs {
         _umask: u32,
         reply: ReplyEntry,
     ) {
-        if self.readonly {
-            reply.error(libc::EROFS);
+        if let Some(errno) = self.readonly_reject() {
+            reply.error(errno);
             return;
         }
         let Some(parent_path) = self.ino_to_path(parent) else {
@@ -710,8 +723,8 @@ impl Filesystem for FuseFs {
     }
 
     fn unlink(&mut self, _req: &Request<'_>, parent: u64, name: &OsStr, reply: ReplyEmpty) {
-        if self.readonly {
-            reply.error(libc::EROFS);
+        if let Some(errno) = self.readonly_reject() {
+            reply.error(errno);
             return;
         }
         let Some(parent_path) = self.ino_to_path(parent) else {
@@ -734,8 +747,8 @@ impl Filesystem for FuseFs {
     }
 
     fn rmdir(&mut self, _req: &Request<'_>, parent: u64, name: &OsStr, reply: ReplyEmpty) {
-        if self.readonly {
-            reply.error(libc::EROFS);
+        if let Some(errno) = self.readonly_reject() {
+            reply.error(errno);
             return;
         }
         let Some(parent_path) = self.ino_to_path(parent) else {
@@ -765,8 +778,8 @@ impl Filesystem for FuseFs {
         target: &std::path::Path,
         reply: ReplyEntry,
     ) {
-        if self.readonly {
-            reply.error(libc::EROFS);
+        if let Some(errno) = self.readonly_reject() {
+            reply.error(errno);
             return;
         }
         let Some(parent_path) = self.ino_to_path(parent) else {
@@ -805,8 +818,8 @@ impl Filesystem for FuseFs {
         _flags: u32,
         reply: ReplyEmpty,
     ) {
-        if self.readonly {
-            reply.error(libc::EROFS);
+        if let Some(errno) = self.readonly_reject() {
+            reply.error(errno);
             return;
         }
         let Some(p1) = self.ino_to_path(parent) else {
@@ -849,9 +862,11 @@ impl Filesystem for FuseFs {
             return;
         };
         let write = (flags & libc::O_ACCMODE) != libc::O_RDONLY;
-        if write && self.readonly {
-            reply.error(libc::EROFS);
-            return;
+        if write {
+            if let Some(errno) = self.readonly_reject() {
+                reply.error(errno);
+                return;
+            }
         }
         let fh = self.alloc_fh(path, write);
         reply.opened(fh, 0);
@@ -867,8 +882,8 @@ impl Filesystem for FuseFs {
         _flags: i32,
         reply: ReplyCreate,
     ) {
-        if self.readonly {
-            reply.error(libc::EROFS);
+        if let Some(errno) = self.readonly_reject() {
+            reply.error(errno);
             return;
         }
         let Some(parent_path) = self.ino_to_path(parent) else {
@@ -979,8 +994,8 @@ impl Filesystem for FuseFs {
         _lock_owner: Option<u64>,
         reply: ReplyWrite,
     ) {
-        if self.readonly {
-            reply.error(libc::EROFS);
+        if let Some(errno) = self.readonly_reject() {
+            reply.error(errno);
             return;
         }
         let Some((path, _w)) = self.fh_path(fh) else {
@@ -1297,5 +1312,42 @@ mod tests {
             err,
             SftpError::UnsupportedPlatform { .. } | SftpError::Other { .. }
         ));
+    }
+}
+
+#[cfg(all(test, target_os = "linux", feature = "mount-fuse"))]
+mod readonly_enforcement_tests {
+    use super::*;
+    use crate::mock::MockSftpServer;
+    use std::sync::Arc;
+    use tempfile::tempdir;
+
+    /// A read-only mount must reject writes: every mutating FUSE callback
+    /// funnels through `FuseFs::readonly_reject`, which returns `EROFS` when
+    /// the mount was created read-only and `None` otherwise. This pins the
+    /// enforcement decision on a real `FuseFs` built from a live (mock)
+    /// client, so a read_only mount can never silently accept writes.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn readonly_mount_rejects_writes() {
+        let root = tempdir().expect("tempdir");
+        let handle = tokio::runtime::Handle::current();
+
+        // Read-only mount → writes denied with EROFS.
+        let (_srv_ro, client_ro) = MockSftpServer::start(root.path()).await;
+        let mut ro_opts = MountOpts::new(root.path(), "/srv/data");
+        ro_opts.readonly = true;
+        let ro_fs = FuseFs::new(Arc::new(client_ro), handle.clone(), &ro_opts);
+        assert_eq!(
+            ro_fs.readonly_reject(),
+            Some(libc::EROFS),
+            "read-only mount must reject writes with EROFS"
+        );
+
+        // Read-write mount → no restriction.
+        let (_srv_rw, client_rw) = MockSftpServer::start(root.path()).await;
+        let mut rw_opts = MountOpts::new(root.path(), "/srv/data");
+        rw_opts.readonly = false;
+        let rw_fs = FuseFs::new(Arc::new(client_rw), handle, &rw_opts);
+        assert_eq!(rw_fs.readonly_reject(), None);
     }
 }
