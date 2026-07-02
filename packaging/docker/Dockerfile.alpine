@@ -78,7 +78,7 @@ COPY --from=builder /usr/local/bin/spt /usr/local/bin/spt
 COPY license.md                         /usr/share/doc/spt/license.md
 COPY packaging/man/                     /usr/share/man/
 
-ENV SPT_CONFIG_PATH=/etc/spt/spt.toml \
+ENV SPT_CONFIG=/etc/spt/spt.toml \
     SPT_STATE_DIR=/var/lib/spt \
     SPT_LOG_LEVEL=info \
     RUST_BACKTRACE=1

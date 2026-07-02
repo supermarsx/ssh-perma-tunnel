@@ -21,8 +21,14 @@ user = "alice"
 [profiles.auth]
 # Public-key auth using a key mounted from the host secrets dir. Swap to
 # `method = "agent"` if you forward the host's ssh-agent socket instead.
+# The key file is read by its absolute path directly (no secret backend); mount
+# it read-only at /run/secrets with mode 0600, owned by UID/GID 65532.
 method = "publickey"
 identity_file = "/run/secrets/id_ed25519"
+# A `secret://ns/name` reference (below) is resolved by the file backend. By
+# default that root is <state_dir>/secrets (i.e. /var/lib/spt/secrets), NOT
+# /run/secrets. To resolve secret:// material from the read-only /run/secrets
+# mount, uncomment the [secrets.file] table at the bottom of this file.
 # private_key_passphrase = "secret://docker/id-ed25519-passphrase"
 
 [profiles.trust]
@@ -44,3 +50,9 @@ expose = true
 target = "service.internal:80"
 target_resolve = "remote"
 required = true
+
+# [secrets.file]
+# # Resolve `secret://ns/name` references against /run/secrets/ns/name (the
+# # read-only secrets bind mount) instead of the default <state_dir>/secrets.
+# # Files must be mode 0400/0600 and readable by UID/GID 65532.
+# root = "/run/secrets"

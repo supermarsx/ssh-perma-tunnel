@@ -45,9 +45,17 @@ pub fn build_resolver(
     if want_env {
         backends.push(Arc::new(EnvBackend::new()));
     }
-    // FileBackend rooted at <state_dir>/secrets/ acts as a final fallback.
-    backends.push(Arc::new(FileBackend::new(state_dir.join("secrets"))));
-    let _ = (state_dir, PathBuf::new());
+    // FileBackend acts as a final fallback. Its root defaults to
+    // <state_dir>/secrets/ (back-compat) but honors an explicit
+    // `[secrets.file] root = "..."` when configured — e.g. point it at a
+    // read-only `/run/secrets` mount so `secret://ns/name` resolves there.
+    // The backend's own containment + 0400/0600 permission checks are
+    // unchanged regardless of the root.
+    let file_root = cfg
+        .and_then(|s| s.file.as_ref())
+        .and_then(|f| f.root.as_deref())
+        .map_or_else(|| state_dir.join("secrets"), PathBuf::from);
+    backends.push(Arc::new(FileBackend::new(file_root)));
     Ok(Resolver::new(backends))
 }
 
@@ -124,6 +132,65 @@ mod tests {
         };
         let r = build_resolver(Some(&cfg), tmp.path()).expect("build");
         assert!(r.backends().count() >= 1);
+    }
+
+    #[test]
+    fn build_resolver_honors_configured_file_root() {
+        // A secret seeded ONLY under a custom root is resolvable when
+        // `[secrets.file] root` points there, and is NOT resolvable when the
+        // field is unset (proving the root actually switched, not a coincidence).
+        let state = tempfile::tempdir().unwrap();
+        let custom = tempfile::tempdir().unwrap();
+        let r = SecretRef::from_str("secret://ns/name").unwrap();
+        FileBackend::new(custom.path())
+            .set(&r, b"from-custom")
+            .unwrap();
+
+        let cfg_custom = SecretsConfig {
+            backend: Some("file".into()),
+            file: Some(spt_config::schema::SecretsFile {
+                root: Some(custom.path().display().to_string()),
+            }),
+            ..Default::default()
+        };
+        let resolver = build_resolver(Some(&cfg_custom), state.path()).expect("build");
+        assert!(
+            resolver.resolve(&r).is_ok(),
+            "configured file.root should resolve the seeded secret"
+        );
+
+        // Same state_dir, but no configured root -> default <state_dir>/secrets,
+        // where nothing was seeded, so the reference is unavailable.
+        let cfg_default = SecretsConfig {
+            backend: Some("file".into()),
+            ..Default::default()
+        };
+        let resolver = build_resolver(Some(&cfg_default), state.path()).expect("build");
+        assert!(
+            resolver.resolve(&r).is_err(),
+            "unset file.root must not read from the custom root"
+        );
+    }
+
+    #[test]
+    fn build_resolver_file_root_defaults_to_state_dir_when_unset() {
+        // With no configured root, the file backend falls back to
+        // <state_dir>/secrets (back-compat).
+        let state = tempfile::tempdir().unwrap();
+        let r = SecretRef::from_str("secret://ns/name").unwrap();
+        FileBackend::new(state.path().join("secrets"))
+            .set(&r, b"from-state")
+            .unwrap();
+
+        let cfg = SecretsConfig {
+            backend: Some("file".into()),
+            ..Default::default()
+        };
+        let resolver = build_resolver(Some(&cfg), state.path()).expect("build");
+        assert!(
+            resolver.resolve(&r).is_ok(),
+            "default root <state_dir>/secrets should resolve the seeded secret"
+        );
     }
 
     #[test]

@@ -87,7 +87,7 @@ COPY packaging/man/                     /usr/share/man/
 
 # Default config lives in /etc/spt/spt.toml; operators bind-mount their own.
 # State (known_hosts, supervisor lock, snapshots) is persisted under /var/lib/spt.
-ENV SPT_CONFIG_PATH=/etc/spt/spt.toml \
+ENV SPT_CONFIG=/etc/spt/spt.toml \
     SPT_STATE_DIR=/var/lib/spt \
     SPT_LOG_LEVEL=info \
     RUST_BACKTRACE=1

@@ -427,6 +427,20 @@ pub struct Secrets {
     /// Keychain namespace. §9.3.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub keychain_namespace: Option<String>,
+    /// File backend settings (`[secrets.file]`). §9.3.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file: Option<SecretsFile>,
+}
+
+/// `[secrets.file]` sub-table: file-backed secret backend settings. §9.3.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct SecretsFile {
+    /// Root directory the file backend resolves `secret://ns/name` references
+    /// against (as `<root>/<ns>/<name>`). When unset the resolver defaults to
+    /// `<state_dir>/secrets`. Point this at a read-only secrets mount (e.g.
+    /// `/run/secrets`) to resolve `secret://` material from there. §9.3.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root: Option<String>,
 }
 
 // ---------------------------------------------------------------------------

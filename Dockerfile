@@ -130,7 +130,7 @@ COPY --from=builder /usr/local/bin/spt /usr/local/bin/spt
 #                         snapshots). Mount a writable volume here; the
 #                         compose read-only rootfs makes everything else
 #                         immutable.
-ENV SPT_CONFIG_PATH=/etc/spt/spt.toml \
+ENV SPT_CONFIG=/etc/spt/spt.toml \
     SPT_STATE_DIR=/var/lib/spt \
     SPT_LOG_LEVEL=info \
     RUST_BACKTRACE=1

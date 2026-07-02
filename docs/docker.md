@@ -124,15 +124,52 @@ key ones:
 The read-only rootfs means `/var/lib/spt` **must** be a writable volume or the
 supervisor cannot persist its lock/known_hosts and will fail to start cleanly.
 
+### File permissions & ownership
+
+The container runs as the non-root user **UID/GID `65532`**, so every file you
+bind-mount into it must be readable by that identity — the host UID, not
+`root`, is what opens the file inside the container:
+
+- **Config (`/etc/spt/spt.toml`) and any referenced key/token files** must be
+  readable by UID/GID `65532`. Either `chown 65532:65532 <file>` on the host, or
+  make the config world-readable (`chmod 0644`). A file owned by host `root`
+  with mode `0600` is **unreadable** inside the container and `spt` will fail to
+  start.
+- **Private keys / secret files** must be mode **`0600`** (or `0400`). The Unix
+  file-secret backend hard-rejects anything broader than owner read/write, so a
+  world- or group-readable key is refused with a permission error — this is a
+  security check, not a bug. Set `chmod 0600 <keyfile>` and
+  `chown 65532:65532 <keyfile>` on the host.
+- **Read-only bind mounts preserve the host's mode bits and ownership** — the
+  container sees exactly the permissions the file has on the host. `read_only`
+  only blocks writes; it does not relax the readability requirement above. Fix
+  ownership/mode on the host before mounting.
+
 ## Supplying secrets safely
 
 **No secrets are ever baked into the image or committed to any file.** The image
 contains only the `spt` binary and CA certificates. Provide secrets at runtime:
 
-- **File mount (recommended):** mount a host directory of key/token files
-  read-only at `/run/secrets` and reference them from `spt.toml` (e.g. a private
-  key path or a bearer-token file). Uncomment the `secrets` bind mount in
-  `docker-compose.yml`.
+- **Direct file path (recommended):** mount a host directory of key/token files
+  read-only at `/run/secrets` and reference them by **absolute path** from
+  `spt.toml` — e.g. `identity_file = "/run/secrets/id_ed25519"` or a
+  bearer-token file path. Uncomment the `secrets` bind mount in
+  `docker-compose.yml`. These paths are read directly; no secret backend is
+  involved.
+- **`secret://ns/name` references (file backend):** by default the file backend
+  resolves `secret://ns/name` against `<state_dir>/secrets/<ns>/<name>` — i.e.
+  `/var/lib/spt/secrets/...` inside the **writable state volume**, *not*
+  `/run/secrets`. To resolve `secret://` material from a read-only mount
+  instead, set the file backend's root explicitly:
+
+  ```toml
+  [secrets.file]
+  # Resolve secret://ns/name from /run/secrets/ns/name (read-only mount).
+  root = "/run/secrets"
+  ```
+
+  On Unix the backend still enforces owner-only mode (`0400`/`0600`) on every
+  file it reads, so mount your secrets with those bits.
 - **Environment variable:** for the sealed-config passphrase, pass
   `SPT_CONFIG_PASSPHRASE` via your orchestrator's secret mechanism (Docker
   secrets, Kubernetes Secret, etc.) — never via a committed `.env`.

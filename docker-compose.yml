@@ -27,6 +27,12 @@ services:
     # crashes without masking a deliberate `docker compose down`).
     restart: unless-stopped
 
+    # Give the graceful-shutdown path time to flush. spt's stop budget is
+    # ~45s (RECOMMENDED_STOP_TIMEOUT_SECS; the systemd unit uses
+    # TimeoutStopSec=45s) so a multi-profile teardown can flush status.json /
+    # runtime.json before SIGKILL. Docker's default 10s would cut that short.
+    stop_grace_period: 45s
+
     # ----- environment ----------------------------------------------------
     # NO secrets here. Private keys / bearer tokens come from a mounted secret
     # file or the host's secret manager at runtime, never baked into the image
