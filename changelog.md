@@ -1,3 +1,11 @@
+## [26.41] - 2026-07-02
+
+# spt 26.41
+
+## Changes since 26.40
+
+- fix(docker): config/secrets/state mounts + graceful-shutdown alignment for containers (81dce0f)
+
 ## [26.40] - 2026-07-02
 
 # spt 26.40
