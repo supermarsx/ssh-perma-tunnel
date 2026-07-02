@@ -7,7 +7,10 @@ description="{{description}}"
 command="{{exec_path}}"
 command_args="{{args}}"
 command_user="{{user}}:{{group}}"
-command_background=true
+# Supervision / restart policy (from ServiceSpec.restart_policy):
+#   always / on-failure -> supervise-daemon respawns the process if it exits
+#   never               -> plain backgrounded start-stop-daemon (no respawn)
+{{supervisor_directives}}
 pidfile="/run/{{name}}.pid"
 directory="{{working_dir}}"
 

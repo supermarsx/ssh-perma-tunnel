@@ -18,6 +18,8 @@ DAEMON_ARGS="'service' 'run' '--config' '/etc/spt/relay.toml'"
 DAEMON_USER="spt"
 PIDFILE="/var/run/${NAME}.pid"
 WORKDIR="/var/lib/spt"
+RESTART_POLICY="on-failure"
+# SysV has no native on-failure respawn; use a supervisor for restart-on-crash.
 
 # Environment exports from [profiles].env (blank when none configured).
 export RUST_LOG="info"

@@ -37,6 +37,7 @@ pub mod doctor;
 pub mod env;
 pub mod file;
 pub mod keychain;
+pub mod mem_protection;
 pub mod mlock;
 pub mod passphrase;
 pub mod portable;
@@ -53,6 +54,10 @@ pub use doctor::SecretsDoctor;
 pub use env::EnvBackend;
 pub use file::FileBackend;
 pub use keychain::KeychainBackend;
+pub use mem_protection::{
+    apply as apply_memory_protection, apply_once as apply_memory_protection_once, MemoryProtection,
+    ProtectionOutcome,
+};
 pub use passphrase::read_passphrase;
 pub use portable::{
     keychain_allowed, set_portable_mode, vault_passphrase_from_file, PortableVaultLayout,

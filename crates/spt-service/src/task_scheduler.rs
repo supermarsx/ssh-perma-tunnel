@@ -170,6 +170,7 @@ impl ServiceManager for TaskSchedulerManager {
     }
 
     async fn install(&self, spec: &ServiceSpec) -> Result<()> {
+        tracing::info!(target: "spt_service", backend = "task-scheduler", service = %spec.name, "installing service");
         let owned = schtasks_args(spec, self.trigger);
         let args: Vec<&str> = owned.iter().map(String::as_str).collect();
         let out = self.run(&args).await?;
@@ -185,6 +186,7 @@ impl ServiceManager for TaskSchedulerManager {
     }
 
     async fn uninstall(&self, name: &str) -> Result<()> {
+        tracing::info!(target: "spt_service", backend = "task-scheduler", service = %name, "uninstalling service");
         let out = self.run(&["/Delete", "/TN", name, "/F"]).await?;
         if out.ok() {
             return Ok(());
@@ -223,6 +225,7 @@ impl ServiceManager for TaskSchedulerManager {
     }
 
     async fn start(&self, name: &str) -> Result<()> {
+        tracing::info!(target: "spt_service", backend = "task-scheduler", service = %name, "starting service");
         let out = self.run(&["/Run", "/TN", name]).await?;
         if out.ok() {
             return Ok(());
@@ -238,6 +241,7 @@ impl ServiceManager for TaskSchedulerManager {
     }
 
     async fn stop(&self, name: &str) -> Result<()> {
+        tracing::info!(target: "spt_service", backend = "task-scheduler", service = %name, "stopping service");
         let out = self.run(&["/End", "/TN", name]).await?;
         if out.ok() {
             return Ok(());

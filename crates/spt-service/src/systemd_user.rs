@@ -119,6 +119,7 @@ impl ServiceManager for SystemdUserManager {
     }
 
     async fn install(&self, spec: &ServiceSpec) -> Result<()> {
+        tracing::info!(target: "spt_service", backend = "systemd-user", service = %spec.name, "installing service");
         let unit = systemd_system::render_unit(spec, true);
         let dir = self.resolve_unit_root()?;
         std::fs::create_dir_all(&dir)
@@ -149,6 +150,7 @@ impl ServiceManager for SystemdUserManager {
     }
 
     async fn uninstall(&self, name: &str) -> Result<()> {
+        tracing::info!(target: "spt_service", backend = "systemd-user", service = %name, "uninstalling service");
         let _ = self
             .runner
             .run("systemctl", &["--user", "stop", name], DEFAULT_TIMEOUT)
@@ -182,11 +184,13 @@ impl ServiceManager for SystemdUserManager {
     }
 
     async fn start(&self, name: &str) -> Result<()> {
+        tracing::info!(target: "spt_service", backend = "systemd-user", service = %name, "starting service");
         systemd_system::run_systemctl_prefixed(self.runner.as_ref(), &["--user"], &["start", name])
             .await
     }
 
     async fn stop(&self, name: &str) -> Result<()> {
+        tracing::info!(target: "spt_service", backend = "systemd-user", service = %name, "stopping service");
         systemd_system::run_systemctl_prefixed(self.runner.as_ref(), &["--user"], &["stop", name])
             .await
     }

@@ -55,6 +55,15 @@ pub const WATCHDOG_PID_ENV: &str = "WATCHDOG_PID";
 /// with `TimeoutStopSec=` in `packaging/systemd/spt.service{,.tmpl}`.
 pub const RECOMMENDED_STOP_TIMEOUT_SECS: u64 = 45;
 
+/// Recommended systemd `WatchdogSec` (seconds) for installed units.
+///
+/// The pinger sends `WATCHDOG=1` at half this interval (see [`spawn_watchdog`]),
+/// so a 30s watchdog pings every ~15s — frequent enough that a wedged process
+/// is detected and restarted within one interval, without adding meaningful
+/// load. This is the default applied by `spt service install` and is embedded
+/// in the shipped `packaging/systemd/spt.service` unit; keep the two in sync.
+pub const RECOMMENDED_WATCHDOG_SECS: u64 = 30;
+
 /// Send `READY=1` to systemd, indicating the service has finished starting and
 /// is now operational. Call this once, after the orchestrator is fully up.
 ///

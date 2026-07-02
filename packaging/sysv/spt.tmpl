@@ -14,6 +14,7 @@ DAEMON_ARGS="{{args}}"
 DAEMON_USER="{{user}}"
 PIDFILE="/var/run/${NAME}.pid"
 WORKDIR="{{working_dir}}"
+{{restart_note}}
 
 # Environment exports from [profiles].env (blank when none configured).
 {{env_exports}}

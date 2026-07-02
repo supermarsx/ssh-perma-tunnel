@@ -232,6 +232,7 @@ impl ServiceManager for LaunchdManager {
 
     async fn install(&self, spec: &ServiceSpec) -> Result<()> {
         validate_service_name(&spec.name)?;
+        tracing::info!(target: "spt_service", backend = "launchd", service = %spec.name, "installing service");
         let plist = render_plist(spec);
         // Derive the path from the manager's own scope, not `spec.scope`, so
         // install and uninstall/start/stop/status all agree on the domain and
@@ -265,6 +266,7 @@ impl ServiceManager for LaunchdManager {
 
     async fn uninstall(&self, name: &str) -> Result<()> {
         validate_service_name(name)?;
+        tracing::info!(target: "spt_service", backend = "launchd", service = %name, "uninstalling service");
         let label = Self::label_for(name);
         let path = Self::plist_path_for(self.scope, &label);
         if path.exists() {
@@ -316,6 +318,7 @@ impl ServiceManager for LaunchdManager {
 
     async fn start(&self, name: &str) -> Result<()> {
         validate_service_name(name)?;
+        tracing::info!(target: "spt_service", backend = "launchd", service = %name, "starting service");
         let label = Self::label_for(name);
         let path = Self::plist_path_for(self.scope, &label);
         let path_s = path.display().to_string();
@@ -335,6 +338,7 @@ impl ServiceManager for LaunchdManager {
 
     async fn stop(&self, name: &str) -> Result<()> {
         validate_service_name(name)?;
+        tracing::info!(target: "spt_service", backend = "launchd", service = %name, "stopping service");
         let label = Self::label_for(name);
         let path = Self::plist_path_for(self.scope, &label);
         let path_s = path.display().to_string();

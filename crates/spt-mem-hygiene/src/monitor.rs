@@ -54,6 +54,20 @@ pub struct MemoryMonitorConfig {
     /// Minimum fraction (0.0..=1.0) of adjacent sample pairs that must be
     /// non-decreasing for the window to count as "rising". Rejects sawtooth.
     pub min_rising_fraction: f64,
+    /// Absolute RSS ceiling, in bytes, that triggers a WARN **independent of**
+    /// the slope heuristic — the fast-path that catches a sudden spike or a
+    /// fast leak the ~30-min window would miss. `0` disables the check
+    /// (the conservative default: no absolute ceiling until an operator sets
+    /// one). Rate-limited so a sustained breach is not a per-tick flood.
+    pub rss_high_bytes: u64,
+    /// Percentage of the cgroup memory limit (`0.0..=100.0`) at or above which
+    /// the Linux cgroup-pressure watch logs a pre-OOM WARN. Default `90.0`.
+    /// Ignored on non-Linux targets and when no cgroup limit is discoverable.
+    pub cgroup_pressure_pct: f64,
+    /// Enable the Linux cgroup memory-pressure watch (usage-vs-limit and
+    /// `oom_kill`-delta). Default `true`; a transparent no-op off Linux and when
+    /// `cgroupfs` is not mounted.
+    pub cgroup_watch: bool,
 }
 
 impl Default for MemoryMonitorConfig {
@@ -64,7 +78,156 @@ impl Default for MemoryMonitorConfig {
             growth_threshold_bytes: 64 * 1024 * 1024, // 64 MiB
             growth_rate_bytes_per_min: 2 * 1024 * 1024, // 2 MiB/min
             min_rising_fraction: 0.8,
+            rss_high_bytes: 0, // disabled until configured
+            cgroup_pressure_pct: 90.0,
+            cgroup_watch: true,
         }
+    }
+}
+
+/// How often a *sustained* pressure/ceiling condition is re-logged, in seconds,
+/// so a long-lived breach neither floods per-tick nor goes silent forever.
+const PRESSURE_REWARN_SECS: u64 = 300;
+
+/// Only log a new RSS high-water mark once it exceeds the last-logged mark by at
+/// least this many bytes, so slow growth does not produce a per-tick DEBUG flood.
+const HWM_LOG_DELTA_BYTES: u64 = 32 * 1024 * 1024;
+
+/// A memory-observability signal produced by [`Observer::observe`] on a tick.
+/// Kept as data (rather than logging inline) so the decision logic is pure and
+/// unit-testable; the monitor loop renders each variant to `tracing`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum MemorySignal {
+    /// RSS crossed the absolute configured ceiling (WARN).
+    RssHigh {
+        rss_bytes: u64,
+        threshold_bytes: u64,
+        pct: f64,
+    },
+    /// A new RSS high-water mark worth recording (DEBUG trajectory).
+    HighWaterMark { rss_bytes: u64, hwm_bytes: u64 },
+    /// cgroup usage reached the configured fraction of its limit (WARN).
+    CgroupPressure {
+        usage: u64,
+        limit: u64,
+        pct: f64,
+        psi_some_avg10: Option<f64>,
+    },
+    /// The cgroup `oom_kill` counter advanced — a confirmed OOM-kill (WARN).
+    OomKill { total: u64, delta: u64 },
+}
+
+/// Per-tick observability state for the absolute-RSS ceiling, RSS high-water
+/// mark, and Linux cgroup pressure/OOM signals. Separated from the slope
+/// heuristic so it is deterministically testable without spawning a task.
+pub(crate) struct Observer {
+    cfg: MemoryMonitorConfig,
+    rewarn_ticks: u64,
+    tick_idx: u64,
+    hwm: u64,
+    last_hwm_logged: u64,
+    last_pressure_warn_tick: Option<u64>,
+    last_rss_high_warn_tick: Option<u64>,
+    last_oom_kill: Option<u64>,
+}
+
+impl Observer {
+    /// Build an observer for `cfg`, deriving the re-warn cadence from the (already
+    /// clamped, non-zero) sample `interval`.
+    pub(crate) fn new(cfg: MemoryMonitorConfig, interval: Duration) -> Self {
+        let interval_secs = interval.as_secs().max(1);
+        Self {
+            cfg,
+            rewarn_ticks: (PRESSURE_REWARN_SECS / interval_secs).max(1),
+            tick_idx: 0,
+            hwm: 0,
+            last_hwm_logged: 0,
+            last_pressure_warn_tick: None,
+            last_rss_high_warn_tick: None,
+            last_oom_kill: None,
+        }
+    }
+
+    /// A rate-limited condition is "due" if it has never warned or at least
+    /// `rewarn_ticks` have elapsed since the last warn.
+    fn due(&self, last: Option<u64>) -> bool {
+        match last {
+            None => true,
+            Some(t) => self.tick_idx.saturating_sub(t) >= self.rewarn_ticks,
+        }
+    }
+
+    /// Evaluate this tick's `rss` (and optional cgroup snapshot) and return the
+    /// signals to log. Mutates internal rate-limit / high-water state.
+    pub(crate) fn observe(
+        &mut self,
+        rss: u64,
+        cgroup: Option<&crate::cgroup::CgroupSnapshot>,
+    ) -> Vec<MemorySignal> {
+        self.tick_idx += 1;
+        let mut out = Vec::new();
+
+        // (P3) RSS high-water mark — records the climb even when nothing fires.
+        if rss > self.hwm {
+            self.hwm = rss;
+            if self.hwm.saturating_sub(self.last_hwm_logged) >= HWM_LOG_DELTA_BYTES {
+                self.last_hwm_logged = self.hwm;
+                out.push(MemorySignal::HighWaterMark {
+                    rss_bytes: rss,
+                    hwm_bytes: self.hwm,
+                });
+            }
+        }
+
+        // (P3) Absolute RSS ceiling — fires on any tick, independent of slope.
+        if self.cfg.rss_high_bytes > 0 && rss >= self.cfg.rss_high_bytes {
+            if self.due(self.last_rss_high_warn_tick) {
+                self.last_rss_high_warn_tick = Some(self.tick_idx);
+                let pct = rss as f64 / self.cfg.rss_high_bytes as f64 * 100.0;
+                out.push(MemorySignal::RssHigh {
+                    rss_bytes: rss,
+                    threshold_bytes: self.cfg.rss_high_bytes,
+                    pct,
+                });
+            }
+        } else {
+            // Reset so the next breach warns immediately rather than waiting out
+            // the previous cooldown.
+            self.last_rss_high_warn_tick = None;
+        }
+
+        // (P2) Linux cgroup pressure + OOM-kill delta.
+        if let Some(snap) = cgroup {
+            if let Some(cur) = snap.oom_kill {
+                if let Some(prev) = self.last_oom_kill {
+                    if cur > prev {
+                        out.push(MemorySignal::OomKill {
+                            total: cur,
+                            delta: cur - prev,
+                        });
+                    }
+                }
+                self.last_oom_kill = Some(cur);
+            }
+
+            if let Some(pct) = snap.usage_pct() {
+                if pct >= self.cfg.cgroup_pressure_pct {
+                    if self.due(self.last_pressure_warn_tick) {
+                        self.last_pressure_warn_tick = Some(self.tick_idx);
+                        out.push(MemorySignal::CgroupPressure {
+                            usage: snap.current.unwrap_or(0),
+                            limit: snap.limit.unwrap_or(0),
+                            pct,
+                            psi_some_avg10: snap.psi_some_avg10,
+                        });
+                    }
+                } else {
+                    self.last_pressure_warn_tick = None;
+                }
+            }
+        }
+
+        out
     }
 }
 
@@ -347,6 +510,21 @@ impl MemoryMonitor {
             // Avoid a burst of catch-up ticks if the task is ever delayed.
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
+            // (P2) Linux cgroup memory-pressure reader. A transparent no-op off
+            // Linux and when `cgroupfs` is not mounted / the watch is disabled.
+            #[cfg(target_os = "linux")]
+            let cgroup_reader: Option<crate::cgroup::CgroupReader> = if config.cgroup_watch {
+                crate::cgroup::CgroupReader::detect()
+            } else {
+                None
+            };
+            #[cfg(not(target_os = "linux"))]
+            let cgroup_reader: Option<crate::cgroup::CgroupReader> = None;
+
+            // (P2/P3) fast-path observability state (absolute ceiling, high-water
+            // mark, cgroup pressure/OOM), independent of the slope window.
+            let mut observer = Observer::new(config, tick_period);
+
             loop {
                 ticker.tick().await;
                 let rss = sampler();
@@ -360,6 +538,70 @@ impl MemoryMonitor {
                 task_shared.last_rss.store(rss, Ordering::Relaxed);
                 task_shared.samples_taken.fetch_add(1, Ordering::Relaxed);
 
+                // (P2/P3) fast-path signals: caught every tick, so a spike or a
+                // near-limit cgroup is visible long before the 30-min slope
+                // window could fire.
+                let cgroup_snap = cgroup_reader
+                    .as_ref()
+                    .map(crate::cgroup::CgroupReader::snapshot);
+                for sig in observer.observe(rss, cgroup_snap.as_ref()) {
+                    match sig {
+                        MemorySignal::HighWaterMark {
+                            rss_bytes,
+                            hwm_bytes,
+                        } => {
+                            tracing::debug!(
+                                target: "spt_mem_hygiene",
+                                rss_bytes,
+                                hwm_bytes,
+                                pid,
+                                "RSS high-water mark"
+                            );
+                        }
+                        MemorySignal::RssHigh {
+                            rss_bytes,
+                            threshold_bytes,
+                            pct,
+                        } => {
+                            tracing::warn!(
+                                target: "spt_mem_hygiene",
+                                rss_bytes,
+                                threshold_bytes,
+                                pct,
+                                pid,
+                                "process RSS exceeded configured high-water threshold — \
+                                 possible fast leak/spike"
+                            );
+                        }
+                        MemorySignal::CgroupPressure {
+                            usage,
+                            limit,
+                            pct,
+                            psi_some_avg10,
+                        } => {
+                            tracing::warn!(
+                                target: "spt_mem_hygiene",
+                                usage,
+                                limit,
+                                pct,
+                                psi_some_avg10 = ?psi_some_avg10,
+                                pid,
+                                "memory usage approaching cgroup limit — OOM-kill likely if it \
+                                 continues"
+                            );
+                        }
+                        MemorySignal::OomKill { total, delta } => {
+                            tracing::warn!(
+                                target: "spt_mem_hygiene",
+                                oom_kill_total = total,
+                                oom_kill_delta = delta,
+                                pid,
+                                "cgroup reported {delta} OOM-kill(s)"
+                            );
+                        }
+                    }
+                }
+
                 // Re-arm once RSS has fallen back below the flagged baseline.
                 if !armed && rss < flagged_baseline {
                     armed = true;
@@ -370,6 +612,22 @@ impl MemoryMonitor {
                         armed = false;
                         flagged_baseline = growth.baseline_rss_bytes;
                         task_shared.last_flagged.store(true, Ordering::Relaxed);
+                        // audit-fix (monitor.rs RSS-growth detection): the slope
+                        // heuristic previously fired the `emit` callback ONLY,
+                        // so an operator watching logs saw nothing. Log at WARN
+                        // as well so both the event bus and the log stream see a
+                        // suspected leak.
+                        tracing::warn!(
+                            target: "spt_mem_hygiene",
+                            rss_bytes = growth.rss_bytes,
+                            baseline_rss_bytes = growth.baseline_rss_bytes,
+                            growth_bytes = growth.growth_bytes,
+                            growth_rate_bytes_per_min = growth.growth_rate_bytes_per_min,
+                            window_secs = growth.window_secs,
+                            samples = growth.samples,
+                            pid = growth.pid,
+                            "sustained RSS growth detected — suspected memory leak"
+                        );
                         emit(growth);
                     }
                 }
@@ -395,6 +653,7 @@ mod tests {
             growth_threshold_bytes: 64 * 1024 * 1024,
             growth_rate_bytes_per_min: 2 * 1024 * 1024,
             min_rising_fraction: 0.8,
+            ..MemoryMonitorConfig::default()
         }
     }
 
@@ -709,6 +968,229 @@ mod tests {
             events.load(Ordering::Relaxed),
             2,
             "drop below baseline must re-arm for a second episode"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Observer: absolute RSS ceiling / high-water / cgroup pressure / OOM-kill
+    // -----------------------------------------------------------------------
+
+    use crate::cgroup::CgroupSnapshot;
+
+    fn observer_cfg() -> MemoryMonitorConfig {
+        // interval 60s => PRESSURE_REWARN_SECS/60 = 5 ticks between re-warns.
+        MemoryMonitorConfig {
+            interval: Duration::from_secs(60),
+            rss_high_bytes: 500 * MIB,
+            cgroup_pressure_pct: 90.0,
+            ..MemoryMonitorConfig::default()
+        }
+    }
+
+    fn snap(current: u64, limit: Option<u64>, oom_kill: Option<u64>) -> CgroupSnapshot {
+        CgroupSnapshot {
+            current: Some(current),
+            limit,
+            oom_kill,
+            psi_some_avg10: None,
+        }
+    }
+
+    #[test]
+    fn observer_absolute_rss_threshold_fires_and_rate_limits() {
+        let mut o = Observer::new(observer_cfg(), Duration::from_secs(60));
+
+        // Below threshold: no RssHigh (a HighWaterMark is expected/allowed).
+        assert!(!o
+            .observe(400 * MIB, None)
+            .iter()
+            .any(|s| matches!(s, MemorySignal::RssHigh { .. })));
+
+        // Cross threshold: exactly one RssHigh (HWM may also appear — filter it).
+        let sigs = o.observe(600 * MIB, None);
+        let rss_high: Vec<_> = sigs
+            .iter()
+            .filter(|s| matches!(s, MemorySignal::RssHigh { .. }))
+            .collect();
+        assert_eq!(rss_high.len(), 1, "one RssHigh on first breach: {sigs:?}");
+        match rss_high[0] {
+            MemorySignal::RssHigh {
+                threshold_bytes,
+                pct,
+                ..
+            } => {
+                assert_eq!(*threshold_bytes, 500 * MIB);
+                assert!((*pct - 120.0).abs() < 0.01, "pct was {pct}");
+            }
+            _ => unreachable!(),
+        }
+
+        // Sustained breach within the re-warn window (5 ticks): suppressed.
+        for _ in 0..3 {
+            let s = o.observe(600 * MIB, None);
+            assert!(
+                !s.iter().any(|x| matches!(x, MemorySignal::RssHigh { .. })),
+                "must not re-warn every tick"
+            );
+        }
+    }
+
+    #[test]
+    fn observer_rss_threshold_rearms_after_dropping_below() {
+        let mut o = Observer::new(observer_cfg(), Duration::from_secs(60));
+        assert!(o
+            .observe(600 * MIB, None)
+            .iter()
+            .any(|s| matches!(s, MemorySignal::RssHigh { .. })));
+        // Drop below: resets the rate-limit.
+        assert!(!o
+            .observe(100 * MIB, None)
+            .iter()
+            .any(|s| matches!(s, MemorySignal::RssHigh { .. })));
+        // Re-breach warns immediately (no cooldown wait).
+        assert!(o
+            .observe(600 * MIB, None)
+            .iter()
+            .any(|s| matches!(s, MemorySignal::RssHigh { .. })));
+    }
+
+    #[test]
+    fn observer_rss_threshold_disabled_when_zero() {
+        let cfg = MemoryMonitorConfig {
+            rss_high_bytes: 0,
+            ..MemoryMonitorConfig::default()
+        };
+        let mut o = Observer::new(cfg, Duration::from_secs(60));
+        let sigs = o.observe(10 * 1024 * MIB, None);
+        assert!(
+            !sigs
+                .iter()
+                .any(|s| matches!(s, MemorySignal::RssHigh { .. })),
+            "rss_high_bytes=0 disables the ceiling"
+        );
+    }
+
+    #[test]
+    fn observer_high_water_mark_logs_on_new_max_beyond_delta() {
+        let cfg = MemoryMonitorConfig {
+            rss_high_bytes: 0, // isolate HWM
+            ..MemoryMonitorConfig::default()
+        };
+        let mut o = Observer::new(cfg, Duration::from_secs(60));
+
+        // First sample above the 32 MiB delta: HWM logged.
+        let s = o.observe(100 * MIB, None);
+        assert_eq!(
+            s.iter()
+                .filter(|x| matches!(x, MemorySignal::HighWaterMark { .. }))
+                .count(),
+            1
+        );
+        // A tiny new max (< 32 MiB above last logged): no HWM log.
+        let s = o.observe(110 * MIB, None);
+        assert!(!s
+            .iter()
+            .any(|x| matches!(x, MemorySignal::HighWaterMark { .. })));
+        // A non-max (lower): no HWM log.
+        let s = o.observe(50 * MIB, None);
+        assert!(!s
+            .iter()
+            .any(|x| matches!(x, MemorySignal::HighWaterMark { .. })));
+        // Cumulative climb crossing the delta from the last-logged mark: logs.
+        let s = o.observe(140 * MIB, None);
+        assert!(s
+            .iter()
+            .any(|x| matches!(x, MemorySignal::HighWaterMark { .. })));
+    }
+
+    #[test]
+    fn observer_cgroup_pressure_fires_at_threshold() {
+        let mut o = Observer::new(observer_cfg(), Duration::from_secs(60));
+
+        // 80% of limit: below the 90% threshold — no pressure warn.
+        let s = o.observe(1, Some(&snap(80, Some(100), Some(0))));
+        assert!(!s
+            .iter()
+            .any(|x| matches!(x, MemorySignal::CgroupPressure { .. })));
+
+        // 95% of limit: pressure warn.
+        let s = o.observe(1, Some(&snap(95, Some(100), Some(0))));
+        let p: Vec<_> = s
+            .iter()
+            .filter(|x| matches!(x, MemorySignal::CgroupPressure { .. }))
+            .collect();
+        assert_eq!(p.len(), 1, "pressure warn at 95%: {s:?}");
+        match p[0] {
+            MemorySignal::CgroupPressure {
+                usage, limit, pct, ..
+            } => {
+                assert_eq!(*usage, 95);
+                assert_eq!(*limit, 100);
+                assert!((*pct - 95.0).abs() < 0.01);
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn observer_cgroup_pressure_none_when_unlimited() {
+        let mut o = Observer::new(observer_cfg(), Duration::from_secs(60));
+        let s = o.observe(1, Some(&snap(u64::MAX / 2, None, Some(0))));
+        assert!(!s
+            .iter()
+            .any(|x| matches!(x, MemorySignal::CgroupPressure { .. })));
+    }
+
+    #[test]
+    fn observer_oom_kill_delta_logged() {
+        let mut o = Observer::new(observer_cfg(), Duration::from_secs(60));
+
+        // First reading establishes the baseline — no signal even if non-zero.
+        let s = o.observe(1, Some(&snap(1, Some(1_000_000), Some(2))));
+        assert!(!s.iter().any(|x| matches!(x, MemorySignal::OomKill { .. })));
+
+        // Counter advances by 3: delta logged.
+        let s = o.observe(1, Some(&snap(1, Some(1_000_000), Some(5))));
+        let k: Vec<_> = s
+            .iter()
+            .filter(|x| matches!(x, MemorySignal::OomKill { .. }))
+            .collect();
+        assert_eq!(k.len(), 1);
+        match k[0] {
+            MemorySignal::OomKill { total, delta } => {
+                assert_eq!(*total, 5);
+                assert_eq!(*delta, 3);
+            }
+            _ => unreachable!(),
+        }
+
+        // No further advance: no signal.
+        let s = o.observe(1, Some(&snap(1, Some(1_000_000), Some(5))));
+        assert!(!s.iter().any(|x| matches!(x, MemorySignal::OomKill { .. })));
+    }
+
+    #[test]
+    fn observer_pressure_rewarns_after_cooldown() {
+        // rewarn_ticks = 300/60 = 5. Fire on tick 1, then not until tick 6.
+        let mut o = Observer::new(observer_cfg(), Duration::from_secs(60));
+        let fired = |s: &[MemorySignal]| {
+            s.iter()
+                .any(|x| matches!(x, MemorySignal::CgroupPressure { .. }))
+        };
+
+        assert!(
+            fired(&o.observe(1, Some(&snap(95, Some(100), Some(0))))),
+            "tick1 fires"
+        );
+        for tick in 2..=5 {
+            assert!(
+                !fired(&o.observe(1, Some(&snap(95, Some(100), Some(0))))),
+                "tick{tick} suppressed"
+            );
+        }
+        assert!(
+            fired(&o.observe(1, Some(&snap(95, Some(100), Some(0))))),
+            "tick6 re-warns after cooldown"
         );
     }
 }

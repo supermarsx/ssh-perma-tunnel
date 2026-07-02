@@ -14,6 +14,7 @@ WorkingDirectory={{working_dir}}
 {{group_line}}
 Restart={{restart_policy}}
 RestartSec=5s
+{{watchdog_line}}
 # Graceful-stop budget. spt bounds its own aggregate teardown to ~80% of this
 # and flushes final status before the slow session teardown, so a clean stop
 # always finishes before systemd escalates to SIGKILL. Keep in sync with

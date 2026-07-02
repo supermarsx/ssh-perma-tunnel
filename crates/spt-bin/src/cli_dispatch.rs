@@ -3003,7 +3003,7 @@ fn select_service_manager(
 
 async fn service_install(args: groups::service::ServiceArgs) -> Result<()> {
     let mgr = select_service_manager(&args.scope)?;
-    let spec = service_spec_from_args(&args.config, &args.scope)?;
+    let spec = service_spec_from_args(&args.config, &args.scope, &args.unit)?;
     mgr.install(&spec).await?;
     println!("installed service `{}`", spec.name);
     Ok(())
@@ -3054,7 +3054,7 @@ fn service_render(args: groups::service::ServiceRender) -> Result<()> {
     use groups::service::RenderFormat;
 
     let mgr = select_service_manager(&args.scope)?;
-    let spec = service_spec_from_args(&args.config, &args.scope)?;
+    let spec = service_spec_from_args(&args.config, &args.scope, &args.unit)?;
 
     // E7-F4: `--format` was parsed but ignored. Honor it by validating that
     // the selected backend actually emits the requested representation —
@@ -3095,7 +3095,10 @@ fn service_render(args: groups::service::ServiceRender) -> Result<()> {
 fn service_spec_from_args(
     config: &Path,
     scope: &groups::service::ServiceScope,
+    unit: &groups::service::ServiceUnitOpts,
 ) -> Result<spt_service::ServiceSpec> {
+    use groups::service::RestartPolicyArg;
+
     let exe =
         std::env::current_exe().map_err(|e| Error::RuntimeFailure(format!("current_exe: {e}")))?;
     let name = scope
@@ -3107,9 +3110,42 @@ fn service_spec_from_args(
     } else {
         spt_service::Scope::System
     };
+
+    // E7/F4: thread the unit-shaping CLI options into the ServiceSpec so the
+    // generated unit honors them. Previously everything except name+scope was
+    // hardcoded, so every installed service ran as root with an empty env and
+    // Type=simple regardless of the operator's intent.
+    let restart_policy = match unit.restart {
+        Some(RestartPolicyArg::Always) => spt_service::RestartPolicy::Always,
+        Some(RestartPolicyArg::Never) => spt_service::RestartPolicy::Never,
+        // Default (and explicit on-failure) keep the historical policy.
+        Some(RestartPolicyArg::OnFailure) | None => spt_service::RestartPolicy::OnFailure,
+    };
+
+    // Parse `--env KEY=VALUE` pairs; a missing `=` is a hard error so a typo is
+    // not silently dropped into an unusable unit.
+    let mut env = std::collections::BTreeMap::new();
+    for pair in &unit.env {
+        let (k, v) = pair
+            .split_once('=')
+            .ok_or_else(|| Error::InvalidArgs(format!("--env expects KEY=VALUE, got `{pair}`")))?;
+        env.insert(k.to_string(), v.to_string());
+    }
+
+    // Watchdog: omitted -> a sane default (so installed systemd services get
+    // liveness supervision out of the box); explicit 0 -> disabled.
+    let watchdog_sec = match unit.watchdog_sec {
+        None => Some(spt_service::RECOMMENDED_WATCHDOG_SECS),
+        Some(0) => None,
+        Some(n) => Some(n),
+    };
+
     let spec = spt_service::ServiceSpec {
         name,
-        description: format!("spt service for {}", config.display()),
+        description: unit
+            .description
+            .clone()
+            .unwrap_or_else(|| format!("spt service for {}", config.display())),
         exec_path: exe,
         args: vec![
             "tunnel".into(),
@@ -3119,14 +3155,15 @@ fn service_spec_from_args(
             config.display().to_string(),
         ],
         working_dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")),
-        env: Default::default(),
-        user: None,
-        group: None,
+        env,
+        user: unit.run_as_user.clone(),
+        group: unit.run_as_group.clone(),
         scope: scope_kind,
-        restart_policy: spt_service::RestartPolicy::OnFailure,
-        sd_notify: false,
-        stdout_path: None,
-        stderr_path: None,
+        restart_policy,
+        sd_notify: unit.sd_notify,
+        stdout_path: unit.stdout_path.clone(),
+        stderr_path: unit.stderr_path.clone(),
+        watchdog_sec,
     };
     Ok(spec)
 }
@@ -6694,7 +6731,9 @@ mod tests {
             system: false,
             name: Some("custom-name".into()),
         };
-        let spec = service_spec_from_args(&cfg, &scope).unwrap();
+        let spec =
+            service_spec_from_args(&cfg, &scope, &groups::service::ServiceUnitOpts::default())
+                .unwrap();
         assert_eq!(spec.name, "custom-name");
         assert!(matches!(spec.scope, spt_service::Scope::User));
         assert!(spec.args.iter().any(|a| a == "run"));
@@ -6710,9 +6749,87 @@ mod tests {
             system: true,
             name: None,
         };
-        let spec = service_spec_from_args(&cfg, &scope).unwrap();
+        let spec =
+            service_spec_from_args(&cfg, &scope, &groups::service::ServiceUnitOpts::default())
+                .unwrap();
         assert_eq!(spec.name, "spt-edge");
         assert!(matches!(spec.scope, spt_service::Scope::System));
+        // Default: watchdog enabled (sane default), no run-as user/group.
+        assert_eq!(
+            spec.watchdog_sec,
+            Some(spt_service::RECOMMENDED_WATCHDOG_SECS)
+        );
+        assert!(spec.user.is_none() && spec.group.is_none());
+    }
+
+    #[test]
+    fn service_spec_helper_threads_unit_opts_into_rendered_unit() {
+        use groups::service::{RestartPolicyArg, ServiceUnitOpts};
+        let td = tempfile::tempdir().unwrap();
+        let cfg = td.path().join("relay.toml");
+        std::fs::write(&cfg, "version = 1\n").unwrap();
+        let scope = groups::service::ServiceScope {
+            user: false,
+            system: true,
+            name: None,
+        };
+        let unit = ServiceUnitOpts {
+            run_as_user: Some("svc-user".into()),
+            run_as_group: Some("svc-group".into()),
+            restart: Some(RestartPolicyArg::Always),
+            sd_notify: true,
+            watchdog_sec: Some(20),
+            env: vec!["FOO=bar".into()],
+            ..Default::default()
+        };
+        let spec = service_spec_from_args(&cfg, &scope, &unit).unwrap();
+        assert_eq!(spec.user.as_deref(), Some("svc-user"));
+        assert_eq!(spec.group.as_deref(), Some("svc-group"));
+        assert!(matches!(
+            spec.restart_policy,
+            spt_service::RestartPolicy::Always
+        ));
+        assert!(spec.sd_notify);
+        assert_eq!(spec.watchdog_sec, Some(20));
+        assert_eq!(spec.env.get("FOO").map(String::as_str), Some("bar"));
+
+        // The systemd unit rendered from this spec must carry those directives
+        // (previously unreachable via the CLI — every install ran as root,
+        // Type=simple, no watchdog).
+        let unit_text = spt_service::systemd_system::SystemdSystemManager::new().render(&spec);
+        assert!(unit_text.contains("User=svc-user"), "{unit_text}");
+        assert!(unit_text.contains("Group=svc-group"), "{unit_text}");
+        assert!(unit_text.contains("Restart=always"), "{unit_text}");
+        assert!(unit_text.contains("Type=notify"), "{unit_text}");
+        assert!(unit_text.contains("WatchdogSec=20s"), "{unit_text}");
+        assert!(unit_text.contains("Environment=\"FOO=bar\""), "{unit_text}");
+    }
+
+    #[test]
+    fn service_spec_helper_watchdog_zero_disables_and_env_typo_errors() {
+        use groups::service::ServiceUnitOpts;
+        let td = tempfile::tempdir().unwrap();
+        let cfg = td.path().join("relay.toml");
+        std::fs::write(&cfg, "version = 1\n").unwrap();
+        let scope = groups::service::ServiceScope {
+            user: false,
+            system: true,
+            name: None,
+        };
+        // watchdog 0 -> disabled.
+        let unit = ServiceUnitOpts {
+            watchdog_sec: Some(0),
+            ..Default::default()
+        };
+        let spec = service_spec_from_args(&cfg, &scope, &unit).unwrap();
+        assert_eq!(spec.watchdog_sec, None);
+
+        // Malformed --env must be a hard error, not a silent drop.
+        let bad = ServiceUnitOpts {
+            env: vec!["NOEQUALS".into()],
+            ..Default::default()
+        };
+        assert!(service_spec_from_args(&cfg, &scope, &bad).is_err());
     }
 
     #[test]

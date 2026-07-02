@@ -294,6 +294,7 @@ pub mod fixtures {
             sd_notify: false,
             stdout_path: None,
             stderr_path: None,
+            watchdog_sec: None,
         }
     }
 

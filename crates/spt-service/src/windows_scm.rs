@@ -290,6 +290,7 @@ impl ScmManagerImpl {
 
     /// Install + best-effort start. See module docs for sequencing.
     pub fn install(&self, spec: &ServiceSpec) -> Result<()> {
+        tracing::info!(target: "spt_service", backend = "windows-scm", service = %spec.name, "installing service");
         // Cheap pre-flight so an immediately-following `create_service` call
         // doesn't blow up with a noisier error if SCM isn't reachable.
         self.backend.open_scm()?;
@@ -304,6 +305,7 @@ impl ScmManagerImpl {
 
     /// Idempotent uninstall — unknown services succeed.
     pub fn uninstall(&self, name: &str) -> Result<()> {
+        tracing::info!(target: "spt_service", backend = "windows-scm", service = %name, "uninstalling service");
         // Idempotent: missing service is success.
         let exists = self
             .backend
@@ -333,11 +335,13 @@ impl ScmManagerImpl {
 
     /// Start the service.
     pub fn start(&self, name: &str) -> Result<()> {
+        tracing::info!(target: "spt_service", backend = "windows-scm", service = %name, "starting service");
         self.backend.start_service(name)
     }
 
     /// Stop the service.
     pub fn stop(&self, name: &str) -> Result<()> {
+        tracing::info!(target: "spt_service", backend = "windows-scm", service = %name, "stopping service");
         self.backend.stop_service(name)
     }
 

@@ -35,6 +35,7 @@ fn cfg(window: usize) -> MemoryMonitorConfig {
         growth_threshold_bytes: 64 * MIB,
         growth_rate_bytes_per_min: 2 * MIB,
         min_rising_fraction: 0.8,
+        ..MemoryMonitorConfig::default()
     }
 }
 

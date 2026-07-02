@@ -53,6 +53,55 @@ pub struct ServiceScope {
     pub name: Option<String>,
 }
 
+/// Restart policy for the generated unit (maps to `spt_service::RestartPolicy`).
+#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
+pub enum RestartPolicyArg {
+    /// Always restart on exit.
+    Always,
+    /// Restart only on non-zero exit (default).
+    OnFailure,
+    /// Never restart automatically.
+    Never,
+}
+
+/// Unit-shaping options threaded into the generated service unit at install /
+/// render time. Without these the installed unit would run as root with an
+/// empty environment and `Type=simple` regardless of intent.
+///
+/// Consumed only by `install` and `render`; ignored by the lifecycle verbs.
+#[derive(Args, Debug, Default, Clone)]
+pub struct ServiceUnitOpts {
+    /// Run the service as this user (system scope). Maps to systemd `User=` /
+    /// OpenRC `command_user` / launchd `UserName` / SysV `DAEMON_USER`.
+    #[arg(long = "run-as-user", value_name = "USER")]
+    pub run_as_user: Option<String>,
+    /// Run the service as this group (system scope). Maps to systemd `Group=`.
+    #[arg(long = "run-as-group", value_name = "GROUP")]
+    pub run_as_group: Option<String>,
+    /// Restart policy for the generated unit.
+    #[arg(long = "restart", value_enum, value_name = "POLICY")]
+    pub restart: Option<RestartPolicyArg>,
+    /// Enable systemd `Type=notify` (the daemon sends READY=1/STOPPING=1).
+    #[arg(long = "sd-notify")]
+    pub sd_notify: bool,
+    /// systemd `WatchdogSec=` interval in seconds. `0` disables the watchdog;
+    /// omitted uses a sane default.
+    #[arg(long = "watchdog-sec", value_name = "SECONDS")]
+    pub watchdog_sec: Option<u64>,
+    /// Redirect service stdout to this path (launchd / SysV).
+    #[arg(long = "stdout", value_name = "PATH")]
+    pub stdout_path: Option<PathBuf>,
+    /// Redirect service stderr to this path (launchd / SysV).
+    #[arg(long = "stderr", value_name = "PATH")]
+    pub stderr_path: Option<PathBuf>,
+    /// Extra environment variable `KEY=VALUE` (repeatable).
+    #[arg(long = "env", value_name = "KEY=VALUE")]
+    pub env: Vec<String>,
+    /// Override the unit description.
+    #[arg(long = "description", value_name = "TEXT")]
+    pub description: Option<String>,
+}
+
 /// Args for install/uninstall/start/stop/restart.
 #[derive(Args, Debug)]
 pub struct ServiceArgs {
@@ -62,6 +111,9 @@ pub struct ServiceArgs {
     /// Scope flags.
     #[command(flatten)]
     pub scope: ServiceScope,
+    /// Unit-shaping options (honored by `install`; ignored by other verbs).
+    #[command(flatten)]
+    pub unit: ServiceUnitOpts,
 }
 
 /// `spt service status`.
@@ -98,6 +150,10 @@ pub struct ServiceRender {
     /// Scope flags.
     #[command(flatten)]
     pub scope: ServiceScope,
+    /// Unit-shaping options (same as `install`, so `render` previews the real
+    /// unit).
+    #[command(flatten)]
+    pub unit: ServiceUnitOpts,
     /// Output format.
     #[arg(long, value_enum, value_name = "FORMAT")]
     pub format: Option<RenderFormat>,

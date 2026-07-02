@@ -161,6 +161,7 @@ impl ServiceManager for SysVManager {
 
     async fn install(&self, spec: &ServiceSpec) -> Result<()> {
         validate_service_name(&spec.name)?;
+        tracing::info!(target: "spt_service", backend = "sysv", service = %spec.name, "installing service");
         let script = render_script(spec);
         let path = self.script_path(&spec.name);
 
@@ -229,6 +230,7 @@ impl ServiceManager for SysVManager {
 
     async fn uninstall(&self, name: &str) -> Result<()> {
         validate_service_name(name)?;
+        tracing::info!(target: "spt_service", backend = "sysv", service = %name, "uninstalling service");
         match self.detect_distro_tool().await {
             DistroTool::Debian => {
                 let _ = self
@@ -313,11 +315,13 @@ impl ServiceManager for SysVManager {
 
     async fn start(&self, name: &str) -> Result<()> {
         validate_service_name(name)?;
+        tracing::info!(target: "spt_service", backend = "sysv", service = %name, "starting service");
         run_service(self.runner.as_ref(), name, "start").await
     }
 
     async fn stop(&self, name: &str) -> Result<()> {
         validate_service_name(name)?;
+        tracing::info!(target: "spt_service", backend = "sysv", service = %name, "stopping service");
         run_service(self.runner.as_ref(), name, "stop").await
     }
 
@@ -421,7 +425,32 @@ fn render_script(spec: &ServiceSpec) -> String {
     // Rendered into the `{{env_exports}}` placeholder; the template is owned
     // by p5-packaging-units and must add that placeholder.
     vars.insert("env_exports", render_env_exports(spec));
+    // F4/F6: record `restart_policy` on SysV (previously silently dropped).
+    // Classic SysV init has no native respawn (that is `/etc/inittab`'s job or a
+    // process supervisor), so we surface the configured policy as a visible
+    // `RESTART_POLICY` marker + guidance rather than dropping it. This keeps the
+    // operator's choice observable in the generated script.
+    vars.insert("restart_note", sysv_restart_note(spec.restart_policy));
     template::render(TEMPLATE, &vars)
+}
+
+/// Render the `SysV` restart-policy marker/comment for `policy`.
+fn sysv_restart_note(policy: crate::RestartPolicy) -> String {
+    use crate::RestartPolicy;
+    let (value, guidance) = match policy {
+        RestartPolicy::Always => (
+            "always",
+            "# SysV has no native respawn; for automatic restart add an \
+             `/etc/inittab` respawn entry or run under a supervisor.",
+        ),
+        RestartPolicy::OnFailure => (
+            "on-failure",
+            "# SysV has no native on-failure respawn; use a supervisor for \
+             restart-on-crash.",
+        ),
+        RestartPolicy::Never => ("never", "# No automatic restart is configured."),
+    };
+    format!("RESTART_POLICY=\"{value}\"\n{guidance}")
 }
 
 #[cfg(test)]
@@ -444,6 +473,29 @@ mod tests {
             stdout: String::new(),
             stderr: stderr.into(),
         }
+    }
+
+    // F4/F6: restart_policy must be surfaced on SysV rather than silently
+    // dropped. Each policy emits a distinct RESTART_POLICY marker.
+    #[test]
+    fn render_records_restart_policy() {
+        use crate::RestartPolicy;
+        let mut spec = sample_spec();
+
+        spec.restart_policy = RestartPolicy::Always;
+        assert!(SysVManager::new()
+            .render(&spec)
+            .contains("RESTART_POLICY=\"always\""));
+
+        spec.restart_policy = RestartPolicy::OnFailure;
+        assert!(SysVManager::new()
+            .render(&spec)
+            .contains("RESTART_POLICY=\"on-failure\""));
+
+        spec.restart_policy = RestartPolicy::Never;
+        assert!(SysVManager::new()
+            .render(&spec)
+            .contains("RESTART_POLICY=\"never\""));
     }
 
     // M2: SysV args must be single-quoted so the `eval "set -- ${DAEMON_ARGS}"`

@@ -116,6 +116,7 @@ impl ServiceManager for OpenRcManager {
 
     async fn install(&self, spec: &ServiceSpec) -> Result<()> {
         validate_service_name(&spec.name)?;
+        tracing::info!(target: "spt_service", backend = "openrc", service = %spec.name, "installing service");
         let script = render_script(spec);
         let path = self.script_path(&spec.name);
 
@@ -165,6 +166,7 @@ impl ServiceManager for OpenRcManager {
 
     async fn uninstall(&self, name: &str) -> Result<()> {
         validate_service_name(name)?;
+        tracing::info!(target: "spt_service", backend = "openrc", service = %name, "uninstalling service");
         // Best-effort deregistration; ignore exit status.
         let _ = self
             .runner
@@ -231,11 +233,13 @@ impl ServiceManager for OpenRcManager {
 
     async fn start(&self, name: &str) -> Result<()> {
         validate_service_name(name)?;
+        tracing::info!(target: "spt_service", backend = "openrc", service = %name, "starting service");
         run_rc_service(self.runner.as_ref(), name, "start").await
     }
 
     async fn stop(&self, name: &str) -> Result<()> {
         validate_service_name(name)?;
+        tracing::info!(target: "spt_service", backend = "openrc", service = %name, "stopping service");
         run_rc_service(self.runner.as_ref(), name, "stop").await
     }
 
@@ -335,7 +339,31 @@ fn render_script(spec: &ServiceSpec) -> String {
     // is owned by p5-packaging-units and must add that placeholder for these
     // exports to take effect.
     vars.insert("env_exports", render_env_exports(spec));
+    // F4/F6: honour `restart_policy` on OpenRC (previously silently dropped).
+    // `supervise-daemon` monitors the child and respawns it when it exits, which
+    // is the closest OpenRC primitive to systemd's Restart=. `Never` keeps the
+    // legacy plain-backgrounded start-stop-daemon behaviour (no respawn).
+    vars.insert(
+        "supervisor_directives",
+        openrc_supervisor_directives(spec.restart_policy),
+    );
     template::render(TEMPLATE, &vars)
+}
+
+/// Map a [`crate::RestartPolicy`] onto `OpenRC` supervision directives.
+///
+/// `Always`/`OnFailure` select `supervise-daemon` (respawn on exit; `OpenRC` has
+/// no native "only on non-zero exit" distinction, so both map to respawn — the
+/// operator-visible intent "keep it running" is honoured). `Never` falls back
+/// to a plain backgrounded start-stop-daemon with no respawn.
+fn openrc_supervisor_directives(policy: crate::RestartPolicy) -> String {
+    use crate::RestartPolicy;
+    match policy {
+        RestartPolicy::Always | RestartPolicy::OnFailure => {
+            "supervisor=supervise-daemon\nrespawn_delay=5".to_string()
+        }
+        RestartPolicy::Never => "command_background=true".to_string(),
+    }
 }
 
 /// Render `ServiceSpec.env` as POSIX `export KEY="VALUE"` lines for shell
@@ -446,6 +474,34 @@ mod tests {
         let out = mgr.render(&sample_spec());
         assert!(out.contains("command=\"/usr/local/bin/spt\""));
         assert!(out.contains("command_user=\"spt:spt\""));
+    }
+
+    // F4/F6: restart_policy must be honoured on OpenRC. Always/OnFailure emit a
+    // supervise-daemon respawn block; Never keeps plain backgrounding.
+    #[test]
+    fn render_wires_restart_policy() {
+        use crate::RestartPolicy;
+        let mut spec = sample_spec();
+
+        spec.restart_policy = RestartPolicy::Always;
+        let out = OpenRcManager::new().render(&spec);
+        assert!(out.contains("supervisor=supervise-daemon"), "always: {out}");
+        assert!(out.contains("respawn_delay=5"), "always: {out}");
+
+        spec.restart_policy = RestartPolicy::OnFailure;
+        let out = OpenRcManager::new().render(&spec);
+        assert!(
+            out.contains("supervisor=supervise-daemon"),
+            "on-failure: {out}"
+        );
+
+        spec.restart_policy = RestartPolicy::Never;
+        let out = OpenRcManager::new().render(&spec);
+        assert!(
+            !out.contains("supervisor=supervise-daemon"),
+            "never must not respawn: {out}"
+        );
+        assert!(out.contains("command_background=true"), "never: {out}");
     }
 
     #[test]

@@ -153,6 +153,22 @@ pub struct Ssh3TlsConfig {
     /// See [`spt_trust::ChainDepthCap`].
     #[serde(default)]
     pub max_cert_chain_depth: ChainDepthCap,
+
+    /// Whether to load the OS trust store (system roots) as trust anchors.
+    ///
+    /// Default `true`. When `false`, the OS trust store is NOT loaded, and the
+    /// only trust anchors are `ca_file` (when set) and/or the SPKI `pin` set —
+    /// [`crate::tls`] never silently falls back to system roots. Honored
+    /// INDEPENDENTLY of `ca_file`: `system_roots = false` disables the OS store
+    /// even when no `ca_file` is present. `false` with neither a `ca_file` nor a
+    /// pin (and without `allow_self_signed`) is a configuration error — nothing
+    /// would be trusted — and [`Ssh3Config::validate`] rejects it.
+    #[serde(default = "default_system_roots")]
+    pub system_roots: bool,
+}
+
+const fn default_system_roots() -> bool {
+    true
 }
 
 #[allow(non_snake_case)]
@@ -172,6 +188,7 @@ impl Default for Ssh3TlsConfig {
             allow_self_signed: false,
             alpn: default_alpn(),
             max_cert_chain_depth: ChainDepthCap::default(),
+            system_roots: true,
         }
     }
 }
@@ -211,7 +228,12 @@ impl Ssh3Config {
     ///
     /// * `url_path` starts with `/`.
     /// * If `tls.allow_self_signed` is `true`, `acknowledge_experimental` MUST
-    ///   also be `true` (spec §9.13 — explicit dual-acknowledgment).
+    ///   also be `true` (spec §9.13 — explicit dual-acknowledgment). The
+    ///   blind-accept combo (`allow_self_signed` with neither a pin nor a
+    ///   `ca_file`) is permitted but emits a loud `tracing::warn!` that
+    ///   certificate verification is DISABLED.
+    /// * `tls.system_roots = false` with no `ca_file` and no pin (and no
+    ///   `allow_self_signed`) is rejected — nothing would be trusted.
     /// * `keepalive_secs > 0`.
     /// * `idle_timeout_secs`, when set, is `> 0`.
     /// * `max_streams`, when set, is `> 0`.
@@ -237,13 +259,7 @@ impl Ssh3Config {
         }
         if self.tls.allow_self_signed {
             // `acknowledge_experimental` keeps the "I know what I'm doing"
-            // gate, but on its own it does NOT make `allow_self_signed`
-            // safe: WebPKI is skipped, so without either an explicit pin
-            // set or a `ca_file` the only trust check is "the server
-            // presented *some* certificate." That collapses TLS to a
-            // hostname-confirmation no-op. Require at least one of:
-            //   - `tls.pin.spki_sha256` is non-empty (pinned), or
-            //   - `tls.ca_file` is set (private CA bundle).
+            // gate. It stays a HARD requirement.
             if !self.acknowledge_experimental {
                 return Err(Error::InvalidConfig(
                     "ssh3.tls.allow_self_signed=true requires \
@@ -251,14 +267,40 @@ impl Ssh3Config {
                         .to_string(),
                 ));
             }
+            // When a `ca_file` OR a pin is set, that anchor is now genuinely
+            // enforced at connect time (see `crate::tls`): a `ca_file` forces
+            // the server chain to validate against it (even with
+            // `allow_self_signed`), and the pin path is fail-closed. Only the
+            // combo with NEITHER a pin NOR a `ca_file` is true blind-accept:
+            // WebPKI is skipped and any certificate is accepted. That is a
+            // permitted dev-only mode (gated by `acknowledge_experimental`
+            // above), but it is INSECURE — warn loudly rather than silently
+            // accepting, and never confuse it with an enforced trust anchor.
             if self.tls.pin.spki_sha256.is_empty() && self.tls.ca_file.is_none() {
-                return Err(Error::InvalidConfig(
-                    "ssh3.tls.allow_self_signed=true requires either a non-empty \
-                     `tls.pin.spki_sha256` pin set or a `tls.ca_file` private CA \
-                     bundle — otherwise no trust anchor is enforced"
-                        .to_string(),
-                ));
+                tracing::warn!(
+                    "ssh3.tls.allow_self_signed=true with no `tls.pin.spki_sha256` \
+                     and no `tls.ca_file`: TLS certificate verification is DISABLED \
+                     (INSECURE, dev-only)"
+                );
             }
+        }
+        // `system_roots=false` removes the OS trust store as an anchor, HONORED
+        // independently of `ca_file`. If that leaves nothing to trust (no
+        // `ca_file`, no pin) and we are not in the blind-accept mode handled
+        // above, the config can never succeed — the runtime fails closed (an
+        // empty root store rejects every chain and never falls back to system
+        // roots) — so reject it up front rather than failing opaquely at connect.
+        if !self.tls.system_roots
+            && self.tls.ca_file.is_none()
+            && self.tls.pin.spki_sha256.is_empty()
+            && !self.tls.allow_self_signed
+        {
+            return Err(Error::InvalidConfig(
+                "ssh3.tls.system_roots=false requires a trust anchor — set \
+                 `tls.ca_file` or a non-empty `tls.pin.spki_sha256` (nothing \
+                 would be trusted otherwise)"
+                    .to_string(),
+            ));
         }
         if self.keepalive_secs == 0 {
             return Err(Error::InvalidConfig(
@@ -350,21 +392,80 @@ mod tests {
             },
             ..Ssh3Config::default()
         };
-        // Without `acknowledge_experimental` → fail.
+        // Without `acknowledge_experimental` → hard error (unchanged).
         let err = c.validate().unwrap_err();
         assert!(matches!(err, Error::InvalidConfig(_)));
-        // With `acknowledge_experimental` but no pin/ca_file → still fail.
+        // With `acknowledge_experimental` but no pin/ca_file → now PERMITTED
+        // (blind-accept dev mode) with a loud warning, no longer an error.
         c.acknowledge_experimental = true;
+        c.validate()
+            .expect("blind-accept is permitted once experimental is acknowledged");
+    }
+
+    #[tracing_test::traced_test]
+    #[test]
+    fn blind_accept_validate_warns() {
+        // allow_self_signed + ack + NO pin + NO ca_file → validate must WARN
+        // that verification is disabled (and still succeed).
+        let c = Ssh3Config {
+            tls: Ssh3TlsConfig {
+                allow_self_signed: true,
+                ..Ssh3TlsConfig::default()
+            },
+            acknowledge_experimental: true,
+            ..Ssh3Config::default()
+        };
+        c.validate().unwrap();
+        assert!(
+            logs_contain("verification is DISABLED"),
+            "blind-accept must log the insecure warning"
+        );
+    }
+
+    #[test]
+    fn system_roots_false_without_anchor_errors() {
+        // system_roots=false with no ca_file, no pin, no allow_self_signed →
+        // nothing to trust → ERROR (never a silent fall-back to system roots).
+        let c = Ssh3Config {
+            tls: Ssh3TlsConfig {
+                system_roots: false,
+                ..Ssh3TlsConfig::default()
+            },
+            ..Ssh3Config::default()
+        };
         let err = c.validate().unwrap_err();
-        match err {
-            Error::InvalidConfig(m) => {
-                assert!(
-                    m.contains("`tls.pin.spki_sha256`") || m.contains("`tls.ca_file`"),
-                    "got: {m}"
-                );
-            }
-            other => panic!("expected InvalidConfig, got {other:?}"),
-        }
+        assert!(
+            matches!(err, Error::InvalidConfig(ref m) if m.contains("system_roots")),
+            "got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn system_roots_false_with_pin_ok() {
+        let c = Ssh3Config {
+            tls: Ssh3TlsConfig {
+                system_roots: false,
+                pin: TlsPin {
+                    spki_sha256: vec![[9u8; 32]],
+                },
+                ..Ssh3TlsConfig::default()
+            },
+            ..Ssh3Config::default()
+        };
+        c.validate().unwrap();
+    }
+
+    #[test]
+    fn system_roots_false_with_ca_ok() {
+        let c = Ssh3Config {
+            tls: Ssh3TlsConfig {
+                system_roots: false,
+                ca_file: Some(std::path::PathBuf::from("/etc/spt/private-ca.pem")),
+                ..Ssh3TlsConfig::default()
+            },
+            ..Ssh3Config::default()
+        };
+        c.validate().unwrap();
     }
 
     #[test]

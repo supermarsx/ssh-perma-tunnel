@@ -130,6 +130,7 @@ impl ServiceManager for SystemdSystemManager {
     }
 
     async fn install(&self, spec: &ServiceSpec) -> Result<()> {
+        tracing::info!(target: "spt_service", backend = "systemd-system", service = %spec.name, "installing service");
         let unit = render_unit(spec, false);
         let path = self.unit_path(&spec.name)?;
 
@@ -149,6 +150,7 @@ impl ServiceManager for SystemdSystemManager {
     }
 
     async fn uninstall(&self, name: &str) -> Result<()> {
+        tracing::info!(target: "spt_service", backend = "systemd-system", service = %name, "uninstalling service");
         // Validate before any path join or systemctl call.
         let path = self.unit_path(name)?;
         // Best-effort stop+disable, then remove file.
@@ -184,10 +186,12 @@ impl ServiceManager for SystemdSystemManager {
     }
 
     async fn start(&self, name: &str) -> Result<()> {
+        tracing::info!(target: "spt_service", backend = "systemd-system", service = %name, "starting service");
         run_systemctl(self.runner.as_ref(), &["start", name]).await
     }
 
     async fn stop(&self, name: &str) -> Result<()> {
+        tracing::info!(target: "spt_service", backend = "systemd-system", service = %name, "stopping service");
         run_systemctl(self.runner.as_ref(), &["stop", name]).await
     }
 
@@ -410,6 +414,15 @@ pub(crate) fn render_unit(spec: &ServiceSpec, user_scope: bool) -> String {
         .map_or(String::new(), |g| {
             format!("Group={}", systemd_value_escape(g))
         });
+    // F3: emit `WatchdogSec=` so systemd exports `WATCHDOG_USEC` and the
+    // `spawn_watchdog` pinger actually arms. Without this directive in the unit
+    // the watchdog subsystem can never fire. `None` omits the line (watchdog
+    // disabled). The value is a whole number of seconds (`watchdog_sec` is a
+    // `u64`), so no escaping is required.
+    let watchdog_line = spec
+        .watchdog_sec
+        .filter(|n| *n > 0)
+        .map_or(String::new(), |n| format!("WatchdogSec={n}s"));
     let svc_type = if spec.sd_notify { "notify" } else { "simple" };
     // For Type=notify, restrict readiness notifications to the main process and
     // emit the line just before ExecStart. spt sends READY=1 / STOPPING=1 over
@@ -480,6 +493,7 @@ pub(crate) fn render_unit(spec: &ServiceSpec, user_scope: bool) -> String {
     vars.insert("user_line", user_line);
     vars.insert("group_line", group_line);
     vars.insert("restart_policy", spec.restart_policy.as_systemd().into());
+    vars.insert("watchdog_line", watchdog_line);
     vars.insert("wanted_by", wanted_by.into());
 
     template::render(TEMPLATE, &vars)
@@ -724,6 +738,31 @@ mod tests {
         assert!(!out.contains("Type=notify"), "{out}");
         // State-dir writability is independent of the service type.
         assert!(out.contains("StateDirectory=spt"));
+    }
+
+    /// F3: a spec carrying `watchdog_sec` must emit `WatchdogSec=<n>s` so
+    /// systemd exports `WATCHDOG_USEC` and the `spawn_watchdog` pinger can arm.
+    #[test]
+    fn render_emits_watchdog_sec_when_configured() {
+        let mgr = SystemdSystemManager::new();
+        let mut spec = sample_spec();
+        spec.watchdog_sec = Some(30);
+        let out = mgr.render(&spec);
+        assert!(
+            out.contains("WatchdogSec=30s"),
+            "unit must emit WatchdogSec so the watchdog pinger arms: {out}"
+        );
+    }
+
+    /// No `watchdog_sec` (or zero) → no `WatchdogSec=` directive at all.
+    #[test]
+    fn render_omits_watchdog_sec_when_unset() {
+        let mgr = SystemdSystemManager::new();
+        let mut spec = sample_spec();
+        spec.watchdog_sec = None;
+        assert!(!mgr.render(&spec).contains("WatchdogSec"));
+        spec.watchdog_sec = Some(0);
+        assert!(!mgr.render(&spec).contains("WatchdogSec"));
     }
 
     #[test]

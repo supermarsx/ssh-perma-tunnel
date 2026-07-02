@@ -37,8 +37,8 @@ pub mod testing;
 pub use runner::{CommandRunner, MockRunner, RunOutput, TokioRunner};
 pub use systemd_notify::{
     sd_notify, sd_notify_ready, sd_notify_stopping, sd_notify_watchdog, spawn_watchdog,
-    WatchdogHandle, NOTIFY_SOCKET_ENV, RECOMMENDED_STOP_TIMEOUT_SECS, WATCHDOG_PID_ENV,
-    WATCHDOG_USEC_ENV,
+    WatchdogHandle, NOTIFY_SOCKET_ENV, RECOMMENDED_STOP_TIMEOUT_SECS, RECOMMENDED_WATCHDOG_SECS,
+    WATCHDOG_PID_ENV, WATCHDOG_USEC_ENV,
 };
 
 /// Whether a service runs at the system or per-user scope.
@@ -111,6 +111,13 @@ pub struct ServiceSpec {
     pub stdout_path: Option<PathBuf>,
     /// Standard error log path (launchd / `SysV`). Optional.
     pub stderr_path: Option<PathBuf>,
+    /// systemd `WatchdogSec=` interval, in **seconds**. When `Some(n)` the
+    /// generated systemd unit emits `WatchdogSec=<n>s`, which makes systemd
+    /// export `WATCHDOG_USEC` so the [`spawn_watchdog`] pinger arms and sends
+    /// `WATCHDOG=1` at half the interval. `None` (the default) omits the
+    /// directive entirely, disabling watchdog supervision. Ignored by
+    /// non-systemd backends (launchd/SCM/OpenRC/SysV have no equivalent).
+    pub watchdog_sec: Option<u64>,
 }
 
 impl Default for ServiceSpec {
@@ -129,6 +136,7 @@ impl Default for ServiceSpec {
             sd_notify: false,
             stdout_path: None,
             stderr_path: None,
+            watchdog_sec: None,
         }
     }
 }
@@ -352,6 +360,7 @@ mod tests {
             sd_notify: true,
             stdout_path: Some(PathBuf::from("/var/log/spt/relay.out.log")),
             stderr_path: Some(PathBuf::from("/var/log/spt/relay.err.log")),
+            watchdog_sec: Some(RECOMMENDED_WATCHDOG_SECS),
         }
     }
 

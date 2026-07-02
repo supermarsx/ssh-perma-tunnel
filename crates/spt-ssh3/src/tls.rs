@@ -1,13 +1,24 @@
 //! Build a [`rustls::ClientConfig`] for the SSH3 QUIC handshake.
 //!
-//! Honors the `[profiles.tls]` sub-table:
-//! - System roots via `rustls-native-certs` (default).
-//! - Optional CA file (PEM) — when set, replaces system roots.
-//! - SHA-256 SPKI pin set via [`spt_trust::TlsPin`] (custom verifier wraps the
-//!   default webpki verifier and additionally enforces SPKI match).
-//! - `allow_self_signed` — installs a verifier that accepts any chain, BUT
-//!   still enforces the pin set if non-empty (the dual-acknowledgment is
-//!   gated upstream by [`crate::Ssh3Config::validate`]).
+//! Honors the `[profiles.tls]` sub-table. Trust anchors are resolved by
+//! [`load_trust_roots`] honoring `system_roots` and `ca_file` INDEPENDENTLY:
+//! - `ca_file` (PEM) set → the roots are exactly those certs.
+//! - else `system_roots = true` (default) → the OS trust store via
+//!   `rustls-native-certs`.
+//! - else (`system_roots = false`, no `ca_file`) → an EMPTY root store: the OS
+//!   store is never loaded as a silent fall-back, so the only remaining anchor
+//!   is the SPKI pin set.
+//!
+//! Verification policy ([`SptVerifier`]):
+//! - `ca_file` ALWAYS enforces that the server chain validates against that CA
+//!   — even when `allow_self_signed = true`. A self-signed leaf that does not
+//!   chain to the `ca_file` CA is REJECTED.
+//! - `allow_self_signed` with NO `ca_file` skips the webpki chain check; trust
+//!   then rests on the SPKI pin set (fail-closed) when present.
+//! - `allow_self_signed` with NEITHER a pin NOR a `ca_file` is genuine
+//!   blind-accept: verification is DISABLED and [`build_client_config`] emits a
+//!   loud `tracing::warn!` at connect (never silent).
+//! - SHA-256 SPKI pin set via [`spt_trust::TlsPin`] stays fail-closed.
 //! - ALPN values from `tls.alpn` (default `["h3"]`).
 
 use std::sync::Arc;
@@ -27,6 +38,12 @@ pub fn build_client_config(tls: &Ssh3TlsConfig) -> Result<ClientConfig> {
     // Make sure rustls' aws-lc-rs / ring crypto provider is installed.
     install_default_provider();
 
+    // Resolve trust anchors, honoring `ca_file` and `system_roots`
+    // INDEPENDENTLY (see module docs):
+    //   ca_file set            → roots are exactly the ca_file certs.
+    //   else system_roots=true → the OS trust store.
+    //   else                   → EMPTY (never a silent system-roots fallback).
+    let has_ca = tls.ca_file.is_some();
     let mut roots = RootCertStore::empty();
     if let Some(ca) = &tls.ca_file {
         let pem = std::fs::read(ca)
@@ -40,7 +57,7 @@ pub fn build_client_config(tls: &Ssh3TlsConfig) -> Result<ClientConfig> {
                 Error::InvalidConfig(format!("add ca cert from `{}`: {e}", ca.display()))
             })?;
         }
-    } else {
+    } else if tls.system_roots {
         // System trust roots. t9-Bump: rustls-native-certs 0.8 returns
         // `CertificateResult { certs, errors }` instead of `Result<Vec<_>>`
         // — load is always best-effort and surfaces per-cert failures
@@ -53,6 +70,31 @@ pub fn build_client_config(tls: &Ssh3TlsConfig) -> Result<ClientConfig> {
             tracing::debug!("ssh3: load_native_certs partial failure: {e}");
         }
     }
+    // else: `system_roots = false` and no `ca_file` → the root store stays
+    // empty. The OS store is NEVER loaded as a silent fall-back; the only
+    // remaining anchor is the SPKI pin set (fail-closed) or `allow_self_signed`.
+
+    let roots_empty = roots.is_empty();
+
+    // Genuine blind-accept: `allow_self_signed` with NEITHER a pin NOR a
+    // `ca_file` disables certificate verification outright. Never let that be
+    // silent — emit a loud warning at connect (w2-ssh3tls, finding 1).
+    if tls.allow_self_signed && !has_ca && tls.pin.spki_sha256.is_empty() {
+        tracing::warn!(
+            "TLS certificate verification DISABLED — self-signed accepted with no \
+             pin/CA; INSECURE, dev-only"
+        );
+    }
+
+    // The chain (webpki) verifier is enforced whenever we have a real trust
+    // anchor to check against:
+    //   * a `ca_file` ALWAYS enforces its CA — even with `allow_self_signed`,
+    //     a leaf that does not chain to it is REJECTED (finding 1); and
+    //   * the normal path (`!allow_self_signed`) with non-empty roots.
+    // When there is no such anchor (blind-accept, or pin-only with
+    // `system_roots = false`), chain verification is skipped and trust rests
+    // on the pin set (fail-closed) — or, in blind-accept, nothing.
+    let require_chain = has_ca || (!tls.allow_self_signed && !roots_empty);
 
     // The depth cap applies on every path, including the unmodified-webpki
     // path. When the cap is bypassed (`None`) and there's no pin and no
@@ -61,13 +103,14 @@ pub fn build_client_config(tls: &Ssh3TlsConfig) -> Result<ClientConfig> {
         || !tls.pin.spki_sha256.is_empty()
         || !tls.max_cert_chain_depth.is_unlimited();
     let mut cfg = if needs_custom {
-        // Install our custom verifier — wraps webpki on the chain side (or
-        // accepts any chain when allow_self_signed), enforces the pin set,
-        // and applies the chain-depth cap (t5-e10).
+        // Install our custom verifier — wraps webpki on the chain side (when a
+        // trust anchor is enforced), enforces the pin set, and applies the
+        // chain-depth cap (t5-e10).
         let verifier = Arc::new(SptVerifier::new(
             roots,
             tls.pin.clone(),
             tls.allow_self_signed,
+            require_chain,
             tls.max_cert_chain_depth,
         ));
         ClientConfig::builder()
@@ -93,10 +136,15 @@ fn install_default_provider() {
 /// and a [`ChainDepthCap`].
 #[derive(Debug)]
 pub(crate) struct SptVerifier {
-    /// Underlying webpki verifier (used when `allow_self_signed = false`).
+    /// Underlying webpki verifier. Present iff a chain trust anchor is
+    /// enforced (`require_chain`): the CA from `ca_file` (even when
+    /// `allow_self_signed`), or system/CA roots on the normal path.
     inner: Option<Arc<dyn ServerCertVerifier>>,
     pin: TlsPin,
     allow_self_signed: bool,
+    /// Whether the server chain MUST validate against `inner` (webpki). When
+    /// `true` and `inner` is unexpectedly absent, verification FAILS CLOSED.
+    require_chain: bool,
     chain_depth_cap: ChainDepthCap,
 }
 
@@ -105,21 +153,25 @@ impl SptVerifier {
         roots: RootCertStore,
         pin: TlsPin,
         allow_self_signed: bool,
+        require_chain: bool,
         chain_depth_cap: ChainDepthCap,
     ) -> Self {
-        let inner = if allow_self_signed {
-            None
-        } else {
-            // Use rustls' default webpki verifier.
+        // Build the webpki verifier ONLY when a chain anchor is enforced. A
+        // `ca_file` forces enforcement even under `allow_self_signed`, so the
+        // discriminator is `require_chain`, not `!allow_self_signed`.
+        let inner = if require_chain {
             match rustls::client::WebPkiServerVerifier::builder(Arc::new(roots)).build() {
                 Ok(v) => Some(v as Arc<dyn ServerCertVerifier>),
                 Err(_) => None,
             }
+        } else {
+            None
         };
         Self {
             inner,
             pin,
             allow_self_signed,
+            require_chain,
             chain_depth_cap,
         }
     }
@@ -148,20 +200,37 @@ impl ServerCertVerifier for SptVerifier {
             check_chain_depth(&chain, &self.chain_depth_cap)
                 .map_err(|e| TlsError::General(format!("ssh3 chain depth: {e}")))?;
         }
-        if !self.allow_self_signed {
-            if let Some(inner) = &self.inner {
-                inner.verify_server_cert(
-                    end_entity,
-                    intermediates,
-                    server_name,
-                    ocsp_response,
-                    now,
-                )?;
-            } else {
-                return Err(TlsError::General(
-                    "spt-ssh3: webpki verifier unavailable".into(),
-                ));
+        if self.require_chain {
+            // A trust anchor (ca_file / system roots) MUST be enforced. This
+            // path also runs under `allow_self_signed` when a `ca_file` is set,
+            // so a self-signed leaf that does not chain to the CA is REJECTED.
+            match &self.inner {
+                Some(inner) => {
+                    inner.verify_server_cert(
+                        end_entity,
+                        intermediates,
+                        server_name,
+                        ocsp_response,
+                        now,
+                    )?;
+                }
+                None => {
+                    // Anchor was required but the webpki verifier could not be
+                    // built (e.g. empty/invalid roots). Fail closed — never
+                    // fall back to accepting the chain.
+                    return Err(TlsError::General(
+                        "spt-ssh3: certificate chain verifier unavailable — refusing".into(),
+                    ));
+                }
             }
+        } else if !self.allow_self_signed && self.pin.spki_sha256.is_empty() {
+            // No chain anchor, not allowing self-signed, and no pin → there is
+            // nothing to establish trust against. Fail closed rather than
+            // silently accepting (validate rejects this combo up front; this
+            // is defense-in-depth).
+            return Err(TlsError::General(
+                "spt-ssh3: no trust anchor (no CA/system roots and no pin) — refusing".into(),
+            ));
         }
         if !self.pin.spki_sha256.is_empty() {
             self.pin
@@ -330,8 +399,13 @@ mod tests {
         let pin = TlsPin {
             spki_sha256: vec![[0x42u8; 32]],
         };
-        let verifier =
-            SptVerifier::new(RootCertStore::empty(), pin, true, ChainDepthCap::default());
+        let verifier = SptVerifier::new(
+            RootCertStore::empty(),
+            pin,
+            true,
+            false,
+            ChainDepthCap::default(),
+        );
         let server_name = ServerName::try_from("pin-mismatch.test").unwrap();
         let res = verifier.verify_server_cert(&der, &[], &server_name, &[], UnixTime::now());
         let err = res.unwrap_err();
@@ -358,6 +432,7 @@ mod tests {
             RootCertStore::empty(),
             TlsPin::default(),
             true,
+            false,
             ChainDepthCap::new(2),
         );
         let server_name = ServerName::try_from("leaf.test").unwrap();
@@ -392,11 +467,190 @@ mod tests {
         let pin = TlsPin {
             spki_sha256: vec![spki],
         };
-        let verifier =
-            SptVerifier::new(RootCertStore::empty(), pin, true, ChainDepthCap::default());
+        let verifier = SptVerifier::new(
+            RootCertStore::empty(),
+            pin,
+            true,
+            false,
+            ChainDepthCap::default(),
+        );
         let server_name = ServerName::try_from("pin-match.test").unwrap();
         verifier
             .verify_server_cert(&der, &[], &server_name, &[], UnixTime::now())
             .expect("pin match should accept");
+    }
+
+    // --- w2-ssh3tls: ca_file enforcement, system_roots, blind-accept warn ---
+
+    /// Mint a CA (self-signed, keyCertSign) usable as an explicit `ca_file`
+    /// trust anchor.
+    fn make_ca() -> (rcgen::Certificate, rcgen::KeyPair) {
+        let key = rcgen::KeyPair::generate().unwrap();
+        let mut params = rcgen::CertificateParams::new(vec!["spt-test-ca".to_string()]).unwrap();
+        params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+        params.key_usages = vec![
+            rcgen::KeyUsagePurpose::KeyCertSign,
+            rcgen::KeyUsagePurpose::CrlSign,
+            rcgen::KeyUsagePurpose::DigitalSignature,
+        ];
+        let cert = params.self_signed(&key).unwrap();
+        (cert, key)
+    }
+
+    /// Mint a serverAuth leaf for `san` signed by `ca`/`ca_key`.
+    fn make_leaf_signed_by(
+        san: &str,
+        ca: &rcgen::Certificate,
+        ca_key: &rcgen::KeyPair,
+    ) -> CertificateDer<'static> {
+        let key = rcgen::KeyPair::generate().unwrap();
+        let mut params = rcgen::CertificateParams::new(vec![san.to_string()]).unwrap();
+        params.is_ca = rcgen::IsCa::NoCa;
+        params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ServerAuth];
+        params.key_usages = vec![rcgen::KeyUsagePurpose::DigitalSignature];
+        let cert = params.signed_by(&key, ca, ca_key).unwrap();
+        CertificateDer::from(cert.der().to_vec())
+    }
+
+    fn roots_with(ca: &rcgen::Certificate) -> RootCertStore {
+        let mut roots = RootCertStore::empty();
+        roots.add(CertificateDer::from(ca.der().to_vec())).unwrap();
+        roots
+    }
+
+    #[test]
+    fn ca_file_accepts_leaf_chaining_to_ca() {
+        // Mirrors `build_client_config` for `ca_file` + `allow_self_signed`:
+        // roots = the CA, require_chain = true. A leaf that chains to the CA
+        // must be accepted.
+        install_default_provider();
+        let (ca, ca_key) = make_ca();
+        let leaf = make_leaf_signed_by("leaf.test", &ca, &ca_key);
+        let verifier = SptVerifier::new(
+            roots_with(&ca),
+            TlsPin::default(),
+            true, // allow_self_signed
+            true, // require_chain (ca_file always enforces)
+            ChainDepthCap::default(),
+        );
+        let name = ServerName::try_from("leaf.test").unwrap();
+        verifier
+            .verify_server_cert(&leaf, &[], &name, &[], UnixTime::now())
+            .expect("leaf chaining to the ca_file CA must be accepted");
+    }
+
+    #[test]
+    fn ca_file_rejects_self_signed_leaf_not_chaining() {
+        // THE security test (finding 1). Pre-fix, `allow_self_signed=true` set
+        // `inner=None` and accepted ANY certificate even with a `ca_file`. Now
+        // the ca_file CA is enforced: a self-signed leaf that does not chain to
+        // it is REJECTED.
+        install_default_provider();
+        let (ca, _ca_key) = make_ca();
+        let rogue = rcgen::generate_simple_self_signed(vec!["leaf.test".to_string()]).unwrap();
+        let rogue_der = CertificateDer::from(rogue.cert.der().to_vec());
+        let verifier = SptVerifier::new(
+            roots_with(&ca),
+            TlsPin::default(),
+            true, // allow_self_signed
+            true, // require_chain (ca_file present)
+            ChainDepthCap::default(),
+        );
+        let name = ServerName::try_from("leaf.test").unwrap();
+        verifier
+            .verify_server_cert(&rogue_der, &[], &name, &[], UnixTime::now())
+            .expect_err("self-signed leaf not chaining to the ca_file CA must be REJECTED");
+    }
+
+    #[test]
+    fn system_roots_false_no_fallback_pin_only() {
+        // Mirrors `build_client_config` for `system_roots=false` + pin (no
+        // ca_file, allow_self_signed=false): the root store is EMPTY, so
+        // require_chain=false and trust rests ONLY on the pin. Pre-fix the OS
+        // store was loaded unconditionally and webpki would reject a leaf that
+        // does not chain to a system root — proving the fall-back is gone.
+        install_default_provider();
+        let (ca, ca_key) = make_ca();
+        let leaf = make_leaf_signed_by("leaf.test", &ca, &ca_key);
+        let pin = TlsPin {
+            spki_sha256: vec![TlsPin::spki_sha256_of(&leaf).unwrap()],
+        };
+        let verifier = SptVerifier::new(
+            RootCertStore::empty(),
+            pin,
+            false, // allow_self_signed
+            false, // require_chain (roots empty, no ca_file)
+            ChainDepthCap::default(),
+        );
+        let name = ServerName::try_from("leaf.test").unwrap();
+        verifier
+            .verify_server_cert(&leaf, &[], &name, &[], UnixTime::now())
+            .expect("pinned cert accepted without any system-root fall-back");
+        // A different (non-pinned) cert is rejected — the system store is never
+        // consulted as an alternative anchor.
+        let (ca2, ca2_key) = make_ca();
+        let other = make_leaf_signed_by("leaf.test", &ca2, &ca2_key);
+        verifier
+            .verify_server_cert(&other, &[], &name, &[], UnixTime::now())
+            .expect_err("non-pinned cert must be rejected; no system-root fall-back");
+    }
+
+    #[test]
+    fn no_anchor_no_pin_fails_closed() {
+        // require_chain=false, allow_self_signed=false, empty pin → nothing to
+        // trust → reject every cert (defense-in-depth; validate also errors).
+        install_default_provider();
+        let rogue = rcgen::generate_simple_self_signed(vec!["x.test".to_string()]).unwrap();
+        let der = CertificateDer::from(rogue.cert.der().to_vec());
+        let verifier = SptVerifier::new(
+            RootCertStore::empty(),
+            TlsPin::default(),
+            false,
+            false,
+            ChainDepthCap::default(),
+        );
+        let name = ServerName::try_from("x.test").unwrap();
+        let err = verifier
+            .verify_server_cert(&der, &[], &name, &[], UnixTime::now())
+            .unwrap_err();
+        assert!(
+            format!("{err}").contains("no trust anchor"),
+            "expected fail-closed no-trust-anchor error, got: {err}"
+        );
+    }
+
+    #[tracing_test::traced_test]
+    #[test]
+    fn blind_accept_warns_at_connect() {
+        // allow_self_signed + NO pin + NO ca_file → build_client_config must
+        // emit the loud INSECURE warning (never silent).
+        let tls = Ssh3TlsConfig {
+            allow_self_signed: true,
+            ..Ssh3TlsConfig::default()
+        };
+        let _cfg = build_client_config(&tls).unwrap();
+        assert!(
+            logs_contain("verification DISABLED"),
+            "blind-accept must log the insecure warning at connect"
+        );
+    }
+
+    #[tracing_test::traced_test]
+    #[test]
+    fn ca_file_or_pin_does_not_warn_blind_accept() {
+        // allow_self_signed WITH a pin must NOT emit the blind-accept warning
+        // (the pin is a real fail-closed anchor).
+        let tls = Ssh3TlsConfig {
+            allow_self_signed: true,
+            pin: TlsPin {
+                spki_sha256: vec![[7u8; 32]],
+            },
+            ..Ssh3TlsConfig::default()
+        };
+        let _cfg = build_client_config(&tls).unwrap();
+        assert!(
+            !logs_contain("verification DISABLED"),
+            "a pinned self-signed config must not warn that verification is disabled"
+        );
     }
 }

@@ -9,10 +9,10 @@ Wants=network-online.target
 # up and STOPPING=1 at the start of an orderly shutdown, via $NOTIFY_SOCKET
 # (see spt-service::systemd_notify; no libsystemd dependency).
 #
-# WatchdogSec is supported: when set, spt reads $WATCHDOG_USEC and sends
-# WATCHDOG=1 at half the interval (a bounded, non-blocking pinger). It is safe
-# to add e.g. `WatchdogSec=30s` here for liveness-based restarts; leaving it
-# unset simply disables the watchdog (no pings sent).
+# WatchdogSec: systemd exports $WATCHDOG_USEC and spt sends WATCHDOG=1 at half
+# the interval (a bounded, non-blocking pinger; see spt-service::systemd_notify).
+# A wedged process is then detected and restarted within one interval. Keep in
+# sync with spt_service::RECOMMENDED_WATCHDOG_SECS; set to 0/remove to disable.
 Type=notify
 # Only the main process emits notifications.
 NotifyAccess=main
@@ -25,6 +25,7 @@ User=spt
 Group=spt
 Restart=on-failure
 RestartSec=5s
+WatchdogSec=30s
 # Graceful-stop budget. spt bounds its own aggregate teardown to ~80% of this
 # and flushes final status before the slow session teardown, so a clean stop
 # always finishes before systemd escalates to SIGKILL. Keep in sync with

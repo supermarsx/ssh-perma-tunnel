@@ -47,6 +47,7 @@
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
+mod cgroup;
 pub mod monitor;
 #[doc(inline)]
 pub use monitor::{
