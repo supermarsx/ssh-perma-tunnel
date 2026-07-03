@@ -369,7 +369,10 @@ async fn run_orchestrator_under_scm(
     // from t4-Bwire (see `.orchestration/logs/f-status-tls.md`).
     let status_api_handle = if cfg.status_api.enabled {
         let source = crate::status_api_tls::file_snapshot_source(state_dir.clone());
-        Some(crate::status_api_tls::launch(&cfg.status_api, source, &resolver).await?)
+        // Wave 6: apply `[network.offload]` socket options to the listener,
+        // matching the `tunnel run` daemon path.
+        let tcp_options = crate::net_offload::tcp_options(&cfg);
+        Some(crate::status_api_tls::launch(&cfg.status_api, source, &resolver, tcp_options).await?)
     } else {
         None
     };

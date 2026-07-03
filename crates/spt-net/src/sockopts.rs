@@ -38,6 +38,101 @@ impl TcpOptions {
             dual_stack_v6: false,
         }
     }
+
+    /// Build socket options from config-derived [`OffloadOptions`], starting
+    /// from `base` (typically [`TcpOptions::default`]). This is the wiring
+    /// seam for the `[network.offload]` config table (Wave 6): spt-bin maps
+    /// `spt_config::NetworkOffload` into an [`OffloadOptions`] and calls this to
+    /// derive the [`TcpOptions`] it then applies to the sockets it controls.
+    ///
+    /// Returns the resulting options plus the list of requested-but-unsupported
+    /// offload flag names — flags set to `Some(true)` that this crate has no
+    /// mechanism to honor (`tcp_fast_open`, `reuse_port`, `io_uring`,
+    /// `zerocopy`, `sendfile`, `checksum_offload`, `large_send_offload`). The
+    /// caller is expected to emit a single WARN for those rather than silently
+    /// ignoring an operator's request.
+    ///
+    /// Mapping:
+    /// * `tcp_nodelay` → [`TcpOptions::nodelay`].
+    /// * `socket_keepalive = Some(true)` → enable keepalive, filling any unset
+    ///   probe timing with production defaults (30s idle / 15s interval / 4
+    ///   retries).
+    /// * `socket_keepalive = Some(false)` → clear all keepalive fields.
+    /// * an unset (`None`) flag preserves whatever `base` had (so an absent
+    ///   `[network.offload]` is behavior-preserving).
+    #[must_use]
+    pub fn from_offload(base: Self, off: &OffloadOptions) -> (Self, Vec<&'static str>) {
+        let mut opts = base;
+        if let Some(nodelay) = off.tcp_nodelay {
+            opts.nodelay = nodelay;
+        }
+        match off.socket_keepalive {
+            Some(true) => {
+                if opts.keepalive_idle.is_none() {
+                    opts.keepalive_idle = Some(Duration::from_secs(30));
+                }
+                if opts.keepalive_interval.is_none() {
+                    opts.keepalive_interval = Some(Duration::from_secs(15));
+                }
+                if opts.keepalive_retries.is_none() {
+                    opts.keepalive_retries = Some(4);
+                }
+            }
+            Some(false) => {
+                opts.keepalive_idle = None;
+                opts.keepalive_interval = None;
+                opts.keepalive_retries = None;
+            }
+            None => {}
+        }
+
+        let mut unsupported = Vec::new();
+        for (name, requested) in [
+            ("tcp_fast_open", off.tcp_fast_open),
+            ("reuse_port", off.reuse_port),
+            ("io_uring", off.io_uring),
+            ("zerocopy", off.zerocopy),
+            ("sendfile", off.sendfile),
+            ("checksum_offload", off.checksum_offload),
+            ("large_send_offload", off.large_send_offload),
+        ] {
+            if requested == Some(true) {
+                unsupported.push(name);
+            }
+        }
+        (opts, unsupported)
+    }
+}
+
+/// Config-agnostic view of the `[network.offload]` knobs that map onto TCP
+/// socket options. `spt-net` deliberately stays free of any dependency on
+/// `spt-config`; the caller (spt-bin) maps `spt_config::NetworkOffload` into
+/// this struct and passes it to [`TcpOptions::from_offload`].
+///
+/// Every field is `Option<bool>`, mirroring the schema's tri-state (unset =
+/// keep the base/platform default). The flags with no `socket2`/kernel mapping
+/// in this crate are carried anyway so [`TcpOptions::from_offload`] can report
+/// them as unsupported instead of silently discarding an operator's request.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct OffloadOptions {
+    /// `TCP_NODELAY` (Nagle off) — maps to [`TcpOptions::nodelay`].
+    pub tcp_nodelay: Option<bool>,
+    /// Socket keepalive — enables [`TcpOptions`] keepalive probes.
+    pub socket_keepalive: Option<bool>,
+    /// TCP Fast Open — no mapping in this crate (reported unsupported).
+    pub tcp_fast_open: Option<bool>,
+    /// `SO_REUSEPORT` — no mapping in this crate (reported unsupported).
+    pub reuse_port: Option<bool>,
+    /// `io_uring` backing — no mapping in this crate (reported unsupported).
+    pub io_uring: Option<bool>,
+    /// Zero-copy send — no mapping in this crate (reported unsupported).
+    pub zerocopy: Option<bool>,
+    /// sendfile transfer — no mapping in this crate (reported unsupported).
+    pub sendfile: Option<bool>,
+    /// NIC checksum offload — no mapping in this crate (reported unsupported).
+    pub checksum_offload: Option<bool>,
+    /// Large-send/TSO offload — no mapping in this crate (reported unsupported).
+    pub large_send_offload: Option<bool>,
 }
 
 /// Apply the configured options to an already-created socket.
@@ -246,5 +341,99 @@ mod tests {
         let listener =
             bind_tcp(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0), &opts).unwrap();
         assert!(listener.local_addr().unwrap().port() != 0);
+    }
+
+    // ---- Wave 6: [network.offload] → TcpOptions -------------------------
+
+    // A bare `TcpOptions::default()` (what a plain `TcpListener::bind` gives)
+    // has nodelay OFF and no keepalive; an EMPTY offload table must not change
+    // it (behavior-preserving when `[network.offload]` is absent/empty).
+    #[test]
+    fn from_offload_empty_is_behavior_preserving() {
+        let (opts, unsupported) =
+            TcpOptions::from_offload(TcpOptions::default(), &OffloadOptions::default());
+        assert_eq!(opts, TcpOptions::default());
+        assert!(unsupported.is_empty());
+    }
+
+    // tcp_nodelay + socket_keepalive must build the expected TcpOptions: nodelay
+    // on and keepalive filled with the production probe timings.
+    #[test]
+    fn from_offload_builds_expected_tcp_options() {
+        let off = OffloadOptions {
+            tcp_nodelay: Some(true),
+            socket_keepalive: Some(true),
+            ..OffloadOptions::default()
+        };
+        let (opts, unsupported) = TcpOptions::from_offload(TcpOptions::default(), &off);
+        assert!(opts.nodelay, "tcp_nodelay=true must set nodelay");
+        assert_eq!(opts.keepalive_idle, Some(Duration::from_secs(30)));
+        assert_eq!(opts.keepalive_interval, Some(Duration::from_secs(15)));
+        assert_eq!(opts.keepalive_retries, Some(4));
+        assert!(unsupported.is_empty());
+    }
+
+    // socket_keepalive=false must clear keepalive even when the base carried it
+    // (e.g. base = production()), and tcp_nodelay=false must turn Nagle back on.
+    #[test]
+    fn from_offload_can_disable_over_production_base() {
+        let off = OffloadOptions {
+            tcp_nodelay: Some(false),
+            socket_keepalive: Some(false),
+            ..OffloadOptions::default()
+        };
+        let (opts, _) = TcpOptions::from_offload(TcpOptions::production(), &off);
+        assert!(!opts.nodelay);
+        assert_eq!(opts.keepalive_idle, None);
+        assert_eq!(opts.keepalive_interval, None);
+        assert_eq!(opts.keepalive_retries, None);
+    }
+
+    // The offload flags with no socket mapping must be reported (not silently
+    // dropped) so the caller can WARN instead of a silent no-op.
+    #[test]
+    fn from_offload_reports_unsupported_flags() {
+        let off = OffloadOptions {
+            tcp_fast_open: Some(true),
+            io_uring: Some(true),
+            zerocopy: Some(true),
+            sendfile: Some(true),
+            checksum_offload: Some(true),
+            large_send_offload: Some(true),
+            reuse_port: Some(true),
+            // A `Some(false)` must NOT be reported — the operator disabled it.
+            ..OffloadOptions::default()
+        };
+        let (_opts, unsupported) = TcpOptions::from_offload(TcpOptions::default(), &off);
+        assert_eq!(unsupported.len(), 7, "all 7 set-true flags reported");
+        assert!(unsupported.contains(&"tcp_fast_open"));
+        assert!(unsupported.contains(&"large_send_offload"));
+
+        let off_off = OffloadOptions {
+            tcp_fast_open: Some(false),
+            io_uring: Some(false),
+            ..OffloadOptions::default()
+        };
+        let (_o, none) = TcpOptions::from_offload(TcpOptions::default(), &off_off);
+        assert!(none.is_empty(), "flags set false are not 'unsupported'");
+    }
+
+    // End-to-end: an offload-derived TcpOptions must actually take effect on a
+    // real bound listener (nodelay round-trips through socket2). This proves the
+    // whole [network.offload] → TcpOptions → socket seam, independent of which
+    // higher-level call-site routes through bind_tcp.
+    #[tokio::test(flavor = "current_thread")]
+    async fn offload_derived_options_apply_to_bound_socket() {
+        let off = OffloadOptions {
+            tcp_nodelay: Some(true),
+            ..OffloadOptions::default()
+        };
+        let (opts, _) = TcpOptions::from_offload(TcpOptions::default(), &off);
+        let listener =
+            bind_tcp(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0), &opts).unwrap();
+        let std = listener.into_std().unwrap();
+        std.set_nonblocking(false).unwrap();
+        let s = Socket::from(std);
+        assert!(s.tcp_nodelay().unwrap(), "offload nodelay must be applied");
     }
 }

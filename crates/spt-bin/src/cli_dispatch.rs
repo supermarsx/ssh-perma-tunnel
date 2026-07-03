@@ -1315,6 +1315,13 @@ async fn tunnel_run(global: &GlobalOpts, args: groups::tunnel::TunnelRun) -> Res
     #[cfg(feature = "snmp")]
     let snmp_runtime = crate::snmp_agent::maybe_spawn_snmp_agent(&cfg, &resolver).await?;
 
+    // Wave 6 (wire-config [firewall]): now that the forwards are bound, apply
+    // the `[firewall]` rules derived from the config to the host firewall
+    // (or plan-only when `apply_rules` is unset). Fail-safe (allow-only rules,
+    // never a default-deny) and non-fatal — an unsupported platform or a failed
+    // apply logs a WARN and leaves the tunnel running. Reverted on shutdown.
+    let firewall_runtime = crate::firewall_runtime::maybe_apply(&cfg, &state_dir, global.dry_run);
+
     // appstatus (Wave 2): now that every subsystem has been (maybe) spawned,
     // record the daemon identity + per-subsystem state into the sibling
     // `<state_dir>/runtime.json` so `spt status` can render an app-wide
@@ -1399,6 +1406,10 @@ async fn tunnel_run(global: &GlobalOpts, args: groups::tunnel::TunnelRun) -> Res
         #[cfg(feature = "snmp")]
         if let Some(s) = snmp_runtime {
             s.shutdown().await;
+        }
+        // Wave 6: revert any applied [firewall] rules (best-effort, logs count).
+        if let Some(fw) = firewall_runtime {
+            fw.revert();
         }
         // E6-F1/E6-F4: stop the events dispatcher and flush+stop the metrics
         // exporter writer (final metrics.prom snapshot) before returning.
@@ -1519,6 +1530,10 @@ async fn tunnel_run(global: &GlobalOpts, args: groups::tunnel::TunnelRun) -> Res
     #[cfg(feature = "snmp")]
     if let Some(s) = snmp_runtime {
         s.shutdown().await;
+    }
+    // Wave 6: revert any applied [firewall] rules (best-effort, logs count).
+    if let Some(fw) = firewall_runtime {
+        fw.revert();
     }
     // E6-F1/E6-F4: stop the events dispatcher + metrics exporter writer.
     events_pipeline.shutdown().await;
@@ -2498,7 +2513,12 @@ async fn maybe_spawn_status_api(
         return Ok(None);
     }
     let source = crate::status_api_tls::file_snapshot_source(state_dir.to_path_buf());
-    let handle = crate::status_api_tls::launch(&cfg.status_api, source, resolver.as_ref()).await?;
+    // Wave 6: derive `[network.offload]` socket options and apply them to this
+    // spt-bin-controlled listener.
+    let tcp_options = crate::net_offload::tcp_options(cfg);
+    let handle =
+        crate::status_api_tls::launch(&cfg.status_api, source, resolver.as_ref(), tcp_options)
+            .await?;
     tracing::info!(
         addr = %handle.local_addr(),
         tls = cfg.status_api.tls.enabled,

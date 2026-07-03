@@ -109,6 +109,7 @@ pub async fn launch(
     cfg: &StatusApiConfig,
     source: Arc<dyn StateSnapshotSource>,
     resolver: &Resolver,
+    tcp_options: Option<spt_net::TcpOptions>,
 ) -> Result<SptStatusApiHandle> {
     // Security gate (E6-F3): refuse an unauthenticated API on a non-loopback
     // bind. Applies to BOTH the plain and TLS branches below — TLS encrypts the
@@ -129,11 +130,23 @@ pub async fn launch(
         // Plain HTTP — delegate to the existing helper. Behavior identical to
         // the path shipped by t4-Bwire so existing
         // `auth.mode = "none" | "bearer" | "basic"` deployments are byte-stable.
+        //
+        // Wave 6 NOTE: the plain-HTTP listener is created inside
+        // `spt_status_api::StatusApiServer::start` (outside spt-bin/spt-net), so
+        // `[network.offload]` socket options cannot be threaded here without
+        // editing spt-status-api — a follow-up. Offload currently takes effect
+        // on the TLS listener below (which spt-bin binds).
+        if tcp_options.is_some() {
+            tracing::debug!(
+                "[network.offload] not applied to the plain-HTTP status-api listener \
+                 (bound inside spt-status-api); enable status_api.tls to have it applied"
+            );
+        }
         let handle = StatusApiServer::start(cfg, source, resolver).await?;
         return Ok(SptStatusApiHandle::Plain(handle));
     }
 
-    launch_tls(cfg, source, resolver).await
+    launch_tls(cfg, source, resolver, tcp_options).await
 }
 
 /// TLS / mTLS branch of [`launch`]. Builds the rustls config, binds, and
@@ -142,6 +155,7 @@ async fn launch_tls(
     cfg: &StatusApiConfig,
     source: Arc<dyn StateSnapshotSource>,
     resolver: &Resolver,
+    tcp_options: Option<spt_net::TcpOptions>,
 ) -> Result<SptStatusApiHandle> {
     // Install the rustls crypto provider — idempotent across the process.
     // The supervisor may already have done this for other rustls users
@@ -160,10 +174,25 @@ async fn launch_tls(
     let state = AppState::new(source, cfg.expose_metrics);
     let router = StatusApiServer::router(state, auth_ctx, limiter);
 
-    // Bind the TCP listener.
-    let listener = TcpListener::bind(cfg.bind).await.map_err(|e| {
-        Error::InvalidConfig(format!("status_api: bind to {} failed: {e}", cfg.bind))
-    })?;
+    // Bind the TCP listener. Wave 6: when `[network.offload]` derived socket
+    // options are present, bind through `spt_net::bind_tcp` so nodelay/keepalive
+    // take effect on this (spt-bin-controlled) listener; otherwise fall back to
+    // the plain tokio bind so an unconfigured deployment is byte-stable.
+    let listener = match tcp_options {
+        Some(opts) => {
+            tracing::debug!(
+                nodelay = opts.nodelay,
+                keepalive = opts.keepalive_idle.is_some(),
+                "status-api: applying [network.offload] socket options to the TLS listener"
+            );
+            spt_net::bind_tcp(cfg.bind, &opts).map_err(|e| {
+                Error::InvalidConfig(format!("status_api: bind to {} failed: {e}", cfg.bind))
+            })?
+        }
+        None => TcpListener::bind(cfg.bind).await.map_err(|e| {
+            Error::InvalidConfig(format!("status_api: bind to {} failed: {e}", cfg.bind))
+        })?,
+    };
     let bound_addr = listener
         .local_addr()
         .map_err(|e| Error::InvalidConfig(format!("status_api: local_addr: {e}")))?;
@@ -380,7 +409,7 @@ mod tests {
         let mut cfg = cfg_with_auth(false, StatusApiAuthMode::None);
         cfg.bind = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 0);
         let src: Arc<dyn StateSnapshotSource> = Arc::new(spt_status_api::InMemorySource::new());
-        let result = launch(&cfg, src, &empty_resolver()).await;
+        let result = launch(&cfg, src, &empty_resolver(), None).await;
         match result {
             Ok(_) => panic!("expected InvalidConfig for auth=none on 0.0.0.0"),
             Err(Error::InvalidConfig(msg)) => {
@@ -398,7 +427,7 @@ mod tests {
         let mut cfg = cfg_with_auth(true, StatusApiAuthMode::None);
         cfg.bind = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 7)), 0);
         let src: Arc<dyn StateSnapshotSource> = Arc::new(spt_status_api::InMemorySource::new());
-        let result = launch(&cfg, src, &empty_resolver()).await;
+        let result = launch(&cfg, src, &empty_resolver(), None).await;
         match result {
             Ok(_) => panic!("expected InvalidConfig for auth=none on routable TLS bind"),
             Err(Error::InvalidConfig(msg)) => {
@@ -415,7 +444,7 @@ mod tests {
         let cfg = cfg_with_auth(false, StatusApiAuthMode::None);
         assert!(cfg.bind.ip().is_loopback());
         let src: Arc<dyn StateSnapshotSource> = Arc::new(spt_status_api::InMemorySource::new());
-        let handle = launch(&cfg, src, &empty_resolver())
+        let handle = launch(&cfg, src, &empty_resolver(), None)
             .await
             .expect("loopback + auth=none must start");
         handle.shutdown().await;
@@ -495,7 +524,7 @@ mod tests {
             },
         );
         let src: Arc<dyn StateSnapshotSource> = Arc::new(spt_status_api::InMemorySource::new());
-        let result = launch(&cfg, src, &empty_resolver()).await;
+        let result = launch(&cfg, src, &empty_resolver(), None).await;
         let err = match result {
             Ok(_) => panic!("expected InvalidConfig error, got Ok"),
             Err(e) => e,
@@ -521,7 +550,7 @@ mod tests {
             ..cfg_with_auth(true, StatusApiAuthMode::None)
         };
         let src: Arc<dyn StateSnapshotSource> = Arc::new(spt_status_api::InMemorySource::new());
-        let result = launch(&cfg, src, &empty_resolver()).await;
+        let result = launch(&cfg, src, &empty_resolver(), None).await;
         let err = match result {
             Ok(_) => panic!("expected InvalidConfig error, got Ok"),
             Err(e) => e,
@@ -674,7 +703,7 @@ mod tests {
         let _ = rustls::crypto::ring::default_provider().install_default();
         let cfg = cfg_with_auth(false, StatusApiAuthMode::None);
         let src: Arc<dyn StateSnapshotSource> = Arc::new(spt_status_api::InMemorySource::new());
-        let handle = launch(&cfg, src, &empty_resolver()).await.unwrap();
+        let handle = launch(&cfg, src, &empty_resolver(), None).await.unwrap();
         let addr = handle.local_addr();
 
         // Plain HTTP GET.
@@ -707,7 +736,7 @@ mod tests {
             ..cfg_with_auth(true, StatusApiAuthMode::None)
         };
         let src: Arc<dyn StateSnapshotSource> = Arc::new(spt_status_api::InMemorySource::new());
-        let handle = launch(&cfg, src, &empty_resolver()).await.unwrap();
+        let handle = launch(&cfg, src, &empty_resolver(), None).await.unwrap();
         let addr = handle.local_addr();
 
         let connector = plain_client_for_ca(&ca.pem());
@@ -750,7 +779,7 @@ mod tests {
             ..cfg_with_auth(true, StatusApiAuthMode::None)
         };
         let src: Arc<dyn StateSnapshotSource> = Arc::new(spt_status_api::InMemorySource::new());
-        let handle = launch(&cfg, src, &empty_resolver()).await.unwrap();
+        let handle = launch(&cfg, src, &empty_resolver(), None).await.unwrap();
         let addr = handle.local_addr();
 
         let connector = mtls_client(&ca.pem(), &cli_cert, &cli_key);
@@ -793,7 +822,7 @@ mod tests {
             ..cfg_with_auth(true, StatusApiAuthMode::None)
         };
         let src: Arc<dyn StateSnapshotSource> = Arc::new(spt_status_api::InMemorySource::new());
-        let handle = launch(&cfg, src, &empty_resolver()).await.unwrap();
+        let handle = launch(&cfg, src, &empty_resolver(), None).await.unwrap();
         let addr = handle.local_addr();
 
         let connector = mtls_client(&ca.pem(), &cli_cert, &cli_key);

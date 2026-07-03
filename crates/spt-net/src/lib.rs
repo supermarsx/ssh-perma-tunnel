@@ -41,5 +41,7 @@ pub use diag::{
 };
 pub use interfaces::{list as list_interfaces, Interface};
 pub use privileged::can_bind_privileged_port;
-pub use sockopts::{apply as apply_tcp_options, apply_v6_only, bind_tcp, TcpOptions};
+pub use sockopts::{
+    apply as apply_tcp_options, apply_v6_only, bind_tcp, OffloadOptions, TcpOptions,
+};
 pub use uds::bind_unix;

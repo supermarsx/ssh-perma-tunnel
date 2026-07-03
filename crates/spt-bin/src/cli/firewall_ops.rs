@@ -829,7 +829,7 @@ fn policy_registry_error(err: crate::policy::registry::Error) -> Error {
 /// per-forward "allow inbound on listen port" rules. This is a simplified
 /// preview — the supervisor's runtime computation is the source of truth for
 /// the actually-applied set.
-fn compute_rules(
+pub(crate) fn compute_rules(
     cfg: &Config,
     profile_filter: Option<&str>,
     forward_filter: Option<&str>,

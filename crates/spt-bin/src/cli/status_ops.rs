@@ -98,7 +98,9 @@ pub async fn serve(global: &GlobalOpts, args: StatusApiServeArgs) -> Result<()> 
     // `.orchestration/logs/f-status-tls.md`). For plain HTTP it delegates to
     // `StatusApiServer::start`, preserving the byte-identical wire behavior
     // of the t4-Bwire shipped path.
-    let handle = crate::status_api_tls::launch(&cfg.status_api, source, &resolver).await?;
+    let tcp_options = crate::net_offload::tcp_options(&cfg);
+    let handle =
+        crate::status_api_tls::launch(&cfg.status_api, source, &resolver, tcp_options).await?;
     let bound = handle.local_addr();
     match output_format(global) {
         OutputFormat::Json | OutputFormat::Jsonl => {
