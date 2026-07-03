@@ -15,6 +15,7 @@ mod audit;
 mod benchmark_bridge;
 mod cli;
 mod cli_dispatch;
+mod config_watcher;
 mod controller;
 mod dns_health;
 mod firewall_runtime;

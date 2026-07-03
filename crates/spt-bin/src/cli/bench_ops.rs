@@ -40,6 +40,7 @@
 #![allow(clippy::manual_let_else)]
 
 use std::path::PathBuf;
+use std::time::Duration;
 
 use serde_json::Value;
 
@@ -48,9 +49,128 @@ use spt_cli::groups::benchmark::{
     BenchmarkReportExport, BenchmarkReportFormat, BenchmarkRun, BenchmarkRunTarget,
 };
 use spt_cli::GlobalOpts;
+use spt_config::schema::Benchmark;
 use spt_core::{Error, Result};
 
 use crate::mcp_client::McpClient;
+
+// ---------------------------------------------------------------------------
+// Benchmark safety caps ([benchmark], Wave 7)
+// ---------------------------------------------------------------------------
+
+/// Safety caps derived from the `[benchmark]` table.
+///
+/// Enforced on **every** CLI benchmark invocation (live and synthetic) so a
+/// run can never exceed the operator-configured bounds regardless of the flags
+/// the caller passes. Absent config = no caps (behavior-preserving).
+///
+/// - `enabled = false` refuses all benchmarks.
+/// - `require_explicit_target = true` refuses a run without a `--profile`.
+/// - `max_duration` hard-clamps the requested/duration-flag duration.
+/// - `max_connections` hard-clamps the per-run connection/iteration count.
+/// - `default_duration` is the fallback when the caller passes no `--duration`.
+/// - `max_bytes_per_second` / `max_packets_per_second` are forwarded to the
+///   live driver as advisory rate caps.
+/// - `results_dir` overrides where synthetic reports are written.
+#[derive(Debug, Clone, Default)]
+pub struct BenchmarkCaps {
+    /// Master enable. `Some(false)` refuses all benchmarks.
+    pub enabled: Option<bool>,
+    /// Fallback duration when the caller supplies none.
+    pub default_duration: Option<Duration>,
+    /// Hard cap on requested duration.
+    pub max_duration: Option<Duration>,
+    /// Hard cap on per-run connection/iteration count.
+    pub max_connections: Option<u32>,
+    /// Refuse benchmarks without an explicit target profile.
+    pub require_explicit_target: bool,
+    /// Advisory byte-rate cap forwarded to the live driver.
+    pub max_bytes_per_second: Option<u64>,
+    /// Advisory packet-rate cap forwarded to the live driver.
+    pub max_packets_per_second: Option<u32>,
+    /// Optional results output directory override.
+    pub results_dir: Option<PathBuf>,
+}
+
+impl BenchmarkCaps {
+    /// Build caps from the parsed `[benchmark]` table (or `None`).
+    #[must_use]
+    pub fn from_config(b: Option<&Benchmark>) -> Self {
+        let Some(b) = b else {
+            return Self::default();
+        };
+        let parse_dur = |s: &Option<String>| {
+            s.as_deref()
+                .and_then(|v| spt_core::duration::parse_duration(v).ok())
+        };
+        Self {
+            enabled: b.enabled,
+            default_duration: parse_dur(&b.default_duration),
+            max_duration: parse_dur(&b.max_duration),
+            max_connections: b.max_connections,
+            require_explicit_target: b.require_explicit_target.unwrap_or(false),
+            max_bytes_per_second: b
+                .max_bytes_per_second
+                .as_deref()
+                .and_then(|v| spt_core::size::parse_size(v).ok()),
+            max_packets_per_second: b.max_packets_per_second,
+            results_dir: b.results_dir.as_deref().map(PathBuf::from),
+        }
+    }
+
+    /// Refuse the run when disabled, or when an explicit target is required
+    /// but absent. Call before doing any benchmark work.
+    pub fn preflight(&self, has_target: bool) -> Result<()> {
+        if self.enabled == Some(false) {
+            return Err(Error::InvalidArgs(
+                "benchmarks are disabled by config ([benchmark].enabled = false)".into(),
+            ));
+        }
+        if self.require_explicit_target && !has_target {
+            return Err(Error::InvalidArgs(
+                "config requires an explicit target ([benchmark].require_explicit_target = true) — \
+                 pass --profile <id>"
+                    .into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Clamp a requested duration to `max_duration`, applying `default_duration`
+    /// (then `fallback`) when the caller supplied none. Logs a WARN on clamp.
+    #[must_use]
+    pub fn clamp_duration(&self, requested: Option<Duration>, fallback: Duration) -> Duration {
+        let base = requested.or(self.default_duration).unwrap_or(fallback);
+        match self.max_duration {
+            Some(cap) if base > cap => {
+                tracing::warn!(
+                    requested_secs = base.as_secs(),
+                    cap_secs = cap.as_secs(),
+                    "benchmark duration exceeds [benchmark].max_duration — clamping to the cap"
+                );
+                cap
+            }
+            _ => base,
+        }
+    }
+
+    /// Clamp a requested connection/iteration count to `max_connections`.
+    /// Logs a WARN on clamp.
+    #[must_use]
+    pub fn clamp_count(&self, requested: u32) -> u32 {
+        match self.max_connections {
+            Some(cap) if requested > cap => {
+                tracing::warn!(
+                    requested,
+                    cap,
+                    "benchmark count exceeds [benchmark].max_connections — clamping to the cap"
+                );
+                cap
+            }
+            _ => requested,
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Args
@@ -151,16 +271,32 @@ pub async fn run_live(global: &GlobalOpts, args: BenchmarkRunArgs) -> Result<()>
         ));
     };
 
-    // Resolve the production-impact gate: BOTH the CLI flag AND the config
-    // flag must be set for the user opt-in to take effect.
-    let cfg_allow_prod = global
+    // Resolve the `[benchmark]` table once for both the production-impact gate
+    // and the safety caps.
+    let bench_cfg = global
         .config
         .as_ref()
         .and_then(|p| spt_config::load(p, false).ok())
-        .and_then(|(c, _)| c.benchmark)
+        .and_then(|(c, _)| c.benchmark);
+    let caps = BenchmarkCaps::from_config(bench_cfg.as_ref());
+    // Wave 7: enforce the configured safety caps before touching the tunnel.
+    caps.preflight(true)?;
+    // Resolve the production-impact gate: BOTH the CLI flag AND the config
+    // flag must be set for the user opt-in to take effect.
+    let cfg_allow_prod = bench_cfg
+        .as_ref()
         .and_then(|b| b.allow_production_impact)
         .unwrap_or(false);
     let allow_prod = args.allow_production_impact && cfg_allow_prod;
+
+    let requested_dur = args
+        .duration
+        .as_deref()
+        .and_then(|d| spt_core::duration::parse_duration(d).ok());
+    let duration_seconds = caps
+        .clamp_duration(requested_dur, Duration::from_secs(5))
+        .as_secs();
+    let count = caps.clamp_count(args.count.unwrap_or(50));
 
     let state_dir = spt_state::resolve_state_dir(global.state_dir.as_deref())?;
     let mut client = McpClient::connect_from_state_dir(&state_dir)
@@ -178,17 +314,18 @@ pub async fn run_live(global: &GlobalOpts, args: BenchmarkRunArgs) -> Result<()>
     let mut payload = serde_json::json!({
         "driver": args.driver,
         "profile": profile,
-        "count": args.count.unwrap_or(50),
-        "duration_seconds": args
-            .duration
-            .as_deref()
-            .and_then(|d| spt_core::duration::parse_duration(d).ok())
-            .map(|d| d.as_secs())
-            .unwrap_or(5),
+        "count": count,
+        "duration_seconds": duration_seconds,
         "allow_production_impact": allow_prod,
     });
     if let Some(f) = args.forward.clone() {
         payload["forward"] = Value::String(f);
+    }
+    if let Some(bps) = caps.max_bytes_per_second {
+        payload["max_bytes_per_second"] = Value::from(bps);
+    }
+    if let Some(pps) = caps.max_packets_per_second {
+        payload["max_packets_per_second"] = Value::from(pps);
     }
     let v = client.call_tool("benchmark_run", payload).await?;
 
@@ -315,6 +452,89 @@ mod tests {
             env: BenchEnv::default(),
             started_at: "2026-05-05T00:00:00Z".into(),
         }
+    }
+
+    #[test]
+    fn caps_clamp_duration_to_max() {
+        let caps = BenchmarkCaps {
+            max_duration: Some(Duration::from_secs(10)),
+            ..Default::default()
+        };
+        // A request over the cap is clamped down.
+        assert_eq!(
+            caps.clamp_duration(Some(Duration::from_secs(3600)), Duration::from_secs(5)),
+            Duration::from_secs(10)
+        );
+        // A request under the cap is preserved.
+        assert_eq!(
+            caps.clamp_duration(Some(Duration::from_secs(4)), Duration::from_secs(5)),
+            Duration::from_secs(4)
+        );
+    }
+
+    #[test]
+    fn caps_default_duration_used_when_unspecified() {
+        let caps = BenchmarkCaps {
+            default_duration: Some(Duration::from_secs(7)),
+            max_duration: Some(Duration::from_secs(30)),
+            ..Default::default()
+        };
+        assert_eq!(
+            caps.clamp_duration(None, Duration::from_secs(5)),
+            Duration::from_secs(7)
+        );
+    }
+
+    #[test]
+    fn caps_clamp_count_to_max_connections() {
+        let caps = BenchmarkCaps {
+            max_connections: Some(4),
+            ..Default::default()
+        };
+        assert_eq!(caps.clamp_count(1000), 4);
+        assert_eq!(caps.clamp_count(2), 2);
+    }
+
+    #[test]
+    fn caps_preflight_rejects_disabled_and_missing_target() {
+        let disabled = BenchmarkCaps {
+            enabled: Some(false),
+            ..Default::default()
+        };
+        assert!(disabled.preflight(true).is_err());
+
+        let needs_target = BenchmarkCaps {
+            require_explicit_target: true,
+            ..Default::default()
+        };
+        assert!(needs_target.preflight(false).is_err());
+        assert!(needs_target.preflight(true).is_ok());
+
+        // No config = no caps: always allowed.
+        assert!(BenchmarkCaps::default().preflight(false).is_ok());
+    }
+
+    #[test]
+    fn caps_from_config_parses_durations_and_sizes() {
+        let b = Benchmark {
+            enabled: Some(true),
+            default_duration: Some("2s".into()),
+            max_duration: Some("30s".into()),
+            max_connections: Some(8),
+            max_bytes_per_second: Some("1MiB".into()),
+            max_packets_per_second: Some(1000),
+            require_explicit_target: Some(true),
+            results_dir: Some("/tmp/bench".into()),
+            ..Default::default()
+        };
+        let caps = BenchmarkCaps::from_config(Some(&b));
+        assert_eq!(caps.max_duration, Some(Duration::from_secs(30)));
+        assert_eq!(caps.default_duration, Some(Duration::from_secs(2)));
+        assert_eq!(caps.max_connections, Some(8));
+        assert_eq!(caps.max_bytes_per_second, Some(1024 * 1024));
+        assert_eq!(caps.max_packets_per_second, Some(1000));
+        assert!(caps.require_explicit_target);
+        assert_eq!(caps.results_dir, Some(PathBuf::from("/tmp/bench")));
     }
 
     #[tokio::test]

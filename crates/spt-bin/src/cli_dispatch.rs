@@ -991,6 +991,16 @@ async fn tunnel_run(global: &GlobalOpts, args: groups::tunnel::TunnelRun) -> Res
     }
     let state_dir = resolve_state_dir(global, &cfg)?;
     let _trace_guard = crate::tracing_init::init_from_config(global, &cfg, &state_dir)?;
+    // Wave 7 (audit-logging §5): spt-config emits no INFO on a successful load,
+    // so the config the daemon is actually running with is invisible in the
+    // log. Log it here, at the call site, now that the subscriber is up.
+    tracing::info!(
+        config = %path.display(),
+        version = env!("CARGO_PKG_VERSION"),
+        profiles = cfg.profiles.len(),
+        fingerprint = %spt_config::fingerprint::fingerprint_hex(&cfg),
+        "loaded config"
+    );
     // E5-F6: now that the subscriber is installed, surface the unknown-key
     // warnings that were held back at load time. Fold them through
     // `warnings_to_diagnostics` so they share the diagnostics loop below and
@@ -1076,17 +1086,31 @@ async fn tunnel_run(global: &GlobalOpts, args: groups::tunnel::TunnelRun) -> Res
         );
     }
 
-    // E6-F4: instantiate the Prometheus exporter and spawn its periodic writer
-    // task (writes `<state_dir>/metrics.prom`). HOLD `metrics_handle` for the
-    // lifetime of the run; inject the StandardMetrics handles into the
-    // orchestrator so the supervisor hot path increments real counters.
+    // E6-F4 / Wave 7: instantiate the Prometheus exporter. The in-memory
+    // registry is always built (the supervisor hot path increments its
+    // counters), but the periodic *writer* task — the operator-visible
+    // metrics surface — is gated on `[observability.metrics].enabled`. When
+    // `enabled = false` no writer runs and no `metrics.prom` is exposed;
+    // absent/true (the default) starts the writer. HOLD `metrics_handle` for
+    // the lifetime of the run.
     let metrics_exporter = spt_observability::metrics::MetricsExporter::new()
         .map_err(|e| Error::RuntimeFailure(format!("metrics exporter: {e}")))?;
-    let metrics_handle =
-        metrics_exporter.spawn(spt_observability::metrics::MetricsExporterConfig {
-            state_file: spt_state::paths::metrics_path(&state_dir),
-            ..Default::default()
-        });
+    let metrics_handle = match metrics_writer_config(&cfg, &state_dir) {
+        Some(mcfg) => {
+            tracing::info!(
+                state_file = %mcfg.state_file.display(),
+                "metrics enabled — Prometheus exporter writer started"
+            );
+            Some(metrics_exporter.spawn(mcfg))
+        }
+        None => {
+            tracing::info!(
+                "metrics disabled ([observability.metrics].enabled=false) — \
+                 exporter writer not started, no metrics.prom exposed"
+            );
+            None
+        }
+    };
 
     // memleak-E4: spawn the optional runtime memory-growth monitor. The emit
     // callback needs the live `EventBus`, so clone it BEFORE the original is
@@ -1303,6 +1327,14 @@ async fn tunnel_run(global: &GlobalOpts, args: groups::tunnel::TunnelRun) -> Res
         &config_cell,
     );
 
+    // Wave 7: bring up the config file-watcher when `[runtime.reload].mode =
+    // "watch"`. Poll-based (no `notify` dep); a detected+debounced change is
+    // funneled through the SAME validated-before-swap reload pipeline as
+    // SIGHUP (`ConfigCell::reload`), so a bad reload keeps the old config.
+    // `mode = "signal"`/`"none"`/`"service"` leave this `None`.
+    let config_watch_handle =
+        maybe_spawn_config_watcher(&cfg, &path, &resolver, &orchestrator, &config_cell);
+
     // GAP 3: bring up the embedded DNS resolver when `[dns]` is enabled with a
     // listener mode. Honors mode / auto_records / health-gating; a misconfig
     // logs and returns None rather than aborting the tunnel.
@@ -1400,6 +1432,9 @@ async fn tunnel_run(global: &GlobalOpts, args: groups::tunnel::TunnelRun) -> Res
         if let Some(h) = remote_config_handle {
             h.shutdown().await;
         }
+        if let Some(h) = config_watch_handle {
+            h.shutdown().await;
+        }
         if let Some(d) = dns_runtime {
             d.shutdown().await;
         }
@@ -1414,7 +1449,9 @@ async fn tunnel_run(global: &GlobalOpts, args: groups::tunnel::TunnelRun) -> Res
         // E6-F1/E6-F4: stop the events dispatcher and flush+stop the metrics
         // exporter writer (final metrics.prom snapshot) before returning.
         events_pipeline.shutdown().await;
-        metrics_handle.shutdown().await;
+        if let Some(h) = metrics_handle {
+            h.shutdown().await;
+        }
         // memleak-E4: stop the memory-growth monitor task (abort + join).
         if let Some(h) = memory_monitor_handle {
             h.shutdown().await;
@@ -1524,6 +1561,9 @@ async fn tunnel_run(global: &GlobalOpts, args: groups::tunnel::TunnelRun) -> Res
     if let Some(h) = remote_config_handle {
         h.shutdown().await;
     }
+    if let Some(h) = config_watch_handle {
+        h.shutdown().await;
+    }
     if let Some(d) = dns_runtime {
         d.shutdown().await;
     }
@@ -1537,7 +1577,9 @@ async fn tunnel_run(global: &GlobalOpts, args: groups::tunnel::TunnelRun) -> Res
     }
     // E6-F1/E6-F4: stop the events dispatcher + metrics exporter writer.
     events_pipeline.shutdown().await;
-    metrics_handle.shutdown().await;
+    if let Some(h) = metrics_handle {
+        h.shutdown().await;
+    }
     // memleak-E4: stop the memory-growth monitor task (abort + join).
     if let Some(h) = memory_monitor_handle {
         h.shutdown().await;
@@ -1605,13 +1647,12 @@ fn build_runtime_status(
         });
     }
 
-    // Metrics exporter always runs in `tunnel_run`.
+    // Metrics exporter runs in `tunnel_run` unless disabled via
+    // `[observability.metrics].enabled = false` (Wave 7). Reflect the real
+    // state so `spt status` doesn't advertise a metrics file that isn't
+    // written.
     rs.set_metrics(spt_state::MetricsStatus {
-        path: Some(
-            spt_state::paths::metrics_path(state_dir)
-                .display()
-                .to_string(),
-        ),
+        path: metrics_writer_config(cfg, state_dir).map(|m| m.state_file.display().to_string()),
     });
 
     // Remote-config poller: only when the handle exists; re-derive interval.
@@ -2737,6 +2778,80 @@ fn maybe_spawn_remote_config_poller(
             None
         }
     }
+}
+
+/// Bring up the poll-based config file-watcher for `[runtime.reload].mode =
+/// "watch"`.
+///
+/// Returns `None` (no watcher) for every other mode (`signal` = SIGHUP,
+/// `none`, `service` = SCM), preserving existing behavior. When watching, a
+/// debounced file change funnels through the SAME validated-before-swap reload
+/// pipeline as SIGHUP (`ConfigCell::reload`): a reload that fails validation is
+/// logged and the previously-running config is kept (fail-safe). The debounce
+/// comes from `[runtime.reload].debounce` (default 1s).
+fn maybe_spawn_config_watcher(
+    cfg: &spt_config::schema::Config,
+    path: &Path,
+    resolver: &std::sync::Arc<spt_secrets::Resolver>,
+    orchestrator: &std::sync::Arc<spt_supervisor::Orchestrator>,
+    config_cell: &crate::controller::ConfigCell,
+) -> Option<crate::config_watcher::ConfigWatchHandle> {
+    let reload = cfg.runtime.as_ref().and_then(|r| r.reload.as_ref())?;
+    if reload.mode.as_deref() != Some("watch") {
+        return None;
+    }
+    let debounce = reload
+        .debounce
+        .as_deref()
+        .and_then(|s| spt_core::duration::parse_duration(s).ok())
+        .filter(|d| !d.is_zero())
+        .unwrap_or_else(|| std::time::Duration::from_secs(1));
+    let poll_interval = crate::config_watcher::poll_interval_for(debounce);
+
+    let resolver = resolver.clone();
+    let orchestrator = orchestrator.clone();
+    let config_cell = config_cell.clone();
+    let watch_path = path.to_path_buf();
+    let cb_path = watch_path.clone();
+    let on_change = move || {
+        let resolver = resolver.clone();
+        let orchestrator = orchestrator.clone();
+        let config_cell = config_cell.clone();
+        let cb_path = cb_path.clone();
+        async move {
+            match reload_orchestrator(&cb_path, &resolver, &orchestrator, &config_cell).await {
+                Ok(outcome) => {
+                    for f in &outcome.provider_failures {
+                        tracing::error!(
+                            profile = %f.profile,
+                            error = %f.error,
+                            "profile failed to build on watch reload — not started",
+                        );
+                    }
+                    tracing::info!("config reload applied (watch-triggered)");
+                }
+                Err(e) => {
+                    tracing::error!(
+                        error = %e,
+                        "watch-triggered reload failed; keeping previous config"
+                    );
+                }
+            }
+        }
+    };
+
+    tracing::info!(
+        path = %watch_path.display(),
+        debounce = ?debounce,
+        poll_interval = ?poll_interval,
+        "[runtime.reload].mode=watch — config file-watcher started (poll-based)"
+    );
+    Some(crate::config_watcher::spawn(
+        watch_path,
+        poll_interval,
+        debounce,
+        on_change,
+    ))
 }
 
 async fn wait_for_once_startup(
@@ -5169,27 +5284,51 @@ async fn diagnose_bundle(
     let effective_config = cfg
         .as_ref()
         .map(|c| spt_config::render(c, RedactionMode::Strict));
+    // Wave 7: build the bundle knobs from `[diagnostics]` (redaction level,
+    // size cap, included sections) instead of the hardwired `default()`.
+    // Fail-safe: absent table / unset fields keep Strict redaction, the
+    // 16 MiB cap, and every section included.
+    let diag_cfg = cfg.as_ref().and_then(|c| c.diagnostics.as_ref());
+    let bundle_cfg = diag_cfg.map_or_else(spt_diagnostics::BundleConfig::default, |d| {
+        spt_diagnostics::BundleConfig::from_diagnostics(d)
+    });
     // Pull events / logs / stats from the same state dir the live daemon and
     // the diagnostics read, so the bundle reflects real runtime artifacts.
+    // Only collect a section when the config includes it — an operator that
+    // set `include_recent_logs = false` should not have logs read/packed.
     let recent_events = std::fs::read_to_string(spt_state::paths::events_file(
         &state_dir,
         &chrono::Utc::now().format("%Y-%m-%d").to_string(),
     ))
     .ok();
-    let recent_logs = std::fs::read_to_string(state_dir.join("spt.log")).ok();
-    let stats_summary = std::fs::read_to_string(spt_state::paths::metrics_path(&state_dir)).ok();
+    let recent_logs = bundle_cfg
+        .include_recent_logs
+        .then(|| std::fs::read_to_string(state_dir.join("spt.log")).ok())
+        .flatten();
+    let stats_summary = bundle_cfg
+        .include_stats
+        .then(|| std::fs::read_to_string(spt_state::paths::metrics_path(&state_dir)).ok())
+        .flatten();
+    let status_snapshot = bundle_cfg
+        .include_status
+        .then(|| std::fs::read_to_string(spt_state::paths::status_path(&state_dir)).ok())
+        .flatten();
     let inputs = spt_diagnostics::BundleInputs {
         effective_config,
-        status_snapshot: std::fs::read_to_string(spt_state::paths::status_path(&state_dir)).ok(),
+        status_snapshot,
         recent_events,
         recent_logs,
         stats_summary,
         report: Some(report),
         version_info: Some(format!("spt {}", env!("CARGO_PKG_VERSION"))),
     };
-    let cfg = spt_diagnostics::BundleConfig::default();
+    // Honor `[diagnostics].bundle_dir` as the base for the intermediate
+    // archive when set; otherwise use the state dir (behavior-preserving).
+    let bundle_base = diag_cfg
+        .and_then(|d| d.bundle_dir.as_deref())
+        .map_or_else(|| state_dir.clone(), PathBuf::from);
     let run_id = chrono::Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
-    let archive_path = spt_diagnostics::build_bundle(&state_dir, &run_id, &inputs, &cfg)?;
+    let archive_path = spt_diagnostics::build_bundle(&bundle_base, &run_id, &inputs, &bundle_cfg)?;
     if let Some(parent) = args.out.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
@@ -5200,6 +5339,12 @@ async fn diagnose_bundle(
             args.out.display()
         ))
     })?;
+    tracing::info!(
+        out = %args.out.display(),
+        redaction = ?bundle_cfg.redaction,
+        max_bytes = bundle_cfg.max_total_bytes,
+        "diagnostic bundle written"
+    );
     println!("wrote {}", args.out.display());
     Ok(())
 }
@@ -5342,13 +5487,20 @@ async fn benchmark_run(global: &GlobalOpts, args: groups::benchmark::BenchmarkRu
     use std::time::Duration;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-    // Resolve the production-impact gate: BOTH the CLI flag AND the config
-    // flag must be set for the user opt-in to take effect.
-    let cfg_allow_prod = global
+    // Resolve the `[benchmark]` table once for both the production-impact gate
+    // and the Wave 7 safety caps.
+    let bench_cfg = global
         .config
         .as_ref()
         .and_then(|p| spt_config::load(p, false).ok())
-        .and_then(|(c, _)| c.benchmark)
+        .and_then(|(c, _)| c.benchmark);
+    let caps = crate::cli::bench_ops::BenchmarkCaps::from_config(bench_cfg.as_ref());
+    // Enforce the disable/require-target caps up front (before any work).
+    caps.preflight(args.target.profile.is_some())?;
+    // Resolve the production-impact gate: BOTH the CLI flag AND the config
+    // flag must be set for the user opt-in to take effect.
+    let cfg_allow_prod = bench_cfg
+        .as_ref()
         .and_then(|b| b.allow_production_impact)
         .unwrap_or(false);
     let allow_prod = args.unsafe_allow_production_impact && cfg_allow_prod;
@@ -5372,20 +5524,27 @@ async fn benchmark_run(global: &GlobalOpts, args: groups::benchmark::BenchmarkRu
             .await
             .map_err(mcp_connect_err)?;
         client.initialize().await.map_err(mcp_connect_err)?;
+        let requested_dur = args
+            .duration
+            .as_deref()
+            .and_then(|d| spt_core::duration::parse_duration(d).ok());
         let mut payload = serde_json::json!({
             "driver": args.driver,
             "profile": args.target.profile.clone().unwrap(),
-            "count": args.count.unwrap_or(50),
-            "duration_seconds": args
-                .duration
-                .as_deref()
-                .and_then(|d| spt_core::duration::parse_duration(d).ok())
-                .map(|d| d.as_secs())
-                .unwrap_or(5),
+            "count": caps.clamp_count(args.count.unwrap_or(50)),
+            "duration_seconds": caps
+                .clamp_duration(requested_dur, Duration::from_secs(5))
+                .as_secs(),
             "allow_production_impact": allow_prod,
         });
         if let Some(f) = args.target.forward.clone() {
             payload["forward"] = serde_json::Value::String(f);
+        }
+        if let Some(bps) = caps.max_bytes_per_second {
+            payload["max_bytes_per_second"] = serde_json::Value::from(bps);
+        }
+        if let Some(pps) = caps.max_packets_per_second {
+            payload["max_packets_per_second"] = serde_json::Value::from(pps);
         }
         let v = client.call_tool("benchmark_run", payload).await?;
         if args.json {
@@ -5454,13 +5613,15 @@ async fn benchmark_run(global: &GlobalOpts, args: groups::benchmark::BenchmarkRu
         ..Default::default()
     };
 
-    let iterations = u64::from(args.count.unwrap_or(50));
+    // Wave 7: clamp iterations/duration to the configured safety caps so a
+    // synthetic run can never exceed the operator's bounds either.
+    let iterations = u64::from(caps.clamp_count(args.count.unwrap_or(50)));
     let payload_size = 256;
-    let max_duration = args
+    let requested_dur = args
         .duration
         .as_deref()
-        .and_then(|d| spt_core::duration::parse_duration(d).ok())
-        .unwrap_or_else(|| Duration::from_secs(5));
+        .and_then(|d| spt_core::duration::parse_duration(d).ok());
+    let max_duration = caps.clamp_duration(requested_dur, Duration::from_secs(5));
 
     // Build the driver per `--driver`.
     let driver: Box<dyn BenchmarkDriver> = match args.driver.as_str() {
@@ -5553,16 +5714,19 @@ async fn benchmark_run(global: &GlobalOpts, args: groups::benchmark::BenchmarkRu
     };
     let result = driver.run(&ctx).await;
 
-    // Write reports to <state_dir>/benchmarks/<run-id>.{json,md}.
-    let state_dir = resolve_state_dir_for_read(global).unwrap_or_else(|_| std::env::temp_dir());
+    // Write reports to <results_dir|state_dir>/benchmarks/<run-id>.{json,md}.
+    // `[benchmark].results_dir` overrides the base when set (Wave 7).
+    let report_base = caps.results_dir.clone().unwrap_or_else(|| {
+        resolve_state_dir_for_read(global).unwrap_or_else(|_| std::env::temp_dir())
+    });
     let run_id = format!(
         "{}-{}",
         args.driver,
         chrono::Utc::now().format("%Y%m%dT%H%M%S")
     );
-    let json_path = write_report(&state_dir, &run_id, &[result.clone()], ReportFormat::Json)?;
+    let json_path = write_report(&report_base, &run_id, &[result.clone()], ReportFormat::Json)?;
     let md_path = write_report(
-        &state_dir,
+        &report_base,
         &run_id,
         &[result.clone()],
         ReportFormat::Markdown,
@@ -5820,6 +5984,32 @@ fn completion_dispatch(_global: &GlobalOpts, c: groups::completion::CompletionCm
 fn require_config_path(global: &GlobalOpts) -> Result<PathBuf> {
     global.config.clone().ok_or_else(|| {
         Error::InvalidArgs("no config path supplied (pass --config or set $SPT_CONFIG)".into())
+    })
+}
+
+/// Resolve the Prometheus exporter writer config from `[observability.metrics]`.
+///
+/// Returns `None` when metrics are explicitly disabled (`enabled = false`) —
+/// the caller then skips spawning the writer task entirely, so no
+/// `metrics.prom` is ever written or exposed. When the table is absent or
+/// `enabled` is unset/true (the default), returns `Some` with the state-file
+/// path honoring a custom `state_file` override, falling back to the canonical
+/// `<state_dir>/metrics.prom`.
+fn metrics_writer_config(
+    cfg: &spt_config::schema::Config,
+    state_dir: &Path,
+) -> Option<spt_observability::metrics::MetricsExporterConfig> {
+    let metrics = cfg.observability.as_ref().and_then(|o| o.metrics.as_ref());
+    let enabled = metrics.and_then(|m| m.enabled).unwrap_or(true);
+    if !enabled {
+        return None;
+    }
+    let state_file = metrics
+        .and_then(|m| m.state_file.clone())
+        .map_or_else(|| spt_state::paths::metrics_path(state_dir), PathBuf::from);
+    Some(spt_observability::metrics::MetricsExporterConfig {
+        state_file,
+        ..Default::default()
     })
 }
 
@@ -6180,6 +6370,81 @@ mod tests {
         let cli = parse(&["spt", "config", "validate"]);
         let err = require_config_path(&cli.global).unwrap_err();
         assert!(matches!(err, Error::InvalidArgs(_)));
+    }
+
+    // ----- Wave 7: metrics toggle -------------------------------------------
+
+    #[test]
+    fn metrics_writer_config_none_when_disabled() {
+        // `[observability.metrics].enabled = false` must return None, i.e. the
+        // exporter writer subsystem is NOT started (no metrics.prom exposed).
+        let mut cfg = spt_config::schema::Config::default();
+        cfg.observability = Some(spt_config::schema::Observability {
+            metrics: Some(spt_config::schema::ObservabilityMetrics {
+                enabled: Some(false),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        assert!(
+            metrics_writer_config(&cfg, Path::new("/tmp/state")).is_none(),
+            "disabled metrics must not start the writer"
+        );
+    }
+
+    #[test]
+    fn metrics_writer_config_some_when_enabled_or_absent() {
+        // Absent table = default-on.
+        let cfg = spt_config::schema::Config::default();
+        assert!(metrics_writer_config(&cfg, Path::new("/tmp/state")).is_some());
+
+        // Explicit enable, with a custom state_file honored.
+        let mut cfg2 = spt_config::schema::Config::default();
+        cfg2.observability = Some(spt_config::schema::Observability {
+            metrics: Some(spt_config::schema::ObservabilityMetrics {
+                enabled: Some(true),
+                state_file: Some("/custom/metrics.prom".into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        let mc = metrics_writer_config(&cfg2, Path::new("/tmp/state")).unwrap();
+        assert_eq!(mc.state_file, PathBuf::from("/custom/metrics.prom"));
+    }
+
+    // ----- Wave 7: config watcher gating ------------------------------------
+
+    #[tokio::test]
+    async fn config_watcher_only_spawns_in_watch_mode() {
+        use std::sync::Arc;
+        let resolver = Arc::new(spt_secrets::Resolver::new(vec![]));
+        let orchestrator = Arc::new(spt_supervisor::Orchestrator::new());
+        let cell = crate::controller::ConfigCell::new(spt_config::schema::Config::default());
+        let path = Path::new("/tmp/spt.toml");
+
+        // mode = "signal" (or absent) => no watcher.
+        let mut cfg = spt_config::schema::Config::default();
+        cfg.runtime = Some(spt_config::schema::Runtime {
+            reload: Some(spt_config::schema::RuntimeReload {
+                mode: Some("signal".into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        assert!(maybe_spawn_config_watcher(&cfg, path, &resolver, &orchestrator, &cell).is_none());
+
+        // mode = "watch" => watcher handle present.
+        let mut cfg2 = spt_config::schema::Config::default();
+        cfg2.runtime = Some(spt_config::schema::Runtime {
+            reload: Some(spt_config::schema::RuntimeReload {
+                mode: Some("watch".into()),
+                debounce: Some("1s".into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        let handle = maybe_spawn_config_watcher(&cfg2, path, &resolver, &orchestrator, &cell);
+        assert!(handle.is_some(), "watch mode must spawn a watcher");
     }
 
     #[test]

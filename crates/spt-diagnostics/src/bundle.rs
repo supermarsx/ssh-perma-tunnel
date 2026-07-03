@@ -46,6 +46,10 @@ pub struct BundleInputs {
 }
 
 /// Knobs for the bundle build.
+///
+/// Built either with [`BundleConfig::default`] (fail-safe: Strict redaction,
+/// 16 MiB cap, every section included) or from the operator's `[diagnostics]`
+/// table via [`BundleConfig::from_diagnostics`].
 #[derive(Debug, Clone)]
 pub struct BundleConfig {
     /// Redaction mode applied to every text entry. Defaults to
@@ -54,6 +58,19 @@ pub struct BundleConfig {
     /// Maximum total uncompressed bytes across all entries. Entries beyond
     /// this cap are truncated with a marker.
     pub max_total_bytes: u64,
+    /// Include the recent log tail (`logs.txt`). Default `true`.
+    pub include_recent_logs: bool,
+    /// Include the status snapshot (`status.json`). Default `true`.
+    pub include_status: bool,
+    /// Include the stats/metrics snapshot (`stats.txt`). Default `true`.
+    pub include_stats: bool,
+    /// Include session details. Default `true`. (No dedicated input entry
+    /// yet — reserved so the configured section takes effect once a session
+    /// collector is wired.)
+    pub include_sessions: bool,
+    /// Include copies of service definitions. Default `true`. (Reserved as
+    /// for [`Self::include_sessions`].)
+    pub include_service_definitions: bool,
 }
 
 impl Default for BundleConfig {
@@ -61,6 +78,45 @@ impl Default for BundleConfig {
         Self {
             redaction: RedactionMode::Strict,
             max_total_bytes: 16 * 1024 * 1024,
+            include_recent_logs: true,
+            include_status: true,
+            include_stats: true,
+            include_sessions: true,
+            include_service_definitions: true,
+        }
+    }
+}
+
+impl BundleConfig {
+    /// Build a [`BundleConfig`] from the `[diagnostics]` config table.
+    ///
+    /// Unset fields fall back to the fail-safe [`BundleConfig::default`]
+    /// (Strict redaction, 16 MiB cap, all sections included). `redact = false`
+    /// is the *only* way to opt out of redaction; unset or `redact = true`
+    /// keeps `RedactionMode::Strict`, so a missing/typo'd value can never
+    /// silently disable redaction. `max_bundle_size` is parsed as a byte size
+    /// (e.g. `"8MiB"`); an unparseable value keeps the default cap.
+    #[must_use]
+    pub fn from_diagnostics(d: &spt_config::schema::Diagnostics) -> Self {
+        let default = Self::default();
+        let redaction = match d.redact {
+            Some(false) => RedactionMode::None,
+            _ => RedactionMode::Strict,
+        };
+        let max_total_bytes = d
+            .max_bundle_size
+            .as_deref()
+            .and_then(|s| spt_core::size::parse_size(s).ok())
+            .filter(|n| *n > 0)
+            .unwrap_or(default.max_total_bytes);
+        Self {
+            redaction,
+            max_total_bytes,
+            include_recent_logs: d.include_recent_logs.unwrap_or(true),
+            include_status: d.include_status.unwrap_or(true),
+            include_stats: d.include_stats.unwrap_or(true),
+            include_sessions: d.include_sessions.unwrap_or(true),
+            include_service_definitions: d.include_service_definitions.unwrap_or(true),
         }
     }
 }
@@ -103,17 +159,23 @@ pub fn build_bundle(
         if let Some(s) = &inputs.effective_config {
             write_text(&mut tar, "effective-config.toml", s, cfg, &mut budget)?;
         }
-        if let Some(s) = &inputs.status_snapshot {
-            write_text(&mut tar, "status.json", s, cfg, &mut budget)?;
+        if cfg.include_status {
+            if let Some(s) = &inputs.status_snapshot {
+                write_text(&mut tar, "status.json", s, cfg, &mut budget)?;
+            }
         }
         if let Some(s) = &inputs.recent_events {
             write_text(&mut tar, "events.jsonl", s, cfg, &mut budget)?;
         }
-        if let Some(s) = &inputs.recent_logs {
-            write_text(&mut tar, "logs.txt", s, cfg, &mut budget)?;
+        if cfg.include_recent_logs {
+            if let Some(s) = &inputs.recent_logs {
+                write_text(&mut tar, "logs.txt", s, cfg, &mut budget)?;
+            }
         }
-        if let Some(s) = &inputs.stats_summary {
-            write_text(&mut tar, "stats.txt", s, cfg, &mut budget)?;
+        if cfg.include_stats {
+            if let Some(s) = &inputs.stats_summary {
+                write_text(&mut tar, "stats.txt", s, cfg, &mut budget)?;
+            }
         }
         if let Some(report) = &inputs.report {
             let json = serde_json::to_string_pretty(report).unwrap_or_default();
@@ -309,6 +371,79 @@ mod tests {
         let c = BundleConfig::default();
         assert!(matches!(c.redaction, RedactionMode::Strict));
         assert_eq!(c.max_total_bytes, 16 * 1024 * 1024);
+        assert!(c.include_recent_logs);
+        assert!(c.include_status);
+        assert!(c.include_stats);
+    }
+
+    #[test]
+    fn from_diagnostics_honors_redaction_and_size_and_sections() {
+        // redact = false explicitly opts OUT of redaction; a custom size cap
+        // and disabled sections must be reflected in the BundleConfig.
+        let d = spt_config::schema::Diagnostics {
+            redact: Some(false),
+            max_bundle_size: Some("4MiB".into()),
+            include_recent_logs: Some(false),
+            include_status: Some(false),
+            include_stats: Some(true),
+            ..Default::default()
+        };
+        let c = BundleConfig::from_diagnostics(&d);
+        assert!(matches!(c.redaction, RedactionMode::None));
+        assert_eq!(c.max_total_bytes, 4 * 1024 * 1024);
+        assert!(!c.include_recent_logs);
+        assert!(!c.include_status);
+        assert!(c.include_stats);
+    }
+
+    #[test]
+    fn from_diagnostics_is_failsafe_strict_when_unset_or_bad() {
+        // Unset redact => Strict (default); an unparseable size keeps the
+        // 16 MiB default cap; unset sections default to included.
+        let d = spt_config::schema::Diagnostics {
+            redact: None,
+            max_bundle_size: Some("not-a-size".into()),
+            ..Default::default()
+        };
+        let c = BundleConfig::from_diagnostics(&d);
+        assert!(matches!(c.redaction, RedactionMode::Strict));
+        assert_eq!(c.max_total_bytes, 16 * 1024 * 1024);
+        assert!(c.include_recent_logs);
+        assert!(c.include_status);
+        assert!(c.include_stats);
+
+        // redact = Some(true) is also Strict.
+        let d2 = spt_config::schema::Diagnostics {
+            redact: Some(true),
+            ..Default::default()
+        };
+        assert!(matches!(
+            BundleConfig::from_diagnostics(&d2).redaction,
+            RedactionMode::Strict
+        ));
+    }
+
+    #[test]
+    fn include_flags_drop_disabled_sections_from_archive() {
+        let d = tempdir().unwrap();
+        let cfg = BundleConfig {
+            include_recent_logs: false,
+            include_status: false,
+            ..BundleConfig::default()
+        };
+        let inputs = BundleInputs {
+            status_snapshot: Some("{}".into()),
+            recent_logs: Some("secret log line".into()),
+            stats_summary: Some("metric=1".into()),
+            ..Default::default()
+        };
+        let p = build_bundle(d.path(), "gated", &inputs, &cfg).unwrap();
+        let entries = read_archive_entries(&p);
+        let names: Vec<&str> = entries.iter().map(|(n, _)| n.as_str()).collect();
+        assert!(!names.contains(&"logs.txt"), "logs must be excluded");
+        assert!(!names.contains(&"status.json"), "status must be excluded");
+        // stats still included (include_stats defaults true).
+        assert!(names.contains(&"stats.txt"), "stats should remain");
     }
 
     #[test]
@@ -396,6 +531,7 @@ mod tests {
         let cfg = BundleConfig {
             redaction: RedactionMode::None,
             max_total_bytes: 0,
+            ..BundleConfig::default()
         };
         let p = build_bundle(
             d.path(),
@@ -419,6 +555,7 @@ mod tests {
         let cfg = BundleConfig {
             redaction: RedactionMode::None,
             max_total_bytes: 100,
+            ..BundleConfig::default()
         };
         let path = build_bundle(
             d.path(),
