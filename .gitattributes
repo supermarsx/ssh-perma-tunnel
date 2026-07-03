@@ -1,5 +1,7 @@
-# Auto detect text files and perform LF normalization
-* text=auto
+# Auto detect text files and normalize to LF in the repo AND in every working
+# tree. `eol=lf` overrides core.autocrlf so Windows checkouts are LF too, which
+# stops `cargo fmt`/rustfmt from flagging "Incorrect newline style" on CRLF.
+* text=auto eol=lf
 
 # Keep attributes parsing consistent across platforms.
 .gitattributes text eol=lf
