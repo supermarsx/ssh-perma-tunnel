@@ -43,10 +43,16 @@ pub mod zone;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
 
+#[cfg(test)]
+mod test_log_capture;
+
 pub use error::{DnsError, Result};
 pub use forward_acl::ForwardScope;
 pub use health::{AlwaysHealthy, ForwardHealth, HealthSource, NoHealth};
-pub use hosts::{HostsApplyReport, HostsEntry, HostsManager, HOSTS_BEGIN_MARKER, HOSTS_END_MARKER};
+pub use hosts::{
+    HostsApplyReport, HostsEntry, HostsFileMode, HostsManager, HostsModeOutcome,
+    HOSTS_BEGIN_MARKER, HOSTS_END_MARKER,
+};
 pub use mode::DnsMode;
 pub use server::{DnsHandle, DnsServer, DnsServerBuilder};
 pub use split_horizon::SplitHorizonHandler;

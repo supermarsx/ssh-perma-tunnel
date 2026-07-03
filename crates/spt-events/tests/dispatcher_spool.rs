@@ -121,6 +121,7 @@ fn binding(name: &str, kinds: Vec<&str>, sinks: Vec<&str>) -> Binding {
         },
         sinks: sinks.into_iter().map(SinkRef::new).collect(),
         dedupe: None,
+        throttle: None,
     }
 }
 

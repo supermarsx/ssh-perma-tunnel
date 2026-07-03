@@ -47,3 +47,6 @@ url = { workspace = true }
 [dev-dependencies]
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
+# Captures `tracing` events in-test so verify-failure logging can be asserted
+# (already resolved in the workspace lock — adds nothing new to Cargo.lock).
+tracing-test = "0.2"

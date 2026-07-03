@@ -158,6 +158,7 @@ fn build_fanout_dispatcher(n: usize) -> (spt_events::dispatcher::DispatcherInner
         },
         sinks: sink_refs,
         dedupe: None,
+        throttle: None,
     }];
     let d = build_for_test(bindings, sinks, cfg).expect("build dispatcher");
     (d, tmp)

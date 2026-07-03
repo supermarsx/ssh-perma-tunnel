@@ -38,6 +38,48 @@ impl Event {
     pub fn to_json(&self) -> String {
         serde_json::to_string(self).unwrap_or_else(|_| "{}".to_owned())
     }
+
+    /// The profile name carried by every event variant.
+    #[must_use]
+    pub fn profile(&self) -> &str {
+        match self {
+            Event::PreConnect(e) => &e.profile,
+            Event::PostConnect(e) => &e.profile,
+            Event::ForwardState(e) => &e.profile,
+            Event::Disconnect(e) => &e.profile,
+            Event::Generic(e) => &e.profile,
+        }
+    }
+
+    /// Stable `snake_case` tag identifying the concrete event variant (matches
+    /// the serde discriminator). Surfaced as the `tag` of the [`Generic`]
+    /// projection so an `on_event` hook can tell which lifecycle event fired.
+    #[must_use]
+    pub fn tag(&self) -> &'static str {
+        match self {
+            Event::PreConnect(_) => "pre_connect",
+            Event::PostConnect(_) => "post_connect",
+            Event::ForwardState(_) => "forward_state",
+            Event::Disconnect(_) => "disconnect",
+            Event::Generic(_) => "generic",
+        }
+    }
+
+    /// Project any typed lifecycle event into a [`Generic`] catch-all payload
+    /// so it can also be delivered to the `on_event` hook. A [`Generic`] event
+    /// projects to a clone of itself; every other variant serialises its full
+    /// payload into `payload_json` and carries its variant tag.
+    #[must_use]
+    pub fn as_generic(&self) -> Generic {
+        match self {
+            Event::Generic(g) => g.clone(),
+            other => Generic {
+                profile: other.profile().to_string(),
+                kind: other.tag().to_string(),
+                payload_json: other.to_json(),
+            },
+        }
+    }
 }
 
 /// `pre_connect` event — fired before the TCP/QUIC connect attempt.
@@ -169,6 +211,38 @@ mod tests {
         let j = e.to_json();
         assert!(j.contains(r#""reason":"keepalive_timeout""#), "{j}");
         assert!(j.contains(r#""duration_ms":12345"#), "{j}");
+    }
+
+    #[test]
+    fn as_generic_projects_typed_event_with_tag_and_payload() {
+        let e = Event::PreConnect(PreConnect {
+            profile: "edge".into(),
+            host: "h".into(),
+            port: 22,
+            attempt: 2,
+        });
+        assert_eq!(e.profile(), "edge");
+        assert_eq!(e.tag(), "pre_connect");
+        let g = e.as_generic();
+        assert_eq!(g.profile, "edge");
+        assert_eq!(g.kind, "pre_connect");
+        // The full typed payload is preserved as JSON for the script side.
+        assert!(
+            g.payload_json.contains("\"attempt\":2"),
+            "{}",
+            g.payload_json
+        );
+    }
+
+    #[test]
+    fn as_generic_of_generic_is_identity() {
+        let g = Generic {
+            profile: "p".into(),
+            kind: "custom".into(),
+            payload_json: r#"{"x":1}"#.into(),
+        };
+        let e = Event::Generic(g.clone());
+        assert_eq!(e.as_generic(), g);
     }
 
     #[test]

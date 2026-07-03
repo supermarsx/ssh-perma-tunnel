@@ -75,7 +75,7 @@ pub trait ToolHandler: Send + Sync + 'static {
 /// (`session_close`, `session_drain`, `stats_subscribe`, `events_subscribe`;
 /// `benchmark_run` already counted) are appended for the loopback control
 /// surface, plus the observability live-control tool `log_set_level` (t8-A3)
-/// for a total of 36.
+/// and the single-profile-stop tool `profile_stop` (w4-mcp) for a total of 37.
 pub const ALL_TOOL_NAMES: &[&str] = &[
     "config_validate",
     "config_doctor",
@@ -83,6 +83,7 @@ pub const ALL_TOOL_NAMES: &[&str] = &[
     "profile_list",
     "profile_show",
     "profile_set",
+    "profile_stop",
     "forward_list",
     "forward_explain",
     "forward_add",
@@ -474,6 +475,37 @@ impl ToolHandler for ProfileSet {
         // controller adapter does not yet expose a free-form mutation. We
         // surface the planned update to the client without persisting.
         Ok(json!({"applied": false, "planned": args}))
+    }
+}
+
+/// `profile_stop`: stop a single profile and tear down its forwards.
+///
+/// Routes to [`crate::controller::Controller::profile_stop`]. This is the
+/// control-surface tool `tunnel stop --profile X` targets so a single profile
+/// can be taken down without signalling the whole supervisor (w4-mcp).
+pub struct ProfileStop;
+#[async_trait]
+impl ToolHandler for ProfileStop {
+    fn name(&self) -> &'static str {
+        "profile_stop"
+    }
+    fn descriptor(&self) -> ToolDescriptor {
+        ToolDescriptor {
+            name: self.name().to_owned(),
+            description: "Stop a single profile and tear down its forwards.".to_owned(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {"profile": {"type": "string"}},
+                "required": ["profile"],
+            }),
+        }
+    }
+    async fn call(&self, ctx: &ToolContext, args: Value) -> crate::Result<Value> {
+        let profile = args.get("profile").and_then(Value::as_str).ok_or_else(|| {
+            crate::Error::InvalidParams("missing string field 'profile'".to_owned())
+        })?;
+        ctx.controller.profile_stop(profile).await?;
+        Ok(json!({"applied": true, "profile": profile}))
     }
 }
 
@@ -960,7 +992,7 @@ planned_tool!(
     empty_schema()
 );
 
-/// Registry of all 31 tool handlers, keyed by name.
+/// Registry of all tool handlers (see [`ALL_TOOL_NAMES`]), keyed by name.
 pub struct ToolRegistry {
     by_name: BTreeMap<&'static str, Arc<dyn ToolHandler>>,
 }
@@ -972,10 +1004,10 @@ impl Default for ToolRegistry {
 }
 
 impl ToolRegistry {
-    /// Build the standard registry of all 31 spec tools.
+    /// Build the standard registry of all tools.
     ///
-    /// Asserts at runtime that exactly 31 tools register and that every
-    /// registered name appears in [`ALL_TOOL_NAMES`].
+    /// Asserts at runtime that exactly [`ALL_TOOL_NAMES`]-many tools register
+    /// and that every registered name appears in [`ALL_TOOL_NAMES`].
     #[must_use]
     pub fn new() -> Self {
         let mut by_name: BTreeMap<&'static str, Arc<dyn ToolHandler>> = BTreeMap::new();
@@ -1006,6 +1038,7 @@ impl ToolRegistry {
         add!(DnsQuery);
         // mutating
         add!(ProfileSet);
+        add!(ProfileStop);
         add!(ForwardAdd);
         add!(ForwardRemove);
         add!(TunnelReload);
@@ -1030,7 +1063,7 @@ impl ToolRegistry {
         Self { by_name }
     }
 
-    /// Number of registered tools (must be 36).
+    /// Number of registered tools (must equal [`ALL_TOOL_NAMES`], currently 37).
     #[must_use]
     pub fn len(&self) -> usize {
         self.by_name.len()
@@ -1218,6 +1251,32 @@ mod tests {
             ControllerCall::ForwardRemove { profile, forward_id }
                 if profile == "p" && forward_id == "web"
         ));
+    }
+
+    #[tokio::test]
+    async fn profile_stop_routes_single_profile_to_controller() {
+        let ctrl = RecordingController::new();
+        let ctx = ctx_with(Arc::new(ctrl.clone()));
+        let v = ProfileStop
+            .call(&ctx, json!({"profile": "edge"}))
+            .await
+            .expect("ok");
+        assert_eq!(v["applied"], true);
+        assert_eq!(v["profile"], "edge");
+        // Exactly one call, targeting ONLY the named profile.
+        assert_eq!(
+            ctrl.snapshot(),
+            vec![ControllerCall::ProfileStop {
+                profile: "edge".to_owned()
+            }]
+        );
+    }
+
+    #[tokio::test]
+    async fn profile_stop_missing_profile_errors() {
+        let ctx = ctx_with(Arc::new(NoopController));
+        let err = ProfileStop.call(&ctx, json!({})).await.unwrap_err();
+        assert!(matches!(err, crate::Error::InvalidParams(_)));
     }
 
     #[tokio::test]

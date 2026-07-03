@@ -54,6 +54,9 @@ testing = ["dep:axum", "dep:tokio-rustls", "dep:rustls", "dep:rustls-pemfile", "
 # HTTPS-only / body-cap negative paths never ran. The feature now unifies ON.
 spt-remote-config = { path = ".", version = "0.26.1", features = ["testing"] }
 tempfile = { workspace = true }
+# Captures `tracing` events in-test to assert the poll-loop panic ERROR log
+# (already resolved in the workspace lock — adds nothing new to Cargo.lock).
+tracing-test = "0.2"
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "io-util", "net"] }
 axum = { workspace = true }
 tokio-rustls = { workspace = true }

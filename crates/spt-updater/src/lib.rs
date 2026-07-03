@@ -40,17 +40,21 @@
 
 #![warn(missing_docs)]
 
+pub mod audit;
 pub mod config;
 pub mod download;
 pub mod error;
 pub mod install;
 pub mod schedule;
 pub mod source;
+pub mod staging;
 #[cfg(feature = "testing")]
 pub mod testing;
 pub mod verify;
 pub mod version;
+pub mod window;
 
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -145,10 +149,31 @@ impl UpdaterHandle {
     }
 }
 
+/// A callback the supervisor registers so the updater can request a process
+/// restart after a successful **auto** install. The updater crate holds no
+/// handle to the running supervisor, so the restart mechanism must be injected
+/// from the outside (see [`Updater::spawn_with_restart`]). Invoked on the
+/// updater thread; implementations should be cheap and non-blocking (e.g. set
+/// an atomic flag / send on a channel the supervisor watches).
+pub type RestartHook = Arc<dyn Fn() + Send + Sync>;
+
 /// Top-level updater driver. Owns the polling loop and the status mirror.
-#[derive(Debug)]
+#[derive(Clone)]
 pub struct Updater {
     cfg: UpdaterConfig,
+    /// Optional supervisor-restart trigger for the `auto` path. `None` means
+    /// `restart_supervisor = true` is a no-op (logged at WARN) until a hook is
+    /// wired via [`Updater::spawn_with_restart`].
+    restart_hook: Option<RestartHook>,
+}
+
+impl std::fmt::Debug for Updater {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Updater")
+            .field("cfg", &self.cfg)
+            .field("restart_hook", &self.restart_hook.is_some())
+            .finish()
+    }
 }
 
 impl Updater {
@@ -161,7 +186,29 @@ impl Updater {
     /// `spt update *` paths still work because they don't need the
     /// background thread). This is the load-bearing "off by default"
     /// behaviour.
+    ///
+    /// This overload registers **no** restart hook, so an `auto` install with
+    /// `restart_supervisor = true` installs the new binary and then WARNs that
+    /// the restart is a no-op. Use [`Updater::spawn_with_restart`] to wire an
+    /// actual restart.
     pub fn spawn(cfg: UpdaterConfig) -> UpdaterResult<Option<UpdaterHandle>> {
+        Self::spawn_inner(cfg, None)
+    }
+
+    /// Like [`Updater::spawn`] but registers a [`RestartHook`] the `auto` path
+    /// invokes after a successful install when
+    /// `[updater.action].restart_supervisor` is set.
+    pub fn spawn_with_restart(
+        cfg: UpdaterConfig,
+        restart_hook: RestartHook,
+    ) -> UpdaterResult<Option<UpdaterHandle>> {
+        Self::spawn_inner(cfg, Some(restart_hook))
+    }
+
+    fn spawn_inner(
+        cfg: UpdaterConfig,
+        restart_hook: Option<RestartHook>,
+    ) -> UpdaterResult<Option<UpdaterHandle>> {
         if !cfg.enabled || matches!(cfg.mode, UpdateMode::Off) {
             info!(
                 target: "spt_updater",
@@ -178,7 +225,7 @@ impl Updater {
             tx,
             status: Arc::clone(&status),
         };
-        let driver = Updater { cfg };
+        let driver = Updater { cfg, restart_hook };
 
         // Dedicated OS thread + current-thread tokio runtime. We don't
         // join the spawned runtime onto the main supervisor runtime
@@ -278,22 +325,59 @@ impl Updater {
                 }
 
                 if outcome.update_available && matches!(self.cfg.mode, UpdateMode::Auto) {
+                    // Finding 6: honor the maintenance window. An auto-install
+                    // outside the configured window is DEFERRED (a later tick
+                    // inside the window installs it) rather than firing anytime.
+                    if !auto_install_allowed(&self.cfg, chrono::Utc::now()) {
+                        if let Some(w) = &self.cfg.window {
+                            info!(
+                                target: "spt_updater",
+                                latest = %outcome.latest_tag,
+                                allow_from = %w.allow_from,
+                                allow_to = %w.allow_to,
+                                timezone = %w.timezone,
+                                "auto-update deferred: current time is outside the maintenance window"
+                            );
+                        }
+                        return;
+                    }
                     match apply_update(&self.cfg).await {
                         Ok(report) => {
                             info!(
                                 target: "spt_updater",
                                 version = %report.version,
                                 artifact = %report.installed_from.display(),
-                                "auto-update installed; supervisor restart {}",
-                                if report.restart_requested {
-                                    "requested"
-                                } else {
-                                    "skipped"
-                                }
+                                "auto-update installed"
                             );
-                            let mut s = status.write();
-                            s.staged_artifact = Some(report.installed_from.display().to_string());
-                            s.last_error = None;
+                            {
+                                let mut s = status.write();
+                                s.staged_artifact =
+                                    Some(report.installed_from.display().to_string());
+                                s.last_error = None;
+                            }
+                            // Finding 8: actually trigger the supervisor restart
+                            // when configured. The updater crate has no handle to
+                            // the supervisor, so the restart is performed via an
+                            // injected hook; without one we WARN that the new
+                            // binary only takes effect on the next manual restart.
+                            if report.restart_requested {
+                                match &self.restart_hook {
+                                    Some(hook) => {
+                                        info!(
+                                            target: "spt_updater",
+                                            "auto-update: invoking supervisor restart hook"
+                                        );
+                                        hook();
+                                    }
+                                    None => warn!(
+                                        target: "spt_updater",
+                                        "auto-update installed and restart_supervisor = true, but no \
+                                         restart hook is wired — the new binary takes effect only \
+                                         after a manual supervisor restart/reload (wire \
+                                         Updater::spawn_with_restart)"
+                                    ),
+                                }
+                            }
                         }
                         Err(e) => {
                             warn!(
@@ -370,6 +454,86 @@ fn staging_dir(cfg: &UpdaterConfig) -> std::path::PathBuf {
         .unwrap_or_else(|| std::env::temp_dir().join("spt-updates"))
 }
 
+/// Whether an **auto** install is permitted at `now`, given the configured
+/// maintenance window. Returns `true` when no window is configured, or when
+/// `now` (evaluated in UTC) falls inside it. Only the background `auto` path
+/// consults this — manual `spt update apply` is never window-gated.
+#[must_use]
+pub fn auto_install_allowed(cfg: &UpdaterConfig, now: chrono::DateTime<chrono::Utc>) -> bool {
+    match &cfg.window {
+        Some(w) => window::is_within_window(w, now),
+        None => true,
+    }
+}
+
+/// Run the configured `[updater.action].post_install_hook` after a successful
+/// install (finding 7).
+///
+/// **Argv-only, no shell** — the hook path is executed directly via
+/// [`std::process::Command`] with no arguments and NO shell interpretation, so
+/// a hook path can never be a shell-injection vector (matches the event-command
+/// sink's safety posture). The install version and staged-artifact path are
+/// passed through the `SPT_UPDATE_VERSION` / `SPT_UPDATE_ARTIFACT` environment
+/// variables (as documented). Returns the child's exit status, or an error if
+/// the hook could not be spawned.
+fn run_post_install_hook(
+    hook: &Path,
+    version: &str,
+    artifact: &Path,
+) -> UpdaterResult<std::process::ExitStatus> {
+    std::process::Command::new(hook)
+        .env("SPT_UPDATE_VERSION", version)
+        .env("SPT_UPDATE_ARTIFACT", artifact)
+        .status()
+        .map_err(|e| UpdaterError::Install(format!("post_install_hook {}: {e}", hook.display())))
+}
+
+/// Post-install side effects shared by `apply_update` and the auto path:
+/// run the post-install hook, record the audit trail, and prune staging.
+/// All are best-effort — a failure here does not undo a completed install.
+async fn post_install(cfg: &UpdaterConfig, version: &str, artifact: &Path) {
+    // Finding 7: run the post-install hook (argv-only) if configured.
+    if let Some(hook) = &cfg.action.post_install_hook {
+        let hook = hook.clone();
+        let version_s = version.to_string();
+        let artifact_c = artifact.to_path_buf();
+        let result = tokio::task::spawn_blocking(move || {
+            run_post_install_hook(&hook, &version_s, &artifact_c)
+        })
+        .await;
+        match result {
+            Ok(Ok(status)) if status.success() => info!(
+                target: "spt_updater",
+                hook = %cfg.action.post_install_hook.as_ref().unwrap().display(),
+                "post-install hook completed successfully"
+            ),
+            Ok(Ok(status)) => warn!(
+                target: "spt_updater",
+                hook = %cfg.action.post_install_hook.as_ref().unwrap().display(),
+                code = status.code().unwrap_or(-1),
+                "post-install hook exited with a non-zero status"
+            ),
+            Ok(Err(e)) => {
+                warn!(target: "spt_updater", error = %e, "post-install hook failed to run");
+            }
+            Err(e) => {
+                warn!(target: "spt_updater", error = %e, "post-install hook task join failed");
+            }
+        }
+    }
+
+    // Finding 15: record the install in the audit trail when notify_audit is set
+    // so `spt update history` has data.
+    if cfg.action.notify_audit {
+        audit::record_install(&staging_dir(cfg), version, artifact);
+    }
+
+    // Finding 14: bound staging-dir growth to keep_last.
+    if let Err(e) = staging::prune(&staging_dir(cfg), cfg.staging.keep_last) {
+        warn!(target: "spt_updater", error = %e, "failed to prune staging directory");
+    }
+}
+
 /// Download the latest artifact for this build's target into the staging
 /// directory and verify it. Does **not** install. Used by `spt update
 /// download` and as the first half of [`apply_update`].
@@ -390,6 +554,11 @@ pub async fn download_and_verify(cfg: &UpdaterConfig) -> UpdaterResult<download:
         staged.signature.as_deref(),
         &inputs,
     )?;
+    // Finding 14: even the download-only path stages artifacts; prune so a
+    // repeated `spt update download` cannot leak disk.
+    if let Err(e) = staging::prune(&staging_dir(cfg), cfg.staging.keep_last) {
+        warn!(target: "spt_updater", error = %e, "failed to prune staging directory");
+    }
     Ok(staged)
 }
 
@@ -426,8 +595,13 @@ pub async fn apply_update(cfg: &UpdaterConfig) -> UpdaterResult<ApplyReport> {
 
     install::install_atomic(&staged.artifact).await?;
 
+    let version = latest.to_tag_string();
+    // Post-install: run the hook (finding 7), record audit history (finding 15),
+    // prune staging (finding 14). Best-effort — never undoes a done install.
+    post_install(cfg, &version, &staged.artifact).await;
+
     Ok(ApplyReport {
-        version: latest.to_tag_string(),
+        version,
         installed_from: staged.artifact,
         restart_requested: cfg.action.restart_supervisor,
     })
@@ -541,5 +715,115 @@ mod apply_tests {
     fn channel_enum_round_trips_for_completeness() {
         // Guards against accidental removal of the prerelease arm.
         assert_ne!(ReleaseChannel::Stable, ReleaseChannel::Prerelease);
+    }
+
+    // Finding 6: an `auto` install must be gated on the maintenance window.
+    // Pre-fix `auto_install_allowed` did not exist and the window was ignored.
+    #[test]
+    fn auto_install_respects_window() {
+        use chrono::TimeZone;
+        let dist = tempfile::tempdir().unwrap();
+        let stage = tempfile::tempdir().unwrap();
+        let mut cfg = static_cfg(dist.path(), stage.path(), UpdateMode::Auto);
+        cfg.window = Some(crate::config::WindowConfig {
+            allow_from: "02:00".into(),
+            allow_to: "04:00".into(),
+            timezone: "UTC".into(),
+        });
+        let inside = chrono::Utc.with_ymd_and_hms(2026, 6, 11, 3, 0, 0).unwrap();
+        let outside = chrono::Utc.with_ymd_and_hms(2026, 6, 11, 12, 0, 0).unwrap();
+        assert!(
+            auto_install_allowed(&cfg, inside),
+            "inside window must install"
+        );
+        assert!(
+            !auto_install_allowed(&cfg, outside),
+            "outside window must defer"
+        );
+        // No window configured → always allowed.
+        cfg.window = None;
+        assert!(auto_install_allowed(&cfg, outside));
+    }
+
+    // Finding 7: the post-install hook must actually run (argv-only, no shell),
+    // receiving the version + artifact via the documented env vars.
+    #[cfg(unix)]
+    #[test]
+    fn post_install_hook_runs_on_success() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let marker = tmp.path().join("marker");
+        let hook = tmp.path().join("hook.sh");
+        std::fs::write(
+            &hook,
+            format!(
+                "#!/bin/sh\nprintf '%s|%s' \"$SPT_UPDATE_VERSION\" \"$SPT_UPDATE_ARTIFACT\" > '{}'\n",
+                marker.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let artifact = tmp.path().join("spt-99.0-target.tar.gz");
+        let status = run_post_install_hook(&hook, "99.0", &artifact).unwrap();
+        assert!(status.success());
+        let got = std::fs::read_to_string(&marker).unwrap();
+        assert_eq!(got, format!("99.0|{}", artifact.display()));
+    }
+
+    #[test]
+    fn post_install_hook_missing_path_errors() {
+        let tmp = tempfile::tempdir().unwrap();
+        let missing = tmp.path().join("no-such-hook");
+        let err = run_post_install_hook(&missing, "1.0", tmp.path()).unwrap_err();
+        assert_eq!(err.code(), "updater_install");
+    }
+
+    // Findings 14 + 15: the post-install side-effects must record the audit
+    // trail (gated on notify_audit) and prune staging to keep_last.
+    #[tokio::test]
+    async fn post_install_records_history_and_prunes() {
+        use std::time::{Duration, SystemTime};
+        let stage = tempfile::tempdir().unwrap();
+        let mut cfg = static_cfg(stage.path(), stage.path(), UpdateMode::Auto);
+        cfg.action.notify_audit = true;
+        cfg.action.post_install_hook = None;
+        cfg.staging.keep_last = 2;
+
+        // Seed 4 staged archives with increasing mtimes.
+        for i in 0..4u64 {
+            let p = stage.path().join(format!("spt-{i}-target.tar.gz"));
+            std::fs::write(&p, b"x").unwrap();
+            std::fs::File::options()
+                .write(true)
+                .open(&p)
+                .unwrap()
+                .set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(i * 100))
+                .unwrap();
+        }
+        let artifact = stage.path().join("spt-3-target.tar.gz");
+        post_install(&cfg, "99.3", &artifact).await;
+
+        // notify_audit = true → history recorded.
+        let hist = crate::audit::read_history(stage.path());
+        assert_eq!(hist.len(), 1);
+        assert_eq!(hist[0].version, "99.3");
+
+        // keep_last = 2 → only the two newest archives remain.
+        let archives = std::fs::read_dir(stage.path())
+            .unwrap()
+            .filter_map(std::result::Result::ok)
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".tar.gz"))
+            .count();
+        assert_eq!(archives, 2, "staging must be pruned to keep_last");
+
+        // notify_audit = false → no further history appended.
+        cfg.action.notify_audit = false;
+        post_install(&cfg, "99.4", &artifact).await;
+        assert_eq!(
+            crate::audit::read_history(stage.path()).len(),
+            1,
+            "notify_audit=false must not append history"
+        );
     }
 }

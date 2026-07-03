@@ -1113,14 +1113,33 @@ async fn tunnel_run(global: &GlobalOpts, args: groups::tunnel::TunnelRun) -> Res
     // arrives mid-startup.
     let signal_rx = crate::signals::spawn();
 
-    // Embedded auto-updater. Off by default — `Updater::spawn` returns
+    // Auto-updater restart channel: a successful `auto` install with
+    // `[updater.action].restart_supervisor = true` fires this so the main loop
+    // below breaks and tears down gracefully — the service manager
+    // (systemd `Restart=`, Windows SCM) then relaunches spt on the NEW binary.
+    // The updater crate holds no supervisor handle, so the restart is injected
+    // as a `RestartHook` (see `Updater::spawn_with_restart`).
+    let (updater_restart_tx, mut updater_restart_rx) = tokio::sync::watch::channel(false);
+
+    // Embedded auto-updater. Off by default — `Updater::spawn*` returns
     // `Ok(None)` when `[updater].enabled = false` or `[updater].mode = "off"`,
     // so the dedicated polling thread is only created when the operator has
     // explicitly opted in. Manual `spt update *` commands work regardless.
     let updater_handle = {
         let schema = cfg.updater.clone().unwrap_or_default();
+        let restart_hook: spt_updater::RestartHook = {
+            let tx = updater_restart_tx.clone();
+            std::sync::Arc::new(move || {
+                tracing::warn!(
+                    target: "spt_updater",
+                    "auto-update installed — signaling supervisor shutdown so the service \
+                     manager restarts spt on the new binary"
+                );
+                let _ = tx.send(true);
+            })
+        };
         match spt_updater::UpdaterConfig::from_schema(&schema) {
-            Ok(ucfg) => match spt_updater::Updater::spawn(ucfg) {
+            Ok(ucfg) => match spt_updater::Updater::spawn_with_restart(ucfg, restart_hook) {
                 Ok(Some(h)) => {
                     tracing::info!(
                         target: "spt_updater",
@@ -1287,7 +1306,7 @@ async fn tunnel_run(global: &GlobalOpts, args: groups::tunnel::TunnelRun) -> Res
     // GAP 3: bring up the embedded DNS resolver when `[dns]` is enabled with a
     // listener mode. Honors mode / auto_records / health-gating; a misconfig
     // logs and returns None rather than aborting the tunnel.
-    let dns_runtime = maybe_spawn_dns_server(&cfg, &state_dir).await?;
+    let dns_runtime = maybe_spawn_dns_server(&cfg, &state_dir, global.dry_run).await?;
 
     // appstatus (Wave 2): now that every subsystem has been (maybe) spawned,
     // record the daemon identity + per-subsystem state into the sibling
@@ -1389,10 +1408,27 @@ async fn tunnel_run(global: &GlobalOpts, args: groups::tunnel::TunnelRun) -> Res
     let mut sig = signal_rx;
     let cfg_path_for_reload = path.clone();
     loop {
-        if sig.changed().await.is_err() {
-            break;
-        }
-        match *sig.borrow() {
+        let signal = tokio::select! {
+            changed = sig.changed() => {
+                if changed.is_err() {
+                    break;
+                }
+                *sig.borrow()
+            }
+            // Finding 8: an `auto` install that requested a supervisor restart
+            // breaks the loop into the same graceful teardown as SIGTERM; the
+            // service manager then relaunches spt on the freshly-installed binary.
+            changed = updater_restart_rx.changed() => {
+                if changed.is_err() || !*updater_restart_rx.borrow() {
+                    continue;
+                }
+                tracing::info!(
+                    "auto-update restart requested — shutting down for service-manager restart"
+                );
+                break;
+            }
+        };
+        match signal {
             Some(crate::signals::Signal::Shutdown) => break,
             Some(crate::signals::Signal::Reload) => {
                 tracing::info!("reload requested (SIGHUP) — re-reading config");
@@ -1701,7 +1737,8 @@ impl DnsRuntime {
 ///
 /// Honors:
 /// * `mode` — `transparent_forwarder` / `synthetic_only` start a listener;
-///   `disabled` / `hosts_file` do not (returns `Ok(None)`).
+///   `disabled` returns `Ok(None)`; `hosts_file` manages the system hosts file
+///   (via [`run_hosts_file_mode`]) and returns `Ok(None)` (no listener).
 /// * `[[dns.records]]` — static managed records.
 /// * `auto_records` — synthesize A/AAAA (+ SRV) from each forward's `dns_names`.
 /// * `upstream` — recursion target for `transparent_forwarder`.
@@ -1713,6 +1750,7 @@ impl DnsRuntime {
 async fn maybe_spawn_dns_server(
     cfg: &spt_config::schema::Config,
     state_dir: &Path,
+    dry_run: bool,
 ) -> Result<Option<DnsRuntime>> {
     let Some(dns_cfg) = cfg.dns.as_ref() else {
         return Ok(None);
@@ -1723,7 +1761,12 @@ async fn maybe_spawn_dns_server(
     let mode = match spt_dns::DnsMode::from_config_str(dns_cfg.mode.as_deref().unwrap_or("")) {
         Ok(Some(m)) => m,
         Ok(None) => {
-            // `disabled` / `hosts_file`: no listener in the tunnel-run path.
+            if dns_cfg.mode.as_deref() == Some("hosts_file") {
+                // `hosts_file` runs no listener but is NOT a no-op: it drives the
+                // system hosts file (render/apply/restore) from the managed zone.
+                return run_hosts_file_mode(dns_cfg, cfg, state_dir, dry_run);
+            }
+            // `disabled`: no listener and no hosts management in the tunnel-run path.
             tracing::info!(
                 mode = dns_cfg.mode.as_deref().unwrap_or(""),
                 "dns: mode selects no resolver listener — skipping embedded DNS server"
@@ -1743,41 +1786,7 @@ async fn maybe_spawn_dns_server(
         .parse()
         .map_err(|e| Error::InvalidConfig(format!("[dns] bind: {e}")))?;
 
-    let suffix = dns_cfg
-        .zone
-        .clone()
-        .unwrap_or_else(|| "tunnel.local.".into());
-    let default_ttl = dns_cfg
-        .ttl
-        .as_deref()
-        .and_then(|d| spt_core::duration::parse_duration(d).ok())
-        .unwrap_or_else(|| std::time::Duration::from_secs(60));
-
-    let mut zone = spt_dns::ManagedZone::new(suffix.clone());
-
-    // Static `[[dns.records]]`.
-    for rec in &dns_cfg.records {
-        match build_static_record(rec, default_ttl) {
-            Ok(r) => {
-                if let Err(e) = zone.add(r) {
-                    tracing::warn!(name = %rec.name, error = %e, "dns: skipping invalid static record");
-                }
-            }
-            Err(e) => {
-                tracing::warn!(name = %rec.name, error = %e, "dns: skipping unparseable static record");
-            }
-        }
-    }
-
-    // `auto_records`: synthesize address/SRV records from forwards' dns_names.
-    if dns_cfg.auto_records == Some(true) {
-        let sources = forward_dns_sources(cfg, default_ttl);
-        for r in spt_dns::auto_records_from_forwards(&suffix, &sources) {
-            if let Err(e) = zone.add(r) {
-                tracing::debug!(error = %e, "dns: skipping duplicate auto-synthesized record");
-            }
-        }
-    }
+    let zone = build_dns_zone(dns_cfg, cfg);
 
     let upstream = parse_dns_upstreams(dns_cfg.upstream.as_deref().unwrap_or(&[]));
     let health = std::sync::Arc::new(crate::dns_health::ProfileSupervisorHealthSource::new(
@@ -1815,6 +1824,108 @@ async fn maybe_spawn_dns_server(
         "embedded DNS resolver bound"
     );
     Ok(Some(DnsRuntime { handle }))
+}
+
+/// Assemble the managed DNS zone (static `[[dns.records]]` + synthesized
+/// `auto_records`) shared by the listener path and the `hosts_file` path.
+fn build_dns_zone(
+    dns_cfg: &spt_config::schema::Dns,
+    cfg: &spt_config::schema::Config,
+) -> spt_dns::ManagedZone {
+    let suffix = dns_cfg
+        .zone
+        .clone()
+        .unwrap_or_else(|| "tunnel.local.".into());
+    let default_ttl = dns_cfg
+        .ttl
+        .as_deref()
+        .and_then(|d| spt_core::duration::parse_duration(d).ok())
+        .unwrap_or_else(|| std::time::Duration::from_secs(60));
+
+    let mut zone = spt_dns::ManagedZone::new(suffix.clone());
+
+    // Static `[[dns.records]]`.
+    for rec in &dns_cfg.records {
+        match build_static_record(rec, default_ttl) {
+            Ok(r) => {
+                if let Err(e) = zone.add(r) {
+                    tracing::warn!(name = %rec.name, error = %e, "dns: skipping invalid static record");
+                }
+            }
+            Err(e) => {
+                tracing::warn!(name = %rec.name, error = %e, "dns: skipping unparseable static record");
+            }
+        }
+    }
+
+    // `auto_records`: synthesize address/SRV records from forwards' dns_names.
+    if dns_cfg.auto_records == Some(true) {
+        let sources = forward_dns_sources(cfg, default_ttl);
+        for r in spt_dns::auto_records_from_forwards(&suffix, &sources) {
+            if let Err(e) = zone.add(r) {
+                tracing::debug!(error = %e, "dns: skipping duplicate auto-synthesized record");
+            }
+        }
+    }
+
+    zone
+}
+
+/// Drive `[dns] mode = "hosts_file"` at `tunnel run`: turn the managed zone's
+/// address records into a hosts-file managed block and render/apply/restore it
+/// per `[dns] hosts_file_mode`. Returns `Ok(None)` (no resolver listener) — the
+/// hosts file itself is now managed instead of the previous silent no-op.
+fn run_hosts_file_mode(
+    dns_cfg: &spt_config::schema::Dns,
+    cfg: &spt_config::schema::Config,
+    state_dir: &Path,
+    dry_run: bool,
+) -> Result<Option<DnsRuntime>> {
+    let zone = build_dns_zone(dns_cfg, cfg);
+    let entries = spt_dns::HostsEntry::from_records(&zone.records);
+    let hf_mode = match spt_dns::HostsFileMode::from_config_str(
+        dns_cfg.hosts_file_mode.as_deref().unwrap_or(""),
+    ) {
+        Ok(m) => m,
+        Err(unknown) => {
+            tracing::warn!(
+                hosts_file_mode = %unknown,
+                "dns: unknown `[dns] hosts_file_mode` — hosts-file not managed this run"
+            );
+            return Ok(None);
+        }
+    };
+
+    let mgr = spt_dns::HostsManager::new(entries, state_dir.join("hosts"));
+    // `None` => the OS default hosts path; an explicit `[dns] hosts_file`
+    // overrides it (e.g. for tests / non-default layouts).
+    let path = dns_cfg.hosts_file.as_deref().map(std::path::Path::new);
+    let outcome = mgr
+        .run_mode(hf_mode, path, dry_run)
+        .map_err(|e| Error::DnsFailed(format!("dns hosts-file: {e}")))?;
+
+    match &outcome.report {
+        Some(report) if report.changed => tracing::info!(
+            mode = ?outcome.mode,
+            path = %report.path.display(),
+            entries = zone.records.len(),
+            dry_run,
+            backed_up = report.backed_up,
+            "dns: hosts-file managed block written"
+        ),
+        Some(report) => tracing::info!(
+            mode = ?outcome.mode,
+            path = %report.path.display(),
+            "dns: hosts-file already up to date — no change"
+        ),
+        None => tracing::info!(
+            mode = ?outcome.mode,
+            restored = outcome.restored,
+            "dns: hosts-file restore completed"
+        ),
+    }
+
+    Ok(None)
 }
 
 /// Build a [`spt_dns::Record`] from a `[[dns.records]]` config entry, always
@@ -2278,6 +2389,12 @@ fn build_event_bindings(
             },
             sinks: refs,
             dedupe: None,
+            // Map the schema `[[events.bindings]].throttle` duration onto the
+            // dispatcher-enforced per-binding rate limit. `None` = no limit.
+            throttle: b
+                .throttle
+                .as_deref()
+                .and_then(|t| spt_core::duration::parse_duration(t).ok()),
         };
         // Per-binding min_level (explicit) takes precedence; then apply the
         // pipeline default as a floor for bindings without their own.
@@ -2306,6 +2423,7 @@ fn build_event_bindings(
             r#match: spt_events::BindingMatch::default(),
             sinks: sinks.keys().map(spt_events::SinkRef::new).collect(),
             dedupe: None,
+            throttle: None,
         };
         if let Some(default) = default_min_level {
             binding = binding.min_severity_or(default);
@@ -2715,6 +2833,15 @@ async fn maybe_spawn_mcp_loopback(
 
     let policy = loopback_mcp_policy(cfg, &listen);
 
+    // E-w4: enforce the MCP TLS-pin surface fail-closed BEFORE serving. An
+    // `allow_self_signed` posture with no pins (a fully-unauthenticated TLS
+    // config) or a blank pin is a policy error — refuse to bring the control
+    // surface up rather than silently ignoring the pin fields (they were DEAD).
+    policy
+        .tls_pins
+        .validate()
+        .map_err(|e| Error::McpFailed(format!("mcp TLS pin policy: {e}")))?;
+
     // E8-F2 + E8-F5: pass REAL config/state sources (so MCP resources + read
     // tools serve live data instead of NoopSources `{}`/`[]`), plus the audit
     // sink gated on `[mcp].audit_events`.
@@ -2735,25 +2862,59 @@ async fn maybe_spawn_mcp_loopback(
     Ok(Some(McpLoopbackHandle { task }))
 }
 
+/// The extra write tools the loopback control surface grants on top of the
+/// operator's configured `allow_write_tools`.
+///
+/// These back CLI subcommands that must reach the running supervisor over the
+/// loopback: `session close`/`drain` (`session_close`/`session_drain`), the
+/// live `stats`/`events` streams (`stats_subscribe`/`events_subscribe`), and
+/// `tunnel stop --profile X` (`profile_stop`, w4-mcp). This list is the single
+/// explicit source of truth for the widening (E-w4) — the widening is no
+/// longer an anonymous inline literal that silently expands the write surface.
+const LOOPBACK_EXTRA_WRITE_TOOLS: &[&str] = &[
+    "session_close",
+    "session_drain",
+    "stats_subscribe",
+    "events_subscribe",
+    "profile_stop",
+];
+
+/// Compute which of [`LOOPBACK_EXTRA_WRITE_TOOLS`] are NOT already in `base`
+/// (i.e. the tools the loopback would actually add on top of the operator's
+/// configured allow-list). Pure + testable so the widening is explicit.
+fn loopback_widened_write_tools(base: &[String]) -> Vec<&'static str> {
+    LOOPBACK_EXTRA_WRITE_TOOLS
+        .iter()
+        .filter(|t| !base.iter().any(|b| b == *t))
+        .copied()
+        .collect()
+}
+
 /// Build the loopback MCP policy (E8-F3): start from the OPERATOR's configured
 /// `[mcp]` policy (`allow_write_tools` / `default_mode` / `allow_secret_reveal`)
 /// and widen ONLY to the specific write tools the live-bridge loopback surface
 /// needs — NEVER force-allow every `WRITE_TOOLS`. The previous behaviour
 /// silently ignored the operator's allow-list and granted the full mutating
 /// surface on the loopback.
+///
+/// E-w4: the widening is now EXPLICIT — the extra tools live in the named
+/// [`LOOPBACK_EXTRA_WRITE_TOOLS`] constant and any tools actually added on top
+/// of the operator's allow-list are logged, so the loopback granting extra
+/// write tools is never a silent surprise.
 fn loopback_mcp_policy(cfg: &spt_config::schema::Config, listen: &str) -> spt_mcp::McpPolicy {
     let mut policy = crate::mcp_server::mcp_policy_from_config(cfg);
     policy.enabled = true;
     policy.listen = listen.to_owned();
-    for t in [
-        "session_close",
-        "session_drain",
-        "stats_subscribe",
-        "events_subscribe",
-    ] {
-        if !policy.allow_write_tools.iter().any(|x| x == t) {
-            policy.allow_write_tools.push(t.to_owned());
-        }
+    let added = loopback_widened_write_tools(&policy.allow_write_tools);
+    if !added.is_empty() {
+        tracing::info!(
+            widened = ?added,
+            "MCP loopback grants extra write tools beyond the configured allow_write_tools \
+             (live-bridge + single-profile control surface)"
+        );
+    }
+    for t in &added {
+        policy.allow_write_tools.push((*t).to_owned());
     }
     policy
 }
@@ -2860,24 +3021,18 @@ fn tunnel_status(global: &GlobalOpts, args: groups::tunnel::TunnelStatus) -> Res
 }
 
 async fn tunnel_stop(global: &GlobalOpts, args: groups::tunnel::TunnelStop) -> Result<()> {
-    // SAFETY (t6-e1): `tunnel stop` signals the supervisor's recorded PID,
-    // which stops the ENTIRE supervisor (every profile). `--profile X`
-    // therefore CANNOT be honoured by this path — historically it silently
-    // stopped ALL tunnels, the exact opposite of the operator's intent.
+    // SAFETY (t6-e1 → w4-mcp): `tunnel stop` (no `--profile`) signals the
+    // supervisor's recorded PID, which stops the ENTIRE supervisor. Historically
+    // `--profile X` silently fell through to that same kill-all path (the exact
+    // opposite of intent), then was made to fail loudly.
     //
-    // Per-profile stop would require a control-surface tool that targets a
-    // single profile. The MCP loopback control surface DOES exist, and the
-    // `OrchestratorController` can stop one profile, but there is no
-    // CLI-reachable MCP *tool* wired to it today. Rather than stop everything
-    // while the operator believes only one profile was stopped, fail loudly.
+    // It now routes through the MCP loopback control surface's `profile_stop`
+    // tool, which stops ONLY the named profile via
+    // `OrchestratorController::profile_stop`. This NEVER touches the kill-all
+    // signal path, so a mis-reached control surface fails as `McpFailed` rather
+    // than stopping everything.
     if let Some(profile) = args.profile.as_deref() {
-        return Err(Error::InvalidArgs(format!(
-            "`tunnel stop --profile {profile}` is not supported: this path signals the \
-             whole supervisor and would stop ALL tunnels, not just `{profile}`. \
-             Per-profile targeting requires a control-surface stop tool that is not \
-             wired in this build. To stop everything run `tunnel stop` (no --profile); \
-             to take a single profile down, disable it in the config and reload."
-        )));
+        return tunnel_stop_profile(global, profile).await;
     }
     // `--grace` is not honoured by the signal path (the supervisor applies its
     // own shutdown-grace budget); flag it so operators are not misled.
@@ -2912,6 +3067,28 @@ async fn tunnel_stop(global: &GlobalOpts, args: groups::tunnel::TunnelStop) -> R
         let _ = pid;
         crate::cli::tunnel_ops::stop_windows_standalone(global).await
     }
+}
+
+/// Stop ONLY the named profile via the MCP loopback `profile_stop` tool
+/// (w4-mcp). Routes through the running supervisor's control surface — it does
+/// NOT signal the supervisor PID, so `tunnel stop --profile X` can never stop
+/// the other profiles. A missing/unreachable control surface maps to
+/// `McpFailed` (not a kill-all fallthrough).
+async fn tunnel_stop_profile(global: &GlobalOpts, profile: &str) -> Result<()> {
+    let state_dir = resolve_state_dir_for_read(global)?;
+    let mut client = crate::mcp_client::McpClient::connect_from_state_dir(&state_dir)
+        .await
+        .map_err(mcp_connect_err)?;
+    client.initialize().await.map_err(mcp_connect_err)?;
+    let v = client
+        .call_tool("profile_stop", serde_json::json!({ "profile": profile }))
+        .await
+        .map_err(|e| Error::McpFailed(format!("stop profile `{profile}`: {e}")))?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&v).map_err(|e| Error::RuntimeFailure(e.to_string()))?
+    );
+    Ok(())
 }
 
 async fn tunnel_reload(global: &GlobalOpts) -> Result<()> {
@@ -6673,13 +6850,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tunnel_stop_profile_fails_loudly_not_kill_all() {
-        // SAFETY regression (t6-e1): `tunnel stop --profile X` must NOT fall
-        // through to signalling the whole supervisor (which would stop every
-        // tunnel). It must fail loudly with an actionable InvalidArgs error.
+    async fn tunnel_stop_profile_routes_through_mcp_not_kill_all() {
+        // SAFETY (t6-e1 → w4-mcp): `tunnel stop --profile X` must NOT signal the
+        // whole supervisor (which would stop every tunnel). It now routes
+        // through the MCP loopback `profile_stop` tool. With no running control
+        // surface, that attempt fails as `McpFailed` — proving it took the MCP
+        // path and NEVER the kill-all signal path.
         let td = tempfile::tempdir().unwrap();
-        // Write a live-looking pid file so, if the guard were missing, the
-        // handler would proceed to signal it (stopping ALL tunnels).
+        // Write a live-looking pid file so, if the routing were missing, the
+        // handler would proceed to signal it (stopping ALL tunnels) and the
+        // error class would differ.
         let state_dir = td.path();
         std::fs::write(
             spt_state::paths::pid_path(state_dir),
@@ -6697,12 +6877,8 @@ mod tests {
         ]);
         let err = dispatch_err(cli).await;
         assert!(
-            matches!(err, Error::InvalidArgs(_)),
-            "expected InvalidArgs, got {err:?}"
-        );
-        assert!(
-            err.to_string().contains("edge") && err.to_string().contains("not supported"),
-            "error must name the profile and explain: {err}"
+            matches!(err, Error::McpFailed(_)),
+            "expected McpFailed (routed to MCP, not kill-all), got {err:?}"
         );
     }
 
@@ -8276,6 +8452,7 @@ mod tests {
             allow,
             vec![
                 "events_subscribe".to_string(),
+                "profile_stop".to_string(),
                 "session_close".to_string(),
                 "session_drain".to_string(),
                 "stats_subscribe".to_string()
@@ -8283,6 +8460,78 @@ mod tests {
             "must not grant the full WRITE_TOOLS surface"
         );
         assert!(allow.len() < spt_mcp::policy::WRITE_TOOLS.len());
+    }
+
+    // E-w4: the loopback widening is EXPLICIT and reported. The pure helper
+    // names exactly which extra write tools are added on top of the operator's
+    // configured allow-list, and drops any that are already present.
+    #[test]
+    fn loopback_widening_is_explicit_and_reported() {
+        // Empty base → the full extra set (incl. the single-profile stop tool).
+        let mut added = loopback_widened_write_tools(&[]);
+        added.sort_unstable();
+        assert_eq!(
+            added,
+            vec![
+                "events_subscribe",
+                "profile_stop",
+                "session_close",
+                "session_drain",
+                "stats_subscribe",
+            ]
+        );
+        // A tool already in the operator's allow-list is NOT re-added.
+        let base = vec!["profile_stop".to_string(), "session_close".to_string()];
+        let added = loopback_widened_write_tools(&base);
+        assert!(!added.contains(&"profile_stop"));
+        assert!(!added.contains(&"session_close"));
+        assert!(added.contains(&"events_subscribe"));
+    }
+
+    // E-w4: `[mcp].default_mode = "read_write"` is honored end-to-end through
+    // the config → policy projection (pre-fix it was DEAD).
+    #[test]
+    fn mcp_policy_from_config_honors_default_mode_read_write() {
+        let mut cfg = spt_config::schema::Config::default();
+        cfg.mcp = Some(spt_config::schema::Mcp {
+            enabled: Some(true),
+            default_mode: Some("read_write".into()),
+            ..Default::default()
+        });
+        let policy = crate::mcp_server::mcp_policy_from_config(&cfg);
+        assert_eq!(policy.default_mode, spt_mcp::McpMode::ReadWrite);
+        // Absent → fail-closed read_only.
+        cfg.mcp.as_mut().unwrap().default_mode = None;
+        let policy = crate::mcp_server::mcp_policy_from_config(&cfg);
+        assert_eq!(policy.default_mode, spt_mcp::McpMode::ReadOnly);
+    }
+
+    // E-w4: an `allow_self_signed` MCP TLS posture with no pins fails closed at
+    // policy construction so the loopback refuses to serve an unauthenticated
+    // TLS surface (pre-fix the pin fields were DEAD / ignored).
+    #[test]
+    fn mcp_tls_pins_self_signed_without_pins_is_rejected() {
+        let mut cfg = spt_config::schema::Config::default();
+        cfg.mcp = Some(spt_config::schema::Mcp {
+            enabled: Some(true),
+            allow_self_signed: Some(true),
+            ..Default::default()
+        });
+        let policy = crate::mcp_server::mcp_policy_from_config(&cfg);
+        assert!(
+            policy.tls_pins.validate().is_err(),
+            "self-signed without pins must fail closed"
+        );
+
+        // A configured pin also flows through and enforces on mismatch.
+        cfg.mcp.as_mut().unwrap().pin_spki_sha256 = vec!["SHA256:abc123".into()];
+        let policy = crate::mcp_server::mcp_policy_from_config(&cfg);
+        assert!(policy.tls_pins.validate().is_ok());
+        assert!(
+            policy.tls_pins.verify_spki("sha256:deadbeef").is_err(),
+            "a mismatched presented SPKI must be rejected fail-closed"
+        );
+        assert!(policy.tls_pins.verify_spki("abc123").is_ok());
     }
 
     // E8-F3: the operator's configured allow_write_tools is honored and merged

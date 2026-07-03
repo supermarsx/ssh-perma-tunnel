@@ -195,7 +195,38 @@ impl ScriptEngine {
     /// surfaced to the caller; the session-side dispatcher in
     /// `Ssh2Session::dispatch_script_event` logs and *continues* (a script
     /// failure must not bring down the supervisor).
+    ///
+    /// # `on_event` catch-all (wire-observ finding 5)
+    ///
+    /// The `on_event` hook is the generic catch-all. Previously it had **no
+    /// call site** and never fired. Now every specific lifecycle dispatch
+    /// (`pre_connect` / `post_connect` / `on_forward_state` / `on_disconnect`)
+    /// **also** fires `on_event` — when, and only when, a script binds it —
+    /// with a [`crate::event::Generic`] projection of the same event. The
+    /// catch-all runs after the specific hook and never masks or alters the
+    /// specific hook's `Result`; its own failure is recorded (recorder / audit
+    /// sink) and logged at debug. When `on_event` is unbound the behaviour is
+    /// byte-identical to before (no extra invocation).
     pub fn invoke(&self, hook: HookName, event: &Event) -> Result<(), ScriptError> {
+        let primary = self.invoke_hook(hook, event);
+        // Fire the generic catch-all in addition to the specific hook — but not
+        // for an `on_event` dispatch itself (avoids double-fire / recursion),
+        // and only when the script actually binds `on_event`.
+        if hook != HookName::OnEvent && self.hooks.function_for(HookName::OnEvent).is_some() {
+            let generic = Event::Generic(event.as_generic());
+            if let Err(e) = self.invoke_hook(HookName::OnEvent, &generic) {
+                tracing::debug!(
+                    primary_hook = %hook,
+                    error = %e,
+                    "spt-scripting: on_event catch-all hook failed (primary hook result preserved)"
+                );
+            }
+        }
+        primary
+    }
+
+    /// Dispatch a single hook invocation for exactly `hook` (no catch-all).
+    fn invoke_hook(&self, hook: HookName, event: &Event) -> Result<(), ScriptError> {
         let started = Instant::now();
         let Some(fn_name) = self.hooks.function_for(hook) else {
             self.audit_sink
@@ -672,6 +703,91 @@ mod tests {
             }
             AuditEntry::Loaded { .. } => panic!("expected Invoked entry"),
         }
+    }
+
+    // ──────── wire-observ finding 5: on_event catch-all ──────────────
+
+    /// With `on_event` bound, invoking a *specific* lifecycle hook ALSO fires
+    /// `on_event` with a `Generic` projection. Pre-fix `on_event` had no call
+    /// site and this recorded only the specific hook.
+    #[test]
+    fn on_event_catch_all_fires_on_lifecycle_hook() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write(&dir, "fn pre(ev) { ev }\nfn any(ev) { ev }\n");
+        let eng = ScriptEngine::load(&ScriptConfig {
+            path,
+            hooks: ScriptHooks {
+                pre_connect: Some("pre".into()),
+                on_event: Some("any".into()),
+                ..Default::default()
+            },
+            limits: ScriptLimits::default(),
+        })
+        .unwrap();
+        eng.invoke(HookName::PreConnect, &sample_event()).unwrap();
+        let calls = eng.recorder_snapshot().calls;
+        assert!(
+            calls.iter().any(|(h, _)| *h == HookName::PreConnect),
+            "specific hook must still fire: {calls:?}"
+        );
+        let on_event = calls
+            .iter()
+            .find(|(h, _)| *h == HookName::OnEvent)
+            .expect("on_event catch-all must fire on the lifecycle event");
+        // The catch-all receives a Generic projection tagged with the variant.
+        assert!(
+            on_event.1.contains("pre_connect"),
+            "payload: {}",
+            on_event.1
+        );
+    }
+
+    /// When `on_event` is NOT bound, a specific-hook invocation fires only that
+    /// hook — behaviour is byte-identical to before the catch-all wiring.
+    #[test]
+    fn on_event_not_fired_when_unbound() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write(&dir, "fn pre(ev) { ev }\n");
+        let eng = ScriptEngine::load(&ScriptConfig {
+            path,
+            hooks: hooks_pre("pre"),
+            limits: ScriptLimits::default(),
+        })
+        .unwrap();
+        eng.invoke(HookName::PreConnect, &sample_event()).unwrap();
+        let calls = eng.recorder_snapshot().calls;
+        assert_eq!(
+            calls.len(),
+            1,
+            "only the specific hook should fire: {calls:?}"
+        );
+        assert_eq!(calls[0].0, HookName::PreConnect);
+    }
+
+    /// A direct `on_event` dispatch does not recurse / double-fire.
+    #[test]
+    fn direct_on_event_dispatch_fires_once() {
+        use crate::event::Generic;
+        let dir = tempfile::tempdir().unwrap();
+        let path = write(&dir, "fn any(ev) { ev }\n");
+        let eng = ScriptEngine::load(&ScriptConfig {
+            path,
+            hooks: ScriptHooks {
+                on_event: Some("any".into()),
+                ..Default::default()
+            },
+            limits: ScriptLimits::default(),
+        })
+        .unwrap();
+        let ev = Event::Generic(Generic {
+            profile: "p".into(),
+            kind: "custom".into(),
+            payload_json: "{}".into(),
+        });
+        eng.invoke(HookName::OnEvent, &ev).unwrap();
+        let calls = eng.recorder_snapshot().calls;
+        assert_eq!(calls.len(), 1, "on_event must fire exactly once: {calls:?}");
+        assert_eq!(calls[0].0, HookName::OnEvent);
     }
 
     /// Soft-skip path (configured hook with no function body) reports

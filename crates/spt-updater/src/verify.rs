@@ -53,7 +53,7 @@
 use std::path::Path;
 
 use sha2::{Digest, Sha256};
-use tracing::warn;
+use tracing::{error, info, warn};
 
 use crate::config::VerifyConfig;
 use crate::error::{UpdaterError, UpdaterResult};
@@ -127,6 +127,18 @@ pub fn verify_checksum_against_digest(artifact: &Path, expected: &str) -> Update
     if got == expected {
         Ok(())
     } else {
+        // Security-critical: a checksum mismatch means the artifact on disk is
+        // NOT the published one (tamper / corruption / MITM). Log at ERROR at
+        // the detection site BEFORE returning so a tampered artifact is not
+        // indistinguishable from a transient error in the operator's logs.
+        error!(
+            target: "spt_updater::verify",
+            check = "sha256",
+            artifact = %artifact.display(),
+            expected = %expected,
+            got = %got,
+            "artifact SHA-256 verification FAILED (checksum mismatch) — refusing artifact"
+        );
         Err(UpdaterError::Verify(format!(
             "SHA-256 mismatch for {}: expected {expected}, got {got}",
             artifact.display()
@@ -142,12 +154,28 @@ pub fn verify_minisign(
     pubkey_path: &Path,
 ) -> UpdaterResult<()> {
     let pk = minisign_verify::PublicKey::from_file(pubkey_path).map_err(|e| {
+        error!(
+            target: "spt_updater::verify",
+            check = "minisign",
+            artifact = %artifact.display(),
+            pubkey = %pubkey_path.display(),
+            error = %e,
+            "minisign verification FAILED to load the configured public key — refusing artifact"
+        );
         UpdaterError::Verify(format!(
             "load minisign pubkey {}: {e}",
             pubkey_path.display()
         ))
     })?;
     let sig = minisign_verify::Signature::from_file(signature_path).map_err(|e| {
+        error!(
+            target: "spt_updater::verify",
+            check = "minisign",
+            artifact = %artifact.display(),
+            signature = %signature_path.display(),
+            error = %e,
+            "minisign verification FAILED to load the detached signature — refusing artifact"
+        );
         UpdaterError::Verify(format!(
             "load minisign signature {}: {e}",
             signature_path.display()
@@ -158,8 +186,19 @@ pub fn verify_minisign(
     // `allow_legacy = false` — require modern prehashed signatures (the
     // default `minisign -S` output since 0.6). Legacy un-prehashed sigs are
     // rejected, which is the stronger posture.
-    pk.verify(&bytes, &sig, false)
-        .map_err(|e| UpdaterError::Verify(format!("minisign verification failed: {e}")))
+    pk.verify(&bytes, &sig, false).map_err(|e| {
+        // Security-critical: a bad signature means the artifact was not signed
+        // by the trusted key (tamper / forgery). Log at ERROR at the detection
+        // site BEFORE returning.
+        error!(
+            target: "spt_updater::verify",
+            check = "minisign",
+            artifact = %artifact.display(),
+            error = %e,
+            "artifact minisign signature verification FAILED — refusing artifact"
+        );
+        UpdaterError::Verify(format!("minisign verification failed: {e}"))
+    })
 }
 
 /// Optional inputs to [`verify_artifact`], threaded from the source/download
@@ -194,6 +233,13 @@ pub fn verify_artifact(
 ) -> UpdaterResult<()> {
     // ---- GPG: explicitly requested but unsupported in-process ----------
     if let Some(gpg) = &cfg.gpg_pubkey {
+        error!(
+            target: "spt_updater::verify",
+            check = "gpg",
+            artifact = %artifact.display(),
+            gpg_pubkey = %gpg.display(),
+            "gpg_pubkey is configured but in-process GPG verification is unavailable — refusing artifact (fail-closed)"
+        );
         return Err(UpdaterError::Verify(format!(
             "gpg_pubkey is set ({}) but in-process GPG verification is not \
              available (no `OpenPGP` crate in the dependency tree). Verify \
@@ -206,6 +252,12 @@ pub fn verify_artifact(
     // ---- SHA-256 checksum ----------------------------------------------
     let checksum_ok = run_checksum_check(artifact, inputs)?;
     if cfg.require_sha256sums && !checksum_ok {
+        error!(
+            target: "spt_updater::verify",
+            check = "sha256",
+            artifact = %artifact.display(),
+            "require_sha256sums = true but no SHA-256 digest was available — refusing artifact (fail-closed)"
+        );
         return Err(UpdaterError::Verify(format!(
             "require_sha256sums = true but no SHA-256 digest was available for {} \
              (the release published neither a per-asset digest nor a SHA256SUMS entry)",
@@ -224,6 +276,12 @@ pub fn verify_artifact(
     // ---- minisign signature --------------------------------------------
     let signature_ok = run_minisign_check(cfg, artifact, signature)?;
     if cfg.require_minisign && !signature_ok {
+        error!(
+            target: "spt_updater::verify",
+            check = "minisign",
+            artifact = %artifact.display(),
+            "require_minisign = true but no valid minisign material was available — refusing artifact (fail-closed)"
+        );
         return Err(UpdaterError::Verify(format!(
             "require_minisign = true but no valid minisign material was available for {} \
              (need both a configured minisign_pubkey and a downloaded .minisig)",
@@ -239,6 +297,16 @@ pub fn verify_artifact(
         );
     }
 
+    // Successful verification (every REQUIRED check passed; present best-effort
+    // material validated). Log at INFO so a good install is observable in the
+    // log stream, not just failures.
+    info!(
+        target: "spt_updater::verify",
+        artifact = %artifact.display(),
+        sha256_verified = checksum_ok,
+        minisign_verified = signature_ok,
+        "artifact verification passed"
+    );
     Ok(())
 }
 
@@ -418,6 +486,55 @@ mod tests {
         let err = verify_artifact(&cfg, &art, None, &VerifyInputs::default()).unwrap_err();
         assert_eq!(err.code(), "updater_verify");
         assert!(err.to_string().contains("gpg"));
+    }
+
+    // A verify FAILURE must be LOGGED at ERROR at the detection site, not
+    // silently swallowed into a returned `Err` (audit CRIT #2). Pre-fix the
+    // crate had no `error!` anywhere and this assertion fails.
+    #[tracing_test::traced_test]
+    #[test]
+    fn checksum_failure_logs_error_before_returning() {
+        let tmp = tempfile::tempdir().unwrap();
+        let art = write_tmp(tmp.path(), "a.bin", b"abc");
+        let cfg = vcfg(false, false);
+        let inputs = VerifyInputs {
+            expected_sha256: Some("00".repeat(32)),
+            ..Default::default()
+        };
+        let err = verify_artifact(&cfg, &art, None, &inputs).unwrap_err();
+        assert_eq!(err.code(), "updater_verify");
+        // The failure must have been logged at ERROR (not swallowed).
+        logs_assert(|lines: &[&str]| {
+            if lines
+                .iter()
+                .any(|l| l.contains("ERROR") && l.contains("SHA-256 verification FAILED"))
+            {
+                Ok(())
+            } else {
+                Err(format!(
+                    "expected an ERROR verify-failure log, got: {lines:?}"
+                ))
+            }
+        });
+    }
+
+    #[tracing_test::traced_test]
+    #[test]
+    fn required_minisign_absent_logs_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let art = write_tmp(tmp.path(), "a.bin", b"abc");
+        let cfg = vcfg(true, false);
+        let _ = verify_artifact(&cfg, &art, None, &VerifyInputs::default()).unwrap_err();
+        logs_assert(|lines: &[&str]| {
+            if lines
+                .iter()
+                .any(|l| l.contains("ERROR") && l.contains("refusing artifact"))
+            {
+                Ok(())
+            } else {
+                Err(format!("expected an ERROR fail-closed log, got: {lines:?}"))
+            }
+        });
     }
 
     #[test]

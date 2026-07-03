@@ -63,10 +63,20 @@ fn pre_connect_fires_with_host_and_port_payload() {
     eng.invoke(HookName::PreConnect, &ev).unwrap();
 
     let rec = eng.recorder_snapshot();
-    assert_eq!(rec.calls.len(), 1);
-    assert_eq!(rec.calls[0].0, HookName::PreConnect);
-    assert!(rec.calls[0].1.contains(r#""host":"203.0.113.7""#));
-    assert!(rec.calls[0].1.contains(r#""port":22"#));
+    // pre_connect fires; the `on_event` catch-all co-fires because
+    // `default_hooks()` binds it (wire-observ finding 5).
+    assert_eq!(rec.calls.len(), 2);
+    let pre = rec
+        .calls
+        .iter()
+        .find(|(h, _)| *h == HookName::PreConnect)
+        .expect("pre_connect hook fired");
+    assert!(pre.1.contains(r#""host":"203.0.113.7""#));
+    assert!(pre.1.contains(r#""port":22"#));
+    assert!(
+        rec.calls.iter().any(|(h, _)| *h == HookName::OnEvent),
+        "on_event catch-all co-fires on the lifecycle event"
+    );
 }
 
 // 2. post_connect hook fires with auth-method tag
@@ -89,8 +99,14 @@ fn post_connect_fires_with_auth_method_tag() {
     });
     eng.invoke(HookName::PostConnect, &ev).unwrap();
     let rec = eng.recorder_snapshot();
-    assert_eq!(rec.calls.len(), 1);
-    assert!(rec.calls[0].1.contains(r#""auth_method":"publickey""#));
+    // post_connect + co-fired on_event catch-all.
+    assert_eq!(rec.calls.len(), 2);
+    let post = rec
+        .calls
+        .iter()
+        .find(|(h, _)| *h == HookName::PostConnect)
+        .expect("post_connect hook fired");
+    assert!(post.1.contains(r#""auth_method":"publickey""#));
 }
 
 // 3. on_forward_state delivers state-machine transitions
@@ -118,11 +134,19 @@ fn on_forward_state_delivers_transitions() {
         eng.invoke(HookName::OnForwardState, &ev).unwrap();
     }
     let rec = eng.recorder_snapshot();
-    assert_eq!(rec.calls.len(), 4);
-    assert!(rec.calls[0].1.contains(r#""transition":"listening""#));
-    assert!(rec.calls[1].1.contains(r#""transition":"active""#));
-    assert!(rec.calls[2].1.contains(r#""transition":"paused""#));
-    assert!(rec.calls[3].1.contains(r#""transition":"closed""#));
+    // 4 forward-state dispatches, each co-firing the on_event catch-all → 8.
+    assert_eq!(rec.calls.len(), 8);
+    let fwd: Vec<&String> = rec
+        .calls
+        .iter()
+        .filter(|(h, _)| *h == HookName::OnForwardState)
+        .map(|(_, j)| j)
+        .collect();
+    assert_eq!(fwd.len(), 4);
+    assert!(fwd[0].contains(r#""transition":"listening""#));
+    assert!(fwd[1].contains(r#""transition":"active""#));
+    assert!(fwd[2].contains(r#""transition":"paused""#));
+    assert!(fwd[3].contains(r#""transition":"closed""#));
 }
 
 // 4. on_disconnect fires with reason code + duration
@@ -143,9 +167,15 @@ fn on_disconnect_fires_with_reason_and_duration() {
     });
     eng.invoke(HookName::OnDisconnect, &ev).unwrap();
     let rec = eng.recorder_snapshot();
-    assert_eq!(rec.calls.len(), 1);
-    assert!(rec.calls[0].1.contains(r#""reason":"keepalive_timeout""#));
-    assert!(rec.calls[0].1.contains(r#""duration_ms":12345"#));
+    // on_disconnect + co-fired on_event catch-all.
+    assert_eq!(rec.calls.len(), 2);
+    let disc = rec
+        .calls
+        .iter()
+        .find(|(h, _)| *h == HookName::OnDisconnect)
+        .expect("on_disconnect hook fired");
+    assert!(disc.1.contains(r#""reason":"keepalive_timeout""#));
+    assert!(disc.1.contains(r#""duration_ms":12345"#));
 }
 
 // 5. on_event generic delivery
@@ -441,12 +471,21 @@ fn hook_invocations_carry_per_call_event_payload_with_no_residue() {
     eng.invoke(HookName::PreConnect, &ev1).unwrap();
     eng.invoke(HookName::PreConnect, &ev2).unwrap();
     let rec = eng.recorder_snapshot();
-    assert_eq!(rec.calls.len(), 2);
+    // 2 pre_connect dispatches, each co-firing on_event → 4 recorded calls.
+    assert_eq!(rec.calls.len(), 4);
+    // The *specific* pre_connect calls, in order.
+    let pre: Vec<&String> = rec
+        .calls
+        .iter()
+        .filter(|(h, _)| *h == HookName::PreConnect)
+        .map(|(_, j)| j)
+        .collect();
+    assert_eq!(pre.len(), 2);
     // Second invocation contains exactly the second event's host/port, with
     // no carry-over of the first.
-    assert!(rec.calls[1].1.contains(r#""host":"10.0.0.2""#));
-    assert!(rec.calls[1].1.contains(r#""port":2222"#));
-    assert!(!rec.calls[1].1.contains(r#""host":"10.0.0.1""#));
+    assert!(pre[1].contains(r#""host":"10.0.0.2""#));
+    assert!(pre[1].contains(r#""port":2222"#));
+    assert!(!pre[1].contains(r#""host":"10.0.0.1""#));
 }
 
 // 13. ScriptConfig schema deser: minimal + full forms round-trip
@@ -532,10 +571,12 @@ fn engine_reused_across_multiple_sessions() {
     t_b.join().unwrap();
 
     let rec = eng.recorder_snapshot();
-    assert_eq!(rec.calls.len(), 2);
+    // 2 lifecycle dispatches, each co-firing the on_event catch-all → 4.
+    assert_eq!(rec.calls.len(), 4);
     let hooks: Vec<HookName> = rec.calls.iter().map(|(h, _)| *h).collect();
     assert!(hooks.contains(&HookName::PreConnect));
     assert!(hooks.contains(&HookName::PostConnect));
+    assert!(hooks.contains(&HookName::OnEvent));
 }
 
 // 15. Fresh scope per invocation — `rhai::Engine::call_fn` is fed a fresh
@@ -646,7 +687,16 @@ fn end_to_end_dispatch_via_arc_engine_handle() {
     dispatch(engine.as_ref(), HookName::OnDisconnect, &ev4).unwrap();
 
     let rec = engine.as_ref().unwrap().recorder_snapshot();
-    assert_eq!(rec.calls.len(), 4);
+    // 4 lifecycle dispatches, each co-firing the on_event catch-all → 8.
+    assert_eq!(rec.calls.len(), 8);
+    assert_eq!(
+        rec.calls
+            .iter()
+            .filter(|(h, _)| *h == HookName::OnEvent)
+            .count(),
+        4,
+        "on_event co-fires once per lifecycle dispatch"
+    );
     assert!(rec.aborts.is_empty());
 
     // `None` engine handle — every dispatch is a no-op.

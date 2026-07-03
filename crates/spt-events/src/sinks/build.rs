@@ -15,6 +15,10 @@
 //! | `sms`                        | [`SmsSink`]             |
 //! | `push`                       | [`PushSink`] or [`WebPushSink`] (when `subscriptions` + VAPID present) |
 //! | `mcp_notify`                 | [`McpNotifySink`]       |
+//! | `command`                    | [`CommandSink`]         |
+//! | `snmp_trap`                  | [`SnmpTrapSink`] (transport injected in Wave 5) |
+//! | `windows_event`              | [`WindowsEventSink`] (`cfg(windows)` transport injected) |
+//! | `remote_log`                 | [`HttpSink`] — explicit alias for an HTTP POST to a remote log collector (distinct from the `[logging]` remote sinks) |
 //!
 //! # Transport injection
 //!
@@ -58,6 +62,8 @@ use crate::sinks::http::{HttpAuth, HttpSink, HttpTransport};
 use crate::sinks::mcp_notify::McpNotifySink;
 use crate::sinks::push::{PushSink, Subscription, VapidIdentity, WebPushSink};
 use crate::sinks::sms::SmsSink;
+use crate::sinks::snmp_trap::{SnmpTrapSink, SnmpTrapTransport};
+use crate::sinks::windows_event::{WindowsEventSink, WindowsEventTransport};
 use crate::sinks::{Sink, SinkError};
 
 /// Default per-sink delivery timeout when the config omits `timeout`.
@@ -82,6 +88,12 @@ pub struct SinkDeps {
     pub command: Option<Arc<dyn CommandRunner>>,
     /// MCP notifier for `mcp_notify` (real notifier or [`crate::NoopMcpNotifier`]).
     pub mcp: Option<Arc<dyn McpNotifier>>,
+    /// SNMP trap sender for `snmp_trap` sinks. `None` until the Wave-5 SNMP
+    /// integration supplies one — the sink is still built but WARNs.
+    pub snmp_trap: Option<Arc<dyn SnmpTrapTransport>>,
+    /// Windows Event Log writer for `windows_event` sinks. `None` on
+    /// non-Windows targets / until wired — the sink is still built but WARNs.
+    pub windows_event: Option<Arc<dyn WindowsEventTransport>>,
 }
 
 impl SinkDeps {
@@ -94,6 +106,8 @@ impl SinkDeps {
             email: None,
             command: None,
             mcp: None,
+            snmp_trap: None,
+            windows_event: None,
         }
     }
 
@@ -122,6 +136,20 @@ impl SinkDeps {
     #[must_use]
     pub fn with_mcp(mut self, n: Arc<dyn McpNotifier>) -> Self {
         self.mcp = Some(n);
+        self
+    }
+
+    /// Set the SNMP trap sender (chainable).
+    #[must_use]
+    pub fn with_snmp_trap(mut self, t: Arc<dyn SnmpTrapTransport>) -> Self {
+        self.snmp_trap = Some(t);
+        self
+    }
+
+    /// Set the Windows Event Log writer (chainable).
+    #[must_use]
+    pub fn with_windows_event(mut self, t: Arc<dyn WindowsEventTransport>) -> Self {
+        self.windows_event = Some(t);
         self
     }
 }
@@ -205,12 +233,22 @@ pub fn build_sink(
     resolver: &Resolver,
 ) -> Result<Box<dyn Sink>, SinkError> {
     match sink.kind.as_str() {
-        "http" | "webhook_post" => build_http(sink, deps, resolver),
+        // `remote_log` is an explicit alias for an HTTP POST to a remote log
+        // collector — distinct from the `[logging]` remote sinks (which live in
+        // spt-observability). Wiring it to the HTTP sink makes a configured
+        // `remote_log` deliver rather than validate-clean-then-drop.
+        "http" | "webhook_post" | "remote_log" => build_http(sink, deps, resolver),
         "email" => build_email(sink, deps, resolver),
         "sms" => build_sms(sink, deps, resolver),
-        "push" => build_push(sink, deps, resolver),
+        // `push` auto-detects the WebPush flavour when `subscriptions` + a VAPID
+        // key are present; `webpush` is accepted by the validator (validate.rs)
+        // as an explicit kind, so route it here too rather than
+        // validate-clean-then-drop.
+        "push" | "webpush" => build_push(sink, deps, resolver),
         "mcp_notify" => build_mcp_notify(sink, deps),
         "command" => build_command(sink, commands, deps),
+        "snmp_trap" => Ok(build_snmp_trap(sink, deps)),
+        "windows_event" => Ok(build_windows_event(sink, deps)),
         other => Err(SinkError::Config(format!(
             "unsupported event sink kind `{other}` for sink `{}`",
             sink.name
@@ -371,6 +409,34 @@ fn build_push(
     }
 }
 
+fn build_snmp_trap(sink: &EventSink, deps: &SinkDeps) -> Box<dyn Sink> {
+    // Trap target is the sink url/endpoint (`host:port`); may be empty until a
+    // real transport (Wave 5) validates it. The sink WARNs at construction if
+    // no transport is injected — never a silent drop.
+    let target = sink
+        .url
+        .clone()
+        .or_else(|| sink.endpoint.clone())
+        .unwrap_or_default();
+    Box::new(SnmpTrapSink::new(
+        sink.name.clone(),
+        target,
+        body_template(sink),
+        deps.snmp_trap.clone(),
+    ))
+}
+
+fn build_windows_event(sink: &EventSink, deps: &SinkDeps) -> Box<dyn Sink> {
+    // Event Log source name: the sink `provider`, else the sink name.
+    let source = sink.provider.clone().unwrap_or_else(|| sink.name.clone());
+    Box::new(WindowsEventSink::new(
+        sink.name.clone(),
+        source,
+        body_template(sink),
+        deps.windows_event.clone(),
+    ))
+}
+
 fn build_mcp_notify(sink: &EventSink, deps: &SinkDeps) -> Result<Box<dyn Sink>, SinkError> {
     let notifier = deps
         .mcp
@@ -476,11 +542,15 @@ mod tests {
     }
 
     fn full_deps() -> SinkDeps {
+        use crate::sinks::snmp_trap::RecordingSnmpTrapTransport;
+        use crate::sinks::windows_event::RecordingWindowsEventTransport;
         SinkDeps::none()
             .with_http(Arc::new(RecordingTransport::new()))
             .with_email(Arc::new(RecordingEmailTransport::new()))
             .with_command(Arc::new(RecordingRunner::new()))
             .with_mcp(Arc::new(NoopMcpNotifier))
+            .with_snmp_trap(Arc::new(RecordingSnmpTrapTransport::new()))
+            .with_windows_event(Arc::new(RecordingWindowsEventTransport::new()))
     }
 
     #[test]
@@ -546,6 +616,17 @@ mod tests {
     }
 
     #[test]
+    fn build_webpush_kind_routes_to_push_builder() {
+        // `type = "webpush"` is accepted by the validator; the factory must
+        // build it (as a generic PushSink here, since no subscriptions/VAPID are
+        // supplied) rather than validate-clean-then-drop.
+        let mut sc = sink("mobile", "webpush");
+        sc.url = Some("https://push.example.com/send".into());
+        let s = build_sink(&sc, &[], &full_deps(), &empty_resolver()).unwrap();
+        assert_eq!(s.kind(), "push");
+    }
+
+    #[test]
     fn build_mcp_notify_sink_from_config() {
         let sc = sink("mcp", "mcp_notify");
         let s = build_sink(&sc, &[], &full_deps(), &empty_resolver()).unwrap();
@@ -589,6 +670,105 @@ mod tests {
             build_sink(&sc, &[], &full_deps(), &empty_resolver()),
             Err(SinkError::Config(_))
         ));
+    }
+
+    // ---- W4-1: snmp_trap / windows_event / remote_log now build --------
+
+    #[test]
+    fn build_snmp_trap_sink_from_config() {
+        let mut sc = sink("traps", "snmp_trap");
+        sc.url = Some("10.0.0.1:162".into());
+        let s = build_sink(&sc, &[], &full_deps(), &empty_resolver()).unwrap();
+        assert_eq!(s.kind(), "snmp_trap");
+        assert_eq!(s.name(), "traps");
+    }
+
+    #[test]
+    fn build_snmp_trap_without_transport_still_builds_not_dropped() {
+        // No trap transport (Wave-5 not yet wired): the sink must still be
+        // built (WARN at construction), never silently skipped.
+        let mut sc = sink("traps", "snmp_trap");
+        sc.url = Some("10.0.0.1:162".into());
+        let deps = SinkDeps::none().with_http(Arc::new(RecordingTransport::new()));
+        let s = build_sink(&sc, &[], &deps, &empty_resolver()).unwrap();
+        assert_eq!(s.kind(), "snmp_trap");
+    }
+
+    #[test]
+    fn build_windows_event_sink_from_config() {
+        let mut sc = sink("eventlog", "windows_event");
+        sc.provider = Some("spt".into());
+        let s = build_sink(&sc, &[], &full_deps(), &empty_resolver()).unwrap();
+        assert_eq!(s.kind(), "windows_event");
+    }
+
+    #[test]
+    fn build_remote_log_sink_is_http_alias() {
+        // `remote_log` wires to an HTTP POST (explicit alias) rather than
+        // validating-clean-then-dropping.
+        let mut sc = sink("collector", "remote_log");
+        sc.url = Some("https://logs.example.com/ingest".into());
+        let s = build_sink(&sc, &[], &full_deps(), &empty_resolver()).unwrap();
+        assert_eq!(s.kind(), "http");
+        assert_eq!(s.name(), "collector");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn built_snmp_trap_sink_delivers_through_injected_transport() {
+        use crate::event::{Event, Severity};
+        use crate::sinks::snmp_trap::RecordingSnmpTrapTransport;
+        let t = Arc::new(RecordingSnmpTrapTransport::new());
+        let deps = SinkDeps::none().with_snmp_trap(t.clone());
+        let mut sc = sink("traps", "snmp_trap");
+        sc.url = Some("10.0.0.1:162".into());
+        sc.body_template = Some("{{kind}}".into());
+        let s = build_sink(&sc, &[], &deps, &empty_resolver()).unwrap();
+        s.deliver(Arc::new(
+            Event::builder("profile.failed", Severity::Error).build(),
+        ))
+        .await
+        .unwrap();
+        let traps = t.traps();
+        assert_eq!(traps.len(), 1);
+        assert!(traps[0].message.contains("profile.failed"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn built_windows_event_sink_delivers_through_injected_transport() {
+        use crate::event::{Event, Severity};
+        use crate::sinks::windows_event::RecordingWindowsEventTransport;
+        let t = Arc::new(RecordingWindowsEventTransport::new());
+        let deps = SinkDeps::none().with_windows_event(t.clone());
+        let mut sc = sink("eventlog", "windows_event");
+        sc.body_template = Some("{{kind}}".into());
+        let s = build_sink(&sc, &[], &deps, &empty_resolver()).unwrap();
+        s.deliver(Arc::new(
+            Event::builder("profile.failed", Severity::Error).build(),
+        ))
+        .await
+        .unwrap();
+        assert_eq!(t.records().len(), 1);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn built_remote_log_sink_delivers_through_http_transport() {
+        use crate::event::{Event, Severity};
+        let t = Arc::new(RecordingTransport::new());
+        let deps = SinkDeps::none().with_http(t.clone());
+        let mut sc = sink("collector", "remote_log");
+        sc.url = Some("https://logs.example.com/ingest".into());
+        sc.body_template = Some(r#"{"k":"{{kind}}"}"#.into());
+        let s = build_sink(&sc, &[], &deps, &empty_resolver()).unwrap();
+        s.deliver(Arc::new(
+            Event::builder("profile.failed", Severity::Error).build(),
+        ))
+        .await
+        .unwrap();
+        let reqs = t.requests();
+        assert_eq!(reqs.len(), 1);
+        assert!(std::str::from_utf8(&reqs[0].body)
+            .unwrap()
+            .contains("profile.failed"));
     }
 
     #[test]

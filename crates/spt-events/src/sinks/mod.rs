@@ -18,6 +18,8 @@ pub mod http;
 pub mod mcp_notify;
 pub mod push;
 pub mod sms;
+pub mod snmp_trap;
+pub mod windows_event;
 
 pub use build::{build_sink, resolve_secret, SinkDeps};
 

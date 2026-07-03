@@ -303,6 +303,7 @@ pub fn fake_bindings_single(kind: EventKind, sinks: Vec<SinkRef>) -> Vec<Binding
         },
         sinks,
         dedupe: None,
+        throttle: None,
     }]
 }
 

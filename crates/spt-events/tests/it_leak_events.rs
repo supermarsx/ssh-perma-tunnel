@@ -83,6 +83,7 @@ fn binding(kind: &str, sink: &str) -> Binding {
         },
         sinks: vec![SinkRef::new(sink)],
         dedupe: None,
+        throttle: None,
     }
 }
 

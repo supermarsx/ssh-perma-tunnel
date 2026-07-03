@@ -55,7 +55,7 @@ pub mod transport;
 pub use audit::{AuditEvent, McpAuditSink, NoopAuditSink};
 pub use controller::{Controller, NoopController};
 pub use error::{Error, Result};
-pub use policy::{McpPolicy, Policy};
+pub use policy::{McpMode, McpPolicy, Policy, TlsPinPolicy};
 pub use server::{McpServer, McpServerInner, ServerCapabilities};
 pub use sources::{ConfigSource, NoopSources, StateSource};
 pub use transport::{

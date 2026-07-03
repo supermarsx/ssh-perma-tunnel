@@ -37,8 +37,8 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use tokio::sync::oneshot;
-use tokio::task::JoinHandle;
-use tracing::{debug, warn};
+use tokio::task::{JoinError, JoinHandle};
+use tracing::{debug, error, warn};
 
 use crate::cache::hex_sha256;
 use crate::fetch::{fetch, fetcher_for_plan, FetchOutcome};
@@ -132,7 +132,7 @@ where
 {
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
     let state_dir = state_dir.into();
-    let task = tokio::spawn(run_loop(
+    let inner = tokio::spawn(run_loop(
         plan,
         state_dir,
         interval,
@@ -140,7 +140,29 @@ where
         apply_cb,
         shutdown_rx,
     ));
+    // Supervise the loop task: a panic inside the loop would otherwise be a
+    // silently-dead poller (wire-observ §5, poll.rs:68). The monitor awaits the
+    // loop and logs at ERROR if it terminated abnormally, so an operator can see
+    // that remote-config polling has stopped.
+    let task = tokio::spawn(async move { report_loop_exit(inner.await) });
     RemoteConfigPollHandle { shutdown_tx, task }
+}
+
+/// Classify how the poll-loop task ended and log accordingly. A clean exit
+/// (shutdown) is `debug`; a panic/abort is `error` so a dead poller is visible
+/// rather than swallowed.
+fn report_loop_exit(result: Result<(), JoinError>) {
+    match result {
+        Ok(()) => debug!("remote-config poll loop exited"),
+        Err(e) if e.is_cancelled() => {
+            debug!("remote-config poll loop task was cancelled");
+        }
+        Err(e) => error!(
+            error = %e,
+            "remote-config poll loop terminated abnormally (panicked) — the poller is \
+             no longer running; remote config will not refresh until restarted"
+        ),
+    }
 }
 
 /// The driver loop, factored out so it is a plain `async fn` (testable shape).
@@ -583,6 +605,41 @@ mod tests {
         }
         // Early backoff (1 failure) should be well under the cap.
         assert!(next_delay(i, 1) < i);
+    }
+
+    // wire-observ §5: a panicked poll loop must be surfaced at ERROR, not
+    // swallowed. `report_loop_exit` is the reporting seam the supervisor task
+    // uses; drive it with a real panicked `JoinError`.
+    #[tracing_test::traced_test]
+    #[tokio::test]
+    async fn panicked_loop_exit_logs_error() {
+        let jh = tokio::spawn(async { panic!("simulated poll-loop panic") });
+        let res = jh.await;
+        assert!(res.is_err(), "the task must have panicked");
+        report_loop_exit(res);
+        logs_assert(|lines: &[&str]| {
+            if lines
+                .iter()
+                .any(|l| l.contains("ERROR") && l.contains("panicked"))
+            {
+                Ok(())
+            } else {
+                Err(format!("expected an ERROR panic log, got: {lines:?}"))
+            }
+        });
+    }
+
+    #[tracing_test::traced_test]
+    #[tokio::test]
+    async fn clean_loop_exit_does_not_log_error() {
+        report_loop_exit(Ok(()));
+        logs_assert(|lines: &[&str]| {
+            if lines.iter().any(|l| l.contains("ERROR")) {
+                Err("a clean exit must not log at ERROR".to_string())
+            } else {
+                Ok(())
+            }
+        });
     }
 
     /// Newtype so an `Arc<FakeFetcher>` can be moved into the task while the

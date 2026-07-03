@@ -174,22 +174,38 @@ async fn run_apply(global: &GlobalOpts, no_restart: bool) -> Result<()> {
 }
 
 async fn run_history(global: &GlobalOpts) -> Result<()> {
-    // The install audit history is emitted as structured audit events at
-    // install time (see [updater.action].notify_audit). There is no
-    // standalone updater history store; surface that honestly rather than
-    // printing an empty fabricated table.
-    let _ = load_updater_config(global)?;
+    let cfg = load_updater_config(global)?;
     let st = crate::styler(global);
+    // Mirror spt-updater's staging-dir resolution (configured dir, else the OS
+    // temp fallback) so we read the same append-only trail `record_install`
+    // writes on each successful install.
+    let staging_dir = cfg
+        .staging
+        .dir
+        .clone()
+        .unwrap_or_else(|| std::env::temp_dir().join("spt-updates"));
+    let history = spt_updater::audit::read_history(&staging_dir);
+
     println!("{}", st.bold("spt update — history"));
-    println!(
-        "  {}",
-        st.dim("no separate updater history store; install events are recorded")
-    );
-    println!(
-        "  {}",
-        st.dim("as audit events when [updater.action].notify_audit = true.")
-    );
-    println!("  Query them via `spt event` / your audit log pipeline.");
+    if history.is_empty() {
+        println!("  {}", st.dim("no install events recorded yet."));
+        println!(
+            "  {}",
+            st.dim("the trail is written on each successful install when")
+        );
+        println!("  {}", st.dim("[updater.action].notify_audit = true."));
+        return Ok(());
+    }
+    // Recorded in install order (newest last).
+    for entry in &history {
+        println!(
+            "  {}  {} {}",
+            st.dim(&entry.timestamp),
+            st.cyan(&entry.event),
+            st.bold(&entry.version),
+        );
+        println!("      from {}", st.dim(&entry.artifact));
+    }
     Ok(())
 }
 

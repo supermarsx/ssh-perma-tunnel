@@ -31,7 +31,7 @@ use spt_state::{DiskSpool, SpoolConfig};
 /// a slow/black-holed sink can never hang shutdown.
 const SHUTDOWN_DRAIN_BUDGET: Duration = Duration::from_secs(2);
 
-use crate::binding::{Binding, DedupeState};
+use crate::binding::{Binding, DedupeState, ThrottleState};
 use crate::bus::EventBus;
 use crate::event::Event;
 use crate::sinks::Sink;
@@ -126,6 +126,7 @@ impl Dispatcher {
             bindings,
             sinks,
             dedupe_state: DedupeState::new(),
+            throttle_state: ThrottleState::new(),
             spools,
             cfg,
         };
@@ -245,6 +246,8 @@ pub struct DispatcherInner {
     bindings: Vec<Binding>,
     sinks: HashMap<String, Arc<dyn Sink>>,
     dedupe_state: DedupeState,
+    /// Per-binding delivery throttle state (`Binding.throttle`).
+    throttle_state: ThrottleState,
     spools: HashMap<String, Arc<Mutex<DiskSpool>>>,
     /// Dispatcher config; consumed by the spool-retry task (`retry_interval`).
     cfg: DispatcherConfig,
@@ -264,11 +267,34 @@ impl DispatcherInner {
                     continue;
                 }
             }
+            // Per-binding throttle (wire-observ finding 4): at most one delivery
+            // per binding per `throttle` interval. Checked AFTER match+dedupe so
+            // only events that would actually deliver consume the rate budget.
+            if let Some(interval) = b.throttle {
+                if !self.throttle_state.allow(&b.name, interval) {
+                    tracing::debug!(
+                        binding = %b.name,
+                        "event suppressed by per-binding throttle"
+                    );
+                    continue;
+                }
+            }
             for sref in &b.sinks {
                 if let Some(sink) = self.sinks.get(sref.as_str()) {
                     let result = sink.deliver(event.clone()).await;
                     if let Err(e) = result {
                         if e.is_retryable() {
+                            // wire-observ / audit-logging (dispatcher:270): a
+                            // transient delivery failure was previously spooled
+                            // with NO log — a sink failing every delivery stayed
+                            // invisible until the spool filled. Log a WARN with
+                            // sink + error kind (never a secret payload) so an
+                            // operator sees the failing sink.
+                            tracing::warn!(
+                                sink = %sink.name(),
+                                error = %e,
+                                "sink delivery failed transiently; spooling for retry"
+                            );
                             self.spool_one(sink.name(), &event);
                         } else {
                             tracing::warn!(sink=%sink.name(), error=%e, "sink delivery failed permanently");
@@ -426,6 +452,7 @@ pub fn build_for_test(
         bindings,
         sinks,
         dedupe_state: DedupeState::new(),
+        throttle_state: ThrottleState::new(),
         spools,
         cfg,
     })
@@ -494,6 +521,7 @@ mod tests {
             },
             sinks: sinks.into_iter().map(SinkRef::new).collect(),
             dedupe: None,
+            throttle: None,
         }
     }
 
@@ -1123,6 +1151,125 @@ mod tests {
         let d = Dispatcher::spawn(&bus, Vec::new(), sinks, cfg).unwrap();
         drop(d);
         tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    /// Minimal `tracing::Subscriber` that records WARN-level messages. Built
+    /// with only the `tracing` crate (no `tracing-subscriber` dep), mirroring
+    /// `spt-obfs/tests/reject_logging.rs`.
+    #[derive(Clone, Default)]
+    struct WarnCapture {
+        warnings: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl WarnCapture {
+        fn messages(&self) -> Vec<String> {
+            self.warnings.lock().clone()
+        }
+    }
+
+    struct MsgVisitor(String);
+    impl tracing::field::Visit for MsgVisitor {
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            if field.name() == "message" {
+                use std::fmt::Write as _;
+                let _ = write!(self.0, "{value:?}");
+            }
+        }
+    }
+
+    impl tracing::Subscriber for WarnCapture {
+        fn enabled(&self, _meta: &tracing::Metadata<'_>) -> bool {
+            true
+        }
+        fn new_span(&self, _attrs: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            tracing::span::Id::from_u64(1)
+        }
+        fn record(&self, _id: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
+        fn record_follows_from(&self, _id: &tracing::span::Id, _follows: &tracing::span::Id) {}
+        fn event(&self, event: &tracing::Event<'_>) {
+            if *event.metadata().level() == tracing::Level::WARN {
+                let mut v = MsgVisitor(String::new());
+                event.record(&mut v);
+                self.warnings.lock().push(v.0);
+            }
+        }
+        fn enter(&self, _id: &tracing::span::Id) {}
+        fn exit(&self, _id: &tracing::span::Id) {}
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn throttle_limits_delivery_rate_per_binding() {
+        // wire-observ finding 4: with a per-binding throttle, only the first of
+        // several rapid matching events is delivered; the rest are suppressed.
+        // Pre-fix (no throttle consumer) all three would deliver.
+        let tmp = tempdir().unwrap();
+        let cfg = DispatcherConfig {
+            spool_root: tmp.path().into(),
+            ..DispatcherConfig::default()
+        };
+        let sink = RecordingSink::new("r");
+        let mut sinks: HashMap<String, Arc<dyn Sink>> = HashMap::new();
+        sinks.insert("r".into(), sink.clone() as Arc<dyn Sink>);
+        let binding =
+            make_binding(vec!["k*"], vec!["r"]).with_throttle(Some(Duration::from_secs(3600)));
+        let d = build_for_test(vec![binding], sinks, cfg).unwrap();
+
+        for i in 0..3 {
+            d.dispatch(Arc::new(
+                Event::builder(format!("k{i}"), Severity::Info).build(),
+            ))
+            .await;
+        }
+        assert_eq!(
+            sink.kinds().len(),
+            1,
+            "throttle should allow only one delivery within the interval"
+        );
+    }
+
+    #[test]
+    fn transient_delivery_failure_logs_warn() {
+        // audit-logging (dispatcher:270): a transient sink failure was spooled
+        // with NO log. It must now emit a WARN naming the sink. Pre-fix: zero
+        // WARNs on the transient path.
+        let cap = WarnCapture::default();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        tracing::subscriber::with_default(cap.clone(), || {
+            rt.block_on(async {
+                let tmp = tempdir().unwrap();
+                let cfg = DispatcherConfig {
+                    spool_root: tmp.path().into(),
+                    ..DispatcherConfig::default()
+                };
+                let t = Arc::new(RecordingTransport::new());
+                t.fail_once(SinkError::Transient("network down".into()));
+                let http = Arc::new(HttpSink::new(
+                    "alerts",
+                    "POST",
+                    "https://x",
+                    "{}",
+                    "application/json",
+                    HttpAuth::None,
+                    t.clone(),
+                )) as Arc<dyn Sink>;
+                let mut sinks: HashMap<String, Arc<dyn Sink>> = HashMap::new();
+                sinks.insert("alerts".into(), http);
+                let bindings = vec![make_binding(vec!["k"], vec!["alerts"])];
+                let d = build_for_test(bindings, sinks, cfg).unwrap();
+                d.dispatch(Arc::new(Event::builder("k", Severity::Info).build()))
+                    .await;
+                // The transient failure spooled the event.
+                assert_eq!(d.spool_len("alerts"), 1);
+            });
+        });
+        let msgs = cap.messages();
+        assert!(
+            msgs.iter().any(|m| m.contains("transiently")),
+            "transient delivery failure must log a WARN; captured warnings: {msgs:?}"
+        );
     }
 
     #[test]

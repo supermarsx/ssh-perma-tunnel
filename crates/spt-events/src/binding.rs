@@ -237,6 +237,13 @@ pub struct Binding {
     /// Dedupe policy.
     #[serde(default)]
     pub dedupe: Option<Dedupe>,
+    /// Per-binding delivery throttle (maps from the schema
+    /// `[[events.bindings]].throttle` duration). When set, at most one event
+    /// is delivered through this binding per throttle interval; events arriving
+    /// while throttled are suppressed. Enforced by the dispatcher via
+    /// [`ThrottleState`]. `None` = no rate limit.
+    #[serde(default)]
+    pub throttle: Option<Duration>,
 }
 
 impl Binding {
@@ -250,6 +257,7 @@ impl Binding {
             r#match,
             sinks,
             dedupe: None,
+            throttle: None,
         }
     }
 
@@ -257,6 +265,14 @@ impl Binding {
     #[must_use]
     pub fn with_dedupe(mut self, dedupe: Option<Dedupe>) -> Self {
         self.dedupe = dedupe;
+        self
+    }
+
+    /// Attach (or clear) a per-binding delivery throttle. Chainable. Maps from
+    /// the schema `[[events.bindings]].throttle` duration.
+    #[must_use]
+    pub fn with_throttle(mut self, throttle: Option<Duration>) -> Self {
+        self.throttle = throttle;
         self
     }
 
@@ -311,6 +327,40 @@ impl DedupeState {
         }
         map.insert(key, now);
         false
+    }
+}
+
+/// In-memory per-binding throttle state.
+///
+/// Tracks the last-delivery instant per binding name so the dispatcher can
+/// rate-limit event delivery to at most one per throttle interval, per binding
+/// (finding W4 / wire-observ finding 4 — `EventBinding.throttle` was
+/// documented + validated but had no consumer).
+#[derive(Debug, Default)]
+pub struct ThrottleState {
+    last: Mutex<HashMap<String, Instant>>,
+}
+
+impl ThrottleState {
+    /// New empty state.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Returns `true` if a delivery is allowed for `binding` now, recording the
+    /// delivery instant; returns `false` (suppress) if the previous delivery
+    /// was within `interval`.
+    pub fn allow(&self, binding: &str, interval: Duration) -> bool {
+        let now = Instant::now();
+        let mut map = self.last.lock();
+        if let Some(prev) = map.get(binding) {
+            if now.saturating_duration_since(*prev) < interval {
+                return false;
+            }
+        }
+        map.insert(binding.to_string(), now);
+        true
     }
 }
 
@@ -521,6 +571,7 @@ mod tests {
             },
             sinks: vec![SinkRef::new("alerts")],
             dedupe: Some(Dedupe::default()),
+            throttle: None,
         };
         let s = serde_json::to_string(&b).unwrap();
         let back: Binding = serde_json::from_str(&s).unwrap();
@@ -593,6 +644,40 @@ mod tests {
         )
         .min_severity_or(Severity::Warn);
         assert_eq!(explicit.r#match.min_severity, Some(Severity::Error));
+    }
+
+    #[test]
+    fn binding_with_throttle_sets_field() {
+        let b = Binding::new("b", BindingMatch::default(), vec![])
+            .with_throttle(Some(Duration::from_secs(30)));
+        assert_eq!(b.throttle, Some(Duration::from_secs(30)));
+        // Default construction leaves throttle unset (behavior-preserving).
+        assert!(Binding::default().throttle.is_none());
+    }
+
+    #[test]
+    fn throttle_state_allows_first_then_suppresses_within_interval() {
+        let s = ThrottleState::new();
+        let interval = Duration::from_secs(60);
+        assert!(s.allow("b1", interval), "first delivery allowed");
+        assert!(
+            !s.allow("b1", interval),
+            "second within interval suppressed"
+        );
+        // A different binding is tracked independently.
+        assert!(s.allow("b2", interval), "distinct binding is not throttled");
+    }
+
+    #[test]
+    fn throttle_state_releases_after_interval() {
+        let s = ThrottleState::new();
+        let interval = Duration::from_millis(10);
+        assert!(s.allow("b", interval));
+        std::thread::sleep(Duration::from_millis(20));
+        assert!(
+            s.allow("b", interval),
+            "allowed again after interval elapses"
+        );
     }
 
     #[test]

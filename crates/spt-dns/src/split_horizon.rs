@@ -202,7 +202,10 @@ impl RequestHandler for SplitHorizonHandler {
             // REFUSED rather than a recursive answer.
             let src = request.src().ip();
             if !self.forward_scope.allows(src) {
-                debug!(
+                // A denied query is security-relevant (open-resolver /
+                // amplification-reflection guard): surface it at WARN with the
+                // client address and queried name, not DEBUG.
+                warn!(
                     name = %qname_str, %src, scope = ?self.forward_scope,
                     "forwarder: client out of scope -> REFUSED (not an open resolver)"
                 );
@@ -1101,5 +1104,29 @@ mod tests {
                 "Any scope must let the client reach the forwarder (gate not fired)"
             );
         });
+    }
+
+    #[test]
+    fn out_of_scope_client_logs_warn_with_client_and_qname() {
+        // A denied (out-of-scope) forwarder query is security-relevant and must
+        // be logged at WARN with both the client address and the queried name.
+        let (code, events) = crate::test_log_capture::capture(|| {
+            rt().block_on(async {
+                let handler = forwarder_handler(ForwardScope::LoopbackOnly);
+                let capture = CapturingHandler::new();
+                let request = request_for_src("victim.example.com.", "8.8.8.8:30000");
+                handler
+                    .handle_request::<_, TokioTime>(&request, capture.clone())
+                    .await;
+                capture.parsed().metadata.response_code
+            })
+        });
+        assert_eq!(code, ResponseCode::Refused);
+        assert!(
+            events.iter().any(|e| e.level == tracing::Level::WARN
+                && e.fields.contains("victim.example.com")
+                && e.fields.contains("8.8.8.8")),
+            "expected a WARN ACL-deny log carrying client + qname, got {events:?}"
+        );
     }
 }

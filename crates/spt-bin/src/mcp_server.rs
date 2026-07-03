@@ -381,10 +381,20 @@ pub fn mcp_policy_from_config(cfg: &Config) -> McpPolicy {
     };
     McpPolicy {
         enabled: mcp.enabled.unwrap_or(false),
+        // E-w4: honor `[mcp].default_mode` (the baseline read/write posture).
+        // Unknown / absent maps fail-closed to `read_only`.
+        default_mode: spt_mcp::McpMode::from_config_str(mcp.default_mode.as_deref()),
         allow_write_tools: mcp.allow_write_tools.clone().unwrap_or_default(),
         allow_secret_reveal: mcp.allow_secret_reveal.unwrap_or(false),
         listen: mcp.listen.clone().unwrap_or_default(),
         stdio: mcp.stdio.unwrap_or(true),
+        // E-w4: carry the TLS-pin surface so it is enforced fail-closed on the
+        // MCP TLS listener/client instead of silently ignored.
+        tls_pins: spt_mcp::TlsPinPolicy {
+            pin_spki_sha256: mcp.pin_spki_sha256.clone(),
+            allow_self_signed: mcp.allow_self_signed.unwrap_or(false),
+            max_cert_chain_depth: mcp.max_cert_chain_depth,
+        },
     }
 }
 

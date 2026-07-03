@@ -156,17 +156,25 @@ impl McpServerInner {
         let Some(expected) = &self.auth_token else {
             return Ok(());
         };
-        let supplied = params
-            .and_then(|p| p.get("token"))
-            .and_then(Value::as_str)
-            .ok_or_else(|| {
-                crate::Error::PolicyDenied(
-                    "initialize requires `params.token` for this MCP listener".to_owned(),
-                )
-            })?;
+        // Security-relevant: an auth-token rejection must be visible in the log
+        // stream. We log the reason only — NEVER the supplied or expected token
+        // value (redaction invariant).
+        let Some(supplied) = params.and_then(|p| p.get("token")).and_then(Value::as_str) else {
+            tracing::warn!(
+                reason = "missing_token",
+                "MCP initialize rejected: `params.token` absent on a token-gated listener"
+            );
+            return Err(crate::Error::PolicyDenied(
+                "initialize requires `params.token` for this MCP listener".to_owned(),
+            ));
+        };
         if supplied == expected {
             Ok(())
         } else {
+            tracing::warn!(
+                reason = "token_mismatch",
+                "MCP initialize rejected: supplied auth token does not match"
+            );
             Err(crate::Error::PolicyDenied(
                 "initialize token mismatch".to_owned(),
             ))
@@ -963,6 +971,32 @@ mod tests {
     async fn auth_token_default_none() {
         let s = server_with(McpPolicy::default(), MockAuditSink::new());
         assert!(s.inner.auth_token().is_none());
+    }
+
+    /// An auth-token rejection (missing token OR mismatch) must emit a WARN at
+    /// the decision site — a security-relevant event operators must see. The
+    /// token value itself is never logged. Pre-fix `verify_init_token` logged
+    /// nothing, so this test fails against it.
+    #[test]
+    fn auth_token_rejection_logs_warn_without_token_value() {
+        let s = server_with(McpPolicy::default(), MockAuditSink::new()).with_auth_token("hunter2");
+        let counter = crate::policy::WarnCounter::default();
+        let observer = counter.clone();
+        tracing::subscriber::with_default(counter, || {
+            // Missing token → WARN #1.
+            assert!(s.inner.verify_init_token(None).is_err());
+            // Wrong token → WARN #2 (and the wrong value must not be logged).
+            assert!(s
+                .inner
+                .verify_init_token(Some(&json!({"token": "wrong-secret"})))
+                .is_err());
+            // Correct token → no WARN.
+            assert!(s
+                .inner
+                .verify_init_token(Some(&json!({"token": "hunter2"})))
+                .is_ok());
+        });
+        assert_eq!(observer.count(), 2, "one WARN per rejected initialize");
     }
 
     #[tokio::test]
