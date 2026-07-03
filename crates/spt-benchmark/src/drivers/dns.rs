@@ -269,9 +269,18 @@ mod tests {
     #[tokio::test]
     async fn dns_against_hickory_resolver() {
         // Adapter from hickory-resolver to DnsClient.
-        use hickory_resolver::config::{NameServerConfig, Protocol, ResolverConfig, ResolverOpts};
-        use hickory_resolver::TokioAsyncResolver;
-        struct HResolver(TokioAsyncResolver);
+        //
+        // hickory 0.26: the old `TokioAsyncResolver::tokio` +
+        // `ResolverConfig::new` / `NameServerConfig::new(SocketAddr, Protocol)`
+        // path was removed in the 0.25 rework. Mirror spt-dns's construction:
+        // assemble a `NameServerConfig` from the IP with a UDP `ConnectionConfig`
+        // and build through `Resolver::builder_with_config`.
+        use hickory_resolver::config::{
+            ConnectionConfig, NameServerConfig, ProtocolConfig, ResolverConfig,
+        };
+        use hickory_resolver::net::runtime::TokioRuntimeProvider;
+        use hickory_resolver::{Resolver, TokioResolver};
+        struct HResolver(TokioResolver);
         #[async_trait]
         impl DnsClient for HResolver {
             async fn query(&self, name: &str) -> std::io::Result<Vec<String>> {
@@ -279,16 +288,20 @@ mod tests {
                     .0
                     .lookup_ip(name)
                     .await
-                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+                    .map_err(std::io::Error::other)?;
                 Ok(r.iter().map(|i| i.to_string()).collect())
             }
         }
-        let mut cfg = ResolverConfig::new();
-        cfg.add_name_server(NameServerConfig::new(
-            "127.0.0.1:53".parse().unwrap(),
-            Protocol::Udp,
-        ));
-        let resolver = TokioAsyncResolver::tokio(cfg, ResolverOpts::default());
+        // 127.0.0.1:53 UDP — `ConnectionConfig::new(Udp)` defaults to port 53.
+        let ns = NameServerConfig::new(
+            std::net::Ipv4Addr::LOCALHOST.into(),
+            true,
+            vec![ConnectionConfig::new(ProtocolConfig::Udp)],
+        );
+        let cfg = ResolverConfig::from_parts(None, vec![], vec![ns]);
+        let resolver = Resolver::builder_with_config(cfg, TokioRuntimeProvider::default())
+            .build()
+            .expect("build hickory resolver");
         let client = Arc::new(HResolver(resolver));
         let driver = DnsDriver::new(client, vec!["localhost.".into()]).with_concurrency(2);
         let _res = driver.run(&ctx(2)).await;
