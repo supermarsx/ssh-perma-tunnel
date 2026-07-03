@@ -104,7 +104,7 @@ libgssapi-sys = { path = "vendor/libgssapi-fork/libgssapi-sys" }
 # The `# rolling` marker is load-bearing — `scripts/release/bump-version.sh`
 # greps for it to perform an unambiguous in-place rewrite. See
 # `releasing.md` and `docs/releases/readme.md`.
-version = "0.26.47"  # rolling
+version = "0.26.48"  # rolling
 edition = "2021"
 rust-version = "1.88"
 license = "MIT"

@@ -1,3 +1,15 @@
+## [26.48] - 2026-07-03
+
+# spt 26.48
+
+## Changes since 26.47
+
+- fix(ci): gate macOS-fragile 4mib dataplane harness test; grant docs Pages write (ab3e265)
+- test: across-board regression suite (auth/trust, updater, validate, firewall, lifecycle) (a16a999)
+- test(dataplane): extensive matrix-driven regression suite across all transports (767f2aa)
+- chore: resync chaos + property locks to 0.26.47 (4b75c14)
+- ci+docs: upgrade GitHub Actions to latest + add extensive mdBook GitHub Pages docs (17c1b65)
+
 ## [26.47] - 2026-07-03
 
 # spt 26.47
