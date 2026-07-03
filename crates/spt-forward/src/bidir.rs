@@ -18,12 +18,29 @@ use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, ReadBuf};
 use crate::limits::TokenBucket;
 
 /// Shared activity beacon for the idle watchdog. Each direction's copy loop
-/// bumps the generation counter on every non-empty read; the watchdog samples
-/// it to detect quiescence without touching the hot read/write path beyond a
-/// single relaxed atomic increment.
+/// bumps the generation counter whenever bytes actually move, and marks itself
+/// "in flight" for the entire duration of draining a chunk (the throttle
+/// acquire *plus* the downstream write). The watchdog samples both to detect
+/// true quiescence without touching the hot read/write path beyond a couple of
+/// relaxed atomics.
+///
+/// The in-flight counter is the crux of the idle-vs-throttle distinction: a
+/// heavily rate-limited transfer can legitimately spend longer than one idle
+/// window inside a single [`TokenBucket::acquire`], during which the generation
+/// counter does not advance. Treating that window as idle would false-close an
+/// actively-draining connection and silently truncate it. By keeping the
+/// direction marked in-flight across the acquire+write, the watchdog sees the
+/// connection as busy (data is moving, just slowly) and never idle-closes it.
+/// The timeout therefore fires only when *no* direction is mid-chunk and no
+/// bytes have moved for a full window — genuine idleness.
 #[derive(Debug, Default)]
 struct ActivityBeacon {
+    /// Advanced once per non-empty read and once again after the matching write
+    /// completes, so a completed chunk always changes the sampled generation.
     generation: AtomicU64,
+    /// Number of directions currently draining a chunk (inside acquire+write).
+    /// Non-zero means data is actively being moved, however slowly.
+    in_flight: AtomicU64,
 }
 
 impl ActivityBeacon {
@@ -31,8 +48,20 @@ impl ActivityBeacon {
         self.generation.fetch_add(1, Ordering::Relaxed);
     }
 
+    fn enter_transfer(&self) {
+        self.in_flight.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn exit_transfer(&self) {
+        self.in_flight.fetch_sub(1, Ordering::Relaxed);
+    }
+
     fn sample(&self) -> u64 {
         self.generation.load(Ordering::Relaxed)
+    }
+
+    fn is_busy(&self) -> bool {
+        self.in_flight.load(Ordering::Relaxed) > 0
     }
 }
 
@@ -133,10 +162,23 @@ where
             res = &mut copies => return res,
             () = tokio::time::sleep(idle) => {
                 let now = beacon.sample();
-                if now == last_seen {
-                    // No activity for a full idle window — close by returning
-                    // the partial stats. Dropping the split halves here shuts
-                    // both directions down.
+                // Idle only when the generation has not advanced AND neither
+                // direction is mid-chunk. `is_busy()` covers a transfer that is
+                // legitimately slow due to its configured rate limit: while it
+                // sits in `bucket.acquire()` draining real data the generation
+                // does not move, but the direction is marked in-flight, so it is
+                // NOT counted as idle and never truncated.
+                if now == last_seen && !beacon.is_busy() {
+                    // No byte moved and nothing is in flight for a full idle
+                    // window — a genuinely idle connection. Log the close so it
+                    // is observable (the previous silent `Ok(default)` return
+                    // made idle closes invisible), then return the partial
+                    // stats; dropping the split halves shuts both directions
+                    // down.
+                    tracing::debug!(
+                        idle_timeout = ?idle,
+                        "bidir: idle watchdog closing quiescent connection"
+                    );
                     return Ok(CopyStats::default());
                 }
                 last_seen = now;
@@ -180,16 +222,34 @@ where
             let _ = dst.shutdown().await;
             return Ok(total);
         }
-        // Byte activity — reset the idle watchdog (single relaxed increment).
+        // Byte activity — reset the idle watchdog (single relaxed increment)
+        // and mark this direction in-flight for the whole drain (throttle
+        // acquire + write). Marking in-flight is what keeps a legitimately
+        // rate-limited chunk — which can block inside `acquire` for longer than
+        // a full idle window — from being mis-read as idle and truncated.
         if let Some(b) = beacon {
             b.bump();
+            b.enter_transfer();
         }
-        if bucket.is_active() {
-            bucket.acquire(n as u64).await;
+        // Ensure the in-flight mark is cleared even if the write errors out, so
+        // a failed direction cannot wedge the watchdog into "always busy".
+        let drain = async {
+            if bucket.is_active() {
+                bucket.acquire(n as u64).await;
+            }
+            // `filled()` is the initialised portion of the buffer — never pass
+            // uninitialised memory to `write_all`.
+            dst.write_all(read_buf.filled()).await
+        };
+        let result = drain.await;
+        if let Some(b) = beacon {
+            // Bump again on completion so a chunk that finished entirely within
+            // one idle window still advances the sampled generation, then clear
+            // the in-flight mark.
+            b.bump();
+            b.exit_transfer();
         }
-        // `filled()` is the initialised portion of the buffer — never pass
-        // uninitialised memory to `write_all`.
-        dst.write_all(read_buf.filled()).await?;
+        result?;
         total += n as u64;
     }
 }
@@ -325,6 +385,74 @@ mod tests {
         tokio::time::advance(std::time::Duration::from_secs(5)).await;
         let stats = bridge.await.unwrap().unwrap();
         // Idle close returns default (zero) stats.
+        assert_eq!(stats, CopyStats::default());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn throttled_transfer_not_idle_closed() {
+        // Regression (MED-3): a legitimately rate-limited transfer whose single
+        // chunk takes far longer than the idle window to drain must NOT be
+        // idle-closed. Pre-fix, the activity beacon was bumped only *before*
+        // `bucket.acquire()`; while the chunk drained (≈16 s at 1 KiB/s) the
+        // generation never advanced, so the watchdog saw two equal samples and
+        // false-closed — dropping the in-flight write, truncating the upload,
+        // and returning zero stats reported as success. With the in-flight mark
+        // held across acquire+write the connection reads as busy and survives.
+        let payload_len = 16 * 1024;
+        let (mut left_app, mut left_tun) = duplex(64 * 1024);
+        let (mut right_tun, mut right_app) = duplex(64 * 1024);
+
+        let bridge = tokio::spawn(async move {
+            copy_bidirectional_throttled_idle(
+                &mut left_tun,
+                &mut right_tun,
+                // 1 KiB/s, 1 KiB burst → ≈16 s to drain a 16 KiB chunk.
+                TokenBucket::new(1024, 1024),
+                TokenBucket::unlimited(),
+                // Idle window far shorter than the per-chunk drain time; this is
+                // exactly the config that false-closed pre-fix.
+                Some(Duration::from_secs(2)),
+            )
+            .await
+        });
+
+        let payload = vec![0xCD; payload_len];
+        left_app.write_all(&payload).await.unwrap();
+        left_app.shutdown().await.unwrap();
+        // Close the quiescent reverse direction so it EOFs cleanly.
+        right_app.shutdown().await.unwrap();
+
+        // Must receive the *entire* payload — no truncation.
+        let mut got = vec![0u8; payload_len];
+        tokio::io::AsyncReadExt::read_exact(&mut right_app, &mut got)
+            .await
+            .unwrap();
+        assert_eq!(got, payload);
+
+        let stats = bridge.await.unwrap().unwrap();
+        // Full byte count reported, not the zeroed idle-close default.
+        assert_eq!(stats.a_to_b as usize, payload_len);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn throttled_but_quiescent_still_idle_closes() {
+        // A throttle bucket is configured but no bytes ever flow: `acquire` is
+        // never entered, nothing is in-flight, so the watchdog must still fire
+        // after the idle window (the fix must not wedge the watchdog "on").
+        let (_left_app, mut left_tun) = duplex(64);
+        let (mut right_tun, _right_app) = duplex(64);
+        let bridge = tokio::spawn(async move {
+            copy_bidirectional_throttled_idle(
+                &mut left_tun,
+                &mut right_tun,
+                TokenBucket::new(1024, 1024),
+                TokenBucket::new(1024, 1024),
+                Some(Duration::from_secs(1)),
+            )
+            .await
+        });
+        tokio::time::advance(Duration::from_secs(5)).await;
+        let stats = bridge.await.unwrap().unwrap();
         assert_eq!(stats, CopyStats::default());
     }
 

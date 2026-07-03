@@ -45,6 +45,13 @@ pub struct Model {
     /// preserving it byte-for-byte. Set by [`Self::dns_mut`] /
     /// [`Self::config_mut`]; cleared on save.
     dns_dirty: bool,
+    /// Name (`id`) the selected profile has in the *source document* — i.e. its
+    /// on-disk key, captured at selection/save time and left untouched while the
+    /// operator edits `Profile::name`. [`crate::save`] matches the
+    /// `[[profiles]]` block to replace by this original name so renaming the
+    /// `id` updates the existing block in place instead of appending a duplicate
+    /// (HC3 F4). `None` when there is no selected profile yet.
+    selected_original_name: Option<String>,
     /// Last successful save target (for restore-on-error reporting).
     last_saved: Option<PathBuf>,
 }
@@ -58,6 +65,7 @@ impl Model {
             .map_err(|e| Error::InvalidConfig(format!("read `{}`: {e}", path.display())))?;
         let document = Document::parse(&raw)?;
         let (config, _warnings) = spt_config::load_str(&raw, false)?;
+        let selected_original_name = config.profiles.first().map(|p| p.name.clone());
         Ok(Self {
             config_path: path.to_path_buf(),
             document,
@@ -66,6 +74,7 @@ impl Model {
             dirty: false,
             events_dirty: false,
             dns_dirty: false,
+            selected_original_name,
             last_saved: None,
         })
     }
@@ -75,6 +84,7 @@ impl Model {
     pub fn from_str(raw: &str) -> Self {
         let document = Document::parse(raw).expect("test input must parse");
         let (config, _w) = spt_config::load_str(raw, false).expect("test input must load");
+        let selected_original_name = config.profiles.first().map(|p| p.name.clone());
         Self {
             config_path: PathBuf::from("<memory>"),
             document,
@@ -83,6 +93,7 @@ impl Model {
             dirty: false,
             events_dirty: false,
             dns_dirty: false,
+            selected_original_name,
             last_saved: None,
         }
     }
@@ -248,6 +259,7 @@ impl Model {
     pub fn select_profile_index(&mut self, idx: usize) {
         if idx < self.config.profiles.len() {
             self.selected = idx;
+            self.capture_original_name();
         }
     }
 
@@ -255,6 +267,7 @@ impl Model {
     pub fn select_profile_by_name(&mut self, name: &str) -> Option<usize> {
         let idx = self.config.profiles.iter().position(|p| p.name == name)?;
         self.selected = idx;
+        self.capture_original_name();
         Some(idx)
     }
 
@@ -267,7 +280,32 @@ impl Model {
         };
         self.config.profiles.push(p);
         self.selected = self.config.profiles.len() - 1;
+        // A freshly-created profile is not yet in the source document, so its
+        // original name is its current name (no on-disk block matches it, so
+        // the first save appends rather than renaming).
+        self.selected_original_name = Some(name.to_owned());
         self.dirty = true;
+    }
+
+    /// Capture the currently-selected profile's name as its source-document
+    /// (`id`) key, so a later rename can locate the block to update in place.
+    /// Called on selection changes and after a successful save.
+    fn capture_original_name(&mut self) {
+        self.selected_original_name = self
+            .config
+            .profiles
+            .get(self.selected)
+            .map(|p| p.name.clone());
+    }
+
+    /// The name the selected profile has in the *source document* — its on-disk
+    /// `id` key, unaffected by an in-flight rename of `Profile::name`.
+    /// [`crate::save`] uses this to match the `[[profiles]]` block to replace,
+    /// so editing the `id` renames the block in place instead of appending a
+    /// duplicate. `None` when there is no selected profile.
+    #[must_use]
+    pub fn selected_original_name(&self) -> Option<&str> {
+        self.selected_original_name.as_deref()
     }
 
     /// `true` if any edit has occurred since the last save.
@@ -316,6 +354,10 @@ impl Model {
         self.dirty = false;
         self.events_dirty = false;
         self.dns_dirty = false;
+        // The saved document now carries the (possibly renamed) profile under
+        // its current name, so that becomes the original name for any further
+        // rename in the same session.
+        self.capture_original_name();
     }
 
     /// Mutably borrow the round-trip document so [`crate::save`] can splice

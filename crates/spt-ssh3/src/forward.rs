@@ -402,7 +402,13 @@ async fn local_loop(
     idle_timeout: Option<Duration>,
 ) {
     let _ = state_tx.send(ForwardState::Active);
-    let active = Arc::new(std::sync::atomic::AtomicU32::new(0));
+    // LOW-6: enforce `max_connections` with a proper semaphore gate rather than
+    // a racy load-then-increment. `try_acquire` reserves a slot atomically, so N
+    // concurrent accepts can never overshoot the cap; the RAII permit is held
+    // for the bridged connection's lifetime and released on completion. `0`
+    // (⇐ `max == None`) ⇒ unlimited (mirrors the ConnectionGate used by the
+    // remote-forward/inbound-bidi paths).
+    let conn_gate = ConnectionGate::new(max.unwrap_or(0));
     // M-W3: honour `max_new_connections_per_second` — a per-accept admission
     // gate. `0` ⇒ unlimited (preserves prior behaviour).
     let rate_gate = RateGate::new(limits.max_new_conns_per_sec, limits.max_new_conns_per_sec);
@@ -426,22 +432,21 @@ async fn local_loop(
                     warn!(target: "spt_ssh3::forward", forward = %name, ?peer, "max_new_connections_per_second reached, dropping connection");
                     continue;
                 }
-                if let Some(limit) = max {
-                    if active.load(std::sync::atomic::Ordering::Relaxed) >= limit {
-                        warn!(target: "spt_ssh3::forward", forward = %name, ?peer, limit, "max_connections reached, dropping incoming");
-                        continue;
-                    }
-                }
+                // LOW-6: atomically reserve a connection slot. When the gate is
+                // exhausted the freshly-accepted socket is dropped (no overshoot).
+                let Some(permit) = conn_gate.try_acquire() else {
+                    warn!(target: "spt_ssh3::forward", forward = %name, ?peer, limit = max, "max_connections reached, dropping incoming");
+                    continue;
+                };
                 let target = target.clone();
                 let conn = conn.clone();
-                let active = active.clone();
-                active.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 let name_t = name.clone();
                 tokio::spawn(async move {
                     if let Err(e) = bridge_local(conn, sock, &target, &limits, idle_timeout).await {
                         warn!(target: "spt_ssh3::forward", forward = %name_t, error = %e, "local conn failed");
                     }
-                    active.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                    // Release the connection slot only after the bridge returns.
+                    drop(permit);
                 });
             }
         }
@@ -656,13 +661,226 @@ async fn bridge_remote(inbound: InboundForward) -> Result<()> {
     Ok(())
 }
 
+/// Per-client return-path route for a local UDP forward (MED-4).
+///
+/// Created lazily on the first datagram from a *new* client source address and
+/// stored as the [`UdpFlowTable`] value (keyed by that client addr). It owns the
+/// per-client `flow_id`, so a reply datagram — routed by the session demux into
+/// `state.udp_flows[flow_id]` — is delivered back to the *correct* client rather
+/// than a shared "last peer". Dropping the route (idle eviction or forward
+/// teardown) unregisters the flow-id and stops the client's reply pump, keeping
+/// `state.udp_flows` and the spawned task set bounded by `max_flows`.
+struct UdpFlowRoute {
+    flow_id: u32,
+    state: Arc<SessionState>,
+    pump: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for UdpFlowRoute {
+    fn drop(&mut self) {
+        self.state.udp_flows.remove(&self.flow_id);
+        self.pump.abort();
+    }
+}
+
+/// Spawn the per-client reply pump: drain `rx` (fed by the session datagram
+/// demux for this client's `flow_id`) and deliver each reply back to exactly
+/// `peer`. The shared per-direction `down_bucket` throttles byte-rate (UDP is
+/// lossy — an over-budget datagram is dropped, never blocked).
+fn spawn_udp_reply_pump(
+    mut rx: mpsc::Receiver<Bytes>,
+    socket: Arc<UdpSocket>,
+    peer: SocketAddr,
+    down_bucket: TokenBucket,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        while let Some(payload) = rx.recv().await {
+            if down_bucket.is_active() && down_bucket.try_acquire(payload.len() as u64).is_some() {
+                debug!(target: "spt_ssh3::forward", ?peer, "udp down byte-rate cap — dropping datagram");
+                continue;
+            }
+            if let Err(e) = socket.send_to(&payload, peer).await {
+                warn!(target: "spt_ssh3::forward", error = %e, ?peer, "udp send_to client failed");
+            }
+        }
+    })
+}
+
+/// Parameters for [`local_udp_pump`], the local-UDP forward data-plane task.
+/// Bundled into one struct so the pump can be driven directly from tests with a
+/// caller-bound socket (whose ephemeral port is then known) without an
+/// unwieldy argument list.
+struct LocalUdpPump {
+    conn: Connection,
+    state: Arc<SessionState>,
+    control_send: Arc<AsyncMutex<SendStream>>,
+    next_flow_id: Arc<std::sync::atomic::AtomicU32>,
+    socket: Arc<UdpSocket>,
+    target: TargetAddr,
+    flow_table: Arc<UdpFlowTable<UdpFlowKey, UdpFlowRoute>>,
+    up_bucket: TokenBucket,
+    down_bucket: TokenBucket,
+    idle: Duration,
+    name: String,
+}
+
+/// Data-plane loop for a local UDP forward.
+///
+/// Outbound (`socket` → QUIC): each datagram is admitted against the pps /
+/// datagram-size / max-flows / byte-rate limits, then sent with a 4-byte
+/// big-endian `flow_id` prefix. Crucially, every *distinct* client source
+/// address gets its *own* `flow_id` (allocated lazily and announced with a
+/// [`Ssh3FrameKind::UdpAssociate`] frame), so return datagrams are demultiplexed
+/// per-client and never cross-talk (MED-4).
+///
+/// Inbound (QUIC → `socket`): handled by the per-client reply pumps spawned in
+/// [`spawn_udp_reply_pump`]; the session demux routes each reply into the
+/// originating client's channel by `flow_id`.
+async fn local_udp_pump(
+    pump: LocalUdpPump,
+    mut close_rx: oneshot::Receiver<()>,
+    state_tx: watch::Sender<ForwardState>,
+) {
+    let LocalUdpPump {
+        conn,
+        state,
+        control_send,
+        next_flow_id,
+        socket,
+        target,
+        flow_table,
+        up_bucket,
+        down_bucket,
+        idle,
+        name,
+    } = pump;
+
+    let flow_table_evict = flow_table.clone();
+    let name_e = name.clone();
+
+    let outbound = async {
+        let mut buf = vec![0u8; 64 * 1024];
+        loop {
+            let (n, peer) = match socket.recv_from(&mut buf).await {
+                Ok(v) => v,
+                Err(e) => {
+                    warn!(target: "spt_ssh3::forward", error = %e, "udp recv_from failed");
+                    return;
+                }
+            };
+            // packets-per-second cap.
+            if !flow_table.admit_packet() {
+                warn!(target: "spt_ssh3::forward", forward = %name, ?peer, "udp max_packets_per_second reached — dropping datagram");
+                continue;
+            }
+            // max_datagram_size reject (oversized dropped + counted).
+            if !flow_table.admit_size(n) {
+                warn!(target: "spt_ssh3::forward", forward = %name, ?peer, bytes = n, "udp datagram exceeds max_datagram_size — dropping");
+                continue;
+            }
+            // Resolve (or lazily create) this client's flow. `touch_or_insert`
+            // bumps last_seen for an existing flow and atomically inserts a new
+            // one under the `max_flows` cap — so concurrent clients cannot
+            // overshoot it. On insert we allocate a fresh per-client `flow_id`,
+            // register its reply channel + pump, and remember (via `created`)
+            // that we must announce it below.
+            let mut created: Option<u32> = None;
+            let admitted = flow_table.touch_or_insert(peer, || {
+                let fid = next_flow_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let (tx, rx) = mpsc::channel::<Bytes>(UDP_INBOUND_CHANNEL_CAP);
+                state.udp_flows.insert(fid, tx);
+                let pump = spawn_udp_reply_pump(rx, socket.clone(), peer, down_bucket.clone());
+                created = Some(fid);
+                UdpFlowRoute {
+                    flow_id: fid,
+                    state: state.clone(),
+                    pump,
+                }
+            });
+            if !admitted {
+                warn!(target: "spt_ssh3::forward", forward = %name, ?peer, "udp max_flows reached — dropping datagram");
+                continue;
+            }
+            let flow_id = if let Some(fid) = created {
+                // New client flow: announce the association so the peer opens a
+                // dedicated per-client mapping toward the target.
+                let assoc = Ssh3Frame::new(
+                    Ssh3FrameKind::UdpAssociate,
+                    UdpAssociatePayload {
+                        flow_id: fid,
+                        host: target.host.clone(),
+                        port: target.port,
+                    }
+                    .encode(),
+                );
+                let mut g = control_send.lock().await;
+                if let Err(e) = assoc.write_async(&mut *g).await {
+                    warn!(target: "spt_ssh3::forward", error = %e, ?peer, "udp associate write failed");
+                }
+                drop(g);
+                fid
+            } else {
+                // Existing flow: read back its flow_id. (A concurrent eviction
+                // between the touch and this read is possible but improbable —
+                // we just bumped last_seen; if it did happen, drop the datagram.)
+                let mut fid = None;
+                flow_table.with_value(&peer, |r: &UdpFlowRoute| fid = Some(r.flow_id));
+                let Some(fid) = fid else {
+                    continue;
+                };
+                fid
+            };
+            // Byte-rate (up): drop when over rate (UDP is lossy — never block
+            // the datagram pump).
+            if up_bucket.is_active() && up_bucket.try_acquire(n as u64).is_some() {
+                debug!(target: "spt_ssh3::forward", forward = %name, ?peer, "udp up byte-rate cap — dropping datagram");
+                continue;
+            }
+            let mut payload = Vec::with_capacity(4 + n);
+            payload.extend_from_slice(&flow_id.to_be_bytes());
+            payload.extend_from_slice(&buf[..n]);
+            if let Err(e) = conn.send_datagram(Bytes::from(payload)) {
+                warn!(target: "spt_ssh3::forward", error = %e, "udp send_datagram failed");
+            }
+        }
+    };
+
+    // Idle-flow evictor: prune per-client flows quiescent for `idle`. Dropping
+    // an evicted `UdpFlowRoute` value tears down its channel + reply pump.
+    let evict = async move {
+        let mut ticker = tokio::time::interval(idle.max(Duration::from_secs(1)));
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            ticker.tick().await;
+            let n = flow_table_evict.evict_idle();
+            if n > 0 {
+                debug!(target: "spt_ssh3::forward", forward = %name_e, evicted = n, "udp idle flows evicted");
+            }
+        }
+    };
+
+    #[allow(clippy::ignored_unit_patterns)]
+    {
+        tokio::select! {
+            _ = &mut close_rx => {}
+            _ = outbound => {}
+            _ = evict => {}
+        }
+    }
+    // Dropping `flow_table` here drops every `UdpFlowRoute`, which unregisters
+    // each flow-id from `state.udp_flows` and aborts its reply pump.
+    debug!(target: "spt_ssh3::forward", forward = %name, "udp forward stopped");
+    let _ = state_tx.send(ForwardState::Stopped);
+}
+
 /// Open a UDP forward.
 ///
-/// Allocates a fresh `flow_id`, sends a [`Ssh3FrameKind::UdpAssociate`] frame
-/// on the control stream, then bridges between a local `UdpSocket` and the
-/// QUIC datagram channel. Each datagram is prefixed with the 4-byte big-endian
-/// `flow_id` so multiple UDP forwards on one session can be demultiplexed.
-#[allow(clippy::too_many_arguments)]
+/// Binds a local `UdpSocket` and bridges it to the QUIC datagram channel. Each
+/// datagram is prefixed with a 4-byte big-endian `flow_id`; every distinct local
+/// client source address is assigned its *own* `flow_id` (announced with a
+/// [`Ssh3FrameKind::UdpAssociate`] frame) so replies are demultiplexed back to
+/// the client that originated the flow (MED-4) and concurrent clients never
+/// receive each other's traffic.
 pub async fn open_udp(
     conn: Connection,
     state: Arc<SessionState>,
@@ -693,26 +911,8 @@ pub async fn open_udp(
             reason: e.to_string(),
         })?;
 
-    let flow_id = next_flow_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let assoc = Ssh3Frame::new(
-        Ssh3FrameKind::UdpAssociate,
-        UdpAssociatePayload {
-            flow_id,
-            host: spec.target.host.clone(),
-            port: spec.target.port,
-        }
-        .encode(),
-    );
-    {
-        let mut g = control_send.lock().await;
-        assoc.write_async(&mut *g).await?;
-    }
-
-    let (inbound_tx, mut inbound_rx) = mpsc::channel::<Bytes>(UDP_INBOUND_CHANNEL_CAP);
-    state.udp_flows.insert(flow_id, inbound_tx);
-
     let (state_tx, state_rx) = watch::channel(ForwardState::Active);
-    let (close_tx, mut close_rx) = oneshot::channel();
+    let (close_tx, close_rx) = oneshot::channel();
     let id = ForwardId::new();
     let name = spec.name.clone();
 
@@ -723,7 +923,7 @@ pub async fn open_udp(
     // direction; idle flows are evicted at the configured idle cadence.
     let flow_cfg = udp_flow_config(spec);
     let idle = flow_cfg.idle_timeout;
-    let flow_table: Arc<UdpFlowTable<UdpFlowKey, ()>> = Arc::new(UdpFlowTable::with_pps(
+    let flow_table: Arc<UdpFlowTable<UdpFlowKey, UdpFlowRoute>> = Arc::new(UdpFlowTable::with_pps(
         flow_cfg,
         spec.limits.max_packets_per_sec,
     ));
@@ -740,120 +940,20 @@ pub async fn open_udp(
         "ssh3 udp forward opened"
     );
 
-    let socket = Arc::new(socket);
-    let conn_dgrm = conn.clone();
-    let socket_send = socket.clone();
-    let state_clone = state.clone();
-    let name_t = name.clone();
-    let flow_table_out = flow_table.clone();
-    let flow_table_evict = flow_table.clone();
-    tokio::spawn(async move {
-        // Track last peer addr so we can deliver server→client datagrams.
-        let last_peer: Arc<AsyncMutex<Option<std::net::SocketAddr>>> =
-            Arc::new(AsyncMutex::new(None));
-
-        // Outbound: socket → quic datagram (with flow-id prefix), rate/size/flow
-        // capped.
-        let outbound_socket = socket.clone();
-        let outbound_conn = conn_dgrm.clone();
-        let outbound_peer = last_peer.clone();
-        let name_o = name_t.clone();
-        let outbound = async move {
-            let mut buf = vec![0u8; 64 * 1024];
-            loop {
-                let (n, peer) = match outbound_socket.recv_from(&mut buf).await {
-                    Ok(v) => v,
-                    Err(e) => {
-                        warn!(target: "spt_ssh3::forward", error = %e, "udp recv_from failed");
-                        return;
-                    }
-                };
-                // packets-per-second cap.
-                if !flow_table_out.admit_packet() {
-                    warn!(target: "spt_ssh3::forward", forward = %name_o, ?peer, "udp max_packets_per_second reached — dropping datagram");
-                    continue;
-                }
-                // max_datagram_size reject (oversized dropped + counted).
-                if !flow_table_out.admit_size(n) {
-                    warn!(target: "spt_ssh3::forward", forward = %name_o, ?peer, bytes = n, "udp datagram exceeds max_datagram_size — dropping");
-                    continue;
-                }
-                // max_flows cap (keyed by client source addr).
-                if !flow_table_out.touch_or_insert(peer, || ()) {
-                    warn!(target: "spt_ssh3::forward", forward = %name_o, ?peer, "udp max_flows reached — dropping datagram");
-                    continue;
-                }
-                // Byte-rate (up): drop when over rate (UDP is lossy — never block
-                // the datagram pump).
-                if up_bucket.is_active() && up_bucket.try_acquire(n as u64).is_some() {
-                    debug!(target: "spt_ssh3::forward", forward = %name_o, ?peer, "udp up byte-rate cap — dropping datagram");
-                    continue;
-                }
-                {
-                    let mut g = outbound_peer.lock().await;
-                    *g = Some(peer);
-                }
-                let mut payload = Vec::with_capacity(4 + n);
-                payload.extend_from_slice(&flow_id.to_be_bytes());
-                payload.extend_from_slice(&buf[..n]);
-                if let Err(e) = outbound_conn.send_datagram(Bytes::from(payload)) {
-                    warn!(target: "spt_ssh3::forward", error = %e, "udp send_datagram failed");
-                }
-            }
-        };
-
-        // Inbound: dispatched datagrams (from session loop) → socket, byte-rate
-        // (down) capped.
-        let inbound_peer = last_peer.clone();
-        let inbound = async move {
-            while let Some(payload) = inbound_rx.recv().await {
-                if down_bucket.is_active()
-                    && down_bucket.try_acquire(payload.len() as u64).is_some()
-                {
-                    debug!(target: "spt_ssh3::forward", "udp down byte-rate cap — dropping datagram");
-                    continue;
-                }
-                let peer = {
-                    let g = inbound_peer.lock().await;
-                    *g
-                };
-                if let Some(peer) = peer {
-                    if let Err(e) = socket_send.send_to(&payload, peer).await {
-                        warn!(target: "spt_ssh3::forward", error = %e, "udp send_to client failed");
-                    }
-                } else {
-                    debug!(target: "spt_ssh3::forward", "udp inbound dropped — no client peer yet");
-                }
-            }
-        };
-
-        // Idle-flow evictor: prune per-flow mappings quiescent for `idle`.
-        let name_e = name_t.clone();
-        let evict = async move {
-            let mut ticker = tokio::time::interval(idle.max(Duration::from_secs(1)));
-            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-            loop {
-                ticker.tick().await;
-                let n = flow_table_evict.evict_idle();
-                if n > 0 {
-                    debug!(target: "spt_ssh3::forward", forward = %name_e, evicted = n, "udp idle flows evicted");
-                }
-            }
-        };
-
-        #[allow(clippy::ignored_unit_patterns)]
-        {
-            tokio::select! {
-                _ = &mut close_rx => {}
-                _ = outbound => {}
-                _ = inbound => {}
-                _ = evict => {}
-            }
-        }
-        state_clone.udp_flows.remove(&flow_id);
-        debug!(target: "spt_ssh3::forward", forward = %name_t, "udp forward stopped");
-        let _ = state_tx.send(ForwardState::Stopped);
-    });
+    let pump = LocalUdpPump {
+        conn,
+        state,
+        control_send,
+        next_flow_id,
+        socket: Arc::new(socket),
+        target: spec.target.clone(),
+        flow_table,
+        up_bucket,
+        down_bucket,
+        idle,
+        name: name.clone(),
+    };
+    tokio::spawn(local_udp_pump(pump, close_rx, state_tx));
 
     Ok(ForwardHandle::new(id, name, state_rx, close_tx))
 }
@@ -1798,74 +1898,101 @@ async fn open_remote_udp(
     let inflight = state.remote_udp_inflight.clone();
     let name_t = name.clone();
 
-    // For each inbound datagram, dial target; reflect replies back over the
-    // QUIC datagram channel.
+    // MED/LOW-5: keep ONE persistent local socket per flow (connected to the
+    // target) alive for the flow's idle window and relay *every* reply datagram,
+    // instead of binding a fresh socket per datagram and reading a single reply.
+    // This matches normal UDP-forward semantics for multi-response / stateful
+    // protocols (DNS retries, QUIC, TFTP): all replies get through and the
+    // target sees a stable source port. Bounded: at most one socket + one relay
+    // task per remote-UDP forward (the in-flight permit is held for the socket's
+    // lifetime, not per datagram), reclaimed after `idle` with no traffic.
+    let idle = udp_flow_config(spec).idle_timeout;
     tokio::spawn(async move {
         let dial_target = format!("{}:{}", target.host, target.port);
-        let inbound_loop = async {
-            while let Some(payload) = inbound_rx.recv().await {
-                // E3-F3: bound the per-datagram fan-out. Each datagram spawns a
-                // task that binds a socket + allocates a 64 KiB buffer; without
-                // a cap a datagram flood is unbounded socket/memory growth.
-                // `try_acquire_owned` drops the datagram (rather than queueing)
-                // when the session is already at its in-flight ceiling.
-                let Ok(permit) = inflight.clone().try_acquire_owned() else {
-                    warn!(
-                        target: "spt_ssh3::forward",
-                        target = %dial_target,
-                        "remote-udp in-flight cap reached — dropping datagram"
-                    );
-                    continue;
-                };
-                // Resolve + connect a fresh local UDP socket per inbound
-                // datagram (stateless mapping). For long-lived flows the
-                // caller can layer a connection-tracking table on top.
-                let sock = match UdpSocket::bind(("0.0.0.0", 0)).await {
-                    Ok(s) => s,
-                    Err(e) => {
-                        warn!(
-                            target: "spt_ssh3::forward",
-                            error = %e,
-                            "remote-udp local bind failed"
-                        );
-                        continue;
-                    }
-                };
-                if let Err(e) = sock.send_to(&payload, &dial_target).await {
-                    warn!(
-                        target: "spt_ssh3::forward",
-                        error = %e,
-                        target = %dial_target,
-                        "remote-udp send_to local target failed"
-                    );
-                    continue;
-                }
-                // Best-effort: read one reply with a short timeout, send back.
-                let mut buf = vec![0u8; 64 * 1024];
-                let conn_clone = conn.clone();
-                tokio::spawn(async move {
-                    // Permit released when this reply task finishes.
-                    let _permit = permit;
-                    let r = tokio::time::timeout(
-                        std::time::Duration::from_secs(5),
-                        sock.recv(&mut buf),
-                    )
-                    .await;
-                    if let Ok(Ok(n)) = r {
-                        let mut out = Vec::with_capacity(4 + n);
-                        out.extend_from_slice(&flow_id.to_be_bytes());
-                        out.extend_from_slice(&buf[..n]);
-                        let _ = conn_clone.send_datagram(Bytes::from(out));
-                    }
-                });
-            }
-        };
-        #[allow(clippy::ignored_unit_patterns)]
-        {
+        // Lazily-(re)created persistent socket and its reply-relay task.
+        let mut sock: Option<Arc<UdpSocket>> = None;
+        let mut relay_task: Option<tokio::task::JoinHandle<()>> = None;
+        loop {
             tokio::select! {
-                _ = &mut close_rx => {}
-                _ = inbound_loop => {}
+                _ = &mut close_rx => break,
+                res = tokio::time::timeout(idle, inbound_rx.recv()) => {
+                    match res {
+                        // Idle window elapsed with no datagram: reclaim the
+                        // socket + relay task (releases the in-flight permit).
+                        Err(_) => {
+                            if let Some(t) = relay_task.take() {
+                                t.abort();
+                            }
+                            sock = None;
+                        }
+                        // Demux channel closed (forward dropped).
+                        Ok(None) => break,
+                        Ok(Some(payload)) => {
+                            // (Re)establish the persistent socket + relay on the
+                            // first datagram of an active window.
+                            if sock.is_none() {
+                                // Hold one in-flight permit for the socket's
+                                // lifetime so concurrent remote-UDP forwards stay
+                                // bounded (E3-F3).
+                                let Ok(permit) = inflight.clone().try_acquire_owned() else {
+                                    warn!(target: "spt_ssh3::forward", target = %dial_target, "remote-udp in-flight cap reached — dropping datagram");
+                                    continue;
+                                };
+                                let s = match UdpSocket::bind(("0.0.0.0", 0)).await {
+                                    Ok(s) => s,
+                                    Err(e) => {
+                                        warn!(target: "spt_ssh3::forward", error = %e, "remote-udp local bind failed");
+                                        continue;
+                                    }
+                                };
+                                if let Err(e) = s.connect(&dial_target).await {
+                                    warn!(target: "spt_ssh3::forward", error = %e, target = %dial_target, "remote-udp connect to target failed");
+                                    continue;
+                                }
+                                let s = Arc::new(s);
+                                let relay_sock = s.clone();
+                                let relay_conn = conn.clone();
+                                relay_task = Some(tokio::spawn(async move {
+                                    // Permit released when this relay task ends.
+                                    let _permit = permit;
+                                    let mut buf = vec![0u8; 64 * 1024];
+                                    loop {
+                                        match relay_sock.recv(&mut buf).await {
+                                            Ok(n) => {
+                                                let mut out = Vec::with_capacity(4 + n);
+                                                out.extend_from_slice(&flow_id.to_be_bytes());
+                                                out.extend_from_slice(&buf[..n]);
+                                                if relay_conn.send_datagram(Bytes::from(out)).is_err() {
+                                                    return;
+                                                }
+                                            }
+                                            Err(e) => {
+                                                warn!(target: "spt_ssh3::forward", error = %e, "remote-udp reply recv failed");
+                                                return;
+                                            }
+                                        }
+                                    }
+                                }));
+                                sock = Some(s);
+                            }
+                            if let Some(s) = sock.as_ref() {
+                                if let Err(e) = s.send(&payload).await {
+                                    warn!(target: "spt_ssh3::forward", error = %e, target = %dial_target, "remote-udp send to target failed");
+                                    // Socket may be wedged; tear down so the next
+                                    // datagram rebinds a fresh one.
+                                    if let Some(t) = relay_task.take() {
+                                        t.abort();
+                                    }
+                                    sock = None;
+                                }
+                            }
+                        }
+                    }
+                }
             }
+        }
+        if let Some(t) = relay_task.take() {
+            t.abort();
         }
         state_clone.udp_flows.remove(&flow_id);
         debug!(target: "spt_ssh3::forward", forward = %name_t, "remote-udp forward stopped");
@@ -2505,5 +2632,305 @@ mod tests {
         }
 
         server.close(0u32.into(), b"done");
+    }
+
+    // ---------------------------------------------------------------------
+    // MED-4 / MED-LOW-5 / LOW-6: ssh3 UDP data-plane demux + cap fixes.
+    // ---------------------------------------------------------------------
+
+    /// MED-4 (key regression): two concurrent local UDP clients each receive
+    /// ONLY their own replies. Each distinct client source address gets its own
+    /// `flow_id`, so the session demux routes each reply back to the client that
+    /// originated the flow — never a shared "last peer". Pre-fix (single
+    /// `flow_id` + one shared `last_peer`) client A could receive client B's
+    /// reply.
+    #[cfg(feature = "testing")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn local_udp_concurrent_clients_no_reply_cross_talk() {
+        use std::sync::atomic::AtomicU32;
+
+        // Each client tags its datagrams with its own marker byte and asserts
+        // every reply it gets back carries THAT marker (never the other's).
+        async fn run_client(marker: u8, fwd_addr: std::net::SocketAddr) -> (usize, bool) {
+            let sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+            sock.connect(fwd_addr).await.unwrap();
+            let mut got = 0usize;
+            let mut clean = true;
+            for i in 0..40u8 {
+                let _ = sock.send(&[marker, i]).await;
+                let mut buf = [0u8; 64];
+                if let Ok(Ok(n)) =
+                    tokio::time::timeout(Duration::from_millis(50), sock.recv(&mut buf)).await
+                {
+                    if n >= 1 {
+                        got += 1;
+                        if buf[0] != marker {
+                            clean = false;
+                        }
+                    }
+                }
+            }
+            // Drain any stragglers.
+            loop {
+                let mut buf = [0u8; 64];
+                match tokio::time::timeout(Duration::from_millis(150), sock.recv(&mut buf)).await {
+                    Ok(Ok(n)) if n >= 1 => {
+                        got += 1;
+                        if buf[0] != marker {
+                            clean = false;
+                        }
+                    }
+                    _ => break,
+                }
+            }
+            (got, clean)
+        }
+
+        let (client, server) = connected_pair_public().await;
+        let state = Arc::new(SessionState::default());
+
+        // Client-side inbound demux: route server→client datagrams by flow_id
+        // into `state.udp_flows` (the per-client reply pumps drain these).
+        let demux = tokio::spawn(serve_datagram_demux(client.clone(), state.clone()));
+
+        // Server "target": reflect each datagram back verbatim (flow_id prefix
+        // preserved), i.e. an echo of what the client sent.
+        let server_echo = server.clone();
+        let echo = tokio::spawn(async move {
+            while let Ok(payload) = server_echo.read_datagram().await {
+                if payload.len() < 4 {
+                    continue;
+                }
+                let _ = server_echo.send_datagram(payload);
+            }
+        });
+
+        // Control stream for the (per-client) UdpAssociate frames.
+        let (csend, _crecv) = client.open_bi().await.unwrap();
+        let control_send = Arc::new(AsyncMutex::new(csend));
+
+        // Forward socket bound to a known port (so the test clients can reach it).
+        let fwd_sock = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let fwd_addr = fwd_sock.local_addr().unwrap();
+
+        let flow_cfg = UdpFlowTableConfig {
+            max_flows: 64,
+            ..Default::default()
+        };
+        let flow_table = Arc::new(UdpFlowTable::with_pps(flow_cfg, 0));
+        let (state_tx, _state_rx) = watch::channel(ForwardState::Active);
+        let (_close_tx, close_rx) = oneshot::channel();
+        let pump = LocalUdpPump {
+            conn: client.clone(),
+            state: state.clone(),
+            control_send,
+            next_flow_id: Arc::new(AtomicU32::new(1)),
+            socket: fwd_sock,
+            target: TargetAddr::new("127.0.0.1", 9),
+            flow_table,
+            up_bucket: TokenBucket::unlimited(),
+            down_bucket: TokenBucket::unlimited(),
+            idle: Duration::from_secs(60),
+            name: "u".into(),
+        };
+        tokio::spawn(local_udp_pump(pump, close_rx, state_tx));
+
+        let a = tokio::spawn(run_client(b'A', fwd_addr));
+        let b = tokio::spawn(run_client(b'B', fwd_addr));
+        let (a_got, a_clean) = a.await.unwrap();
+        let (b_got, b_clean) = b.await.unwrap();
+
+        assert!(
+            a_clean,
+            "client A received a datagram belonging to another client (cross-talk)"
+        );
+        assert!(
+            b_clean,
+            "client B received a datagram belonging to another client (cross-talk)"
+        );
+        assert!(
+            a_got > 0,
+            "client A must receive at least one of its own replies"
+        );
+        assert!(
+            b_got > 0,
+            "client B must receive at least one of its own replies"
+        );
+        assert!(
+            state.udp_flows.len() >= 2,
+            "each distinct client must be assigned its own flow-id"
+        );
+
+        demux.abort();
+        echo.abort();
+        client.close(0u32.into(), b"done");
+        server.close(0u32.into(), b"done");
+    }
+
+    /// MED/LOW-5: a remote UDP forward relays *every* reply datagram for a flow
+    /// (multi-response / stateful UDP), not just the first. The persistent
+    /// per-flow socket stays alive for the idle window. Pre-fix (fresh socket +
+    /// single `recv` per inbound datagram) only the first of N replies survived.
+    #[cfg(feature = "testing")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn remote_udp_relays_all_reply_datagrams() {
+        use std::sync::atomic::AtomicU32;
+
+        const REPLIES: u8 = 5;
+
+        let (client, server) = connected_pair_public().await;
+        let state = Arc::new(SessionState::default());
+
+        // Client-side demux: route the test's injected `[flow_id][req]` datagrams
+        // into `state.udp_flows[flow_id]` so the remote-udp inbound loop dials
+        // the target.
+        let demux = tokio::spawn(serve_datagram_demux(client.clone(), state.clone()));
+
+        // UDP target: on each request, fire back REPLIES reply datagrams.
+        let target = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let target_addr = target.local_addr().unwrap();
+        tokio::spawn(async move {
+            let mut buf = [0u8; 64];
+            while let Ok((_n, from)) = target.recv_from(&mut buf).await {
+                for i in 0..REPLIES {
+                    let _ = target.send_to(&[b'R', i], from).await;
+                }
+            }
+        });
+
+        // Control stream for the RemoteUdpForwardRequest frame.
+        let (csend, _crecv) = client.open_bi().await.unwrap();
+        let control_send = Arc::new(AsyncMutex::new(csend));
+
+        let spec = UdpForwardSpec {
+            name: "ru".into(),
+            direction: ForwardDirection::Remote,
+            listen: BindAddr::TcpHostPort {
+                host: "127.0.0.1".into(),
+                port: 0,
+            },
+            target: TargetAddr::new(target_addr.ip().to_string(), target_addr.port()),
+            idle_timeout_secs: 0,
+            max_flows: None,
+            limits: ForwardRateLimits::default(),
+        };
+        // next_flow_id starts at 1 ⇒ this forward gets flow_id = 1.
+        let _handle = open_remote_udp(
+            client.clone(),
+            state.clone(),
+            control_send,
+            Arc::new(AtomicU32::new(1)),
+            &spec,
+        )
+        .await
+        .expect("open_remote_udp");
+        let flow_id: u32 = 1;
+
+        // Inject one request datagram as if the peer forwarded it to us.
+        let mut req = Vec::new();
+        req.extend_from_slice(&flow_id.to_be_bytes());
+        req.extend_from_slice(b"ping");
+        server.send_datagram(Bytes::from(req)).unwrap();
+
+        // Collect relayed replies off the QUIC channel.
+        let mut relayed = 0usize;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        while relayed < REPLIES as usize && tokio::time::Instant::now() < deadline {
+            match tokio::time::timeout(Duration::from_millis(300), server.read_datagram()).await {
+                Ok(Ok(p)) if p.len() >= 5 => {
+                    let fid = u32::from_be_bytes([p[0], p[1], p[2], p[3]]);
+                    if fid == flow_id && p[4] == b'R' {
+                        relayed += 1;
+                    }
+                }
+                Ok(Ok(_)) => {}
+                _ => break,
+            }
+        }
+
+        assert!(
+            relayed >= 2,
+            "remote-udp must relay MULTIPLE reply datagrams per request (got {relayed}); \
+             pre-fix relayed only the first"
+        );
+
+        demux.abort();
+        client.close(0u32.into(), b"done");
+        server.close(0u32.into(), b"done");
+    }
+
+    /// LOW-6: the local forward's `max_connections` cap is enforced with a
+    /// semaphore gate and is never overshot, even when many clients connect at
+    /// once. The peer accepts the bridge channels but never responds, so each
+    /// admitted bridge holds its slot; every connection beyond the cap is
+    /// dropped at the gate (its channel is never opened toward the peer).
+    #[cfg(feature = "testing")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn local_forward_max_connections_not_overshot() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tokio::io::AsyncWriteExt as _;
+
+        const CAP: u32 = 2;
+        const CLIENTS: usize = 8;
+
+        let (client, server) = connected_pair_public().await;
+
+        // Server: accept bridge channels, count them, and hold them open WITHOUT
+        // responding (so each admitted bridge keeps its connection slot).
+        let opened = Arc::new(AtomicUsize::new(0));
+        let o = opened.clone();
+        let srv = tokio::spawn(async move {
+            let mut held = Vec::new();
+            while let Ok((send, recv)) = server.accept_bi().await {
+                o.fetch_add(1, Ordering::SeqCst);
+                held.push((send, recv));
+            }
+        });
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let lport = listener.local_addr().unwrap().port();
+        let (state_tx, _state_rx) = watch::channel(ForwardState::Listening);
+        let (_close_tx, close_rx) = oneshot::channel();
+        tokio::spawn(local_loop(
+            client,
+            listener,
+            TargetAddr::new("127.0.0.1", 9),
+            state_tx,
+            close_rx,
+            Some(CAP),
+            "cap".into(),
+            ForwardRateLimits::default(),
+            None,
+        ));
+
+        // Fire CLIENTS concurrent connections and keep them all open.
+        let mut socks = Vec::new();
+        for _ in 0..CLIENTS {
+            let mut s = TcpStream::connect(("127.0.0.1", lport)).await.unwrap();
+            let _ = s.write_all(b"x").await;
+            socks.push(s);
+        }
+
+        // Wait for the admitted bridges' channels to reach the peer.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        while opened.load(Ordering::SeqCst) < CAP as usize && tokio::time::Instant::now() < deadline
+        {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        // Settle: give any (erroneously) over-admitted bridge time to appear.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+
+        let n = opened.load(Ordering::SeqCst);
+        assert!(
+            n <= CAP as usize,
+            "max_connections overshot: {n} channels opened for cap {CAP}"
+        );
+        assert!(
+            n >= 1,
+            "the gate must still admit up to the cap (opened {n})"
+        );
+
+        srv.abort();
+        drop(socks);
     }
 }

@@ -16,8 +16,9 @@
 //! 6. **Encode response**: re-encrypt and re-HMAC if needed.
 
 use std::collections::HashMap;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
+use std::time::Instant;
 
 use tokio::net::UdpSocket;
 use tokio::sync::{oneshot, Mutex};
@@ -289,6 +290,7 @@ impl AgentBuilder {
             users: user_keys,
             registry: self.registry,
             counters: Mutex::new(UsmCounters::default()),
+            discovery_limiter: Mutex::new(DiscoveryRateLimiter::new()),
         });
         let agent_for_task = Arc::clone(&agent);
         let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
@@ -311,6 +313,90 @@ struct UserKeys {
     priv_kul: Vec<u8>,
 }
 
+/// Burst allowance (initial/maximum tokens) per source IP for the
+/// unauthenticated engine-ID discovery reply path.
+const DISCOVERY_BURST: u32 = 5;
+
+/// Tokens refilled per second per source IP. A legitimate client sends a single
+/// discovery then authenticates, so a slow refill is ample for real use while
+/// still throttling a flood.
+const DISCOVERY_REFILL_PER_SEC: f64 = 1.0;
+
+/// Hard cap on the number of source IPs tracked at once, bounding the
+/// rate-limiter's memory regardless of how many spoofed sources appear.
+const DISCOVERY_MAX_SOURCES: usize = 4096;
+
+/// One source IP's token-bucket state.
+#[derive(Debug)]
+struct DiscoveryBucket {
+    tokens: f64,
+    last: Instant,
+}
+
+/// Per-source-IP token-bucket rate limiter guarding the unauthenticated
+/// engine-ID discovery Report reply path.
+///
+/// A well-formed SNMPv3 message with an empty `msgAuthoritativeEngineID`
+/// elicits a ~100–150 byte Report at `noAuthNoPriv` *before* any auth check.
+/// With a spoofed source IP this makes the agent a UDP reflection/amplification
+/// vector (RFC 3414 §4 discovery is inherently unauthenticated). This limiter
+/// caps the reply rate per source so the agent can't be abused as an amplifier,
+/// while leaving legitimate discovery (one packet, then authenticate) working.
+///
+/// Memory is bounded by [`DISCOVERY_MAX_SOURCES`]: when the table is full, idle
+/// (fully-refilled) buckets are evicted to make room; if every tracked source
+/// is still active, new sources are refused rather than growing the table.
+#[derive(Debug)]
+struct DiscoveryRateLimiter {
+    buckets: HashMap<IpAddr, DiscoveryBucket>,
+}
+
+impl DiscoveryRateLimiter {
+    fn new() -> Self {
+        Self {
+            buckets: HashMap::new(),
+        }
+    }
+
+    /// Returns `true` (consuming one token) if a discovery reply is permitted
+    /// for `src` at `now`; `false` when the source has exhausted its budget.
+    fn allow(&mut self, src: IpAddr, now: Instant) -> bool {
+        // Bound memory: only evict/refuse when a *new* source would grow the
+        // table past the cap. Existing sources always refresh in place.
+        if self.buckets.len() >= DISCOVERY_MAX_SOURCES && !self.buckets.contains_key(&src) {
+            self.buckets.retain(|_, b| {
+                let refilled = b.tokens
+                    + now.saturating_duration_since(b.last).as_secs_f64()
+                        * DISCOVERY_REFILL_PER_SEC;
+                // Keep only sources that are still rate-limited (not fully
+                // refilled); a fully-refilled bucket is indistinguishable from a
+                // fresh one, so dropping it is free.
+                refilled < f64::from(DISCOVERY_BURST)
+            });
+            if self.buckets.len() >= DISCOVERY_MAX_SOURCES {
+                // Every tracked source is still active — refuse the new one
+                // rather than allocate unboundedly.
+                return false;
+            }
+        }
+
+        let bucket = self.buckets.entry(src).or_insert(DiscoveryBucket {
+            tokens: f64::from(DISCOVERY_BURST),
+            last: now,
+        });
+        let elapsed = now.saturating_duration_since(bucket.last).as_secs_f64();
+        bucket.tokens =
+            (bucket.tokens + elapsed * DISCOVERY_REFILL_PER_SEC).min(f64::from(DISCOVERY_BURST));
+        bucket.last = now;
+        if bucket.tokens >= 1.0 {
+            bucket.tokens -= 1.0;
+            true
+        } else {
+            false
+        }
+    }
+}
+
 /// Running agent. Held inside [`AgentHandle`].
 pub struct Agent {
     socket: UdpSocket,
@@ -319,6 +405,9 @@ pub struct Agent {
     users: HashMap<String, UserKeys>,
     registry: MibRegistry,
     counters: Mutex<UsmCounters>,
+    /// Per-source rate limiter for the unauthenticated discovery reply path
+    /// (anti-reflection defense-in-depth).
+    discovery_limiter: Mutex<DiscoveryRateLimiter>,
 }
 
 impl std::fmt::Debug for Agent {
@@ -398,6 +487,20 @@ impl Agent {
         // and §4 — Engine ID Discovery).
         if msg.security.engine_id.is_empty() {
             self.bump_counter(UsmError::UnknownEngineId).await;
+            // Defense-in-depth (anti-reflection): rate-limit the unauthenticated
+            // discovery Report reply per source IP. A spoofed-source discovery
+            // packet otherwise reflects a ~100–150 byte Report at a victim with
+            // no auth and no throttle. A real client sends one discovery then
+            // authenticates, so the per-source burst never impedes it.
+            let allowed = self
+                .discovery_limiter
+                .lock()
+                .await
+                .allow(peer.ip(), Instant::now());
+            if !allowed {
+                tracing::debug!(%peer, "snmp discovery reply rate-limited (anti-reflection)");
+                return Ok(());
+            }
             let scoped = self.build_report(&msg, UsmError::UnknownEngineId).await?;
             let reply = self
                 .build_response_message(&msg, scoped, SecurityLevel::NoAuthNoPriv, None)
@@ -1127,5 +1230,90 @@ impl Drop for AgentHandle {
         if let Some(j) = self.join.take() {
             j.abort();
         }
+    }
+}
+
+#[cfg(test)]
+mod discovery_rate_limit_tests {
+    use super::{
+        DiscoveryRateLimiter, DISCOVERY_BURST, DISCOVERY_MAX_SOURCES, DISCOVERY_REFILL_PER_SEC,
+    };
+    use std::net::{IpAddr, Ipv4Addr};
+    use std::time::{Duration, Instant};
+
+    fn ip(last_octet: u8) -> IpAddr {
+        IpAddr::V4(Ipv4Addr::new(10, 0, 0, last_octet))
+    }
+
+    #[test]
+    fn repeated_discovery_from_one_source_is_rate_limited() {
+        let mut rl = DiscoveryRateLimiter::new();
+        let now = Instant::now();
+        let src = ip(1);
+
+        // The initial burst is permitted...
+        for i in 0..DISCOVERY_BURST {
+            assert!(
+                rl.allow(src, now),
+                "burst token {i} must be permitted at t0"
+            );
+        }
+        // ...then the very next reply (same instant, same source) is throttled.
+        assert!(
+            !rl.allow(src, now),
+            "discovery flood from one source must be rate-limited once the burst is spent"
+        );
+    }
+
+    #[test]
+    fn tokens_refill_over_time() {
+        let mut rl = DiscoveryRateLimiter::new();
+        let t0 = Instant::now();
+        let src = ip(2);
+
+        // Drain the whole burst.
+        for _ in 0..DISCOVERY_BURST {
+            assert!(rl.allow(src, t0));
+        }
+        assert!(!rl.allow(src, t0), "burst exhausted");
+
+        // After enough time to refill one token, a single reply is permitted
+        // again, then throttled once more.
+        let later = t0 + Duration::from_secs_f64(1.0 / DISCOVERY_REFILL_PER_SEC + 0.001);
+        assert!(rl.allow(src, later), "one token must refill after ~1s");
+        assert!(!rl.allow(src, later), "only one token should have refilled");
+    }
+
+    #[test]
+    fn distinct_sources_have_independent_budgets() {
+        let mut rl = DiscoveryRateLimiter::new();
+        let now = Instant::now();
+
+        // Exhaust source A entirely.
+        for _ in 0..DISCOVERY_BURST {
+            assert!(rl.allow(ip(10), now));
+        }
+        assert!(!rl.allow(ip(10), now), "source A exhausted");
+
+        // Source B still gets its own full burst — one flooding source can't
+        // starve a legitimate one.
+        assert!(rl.allow(ip(11), now), "source B has an independent budget");
+    }
+
+    #[test]
+    fn source_table_is_memory_bounded() {
+        let mut rl = DiscoveryRateLimiter::new();
+        let now = Instant::now();
+        // Hammer far more distinct (spoofed) sources than the cap; a single
+        // token each keeps every bucket "active" so eviction can't reclaim.
+        for i in 0..(DISCOVERY_MAX_SOURCES + 500) {
+            #[allow(clippy::cast_possible_truncation)]
+            let src = IpAddr::V4(Ipv4Addr::from((i as u32).wrapping_add(1)));
+            let _ = rl.allow(src, now);
+        }
+        assert!(
+            rl.buckets.len() <= DISCOVERY_MAX_SOURCES,
+            "tracked-source table must stay within the memory cap"
+        );
     }
 }

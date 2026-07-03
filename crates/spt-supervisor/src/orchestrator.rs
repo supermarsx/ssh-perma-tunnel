@@ -13,6 +13,7 @@
 //!   open fresh streams over the live tunnel.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -50,6 +51,16 @@ pub struct Orchestrator {
     /// [`ProfileSupervisorConfig`] at start, and consumed by the stats-tick task
     /// to populate byte/connection/state metrics. Empty by default (no-op).
     observers: Mutex<SupervisorObservers>,
+    /// Shutdown gate (HC3 Finding 1). Set once [`Self::shutdown_deadline`]
+    /// begins draining the profile map; afterwards
+    /// [`Self::start_profile_with_auth`] / [`Self::apply_with_auth`] refuse to
+    /// insert or spawn. This closes the race where a config-watcher /
+    /// remote-config reload running on its own task re-populates the
+    /// just-drained map with fresh supervisors (leaked tasks / sessions /
+    /// forward listeners that never get stopped, plus spurious port re-binds
+    /// during teardown). Set/checked under the `profiles` lock so the drain and
+    /// any concurrent insert are strictly ordered.
+    shutting_down: AtomicBool,
 }
 
 struct StatsBroadcast {
@@ -98,6 +109,7 @@ impl Orchestrator {
             live_overrides: Mutex::new(HashMap::new()),
             stats_cfg,
             observers: Mutex::new(SupervisorObservers::default()),
+            shutting_down: AtomicBool::new(false),
         }
     }
 
@@ -155,6 +167,14 @@ impl Orchestrator {
         self.profiles.lock().is_empty()
     }
 
+    /// Whether graceful shutdown has begun (HC3 Finding 1 gate). Once `true`,
+    /// [`Self::start_profile_with_auth`] / [`Self::apply_with_auth`] are no-ops
+    /// so a reload racing teardown can't re-populate the drained profile map.
+    #[must_use]
+    pub fn is_shutting_down(&self) -> bool {
+        self.shutting_down.load(Ordering::Acquire)
+    }
+
     /// Direct handle to a running profile's supervisor, if any. Used by
     /// callers that need to bind a [`crate::LiveReconnectTrigger`] or feed
     /// the supervisor directly into a backend adapter.
@@ -208,6 +228,19 @@ impl Orchestrator {
         endpoints: Vec<Endpoint>,
         mut cfg: ProfileSupervisorConfig,
     ) {
+        // HC3 Finding 1 (shutdown gate, fast path): if teardown has already
+        // drained the map, do not remove/spawn anything — a reload racing
+        // shutdown must not resurrect a profile. The authoritative check
+        // happens again under the insert lock below (in case the gate flips
+        // while this profile is being spawned).
+        if self.shutting_down.load(Ordering::Acquire) {
+            tracing::warn!(
+                profile = %profile.name,
+                "orchestrator is shutting down; refusing to start profile (shutdown gate)"
+            );
+            return;
+        }
+
         // Remove + drop any existing instance first. Drop aborts its task
         // (E1-F5 backstop), so this is an immediate, synchronous teardown.
         let displaced = self.profiles.lock().remove(&profile.name);
@@ -238,9 +271,27 @@ impl Orchestrator {
             profile.forwards.clone(),
             cfg,
         );
-        self.profiles
-            .lock()
-            .insert(profile.name.clone(), Arc::new(sup));
+        // HC3 Finding 1 (authoritative gate): check the shutdown flag WHILE
+        // holding the `profiles` lock — the same lock `shutdown_deadline` sets
+        // the flag under and drains the map under. This orders the two: either
+        // this insert observes the flag and discards the fresh supervisor
+        // (dropping it aborts its just-spawned task), or the drain observes the
+        // inserted supervisor and stops it. Neither leaks past teardown.
+        {
+            let mut g = self.profiles.lock();
+            if self.shutting_down.load(Ordering::Acquire) {
+                drop(g);
+                tracing::warn!(
+                    profile = %profile.name,
+                    "orchestrator began shutting down mid-start; discarding freshly-spawned \
+                     supervisor (shutdown gate)"
+                );
+                // `sup` is dropped as this function returns; its Drop aborts the
+                // task so nothing leaks into the drained map.
+                return;
+            }
+            g.insert(profile.name.clone(), Arc::new(sup));
+        }
     }
 
     /// Gracefully stop any existing instance of `profile` (awaiting shutdown),
@@ -321,6 +372,16 @@ impl Orchestrator {
             ProfileSupervisorConfig,
         )>,
     {
+        // HC3 Finding 1: once shutdown has begun, skip the whole apply — a
+        // reload landing during teardown must not restart/insert profiles into
+        // the drained map. `start_profile_with_auth` gates each insert too, but
+        // short-circuiting here also avoids the intermediate stop churn.
+        if self.shutting_down.load(Ordering::Acquire) {
+            tracing::warn!(
+                "orchestrator is shutting down; skipping config-reload apply (shutdown gate)"
+            );
+            return;
+        }
         // E1-F7: coalesce the per-forward actions of a profile into a single
         // restart. A reload touching three forwards of one profile must restart
         // it once, not three times (which would sever every other forward's
@@ -392,6 +453,11 @@ impl Orchestrator {
         // sequentially; here we drain once and fan the stops out concurrently.
         let profiles: Vec<Arc<ProfileSupervisor>> = {
             let mut g = self.profiles.lock();
+            // HC3 Finding 1: raise the shutdown gate UNDER the same lock as the
+            // drain, so any concurrent `start_profile_with_auth` insert either
+            // observes the gate (and discards) or is drained here — never
+            // resurrected afterwards.
+            self.shutting_down.store(true, Ordering::Release);
             g.drain().map(|(_, sup)| sup).collect()
         };
         self.live_overrides.lock().clear();
@@ -1057,6 +1123,58 @@ mod tests {
             elapsed < Duration::from_millis(1500),
             "bounded concurrent shutdown must complete within ~deadline, not the \
              sum of N×2s sequential closes; took {elapsed:?}"
+        );
+    }
+
+    // ──────── HC3 Finding 1: shutdown gate ───────────────────────────
+
+    #[tokio::test]
+    async fn shutdown_gate_refuses_profiles_started_after_shutdown() {
+        // A reload racing SIGTERM runs on its own task and can call
+        // `start_profile` / `apply` AFTER `shutdown_within` drained the map.
+        // The gate must reject those so the drained orchestrator is not
+        // re-populated with leaked supervisors / sessions / listeners.
+        let orch = Orchestrator::new();
+        assert!(!orch.is_shutting_down());
+
+        // Nothing running → shutdown just raises the gate.
+        orch.shutdown_within(Duration::from_millis(100)).await;
+        assert!(orch.is_shutting_down(), "gate must be set after shutdown");
+
+        // A post-shutdown `start_profile` (the reload path) must be a no-op.
+        let _proto = start_running_profile(&orch);
+        assert!(
+            orch.is_empty(),
+            "shutdown gate must reject a profile started after teardown began"
+        );
+
+        // `apply_with_auth` (the actual reload pipeline) must likewise no-op.
+        let proto = Arc::new(MockTunnelProtocol::new());
+        let cfg = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "a"
+        "#;
+        let (c, _) = load_str(cfg, false).unwrap();
+        let prof = c.profiles[0].clone();
+        let plan = ReloadPlan {
+            actions: vec![ReloadAction::StartProfile("p".into())],
+        };
+        orch.apply(&plan, |_| {
+            Some((
+                prof.clone(),
+                proto.clone(),
+                auth(),
+                vec![endpoint("a", 22)],
+                ProfileSupervisorConfig::default(),
+            ))
+        })
+        .await;
+        assert!(
+            orch.is_empty(),
+            "shutdown gate must reject a reload apply after teardown began"
         );
     }
 

@@ -455,6 +455,17 @@ pub struct AeadStream {
     rx_buf: Vec<u8>,
     /// Pending plaintext for the consumer.
     pending: Vec<u8>,
+    /// Buffered ciphertext of exactly one already-sealed outbound frame that
+    /// has NOT yet been fully written to `inner`. This is the HIGH-1 partial-
+    /// write fix: if the inner socket accepts only part of a frame (kernel send
+    /// buffer full to a slower peer), the remainder is resumed from this buffer
+    /// on the next poll — the SAME ciphertext under the SAME nonces — instead of
+    /// re-sealing the plaintext under a fresh nonce (which would desync the
+    /// peer's AEAD stream). A new frame is never sealed while this holds
+    /// unflushed bytes, so the write nonce advances EXACTLY once per wire frame.
+    tx_pending: Vec<u8>,
+    /// Write offset into `tx_pending` (bytes already committed to `inner`).
+    tx_pending_off: usize,
 }
 
 enum RxState {
@@ -491,7 +502,35 @@ impl AeadStream {
             rx: RxState::Length,
             rx_buf: Vec::new(),
             pending: Vec::new(),
+            tx_pending: Vec::new(),
+            tx_pending_off: 0,
         }
+    }
+
+    /// Drive the buffered outbound frame (`tx_pending`) to completion, resuming
+    /// from `tx_pending_off`. Returns `Ready(Ok(()))` once the whole buffer has
+    /// been committed to `inner` (buffer cleared), `Pending` on backpressure
+    /// (offset advanced by whatever was accepted — nothing re-sealed), or the
+    /// inner error. Called before sealing any new frame and from
+    /// `poll_flush`/`poll_shutdown` so no half-frame is ever stranded.
+    fn drive_tx(&mut self, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        while self.tx_pending_off < self.tx_pending.len() {
+            match Pin::new(&mut self.inner).poll_write(cx, &self.tx_pending[self.tx_pending_off..])
+            {
+                Poll::Ready(Ok(0)) => {
+                    return Poll::Ready(Err(std::io::Error::new(
+                        std::io::ErrorKind::WriteZero,
+                        "ss: underlying write returned 0",
+                    )));
+                }
+                Poll::Ready(Ok(n)) => self.tx_pending_off += n,
+                Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
+                Poll::Pending => return Poll::Pending,
+            }
+        }
+        self.tx_pending.clear();
+        self.tx_pending_off = 0;
+        Poll::Ready(Ok(()))
     }
 
     fn next_write_nonce(&mut self) -> [u8; 12] {
@@ -647,6 +686,20 @@ impl AsyncWrite for AeadStream {
         cx: &mut Context<'_>,
         data: &[u8],
     ) -> Poll<std::io::Result<usize>> {
+        let this = self.as_mut().get_mut();
+
+        // HIGH-1 fix: finish flushing any buffered frame from a prior poll
+        // BEFORE sealing a new one. If the previous frame was only partially
+        // committed to the socket, we resume the SAME ciphertext here; we must
+        // not seal a fresh frame (and advance the nonce again) until it lands.
+        if this.tx_pending_off < this.tx_pending.len() {
+            match this.drive_tx(cx) {
+                Poll::Ready(Ok(())) => {}
+                Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
+                Poll::Pending => return Poll::Pending,
+            }
+        }
+
         if data.is_empty() {
             return Poll::Ready(Ok(0));
         }
@@ -655,54 +708,57 @@ impl AsyncWrite for AeadStream {
 
         // Compute both nonces first (they need `&mut self`), then seal with the
         // cached cipher via `&self` — no per-frame key clone (P3) and no
-        // per-frame cipher rebuild (P1).
-        let len_nonce = self.next_write_nonce();
-        let body_nonce = self.next_write_nonce();
+        // per-frame cipher rebuild (P1). The nonce advances here EXACTLY once
+        // per wire frame (see the `tx_pending` guard above).
+        let len_nonce = this.next_write_nonce();
+        let body_nonce = this.next_write_nonce();
         let len_be = (chunk_len as u16).to_be_bytes();
-        let len_ct = self
+        let len_ct = this
             .seal_tx(&len_nonce, &len_be)
             .map_err(|e| std::io::Error::other(e.to_string()))?; // 1.88 lint: io_other_error
-        let body_ct = self
+        let body_ct = this
             .seal_tx(&body_nonce, chunk)
             .map_err(|e| std::io::Error::other(e.to_string()))?; // 1.88 lint: io_other_error
 
-        let mut buf = Vec::with_capacity(len_ct.len() + body_ct.len());
-        buf.extend_from_slice(&len_ct);
-        buf.extend_from_slice(&body_ct);
+        // Buffer the whole sealed frame, then try to flush it. Even if the
+        // inner socket accepts only part of it (or none), the frame is safely
+        // buffered and resumed on the next poll_write/poll_flush — so we report
+        // the plaintext as accepted without ever re-sealing under a new nonce.
+        this.tx_pending.clear();
+        this.tx_pending.reserve(len_ct.len() + body_ct.len());
+        this.tx_pending.extend_from_slice(&len_ct);
+        this.tx_pending.extend_from_slice(&body_ct);
+        this.tx_pending_off = 0;
 
-        // We do a single attempt at write_all-like behavior: write what we
-        // can, surface partial writes by returning the consumed bytes.
-        let mut written = 0;
-        while written < buf.len() {
-            match Pin::new(&mut self.inner).poll_write(cx, &buf[written..]) {
-                Poll::Ready(Ok(n)) => {
-                    if n == 0 {
-                        return Poll::Ready(Err(std::io::Error::new(
-                            std::io::ErrorKind::WriteZero,
-                            "ss: underlying write returned 0",
-                        )));
-                    }
-                    written += n;
-                }
-                Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
-                Poll::Pending => {
-                    // We've consumed the data and committed it; we cannot
-                    // rewind. Treat as if we'd written `chunk_len` bytes —
-                    // tokio will retry on next wakeup; if the partial
-                    // frame causes a desync the peer will close.
-                    return Poll::Pending;
-                }
-            }
+        // Opportunistically push the fresh frame toward the wire; a `Pending`
+        // here just means the tail stays buffered for the next poll (backpressure
+        // is applied to the *next* frame by the guard at the top of this fn).
+        if let Poll::Ready(Err(e)) = this.drive_tx(cx) {
+            return Poll::Ready(Err(e));
         }
         Poll::Ready(Ok(chunk_len))
     }
 
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
-        Pin::new(&mut self.inner).poll_flush(cx)
+        let this = self.as_mut().get_mut();
+        // Drain any buffered frame before flushing the inner transport.
+        match this.drive_tx(cx) {
+            Poll::Ready(Ok(())) => {}
+            Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
+            Poll::Pending => return Poll::Pending,
+        }
+        Pin::new(&mut this.inner).poll_flush(cx)
     }
 
     fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
-        Pin::new(&mut self.inner).poll_shutdown(cx)
+        let this = self.as_mut().get_mut();
+        // Ensure the last buffered frame lands before signalling shutdown.
+        match this.drive_tx(cx) {
+            Poll::Ready(Ok(())) => {}
+            Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
+            Poll::Pending => return Poll::Pending,
+        }
+        Pin::new(&mut this.inner).poll_shutdown(cx)
     }
 }
 

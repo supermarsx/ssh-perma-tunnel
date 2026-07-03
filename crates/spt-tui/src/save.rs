@@ -127,7 +127,11 @@ pub fn unknown_keys(model: &Model) -> Vec<String> {
 /// the Review page renders or a save runs.
 fn source_profile_table(model: &Model) -> Option<Table> {
     let doc: toml_edit::DocumentMut = model.original_toml().parse().ok()?;
-    let name = model.profile().name.clone();
+    // Match by the profile's original (source-document) name so an in-flight
+    // `id` rename still locates the on-disk block.
+    let name = model
+        .selected_original_name()
+        .map_or_else(|| model.profile().name.clone(), str::to_owned);
     let Item::ArrayOfTables(arr) = doc.get("profiles")? else {
         return None;
     };
@@ -190,8 +194,11 @@ pub fn save_to(model: &mut Model, target: &Path) -> Result<PathBuf> {
     let dns = write_dns.then(|| model.dns().cloned()).flatten();
 
     // 2. Clone the document so failures don't leave the model half-edited.
+    //    Match the block to replace by the profile's *original* (source) name
+    //    so renaming its `id` updates the existing block in place (HC3 F4).
+    let original_name = model.selected_original_name().map(str::to_owned);
     let mut document = model.document_mut().clone();
-    splice_profile(&mut document, model.profile())?;
+    splice_profile(&mut document, model.profile(), original_name.as_deref())?;
     if let Some(events) = events.as_ref() {
         splice_events(&mut document, events);
     }
@@ -205,11 +212,21 @@ pub fn save_to(model: &mut Model, target: &Path) -> Result<PathBuf> {
 
 /// Splice an edited [`Profile`] into a round-trip [`Document`].
 ///
-/// Locates the `[[profiles]]` entry whose `name` matches `profile.name` and
-/// replaces it with a freshly-serialized table. If no entry matches, the new
-/// table is appended.
-pub fn splice_profile(document: &mut Document, profile: &Profile) -> Result<()> {
+/// Locates the `[[profiles]]` entry to replace by `match_name` — the profile's
+/// name *in the source document* (its on-disk `id`), passed via
+/// `original_name` — and replaces it with a freshly-serialized table. When the
+/// operator has renamed the profile (edited its `id`), `original_name` is the
+/// pre-edit name, so the existing block is updated **in place** (a rename)
+/// rather than the renamed struct being appended as a duplicate `[[profiles]]`
+/// (HC3 F4). When `original_name` is `None` (or matches nothing — e.g. a
+/// brand-new profile) the new table is appended.
+pub fn splice_profile(
+    document: &mut Document,
+    profile: &Profile,
+    original_name: Option<&str>,
+) -> Result<()> {
     let new_table = profile_to_table(profile)?;
+    let match_name = original_name.unwrap_or(profile.name.as_str());
     let inner = document.document_mut();
 
     // Ensure `profiles` exists as ArrayOfTables.
@@ -225,12 +242,13 @@ pub fn splice_profile(document: &mut Document, profile: &Profile) -> Result<()> 
         }
     };
 
-    // Find existing.
+    // Find existing by the *original* (source-document) name so a rename of the
+    // profile's `id` updates the matched block in place instead of appending.
     let mut found: Option<usize> = None;
     for (i, t) in arr.iter().enumerate() {
         if t.get("name")
             .and_then(|v| v.as_str())
-            .is_some_and(|s| s == profile.name)
+            .is_some_and(|s| s == match_name)
         {
             found = Some(i);
             break;
@@ -412,6 +430,67 @@ endpoint = "https://q.example.com"
         assert!(out.contains(r#"name = "q""#));
     }
 
+    /// HC3 F4: renaming a profile's `id` (i.e. editing `Profile::name`) must
+    /// update the existing `[[profiles]]` block *in place* — not append a new
+    /// block and orphan the old one.
+    #[test]
+    fn renaming_profile_id_updates_existing_block_no_orphan() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("c.toml");
+        std::fs::write(&path, RAW).unwrap();
+
+        let mut model = Model::load(&path).unwrap();
+        model.select_profile_by_name("p").unwrap();
+        // Rename the profile's id (Basics `id` maps to `Profile::name`).
+        model.profile_mut().name = "renamed".into();
+        save(&mut model).unwrap();
+
+        let out = std::fs::read_to_string(&path).unwrap();
+        // New name present, old name gone (renamed in place).
+        assert!(
+            out.contains(r#"name = "renamed""#),
+            "new id must be written"
+        );
+        assert!(
+            !out.contains(r#"name = "p""#),
+            "old id must be gone, not left as an orphan: {out}"
+        );
+        // No duplicate/orphan: exactly two profiles remain (renamed + q).
+        let (cfg, _w) = spt_config::load_str(&out, false).unwrap();
+        assert_eq!(
+            cfg.profiles.len(),
+            2,
+            "rename must not add a profile: {out}"
+        );
+        assert_eq!(cfg.profiles[0].name, "renamed");
+        assert_eq!(cfg.profiles[1].name, "q");
+        // The other profile is untouched.
+        assert!(out.contains("https://q.example.com"));
+    }
+
+    /// A second rename in the same session (after a save) must also rename in
+    /// place — the post-save original name is refreshed by `mark_saved`.
+    #[test]
+    fn second_rename_after_save_still_renames_in_place() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("c.toml");
+        std::fs::write(&path, RAW).unwrap();
+
+        let mut model = Model::load(&path).unwrap();
+        model.select_profile_by_name("p").unwrap();
+        model.profile_mut().name = "first".into();
+        save(&mut model).unwrap();
+        model.profile_mut().name = "second".into();
+        save(&mut model).unwrap();
+
+        let out = std::fs::read_to_string(&path).unwrap();
+        let (cfg, _w) = spt_config::load_str(&out, false).unwrap();
+        assert_eq!(cfg.profiles.len(), 2, "no orphan after two renames: {out}");
+        assert!(!out.contains(r#"name = "p""#));
+        assert!(!out.contains(r#"name = "first""#));
+        assert!(out.contains(r#"name = "second""#));
+    }
+
     #[test]
     fn save_clears_dirty_and_records_last_saved() {
         let dir = tempfile::tempdir().unwrap();
@@ -450,7 +529,7 @@ endpoint = "https://q.example.com"
             protocol: "ssh2".into(),
             ..Default::default()
         };
-        splice_profile(&mut doc, &p).unwrap();
+        splice_profile(&mut doc, &p, None).unwrap();
         let rendered = doc.to_string();
         assert!(rendered.contains(r#"name = "fresh""#));
         assert!(rendered.contains(r#"protocol = "ssh2""#));
@@ -464,7 +543,7 @@ endpoint = "https://q.example.com"
             protocol: "ssh2".into(),
             ..Default::default()
         };
-        let err = splice_profile(&mut doc, &p).unwrap_err();
+        let err = splice_profile(&mut doc, &p, None).unwrap_err();
         let s = format!("{err}");
         assert!(s.contains("array of tables"));
     }

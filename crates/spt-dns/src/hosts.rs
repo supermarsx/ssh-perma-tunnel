@@ -43,9 +43,23 @@ pub struct HostsEntry {
 
 impl HostsEntry {
     /// Render a single line (no trailing newline).
+    ///
+    /// Address and each name are passed through [`sanitize_hosts_field`] so a
+    /// value can never inject an extra hosts-file line: newlines/carriage
+    /// returns (and every other ASCII/Unicode control char, including the tab
+    /// column separator) are stripped. Today all fields are typed `IpAddr`
+    /// addresses or config-sourced hostnames, but sanitizing here is
+    /// defense-in-depth against any future untrusted source reaching this path.
     #[must_use]
     pub fn render_line(&self) -> String {
-        format!("{}\t{}", self.address, self.names.join(" "))
+        let address = sanitize_hosts_field(&self.address);
+        let names = self
+            .names
+            .iter()
+            .map(|n| sanitize_hosts_field(n))
+            .collect::<Vec<_>>()
+            .join(" ");
+        format!("{address}\t{names}")
     }
 
     /// Build the hosts-file entries for a set of managed [`Record`]s.
@@ -69,6 +83,18 @@ impl HostsEntry {
             })
             .collect()
     }
+}
+
+/// Strip any character that could break the single-line hosts-file record
+/// format out of a rendered field.
+///
+/// A `\n`/`\r` in an address or hostname would let the value inject an extra
+/// hosts-file line (a second address→name mapping); a tab (`\t`) is the
+/// address/name column separator, and NUL/other control chars are never valid
+/// in an address or hostname. Removing every control character neutralizes all
+/// of these so a single [`HostsEntry`] can only ever render to a single line.
+fn sanitize_hosts_field(s: &str) -> String {
+    s.chars().filter(|c| !c.is_control()).collect()
 }
 
 /// How `[dns] mode = "hosts_file"` drives the system hosts file, mapped from
@@ -450,6 +476,52 @@ mod tests {
         assert!(s.trim_end().ends_with(HOSTS_END_MARKER));
         assert!(s.contains("10.0.0.1\tmail.tunnel.local"));
         assert!(s.contains("::1\tv6.tunnel.local alias.tunnel.local"));
+    }
+
+    #[test]
+    fn render_line_strips_newlines_to_prevent_line_injection() {
+        // A name carrying an embedded newline + a forged address/name pair must
+        // NOT be able to inject a second hosts-file line.
+        let e = HostsEntry {
+            address: "10.0.0.1".into(),
+            names: vec!["evil.local\n6.6.6.6\tinjected.local".into()],
+        };
+        let line = e.render_line();
+        assert!(
+            !line.contains('\n') && !line.contains('\r'),
+            "no line break may survive into a rendered hosts line: {line:?}"
+        );
+        // The rendered record is exactly one line.
+        assert_eq!(line.lines().count(), 1, "must render to a single line");
+        // Only the address/name separator tab may remain (the injected `\t` is
+        // stripped as a control char).
+        assert_eq!(
+            line.matches('\t').count(),
+            1,
+            "only the column-separator tab may remain: {line:?}"
+        );
+        // The visible characters survive (just concatenated onto one line).
+        assert!(line.contains("evil.local"));
+    }
+
+    #[test]
+    fn render_line_via_block_cannot_add_extra_managed_lines() {
+        // Even routed through the full managed-block render, an injected
+        // newline cannot add an entry line to the block.
+        let m = HostsManager::new(
+            vec![HostsEntry {
+                address: "10.0.0.1".into(),
+                names: vec!["a.local\n10.0.0.2\tb.local".into()],
+            }],
+            tempdir().unwrap().path(),
+        );
+        let block = m.render();
+        // Lines: begin marker, one entry line, end marker => 3 lines total.
+        assert_eq!(
+            block.lines().count(),
+            3,
+            "injected newline must not add a managed entry line: {block:?}"
+        );
     }
 
     #[test]

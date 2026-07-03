@@ -1357,7 +1357,8 @@ async fn tunnel_run(global: &GlobalOpts, args: groups::tunnel::TunnelRun) -> Res
     // (or plan-only when `apply_rules` is unset). Fail-safe (allow-only rules,
     // never a default-deny) and non-fatal — an unsupported platform or a failed
     // apply logs a WARN and leaves the tunnel running. Reverted on shutdown.
-    let firewall_runtime = crate::firewall_runtime::maybe_apply(&cfg, &state_dir, global.dry_run);
+    let firewall_runtime =
+        crate::firewall_runtime::maybe_apply(&cfg, &state_dir, global.dry_run).await;
 
     // appstatus (Wave 2): now that every subsystem has been (maybe) spawned,
     // record the daemon identity + per-subsystem state into the sibling
@@ -1414,6 +1415,18 @@ async fn tunnel_run(global: &GlobalOpts, args: groups::tunnel::TunnelRun) -> Res
                 startup_errors.join("; ")
             )))
         };
+        // HC3 Finding 1: stop the reload SOURCES (config-watcher +
+        // remote-config poller) BEFORE draining the orchestrator, so no reload
+        // running on its own task can re-populate the just-drained profile map
+        // mid-teardown (leaking supervisors / sessions / listeners). The
+        // orchestrator's shutdown gate is the correctness backstop; stopping
+        // the sources first is the clean-ordering half.
+        if let Some(h) = remote_config_handle {
+            h.shutdown().await;
+        }
+        if let Some(h) = config_watch_handle {
+            h.shutdown().await;
+        }
         // F-L1(a): bound `--once` teardown identically so a stalled endpoint
         // cannot hang the one-shot run indefinitely. Fast path is unchanged.
         // `shutdown_within` stops profiles concurrently under one aggregate
@@ -1434,12 +1447,6 @@ async fn tunnel_run(global: &GlobalOpts, args: groups::tunnel::TunnelRun) -> Res
             // the runtime shutting down.
             let _ = h.shutdown().await;
         }
-        if let Some(h) = remote_config_handle {
-            h.shutdown().await;
-        }
-        if let Some(h) = config_watch_handle {
-            h.shutdown().await;
-        }
         if let Some(d) = dns_runtime {
             d.shutdown().await;
         }
@@ -1449,7 +1456,7 @@ async fn tunnel_run(global: &GlobalOpts, args: groups::tunnel::TunnelRun) -> Res
         }
         // Wave 6: revert any applied [firewall] rules (best-effort, logs count).
         if let Some(fw) = firewall_runtime {
-            fw.revert();
+            fw.revert().await;
         }
         // E6-F1/E6-F4: stop the events dispatcher and flush+stop the metrics
         // exporter writer (final metrics.prom snapshot) before returning.
@@ -1551,6 +1558,20 @@ async fn tunnel_run(global: &GlobalOpts, args: groups::tunnel::TunnelRun) -> Res
     // CONCURRENTLY under a single `tokio::time::timeout(deadline, ..)`, and on
     // expiry logs a WARN and returns (abandoned teardowns are detached — fine,
     // the process exits right after). Status is already flushed as "stopping".
+    //
+    // HC3 Finding 1: stop the reload SOURCES (config-watcher + remote-config
+    // poller) BEFORE draining the orchestrator so a reload racing SIGTERM can't
+    // re-populate the just-drained profile map with fresh supervisors /
+    // sessions / forward listeners that then leak past teardown (and re-bind
+    // ports / open new connects while stopping). The orchestrator's shutdown
+    // gate is the correctness backstop; stopping the sources first is the
+    // clean-ordering half (a reload can no longer be in-flight during drain).
+    if let Some(h) = remote_config_handle {
+        h.shutdown().await;
+    }
+    if let Some(h) = config_watch_handle {
+        h.shutdown().await;
+    }
     let shutdown_deadline =
         std::time::Duration::from_secs(spt_service::RECOMMENDED_STOP_TIMEOUT_SECS * 4 / 5);
     orchestrator.shutdown_within(shutdown_deadline).await;
@@ -1563,12 +1584,6 @@ async fn tunnel_run(global: &GlobalOpts, args: groups::tunnel::TunnelRun) -> Res
     if let Some(h) = updater_handle.as_ref() {
         let _ = h.shutdown().await;
     }
-    if let Some(h) = remote_config_handle {
-        h.shutdown().await;
-    }
-    if let Some(h) = config_watch_handle {
-        h.shutdown().await;
-    }
     if let Some(d) = dns_runtime {
         d.shutdown().await;
     }
@@ -1578,7 +1593,7 @@ async fn tunnel_run(global: &GlobalOpts, args: groups::tunnel::TunnelRun) -> Res
     }
     // Wave 6: revert any applied [firewall] rules (best-effort, logs count).
     if let Some(fw) = firewall_runtime {
-        fw.revert();
+        fw.revert().await;
     }
     // E6-F1/E6-F4: stop the events dispatcher + metrics exporter writer.
     events_pipeline.shutdown().await;

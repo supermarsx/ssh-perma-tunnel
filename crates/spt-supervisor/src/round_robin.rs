@@ -53,6 +53,17 @@ pub trait EndpointSelector: Send + Sync {
     /// always return that endpoint until the override is cleared with
     /// `manual_override("")` or a fresh selector replaces this one.
     fn manual_override(&mut self, id: &str);
+
+    /// The fixed cooldown this selector benches a failed endpoint for, if any.
+    ///
+    /// F2(b): when a policy drives selection, IT governs re-eligibility — not
+    /// the legacy `[failover].restore_after` scaling. The legacy
+    /// [`crate::failover::EndpointSelector`] reads this so its bench log reports
+    /// the cooldown that actually applies, instead of a misleading legacy value.
+    /// Defaults to `None` for selectors without a fixed cooldown.
+    fn cooldown_after_failure(&self) -> Option<Duration> {
+        None
+    }
 }
 
 /// What [`EndpointSelector::next`] yields.
@@ -308,6 +319,9 @@ impl EndpointSelector for RoundRobinSelector {
     fn manual_override(&mut self, id: &str) {
         self.core.manual_override(id);
     }
+    fn cooldown_after_failure(&self) -> Option<Duration> {
+        Some(self.core.cooldown)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -374,6 +388,9 @@ impl EndpointSelector for RandomSelector {
     }
     fn manual_override(&mut self, id: &str) {
         self.core.manual_override(id);
+    }
+    fn cooldown_after_failure(&self) -> Option<Duration> {
+        Some(self.core.cooldown)
     }
 }
 
@@ -453,6 +470,9 @@ impl EndpointSelector for WeightedSelector {
     }
     fn manual_override(&mut self, id: &str) {
         self.core.manual_override(id);
+    }
+    fn cooldown_after_failure(&self) -> Option<Duration> {
+        Some(self.core.cooldown)
     }
 }
 
@@ -550,6 +570,9 @@ impl EndpointSelector for StickySelector {
     fn manual_override(&mut self, id: &str) {
         self.core.manual_override(id);
     }
+    fn cooldown_after_failure(&self) -> Option<Duration> {
+        Some(self.core.cooldown)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -613,6 +636,9 @@ impl EndpointSelector for LeastErrorsSelector {
     }
     fn manual_override(&mut self, id: &str) {
         self.core.manual_override(id);
+    }
+    fn cooldown_after_failure(&self) -> Option<Duration> {
+        Some(self.core.cooldown)
     }
 }
 

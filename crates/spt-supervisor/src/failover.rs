@@ -203,6 +203,30 @@ impl EndpointSelector {
             .count()
     }
 
+    /// The least-bad (soonest-recovering) endpoint, used when every endpoint is
+    /// cooling — either the legacy path found no healthy endpoint, or an
+    /// attached policy selector yielded nothing (F2(a)). Rather than stranding
+    /// the profile (blocking reconnect for the whole cooldown), this preserves
+    /// failover PREFERENCE (a healthy endpoint always wins upstream) while
+    /// letting the normal backoff/reconnect path proceed against the
+    /// most-recovered endpoint. `entries` must be non-empty (callers check).
+    fn least_bad_fallback(&self) -> &Endpoint {
+        // Endpoints with no cooldown set sort as soonest (already eligible).
+        let soonest = self
+            .entries
+            .iter()
+            .min_by_key(|e| e.cooldown_until)
+            .expect("entries is non-empty");
+        // CRIT-LOG (w8): every endpoint is cooling — a degraded, alertable
+        // situation that used to be silent. Log the least-bad fallback pick.
+        tracing::warn!(
+            endpoint = %format!("{}:{}", soonest.ep.host, soonest.ep.port),
+            candidates = self.entries.len(),
+            "all endpoints cooling down; falling back to least-bad (soonest-recovering) endpoint"
+        );
+        &soonest.ep
+    }
+
     /// Pick the next endpoint to try.
     pub fn pick<R: Rng + ?Sized>(
         &self,
@@ -231,8 +255,19 @@ impl EndpointSelector {
             }
         }
         // Delegate to round-robin policy when one is wired in.
-        if let Some(result) = self.pick_via_policy() {
-            return result;
+        //
+        // F2(a): if the policy yields an endpoint, use it. But when the policy
+        // returns nothing (all its candidates are cooling) — or resolves to an
+        // endpoint not in our list — do NOT strand the profile on the policy's
+        // error. Fall back to the least-bad (soonest-recovering) endpoint, the
+        // same anti-stranding guarantee the non-policy path has below. Without
+        // this, a policy short-circuit made the Wave-8 least-bad fallback
+        // unreachable, so an all-cooling policy profile waited out the full
+        // cooldown instead of reconnecting against the most-recovered endpoint.
+        match self.pick_via_policy() {
+            Some(Ok(ep)) => return Ok(ep),
+            Some(Err(_)) => return Ok(self.least_bad_fallback()),
+            None => {}
         }
         if matches!(self.mode, FailoverMode::Manual) {
             return Err(SelectorError::Empty);
@@ -245,31 +280,9 @@ impl EndpointSelector {
             .collect();
         if healthy.is_empty() {
             // No endpoint is eligible right now — every one is still cooling.
-            // Rather than strand the profile (returning `AllCoolingDown` here
-            // blocks reconnect entirely for the whole cooldown, which wedges a
-            // single-endpoint profile), fall back to the LEAST-BAD endpoint:
-            // the one whose cooldown expires soonest. This preserves failover
-            // PREFERENCE (a non-cooling endpoint always wins above) while
-            // letting the normal backoff/reconnect path proceed against the
-            // most-recovered endpoint instead of being held off completely.
-            //
-            // `entries` is non-empty here (checked at the top), so the min
-            // always yields an endpoint. Endpoints with no cooldown set sort as
-            // soonest (treated as already eligible — though in practice that
-            // case is captured by the `healthy` filter above).
-            let soonest = self
-                .entries
-                .iter()
-                .min_by_key(|e| e.cooldown_until)
-                .expect("entries is non-empty");
-            // CRIT-LOG (w8): every endpoint is cooling — a degraded, alertable
-            // situation that used to be silent. Log the least-bad fallback pick.
-            tracing::warn!(
-                endpoint = %format!("{}:{}", soonest.ep.host, soonest.ep.port),
-                candidates = self.entries.len(),
-                "all endpoints cooling down; falling back to least-bad (soonest-recovering) endpoint"
-            );
-            return Ok(&soonest.ep);
+            // Rather than strand the profile, fall back to the least-bad
+            // (soonest-recovering) endpoint. See [`Self::least_bad_fallback`].
+            return Ok(self.least_bad_fallback());
         }
         // Pick the lowest priority cohort.
         let min_pri = healthy.iter().map(|e| e.ep.priority).min().unwrap();
@@ -344,6 +357,16 @@ impl EndpointSelector {
 
     /// Record a failure, possibly entering cooldown.
     pub fn record_failure(&mut self, host: &str, port: u16, now: Instant) {
+        // F2(b): when a policy selector drives selection, ITS fixed cooldown —
+        // not the legacy `restore_after` scaling — governs when the endpoint is
+        // re-eligible. Capture it up front (temporary lock, released here) so
+        // the bench log below reports the cooldown that actually applies rather
+        // than a misleading legacy number. `None` when no policy is attached.
+        let policy_cooldown_secs = self
+            .policy_selector
+            .as_ref()
+            .and_then(|ps| ps.lock().cooldown_after_failure())
+            .map(|d| d.as_secs());
         if let Some(e) = self
             .entries
             .iter_mut()
@@ -355,17 +378,22 @@ impl EndpointSelector {
                     (e.consecutive_failures as u64).saturating_mul(self.cooldown_secs_per_failure);
                 // CRIT-LOG (w8) + F2 (restore_after): failover.rs was previously
                 // silent — an endpoint being benched (and for how long) never
-                // reached the logs. Log the cooldown ENTER at WARN. The fields
-                // also make the true `restore_after` semantics observable: the
-                // cooldown is `consecutive_failures × cooldown_secs_per_failure`
-                // (the per-failure unit that `[failover].restore_after` maps to),
-                // NOT a fixed "restore window" — the field name is misleading and
-                // this log is where operators can see the real scaling.
+                // reached the logs. Log the cooldown ENTER at WARN.
+                //
+                // F2(b): the logged `cooldown_secs` must be the one GOVERNING
+                // re-eligibility. When a policy is active that is the policy's
+                // own fixed cooldown; otherwise it is the legacy scaling
+                // `consecutive_failures × cooldown_secs_per_failure` (the
+                // per-failure unit that `[failover].restore_after` maps to —
+                // NOT a fixed "restore window", so the field name is
+                // misleading and this log is where operators see the real value).
+                let governing_secs = policy_cooldown_secs.unwrap_or(secs);
                 tracing::warn!(
                     endpoint = %format!("{}:{}", e.ep.host, e.ep.port),
                     consecutive_failures = e.consecutive_failures,
-                    cooldown_secs = secs,
+                    cooldown_secs = governing_secs,
                     per_failure_unit_secs = self.cooldown_secs_per_failure,
+                    policy_governed = policy_cooldown_secs.is_some(),
                     "endpoint benched (failover cooldown); scales with consecutive failures"
                 );
                 // Cooldown scales with consecutive failures:
@@ -709,5 +737,85 @@ mod tests {
             .find("clearing failover cooldown")
             .expect("cooldown clear must be logged on recovery");
         assert_eq!(ev.level, tracing::Level::DEBUG);
+    }
+
+    // ------- F2: policy composition (anti-strand + governing-cooldown log) -------
+
+    #[tokio::test]
+    async fn all_cooling_policy_falls_back_to_least_bad_no_strand() {
+        // F2(a): with a round-robin policy attached, once every endpoint is
+        // benched in the policy, `pick_via_policy` yields nothing. The selector
+        // must NOT strand the profile on `AllCoolingDown` — it falls back to the
+        // least-bad endpoint so the normal reconnect/backoff path proceeds.
+        use crate::round_robin::make_selector;
+        use spt_config::round_robin::{RoundRobinConfig, SelectionPolicy};
+
+        let endpoints = vec![ep("a", 22, 0, 1), ep("b", 22, 1, 1)];
+        let cfg = RoundRobinConfig {
+            enabled: true,
+            policy: SelectionPolicy::RoundRobin,
+            cooldown_after_failure: Duration::from_secs(30),
+            ..Default::default()
+        };
+        let policy = make_selector(endpoints.clone(), &cfg).expect("enabled");
+        let mut s = EndpointSelector::new(FailoverMode::Priority, endpoints)
+            .with_fail_after(1)
+            .with_policy_selector(Some(policy));
+
+        let mut rng = StdRng::seed_from_u64(0);
+        let now = Instant::now();
+        // Drive BOTH endpoints into the policy's cooldown.
+        s.record_failure("a", 22, now);
+        s.record_failure("b", 22, now);
+
+        // Policy yields nothing (all cooling) → pick must NOT strand (Err);
+        // it returns the least-bad endpoint instead.
+        let pick = s
+            .pick(&mut rng, now)
+            .expect("must not strand under an all-cooling policy selector");
+        assert!(
+            pick.host == "a" || pick.host == "b",
+            "least-bad fallback must return one of the configured endpoints, got {}",
+            pick.host
+        );
+    }
+
+    #[test]
+    fn record_failure_logs_policy_governing_cooldown_when_policy_active() {
+        // F2(b): when a policy drives selection, the bench log must report the
+        // policy's fixed cooldown (which actually governs re-eligibility), not
+        // the legacy `restore_after` scaling.
+        use crate::round_robin::make_selector;
+        use spt_config::round_robin::{RoundRobinConfig, SelectionPolicy};
+
+        let endpoints = vec![ep("a", 22, 0, 1), ep("b", 22, 1, 1)];
+        let cfg = RoundRobinConfig {
+            enabled: true,
+            policy: SelectionPolicy::RoundRobin,
+            cooldown_after_failure: Duration::from_secs(45),
+            ..Default::default()
+        };
+        let policy = make_selector(endpoints.clone(), &cfg).expect("enabled");
+
+        let sub = crate::log_capture::CaptureSubscriber::new();
+        tracing::subscriber::with_default(sub.clone(), || {
+            let mut s = EndpointSelector::new(FailoverMode::Priority, endpoints)
+                .with_fail_after(1)
+                // Legacy per-failure unit (restore_after scaling) = 7s — a
+                // DIFFERENT number from the policy's 45s, so the assertion is
+                // unambiguous about which one is logged.
+                .with_cooldown(7)
+                .with_policy_selector(Some(policy));
+            let now = Instant::now();
+            s.record_failure("a", 22, now);
+        });
+
+        let ev = sub
+            .find("endpoint benched")
+            .expect("cooldown enter must be logged");
+        assert_eq!(ev.level, tracing::Level::WARN);
+        // The governing cooldown is the POLICY's 45s, NOT the legacy 7s.
+        assert_eq!(ev.field("cooldown_secs"), Some("45"));
+        assert_eq!(ev.field("policy_governed"), Some("true"));
     }
 }

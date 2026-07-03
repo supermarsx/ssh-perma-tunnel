@@ -385,6 +385,15 @@ pub struct Obfs4Stream {
     rx_state: RxState,
     rx_buf: Vec<u8>,
     pending: Vec<u8>,
+    /// Buffered ciphertext of exactly one already-sealed outbound frame not yet
+    /// fully written to `inner`. HIGH-1 partial-write fix: a partial inner write
+    /// is resumed from this buffer (SAME ciphertext, SAME counter) instead of
+    /// re-sealing the plaintext under the next counter, which would desync the
+    /// peer. No new frame is sealed while this holds unflushed bytes, so the tx
+    /// counter advances EXACTLY once per wire frame.
+    tx_pending: Vec<u8>,
+    /// Write offset into `tx_pending` (bytes already committed to `inner`).
+    tx_pending_off: usize,
     iat_delay: Duration,
     next_write_after: Option<tokio::time::Instant>,
     delay_fut: Option<Pin<Box<tokio::time::Sleep>>>,
@@ -415,6 +424,8 @@ impl Obfs4Stream {
             rx_state: RxState::Length,
             rx_buf: Vec::new(),
             pending: Vec::new(),
+            tx_pending: Vec::new(),
+            tx_pending_off: 0,
             iat_delay,
             next_write_after: None,
             delay_fut: None,
@@ -425,6 +436,31 @@ impl Obfs4Stream {
         let c = self.tx_ctr;
         self.tx_ctr = self.tx_ctr.wrapping_add(1);
         c
+    }
+
+    /// Drive the buffered outbound frame (`tx_pending`) to completion, resuming
+    /// from `tx_pending_off`. `Ready(Ok(()))` once the whole buffer is committed
+    /// to `inner` (buffer cleared); `Pending` on backpressure (offset advanced,
+    /// nothing re-sealed); or the inner error. Used before sealing a new frame
+    /// and from `poll_flush`/`poll_shutdown`.
+    fn drive_tx(&mut self, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        while self.tx_pending_off < self.tx_pending.len() {
+            match Pin::new(&mut self.inner).poll_write(cx, &self.tx_pending[self.tx_pending_off..])
+            {
+                Poll::Ready(Ok(0)) => {
+                    return Poll::Ready(Err(std::io::Error::new(
+                        std::io::ErrorKind::WriteZero,
+                        "obfs4: underlying write returned 0",
+                    )));
+                }
+                Poll::Ready(Ok(n)) => self.tx_pending_off += n,
+                Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
+                Poll::Pending => return Poll::Pending,
+            }
+        }
+        self.tx_pending.clear();
+        self.tx_pending_off = 0;
+        Poll::Ready(Ok(()))
     }
 
     fn next_rx_ctr(&mut self) -> u64 {
@@ -651,21 +687,37 @@ impl AsyncWrite for Obfs4Stream {
         cx: &mut Context<'_>,
         data: &[u8],
     ) -> Poll<std::io::Result<usize>> {
+        let this = self.as_mut().get_mut();
+
+        // HIGH-1 fix: finish flushing any buffered frame from a prior poll
+        // BEFORE sealing (and IAT-gating) a new one. A partially-written frame
+        // is resumed here from the SAME ciphertext; the tx counter is not
+        // advanced again until the buffer lands, so a nonce is consumed exactly
+        // once per wire frame.
+        if this.tx_pending_off < this.tx_pending.len() {
+            match this.drive_tx(cx) {
+                Poll::Ready(Ok(())) => {}
+                Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
+                Poll::Pending => return Poll::Pending,
+            }
+        }
+
         if data.is_empty() {
             return Poll::Ready(Ok(0));
         }
 
-        // IAT mode 1/2: enforce a minimum inter-frame delay.
-        if self.iat_delay > Duration::ZERO {
-            if let Some(after) = self.next_write_after {
+        // IAT mode 1/2: enforce a minimum inter-frame delay before sealing a
+        // new frame (leftover ciphertext above is flushed regardless of IAT).
+        if this.iat_delay > Duration::ZERO {
+            if let Some(after) = this.next_write_after {
                 if tokio::time::Instant::now() < after {
-                    if self.delay_fut.is_none() {
-                        self.delay_fut = Some(Box::pin(tokio::time::sleep_until(after)));
+                    if this.delay_fut.is_none() {
+                        this.delay_fut = Some(Box::pin(tokio::time::sleep_until(after)));
                     }
-                    let f = self.delay_fut.as_mut().unwrap();
+                    let f = this.delay_fut.as_mut().unwrap();
                     match f.as_mut().poll(cx) {
                         Poll::Ready(()) => {
-                            self.delay_fut = None;
+                            this.delay_fut = None;
                         }
                         Poll::Pending => return Poll::Pending,
                     }
@@ -675,38 +727,44 @@ impl AsyncWrite for Obfs4Stream {
 
         let chunk_len = data.len().min(MAX_FRAME_PT);
         let chunk = &data[..chunk_len];
-        let ctr = self.next_tx_ctr();
-        let frame = seal_frame_with(&self.tx_cipher, &self.c2s_key, ctr, chunk)
+        let ctr = this.next_tx_ctr();
+        let frame = seal_frame_with(&this.tx_cipher, &this.c2s_key, ctr, chunk)
             .map_err(|e| std::io::Error::other(e.to_string()))?; // 1.88 lint: io_other_error
 
-        let mut written = 0;
-        while written < frame.len() {
-            match Pin::new(&mut self.inner).poll_write(cx, &frame[written..]) {
-                Poll::Ready(Ok(n)) => {
-                    if n == 0 {
-                        return Poll::Ready(Err(std::io::Error::new(
-                            std::io::ErrorKind::WriteZero,
-                            "obfs4: underlying write returned 0",
-                        )));
-                    }
-                    written += n;
-                }
-                Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
-                Poll::Pending => return Poll::Pending,
-            }
+        // Buffer the whole sealed frame, then push what the socket accepts. A
+        // partial write leaves the tail buffered for the next poll instead of
+        // being dropped and re-sealed.
+        this.tx_pending.clear();
+        this.tx_pending.extend_from_slice(&frame);
+        this.tx_pending_off = 0;
+        if let Poll::Ready(Err(e)) = this.drive_tx(cx) {
+            return Poll::Ready(Err(e));
         }
-        if self.iat_delay > Duration::ZERO {
-            self.next_write_after = Some(tokio::time::Instant::now() + self.iat_delay);
+
+        if this.iat_delay > Duration::ZERO {
+            this.next_write_after = Some(tokio::time::Instant::now() + this.iat_delay);
         }
         Poll::Ready(Ok(chunk_len))
     }
 
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
-        Pin::new(&mut self.inner).poll_flush(cx)
+        let this = self.as_mut().get_mut();
+        match this.drive_tx(cx) {
+            Poll::Ready(Ok(())) => {}
+            Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
+            Poll::Pending => return Poll::Pending,
+        }
+        Pin::new(&mut this.inner).poll_flush(cx)
     }
 
     fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
-        Pin::new(&mut self.inner).poll_shutdown(cx)
+        let this = self.as_mut().get_mut();
+        match this.drive_tx(cx) {
+            Poll::Ready(Ok(())) => {}
+            Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
+            Poll::Pending => return Poll::Pending,
+        }
+        Pin::new(&mut this.inner).poll_shutdown(cx)
     }
 }
 

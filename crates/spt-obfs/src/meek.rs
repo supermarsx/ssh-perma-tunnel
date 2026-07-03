@@ -14,6 +14,7 @@
 //! empty POST body is a keepalive that flushes any buffered downstream
 //! bytes.
 
+use std::future::Future;
 use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -48,6 +49,13 @@ const MEEK_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs
 
 /// Per-request round-trip deadline (covers the probe POST and each later POST).
 const MEEK_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Idle poll interval: when a keepalive POST returns an EMPTY body (the server
+/// simply had no downstream bytes ready), the read side waits this long before
+/// issuing the next keepalive POST. An empty body is NOT end-of-stream — the
+/// meek session stays open — so we back off and retry rather than surfacing a
+/// premature EOF that would half-close the tunnel (HIGH-2a).
+const MEEK_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
 
 /// Bounded accumulator for an HTTP response body. Rejects up front if a
 /// declared `Content-Length` exceeds the cap, and again while streaming if the
@@ -390,7 +398,16 @@ pub struct MeekStream {
     url: String,
     headers: HeaderMap,
     rx_buf: Vec<u8>,
-    in_flight: Option<PostFuture>,
+    /// In-flight keepalive/read POST. Kept SEPARATE from `write_in_flight`
+    /// (HIGH-2b): sharing one slot meant a `poll_write` issued while a read POST
+    /// was pending would poll the read future and report the write as sent
+    /// WITHOUT ever transmitting the payload — silent outbound data loss.
+    read_in_flight: Option<PostFuture>,
+    /// In-flight write POST carrying outbound bytes (independent of reads).
+    write_in_flight: Option<PostFuture>,
+    /// Backoff timer armed after an empty poll response so the next keepalive
+    /// POST is spaced out by `MEEK_POLL_INTERVAL` instead of busy-looping.
+    read_backoff: Option<Pin<Box<tokio::time::Sleep>>>,
     closed: bool,
 }
 
@@ -405,7 +422,9 @@ impl MeekStream {
             url,
             headers,
             rx_buf: initial,
-            in_flight: None,
+            read_in_flight: None,
+            write_in_flight: None,
+            read_backoff: None,
             closed: false,
         }
     }
@@ -434,42 +453,55 @@ impl MeekStream {
 
 impl AsyncRead for MeekStream {
     fn poll_read(
-        mut self: Pin<&mut Self>,
+        self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         buf: &mut ReadBuf<'_>,
     ) -> Poll<std::io::Result<()>> {
+        let this = self.get_mut();
         loop {
-            if !self.rx_buf.is_empty() {
-                let n = buf.remaining().min(self.rx_buf.len());
-                let drained: Vec<u8> = self.rx_buf.drain(..n).collect();
+            if !this.rx_buf.is_empty() {
+                let n = buf.remaining().min(this.rx_buf.len());
+                let drained: Vec<u8> = this.rx_buf.drain(..n).collect();
                 buf.put_slice(&drained);
                 return Poll::Ready(Ok(()));
             }
-            if self.closed {
+            if this.closed {
                 return Poll::Ready(Ok(())); // EOF
             }
-            if self.in_flight.is_none() {
+            // If we're backing off after an empty poll response, wait out the
+            // interval before issuing the next keepalive POST.
+            if let Some(backoff) = this.read_backoff.as_mut() {
+                match backoff.as_mut().poll(cx) {
+                    Poll::Ready(()) => {
+                        this.read_backoff = None;
+                    }
+                    Poll::Pending => return Poll::Pending,
+                }
+            }
+            if this.read_in_flight.is_none() {
                 // Issue an empty-body keepalive POST to fetch downstream
                 // bytes from the meek server.
-                let f = self.issue_post(Vec::new());
-                self.in_flight = Some(f);
+                let f = this.issue_post(Vec::new());
+                this.read_in_flight = Some(f);
             }
-            // Poll the in-flight future.
-            let fut = self.in_flight.as_mut().unwrap();
+            // Poll the in-flight read future.
+            let fut = this.read_in_flight.as_mut().unwrap();
             match fut.as_mut().poll(cx) {
                 Poll::Ready(Ok(bytes)) => {
-                    self.in_flight = None;
+                    this.read_in_flight = None;
                     if bytes.is_empty() {
-                        // No data — treat as a brief pending. Returning
-                        // Pending without registering a fresh waker would
-                        // stall; instead surface "would block" so caller
-                        // applies backoff.
-                        return Poll::Ready(Ok(()));
+                        // HIGH-2a: an empty response is NOT EOF — the meek
+                        // session is idle-but-open. Arm a short backoff and
+                        // retry on the next loop turn rather than filling zero
+                        // bytes (which `copy_one`/`tokio::io::copy` would read
+                        // as EOF and half-close the tunnel).
+                        this.read_backoff = Some(Box::pin(tokio::time::sleep(MEEK_POLL_INTERVAL)));
+                        continue;
                     }
-                    self.rx_buf = bytes;
+                    this.rx_buf = bytes;
                 }
                 Poll::Ready(Err(e)) => {
-                    self.in_flight = None;
+                    this.read_in_flight = None;
                     return Poll::Ready(Err(e));
                 }
                 Poll::Pending => return Poll::Pending,
@@ -480,28 +512,31 @@ impl AsyncRead for MeekStream {
 
 impl AsyncWrite for MeekStream {
     fn poll_write(
-        mut self: Pin<&mut Self>,
+        self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         data: &[u8],
     ) -> Poll<std::io::Result<usize>> {
         if data.is_empty() {
             return Poll::Ready(Ok(0));
         }
-        // Single-flight write: spawn POST, drain response into rx_buf,
-        // report `data.len()` consumed.
-        if self.in_flight.is_none() {
-            let f = self.issue_post(data.to_vec());
-            self.in_flight = Some(f);
+        let this = self.get_mut();
+        // Single-flight write on a DEDICATED slot (HIGH-2b): a concurrently
+        // pending read POST must not swallow this write. The write issues its
+        // own POST carrying `data`; on re-poll (after `Pending`) the same
+        // in-flight future is polled, so `data` is transmitted exactly once.
+        if this.write_in_flight.is_none() {
+            let f = this.issue_post(data.to_vec());
+            this.write_in_flight = Some(f);
         }
-        let fut = self.in_flight.as_mut().unwrap();
+        let fut = this.write_in_flight.as_mut().unwrap();
         match fut.as_mut().poll(cx) {
             Poll::Ready(Ok(bytes)) => {
-                self.in_flight = None;
-                self.rx_buf.extend_from_slice(&bytes);
+                this.write_in_flight = None;
+                this.rx_buf.extend_from_slice(&bytes);
                 Poll::Ready(Ok(data.len()))
             }
             Poll::Ready(Err(e)) => {
-                self.in_flight = None;
+                this.write_in_flight = None;
                 Poll::Ready(Err(e))
             }
             Poll::Pending => Poll::Pending,

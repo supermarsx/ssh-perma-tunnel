@@ -522,28 +522,45 @@ fn check_secrets(d: &mut Diagnostics, c: &Config) {
         }
     }
 
-    // `encrypt_at_rest = true` is only honoured by `backend = "vault"` (the
-    // encrypted store IS the vault: AES-256-GCM + Argon2id). Every other backend
-    // (`auto`/`keychain`/`env`/`file`) writes spt-managed secrets in PLAINTEXT.
-    // Because the flag *name* promises encryption, treat the mismatch as
-    // FAIL-CLOSED — an ERROR at `spt config validate` time — so a dangerous
-    // misconfiguration is caught before any secret is written unencrypted, rather
-    // than surfacing only as a runtime WARN after the fact. `auto` never resolves
-    // to vault (it composes keychain/env/file), so it is rejected too.
+    // `encrypt_at_rest = true` promises spt-managed secrets are encrypted on
+    // disk. Only backends whose at-rest store is itself encrypted actually honour
+    // that promise; classify each so the flag fails closed ONLY against a backend
+    // that would write plaintext:
+    //   * `vault`    — encrypts at rest (the AES-256-GCM + Argon2id store; the
+    //                  encrypted store IS the vault).
+    //   * `keychain` — encrypts at rest via the OS credential store (macOS
+    //                  Keychain / Windows Credential Manager / libsecret), so the
+    //                  flag is effectively satisfied.
+    //   * `env`      — PLAINTEXT (process environment).
+    //   * `file`     — PLAINTEXT (spt-managed secret files under the state dir).
+    //   * `auto`     — composes keychain + env + file, so a secret can still land
+    //                  in the plaintext env/file fallbacks; it does NOT guarantee
+    //                  encryption at rest.
+    // For the plaintext backends this is FAIL-CLOSED — a hard ERROR at
+    // `spt config validate` time so a dangerous misconfiguration (a name that
+    // promises encryption over a plaintext store) is caught before any secret is
+    // written unencrypted. `vault`/`keychain` pass without error (the runtime only
+    // WARNs, but validate agreeing that an encrypted store satisfies the flag is
+    // the honest surface).
     if secrets.encrypt_at_rest == Some(true) {
         let backend = secrets.backend.as_deref().unwrap_or("auto");
-        if backend != "vault" {
+        let encrypts_at_rest = matches!(backend, "vault" | "keychain");
+        if !encrypts_at_rest {
             d.push(
                 Diagnostic::error(
-                    "secrets_encrypt_at_rest_requires_vault",
+                    "secrets_encrypt_at_rest_requires_encrypted_backend",
                     format!(
                         "secrets.encrypt_at_rest = true is not honoured by the `{backend}` \
-                         backend; at-rest encryption requires `backend = \"vault\"` (the \
-                         AES-256-GCM vault). Any other backend would write secrets in plaintext"
+                         backend, which writes spt-managed secrets in plaintext at rest. \
+                         At-rest encryption requires an encrypted backend: `vault` (the \
+                         AES-256-GCM store) or `keychain` (the OS credential store)"
                     ),
                 )
                 .at("secrets.encrypt_at_rest")
-                .with_help("set `[secrets].backend = \"vault\"`, or remove `encrypt_at_rest`"),
+                .with_help(
+                    "set `[secrets].backend = \"vault\"` or `\"keychain\"`, or remove \
+                     `encrypt_at_rest`",
+                ),
             );
         }
     }
@@ -1215,6 +1232,24 @@ fn check_network(d: &mut Diagnostics, c: &Config) {
                     Diagnostic::error(
                         "network_load_balance_strategy_invalid",
                         format!("network.load_balance.strategy `{strategy}` is invalid"),
+                    )
+                    .at("network.load_balance.strategy"),
+                );
+            }
+            // The load_balance → round_robin mapper only understands
+            // `round_robin`/`weighted` as endpoint-selector policies (and routes
+            // `priority`/`manual` to failover). `least_connections` maps onto
+            // nothing — there is no live connection-count signal — so at runtime
+            // it is accepted then silently ignored. Mirror the runtime WARN here
+            // so `spt config validate` discloses the inert strategy rather than
+            // accepting it silently.
+            if matches!(strategy, "least_connections" | "least-connections") {
+                d.push(
+                    Diagnostic::warning(
+                        "network_load_balance_least_connections_inert",
+                        "network.load_balance.strategy = \"least_connections\" is not \
+                         implemented: the endpoint selector supports `round_robin`/`weighted` \
+                         only (no live connection-count signal), so this strategy is inert",
                     )
                     .at("network.load_balance.strategy"),
                 );
@@ -3136,6 +3171,21 @@ fn check_forward(
     j: usize,
 ) {
     let prefix = format!("profiles[{i}].forwards[{j}]");
+
+    // A forward `name` is its identity: it keys uniqueness within the profile
+    // and is how status/TUI/log surfaces address the forward. An empty (or
+    // whitespace-only) name serializes as `name = ""` — valid TOML but a
+    // semantically empty id. Hop `name` and profile `id` are already guarded;
+    // this closes the last gap so an empty forward id is a hard ERROR.
+    if f.name.trim().is_empty() {
+        d.push(
+            Diagnostic::error(
+                "forward_name_empty",
+                format!("forward at index {j} in profile has an empty `name`"),
+            )
+            .at(format!("{prefix}.name")),
+        );
+    }
 
     if !matches!(f.kind.as_str(), "local" | "remote" | "dynamic") {
         d.push(
@@ -7488,63 +7538,83 @@ mod tests {
         );
     }
 
-    #[test]
-    fn encrypt_at_rest_on_non_vault_backend_errors() {
-        // FAIL-CLOSED: encrypt_at_rest = true with any non-vault backend is an
-        // ERROR (the flag would otherwise write plaintext under a name that
-        // promises encryption).
-        let raw = r#"
+    const ENCRYPT_AT_REST_CODE: &str = "secrets_encrypt_at_rest_requires_encrypted_backend";
+
+    fn encrypt_at_rest_errors_for(backend: Option<&str>) -> bool {
+        let backend_line = backend.map_or(String::new(), |b| format!("backend = \"{b}\"\n"));
+        let raw = format!(
+            r#"
             version = 1
             [secrets]
-            backend = "keychain"
-            encrypt_at_rest = true
+            {backend_line}encrypt_at_rest = true
             [[profiles]]
             name = "p"
             protocol = "ssh2"
             host = "h"
-        "#;
-        let (c, _) = load_str(raw, false).unwrap();
-        let d = validate(&c);
-        assert!(
-            d.errors
-                .iter()
-                .any(|e| e.code == "secrets_encrypt_at_rest_requires_vault"),
-            "errors: {:?}",
-            d.errors
+        "#
         );
+        let (c, _) = load_str(&raw, false).unwrap();
+        let d = validate(&c);
+        d.errors.iter().any(|e| e.code == ENCRYPT_AT_REST_CODE)
     }
 
     #[test]
-    fn encrypt_at_rest_default_auto_backend_errors() {
-        // `backend` unset defaults to `auto`, which never resolves to vault, so
-        // encrypt_at_rest = true is still a fail-closed ERROR.
-        let raw = r#"
-            version = 1
-            [secrets]
-            encrypt_at_rest = true
-            [[profiles]]
-            name = "p"
-            protocol = "ssh2"
-            host = "h"
-        "#;
-        let (c, _) = load_str(raw, false).unwrap();
-        let d = validate(&c);
+    fn encrypt_at_rest_on_keychain_backend_ok() {
+        // REGRESSION FIX: keychain stores secrets in the OS credential store,
+        // which IS encrypted at rest — encrypt_at_rest is effectively satisfied,
+        // so this must NOT be an error (previously it was over-strict).
         assert!(
-            d.errors
-                .iter()
-                .any(|e| e.code == "secrets_encrypt_at_rest_requires_vault"),
-            "errors: {:?}",
-            d.errors
+            !encrypt_at_rest_errors_for(Some("keychain")),
+            "keychain encrypts at rest and must satisfy encrypt_at_rest"
         );
     }
 
     #[test]
     fn encrypt_at_rest_on_vault_backend_ok() {
+        assert!(
+            !encrypt_at_rest_errors_for(Some("vault")),
+            "vault backend must satisfy encrypt_at_rest"
+        );
+    }
+
+    #[test]
+    fn encrypt_at_rest_on_file_backend_errors() {
+        // FAIL-CLOSED: `file` writes spt-managed secrets in plaintext, so
+        // encrypt_at_rest = true is a hard ERROR (the real fail-closed case).
+        assert!(
+            encrypt_at_rest_errors_for(Some("file")),
+            "file backend writes plaintext and must fail encrypt_at_rest"
+        );
+    }
+
+    #[test]
+    fn encrypt_at_rest_on_env_backend_errors() {
+        // FAIL-CLOSED: `env` is plaintext (process environment).
+        assert!(
+            encrypt_at_rest_errors_for(Some("env")),
+            "env backend writes plaintext and must fail encrypt_at_rest"
+        );
+    }
+
+    #[test]
+    fn encrypt_at_rest_default_auto_backend_errors() {
+        // `backend` unset defaults to `auto`, which composes keychain + env +
+        // file — a secret can still land in the plaintext env/file fallbacks, so
+        // encrypt_at_rest = true remains a fail-closed ERROR.
+        assert!(
+            encrypt_at_rest_errors_for(None),
+            "auto backend does not guarantee at-rest encryption"
+        );
+    }
+
+    #[test]
+    fn load_balance_least_connections_warns_inert() {
+        // F3: least_connections validates but is inert at runtime (no
+        // connection-count signal). validate must disclose it with a WARN.
         let raw = r#"
             version = 1
-            [secrets]
-            backend = "vault"
-            encrypt_at_rest = true
+            [network.load_balance]
+            strategy = "least_connections"
             [[profiles]]
             name = "p"
             protocol = "ssh2"
@@ -7553,10 +7623,67 @@ mod tests {
         let (c, _) = load_str(raw, false).unwrap();
         let d = validate(&c);
         assert!(
+            d.warnings
+                .iter()
+                .any(|w| w.code == "network_load_balance_least_connections_inert"),
+            "warnings: {:?}",
+            d.warnings
+        );
+        // Still an accepted (non-error) strategy value.
+        assert!(
             !d.errors
                 .iter()
-                .any(|e| e.code == "secrets_encrypt_at_rest_requires_vault"),
-            "vault backend must satisfy encrypt_at_rest: {:?}",
+                .any(|e| e.code == "network_load_balance_strategy_invalid"),
+            "least_connections must remain a valid strategy value: {:?}",
+            d.errors
+        );
+    }
+
+    #[test]
+    fn empty_forward_name_errors() {
+        // F5: a forward `name` must be non-empty.
+        let raw = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            [[profiles.forwards]]
+            name = ""
+            type = "local"
+            transport = "tcp"
+            bind = "127.0.0.1:8080"
+            target = "127.0.0.1:80"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(
+            d.errors.iter().any(|e| e.code == "forward_name_empty"),
+            "errors: {:?}",
+            d.errors
+        );
+    }
+
+    #[test]
+    fn non_empty_forward_name_ok() {
+        let raw = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            [[profiles.forwards]]
+            name = "web"
+            type = "local"
+            transport = "tcp"
+            bind = "127.0.0.1:8080"
+            target = "127.0.0.1:80"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(
+            !d.errors.iter().any(|e| e.code == "forward_name_empty"),
+            "errors: {:?}",
             d.errors
         );
     }

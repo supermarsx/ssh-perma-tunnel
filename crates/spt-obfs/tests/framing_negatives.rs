@@ -129,6 +129,78 @@ impl AsyncWrite for MockDuplex {
 }
 
 // ---------------------------------------------------------------------------
+// Backpressure sink: accepts at most `chunk` bytes per successful poll_write,
+// then returns `Poll::Pending` on the very next poll (waking itself so the
+// runtime re-polls promptly). This reproduces real TCP backpressure — a partial
+// write (`n > 0`) followed by a `Pending` mid-frame — which is exactly the
+// HIGH-1 desync trigger. Everything written is captured so the produced wire
+// bytes can be replayed through a reader afterwards.
+// ---------------------------------------------------------------------------
+
+#[derive(Clone)]
+struct FlakySink {
+    out: Arc<Mutex<Vec<u8>>>,
+    chunk: usize,
+    pending_next: Arc<Mutex<bool>>,
+}
+
+impl FlakySink {
+    fn new(chunk: usize) -> Self {
+        Self {
+            out: Arc::new(Mutex::new(Vec::new())),
+            chunk: chunk.max(1),
+            pending_next: Arc::new(Mutex::new(false)),
+        }
+    }
+
+    fn captured(&self) -> Vec<u8> {
+        self.out.lock().unwrap().clone()
+    }
+}
+
+impl AsyncRead for FlakySink {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+        _buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        // Never used as a reader in these tests.
+        Poll::Ready(Ok(()))
+    }
+}
+
+impl AsyncWrite for FlakySink {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        data: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        let mut pend = self.pending_next.lock().unwrap();
+        if *pend {
+            // Simulate a full kernel send buffer: refuse this poll, but wake so
+            // the driver retries (a real socket wakes on writability).
+            *pend = false;
+            cx.waker().wake_by_ref();
+            return Poll::Pending;
+        }
+        let n = self.chunk.min(data.len());
+        self.out.lock().unwrap().extend_from_slice(&data[..n]);
+        // Force the *next* poll to be Pending, so every accepted chunk is a
+        // partial write followed by backpressure.
+        *pend = true;
+        Poll::Ready(Ok(n))
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+}
+
+// ---------------------------------------------------------------------------
 // shadowsocks helpers
 // ---------------------------------------------------------------------------
 
@@ -634,4 +706,121 @@ async fn meek_2xx_status_does_not_trip_status_gate() {
             "2xx must not trip the status gate: {msg}"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// 18. HIGH-1 (shadowsocks): a mid-frame partial write under backpressure must
+//     NOT desync the AEAD stream. The writer must buffer the sealed frame and
+//     resume the SAME ciphertext across polls rather than re-sealing the
+//     plaintext under a fresh nonce. Assert the backpressured wire is
+//     byte-identical to the clean encoding AND decodes byte-exact on the peer.
+//     This test FAILS against the pre-fix re-seal behaviour (which produced
+//     `[partial frame @ nonce k] ++ [full frame @ nonce k+2]`).
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn ss_partial_write_backpressure_no_nonce_desync() {
+    let key = ss_subkey(b"backpressure-pw", &[0xC1; 32]);
+    // > 0x3fff forces the writer to split the payload into multiple frames, so
+    // both the intra-write resume and the cross-frame boundary are exercised.
+    let payload: Vec<u8> = (0..(0x3fff * 2 + 1234)).map(|i| (i % 251) as u8).collect();
+
+    // Canonical clean wire (the capturing sink accepts everything at once).
+    let clean = ss_wire_frames(&key, &[&payload]).await;
+
+    // The same payload through a sink that only accepts a few bytes per poll
+    // and then backpressures mid-frame.
+    let sink = FlakySink::new(37);
+    let (tx, rx) = direction_keys(&key, SS_METHOD, SsRole::Client);
+    let mut w = AeadStream::new(Box::new(sink.clone()), SS_METHOD, tx, rx);
+    // A bounded timeout so the PRE-FIX behaviour (which re-seals forever under
+    // sustained backpressure and never completes a frame) fails fast here
+    // rather than hanging the suite; the fixed writer completes near-instantly.
+    tokio::time::timeout(Duration::from_secs(10), async {
+        w.write_all(&payload)
+            .await
+            .expect("write_all under backpressure");
+        w.flush()
+            .await
+            .expect("flush drains the last buffered frame");
+    })
+    .await
+    .expect("writer must make progress under backpressure (no re-seal loop)");
+    let wire = sink.captured();
+
+    assert_eq!(
+        wire.len(),
+        clean.len(),
+        "backpressured wire length must match the clean encoding (a re-sealed \
+         extra frame would make it longer)"
+    );
+    assert_eq!(
+        wire, clean,
+        "backpressured wire must be byte-identical to the clean encoding; a \
+         nonce-skip re-seal would diverge here"
+    );
+
+    // And the peer decodes it byte-exact with no AEAD failure.
+    let inner = MockDuplex::new(wire, 7);
+    inner.set_eof();
+    let mut r = ss_reader(inner, &key);
+    let mut got = vec![0u8; payload.len()];
+    r.read_exact(&mut got)
+        .await
+        .expect("peer decodes the backpressured stream (no nonce desync)");
+    assert_eq!(got, payload, "round-trip byte-exact");
+}
+
+// ---------------------------------------------------------------------------
+// 19. HIGH-1 (obfs4): identical partial-write regression for the obfs4 framer.
+//     The per-direction counter must advance exactly once per wire frame even
+//     when the inner socket only accepts a fraction of each frame per poll.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn obfs4_partial_write_backpressure_no_counter_desync() {
+    let keys = obfs4_keys();
+    // Several frames (each capped at MAX_FRAME_PT) to force splitting.
+    let payload: Vec<u8> = (0..(MAX_FRAME_PT * 3 + 77))
+        .map(|i| (i % 253) as u8)
+        .collect();
+
+    // Canonical clean wire.
+    let clean = {
+        let sink = MockDuplex::capturing();
+        let mut w = Obfs4Stream::new(Box::new(sink.clone()), keys, Duration::ZERO);
+        w.write_all(&payload).await.unwrap();
+        w.flush().await.unwrap();
+        sink.captured()
+    };
+
+    // Backpressured wire.
+    let sink = FlakySink::new(29);
+    let mut w = Obfs4Stream::new(Box::new(sink.clone()), keys, Duration::ZERO);
+    // Bounded timeout: the pre-fix re-seal loop never completes under sustained
+    // backpressure — fail fast instead of hanging the suite.
+    tokio::time::timeout(Duration::from_secs(10), async {
+        w.write_all(&payload)
+            .await
+            .expect("obfs4 write_all under backpressure");
+        w.flush().await.expect("obfs4 flush drains the last frame");
+    })
+    .await
+    .expect("obfs4 writer must make progress under backpressure");
+    let wire = sink.captured();
+
+    assert_eq!(
+        wire, clean,
+        "obfs4 backpressured wire must be byte-identical to the clean encoding"
+    );
+
+    // Peer decodes byte-exact.
+    let inner = MockDuplex::new(wire, 5);
+    inner.set_eof();
+    let mut r = Obfs4Stream::new(Box::new(inner), keys, Duration::ZERO);
+    let mut got = vec![0u8; payload.len()];
+    r.read_exact(&mut got)
+        .await
+        .expect("peer decodes the obfs4 backpressured stream");
+    assert_eq!(got, payload);
 }

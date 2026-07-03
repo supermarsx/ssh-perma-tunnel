@@ -41,26 +41,44 @@ pub struct FirewallRuntime {
 impl FirewallRuntime {
     /// Revert the applied rules on shutdown. Best-effort: logs on failure but
     /// never propagates (teardown must proceed regardless).
-    pub fn revert(self) {
-        if !self.applied {
+    ///
+    /// The `planner.remove` shell-out (nft/pf/netsh) runs on a
+    /// [`tokio::task::spawn_blocking`] thread so a hung firewall backend cannot
+    /// wedge a runtime worker during shutdown (HC3 LOW finding).
+    pub async fn revert(self) {
+        let FirewallRuntime {
+            planner,
+            plan,
+            state_dir,
+            applied,
+        } = self;
+        if !applied {
             // Plan-only: nothing was installed on the host. Still clear any
             // persisted artifact so a later run won't try to remove phantoms.
-            let _ = FirewallPlan::clear_persisted(&self.state_dir);
+            let _ = FirewallPlan::clear_persisted(&state_dir);
             return;
         }
-        match self.planner.remove(&self.plan) {
+        // Move planner + plan onto a blocking thread for the shell-out, then
+        // hand `plan` back for the logging fields.
+        let (plan, remove_res) = tokio::task::spawn_blocking(move || {
+            let res = planner.remove(&plan);
+            (plan, res)
+        })
+        .await
+        .expect("firewall revert blocking task panicked");
+        match remove_res {
             Ok(()) => tracing::info!(
-                rules = self.plan.rule_count,
+                rules = plan.rule_count,
                 "[firewall] reverted managed rules on shutdown"
             ),
             Err(e) => tracing::warn!(
                 error = %e,
-                rules = self.plan.rule_count,
+                rules = plan.rule_count,
                 "[firewall] failed to revert managed rules on shutdown — they may need \
                  manual cleanup (see `spt firewall status`)"
             ),
         }
-        let _ = FirewallPlan::clear_persisted(&self.state_dir);
+        let _ = FirewallPlan::clear_persisted(&state_dir);
     }
 }
 
@@ -107,7 +125,7 @@ fn decide(fw: &Firewall, backend_available: Result<(), String>, global_dry_run: 
 /// (`manager = "none"`), unsupported on this platform, or the apply failed. In
 /// every non-apply case the reason is logged (INFO for intentional skips, WARN
 /// for unsupported/failed) — never a silent no-op.
-pub fn maybe_apply(
+pub async fn maybe_apply(
     cfg: &Config,
     state_dir: &Path,
     global_dry_run: bool,
@@ -137,14 +155,19 @@ pub fn maybe_apply(
         Decision::Plan { live } => {
             // `decide` only returns `Plan` when the backend is available.
             let planner = planner_res.expect("backend available when Decision::Plan");
-            apply_plan(planner, cfg, state_dir, live)
+            apply_plan(planner, cfg, state_dir, live).await
         }
     }
 }
 
 /// Compute rules, render, persist, and (dry-)apply. Split out so the decision
 /// above stays pure.
-fn apply_plan(
+///
+/// The `plan.persist` write and the `planner.apply` shell-out (nft/pf/netsh)
+/// run on a [`tokio::task::spawn_blocking`] thread so a hung firewall backend
+/// cannot wedge a runtime worker at startup (HC3 LOW finding). Rule computation
+/// and rendering are pure/cheap and stay on the async path.
+async fn apply_plan(
     planner: Box<dyn FirewallPlanner>,
     cfg: &Config,
     state_dir: &Path,
@@ -162,15 +185,25 @@ fn apply_plan(
     };
     let plan = planner.plan(&rules);
 
-    // Persist BEFORE applying so a crash mid-apply still leaves a record the
-    // next run can use for orphan cleanup.
-    if live {
-        if let Err(e) = plan.persist(state_dir) {
-            tracing::warn!(error = %e, "[firewall] failed to persist plan for crash-recovery");
+    // Move planner + plan onto a blocking thread for the persist + shell-out,
+    // then hand them back for the result / logging fields.
+    let state_dir_buf = state_dir.to_path_buf();
+    let sd = state_dir_buf.clone();
+    let (planner, plan, apply_res) = tokio::task::spawn_blocking(move || {
+        // Persist BEFORE applying so a crash mid-apply still leaves a record the
+        // next run can use for orphan cleanup.
+        if live {
+            if let Err(e) = plan.persist(&sd) {
+                tracing::warn!(error = %e, "[firewall] failed to persist plan for crash-recovery");
+            }
         }
-    }
+        let res = planner.apply(&plan, !live);
+        (planner, plan, res)
+    })
+    .await
+    .expect("firewall apply blocking task panicked");
 
-    match planner.apply(&plan, !live) {
+    match apply_res {
         Ok(()) => {
             if live {
                 tracing::info!(
@@ -189,7 +222,7 @@ fn apply_plan(
             Some(FirewallRuntime {
                 planner,
                 plan,
-                state_dir: state_dir.to_path_buf(),
+                state_dir: state_dir_buf,
                 applied: live,
             })
         }
@@ -200,7 +233,7 @@ fn apply_plan(
                 "[firewall] failed to apply managed rules — continuing without them \
                  (allow-only rules are not load-bearing; forwards still work)"
             );
-            let _ = FirewallPlan::clear_persisted(state_dir);
+            let _ = FirewallPlan::clear_persisted(&state_dir_buf);
             None
         }
     }
@@ -280,8 +313,8 @@ mod tests {
     // Integration (no shell-out): enabling firewall in plan-only mode must feed
     // the config-derived forward rules into the planner. Pre-fix there was NO
     // application path at all, so this fails against the dead state.
-    #[test]
-    fn maybe_apply_plan_only_feeds_rules_to_planner() {
+    #[tokio::test]
+    async fn maybe_apply_plan_only_feeds_rules_to_planner() {
         let s = "\
 version = 1
 [firewall]
@@ -310,7 +343,9 @@ target = \"internal:80\"
 ";
         let (cfg, _) = spt_config::load_str(s, false).unwrap();
         let dir = tempfile::tempdir().unwrap();
-        let rt = maybe_apply(&cfg, dir.path(), false).expect("plan-only apply returns a runtime");
+        let rt = maybe_apply(&cfg, dir.path(), false)
+            .await
+            .expect("plan-only apply returns a runtime");
         // The engine received both forward-derived allow rules.
         assert_eq!(rt.plan.rule_count, 2);
         assert!(
@@ -318,11 +353,11 @@ target = \"internal:80\"
             "apply_rules unset ⇒ plan-only, nothing installed"
         );
         // Plan-only revert must not error and must clear no persisted plan.
-        rt.revert();
+        rt.revert().await;
     }
 
-    #[test]
-    fn maybe_apply_returns_none_when_disabled() {
+    #[tokio::test]
+    async fn maybe_apply_returns_none_when_disabled() {
         let s = "\
 version = 1
 [firewall]
@@ -330,6 +365,6 @@ enabled = false
 ";
         let (cfg, _) = spt_config::load_str(s, false).unwrap();
         let dir = tempfile::tempdir().unwrap();
-        assert!(maybe_apply(&cfg, dir.path(), false).is_none());
+        assert!(maybe_apply(&cfg, dir.path(), false).await.is_none());
     }
 }
