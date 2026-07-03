@@ -1018,4 +1018,85 @@ mod tests {
         let back: Ssh3StreamKind = serde_json::from_str("\"udp_association\"").unwrap();
         assert_eq!(back, Ssh3StreamKind::UdpAssociation);
     }
+
+    // ---- CI-runnable randomized SSH3 frame/payload decoder fuzz ----
+    //
+    // Restores the decoder-fuzz coverage lost when the `fuzz/` cargo-fuzz
+    // workspace was deleted in commit fb2631d (`fuzz_targets/ssh3_frame.rs`).
+    // The frame envelope and every typed payload decoder ingest
+    // attacker-controlled bytes and must reject malformed input without
+    // panicking, overflowing (release runs overflow-checks), or over-allocating.
+    // Seeded deterministically — no wall-clock / no OS entropy.
+
+    // Deterministic SplitMix64 PRNG (matches the sibling crate fuzz harnesses).
+    struct FuzzRng(u64);
+
+    impl FuzzRng {
+        fn new(seed: u64) -> Self {
+            Self(seed)
+        }
+
+        fn next_u64(&mut self) -> u64 {
+            self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+            let mut z = self.0;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            z ^ (z >> 31)
+        }
+
+        fn len(&mut self, max: usize) -> usize {
+            (self.next_u64() as usize) % (max + 1)
+        }
+
+        fn bytes(&mut self, max: usize) -> Vec<u8> {
+            let n = self.len(max);
+            let mut v = vec![0u8; n];
+            for chunk in v.chunks_mut(8) {
+                let r = self.next_u64().to_le_bytes();
+                for (dst, src) in chunk.iter_mut().zip(r.iter()) {
+                    *dst = *src;
+                }
+            }
+            v
+        }
+    }
+
+    fn hammer_frame(data: &[u8]) {
+        // Outer envelope — possibly several concatenated frames.
+        let mut buf = Bytes::copy_from_slice(data);
+        let mut steps = 0;
+        while !buf.is_empty() && steps < 16 {
+            match Ssh3Frame::decode(&mut buf) {
+                Ok(_) => steps += 1,
+                Err(_) => break,
+            }
+        }
+        // Each typed payload decoder, fed the raw bytes as its payload.
+        let payload = Bytes::copy_from_slice(data);
+        let _ = Ssh3Settings::decode_payload(payload.clone());
+        let _ = ChannelOpenPayload::decode(payload.clone());
+        let _ = UdsChannelOpenPayload::decode(payload.clone());
+        let _ = ForwardOpenResponse::decode(payload.clone());
+        let _ = UdpAssociatePayload::decode(payload);
+    }
+
+    #[test]
+    fn ssh3_frame_decoders_survive_random_and_malformed_input() {
+        let edge_cases: &[&[u8]] = &[
+            &[],
+            &[0x00],
+            &[0xFF],
+            &[0xFF, 0xFF, 0xFF, 0xFF],
+            &[0x00, 0x00, 0x00, 0x00],
+            &[0xAB; 256],
+        ];
+        for case in edge_cases {
+            hammer_frame(case);
+        }
+        let mut rng = FuzzRng::new(0x5350_545F_4652_4D00); // "SPT_FRM\0"
+        for _ in 0..20_000 {
+            let data = rng.bytes(512);
+            hammer_frame(&data);
+        }
+    }
 }

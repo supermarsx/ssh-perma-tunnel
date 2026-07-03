@@ -77,8 +77,7 @@ const KNOWN_PROFILE_KEYS: &[&str] = &[
 /// *see* settings they cannot yet edit (E4-F15). These are all valid schema
 /// keys (so they survive save), unlike [`unknown_keys`] which finds keys the
 /// schema would drop entirely.
-pub const NON_WIZARD_TABLE_KEYS: &[&str] =
-    &["hops", "sftp_mounts", "script", "transport", "enabled"];
+pub const NON_WIZARD_TABLE_KEYS: &[&str] = &["sftp_mounts", "script", "enabled"];
 
 /// Return the names of the non-wizard tables/fields that are actually present
 /// on the given profile's *source* `[[profiles]]` table, in
@@ -612,12 +611,10 @@ host = "jump.example.com"
 port = 22
 "#;
         let model = Model::from_str(raw);
-        // Order follows NON_WIZARD_TABLE_KEYS: hops, sftp_mounts, script,
-        // transport, enabled.
-        assert_eq!(
-            present_non_wizard_keys(&model),
-            vec!["hops", "transport", "enabled"]
-        );
+        // `hops` and `transport` are now wizard-editable (Hops / Transport
+        // pages), so they are no longer surfaced as non-wizard. Only the
+        // still-unreachable `enabled` scalar remains.
+        assert_eq!(present_non_wizard_keys(&model), vec!["enabled"]);
     }
 
     /// A wizard-only profile (no non-wizard tables) reports an empty list,

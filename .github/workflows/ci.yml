@@ -102,6 +102,35 @@ jobs:
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
   # ---------------------------------------------------------------------------
+  # all-features — compile + lint + test EVERY feature-gated surface (otlp, snmp,
+  # yubikey, ssh3 server-selfsigned, config-crypt, mount backends, hickory bench,
+  # …). The `clippy`/`typecheck`/`test` jobs build DEFAULT features only, so
+  # feature-gated code can silently ROT against dependency API changes with no
+  # CI signal — as spt-benchmark's hickory-resolver driver did (fixed 26.45).
+  # This job is the guard for that class. Runs on Linux so cfg(unix) + FUSE
+  # paths compile too.
+  # ---------------------------------------------------------------------------
+  all-features:
+    name: all-features
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@1.88.0
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: all-features
+      - name: Install Linux system deps
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libssl-dev libdbus-1-dev libkrb5-dev clang libclang-dev libfuse-dev
+      - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      - run: cargo test --workspace --all-features --locked -- --test-threads=1
+
+  # ---------------------------------------------------------------------------
   # typecheck — fast `cargo check` gate. Runs in parallel with fmt + clippy and
   # gives quicker type-error feedback than the full test matrix.
   # ---------------------------------------------------------------------------

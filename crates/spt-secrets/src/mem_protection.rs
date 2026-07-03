@@ -11,8 +11,11 @@
 //!   `mlockall(MCL_CURRENT | MCL_FUTURE)`; on success the whole address space
 //!   (including every [`crate::SecretBytes`] the resolver hands back) is
 //!   non-swappable. When the level genuinely cannot be honoured (e.g.
-//!   `RLIMIT_MEMLOCK` exceeded, or the platform has no equivalent) a `WARN` is
-//!   logged and the process falls back to best-effort — never a silent no-op.
+//!   `RLIMIT_MEMLOCK` exceeded, or the platform has no equivalent) an `ERROR`
+//!   is logged and a [`ProtectionOutcome::StrictUnavailable`] is returned —
+//!   never a silent no-op. Because `strict` should *mean* strict, the caller
+//!   can enforce fail-closed startup by threading the outcome through
+//!   [`ProtectionOutcome::into_result`] (best-effort/none always succeed).
 //! * `none` — memory protection is explicitly disabled; only a `debug` line is
 //!   emitted so the operator's choice is observable.
 //!
@@ -22,7 +25,7 @@
 
 use std::sync::OnceLock;
 
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 /// Configured `[secrets].memory_protection` level.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -80,13 +83,52 @@ pub enum ProtectionOutcome {
     Disabled,
 }
 
+impl ProtectionOutcome {
+    /// Whether this outcome is a `strict` request that could **not** be
+    /// honoured (the address space was not locked). Callers that want `strict`
+    /// to fail closed can branch on this.
+    #[must_use]
+    pub fn is_strict_unavailable(&self) -> bool {
+        matches!(self, Self::StrictUnavailable(_))
+    }
+
+    /// Fail-closed view of the outcome: `Err(reason)` **iff** a `strict`
+    /// protection request could not be honoured, and `Ok(())` otherwise
+    /// (`strict` applied, `best_effort`, or `none`).
+    ///
+    /// A process that configured `strict` should propagate this error (refuse
+    /// to start) so `strict` genuinely means strict rather than silently
+    /// degrading to swappable best-effort locking. `best_effort`/`none` callers
+    /// are unaffected because those outcomes always map to `Ok`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the concrete reason string attached to
+    /// [`ProtectionOutcome::StrictUnavailable`].
+    pub fn into_result(self) -> std::result::Result<(), String> {
+        match self {
+            Self::StrictUnavailable(reason) => Err(reason),
+            Self::StrictApplied | Self::BestEffort | Self::Disabled => Ok(()),
+        }
+    }
+}
+
 /// Apply `level`, logging the resulting protection state. This performs the
 /// real syscall for [`MemoryProtection::Strict`]; see [`apply_once`] for the
 /// process-guarded variant used by the resolver builder.
 #[must_use]
 pub fn apply(level: MemoryProtection) -> ProtectionOutcome {
+    apply_with(level, lock_process_memory)
+}
+
+/// Inner implementation of [`apply`] with the process-lock syscall injected so
+/// the fail-closed path can be unit-tested without a real `mlockall` failure.
+fn apply_with(
+    level: MemoryProtection,
+    lock: impl FnOnce() -> Result<(), String>,
+) -> ProtectionOutcome {
     match level {
-        MemoryProtection::Strict => match lock_process_memory() {
+        MemoryProtection::Strict => match lock() {
             Ok(()) => {
                 info!(
                     target: "spt_secrets::mem_protection",
@@ -95,10 +137,14 @@ pub fn apply(level: MemoryProtection) -> ProtectionOutcome {
                 ProtectionOutcome::StrictApplied
             }
             Err(reason) => {
-                warn!(
+                // `strict` was explicitly configured but could not be honoured.
+                // Log at ERROR (not WARN): this is a security-posture failure,
+                // and the returned `StrictUnavailable` lets the caller fail
+                // closed via `ProtectionOutcome::into_result`.
+                error!(
                     target: "spt_secrets::mem_protection",
                     reason = %reason,
-                    "strict memory protection requested but could not be honoured; falling back to best-effort per-secret locking (secret pages may be swappable)"
+                    "strict memory protection requested but could not be honoured; secret pages may be swappable — refuse to continue if strict is required (see ProtectionOutcome::into_result)"
                 );
                 ProtectionOutcome::StrictUnavailable(reason)
             }
@@ -243,5 +289,43 @@ mod tests {
             }
             other => panic!("strict produced non-strict outcome: {other:?}"),
         }
+    }
+
+    #[test]
+    fn strict_lock_failure_is_unavailable_and_fails_closed() {
+        // Mock an mlockall failure: strict must NOT silently degrade. It must
+        // surface `StrictUnavailable` and `into_result` must be an Err carrying
+        // the reason so the caller can refuse to start.
+        let outcome = apply_with(MemoryProtection::Strict, || {
+            Err("mock mlockall EPERM".into())
+        });
+        assert!(outcome.is_strict_unavailable());
+        assert_eq!(
+            outcome,
+            ProtectionOutcome::StrictUnavailable("mock mlockall EPERM".to_string())
+        );
+        let err = outcome.into_result().unwrap_err();
+        assert!(err.contains("mock mlockall EPERM"));
+    }
+
+    #[test]
+    fn strict_lock_success_is_ok_result() {
+        // With the lock succeeding, strict applies and is a fail-closed Ok. The
+        // injected closure avoids touching the real address space.
+        let outcome = apply_with(MemoryProtection::Strict, || Ok(()));
+        assert_eq!(outcome, ProtectionOutcome::StrictApplied);
+        assert!(!outcome.is_strict_unavailable());
+        assert!(outcome.into_result().is_ok());
+    }
+
+    #[test]
+    fn best_effort_and_none_always_ok_results() {
+        // Non-strict modes are behaviour-preserving: they never fail closed.
+        assert!(ProtectionOutcome::BestEffort.into_result().is_ok());
+        assert!(ProtectionOutcome::Disabled.into_result().is_ok());
+        assert!(!ProtectionOutcome::BestEffort.is_strict_unavailable());
+        // The real syscall paths for these levels also map to Ok.
+        assert!(apply(MemoryProtection::BestEffort).into_result().is_ok());
+        assert!(apply(MemoryProtection::None).into_result().is_ok());
     }
 }

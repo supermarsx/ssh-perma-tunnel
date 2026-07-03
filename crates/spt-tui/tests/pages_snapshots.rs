@@ -145,10 +145,12 @@ fn snapshot_review_page() {
 }
 
 /// E4-F15: the Review page grows a read-only "Other settings" section when
-/// the profile carries non-wizard tables (`hops`/`sftp_mounts`/`script`/
-/// `transport`/`enabled`) or schema-unknown keys. This profile has several of
-/// each, plus a typo'd key that a TUI save would silently drop — the section
-/// makes both visible. Rendered against a dedicated sample so the wizard-only
+/// the profile carries non-wizard tables (`sftp_mounts`/`script`/`enabled`) or
+/// schema-unknown keys. `hops` and `transport` are now wizard-editable (Hops /
+/// Transport pages) so — even though the sample carries them — they must NOT
+/// appear in this read-only section. This profile has script + enabled plus a
+/// typo'd key that a TUI save would silently drop — the section makes those
+/// visible. Rendered against a dedicated sample so the wizard-only
 /// `review_page_100x30` snapshot stays byte-identical.
 #[test]
 fn snapshot_review_page_other_settings() {

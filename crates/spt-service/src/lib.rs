@@ -289,6 +289,41 @@ pub fn unsupported(backend: &'static str, method: &'static str) -> Error {
     Error::UnsupportedPlatform(format!("{method} is not supported on backend '{backend}'"))
 }
 
+/// Build the install-time diagnostic for a `watchdog_sec` request that the
+/// given backend cannot honor.
+///
+/// Only the systemd backends export `WATCHDOG_USEC` and drive the
+/// [`spawn_watchdog`] pinger; every other backend (launchd, Windows SCM, Task
+/// Scheduler, `OpenRC`, `SysV`) has no equivalent watchdog-supervision
+/// primitive. Rather than silently drop the field, non-systemd backends call
+/// this at install time and, when it returns `Some`, log the message via
+/// `tracing::warn!` so the operator knows the supervision they configured will
+/// not actually happen.
+///
+/// Returns `None` when there is nothing to warn about — `watchdog_sec` is
+/// unset or zero. Zero is the systemd-consistent "disabled" sentinel (the
+/// systemd unit omits `WatchdogSec=` for `Some(0)`), so it is not surfaced as
+/// a dropped guarantee.
+#[must_use]
+pub(crate) fn watchdog_unsupported_warning(backend: &str, spec: &ServiceSpec) -> Option<String> {
+    match spec.watchdog_sec {
+        Some(n) if n > 0 => Some(format!(
+            "watchdog_sec ({n}s) is only supported by the systemd backend; \
+             ignored on {backend} (no watchdog supervision will be performed)"
+        )),
+        _ => None,
+    }
+}
+
+/// Emit the [`watchdog_unsupported_warning`] diagnostic via `tracing::warn!`
+/// when `spec` requests a watchdog the `backend` cannot honor. No-op
+/// otherwise. Called from the non-systemd backends' install paths.
+pub(crate) fn warn_if_watchdog_unsupported(backend: &str, spec: &ServiceSpec) {
+    if let Some(msg) = watchdog_unsupported_warning(backend, spec) {
+        tracing::warn!(target: "spt_service", backend = %backend, "{msg}");
+    }
+}
+
 /// Pick the recommended `ServiceManager` for the running OS.
 ///
 /// On Linux this returns the systemd-system backend (most common); use
@@ -388,6 +423,46 @@ mod tests {
             Error::UnsupportedPlatform(_) => {}
             other => panic!("expected UnsupportedPlatform, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn watchdog_warning_fires_for_non_systemd_backend() {
+        // A spec that requests a watchdog produces a diagnostic naming the
+        // backend and pointing the operator back at systemd.
+        let mut spec = sample_spec();
+        spec.watchdog_sec = Some(30);
+        for backend in [
+            "launchd-daemon",
+            "openrc",
+            "sysv",
+            "windows-scm",
+            "task-scheduler",
+        ] {
+            let msg = watchdog_unsupported_warning(backend, &spec)
+                .unwrap_or_else(|| panic!("{backend} should warn"));
+            assert!(msg.contains(backend), "message should name backend: {msg}");
+            assert!(
+                msg.contains("systemd"),
+                "message should mention systemd: {msg}"
+            );
+            assert!(
+                msg.contains("30s"),
+                "message should include the interval: {msg}"
+            );
+        }
+    }
+
+    #[test]
+    fn watchdog_warning_silent_when_unset_or_zero() {
+        // Unset → nothing to warn about.
+        let mut spec = sample_spec();
+        spec.watchdog_sec = None;
+        assert!(watchdog_unsupported_warning("launchd-daemon", &spec).is_none());
+        // Zero is the systemd-consistent "disabled" sentinel, not a dropped
+        // guarantee — must stay silent so it matches the systemd unit (which
+        // omits WatchdogSec= for Some(0)).
+        spec.watchdog_sec = Some(0);
+        assert!(watchdog_unsupported_warning("windows-scm", &spec).is_none());
     }
 
     #[test]

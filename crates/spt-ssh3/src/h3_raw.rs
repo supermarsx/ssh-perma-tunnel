@@ -861,4 +861,67 @@ mod tests {
         assert!(validate_authority(b"host\r\n:443").is_err());
         validate_authority(b"host.example:443").unwrap();
     }
+
+    // ---- CI-runnable randomized QPACK decoder fuzz ----
+    //
+    // Restores the decoder-fuzz coverage lost when the `fuzz/` cargo-fuzz
+    // workspace was deleted in commit fb2631d (the `ssh3_frame` target plus the
+    // h3/QPACK layer). `qpack_decode` ingests attacker-controlled HTTP/3 header
+    // blocks and must reject any malformed field-line section without panicking,
+    // overflowing (release runs overflow-checks), or over-allocating. Seeded
+    // deterministically — no wall-clock / no OS entropy.
+
+    // Deterministic SplitMix64 PRNG (matches the sibling crate fuzz harnesses).
+    struct FuzzRng(u64);
+
+    impl FuzzRng {
+        fn new(seed: u64) -> Self {
+            Self(seed)
+        }
+
+        fn next_u64(&mut self) -> u64 {
+            self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+            let mut z = self.0;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            z ^ (z >> 31)
+        }
+
+        fn len(&mut self, max: usize) -> usize {
+            (self.next_u64() as usize) % (max + 1)
+        }
+
+        fn bytes(&mut self, max: usize) -> Vec<u8> {
+            let n = self.len(max);
+            let mut v = vec![0u8; n];
+            for chunk in v.chunks_mut(8) {
+                let r = self.next_u64().to_le_bytes();
+                for (dst, src) in chunk.iter_mut().zip(r.iter()) {
+                    *dst = *src;
+                }
+            }
+            v
+        }
+    }
+
+    #[test]
+    fn qpack_decode_survives_random_and_malformed_input() {
+        let edge_cases: &[&[u8]] = &[
+            &[],
+            &[0x00],
+            &[0xFF],
+            &[0x00, 0x00],
+            &[0xFF, 0xFF, 0xFF, 0xFF],
+            &[0x00, 0x00, 0x50, 0xFF],
+            &[0xAB; 128],
+        ];
+        for case in edge_cases {
+            let _ = qpack_decode(case);
+        }
+        let mut rng = FuzzRng::new(0x5350_545F_5150_4B00); // "SPT_QPK\0"
+        for _ in 0..20_000 {
+            let data = rng.bytes(256);
+            let _ = qpack_decode(&data);
+        }
+    }
 }

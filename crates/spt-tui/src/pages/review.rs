@@ -514,7 +514,8 @@ host = "h.example.com"
 enabled = true
 typo_key = "x"
 
-[profiles.transport]
+[profiles.script]
+path = "hooks.rhai"
 "#,
         );
         let lines = other_settings_lines(&m);
@@ -524,7 +525,7 @@ typo_key = "x"
             .flat_map(|l| l.spans.iter())
             .map(|s| s.content.as_ref())
             .collect();
-        assert!(text.contains("transport"), "must list transport table");
+        assert!(text.contains("script"), "must list script table");
         assert!(text.contains("enabled"), "must list enabled flag");
         assert!(text.contains("typo_key"), "must warn about unknown key");
         assert!(text.contains("drop it"), "must say the key will be dropped");
@@ -539,7 +540,8 @@ name = "p"
 protocol = "ssh2"
 host = "h.example.com"
 
-[profiles.transport]
+[profiles.script]
+path = "hooks.rhai"
 "#,
         );
         let mut page = ReviewPage::new();

@@ -162,6 +162,8 @@ impl ServiceManager for SysVManager {
     async fn install(&self, spec: &ServiceSpec) -> Result<()> {
         validate_service_name(&spec.name)?;
         tracing::info!(target: "spt_service", backend = "sysv", service = %spec.name, "installing service");
+        // SysV has no watchdog primitive; warn rather than silently drop it.
+        crate::warn_if_watchdog_unsupported("sysv", spec);
         let script = render_script(spec);
         let path = self.script_path(&spec.name);
 

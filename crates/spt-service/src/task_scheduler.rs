@@ -171,6 +171,12 @@ impl ServiceManager for TaskSchedulerManager {
 
     async fn install(&self, spec: &ServiceSpec) -> Result<()> {
         tracing::info!(target: "spt_service", backend = "task-scheduler", service = %spec.name, "installing service");
+        // Task Scheduler has neither a watchdog nor a `schtasks /Create`-expressible
+        // auto-restart-on-crash. Warn on both rather than silently dropping them.
+        crate::warn_if_watchdog_unsupported(BACKEND_NAME, spec);
+        if let Some(msg) = restart_policy_unsupported_warning(spec.restart_policy) {
+            tracing::warn!(target: "spt_service", backend = BACKEND_NAME, "{msg}");
+        }
         let owned = schtasks_args(spec, self.trigger);
         let args: Vec<&str> = owned.iter().map(String::as_str).collect();
         let out = self.run(&args).await?;
@@ -483,6 +489,35 @@ fn parse_schtasks_timestamp(s: &str) -> Option<chrono::DateTime<chrono::Utc>> {
     None
 }
 
+/// Build the install-time diagnostic for a `restart_policy` the Task Scheduler
+/// backend cannot honor.
+///
+/// The backend registers tasks through the `schtasks /Create` CLI, whose
+/// argument surface has **no** flag for auto-restart-on-crash — that setting
+/// is only reachable through a full task-XML import (`schtasks /Create /XML`
+/// with a `<RestartOnFailure>` element), which the current argv-based renderer
+/// does not use. Rather than silently drop the operator's restart intent, the
+/// install path warns and points them at the Windows SCM backend (which does
+/// honor `restart_policy` via SCM failure actions).
+///
+/// Returns `None` for [`crate::RestartPolicy::Never`] (nothing to restart, so
+/// nothing is dropped). Always compiled so it can be unit-tested on any host.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+#[must_use]
+fn restart_policy_unsupported_warning(policy: crate::RestartPolicy) -> Option<String> {
+    use crate::RestartPolicy;
+    let label = match policy {
+        RestartPolicy::Always => "always",
+        RestartPolicy::OnFailure => "on-failure",
+        RestartPolicy::Never => return None,
+    };
+    Some(format!(
+        "restart_policy ({label}) is not honored by the task-scheduler backend; \
+         schtasks /Create cannot express auto-restart-on-crash. Use the Windows \
+         SCM backend for supervised restart."
+    ))
+}
+
 // ----- argv rendering (always available, used by render + install) ----------
 
 fn render_schtasks(spec: &ServiceSpec, trigger: Trigger) -> String {
@@ -692,6 +727,25 @@ mod tests {
         let out = TaskSchedulerManager::new().render(&sample_spec());
         // /F appears as a standalone arg.
         assert!(out.split_whitespace().any(|a| a == "/F"));
+    }
+
+    // --- restart_policy disclosure (GAP-2) ----------------------------------
+
+    #[test]
+    fn restart_policy_warning_fires_for_restarting_policies() {
+        use crate::RestartPolicy;
+        for policy in [RestartPolicy::Always, RestartPolicy::OnFailure] {
+            let msg = restart_policy_unsupported_warning(policy)
+                .unwrap_or_else(|| panic!("{policy:?} should warn"));
+            assert!(msg.contains("restart_policy"), "got: {msg}");
+            assert!(msg.contains("task-scheduler"), "got: {msg}");
+            assert!(msg.contains("SCM"), "should point at SCM backend: {msg}");
+        }
+    }
+
+    #[test]
+    fn restart_policy_warning_silent_for_never() {
+        assert!(restart_policy_unsupported_warning(crate::RestartPolicy::Never).is_none());
     }
 
     // --- name validation (shared across launchd/openrc/sysv) ----------------

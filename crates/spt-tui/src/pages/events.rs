@@ -113,6 +113,11 @@ enum RowKind {
     SecretOpaque,
 }
 
+/// Row labels whose committed value is a `u32`. Non-numeric input to these
+/// rows is rejected at commit (held open with an inline error) rather than
+/// silently parsed to `None` (E4-F8).
+const NUMERIC_U32_ROWS: &[&str] = &["ring_capacity", "max_cert_chain_depth"];
+
 /// One editable row inside a hand-rolled sink/binding editor.
 struct EditorRow {
     /// Display label / TOML key.
@@ -202,6 +207,16 @@ impl EditorRow {
         if self.kind == RowKind::Secret && !self.value.is_empty() {
             if let Err(e) = spt_auth::SecretRef::parse(&self.value) {
                 return Some(format!("invalid secret reference: {e}"));
+            }
+        }
+        // Numeric `u32` rows: a non-empty, non-numeric buffer previously
+        // parsed to `None` via `.ok()` and silently discarded the operator's
+        // input (E4-F8). Validate the shape up front so a bad value holds the
+        // field open with an inline error instead of vanishing on commit.
+        if NUMERIC_U32_ROWS.contains(&self.label) {
+            let t = self.value.trim();
+            if !t.is_empty() && t.parse::<u32>().is_err() {
+                return Some(format!("`{t}` is not a valid non-negative integer"));
             }
         }
         None
@@ -2686,6 +2701,26 @@ ring_capacity = 2048
         assert!(has_settings(m.events().unwrap()));
         // A bare model stays empty-state.
         assert!(EventsPage::is_empty_state(&model()));
+    }
+
+    /// E4-F8: a non-numeric `ring_capacity` must be rejected with an inline
+    /// error (field held open), not silently discarded via `.ok()`.
+    #[test]
+    fn settings_editor_rejects_non_numeric_ring_capacity() {
+        let mut p = EventsPage::new();
+        let mut m = model_with_events();
+        p.region = Region::Settings;
+        p.on_key(k(KeyCode::Enter), &mut m); // begin edit ring_capacity (row 0)
+        for c in "xyz".chars() {
+            p.on_key(k(KeyCode::Char(c)), &mut m);
+        }
+        p.on_key(k(KeyCode::Enter), &mut m); // commit attempt — rejected
+        let ed = p.settings_editor.as_ref().expect("settings editor open");
+        assert!(
+            ed.rows[0].last_error.is_some(),
+            "non-numeric ring_capacity must surface an inline error"
+        );
+        assert!(ed.editing, "validation failure must hold the field open");
     }
 
     #[test]

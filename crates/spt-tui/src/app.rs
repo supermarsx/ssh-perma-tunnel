@@ -106,7 +106,7 @@ impl App {
     ///
     /// ```text
     /// ┌─ tabs ────────────────────────────────────────────────┐  3 rows
-    /// │  spt profile configure — <profile>          [3/13]    │
+    /// │  spt profile configure — <profile>          [3/15]    │
     /// │  1 Basics  2 Endpoints  3 Auth  4 Trust  …           │
     /// └────────────────────────────────────────────────────────┘
     /// │                                                        │
@@ -133,7 +133,7 @@ impl App {
         // ratatui's `Tabs` widget renders the full list left-to-right with
         // no scroll — anything beyond the inner width gets clipped silently
         // and the user can't even see which page they're on if it's past
-        // the cut. With 13 pages totalling ~145 cells of text, this happens
+        // the cut. With 15 pages totalling ~165 cells of text, this happens
         // routinely below 120-wide. We render a windowed view manually so
         // the active tab is always visible, with `…` markers when there's
         // overflow on either side.
@@ -254,26 +254,22 @@ impl App {
             return AppEvent::Continue;
         }
 
+        // Is the active page currently editing a field? While a field is
+        // being edited, *character-producing* global keys must be forwarded
+        // to the field so operators can type values that legitimately contain
+        // `h`, `l`, `q`, `?`, `[`, `]`, or digits — e.g. `https://`,
+        // `localhost`, `/home/alice`, `?query`, tag lists. This is the fix
+        // for the HIGH-severity input bug where those keys triggered
+        // nav/quit/help instead of inserting the character.
+        let editing = self
+            .pages
+            .get(self.current.index())
+            .is_some_and(|p| p.is_editing());
+
+        // Tab / BackTab always navigate pages — they are not
+        // character-producing keys, so they stay global in every mode
+        // (preserving the pre-existing contract).
         match key.code {
-            KeyCode::Char('?') => {
-                self.show_help = !self.show_help;
-                return AppEvent::Continue;
-            }
-            KeyCode::Char('q') => {
-                if self.model.is_dirty() && !self.confirm_quit {
-                    self.confirm_quit = true;
-                    self.status =
-                        "unsaved changes — press q again to discard, Ctrl-S to save".into();
-                    return AppEvent::Continue;
-                }
-                return AppEvent::Quit;
-            }
-            KeyCode::Esc => {
-                // If the page is in nav mode (not editing), Esc could be quit.
-                // Pages handle their own Esc-cancel inside edit mode; we only
-                // intercept if no page is editing. The page-key dispatcher
-                // below returns whether it consumed the event.
-            }
             KeyCode::Tab => {
                 let next = (self.current.index() + 1) % PageKind::COUNT;
                 self.current = PageKind::all()[next];
@@ -284,29 +280,49 @@ impl App {
                 self.current = PageKind::all()[prev];
                 return AppEvent::Continue;
             }
-            KeyCode::Char(']') => {
-                let next = (self.current.index() + 1) % PageKind::COUNT;
-                self.current = PageKind::all()[next];
-                return AppEvent::Continue;
-            }
-            KeyCode::Char('[') => {
-                let prev = (self.current.index() + PageKind::COUNT - 1) % PageKind::COUNT;
-                self.current = PageKind::all()[prev];
-                return AppEvent::Continue;
-            }
-            KeyCode::Char('h') => {
-                // Vim-style page-prev (only when not editing — pages with
-                // text inputs in edit mode will see 'h' as a character).
-                let prev = (self.current.index() + PageKind::COUNT - 1) % PageKind::COUNT;
-                self.current = PageKind::all()[prev];
-                return AppEvent::Continue;
-            }
-            KeyCode::Char('l') => {
-                let next = (self.current.index() + 1) % PageKind::COUNT;
-                self.current = PageKind::all()[next];
-                return AppEvent::Continue;
-            }
             _ => {}
+        }
+
+        // Character-based global keys — intercepted ONLY when NOT editing a
+        // field. In edit mode they fall through to the page so the focused
+        // field receives the character.
+        if !editing {
+            match key.code {
+                KeyCode::Char('?') => {
+                    self.show_help = !self.show_help;
+                    return AppEvent::Continue;
+                }
+                KeyCode::Char('q') => {
+                    if self.model.is_dirty() && !self.confirm_quit {
+                        self.confirm_quit = true;
+                        self.status =
+                            "unsaved changes — press q again to discard, Ctrl-S to save".into();
+                        return AppEvent::Continue;
+                    }
+                    return AppEvent::Quit;
+                }
+                KeyCode::Char(']') | KeyCode::Char('l') => {
+                    let next = (self.current.index() + 1) % PageKind::COUNT;
+                    self.current = PageKind::all()[next];
+                    return AppEvent::Continue;
+                }
+                KeyCode::Char('[') | KeyCode::Char('h') => {
+                    let prev = (self.current.index() + PageKind::COUNT - 1) % PageKind::COUNT;
+                    self.current = PageKind::all()[prev];
+                    return AppEvent::Continue;
+                }
+                // Digit jump: `1`-`9` select that page directly (documented in
+                // the help overlay). Guarded behind `!editing` so numeric
+                // fields still receive digits; out-of-range digits are ignored.
+                KeyCode::Char(c @ '1'..='9') => {
+                    let target = (c as usize) - ('1' as usize);
+                    if target < PageKind::COUNT {
+                        self.current = PageKind::all()[target];
+                    }
+                    return AppEvent::Continue;
+                }
+                _ => {}
+            }
         }
 
         // Reset confirm_quit on any other interaction.
@@ -895,6 +911,68 @@ host = "h.example.com"
         app.on_key(k(KeyCode::Char('l')));
         assert_eq!(app.current, PageKind::Endpoints);
         app.on_key(k(KeyCode::Char('h')));
+        assert_eq!(app.current, PageKind::Basics);
+    }
+
+    /// HIGH-severity input-bug regression (App-level): while a text field is
+    /// being edited, the character keys `h l q ? [ ]` — and digits — must be
+    /// inserted into the field, NOT trigger page-nav / quit / help / digit
+    /// jump. Page unit tests bypass `App::on_key` and missed this entirely.
+    #[test]
+    fn edit_mode_forwards_reserved_chars_into_field() {
+        let mut app = App::new(sample());
+        assert_eq!(app.current, PageKind::Basics);
+        // Focus the free-form `description` field (index 1 on Basics).
+        app.on_key(k(KeyCode::Down));
+        app.on_key(k(KeyCode::Enter)); // begin edit (empty)
+                                       // Type a string containing every globally-intercepted character.
+        for c in "https://h:1/a?q[x]l".chars() {
+            app.on_key(k(KeyCode::Char(c)));
+        }
+        app.on_key(k(KeyCode::Enter)); // commit
+                                       // Page must not have navigated, help must not have toggled.
+        assert_eq!(
+            app.current,
+            PageKind::Basics,
+            "typing h/l/q/?/[/]/digits in edit mode must not navigate pages"
+        );
+        assert!(
+            !app.show_help,
+            "typing `?` in edit mode must not toggle the help overlay"
+        );
+        // The literal text — including h, l, q, ?, [, ], and digits — landed
+        // in the field.
+        assert_eq!(
+            app.model.profile().description.as_deref(),
+            Some("https://h:1/a?q[x]l")
+        );
+    }
+
+    /// While editing, `q` must NOT quit — it is a plain character.
+    #[test]
+    fn edit_mode_q_does_not_quit() {
+        let mut app = App::new(sample());
+        app.on_key(k(KeyCode::Down)); // focus description
+        app.on_key(k(KeyCode::Enter)); // begin edit
+        assert_eq!(
+            app.on_key(k(KeyCode::Char('q'))),
+            AppEvent::Continue,
+            "q while editing must be a character, not a quit"
+        );
+        // Still editing, no quit requested.
+        assert!(app.pages[PageKind::Basics.index()].is_editing());
+    }
+
+    /// Digit `1`-`9` jumps directly to that page in nav mode (the help
+    /// overlay documents this). `3` selects the third page (Hops).
+    #[test]
+    fn digit_jump_selects_page_in_nav_mode() {
+        let mut app = App::new(sample());
+        assert_eq!(app.current, PageKind::Basics);
+        app.on_key(k(KeyCode::Char('3')));
+        assert_eq!(app.current, PageKind::all()[2]);
+        assert_eq!(app.current, PageKind::Hops);
+        app.on_key(k(KeyCode::Char('1')));
         assert_eq!(app.current, PageKind::Basics);
     }
 

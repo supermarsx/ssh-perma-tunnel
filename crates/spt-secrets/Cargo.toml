@@ -19,7 +19,10 @@ testing = []
 spt-core = { workspace = true }
 secrecy = { workspace = true }
 zeroize = { workspace = true }
-aes-gcm = { workspace = true }
+# `zeroize` (an optional feature of aes-gcm, not a new dependency) wipes the
+# derived GHASH key material on drop so no AES-GCM key-schedule residue lingers
+# in freed heap after a cipher is dropped.
+aes-gcm = { workspace = true, features = ["zeroize"] }
 argon2 = { workspace = true }
 keyring = { workspace = true, features = ["apple-native", "windows-native", "sync-secret-service", "linux-native"] }
 rand = { workspace = true }

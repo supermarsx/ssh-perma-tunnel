@@ -24,10 +24,13 @@ mode = "signal"
 require_valid_config = true
 restart_changed_profiles = true
 
+# This fleet resolves secrets from the OS keychain (namespace `spt-fleet`).
+# `encrypt_at_rest` is intentionally omitted: it is only honoured by
+# `backend = "vault"` (the AES-256-GCM vault) and would otherwise be an inert,
+# misleading flag — `spt config validate` rejects it on any non-vault backend.
 [secrets]
 backend = "auto"
 keychain_namespace = "spt-fleet"
-encrypt_at_rest = true
 
 [logging]
 level = "info"

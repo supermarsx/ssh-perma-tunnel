@@ -291,6 +291,8 @@ impl ScmManagerImpl {
     /// Install + best-effort start. See module docs for sequencing.
     pub fn install(&self, spec: &ServiceSpec) -> Result<()> {
         tracing::info!(target: "spt_service", backend = "windows-scm", service = %spec.name, "installing service");
+        // SCM has no systemd-style watchdog; warn rather than silently drop it.
+        crate::warn_if_watchdog_unsupported("windows-scm", spec);
         // Cheap pre-flight so an immediately-following `create_service` call
         // doesn't blow up with a noisier error if SCM isn't reachable.
         self.backend.open_scm()?;

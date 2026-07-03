@@ -117,6 +117,8 @@ impl ServiceManager for OpenRcManager {
     async fn install(&self, spec: &ServiceSpec) -> Result<()> {
         validate_service_name(&spec.name)?;
         tracing::info!(target: "spt_service", backend = "openrc", service = %spec.name, "installing service");
+        // OpenRC has no watchdog primitive; warn rather than silently drop it.
+        crate::warn_if_watchdog_unsupported("openrc", spec);
         let script = render_script(spec);
         let path = self.script_path(&spec.name);
 

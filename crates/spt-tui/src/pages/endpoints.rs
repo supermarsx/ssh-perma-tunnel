@@ -348,6 +348,10 @@ impl Page for EndpointsPage {
         }
     }
 
+    fn is_editing(&self) -> bool {
+        self.editor.as_ref().is_some_and(|ed| ed.fields.editing)
+    }
+
     fn on_key(&mut self, key: KeyEvent, model: &mut Model) -> bool {
         // Two-pane navigation contract:
         //

@@ -16,7 +16,7 @@ use spt_config::schema::Secrets as SecretsConfig;
 use spt_core::{Error, Result};
 use spt_secrets::{
     apply_memory_protection_once, EnvBackend, FileBackend, KeychainBackend, MemoryProtection,
-    Resolver, SecretBackend, SecretRef, VaultBackend,
+    ProtectionOutcome, Resolver, SecretBackend, SecretRef, VaultBackend,
 };
 
 /// Build a [`Resolver`] from the `[secrets]` config table.
@@ -48,8 +48,17 @@ pub fn build_resolver(cfg: Option<&SecretsConfig>, state_dir: &Path) -> Result<R
     // closed enum and documented as "consumed by spt-secrets" but never applied.
     // `apply_once` is process-global and idempotent, so calling it on every
     // resolver build is cheap and logs the active protection exactly once.
+    //
+    // The returned `ProtectionOutcome` was previously DISCARDED, which silently
+    // let `strict` degrade to swappable best-effort locking whenever mlockall
+    // failed. spt-secrets now makes `strict` fail-closed via `into_result`:
+    // `StrictUnavailable` maps to `Err`, while `strict-applied`/`best_effort`/
+    // `none` map to `Ok`. Propagate that here — when `memory_protection = strict`
+    // and the process address space could NOT be locked, refuse to proceed rather
+    // than build a resolver whose secret pages may be paged to swap. Best-effort
+    // and none are unaffected (spt-secrets already logged the active state).
     let level = MemoryProtection::from_config(cfg.and_then(|s| s.memory_protection.as_deref()));
-    let _ = apply_memory_protection_once(level);
+    enforce_memory_protection(apply_memory_protection_once(level))?;
 
     let mut backends: Vec<Arc<dyn SecretBackend>> = Vec::new();
     let backend_kind = cfg.and_then(|s| s.backend.as_deref()).unwrap_or("auto");
@@ -119,6 +128,25 @@ pub fn build_resolver(cfg: Option<&SecretsConfig>, state_dir: &Path) -> Result<R
         "built secret resolver chain"
     );
     Ok(resolver)
+}
+
+/// Fail-closed gate on the process memory-protection outcome.
+///
+/// spt-secrets makes `strict` fail-closed: [`ProtectionOutcome::into_result`]
+/// returns `Err` **only** for `StrictUnavailable` (a configured `strict` that
+/// could not be honoured — e.g. `mlockall` denied) and `Ok` for
+/// `StrictApplied`/`BestEffort`/`Disabled`. This translates that into a hard
+/// [`Error::RuntimeFailure`] so `build_resolver` refuses to hand back a resolver
+/// whose secret pages may be swappable. Best-effort / none / strict-applied all
+/// continue (spt-secrets already logged the active protection state).
+fn enforce_memory_protection(outcome: ProtectionOutcome) -> Result<()> {
+    outcome.into_result().map_err(|reason| {
+        Error::RuntimeFailure(format!(
+            "[secrets].memory_protection = \"strict\" was requested but strict memory \
+             protection could not be honoured ({reason}); refusing to proceed with \
+             potentially swappable secret memory"
+        ))
+    })
 }
 
 /// Human-readable summary of a resolver's backend chain (kinds only — never any
@@ -461,5 +489,40 @@ mod tests {
         };
         let r = build_resolver(Some(&cfg), tmp.path()).expect("build");
         assert_eq!(vault_kinds(&r), vec![spt_secrets::BackendKind::File]);
+    }
+
+    // ----- hcfix-config: strict mlockall failure is fail-closed at spt-bin ----
+
+    #[test]
+    fn strict_unavailable_refuses_to_build() {
+        // A configured `strict` that could not be honoured (mlockall denied)
+        // must propagate a hard error — spt-bin refuses to proceed with
+        // potentially swappable secret memory rather than silently degrading.
+        let err = enforce_memory_protection(ProtectionOutcome::StrictUnavailable(
+            "mlockall failed: EPERM".to_string(),
+        ))
+        .expect_err("strict-unavailable must refuse");
+        match err {
+            Error::RuntimeFailure(msg) => {
+                assert!(msg.contains("strict"), "message: {msg}");
+                assert!(msg.contains("refusing to proceed"), "message: {msg}");
+            }
+            other => panic!("expected RuntimeFailure, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn non_strict_outcomes_continue() {
+        // strict-applied / best-effort / none never fail closed.
+        for outcome in [
+            ProtectionOutcome::StrictApplied,
+            ProtectionOutcome::BestEffort,
+            ProtectionOutcome::Disabled,
+        ] {
+            assert!(
+                enforce_memory_protection(outcome.clone()).is_ok(),
+                "{outcome:?} must not refuse"
+            );
+        }
     }
 }

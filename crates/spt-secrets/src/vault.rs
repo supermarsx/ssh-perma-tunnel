@@ -208,12 +208,17 @@ impl VaultBackend {
     pub fn open_with_keychain(dir: &Path, keychain: &KeychainBackend) -> Result<Self> {
         let meta = read_meta(&Self::meta_path(dir))?;
         let entry = keychain.master_entry()?;
-        let raw = entry.get_secret().map_err(|e| match e {
+        // The keyring hands back a plain `Vec<u8>` holding the 32-byte master
+        // key; wrap it in `Zeroizing` immediately so the source buffer is wiped
+        // when it drops. Otherwise the master-key plaintext would linger in
+        // freed heap (recoverable via swap/core-dump/heap-scrape) even after the
+        // protected `Zeroizing` copy below is zeroized.
+        let raw = Zeroizing::new(entry.get_secret().map_err(|e| match e {
             keyring::Error::NoEntry => Error::SecretCryptoFailed(
                 "vault master key not present in keychain; run `spt secret store init`".into(),
             ),
             other => Error::SecretCryptoFailed(format!("load master key: {other}")),
-        })?;
+        })?);
         if raw.len() != KEY_LEN {
             return Err(Error::SecretCryptoFailed(format!(
                 "master key in keychain has wrong length {} (expected {KEY_LEN})",
@@ -302,7 +307,10 @@ impl VaultBackend {
         // Decrypt every record under the current key.
         let file = read_vault(&self.vault_path)?;
         let cipher = self.master.cipher();
-        let mut decrypted: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+        // Hold every decrypted secret in `Zeroizing` so the whole vault
+        // cleartext is wiped from heap when this map drops at end of rotation,
+        // instead of lingering in freed heap as plain `Vec<u8>` residue.
+        let mut decrypted: BTreeMap<String, Zeroizing<Vec<u8>>> = BTreeMap::new();
         for (k, rec) in &file.records {
             let (ns, name) = split_key(k)?;
             let aad = aad_bytes(ns, name);
@@ -319,7 +327,7 @@ impl VaultBackend {
                     },
                 )
                 .map_err(|_| Error::SecretCryptoFailed(format!("decrypt `{k}` failed")))?;
-            decrypted.insert(k.clone(), pt);
+            decrypted.insert(k.clone(), Zeroizing::new(pt));
         }
 
         // Generate fresh master key.
@@ -338,7 +346,7 @@ impl VaultBackend {
                 .encrypt(
                     Nonce::from_slice(&nonce),
                     Payload {
-                        msg: &pt,
+                        msg: pt.as_slice(),
                         aad: &aad,
                     },
                 )
@@ -690,6 +698,69 @@ mod tests {
         let v2 = VaultBackend::open_with_keychain(dir.path(), &kc).unwrap();
         let got = v2.get(&r).unwrap().unwrap();
         assert_eq!(got.expose_secret().as_slice(), b"payload");
+    }
+
+    #[test]
+    fn open_with_keychain_wraps_source_key_and_round_trips() {
+        // The keyring-returned `Vec<u8>` is now wrapped in `Zeroizing` before
+        // the length check + copy. Prove the wrapping did not break the happy
+        // path (correct-length key opens and decrypts).
+        let _g = install_mock_keyring();
+        let dir = tempdir().unwrap();
+        let kc = KeychainBackend::with_service("spt-test-vault-src-zero");
+        let v = VaultBackend::init_with_keychain(dir.path(), &kc).unwrap();
+        let r = SecretRef::new("ns", "name").unwrap();
+        v.set(&r, b"payload").unwrap();
+        drop(v);
+        let v2 = VaultBackend::open_with_keychain(dir.path(), &kc).unwrap();
+        assert_eq!(
+            v2.get(&r).unwrap().unwrap().expose_secret().as_slice(),
+            b"payload"
+        );
+    }
+
+    #[test]
+    fn open_with_keychain_rejects_wrong_length_master_key() {
+        // Exercises the `raw.len() != KEY_LEN` branch operating on the
+        // `Zeroizing`-wrapped source buffer.
+        let _g = install_mock_keyring();
+        let dir = tempdir().unwrap();
+        let kc = KeychainBackend::with_service("spt-test-vault-wronglen");
+        VaultBackend::init_with_keychain(dir.path(), &kc).unwrap();
+        // Overwrite the stored master key with a too-short value.
+        kc.master_entry().unwrap().set_secret(b"short").unwrap();
+        let err = VaultBackend::open_with_keychain(dir.path(), &kc).unwrap_err();
+        assert!(matches!(err, Error::SecretCryptoFailed(_)));
+    }
+
+    #[test]
+    fn rotate_uses_zeroizing_for_decrypted_and_preserves_multiple_records() {
+        // `rotate_master_key` now holds decrypted plaintext in
+        // `Zeroizing<Vec<u8>>`. Rotate a vault with several records and confirm
+        // every plaintext survives the rotation (type is compile-enforced;
+        // this guards the encrypt path that reads `pt.as_slice()`).
+        let _g = install_mock_keyring();
+        let dir = tempdir().unwrap();
+        let kc = KeychainBackend::with_service("spt-test-vault-rotate-multi");
+        let mut v = VaultBackend::init_with_keychain(dir.path(), &kc).unwrap();
+        let items = [
+            (SecretRef::new("ns", "a").unwrap(), b"alpha".as_slice()),
+            (SecretRef::new("ns", "b").unwrap(), b"bravo".as_slice()),
+            (SecretRef::new("other", "c").unwrap(), b"charlie".as_slice()),
+        ];
+        for (r, val) in &items {
+            v.set(r, val).unwrap();
+        }
+        v.rotate_master_key(&kc).unwrap();
+        for (r, val) in &items {
+            assert_eq!(v.get(r).unwrap().unwrap().expose_secret().as_slice(), *val);
+        }
+        // And they remain readable after reopening under the rotated key.
+        drop(v);
+        let v2 = VaultBackend::open_with_keychain(dir.path(), &kc).unwrap();
+        for (r, val) in &items {
+            assert_eq!(v2.get(r).unwrap().unwrap().expose_secret().as_slice(), *val);
+        }
     }
 
     #[test]

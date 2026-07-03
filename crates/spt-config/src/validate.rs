@@ -70,8 +70,29 @@ pub fn validate(c: &Config) -> Diagnostics {
     check_capabilities(&mut d, c);
     check_service(&mut d, c);
     check_profiles(&mut d, c);
+    check_round_robin(&mut d, c);
 
     d
+}
+
+/// Cross-validate the `[round_robin]` endpoint-cycling table.
+///
+/// `dns_round_robin` is honoured only by a runtime `tracing::warn!` in the
+/// supervisor ("configured but NOT active…") — DNS A/AAAA expansion is not
+/// implemented. Mirror that honesty at config-validate time so an operator who
+/// runs `spt config validate` (and never sees supervisor start-up logs) is told
+/// the option has no effect. WARN only; the option is otherwise inert.
+fn check_round_robin(d: &mut Diagnostics, c: &Config) {
+    if c.round_robin.dns_round_robin {
+        d.push(
+            Diagnostic::warning(
+                "dns_round_robin_not_active",
+                "round_robin.dns_round_robin is not active: DNS A/AAAA expansion of endpoint \
+                 hostnames is not implemented, so only the declared endpoint list is cycled",
+            )
+            .at("round_robin.dns_round_robin"),
+        );
+    }
 }
 
 /// Cross-validate the `[updater]` block. The runtime is permissive when
@@ -497,6 +518,32 @@ fn check_secrets(d: &mut Diagnostics, c: &Config) {
                     ),
                 )
                 .at("secrets.memory_protection"),
+            );
+        }
+    }
+
+    // `encrypt_at_rest = true` is only honoured by `backend = "vault"` (the
+    // encrypted store IS the vault: AES-256-GCM + Argon2id). Every other backend
+    // (`auto`/`keychain`/`env`/`file`) writes spt-managed secrets in PLAINTEXT.
+    // Because the flag *name* promises encryption, treat the mismatch as
+    // FAIL-CLOSED — an ERROR at `spt config validate` time — so a dangerous
+    // misconfiguration is caught before any secret is written unencrypted, rather
+    // than surfacing only as a runtime WARN after the fact. `auto` never resolves
+    // to vault (it composes keychain/env/file), so it is rejected too.
+    if secrets.encrypt_at_rest == Some(true) {
+        let backend = secrets.backend.as_deref().unwrap_or("auto");
+        if backend != "vault" {
+            d.push(
+                Diagnostic::error(
+                    "secrets_encrypt_at_rest_requires_vault",
+                    format!(
+                        "secrets.encrypt_at_rest = true is not honoured by the `{backend}` \
+                         backend; at-rest encryption requires `backend = \"vault\"` (the \
+                         AES-256-GCM vault). Any other backend would write secrets in plaintext"
+                    ),
+                )
+                .at("secrets.encrypt_at_rest")
+                .with_help("set `[secrets].backend = \"vault\"`, or remove `encrypt_at_rest`"),
             );
         }
     }
@@ -1109,6 +1156,28 @@ fn check_network(d: &mut Diagnostics, c: &Config) {
     }
 
     if let Some(gateway) = network.gateway.as_ref() {
+        // The entire `[network.gateway]` table is parsed and format-checked but
+        // has NO runtime consumer this build — no gateway resolution or route
+        // checking is performed. `require_gateway_match = true` in particular
+        // reads like a hard routing safety gate but enforces nothing. WARN when
+        // any field is set so the table is never a silent no-op (the format
+        // checks below still run so an outright-invalid value is still an ERROR).
+        let gateway_configured = gateway.default_gateway.is_some()
+            || gateway.interface.is_some()
+            || gateway.route_check_target.is_some()
+            || gateway.require_gateway_match.is_some()
+            || gateway.policy.is_some();
+        if gateway_configured {
+            d.push(
+                Diagnostic::warning(
+                    "network_gateway_not_enforced",
+                    "[network.gateway] is not enforced at runtime: no gateway resolution or \
+                     route checking is performed, so require_gateway_match/policy/route_check_target \
+                     have no effect and do not act as a routing safety gate",
+                )
+                .at("network.gateway"),
+            );
+        }
         if let Some(policy) = gateway.policy.as_deref() {
             if !matches!(
                 policy,
@@ -1184,6 +1253,33 @@ fn check_network(d: &mut Diagnostics, c: &Config) {
             load_balance.rebalance_interval.as_deref(),
             "network.load_balance.rebalance_interval",
         );
+
+        // The load-balance → round_robin mapper consumes only `strategy` and
+        // `restore_after`; `rebalance_interval` and `sticky_sessions` are parsed
+        // (and `rebalance_interval` is format-checked above) but never honored.
+        // WARN so a set value is not a silent no-op.
+        if load_balance.rebalance_interval.is_some() {
+            d.push(
+                Diagnostic::warning(
+                    "network_load_balance_rebalance_interval_ignored",
+                    "network.load_balance.rebalance_interval is not honored: the endpoint \
+                     selector uses `strategy` and `restore_after` only and never actively \
+                     redistributes sessions on an interval",
+                )
+                .at("network.load_balance.rebalance_interval"),
+            );
+        }
+        if load_balance.sticky_sessions.is_some() {
+            d.push(
+                Diagnostic::warning(
+                    "network_load_balance_sticky_sessions_ignored",
+                    "network.load_balance.sticky_sessions is not honored by the endpoint \
+                     selector; for sticky selection set `[round_robin] policy = \"sticky\"` \
+                     (with `sticky_session_ttl`) instead",
+                )
+                .at("network.load_balance.sticky_sessions"),
+            );
+        }
     }
 
     // `[network.offload]` — only `tcp_nodelay` and `socket_keepalive` map onto
@@ -2594,6 +2690,22 @@ fn check_profile_ssh3_tls(d: &mut Diagnostics, p: &Profile, prefix: &str) {
             ssh3.keepalive.as_deref(),
             format!("{prefix}.ssh3.keepalive"),
         );
+
+        // `draft` is informational only — it is discarded when the ssh3 profile
+        // is built (profile_factory) and never selects a wire protocol version.
+        // WARN so it is not a silent no-op.
+        if ssh3.draft.is_some() {
+            d.push(
+                Diagnostic::warning(
+                    "ssh3_draft_no_effect",
+                    format!(
+                        "{prefix}.ssh3.draft is informational only and has no runtime effect; the \
+                         ssh3 protocol version is not selected by this field"
+                    ),
+                )
+                .at(format!("{prefix}.ssh3.draft")),
+            );
+        }
     }
 }
 
@@ -3152,6 +3264,26 @@ fn check_forward(
                 ),
             )
             .at(format!("{prefix}.udp_mode")),
+        );
+    }
+
+    // `max_datagram_size` is surfaced by `forward inspect` but is NOT threaded
+    // into the UDP flow config: the runtime hardcodes the datagram cap (a fixed
+    // default in both the ssh2 and ssh3 UDP paths). WARN so an operator setting
+    // it to cap datagram admission is not silently misled by the display value.
+    // (Full runtime wiring is a separate transport task.)
+    if f.max_datagram_size.is_some() {
+        d.push(
+            Diagnostic::warning(
+                "forward_max_datagram_size_not_enforced",
+                format!(
+                    "forward `{}` sets max_datagram_size but it is not enforced at runtime: the \
+                     UDP datagram cap uses a fixed default and this value only appears in \
+                     `forward inspect` output",
+                    f.name
+                ),
+            )
+            .at(format!("{prefix}.max_datagram_size")),
         );
     }
 
@@ -7166,6 +7298,265 @@ mod tests {
                 .iter()
                 .any(|e| e.code == "mem_hygiene_cgroup_pressure_pct_range"),
             "errors: {:?}",
+            d.errors
+        );
+    }
+
+    // ───────── hcfix-config: no-silent-no-op validate diagnostics ─────────
+
+    #[test]
+    fn network_gateway_table_warns_not_enforced() {
+        // The whole `[network.gateway]` table has no runtime consumer; a set
+        // field must WARN so require_gateway_match doesn't read as a safety gate.
+        let raw = r#"
+            version = 1
+            [network.gateway]
+            require_gateway_match = true
+            interface = "eth0"
+            policy = "default_route"
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(
+            d.warnings
+                .iter()
+                .any(|w| w.code == "network_gateway_not_enforced"),
+            "warnings: {:?}",
+            d.warnings
+        );
+        // The valid policy + interface coupling must not spuriously ERROR.
+        assert!(
+            !d.errors
+                .iter()
+                .any(|e| e.code.starts_with("network_gateway")),
+            "valid gateway table must not ERROR: {:?}",
+            d.errors
+        );
+    }
+
+    #[test]
+    fn network_gateway_absent_does_not_warn() {
+        let raw = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(
+            !d.warnings
+                .iter()
+                .any(|w| w.code == "network_gateway_not_enforced"),
+            "warnings: {:?}",
+            d.warnings
+        );
+    }
+
+    #[test]
+    fn network_load_balance_rebalance_and_sticky_warn_ignored() {
+        let raw = r#"
+            version = 1
+            [network.load_balance]
+            strategy = "round_robin"
+            rebalance_interval = "30s"
+            sticky_sessions = true
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(
+            d.warnings
+                .iter()
+                .any(|w| w.code == "network_load_balance_rebalance_interval_ignored"),
+            "warnings: {:?}",
+            d.warnings
+        );
+        assert!(
+            d.warnings
+                .iter()
+                .any(|w| w.code == "network_load_balance_sticky_sessions_ignored"),
+            "warnings: {:?}",
+            d.warnings
+        );
+        // A valid duration must not itself be an ERROR.
+        assert!(
+            !d.errors.iter().any(|e| e.code == "duration_invalid"),
+            "errors: {:?}",
+            d.errors
+        );
+    }
+
+    #[test]
+    fn forward_max_datagram_size_warns_not_enforced() {
+        let raw = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            [[profiles.forwards]]
+            name = "f"
+            type = "local"
+            transport = "tcp"
+            bind = "127.0.0.1:1234"
+            target = "127.0.0.1:22"
+            max_datagram_size = 1500
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(
+            d.warnings
+                .iter()
+                .any(|w| w.code == "forward_max_datagram_size_not_enforced"),
+            "warnings: {:?}",
+            d.warnings
+        );
+    }
+
+    #[test]
+    fn ssh3_draft_warns_no_effect() {
+        let raw = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh3"
+            endpoint = "https://q.example.com/spt"
+            acknowledge_experimental = true
+            [profiles.ssh3]
+            draft = "draft-ietf-ssh3-00"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(
+            d.warnings.iter().any(|w| w.code == "ssh3_draft_no_effect"),
+            "warnings: {:?}",
+            d.warnings
+        );
+    }
+
+    #[test]
+    fn dns_round_robin_warns_not_active() {
+        let raw = r#"
+            version = 1
+            [round_robin]
+            enabled = true
+            dns_round_robin = true
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(
+            d.warnings
+                .iter()
+                .any(|w| w.code == "dns_round_robin_not_active"),
+            "warnings: {:?}",
+            d.warnings
+        );
+    }
+
+    #[test]
+    fn dns_round_robin_disabled_does_not_warn() {
+        let raw = r#"
+            version = 1
+            [round_robin]
+            enabled = true
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(
+            !d.warnings
+                .iter()
+                .any(|w| w.code == "dns_round_robin_not_active"),
+            "warnings: {:?}",
+            d.warnings
+        );
+    }
+
+    #[test]
+    fn encrypt_at_rest_on_non_vault_backend_errors() {
+        // FAIL-CLOSED: encrypt_at_rest = true with any non-vault backend is an
+        // ERROR (the flag would otherwise write plaintext under a name that
+        // promises encryption).
+        let raw = r#"
+            version = 1
+            [secrets]
+            backend = "keychain"
+            encrypt_at_rest = true
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(
+            d.errors
+                .iter()
+                .any(|e| e.code == "secrets_encrypt_at_rest_requires_vault"),
+            "errors: {:?}",
+            d.errors
+        );
+    }
+
+    #[test]
+    fn encrypt_at_rest_default_auto_backend_errors() {
+        // `backend` unset defaults to `auto`, which never resolves to vault, so
+        // encrypt_at_rest = true is still a fail-closed ERROR.
+        let raw = r#"
+            version = 1
+            [secrets]
+            encrypt_at_rest = true
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(
+            d.errors
+                .iter()
+                .any(|e| e.code == "secrets_encrypt_at_rest_requires_vault"),
+            "errors: {:?}",
+            d.errors
+        );
+    }
+
+    #[test]
+    fn encrypt_at_rest_on_vault_backend_ok() {
+        let raw = r#"
+            version = 1
+            [secrets]
+            backend = "vault"
+            encrypt_at_rest = true
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(
+            !d.errors
+                .iter()
+                .any(|e| e.code == "secrets_encrypt_at_rest_requires_vault"),
+            "vault backend must satisfy encrypt_at_rest: {:?}",
             d.errors
         );
     }

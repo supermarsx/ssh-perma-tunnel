@@ -17,8 +17,8 @@ use spt_config::schema::{Forward, Profile};
 
 use crate::model::Model;
 use crate::pages::field::{
-    opt_bool_with_help, opt_choice_with_help, opt_multi_with_help, opt_text, opt_u32, FieldDef,
-    FieldList, FieldValue,
+    opt_bool_with_help, opt_choice_with_help, opt_list, opt_multi_with_help, opt_text, opt_u32,
+    FieldDef, FieldList, FieldValue,
 };
 use crate::pages::Page;
 
@@ -46,6 +46,12 @@ const BIND_MODE_HELP: &[&str] = &[
     "Bind a specific named interface. Set `bind_interface`.",
     "Wildcard bind (0.0.0.0 / ::). Requires `expose = true`.",
     "Pick the first matching interface from `bind_interface_preference`.",
+];
+const LINK_KIND: &[&str] = &["tcp", "local_uds", "remote_uds"];
+const LINK_KIND_HELP: &[&str] = &[
+    "tcp: standard RFC 4254 direct-tcpip / tcpip-forward (default).",
+    "local_uds: direct-streamlocal to a server-side UNIX socket (needs remote_socket_path).",
+    "remote_uds: streamlocal-forward; server listens on a UNIX socket (Unix client only).",
 ];
 const PROXY_PROTOCOLS: &[&str] = &["socks4", "socks4a", "socks5", "http_connect"];
 const PROXY_PROTOCOLS_HELP: &[&str] = &[
@@ -269,6 +275,150 @@ fn forward_fields(idx: usize) -> Vec<FieldDef> {
             move |p, v| {
                 if let Some(f) = p.forwards.get_mut(i) {
                     f.max_packets_per_second = v;
+                }
+            },
+        ),
+        // required — whether this forward is mandatory for the profile to be
+        // considered healthy vs. degraded-allowed. §9.14.
+        opt_bool_with_help(
+            "required",
+            "Whether this forward must succeed for the profile to be healthy.",
+            "Optional: the profile stays healthy even if this forward fails (degraded).",
+            "Required: a failure of this forward degrades/fails the whole profile.",
+            move |p| p.forwards.get(i).and_then(|f| f.required),
+            move |p, v| {
+                if let Some(f) = p.forwards.get_mut(i) {
+                    f.required = v;
+                }
+            },
+        ),
+        // dns_names — DNS names to register for this forward. §9.14.
+        opt_list(
+            "dns_names",
+            "DNS names to register for this forward (comma-separated)",
+            move |p| {
+                p.forwards
+                    .get(i)
+                    .and_then(|f| f.dns_names.clone())
+                    .unwrap_or_default()
+            },
+            move |p, v| {
+                if let Some(f) = p.forwards.get_mut(i) {
+                    f.dns_names = if v.is_empty() { None } else { Some(v) };
+                }
+            },
+        ),
+        // allow_targets — SOCKS/dynamic destination allow-list (SSRF/abuse
+        // mitigation). Host globs or CIDR/IP rules. §9.14.
+        opt_list(
+            "allow_targets",
+            "Dynamic-forward destination allow-list (host glob or CIDR; empty = allow all)",
+            move |p| {
+                p.forwards
+                    .get(i)
+                    .and_then(|f| f.allow_targets.clone())
+                    .unwrap_or_default()
+            },
+            move |p, v| {
+                if let Some(f) = p.forwards.get_mut(i) {
+                    f.allow_targets = if v.is_empty() { None } else { Some(v) };
+                }
+            },
+        ),
+        // deny_targets — SOCKS/dynamic destination deny-list (deny wins over
+        // allow). §9.14.
+        opt_list(
+            "deny_targets",
+            "Dynamic-forward destination deny-list (deny wins over allow; empty = none)",
+            move |p| {
+                p.forwards
+                    .get(i)
+                    .and_then(|f| f.deny_targets.clone())
+                    .unwrap_or_default()
+            },
+            move |p, v| {
+                if let Some(f) = p.forwards.get_mut(i) {
+                    f.deny_targets = if v.is_empty() { None } else { Some(v) };
+                }
+            },
+        ),
+        // max_bytes_per_second_in — inbound byte-rate cap (e.g. `1MiB`). §9.14.
+        opt_text(
+            "max_bytes_per_second_in",
+            "Inbound byte-rate cap (e.g. `1MiB`, `500KiB`)",
+            move |p| {
+                p.forwards
+                    .get(i)
+                    .and_then(|f| f.max_bytes_per_second_in.clone())
+            },
+            move |p, v| {
+                if let Some(f) = p.forwards.get_mut(i) {
+                    f.max_bytes_per_second_in = v;
+                }
+            },
+        ),
+        // max_bytes_per_second_out — outbound byte-rate cap. §9.14.
+        opt_text(
+            "max_bytes_per_second_out",
+            "Outbound byte-rate cap (e.g. `1MiB`, `500KiB`)",
+            move |p| {
+                p.forwards
+                    .get(i)
+                    .and_then(|f| f.max_bytes_per_second_out.clone())
+            },
+            move |p, v| {
+                if let Some(f) = p.forwards.get_mut(i) {
+                    f.max_bytes_per_second_out = v;
+                }
+            },
+        ),
+        // max_new_connections_per_second — accept-rate cap. §9.14.
+        opt_u32(
+            "max_new_connections_per_second",
+            "Accept-rate cap (new connections per second)",
+            move |p| {
+                p.forwards
+                    .get(i)
+                    .and_then(|f| f.max_new_connections_per_second)
+            },
+            move |p, v| {
+                if let Some(f) = p.forwards.get_mut(i) {
+                    f.max_new_connections_per_second = v;
+                }
+            },
+        ),
+        // link_kind — wire flavour: tcp (default), local_uds, remote_uds. t6-e2.
+        opt_choice_with_help(
+            "link_kind",
+            "Forward link kind (tcp, local_uds, remote_uds)",
+            LINK_KIND,
+            LINK_KIND_HELP,
+            move |p| p.forwards.get(i).and_then(|f| f.link_kind.clone()),
+            move |p, v| {
+                if let Some(f) = p.forwards.get_mut(i) {
+                    f.link_kind = v;
+                }
+            },
+        ),
+        // remote_socket_path — server-side UDS path for local_uds/remote_uds.
+        opt_text(
+            "remote_socket_path",
+            "Server-side UNIX socket path (local_uds / remote_uds)",
+            move |p| p.forwards.get(i).and_then(|f| f.remote_socket_path.clone()),
+            move |p, v| {
+                if let Some(f) = p.forwards.get_mut(i) {
+                    f.remote_socket_path = v;
+                }
+            },
+        ),
+        // local_socket_path — client-side UDS path (Unix-only). t6-e2.
+        opt_text(
+            "local_socket_path",
+            "Client-side UNIX socket path (Unix-only; local_uds / remote_uds)",
+            move |p| p.forwards.get(i).and_then(|f| f.local_socket_path.clone()),
+            move |p, v| {
+                if let Some(f) = p.forwards.get_mut(i) {
+                    f.local_socket_path = v;
                 }
             },
         ),
@@ -668,10 +818,42 @@ protocol = "ssh2"
     #[test]
     fn editor_field_count() {
         let fields = forward_fields(0);
-        // 12 fields: name, type, transport, bind, target, bind_mode,
+        // 22 fields: name, type, transport, bind, target, bind_mode,
         //   bind_interface, expose, idle_timeout, max_connections,
-        //   proxy_protocols, max_packets_per_second.
-        assert_eq!(fields.len(), 12);
+        //   proxy_protocols, max_packets_per_second, required, dns_names,
+        //   allow_targets, deny_targets, max_bytes_per_second_in,
+        //   max_bytes_per_second_out, max_new_connections_per_second,
+        //   link_kind, remote_socket_path, local_socket_path.
+        assert_eq!(fields.len(), 22);
+        let labels: Vec<&str> = fields.iter().map(|f| f.label).collect();
+        assert!(labels.contains(&"allow_targets"));
+        assert!(labels.contains(&"deny_targets"));
+        assert!(labels.contains(&"required"));
+        assert!(labels.contains(&"link_kind"));
+    }
+
+    #[test]
+    fn allow_targets_round_trip() {
+        let mut p = ForwardsPage::new();
+        let mut m = model();
+        p.on_key(k(KeyCode::Char('a')), &mut m); // add + open editor
+                                                 // allow_targets is index 14.
+        for _ in 0..14 {
+            p.on_key(k(KeyCode::Down), &mut m);
+        }
+        assert_eq!(
+            p.editor.as_ref().unwrap().fields.fields[14].def.label,
+            "allow_targets"
+        );
+        p.on_key(k(KeyCode::Enter), &mut m); // begin edit (List)
+        for c in "10.0.0.0/8, *.internal".chars() {
+            p.on_key(k(KeyCode::Char(c)), &mut m);
+        }
+        p.on_key(k(KeyCode::Enter), &mut m); // commit
+        assert_eq!(
+            m.profile().forwards[0].allow_targets,
+            Some(vec!["10.0.0.0/8".to_string(), "*.internal".to_string()])
+        );
     }
 
     #[test]

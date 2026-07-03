@@ -16,6 +16,8 @@ expression: snap
 │protocol = "ssh2"                                                                                 │
 │host = "jump.example.com"                                                                         │
 │port = 22                                                                                         │
+│kind = "ssh"                                                                                      │
+│                                                                                                  │
 └──────────────────────────────────────────────────────────────────────────────────────────────────┘
 ┌Validation: 0 error(s), 0 warning(s)──────────────────────────────────────────────────────────────┐
 │no issues                                                                                         │
@@ -26,9 +28,7 @@ expression: snap
 │                                                                                                  │
 └──────────────────────────────────────────────────────────────────────────────────────────────────┘
 ┌Other settings (read-only — edit in the config file)──────────────────────────────────────────────┐
-│• hops — proxy-jump / multi-hop chain                                                             │
 │• script — Rhai scripting hooks                                                                   │
-│• transport — obfuscation transport                                                               │
 │• enabled — profile start flag                                                                    │
 │⚠ unknown key `mystery_key` — NOT understood by the schema; a TUI save will drop it               │
 └──────────────────────────────────────────────────────────────────────────────────────────────────┘

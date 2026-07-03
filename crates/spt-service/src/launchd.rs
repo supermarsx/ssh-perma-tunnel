@@ -233,6 +233,8 @@ impl ServiceManager for LaunchdManager {
     async fn install(&self, spec: &ServiceSpec) -> Result<()> {
         validate_service_name(&spec.name)?;
         tracing::info!(target: "spt_service", backend = "launchd", service = %spec.name, "installing service");
+        // launchd has no watchdog primitive; warn rather than silently drop it.
+        crate::warn_if_watchdog_unsupported(self.name(), spec);
         let plist = render_plist(spec);
         // Derive the path from the manager's own scope, not `spec.scope`, so
         // install and uninstall/start/stop/status all agree on the domain and

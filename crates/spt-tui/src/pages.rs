@@ -15,9 +15,11 @@ mod events;
 mod failover;
 mod field;
 mod forwards;
+mod hops;
 mod keepalive;
 mod limits;
 mod review;
+mod transport;
 mod trust;
 
 pub use field::{Field, FieldDef, FieldList, FieldValue};
@@ -36,7 +38,9 @@ pub enum PageKind {
     Basics,
     /// `2. Endpoints` — multi-target failover list. §9.11.
     Endpoints,
-    /// `3. Auth` — auth method + secret refs.
+    /// `3. Hops` — multi-hop / proxy-jump chain. §8.2.
+    Hops,
+    /// `4. Auth` — auth method + secret refs.
     Auth,
     /// `4. Trust` — known_hosts, SHA-256 pins, TLS pins.
     Trust,
@@ -50,7 +54,9 @@ pub enum PageKind {
     Limits,
     /// `9. Forwards` — local / remote / udp forward entries.
     Forwards,
-    /// `10. DNS` — managed records bound to this profile.
+    /// `10. Transport` — obfuscation transport (obfs4 / meek / websocket). t6-e13.
+    Transport,
+    /// `11. DNS` — managed records bound to this profile.
     Dns,
     /// `11. Events` — per-profile binding tags.
     Events,
@@ -62,7 +68,7 @@ pub enum PageKind {
 
 impl PageKind {
     /// Total number of pages in the wizard.
-    pub const COUNT: usize = 13;
+    pub const COUNT: usize = 15;
 
     /// Ordered list, in the order shown in the navigation tabs.
     #[must_use]
@@ -70,6 +76,7 @@ impl PageKind {
         [
             PageKind::Basics,
             PageKind::Endpoints,
+            PageKind::Hops,
             PageKind::Auth,
             PageKind::Trust,
             PageKind::Crypto,
@@ -77,6 +84,7 @@ impl PageKind {
             PageKind::Failover,
             PageKind::Limits,
             PageKind::Forwards,
+            PageKind::Transport,
             PageKind::Dns,
             PageKind::Events,
             PageKind::Diagnostics,
@@ -90,6 +98,7 @@ impl PageKind {
         match self {
             PageKind::Basics => "Basics",
             PageKind::Endpoints => "Endpoints",
+            PageKind::Hops => "Hops",
             PageKind::Auth => "Auth",
             PageKind::Trust => "Trust",
             PageKind::Crypto => "Crypto",
@@ -97,6 +106,7 @@ impl PageKind {
             PageKind::Failover => "Reconnect/Failover",
             PageKind::Limits => "Limits",
             PageKind::Forwards => "Forwards",
+            PageKind::Transport => "Transport",
             PageKind::Dns => "DNS",
             PageKind::Events => "Events",
             PageKind::Diagnostics => "Diagnostics",
@@ -164,6 +174,7 @@ pub fn build_pages() -> Vec<Box<dyn Page>> {
     vec![
         Box::new(basics::BasicsPage::new()),
         Box::new(endpoints::EndpointsPage::new()),
+        Box::new(hops::HopsPage::new()),
         Box::new(auth::AuthPage::new()),
         Box::new(trust::TrustPage::new()),
         Box::new(crypto::CryptoPage::new()),
@@ -171,6 +182,7 @@ pub fn build_pages() -> Vec<Box<dyn Page>> {
         Box::new(failover::FailoverPage::new()),
         Box::new(limits::LimitsPage::new()),
         Box::new(forwards::ForwardsPage::new()),
+        Box::new(transport::TransportPage::new()),
         Box::new(dns::DnsPage::new()),
         Box::new(events::EventsPage::new()),
         Box::new(diagnostics::DiagnosticsPage::new()),

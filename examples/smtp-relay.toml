@@ -26,8 +26,13 @@ rotate = "daily"
 max_files = 14
 redact = ["secrets"]
 
+# At-rest encryption is provided by the vault backend (AES-256-GCM + Argon2id);
+# `encrypt_at_rest = true` is only honoured under `backend = "vault"` (run
+# `spt secret store init` to create the keychain-unlocked vault). Any other
+# backend would write secrets in plaintext, so `spt config validate` rejects
+# `encrypt_at_rest = true` unless the vault backend is selected.
 [secrets]
-backend = "auto"
+backend = "vault"
 encrypt_at_rest = true
 
 [[profiles]]
