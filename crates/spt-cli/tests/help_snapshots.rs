@@ -1,6 +1,14 @@
 //! Snapshot tests of `--help` for the root command and every group.
 //!
 //! Run `cargo insta accept` to refresh fixtures after intentional changes.
+//!
+//! These snapshots capture the DEFAULT (shipped) CLI surface. The `snmp` feature
+//! adds `observe snmp` subcommands, reshaping the root + observe help, so the
+//! static fixtures can't match both feature sets. Skip the whole suite when
+//! `snmp` is enabled (e.g. the `all-features` CI job) — the default `cargo test
+//! --workspace` matrix (the shipped surface) is where these are meaningful, and
+//! spt-bin's it_completion validates the feature-gated surface separately.
+#![cfg(not(feature = "snmp"))]
 
 use clap::CommandFactory;
 use spt_cli::Cli;
