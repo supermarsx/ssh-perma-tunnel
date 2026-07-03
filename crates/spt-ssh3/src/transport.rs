@@ -67,6 +67,7 @@ use http::{HeaderValue, Method, Request, Uri};
 use quinn::{ClientConfig as QuinnClientConfig, Endpoint, TransportConfig};
 use spt_auth::AuthConfig;
 use spt_core::{DnsResolution, Error, Result};
+use tracing::{info, warn};
 
 use crate::auth_header::build_authorization_header_for;
 use crate::config::Ssh3Config;
@@ -240,6 +241,13 @@ pub async fn bootstrap(
         .connect(remote, &server_name)
         .map_err(|e| Error::RuntimeFailure(format!("ssh3: quinn::connect: {e}")))?;
     let connection = connecting.await.map_err(map_connection_error)?;
+    info!(
+        target: "spt_ssh3::transport",
+        endpoint = %format!("{host}:{port}"),
+        remote = %remote,
+        server_name = %server_name,
+        "ssh3 QUIC connection established"
+    );
 
     // Spin up the h3 client driver on a clone of the QUIC connection. We do
     // NOT use it to issue the Extended-CONNECT request — h3 0.0.8 cannot
@@ -308,6 +316,12 @@ pub async fn bootstrap(
     drop(raw.recv);
     if !(200..300).contains(&status) {
         // `guard` drops here → aborts the driver task + closes the connection.
+        warn!(
+            target: "spt_ssh3::transport",
+            endpoint = %format!("{host}:{port}"),
+            status,
+            "ssh3 CONNECT refused by peer"
+        );
         let body = format!("ssh3: CONNECT returned HTTP {status}");
         return Err(if matches!(status, 401 | 403) {
             Error::AuthFailed(body)
@@ -322,6 +336,18 @@ pub async fn bootstrap(
     // channel-framing contract is documented in `forward.rs`.
     let (control_send, control_recv, peer_settings) =
         open_control_stream(&connection, default_local_settings()).await?;
+
+    info!(
+        target: "spt_ssh3::transport",
+        endpoint = %format!("{host}:{port}"),
+        status,
+        peer_version = ?peer_version,
+        direct_tcp = peer_settings.direct_tcp,
+        remote_tcp = peer_settings.remote_tcp,
+        udp_datagrams = peer_settings.udp_datagrams,
+        max_forwards = ?peer_settings.max_forwards,
+        "ssh3 CONNECT + control-stream handshake complete"
+    );
 
     // SUCCESS: transfer ownership of the driver handle + connection into the
     // session and disarm the guard so it no longer aborts/closes them.

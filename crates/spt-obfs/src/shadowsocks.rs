@@ -584,6 +584,15 @@ impl AsyncRead for AeadStream {
                     let nonce = self.next_read_nonce();
                     let chunk: Vec<u8> = self.rx_buf.drain(..target_len).collect();
                     let pt = self.open_rx(&nonce, &chunk).map_err(|e| {
+                        // Reject site: AEAD authentication failed on the length
+                        // frame (wrong password / replay / tamper). Log the
+                        // failure kind only — never the key or plaintext.
+                        tracing::warn!(
+                            transport = "shadowsocks",
+                            stage = "length",
+                            reason = "aead-open-failed",
+                            "shadowsocks frame rejected: AEAD authentication failed"
+                        );
                         std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string())
                     })?;
                     if pt.len() != 2 {
@@ -607,6 +616,15 @@ impl AsyncRead for AeadStream {
                     let nonce = self.next_read_nonce();
                     let chunk: Vec<u8> = self.rx_buf.drain(..target_len).collect();
                     let pt = self.open_rx(&nonce, &chunk).map_err(|e| {
+                        // Reject site: AEAD authentication failed on the body
+                        // frame (wrong password / replay / tamper). Log the
+                        // failure kind only — never the key or plaintext.
+                        tracing::warn!(
+                            transport = "shadowsocks",
+                            stage = "body",
+                            reason = "aead-open-failed",
+                            "shadowsocks frame rejected: AEAD authentication failed"
+                        );
                         std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string())
                     })?;
                     if pt.len() != plaintext_len {

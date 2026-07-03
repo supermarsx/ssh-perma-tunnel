@@ -64,6 +64,22 @@ pub const POST_QUANTUM_KEX: &[&str] = &[
     "sntrup761x25519-sha512@openssh.com",
 ];
 
+/// KEX method names that the russh fork *registers* in its algorithm table
+/// (so they pass the [`build_preferred`](crate::russh_backend) name-parse step)
+/// but whose KEM primitive is **not wired** — negotiating them succeeds at the
+/// algorithm-list stage and then fails at `client_dh` / `server_dh` with
+/// `russh::Error::Kex` (finding 8 / t8-B2). [`resolve_crypto_policy`] rejects
+/// them at config-resolution time with a clear message so the failure surfaces
+/// at config load rather than cryptically at handshake.
+pub const UNSUPPORTED_HANDSHAKE_KEX: &[&str] = &[
+    "sntrup761x25519-sha512",
+    "sntrup761x25519-sha512@openssh.com",
+];
+
+/// The post-quantum KEX the russh fork actually implements end-to-end (used in
+/// the diagnostic that rejects [`UNSUPPORTED_HANDSHAKE_KEX`]).
+pub const SUPPORTED_PQ_KEX: &str = "mlkem768x25519-sha256";
+
 /// ML-KEM hybrid SSH KEX method names recognized by config validation and
 /// diagnostics. See [`POST_QUANTUM_KEX`] for the russh 0.46 caveat.
 pub const ML_KEM_KEX: &[&str] = &[
@@ -292,6 +308,25 @@ pub fn resolve_crypto_policy(
         host_keys: fill(&explicit.host_keys, set.host_keys),
         compression: fill(&explicit.compression, set.compression),
     };
+
+    // Reject KEX names that the russh fork registers but cannot complete
+    // (finding 8): they validate and connect, then fail cryptically at the key
+    // exchange. Surface an honest config-time error naming the only supported
+    // post-quantum KEX instead.
+    for algo in &policy.kex {
+        if UNSUPPORTED_HANDSHAKE_KEX
+            .iter()
+            .any(|u| u.eq_ignore_ascii_case(algo))
+        {
+            return Err(Error::InvalidConfig(format!(
+                "kex algorithm `{algo}` is recognized but not implemented by the russh SSH2 \
+                 backend: its KEM primitive is unwired, so the handshake would fail at key \
+                 exchange (not at config load). The only supported post-quantum KEX is \
+                 `{SUPPORTED_PQ_KEX}`. Remove `{algo}` from `crypto.kex_algorithms`, or \
+                 replace it with `{SUPPORTED_PQ_KEX}`."
+            )));
+        }
+    }
 
     // Scan the *resolved* selection for deprecated algorithms.
     for (category, algos) in [
@@ -537,6 +572,45 @@ mod tests {
         let s = format!("{err}");
         assert!(s.contains("aes256-cbc"), "{s}");
         assert!(s.contains("allow_deprecated"), "{s}");
+    }
+
+    #[test]
+    fn sntrup761_kex_rejected_at_config_resolution() {
+        // finding 8: sntrup761x25519 names validate then fail at KEX time under
+        // the current russh fork (KEM unwired). resolve_crypto_policy must reject
+        // them at config-resolution time with a clear message that names the
+        // supported PQ KEX. Fails against pre-fix (which returned Ok, deferring
+        // the failure to the handshake).
+        for name in [
+            "sntrup761x25519-sha512",
+            "sntrup761x25519-sha512@openssh.com",
+        ] {
+            let explicit = CryptoPolicy {
+                kex: vec![name.into()],
+                ..Default::default()
+            };
+            let err = resolve_crypto_policy(Some("modern"), &explicit, true, false)
+                .expect_err("sntrup761 kex must be rejected at config time");
+            assert!(matches!(err, Error::InvalidConfig(_)), "{err:?}");
+            let s = format!("{err}");
+            assert!(s.contains(name), "message must name the rejected algo: {s}");
+            assert!(
+                s.contains("mlkem768x25519-sha256"),
+                "message must name the supported PQ KEX: {s}"
+            );
+        }
+    }
+
+    #[test]
+    fn mlkem768_kex_still_resolves() {
+        // The supported PQ KEX must NOT be swept up by the sntrup rejection.
+        let explicit = CryptoPolicy {
+            kex: vec!["mlkem768x25519-sha256".into()],
+            ..Default::default()
+        };
+        let resolved = resolve_crypto_policy(Some("modern"), &explicit, false, false)
+            .expect("mlkem768x25519-sha256 must resolve cleanly");
+        assert_eq!(resolved.kex, vec!["mlkem768x25519-sha256".to_owned()]);
     }
 
     #[test]

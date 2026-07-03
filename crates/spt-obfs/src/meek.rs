@@ -14,6 +14,7 @@
 //! empty POST body is a keepalive that flushes any buffered downstream
 //! bytes.
 
+use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
@@ -154,6 +155,18 @@ impl MeekHttpTransport {
         }
     }
 
+    /// The explicit `meek.sni` override, if configured (`None` falls back to
+    /// the dialed URL host for the TLS SNI). Distinct from [`sni`](Self::sni),
+    /// which resolves the fallback against the *configured* URL — `connect`
+    /// needs the override relative to the *actually dialed* URL (which may be a
+    /// test `url_override`).
+    fn sni_override(&self) -> Option<&str> {
+        match &self.cfg {
+            ObfsConfig::MeekHttp { sni, .. } => sni.as_deref(),
+            _ => None,
+        }
+    }
+
     /// HTTP Host: header — `front_host` override > URL host.
     #[must_use]
     pub fn host_header(&self) -> String {
@@ -197,6 +210,50 @@ impl MeekHttpTransport {
     }
 }
 
+/// Plan for presenting a distinct TLS SNI through `reqwest`.
+///
+/// `reqwest` derives the TLS `ClientHello` SNI from the request URL host and
+/// exposes no separate SNI knob. To honour a `meek.sni` override we POST to a
+/// URL whose host *is* the desired SNI and pin that name back to the real
+/// host's address with a DNS `resolve()` override, so the socket still connects
+/// to the real front while the `ClientHello` advertises the configured SNI.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SniPlan {
+    /// URL `reqwest` should POST to; its host drives the TLS SNI.
+    dial_url: String,
+    /// `Some((sni_host, real_host, port))` when the SNI differs from the real
+    /// host and a `resolve()` override is required; `None` when the SNI already
+    /// equals the URL host (no rewrite — prior behaviour preserved).
+    resolve: Option<(String, String, u16)>,
+}
+
+/// Compute the [`SniPlan`] for dialing `real_url` while presenting `sni` as the
+/// TLS SNI.
+///
+/// When `sni` is empty or already equal to the URL host the URL is dialed
+/// unchanged (behaviour-preserving); otherwise the URL host is rewritten to
+/// `sni` and the original host/port is returned so `connect` can pin it via
+/// `resolve_to_addrs`.
+fn plan_sni(real_url: &str, sni: &str) -> std::result::Result<SniPlan, ObfsError> {
+    let mut parsed = url::Url::parse(real_url)
+        .map_err(|e| ObfsError::InvalidConfig(format!("meek url: {e}")))?;
+    let real_host = parsed.host_str().unwrap_or_default().to_owned();
+    if sni.is_empty() || sni == real_host {
+        return Ok(SniPlan {
+            dial_url: real_url.to_owned(),
+            resolve: None,
+        });
+    }
+    let port = parsed.port_or_known_default().unwrap_or(443);
+    parsed
+        .set_host(Some(sni))
+        .map_err(|e| ObfsError::InvalidConfig(format!("meek sni host {sni:?}: {e}")))?;
+    Ok(SniPlan {
+        dial_url: parsed.to_string(),
+        resolve: Some((sni.to_owned(), real_host, port)),
+    })
+}
+
 #[async_trait]
 impl ObfsTransport for MeekHttpTransport {
     async fn connect(&mut self, target: &str) -> Result<Box<dyn AsyncReadWrite>> {
@@ -206,6 +263,12 @@ impl ObfsTransport for MeekHttpTransport {
         // error so the contract test (#6) keeps passing without a live
         // peer.
         if !(200..300).contains(&self.simulated_status) {
+            tracing::warn!(
+                transport = "meek-http",
+                http_status = self.simulated_status,
+                reason = "front-non-2xx",
+                "meek-http handshake rejected: front returned non-2xx status"
+            );
             return Err(ObfsError::Handshake(format!(
                 "meek-http front returned HTTP {}",
                 self.simulated_status
@@ -219,14 +282,22 @@ impl ObfsTransport for MeekHttpTransport {
             .clone()
             .unwrap_or_else(|| self.url().to_owned());
 
+        // Resolve the TLS SNI: the `meek.sni` override when set, else the URL
+        // host. `reqwest` has no separate SNI knob, so an override rewrites the
+        // dial URL host to the SNI and pins that name back to the real host's
+        // address (see `plan_sni`) — the socket still reaches the front while
+        // the `ClientHello` advertises the configured SNI.
+        let sni_override = self.sni_override().unwrap_or_default();
+        let plan = plan_sni(&real_url, sni_override).map_err(spt_core::Error::from)?;
+
         // Build the reqwest client. We rely on the workspace `reqwest`
         // dep (rustls-tls). For domain-fronting the front_host is set
-        // via the `Host` header; the TLS SNI follows the URL host
-        // because rustls reads it from the URL.
+        // via the `Host` header; the TLS SNI follows the DIAL URL host
+        // (the `sni` override when configured, else the URL host).
         let mut default_headers = HeaderMap::new();
-        // Reqwest sets Host automatically from URL; we override only
-        // when fronting is active.
-        if host_hdr != Self::host_from_url(&real_url).unwrap_or_default() {
+        // Reqwest sets Host automatically from the dial URL host; override it
+        // whenever the intended origin differs (fronting, or an SNI rewrite).
+        if host_hdr != Self::host_from_url(&plan.dial_url).unwrap_or_default() {
             default_headers.insert(
                 HOST,
                 HeaderValue::from_str(&host_hdr)
@@ -240,13 +311,29 @@ impl ObfsTransport for MeekHttpTransport {
                 .map_err(|e| ObfsError::Handshake(format!("sid: {e}")))?,
         );
 
-        let client = ClientBuilder::new()
+        let mut builder = ClientBuilder::new()
             .default_headers(default_headers.clone())
             // M10: bound the TCP/TLS connect and the per-request round-trip so a
             // stalled / half-open front cannot pin the probe (and later POSTs)
             // indefinitely.
             .connect_timeout(MEEK_CONNECT_TIMEOUT)
-            .timeout(MEEK_REQUEST_TIMEOUT)
+            .timeout(MEEK_REQUEST_TIMEOUT);
+        // When an explicit `sni` override rewrote the dial host, pin that name
+        // to the real host's resolved address so DNS still targets the front.
+        if let Some((sni_host, real_host, port)) = &plan.resolve {
+            let addrs: Vec<SocketAddr> = tokio::net::lookup_host((real_host.as_str(), *port))
+                .await
+                .map_err(|e| ObfsError::Handshake(format!("meek resolve {real_host}:{port}: {e}")))?
+                .collect();
+            if addrs.is_empty() {
+                return Err(ObfsError::Handshake(format!(
+                    "meek resolve {real_host}:{port}: no addresses"
+                ))
+                .into());
+            }
+            builder = builder.resolve_to_addrs(sni_host, &addrs);
+        }
+        let client = builder
             // meek explicitly does NOT pool connections — each POST is
             // independent. But reqwest pools by default; that's still
             // wire-compatible with meek-server.
@@ -256,13 +343,19 @@ impl ObfsTransport for MeekHttpTransport {
         // Probe: emit an empty POST so configuration errors surface
         // before the SSH layer commits. A 2xx response is required.
         let probe = client
-            .post(&real_url)
+            .post(&plan.dial_url)
             .body(Vec::<u8>::new())
             .send()
             .await
             .map_err(|e| ObfsError::Handshake(format!("meek probe: {e}")))?;
         let status = probe.status().as_u16();
         if !(200..300).contains(&status) {
+            tracing::warn!(
+                transport = "meek-http",
+                http_status = status,
+                reason = "front-non-2xx",
+                "meek-http handshake rejected: front returned non-2xx status"
+            );
             return Err(
                 ObfsError::Handshake(format!("meek-http front returned HTTP {status}")).into(),
             );
@@ -271,7 +364,7 @@ impl ObfsTransport for MeekHttpTransport {
             .await
             .map_err(|e| ObfsError::Handshake(format!("meek body: {e}")))?;
 
-        let stream = MeekStream::new(client, real_url, default_headers, initial_body);
+        let stream = MeekStream::new(client, plan.dial_url, default_headers, initial_body);
         Ok(Box::new(stream))
     }
 
@@ -490,6 +583,59 @@ mod tests {
         assert!(format!("{err}").contains("exceeds cap"), "got {err:?}");
         // The accumulator did not grow past what was accepted before the error.
         assert_eq!(acc.into_inner().len(), 6);
+    }
+
+    #[test]
+    fn plan_sni_no_override_dials_url_unchanged() {
+        // No override (SNI == URL host): the dial URL is untouched and no
+        // resolve() pin is needed — behaviour is byte-for-byte preserved.
+        let plan = plan_sni("https://front.cdn.example/path", "front.cdn.example").unwrap();
+        assert_eq!(plan.dial_url, "https://front.cdn.example/path");
+        assert!(plan.resolve.is_none());
+    }
+
+    #[test]
+    fn plan_sni_override_rewrites_dial_host_and_pins_real_host() {
+        // A configured `meek.sni` distinct from the URL host becomes the dial
+        // URL host (which drives the TLS `ClientHello` SNI), while the original
+        // host/port is preserved for a resolve() pin so the socket still
+        // reaches the real front.
+        let plan = plan_sni("https://front.cdn.example/path", "third.example").unwrap();
+        assert_eq!(
+            url::Url::parse(&plan.dial_url).unwrap().host_str(),
+            Some("third.example"),
+            "dial URL host (TLS SNI) must be the configured meek.sni"
+        );
+        assert_eq!(
+            plan.resolve,
+            Some((
+                "third.example".to_owned(),
+                "front.cdn.example".to_owned(),
+                443
+            ))
+        );
+    }
+
+    #[test]
+    fn configured_sni_becomes_dial_sni() {
+        // End-to-end wiring: the transport's `sni()` override flows into the
+        // plan `connect()` uses, so the SNI advertised on the wire is the
+        // configured `meek.sni` — not the URL host (finding 7). The Host header
+        // still targets the hidden origin.
+        let cfg = ObfsConfig::MeekHttp {
+            url: "https://front.cdn.example/p".into(),
+            front_host: Some("hidden.example".into()),
+            sni: Some("sni.example".into()),
+        };
+        let t = MeekHttpTransport::new(cfg, Arc::new(NoopAuditHook)).unwrap();
+        assert_eq!(t.sni(), "sni.example");
+        let plan = plan_sni(t.url(), &t.sni()).unwrap();
+        assert_eq!(
+            url::Url::parse(&plan.dial_url).unwrap().host_str(),
+            Some("sni.example"),
+            "meek.sni override must drive the TLS SNI"
+        );
+        assert_eq!(t.host_header(), "hidden.example");
     }
 
     #[test]

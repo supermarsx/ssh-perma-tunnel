@@ -496,14 +496,32 @@ impl PinnedVerifier {
             .is_revoked(&issuer_dn_owned, &serial_be)
             .map_err(|e| TlsError::General(format!("spt-trust CRL lookup: {e}")))?;
         match status {
-            RevocationStatus::Revoked => Err(TlsError::General(
-                "spt-trust: certificate revoked via CRL".into(),
-            )),
+            RevocationStatus::Revoked => {
+                // Log the revocation reject AT THE DETECTION SITE. The serial is a
+                // public certificate identifier (never key material); it lets an
+                // operator correlate the rejected leaf.
+                tracing::warn!(
+                    target: "spt_trust::crl",
+                    serial = %hex_encode(&serial_be),
+                    "certificate REVOKED via CRL — rejecting TLS chain"
+                );
+                Err(TlsError::General(
+                    "spt-trust: certificate revoked via CRL".into(),
+                ))
+            }
             RevocationStatus::NotRevoked => Ok(()),
             RevocationStatus::NoCrl | RevocationStatus::Stale => match handle.policy {
-                CrlPolicy::Hard => Err(TlsError::General(format!(
-                    "spt-trust CRL: no fresh CRL for issuer ({status:?}); fail-closed"
-                ))),
+                CrlPolicy::Hard => {
+                    tracing::warn!(
+                        target: "spt_trust::crl",
+                        serial = %hex_encode(&serial_be),
+                        status = ?status,
+                        "no fresh CRL for issuer under Hard policy — rejecting TLS chain (fail-closed)"
+                    );
+                    Err(TlsError::General(format!(
+                        "spt-trust CRL: no fresh CRL for issuer ({status:?}); fail-closed"
+                    )))
+                }
                 CrlPolicy::Soft => {
                     tracing::warn!(
                         "spt-trust CRL: no fresh CRL for leaf-named DP ({:?}); \
@@ -599,6 +617,17 @@ impl ServerCertVerifier for PinnedVerifier {
 fn install_default_provider() {
     // Idempotent — first caller wins, subsequent calls no-op.
     let _ = rustls::crypto::ring::default_provider().install_default();
+}
+
+/// Lowercase hex-encode a byte slice (used to log a certificate serial — a
+/// public identifier — on a CRL reject; no `hex` crate dependency).
+fn hex_encode(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+    let mut s = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        let _ = write!(s, "{b:02x}");
+    }
+    s
 }
 
 // ---------------------------------------------------------------------------

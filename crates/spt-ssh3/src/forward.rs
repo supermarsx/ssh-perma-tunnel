@@ -38,21 +38,28 @@
 //! TODO(spec-clarify): when the upstream SSH3 wire spec stabilizes, replace
 //! this framing with a bit-compatible encoder.
 
+use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use bytes::Bytes;
 use dashmap::DashMap;
 use quinn::{Connection, RecvStream, SendStream};
 use spt_core::{BindAddr, Error, Result};
+use spt_forward::{
+    bind_with_policy, copy_bidirectional_throttled_idle, BoundListener, ConnectionGate,
+    ConnectionPermit, RateGate, TokenBucket, UdpFlowKey, UdpFlowTable, UdpFlowTableConfig,
+};
 use spt_protocol::endpoint::TargetAddr;
 use spt_protocol::forward::{
-    ForwardDirection, ForwardState, LocalForwardSpec, RemoteForwardSpec, UdpForwardSpec,
+    BindConflictPolicy, ForwardDirection, ForwardRateLimits, ForwardState, LocalForwardSpec,
+    RemoteForwardSpec, UdpForwardSpec,
 };
 use spt_protocol::handle::{ForwardHandle, ForwardId};
 use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio::sync::{mpsc, oneshot, watch, Mutex as AsyncMutex, Semaphore};
-use tracing::{debug, error, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::frame::{
     ChannelOpenPayload, ForwardOpenResponse, Ssh3Frame, Ssh3FrameKind, UdpAssociatePayload,
@@ -89,6 +96,54 @@ const MAX_REMOTE_UDP_INFLIGHT: usize = 1024;
 /// drains, consistent with how the UDP flow table caps elsewhere.
 const UDP_INBOUND_CHANNEL_CAP: usize = 1024;
 
+/// Default maximum UDP datagram size (bytes) enforced on the ssh3 UDP forward
+/// path. `UdpForwardSpec` currently has **no** `max_datagram_size` field in the
+/// config schema (flagged for the coordinator to add in Wave 8 — see
+/// `.orchestration/logs/w3-ssh3fwd.md`), so we apply this conservative default
+/// (the maximum well-formed UDP payload); oversized datagrams are dropped and
+/// counted. When the schema field lands this becomes the per-forward configured
+/// value. Chosen so it is behaviour-preserving (a normal datagram is never
+/// rejected) while still bounding a malformed/oversized datagram.
+const DEFAULT_MAX_DATAGRAM_SIZE: u32 = 65_535;
+
+/// Fallback per-flow idle timeout for a UDP forward whose spec sets
+/// `idle_timeout_secs = 0` (interpreted as "unset").
+const DEFAULT_UDP_IDLE: Duration = Duration::from_secs(60);
+
+/// Build the `(up, down)` byte-rate token buckets for a forward from its rate
+/// limits, mirroring the ssh2 backend's `ForwardBuckets` (a zero rate yields an
+/// inert/unlimited bucket, preserving prior behaviour). `up` throttles the
+/// client→peer direction, `down` the peer→client direction.
+fn forward_buckets(limits: &ForwardRateLimits) -> (TokenBucket, TokenBucket) {
+    (
+        TokenBucket::new(limits.rate_bps_up, limits.burst_up),
+        TokenBucket::new(limits.rate_bps_down, limits.burst_down),
+    )
+}
+
+/// Resolve the effective per-forward UDP flow-table config from a
+/// [`UdpForwardSpec`]: the config `max_flows` (NOT a hard-coded 1024 — falling
+/// back to [`UdpFlowTableConfig`]'s generous-but-finite default when unset), the
+/// per-flow idle timeout from `idle_timeout_secs`, and the (currently
+/// schema-less) max-datagram-size default.
+fn udp_flow_config(spec: &UdpForwardSpec) -> UdpFlowTableConfig {
+    let idle_timeout = if spec.idle_timeout_secs == 0 {
+        DEFAULT_UDP_IDLE
+    } else {
+        Duration::from_secs(u64::from(spec.idle_timeout_secs))
+    };
+    UdpFlowTableConfig {
+        idle_timeout,
+        max_datagram_size: DEFAULT_MAX_DATAGRAM_SIZE,
+        // `UdpForwardSpec.max_flows` is the config `max_connections` remapped by
+        // the runner. `Some(n)` ⇒ that cap; `None` ⇒ the table's finite default
+        // (never the old hard-coded 1024 channel cap).
+        max_flows: spec
+            .max_flows
+            .unwrap_or(UdpFlowTableConfig::default().max_flows),
+    }
+}
+
 /// What the inbound-bidi dispatcher hands off to the remote-forward loop once
 /// it has accepted an inbound `forwarded-tcp` open *and* successfully dialed
 /// the local target (E3-F8): the already-connected local socket plus the QUIC
@@ -98,9 +153,18 @@ pub(crate) struct InboundForward {
     pub(crate) send: SendStream,
     pub(crate) recv: RecvStream,
     pub(crate) local: TcpStream,
-    /// Held for the lifetime of the bridged connection so the `max_forwards`
-    /// semaphore reflects live forwards, not merely accepted opens.
+    /// Held for the lifetime of the bridged connection so the session-wide
+    /// negotiated `max_forwards` semaphore reflects live forwards, not merely
+    /// accepted opens.
     pub(crate) _permit: tokio::sync::OwnedSemaphorePermit,
+    /// Per-forward config `max_connections` permit (M-W3): held alongside the
+    /// negotiated permit so an inbound remote forward is bounded by
+    /// `min(config max_connections, negotiated max_forwards)`. `None` when the
+    /// forward set no `max_connections` (unlimited gate).
+    pub(crate) _conn_permit: Option<ConnectionPermit>,
+    /// Per-forward byte-rate buckets + idle timeout applied by [`bridge_remote`].
+    pub(crate) limits: ForwardRateLimits,
+    pub(crate) idle_timeout: Option<Duration>,
 }
 
 /// Per-remote-forward registration: the local target to dial on each inbound
@@ -109,6 +173,13 @@ pub(crate) struct InboundForward {
 pub(crate) struct RemoteForwardEntry {
     pub(crate) target: TargetAddr,
     pub(crate) tx: mpsc::UnboundedSender<InboundForward>,
+    /// Per-forward connection cap from the config `max_connections` (M-W3).
+    /// `cap == 0` ⇒ unlimited; the session-wide negotiated `max_forwards`
+    /// semaphore still applies, so the effective cap is the min of the two.
+    pub(crate) conn_gate: ConnectionGate,
+    /// Per-forward byte-rate limits + idle timeout, applied per bridged conn.
+    pub(crate) limits: ForwardRateLimits,
+    pub(crate) idle_timeout: Option<Duration>,
 }
 
 /// Transient state shared between the session and its dispatch loop.
@@ -253,22 +324,55 @@ async fn open_channel(conn: &Connection, target: &TargetAddr) -> Result<(SendStr
     Ok((send, recv))
 }
 
+/// Bind a local TCP listener honouring the forward's [`BindConflictPolicy`]
+/// (M-W3). Mirrors the ssh2 backend's `bind_local_listener`: instead of a bare
+/// `TcpListener::bind`, a bind conflict is resolved per the configured policy
+/// (fail / retry / next-port), and a fell-forward bind is logged.
+async fn bind_local_listener(
+    listen: &BindAddr,
+    policy: BindConflictPolicy,
+    name: &str,
+) -> Result<TcpListener> {
+    let bind = bind_addr_string(listen)?;
+    let desired: SocketAddr = bind.parse().map_err(|e| Error::LocalBindFailed {
+        address: bind.clone(),
+        reason: format!("parse bind address: {e}"),
+    })?;
+    let BoundListener { listener, addr } = bind_with_policy(desired, policy).await?;
+    if addr != desired {
+        warn!(
+            target: "spt_ssh3::forward",
+            forward = %name,
+            requested = %desired,
+            bound = %addr,
+            "bind conflict resolved to a different address"
+        );
+    }
+    Ok(listener)
+}
+
 /// Open a TCP local forward.
 pub async fn open_local(conn: Connection, spec: &LocalForwardSpec) -> Result<ForwardHandle> {
-    let bind = bind_addr_string(&spec.listen)?;
-    let listener = TcpListener::bind(&bind)
-        .await
-        .map_err(|e| Error::LocalBindFailed {
-            address: bind.clone(),
-            reason: e.to_string(),
-        })?;
+    let name = spec.name.clone();
+    let listener = bind_local_listener(&spec.listen, spec.on_bind_conflict, &name).await?;
+    let bound = listener
+        .local_addr()
+        .map(|a| a.to_string())
+        .unwrap_or_default();
 
     let (state_tx, state_rx) = watch::channel(ForwardState::Listening);
     let (close_tx, close_rx) = oneshot::channel();
     let id = ForwardId::new();
-    let name = spec.name.clone();
     let target = spec.target.clone();
-    let max = spec.max_connections;
+
+    info!(
+        target: "spt_ssh3::forward",
+        forward = %name,
+        listen = %bound,
+        target = %format!("{}:{}", target.host, target.port),
+        max_connections = ?spec.max_connections,
+        "ssh3 local forward opened"
+    );
 
     tokio::spawn(local_loop(
         conn,
@@ -276,13 +380,16 @@ pub async fn open_local(conn: Connection, spec: &LocalForwardSpec) -> Result<For
         target,
         state_tx,
         close_rx,
-        max,
+        spec.max_connections,
         name.clone(),
+        spec.limits,
+        spec.idle_timeout,
     ));
 
     Ok(ForwardHandle::new(id, name, state_rx, close_tx))
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn local_loop(
     conn: Connection,
     listener: TcpListener,
@@ -291,9 +398,14 @@ async fn local_loop(
     mut close_rx: oneshot::Receiver<()>,
     max: Option<u32>,
     name: String,
+    limits: ForwardRateLimits,
+    idle_timeout: Option<Duration>,
 ) {
     let _ = state_tx.send(ForwardState::Active);
     let active = Arc::new(std::sync::atomic::AtomicU32::new(0));
+    // M-W3: honour `max_new_connections_per_second` — a per-accept admission
+    // gate. `0` ⇒ unlimited (preserves prior behaviour).
+    let rate_gate = RateGate::new(limits.max_new_conns_per_sec, limits.max_new_conns_per_sec);
     loop {
         tokio::select! {
             _ = &mut close_rx => {
@@ -301,16 +413,22 @@ async fn local_loop(
                 break;
             }
             accept = listener.accept() => {
-                let (sock, _peer) = match accept {
+                let (sock, peer) = match accept {
                     Ok(v) => v,
                     Err(e) => {
                         error!(target: "spt_ssh3::forward", forward = %name, error = %e, "accept failed");
                         continue;
                     }
                 };
+                // M-W3: new-connection rate cap (checked before the conn cap so a
+                // flood is shed cheaply).
+                if !rate_gate.admit() {
+                    warn!(target: "spt_ssh3::forward", forward = %name, ?peer, "max_new_connections_per_second reached, dropping connection");
+                    continue;
+                }
                 if let Some(limit) = max {
                     if active.load(std::sync::atomic::Ordering::Relaxed) >= limit {
-                        warn!(target: "spt_ssh3::forward", forward = %name, "max_connections reached, dropping incoming");
+                        warn!(target: "spt_ssh3::forward", forward = %name, ?peer, limit, "max_connections reached, dropping incoming");
                         continue;
                     }
                 }
@@ -320,7 +438,7 @@ async fn local_loop(
                 active.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 let name_t = name.clone();
                 tokio::spawn(async move {
-                    if let Err(e) = bridge_local(conn, sock, &target).await {
+                    if let Err(e) = bridge_local(conn, sock, &target, &limits, idle_timeout).await {
                         warn!(target: "spt_ssh3::forward", forward = %name_t, error = %e, "local conn failed");
                     }
                     active.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
@@ -331,24 +449,26 @@ async fn local_loop(
     let _ = state_tx.send(ForwardState::Stopped);
 }
 
-async fn bridge_local(conn: Connection, mut sock: TcpStream, target: &TargetAddr) -> Result<()> {
-    let (mut send, mut recv) = open_channel(&conn, target).await?;
-    let (mut sock_r, mut sock_w) = sock.split();
-    let to_peer = async {
-        let n = tokio::io::copy(&mut sock_r, &mut send).await;
-        let _ = send.finish();
-        n
-    };
-    let from_peer = async {
-        let n = tokio::io::copy(&mut recv, &mut sock_w).await;
-        // Half-close the local socket so the application sees EOF cleanly
-        // before we drop the stream (otherwise Windows can RST the conn).
-        let _ = sock_w.shutdown().await;
-        n
-    };
-    let (a, b) = tokio::join!(to_peer, from_peer);
-    a.map_err(|e| Error::RuntimeFailure(format!("ssh3 local→peer copy: {e}")))?;
-    b.map_err(|e| Error::RuntimeFailure(format!("ssh3 peer→local copy: {e}")))?;
+async fn bridge_local(
+    conn: Connection,
+    mut sock: TcpStream,
+    target: &TargetAddr,
+    limits: &ForwardRateLimits,
+    idle_timeout: Option<Duration>,
+) -> Result<()> {
+    let (send, recv) = open_channel(&conn, target).await?;
+    // M-W3: throttle + idle-close identically to the ssh2 local bridge. The
+    // QUIC channel's (recv, send) halves are joined into one duplex so the
+    // shared bidirectional copy can drive both directions. `sock` is the client
+    // side (a); the joined QUIC stream is the peer side (b): a→b throttles
+    // client→peer (`up`), b→a throttles peer→client (`down`).
+    let (up, down) = forward_buckets(limits);
+    let mut quic = tokio::io::join(recv, send);
+    let res = copy_bidirectional_throttled_idle(&mut sock, &mut quic, up, down, idle_timeout).await;
+    // Finish the QUIC send half regardless of outcome so the peer sees EOF.
+    let _ = quic.shutdown().await;
+    let _ = sock.shutdown().await;
+    res.map_err(|e| Error::RuntimeFailure(format!("ssh3 local bridge I/O: {e}")))?;
     Ok(())
 }
 
@@ -391,6 +511,12 @@ pub async fn open_remote(
         RemoteForwardEntry {
             target: spec.target.clone(),
             tx: inbound_tx,
+            // M-W3: enforce the CONFIG `max_connections` in addition to the
+            // session-wide negotiated `max_forwards` cap (effective = min).
+            // `None`/`0` ⇒ unlimited gate.
+            conn_gate: ConnectionGate::new(spec.max_connections.unwrap_or(0)),
+            limits: spec.limits,
+            idle_timeout: spec.idle_timeout,
         },
     );
 
@@ -444,6 +570,14 @@ pub async fn open_remote(
     let (close_tx, close_rx) = oneshot::channel();
     let id = ForwardId::new();
     let name = spec.name.clone();
+
+    info!(
+        target: "spt_ssh3::forward",
+        forward = %name,
+        listen = %format!("{host}:{port}"),
+        max_connections = ?spec.max_connections,
+        "ssh3 remote forward opened"
+    );
 
     tokio::spawn(remote_loop(
         conn,
@@ -500,25 +634,25 @@ async fn remote_loop(
 /// drops.
 async fn bridge_remote(inbound: InboundForward) -> Result<()> {
     let InboundForward {
-        mut send,
-        mut recv,
+        send,
+        recv,
         mut local,
         _permit,
+        _conn_permit,
+        limits,
+        idle_timeout,
     } = inbound;
-    let (mut sr, mut sw) = local.split();
-    let to_local = async {
-        let n = tokio::io::copy(&mut recv, &mut sw).await;
-        let _ = sw.shutdown().await;
-        n
-    };
-    let from_local = async {
-        let n = tokio::io::copy(&mut sr, &mut send).await;
-        let _ = send.finish();
-        n
-    };
-    let (a, b) = tokio::join!(to_local, from_local);
-    a.map_err(|e| Error::RuntimeFailure(format!("ssh3 remote→local copy: {e}")))?;
-    b.map_err(|e| Error::RuntimeFailure(format!("ssh3 local→remote copy: {e}")))?;
+    // M-W3: throttle + idle-close the bridged remote forward. `local` is the
+    // client-side dialed socket (a); the joined QUIC stream is the peer side
+    // (b). For a remote forward the tunnel-side traffic (peer→local) is the
+    // "down"/inbound direction and local→peer is "up".
+    let (up, down) = forward_buckets(&limits);
+    let mut quic = tokio::io::join(recv, send);
+    let res =
+        copy_bidirectional_throttled_idle(&mut local, &mut quic, up, down, idle_timeout).await;
+    let _ = quic.shutdown().await;
+    let _ = local.shutdown().await;
+    res.map_err(|e| Error::RuntimeFailure(format!("ssh3 remote bridge I/O: {e}")))?;
     Ok(())
 }
 
@@ -582,20 +716,48 @@ pub async fn open_udp(
     let id = ForwardId::new();
     let name = spec.name.clone();
 
+    // M-W3: enforce the full UDP per-forward limit surface. `flow_table` bounds
+    // concurrent client-source flows (config `max_flows`, NOT the old hard-coded
+    // 1024), the packets-per-second gate (`max_packets_per_sec`), and the
+    // max-datagram-size drop; the token buckets throttle byte-rate per
+    // direction; idle flows are evicted at the configured idle cadence.
+    let flow_cfg = udp_flow_config(spec);
+    let idle = flow_cfg.idle_timeout;
+    let flow_table: Arc<UdpFlowTable<UdpFlowKey, ()>> = Arc::new(UdpFlowTable::with_pps(
+        flow_cfg,
+        spec.limits.max_packets_per_sec,
+    ));
+    let (up_bucket, down_bucket) = forward_buckets(&spec.limits);
+
+    info!(
+        target: "spt_ssh3::forward",
+        forward = %name,
+        listen = %bind,
+        target = %format!("{}:{}", spec.target.host, spec.target.port),
+        max_flows = flow_cfg.max_flows,
+        max_packets_per_sec = spec.limits.max_packets_per_sec,
+        idle_secs = idle.as_secs(),
+        "ssh3 udp forward opened"
+    );
+
     let socket = Arc::new(socket);
     let conn_dgrm = conn.clone();
     let socket_send = socket.clone();
     let state_clone = state.clone();
     let name_t = name.clone();
+    let flow_table_out = flow_table.clone();
+    let flow_table_evict = flow_table.clone();
     tokio::spawn(async move {
         // Track last peer addr so we can deliver server→client datagrams.
         let last_peer: Arc<AsyncMutex<Option<std::net::SocketAddr>>> =
             Arc::new(AsyncMutex::new(None));
 
-        // Outbound: socket → quic datagram (with flow-id prefix).
+        // Outbound: socket → quic datagram (with flow-id prefix), rate/size/flow
+        // capped.
         let outbound_socket = socket.clone();
         let outbound_conn = conn_dgrm.clone();
         let outbound_peer = last_peer.clone();
+        let name_o = name_t.clone();
         let outbound = async move {
             let mut buf = vec![0u8; 64 * 1024];
             loop {
@@ -606,6 +768,27 @@ pub async fn open_udp(
                         return;
                     }
                 };
+                // packets-per-second cap.
+                if !flow_table_out.admit_packet() {
+                    warn!(target: "spt_ssh3::forward", forward = %name_o, ?peer, "udp max_packets_per_second reached — dropping datagram");
+                    continue;
+                }
+                // max_datagram_size reject (oversized dropped + counted).
+                if !flow_table_out.admit_size(n) {
+                    warn!(target: "spt_ssh3::forward", forward = %name_o, ?peer, bytes = n, "udp datagram exceeds max_datagram_size — dropping");
+                    continue;
+                }
+                // max_flows cap (keyed by client source addr).
+                if !flow_table_out.touch_or_insert(peer, || ()) {
+                    warn!(target: "spt_ssh3::forward", forward = %name_o, ?peer, "udp max_flows reached — dropping datagram");
+                    continue;
+                }
+                // Byte-rate (up): drop when over rate (UDP is lossy — never block
+                // the datagram pump).
+                if up_bucket.is_active() && up_bucket.try_acquire(n as u64).is_some() {
+                    debug!(target: "spt_ssh3::forward", forward = %name_o, ?peer, "udp up byte-rate cap — dropping datagram");
+                    continue;
+                }
                 {
                     let mut g = outbound_peer.lock().await;
                     *g = Some(peer);
@@ -619,10 +802,17 @@ pub async fn open_udp(
             }
         };
 
-        // Inbound: dispatched datagrams (from session loop) → socket.
+        // Inbound: dispatched datagrams (from session loop) → socket, byte-rate
+        // (down) capped.
         let inbound_peer = last_peer.clone();
         let inbound = async move {
             while let Some(payload) = inbound_rx.recv().await {
+                if down_bucket.is_active()
+                    && down_bucket.try_acquire(payload.len() as u64).is_some()
+                {
+                    debug!(target: "spt_ssh3::forward", "udp down byte-rate cap — dropping datagram");
+                    continue;
+                }
                 let peer = {
                     let g = inbound_peer.lock().await;
                     *g
@@ -637,12 +827,27 @@ pub async fn open_udp(
             }
         };
 
+        // Idle-flow evictor: prune per-flow mappings quiescent for `idle`.
+        let name_e = name_t.clone();
+        let evict = async move {
+            let mut ticker = tokio::time::interval(idle.max(Duration::from_secs(1)));
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                ticker.tick().await;
+                let n = flow_table_evict.evict_idle();
+                if n > 0 {
+                    debug!(target: "spt_ssh3::forward", forward = %name_e, evicted = n, "udp idle flows evicted");
+                }
+            }
+        };
+
         #[allow(clippy::ignored_unit_patterns)]
         {
             tokio::select! {
                 _ = &mut close_rx => {}
                 _ = outbound => {}
                 _ = inbound => {}
+                _ = evict => {}
             }
         }
         state_clone.udp_flows.remove(&flow_id);
@@ -742,7 +947,7 @@ pub(crate) async fn dispatch_inbound_bidi(
     };
 
     let key = (open.host.clone(), open.port);
-    let (target, tx) = {
+    let (target, tx, conn_gate, limits, idle_timeout) = {
         let Some(entry) = state.remote_forwards.get(&key) else {
             debug!(
                 target: "spt_ssh3::forward",
@@ -752,7 +957,13 @@ pub(crate) async fn dispatch_inbound_bidi(
             reject_inbound(send, "no remote forward registered for that bind").await;
             return;
         };
-        (entry.target.clone(), entry.tx.clone())
+        (
+            entry.target.clone(),
+            entry.tx.clone(),
+            entry.conn_gate.clone(),
+            entry.limits,
+            entry.idle_timeout,
+        )
     };
 
     // E3-F3: bound concurrent inbound forwards by the negotiated `max_forwards`
@@ -766,6 +977,25 @@ pub(crate) async fn dispatch_inbound_bidi(
         );
         reject_inbound(send, "max_forwards reached").await;
         return;
+    };
+    // M-W3: additionally enforce the per-forward CONFIG `max_connections`
+    // (effective cap = min of this and the negotiated `max_forwards` above).
+    // `None`/`0` ⇒ unlimited gate that always yields a permit.
+    let conn_permit = if conn_gate.cap() == 0 {
+        None
+    } else {
+        match conn_gate.try_acquire() {
+            Some(p) => Some(p),
+            None => {
+                warn!(
+                    target: "spt_ssh3::forward",
+                    host = %open.host, port = open.port, cap = conn_gate.cap(),
+                    "inbound bidi: max_connections reached — rejecting"
+                );
+                reject_inbound(send, "max_connections reached").await;
+                return;
+            }
+        }
     };
 
     // E3-F8: dial the local target *before* ACKing so the peer never sees a
@@ -803,6 +1033,9 @@ pub(crate) async fn dispatch_inbound_bidi(
         recv,
         local,
         _permit: permit,
+        _conn_permit: conn_permit,
+        limits,
+        idle_timeout,
     });
 }
 
@@ -1853,6 +2086,8 @@ async fn server_remote_udp_loop(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "testing")]
+    use crate::testing::test_support::connected_pair_public;
 
     #[test]
     fn bind_addr_string_tcp() {
@@ -2026,5 +2261,249 @@ mod tests {
     #[test]
     fn open_timeout_constant_is_15s() {
         assert_eq!(OPEN_TIMEOUT.as_secs(), 15);
+    }
+
+    // ---------------------------------------------------------------------
+    // M-W3: per-forward limit enforcement (Wave 3). Each of the following
+    // targets a knob that was DEAD before this wave (rate/idle/bind on the
+    // local path, config max_flows on UDP) and therefore FAILS against the
+    // pre-fix code.
+    // ---------------------------------------------------------------------
+
+    /// A full [`UdpForwardSpec`] used by the UDP-config tests.
+    #[cfg(test)]
+    fn make_udp_spec(max_flows: Option<u32>, pps: u32, idle_secs: u32) -> UdpForwardSpec {
+        UdpForwardSpec {
+            name: "u".into(),
+            direction: ForwardDirection::Local,
+            listen: BindAddr::TcpHostPort {
+                host: "127.0.0.1".into(),
+                port: 0,
+            },
+            target: TargetAddr::new("127.0.0.1", 9),
+            idle_timeout_secs: idle_secs,
+            max_flows,
+            limits: ForwardRateLimits {
+                max_packets_per_sec: pps,
+                ..Default::default()
+            },
+        }
+    }
+
+    /// The UDP flow table is sized from the CONFIG `max_flows`, NOT the old
+    /// hard-coded `UDP_INBOUND_CHANNEL_CAP = 1024`. The full limit surface
+    /// (`max_flows` / `max_datagram_size` / packets-per-second) is live on the
+    /// table `open_udp` builds.
+    #[test]
+    fn udp_flow_config_uses_config_max_flows_and_enforces_surface() {
+        let spec = make_udp_spec(Some(3), 5, 30);
+        let cfg = udp_flow_config(&spec);
+        assert_eq!(
+            cfg.max_flows, 3,
+            "must use config max_flows, not a hard-coded 1024"
+        );
+        assert_ne!(cfg.max_flows, 1024);
+        assert_eq!(cfg.idle_timeout, Duration::from_secs(30));
+
+        // Build the table exactly as `open_udp` does and assert enforcement.
+        let table: UdpFlowTable<UdpFlowKey, ()> =
+            UdpFlowTable::with_pps(cfg, spec.limits.max_packets_per_sec);
+        let a = |p: u16| std::net::SocketAddr::from(([127, 0, 0, 1], p));
+        assert!(table.touch_or_insert(a(1), || ()));
+        assert!(table.touch_or_insert(a(2), || ()));
+        assert!(table.touch_or_insert(a(3), || ()));
+        assert!(
+            !table.touch_or_insert(a(4), || ()),
+            "config max_flows=3 must reject the 4th distinct flow"
+        );
+        // Oversized-datagram reject.
+        assert!(table.admit_size(1000));
+        assert!(!table.admit_size(DEFAULT_MAX_DATAGRAM_SIZE as usize + 1));
+        assert_eq!(table.oversized_count(), 1);
+        // packets-per-second: burst 5 then drop.
+        for _ in 0..5 {
+            assert!(table.admit_packet());
+        }
+        assert!(
+            !table.admit_packet(),
+            "pps cap must drop the 6th packet in the burst window"
+        );
+    }
+
+    /// When `max_flows` is unset the table falls back to the finite default
+    /// (never the old 1024 channel cap, and never unbounded).
+    #[test]
+    fn udp_flow_config_default_max_flows_is_finite_not_1024() {
+        let cfg = udp_flow_config(&make_udp_spec(None, 0, 0));
+        assert_eq!(cfg.max_flows, UdpFlowTableConfig::default().max_flows);
+        assert_ne!(cfg.max_flows, 1024);
+        assert_ne!(cfg.max_flows, 0, "unset must NOT mean unbounded");
+        // idle_timeout_secs = 0 ⇒ the safe default idle window.
+        assert_eq!(cfg.idle_timeout, DEFAULT_UDP_IDLE);
+    }
+
+    /// `on_bind_conflict` is honoured: a `Fail` policy on an occupied address
+    /// errors (the pre-fix bare-`TcpListener::bind` behaviour), while
+    /// `NextPort` falls forward to a free port instead of failing.
+    #[tokio::test]
+    async fn local_forward_honors_bind_conflict_policy() {
+        let occupied = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = occupied.local_addr().unwrap();
+        let listen = BindAddr::TcpHostPort {
+            host: addr.ip().to_string(),
+            port: addr.port(),
+        };
+
+        let err = bind_local_listener(&listen, BindConflictPolicy::Fail, "bc")
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::LocalBindFailed { .. }));
+
+        let l = bind_local_listener(&listen, BindConflictPolicy::NextPort, "bc")
+            .await
+            .expect("NextPort must fall forward to a free port");
+        assert_ne!(
+            l.local_addr().unwrap().port(),
+            addr.port(),
+            "NextPort must bind a different port"
+        );
+    }
+
+    /// Spin up a TCP target that counts accepted connections and echoes bytes.
+    #[cfg(feature = "testing")]
+    async fn counting_echo_target() -> (std::net::SocketAddr, Arc<std::sync::atomic::AtomicU32>) {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let count = Arc::new(AtomicU32::new(0));
+        let c = count.clone();
+        tokio::spawn(async move {
+            loop {
+                let Ok((sock, _)) = listener.accept().await else {
+                    break;
+                };
+                c.fetch_add(1, Ordering::SeqCst);
+                tokio::spawn(async move {
+                    let (mut r, mut w) = sock.into_split();
+                    let _ = tokio::io::copy(&mut r, &mut w).await;
+                });
+            }
+        });
+        (addr, count)
+    }
+
+    /// The local forward honours `max_new_connections_per_second`: of two rapid
+    /// connections only the first is bridged to the peer, and the refusal is
+    /// logged at WARN. Pre-fix (`bridge_local` used a plain `copy` with no rate
+    /// gate) both connections reached the target.
+    #[cfg(feature = "testing")]
+    #[tracing_test::traced_test]
+    #[tokio::test]
+    async fn local_forward_rate_limits_new_connections_and_warns() {
+        use std::sync::atomic::Ordering;
+        use tokio::io::AsyncWriteExt as _;
+
+        let (client, server) = connected_pair_public().await;
+        let (target_addr, count) = counting_echo_target().await;
+        let resolver = move |_o: &ChannelOpenPayload| {
+            Some(TargetAddr::new(
+                target_addr.ip().to_string(),
+                target_addr.port(),
+            ))
+        };
+        tokio::spawn(serve_local_tcp_acceptor(server.clone(), resolver));
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let lport = listener.local_addr().unwrap().port();
+        let (state_tx, _state_rx) = watch::channel(ForwardState::Listening);
+        let (_close_tx, close_rx) = oneshot::channel();
+        let limits = ForwardRateLimits {
+            max_new_conns_per_sec: 1,
+            ..Default::default()
+        };
+        tokio::spawn(local_loop(
+            client,
+            listener,
+            TargetAddr::new("unused", 0),
+            state_tx,
+            close_rx,
+            None,
+            "rl".into(),
+            limits,
+            None,
+        ));
+
+        for _ in 0..2 {
+            let mut s = TcpStream::connect(("127.0.0.1", lport)).await.unwrap();
+            let _ = s.write_all(b"x").await;
+            let _ = s.shutdown().await;
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        tokio::time::sleep(Duration::from_millis(600)).await;
+
+        assert_eq!(
+            count.load(Ordering::SeqCst),
+            1,
+            "rate gate must bridge only the first of two rapid connections"
+        );
+        assert!(
+            logs_contain("max_new_connections_per_second reached"),
+            "a rate-refused forward must log a WARN"
+        );
+
+        server.close(0u32.into(), b"done");
+    }
+
+    /// The local forward honours a per-forward `idle_timeout`: a connection over
+    /// which no bytes flow is closed after the idle window, so the client sees
+    /// EOF. Pre-fix the plain `copy` never closed an idle connection, so the
+    /// read below would block until the outer timeout fired (test failure).
+    #[cfg(feature = "testing")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn local_forward_idle_timeout_drops_connection() {
+        use tokio::io::AsyncReadExt as _;
+
+        let (client, server) = connected_pair_public().await;
+        let (target_addr, _count) = counting_echo_target().await;
+        let resolver = move |_o: &ChannelOpenPayload| {
+            Some(TargetAddr::new(
+                target_addr.ip().to_string(),
+                target_addr.port(),
+            ))
+        };
+        tokio::spawn(serve_local_tcp_acceptor(server.clone(), resolver));
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let lport = listener.local_addr().unwrap().port();
+        let (state_tx, _state_rx) = watch::channel(ForwardState::Listening);
+        let (_close_tx, close_rx) = oneshot::channel();
+        tokio::spawn(local_loop(
+            client,
+            listener,
+            TargetAddr::new("unused", 0),
+            state_tx,
+            close_rx,
+            None,
+            "idle".into(),
+            ForwardRateLimits::default(),
+            Some(Duration::from_millis(300)),
+        ));
+
+        let mut s = TcpStream::connect(("127.0.0.1", lport)).await.unwrap();
+        // Never send anything; the only closure cause is the idle timeout.
+        let mut buf = [0u8; 1];
+        let read = tokio::time::timeout(Duration::from_secs(3), s.read(&mut buf)).await;
+        // `Err(_)` from the outer timeout = the connection stayed open past the
+        // idle window (the pre-fix unenforced behaviour) → test failure. An
+        // inner `Ok(0)` (EOF) or an inner reset both mean the idle-close fired.
+        let inner = read.expect(
+            "idle timeout did not close the idle connection within 3s (pre-fix unenforced behaviour)",
+        );
+        match inner {
+            Ok(0) | Err(_) => {} // idle-close EOF or reset — the wired behaviour.
+            Ok(n) => panic!("expected idle EOF, got {n} bytes"),
+        }
+
+        server.close(0u32.into(), b"done");
     }
 }

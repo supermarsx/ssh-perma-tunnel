@@ -312,6 +312,13 @@ where
     // Defence against an all-zero curve point.
     let zero = [0u8; 32];
     if shared.as_bytes() == &zero {
+        // Reject site: log the failure kind (no key/secret material) so an
+        // operator debugging an obfs4 handshake sees *why* it failed.
+        tracing::warn!(
+            transport = "obfs4",
+            reason = "zero-ecdh",
+            "obfs4 handshake rejected: peer produced an all-zero ECDH point"
+        );
         return Err(ObfsError::Handshake("obfs4: zero ECDH output".into()));
     }
     // Bind the server identity by mixing x * B into the secret.
@@ -331,6 +338,14 @@ where
 
     // Constant-time auth tag verification.
     if keys.auth.ct_eq(&srv_auth).unwrap_u8() == 0 {
+        // Reject site: log the failure kind only (never the derived keys or the
+        // auth tag) so a rejected NTOR handshake is distinguishable from a
+        // normal close without leaking secret material.
+        tracing::warn!(
+            transport = "obfs4",
+            reason = "auth-tag-mismatch",
+            "obfs4 handshake rejected: server NTOR auth tag verification failed"
+        );
         return Err(ObfsError::Handshake("obfs4: bad server auth tag".into()));
     }
     Ok(keys)

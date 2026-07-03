@@ -14,7 +14,7 @@ use std::time::Duration;
 use dashmap::DashMap;
 use tokio::time::Instant;
 
-use crate::limits::RateGate;
+use crate::limits::{RateGate, TokenBucket};
 
 /// Key into a [`UdpFlowTable`]. Defaults to peer socket address — backends may
 /// supply a richer key (e.g. (peer, server-port)) by parameterising the table.
@@ -79,6 +79,12 @@ where
     pps_gate: RateGate,
     /// Count of datagrams dropped because the pps gate was exhausted.
     rejected_pps: Arc<AtomicU64>,
+    /// Aggregate byte-rate admission gate across the table. Unlimited unless a
+    /// `max_bytes_per_sec` cap was configured via
+    /// [`UdpFlowTable::with_byte_rate`].
+    byte_gate: TokenBucket,
+    /// Count of datagrams dropped because the byte-rate gate was exhausted.
+    rejected_bytes: Arc<AtomicU64>,
 }
 
 impl<K, V> Clone for UdpFlowTable<K, V>
@@ -94,6 +100,8 @@ where
             rejected_full: Arc::clone(&self.rejected_full),
             pps_gate: self.pps_gate.clone(),
             rejected_pps: Arc::clone(&self.rejected_pps),
+            byte_gate: self.byte_gate.clone(),
+            rejected_bytes: Arc::clone(&self.rejected_bytes),
         }
     }
 }
@@ -124,7 +132,49 @@ where
             rejected_full: Arc::new(AtomicU64::new(0)),
             pps_gate: RateGate::new(max_packets_per_sec, max_packets_per_sec),
             rejected_pps: Arc::new(AtomicU64::new(0)),
+            byte_gate: TokenBucket::unlimited(),
+            rejected_bytes: Arc::new(AtomicU64::new(0)),
         }
+    }
+
+    /// Attach an aggregate byte-rate cap (`max_bytes_per_sec` bytes/second with
+    /// a `burst_bytes` allowance). `0` disables the cap.
+    ///
+    /// Chains after [`new`](Self::new) / [`with_pps`](Self::with_pps) so a
+    /// backend can compose packet-rate and byte-rate limits:
+    /// `UdpFlowTable::with_pps(cfg, pps).with_byte_rate(bps, burst)`. Admission
+    /// is checked via [`admit_bytes`](Self::admit_bytes).
+    #[must_use]
+    pub fn with_byte_rate(mut self, max_bytes_per_sec: u64, burst_bytes: u64) -> Self {
+        self.byte_gate = TokenBucket::new(max_bytes_per_sec, burst_bytes);
+        self
+    }
+
+    /// Admit one inbound datagram of `len` bytes against the byte-rate cap.
+    ///
+    /// Returns `true` if the datagram fits the current byte budget (always
+    /// `true` when no `max_bytes_per_sec` was configured); `false` when the
+    /// byte-rate gate is exhausted, in which case the datagram should be dropped
+    /// and the [`rejected_bytes_count`](Self::rejected_bytes_count) counter is
+    /// incremented.
+    ///
+    /// Non-blocking: unlike [`TokenBucket::acquire`](crate::limits::TokenBucket::acquire)
+    /// this never waits — a datagram that would exceed the budget is dropped,
+    /// matching the packets-per-second and oversized-datagram admission
+    /// semantics (a stalled UDP forward must not build unbounded latency).
+    pub fn admit_bytes(&self, len: usize) -> bool {
+        if self.byte_gate.try_acquire(len as u64).is_none() {
+            true
+        } else {
+            self.rejected_bytes.fetch_add(1, Ordering::Relaxed);
+            false
+        }
+    }
+
+    /// Count of datagrams dropped because the byte-rate cap was hit.
+    #[must_use]
+    pub fn rejected_bytes_count(&self) -> u64 {
+        self.rejected_bytes.load(Ordering::Relaxed)
     }
 
     /// Admit one inbound datagram against the packets-per-second cap.
@@ -347,6 +397,47 @@ mod tests {
         tokio::time::advance(Duration::from_millis(334)).await;
         assert!(t.admit_packet());
         assert_eq!(t.rejected_pps_count(), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn byte_rate_unlimited_admits_everything() {
+        // With no byte-rate cap configured, every datagram is admitted.
+        let t: UdpFlowTable<UdpFlowKey, ()> = UdpFlowTable::new(UdpFlowTableConfig::default());
+        for _ in 0..1000 {
+            assert!(t.admit_bytes(1500));
+        }
+        assert_eq!(t.rejected_bytes_count(), 0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn byte_rate_cap_drops_excess_bytes() {
+        // 1000 bytes/sec, burst 1000: the first 600-byte datagram admits, the
+        // second exceeds the remaining budget and is dropped + counted; after
+        // ~0.7s of refill it admits again.
+        let t: UdpFlowTable<UdpFlowKey, ()> =
+            UdpFlowTable::new(UdpFlowTableConfig::default()).with_byte_rate(1000, 1000);
+        assert!(t.admit_bytes(600));
+        assert!(!t.admit_bytes(600));
+        assert_eq!(t.rejected_bytes_count(), 1);
+        tokio::time::advance(Duration::from_millis(700)).await;
+        assert!(t.admit_bytes(600));
+        assert_eq!(t.rejected_bytes_count(), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn byte_rate_composes_with_pps() {
+        // A backend can layer packet-rate and byte-rate caps on one table; the
+        // two gates are independent counters.
+        let t: UdpFlowTable<UdpFlowKey, ()> =
+            UdpFlowTable::with_pps(UdpFlowTableConfig::default(), 100).with_byte_rate(1000, 1000);
+        // Byte gate trips first here (600 + 600 > 1000-byte budget) while the
+        // pps gate (100/s) still has tokens.
+        assert!(t.admit_packet());
+        assert!(t.admit_bytes(600));
+        assert!(t.admit_packet());
+        assert!(!t.admit_bytes(600));
+        assert_eq!(t.rejected_bytes_count(), 1);
+        assert_eq!(t.rejected_pps_count(), 0);
     }
 
     #[tokio::test]

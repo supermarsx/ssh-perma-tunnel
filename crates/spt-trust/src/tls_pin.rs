@@ -83,10 +83,43 @@ impl TlsPin {
         if self.matches_digest(&got) {
             return Ok(());
         }
+        // Log the rejection AT THE DETECTION SITE with the expected-vs-received
+        // SPKI fingerprints so a TLS MITM is not invisible in-crate. Only
+        // public SHA-256 fingerprints are emitted — never key material.
+        let (received, expected) = self.mismatch_fingerprints(&got);
+        tracing::warn!(
+            target: "spt_trust::tls_pin",
+            received_spki_sha256 = %received,
+            expected_spki_sha256 = %expected,
+            "TLS SPKI pin MISMATCH: server certificate public key does not match any \
+             configured pin — possible MITM; rejecting"
+        );
         Err(Error::TrustFailed(format!(
-            "TLS SPKI pin mismatch: got SHA256:{}",
-            base64::engine::general_purpose::STANDARD_NO_PAD.encode(got)
+            "TLS SPKI pin mismatch: got {received}"
         )))
+    }
+
+    /// Format the `(received, expected)` SPKI fingerprint pair logged when a
+    /// certificate fails the pin check. Split out so the expected≠received diff
+    /// is unit-testable without a tracing subscriber. Both are public
+    /// `SHA256:<base64>` fingerprints; the expected side joins every configured
+    /// pin. Never emits key material.
+    #[must_use]
+    fn mismatch_fingerprints(&self, got: &[u8; 32]) -> (String, String) {
+        let enc = |b: &[u8]| {
+            format!(
+                "SHA256:{}",
+                base64::engine::general_purpose::STANDARD_NO_PAD.encode(b)
+            )
+        };
+        let received = enc(got);
+        let expected = self
+            .spki_sha256
+            .iter()
+            .map(|p| enc(p))
+            .collect::<Vec<_>>()
+            .join(", ");
+        (received, expected)
     }
 
     /// Verify a server-presented certificate chain against both the pin
@@ -251,6 +284,41 @@ mod tests {
             }
             other => panic!("expected TrustFailed, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn pin_mismatch_logs_expected_vs_received_fingerprints() {
+        // A pin mismatch is logged AT THE DETECTION SITE with the expected and
+        // received SPKI fingerprints (public identifiers, not key material) so a
+        // TLS MITM is not invisible in-crate. We assert the code path that feeds
+        // the `warn!`: `mismatch_fingerprints` must yield distinct `SHA256:`
+        // strings for the real cert vs a bogus pin set. Fails against pre-fix
+        // (the helper — and the log — did not exist).
+        let (der, real_pin) = gen_cert_and_pin();
+        let pinset = TlsPin {
+            spki_sha256: vec![[0xAB; 32]],
+        };
+        let cert = CertificateDer::from(der);
+        // The rejection still fires (security preserved: logging does not relax
+        // the decision).
+        assert!(pinset.verify(&cert).is_err());
+
+        let got = TlsPin::spki_sha256_of(&cert).unwrap();
+        // Sanity: the certificate's real SPKI is what we computed.
+        assert_eq!(got, real_pin);
+        let (received, expected) = pinset.mismatch_fingerprints(&got);
+        assert!(received.starts_with("SHA256:"), "received={received}");
+        assert!(expected.starts_with("SHA256:"), "expected={expected}");
+        assert_ne!(
+            received, expected,
+            "expected and received fingerprints must differ on a mismatch"
+        );
+        // The expected side reflects the configured (bogus) pin, not the cert.
+        let bogus = format!(
+            "SHA256:{}",
+            base64::engine::general_purpose::STANDARD_NO_PAD.encode([0xAB; 32])
+        );
+        assert_eq!(expected, bogus);
     }
 
     #[test]

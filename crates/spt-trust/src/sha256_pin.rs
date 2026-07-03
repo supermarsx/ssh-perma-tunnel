@@ -33,6 +33,16 @@ impl Sha256HostPin {
         self.pins.entry(key).or_default().push(fingerprint.into());
     }
 
+    /// Configured pin fingerprint strings for `(host, port)`, if any.
+    ///
+    /// Exposed so callers that reject a mismatch can log the expected-vs-received
+    /// fingerprint diff at the detection site. Pin strings are public SHA-256
+    /// fingerprints (`SHA256:<base64>`), never key material.
+    #[must_use]
+    pub fn pins_for(&self, host: &str, port: u16) -> Option<&Vec<String>> {
+        self.pins.get(&format_host_key(host, port))
+    }
+
     /// Verify that `key`'s SHA-256 fingerprint matches one of the configured
     /// pins for `(host, port)`.
     #[must_use]

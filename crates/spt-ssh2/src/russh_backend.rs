@@ -27,7 +27,7 @@ use spt_secrets::SecretBackend;
 use tokio::io::AsyncWriteExt as _;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, oneshot, watch, Mutex as AsyncMutex};
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use crate::agent::Agent;
 use crate::crypto::CryptoPolicy;
@@ -976,6 +976,13 @@ async fn connect_inner(params: ReconnectParams) -> Result<RusshSsh2Session> {
         connection.auth_timeout,
     )
     .await?;
+    info!(
+        target: "spt_ssh2::russh",
+        host = %endpoint.host,
+        port = endpoint.port,
+        backend = "ssh2-russh",
+        "SSH2 session established and authenticated"
+    );
     let info = SessionInfo {
         backend: "ssh2-russh".into(),
         peer_version: None,
@@ -1458,6 +1465,11 @@ impl TunnelSession for RusshSsh2Session {
     }
 
     async fn close(self: Box<Self>) -> Result<()> {
+        info!(
+            target: "spt_ssh2::russh",
+            backend = %self.info.backend,
+            "SSH2 session closing"
+        );
         // E8-F1: fire the `on_disconnect` hook before tearing the transport
         // down so operator scripts observe the session ending with a stable
         // reason and the measured lifetime. A script failure is logged and
@@ -1572,6 +1584,11 @@ async fn run_auth(
         {
             Ok(true) => return Ok(()),
             Ok(false) => {
+                warn!(
+                    target: "spt_ssh2::russh",
+                    method = method_name(&method),
+                    "auth method rejected by server (authentication failure); trying next method"
+                );
                 last_err = Some(Error::auth_failed(
                     spt_core::Diagnostic::what(format!(
                         "Auth method `{}` rejected by server",
@@ -2180,6 +2197,7 @@ async fn open_local(
         spec.limits,
         combine_idle(spec.idle_timeout, channel_idle),
     ));
+    info!(target: "spt_ssh2::russh", forward = %name, "local forward opened");
     Ok(ForwardHandle::new(id, name, state_rx, close_tx))
 }
 
@@ -2222,6 +2240,7 @@ async fn open_dynamic(
         spec.limits,
         combine_idle(spec.idle_timeout, channel_idle),
     ));
+    info!(target: "spt_ssh2::russh", forward = %name, "dynamic (SOCKS/HTTP-CONNECT) forward opened");
     Ok(ForwardHandle::new(id, name, state_rx, close_tx))
 }
 
@@ -2567,6 +2586,7 @@ async fn open_remote(
             idle_timeout: combine_idle(spec.idle_timeout, channel_idle),
         },
     ));
+    info!(target: "spt_ssh2::russh", forward = %name, "remote forward opened");
     Ok(ForwardHandle::new(id, name, state_rx, close_tx))
 }
 
@@ -2695,10 +2715,17 @@ async fn open_uds(
         spec.remote_socket_path.clone(),
         state_tx,
         close_rx,
+        // `UdsForwardSpec` carries no `max_connections` field (mirrors
+        // `RemoteUdsForwardSpec` / `remote_uds_loop`), so the concurrency cap is
+        // `None` here; the `max_new_conns_per_sec` rate gate from `limits` is
+        // enforced by the `ConnLimiter`. Wiring a per-forward `max_connections`
+        // value onto the UDS spec is a config-schema change outside this crate.
+        None,
         name.clone(),
         spec.limits,
         combine_idle(None, channel_idle),
     ));
+    info!(target: "spt_ssh2::russh", forward = %name, "local_uds forward opened");
     Ok(ForwardHandle::new(id, name, state_rx, close_tx))
 }
 
@@ -2712,8 +2739,23 @@ async fn open_uds(
     Err(crate::uds_forward::windows_local_uds_unsupported())
 }
 
+/// Build the admission gate for a `local_uds` accept loop: the same
+/// [`ConnLimiter`] (concurrency cap + `max_new_conns_per_sec` rate gate) the
+/// TCP/dynamic/reverse loops use. Split out so `uds_loop`'s cap enforcement is
+/// unit-testable without binding a real listener + live SSH handle.
+#[cfg(unix)]
+fn uds_conn_limiter(max_connections: Option<u32>, limits: &ForwardRateLimits) -> ConnLimiter {
+    ConnLimiter::new(max_connections, limits.max_new_conns_per_sec)
+}
+
 /// Accept loop for a `local_uds` forward. Each accepted `UnixStream` is bridged
 /// onto a fresh `direct-streamlocal@openssh.com` channel to `remote_path`.
+///
+/// Admission is gated by a [`ConnLimiter`] — the same mechanism the
+/// TCP/dynamic/reverse loops use — so `max_connections` and the
+/// `max_new_conns_per_sec` rate gate are honoured (previously the UDS local
+/// path applied neither). The permit is held for the bridge task's lifetime and
+/// released via RAII on drop, so the cap never wedges even if a bridge panics.
 #[cfg(unix)]
 #[allow(clippy::too_many_arguments)]
 async fn uds_loop(
@@ -2722,11 +2764,13 @@ async fn uds_loop(
     remote_path: String,
     state_tx: watch::Sender<ForwardState>,
     mut close_rx: oneshot::Receiver<()>,
+    max_connections: Option<u32>,
     name: String,
     limits: ForwardRateLimits,
     idle_timeout: Option<Duration>,
 ) {
     let _ = state_tx.send(ForwardState::Active);
+    let limiter = uds_conn_limiter(max_connections, &limits);
     loop {
         tokio::select! {
             _ = &mut close_rx => break,
@@ -2738,10 +2782,21 @@ async fn uds_loop(
                         continue;
                     }
                 };
+                let Some(permit) = limiter.try_admit() else {
+                    warn!(
+                        target: "spt_ssh2::russh",
+                        forward = %name,
+                        "local_uds forward refused: max_connections / new-connection rate cap reached, dropping connection"
+                    );
+                    continue;
+                };
                 let handle = Arc::clone(&handle);
                 let remote_path = remote_path.clone();
                 let name = name.clone();
                 tokio::spawn(async move {
+                    // Hold the permit for the bridge's lifetime; its `Drop`
+                    // releases the concurrency slot when the bridge ends.
+                    let _permit = permit;
                     if let Err(e) = bridge_uds(handle, sock, &remote_path, &limits, idle_timeout).await {
                         warn!(target: "spt_ssh2::russh", forward = %name, error = %e, "uds bridge failed");
                     }
@@ -2750,6 +2805,7 @@ async fn uds_loop(
         }
     }
     let _ = state_tx.send(ForwardState::Stopped);
+    info!(target: "spt_ssh2::russh", forward = %name, "local_uds forward closed");
 }
 
 /// Bridge one accepted local `UnixStream` onto a `direct-streamlocal` channel
@@ -2843,6 +2899,7 @@ async fn open_remote_uds(
             idle_timeout: combine_idle(spec.idle_timeout, channel_idle),
         },
     ));
+    info!(target: "spt_ssh2::russh", forward = %name, "remote_uds forward opened");
     Ok(ForwardHandle::new(id, name, state_rx, close_tx))
 }
 
@@ -3857,6 +3914,34 @@ mod tests {
             .await
             .expect("connect to local uds");
         server.await.expect("acceptor joins");
+    }
+
+    /// finding 3: the `local_uds` accept loop now gates admission through the
+    /// same [`ConnLimiter`] the TCP/dynamic/reverse loops use (built by
+    /// `uds_conn_limiter`), so `max_connections` and the new-connection rate gate
+    /// are enforced — previously `uds_loop` applied neither. With a cap of 2 the
+    /// first two inbound connections are admitted and the third is refused until
+    /// a slot frees (RAII permit drop). Fails against pre-fix: `uds_conn_limiter`
+    /// did not exist and the loop had no admission gate.
+    #[cfg(unix)]
+    #[test]
+    fn local_uds_conn_limiter_rejects_over_max_connections() {
+        let limits = ForwardRateLimits::default();
+        let limiter = uds_conn_limiter(Some(2), &limits);
+        let p1 = limiter.try_admit().expect("1st admitted");
+        let _p2 = limiter.try_admit().expect("2nd admitted");
+        assert_eq!(limiter.active_count(), 2);
+        // The N+1-th (3rd) connection is rejected at the cap.
+        assert!(
+            limiter.try_admit().is_none(),
+            "3rd connection must be refused at max_connections = 2"
+        );
+        // Freeing a slot (bridge ended) re-opens capacity.
+        drop(p1);
+        assert_eq!(limiter.active_count(), 1);
+        let _p3 = limiter
+            .try_admit()
+            .expect("a freed slot must admit the next connection");
     }
 
     #[test]

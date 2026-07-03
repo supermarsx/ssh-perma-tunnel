@@ -62,12 +62,33 @@ impl TrustVerifier {
         if let Some(kh) = &self.known_hosts {
             match kh.verify(host, port, key) {
                 KnownHostsResult::Match => return Ok(HostKeyOutcome::Match),
-                KnownHostsResult::Mismatch { .. } => {
+                KnownHostsResult::Mismatch { stored } => {
+                    // Log the MISMATCH at the detection site with the expected vs
+                    // received SHA-256 fingerprints (public identifiers, never key
+                    // material) so a MITM is not invisible in-crate. The decision
+                    // is unchanged — a mismatch still REJECTS.
+                    let (received, expected) = fingerprint_diff(key, &stored);
+                    warn!(
+                        target: "spt_ssh2::trust",
+                        host = host,
+                        port = port,
+                        received_fingerprint = %received,
+                        expected_fingerprints = %expected,
+                        "host key MISMATCH against known_hosts — possible MITM; rejecting"
+                    );
                     return Err(Error::TrustFailed(format!(
                         "known_hosts mismatch for {host}:{port}"
                     )));
                 }
                 KnownHostsResult::Revoked => {
+                    let received = key.fingerprint(HashAlg::Sha256);
+                    warn!(
+                        target: "spt_ssh2::trust",
+                        host = host,
+                        port = port,
+                        received_fingerprint = %received,
+                        "host key is @revoked in known_hosts; rejecting"
+                    );
                     return Err(Error::TrustFailed(format!(
                         "host key for {host}:{port} is @revoked in known_hosts"
                     )));
@@ -79,12 +100,33 @@ impl TrustVerifier {
             match pin.verify(host, port, key) {
                 KnownHostsResult::Match => return Ok(HostKeyOutcome::Match),
                 KnownHostsResult::Mismatch { .. } => {
+                    let received = key.fingerprint(HashAlg::Sha256);
+                    let expected = pin
+                        .pins_for(host, port)
+                        .map(|v| v.join(", "))
+                        .unwrap_or_default();
+                    warn!(
+                        target: "spt_ssh2::trust",
+                        host = host,
+                        port = port,
+                        received_fingerprint = %received,
+                        expected_pins = %expected,
+                        "SHA-256 host-key pin MISMATCH — possible MITM; rejecting"
+                    );
                     return Err(Error::TrustFailed(format!(
                         "SHA-256 pin mismatch for {host}:{port}"
                     )));
                 }
                 KnownHostsResult::Revoked => {
                     // Pin map does not encode revocation; treat as mismatch.
+                    let received = key.fingerprint(HashAlg::Sha256);
+                    warn!(
+                        target: "spt_ssh2::trust",
+                        host = host,
+                        port = port,
+                        received_fingerprint = %received,
+                        "SHA-256 pin: revoked key; rejecting"
+                    );
                     return Err(Error::TrustFailed(format!(
                         "SHA-256 pin: revoked key for {host}:{port}"
                     )));
@@ -142,6 +184,22 @@ impl TrustVerifier {
         }
         Ok(HostKeyOutcome::NotFound)
     }
+}
+
+/// Format the `(received, expected)` SHA-256 fingerprint pair logged when a
+/// presented host key does not match `known_hosts`. Split out so the
+/// expected≠received diff is unit-testable without a tracing subscriber. Both
+/// sides are public `SHA256:<base64>` fingerprints (the expected side joins
+/// every stored key); never key material.
+#[must_use]
+fn fingerprint_diff(presented: &PublicKey, stored: &[PublicKey]) -> (String, String) {
+    let received = presented.fingerprint(HashAlg::Sha256).to_string();
+    let expected = stored
+        .iter()
+        .map(|k| k.fingerprint(HashAlg::Sha256).to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    (received, expected)
 }
 
 /// Persist a single OpenSSH `known_hosts` line for a newly-accepted TOFU key.
@@ -305,6 +363,38 @@ mod tests {
         };
         let err = v.verify("h.example", 22, &presented).unwrap_err();
         assert!(matches!(err, Error::TrustFailed(_)));
+    }
+
+    #[test]
+    fn changed_host_key_logs_expected_ne_received_fingerprints() {
+        // A changed host key must be logged AT THE DETECTION SITE with the
+        // expected (stored) and received (presented) SHA-256 fingerprints so a
+        // MITM is not invisible in-crate — while the decision stays a REJECT.
+        // We assert the code path feeding the `warn!`: `fingerprint_diff` yields
+        // distinct `SHA256:` strings for the stored vs presented key. Fails
+        // against pre-fix (the helper/log did not exist and `stored` was
+        // discarded via `Mismatch { .. }`).
+        let stored = fresh_pub();
+        let presented = fresh_pub();
+        let mut kh = KnownHosts::default();
+        kh.add("h.example", 22, stored.clone(), false);
+        let v = TrustVerifier {
+            known_hosts: Some(kh),
+            ..Default::default()
+        };
+        // Rejection preserved.
+        assert!(v.verify("h.example", 22, &presented).is_err());
+
+        let (received, expected) = fingerprint_diff(&presented, std::slice::from_ref(&stored));
+        assert!(received.starts_with("SHA256:"), "received={received}");
+        assert!(expected.starts_with("SHA256:"), "expected={expected}");
+        assert_ne!(
+            received, expected,
+            "a changed key must produce different expected/received fingerprints"
+        );
+        // Expected reflects the stored key; received reflects the presented one.
+        assert_eq!(expected, stored.fingerprint(HashAlg::Sha256).to_string());
+        assert_eq!(received, presented.fingerprint(HashAlg::Sha256).to_string());
     }
 
     #[test]

@@ -37,6 +37,13 @@ bench = []
 [dependencies]
 spt-core = { workspace = true }
 spt-protocol = { workspace = true }
+# Forwarding toolkit: reuse the SAME rate/idle/bind/UDP-flow primitives the
+# ssh2 backend consumes (TokenBucket / RateGate / ConnectionGate /
+# copy_bidirectional_throttled_idle / bind_with_policy / UdpFlowTable) so ssh3
+# forwards honour the per-forward limit surface identically. This is an internal
+# workspace crate already in the lock (via spt-ssh2/spt-bin), so it only adds a
+# dependency *edge* — no new external crate version.
+spt-forward = { workspace = true }
 spt-auth = { workspace = true }
 spt-trust = { workspace = true }
 spt-secrets = { workspace = true }
