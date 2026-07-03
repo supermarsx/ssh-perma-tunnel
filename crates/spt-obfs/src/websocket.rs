@@ -400,4 +400,180 @@ mod tests {
         bad.put_u32(0);
         assert!(decode_binary_frame(&bad).is_err());
     }
+
+    // -----------------------------------------------------------------------
+    // Data-plane gauntlet for `WebsocketStream` (P1.1).
+    //
+    // `WebsocketStream::new` takes a live `tokio-tungstenite` stream, whose type
+    // is not nameable from the integration-test crate (tokio-tungstenite is a
+    // normal dependency, not a dev-dependency, and no new deps may be added), so
+    // these live here in the crate's own unit tests. They drive a real
+    // `WebsocketStream` against a loopback tokio-tungstenite echo server:
+    //
+    // * byte-integrity + backpressure: the payload table (0 B … 4 MiB) is
+    //   written by a concurrent writer while the reader verifies the echoed
+    //   stream is byte-exact and in order — the multi-MiB payload forces the
+    //   `poll_ready`/`start_send` backpressure path (`pending_write` region) as
+    //   the TCP send buffer fills, so a dropped/duplicated message fails here;
+    // * half-close: a server `Close` surfaces as a clean EOF, and a client
+    //   half-close (`poll_shutdown` → `Close`) likewise ends with a clean EOF —
+    //   no premature close, no hang.
+    // -----------------------------------------------------------------------
+
+    use futures::{SinkExt, StreamExt};
+    use std::net::SocketAddr;
+    use std::time::Duration;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+    use tokio_tungstenite::tungstenite::protocol::Message;
+    use tokio_tungstenite::{accept_async, connect_async};
+
+    /// Deterministic filler byte (seed-free, reproducible — no wall-clock/RNG).
+    fn ws_fill(i: usize) -> u8 {
+        ((i.wrapping_mul(2_246_822_519).wrapping_add(13) >> 4) & 0xff) as u8
+    }
+
+    fn ws_payloads() -> Vec<Vec<u8>> {
+        [
+            0usize,
+            1,
+            7,
+            1024,
+            64 * 1024,
+            1024 * 1024,
+            4 * 1024 * 1024 + 123,
+        ]
+        .iter()
+        .map(|&n| (0..n).map(ws_fill).collect())
+        .collect()
+    }
+
+    /// Spawn a loopback tokio-tungstenite server that echoes every binary
+    /// message back and cleanly closes when the peer closes.
+    async fn spawn_ws_echo() -> (SocketAddr, tokio::task::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = tokio::spawn(async move {
+            while let Ok((tcp, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let Ok(mut ws) = accept_async(tcp).await else {
+                        return;
+                    };
+                    while let Some(msg) = ws.next().await {
+                        match msg {
+                            Ok(Message::Binary(b)) => {
+                                if ws.send(Message::Binary(b)).await.is_err() {
+                                    break;
+                                }
+                            }
+                            Ok(Message::Close(_)) | Err(_) => break,
+                            Ok(_) => {}
+                        }
+                    }
+                    let _ = ws.close(None).await;
+                });
+            }
+        });
+        (addr, handle)
+    }
+
+    #[tokio::test]
+    async fn websocket_stream_byte_integrity_and_backpressure_gauntlet() {
+        let (addr, server) = spawn_ws_echo().await;
+        let (ws, _resp) = connect_async(format!("ws://{addr}/ssh")).await.unwrap();
+        let client = WebsocketStream::new(ws);
+
+        let payloads = ws_payloads();
+        let expected: Vec<u8> = payloads.iter().flatten().copied().collect();
+
+        let (mut c_rd, mut c_wr) = tokio::io::split(client);
+        let writer = tokio::spawn(async move {
+            for p in &payloads {
+                if !p.is_empty() {
+                    c_wr.write_all(p).await.expect("ws write_all");
+                }
+            }
+            c_wr.flush().await.expect("ws flush");
+            c_wr.shutdown().await.expect("ws shutdown");
+        });
+
+        let mut got = vec![0u8; expected.len()];
+        tokio::time::timeout(Duration::from_secs(60), c_rd.read_exact(&mut got))
+            .await
+            .expect("ws round-trip must not hang")
+            .expect("read the full echo");
+        assert!(
+            got == expected,
+            "websocket round-trip must be byte-exact under backpressure"
+        );
+        writer.await.unwrap();
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn websocket_stream_server_close_is_clean_eof() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let mut ws = accept_async(tcp).await.unwrap();
+            ws.send(Message::Binary(b"hello-eof".to_vec()))
+                .await
+                .unwrap();
+            ws.close(None).await.unwrap();
+        });
+
+        let (ws, _resp) = connect_async(format!("ws://{addr}/ssh")).await.unwrap();
+        let mut client = WebsocketStream::new(ws);
+
+        let mut got = vec![0u8; b"hello-eof".len()];
+        client
+            .read_exact(&mut got)
+            .await
+            .expect("read pre-close msg");
+        assert_eq!(&got, b"hello-eof");
+
+        let mut buf = [0u8; 16];
+        let n = tokio::time::timeout(Duration::from_secs(5), client.read(&mut buf))
+            .await
+            .expect("EOF read must not hang")
+            .expect("clean EOF, not error");
+        assert_eq!(n, 0, "server Close must surface as a clean EOF");
+
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn websocket_stream_client_half_close_then_eof() {
+        let (addr, server) = spawn_ws_echo().await;
+        let (ws, _resp) = connect_async(format!("ws://{addr}/ssh")).await.unwrap();
+        let mut client = WebsocketStream::new(ws);
+
+        client.write_all(b"ping").await.unwrap();
+        client.flush().await.unwrap();
+        let mut got = [0u8; 4];
+        client.read_exact(&mut got).await.expect("echo of ping");
+        assert_eq!(&got, b"ping");
+
+        // Client half-closes: poll_shutdown emits a Close frame. A WebSocket
+        // Close is a *bidirectional* teardown (there is no TCP-style half-close
+        // where one direction keeps flowing), so the read side must promptly
+        // reach a TERMINAL state — either a clean EOF (0 bytes) or a terminal
+        // error — and must NOT hang or hand back bogus "live" data. The forward
+        // copy loop ends on either outcome; the invariant guarded here is
+        // no-hang + no-spurious-data after a half-close.
+        client.shutdown().await.unwrap();
+
+        let mut buf = [0u8; 16];
+        let res = tokio::time::timeout(Duration::from_secs(5), client.read(&mut buf))
+            .await
+            .expect("post-half-close read must not hang");
+        match res {
+            // A clean EOF (0 bytes) or a terminal error are both acceptable ends.
+            Ok(0) | Err(_) => {}
+            Ok(n) => panic!("read returned {n} bytes of bogus data after a half-close"),
+        }
+
+        server.abort();
+    }
 }

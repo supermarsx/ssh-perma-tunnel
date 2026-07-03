@@ -201,3 +201,123 @@ async fn meek_write_during_pending_read_is_transmitted() {
     reader.abort();
     server.abort();
 }
+
+// ---------------------------------------------------------------------------
+// P1.2 (meek large integrity): a multi-MiB payload round-trips byte-exact
+// through `MeekStream` over the loopback HTTP server. The server echoes each
+// POST body back in its response; MeekStream appends the write POST's response
+// to its inbound buffer, so the client reads back exactly what it wrote. Writes
+// are chunked <= the 4 MiB per-response body cap. A single flipped/lost/dup byte
+// anywhere in >4 MiB fails the final compare.
+// ---------------------------------------------------------------------------
+
+/// Deterministic filler byte for index `i` (seed-free, reproducible).
+fn filler(i: usize) -> u8 {
+    ((i.wrapping_mul(2_654_435_761).wrapping_add(97) >> 5) & 0xff) as u8
+}
+
+fn make_payload(n: usize) -> Vec<u8> {
+    (0..n).map(filler).collect()
+}
+
+/// Loopback server that echoes each request body back verbatim in its response.
+fn spawn_echo_server(listener: TcpListener) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut sock, _)) = listener.accept().await else {
+                break;
+            };
+            tokio::spawn(async move {
+                let body = read_request_body(&mut sock).await.unwrap_or_default();
+                let _ = sock.write_all(&http_response(&body)).await;
+                let _ = sock.shutdown().await;
+            });
+        }
+    })
+}
+
+#[tokio::test]
+async fn meek_multi_mib_round_trips_byte_exact() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = spawn_echo_server(listener);
+
+    let mut stream = meek_stream(format!("http://{addr}/"));
+
+    // > 4 MiB total, written in <= 1 MiB chunks so each echoed response body
+    // stays within `MAX_MEEK_BODY_BYTES` (4 MiB).
+    let total = 4 * 1024 * 1024 + 4096;
+    let payload = make_payload(total);
+    let chunk = 1024 * 1024;
+
+    let write_fut = async {
+        for part in payload.chunks(chunk) {
+            stream.write_all(part).await.expect("meek write chunk");
+        }
+        // Read the whole echo back.
+        let mut got = vec![0u8; total];
+        stream.read_exact(&mut got).await.expect("meek read echo");
+        got
+    };
+    let got = tokio::time::timeout(Duration::from_secs(60), write_fut)
+        .await
+        .expect("meek multi-MiB transfer must not hang");
+    assert_eq!(got.len(), total);
+    assert!(got == payload, "meek multi-MiB echo must be byte-exact");
+
+    server.abort();
+}
+
+// ---------------------------------------------------------------------------
+// P1.2 (meek slow/chunked response reassembly): a response body streamed to the
+// client in many small TCP writes (with delays) must reassemble byte-exact —
+// `read_body_capped` streams via `resp.chunk()`, so a reassembly bug would drop
+// or reorder pieces. Uses a single read POST whose response is delivered slowly.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn meek_slow_chunked_response_reassembles_byte_exact() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    let payload = make_payload(256 * 1024);
+    let payload_srv = payload.clone();
+
+    let server = tokio::spawn(async move {
+        let Ok((mut sock, _)) = listener.accept().await else {
+            return;
+        };
+        // Consume the client's (empty) keepalive/read POST.
+        let _ = read_request_body(&mut sock).await;
+        // Send the header, then the body in small pieces with tiny delays so
+        // reqwest surfaces it across multiple `chunk()` calls.
+        let header = format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            payload_srv.len()
+        );
+        if sock.write_all(header.as_bytes()).await.is_err() {
+            return;
+        }
+        for piece in payload_srv.chunks(4096) {
+            if sock.write_all(piece).await.is_err() {
+                return;
+            }
+            let _ = sock.flush().await;
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        let _ = sock.shutdown().await;
+    });
+
+    let mut stream = meek_stream(format!("http://{addr}/"));
+    let mut got = vec![0u8; payload.len()];
+    tokio::time::timeout(Duration::from_secs(30), stream.read_exact(&mut got))
+        .await
+        .expect("slow response read must not hang")
+        .expect("read_exact the slowly-streamed body");
+    assert!(
+        got == payload,
+        "slowly-chunked meek response must reassemble byte-exact"
+    );
+
+    server.abort();
+}

@@ -66,6 +66,12 @@ jobs:
       # upload the rendered site as the Pages artifact consumed by `deploy`.
       - name: Configure Pages
         uses: actions/configure-pages@v5
+        with:
+          # Auto-enable Pages (source = GitHub Actions) on first run if the repo
+          # token has permission, so no manual Settings step is needed. If org
+          # policy blocks API enablement, set it manually:
+          # Settings -> Pages -> Source -> "GitHub Actions".
+          enablement: true
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3

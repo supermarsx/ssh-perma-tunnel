@@ -27,7 +27,23 @@ use std::sync::Arc;
 use russh::client;
 use spt_ssh2::multi_hop::open_chained_session;
 use spt_ssh2::testing::{wincng_libssh2_compatible_preferred, RusshTestServer};
+use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::sync::Mutex as AsyncMutex;
+
+/// Deterministic xorshift64 payload — any loss/reorder across an 8-byte
+/// boundary makes the byte-exact assertion fail.
+fn make_payload(len: usize, seed: u64) -> Vec<u8> {
+    let mut out = Vec::with_capacity(len + 8);
+    let mut s = seed | 1;
+    while out.len() < len {
+        s ^= s << 13;
+        s ^= s >> 7;
+        s ^= s << 17;
+        out.extend_from_slice(&s.to_le_bytes());
+    }
+    out.truncate(len);
+    out
+}
 
 #[derive(Debug, Clone)]
 struct PassThroughHandler;
@@ -226,4 +242,115 @@ async fn two_hop_russh_chain_handshakes_and_serves_channel_open() {
     drop(shared_a);
     a.shutdown().await;
     b.shutdown().await;
+}
+
+/// Byte-integrity through the full 3-hop chain: a 64 KiB payload written to a
+/// session channel on the **final** hop (server C) must be echoed back
+/// byte-exact. The bytes traverse the innermost SSH session (client↔C) tunneled
+/// through the piped `direct-tcpip` channels on A and B, so an exact round-trip
+/// proves data survives the whole hop chain intact (not just the handshake).
+#[tokio::test]
+async fn three_hop_chain_preserves_payload_byte_exact() {
+    let a = RusshTestServer::new()
+        .with_password("u", "pw")
+        .with_algorithm_pinning(wincng_libssh2_compatible_preferred())
+        .start()
+        .await
+        .expect("start server A");
+    let b = RusshTestServer::new()
+        .with_password("u", "pw")
+        .with_algorithm_pinning(wincng_libssh2_compatible_preferred())
+        .start()
+        .await
+        .expect("start server B");
+    let c = RusshTestServer::new()
+        .with_password("u", "pw")
+        .with_algorithm_pinning(wincng_libssh2_compatible_preferred())
+        .start()
+        .await
+        .expect("start server C");
+
+    let cfg = Arc::new(client::Config {
+        preferred: wincng_libssh2_compatible_preferred(),
+        ..Default::default()
+    });
+
+    let mut handle_a = client::connect(cfg.clone(), a.addr, PassThroughHandler)
+        .await
+        .expect("connect A");
+    assert!(handle_a
+        .authenticate_password("u", "pw")
+        .await
+        .expect("auth A")
+        .success());
+    let shared_a = Arc::new(AsyncMutex::new(handle_a));
+
+    let mut handle_b = open_chained_session(
+        Arc::clone(&shared_a),
+        &b.addr.ip().to_string(),
+        b.addr.port(),
+        cfg.clone(),
+        PassThroughHandler,
+    )
+    .await
+    .expect("chained session A -> B");
+    assert!(handle_b
+        .authenticate_password("u", "pw")
+        .await
+        .expect("auth B")
+        .success());
+    let shared_b = Arc::new(AsyncMutex::new(handle_b));
+
+    let mut handle_c = open_chained_session(
+        Arc::clone(&shared_b),
+        &c.addr.ip().to_string(),
+        c.addr.port(),
+        cfg,
+        PassThroughHandler,
+    )
+    .await
+    .expect("chained session B -> C");
+    assert!(handle_c
+        .authenticate_password("u", "pw")
+        .await
+        .expect("auth C")
+        .success());
+
+    // Open a session channel on the final hop and echo a 64 KiB payload
+    // through it. Server C's `data` handler echoes non-piped channel data.
+    let channel = handle_c
+        .channel_open_session()
+        .await
+        .expect("session channel on hop C");
+    let stream = channel.into_stream();
+    let (mut rd, mut wr) = tokio::io::split(stream);
+
+    let payload = make_payload(64 * 1024, 0x3B0F);
+    let to_write = payload.clone();
+    let writer = tokio::spawn(async move {
+        wr.write_all(&to_write)
+            .await
+            .expect("write payload to hop C");
+        wr.flush().await.expect("flush payload");
+        wr
+    });
+
+    let mut got = vec![0u8; payload.len()];
+    tokio::time::timeout(std::time::Duration::from_secs(30), rd.read_exact(&mut got))
+        .await
+        .expect("3-hop echo read timed out (data lost through the chain)")
+        .expect("3-hop echo read failed");
+    assert!(
+        got == payload,
+        "the 64 KiB payload must round-trip byte-exact through the 3-hop chain"
+    );
+
+    let _wr = writer.await.expect("writer join");
+    drop(rd);
+    drop(handle_c);
+    drop(shared_b);
+    drop(shared_a);
+    a.shutdown().await;
+    b.shutdown().await;
+    c.shutdown().await;
 }

@@ -218,6 +218,213 @@ async fn remote_udp_forward_round_trips_payload() {
     let _ = server_conn.close(0u32.into(), b"done");
 }
 
+/// MED-5: a single external request that elicits MULTIPLE reply datagrams must
+/// relay ALL of them (not just the first). The client-side remote-UDP relay
+/// keeps one persistent socket per flow and pumps every reply the target sends.
+#[tokio::test]
+async fn remote_udp_forward_relays_multiple_replies() {
+    let (client_conn, server_conn) = connected_pair().await;
+    let (cs_res, sv_res) = tokio::join!(
+        open_control_stream(&client_conn, local_settings()),
+        accept_control_stream(&server_conn, local_settings()),
+    );
+    let (c_send, c_recv, c_peer) = cs_res.unwrap();
+    let (s_send, s_recv, _s_peer) = sv_res.unwrap();
+
+    let server_state = Arc::new(SessionState::default());
+    let server_send = Arc::new(AsyncMutex::new(s_send));
+    let acceptor = tokio::spawn(serve_remote_udp_forwards(
+        server_conn.clone(),
+        s_recv,
+        server_send,
+        server_state.clone(),
+    ));
+    let demux = tokio::spawn(serve_datagram_demux(
+        server_conn.clone(),
+        server_state.clone(),
+    ));
+
+    let mut client_session: Box<dyn TunnelSession> = Box::new(Ssh3Session::from_parts(
+        client_conn.clone(),
+        c_send,
+        c_recv,
+        c_peer,
+        dummy_info("client"),
+        None,
+    ));
+
+    // Target: for each inbound datagram, fire back THREE distinct replies.
+    let target = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0u16)).await.unwrap();
+    let target_addr = target.local_addr().unwrap();
+    let target_task = tokio::spawn(async move {
+        let mut buf = [0u8; 2048];
+        loop {
+            match target.recv_from(&mut buf).await {
+                Ok((n, peer)) => {
+                    for i in 0..3u8 {
+                        let mut reply = Vec::with_capacity(n + 3);
+                        reply.push(b'r');
+                        reply.push(b'0' + i);
+                        reply.push(b':');
+                        reply.extend_from_slice(&buf[..n]);
+                        let _ = target.send_to(&reply, peer).await;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+    });
+
+    let probe = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0u16)).await.unwrap();
+    let bind_addr = probe.local_addr().unwrap();
+    drop(probe);
+
+    let spec = UdpForwardSpec {
+        name: "rudp-multi".into(),
+        direction: ForwardDirection::Remote,
+        listen: BindAddr::Tcp(bind_addr),
+        target: TargetAddr::new(target_addr.ip().to_string(), target_addr.port()),
+        idle_timeout_secs: 30,
+        max_flows: None,
+        limits: ForwardRateLimits::default(),
+    };
+    let _h = client_session.open_udp_forward(&spec).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(150)).await;
+
+    let external = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0u16)).await.unwrap();
+    external.connect(bind_addr).await.unwrap();
+    external.send(b"REQ").await.unwrap();
+
+    // All three replies must arrive (datagram order is not guaranteed → set).
+    let mut got: std::collections::HashSet<Vec<u8>> = std::collections::HashSet::new();
+    for _ in 0..3 {
+        let mut buf = [0u8; 2048];
+        let n = tokio::time::timeout(Duration::from_secs(5), external.recv(&mut buf))
+            .await
+            .expect("missing one of the multiple replies (MED-5 regression)")
+            .unwrap();
+        got.insert(buf[..n].to_vec());
+    }
+    assert_eq!(got.len(), 3, "did not receive 3 distinct replies: {got:?}");
+    assert!(got.contains(&b"r0:REQ"[..]), "reply 0 missing");
+    assert!(got.contains(&b"r1:REQ"[..]), "reply 1 missing");
+    assert!(got.contains(&b"r2:REQ"[..]), "reply 2 missing");
+
+    target_task.abort();
+    acceptor.abort();
+    demux.abort();
+    let _ = client_conn.close(0u32.into(), b"done");
+    let _ = server_conn.close(0u32.into(), b"done");
+}
+
+/// MED-5 (stateful): several sequential request/reply exchanges on ONE
+/// remote-UDP flow all succeed and reuse a single persistent local socket toward
+/// the target (stable source port), so a stateful/multi-exchange UDP protocol
+/// works — the flow is not torn down after the first reply.
+#[tokio::test]
+async fn remote_udp_forward_stateful_multi_exchange() {
+    let (client_conn, server_conn) = connected_pair().await;
+    let (cs_res, sv_res) = tokio::join!(
+        open_control_stream(&client_conn, local_settings()),
+        accept_control_stream(&server_conn, local_settings()),
+    );
+    let (c_send, c_recv, c_peer) = cs_res.unwrap();
+    let (s_send, s_recv, _s_peer) = sv_res.unwrap();
+
+    let server_state = Arc::new(SessionState::default());
+    let server_send = Arc::new(AsyncMutex::new(s_send));
+    let acceptor = tokio::spawn(serve_remote_udp_forwards(
+        server_conn.clone(),
+        s_recv,
+        server_send,
+        server_state.clone(),
+    ));
+    let demux = tokio::spawn(serve_datagram_demux(
+        server_conn.clone(),
+        server_state.clone(),
+    ));
+
+    let mut client_session: Box<dyn TunnelSession> = Box::new(Ssh3Session::from_parts(
+        client_conn.clone(),
+        c_send,
+        c_recv,
+        c_peer,
+        dummy_info("client"),
+        None,
+    ));
+
+    // Target: reply with a monotonically increasing counter and record the
+    // source port of each request so we can prove the client used one socket.
+    let ports: Arc<std::sync::Mutex<std::collections::HashSet<u16>>> =
+        Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
+    let ports_t = ports.clone();
+    let target = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0u16)).await.unwrap();
+    let target_addr = target.local_addr().unwrap();
+    let target_task = tokio::spawn(async move {
+        let mut buf = [0u8; 2048];
+        let mut counter: u32 = 0;
+        loop {
+            match target.recv_from(&mut buf).await {
+                Ok((_n, peer)) => {
+                    {
+                        ports_t.lock().unwrap().insert(peer.port());
+                    }
+                    counter += 1;
+                    let _ = target.send_to(counter.to_string().as_bytes(), peer).await;
+                }
+                Err(_) => break,
+            }
+        }
+    });
+
+    let probe = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0u16)).await.unwrap();
+    let bind_addr = probe.local_addr().unwrap();
+    drop(probe);
+
+    let spec = UdpForwardSpec {
+        name: "rudp-stateful".into(),
+        direction: ForwardDirection::Remote,
+        listen: BindAddr::Tcp(bind_addr),
+        target: TargetAddr::new(target_addr.ip().to_string(), target_addr.port()),
+        idle_timeout_secs: 30,
+        max_flows: None,
+        limits: ForwardRateLimits::default(),
+    };
+    let _h = client_session.open_udp_forward(&spec).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(150)).await;
+
+    let external = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0u16)).await.unwrap();
+    external.connect(bind_addr).await.unwrap();
+
+    // Three sequential exchanges on the one flow.
+    for expected in 1..=3u32 {
+        external.send(b"ping").await.unwrap();
+        let mut buf = [0u8; 64];
+        let n = tokio::time::timeout(Duration::from_secs(5), external.recv(&mut buf))
+            .await
+            .unwrap_or_else(|_| panic!("exchange {expected}: reply timeout (flow torn down?)"))
+            .unwrap();
+        assert_eq!(
+            &buf[..n],
+            expected.to_string().as_bytes(),
+            "exchange {expected}: wrong/lost counter reply"
+        );
+    }
+
+    // Persistent socket ⇒ the target saw exactly one source port for all three.
+    let seen = ports.lock().unwrap().len();
+    assert_eq!(
+        seen, 1,
+        "expected one stable source port (persistent per-flow socket), saw {seen}"
+    );
+
+    target_task.abort();
+    acceptor.abort();
+    demux.abort();
+    let _ = client_conn.close(0u32.into(), b"done");
+    let _ = server_conn.close(0u32.into(), b"done");
+}
+
 /// M5: a peer flooding `RemoteUdpForwardRequest` frames must be bounded by the
 /// `inbound_forward_limit` semaphore. With `max_forwards = 1` the server binds
 /// the first requested listener (which holds the only permit for its lifetime)

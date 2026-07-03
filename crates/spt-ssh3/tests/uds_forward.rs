@@ -240,3 +240,104 @@ async fn remote_uds_forward_round_trips() {
     let _ = std::fs::remove_file(&local_echo);
     let _ = Box::new(session).close().await;
 }
+
+/// Large (multi-MiB) local-UDS transfer round-trips BYTE-EXACT. Reads
+/// concurrently with writing so the echo pipeline can't deadlock on flow
+/// control. Guards large-transfer integrity on the ssh3 UDS byte-pipe.
+#[tokio::test]
+async fn local_uds_forward_large_payload_round_trips() {
+    let echo_path = sock_path("echo-large");
+    start_uds_echo(&echo_path);
+
+    let (server_addr, pin) = start_server();
+    let mut session = connect(server_addr, pin).await;
+
+    let listen_path = sock_path("large-listen");
+    let spec = UdsForwardSpec {
+        name: "e2e-large-uds".into(),
+        listen_path: listen_path.clone(),
+        remote_socket_path: echo_path.to_string_lossy().into_owned(),
+        limits: ForwardRateLimits::default(),
+        required: false,
+    };
+    let _handle = session
+        .open_uds_forward(&spec)
+        .await
+        .expect("open local uds forward");
+
+    let payload: Vec<u8> = (0..4 * 1024 * 1024).map(|i| (i % 251) as u8).collect();
+    let sock = UnixStream::connect(&listen_path).await.unwrap();
+    let (mut r, mut w) = sock.into_split();
+    let to_write = payload.clone();
+    let writer = tokio::spawn(async move {
+        w.write_all(&to_write).await.unwrap();
+        w.shutdown().await.unwrap();
+    });
+    let mut got = Vec::with_capacity(payload.len());
+    tokio::time::timeout(Duration::from_secs(30), r.read_to_end(&mut got))
+        .await
+        .expect("read_to_end timed out")
+        .unwrap();
+    writer.await.unwrap();
+    assert_eq!(got.len(), payload.len(), "large-uds length mismatch");
+    assert_eq!(got, payload, "large-uds byte mismatch");
+
+    let _ = std::fs::remove_file(&listen_path);
+    let _ = std::fs::remove_file(&echo_path);
+    let _ = Box::new(session).close().await;
+}
+
+/// Half-close/EOF propagation over a local-UDS forward: the client half-closes
+/// its write side and the server target replies only *after* seeing that EOF.
+/// Proves the client→server FIN propagates through the UDS bridge and the
+/// server→client half stays open for the late reply.
+#[tokio::test]
+async fn local_uds_forward_half_close_client_first() {
+    // Responder: read to EOF, then echo back with a suffix marker and close.
+    let resp_path = sock_path("aftereof");
+    let _ = std::fs::remove_file(&resp_path);
+    let listener = UnixListener::bind(&resp_path).unwrap();
+    tokio::spawn(async move {
+        let (mut sock, _) = listener.accept().await.unwrap();
+        let (mut r, mut w) = sock.split();
+        let mut got = Vec::new();
+        r.read_to_end(&mut got).await.unwrap(); // completes only on client FIN
+        w.write_all(&got).await.unwrap();
+        w.write_all(b"|POST-EOF").await.unwrap();
+        w.shutdown().await.unwrap();
+    });
+
+    let (server_addr, pin) = start_server();
+    let mut session = connect(server_addr, pin).await;
+
+    let listen_path = sock_path("hc-listen");
+    let spec = UdsForwardSpec {
+        name: "e2e-hc-uds".into(),
+        listen_path: listen_path.clone(),
+        remote_socket_path: resp_path.to_string_lossy().into_owned(),
+        limits: ForwardRateLimits::default(),
+        required: false,
+    };
+    let _handle = session
+        .open_uds_forward(&spec)
+        .await
+        .expect("open local uds forward");
+
+    let sock = UnixStream::connect(&listen_path).await.unwrap();
+    let (mut r, mut w) = sock.into_split();
+    w.write_all(b"REQUEST").await.unwrap();
+    w.shutdown().await.unwrap(); // half-close
+    let mut got = Vec::new();
+    tokio::time::timeout(Duration::from_secs(10), r.read_to_end(&mut got))
+        .await
+        .expect("late reply never arrived — UDS half-close broke the read half")
+        .unwrap();
+    assert_eq!(
+        got, b"REQUEST|POST-EOF",
+        "UDS server reply after client half-close was lost/truncated"
+    );
+
+    let _ = std::fs::remove_file(&listen_path);
+    let _ = std::fs::remove_file(&resp_path);
+    let _ = Box::new(session).close().await;
+}

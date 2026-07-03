@@ -344,6 +344,12 @@ pub struct RusshTestServer {
     /// — useful for interop tests that need to pin a specific cipher/MAC/KEX
     /// triple to isolate algorithm-specific bugs.
     preferred: Option<russh::Preferred>,
+    /// Optional override for the server's per-channel SSH window size. `None`
+    /// keeps russh's default (2 MiB). Raising it lets a large full-duplex echo
+    /// transfer fit inside a single window so the russh↔russh flow-control loop
+    /// never has to replenish mid-stream (used by the multi-MiB byte-integrity
+    /// data-plane test).
+    window_size: Option<u32>,
 }
 
 #[cfg(feature = "testing")]
@@ -364,7 +370,21 @@ impl RusshTestServer {
             authorized_pubkeys: Vec::new(),
             use_ed25519_host_key: false,
             preferred: None,
+            window_size: None,
         }
+    }
+
+    /// Override the server's per-channel SSH window size (russh default 2 MiB).
+    ///
+    /// Sizing the window above a test payload lets a full-duplex echo transfer
+    /// complete within a single window grant, so the russh↔russh flow-control
+    /// loop never has to replenish mid-stream. Only needed by the multi-MiB
+    /// byte-integrity test; the default (`None`) preserves russh's 2 MiB window
+    /// for every other fixture.
+    #[must_use]
+    pub fn with_window_size(mut self, window_size: u32) -> Self {
+        self.window_size = Some(window_size);
+        self
     }
 
     /// Pin the russh server's algorithm preference list. Overrides the
@@ -436,6 +456,12 @@ impl RusshTestServer {
         };
         if let Some(p) = self.preferred.clone() {
             cfg.preferred = p;
+        }
+        if let Some(window) = self.window_size {
+            cfg.window_size = window;
+            // russh requires window_size >= maximum_packet_size; the default
+            // max packet (32 KiB) is far below any raised window, so no clamp
+            // is needed here.
         }
         cfg
     }
@@ -586,7 +612,7 @@ impl russh::server::Handler for TestHandler {
         _originator_port: u32,
         _session: &mut russh::server::Session,
     ) -> std::result::Result<bool, Self::Error> {
-        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+        use tokio::io::AsyncWriteExt as _;
 
         self.inner
             .channel_opens_direct_tcpip
@@ -635,30 +661,29 @@ impl russh::server::Handler for TestHandler {
         self.piped_channels.lock().insert(chan_id_u32);
 
         tokio::spawn(async move {
-            let mut chan_stream = channel.into_stream();
-            let (mut rd, mut wr) = tokio::io::split(stream);
-            let mut buf_a = vec![0u8; 8 * 1024];
-            let mut buf_b = vec![0u8; 8 * 1024];
-            loop {
-                tokio::select! {
-                    res = rd.read(&mut buf_a) => match res {
-                        Ok(0) | Err(_) => break,
-                        Ok(n) => {
-                            if chan_stream.write_all(&buf_a[..n]).await.is_err() {
-                                break;
-                            }
-                        }
-                    },
-                    res = chan_stream.read(&mut buf_b) => match res {
-                        Ok(0) | Err(_) => break,
-                        Ok(n) => {
-                            if wr.write_all(&buf_b[..n]).await.is_err() {
-                                break;
-                            }
-                        }
-                    },
-                }
-            }
+            // Pipe each direction on its OWN task. A single select!-loop that
+            // services both directions deadlocks under full-duplex echo volume:
+            // once one write half blocks on a full socket send buffer, the task
+            // can no longer drain the *other* direction, the peer's send buffer
+            // fills too, and both directions wedge (this is exactly what capped
+            // multi-MiB `direct-tcpip` echo transfers at ~the initial channel
+            // window). Independent directional copies — mirroring a real
+            // OpenSSH forward — replenish the SSH channel window continuously
+            // and never deadlock. Each half is shut down on its source EOF so
+            // half-close propagates cleanly.
+            let chan_stream = channel.into_stream();
+            let (mut chan_rd, mut chan_wr) = tokio::io::split(chan_stream);
+            let (mut tcp_rd, mut tcp_wr) = tokio::io::split(stream);
+            let up = tokio::spawn(async move {
+                let _ = tokio::io::copy(&mut chan_rd, &mut tcp_wr).await;
+                let _ = tcp_wr.shutdown().await;
+            });
+            let down = tokio::spawn(async move {
+                let _ = tokio::io::copy(&mut tcp_rd, &mut chan_wr).await;
+                let _ = chan_wr.shutdown().await;
+            });
+            let _ = up.await;
+            let _ = down.await;
         });
 
         Ok(true)

@@ -103,6 +103,13 @@ required-features = ["testing"]
 name = "uds_forward"
 required-features = ["testing"]
 
+# End-to-end data-plane regression tests through the real russh (ssh2)
+# transport: byte-integrity at scale, half-close/EOF, throttle+idle (MED-3),
+# and max_connections enforcement on a live local forward.
+[[test]]
+name = "ssh2_dataplane"
+required-features = ["testing"]
+
 # t7-Phase0: 3-hop russh-native multi-hop chain integration test.
 [[test]]
 name = "multi_hop_three_hops"
