@@ -2793,7 +2793,7 @@ dependencies = [
 
 [[package]]
 name = "spt-auth"
-version = "0.26.47"
+version = "0.26.48"
 dependencies = [
  "hmac",
  "rand 0.8.6",
@@ -2817,7 +2817,7 @@ dependencies = [
 
 [[package]]
 name = "spt-chaos-proxy"
-version = "0.26.47"
+version = "0.26.48"
 dependencies = [
  "parking_lot",
  "rand 0.8.6",
@@ -2845,7 +2845,7 @@ dependencies = [
 
 [[package]]
 name = "spt-config"
-version = "0.26.47"
+version = "0.26.48"
 dependencies = [
  "atomicwrites",
  "directories",
@@ -2886,7 +2886,7 @@ dependencies = [
 
 [[package]]
 name = "spt-core"
-version = "0.26.47"
+version = "0.26.48"
 dependencies = [
  "bytesize",
  "chrono",
@@ -2905,7 +2905,7 @@ dependencies = [
 
 [[package]]
 name = "spt-events"
-version = "0.26.47"
+version = "0.26.48"
 dependencies = [
  "async-trait",
  "base64ct",
@@ -2937,7 +2937,7 @@ dependencies = [
 
 [[package]]
 name = "spt-forward"
-version = "0.26.47"
+version = "0.26.48"
 dependencies = [
  "async-trait",
  "bytes",
@@ -2961,7 +2961,7 @@ dependencies = [
 
 [[package]]
 name = "spt-key"
-version = "0.26.47"
+version = "0.26.48"
 dependencies = [
  "atomicwrites",
  "base64",
@@ -2979,7 +2979,7 @@ dependencies = [
 
 [[package]]
 name = "spt-net"
-version = "0.26.47"
+version = "0.26.48"
 dependencies = [
  "caps",
  "if-addrs",
@@ -2995,7 +2995,7 @@ dependencies = [
 
 [[package]]
 name = "spt-observability"
-version = "0.26.47"
+version = "0.26.48"
 dependencies = [
  "chrono",
  "once_cell",
@@ -3025,7 +3025,7 @@ dependencies = [
 
 [[package]]
 name = "spt-protocol"
-version = "0.26.47"
+version = "0.26.48"
 dependencies = [
  "async-trait",
  "serde",
@@ -3038,7 +3038,7 @@ dependencies = [
 
 [[package]]
 name = "spt-secrets"
-version = "0.26.47"
+version = "0.26.48"
 dependencies = [
  "aes-gcm",
  "argon2",
@@ -3063,7 +3063,7 @@ dependencies = [
 
 [[package]]
 name = "spt-sftp"
-version = "0.26.47"
+version = "0.26.48"
 dependencies = [
  "futures",
  "hex",
@@ -3077,7 +3077,7 @@ dependencies = [
 
 [[package]]
 name = "spt-state"
-version = "0.26.47"
+version = "0.26.48"
 dependencies = [
  "atomicwrites",
  "chrono",
@@ -3094,7 +3094,7 @@ dependencies = [
 
 [[package]]
 name = "spt-stats"
-version = "0.26.47"
+version = "0.26.48"
 dependencies = [
  "chrono",
  "dashmap",
@@ -3106,7 +3106,7 @@ dependencies = [
 
 [[package]]
 name = "spt-supervisor"
-version = "0.26.47"
+version = "0.26.48"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3134,7 +3134,7 @@ dependencies = [
 
 [[package]]
 name = "spt-trust"
-version = "0.26.47"
+version = "0.26.48"
 dependencies = [
  "atomicwrites",
  "base64",
