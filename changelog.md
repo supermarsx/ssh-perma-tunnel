@@ -1,3 +1,18 @@
+## [26.45] - 2026-07-03
+
+# spt 26.45
+
+## Changes since 26.44
+
+- fix(wiring): Wave 9 — global cleanup (all-features clippy, LF normalization, spt-benchmark) (31c5d97)
+- chore: enforce LF in working tree via .gitattributes eol=lf (6999572)
+- fix(wiring): Wave 8 — honesty sweep (schema + validate warns + supervisor logging + TUI + config-set) (7a3c515)
+- fix(wiring): Wave 7 — metrics toggle + config-reload watcher + diagnostics + benchmark caps (dcc858f)
+- fix(wiring): Wave 6 — firewall runtime application + network offload → TcpOptions (a9d11af)
+- fix(snmp): self dev-dep so USM-logging test runs under default CI features (c2c04ea)
+- fix(wiring): Wave 5 — SNMP serving wired end-to-end (Critical dead subsystem) (e273db9)
+- fix(wiring): Wave 4 — event sinks + updater + DNS hosts_file + MCP, with verify/deny logging (67af880)
+
 ## [26.44] - 2026-07-03
 
 # spt 26.44
