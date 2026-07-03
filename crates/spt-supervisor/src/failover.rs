@@ -262,6 +262,13 @@ impl EndpointSelector {
                 .iter()
                 .min_by_key(|e| e.cooldown_until)
                 .expect("entries is non-empty");
+            // CRIT-LOG (w8): every endpoint is cooling — a degraded, alertable
+            // situation that used to be silent. Log the least-bad fallback pick.
+            tracing::warn!(
+                endpoint = %format!("{}:{}", soonest.ep.host, soonest.ep.port),
+                candidates = self.entries.len(),
+                "all endpoints cooling down; falling back to least-bad (soonest-recovering) endpoint"
+            );
             return Ok(&soonest.ep);
         }
         // Pick the lowest priority cohort.
@@ -305,6 +312,15 @@ impl EndpointSelector {
             .iter_mut()
             .find(|e| e.ep.host == host && e.ep.port == port)
         {
+            // w8: log the cooldown CLEAR (implicit failback) when an endpoint
+            // that was actually benched recovers. DEBUG keeps the healthy path
+            // quiet; the matching bench ENTER is logged at WARN above.
+            if e.cooldown_until.is_some() {
+                tracing::debug!(
+                    endpoint = %format!("{host}:{port}"),
+                    "endpoint recovered; clearing failover cooldown (failback eligible)"
+                );
+            }
             e.consecutive_failures = 0;
             e.cooldown_until = None;
         }
@@ -337,6 +353,21 @@ impl EndpointSelector {
             if e.consecutive_failures >= self.fail_after {
                 let secs =
                     (e.consecutive_failures as u64).saturating_mul(self.cooldown_secs_per_failure);
+                // CRIT-LOG (w8) + F2 (restore_after): failover.rs was previously
+                // silent — an endpoint being benched (and for how long) never
+                // reached the logs. Log the cooldown ENTER at WARN. The fields
+                // also make the true `restore_after` semantics observable: the
+                // cooldown is `consecutive_failures × cooldown_secs_per_failure`
+                // (the per-failure unit that `[failover].restore_after` maps to),
+                // NOT a fixed "restore window" — the field name is misleading and
+                // this log is where operators can see the real scaling.
+                tracing::warn!(
+                    endpoint = %format!("{}:{}", e.ep.host, e.ep.port),
+                    consecutive_failures = e.consecutive_failures,
+                    cooldown_secs = secs,
+                    per_failure_unit_secs = self.cooldown_secs_per_failure,
+                    "endpoint benched (failover cooldown); scales with consecutive failures"
+                );
                 // Cooldown scales with consecutive failures:
                 // `consecutive_failures × cooldown_secs_per_failure`.
                 //
@@ -600,5 +631,83 @@ mod tests {
             s.pick(&mut rng, now + Duration::from_secs(6)).unwrap().host,
             "a"
         );
+    }
+
+    // ------- w8: failover.rs decision logging -------
+
+    #[test]
+    fn cooldown_enter_logs_warn_with_scaling_fields() {
+        // w8 + F2: entering cooldown (benching an endpoint) must be logged at
+        // WARN with the fields that reveal the true `restore_after` semantics —
+        // the cooldown is `consecutive_failures × per_failure_unit`, NOT a fixed
+        // restore window. Pre-fix, failover.rs was entirely silent.
+        let sub = crate::log_capture::CaptureSubscriber::new();
+        tracing::subscriber::with_default(sub.clone(), || {
+            let mut s = EndpointSelector::new(
+                FailoverMode::Priority,
+                vec![ep("a", 22, 0, 1), ep("b", 22, 1, 1)],
+            )
+            .with_fail_after(1)
+            .with_cooldown(7);
+            let now = Instant::now();
+            s.record_failure("a", 22, now); // 1st -> 7s
+            s.record_failure("a", 22, now); // 2nd consecutive -> 14s
+        });
+        let first = sub
+            .find("endpoint benched")
+            .expect("cooldown enter must be logged at the decision site");
+        assert_eq!(first.level, tracing::Level::WARN);
+        assert_eq!(first.field("per_failure_unit_secs"), Some("7"));
+        assert_eq!(first.field("endpoint"), Some("a:22"));
+        // The most recent bench log reflects the failure-scaled cooldown (2×7).
+        let last = sub
+            .events()
+            .into_iter()
+            .rev()
+            .find(|e| e.message.contains("endpoint benched"))
+            .unwrap();
+        assert_eq!(last.field("consecutive_failures"), Some("2"));
+        assert_eq!(last.field("cooldown_secs"), Some("14"));
+    }
+
+    #[test]
+    fn all_cooling_least_bad_pick_logs_warn() {
+        // w8: the all-endpoints-cooling least-bad fallback is a degraded,
+        // alertable situation that used to be silent.
+        let sub = crate::log_capture::CaptureSubscriber::new();
+        tracing::subscriber::with_default(sub.clone(), || {
+            let mut rng = StdRng::seed_from_u64(0);
+            let mut s = EndpointSelector::new(FailoverMode::Priority, vec![ep("a", 22, 0, 1)])
+                .with_fail_after(1)
+                .with_cooldown(30);
+            let now = Instant::now();
+            s.record_failure("a", 22, now);
+            // Only endpoint is cooling → least-bad fallback path.
+            let _ = s.pick(&mut rng, now).unwrap();
+        });
+        let ev = sub
+            .find("all endpoints cooling")
+            .expect("least-bad fallback must be logged");
+        assert_eq!(ev.level, tracing::Level::WARN);
+        assert_eq!(ev.field("endpoint"), Some("a:22"));
+    }
+
+    #[test]
+    fn cooldown_clear_on_recovery_logs_debug() {
+        // w8: clearing an active cooldown (implicit failback eligibility) is
+        // logged at DEBUG so it stays out of the default info stream.
+        let sub = crate::log_capture::CaptureSubscriber::new();
+        tracing::subscriber::with_default(sub.clone(), || {
+            let mut s = EndpointSelector::new(FailoverMode::Priority, vec![ep("a", 22, 0, 1)])
+                .with_fail_after(1)
+                .with_cooldown(30);
+            let now = Instant::now();
+            s.record_failure("a", 22, now); // benched
+            s.record_success("a", 22); // recovered -> clears cooldown
+        });
+        let ev = sub
+            .find("clearing failover cooldown")
+            .expect("cooldown clear must be logged on recovery");
+        assert_eq!(ev.level, tracing::Level::DEBUG);
     }
 }

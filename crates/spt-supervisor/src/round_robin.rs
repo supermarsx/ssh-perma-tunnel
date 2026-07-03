@@ -631,6 +631,25 @@ pub fn make_selector(
     if !cfg.enabled {
         return None;
     }
+    // F1 (w8): `[round_robin].dns_round_robin` + `dns_refresh_interval` are NOT
+    // active on the production connect path. The [`DnsRoundRobinResolver`] type
+    // exists and is unit-tested with a fake resolver, but there is no production
+    // `DnsResolver` impl and — more fundamentally — the selector→connect seam
+    // maps a policy pick back to its declared `Endpoint` by `host:port`
+    // (`failover::EndpointSelector::pick_via_policy`), discarding any resolved
+    // address, so per-IP rotation cannot reach `connect()`. Wiring it end-to-end
+    // needs (a) a production resolver here, (b) `pick_via_policy` to carry the
+    // resolved `addr` into the emitted endpoint, and (c) the spt-bin/spt-config
+    // opt-in — all cross-crate (spt-config + spt-bin are peer-owned). Until then
+    // this is warned rather than silently dead.
+    if cfg.dns_round_robin {
+        tracing::warn!(
+            dns_refresh_interval_secs = cfg.dns_refresh_interval.as_secs(),
+            "`round_robin.dns_round_robin` is configured but NOT active: DNS-based per-IP \
+             rotation is not wired into the production connect path (endpoints rotate at the \
+             host level only). Remove the setting or track wiring (spt-config/spt-bin)."
+        );
+    }
     Some(match cfg.policy {
         SelectionPolicy::RoundRobin => Box::new(RoundRobinSelector::new(endpoints, cfg)),
         SelectionPolicy::Random => Box::new(RandomSelector::new(endpoints, cfg)),
@@ -1260,6 +1279,46 @@ mod tests {
         assert!(r3.is_ok(), "third connect should succeed");
         policy.record_success(&p3.id);
         assert_eq!(mock.connect_count(), 1);
+    }
+
+    // ------- w8 F1: dns_round_robin is warned, not silently dead -------
+
+    #[test]
+    fn dns_round_robin_config_warns_that_it_is_not_active() {
+        let sub = crate::log_capture::CaptureSubscriber::new();
+        tracing::subscriber::with_default(sub.clone(), || {
+            let cfg = RoundRobinConfig {
+                enabled: true,
+                policy: SelectionPolicy::RoundRobin,
+                dns_round_robin: true,
+                dns_refresh_interval: Duration::from_secs(42),
+                ..Default::default()
+            };
+            let _ = make_selector(vec![ep("a", 22, 1)], &cfg).expect("enabled");
+        });
+        let ev = sub
+            .find("dns_round_robin")
+            .expect("configuring dns_round_robin must emit a not-active WARN, never be silent");
+        assert_eq!(ev.level, tracing::Level::WARN);
+        assert_eq!(ev.field("dns_refresh_interval_secs"), Some("42"));
+    }
+
+    #[test]
+    fn dns_round_robin_disabled_does_not_warn() {
+        let sub = crate::log_capture::CaptureSubscriber::new();
+        tracing::subscriber::with_default(sub.clone(), || {
+            let cfg = RoundRobinConfig {
+                enabled: true,
+                policy: SelectionPolicy::RoundRobin,
+                dns_round_robin: false,
+                ..Default::default()
+            };
+            let _ = make_selector(vec![ep("a", 22, 1)], &cfg).expect("enabled");
+        });
+        assert!(
+            sub.find("dns_round_robin").is_none(),
+            "no WARN when dns_round_robin is off (behavior-preserving healthy path)"
+        );
     }
 
     #[test]

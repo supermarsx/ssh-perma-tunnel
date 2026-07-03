@@ -823,6 +823,8 @@ set edit:completion:arg-completer[spt] = {|@words|
             cand --version 'Print version'
         }
         &'spt;profile;test'= {
+            cand -J 'Ad-hoc proxy-jump chain `user@host[:port][,user@host…]` to preflight (mirrors `tunnel run -J`). Replaces the profile''s configured hops for the duration of the test so the FULL bastion chain is exercised end to end'
+            cand --jump 'Ad-hoc proxy-jump chain `user@host[:port][,user@host…]` to preflight (mirrors `tunnel run -J`). Replaces the profile''s configured hops for the duration of the test so the FULL bastion chain is exercised end to end'
             cand --config 'Path to a single config file'
             cand --config-dir 'Path to a directory of `*.toml` configs (loaded in lexical order)'
             cand --config-url 'HTTPS URL of a remote config to fetch'

@@ -1192,6 +1192,11 @@ async fn tunnel_run(global: &GlobalOpts, args: groups::tunnel::TunnelRun) -> Res
             }
         }
     };
+    // Wave 8 (W2 §5): resolve `[network.load_balance]` into the `[round_robin]`
+    // selector seam (documented alias) before profiles start, so a configured
+    // load-balance strategy actually drives endpoint selection instead of being
+    // a silent dead surface.
+    apply_load_balance_alias(&mut cfg);
     let mut started_profiles = Vec::new();
     let mut startup_errors = Vec::new();
     for profile in &cfg.profiles {
@@ -2241,7 +2246,135 @@ fn mem_monitor_config(m: &spt_config::schema::MemHygiene) -> spt_mem_hygiene::Me
     if let Some(f) = m.min_rising_fraction {
         cfg.min_rising_fraction = f;
     }
+    // Wave 8 (W2-B / OOM P2+P3): absolute RSS high-water mark, cgroup pressure
+    // percentage, and the cgroup-watch enable flag. Only override the safe
+    // runtime defaults when the operator set the field (behavior-preserving for
+    // configs that omit them). `rss_high` unset ⇒ `rss_high_bytes = 0` (ceiling
+    // disabled); `cgroup_pressure_pct` unset ⇒ the default 90%; `cgroup_watch`
+    // unset ⇒ the runtime default (Linux auto-detect).
+    if let Some(bytes) = m
+        .rss_high
+        .as_deref()
+        .and_then(|s| spt_core::size::parse_size(s).ok())
+    {
+        cfg.rss_high_bytes = bytes;
+    }
+    if let Some(pct) = m.cgroup_pressure_pct {
+        cfg.cgroup_pressure_pct = pct;
+    }
+    if let Some(watch) = m.cgroup_watch {
+        cfg.cgroup_watch = watch;
+    }
     cfg
+}
+
+/// How [`apply_load_balance_alias`] resolved `[network.load_balance]`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LoadBalanceMapping {
+    /// No `[network.load_balance]` table present — nothing to do.
+    Absent,
+    /// `[round_robin]` is already enabled; load_balance is ignored (round_robin
+    /// wins) to avoid installing two conflicting selectors.
+    RoundRobinWins,
+    /// Mapped onto the round-robin endpoint selector with this policy.
+    Mapped(spt_config::round_robin::SelectionPolicy),
+    /// Strategy is a `[profiles.failover]` concept (`priority` / `manual`); the
+    /// round-robin selector stays off and the failover path handles it.
+    DelegatedToFailover,
+    /// Strategy has no selector or failover equivalent (`least_connections`,
+    /// unknown, or missing) — inert, warned.
+    Unsupported,
+}
+
+/// Wave 8 (W2 §5): `[network.load_balance]` has no independent runtime seam —
+/// endpoint selection is driven by `[round_robin]` and `[profiles.failover]`.
+/// Rather than leave it a silent dead surface, treat it as an explicit,
+/// documented alias for the `[round_robin]` selector: translate the compatible
+/// strategies into `cfg.round_robin` (so the existing `make_policy_selector`
+/// seam picks them up) and loudly account for the rest. Mutates `cfg.round_robin`
+/// in place and returns the decision for observability/tests.
+fn apply_load_balance_alias(cfg: &mut spt_config::schema::Config) -> LoadBalanceMapping {
+    use spt_config::round_robin::SelectionPolicy;
+
+    let Some(lb) = cfg.network.as_ref().and_then(|n| n.load_balance.clone()) else {
+        return LoadBalanceMapping::Absent;
+    };
+
+    if cfg.round_robin.enabled {
+        tracing::warn!(
+            strategy = lb.strategy.as_deref().unwrap_or("<unset>"),
+            "[network.load_balance] is set but [round_robin] is already enabled — [round_robin] \
+             wins and load_balance is ignored (they select the same seam; enable only one)"
+        );
+        return LoadBalanceMapping::RoundRobinWins;
+    }
+
+    let strategy = lb
+        .strategy
+        .as_deref()
+        .map(str::trim)
+        .unwrap_or("")
+        .to_ascii_lowercase();
+
+    let policy = match strategy.as_str() {
+        "round_robin" | "round-robin" => Some(SelectionPolicy::RoundRobin),
+        "weighted" => Some(SelectionPolicy::Weighted),
+        _ => None,
+    };
+
+    if let Some(policy) = policy {
+        cfg.round_robin.enabled = true;
+        cfg.round_robin.policy = policy;
+        // `restore_after` is the load-balance analog of the round-robin
+        // per-endpoint cooldown; carry it across when parseable.
+        if let Some(d) = lb
+            .restore_after
+            .as_deref()
+            .and_then(|s| spt_core::duration::parse_duration(s).ok())
+        {
+            cfg.round_robin.cooldown_after_failure = d;
+        }
+        tracing::info!(
+            strategy = %strategy,
+            policy = ?policy,
+            "[network.load_balance] mapped onto the [round_robin] endpoint selector (documented \
+             alias); configure [round_robin] directly to silence this"
+        );
+        return LoadBalanceMapping::Mapped(policy);
+    }
+
+    match strategy.as_str() {
+        "priority" | "manual" => {
+            tracing::info!(
+                strategy = %strategy,
+                "[network.load_balance] strategy maps to the [profiles.failover] path, not the \
+                 round-robin selector — set [profiles.failover] mode to control it"
+            );
+            LoadBalanceMapping::DelegatedToFailover
+        }
+        "least_connections" | "least-connections" => {
+            tracing::warn!(
+                "[network.load_balance] strategy `least_connections` has no endpoint-selector \
+                 equivalent (no live connection-count signal) and is inert — use [round_robin] \
+                 policy=\"least-errors\" or [profiles.failover] instead"
+            );
+            LoadBalanceMapping::Unsupported
+        }
+        "" => {
+            tracing::warn!(
+                "[network.load_balance] is set with no `strategy` — nothing to map; configure \
+                 [round_robin] to drive endpoint selection"
+            );
+            LoadBalanceMapping::Unsupported
+        }
+        other => {
+            tracing::warn!(
+                strategy = %other,
+                "[network.load_balance] strategy is unrecognized and inert — use [round_robin]"
+            );
+            LoadBalanceMapping::Unsupported
+        }
+    }
 }
 
 /// memleak-E4: translate a [`spt_mem_hygiene::MemoryGrowth`] flag into the
@@ -3457,8 +3590,6 @@ fn service_spec_from_args(
     scope: &groups::service::ServiceScope,
     unit: &groups::service::ServiceUnitOpts,
 ) -> Result<spt_service::ServiceSpec> {
-    use groups::service::RestartPolicyArg;
-
     let exe =
         std::env::current_exe().map_err(|e| Error::RuntimeFailure(format!("current_exe: {e}")))?;
     let name = scope
@@ -3471,20 +3602,70 @@ fn service_spec_from_args(
         spt_service::Scope::System
     };
 
-    // E7/F4: thread the unit-shaping CLI options into the ServiceSpec so the
-    // generated unit honors them. Previously everything except name+scope was
-    // hardcoded, so every installed service ran as root with an empty env and
-    // Type=simple regardless of the operator's intent.
+    // Wave 8 (W2 §1): the `[service]` config table also shapes the unit, with
+    // CLI flags taking precedence over config where both are set. Load it
+    // best-effort — a missing/unparseable config here falls back to CLI-only
+    // shaping (the config itself is validated on the real run path), so service
+    // rendering never fails solely because the file could not be read.
+    let svc_cfg: Option<spt_config::schema::Service> = spt_config::load(config, false)
+        .ok()
+        .and_then(|(cfg, _w)| cfg.service);
+    let svc = svc_cfg.as_ref();
+
+    let spec = service_spec_from_parts(SpecParts {
+        name,
+        exe,
+        config,
+        scope: scope_kind,
+        unit,
+        svc,
+    })?;
+    Ok(spec)
+}
+
+/// Inputs to [`service_spec_from_parts`]; groups the pieces so the CLI/config
+/// merge logic reads clearly.
+struct SpecParts<'a> {
+    name: String,
+    exe: PathBuf,
+    config: &'a Path,
+    scope: spt_service::Scope,
+    unit: &'a groups::service::ServiceUnitOpts,
+    svc: Option<&'a spt_config::schema::Service>,
+}
+
+/// Merge CLI unit-shaping options over the `[service]` config table into a
+/// [`spt_service::ServiceSpec`]. CLI flags win; config fills any gap; historical
+/// defaults apply when neither sets a value.
+fn service_spec_from_parts(p: SpecParts<'_>) -> Result<spt_service::ServiceSpec> {
+    use groups::service::RestartPolicyArg;
+
+    let SpecParts {
+        name,
+        exe,
+        config,
+        scope,
+        unit,
+        svc,
+    } = p;
+
+    // Restart policy: CLI flag wins; else `[service].restart_policy`; else the
+    // historical on-failure default.
     let restart_policy = match unit.restart {
         Some(RestartPolicyArg::Always) => spt_service::RestartPolicy::Always,
         Some(RestartPolicyArg::Never) => spt_service::RestartPolicy::Never,
-        // Default (and explicit on-failure) keep the historical policy.
-        Some(RestartPolicyArg::OnFailure) | None => spt_service::RestartPolicy::OnFailure,
+        Some(RestartPolicyArg::OnFailure) => spt_service::RestartPolicy::OnFailure,
+        None => svc
+            .and_then(|s| s.restart_policy.as_deref())
+            .and_then(parse_restart_policy)
+            .unwrap_or(spt_service::RestartPolicy::OnFailure),
     };
 
-    // Parse `--env KEY=VALUE` pairs; a missing `=` is a hard error so a typo is
-    // not silently dropped into an unusable unit.
-    let mut env = std::collections::BTreeMap::new();
+    // Environment: config `[service].env` forms the base; CLI `--env` pairs are
+    // layered on top so a duplicate key from the CLI wins. A `--env` without `=`
+    // is a hard error so a typo is not silently dropped into an unusable unit.
+    let mut env: std::collections::BTreeMap<String, String> =
+        svc.and_then(|s| s.env.clone()).unwrap_or_default();
     for pair in &unit.env {
         let (k, v) = pair
             .split_once('=')
@@ -3492,20 +3673,48 @@ fn service_spec_from_args(
         env.insert(k.to_string(), v.to_string());
     }
 
-    // Watchdog: omitted -> a sane default (so installed systemd services get
-    // liveness supervision out of the box); explicit 0 -> disabled.
-    let watchdog_sec = match unit.watchdog_sec {
+    // Watchdog: CLI wins; else `[service].watchdog_sec`; omitted -> a sane
+    // default; explicit 0 (from either source) -> disabled.
+    let watchdog_source = unit
+        .watchdog_sec
+        .or_else(|| svc.and_then(|s| s.watchdog_sec));
+    let watchdog_sec = match watchdog_source {
         None => Some(spt_service::RECOMMENDED_WATCHDOG_SECS),
         Some(0) => None,
         Some(n) => Some(n),
     };
 
-    let spec = spt_service::ServiceSpec {
+    // sd_notify: the CLI flag is a bare bool (true only when `--sd-notify` was
+    // passed), so it can only turn the feature ON; config can independently
+    // enable it when the flag is absent.
+    let sd_notify = unit.sd_notify || svc.and_then(|s| s.sd_notify) == Some(true);
+
+    let description = unit
+        .description
+        .clone()
+        .or_else(|| svc.and_then(|s| s.description.clone()))
+        .unwrap_or_else(|| format!("spt service for {}", config.display()));
+
+    let user = unit
+        .run_as_user
+        .clone()
+        .or_else(|| svc.and_then(|s| s.user.clone()));
+    let group = unit
+        .run_as_group
+        .clone()
+        .or_else(|| svc.and_then(|s| s.group.clone()));
+    let stdout_path = unit
+        .stdout_path
+        .clone()
+        .or_else(|| svc.and_then(|s| s.stdout.clone()).map(PathBuf::from));
+    let stderr_path = unit
+        .stderr_path
+        .clone()
+        .or_else(|| svc.and_then(|s| s.stderr.clone()).map(PathBuf::from));
+
+    Ok(spt_service::ServiceSpec {
         name,
-        description: unit
-            .description
-            .clone()
-            .unwrap_or_else(|| format!("spt service for {}", config.display())),
+        description,
         exec_path: exe,
         args: vec![
             "tunnel".into(),
@@ -3516,16 +3725,28 @@ fn service_spec_from_args(
         ],
         working_dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")),
         env,
-        user: unit.run_as_user.clone(),
-        group: unit.run_as_group.clone(),
-        scope: scope_kind,
+        user,
+        group,
+        scope,
         restart_policy,
-        sd_notify: unit.sd_notify,
-        stdout_path: unit.stdout_path.clone(),
-        stderr_path: unit.stderr_path.clone(),
+        sd_notify,
+        stdout_path,
+        stderr_path,
         watchdog_sec,
-    };
-    Ok(spec)
+    })
+}
+
+/// Parse a `[service].restart_policy` string into a [`spt_service::RestartPolicy`].
+/// Accepts `always` | `on-failure` (or `on_failure`) | `never`; unknown values
+/// return `None` so the caller falls back to the default (validate already
+/// rejects bad values via `service_restart_policy_invalid`).
+fn parse_restart_policy(s: &str) -> Option<spt_service::RestartPolicy> {
+    match s.trim().to_ascii_lowercase().replace('_', "-").as_str() {
+        "always" => Some(spt_service::RestartPolicy::Always),
+        "on-failure" => Some(spt_service::RestartPolicy::OnFailure),
+        "never" => Some(spt_service::RestartPolicy::Never),
+        _ => None,
+    }
 }
 
 fn service_name(scope: &groups::service::ServiceScope, config: &Path) -> String {
@@ -7333,6 +7554,99 @@ mod tests {
     }
 
     #[test]
+    fn service_spec_shapes_from_config_service_table() {
+        // Wave 8 (W2 §1): `[service]` config fields flow into the ServiceSpec
+        // when the corresponding CLI flag is absent.
+        use groups::service::ServiceUnitOpts;
+        let td = tempfile::tempdir().unwrap();
+        let cfg = td.path().join("relay.toml");
+        std::fs::write(
+            &cfg,
+            "version = 1\n\n\
+             [service]\n\
+             description = \"from config\"\n\
+             user = \"cfg-user\"\n\
+             group = \"cfg-group\"\n\
+             restart_policy = \"always\"\n\
+             sd_notify = true\n\
+             stdout = \"/var/log/spt.out\"\n\
+             stderr = \"/var/log/spt.err\"\n\
+             watchdog_sec = 33\n\n\
+             [service.env]\n\
+             FROM_CONFIG = \"1\"\n",
+        )
+        .unwrap();
+        let scope = groups::service::ServiceScope {
+            user: false,
+            system: true,
+            name: None,
+        };
+        let spec = service_spec_from_args(&cfg, &scope, &ServiceUnitOpts::default()).unwrap();
+        assert_eq!(spec.description, "from config");
+        assert_eq!(spec.user.as_deref(), Some("cfg-user"));
+        assert_eq!(spec.group.as_deref(), Some("cfg-group"));
+        assert!(matches!(
+            spec.restart_policy,
+            spt_service::RestartPolicy::Always
+        ));
+        assert!(spec.sd_notify);
+        assert_eq!(
+            spec.stdout_path.as_deref(),
+            Some(Path::new("/var/log/spt.out"))
+        );
+        assert_eq!(
+            spec.stderr_path.as_deref(),
+            Some(Path::new("/var/log/spt.err"))
+        );
+        assert_eq!(spec.watchdog_sec, Some(33));
+        assert_eq!(spec.env.get("FROM_CONFIG").map(String::as_str), Some("1"));
+    }
+
+    #[test]
+    fn service_spec_cli_overrides_config_service_table() {
+        // CLI flags win over `[service]`; config `env` is the base and a CLI
+        // `--env` with the same key overrides it.
+        use groups::service::{RestartPolicyArg, ServiceUnitOpts};
+        let td = tempfile::tempdir().unwrap();
+        let cfg = td.path().join("relay.toml");
+        std::fs::write(
+            &cfg,
+            "version = 1\n\n\
+             [service]\n\
+             user = \"cfg-user\"\n\
+             restart_policy = \"never\"\n\
+             watchdog_sec = 10\n\n\
+             [service.env]\n\
+             SHARED = \"config\"\n\
+             ONLY_CONFIG = \"c\"\n",
+        )
+        .unwrap();
+        let scope = groups::service::ServiceScope {
+            user: false,
+            system: true,
+            name: None,
+        };
+        let unit = ServiceUnitOpts {
+            run_as_user: Some("cli-user".into()),
+            restart: Some(RestartPolicyArg::Always),
+            watchdog_sec: Some(20),
+            env: vec!["SHARED=cli".into(), "ONLY_CLI=x".into()],
+            ..Default::default()
+        };
+        let spec = service_spec_from_args(&cfg, &scope, &unit).unwrap();
+        assert_eq!(spec.user.as_deref(), Some("cli-user"));
+        assert!(matches!(
+            spec.restart_policy,
+            spt_service::RestartPolicy::Always
+        ));
+        assert_eq!(spec.watchdog_sec, Some(20));
+        // env merge: CLI wins on the shared key, both-only keys present.
+        assert_eq!(spec.env.get("SHARED").map(String::as_str), Some("cli"));
+        assert_eq!(spec.env.get("ONLY_CONFIG").map(String::as_str), Some("c"));
+        assert_eq!(spec.env.get("ONLY_CLI").map(String::as_str), Some("x"));
+    }
+
+    #[test]
     fn service_name_helper_with_override() {
         let scope = groups::service::ServiceScope {
             user: false,
@@ -10129,6 +10443,9 @@ mod tests {
             growth_threshold: Some("8MiB".into()),
             growth_rate_per_min: Some("1MiB".into()),
             min_rising_fraction: Some(0.5),
+            rss_high: Some("1GiB".into()),
+            cgroup_pressure_pct: Some(75.0),
+            cgroup_watch: Some(true),
         };
         let cfg = mem_monitor_config(&m);
         assert_eq!(cfg.interval, std::time::Duration::from_secs(15));
@@ -10136,6 +10453,28 @@ mod tests {
         assert_eq!(cfg.growth_threshold_bytes, 8 * 1024 * 1024);
         assert_eq!(cfg.growth_rate_bytes_per_min, 1024 * 1024);
         assert!((cfg.min_rising_fraction - 0.5).abs() < f64::EPSILON);
+        // Wave 8 (W2-B): rss_high / cgroup_pressure_pct / cgroup_watch mapped.
+        assert_eq!(cfg.rss_high_bytes, 1024 * 1024 * 1024);
+        assert!((cfg.cgroup_pressure_pct - 75.0).abs() < f64::EPSILON);
+        assert!(cfg.cgroup_watch);
+    }
+
+    #[test]
+    fn mem_monitor_config_cgroup_watch_off_overrides_default() {
+        // The runtime default enables cgroup watching; an explicit `false` in
+        // config must turn it off (honest override, not silently ignored).
+        let m = spt_config::schema::MemHygiene {
+            enabled: Some(true),
+            cgroup_watch: Some(false),
+            ..Default::default()
+        };
+        let cfg = mem_monitor_config(&m);
+        assert!(!cfg.cgroup_watch);
+        // rss ceiling stays disabled (0) and pressure keeps its default when
+        // those knobs are omitted.
+        assert_eq!(cfg.rss_high_bytes, 0);
+        let default_pct = spt_mem_hygiene::MemoryMonitorConfig::default().cgroup_pressure_pct;
+        assert!((cfg.cgroup_pressure_pct - default_pct).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -10146,6 +10485,86 @@ mod tests {
         };
         let cfg = mem_monitor_config(&m);
         assert_eq!(cfg, spt_mem_hygiene::MemoryMonitorConfig::default());
+    }
+
+    fn cfg_with_load_balance(strategy: Option<&str>) -> spt_config::schema::Config {
+        let mut cfg = spt_config::schema::Config::default();
+        cfg.network = Some(spt_config::schema::Network {
+            load_balance: Some(spt_config::schema::NetworkLoadBalance {
+                strategy: strategy.map(Into::into),
+                restore_after: Some("45s".into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        cfg
+    }
+
+    #[test]
+    fn load_balance_weighted_drives_round_robin_selector() {
+        use spt_config::round_robin::SelectionPolicy;
+        let mut cfg = cfg_with_load_balance(Some("weighted"));
+        assert!(!cfg.round_robin.enabled);
+        let m = apply_load_balance_alias(&mut cfg);
+        assert_eq!(m, LoadBalanceMapping::Mapped(SelectionPolicy::Weighted));
+        assert!(cfg.round_robin.enabled);
+        assert_eq!(cfg.round_robin.policy, SelectionPolicy::Weighted);
+        // restore_after threaded into the selector cooldown.
+        assert_eq!(
+            cfg.round_robin.cooldown_after_failure,
+            std::time::Duration::from_secs(45)
+        );
+    }
+
+    #[test]
+    fn load_balance_round_robin_maps_to_round_robin_policy() {
+        use spt_config::round_robin::SelectionPolicy;
+        let mut cfg = cfg_with_load_balance(Some("round_robin"));
+        let m = apply_load_balance_alias(&mut cfg);
+        assert_eq!(m, LoadBalanceMapping::Mapped(SelectionPolicy::RoundRobin));
+        assert!(cfg.round_robin.enabled);
+    }
+
+    #[test]
+    fn load_balance_priority_delegates_to_failover_no_selector() {
+        let mut cfg = cfg_with_load_balance(Some("priority"));
+        let m = apply_load_balance_alias(&mut cfg);
+        assert_eq!(m, LoadBalanceMapping::DelegatedToFailover);
+        // Priority is a failover concept, not a round-robin policy — selector
+        // stays off.
+        assert!(!cfg.round_robin.enabled);
+    }
+
+    #[test]
+    fn load_balance_least_connections_is_unsupported_inert() {
+        let mut cfg = cfg_with_load_balance(Some("least_connections"));
+        let m = apply_load_balance_alias(&mut cfg);
+        assert_eq!(m, LoadBalanceMapping::Unsupported);
+        assert!(!cfg.round_robin.enabled);
+    }
+
+    #[test]
+    fn load_balance_ignored_when_round_robin_already_enabled() {
+        let mut cfg = cfg_with_load_balance(Some("weighted"));
+        cfg.round_robin.enabled = true;
+        cfg.round_robin.policy = spt_config::round_robin::SelectionPolicy::RoundRobin;
+        let m = apply_load_balance_alias(&mut cfg);
+        assert_eq!(m, LoadBalanceMapping::RoundRobinWins);
+        // round_robin untouched — its policy is not overwritten by load_balance.
+        assert_eq!(
+            cfg.round_robin.policy,
+            spt_config::round_robin::SelectionPolicy::RoundRobin
+        );
+    }
+
+    #[test]
+    fn load_balance_absent_is_noop() {
+        let mut cfg = spt_config::schema::Config::default();
+        assert_eq!(
+            apply_load_balance_alias(&mut cfg),
+            LoadBalanceMapping::Absent
+        );
+        assert!(!cfg.round_robin.enabled);
     }
 
     #[test]

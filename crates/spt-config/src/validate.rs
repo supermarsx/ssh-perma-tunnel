@@ -68,6 +68,7 @@ pub fn validate(c: &Config) -> Diagnostics {
     check_mem_hygiene(&mut d, c);
     check_updater(&mut d, c);
     check_capabilities(&mut d, c);
+    check_service(&mut d, c);
     check_profiles(&mut d, c);
 
     d
@@ -573,6 +574,7 @@ fn check_events(d: &mut Diagnostics, c: &Config) {
                 | "windows_event"
                 | "mcp_notify"
                 | "remote_log"
+                | "command"
         ) {
             d.push(
                 Diagnostic::error(
@@ -1183,6 +1185,38 @@ fn check_network(d: &mut Diagnostics, c: &Config) {
             "network.load_balance.rebalance_interval",
         );
     }
+
+    // `[network.offload]` — only `tcp_nodelay` and `socket_keepalive` map onto
+    // real socket options (`spt_net::TcpOptions::from_offload`). The remaining
+    // flags have no mechanism this build can honor; the runtime emits a WARN
+    // (`crates/spt-bin/src/net_offload.rs`) when they are requested. Mirror that
+    // WARN at config-validate time so a set-but-unsupported flag is never a
+    // silent no-op (Wave 8 / W6). A flag set to `false` matches the default and
+    // is not warned.
+    if let Some(offload) = network.offload.as_ref() {
+        for (field, requested) in [
+            ("tcp_fast_open", offload.tcp_fast_open),
+            ("reuse_port", offload.reuse_port),
+            ("io_uring", offload.io_uring),
+            ("zerocopy", offload.zerocopy),
+            ("sendfile", offload.sendfile),
+            ("checksum_offload", offload.checksum_offload),
+            ("large_send_offload", offload.large_send_offload),
+        ] {
+            if requested == Some(true) {
+                d.push(
+                    Diagnostic::warning(
+                        "network_offload_flag_unsupported",
+                        format!(
+                            "network.offload.{field} = true is not supported by this build and \
+                             will be ignored; only tcp_nodelay and socket_keepalive take effect"
+                        ),
+                    )
+                    .at(format!("network.offload.{field}")),
+                );
+            }
+        }
+    }
 }
 
 fn check_observability(d: &mut Diagnostics, c: &Config) {
@@ -1249,6 +1283,204 @@ fn check_observability(d: &mut Diagnostics, c: &Config) {
                 .at("observability.snmp.enterprise_id")
                 .with_help("use a registered production IANA Private Enterprise Number"),
         );
+    }
+
+    // `version` — the agent/trap stack is SNMPv3 (USM) only. Any other value is
+    // silently ineffective, so reject it.
+    if let Some(version) = snmp.version.as_deref() {
+        if !version.is_empty() && !matches!(version.to_ascii_lowercase().as_str(), "v3" | "3") {
+            d.push(
+                Diagnostic::error(
+                    "snmp_version_invalid",
+                    format!(
+                        "observability.snmp.version `{version}` is invalid; only SNMPv3 (`v3`) is \
+                         supported"
+                    ),
+                )
+                .at("observability.snmp.version"),
+            );
+        }
+    }
+
+    // `engine_id` — a hex string (the authoritative SNMP engine ID). RFC 3411
+    // bounds it to 5..=32 octets. Validate the hex shape and length so a
+    // malformed value surfaces at load rather than at agent start.
+    if let Some(engine_id) = snmp.engine_id.as_deref() {
+        if !engine_id.is_empty() {
+            let hex = engine_id.strip_prefix("0x").unwrap_or(engine_id);
+            if hex.len() % 2 != 0 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+                d.push(
+                    Diagnostic::error(
+                        "snmp_engine_id_invalid",
+                        format!(
+                            "observability.snmp.engine_id `{engine_id}` must be an even-length hex \
+                             string"
+                        ),
+                    )
+                    .at("observability.snmp.engine_id"),
+                );
+            } else {
+                let octets = hex.len() / 2;
+                if !(5..=32).contains(&octets) {
+                    d.push(
+                        Diagnostic::error(
+                            "snmp_engine_id_length",
+                            format!(
+                                "observability.snmp.engine_id decodes to {octets} octets; RFC 3411 \
+                                 requires 5..=32"
+                            ),
+                        )
+                        .at("observability.snmp.engine_id"),
+                    );
+                }
+            }
+        }
+    }
+
+    // `trap_sinks` — each name must reference a defined `[[observability.snmp.traps]]`
+    // entry, else the referenced sink never fires.
+    if let Some(trap_sinks) = snmp.trap_sinks.as_ref() {
+        for (i, sink) in trap_sinks.iter().enumerate() {
+            if !snmp.traps.iter().any(|t| &t.name == sink) {
+                d.push(
+                    Diagnostic::warning(
+                        "snmp_trap_sink_unknown",
+                        format!(
+                            "observability.snmp.trap_sinks[{i}] `{sink}` does not match any \
+                             [[observability.snmp.traps]] name — nothing will be sent to it"
+                        ),
+                    )
+                    .at(format!("observability.snmp.trap_sinks[{i}]")),
+                );
+            }
+        }
+    }
+
+    // `[[observability.snmp.users]]` — USM agent-users. Validate name
+    // uniqueness, protocol enums, the auth/priv coupling, and the secret refs.
+    if let Some(users) = snmp.users.as_ref() {
+        let mut seen: Vec<&str> = Vec::with_capacity(users.len());
+        for (i, user) in users.iter().enumerate() {
+            let prefix = format!("observability.snmp.users[{i}]");
+            if user.name.trim().is_empty() {
+                d.push(
+                    Diagnostic::error("snmp_user_missing_name", "SNMP USM user requires `name`")
+                        .at(format!("{prefix}.name")),
+                );
+            } else if seen.contains(&user.name.as_str()) {
+                d.push(
+                    Diagnostic::error(
+                        "snmp_user_duplicate",
+                        format!("SNMP USM user name `{}` is not unique", user.name),
+                    )
+                    .at(format!("{prefix}.name")),
+                );
+            } else {
+                seen.push(&user.name);
+            }
+
+            if let Some(auth) = user.auth_protocol.as_deref() {
+                if !matches!(
+                    auth.to_ascii_lowercase().as_str(),
+                    "hmac_md5"
+                        | "hmac-md5"
+                        | "md5"
+                        | "hmac_sha1"
+                        | "hmac-sha1"
+                        | "sha1"
+                        | "hmac_sha256"
+                        | "hmac-sha256"
+                        | "sha256"
+                ) {
+                    d.push(
+                        Diagnostic::error(
+                            "snmp_user_auth_protocol_invalid",
+                            format!(
+                                "SNMP USM user `{}` auth_protocol `{auth}` is invalid \
+                                 (hmac_md5|hmac_sha1|hmac_sha256)",
+                                user.name
+                            ),
+                        )
+                        .at(format!("{prefix}.auth_protocol")),
+                    );
+                }
+                if user.auth_secret.is_none() {
+                    d.push(
+                        Diagnostic::error(
+                            "snmp_user_auth_secret_required",
+                            format!(
+                                "SNMP USM user `{}` sets auth_protocol but no `auth_secret`",
+                                user.name
+                            ),
+                        )
+                        .at(format!("{prefix}.auth_secret")),
+                    );
+                }
+            } else if user.auth_secret.is_some() {
+                d.push(
+                    Diagnostic::warning(
+                        "snmp_user_auth_secret_without_protocol",
+                        format!(
+                            "SNMP USM user `{}` sets auth_secret but no `auth_protocol` — the \
+                             secret is inert (noAuthNoPriv)",
+                            user.name
+                        ),
+                    )
+                    .at(format!("{prefix}.auth_secret")),
+                );
+            }
+
+            if let Some(privp) = user.priv_protocol.as_deref() {
+                if !matches!(
+                    privp.to_ascii_lowercase().as_str(),
+                    "aes128" | "aes-128" | "aes256" | "aes-256" | "des"
+                ) {
+                    d.push(
+                        Diagnostic::error(
+                            "snmp_user_priv_protocol_invalid",
+                            format!(
+                                "SNMP USM user `{}` priv_protocol `{privp}` is invalid \
+                                 (aes128|aes256|des)",
+                                user.name
+                            ),
+                        )
+                        .at(format!("{prefix}.priv_protocol")),
+                    );
+                }
+                if user.auth_protocol.is_none() {
+                    d.push(
+                        Diagnostic::error(
+                            "snmp_user_priv_requires_auth",
+                            format!(
+                                "SNMP USM user `{}` sets priv_protocol but no `auth_protocol` \
+                                 (privacy without authentication is not a valid USM security level)",
+                                user.name
+                            ),
+                        )
+                        .at(format!("{prefix}.priv_protocol")),
+                    );
+                }
+                if user.privacy_secret.is_none() {
+                    d.push(
+                        Diagnostic::error(
+                            "snmp_user_priv_secret_required",
+                            format!(
+                                "SNMP USM user `{}` sets priv_protocol but no `privacy_secret`",
+                                user.name
+                            ),
+                        )
+                        .at(format!("{prefix}.privacy_secret")),
+                    );
+                }
+            }
+
+            if let Some(secret) = user.auth_secret.as_deref() {
+                check_secret_ref_shape(d, secret, format!("{prefix}.auth_secret"));
+            }
+            if let Some(secret) = user.privacy_secret.as_deref() {
+                check_secret_ref_shape(d, secret, format!("{prefix}.privacy_secret"));
+            }
+        }
     }
 }
 
@@ -1337,6 +1569,74 @@ fn check_mem_hygiene(d: &mut Diagnostics, c: &Config) {
                 "mem_hygiene.window_samples must be greater than zero",
             )
             .at("mem_hygiene.window_samples"),
+        );
+    }
+
+    // Wave 8 (W2-B): absolute RSS high-water threshold (bytesize).
+    check_size_field(d, mh.rss_high.as_deref(), "mem_hygiene.rss_high");
+
+    // cgroup pressure percentage must be in (0, 100].
+    if let Some(pct) = mh.cgroup_pressure_pct {
+        if !(pct > 0.0 && pct <= 100.0) {
+            d.push(
+                Diagnostic::error(
+                    "mem_hygiene_cgroup_pressure_pct_range",
+                    format!(
+                        "mem_hygiene.cgroup_pressure_pct `{pct}` must be in the range (0, 100]"
+                    ),
+                )
+                .at("mem_hygiene.cgroup_pressure_pct"),
+            );
+        }
+    }
+
+    // A pressure threshold with cgroup watching disabled never fires — WARN so
+    // the knob is not a silent no-op.
+    if mh.cgroup_pressure_pct.is_some() && !matches!(mh.cgroup_watch, Some(true)) {
+        d.push(
+            Diagnostic::warning(
+                "mem_hygiene_cgroup_pressure_without_watch",
+                "mem_hygiene.cgroup_pressure_pct has no effect unless mem_hygiene.cgroup_watch = true",
+            )
+            .at("mem_hygiene.cgroup_watch"),
+        );
+    }
+}
+
+/// Validate the `[service]` table. Fields shape `spt service install`; when
+/// present they map into `spt_service::ServiceSpec` at install time. Only the
+/// closed-enum `restart_policy` and an obviously-degenerate `watchdog_sec = 0`
+/// need policing — the rest are free-form strings the installer forwards.
+fn check_service(d: &mut Diagnostics, c: &Config) {
+    let Some(service) = c.service.as_ref() else {
+        return;
+    };
+
+    if let Some(policy) = service.restart_policy.as_deref() {
+        if !matches!(
+            policy.to_ascii_lowercase().as_str(),
+            "always" | "on-failure" | "on_failure" | "never" | "no"
+        ) {
+            d.push(
+                Diagnostic::error(
+                    "service_restart_policy_invalid",
+                    format!(
+                        "service.restart_policy `{policy}` is invalid (always|on-failure|never)"
+                    ),
+                )
+                .at("service.restart_policy"),
+            );
+        }
+    }
+
+    if matches!(service.watchdog_sec, Some(0)) {
+        d.push(
+            Diagnostic::warning(
+                "service_watchdog_sec_zero",
+                "service.watchdog_sec = 0 disables watchdog supervision; omit the field instead \
+                 or set a positive interval",
+            )
+            .at("service.watchdog_sec"),
         );
     }
 }
@@ -2416,6 +2716,18 @@ fn check_auth(
 
     match normalize_auth_method(method).as_str() {
         "gssapi" => {
+            // russh (the only SSH2 backend since t7-Phase0) implements no
+            // GSSAPI/Kerberos userauth mechanism. The capability gates below
+            // may pass, but the connect still fails auth at runtime — surface
+            // that as a WARN so it is never a silent fail-closed no-op.
+            d.push(
+                Diagnostic::warning(
+                    "auth_gssapi_unsupported_backend",
+                    "auth.method = \"gssapi\" is not supported by the russh SSH2 backend; \
+                     every connect will fail auth (the gssapi_* fields are inert)",
+                )
+                .at(format!("{prefix}.method")),
+            );
             if protocol != "ssh2" {
                 d.push(
                     Diagnostic::error(
@@ -2463,6 +2775,17 @@ fn check_auth(
             );
         }
         "sspi" => {
+            // As with GSSAPI, the russh SSH2 backend implements no
+            // SSPI/Negotiate userauth mechanism, so a configured sspi method
+            // fails auth on every connect. WARN so it is never silent.
+            d.push(
+                Diagnostic::warning(
+                    "auth_sspi_unsupported_backend",
+                    "auth.method = \"sspi\" is not supported by the russh SSH2 backend; \
+                     every connect will fail auth (the sspi_* fields are inert)",
+                )
+                .at(format!("{prefix}.method")),
+            );
             if protocol != "ssh2" {
                 d.push(
                     Diagnostic::error(
@@ -2810,6 +3133,25 @@ fn check_forward(
                 ),
             )
             .at(format!("{prefix}.transport")),
+        );
+    }
+
+    // `udp_mode` is an SSH2 concept (TcpFramed / UdsBridge selects how UDP
+    // datagrams ride an SSH2 channel). On an ssh3 profile UDP forwarding is
+    // native QUIC datagrams, so `udp_mode` can never take effect — WARN so the
+    // operator is not silently misled (Wave 8 / W3-A).
+    if f.udp_mode.is_some() && protocol == "ssh3" {
+        d.push(
+            Diagnostic::warning(
+                "udp_mode_ignored_on_ssh3",
+                format!(
+                    "forward `{}` sets `udp_mode` but the profile protocol is `ssh3`; ssh3 UDP \
+                     forwarding uses native QUIC datagrams, so `udp_mode` (an ssh2 concept) has \
+                     no effect",
+                    f.name
+                ),
+            )
+            .at(format!("{prefix}.udp_mode")),
         );
     }
 
@@ -6491,6 +6833,338 @@ mod tests {
             d.errors
                 .iter()
                 .any(|e| e.code == "profile_dns_resolution_invalid"),
+            "errors: {:?}",
+            d.errors
+        );
+    }
+
+    // ───────────────── Wave 8 honesty-sweep additions ─────────────────
+
+    #[test]
+    fn event_sink_kind_command_is_accepted() {
+        // W4-A: `type = "command"` sinks are built by the spt-events factory;
+        // they must validate rather than raise `event_sink_kind_invalid`.
+        let raw = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            [[events.sinks]]
+            name = "runner"
+            type = "command"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(
+            !d.errors.iter().any(|e| e.code == "event_sink_kind_invalid"),
+            "command sink must be a known type; errors: {:?}",
+            d.errors
+        );
+    }
+
+    #[test]
+    fn udp_mode_on_ssh3_profile_warns() {
+        // W3-A: ssh3 UDP is native QUIC datagrams; udp_mode (an ssh2 concept)
+        // can't take effect and must WARN.
+        let raw = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh3"
+            endpoint = "https://q.example.com/spt"
+            acknowledge_experimental = true
+            [[profiles.forwards]]
+            name = "u"
+            type = "local"
+            transport = "udp"
+            bind = "127.0.0.1:5300"
+            target = "127.0.0.1:53"
+            udp_mode = "tcp-framed"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(
+            d.warnings
+                .iter()
+                .any(|w| w.code == "udp_mode_ignored_on_ssh3"),
+            "warnings: {:?}",
+            d.warnings
+        );
+    }
+
+    #[test]
+    fn network_offload_unsupported_flags_warn() {
+        // Mirror the runtime WARN: flags with no mechanism this build can
+        // honor must surface at config-validate time.
+        let raw = r#"
+            version = 1
+            [network.offload]
+            io_uring = true
+            zerocopy = true
+            tcp_nodelay = true
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        let unsupported: Vec<&str> = d
+            .warnings
+            .iter()
+            .filter(|w| w.code == "network_offload_flag_unsupported")
+            .filter_map(|w| w.path.as_deref())
+            .collect();
+        assert!(
+            unsupported.contains(&"network.offload.io_uring")
+                && unsupported.contains(&"network.offload.zerocopy"),
+            "expected io_uring + zerocopy WARNs; got: {:?}",
+            d.warnings
+        );
+        // tcp_nodelay is honored — it must NOT warn.
+        assert!(
+            !unsupported.contains(&"network.offload.tcp_nodelay"),
+            "tcp_nodelay must not warn: {:?}",
+            d.warnings
+        );
+    }
+
+    #[test]
+    fn snmp_version_engine_id_and_users_validated() {
+        let raw = r#"
+            version = 1
+            [observability.snmp]
+            enabled = true
+            enterprise_id = 12345
+            version = "v2c"
+            engine_id = "zznothex"
+            trap_sinks = ["nope"]
+            [[observability.snmp.users]]
+            name = "mon"
+            priv_protocol = "aes128"
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(
+            d.errors.iter().any(|e| e.code == "snmp_version_invalid"),
+            "errors: {:?}",
+            d.errors
+        );
+        assert!(
+            d.errors.iter().any(|e| e.code == "snmp_engine_id_invalid"),
+            "errors: {:?}",
+            d.errors
+        );
+        assert!(
+            d.warnings
+                .iter()
+                .any(|w| w.code == "snmp_trap_sink_unknown"),
+            "warnings: {:?}",
+            d.warnings
+        );
+        // priv without auth is an invalid USM security level.
+        assert!(
+            d.errors
+                .iter()
+                .any(|e| e.code == "snmp_user_priv_requires_auth"),
+            "errors: {:?}",
+            d.errors
+        );
+    }
+
+    #[test]
+    fn snmp_valid_user_passes() {
+        let raw = r#"
+            version = 1
+            [observability.snmp]
+            enabled = true
+            enterprise_id = 12345
+            version = "v3"
+            engine_id = "80001f8880abcd1234"
+            [[observability.snmp.users]]
+            name = "mon"
+            auth_protocol = "hmac_sha256"
+            auth_secret = "secret://snmp/mon-auth"
+            priv_protocol = "aes128"
+            privacy_secret = "secret://snmp/mon-priv"
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(
+            !d.errors.iter().any(|e| e.code.starts_with("snmp_")),
+            "valid SNMP config must not error: {:?}",
+            d.errors
+        );
+    }
+
+    #[test]
+    fn auth_gssapi_warns_unsupported_backend() {
+        let raw = r#"
+            version = 1
+            [capabilities]
+            allow_gssapi = true
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            [profiles.auth]
+            method = "gssapi"
+            gssapi_service = "host/server"
+            gssapi_principal = "user@REALM"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(
+            d.warnings
+                .iter()
+                .any(|w| w.code == "auth_gssapi_unsupported_backend"),
+            "warnings: {:?}",
+            d.warnings
+        );
+    }
+
+    #[test]
+    fn auth_sspi_warns_unsupported_backend() {
+        let raw = r#"
+            version = 1
+            [capabilities]
+            allow_sspi = true
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            [profiles.auth]
+            method = "sspi"
+            sspi_service = "host/server"
+            sspi_principal = "user"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(
+            d.warnings
+                .iter()
+                .any(|w| w.code == "auth_sspi_unsupported_backend"),
+            "warnings: {:?}",
+            d.warnings
+        );
+    }
+
+    #[test]
+    fn service_restart_policy_invalid_errors() {
+        let raw = r#"
+            version = 1
+            [service]
+            restart_policy = "sometimes"
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(
+            d.errors
+                .iter()
+                .any(|e| e.code == "service_restart_policy_invalid"),
+            "errors: {:?}",
+            d.errors
+        );
+    }
+
+    #[test]
+    fn service_valid_table_passes() {
+        let raw = r#"
+            version = 1
+            [service]
+            description = "spt tunnel"
+            user = "spt"
+            group = "spt"
+            restart_policy = "on-failure"
+            sd_notify = true
+            watchdog_sec = 30
+            [service.env]
+            RUST_LOG = "info"
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(
+            !d.errors.iter().any(|e| e.code.starts_with("service_")),
+            "valid service table must not error: {:?}",
+            d.errors
+        );
+        // Sanity: the env sub-table round-trips into the schema.
+        let svc = c.service.as_ref().expect("service present");
+        assert_eq!(
+            svc.env
+                .as_ref()
+                .and_then(|e| e.get("RUST_LOG"))
+                .map(String::as_str),
+            Some("info")
+        );
+    }
+
+    #[test]
+    fn mem_hygiene_cgroup_pressure_without_watch_warns() {
+        let raw = r#"
+            version = 1
+            [mem_hygiene]
+            enabled = true
+            cgroup_pressure_pct = 90.0
+            rss_high = "1GiB"
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(
+            d.warnings
+                .iter()
+                .any(|w| w.code == "mem_hygiene_cgroup_pressure_without_watch"),
+            "warnings: {:?}",
+            d.warnings
+        );
+        // rss_high parses as a bytesize → no size_invalid error.
+        assert!(
+            !d.errors.iter().any(|e| e.code == "size_invalid"),
+            "errors: {:?}",
+            d.errors
+        );
+    }
+
+    #[test]
+    fn mem_hygiene_cgroup_pressure_out_of_range_errors() {
+        let raw = r#"
+            version = 1
+            [mem_hygiene]
+            enabled = true
+            cgroup_watch = true
+            cgroup_pressure_pct = 150.0
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(
+            d.errors
+                .iter()
+                .any(|e| e.code == "mem_hygiene_cgroup_pressure_pct_range"),
             "errors: {:?}",
             d.errors
         );

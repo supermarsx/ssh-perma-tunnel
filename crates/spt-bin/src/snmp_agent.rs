@@ -41,7 +41,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use spt_cli::GlobalOpts;
-use spt_config::schema::{Config, ObservabilitySnmp, SnmpTrap};
+use spt_config::schema::{Config, ObservabilitySnmp, SnmpTrap, SnmpUser};
 use spt_core::{Error, Result};
 use spt_events::sinks::snmp_trap::{SnmpTrap as EventSnmpTrap, SnmpTrapTransport};
 use spt_events::sinks::SinkError;
@@ -168,6 +168,84 @@ fn usm_user_from_trap(
     Ok(Some(user))
 }
 
+/// Parse a `[[observability.snmp.users]].auth_protocol` string into an
+/// [`AuthProtocol`]. Case-insensitive. `validate` already gates the allowed
+/// set (`snmp_user_auth_protocol_invalid`); this is the runtime mapping.
+fn parse_auth_protocol(s: &str) -> Result<AuthProtocol> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "hmac_md5" | "hmac-md5" | "md5" => Ok(AuthProtocol::HmacMd5),
+        "hmac_sha1" | "hmac-sha1" | "sha1" => Ok(AuthProtocol::HmacSha1),
+        "hmac_sha256" | "hmac-sha256" | "sha256" => Ok(AuthProtocol::HmacSha256),
+        other => Err(Error::InvalidConfig(format!(
+            "[[observability.snmp.users]] auth_protocol `{other}` is not one of \
+             hmac_md5 | hmac_sha1 | hmac_sha256"
+        ))),
+    }
+}
+
+/// Parse a `[[observability.snmp.users]].priv_protocol` string into a
+/// [`PrivProtocol`]. Case-insensitive.
+fn parse_priv_protocol(s: &str) -> Result<PrivProtocol> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "aes128" | "aes-128" | "aes" => Ok(PrivProtocol::Aes128),
+        "aes256" | "aes-256" => Ok(PrivProtocol::Aes256),
+        "des" => Ok(PrivProtocol::Des),
+        other => Err(Error::InvalidConfig(format!(
+            "[[observability.snmp.users]] priv_protocol `{other}` is not one of \
+             aes128 | aes256 | des"
+        ))),
+    }
+}
+
+/// Build a [`UsmUser`] from a dedicated `[[observability.snmp.users]]` agent
+/// user. The USM security level is derived from which secrets are present:
+/// `auth_protocol` + `priv_protocol` ⇒ authPriv; `auth_protocol` only ⇒
+/// authNoPriv; neither ⇒ noAuthNoPriv. Secret references are resolved at build
+/// time. `validate` (`snmp_user_*` codes) already enforces the presence
+/// constraints, so a missing secret here is a hard error rather than a silent
+/// downgrade.
+fn usm_user_from_config(
+    user: &SnmpUser,
+    resolve_secret: &mut dyn FnMut(&str) -> Result<String>,
+) -> Result<UsmUser> {
+    let name = user.name.as_str();
+    match (user.auth_protocol.as_deref(), user.priv_protocol.as_deref()) {
+        (Some(auth_proto), priv_proto) => {
+            let auth = parse_auth_protocol(auth_proto)?;
+            let auth_secret = user.auth_secret.as_ref().ok_or_else(|| {
+                Error::InvalidConfig(format!(
+                    "[[observability.snmp.users]] `{name}` sets auth_protocol but no auth_secret"
+                ))
+            })?;
+            let auth_pass = resolve_secret(auth_secret.expose())?;
+            match priv_proto {
+                Some(priv_proto) => {
+                    let privacy = parse_priv_protocol(priv_proto)?;
+                    let priv_secret = user.privacy_secret.as_ref().ok_or_else(|| {
+                        Error::InvalidConfig(format!(
+                            "[[observability.snmp.users]] `{name}` sets priv_protocol but no privacy_secret"
+                        ))
+                    })?;
+                    let priv_pass = resolve_secret(priv_secret.expose())?;
+                    Ok(UsmUser::auth_priv(
+                        name,
+                        auth,
+                        SecretBytes::from(auth_pass.as_str()),
+                        privacy,
+                        SecretBytes::from(priv_pass.as_str()),
+                    ))
+                }
+                None => Ok(UsmUser::auth_only(
+                    name,
+                    auth,
+                    SecretBytes::from(auth_pass.as_str()),
+                )),
+            }
+        }
+        (None, _) => Ok(UsmUser::no_auth(name)),
+    }
+}
+
 /// Maps `[observability.snmp]` onto a runnable [`spt_snmp::AgentBuilder`].
 ///
 /// Binds `bind` (default `127.0.0.1:10161`), sets the authoritative engine id
@@ -206,6 +284,16 @@ pub fn build_agent_from_config(
     for trap in &snmp.traps {
         if let Some(user) = usm_user_from_trap(trap, resolve_secret)? {
             builder = builder.add_user(user);
+        }
+    }
+
+    // Wave 8 (W2 §2): dedicated `[[observability.snmp.users]]` USM agent users
+    // — distinct from the trap identities above. These are the users the agent
+    // accepts GET/GETNEXT/GETBULK requests from, with a security level derived
+    // from their configured auth/priv secrets.
+    if let Some(users) = snmp.users.as_ref() {
+        for user in users {
+            builder = builder.add_user(usm_user_from_config(user, resolve_secret)?);
         }
     }
 
@@ -504,6 +592,18 @@ mod tests {
             enterprise_id: Some(12_345),
             trap_sinks: Some(vec!["ops".into()]),
             traps,
+            users: None,
+        }
+    }
+
+    fn snmp_user(name: &str, auth: Option<&str>, priv_: Option<&str>) -> SnmpUser {
+        SnmpUser {
+            name: name.into(),
+            auth_protocol: auth.map(Into::into),
+            auth_secret: auth.map(|_| spt_core::RedactedString::new("auth-passphrase-very-long")),
+            priv_protocol: priv_.map(Into::into),
+            privacy_secret: priv_
+                .map(|_| spt_core::RedactedString::new("priv-passphrase-very-long")),
         }
     }
 
@@ -542,6 +642,61 @@ mod tests {
         let addr = handle.local_addr();
         assert!(addr.ip().is_loopback());
         assert_ne!(addr.port(), 0, "kernel assigned a real port");
+        let _ = handle.shutdown().await;
+    }
+
+    #[test]
+    fn config_user_levels_are_mapped() {
+        let mut resolve = literal_resolver();
+        // authPriv: both protocols + secrets.
+        let u = usm_user_from_config(
+            &snmp_user("full", Some("hmac_sha256"), Some("aes128")),
+            &mut resolve,
+        )
+        .unwrap();
+        assert_eq!(u.name, "full");
+        assert!(u.auth.is_some() && u.priv_.is_some());
+        // authNoPriv: auth only.
+        let u = usm_user_from_config(
+            &snmp_user("authonly", Some("hmac_sha1"), None),
+            &mut resolve,
+        )
+        .unwrap();
+        assert!(u.auth.is_some() && u.priv_.is_none());
+        // noAuthNoPriv: no auth protocol.
+        let u = usm_user_from_config(&snmp_user("bare", None, None), &mut resolve).unwrap();
+        assert!(u.auth.is_none() && u.priv_.is_none());
+    }
+
+    #[test]
+    fn config_user_bad_protocol_is_error() {
+        let mut resolve = literal_resolver();
+        assert!(matches!(
+            usm_user_from_config(&snmp_user("x", Some("hmac_bogus"), None), &mut resolve),
+            Err(Error::InvalidConfig(_))
+        ));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn build_agent_provisions_config_users_alongside_trap_users() {
+        // A dedicated `[[observability.snmp.users]]` list is provisioned into the
+        // agent in addition to trap identities (Wave 8 W2 §2).
+        let mut snmp = snmp_with(vec![trap(
+            "ops",
+            "127.0.0.1:1620",
+            Some("trap-user"),
+            true,
+            true,
+        )]);
+        snmp.users = Some(vec![
+            snmp_user("agent-rw", Some("hmac_sha256"), Some("aes256")),
+            snmp_user("agent-ro", Some("hmac_sha1"), None),
+        ]);
+        let mut resolve = literal_resolver();
+        let builder =
+            build_agent_from_config(&snmp, &mut resolve).expect("agent builds with config users");
+        let handle = builder.run().await.expect("agent runs");
+        assert_ne!(handle.local_addr().port(), 0);
         let _ = handle.shutdown().await;
     }
 

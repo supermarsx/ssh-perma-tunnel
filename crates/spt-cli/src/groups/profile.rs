@@ -151,4 +151,9 @@ pub struct ProfileTest {
     /// Only test DNS.
     #[arg(long, group = "profile_test_scope")]
     pub dns_only: bool,
+    /// Ad-hoc proxy-jump chain `user@host[:port][,user@host…]` to preflight
+    /// (mirrors `tunnel run -J`). Replaces the profile's configured hops for the
+    /// duration of the test so the FULL bastion chain is exercised end to end.
+    #[arg(short = 'J', long = "jump", value_name = "JUMP_CHAIN")]
+    pub jump: Option<String>,
 }

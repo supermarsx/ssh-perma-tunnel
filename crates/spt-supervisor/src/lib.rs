@@ -44,6 +44,9 @@ pub mod stats;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
 
+#[cfg(test)]
+mod log_capture;
+
 pub use control::{BenchForward, Control, DrainReport, EndpointKey};
 pub use failover::{EndpointSelector, FailoverMode, ManualOverride, SelectorError};
 pub use instability::{InstabilityAction, InstabilityDetector, InstabilityWindow};

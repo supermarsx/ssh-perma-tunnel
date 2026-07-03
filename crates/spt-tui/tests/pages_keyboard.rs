@@ -500,14 +500,17 @@ fn choice_right_arrow_updates_rendered_text_live() {
     // Begin edit; before any rotation, the spinner must show the seeded
     // value `ssh2`.
     app.on_key(k(KeyCode::Enter));
-    let edit_initial = render(&mut app, 100, 30);
+    // Basics now has 8 fields (24 rows); render tall enough that the
+    // protocol row's value line is not clipped (mirrors the Auth page,
+    // tested at height 40).
+    let edit_initial = render(&mut app, 100, 40);
     assert!(
         edit_initial.contains("ssh2"),
         "edit-mode initial render must show seeded value ssh2:\n{edit_initial}"
     );
     // Right rotates the cursor to ssh3. Live render must reflect that.
     app.on_key(k(KeyCode::Right));
-    let rotated = render(&mut app, 100, 30);
+    let rotated = render(&mut app, 100, 40);
     assert!(
         rotated.contains("ssh3"),
         "Right must rotate the displayed value to ssh3:\n{rotated}"
@@ -527,7 +530,7 @@ fn choice_left_arrow_wraps_to_last_via_app() {
     app.on_key(k(KeyCode::Down));
     app.on_key(k(KeyCode::Enter));
     app.on_key(k(KeyCode::Left));
-    let rendered = render(&mut app, 100, 30);
+    let rendered = render(&mut app, 100, 40);
     assert!(
         rendered.contains("ssh3"),
         "Left at index 0 must wrap to ssh3:\n{rendered}"
@@ -581,7 +584,7 @@ user = "alice"
 "#;
     let mut app = App::new(Model::from_str(SAMPLE_SSH3));
     assert_eq!(app.current, PageKind::Basics);
-    let text = render(&mut app, 100, 30);
+    let text = render(&mut app, 100, 40);
     assert!(
         text.contains("ssh3"),
         "unfocused compact render must show actual profile value `ssh3`:\n{text}"
@@ -950,9 +953,10 @@ fn endpoints_page_priority_round_trip() {
 fn basics_failure_policy_cycles_three_options_in_viewport_via_right() {
     let mut app = App::new(Model::from_str(SAMPLE));
     assert_eq!(app.current, PageKind::Basics);
-    // Basics field order: 0=id, 1=description, 2=protocol, 3=startup,
-    // 4=failure_policy. Down four times to focus failure_policy.
-    for _ in 0..4 {
+    // Basics field order: 0=id, 1=description, 2=protocol, 3=host,
+    // 4=port, 5=endpoint, 6=startup, 7=failure_policy. Down seven times
+    // to focus failure_policy.
+    for _ in 0..7 {
         app.on_key(k(KeyCode::Down));
     }
     app.on_key(k(KeyCode::Enter)); // begin edit
@@ -1011,7 +1015,7 @@ fn basics_failure_policy_cycles_three_options_in_viewport_via_right() {
 #[test]
 fn basics_failure_policy_cycles_three_options_in_viewport_via_left() {
     let mut app = App::new(Model::from_str(SAMPLE));
-    for _ in 0..4 {
+    for _ in 0..7 {
         app.on_key(k(KeyCode::Down));
     }
     app.on_key(k(KeyCode::Enter)); // begin edit, cursor at options[0]=retry
@@ -1046,7 +1050,7 @@ fn basics_failure_policy_cycles_three_options_in_viewport_via_left() {
 #[test]
 fn basics_failure_policy_cycles_three_options_in_viewport_via_down() {
     let mut app = App::new(Model::from_str(SAMPLE));
-    for _ in 0..4 {
+    for _ in 0..7 {
         app.on_key(k(KeyCode::Down));
     }
     app.on_key(k(KeyCode::Enter)); // begin edit
@@ -1100,7 +1104,7 @@ fn crypto_policy_cycles_three_options_in_viewport() {
 #[test]
 fn failure_policy_full_cycle_returns_to_identical_viewport() {
     let mut app = App::new(Model::from_str(SAMPLE));
-    for _ in 0..4 {
+    for _ in 0..7 {
         app.on_key(k(KeyCode::Down));
     }
     app.on_key(k(KeyCode::Enter));
@@ -1133,7 +1137,7 @@ protocol = "ssh3"
 host = "demo.example.com"
 "#;
     let mut app = App::new(Model::from_str(SAMPLE_SSH3));
-    let text = render(&mut app, 100, 30);
+    let text = render(&mut app, 100, 40);
     assert!(
         text.contains("ssh3 (francoismichel)"),
         "nav-mode protocol row must show friendly display label:\n{text}"
@@ -1145,7 +1149,7 @@ host = "demo.example.com"
 #[test]
 fn protocol_nav_mode_renders_plain_ssh2_unchanged() {
     let mut app = App::new(Model::from_str(SAMPLE));
-    let text = render(&mut app, 100, 30);
+    let text = render(&mut app, 100, 40);
     assert!(
         text.contains("ssh2"),
         "nav-mode protocol row must show ssh2:\n{text}"
@@ -1166,7 +1170,7 @@ fn protocol_edit_rotate_to_ssh3_renders_friendly_label() {
     app.on_key(k(KeyCode::Down));
     app.on_key(k(KeyCode::Enter)); // begin edit
     app.on_key(k(KeyCode::Right)); // rotate to ssh3
-    let text = render(&mut app, 100, 30);
+    let text = render(&mut app, 100, 40);
     assert!(
         text.contains("◀ ssh3 (francoismichel) ▶"),
         "rotated spinner must show friendly display label, not just `ssh3`:\n{text}"

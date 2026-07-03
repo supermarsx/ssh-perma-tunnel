@@ -1210,6 +1210,8 @@ never\:"Never emit color escapes"))' \
 ;;
 (test)
 _arguments "${_arguments_options[@]}" : \
+'-J+[Ad-hoc proxy-jump chain \`user@host\[\:port\]\[,user@host…\]\` to preflight (mirrors \`tunnel run -J\`). Replaces the profile'\''s configured hops for the duration of the test so the FULL bastion chain is exercised end to end]:JUMP_CHAIN:_default' \
+'--jump=[Ad-hoc proxy-jump chain \`user@host\[\:port\]\[,user@host…\]\` to preflight (mirrors \`tunnel run -J\`). Replaces the profile'\''s configured hops for the duration of the test so the FULL bastion chain is exercised end to end]:JUMP_CHAIN:_default' \
 '--config=[Path to a single config file]:PATH:_files' \
 '--config-dir=[Path to a directory of \`*.toml\` configs (loaded in lexical order)]:PATH:_files' \
 '--config-url=[HTTPS URL of a remote config to fetch]:URL:_default' \

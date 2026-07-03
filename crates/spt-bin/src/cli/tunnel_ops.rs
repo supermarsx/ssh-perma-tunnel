@@ -1086,6 +1086,13 @@ pub fn parse_jump_chain(raw: &str) -> Result<Vec<Hop>> {
                 "-J: empty host in `{part}` (expected `user@host[:port]`)"
             )));
         }
+        // Reject an explicit `:0` — port 0 is never a valid SSH jump target and
+        // `validate` does not currently gate hop.port == 0 (audit-jump §7/§9c).
+        if port == Some(0) {
+            return Err(Error::InvalidArgs(format!(
+                "-J: hop `{part}` has port 0, which is not a valid jump target"
+            )));
+        }
         let mut hop = Hop::default();
         hop.name = format!("cli-jump-{}", out.len() + 1);
         // Must be the canonical `ssh2` token: `validate` gates hop.protocol to
@@ -1192,6 +1199,48 @@ mod tests {
         assert_eq!(cfg.profiles[0].hops.len(), 1);
         assert_eq!(cfg.profiles[0].hops[0].host, "fresh.example.com");
         assert_eq!(cfg.profiles[0].hops[0].port, 2222);
+    }
+
+    #[test]
+    fn cli_jump_chain_passes_validate_protocol_gate() {
+        // audit-jump §2/§9a: the run path injects the -J chain and then hard-gates
+        // on `spt_config::validate`. The earlier regression (emitting `protocol =
+        // "ssh"`) tripped `hop_protocol_invalid` and aborted every `tunnel run -J`.
+        // This VALIDATE-based test (the old test only called build()) locks the
+        // fix in: the injected hops must clear the protocol/host gates.
+        use spt_config::schema::Profile;
+        let mut cfg = Config {
+            version: 1,
+            ..Default::default()
+        };
+        let mut p = Profile::default();
+        p.name = "prod".into();
+        p.protocol = "ssh2".into();
+        p.host = Some("target.example.com".into());
+        p.user = Some("me".into());
+        cfg.profiles.push(p);
+
+        let chain = parse_jump_chain("alice@bastion.example.com:2222").unwrap();
+        apply_jump_chain_to_config(&mut cfg, &[], &chain);
+
+        let diags = spt_config::validate(&cfg);
+        let hop_errs: Vec<_> = diags
+            .errors
+            .iter()
+            .filter(|d| d.code.starts_with("hop_"))
+            .collect();
+        assert!(
+            hop_errs.is_empty(),
+            "-J-injected hops must pass validate's hop checks, got: {hop_errs:?}"
+        );
+    }
+
+    #[test]
+    fn cli_jump_chain_rejects_zero_port() {
+        // audit-jump §9c: hop.port == 0 is not gated by validate, so reject it at
+        // parse time rather than let a bogus jump target reach the transport.
+        let err = parse_jump_chain("bastion.example.com:0").unwrap_err();
+        assert!(matches!(err, Error::InvalidArgs(_)), "{err:?}");
     }
 
     fn ts() -> DateTime<Utc> {

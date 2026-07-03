@@ -628,6 +628,19 @@ impl ProfileTask {
                 self.emit_event(ProfileEvent::BackoffExhausted {
                     profile: self.name.clone(),
                 });
+                // CRIT-LOG (w8): mirror the give-up decision to `tracing` at the
+                // decision site — "this tunnel gave up" must be visible in logs,
+                // not only on the event bus. Give-up is terminal → ERROR.
+                let last_endpoint = self
+                    .current_endpoint
+                    .as_ref()
+                    .map(|e| format!("{}:{}", e.host, e.port));
+                tracing::error!(
+                    profile = %self.name,
+                    attempt = self.backoff.attempt(),
+                    endpoint = last_endpoint.as_deref().unwrap_or("<none>"),
+                    "reconnect backoff exhausted; giving up on this profile"
+                );
                 self.cfg.observers.emit_lifecycle(
                     "profile.backoff_exhausted",
                     spt_events::Severity::Error,
@@ -719,6 +732,15 @@ impl ProfileTask {
                     self.selector
                         .lock()
                         .record_success(&endpoint.host, endpoint.port);
+                    // CRIT-LOG (w8): a successful (re)connect is the operator's
+                    // "recovered" signal — mirror it to `tracing` at INFO so even
+                    // recovery is visible in logs (not just on the event bus).
+                    tracing::info!(
+                        profile = %self.name,
+                        endpoint = %format!("{}:{}", endpoint.host, endpoint.port),
+                        attempt = self.backoff.attempt(),
+                        "session connected and authenticated"
+                    );
                     // Connect + auth confirmed: walk the SM to EstablishingForwards.
                     self.fire(SmEvent::ConnectOk);
                     self.fire(SmEvent::AuthOk);
@@ -1010,6 +1032,12 @@ impl ProfileTask {
                             ).await
                         }
                         HealthCheckStyle::Ssh3Endpoint => {
+                            // F5 (w8): same `preflight_connect()` call as
+                            // `SshAuthPreflight` — the ssh3/QUIC vs ssh2/TCP
+                            // distinction is entirely inside the session impl, so
+                            // at the supervisor layer these two styles are the
+                            // same connect+auth side-dial (documented in the
+                            // load-time shallow-probe WARN).
                             tokio::time::timeout(
                                 keepalive_timeout,
                                 session.preflight_connect(),
@@ -1362,8 +1390,19 @@ impl ProfileTask {
         sel.pick(&mut self.rng, now).ok().cloned()
     }
 
-    fn handle_session_failure(&mut self, endpoint: &Endpoint, _e: &spt_core::Error) {
+    fn handle_session_failure(&mut self, endpoint: &Endpoint, e: &spt_core::Error) {
         let now = Instant::now();
+        // CRIT-LOG (w8): the session-failure error was previously discarded
+        // (`_e`), so the single most useful outage diagnostic ("why did the
+        // tunnel drop / fail to connect") never reached logs. Log it at the
+        // decision site. `%e` is the redacted `Display` (kind + reason, no
+        // secret material — mirrors the terminal-error sites above).
+        tracing::warn!(
+            profile = %self.name,
+            endpoint = %format!("{}:{}", endpoint.host, endpoint.port),
+            error = %e,
+            "session failed; cooling endpoint and entering reconnect/backoff"
+        );
         self.selector
             .lock()
             .record_failure(&endpoint.host, endpoint.port, now);
@@ -1407,6 +1446,13 @@ impl ProfileTask {
         self.emit_event(ProfileEvent::InstabilityHit {
             profile: self.name.clone(),
         });
+        // CRIT-LOG (w8): an instability trip is a health decision an operator
+        // needs to see — mirror it to `tracing` at WARN with the selected action.
+        tracing::warn!(
+            profile = %self.name,
+            action = ?self.cfg.instability.action,
+            "instability detector tripped; applying configured action"
+        );
         self.cfg.observers.emit_lifecycle(
             "profile.instability_hit",
             spt_events::Severity::Warn,
@@ -1520,10 +1566,22 @@ impl ProfileTask {
             HealthCheckStyle::SshHandshake => None,
         };
         if let Some(style) = shallow_probe {
+            // F5 (w8): `ssh3_endpoint` and `ssh_auth_preflight` dispatch to the
+            // identical `session.preflight_connect()` at the supervisor layer —
+            // the ssh2/ssh3 transport difference lives entirely inside the
+            // session impl, not here. Call that out so the two names don't imply
+            // a supervisor-level distinction that does not exist.
+            let equivalence = if matches!(self.cfg.health_check, HealthCheckStyle::Ssh3Endpoint) {
+                " (identical to `ssh_auth_preflight` at the supervisor layer: both are a \
+                 connect+auth side-dial via `preflight_connect`; the QUIC/HTTP-3 vs TCP \
+                 difference is internal to the session)"
+            } else {
+                ""
+            };
             let msg = format!(
                 "health_check `{style}` is a side-dial probe that does not exercise the live \
                  session, so it cannot detect a silently-dead session whose host stays \
-                 reachable; `ssh_handshake` is recommended for end-to-end liveness"
+                 reachable; `ssh_handshake` is recommended for end-to-end liveness{equivalence}"
             );
             tracing::warn!(profile = %self.name, "{msg}");
             self.cfg.observers.emit_lifecycle(
@@ -1603,6 +1661,15 @@ impl ProfileTask {
         if let Some(ep) = &endpoint {
             fields.push(("endpoint", serde_json::Value::from(ep.clone())));
         }
+        // CRIT-LOG (w8): mirror the scheduled reconnect to `tracing` at WARN so
+        // the reconnect cadence (attempt #, delay, endpoint) is visible in logs.
+        tracing::warn!(
+            profile = %self.name,
+            attempt,
+            delay_ms = u64::try_from(delay.as_millis()).unwrap_or(u64::MAX),
+            endpoint = endpoint.as_deref().unwrap_or("<none>"),
+            "scheduling reconnect after backoff"
+        );
         self.cfg.observers.emit_lifecycle(
             "profile.reconnect_scheduled",
             spt_events::Severity::Warn,
@@ -1673,6 +1740,20 @@ impl ProfileTask {
                 serde_json::Value::from(format!("{}:{}", cur.host, cur.port)),
             ));
         }
+        // CRIT-LOG (w8): a failover (operator- or instability-driven) is an
+        // alertable transition — mirror it to `tracing` at WARN with the
+        // from-endpoint and the requested override target (if any).
+        tracing::warn!(
+            profile = %self.name,
+            from = self
+                .current_endpoint
+                .as_ref()
+                .map(|c| format!("{}:{}", c.host, c.port))
+                .as_deref()
+                .unwrap_or("<none>"),
+            to = override_to.unwrap_or("<policy>"),
+            "failover requested; rotating endpoint"
+        );
         self.cfg.observers.emit_lifecycle(
             "profile.failover_requested",
             spt_events::Severity::Warn,
@@ -1687,6 +1768,15 @@ impl ProfileTask {
         if let Ok(new) = self.sm.step(ev) {
             if new != prev {
                 let _ = self.state_tx.send(new);
+                // w8: a per-tunnel state-history trail in logs. DEBUG keeps the
+                // default-`info` stream quiet while giving operators a
+                // reconstructable transition log when they raise the level.
+                tracing::debug!(
+                    profile = %self.name,
+                    from = %prev,
+                    to = %new,
+                    "profile state transition"
+                );
                 self.emit_event(ProfileEvent::StateChanged {
                     profile: self.name.clone(),
                     from: prev,
@@ -4150,5 +4240,133 @@ mod tests {
         );
 
         sup.stop().await;
+    }
+
+    // ──────── w8: supervisor decisions are mirrored to `tracing` ────────
+
+    /// give-up (ERROR), reconnect (WARN), and the previously-discarded
+    /// session-failure error (WARN) must all reach `tracing` at the decision
+    /// site with structured fields. Pre-fix these were bus-only / discarded.
+    #[tokio::test(flavor = "current_thread")]
+    async fn give_up_reconnect_and_session_failure_are_logged() {
+        let sub = crate::log_capture::CaptureSubscriber::new();
+        let _guard = tracing::subscriber::set_default(sub.clone());
+
+        let proto = Arc::new(MockTunnelProtocol::new());
+        proto.set_connect_fails(true);
+        let mut cfg = ProfileSupervisorConfig::default();
+        cfg.backoff.initial_delay = Duration::from_millis(1);
+        cfg.backoff.max_delay = Duration::from_millis(2);
+        cfg.backoff.max_attempts = 2;
+        let sup = ProfileSupervisor::spawn("logp", proto, auth(), vec![endpoint("a")], vec![], cfg);
+        let mut events = sup.take_events().unwrap();
+
+        let mut exhausted = false;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+        while tokio::time::Instant::now() < deadline {
+            tokio::select! {
+                ev = events.recv() => match ev {
+                    Some(ProfileEvent::BackoffExhausted { .. }) => { exhausted = true; break; }
+                    Some(_) => {}
+                    None => break,
+                },
+                _ = tokio::time::sleep(Duration::from_millis(20)) => {}
+            }
+        }
+        assert!(exhausted, "profile should exhaust backoff and give up");
+        sup.stop().await;
+
+        let recon = sub
+            .find("scheduling reconnect")
+            .expect("reconnect must be mirrored to tracing");
+        assert_eq!(recon.level, tracing::Level::WARN);
+        assert!(
+            recon.field("attempt").is_some(),
+            "reconnect log carries attempt"
+        );
+        assert!(
+            recon.field("delay_ms").is_some(),
+            "reconnect log carries delay"
+        );
+
+        let giveup = sub
+            .find("giving up")
+            .expect("give-up must be mirrored to tracing at ERROR");
+        assert_eq!(giveup.level, tracing::Level::ERROR);
+        assert!(giveup.field("attempt").is_some());
+
+        let fail = sub
+            .find("session failed")
+            .expect("session-failure error must be logged, not discarded (_e)");
+        assert_eq!(fail.level, tracing::Level::WARN);
+        assert!(
+            fail.field("error").is_some(),
+            "the session-failure error is now logged (previously bound to `_e`)"
+        );
+    }
+
+    /// A successful (re)connect is mirrored to `tracing` at INFO with the
+    /// endpoint — even recovery is visible in logs.
+    #[tokio::test(flavor = "current_thread")]
+    async fn successful_connect_is_logged_at_info() {
+        let sub = crate::log_capture::CaptureSubscriber::new();
+        let _guard = tracing::subscriber::set_default(sub.clone());
+
+        let proto = Arc::new(MockTunnelProtocol::new());
+        let sup = ProfileSupervisor::spawn(
+            "okp",
+            proto,
+            auth(),
+            vec![endpoint("a")],
+            vec![],
+            ProfileSupervisorConfig::default(),
+        );
+        let mut rx = sup.watch_state();
+        loop {
+            if *rx.borrow() == ProfileStateName::Active {
+                break;
+            }
+            rx.changed().await.unwrap();
+        }
+        sup.stop().await;
+
+        let ok = sub
+            .find("session connected and authenticated")
+            .expect("connect-ok must be mirrored to tracing at INFO");
+        assert_eq!(ok.level, tracing::Level::INFO);
+        assert_eq!(ok.field("endpoint"), Some("a:22"));
+    }
+
+    /// A manual failover is mirrored to `tracing` at WARN with the
+    /// from-endpoint.
+    #[tokio::test(flavor = "current_thread")]
+    async fn manual_failover_is_logged_at_warn() {
+        let sub = crate::log_capture::CaptureSubscriber::new();
+        let _guard = tracing::subscriber::set_default(sub.clone());
+
+        let proto = Arc::new(MockTunnelProtocol::new());
+        let sup = ProfileSupervisor::spawn(
+            "fop",
+            proto,
+            auth(),
+            vec![endpoint("a"), endpoint("b")],
+            vec![],
+            ProfileSupervisorConfig::default(),
+        );
+        let mut rx = sup.watch_state();
+        loop {
+            if *rx.borrow() == ProfileStateName::Active {
+                break;
+            }
+            rx.changed().await.unwrap();
+        }
+        sup.failover(None).await.unwrap();
+        sup.stop().await;
+
+        let fo = sub
+            .find("failover requested")
+            .expect("failover must be mirrored to tracing at WARN");
+        assert_eq!(fo.level, tracing::Level::WARN);
+        assert_eq!(fo.field("from"), Some("a:22"));
     }
 }

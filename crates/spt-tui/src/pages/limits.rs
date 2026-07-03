@@ -25,7 +25,7 @@ impl LimitsPage {
         let fields = vec![
             opt_u32(
                 "limits.max_active_connections",
-                "Maximum active forwarded connections",
+                "Maximum active forwarded connections [NOTE: parsed but NOT yet enforced at runtime]",
                 |p| p.limits.as_ref().and_then(|l| l.max_active_connections),
                 |p, v| {
                     p.limits
@@ -77,7 +77,7 @@ impl LimitsPage {
             ),
             opt_choice_with_help(
                 "limits.throttle_algorithm",
-                "Throttle algorithm",
+                "Throttle algorithm [NOTE: parsed but NOT yet enforced at runtime]",
                 ALGORITHMS,
                 ALGORITHMS_HELP,
                 |p| p.limits.as_ref().and_then(|l| l.throttle_algorithm.clone()),
@@ -89,7 +89,7 @@ impl LimitsPage {
             ),
             opt_text(
                 "limits.max_connection_lifetime",
-                "Maximum lifetime of a single forwarded connection",
+                "Maximum lifetime of a single forwarded connection [NOTE: parsed but NOT yet enforced at runtime]",
                 |p| {
                     p.limits
                         .as_ref()

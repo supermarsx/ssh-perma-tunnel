@@ -202,13 +202,61 @@ pub async fn disable(global: &GlobalOpts, args: profile::ProfileName) -> Result<
 /// `connect()` per endpoint in priority order, and report timing.
 pub async fn test(global: &GlobalOpts, args: profile::ProfileTest) -> Result<()> {
     let path = require_config_path(global)?;
-    let (cfg, _w) =
+    let (mut cfg, _w) =
         spt_config::load(&path, false).map_err(|e| Error::InvalidConfig(format!("load: {e}")))?;
+
+    // Ad-hoc `-J/--jump` preflight (audit-jump §5/§9b): splice the parsed jump
+    // chain into the selected profile's hops so `connect()` traverses the FULL
+    // bastion chain, then hard-gate on `validate` exactly like `tunnel run -J`.
+    // Config-file hops are already testable end to end; this closes the gap for
+    // an ad-hoc chain that is not yet written into the config.
+    if let Some(jump) = args.jump.as_deref() {
+        let chain = crate::cli::tunnel_ops::parse_jump_chain(jump)?;
+        if chain.is_empty() {
+            return Err(Error::InvalidArgs(
+                "--jump parsed to an empty chain (expected `user@host[:port][,…]`)".into(),
+            ));
+        }
+        let n = crate::cli::tunnel_ops::apply_jump_chain_to_config(
+            &mut cfg,
+            std::slice::from_ref(&args.name),
+            &chain,
+        );
+        if n == 0 {
+            return Err(Error::InvalidArgs(format!(
+                "no profile named `{}` to apply --jump to",
+                args.name
+            )));
+        }
+        let diags = spt_config::validate(&cfg);
+        if !diags.errors.is_empty() {
+            let msg = diags
+                .errors
+                .iter()
+                .map(|d| format!("[{}] {}", d.code, d.message))
+                .collect::<Vec<_>>()
+                .join("; ");
+            return Err(Error::InvalidConfig(format!(
+                "--jump preflight validation failed: {msg}"
+            )));
+        }
+    }
+
     let prof = cfg
         .profiles
         .iter()
         .find(|p| p.name == args.name)
         .ok_or_else(|| Error::InvalidArgs(format!("no profile named `{}`", args.name)))?;
+
+    // audit-jump §9c: `validate` does not gate `hop.port == 0`; reject it here
+    // before building so a bogus jump target fails preflight loudly rather than
+    // reaching the transport.
+    if let Some(bad) = prof.hops.iter().find(|h| h.port == 0) {
+        return Err(Error::InvalidConfig(format!(
+            "profile `{}` hop `{}` has port 0, which is not a valid jump target",
+            args.name, bad.name
+        )));
+    }
 
     let state_dir = spt_state::resolve_state_dir(global.state_dir.as_deref())?;
     let resolver = crate::secrets_bridge::build_resolver(cfg.secrets.as_ref(), &state_dir)?;
@@ -605,6 +653,18 @@ fn item_to_display(item: &Item) -> String {
 /// segments index into arrays-of-tables; string segments descend into
 /// regular tables.
 fn write_field(doc: &mut Document, profile: &str, field: &str, val: &str) -> Result<()> {
+    // Top-level scalar profile fields (no dotted path, non-numeric) go through
+    // the schema-driven mutator in spt-config, which coerces bool/int fields to
+    // their declared TOML type and keeps every string field VERBATIM. This is
+    // the honest coercion path: `user=0123` stays the string "0123" (no
+    // leading-zero loss, no int flip), a bool field only narrows on the literal
+    // `true`/`false`, and `port` coerces to an integer. The old `value_for`
+    // helper over-coerced any numeric-looking string; it is still used for
+    // nested/array leaves below (where the schema field kind is not known).
+    if !field.contains('.') && field.parse::<usize>().is_err() {
+        doc.set_profile_field(profile, field, val)?;
+        return Ok(());
+    }
     let prof_tbl = profile_table_mut(doc, profile)?;
     write_field_in_table(prof_tbl, field, val)
 }
@@ -880,6 +940,63 @@ connect_timeout = "5s"
     }
 
     #[tokio::test]
+    async fn set_string_field_keeps_leading_zero_verbatim() {
+        // Schema-driven coercion: `user` is a string field, so a numeric-looking
+        // value with a leading zero must stay the string "0123" — never coerced
+        // to the integer 123 (the old `value_for` over-coercion bug).
+        let (_d, path) = write_tmp(RAW);
+        let g = global_with_path(&path);
+        let args = profile::ProfileSet {
+            name: "p".into(),
+            overrides: vec!["user=0123".into()],
+        };
+        set(&g, args).await.unwrap();
+        let new_raw = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            new_raw.contains("user = \"0123\""),
+            "user must stay a verbatim string, got:\n{new_raw}"
+        );
+        let (cfg, _) = spt_config::load_str(&new_raw, false).unwrap();
+        assert_eq!(cfg.profiles[0].user.as_deref(), Some("0123"));
+    }
+
+    #[tokio::test]
+    async fn set_bool_field_coerces_true_false() {
+        let (_d, path) = write_tmp(RAW);
+        let g = global_with_path(&path);
+        let args = profile::ProfileSet {
+            name: "p".into(),
+            overrides: vec!["enabled=false".into()],
+        };
+        set(&g, args).await.unwrap();
+        let new_raw = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            new_raw.contains("enabled = false"),
+            "bool field must coerce to a TOML boolean, got:\n{new_raw}"
+        );
+        let (cfg, _) = spt_config::load_str(&new_raw, false).unwrap();
+        assert_eq!(cfg.profiles[0].enabled, Some(false));
+    }
+
+    #[tokio::test]
+    async fn set_port_field_coerces_to_int() {
+        let (_d, path) = write_tmp(RAW);
+        let g = global_with_path(&path);
+        let args = profile::ProfileSet {
+            name: "p".into(),
+            overrides: vec!["port=2201".into()],
+        };
+        set(&g, args).await.unwrap();
+        let new_raw = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            new_raw.contains("port = 2201"),
+            "port must coerce to a TOML integer, got:\n{new_raw}"
+        );
+        let (cfg, _) = spt_config::load_str(&new_raw, false).unwrap();
+        assert_eq!(cfg.profiles[0].port, Some(2201));
+    }
+
+    #[tokio::test]
     async fn set_changes_nested_field() {
         let (_d, path) = write_tmp(RAW);
         let g = global_with_path(&path);
@@ -973,7 +1090,15 @@ connect_timeout = "5s"
             overrides: vec!["port=2222".into()],
         };
         let err = set(&g, args).await.unwrap_err();
-        assert!(matches!(err, Error::InvalidConfig(_)));
+        // Routed through the schema-driven `set_profile_field`, which reports a
+        // rich diagnostic for an unknown profile (same `InvalidConfig` exit code).
+        assert!(
+            matches!(
+                err,
+                Error::InvalidConfig(_) | Error::InvalidConfigDiagnostic(_)
+            ),
+            "{err:?}"
+        );
         // File untouched.
         let same = std::fs::read_to_string(&path).unwrap();
         assert!(same.contains("port = 22"));
@@ -1014,6 +1139,59 @@ connect_timeout = "5s"
         let raw = std::fs::read_to_string(&path).unwrap();
         let (cfg, _) = spt_config::load_str(&raw, false).unwrap();
         assert_eq!(cfg.profiles[0].enabled, Some(true));
+    }
+
+    // ---- profile test: jump preflight --------------------------------------
+
+    fn profile_test_args(name: &str, jump: Option<&str>) -> profile::ProfileTest {
+        profile::ProfileTest {
+            name: name.into(),
+            connect_only: false,
+            bind_only: false,
+            auth_only: false,
+            trust_only: false,
+            dns_only: false,
+            jump: jump.map(Into::into),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_jump_zero_port_rejected() {
+        // audit-jump §9b/§9c: an ad-hoc `--jump` with a port-0 hop must be
+        // rejected at preflight (parse), never reaching connect.
+        let (_d, path) = write_tmp(RAW);
+        let g = global_with_path(&path);
+        let err = test(&g, profile_test_args("p", Some("bastion.example.com:0")))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::InvalidArgs(_)), "{err:?}");
+    }
+
+    #[tokio::test]
+    async fn test_config_hop_zero_port_rejected() {
+        // audit-jump §9c: validate does not gate `hop.port == 0`, so `profile
+        // test` rejects it before building the bundle.
+        const HOP0: &str = r#"version = 1
+
+[[profiles]]
+name = "p"
+protocol = "ssh2"
+host = "target.example.com"
+user = "me"
+
+[[profiles.hops]]
+name = "b"
+protocol = "ssh2"
+host = "bastion.example.com"
+port = 0
+"#;
+        let (_d, path) = write_tmp(HOP0);
+        let g = global_with_path(&path);
+        let err = test(&g, profile_test_args("p", None)).await.unwrap_err();
+        assert!(
+            err.to_string().contains("port 0"),
+            "expected a port-0 rejection, got: {err}"
+        );
     }
 
     // ---- profile test ------------------------------------------------------

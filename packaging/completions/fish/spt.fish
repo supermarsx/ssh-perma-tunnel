@@ -807,6 +807,7 @@ complete -c spt -n "__fish_spt_using_subcommand profile; and __fish_seen_subcomm
 complete -c spt -n "__fish_spt_using_subcommand profile; and __fish_seen_subcommand_from remove" -l dry-run -d 'Show what would happen without making changes'
 complete -c spt -n "__fish_spt_using_subcommand profile; and __fish_seen_subcommand_from remove" -s h -l help -d 'Print help (see more with \'--help\')'
 complete -c spt -n "__fish_spt_using_subcommand profile; and __fish_seen_subcommand_from remove" -s V -l version -d 'Print version'
+complete -c spt -n "__fish_spt_using_subcommand profile; and __fish_seen_subcommand_from test" -s J -l jump -d 'Ad-hoc proxy-jump chain `user@host[:port][,user@host…]` to preflight (mirrors `tunnel run -J`). Replaces the profile\'s configured hops for the duration of the test so the FULL bastion chain is exercised end to end' -r
 complete -c spt -n "__fish_spt_using_subcommand profile; and __fish_seen_subcommand_from test" -l config -d 'Path to a single config file' -r -F
 complete -c spt -n "__fish_spt_using_subcommand profile; and __fish_seen_subcommand_from test" -l config-dir -d 'Path to a directory of `*.toml` configs (loaded in lexical order)' -r -F
 complete -c spt -n "__fish_spt_using_subcommand profile; and __fish_seen_subcommand_from test" -l config-url -d 'HTTPS URL of a remote config to fetch' -r

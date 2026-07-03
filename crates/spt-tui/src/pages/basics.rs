@@ -6,7 +6,8 @@ use ratatui::layout::Rect;
 
 use crate::model::Model;
 use crate::pages::field::{
-    opt_choice_with_display_and_help, opt_choice_with_help, opt_text, FieldList,
+    opt_choice_with_display_and_help, opt_choice_with_help, opt_text, FieldDef, FieldList,
+    FieldValue,
 };
 use crate::pages::Page;
 
@@ -100,6 +101,56 @@ impl BasicsPage {
                     }
                 },
             ),
+            // Top-level connection target. `host`/`port` are the single-host
+            // SSH2 fields; `endpoint` is the SSH3 URL. These are the most
+            // fundamental fields of a profile and were previously uneditable
+            // anywhere in the wizard (the Endpoints page edits the
+            // `endpoints[]` failover array, not these top-level scalars).
+            opt_text(
+                "host",
+                "SSH2 target host or IP (single-host profiles). For failover use the Endpoints page.",
+                |p| p.host.clone(),
+                |p, v| p.host = v,
+            ),
+            // port — Option<u16>. Empty clears to None (runtime default 22).
+            FieldDef {
+                label: "port",
+                help: "SSH2 target port (1-65535; blank = default 22)",
+                get: Box::new(|p| {
+                    FieldValue::Numeric(p.port.map(|n| n.to_string()).unwrap_or_default())
+                }),
+                set: Box::new(|p, v| {
+                    if let FieldValue::Numeric(s) = v {
+                        if s.is_empty() {
+                            p.port = None;
+                        } else if let Ok(n) = s.parse::<u16>() {
+                            if n >= 1 {
+                                p.port = Some(n);
+                            }
+                        }
+                    }
+                }),
+                validate: Some(Box::new(|v| {
+                    if let FieldValue::Numeric(s) = v {
+                        if s.is_empty() {
+                            return None;
+                        }
+                        match s.parse::<u16>() {
+                            Ok(n) if n >= 1 => None,
+                            _ => Some(format!("`{s}` is not a valid TCP port (1-65535)")),
+                        }
+                    } else {
+                        None
+                    }
+                })),
+                bool_option_help: None,
+            },
+            opt_text(
+                "endpoint",
+                "SSH3 endpoint URL (e.g. `https://host:443/path`). Used when protocol = ssh3.",
+                |p| p.endpoint.clone(),
+                |p, v| p.endpoint = v,
+            ),
             opt_choice_with_help(
                 "startup",
                 "When to start: eager (boot) or lazy (on demand)",
@@ -179,9 +230,81 @@ protocol = "ssh2"
     #[test]
     fn builds_with_expected_field_count() {
         let page = BasicsPage::new();
-        assert_eq!(page.list.fields.len(), 5);
+        // id, description, protocol, host, port, endpoint, startup, failure_policy.
+        assert_eq!(page.list.fields.len(), 8);
         assert_eq!(page.list.fields[0].def.label, "id");
         assert_eq!(page.list.fields[2].def.label, "protocol");
+        assert_eq!(page.list.fields[3].def.label, "host");
+        assert_eq!(page.list.fields[4].def.label, "port");
+        assert_eq!(page.list.fields[5].def.label, "endpoint");
+    }
+
+    #[test]
+    fn host_round_trip_via_keys() {
+        let mut page = BasicsPage::new();
+        let mut m = model();
+        // Move to host (index 3).
+        for _ in 0..3 {
+            page.on_key(k(KeyCode::Down), &mut m);
+        }
+        page.on_key(k(KeyCode::Enter), &mut m); // edit
+        for c in "h.example.com".chars() {
+            page.on_key(k(KeyCode::Char(c)), &mut m);
+        }
+        page.on_key(k(KeyCode::Enter), &mut m); // commit
+        assert_eq!(m.profile().host.as_deref(), Some("h.example.com"));
+        assert!(m.is_dirty());
+    }
+
+    #[test]
+    fn port_round_trip_via_keys() {
+        let mut page = BasicsPage::new();
+        let mut m = model();
+        // Move to port (index 4).
+        for _ in 0..4 {
+            page.on_key(k(KeyCode::Down), &mut m);
+        }
+        page.on_key(k(KeyCode::Enter), &mut m); // edit
+        for c in "2222".chars() {
+            page.on_key(k(KeyCode::Char(c)), &mut m);
+        }
+        page.on_key(k(KeyCode::Enter), &mut m); // commit
+        assert_eq!(m.profile().port, Some(2222));
+    }
+
+    #[test]
+    fn port_validation_rejects_overflow() {
+        let mut page = BasicsPage::new();
+        let mut m = model();
+        for _ in 0..4 {
+            page.on_key(k(KeyCode::Down), &mut m);
+        }
+        page.on_key(k(KeyCode::Enter), &mut m); // edit
+        for c in "99999".chars() {
+            page.on_key(k(KeyCode::Char(c)), &mut m);
+        }
+        page.on_key(k(KeyCode::Enter), &mut m); // commit attempt
+        assert!(page.list.fields[4].last_error().is_some());
+        assert!(m.profile().port.is_none());
+    }
+
+    #[test]
+    fn endpoint_round_trip_via_keys() {
+        let mut page = BasicsPage::new();
+        let mut m = model();
+        // Move to endpoint (index 5).
+        for _ in 0..5 {
+            page.on_key(k(KeyCode::Down), &mut m);
+        }
+        page.on_key(k(KeyCode::Enter), &mut m); // edit
+        for c in "https://q.example.com".chars() {
+            page.on_key(k(KeyCode::Char(c)), &mut m);
+        }
+        page.on_key(k(KeyCode::Enter), &mut m); // commit
+        assert_eq!(
+            m.profile().endpoint.as_deref(),
+            Some("https://q.example.com")
+        );
     }
 
     #[test]

@@ -99,6 +99,14 @@ pub struct Config {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub capabilities: Option<Capabilities>,
 
+    /// `[service]` table. Shapes `spt service install` from config instead of
+    /// only CLI flags (user, group, env, restart policy, `sd_notify`, stdout,
+    /// stderr, description, watchdog interval). **Optional**: absent (or empty)
+    /// preserves the existing CLI-flag-driven behaviour (the installer maps
+    /// only fields that are `Some`). See [`Service`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service: Option<Service>,
+
     /// `[round_robin]` — endpoint cycling configuration. Plan §t4-e4.
     ///
     /// Disabled by default (`enabled = false`). When enabled, the supervisor
@@ -728,6 +736,46 @@ pub struct ObservabilitySnmp {
     /// `[[observability.snmp.traps]]`. §9.6.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub traps: Vec<SnmpTrap>,
+    /// `[[observability.snmp.users]]` — USM agent-users list. Distinct from the
+    /// trap identities in [`Self::traps`]: these are the users the SNMP **agent**
+    /// (`spt observe snmp serve`) accepts inbound GET/GETNEXT/GETBULK requests
+    /// from. Each maps to a `spt_snmp::UsmUser`. **Optional**: absent means the
+    /// agent is configured entirely from CLI flags (behavior-preserving). Wave 8
+    /// honesty-sweep.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub users: Option<Vec<SnmpUser>>,
+}
+
+/// `[[observability.snmp.users]]` — a USM agent-user the SNMP agent accepts
+/// requests from. Mirrors `spt_snmp::UsmUser`: a username plus optional
+/// authentication and privacy protocol/secret pairs. Security level is derived
+/// from which secrets are present (noAuthNoPriv / authNoPriv / authPriv). The
+/// secrets are secret references resolved at runtime, so they never sit in the
+/// config file as cleartext.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct SnmpUser {
+    /// USM security name (username).
+    pub name: String,
+    /// Authentication protocol: `hmac_md5` | `hmac_sha1` | `hmac_sha256`.
+    /// Omitted → noAuthNoPriv.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_protocol: Option<String>,
+    /// Authentication secret reference (`secret://ns/name`). Required when
+    /// `auth_protocol` is set.
+    ///
+    /// Wrapped in [`RedactedString`] so it never leaks via `Debug` and is
+    /// zeroed on drop; serde stays transparent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_secret: Option<RedactedString>,
+    /// Privacy (encryption) protocol: `aes128` | `aes256` | `des`. Requires an
+    /// `auth_protocol` (privacy without auth is not a valid USM security level).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub priv_protocol: Option<String>,
+    /// Privacy secret reference (`secret://ns/name`). Required when
+    /// `priv_protocol` is set. See [`Self::auth_secret`] for the redaction
+    /// contract.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub privacy_secret: Option<RedactedString>,
 }
 
 /// `[[observability.snmp.traps]]`. Spec §9.6.
@@ -1049,6 +1097,21 @@ pub struct MemHygiene {
     /// `0.8`**.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min_rising_fraction: Option<f64>,
+    /// Absolute RSS high-water mark (bytesize string, e.g. `"1GiB"`). When the
+    /// process RSS crosses this threshold the monitor emits a high-water event
+    /// (OOM P3). Omitted disables the absolute-threshold check. Wave 8 (W2-B).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rss_high: Option<String>,
+    /// cgroup `memory.max` pressure threshold as a percentage in `(0, 100]`.
+    /// When the cgroup memory usage crosses this fraction of its limit the
+    /// monitor emits a pressure event (OOM P2). Requires `cgroup_watch = true`.
+    /// Omitted disables the cgroup pressure check. Wave 8 (W2-B).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cgroup_pressure_pct: Option<f64>,
+    /// Enable cgroup (`memory.max` / `memory.current` / `oom_kill`) watching on
+    /// Linux. **Default: `false`**. Ignored on non-Linux targets. Wave 8 (W2-B).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cgroup_watch: Option<bool>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1353,6 +1416,53 @@ pub struct Capabilities {
     /// Permit CLI writes to the Windows GPO registry policy hive.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub allow_gpo_policy_writes: Option<bool>,
+}
+
+// ---------------------------------------------------------------------------
+// [service] — service-install shaping (maps to spt_service::ServiceSpec)
+// ---------------------------------------------------------------------------
+
+/// `[service]` table. Lets `spt service install` be shaped from config rather
+/// than only from CLI flags. Every field is `Option` (or has a default) so an
+/// absent/empty block preserves the previous CLI-only behaviour — the spt-bin
+/// installer maps a field into the [`spt_service::ServiceSpec`] only when it is
+/// `Some`. Wave 8 honesty-sweep (deferral W2-C).
+///
+/// Field semantics mirror `spt_service::ServiceSpec`:
+/// * `restart_policy` — `always` | `on-failure` | `never` (systemd/OpenRC/SysV).
+/// * `sd_notify` — enable systemd `Type=notify` + `sd_notify` (Linux only).
+/// * `watchdog_sec` — systemd `WatchdogSec=` interval in **seconds**; required
+///   for the watchdog pinger to arm.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Service {
+    /// Human-readable service description (`Description=` etc.).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// User to drop privileges to (system scope).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user: Option<String>,
+    /// Group to run as (system scope only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
+    /// Extra environment variables baked into the generated unit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub env: Option<std::collections::BTreeMap<String, String>>,
+    /// Restart behaviour: `always` | `on-failure` | `never`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restart_policy: Option<String>,
+    /// Enable systemd `Type=notify` + `sd_notify` (Linux only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sd_notify: Option<bool>,
+    /// Standard-output log path (launchd / `SysV`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stdout: Option<String>,
+    /// Standard-error log path (launchd / `SysV`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stderr: Option<String>,
+    /// systemd `WatchdogSec=` interval in seconds. Required for the watchdog
+    /// pinger to arm; omitted disables watchdog supervision.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub watchdog_sec: Option<u64>,
 }
 
 // ---------------------------------------------------------------------------
@@ -2578,5 +2688,117 @@ window = \"5m\"
             !rendered.contains("dedupe"),
             "unset dedupe must be omitted; got: {rendered}"
         );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Wave 8 honesty-sweep: [service] + [[observability.snmp.users]] + mem_hygiene
+// new knobs round-trip and stay purely additive when absent.
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod wave8_schema_tests {
+    use super::*;
+
+    #[test]
+    fn service_table_round_trips_through_toml() {
+        let toml_str = "\
+description = \"spt tunnel\"
+user = \"spt\"
+group = \"spt\"
+restart_policy = \"on-failure\"
+sd_notify = true
+stdout = \"/var/log/spt.out\"
+stderr = \"/var/log/spt.err\"
+watchdog_sec = 30
+
+[env]
+RUST_LOG = \"info\"
+";
+        let svc: Service = toml::from_str(toml_str).unwrap();
+        assert_eq!(svc.user.as_deref(), Some("spt"));
+        assert_eq!(svc.restart_policy.as_deref(), Some("on-failure"));
+        assert_eq!(svc.sd_notify, Some(true));
+        assert_eq!(svc.watchdog_sec, Some(30));
+        assert_eq!(
+            svc.env
+                .as_ref()
+                .and_then(|e| e.get("RUST_LOG"))
+                .map(String::as_str),
+            Some("info")
+        );
+        let rendered = toml::to_string(&svc).unwrap();
+        let back: Service = toml::from_str(&rendered).unwrap();
+        assert_eq!(back, svc);
+    }
+
+    #[test]
+    fn config_without_service_omits_table() {
+        let cfg = Config {
+            version: 1,
+            ..Default::default()
+        };
+        assert!(cfg.service.is_none());
+        let rendered = toml::to_string(&cfg).unwrap();
+        assert!(
+            !rendered.contains("[service]"),
+            "absent service must not render a table; got: {rendered}"
+        );
+    }
+
+    #[test]
+    fn snmp_user_round_trips_through_toml() {
+        let toml_str = "\
+name = \"mon\"
+auth_protocol = \"hmac_sha256\"
+auth_secret = \"secret://snmp/mon-auth\"
+priv_protocol = \"aes128\"
+privacy_secret = \"secret://snmp/mon-priv\"
+";
+        let user: SnmpUser = toml::from_str(toml_str).unwrap();
+        assert_eq!(user.name, "mon");
+        assert_eq!(user.auth_protocol.as_deref(), Some("hmac_sha256"));
+        assert_eq!(user.priv_protocol.as_deref(), Some("aes128"));
+        let rendered = toml::to_string(&user).unwrap();
+        let back: SnmpUser = toml::from_str(&rendered).unwrap();
+        assert_eq!(back, user);
+    }
+
+    #[test]
+    fn snmp_users_attach_to_observability_snmp() {
+        let toml_str = "\
+enabled = true
+enterprise_id = 12345
+
+[[users]]
+name = \"mon\"
+auth_protocol = \"hmac_sha256\"
+auth_secret = \"secret://snmp/mon-auth\"
+";
+        let snmp: ObservabilitySnmp = toml::from_str(toml_str).unwrap();
+        let users = snmp.users.as_ref().expect("users present");
+        assert_eq!(users.len(), 1);
+        assert_eq!(users[0].name, "mon");
+    }
+
+    #[test]
+    fn mem_hygiene_new_knobs_round_trip_and_are_omitted_when_absent() {
+        let toml_str = "\
+enabled = true
+rss_high = \"1GiB\"
+cgroup_pressure_pct = 90.0
+cgroup_watch = true
+";
+        let mh: MemHygiene = toml::from_str(toml_str).unwrap();
+        assert_eq!(mh.rss_high.as_deref(), Some("1GiB"));
+        assert_eq!(mh.cgroup_pressure_pct, Some(90.0));
+        assert_eq!(mh.cgroup_watch, Some(true));
+
+        // Absent → omitted (byte-identical to pre-feature layout).
+        let bare = MemHygiene::default();
+        let rendered = toml::to_string(&bare).unwrap();
+        assert!(!rendered.contains("rss_high"), "got: {rendered}");
+        assert!(!rendered.contains("cgroup_pressure_pct"), "got: {rendered}");
+        assert!(!rendered.contains("cgroup_watch"), "got: {rendered}");
     }
 }

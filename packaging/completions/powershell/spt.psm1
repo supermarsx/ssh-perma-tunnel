@@ -877,6 +877,8 @@ Register-ArgumentCompleter -Native -CommandName 'spt' -ScriptBlock {
             break
         }
         'spt;profile;test' {
+            [CompletionResult]::new('-J', '-J ', [CompletionResultType]::ParameterName, 'Ad-hoc proxy-jump chain `user@host[:port][,user@host…]` to preflight (mirrors `tunnel run -J`). Replaces the profile''s configured hops for the duration of the test so the FULL bastion chain is exercised end to end')
+            [CompletionResult]::new('--jump', '--jump', [CompletionResultType]::ParameterName, 'Ad-hoc proxy-jump chain `user@host[:port][,user@host…]` to preflight (mirrors `tunnel run -J`). Replaces the profile''s configured hops for the duration of the test so the FULL bastion chain is exercised end to end')
             [CompletionResult]::new('--config', '--config', [CompletionResultType]::ParameterName, 'Path to a single config file')
             [CompletionResult]::new('--config-dir', '--config-dir', [CompletionResultType]::ParameterName, 'Path to a directory of `*.toml` configs (loaded in lexical order)')
             [CompletionResult]::new('--config-url', '--config-url', [CompletionResultType]::ParameterName, 'HTTPS URL of a remote config to fetch')
