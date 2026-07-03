@@ -46,6 +46,16 @@ jobs:
   build:
     name: mdbook build
     runs-on: ubuntu-latest
+    # `configure-pages` with `enablement: true` calls the Pages REST API to
+    # create the site on first run, which needs `pages: write` (the top-level
+    # default is only `contents: read` — without this the step fails with
+    # "Resource not accessible by integration"). `id-token: write` lets the same
+    # step attest the build. If org policy still forbids API enablement, set the
+    # source manually once: Settings -> Pages -> Source -> "GitHub Actions".
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
     env:
       # Pin mdBook so a new upstream release can't change rendering under us.
       MDBOOK_VERSION: '0.4.40'
