@@ -17147,7 +17147,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__service__subcmd__install)
-            opts="-q -v -h -V --config --user --system --name --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --config --user --system --name --run-as-user --run-as-group --restart --sd-notify --watchdog-sec --stdout --stderr --env --description --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -17158,6 +17158,38 @@ _spt() {
                     return 0
                     ;;
                 --name)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --run-as-user)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --run-as-group)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --restart)
+                    COMPREPLY=($(compgen -W "always on-failure never" -- "${cur}"))
+                    return 0
+                    ;;
+                --watchdog-sec)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --stdout)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --stderr)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --env)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --description)
                     COMPREPLY=($(compgen -f "${cur}"))
                     return 0
                     ;;
@@ -17201,7 +17233,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__service__subcmd__render)
-            opts="-q -v -h -V --config --user --system --name --format --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --config --user --system --name --run-as-user --run-as-group --restart --sd-notify --watchdog-sec --stdout --stderr --env --description --format --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -17212,6 +17244,38 @@ _spt() {
                     return 0
                     ;;
                 --name)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --run-as-user)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --run-as-group)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --restart)
+                    COMPREPLY=($(compgen -W "always on-failure never" -- "${cur}"))
+                    return 0
+                    ;;
+                --watchdog-sec)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --stdout)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --stderr)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --env)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --description)
                     COMPREPLY=($(compgen -f "${cur}"))
                     return 0
                     ;;
@@ -17259,7 +17323,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__service__subcmd__restart)
-            opts="-q -v -h -V --config --user --system --name --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --config --user --system --name --run-as-user --run-as-group --restart --sd-notify --watchdog-sec --stdout --stderr --env --description --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -17270,6 +17334,38 @@ _spt() {
                     return 0
                     ;;
                 --name)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --run-as-user)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --run-as-group)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --restart)
+                    COMPREPLY=($(compgen -W "always on-failure never" -- "${cur}"))
+                    return 0
+                    ;;
+                --watchdog-sec)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --stdout)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --stderr)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --env)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --description)
                     COMPREPLY=($(compgen -f "${cur}"))
                     return 0
                     ;;
@@ -17313,7 +17409,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__service__subcmd__start)
-            opts="-q -v -h -V --config --user --system --name --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --config --user --system --name --run-as-user --run-as-group --restart --sd-notify --watchdog-sec --stdout --stderr --env --description --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -17324,6 +17420,38 @@ _spt() {
                     return 0
                     ;;
                 --name)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --run-as-user)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --run-as-group)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --restart)
+                    COMPREPLY=($(compgen -W "always on-failure never" -- "${cur}"))
+                    return 0
+                    ;;
+                --watchdog-sec)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --stdout)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --stderr)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --env)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --description)
                     COMPREPLY=($(compgen -f "${cur}"))
                     return 0
                     ;;
@@ -17421,7 +17549,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__service__subcmd__stop)
-            opts="-q -v -h -V --config --user --system --name --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --config --user --system --name --run-as-user --run-as-group --restart --sd-notify --watchdog-sec --stdout --stderr --env --description --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -17432,6 +17560,38 @@ _spt() {
                     return 0
                     ;;
                 --name)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --run-as-user)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --run-as-group)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --restart)
+                    COMPREPLY=($(compgen -W "always on-failure never" -- "${cur}"))
+                    return 0
+                    ;;
+                --watchdog-sec)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --stdout)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --stderr)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --env)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --description)
                     COMPREPLY=($(compgen -f "${cur}"))
                     return 0
                     ;;
@@ -17475,7 +17635,7 @@ _spt() {
             return 0
             ;;
         spt__subcmd__service__subcmd__uninstall)
-            opts="-q -v -h -V --config --user --system --name --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
+            opts="-q -v -h -V --config --user --system --name --run-as-user --run-as-group --restart --sd-notify --watchdog-sec --stdout --stderr --env --description --config-dir --config-url --config-fingerprint --state-dir --portable --profile --output --json --log-level --color --quiet --verbose --no-color --dry-run --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -17486,6 +17646,38 @@ _spt() {
                     return 0
                     ;;
                 --name)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --run-as-user)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --run-as-group)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --restart)
+                    COMPREPLY=($(compgen -W "always on-failure never" -- "${cur}"))
+                    return 0
+                    ;;
+                --watchdog-sec)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --stdout)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --stderr)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --env)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --description)
                     COMPREPLY=($(compgen -f "${cur}"))
                     return 0
                     ;;

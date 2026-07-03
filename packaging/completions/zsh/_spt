@@ -2266,6 +2266,16 @@ never\:"Never emit color escapes"))' \
 _arguments "${_arguments_options[@]}" : \
 '--config=[Path to the config file backing the service]:PATH:_files' \
 '--name=[Override the service unit name]:NAME:_default' \
+'--run-as-user=[Run the service as this user (system scope). Maps to systemd \`User=\` / OpenRC \`command_user\` / launchd \`UserName\` / SysV \`DAEMON_USER\`]:USER:_default' \
+'--run-as-group=[Run the service as this group (system scope). Maps to systemd \`Group=\`]:GROUP:_default' \
+'--restart=[Restart policy for the generated unit]:POLICY:((always\:"Always restart on exit"
+on-failure\:"Restart only on non-zero exit (default)"
+never\:"Never restart automatically"))' \
+'--watchdog-sec=[systemd \`WatchdogSec=\` interval in seconds. \`0\` disables the watchdog; omitted uses a sane default]:SECONDS:_default' \
+'--stdout=[Redirect service stdout to this path (launchd / SysV)]:PATH:_files' \
+'--stderr=[Redirect service stderr to this path (launchd / SysV)]:PATH:_files' \
+'*--env=[Extra environment variable \`KEY=VALUE\` (repeatable)]:KEY=VALUE:_default' \
+'--description=[Override the unit description]:TEXT:_default' \
 '--config-dir=[Path to a directory of \`*.toml\` configs (loaded in lexical order)]:PATH:_files' \
 '--config-url=[HTTPS URL of a remote config to fetch]:URL:_default' \
 '--config-fingerprint=[SHA-256 fingerprint pin for \`--config-url\`]:SHA256:_default' \
@@ -2285,6 +2295,7 @@ always\:"Always emit color escapes"
 never\:"Never emit color escapes"))' \
 '--user[User-scoped service]' \
 '--system[System-scoped service]' \
+'--sd-notify[Enable systemd \`Type=notify\` (the daemon sends READY=1/STOPPING=1)]' \
 '--portable[Portable mode\: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)]' \
 '--json[Convenience alias for \`--output json\`]' \
 '-q[Suppress non-essential output]' \
@@ -2303,6 +2314,16 @@ never\:"Never emit color escapes"))' \
 _arguments "${_arguments_options[@]}" : \
 '--config=[Path to the config file backing the service]:PATH:_files' \
 '--name=[Override the service unit name]:NAME:_default' \
+'--run-as-user=[Run the service as this user (system scope). Maps to systemd \`User=\` / OpenRC \`command_user\` / launchd \`UserName\` / SysV \`DAEMON_USER\`]:USER:_default' \
+'--run-as-group=[Run the service as this group (system scope). Maps to systemd \`Group=\`]:GROUP:_default' \
+'--restart=[Restart policy for the generated unit]:POLICY:((always\:"Always restart on exit"
+on-failure\:"Restart only on non-zero exit (default)"
+never\:"Never restart automatically"))' \
+'--watchdog-sec=[systemd \`WatchdogSec=\` interval in seconds. \`0\` disables the watchdog; omitted uses a sane default]:SECONDS:_default' \
+'--stdout=[Redirect service stdout to this path (launchd / SysV)]:PATH:_files' \
+'--stderr=[Redirect service stderr to this path (launchd / SysV)]:PATH:_files' \
+'*--env=[Extra environment variable \`KEY=VALUE\` (repeatable)]:KEY=VALUE:_default' \
+'--description=[Override the unit description]:TEXT:_default' \
 '--config-dir=[Path to a directory of \`*.toml\` configs (loaded in lexical order)]:PATH:_files' \
 '--config-url=[HTTPS URL of a remote config to fetch]:URL:_default' \
 '--config-fingerprint=[SHA-256 fingerprint pin for \`--config-url\`]:SHA256:_default' \
@@ -2322,6 +2343,7 @@ always\:"Always emit color escapes"
 never\:"Never emit color escapes"))' \
 '--user[User-scoped service]' \
 '--system[System-scoped service]' \
+'--sd-notify[Enable systemd \`Type=notify\` (the daemon sends READY=1/STOPPING=1)]' \
 '--portable[Portable mode\: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)]' \
 '--json[Convenience alias for \`--output json\`]' \
 '-q[Suppress non-essential output]' \
@@ -2340,6 +2362,16 @@ never\:"Never emit color escapes"))' \
 _arguments "${_arguments_options[@]}" : \
 '--config=[Path to the config file backing the service]:PATH:_files' \
 '--name=[Override the service unit name]:NAME:_default' \
+'--run-as-user=[Run the service as this user (system scope). Maps to systemd \`User=\` / OpenRC \`command_user\` / launchd \`UserName\` / SysV \`DAEMON_USER\`]:USER:_default' \
+'--run-as-group=[Run the service as this group (system scope). Maps to systemd \`Group=\`]:GROUP:_default' \
+'--restart=[Restart policy for the generated unit]:POLICY:((always\:"Always restart on exit"
+on-failure\:"Restart only on non-zero exit (default)"
+never\:"Never restart automatically"))' \
+'--watchdog-sec=[systemd \`WatchdogSec=\` interval in seconds. \`0\` disables the watchdog; omitted uses a sane default]:SECONDS:_default' \
+'--stdout=[Redirect service stdout to this path (launchd / SysV)]:PATH:_files' \
+'--stderr=[Redirect service stderr to this path (launchd / SysV)]:PATH:_files' \
+'*--env=[Extra environment variable \`KEY=VALUE\` (repeatable)]:KEY=VALUE:_default' \
+'--description=[Override the unit description]:TEXT:_default' \
 '--config-dir=[Path to a directory of \`*.toml\` configs (loaded in lexical order)]:PATH:_files' \
 '--config-url=[HTTPS URL of a remote config to fetch]:URL:_default' \
 '--config-fingerprint=[SHA-256 fingerprint pin for \`--config-url\`]:SHA256:_default' \
@@ -2359,6 +2391,7 @@ always\:"Always emit color escapes"
 never\:"Never emit color escapes"))' \
 '--user[User-scoped service]' \
 '--system[System-scoped service]' \
+'--sd-notify[Enable systemd \`Type=notify\` (the daemon sends READY=1/STOPPING=1)]' \
 '--portable[Portable mode\: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)]' \
 '--json[Convenience alias for \`--output json\`]' \
 '-q[Suppress non-essential output]' \
@@ -2377,6 +2410,16 @@ never\:"Never emit color escapes"))' \
 _arguments "${_arguments_options[@]}" : \
 '--config=[Path to the config file backing the service]:PATH:_files' \
 '--name=[Override the service unit name]:NAME:_default' \
+'--run-as-user=[Run the service as this user (system scope). Maps to systemd \`User=\` / OpenRC \`command_user\` / launchd \`UserName\` / SysV \`DAEMON_USER\`]:USER:_default' \
+'--run-as-group=[Run the service as this group (system scope). Maps to systemd \`Group=\`]:GROUP:_default' \
+'--restart=[Restart policy for the generated unit]:POLICY:((always\:"Always restart on exit"
+on-failure\:"Restart only on non-zero exit (default)"
+never\:"Never restart automatically"))' \
+'--watchdog-sec=[systemd \`WatchdogSec=\` interval in seconds. \`0\` disables the watchdog; omitted uses a sane default]:SECONDS:_default' \
+'--stdout=[Redirect service stdout to this path (launchd / SysV)]:PATH:_files' \
+'--stderr=[Redirect service stderr to this path (launchd / SysV)]:PATH:_files' \
+'*--env=[Extra environment variable \`KEY=VALUE\` (repeatable)]:KEY=VALUE:_default' \
+'--description=[Override the unit description]:TEXT:_default' \
 '--config-dir=[Path to a directory of \`*.toml\` configs (loaded in lexical order)]:PATH:_files' \
 '--config-url=[HTTPS URL of a remote config to fetch]:URL:_default' \
 '--config-fingerprint=[SHA-256 fingerprint pin for \`--config-url\`]:SHA256:_default' \
@@ -2396,6 +2439,7 @@ always\:"Always emit color escapes"
 never\:"Never emit color escapes"))' \
 '--user[User-scoped service]' \
 '--system[System-scoped service]' \
+'--sd-notify[Enable systemd \`Type=notify\` (the daemon sends READY=1/STOPPING=1)]' \
 '--portable[Portable mode\: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)]' \
 '--json[Convenience alias for \`--output json\`]' \
 '-q[Suppress non-essential output]' \
@@ -2414,6 +2458,16 @@ never\:"Never emit color escapes"))' \
 _arguments "${_arguments_options[@]}" : \
 '--config=[Path to the config file backing the service]:PATH:_files' \
 '--name=[Override the service unit name]:NAME:_default' \
+'--run-as-user=[Run the service as this user (system scope). Maps to systemd \`User=\` / OpenRC \`command_user\` / launchd \`UserName\` / SysV \`DAEMON_USER\`]:USER:_default' \
+'--run-as-group=[Run the service as this group (system scope). Maps to systemd \`Group=\`]:GROUP:_default' \
+'--restart=[Restart policy for the generated unit]:POLICY:((always\:"Always restart on exit"
+on-failure\:"Restart only on non-zero exit (default)"
+never\:"Never restart automatically"))' \
+'--watchdog-sec=[systemd \`WatchdogSec=\` interval in seconds. \`0\` disables the watchdog; omitted uses a sane default]:SECONDS:_default' \
+'--stdout=[Redirect service stdout to this path (launchd / SysV)]:PATH:_files' \
+'--stderr=[Redirect service stderr to this path (launchd / SysV)]:PATH:_files' \
+'*--env=[Extra environment variable \`KEY=VALUE\` (repeatable)]:KEY=VALUE:_default' \
+'--description=[Override the unit description]:TEXT:_default' \
 '--config-dir=[Path to a directory of \`*.toml\` configs (loaded in lexical order)]:PATH:_files' \
 '--config-url=[HTTPS URL of a remote config to fetch]:URL:_default' \
 '--config-fingerprint=[SHA-256 fingerprint pin for \`--config-url\`]:SHA256:_default' \
@@ -2433,6 +2487,7 @@ always\:"Always emit color escapes"
 never\:"Never emit color escapes"))' \
 '--user[User-scoped service]' \
 '--system[System-scoped service]' \
+'--sd-notify[Enable systemd \`Type=notify\` (the daemon sends READY=1/STOPPING=1)]' \
 '--portable[Portable mode\: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)]' \
 '--json[Convenience alias for \`--output json\`]' \
 '-q[Suppress non-essential output]' \
@@ -2488,6 +2543,16 @@ never\:"Never emit color escapes"))' \
 _arguments "${_arguments_options[@]}" : \
 '--config=[Path to the config file]:PATH:_files' \
 '--name=[Override the service unit name]:NAME:_default' \
+'--run-as-user=[Run the service as this user (system scope). Maps to systemd \`User=\` / OpenRC \`command_user\` / launchd \`UserName\` / SysV \`DAEMON_USER\`]:USER:_default' \
+'--run-as-group=[Run the service as this group (system scope). Maps to systemd \`Group=\`]:GROUP:_default' \
+'--restart=[Restart policy for the generated unit]:POLICY:((always\:"Always restart on exit"
+on-failure\:"Restart only on non-zero exit (default)"
+never\:"Never restart automatically"))' \
+'--watchdog-sec=[systemd \`WatchdogSec=\` interval in seconds. \`0\` disables the watchdog; omitted uses a sane default]:SECONDS:_default' \
+'--stdout=[Redirect service stdout to this path (launchd / SysV)]:PATH:_files' \
+'--stderr=[Redirect service stderr to this path (launchd / SysV)]:PATH:_files' \
+'*--env=[Extra environment variable \`KEY=VALUE\` (repeatable)]:KEY=VALUE:_default' \
+'--description=[Override the unit description]:TEXT:_default' \
 '--format=[Output format]:FORMAT:((unit\:"systemd / OpenRC / SysV unit"
 plist\:"macOS launchd plist"
 windows\:"Windows service definition"))' \
@@ -2510,6 +2575,7 @@ always\:"Always emit color escapes"
 never\:"Never emit color escapes"))' \
 '--user[User-scoped service]' \
 '--system[System-scoped service]' \
+'--sd-notify[Enable systemd \`Type=notify\` (the daemon sends READY=1/STOPPING=1)]' \
 '--portable[Portable mode\: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)]' \
 '--json[Convenience alias for \`--output json\`]' \
 '-q[Suppress non-essential output]' \

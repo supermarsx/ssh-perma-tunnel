@@ -1382,6 +1382,16 @@ complete -c spt -n "__fish_spt_using_subcommand service; and not __fish_seen_sub
 complete -c spt -n "__fish_spt_using_subcommand service; and not __fish_seen_subcommand_from install uninstall start stop restart status render help" -f -a "help" -d 'Print this message or the help of the given subcommand(s)'
 complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from install" -l config -d 'Path to the config file backing the service' -r -F
 complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from install" -l name -d 'Override the service unit name' -r
+complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from install" -l run-as-user -d 'Run the service as this user (system scope). Maps to systemd `User=` / OpenRC `command_user` / launchd `UserName` / SysV `DAEMON_USER`' -r
+complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from install" -l run-as-group -d 'Run the service as this group (system scope). Maps to systemd `Group=`' -r
+complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from install" -l restart -d 'Restart policy for the generated unit' -r -f -a "always\t'Always restart on exit'
+on-failure\t'Restart only on non-zero exit (default)'
+never\t'Never restart automatically'"
+complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from install" -l watchdog-sec -d 'systemd `WatchdogSec=` interval in seconds. `0` disables the watchdog; omitted uses a sane default' -r
+complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from install" -l stdout -d 'Redirect service stdout to this path (launchd / SysV)' -r -F
+complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from install" -l stderr -d 'Redirect service stderr to this path (launchd / SysV)' -r -F
+complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from install" -l env -d 'Extra environment variable `KEY=VALUE` (repeatable)' -r
+complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from install" -l description -d 'Override the unit description' -r
 complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from install" -l config-dir -d 'Path to a directory of `*.toml` configs (loaded in lexical order)' -r -F
 complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from install" -l config-url -d 'HTTPS URL of a remote config to fetch' -r
 complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from install" -l config-fingerprint -d 'SHA-256 fingerprint pin for `--config-url`' -r
@@ -1401,6 +1411,7 @@ always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
 complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from install" -l user -d 'User-scoped service'
 complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from install" -l system -d 'System-scoped service'
+complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from install" -l sd-notify -d 'Enable systemd `Type=notify` (the daemon sends READY=1/STOPPING=1)'
 complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from install" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from install" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from install" -s q -l quiet -d 'Suppress non-essential output'
@@ -1411,6 +1422,16 @@ complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcomm
 complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from install" -s V -l version -d 'Print version'
 complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from uninstall" -l config -d 'Path to the config file backing the service' -r -F
 complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from uninstall" -l name -d 'Override the service unit name' -r
+complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from uninstall" -l run-as-user -d 'Run the service as this user (system scope). Maps to systemd `User=` / OpenRC `command_user` / launchd `UserName` / SysV `DAEMON_USER`' -r
+complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from uninstall" -l run-as-group -d 'Run the service as this group (system scope). Maps to systemd `Group=`' -r
+complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from uninstall" -l restart -d 'Restart policy for the generated unit' -r -f -a "always\t'Always restart on exit'
+on-failure\t'Restart only on non-zero exit (default)'
+never\t'Never restart automatically'"
+complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from uninstall" -l watchdog-sec -d 'systemd `WatchdogSec=` interval in seconds. `0` disables the watchdog; omitted uses a sane default' -r
+complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from uninstall" -l stdout -d 'Redirect service stdout to this path (launchd / SysV)' -r -F
+complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from uninstall" -l stderr -d 'Redirect service stderr to this path (launchd / SysV)' -r -F
+complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from uninstall" -l env -d 'Extra environment variable `KEY=VALUE` (repeatable)' -r
+complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from uninstall" -l description -d 'Override the unit description' -r
 complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from uninstall" -l config-dir -d 'Path to a directory of `*.toml` configs (loaded in lexical order)' -r -F
 complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from uninstall" -l config-url -d 'HTTPS URL of a remote config to fetch' -r
 complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from uninstall" -l config-fingerprint -d 'SHA-256 fingerprint pin for `--config-url`' -r
@@ -1430,6 +1451,7 @@ always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
 complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from uninstall" -l user -d 'User-scoped service'
 complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from uninstall" -l system -d 'System-scoped service'
+complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from uninstall" -l sd-notify -d 'Enable systemd `Type=notify` (the daemon sends READY=1/STOPPING=1)'
 complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from uninstall" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from uninstall" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from uninstall" -s q -l quiet -d 'Suppress non-essential output'
@@ -1440,6 +1462,16 @@ complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcomm
 complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from uninstall" -s V -l version -d 'Print version'
 complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from start" -l config -d 'Path to the config file backing the service' -r -F
 complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from start" -l name -d 'Override the service unit name' -r
+complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from start" -l run-as-user -d 'Run the service as this user (system scope). Maps to systemd `User=` / OpenRC `command_user` / launchd `UserName` / SysV `DAEMON_USER`' -r
+complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from start" -l run-as-group -d 'Run the service as this group (system scope). Maps to systemd `Group=`' -r
+complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from start" -l restart -d 'Restart policy for the generated unit' -r -f -a "always\t'Always restart on exit'
+on-failure\t'Restart only on non-zero exit (default)'
+never\t'Never restart automatically'"
+complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from start" -l watchdog-sec -d 'systemd `WatchdogSec=` interval in seconds. `0` disables the watchdog; omitted uses a sane default' -r
+complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from start" -l stdout -d 'Redirect service stdout to this path (launchd / SysV)' -r -F
+complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from start" -l stderr -d 'Redirect service stderr to this path (launchd / SysV)' -r -F
+complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from start" -l env -d 'Extra environment variable `KEY=VALUE` (repeatable)' -r
+complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from start" -l description -d 'Override the unit description' -r
 complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from start" -l config-dir -d 'Path to a directory of `*.toml` configs (loaded in lexical order)' -r -F
 complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from start" -l config-url -d 'HTTPS URL of a remote config to fetch' -r
 complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from start" -l config-fingerprint -d 'SHA-256 fingerprint pin for `--config-url`' -r
@@ -1459,6 +1491,7 @@ always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
 complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from start" -l user -d 'User-scoped service'
 complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from start" -l system -d 'System-scoped service'
+complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from start" -l sd-notify -d 'Enable systemd `Type=notify` (the daemon sends READY=1/STOPPING=1)'
 complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from start" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from start" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from start" -s q -l quiet -d 'Suppress non-essential output'
@@ -1469,6 +1502,16 @@ complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcomm
 complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from start" -s V -l version -d 'Print version'
 complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from stop" -l config -d 'Path to the config file backing the service' -r -F
 complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from stop" -l name -d 'Override the service unit name' -r
+complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from stop" -l run-as-user -d 'Run the service as this user (system scope). Maps to systemd `User=` / OpenRC `command_user` / launchd `UserName` / SysV `DAEMON_USER`' -r
+complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from stop" -l run-as-group -d 'Run the service as this group (system scope). Maps to systemd `Group=`' -r
+complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from stop" -l restart -d 'Restart policy for the generated unit' -r -f -a "always\t'Always restart on exit'
+on-failure\t'Restart only on non-zero exit (default)'
+never\t'Never restart automatically'"
+complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from stop" -l watchdog-sec -d 'systemd `WatchdogSec=` interval in seconds. `0` disables the watchdog; omitted uses a sane default' -r
+complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from stop" -l stdout -d 'Redirect service stdout to this path (launchd / SysV)' -r -F
+complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from stop" -l stderr -d 'Redirect service stderr to this path (launchd / SysV)' -r -F
+complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from stop" -l env -d 'Extra environment variable `KEY=VALUE` (repeatable)' -r
+complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from stop" -l description -d 'Override the unit description' -r
 complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from stop" -l config-dir -d 'Path to a directory of `*.toml` configs (loaded in lexical order)' -r -F
 complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from stop" -l config-url -d 'HTTPS URL of a remote config to fetch' -r
 complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from stop" -l config-fingerprint -d 'SHA-256 fingerprint pin for `--config-url`' -r
@@ -1488,6 +1531,7 @@ always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
 complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from stop" -l user -d 'User-scoped service'
 complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from stop" -l system -d 'System-scoped service'
+complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from stop" -l sd-notify -d 'Enable systemd `Type=notify` (the daemon sends READY=1/STOPPING=1)'
 complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from stop" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from stop" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from stop" -s q -l quiet -d 'Suppress non-essential output'
@@ -1498,6 +1542,16 @@ complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcomm
 complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from stop" -s V -l version -d 'Print version'
 complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from restart" -l config -d 'Path to the config file backing the service' -r -F
 complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from restart" -l name -d 'Override the service unit name' -r
+complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from restart" -l run-as-user -d 'Run the service as this user (system scope). Maps to systemd `User=` / OpenRC `command_user` / launchd `UserName` / SysV `DAEMON_USER`' -r
+complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from restart" -l run-as-group -d 'Run the service as this group (system scope). Maps to systemd `Group=`' -r
+complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from restart" -l restart -d 'Restart policy for the generated unit' -r -f -a "always\t'Always restart on exit'
+on-failure\t'Restart only on non-zero exit (default)'
+never\t'Never restart automatically'"
+complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from restart" -l watchdog-sec -d 'systemd `WatchdogSec=` interval in seconds. `0` disables the watchdog; omitted uses a sane default' -r
+complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from restart" -l stdout -d 'Redirect service stdout to this path (launchd / SysV)' -r -F
+complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from restart" -l stderr -d 'Redirect service stderr to this path (launchd / SysV)' -r -F
+complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from restart" -l env -d 'Extra environment variable `KEY=VALUE` (repeatable)' -r
+complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from restart" -l description -d 'Override the unit description' -r
 complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from restart" -l config-dir -d 'Path to a directory of `*.toml` configs (loaded in lexical order)' -r -F
 complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from restart" -l config-url -d 'HTTPS URL of a remote config to fetch' -r
 complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from restart" -l config-fingerprint -d 'SHA-256 fingerprint pin for `--config-url`' -r
@@ -1517,6 +1571,7 @@ always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
 complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from restart" -l user -d 'User-scoped service'
 complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from restart" -l system -d 'System-scoped service'
+complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from restart" -l sd-notify -d 'Enable systemd `Type=notify` (the daemon sends READY=1/STOPPING=1)'
 complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from restart" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from restart" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from restart" -s q -l quiet -d 'Suppress non-essential output'
@@ -1556,6 +1611,16 @@ complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcomm
 complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from status" -s V -l version -d 'Print version'
 complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from render" -l config -d 'Path to the config file' -r -F
 complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from render" -l name -d 'Override the service unit name' -r
+complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from render" -l run-as-user -d 'Run the service as this user (system scope). Maps to systemd `User=` / OpenRC `command_user` / launchd `UserName` / SysV `DAEMON_USER`' -r
+complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from render" -l run-as-group -d 'Run the service as this group (system scope). Maps to systemd `Group=`' -r
+complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from render" -l restart -d 'Restart policy for the generated unit' -r -f -a "always\t'Always restart on exit'
+on-failure\t'Restart only on non-zero exit (default)'
+never\t'Never restart automatically'"
+complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from render" -l watchdog-sec -d 'systemd `WatchdogSec=` interval in seconds. `0` disables the watchdog; omitted uses a sane default' -r
+complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from render" -l stdout -d 'Redirect service stdout to this path (launchd / SysV)' -r -F
+complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from render" -l stderr -d 'Redirect service stderr to this path (launchd / SysV)' -r -F
+complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from render" -l env -d 'Extra environment variable `KEY=VALUE` (repeatable)' -r
+complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from render" -l description -d 'Override the unit description' -r
 complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from render" -l format -d 'Output format' -r -f -a "unit\t'systemd / OpenRC / SysV unit'
 plist\t'macOS launchd plist'
 windows\t'Windows service definition'"
@@ -1578,6 +1643,7 @@ always\t'Always emit color escapes'
 never\t'Never emit color escapes'"
 complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from render" -l user -d 'User-scoped service'
 complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from render" -l system -d 'System-scoped service'
+complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from render" -l sd-notify -d 'Enable systemd `Type=notify` (the daemon sends READY=1/STOPPING=1)'
 complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from render" -l portable -d 'Portable mode: keep all runtime state next to the executable instead of OS-standard locations (no OS install required)'
 complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from render" -l json -d 'Convenience alias for `--output json`'
 complete -c spt -n "__fish_spt_using_subcommand service; and __fish_seen_subcommand_from render" -s q -l quiet -d 'Suppress non-essential output'
