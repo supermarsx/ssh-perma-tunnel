@@ -7,7 +7,7 @@
 //! static fixtures can't match both feature sets. Skip the whole suite when
 //! `snmp` is enabled (e.g. the `all-features` CI job) — the default `cargo test
 //! --workspace` matrix (the shipped surface) is where these are meaningful, and
-//! spt-bin's it_completion validates the feature-gated surface separately.
+//! spt-bin's `it_completion` validates the feature-gated surface separately.
 #![cfg(not(feature = "snmp"))]
 
 use clap::CommandFactory;
