@@ -408,7 +408,18 @@ impl Agent {
 
         // Confirm peer is talking to us.
         if msg.security.engine_id != self.engine_id.as_bytes() {
+            // SECURITY LOGGING (audit-logging CRIT #3): a mismatched engine id
+            // against a non-empty (i.e. NOT discovery) request is a spoof /
+            // misdirected / replay signal. Only the classification and the
+            // untrusted user name (public identifier, control-escaped) are
+            // logged — never key material.
             self.bump_counter(UsmError::UnknownEngineId).await;
+            tracing::warn!(
+                %peer,
+                user = %crate::agent::escape_user(&msg.security.user_name),
+                reason = UsmError::UnknownEngineId.reason(),
+                "snmp usm rejected: engine id mismatch",
+            );
             return Ok(());
         }
 
@@ -416,6 +427,20 @@ impl Agent {
         let scoped = match self.usm_verify(&mut msg, level).await {
             Ok(s) => s,
             Err(Error::Usm(e)) => {
+                // SECURITY LOGGING (audit-logging CRIT #3): previously an
+                // opaque `usmStats*` counter bump was the ONLY trace, so
+                // brute-force / replay / spoofing against the USM agent was
+                // invisible in the log stream. Emit a structured WARN with the
+                // peer, the (untrusted, escaped) user name, the requested
+                // security level, and the failure reason. No secret / key /
+                // digest bytes are logged.
+                tracing::warn!(
+                    %peer,
+                    user = %crate::agent::escape_user(&msg.security.user_name),
+                    level = ?level,
+                    reason = e.reason(),
+                    "snmp usm authentication failed",
+                );
                 self.bump_counter(e.clone()).await;
                 // For reportable messages we should send a Report-PDU back.
                 if msg.global.reportable_bit() {
@@ -1013,6 +1038,29 @@ impl Clone for UserKeys {
             priv_kul: self.priv_kul.clone(),
         }
     }
+}
+
+/// Renders an untrusted USM `msgUserName` for logging.
+///
+/// The user name arrives from the network and may contain control bytes; a
+/// naive `{}`-format would let an attacker forge log lines. We decode lossily
+/// (invalid UTF-8 → replacement char) and escape every control character so
+/// the value is safe to embed in a structured log field. This is a public
+/// identifier, never a secret.
+#[must_use]
+pub(crate) fn escape_user(raw: &[u8]) -> String {
+    let s = String::from_utf8_lossy(raw);
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        if c.is_control() {
+            for e in c.escape_default() {
+                out.push(e);
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 fn extract_request_id(msg: &Message) -> Option<i32> {

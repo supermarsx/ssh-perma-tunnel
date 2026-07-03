@@ -1308,6 +1308,13 @@ async fn tunnel_run(global: &GlobalOpts, args: groups::tunnel::TunnelRun) -> Res
     // logs and returns None rather than aborting the tunnel.
     let dns_runtime = maybe_spawn_dns_server(&cfg, &state_dir, global.dry_run).await?;
 
+    // Wave 5 (wire-observ finding 1): bring up the SNMPv3 USM agent when
+    // `[observability.snmp].enabled = true`. Runs on a background task bound to
+    // `[observability.snmp].bind`; a misconfig returns Err (the operator asked
+    // for SNMP). Feature-gated behind `snmp`.
+    #[cfg(feature = "snmp")]
+    let snmp_runtime = crate::snmp_agent::maybe_spawn_snmp_agent(&cfg, &resolver).await?;
+
     // appstatus (Wave 2): now that every subsystem has been (maybe) spawned,
     // record the daemon identity + per-subsystem state into the sibling
     // `<state_dir>/runtime.json` so `spt status` can render an app-wide
@@ -1388,6 +1395,10 @@ async fn tunnel_run(global: &GlobalOpts, args: groups::tunnel::TunnelRun) -> Res
         }
         if let Some(d) = dns_runtime {
             d.shutdown().await;
+        }
+        #[cfg(feature = "snmp")]
+        if let Some(s) = snmp_runtime {
+            s.shutdown().await;
         }
         // E6-F1/E6-F4: stop the events dispatcher and flush+stop the metrics
         // exporter writer (final metrics.prom snapshot) before returning.
@@ -1504,6 +1515,10 @@ async fn tunnel_run(global: &GlobalOpts, args: groups::tunnel::TunnelRun) -> Res
     }
     if let Some(d) = dns_runtime {
         d.shutdown().await;
+    }
+    #[cfg(feature = "snmp")]
+    if let Some(s) = snmp_runtime {
+        s.shutdown().await;
     }
     // E6-F1/E6-F4: stop the events dispatcher + metrics exporter writer.
     events_pipeline.shutdown().await;
@@ -2063,7 +2078,34 @@ fn build_events_pipeline(
     let bus = spt_events::EventBus::new(&bus_cfg).with_ring(ring.clone());
 
     let mcp_notifier = std::sync::Arc::new(crate::mcp_notifier::BroadcastMcpNotifier::new());
-    let sinks = build_event_sinks(&events.sinks, &events.commands, resolver, &mcp_notifier);
+
+    // Wave 5: build the live SNMP trap transport from `[observability.snmp]`
+    // (feature-gated). `None` when the `snmp` feature is off, no traps are
+    // configured, or the config is unusable — the `snmp_trap` sink then stays
+    // constructed-but-inert (its own WARN) rather than silently vanishing.
+    #[cfg(feature = "snmp")]
+    let snmp_trap: Option<std::sync::Arc<dyn spt_events::sinks::snmp_trap::SnmpTrapTransport>> = cfg
+        .observability
+        .as_ref()
+        .and_then(|o| o.snmp.as_ref())
+        .and_then(|s| match crate::snmp_agent::build_trap_transport(s, resolver) {
+            Ok(t) => t,
+            Err(e) => {
+                tracing::warn!(error = %e, "snmp_trap transport build failed — snmp_trap sinks inert");
+                None
+            }
+        });
+    #[cfg(not(feature = "snmp"))]
+    let snmp_trap: Option<std::sync::Arc<dyn spt_events::sinks::snmp_trap::SnmpTrapTransport>> =
+        None;
+
+    let sinks = build_event_sinks(
+        &events.sinks,
+        &events.commands,
+        resolver,
+        &mcp_notifier,
+        snmp_trap,
+    );
     let bindings = build_event_bindings(&events, &sinks);
 
     let dispatcher = if sinks.is_empty() {
@@ -2213,6 +2255,7 @@ fn build_event_sinks(
     commands: &[spt_config::schema::EventCommand],
     resolver: &spt_secrets::Resolver,
     mcp_notifier: &std::sync::Arc<crate::mcp_notifier::BroadcastMcpNotifier>,
+    snmp_trap: Option<std::sync::Arc<dyn spt_events::sinks::snmp_trap::SnmpTrapTransport>>,
 ) -> std::collections::HashMap<String, std::sync::Arc<dyn spt_events::Sink>> {
     use std::sync::Arc;
     let mut sinks: std::collections::HashMap<String, Arc<dyn spt_events::Sink>> =
@@ -2289,6 +2332,11 @@ fn build_event_sinks(
         }
         if let Some(e) = email {
             deps = deps.with_email(e);
+        }
+        // Wave 5: inject the live SNMP trap transport so `snmp_trap` sinks send
+        // real SNMPv3 traps instead of reporting "no transport" (Wave-4 stub).
+        if let Some(t) = snmp_trap.as_ref() {
+            deps = deps.with_snmp_trap(t.clone());
         }
 
         match spt_events::build_sink(sc, commands, &deps, resolver) {
@@ -4346,25 +4394,16 @@ async fn observe_dispatch(global: &GlobalOpts, c: groups::observe::ObserveCmd) -
         ObserveSub::Metrics(args) => observe_metrics(global, args),
         #[cfg(feature = "snmp")]
         ObserveSub::Snmp(snmp) => match snmp.command {
-            ObserveSnmpSub::Serve(_) => {
-                // `snmp serve` is integrated into `tunnel run` via the
-                // observability stack; surface a hint pointing at that path
-                // rather than spinning a duplicate agent.
-                //
-                // E4-F11: the args are valid, so this is not InvalidArgs (1).
-                // Standalone serving is not a supported mode -> UnsupportedPlatform (10).
-                Err(Error::UnsupportedPlatform(
-                    "`spt observe snmp serve` is integrated into `spt tunnel run`; \
-                     enable `[observability.snmp]` in config and start the supervisor"
-                        .into(),
-                ))
+            ObserveSnmpSub::Serve(s) => {
+                // Wave 5: build the agent from `[observability.snmp]` and run it
+                // in the foreground. The same agent is auto-started under
+                // `spt tunnel run` when `[observability.snmp].enabled = true`.
+                crate::snmp_agent::serve(global, s.foreground).await
             }
-            ObserveSnmpSub::TestTrap(_t) => {
-                crate::cli::observe_ops::snmp(
-                    global,
-                    crate::cli::observe_ops::ObserveSnmpArgs::default(),
-                )
-                .await
+            ObserveSnmpSub::TestTrap(t) => {
+                // Wave 5: send a REAL SNMPv3 trap to the named
+                // `[[observability.snmp.traps]]` sink.
+                crate::snmp_agent::send_test_trap(global, &t.sink).await
             }
         },
         ObserveSub::WindowsEvent(we) => match we.command {
@@ -8664,7 +8703,7 @@ mod tests {
                 ..Default::default()
             },
         ];
-        let sinks = build_event_sinks(&configured, &commands, &resolver, &notifier);
+        let sinks = build_event_sinks(&configured, &commands, &resolver, &notifier, None);
         assert!(sinks.contains_key("hook"), "http sink constructed");
         assert!(sinks.contains_key("notify"), "mcp_notify sink constructed");
         assert!(sinks.contains_key("runner"), "command sink constructed");
@@ -8682,7 +8721,7 @@ mod tests {
             ..Default::default()
         }];
         // No `[[events.commands]]` entry matching the sink name ⇒ build error.
-        let sinks = build_event_sinks(&configured, &[], &resolver, &notifier);
+        let sinks = build_event_sinks(&configured, &[], &resolver, &notifier, None);
         assert!(!sinks.contains_key("runner"), "no allow-entry ⇒ skipped");
     }
 

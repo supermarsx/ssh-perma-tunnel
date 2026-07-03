@@ -66,3 +66,22 @@ pub enum UsmError {
     #[error("decryption error")]
     DecryptionError,
 }
+
+impl UsmError {
+    /// Short, stable, log-safe reason token for this USM failure.
+    ///
+    /// Used by the agent's structured auth-failure logging so operators can
+    /// grep for brute-force / replay / spoof attempts. Carries no secret or
+    /// key material — only the failure classification.
+    #[must_use]
+    pub const fn reason(&self) -> &'static str {
+        match self {
+            Self::UnsupportedSecLevel => "unsupported-security-level",
+            Self::NotInTimeWindow => "not-in-time-window",
+            Self::UnknownUserName => "unknown-user",
+            Self::UnknownEngineId => "unknown-engine-id",
+            Self::WrongDigest => "wrong-digest",
+            Self::DecryptionError => "decryption-error",
+        }
+    }
+}

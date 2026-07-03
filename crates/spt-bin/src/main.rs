@@ -27,6 +27,8 @@ mod runtime;
 mod scm_dispatch;
 mod secrets_bridge;
 mod signals;
+#[cfg(feature = "snmp")]
+mod snmp_agent;
 mod status_api_tls;
 mod tracing_init;
 

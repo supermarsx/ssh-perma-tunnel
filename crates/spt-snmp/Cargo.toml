@@ -44,6 +44,9 @@ proptest = { workspace = true }
 tempfile = { workspace = true }
 hex = { workspace = true }
 criterion = { workspace = true }
+# Log-capture for the USM auth-failure logging tests (agent_usm_logging.rs).
+# Already in the workspace lock via spt-bin et al.; this only adds a dev edge.
+tracing-subscriber = { workspace = true }
 
 [[bench]]
 name = "usm"
