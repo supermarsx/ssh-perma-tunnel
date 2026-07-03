@@ -1,3 +1,13 @@
+## [26.46] - 2026-07-03
+
+# spt 26.46
+
+## Changes since 26.45
+
+- fix(ci): backtick it_completion in help_snapshots doc (clippy::doc_markdown) (d789174)
+- fix(ci): skip default-surface help snapshots under --all-features (0882c8b)
+- fix(review): ultra-hardcore remediation — TUI input bug + editability, zeroize, honesty, fuzz, all-features CI (5b04026)
+
 ## [26.45] - 2026-07-03
 
 # spt 26.45
