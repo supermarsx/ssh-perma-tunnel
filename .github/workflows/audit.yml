@@ -47,7 +47,7 @@ jobs:
     name: cargo-audit
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       # Prebuilt binary via taiki-e/install-action — same pattern the package
       # job uses for cargo-deb/cargo-wix. Avoids a multi-minute source compile
