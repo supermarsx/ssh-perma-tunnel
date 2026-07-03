@@ -39,6 +39,12 @@ async-trait = { workspace = true }
 subtle = { workspace = true }
 
 [dev-dependencies]
+# Self dev-dep enables this crate's `testing` feature (spt_snmp::testing helpers)
+# for its own integration tests under the default `cargo test --workspace` CI
+# invocation — without it, agent_usm_logging.rs can't resolve the import and the
+# USM auth-failure logging security test never compiles/runs. Mirrors the
+# spt-ftp-translator / spt-remote-config / spt-winevent convention.
+spt-snmp = { path = ".", features = ["testing"] }
 tokio = { workspace = true, features = ["full", "test-util", "macros"] }
 proptest = { workspace = true }
 tempfile = { workspace = true }
