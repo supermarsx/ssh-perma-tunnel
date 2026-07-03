@@ -750,6 +750,59 @@ pin_sha256 = ["SHA256:dummy"]
         assert!(matches!(err, McpError::InvalidParams(_)));
     }
 
+    /// P1 (cov-board §3 / GAP 5 — Wave-7 SIGHUP + file-watcher fail-safe): a
+    /// reload with an INVALID new config must NOT swap the running config — the
+    /// cell keeps the OLD valid config — while a reload with a VALID new config
+    /// DOES swap. This guards the validate-BEFORE-swap ordering in
+    /// `run_reload_pipeline`/`ConfigCell::reload`: a regression that swapped the
+    /// cell before (or regardless of) validation would leave the broken config
+    /// live, and the post-invalid-reload snapshot below would no longer hold the
+    /// old profile — failing this test.
+    #[tokio::test]
+    async fn invalid_reload_preserves_running_config_valid_reload_swaps() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ctl = fixture(tmp.path());
+
+        // Baseline: the boot config (profile "p", host "h") is the running one.
+        let before = ctl.cell.snapshot().await;
+        assert_eq!(before.profiles.len(), 1);
+        assert_eq!(before.profiles[0].name, "p");
+        assert_eq!(before.profiles[0].host.as_deref(), Some("h"));
+
+        // (1) Invalid reload: a config that parses but fails validation
+        // (`version = 999`, no profiles) must be REJECTED and must leave the
+        // running config untouched (fail-safe). The Err return is what the
+        // SIGHUP/file-watcher caller logs as the failure.
+        std::fs::write(tmp.path().join("config.toml"), "version = 999\n").unwrap();
+        let err = ctl.reload().await.unwrap_err();
+        assert!(matches!(err, McpError::InvalidParams(_)), "got {err:?}");
+
+        let after_bad = ctl.cell.snapshot().await;
+        assert_eq!(
+            after_bad.profiles.len(),
+            1,
+            "invalid reload must NOT swap: the OLD valid config stays live"
+        );
+        assert_eq!(after_bad.profiles[0].name, "p");
+        assert_eq!(after_bad.profiles[0].host.as_deref(), Some("h"));
+
+        // (2) Valid reload: a well-formed new config DOES swap.
+        std::fs::write(tmp.path().join("config.toml"), profile_cfg("q", "h2")).unwrap();
+        ctl.reload().await.unwrap();
+        let after_good = ctl.cell.snapshot().await;
+        assert_eq!(after_good.profiles.len(), 1);
+        assert_eq!(after_good.profiles[0].name, "q");
+        assert_eq!(after_good.profiles[0].host.as_deref(), Some("h2"));
+
+        // (3) A subsequent invalid reload after the swap still preserves the
+        // now-current ("q"/"h2") config — the fail-safe is not one-shot.
+        std::fs::write(tmp.path().join("config.toml"), "version = 999\n").unwrap();
+        assert!(ctl.reload().await.is_err());
+        let after_bad2 = ctl.cell.snapshot().await;
+        assert_eq!(after_bad2.profiles[0].name, "q");
+        assert_eq!(after_bad2.profiles[0].host.as_deref(), Some("h2"));
+    }
+
     #[tokio::test]
     async fn last_config_handle_observes_post_reload_state() {
         let tmp = tempfile::tempdir().unwrap();

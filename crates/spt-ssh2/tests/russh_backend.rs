@@ -838,6 +838,303 @@ async fn ssh2_protocol_connect_walks_two_hop_chain() {
     endpoint_server.shutdown().await;
 }
 
+// -----------------------------------------------------------------------------
+// tw-authtrust — P0/P1 auth-reject + per-hop trust security regressions.
+//
+// These tests drive BAD credentials / an UNTRUSTED hop key through the real
+// `Ssh2Protocol::connect` path and assert the connection is REFUSED. Each one
+// fails if the corresponding control silently regressed (auth accepts wrong
+// creds, or a mid-chain / final host key is trusted without verification).
+// -----------------------------------------------------------------------------
+
+/// P0: a WRONG password must be rejected by `connect` with an auth failure and
+/// no session; the CORRECT password (same server) must authenticate. This is
+/// the anti-bypass guard: if the `.success()` handling in `run_auth` regressed
+/// (e.g. collapsed to always-accept), the wrong-password half would connect and
+/// this test would fail.
+#[tokio::test]
+async fn russh_backend_rejects_wrong_password_accepts_correct() {
+    let server = RusshTestServer::new()
+        .with_password("tester", "correct-horse")
+        .start()
+        .await
+        .expect("start russh server");
+    let endpoint = Endpoint::new("127.0.0.1", server.addr.port());
+    let proto = Ssh2Protocol::builder()
+        .trust(spt_ssh2::testing::tofu_trust_verifier())
+        .build();
+
+    // WRONG password → AuthFailed, no session established.
+    std::env::set_var("SPT_TEST_TW_WRONGPW", "definitely-not-it");
+    let bad_auth = AuthConfig::new(
+        "tester",
+        vec![AuthMethod::Password {
+            secret: spt_auth::SecretRef::Env("SPT_TEST_TW_WRONGPW".into()),
+        }],
+    );
+    let err = proto
+        .connect(&endpoint, &bad_auth)
+        .await
+        .map(|_| ())
+        .expect_err("a wrong password must be rejected, not authenticated");
+    assert_eq!(
+        err.exit_code(),
+        spt_core::ExitCode::AuthFailed,
+        "wrong password must map to an auth failure, got: {err:?}"
+    );
+    assert!(
+        server.auth_attempts() >= 1,
+        "the server must have actually seen and rejected the credential attempt"
+    );
+
+    // CORRECT password → success. Proves the server WOULD accept valid creds,
+    // so the rejection above is a genuine credential check (not the server
+    // refusing everything).
+    std::env::set_var("SPT_TEST_TW_RIGHTPW", "correct-horse");
+    let ok_auth = AuthConfig::new(
+        "tester",
+        vec![AuthMethod::Password {
+            secret: spt_auth::SecretRef::Env("SPT_TEST_TW_RIGHTPW".into()),
+        }],
+    );
+    let session = proto
+        .connect(&endpoint, &ok_auth)
+        .await
+        .expect("the correct password must authenticate");
+    session.close().await.expect("close");
+
+    std::env::remove_var("SPT_TEST_TW_WRONGPW");
+    std::env::remove_var("SPT_TEST_TW_RIGHTPW");
+    server.shutdown().await;
+}
+
+/// Write a fresh ephemeral Ed25519 private key in OpenSSH format to `dir/name`
+/// and return `(path, public_key)`. The public half is handed to the test
+/// server's `with_authorized_pubkey` allow-list; the private path is fed to
+/// `AuthMethod::PublicKey`.
+fn write_ephemeral_openssh_key(
+    dir: &std::path::Path,
+    name: &str,
+) -> (std::path::PathBuf, russh::keys::ssh_key::PublicKey) {
+    use russh::keys::ssh_key::{Algorithm, LineEnding, PrivateKey};
+    let key = PrivateKey::random(&mut rand010::rng(), Algorithm::Ed25519).expect("ed25519 keygen");
+    let pem = key
+        .to_openssh(LineEnding::LF)
+        .expect("encode openssh private key");
+    let path = dir.join(name);
+    std::fs::write(&path, pem.as_bytes()).expect("write private key");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+            .expect("chmod 0600 key");
+    }
+    (path, key.public_key().clone())
+}
+
+/// P1: file-based public-key auth. The server authorises exactly ONE key; the
+/// matching private key authenticates, a DIFFERENT (unauthorised) key is
+/// rejected with an auth failure. Fails if the `AuthMethod::PublicKey` arm ever
+/// regressed to accepting any key.
+#[tokio::test]
+async fn russh_backend_pubkey_authorized_accepts_unauthorized_rejects() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (authorized_key_path, authorized_pub) = write_ephemeral_openssh_key(dir.path(), "id_ok");
+    let (unauthorized_key_path, _unauth_pub) = write_ephemeral_openssh_key(dir.path(), "id_bad");
+
+    let server = RusshTestServer::new()
+        .with_authorized_pubkey(authorized_pub)
+        .start()
+        .await
+        .expect("start russh server");
+    let endpoint = Endpoint::new("127.0.0.1", server.addr.port());
+    let proto = Ssh2Protocol::builder()
+        .trust(spt_ssh2::testing::tofu_trust_verifier())
+        .build();
+
+    // Authorized key → success.
+    let ok_auth = AuthConfig::new(
+        "tester",
+        vec![AuthMethod::PublicKey {
+            identity_file: authorized_key_path.clone(),
+            passphrase: None,
+            allow_ssh_rsa_sha1: false,
+        }],
+    );
+    let session = proto
+        .connect(&endpoint, &ok_auth)
+        .await
+        .expect("an authorized public key must authenticate");
+    session.close().await.expect("close");
+
+    // Unauthorized key → AuthFailed.
+    let bad_auth = AuthConfig::new(
+        "tester",
+        vec![AuthMethod::PublicKey {
+            identity_file: unauthorized_key_path.clone(),
+            passphrase: None,
+            allow_ssh_rsa_sha1: false,
+        }],
+    );
+    let err = proto
+        .connect(&endpoint, &bad_auth)
+        .await
+        .map(|_| ())
+        .expect_err("an unauthorized public key must be rejected");
+    assert_eq!(
+        err.exit_code(),
+        spt_core::ExitCode::AuthFailed,
+        "unauthorized public key must map to an auth failure, got: {err:?}"
+    );
+
+    server.shutdown().await;
+}
+
+/// P1: per-hop trust in a multi-hop chain. An intermediate (mid-chain) hop
+/// whose host key can't be verified (strict, no trust source → no TOFU) MUST
+/// abort the WHOLE chain — a bastion can't be silently swapped/MitM'd and
+/// tunneled past. Asserts the failure is `TrustFailed` and, crucially, that the
+/// FINAL endpoint is never contacted once the mid-chain key is rejected.
+#[tokio::test]
+async fn multi_hop_untrusted_intermediate_hop_key_aborts_whole_chain() {
+    // hop0 (bastion A, trusted via endpoint-fallback TOFU)
+    //   -> hop1 (bastion B, MIDDLE, UNTRUSTED key)
+    //     -> endpoint (never reached).
+    let bastion_a = RusshTestServer::new()
+        .with_password("u", "pw")
+        .start()
+        .await
+        .expect("bastion A start");
+    let bastion_b = RusshTestServer::new()
+        .with_password("u", "pw")
+        .start()
+        .await
+        .expect("bastion B start");
+    let endpoint_server = RusshTestServer::new()
+        .with_password("u", "pw")
+        .start()
+        .await
+        .expect("endpoint start");
+
+    std::env::set_var("SPT_TEST_TW_HOP_PW", "pw");
+    let auth = AuthConfig::new(
+        "u",
+        vec![AuthMethod::Password {
+            secret: spt_auth::SecretRef::Env("SPT_TEST_TW_HOP_PW".into()),
+        }],
+    );
+
+    // Strict + empty trust source + no TOFU: the presented key is in NO source,
+    // so `verify()` refuses (TrustFailed). Models an unverifiable/MitM'd hop.
+    let untrusted = spt_ssh2::TrustPolicy {
+        strict: true,
+        accept_new: false,
+        ..Default::default()
+    };
+
+    let proto = Ssh2Protocol::builder()
+        // Endpoint + hop0 fallback: accepting TOFU.
+        .trust(spt_ssh2::testing::tofu_trust_verifier())
+        .hop(bastion_a.addr.ip().to_string(), bastion_a.addr.port())
+        // Mid-chain hop pins its own UNTRUSTED policy.
+        .hop_with_auth_trust(
+            bastion_b.addr.ip().to_string(),
+            bastion_b.addr.port(),
+            auth.clone(),
+            untrusted,
+        )
+        .build();
+    let endpoint = Endpoint::new("127.0.0.1", endpoint_server.addr.port());
+
+    let err = proto
+        .connect(&endpoint, &auth)
+        .await
+        .map(|_| ())
+        .expect_err("an untrusted mid-chain hop key must abort the whole chain");
+    assert!(
+        matches!(err, spt_core::Error::TrustFailed(_)),
+        "mid-chain host-key rejection must surface TrustFailed, got: {err:?}"
+    );
+    assert!(
+        bastion_a.connection_count() >= 1,
+        "the chain must have reached and authed hop0 before verifying hop1"
+    );
+    assert_eq!(
+        endpoint_server.connection_count(),
+        0,
+        "the final endpoint must NOT be reached once a mid-chain hop key is rejected"
+    );
+
+    std::env::remove_var("SPT_TEST_TW_HOP_PW");
+    bastion_a.shutdown().await;
+    bastion_b.shutdown().await;
+    endpoint_server.shutdown().await;
+}
+
+/// P1: the FINAL target's host key is independently verified — reaching the end
+/// of an otherwise-trusted hop chain does not grant the endpoint a free pass. A
+/// strict/empty endpoint trust rejects the final target key with `TrustFailed`,
+/// even though the bastion hop was reached and trusted.
+#[tokio::test]
+async fn multi_hop_final_endpoint_key_is_verified_and_can_reject() {
+    let bastion = RusshTestServer::new()
+        .with_password("u", "pw")
+        .start()
+        .await
+        .expect("bastion start");
+    let endpoint_server = RusshTestServer::new()
+        .with_password("u", "pw")
+        .start()
+        .await
+        .expect("endpoint start");
+
+    std::env::set_var("SPT_TEST_TW_FINAL_PW", "pw");
+    let auth = AuthConfig::new(
+        "u",
+        vec![AuthMethod::Password {
+            secret: spt_auth::SecretRef::Env("SPT_TEST_TW_FINAL_PW".into()),
+        }],
+    );
+
+    // Endpoint trust: strict + empty → the final target's key is rejected.
+    let untrusted_endpoint = spt_ssh2::TrustPolicy {
+        strict: true,
+        accept_new: false,
+        ..Default::default()
+    };
+
+    let proto = Ssh2Protocol::builder()
+        .trust(untrusted_endpoint)
+        // Bastion gets its OWN accepting trust so the chain reaches the final
+        // leg (otherwise the endpoint's strict policy would reject hop0 too).
+        .hop_with_auth_trust(
+            bastion.addr.ip().to_string(),
+            bastion.addr.port(),
+            auth.clone(),
+            spt_ssh2::testing::tofu_trust_verifier(),
+        )
+        .build();
+    let endpoint = Endpoint::new("127.0.0.1", endpoint_server.addr.port());
+
+    let err = proto
+        .connect(&endpoint, &auth)
+        .await
+        .map(|_| ())
+        .expect_err("the final target's host key must be verified and can reject");
+    assert!(
+        matches!(err, spt_core::Error::TrustFailed(_)),
+        "final-target host-key rejection must surface TrustFailed, got: {err:?}"
+    );
+    assert!(
+        bastion.connection_count() >= 1,
+        "the trusted bastion hop must have been reached before the final key check"
+    );
+
+    std::env::remove_var("SPT_TEST_TW_FINAL_PW");
+    bastion.shutdown().await;
+    endpoint_server.shutdown().await;
+}
+
 #[tokio::test]
 async fn ssh2_protocol_connect_walks_three_hop_chain() {
     // hops[0] -> hops[1] -> endpoint.

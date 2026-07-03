@@ -1068,23 +1068,10 @@ async fn tunnel_run(global: &GlobalOpts, args: groups::tunnel::TunnelRun) -> Res
     // OOM P1: now that the event bus exists, surface any previous unclean
     // shutdown detected at lock-acquire time (a stale `spt.pid` with no live
     // holder). WARN for operators + a `process.unclean_shutdown` event so
-    // sinks/alerts fire. See `state_lock.previous_unclean_pid()` above.
-    if let Some(prev_pid) = previous_unclean_pid {
-        tracing::warn!(
-            previous_pid = prev_pid,
-            "previous run (pid {prev_pid}) terminated abnormally without clean \
-             shutdown — possible OOM-kill or crash"
-        );
-        let _ = event_bus.emit(
-            spt_events::Event::builder("process.unclean_shutdown", spt_events::Severity::Warn)
-                .message(format!(
-                    "previous run (pid {prev_pid}) terminated abnormally without clean \
-                     shutdown — possible OOM-kill or crash"
-                ))
-                .field("previous_pid", u64::from(prev_pid))
-                .build(),
-        );
-    }
+    // sinks/alerts fire. See `state_lock.previous_unclean_pid()` above. The
+    // emission itself lives in `emit_unclean_shutdown` so it is unit-testable
+    // (a regression that drops the event fails that test).
+    emit_unclean_shutdown(&event_bus, previous_unclean_pid);
 
     // E6-F4 / Wave 7: instantiate the Prometheus exporter. The in-memory
     // registry is always built (the supervisor hot path increments its
@@ -2114,6 +2101,35 @@ fn parse_dns_upstreams(items: &[String]) -> Vec<std::net::SocketAddr> {
             })
         })
         .collect()
+}
+
+/// OOM P1 (leak-oom.md §B-P1): surface a previous unclean shutdown — a stale
+/// `spt.pid` that survived into a successful lock acquisition, meaning the prior
+/// holder died without running `Drop` (OOM-kill / SIGKILL / power-loss) — as an
+/// operator `WARN` plus a `process.unclean_shutdown` event so sinks/alerts fire.
+///
+/// A `None` argument (first-ever run or a clean prior shutdown) is a no-op: no
+/// WARN, no event. Extracted from `tunnel_run` so the emission is unit-testable
+/// — a regression that drops the event (leaving OOM detection green while the
+/// operator alert goes silent) fails `emit_unclean_shutdown_*` in the tests
+/// module below.
+fn emit_unclean_shutdown(event_bus: &spt_events::EventBus, previous_unclean_pid: Option<u32>) {
+    if let Some(prev_pid) = previous_unclean_pid {
+        tracing::warn!(
+            previous_pid = prev_pid,
+            "previous run (pid {prev_pid}) terminated abnormally without clean \
+             shutdown — possible OOM-kill or crash"
+        );
+        let _ = event_bus.emit(
+            spt_events::Event::builder("process.unclean_shutdown", spt_events::Severity::Warn)
+                .message(format!(
+                    "previous run (pid {prev_pid}) terminated abnormally without clean \
+                     shutdown — possible OOM-kill or crash"
+                ))
+                .field("previous_pid", u64::from(prev_pid))
+                .build(),
+        );
+    }
 }
 
 /// Build a single `EventBus` (with a persistence ring) from `[events]`,
@@ -6531,6 +6547,57 @@ mod tests {
         // Despite the cut-off teardown, disk state already says stopping.
         let body = std::fs::read_to_string(spt_state::paths::status_path(&state_dir)).unwrap();
         assert!(body.contains("stopping"), "status.json: {body}");
+    }
+
+    /// OOM P2 (cov-board §6 / GAP 12): the full detect→emit chain. Seed a stale
+    /// `spt.pid` from a dead prior holder, acquire the real `StateLock` (which
+    /// detects it via `previous_unclean_pid`), and feed that into the emission
+    /// site `tunnel_run` uses. A `process.unclean_shutdown` WARN event MUST fire
+    /// carrying the dead pid. A regression that drops the emit (leaving OOM
+    /// detection green while the operator alert goes silent) fails here.
+    #[test]
+    fn emit_unclean_shutdown_fires_event_for_detected_stale_pid() {
+        let dir = tempfile::tempdir().unwrap();
+        // Simulate an OOM/SIGKILL: a pid file survives with no live lock holder
+        // (Drop never ran). The lock is free, so acquire succeeds and reports
+        // the stale pid as an unclean prior exit — exactly the tunnel_run path.
+        std::fs::write(spt_state::paths::pid_path(dir.path()), "424242\n").unwrap();
+        let lock = spt_state::StateLock::acquire(dir.path()).unwrap();
+        let prev = lock.previous_unclean_pid();
+        assert_eq!(prev, Some(424_242), "StateLock must detect the stale pid");
+
+        let bus = spt_events::EventBus::new(&spt_events::EventBusConfig::default());
+        let mut rx = bus.subscribe();
+        emit_unclean_shutdown(&bus, prev);
+
+        let ev = rx
+            .try_recv()
+            .expect("process.unclean_shutdown event must be emitted for a stale pid");
+        assert_eq!(ev.kind.as_str(), "process.unclean_shutdown");
+        assert_eq!(ev.severity.as_str(), "warn");
+        assert_eq!(
+            ev.fields
+                .get("previous_pid")
+                .and_then(serde_json::Value::as_u64),
+            Some(424_242),
+            "event must carry the dead holder's pid so alerts can identify it"
+        );
+        // Exactly one event — the emission is not accidentally duplicated.
+        assert!(rx.try_recv().is_err(), "expected exactly one event");
+    }
+
+    /// The emission is silent on a first-ever run or a clean prior shutdown
+    /// (`previous_unclean_pid` is `None`): no spurious `process.unclean_shutdown`
+    /// alert. Guards against a false-positive regression.
+    #[test]
+    fn emit_unclean_shutdown_is_silent_on_clean_prior_run() {
+        let bus = spt_events::EventBus::new(&spt_events::EventBusConfig::default());
+        let mut rx = bus.subscribe();
+        emit_unclean_shutdown(&bus, None);
+        assert!(
+            rx.try_recv().is_err(),
+            "a clean prior run must NOT emit process.unclean_shutdown"
+        );
     }
 
     /// Write a minimal valid config TOML and return its path inside the tempdir.

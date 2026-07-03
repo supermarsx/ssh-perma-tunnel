@@ -321,6 +321,172 @@ mod tests {
         assert_eq!(expected, bogus);
     }
 
+    /// Minimal hand-rolled tracing capture harness that is safe under the
+    /// multi-threaded lib-test binary.
+    ///
+    /// Design: a PROCESS-GLOBAL subscriber is installed exactly once via
+    /// [`std::sync::Once`] + `set_global_default` (the `Err` is ignored if a
+    /// default is already installed). Installing a single, permanent global
+    /// default makes tracing's per-callsite interest cache resolve to
+    /// "enabled" once and never flip again. Each emitted event is routed into
+    /// a THREAD-LOCAL slot: only the thread that armed its slot records
+    /// anything, so parallel sibling tests that hit the same `warn!` callsite
+    /// (with an empty slot) record nothing and cannot interfere. This is why
+    /// the earlier thread-local `with_default` approach was flaky and this one
+    /// is not.
+    mod warn_capture {
+        use std::cell::RefCell;
+        use std::sync::{Arc, Mutex, Once};
+        use tracing::field::{Field, Visit};
+        use tracing::{span, Event, Level, Metadata, Subscriber};
+
+        /// One captured event: level, target and its `(field, value)` pairs.
+        #[derive(Clone)]
+        pub struct Captured {
+            pub level: Level,
+            pub target: String,
+            pub fields: Vec<(String, String)>,
+        }
+
+        impl Captured {
+            /// Value of the first field named `name`, if present.
+            pub fn field(&self, name: &str) -> Option<&str> {
+                self.fields
+                    .iter()
+                    .find(|(k, _)| k == name)
+                    .map(|(_, v)| v.as_str())
+            }
+        }
+
+        type Buffer = Arc<Mutex<Vec<Captured>>>;
+
+        thread_local! {
+            static SLOT: RefCell<Option<Buffer>> = const { RefCell::new(None) };
+        }
+
+        struct FieldVisitor(Vec<(String, String)>);
+
+        impl Visit for FieldVisitor {
+            fn record_str(&mut self, field: &Field, value: &str) {
+                self.0.push((field.name().to_string(), value.to_string()));
+            }
+            fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+                // `%value` (Display) records via `record_debug` with a
+                // `format_args!`, whose Debug rendering is the Display string.
+                self.0
+                    .push((field.name().to_string(), format!("{value:?}")));
+            }
+        }
+
+        struct CaptureSubscriber;
+
+        impl Subscriber for CaptureSubscriber {
+            fn enabled(&self, _metadata: &Metadata<'_>) -> bool {
+                true
+            }
+            fn new_span(&self, _span: &span::Attributes<'_>) -> span::Id {
+                span::Id::from_u64(1)
+            }
+            fn record(&self, _span: &span::Id, _values: &span::Record<'_>) {}
+            fn record_follows_from(&self, _span: &span::Id, _follows: &span::Id) {}
+            fn event(&self, event: &Event<'_>) {
+                SLOT.with(|slot| {
+                    if let Some(buf) = slot.borrow().as_ref() {
+                        let meta = event.metadata();
+                        let mut v = FieldVisitor(Vec::new());
+                        event.record(&mut v);
+                        buf.lock().unwrap().push(Captured {
+                            level: *meta.level(),
+                            target: meta.target().to_string(),
+                            fields: v.0,
+                        });
+                    }
+                });
+            }
+            fn enter(&self, _span: &span::Id) {}
+            fn exit(&self, _span: &span::Id) {}
+        }
+
+        /// Install the global subscriber exactly once. Idempotent and
+        /// parallel-safe.
+        fn install() {
+            static ONCE: Once = Once::new();
+            ONCE.call_once(|| {
+                let _ = tracing::subscriber::set_global_default(CaptureSubscriber);
+            });
+        }
+
+        /// Arm this thread's capture slot, run `f`, disarm, and return the
+        /// events emitted on this thread during `f`.
+        pub fn capture<R>(f: impl FnOnce() -> R) -> (R, Vec<Captured>) {
+            install();
+            let buf: Buffer = Arc::new(Mutex::new(Vec::new()));
+            SLOT.with(|s| *s.borrow_mut() = Some(buf.clone()));
+            let out = f();
+            SLOT.with(|s| *s.borrow_mut() = None);
+            let events = buf.lock().unwrap().clone();
+            (out, events)
+        }
+    }
+
+    #[test]
+    fn pin_mismatch_emits_warn_with_expected_ne_received_fingerprints() {
+        // Unlike `pin_mismatch_logs_expected_vs_received_fingerprints` (which
+        // only exercises the `mismatch_fingerprints` helper), this test
+        // captures the REAL `tracing::warn!` emitted by `verify` at the
+        // detection site — so deleting the `warn!` makes this test fail. It
+        // proves a TLS-pin MITM is not invisible in-crate: the warning carries
+        // distinct received≠expected SPKI fingerprints, and the rejection
+        // decision is preserved (logging never relaxes it).
+        let (der, _real_pin) = gen_cert_and_pin();
+        let pinset = TlsPin {
+            spki_sha256: vec![[0xAB; 32]],
+        };
+        let cert = CertificateDer::from(der);
+
+        let (result, events) = warn_capture::capture(|| pinset.verify(&cert));
+
+        // Decision preserved: still a hard rejection.
+        assert!(
+            matches!(result, Err(Error::TrustFailed(_))),
+            "pin mismatch must still reject, got {result:?}"
+        );
+
+        // Exactly the expected WARN event was captured at this callsite.
+        let warn = events
+            .iter()
+            .find(|e| e.level == tracing::Level::WARN && e.target == "spt_trust::tls_pin")
+            .expect("expected a WARN event on target spt_trust::tls_pin");
+
+        let received = warn
+            .field("received_spki_sha256")
+            .expect("warn must carry received_spki_sha256");
+        let expected = warn
+            .field("expected_spki_sha256")
+            .expect("warn must carry expected_spki_sha256");
+
+        assert!(
+            !received.is_empty(),
+            "received fingerprint must be non-empty"
+        );
+        assert!(
+            !expected.is_empty(),
+            "expected fingerprint must be non-empty"
+        );
+        assert!(
+            received.starts_with("SHA256:"),
+            "received must look like a SHA256 fingerprint, got {received}"
+        );
+        assert!(
+            expected.starts_with("SHA256:"),
+            "expected must look like a SHA256 fingerprint, got {expected}"
+        );
+        assert_ne!(
+            received, expected,
+            "the mismatch diff must be real: received must differ from expected"
+        );
+    }
+
     #[test]
     fn verify_accepts_pin_in_a_set_of_many() {
         let (der, pin) = gen_cert_and_pin();

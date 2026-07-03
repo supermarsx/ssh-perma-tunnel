@@ -548,4 +548,205 @@ mod tests {
         let err = verify_minisign(&art, &sig, &pk).unwrap_err();
         assert_eq!(err.code(), "updater_verify");
     }
+
+    // --- Genuine minisign/ed25519 signature-verification fixtures ----------
+    //
+    // These exercise the real `pk.verify(...)` cryptographic path (the
+    // security-critical branch at the `verify_minisign` end that all the
+    // malformed-material tests above stop short of). The fixtures are real
+    // minisign material: two ed25519 keypairs (K1, K2) and a genuine
+    // prehashed (`ED`) detached signature over `ARTIFACT_A` produced with
+    // K1's secret key. They were generated deterministically from fixed
+    // seeds (K1 = bytes 0x00..0x1f, K2 = those XOR 0xAA) with a standalone
+    // RFC-8032 ed25519 signer + BLAKE2b-512 prehash — `minisign-verify` is
+    // verify-only and adding a signer would grow `Cargo.lock`. The fixtures
+    // are NOT a mock: they are validated against this very `minisign-verify`
+    // crate below, and flipping one artifact byte or swapping the public key
+    // makes the real ed25519 verify reject.
+    //
+    // If `verify` ever regressed to accept-anything (`Ok(())`), every
+    // `*_rejected` test below flips from red to unexpectedly green.
+
+    const ARTIFACT_A: &[u8] = b"spt-update-artifact-A: the genuinely signed payload v1\n";
+
+    const PUBKEY_K1: &str = "untrusted comment: minisign public key K1 (spt-updater test)\nRWQRIjNEVWZ3iAOhB7/zzhC+HXDdGOdLwJln5NYwm6UNXx3chmQSVTG4\n";
+
+    // A completely independent keypair (different key material AND key_id).
+    const PUBKEY_K2: &str = "untrusted comment: minisign public key K2 (spt-updater test)\nRWSZqrvM3e7/AK1v+ZsuEJsWF/LuvsmUJWAnF9i27gwPnC3nYZVGYRD9\n";
+
+    // K2's key material stamped with K1's key_id: the cheap key_id precheck
+    // passes, so rejection must come from the real ed25519 verify itself.
+    const PUBKEY_K2_ID1: &str = "untrusted comment: minisign public key K2-as-K1id (spt-updater test)\nRWQRIjNEVWZ3iK1v+ZsuEJsWF/LuvsmUJWAnF9i27gwPnC3nYZVGYRD9\n";
+
+    // Valid detached signature over ARTIFACT_A, produced with K1's secret key.
+    const SIG_A_BY_K1: &str = "untrusted comment: signature from spt-updater test key K1\nRUQRIjNEVWZ3iHOEwR0LOSyDA8/E19Io8BltLGGGrveklzKGXNrec+8ZjgQCef1TlKB75GeG1Bkv7DgE5I1UgQTnzsfTM4uebgc=\ntrusted comment: timestamp:1700000000\tfile:a.bin\tprehashed\nxHmt+2qAC79VxwdYwvcOk4w7F1gHGxiDkqlWOykSLUQY3VOm5OQDabXDt1b4TTlnE+m0Lb0jGMQ69HX2fPTMBQ==\n";
+
+    /// Materialize the artifact + `.minisig` + pubkey fixtures into `dir` and
+    /// return `(artifact, signature, pubkey)` paths.
+    fn minisign_fixture(
+        dir: &Path,
+        artifact_bytes: &[u8],
+        pubkey_txt: &str,
+    ) -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
+        let art = write_tmp(dir, "a.bin", artifact_bytes);
+        let sig = write_tmp(dir, "a.bin.minisig", SIG_A_BY_K1.as_bytes());
+        let pk = write_tmp(dir, "minisign.pub", pubkey_txt.as_bytes());
+        (art, sig, pk)
+    }
+
+    /// Requirement #2: correct key + correct artifact + correct signature → Ok.
+    /// If this fails, the fixtures themselves are broken (guards the negative
+    /// tests below from being vacuously green).
+    #[test]
+    fn minisign_valid_signature_accepted() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (art, sig, pk) = minisign_fixture(tmp.path(), ARTIFACT_A, PUBKEY_K1);
+        verify_minisign(&art, &sig, &pk).expect("genuine signature over A by K1 must verify");
+    }
+
+    /// Requirement #1a — FORGERY: a valid signature over artifact A is
+    /// presented against artifact B (one byte flipped), with A's own public
+    /// key (`key_id` still matches, so this reaches and is rejected by the
+    /// real ed25519 verify — not the `key_id` precheck). MUST reject.
+    #[test]
+    fn minisign_forged_over_tampered_artifact_rejected() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Artifact B: ARTIFACT_A with a single trailing byte flipped.
+        let mut tampered = ARTIFACT_A.to_vec();
+        *tampered.last_mut().unwrap() ^= 0x01;
+        assert_ne!(tampered.as_slice(), ARTIFACT_A);
+        let (art, sig, pk) = minisign_fixture(tmp.path(), &tampered, PUBKEY_K1);
+        let err = verify_minisign(&art, &sig, &pk)
+            .expect_err("signature over A must NOT verify against tampered artifact B");
+        assert_eq!(err.code(), "updater_verify");
+        assert!(err.to_string().contains("minisign verification failed"));
+    }
+
+    /// Requirement #1b — WRONG KEY (real crypto): sign with K1, verify with a
+    /// DIFFERENT public key. K2 is stamped with K1's `key_id` so the `key_id`
+    /// precheck passes and the rejection is produced by `pk.verify` itself.
+    /// MUST reject.
+    #[test]
+    fn minisign_wrong_public_key_same_keyid_rejected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (art, sig, pk) = minisign_fixture(tmp.path(), ARTIFACT_A, PUBKEY_K2_ID1);
+        let err = verify_minisign(&art, &sig, &pk)
+            .expect_err("K1's signature must NOT verify under K2's public key");
+        assert_eq!(err.code(), "updater_verify");
+    }
+
+    /// Requirement #1b (belt-and-suspenders): an entirely independent key
+    /// (different `key_id` too) also rejects. Covers the `key_id` mismatch
+    /// guard.
+    #[test]
+    fn minisign_wrong_public_key_different_keyid_rejected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (art, sig, pk) = minisign_fixture(tmp.path(), ARTIFACT_A, PUBKEY_K2);
+        let err = verify_minisign(&art, &sig, &pk)
+            .expect_err("K1's signature must NOT verify under unrelated key K2");
+        assert_eq!(err.code(), "updater_verify");
+    }
+
+    /// A corrupted (bit-flipped) signature blob over the correct artifact with
+    /// the correct key MUST reject — proves the signature bytes are actually
+    /// consumed by the verify, not ignored.
+    #[test]
+    fn minisign_tampered_signature_rejected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let art = write_tmp(tmp.path(), "a.bin", ARTIFACT_A);
+        let pk = write_tmp(tmp.path(), "minisign.pub", PUBKEY_K1.as_bytes());
+        // Swap one character in the middle of the base64 signature line
+        // (line 2). base64 is ASCII, so `len()/2` is a valid char boundary.
+        let mut lines: Vec<String> = SIG_A_BY_K1.lines().map(str::to_string).collect();
+        let sig_line = &lines[1];
+        let mid = sig_line.len() / 2;
+        let (head, tail) = sig_line.split_at(mid);
+        let mut chars = tail.chars();
+        let first = chars.next().unwrap();
+        let repl = if first == 'A' { 'B' } else { 'A' };
+        lines[1] = format!("{head}{repl}{}", chars.as_str());
+        let tampered_sig = format!("{}\n", lines.join("\n"));
+        let sig = write_tmp(tmp.path(), "a.bin.minisig", tampered_sig.as_bytes());
+        // Either a decode error or an InvalidSignature — both are `Err`.
+        assert!(
+            verify_minisign(&art, &sig, &pk).is_err(),
+            "a tampered signature blob must never verify"
+        );
+    }
+
+    /// Full policy path (`verify_artifact`): `require_minisign = true` with a
+    /// configured pubkey + a genuine signature over the artifact → Ok.
+    #[test]
+    fn verify_artifact_accepts_required_valid_minisign() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (art, sig, pk) = minisign_fixture(tmp.path(), ARTIFACT_A, PUBKEY_K1);
+        let cfg = VerifyConfig {
+            require_minisign: true,
+            minisign_pubkey: Some(pk),
+            require_sha256sums: false,
+            gpg_pubkey: None,
+        };
+        verify_artifact(&cfg, &art, Some(&sig), &VerifyInputs::default())
+            .expect("required minisign with valid material must pass");
+    }
+
+    /// Full policy path: `require_minisign = true`, valid pubkey + signature,
+    /// but the artifact bytes were tampered → the whole verification MUST
+    /// fail (fail-closed). This is the end-to-end supply-chain guard: a
+    /// regressed verify would silently install artifact B.
+    #[test]
+    fn verify_artifact_rejects_required_forged_minisign() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut tampered = ARTIFACT_A.to_vec();
+        tampered.extend_from_slice(b"EVIL");
+        let (art, sig, pk) = minisign_fixture(tmp.path(), &tampered, PUBKEY_K1);
+        let cfg = VerifyConfig {
+            require_minisign: true,
+            minisign_pubkey: Some(pk),
+            require_sha256sums: false,
+            gpg_pubkey: None,
+        };
+        let err = verify_artifact(&cfg, &art, Some(&sig), &VerifyInputs::default())
+            .expect_err("required minisign over a tampered artifact must fail closed");
+        assert_eq!(err.code(), "updater_verify");
+    }
+
+    /// Fail-closed: `require_minisign = true` and a pubkey is configured, but
+    /// NO signature file was downloaded → verify aborts (the intended
+    /// fail-closed posture), even though the pubkey material is valid.
+    #[test]
+    fn verify_artifact_required_minisign_no_signature_fails_closed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let art = write_tmp(tmp.path(), "a.bin", ARTIFACT_A);
+        let pk = write_tmp(tmp.path(), "minisign.pub", PUBKEY_K1.as_bytes());
+        let cfg = VerifyConfig {
+            require_minisign: true,
+            minisign_pubkey: Some(pk),
+            require_sha256sums: false,
+            gpg_pubkey: None,
+        };
+        let err = verify_artifact(&cfg, &art, None, &VerifyInputs::default())
+            .expect_err("required minisign with no signature must fail closed");
+        assert_eq!(err.code(), "updater_verify");
+    }
+
+    /// Best-effort (`require_minisign = false`): a PRESENT-but-forged
+    /// signature must still be rejected. Best-effort only tolerates *absent*
+    /// material — present-but-wrong always fails.
+    #[test]
+    fn verify_artifact_best_effort_rejects_present_forged_minisign() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut tampered = ARTIFACT_A.to_vec();
+        *tampered.last_mut().unwrap() ^= 0xFF;
+        let (art, sig, pk) = minisign_fixture(tmp.path(), &tampered, PUBKEY_K1);
+        let cfg = VerifyConfig {
+            require_minisign: false,
+            minisign_pubkey: Some(pk),
+            require_sha256sums: false,
+            gpg_pubkey: None,
+        };
+        let err = verify_artifact(&cfg, &art, Some(&sig), &VerifyInputs::default())
+            .expect_err("a present-but-forged signature must fail even in best-effort mode");
+        assert_eq!(err.code(), "updater_verify");
+    }
 }

@@ -764,6 +764,56 @@ mod tests {
     }
 
     #[test]
+    fn open_and_rotate_keep_master_key_in_zeroizing_wrapper() {
+        // Runtime regression guard for the Wave-11 zeroization fix. The vault
+        // master key must stay wrapped in `Zeroizing` so it wipes on drop.
+        // `config_crypt_master_key` exports it as `Zeroizing<[u8; 32]>`; if the
+        // internal `SecretBox<Zeroizing<[u8; KEY_LEN]>>` wrapper (or this
+        // export type) is reverted to a plain `[u8; 32]`, the
+        // `assert_zeroize_on_drop` bound below stops compiling — arrays are not
+        // `ZeroizeOnDrop` — failing the build. This EXERCISES both the
+        // `open_with_keychain` and `rotate_master_key` paths that hold the key.
+        fn assert_zeroize_on_drop<T: zeroize::ZeroizeOnDrop>(_: &T) {}
+
+        let _g = install_mock_keyring();
+        let dir = tempdir().unwrap();
+        let kc = KeychainBackend::with_service("spt-test-vault-zeroize");
+        VaultBackend::init_with_keychain(dir.path(), &kc).unwrap();
+
+        // open_with_keychain holds the master key in the protected wrapper.
+        let mut v = VaultBackend::open_with_keychain(dir.path(), &kc).unwrap();
+        let k1 = v.config_crypt_master_key();
+        assert_zeroize_on_drop(&k1);
+        let before: [u8; KEY_LEN] = *k1;
+
+        // rotate_master_key replaces it with a fresh key, still wrapped.
+        v.rotate_master_key(&kc).unwrap();
+        let k2 = v.config_crypt_master_key();
+        assert_zeroize_on_drop(&k2);
+        // Proves the rotation path actually ran (fresh random key).
+        assert_ne!(before, *k2, "rotation must install a different master key");
+    }
+
+    #[test]
+    fn vault_get_exposes_zeroizing_secret_bytes() {
+        // Regression guard for `SecretBytes = SecretBox<Zeroizing<Vec<u8>>>`.
+        // A `get()` result must expose a `Zeroizing<Vec<u8>>` so the decrypted
+        // plaintext wipes on drop. Reverting the alias to `SecretBox<Vec<u8>>`
+        // makes `expose_secret()` yield `&Vec<u8>` and both the explicit type
+        // annotation and the `ZeroizeOnDrop` bound below stop compiling.
+        fn assert_zeroize_on_drop<T: zeroize::ZeroizeOnDrop>(_: &T) {}
+
+        let dir = tempdir().unwrap();
+        let v = VaultBackend::init_with_passphrase(dir.path(), b"pw").unwrap();
+        let r = SecretRef::new("ns", "n").unwrap();
+        v.set(&r, b"payload").unwrap();
+        let got = v.get(&r).unwrap().unwrap();
+        let inner: &Zeroizing<Vec<u8>> = got.expose_secret();
+        assert_zeroize_on_drop(inner);
+        assert_eq!(inner.as_slice(), b"payload");
+    }
+
+    #[test]
     fn passphrase_round_trip() {
         let dir = tempdir().unwrap();
         // Use very weak Argon2 params for the test or it will be slow.
