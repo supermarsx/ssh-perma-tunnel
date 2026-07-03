@@ -1,0 +1,34 @@
+[book]
+title = "spt — Permanent SSH Tunnels"
+description = "Extensive end-to-end documentation for spt (ssh-perma-tunnel): a single Rust CLI that establishes and maintains permanent SSH/SSH3 tunnels that survive drops, restarts, and DNS drift."
+authors = ["supermarsx", "the spt contributors"]
+language = "en"
+src = "src"
+
+[rust]
+edition = "2021"
+
+[output.html]
+default-theme = "navy"
+preferred-dark-theme = "navy"
+git-repository-url = "https://github.com/supermarsx/ssh-perma-tunnel"
+edit-url-template = "https://github.com/supermarsx/ssh-perma-tunnel/edit/main/docs-book/{path}"
+git-repository-icon = "fa-github"
+no-section-label = false
+
+[output.html.fold]
+enable = true
+level = 1
+
+[output.html.search]
+enable = true
+limit-results = 30
+use-boolean-and = true
+boost-title = 2
+boost-hierarchy = 2
+boost-paragraph = 1
+expand = true
+heading-split-level = 3
+
+[output.html.playground]
+runnable = false

@@ -1,0 +1,92 @@
+# =============================================================================
+# docs — build the mdBook documentation site and deploy it to GitHub Pages
+# =============================================================================
+#
+# Builds `docs-book/` with mdBook and publishes the rendered HTML to GitHub
+# Pages using the official first-party Pages flow (upload-pages-artifact +
+# deploy-pages). No third-party deploy action, no long-lived token: deployment
+# is authorized by the workflow's OIDC id-token, scoped to the `github-pages`
+# environment.
+#
+# ── ONE-TIME REPO SETTING (required before the first deploy) ─────────────────
+# The repository owner must set the Pages source to "GitHub Actions":
+#     Settings → Pages → Build and deployment → Source → "GitHub Actions"
+# Without this, `deploy-pages` fails with a "Pages site not found" style error.
+# This only has to be done once per repository.
+#
+# Mirrors the repo's other workflows: least-privilege permissions (elevated
+# only in the deploy job), pinned action majors, a concurrency guard, and a
+# path filter so unrelated pushes don't rebuild the site.
+# =============================================================================
+
+name: docs
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs-book/**'
+      - '.github/workflows/docs.yml'
+  # Allow a manual rebuild/redeploy from the Actions tab.
+  workflow_dispatch: {}
+
+# Least privilege by default. The build job needs only to read the repo; the
+# deploy job elevates `pages`/`id-token` locally (see its own `permissions`).
+permissions:
+  contents: read
+
+# Never run two Pages deploys concurrently: a half-finished deploy must not be
+# cancelled (that can leave the live site broken), so in-progress deploys are
+# allowed to complete.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: mdbook build
+    runs-on: ubuntu-latest
+    env:
+      # Pin mdBook so a new upstream release can't change rendering under us.
+      MDBOOK_VERSION: '0.4.40'
+    steps:
+      - uses: actions/checkout@v7
+
+      # Install a prebuilt mdBook binary (no cargo compile). taiki-e/install-action
+      # fetches the pinned release artifact and adds it to PATH.
+      - name: Install mdBook
+        uses: taiki-e/install-action@v2
+        with:
+          tool: mdbook@${{ env.MDBOOK_VERSION }}
+
+      - name: Build the book
+        run: mdbook build docs-book
+
+      # Configure Pages (emits the base_path the build was rendered against) and
+      # upload the rendered site as the Pages artifact consumed by `deploy`.
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs-book/book
+
+  deploy:
+    name: deploy to GitHub Pages
+    needs: build
+    runs-on: ubuntu-latest
+    # The GitHub-managed environment that gates Pages deployments; the deployed
+    # URL surfaces on the environment and in the job summary.
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    # Elevated permissions live ONLY in this job: write the Pages deployment and
+    # mint the OIDC token that authorizes it.
+    permissions:
+      pages: write
+      id-token: write
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

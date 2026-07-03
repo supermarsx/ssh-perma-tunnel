@@ -73,7 +73,7 @@ jobs:
     name: fmt
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
@@ -86,7 +86,7 @@ jobs:
     name: clippy
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@1.88.0
         with:
           components: clippy
@@ -114,7 +114,7 @@ jobs:
     name: all-features
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@1.88.0
         with:
           components: clippy
@@ -138,7 +138,7 @@ jobs:
     name: typecheck
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@1.88.0
       - uses: Swatinem/rust-cache@v2
         with:
@@ -173,7 +173,7 @@ jobs:
     runs-on: ubuntu-latest
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@1.88.0
       - uses: Swatinem/rust-cache@v2
         with:
@@ -219,7 +219,7 @@ jobs:
     name: property
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@1.88.0
       - uses: Swatinem/rust-cache@v2
         with:
@@ -259,7 +259,7 @@ jobs:
       cargo_version: ${{ steps.bump.outputs.cargo_version }}
       prev_tag:      ${{ steps.bump.outputs.prev_tag }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           # bump-version.sh inspects `git tag --list "${YY}.*"` to compute N;
           # shallow checkout has no tag refs.
@@ -316,7 +316,7 @@ jobs:
             can_test: true
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Overlay prepared-source (bumped Cargo.toml + Cargo.lock)
         uses: actions/download-artifact@v8
         with:
@@ -416,7 +416,7 @@ jobs:
           - { target: aarch64-pc-windows-msvc, runner: windows-11-arm, cross: false, os: windows }
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Overlay prepared-source (bumped Cargo.toml + Cargo.lock)
         uses: actions/download-artifact@v8
         with:
@@ -493,7 +493,7 @@ jobs:
           - { target: aarch64-pc-windows-msvc, runner: windows-11-arm, os: windows }
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Overlay prepared-source (bumped Cargo.toml + Cargo.lock)
         uses: actions/download-artifact@v8
         with:
@@ -533,7 +533,7 @@ jobs:
       - name: Cache WiX 3 binaries (windows-11-arm)
         id: wix-cache
         if: ${{ matrix.os == 'windows' && matrix.target == 'aarch64-pc-windows-msvc' }}
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ${{ runner.temp }}\wix314
           # Bump the version suffix when WIX_VERSION below changes.
@@ -636,7 +636,7 @@ jobs:
       RELEASE_CARGO_VERSION: ${{ needs.prepare-release.outputs.cargo_version }}
       RELEASE_PREV_TAG:      ${{ needs.prepare-release.outputs.prev_tag }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
@@ -845,7 +845,7 @@ jobs:
           done
           ls -l dist/spt-amd64 dist/spt-arm64
       - name: Set up QEMU (arm64 emulation for buildx)
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@v4
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
       - name: Log in to GHCR
@@ -905,7 +905,7 @@ jobs:
     env:
       SPT_PKG_RELEASE_MODE: ${{ github.event_name == 'release' && '1' || '0' }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           sparse-checkout: |
             packaging/homebrew
@@ -919,7 +919,7 @@ jobs:
     env:
       SPT_PKG_RELEASE_MODE: ${{ github.event_name == 'release' && '1' || '0' }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           # Only the scoop manifest + test script are needed; sparse/blobless
           # checkout avoids pulling the vendored crates (the ~36s checkout was
@@ -937,7 +937,7 @@ jobs:
     env:
       SPT_PKG_RELEASE_MODE: ${{ github.event_name == 'release' && '1' || '0' }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           sparse-checkout: |
             packaging/choco
@@ -952,7 +952,7 @@ jobs:
     env:
       SPT_PKG_RELEASE_MODE: ${{ github.event_name == 'release' && '1' || '0' }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           sparse-checkout: |
             packaging/snap
@@ -968,7 +968,7 @@ jobs:
     env:
       SPT_PKG_RELEASE_MODE: ${{ github.event_name == 'release' && '1' || '0' }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           # The flatpak smoke only reads packaging/flatpak + its test script, so
           # a sparse, blobless checkout skips the vendored crates and cuts the
@@ -987,7 +987,7 @@ jobs:
     env:
       SPT_PKG_RELEASE_MODE: ${{ github.event_name == 'release' && '1' || '0' }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           sparse-checkout: |
             packaging/aur
@@ -1006,7 +1006,7 @@ jobs:
     env:
       SPT_PKG_RELEASE_MODE: ${{ github.event_name == 'release' && '1' || '0' }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           sparse-checkout: |
             packaging/winget
@@ -1021,7 +1021,7 @@ jobs:
     env:
       SPT_PKG_RELEASE_MODE: ${{ github.event_name == 'release' && '1' || '0' }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           sparse-checkout: |
             packaging/nix
