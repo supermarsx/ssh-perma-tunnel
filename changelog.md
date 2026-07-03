@@ -1,3 +1,13 @@
+## [26.44] - 2026-07-03
+
+# spt 26.44
+
+## Changes since 26.43
+
+- fix(wiring): Wave 3 — transport/forward limit enforcement + host-key-mismatch logging (359bc4a)
+- chore(completions): regenerate for Wave-2 `service install` flags (72201d0)
+- fix(wiring): Wave 2 — security TLS + secrets(vault/mlock) + service-install + OOM P2/P3 (cbf923b)
+
 ## [26.43] - 2026-07-02
 
 # spt 26.43
