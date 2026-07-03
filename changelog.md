@@ -1,3 +1,12 @@
+## [26.47] - 2026-07-03
+
+# spt 26.47
+
+## Changes since 26.46
+
+- chore: resync chaos + property sub-workspace locks to 0.26.46 (51493a4)
+- fix(dataplane): hardcore-review remediation — obfs desync, meek, idle-watchdog, ssh3 UDP, shutdown race (9e9d552)
+
 ## [26.46] - 2026-07-03
 
 # spt 26.46
