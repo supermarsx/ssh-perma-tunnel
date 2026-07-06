@@ -383,8 +383,8 @@ fn build_ssh2(
         .map(|endpoint| (endpoint.host.clone(), endpoint.port))
         .collect::<Vec<_>>();
     warn_legacy_ssh2_backend_capability(capabilities);
-    let crypto = build_crypto_policy(profile.crypto.as_ref())?;
-    reject_unsupported_post_quantum_runtime(profile, capabilities, &crypto)?;
+    let mut crypto = build_crypto_policy(profile.crypto.as_ref())?;
+    apply_post_quantum_capability_policy(&mut crypto, capabilities)?;
     let mut builder = Ssh2Protocol::builder()
         .crypto(crypto)
         .trust(build_trust_policy(
@@ -582,23 +582,39 @@ fn resolve_secret_to_string(
     })
 }
 
-fn reject_unsupported_post_quantum_runtime(
-    profile: &Profile,
+/// Apply the `[capabilities]` post-quantum policy to the resolved crypto
+/// policy's `kex` list (PQ-by-default refinement).
+///
+/// spt now offers the hybrid PQ KEX `mlkem768x25519-sha256` by default (it
+/// leads every preset's `kex` list — see `spt_ssh2::crypto`). This step lets
+/// an operator override that default via `[capabilities]`:
+///
+/// * `require_post_quantum_kex = true` restricts `kex` to the supported PQ KEX
+///   (PQ-only, fail-closed);
+/// * `allow_post_quantum_kex = false` (or `allow_ml_kem = false`) strips every
+///   PQ KEX, leaving the classical fallback.
+///
+/// Genuinely-unsupported PQ names (e.g. `sntrup761x25519-sha512`) are already
+/// rejected earlier, at `resolve_crypto_policy` time. Delegates to
+/// [`spt_ssh2::crypto::apply_post_quantum_capability_policy`] for the
+/// unit-tested list manipulation.
+fn apply_post_quantum_capability_policy(
+    crypto: &mut CryptoPolicy,
     capabilities: Option<&Capabilities>,
-    crypto: &CryptoPolicy,
 ) -> Result<()> {
-    if crypto.has_post_quantum_kex()
-        || matches!(
-            capabilities.and_then(|capabilities| capabilities.require_post_quantum_kex),
-            Some(true)
+    let (allow_pq, allow_ml_kem, require_pq) = capabilities.map_or((None, None, None), |c| {
+        (
+            c.allow_post_quantum_kex,
+            c.allow_ml_kem,
+            c.require_post_quantum_kex,
         )
-    {
-        return Err(Error::UnsupportedPlatform(format!(
-            "profile `{}` requests SSH post-quantum KEX, but the current SSH2 backends do not implement ML-KEM/SNTRUP KEX yet",
-            profile.name
-        )));
-    }
-    Ok(())
+    });
+    spt_ssh2::crypto::apply_post_quantum_capability_policy(
+        crypto,
+        allow_pq,
+        allow_ml_kem,
+        require_pq,
+    )
 }
 
 /// t7-Phase0: surface a one-shot deprecation warning when a profile still
@@ -2096,7 +2112,28 @@ mod tests {
     }
 
     #[test]
-    fn post_quantum_kex_returns_explicit_runtime_unsupported() {
+    fn default_ssh2_profile_offers_pq_kex_first_then_classical() {
+        // (a) PQ-by-default: a plain ssh2 profile with no `[profiles.crypto]`
+        // and no capability flags resolves a kex list that OFFERS
+        // `mlkem768x25519-sha256` FIRST, then the classical fallback.
+        let mut crypto = build_crypto_policy(None).unwrap();
+        apply_post_quantum_capability_policy(&mut crypto, None).unwrap();
+        assert_eq!(
+            crypto.kex.first().map(String::as_str),
+            Some("mlkem768x25519-sha256"),
+            "default profile must offer the hybrid PQ KEX first"
+        );
+        assert!(
+            crypto.kex[1..].iter().any(|k| k == "curve25519-sha256"),
+            "classical curve25519 fallback must follow the PQ KEX"
+        );
+    }
+
+    #[test]
+    fn explicit_mlkem_profile_now_builds_instead_of_rejecting() {
+        // Regression: this profile used to return UnsupportedPlatform. russh
+        // 0.61.2 implements mlkem768x25519-sha256 end-to-end, so with the
+        // enabling capabilities the profile now builds successfully.
         let cfg = r#"
             version = 1
             [capabilities]
@@ -2106,16 +2143,90 @@ mod tests {
             name = "p"
             protocol = "ssh2"
             host = "h"
+            [profiles.trust]
+            pin_sha256 = ["SHA256:dummy"]
             [profiles.crypto]
             kex_algorithms = ["mlkem768x25519-sha256"]
         "#;
         let (c, _) = load_str(cfg, false).unwrap();
+        let bundle = build_with_config(&c.profiles[0], &empty_resolver(), &c)
+            .expect("mlkem768x25519-sha256 profile must build under russh 0.61.2");
+        assert_eq!(bundle.endpoints.len(), 1);
+    }
+
+    #[test]
+    fn allow_post_quantum_kex_false_strips_pq_leaving_classical() {
+        // (b) An explicit `allow_post_quantum_kex = false` strips every PQ KEX
+        // from the resolved list, leaving the classical fallback.
+        let caps = Capabilities {
+            allow_post_quantum_kex: Some(false),
+            ..Default::default()
+        };
+        let mut crypto = build_crypto_policy(None).unwrap();
+        apply_post_quantum_capability_policy(&mut crypto, Some(&caps)).unwrap();
+        assert!(
+            !crypto.kex.iter().any(|k| k == "mlkem768x25519-sha256"),
+            "PQ KEX must be stripped when allow_post_quantum_kex = false"
+        );
+        assert!(crypto.kex.iter().any(|k| k == "curve25519-sha256"));
+    }
+
+    #[test]
+    fn require_post_quantum_kex_yields_pq_only_and_builds() {
+        // (c) `require_post_quantum_kex = true` restricts the resolved list to
+        // the supported PQ KEX only (fail-closed), and now SUCCEEDS.
+        let caps = Capabilities {
+            allow_post_quantum_kex: Some(true),
+            allow_ml_kem: Some(true),
+            require_post_quantum_kex: Some(true),
+            ..Default::default()
+        };
+        let mut crypto = build_crypto_policy(None).unwrap();
+        apply_post_quantum_capability_policy(&mut crypto, Some(&caps)).unwrap();
+        assert_eq!(crypto.kex, vec!["mlkem768x25519-sha256".to_owned()]);
+
+        // …and the whole profile builds through the factory.
+        let cfg = r#"
+            version = 1
+            [capabilities]
+            allow_post_quantum_kex = true
+            allow_ml_kem = true
+            require_post_quantum_kex = true
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            [profiles.trust]
+            pin_sha256 = ["SHA256:dummy"]
+        "#;
+        let (c, _) = load_str(cfg, false).unwrap();
+        build_with_config(&c.profiles[0], &empty_resolver(), &c)
+            .expect("require_post_quantum_kex profile must build (PQ-only)");
+    }
+
+    #[test]
+    fn unsupported_pq_kex_still_rejected_at_load_with_guidance() {
+        // (d) An unsupported PQ name (sntrup761x25519-sha512) still errors at
+        // config-resolution with guidance pointing at the supported KEX.
+        let cfg = r#"
+            version = 1
+            [capabilities]
+            allow_post_quantum_kex = true
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            [profiles.crypto]
+            kex_algorithms = ["sntrup761x25519-sha512"]
+        "#;
+        let (c, _) = load_str(cfg, false).unwrap();
         match build_with_config(&c.profiles[0], &empty_resolver(), &c) {
-            Err(Error::UnsupportedPlatform(message)) => {
-                assert!(message.contains("post-quantum KEX"));
+            Err(Error::InvalidConfig(message)) => {
+                assert!(message.contains("sntrup761x25519-sha512"), "{message}");
+                assert!(message.contains("mlkem768x25519-sha256"), "{message}");
             }
-            Ok(_) => panic!("expected UnsupportedPlatform error"),
-            Err(other) => panic!("expected UnsupportedPlatform, got {other:?}"),
+            Ok(_) => panic!("expected InvalidConfig error, got Ok"),
+            Err(other) => panic!("expected InvalidConfig, got {other:?}"),
         }
     }
 

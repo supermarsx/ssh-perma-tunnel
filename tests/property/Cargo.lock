@@ -2637,7 +2637,7 @@ dependencies = [
 
 [[package]]
 name = "spt-auth"
-version = "0.26.48"
+version = "0.26.49"
 dependencies = [
  "hmac",
  "rand 0.8.6",
@@ -2661,7 +2661,7 @@ dependencies = [
 
 [[package]]
 name = "spt-config"
-version = "0.26.48"
+version = "0.26.49"
 dependencies = [
  "atomicwrites",
  "directories",
@@ -2702,7 +2702,7 @@ dependencies = [
 
 [[package]]
 name = "spt-core"
-version = "0.26.48"
+version = "0.26.49"
 dependencies = [
  "bytesize",
  "chrono",
@@ -2723,7 +2723,7 @@ dependencies = [
 
 [[package]]
 name = "spt-events"
-version = "0.26.48"
+version = "0.26.49"
 dependencies = [
  "async-trait",
  "base64ct",
@@ -2755,7 +2755,7 @@ dependencies = [
 
 [[package]]
 name = "spt-forward"
-version = "0.26.48"
+version = "0.26.49"
 dependencies = [
  "async-trait",
  "bytes",
@@ -2779,7 +2779,7 @@ dependencies = [
 
 [[package]]
 name = "spt-key"
-version = "0.26.48"
+version = "0.26.49"
 dependencies = [
  "atomicwrites",
  "base64",
@@ -2797,7 +2797,7 @@ dependencies = [
 
 [[package]]
 name = "spt-net"
-version = "0.26.48"
+version = "0.26.49"
 dependencies = [
  "caps",
  "if-addrs",
@@ -2829,7 +2829,7 @@ dependencies = [
 
 [[package]]
 name = "spt-protocol"
-version = "0.26.48"
+version = "0.26.49"
 dependencies = [
  "async-trait",
  "serde",
@@ -2842,7 +2842,7 @@ dependencies = [
 
 [[package]]
 name = "spt-secrets"
-version = "0.26.48"
+version = "0.26.49"
 dependencies = [
  "aes-gcm",
  "argon2",
@@ -2867,7 +2867,7 @@ dependencies = [
 
 [[package]]
 name = "spt-snmp"
-version = "0.26.48"
+version = "0.26.49"
 dependencies = [
  "aes 0.8.4",
  "async-trait",
@@ -2888,7 +2888,7 @@ dependencies = [
 
 [[package]]
 name = "spt-ssh3"
-version = "0.26.48"
+version = "0.26.49"
 dependencies = [
  "async-trait",
  "base64",
@@ -2924,7 +2924,7 @@ dependencies = [
 
 [[package]]
 name = "spt-state"
-version = "0.26.48"
+version = "0.26.49"
 dependencies = [
  "atomicwrites",
  "chrono",
@@ -2941,7 +2941,7 @@ dependencies = [
 
 [[package]]
 name = "spt-trust"
-version = "0.26.48"
+version = "0.26.49"
 dependencies = [
  "atomicwrites",
  "base64",

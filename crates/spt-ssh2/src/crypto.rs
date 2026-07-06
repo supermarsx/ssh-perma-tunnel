@@ -37,24 +37,23 @@ const DEPRECATED: &[&str] = &[
 /// Post-quantum or hybrid post-quantum SSH KEX method names recognized by
 /// config validation and diagnostics.
 ///
-/// **t8-B1 update:** the vendored russh fork (`vendor/russh-fork`) now
-/// implements `mlkem768x25519-sha256` natively (see
-/// `russh::kex::MLKEM768X25519_SHA256`). Profiles selecting that algorithm
-/// will negotiate successfully against any peer that also speaks it
-/// (OpenSSH ≥ 9.9).
+/// The SSH2 transport rides upstream `russh 0.61.2` (crates.io), which
+/// implements the hybrid PQ KEX `mlkem768x25519-sha256` end-to-end (see
+/// `russh::kex::MLKEM768X25519_SHA256`). That is the ONE post-quantum KEX
+/// spt offers by default and the only entry in this list russh can actually
+/// negotiate — see [`SUPPORTED_PQ_KEX`]. spt prepends it to every preset's
+/// `kex` list so a profile offers `mlkem768x25519-sha256` FIRST with a
+/// classical fallback (mirroring russh's own `SAFE_KEX_ORDER`); the hybrid
+/// construction keeps X25519 security regardless, and servers without
+/// ML-KEM negotiate curve25519.
 ///
-/// **t8-B2 update (partial):** `sntrup761x25519-sha512` and its legacy
-/// `@openssh.com`-suffixed alias are now registered in the russh fork's
-/// `KEXES` table (see `russh::kex::SNTRUP761X25519_SHA512`) and the wire-
-/// format / hybrid-KDF skeleton is in place — but the sntrup761 KEM
-/// primitive itself is **not yet wired**. Negotiating either sntrup name
-/// today succeeds at the algorithm-list step but fails at `client_dh` /
-/// `server_dh` with `russh::Error::Kex`. Three operator-decidable resume
-/// paths are documented in `vendor/russh-fork/russh/src/kex/sntrup761.rs`
-/// and `.orchestration/logs/t8-B2.md`.
-///
-/// Other entries in this list remain config-recognized but not yet wired
-/// in russh; selecting them still fails negotiation.
+/// The remaining entries below (the `@openssh.com` aliases, the NIST-P
+/// ML-KEM variants, and the `sntrup761x25519-sha512` names) are
+/// config-recognized so validation/diagnostics can reason about them, but
+/// russh 0.61.2 does NOT register them: selecting one either fails the
+/// `build_preferred` name-parse (unknown to russh) or — for the sntrup
+/// names — is rejected up front by [`resolve_crypto_policy`] via
+/// [`UNSUPPORTED_HANDSHAKE_KEX`].
 pub const POST_QUANTUM_KEX: &[&str] = &[
     "mlkem768x25519-sha256",
     "mlkem768x25519-sha256@openssh.com",
@@ -64,24 +63,25 @@ pub const POST_QUANTUM_KEX: &[&str] = &[
     "sntrup761x25519-sha512@openssh.com",
 ];
 
-/// KEX method names that the russh fork *registers* in its algorithm table
-/// (so they pass the [`build_preferred`](crate::russh_backend) name-parse step)
-/// but whose KEM primitive is **not wired** — negotiating them succeeds at the
-/// algorithm-list stage and then fails at `client_dh` / `server_dh` with
-/// `russh::Error::Kex` (finding 8 / t8-B2). [`resolve_crypto_policy`] rejects
-/// them at config-resolution time with a clear message so the failure surfaces
-/// at config load rather than cryptically at handshake.
+/// Post-quantum KEX names that are config-recognized but that russh 0.61.2
+/// cannot complete: `sntrup761x25519-sha512` and its legacy `@openssh.com`
+/// alias name a KEM primitive russh does not implement. [`resolve_crypto_policy`]
+/// rejects them at config-resolution time with a clear message so the failure
+/// surfaces at config load rather than cryptically at handshake.
 pub const UNSUPPORTED_HANDSHAKE_KEX: &[&str] = &[
     "sntrup761x25519-sha512",
     "sntrup761x25519-sha512@openssh.com",
 ];
 
-/// The post-quantum KEX the russh fork actually implements end-to-end (used in
-/// the diagnostic that rejects [`UNSUPPORTED_HANDSHAKE_KEX`]).
+/// The one post-quantum KEX russh 0.61.2 implements end-to-end
+/// (`mlkem768x25519-sha256`). This is the algorithm spt offers by default and
+/// the one [`apply_post_quantum_capability_policy`] keeps under a PQ-only
+/// (`require_post_quantum_kex`) policy.
 pub const SUPPORTED_PQ_KEX: &str = "mlkem768x25519-sha256";
 
 /// ML-KEM hybrid SSH KEX method names recognized by config validation and
-/// diagnostics. See [`POST_QUANTUM_KEX`] for the russh 0.46 caveat.
+/// diagnostics. Only `mlkem768x25519-sha256` is negotiable by russh 0.61.2
+/// (see [`SUPPORTED_PQ_KEX`]); the other names are recognized for diagnostics.
 pub const ML_KEM_KEX: &[&str] = &[
     "mlkem768x25519-sha256",
     "mlkem768x25519-sha256@openssh.com",
@@ -100,9 +100,19 @@ pub const ML_KEM_KEX: &[&str] = &[
 // widely-deployed but non-PQ classics; LEGACY additionally re-admits a handful
 // of deprecated algorithms for talking to ancient servers (and therefore only
 // resolves cleanly with `allow_deprecated = true`).
+//
+// Every preset's `kex` list leads with the hybrid post-quantum KEX
+// [`SUPPORTED_PQ_KEX`] (`mlkem768x25519-sha256`), followed by the classical
+// fallback — mirroring russh's own `SAFE_KEX_ORDER`. This makes spt offer PQ
+// key exchange BY DEFAULT: a peer that speaks ML-KEM negotiates it, and a peer
+// that does not falls back to curve25519 with no loss of security (the hybrid
+// construction retains X25519's guarantees). The capability knobs in
+// `[capabilities]` (`allow_post_quantum_kex` / `allow_ml_kem` /
+// `require_post_quantum_kex`) refine this at the factory layer via
+// [`apply_post_quantum_capability_policy`].
 
 /// Modern, deprecation-free preset. No algorithm here appears in
-/// [`DEPRECATED`].
+/// [`DEPRECATED`]. Leads with the hybrid PQ KEX [`SUPPORTED_PQ_KEX`].
 pub const MODERN: CryptoPreset = CryptoPreset {
     ciphers: &[
         "chacha20-poly1305@openssh.com",
@@ -110,6 +120,7 @@ pub const MODERN: CryptoPreset = CryptoPreset {
         "aes128-gcm@openssh.com",
     ],
     kex: &[
+        "mlkem768x25519-sha256",
         "curve25519-sha256",
         "curve25519-sha256@libssh.org",
         "diffie-hellman-group16-sha512",
@@ -141,6 +152,7 @@ pub const INTEROP: CryptoPreset = CryptoPreset {
         "aes128-ctr",
     ],
     kex: &[
+        "mlkem768x25519-sha256",
         "curve25519-sha256",
         "curve25519-sha256@libssh.org",
         "diffie-hellman-group16-sha512",
@@ -179,6 +191,7 @@ pub const LEGACY: CryptoPreset = CryptoPreset {
         "3des-cbc",
     ],
     kex: &[
+        "mlkem768x25519-sha256",
         "curve25519-sha256",
         "diffie-hellman-group16-sha512",
         "diffie-hellman-group14-sha256",
@@ -430,6 +443,80 @@ fn contains_ignore_ascii_case(values: &[&str], needle: &str) -> bool {
         .any(|value| value.eq_ignore_ascii_case(needle))
 }
 
+/// True when `algo` is a recognized post-quantum (or hybrid-PQ) KEX name
+/// (any entry in [`POST_QUANTUM_KEX`]).
+#[must_use]
+pub fn is_post_quantum_kex(algo: &str) -> bool {
+    contains_ignore_ascii_case(POST_QUANTUM_KEX, algo)
+}
+
+/// True when `algo` is the one post-quantum KEX russh 0.61.2 negotiates
+/// end-to-end ([`SUPPORTED_PQ_KEX`], `mlkem768x25519-sha256`).
+#[must_use]
+pub fn is_supported_post_quantum_kex(algo: &str) -> bool {
+    algo.eq_ignore_ascii_case(SUPPORTED_PQ_KEX)
+}
+
+/// Apply the `[capabilities]` post-quantum policy to an already-resolved
+/// [`CryptoPolicy`]'s `kex` list, in place.
+///
+/// spt offers `mlkem768x25519-sha256` by default (it leads every preset's
+/// `kex` list). This helper lets an operator override that default:
+///
+/// * `require_post_quantum_kex == Some(true)` — **PQ-only**. Restrict `kex` to
+///   the supported post-quantum KEX (drop every classical algorithm) so the
+///   handshake fails closed rather than silently negotiating classical crypto.
+///   If no supported PQ KEX remains (e.g. the operator pinned only an
+///   unsupported PQ name), returns [`Error::InvalidConfig`]. Takes precedence
+///   over the `allow_*` knobs.
+/// * else if `allow_post_quantum_kex == Some(false)` **or**
+///   `allow_ml_kem == Some(false)` — **strip PQ**. Remove every recognized
+///   post-quantum KEX from `kex`, leaving the classical fallback. If that would
+///   empty the list (the operator pinned a PQ-only `kex` and then disallowed
+///   PQ — a contradiction validation also flags), returns
+///   [`Error::InvalidConfig`] rather than leaving an empty list (an empty list
+///   would let russh fall back to its own PQ-by-default `Preferred`).
+/// * otherwise the resolved `kex` is left untouched (PQ-by-default stands).
+///
+/// The list is never left empty on success.
+pub fn apply_post_quantum_capability_policy(
+    crypto: &mut CryptoPolicy,
+    allow_post_quantum_kex: Option<bool>,
+    allow_ml_kem: Option<bool>,
+    require_post_quantum_kex: Option<bool>,
+) -> Result<()> {
+    if require_post_quantum_kex == Some(true) {
+        crypto
+            .kex
+            .retain(|algo| is_supported_post_quantum_kex(algo));
+        if crypto.kex.is_empty() {
+            return Err(Error::InvalidConfig(format!(
+                "capabilities.require_post_quantum_kex = true, but the resolved key-exchange \
+                 list contains no supported post-quantum KEX. The only supported post-quantum \
+                 KEX is `{SUPPORTED_PQ_KEX}`; remove any pinned unsupported PQ algorithm from \
+                 `crypto.kex_algorithms`, or clear it to use the default (which offers \
+                 `{SUPPORTED_PQ_KEX}`)."
+            )));
+        }
+        return Ok(());
+    }
+
+    if allow_post_quantum_kex == Some(false) || allow_ml_kem == Some(false) {
+        crypto.kex.retain(|algo| !is_post_quantum_kex(algo));
+        if crypto.kex.is_empty() {
+            return Err(Error::InvalidConfig(
+                "post-quantum KEX is disabled (capabilities.allow_post_quantum_kex = false or \
+                 allow_ml_kem = false), but that leaves no key-exchange algorithm in \
+                 `crypto.kex_algorithms`. Add a classical KEX such as `curve25519-sha256`, or \
+                 clear the explicit list to use the preset default."
+                    .to_owned(),
+            ));
+        }
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -629,6 +716,120 @@ mod tests {
         // The deprecated entries survive into the resolved policy.
         assert!(resolved.macs.iter().any(|m| m == "hmac-sha1"));
         assert!(resolved.host_keys.iter().any(|h| h == "ssh-rsa"));
+    }
+
+    // ──────── PQ-by-default preset ordering + capability policy ────────────
+
+    #[test]
+    fn presets_lead_with_supported_pq_kex() {
+        // PQ-by-default: every preset's kex list must OFFER
+        // `mlkem768x25519-sha256` FIRST, then a classical fallback.
+        for set in [MODERN, INTEROP, LEGACY] {
+            assert_eq!(
+                set.kex.first().copied(),
+                Some(SUPPORTED_PQ_KEX),
+                "preset kex must lead with the supported PQ KEX"
+            );
+            // classical fallback still present right after the PQ entry.
+            assert!(
+                set.kex[1..].iter().any(|k| k.starts_with("curve25519")),
+                "preset kex must retain a classical curve25519 fallback"
+            );
+        }
+    }
+
+    #[test]
+    fn default_resolved_kex_is_pq_first_then_classical() {
+        // A default ssh2 profile (no explicit kex, no caps) resolves to a kex
+        // list beginning with mlkem768x25519-sha256 then classical.
+        let resolved = resolve_crypto_policy(None, &CryptoPolicy::default(), false, false).unwrap();
+        assert_eq!(
+            resolved.kex.first().map(String::as_str),
+            Some(SUPPORTED_PQ_KEX)
+        );
+        assert!(resolved.kex[1..].iter().any(|k| k == "curve25519-sha256"));
+        assert!(resolved.has_post_quantum_kex());
+    }
+
+    #[test]
+    fn allow_pq_false_strips_pq_leaving_classical() {
+        let mut crypto =
+            resolve_crypto_policy(None, &CryptoPolicy::default(), false, false).unwrap();
+        apply_post_quantum_capability_policy(&mut crypto, Some(false), None, None).unwrap();
+        assert!(
+            !crypto.has_post_quantum_kex(),
+            "allow_post_quantum_kex=false must strip every PQ KEX"
+        );
+        assert!(!crypto.kex.is_empty(), "classical fallback must remain");
+        assert_eq!(
+            crypto.kex.first().map(String::as_str),
+            Some("curve25519-sha256")
+        );
+    }
+
+    #[test]
+    fn allow_ml_kem_false_strips_pq_leaving_classical() {
+        let mut crypto =
+            resolve_crypto_policy(None, &CryptoPolicy::default(), false, false).unwrap();
+        apply_post_quantum_capability_policy(&mut crypto, None, Some(false), None).unwrap();
+        assert!(!crypto.has_post_quantum_kex());
+        assert!(!crypto.kex.is_empty());
+    }
+
+    #[test]
+    fn require_pq_yields_pq_only_and_succeeds() {
+        let mut crypto =
+            resolve_crypto_policy(None, &CryptoPolicy::default(), false, false).unwrap();
+        apply_post_quantum_capability_policy(&mut crypto, Some(true), Some(true), Some(true))
+            .expect("require PQ must succeed now that mlkem768x25519-sha256 is supported");
+        assert_eq!(crypto.kex, vec![SUPPORTED_PQ_KEX.to_owned()]);
+    }
+
+    #[test]
+    fn require_pq_takes_precedence_over_allow_false() {
+        // Contradictory config (require=true, allow=false): require wins,
+        // yielding PQ-only rather than an empty list.
+        let mut crypto =
+            resolve_crypto_policy(None, &CryptoPolicy::default(), false, false).unwrap();
+        apply_post_quantum_capability_policy(&mut crypto, Some(false), None, Some(true)).unwrap();
+        assert_eq!(crypto.kex, vec![SUPPORTED_PQ_KEX.to_owned()]);
+    }
+
+    #[test]
+    fn require_pq_with_no_supported_pq_errors() {
+        // Operator pinned a classical-only kex but required PQ: restriction
+        // empties the list ⇒ InvalidConfig.
+        let mut crypto = CryptoPolicy {
+            kex: vec!["curve25519-sha256".into()],
+            ..Default::default()
+        };
+        let err = apply_post_quantum_capability_policy(&mut crypto, Some(true), None, Some(true))
+            .expect_err("require PQ with no supported PQ kex must error");
+        assert!(matches!(err, Error::InvalidConfig(_)), "{err:?}");
+        assert!(format!("{err}").contains(SUPPORTED_PQ_KEX));
+    }
+
+    #[test]
+    fn allow_pq_false_with_pq_only_kex_errors_not_empties() {
+        // Contradiction: PQ-only explicit kex + allow=false. Rather than leave
+        // an empty list (which would let russh fall back to PQ-by-default), we
+        // error out.
+        let mut crypto = CryptoPolicy {
+            kex: vec![SUPPORTED_PQ_KEX.into()],
+            ..Default::default()
+        };
+        let err = apply_post_quantum_capability_policy(&mut crypto, Some(false), None, None)
+            .expect_err("stripping PQ from a PQ-only list must error, not empty the list");
+        assert!(matches!(err, Error::InvalidConfig(_)), "{err:?}");
+    }
+
+    #[test]
+    fn no_capability_flags_leave_pq_default_intact() {
+        let mut crypto =
+            resolve_crypto_policy(None, &CryptoPolicy::default(), false, false).unwrap();
+        let before = crypto.kex.clone();
+        apply_post_quantum_capability_policy(&mut crypto, None, None, None).unwrap();
+        assert_eq!(crypto.kex, before, "no caps ⇒ PQ-by-default is untouched");
     }
 
     #[test]

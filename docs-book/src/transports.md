@@ -35,7 +35,19 @@ compression         = []            # e.g. ["none", "zlib@openssh.com"]
 
 `policy = "modern"` (default) admits only current strong algorithms. `"interop"` extends that set with algorithms needed for compatibility with older server software. `"legacy"` permits all algorithms russh can negotiate, including ones that carry known weaknesses; it is not recommended for production and emits deprecation warnings. Explicit allow-lists in `ciphers`, `kex_algorithms`, etc. override the policy defaults entirely for that category.
 
-Post-quantum key exchange is available behind the `[capabilities]` feature gates `allow_post_quantum_kex` and `allow_ml_kem`. Set `require_post_quantum_kex = true` to refuse connections that cannot agree on a post-quantum algorithm.
+#### Post-quantum key exchange (on by default)
+
+Every preset offers the hybrid post-quantum KEX **`mlkem768x25519-sha256` first**, followed by the classical algorithms (`curve25519-sha256`, …) as fallback. This means an SSH2 profile negotiates post-quantum key exchange **by default** — no configuration is required. `mlkem768x25519-sha256` is the one post-quantum KEX the underlying `russh` transport implements end-to-end (interoperable with OpenSSH ≥ 9.0). Because it is a hybrid (ML-KEM-768 combined with X25519), it is never weaker than classical X25519, and a peer that does not speak ML-KEM simply negotiates `curve25519-sha256` instead.
+
+Three `[capabilities]` knobs refine this default:
+
+| Capability | Effect |
+| --- | --- |
+| `allow_post_quantum_kex = false` (or `allow_ml_kem = false`) | Strips post-quantum KEX from the offer, leaving only the classical fallback. |
+| `require_post_quantum_kex = true` | Restricts the offer to the supported post-quantum KEX only (drops classical), so the handshake fails closed rather than silently negotiating classical key exchange. Requires `allow_post_quantum_kex = true`. |
+| *(none set)* | Post-quantum offered first with classical fallback (the default). |
+
+Only `mlkem768x25519-sha256` is negotiable; unsupported post-quantum names such as `sntrup761x25519-sha512` are rejected at config load with guidance toward the supported algorithm.
 
 The full field-by-field reference is in [configuration-reference.md](configuration-reference.md).
 

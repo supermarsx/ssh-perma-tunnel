@@ -134,9 +134,9 @@ The `[capabilities]` table in the config file gates higher-risk optional surface
 | `allow_gssapi_delegation` | GSSAPI credential delegation. Off by default to prevent inadvertent ticket forwarding. |
 | `allow_sspi` | Windows SSPI/Negotiate authentication. |
 | `allow_ntlm_fallback` | NTLM fallback through SSPI/Negotiate. |
-| `allow_post_quantum_kex` | Post-quantum SSH key exchange. |
-| `allow_ml_kem` | ML-KEM hybrid SSH key exchange. |
-| `require_post_quantum_kex` | Enforce post-quantum key exchange for eligible SSH2 profiles. |
+| `allow_post_quantum_kex` | Post-quantum SSH key exchange. Offered **by default** (`mlkem768x25519-sha256` first, classical fallback); set to `false` to strip it and offer classical KEX only. |
+| `allow_ml_kem` | ML-KEM hybrid SSH key exchange. Part of the default offer; set to `false` to strip it. |
+| `require_post_quantum_kex` | Restrict eligible SSH2 profiles to the supported post-quantum KEX only (drops classical fallback, fails closed). Requires `allow_post_quantum_kex = true`. |
 | `allow_dynamic_proxy` | SOCKS4/SOCKS4A/SOCKS5/HTTP CONNECT proxy listeners. |
 | `allow_sftp` | SFTP operations over SSH. |
 | `allow_filesystem_mounts` | Filesystem mounts backed by SFTP. |
