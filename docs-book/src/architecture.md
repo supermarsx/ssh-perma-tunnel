@@ -86,33 +86,40 @@ path a packet from a local application takes to reach the far side.
 
 ```text
   ┌───────────────────────────────────────────────────────────────────────┐
-  │  Front-ends        CLI (spt-cli)  │  TUI (spt-tui)  │  service manager  │
-  │                         all three drive the SAME core                   │
+  │ Front-ends      CLI (spt-cli) · TUI (spt-tui) · service manager       │
+  │                 all three drive the SAME core                         │
   ├───────────────────────────────────────────────────────────────────────┤
-  │  Configuration     spt-config  →  ConfigCell (validate-before-swap)     │  ┐
-  │                    TOML → validate → migrate → canonical Config          │  │
-  ├───────────────────────────────────────────────────────────────────────┤  │
-  │  Orchestrator      spt-supervisor::Orchestrator                         │  │ cross-cutting
-  │                    one task per profile · shutdown gate · reload apply   │  │ planes span
-  ├───────────────────────────────────────────────────────────────────────┤  │ every layer:
-  │  Profile control   ProfileSupervisor + 13-state machine                 │  │
-  │                    connect → auth → forwards → healthy → reconnect …     │  │  • Trust
-  ├───────────────────────────────────────────────────────────────────────┤  │    (spt-trust)
-  │  Session/transport TunnelProtocol::connect → Box<dyn TunnelSession>     │  │  • Secrets
-  │                    ssh2 (russh) │ ssh3 (QUIC/H3) │ obfs (beneath ssh2)   │  │    (spt-secrets,
-  ├───────────────────────────────────────────────────────────────────────┤  │     mem-hygiene)
-  │  Channels          per-forward multiplexed channels on the session      │  │  • Events &
-  │                    direct-tcpip · tcpip-forward · streamlocal · QUIC     │  │    observability
-  ├───────────────────────────────────────────────────────────────────────┤  │    (spt-events,
-  │  Forwarders        spt-forward: L / R / D / UDS / UDP runners           │  │     -observability,
-  │                    accept → open channel → hand to the data plane        │  │     -stats, -snmp)
-  ├───────────────────────────────────────────────────────────────────────┤  │  • Service mgmt
-  │  Data plane        copy_bidirectional_throttled_idle                    │  │    (spt-service)
-  │                    two independent directions · half-close · throttle    │  ┘
+  │ Configuration   spt-config → ConfigCell (validate-before-swap)        │
+  │                 TOML → validate → migrate → canonical Config          │
+  ├───────────────────────────────────────────────────────────────────────┤
+  │ Orchestrator    spt-supervisor::Orchestrator                          │
+  │                 one task per profile · shutdown gate · reload apply   │
+  ├───────────────────────────────────────────────────────────────────────┤
+  │ Profile control ProfileSupervisor + 13-state machine                  │
+  │                 connect → auth → forwards → healthy → reconnect …     │
+  ├───────────────────────────────────────────────────────────────────────┤
+  │ Session /       TunnelProtocol::connect → Box<dyn TunnelSession>      │
+  │ transport       ssh2 (russh) · ssh3 (QUIC/H3) · obfs (under ssh2)     │
+  ├───────────────────────────────────────────────────────────────────────┤
+  │ Channels        multiplexed per-forward channels on the session       │
+  │                 direct-tcpip · tcpip-forward · streamlocal · QUIC     │
+  ├───────────────────────────────────────────────────────────────────────┤
+  │ Forwarders      spt-forward: L / R / D / UDS / UDP runners            │
+  │                 accept → open channel → hand to the data plane        │
+  ├───────────────────────────────────────────────────────────────────────┤
+  │ Data plane      copy_bidirectional_throttled_idle                     │
+  │                 two independent directions · half-close · throttle    │
   └───────────────────────────────────────────────────────────────────────┘
+
+        Cross-cutting planes — woven through every layer above, not a
+        layer of their own:
+          • Trust           spt-trust
+          • Secrets         spt-secrets · spt-mem-hygiene
+          • Events & obs.   spt-events · spt-observability · spt-stats · spt-snmp
+          • Service mgmt    spt-service
 ```
 
-The four **cross-cutting planes** on the right are not a layer of their own —
+The four **cross-cutting planes** below the stack are not a layer of their own —
 they thread through all of them. Trust decisions happen at the transport layer
 but are configured per-profile and per-hop; secret resolution happens wherever a
 credential is needed; the event/observability plane taps every layer's state
