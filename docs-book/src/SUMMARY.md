@@ -4,7 +4,8 @@
 
 # Getting Started
 
-- [Architecture Overview](architecture.md)
+- [Architecture](architecture.md)
+- [Comparison with Other Tools](comparison.md)
 - [Installation](installation.md)
 - [Quick Start](quick-start.md)
 
@@ -17,6 +18,10 @@
 
 - [CLI Overview](cli.md)
 - [CLI Reference](cli-reference.md)
+
+# Guides
+
+- [Use Cases & Recipes](use-cases.md)
 
 # Core Subsystems
 
@@ -47,3 +52,7 @@
 - [Security Model](security.md)
 - [Benchmarking](benchmarking.md)
 - [Troubleshooting & FAQ](troubleshooting.md)
+
+# Contributing
+
+- [Development Guide](development.md)
