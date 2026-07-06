@@ -75,7 +75,7 @@ jobs:
       # Configure Pages (emits the base_path the build was rendered against) and
       # upload the rendered site as the Pages artifact consumed by `deploy`.
       - name: Configure Pages
-        uses: actions/configure-pages@v5
+        uses: actions/configure-pages@v6
         with:
           # Auto-enable Pages (source = GitHub Actions) on first run if the repo
           # token has permission, so no manual Settings step is needed. If org
