@@ -1,3 +1,14 @@
+## [26.50] - 2026-07-06
+
+# spt 26.50
+
+## Changes since 26.49
+
+- feat(ssh2): offer post-quantum ML-KEM KEX by default (e628168)
+- docs(architecture): clean up the layered-overview diagram (4ba4b9f)
+- docs: add tool comparison, use-cases/recipes, development guide; deepen architecture (cb5a216)
+- ci(docs): upgrade Pages actions to latest (clears last Node 20 runtime) (828062a)
+
 ## [26.49] - 2026-07-03
 
 # spt 26.49
