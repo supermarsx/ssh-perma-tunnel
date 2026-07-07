@@ -170,6 +170,20 @@ The `[profiles.tls]` table controls TLS for the QUIC connection. Fields:
 | `pin_sha256` | One or more SHA-256 SPKI pins. |
 | `allow_self_signed` | Accept self-signed certs (requires a pin or `ca_file`). |
 | `max_cert_chain_depth` | Maximum intermediate chain depth (default 5). |
+| `post_quantum` | Offer the hybrid post-quantum group `X25519MLKEM768` on the QUIC handshake (default `true`; see below). |
+
+#### Post-quantum key exchange (on by default)
+
+Like the SSH2 backend, **SSH3 negotiates a hybrid post-quantum key exchange by default**. The QUIC/TLS-1.3 handshake offers the hybrid group **`X25519MLKEM768` first**, with classical X25519 / P-256 / P-384 as fallback. `X25519MLKEM768` is the TLS-1.3 analogue of SSH2's `mlkem768x25519-sha256` (draft-ietf-tls-ecdhe-mlkem / RFC 9370): ML-KEM-768 combined with X25519. Because it is hybrid it is never weaker than classical X25519, and a peer that does not speak ML-KEM simply negotiates classical X25519 instead. For `spt`-to-`spt` SSH3 the responder (`spt ssh3-serve`) always offers the group, so both ends negotiate post-quantum with no configuration required.
+
+Implementation detail: only the SSH3 QUIC configuration uses the `aws-lc-rs` crypto provider that supplies `X25519MLKEM768`; the process-global rustls provider (used by the status API, syslog TLS, and remote-config HTTP client) is unchanged.
+
+The operator off-switch is `post_quantum` in `[profiles.tls]`:
+
+| Setting | Effect |
+| --- | --- |
+| *(unset)* / `post_quantum = true` | Hybrid `X25519MLKEM768` offered first, classical fallback (the default). |
+| `post_quantum = false` | Classical-only handshake (no post-quantum group), reproducing the pre-PQ behaviour byte-for-byte. |
 
 SSH3-specific tuning lives in `[profiles.ssh3]`:
 

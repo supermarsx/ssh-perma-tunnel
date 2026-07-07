@@ -165,9 +165,30 @@ pub struct Ssh3TlsConfig {
     /// would be trusted — and [`Ssh3Config::validate`] rejects it.
     #[serde(default = "default_system_roots")]
     pub system_roots: bool,
+
+    /// Offer the hybrid post-quantum TLS-1.3 key-exchange group
+    /// `X25519MLKEM768` on the ssh3 QUIC handshake.
+    ///
+    /// Default `true` (PQ-by-default for spt↔spt ssh3, mirroring the ssh2
+    /// `mlkem768x25519-sha256` default). When `true`, [`crate::tls`] builds the
+    /// QUIC `rustls::ClientConfig` with a *per-config* aws-lc-rs provider whose
+    /// `kx_groups` lead with `X25519MLKEM768` and fall back to classical
+    /// X25519 / P-256 / P-384 — the negotiation is *hybrid*, so it is never
+    /// weaker than classical X25519 and a non-PQ peer still connects.
+    ///
+    /// When `false`, the classical `ring` provider is used (no PQ group), giving
+    /// an operator a force-off switch that reproduces the pre-PQ behaviour
+    /// byte-for-byte. This never swaps the process-global rustls provider; only
+    /// the ssh3 QUIC config is affected.
+    #[serde(default = "default_post_quantum")]
+    pub post_quantum: bool,
 }
 
 const fn default_system_roots() -> bool {
+    true
+}
+
+const fn default_post_quantum() -> bool {
     true
 }
 
@@ -189,6 +210,7 @@ impl Default for Ssh3TlsConfig {
             alpn: default_alpn(),
             max_cert_chain_depth: ChainDepthCap::default(),
             system_roots: true,
+            post_quantum: default_post_quantum(),
         }
     }
 }
@@ -611,5 +633,29 @@ mod tests {
         assert_eq!(de.max_streams, None);
         assert!(de.enable_datagrams);
         assert_eq!(de.protocol_token, None);
+        // PQ hybrid KEX is on by default (mirrors ssh2 policy).
+        assert!(de.tls.post_quantum);
+    }
+
+    #[test]
+    fn post_quantum_defaults_on_and_round_trips() {
+        // Default is ON (PQ-by-default for spt↔spt ssh3).
+        assert!(Ssh3TlsConfig::default().post_quantum);
+        assert!(Ssh3Config::default().tls.post_quantum);
+
+        // A profile can force it OFF and that survives a serde round-trip.
+        let c = Ssh3Config {
+            tls: Ssh3TlsConfig {
+                post_quantum: false,
+                ..Ssh3TlsConfig::default()
+            },
+            ..Ssh3Config::default()
+        };
+        let s = serde_json::to_string(&c).unwrap();
+        let de: Ssh3Config = serde_json::from_str(&s).unwrap();
+        assert!(!de.tls.post_quantum);
+        // Absent key in a legacy `[profiles.tls]` sub-table → defaults ON.
+        let legacy: Ssh3TlsConfig = serde_json::from_str("{}").unwrap();
+        assert!(legacy.post_quantum);
     }
 }

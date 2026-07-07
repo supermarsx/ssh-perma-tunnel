@@ -668,6 +668,14 @@ fn build_ssh3(profile: &Profile) -> Result<Ssh3Protocol> {
             // `allow_self_signed` → carried verbatim; `validate()` enforces the
             // dual-acknowledgement + trust-anchor requirement.
             allow_self_signed: tls.allow_self_signed.unwrap_or(false),
+            // `post_quantum` (hybrid X25519MLKEM768 ssh3 KEX) is ON by DEFAULT,
+            // mirroring the ssh2 PQ policy — it rides `Ssh3TlsConfig`'s default
+            // (`true`) below. Hybrid ⇒ never weaker than classical X25519, and a
+            // non-PQ peer still connects. The spt-config schema does not yet
+            // expose a `[profiles.ssh3]`/`[profiles.tls]` key to force it off, so
+            // the operator off-switch (`post_quantum = false`) attaches HERE once
+            // that additive schema field lands (deferred to the config-wiring
+            // pass). Programmatic `Ssh3TlsConfig` construction can already set it.
             ..Ssh3TlsConfig::default()
         };
         // `max_cert_chain_depth` → `ChainDepthCap`. Omitted keeps the config's

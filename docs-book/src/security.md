@@ -144,6 +144,15 @@ The `[capabilities]` table in the config file gates higher-risk optional surface
 | `allow_windows_event_log` | Windows Event Log registration and writes. |
 | `allow_gpo_policy_writes` | CLI writes to the Windows GPO registry policy hive. |
 
+## Post-quantum key exchange
+
+Both transports negotiate a **hybrid post-quantum key exchange by default**, so recorded traffic is protected against "harvest-now, decrypt-later" attacks without operator action:
+
+- **SSH2** offers `mlkem768x25519-sha256` first with classical fallback, governed by the `[capabilities]` knobs above (`allow_post_quantum_kex`, `allow_ml_kem`, `require_post_quantum_kex`).
+- **SSH3** offers the TLS-1.3 hybrid group **`X25519MLKEM768`** first on its QUIC handshake, with classical X25519 / P-256 / P-384 as fallback (the direct analogue of the SSH2 default). For `spt`-to-`spt` SSH3 the responder always offers the group, so both ends negotiate post-quantum automatically. Because the exchange is hybrid, it is never weaker than classical X25519, and a non-PQ peer still connects over classical X25519.
+
+The SSH3 post-quantum group is supplied by a **per-connection** `aws-lc-rs` crypto provider that applies only to the SSH3 QUIC configuration; the process-global rustls provider used by the status API, syslog TLS, and the remote-config HTTP client is left on `ring` and is unaffected. An operator can force the classical-only handshake with `post_quantum = false` in a profile's `[profiles.tls]` table (see [transports.md](transports.md)); this reproduces the pre-PQ behaviour exactly.
+
 ## Fuzz harnesses and decoder hardening
 
 The original standalone cargo-fuzz workspace was absorbed into the regular test suite so the harnesses run in CI without a separate fuzzer toolchain. Deterministic, fixed-seed fuzz tests are integrated into the following crates:

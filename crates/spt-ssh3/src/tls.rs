@@ -35,7 +35,11 @@ use crate::config::Ssh3TlsConfig;
 
 /// Build a [`rustls::ClientConfig`] from an [`Ssh3TlsConfig`].
 pub fn build_client_config(tls: &Ssh3TlsConfig) -> Result<ClientConfig> {
-    // Make sure rustls' aws-lc-rs / ring crypto provider is installed.
+    // Keep `ring` as the PROCESS-GLOBAL rustls provider (status-api / syslog /
+    // reqwest all rely on `install_default()` being `ring`). The ssh3 QUIC
+    // config built below carries its OWN provider (see `ssh3_crypto_provider`),
+    // so enabling the post-quantum aws-lc-rs group here never disturbs the
+    // global default. Idempotent — only installs if nothing is set yet.
     install_default_provider();
 
     // Resolve trust anchors, honoring `ca_file` and `system_roots`
@@ -102,6 +106,14 @@ pub fn build_client_config(tls: &Ssh3TlsConfig) -> Result<ClientConfig> {
     let needs_custom = tls.allow_self_signed
         || !tls.pin.spki_sha256.is_empty()
         || !tls.max_cert_chain_depth.is_unlimited();
+    // Per-config crypto provider: aws-lc-rs with `X25519MLKEM768` first when
+    // `post_quantum` is on, else the classical `ring` provider. QUIC is
+    // TLS-1.3-only (RFC 9001), so restrict to TLS 1.3 explicitly.
+    let builder = ClientConfig::builder_with_provider(ssh3_crypto_provider(tls.post_quantum))
+        .with_protocol_versions(&[&rustls::version::TLS13])
+        .map_err(|e| {
+            Error::InvalidConfig(format!("ssh3 TLS provider does not support TLS 1.3: {e}"))
+        })?;
     let mut cfg = if needs_custom {
         // Install our custom verifier — wraps webpki on the chain side (when a
         // trust anchor is enforced), enforces the pin set, and applies the
@@ -113,14 +125,12 @@ pub fn build_client_config(tls: &Ssh3TlsConfig) -> Result<ClientConfig> {
             require_chain,
             tls.max_cert_chain_depth,
         ));
-        ClientConfig::builder()
+        builder
             .dangerous()
             .with_custom_certificate_verifier(verifier)
             .with_no_client_auth()
     } else {
-        ClientConfig::builder()
-            .with_root_certificates(roots)
-            .with_no_client_auth()
+        builder.with_root_certificates(roots).with_no_client_auth()
     };
 
     cfg.alpn_protocols = tls.alpn.iter().map(|s| s.as_bytes().to_vec()).collect();
@@ -130,6 +140,38 @@ pub fn build_client_config(tls: &Ssh3TlsConfig) -> Result<ClientConfig> {
 fn install_default_provider() {
     // Idempotent — only sets a provider if none has been installed yet.
     let _ = rustls::crypto::ring::default_provider().install_default();
+}
+
+/// The *per-config* rustls crypto provider for an ssh3 QUIC handshake.
+///
+/// When `pq` is true, use the **aws-lc-rs** provider with the hybrid
+/// post-quantum group [`X25519MLKEM768`] listed FIRST, then classical
+/// fallbacks — a PQ-capable peer negotiates PQ while a classical peer still
+/// connects (hybrid ⇒ never weaker than X25519). When false, use the classical
+/// **ring** provider (no PQ group), reproducing the pre-PQ behaviour exactly.
+///
+/// This provider rides on the returned `ClientConfig`/`ServerConfig` object;
+/// quinn 0.11 reads it off the config (`QuicClientConfig::try_from` /
+/// `QuicServerConfig::try_from` call `initial_suite_from_provider(cfg
+/// .crypto_provider())`). It therefore does NOT touch `install_default()`, so
+/// status-api / syslog / reqwest keep `ring`.
+///
+/// [`X25519MLKEM768`]: rustls::crypto::aws_lc_rs::kx_group::X25519MLKEM768
+fn ssh3_crypto_provider(pq: bool) -> Arc<rustls::crypto::CryptoProvider> {
+    use rustls::crypto::{aws_lc_rs, ring};
+
+    if pq {
+        let mut provider = aws_lc_rs::default_provider();
+        provider.kx_groups = vec![
+            aws_lc_rs::kx_group::X25519MLKEM768, // hybrid PQ, offered first
+            aws_lc_rs::kx_group::X25519,         // classical fallbacks
+            aws_lc_rs::kx_group::SECP256R1,
+            aws_lc_rs::kx_group::SECP384R1,
+        ];
+        Arc::new(provider)
+    } else {
+        Arc::new(ring::default_provider())
+    }
 }
 
 /// Custom server-cert verifier honoring [`TlsPin`], `allow_self_signed`,
@@ -357,7 +399,19 @@ fn quic_server_config_from_rustls(
     certs: Vec<rustls::pki_types::CertificateDer<'static>>,
     key: rustls::pki_types::PrivateKeyDer<'static>,
 ) -> Result<quinn::ServerConfig> {
-    let mut rustls_server = rustls::ServerConfig::builder()
+    // The responder ALWAYS offers the hybrid PQ group (plus classical
+    // fallbacks) so a spt↔spt ssh3 handshake negotiates `X25519MLKEM768`. This
+    // is safe unconditionally: hybrid negotiation degrades to classical X25519
+    // for a non-PQ client, so it is never weaker than the old ring-only path.
+    // Uses the same per-config provider mechanism as the client (no global
+    // provider swap). QUIC is TLS-1.3-only (RFC 9001).
+    let mut rustls_server = rustls::ServerConfig::builder_with_provider(ssh3_crypto_provider(true))
+        .with_protocol_versions(&[&rustls::version::TLS13])
+        .map_err(|e| {
+            Error::InvalidConfig(format!(
+                "ssh3 server TLS provider does not support TLS 1.3: {e}"
+            ))
+        })?
         .with_no_client_auth()
         .with_single_cert(certs, key)
         .map_err(|e| Error::InvalidConfig(format!("build server TLS config: {e}")))?;
@@ -387,6 +441,121 @@ mod tests {
         };
         let cfg = build_client_config(&tls).unwrap();
         assert_eq!(cfg.alpn_protocols, vec![b"h3".to_vec(), b"ssh3".to_vec()]);
+    }
+
+    // --- ssh3-pq: post-quantum hybrid KEX engages when `post_quantum = true` ---
+
+    /// Collect the `NamedGroup`s the built client config offers, in order.
+    fn client_kx_groups(tls: &Ssh3TlsConfig) -> Vec<rustls::NamedGroup> {
+        let cfg = build_client_config(tls).unwrap();
+        cfg.crypto_provider()
+            .kx_groups
+            .iter()
+            .map(|g| g.name())
+            .collect()
+    }
+
+    #[test]
+    fn post_quantum_on_offers_mlkem_first() {
+        // The DEFAULT config is PQ-on: the built ClientConfig must lead its
+        // kx_groups with the hybrid `X25519MLKEM768` group, with classical
+        // X25519 retained as a fallback (hybrid ⇒ never weaker than X25519).
+        let groups = client_kx_groups(&Ssh3TlsConfig::default());
+        assert_eq!(
+            groups.first().copied(),
+            Some(rustls::NamedGroup::X25519MLKEM768),
+            "PQ-by-default must offer X25519MLKEM768 FIRST, got {groups:?}"
+        );
+        assert!(
+            groups.contains(&rustls::NamedGroup::X25519),
+            "classical X25519 fallback must remain, got {groups:?}"
+        );
+    }
+
+    #[test]
+    fn post_quantum_off_offers_no_pq_group() {
+        // The operator force-off switch: the classical ring provider must NOT
+        // offer any post-quantum group, reproducing the pre-PQ behaviour.
+        let tls = Ssh3TlsConfig {
+            post_quantum: false,
+            ..Ssh3TlsConfig::default()
+        };
+        let groups = client_kx_groups(&tls);
+        assert!(
+            !groups.contains(&rustls::NamedGroup::X25519MLKEM768),
+            "post_quantum=false must NOT offer X25519MLKEM768, got {groups:?}"
+        );
+        assert!(
+            groups.contains(&rustls::NamedGroup::X25519),
+            "classical X25519 must still be present, got {groups:?}"
+        );
+    }
+
+    /// Real loopback QUIC handshake proving the aws-lc-rs PQ client config
+    /// interoperates with the PQ-offering server config over quinn. Both ends
+    /// lead with `X25519MLKEM768`, so TLS 1.3 negotiates the hybrid group.
+    /// (quinn 0.11 does not expose the negotiated `NamedGroup`, so the
+    /// completed handshake with PQ-first on both ends is the regression
+    /// signal; the kx_groups ORDERING is asserted directly above.)
+    ///
+    /// Gated on `testing` (⊃ `server`) so `quic_server_config_from_rustls` is
+    /// compiled; `cargo test -p spt-ssh3` activates it via the self dev-dep.
+    #[cfg(feature = "testing")]
+    #[tokio::test]
+    async fn pq_client_and_server_complete_real_quic_handshake() {
+        use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
+        use std::net::{Ipv4Addr, SocketAddr};
+
+        install_default_provider();
+
+        // Self-signed server leaf; pin it so the client accepts it.
+        let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+        let cert_der = CertificateDer::from(cert.cert.der().to_vec());
+        let pin = TlsPin::spki_sha256_of(&cert_der).unwrap();
+        let key_der = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(cert.key_pair.serialize_der()));
+
+        // Server ALWAYS offers X25519MLKEM768 (+ classical fallbacks).
+        let server_cfg = quic_server_config_from_rustls(vec![cert_der], key_der).unwrap();
+
+        // PQ client, pinned to the server cert.
+        let tls = Ssh3TlsConfig {
+            allow_self_signed: true,
+            pin: TlsPin {
+                spki_sha256: vec![pin],
+            },
+            post_quantum: true,
+            ..Ssh3TlsConfig::default()
+        };
+        let client_rustls = build_client_config(&tls).unwrap();
+        assert_eq!(
+            client_rustls
+                .crypto_provider()
+                .kx_groups
+                .first()
+                .map(|g| g.name()),
+            Some(rustls::NamedGroup::X25519MLKEM768),
+        );
+        let quic_client_crypto =
+            quinn::crypto::rustls::QuicClientConfig::try_from(client_rustls).unwrap();
+        let client_cfg = quinn::ClientConfig::new(Arc::new(quic_client_crypto));
+
+        let server_endpoint =
+            quinn::Endpoint::server(server_cfg, (Ipv4Addr::LOCALHOST, 0).into()).unwrap();
+        let server_addr: SocketAddr = server_endpoint.local_addr().unwrap();
+        let mut client_endpoint = quinn::Endpoint::client((Ipv4Addr::LOCALHOST, 0).into()).unwrap();
+        client_endpoint.set_default_client_config(client_cfg);
+
+        let server_task = tokio::spawn(async move {
+            let incoming = server_endpoint.accept().await.expect("incoming");
+            incoming.await.expect("server-side handshake completes");
+        });
+        let client_conn = client_endpoint
+            .connect(server_addr, "localhost")
+            .unwrap()
+            .await
+            .expect("PQ client/server QUIC handshake must complete");
+        server_task.await.unwrap();
+        client_conn.close(0u32.into(), b"done");
     }
 
     #[test]
