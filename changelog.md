@@ -1,3 +1,11 @@
+## [26.51] - 2026-07-07
+
+# spt 26.51
+
+## Changes since 26.50
+
+- feat: negotiated-crypto observability, supply-chain gate, opt-in native build (be2ab31)
+
 ## [26.50] - 2026-07-06
 
 # spt 26.50
