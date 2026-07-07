@@ -670,12 +670,11 @@ fn build_ssh3(profile: &Profile) -> Result<Ssh3Protocol> {
             allow_self_signed: tls.allow_self_signed.unwrap_or(false),
             // `post_quantum` (hybrid X25519MLKEM768 ssh3 KEX) is ON by DEFAULT,
             // mirroring the ssh2 PQ policy — it rides `Ssh3TlsConfig`'s default
-            // (`true`) below. Hybrid ⇒ never weaker than classical X25519, and a
-            // non-PQ peer still connects. The spt-config schema does not yet
-            // expose a `[profiles.ssh3]`/`[profiles.tls]` key to force it off, so
-            // the operator off-switch (`post_quantum = false`) attaches HERE once
-            // that additive schema field lands (deferred to the config-wiring
-            // pass). Programmatic `Ssh3TlsConfig` construction can already set it.
+            // (`true`) here. Hybrid ⇒ never weaker than classical X25519, and a
+            // non-PQ peer still connects. The operator off-switch lives on the
+            // `[profiles.ssh3].post_quantum` key and is applied on `cfg.tls`
+            // below (after this block), so it takes effect even without a
+            // `[profiles.tls]` table.
             ..Ssh3TlsConfig::default()
         };
         // `max_cert_chain_depth` → `ChainDepthCap`. Omitted keeps the config's
@@ -721,6 +720,13 @@ fn build_ssh3(profile: &Profile) -> Result<Ssh3Protocol> {
             cfg.enable_datagrams = enable_datagrams;
         }
         cfg.protocol_token.clone_from(&ssh3.protocol_token);
+        // `post_quantum` off-switch. Absent ⇒ leave the transport default
+        // (`Ssh3TlsConfig::default().post_quantum == true`); present ⇒ force the
+        // configured value. Applied on `cfg.tls` directly so it honors the key
+        // even when the profile has no `[profiles.tls]` block.
+        if let Some(post_quantum) = ssh3.post_quantum {
+            cfg.tls.post_quantum = post_quantum;
+        }
         // `draft` is informational (reference-draft identifier) — no runtime
         // effect; intentionally ignored.
     }
@@ -4085,6 +4091,41 @@ mod tests {
             proto.config().tls.max_cert_chain_depth,
             ChainDepthCap::default()
         );
+    }
+
+    #[test]
+    fn ssh3_post_quantum_defaults_on_when_absent() {
+        // No `[profiles.ssh3].post_quantum` key ⇒ transport default (ON).
+        let p = ssh3_profile("");
+        let proto = build_ssh3(&p).unwrap();
+        assert!(
+            proto.config().tls.post_quantum,
+            "PQ hybrid KEX must default ON when the key is absent"
+        );
+        // Also ON when a `[profiles.ssh3]` block is present but omits the key.
+        let p =
+            ssh3_profile("                [profiles.ssh3]\n                keepalive = \"25s\"");
+        let proto = build_ssh3(&p).unwrap();
+        assert!(proto.config().tls.post_quantum);
+    }
+
+    #[test]
+    fn ssh3_post_quantum_false_forces_classical() {
+        let p =
+            ssh3_profile("                [profiles.ssh3]\n                post_quantum = false");
+        let proto = build_ssh3(&p).unwrap();
+        assert!(
+            !proto.config().tls.post_quantum,
+            "post_quantum = false must force classical TLS KEX"
+        );
+    }
+
+    #[test]
+    fn ssh3_post_quantum_true_is_explicit_on() {
+        let p =
+            ssh3_profile("                [profiles.ssh3]\n                post_quantum = true");
+        let proto = build_ssh3(&p).unwrap();
+        assert!(proto.config().tls.post_quantum);
     }
 
     #[test]

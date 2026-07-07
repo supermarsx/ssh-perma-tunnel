@@ -1934,6 +1934,15 @@ pub struct Ssh3 {
     /// QUIC max bidi streams. §4.2.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_streams: Option<u32>,
+    /// Offer the hybrid post-quantum TLS-1.3 key-exchange group
+    /// `X25519MLKEM768` on the ssh3 QUIC handshake. §4.2 / §9.13.
+    ///
+    /// Absent ⇒ transport default (ON — PQ-by-default for spt↔spt ssh3, mirroring
+    /// the ssh2 `mlkem768x25519-sha256` default). `false` forces the classical
+    /// (pre-PQ) TLS key exchange. The negotiation is hybrid, so `true` is never
+    /// weaker than classical X25519 and a non-PQ peer still connects.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub post_quantum: Option<bool>,
 }
 
 /// `[profiles.keepalive]`. Spec §11.3.

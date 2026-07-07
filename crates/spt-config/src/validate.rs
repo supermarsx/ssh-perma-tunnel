@@ -2741,6 +2741,24 @@ fn check_profile_ssh3_tls(d: &mut Diagnostics, p: &Profile, prefix: &str) {
                 .at(format!("{prefix}.ssh3.draft")),
             );
         }
+
+        // `post_quantum = false` drops the hybrid X25519MLKEM768 group and
+        // downgrades the ssh3 QUIC handshake to classical TLS key exchange.
+        // The hybrid default is never weaker than classical, so opting out is
+        // a deliberate downgrade worth surfacing (informational).
+        if ssh3.post_quantum == Some(false) {
+            d.push(
+                Diagnostic::warning(
+                    "ssh3_post_quantum_disabled",
+                    format!(
+                        "{prefix}.ssh3.post_quantum = false downgrades the ssh3 QUIC handshake to \
+                         classical TLS key exchange (drops the hybrid post-quantum X25519MLKEM768 \
+                         group)"
+                    ),
+                )
+                .at(format!("{prefix}.ssh3.post_quantum")),
+            );
+        }
     }
 }
 
@@ -3317,20 +3335,19 @@ fn check_forward(
         );
     }
 
-    // `max_datagram_size` is surfaced by `forward inspect` but is NOT threaded
-    // into the UDP flow config: the runtime hardcodes the datagram cap (a fixed
-    // default in both the ssh2 and ssh3 UDP paths). WARN so an operator setting
-    // it to cap datagram admission is not silently misled by the display value.
-    // (Full runtime wiring is a separate transport task.)
-    if f.max_datagram_size.is_some() {
+    // `max_datagram_size` caps UDP datagram admission and is now threaded into
+    // the runtime flow table (`spt_forward` runner → `spt_ssh3::forward`'s
+    // `udp_flow_config` → `UdpFlowTable::admit_size`), so on a UDP forward the
+    // configured value is honored. On a non-UDP forward there are no datagrams,
+    // so the value can never take effect — WARN so the operator is not misled.
+    if f.max_datagram_size.is_some() && f.transport != "udp" {
         d.push(
             Diagnostic::warning(
-                "forward_max_datagram_size_not_enforced",
+                "forward_max_datagram_size_ignored_non_udp",
                 format!(
-                    "forward `{}` sets max_datagram_size but it is not enforced at runtime: the \
-                     UDP datagram cap uses a fixed default and this value only appears in \
-                     `forward inspect` output",
-                    f.name
+                    "forward `{}` sets max_datagram_size but transport is `{}`; the datagram cap \
+                     only applies to UDP forwards (ssh3) and has no effect here",
+                    f.name, f.transport
                 ),
             )
             .at(format!("{prefix}.max_datagram_size")),
@@ -7446,7 +7463,9 @@ mod tests {
     }
 
     #[test]
-    fn forward_max_datagram_size_warns_not_enforced() {
+    fn forward_max_datagram_size_warns_only_on_non_udp() {
+        // On a non-UDP (tcp) forward the datagram cap can never take effect →
+        // WARN. The stale `forward_max_datagram_size_not_enforced` code is gone.
         let raw = r#"
             version = 1
             [[profiles]]
@@ -7466,8 +7485,44 @@ mod tests {
         assert!(
             d.warnings
                 .iter()
-                .any(|w| w.code == "forward_max_datagram_size_not_enforced"),
+                .any(|w| w.code == "forward_max_datagram_size_ignored_non_udp"),
             "warnings: {:?}",
+            d.warnings
+        );
+        assert!(
+            !d.warnings
+                .iter()
+                .any(|w| w.code == "forward_max_datagram_size_not_enforced"),
+            "stale not-enforced warning must be removed"
+        );
+    }
+
+    #[test]
+    fn forward_max_datagram_size_enforced_on_udp_no_warn() {
+        // On a UDP forward (ssh3) the cap is now honored at runtime → no
+        // not-enforced / ignored warning.
+        let raw = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh3"
+            endpoint = "https://q.example.com/spt"
+            acknowledge_experimental = true
+            [[profiles.forwards]]
+            name = "f"
+            type = "local"
+            transport = "udp"
+            bind = "127.0.0.1:1234"
+            target = "127.0.0.1:53"
+            max_datagram_size = 1400
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(
+            !d.warnings
+                .iter()
+                .any(|w| w.code.starts_with("forward_max_datagram_size")),
+            "UDP forward must not warn about max_datagram_size; warnings: {:?}",
             d.warnings
         );
     }
@@ -7491,6 +7546,57 @@ mod tests {
             "warnings: {:?}",
             d.warnings
         );
+    }
+
+    #[test]
+    fn ssh3_post_quantum_false_warns_downgrade() {
+        let raw = r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh3"
+            endpoint = "https://q.example.com/spt"
+            acknowledge_experimental = true
+            [profiles.ssh3]
+            post_quantum = false
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(
+            d.warnings
+                .iter()
+                .any(|w| w.code == "ssh3_post_quantum_disabled"),
+            "warnings: {:?}",
+            d.warnings
+        );
+    }
+
+    #[test]
+    fn ssh3_post_quantum_true_or_absent_no_warn() {
+        for line in ["post_quantum = true", ""] {
+            let raw = format!(
+                r#"
+                version = 1
+                [[profiles]]
+                name = "p"
+                protocol = "ssh3"
+                endpoint = "https://q.example.com/spt"
+                acknowledge_experimental = true
+                [profiles.ssh3]
+                keepalive = "25s"
+                {line}
+            "#
+            );
+            let (c, _) = load_str(&raw, false).unwrap();
+            let d = validate(&c);
+            assert!(
+                !d.warnings
+                    .iter()
+                    .any(|w| w.code == "ssh3_post_quantum_disabled"),
+                "line `{line}` must not warn; warnings: {:?}",
+                d.warnings
+            );
+        }
     }
 
     #[test]

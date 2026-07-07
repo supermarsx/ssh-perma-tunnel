@@ -134,7 +134,7 @@ See [cli-reference.md](cli-reference.md) for the `spt ssh3-serve` option referen
 
 ### UDP capability
 
-When `[profiles.ssh3] enable_datagrams = true`, UDP forwards map datagram payloads directly onto QUIC datagrams rather than framing them over a stream. The same `udp_oversize_drops` counter applies; oversized datagrams are dropped and counted. See [forwarding.md](forwarding.md#udp-forwarding) for the forward configuration.
+When `[profiles.ssh3] enable_datagrams = true`, UDP forwards map datagram payloads directly onto QUIC datagrams rather than framing them over a stream. The per-forward `[[profiles.forwards]] max_datagram_size` caps datagram admission: a datagram larger than the configured value is dropped and counted in the `udp_oversize_drops` counter. When unset the flow uses a conservative transport default (the maximum well-formed UDP payload, 65535 bytes), so a normally-sized datagram is never rejected. This is an application-level admission gate independent of QUIC's own datagram-frame-size limit — raising it above what the QUIC peer negotiated does not make oversized datagrams sendable. See [forwarding.md](forwarding.md#udp-forwarding) for the forward configuration.
 
 ### Profile configuration
 
@@ -170,7 +170,6 @@ The `[profiles.tls]` table controls TLS for the QUIC connection. Fields:
 | `pin_sha256` | One or more SHA-256 SPKI pins. |
 | `allow_self_signed` | Accept self-signed certs (requires a pin or `ca_file`). |
 | `max_cert_chain_depth` | Maximum intermediate chain depth (default 5). |
-| `post_quantum` | Offer the hybrid post-quantum group `X25519MLKEM768` on the QUIC handshake (default `true`; see below). |
 
 #### Post-quantum key exchange (on by default)
 
@@ -178,12 +177,12 @@ Like the SSH2 backend, **SSH3 negotiates a hybrid post-quantum key exchange by d
 
 Implementation detail: only the SSH3 QUIC configuration uses the `aws-lc-rs` crypto provider that supplies `X25519MLKEM768`; the process-global rustls provider (used by the status API, syslog TLS, and remote-config HTTP client) is unchanged.
 
-The operator off-switch is `post_quantum` in `[profiles.tls]`:
+The operator off-switch is `post_quantum` in `[profiles.ssh3]`:
 
 | Setting | Effect |
 | --- | --- |
 | *(unset)* / `post_quantum = true` | Hybrid `X25519MLKEM768` offered first, classical fallback (the default). |
-| `post_quantum = false` | Classical-only handshake (no post-quantum group), reproducing the pre-PQ behaviour byte-for-byte. |
+| `post_quantum = false` | Classical-only handshake (no post-quantum group), reproducing the pre-PQ behaviour byte-for-byte. `validate` emits an informational `ssh3_post_quantum_disabled` warning to flag the downgrade. |
 
 SSH3-specific tuning lives in `[profiles.ssh3]`:
 
@@ -195,6 +194,7 @@ SSH3-specific tuning lives in `[profiles.ssh3]`:
 | `idle_timeout` | duration | QUIC connection idle timeout. |
 | `keepalive` | duration | QUIC keepalive probe interval. |
 | `max_streams` | u32 | Maximum concurrent bidirectional QUIC streams. |
+| `post_quantum` | bool | Offer the hybrid post-quantum group `X25519MLKEM768` on the QUIC handshake (default `true`; set `false` to force classical TLS key exchange). |
 
 Auth for SSH3 profiles supports `bearer_token` (sets `Authorization: Bearer`) and `password` (sets `Authorization: Basic`). OIDC device-flow fields (`oidc_issuer`, `oidc_client_id`) are parsed and validated by the auth stack but the SSH3 transport currently exercises only Bearer and Basic headers. See [authentication.md](authentication.md).
 

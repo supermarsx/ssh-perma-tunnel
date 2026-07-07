@@ -481,6 +481,13 @@ fn effective_limits(cfg: &Forward, runner_cfg: &ForwardRunnerConfig) -> Result<F
     if let Some(v) = cfg.max_packets_per_second {
         limits.max_packets_per_sec = v;
     }
+    // `[[forwards]].max_datagram_size` → per-forward UDP datagram admission cap
+    // (SSH3 only). `None` leaves `0` = "unset", so the UDP flow keeps its
+    // transport default cap. A non-zero value is threaded through to the flow
+    // table's `admit_size` gate (see `spt_ssh3::forward::udp_flow_config`).
+    if let Some(v) = cfg.max_datagram_size {
+        limits.max_datagram_size = v;
+    }
     Ok(limits)
 }
 

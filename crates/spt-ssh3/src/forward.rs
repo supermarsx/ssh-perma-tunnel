@@ -97,13 +97,19 @@ const MAX_REMOTE_UDP_INFLIGHT: usize = 1024;
 const UDP_INBOUND_CHANNEL_CAP: usize = 1024;
 
 /// Default maximum UDP datagram size (bytes) enforced on the ssh3 UDP forward
-/// path. `UdpForwardSpec` currently has **no** `max_datagram_size` field in the
-/// config schema (flagged for the coordinator to add in Wave 8 — see
-/// `.orchestration/logs/w3-ssh3fwd.md`), so we apply this conservative default
-/// (the maximum well-formed UDP payload); oversized datagrams are dropped and
-/// counted. When the schema field lands this becomes the per-forward configured
-/// value. Chosen so it is behaviour-preserving (a normal datagram is never
+/// path when the forward does not configure one (`[[forwards]].max_datagram_size`
+/// absent ⇒ `spec.limits.max_datagram_size == 0`). This conservative default is
+/// the maximum well-formed UDP payload; oversized datagrams are dropped and
+/// counted. Chosen so it is behaviour-preserving (a normal datagram is never
 /// rejected) while still bounding a malformed/oversized datagram.
+///
+/// The configured value, when set, replaces this default via [`udp_flow_config`].
+/// It is an application-level admission gate (`UdpFlowTable::admit_size`) and is
+/// independent of QUIC's own datagram-frame-size limit
+/// ([`quinn::Connection::max_datagram_size`]): a config value above what the QUIC
+/// peer negotiated does not make oversized datagrams sendable, it only widens
+/// the admission threshold. A UDP length field is 16 bits, so no real datagram
+/// exceeds `65_535` bytes regardless of the configured cap.
 const DEFAULT_MAX_DATAGRAM_SIZE: u32 = 65_535;
 
 /// Fallback per-flow idle timeout for a UDP forward whose spec sets
@@ -124,17 +130,24 @@ fn forward_buckets(limits: &ForwardRateLimits) -> (TokenBucket, TokenBucket) {
 /// Resolve the effective per-forward UDP flow-table config from a
 /// [`UdpForwardSpec`]: the config `max_flows` (NOT a hard-coded 1024 — falling
 /// back to [`UdpFlowTableConfig`]'s generous-but-finite default when unset), the
-/// per-flow idle timeout from `idle_timeout_secs`, and the (currently
-/// schema-less) max-datagram-size default.
+/// per-flow idle timeout from `idle_timeout_secs`, and the max-datagram-size cap
+/// from `limits.max_datagram_size` (config `[[forwards]].max_datagram_size`),
+/// falling back to [`DEFAULT_MAX_DATAGRAM_SIZE`] when unset (`0`).
 fn udp_flow_config(spec: &UdpForwardSpec) -> UdpFlowTableConfig {
     let idle_timeout = if spec.idle_timeout_secs == 0 {
         DEFAULT_UDP_IDLE
     } else {
         Duration::from_secs(u64::from(spec.idle_timeout_secs))
     };
+    // `limits.max_datagram_size == 0` means "unset" — keep the transport default.
+    let max_datagram_size = if spec.limits.max_datagram_size == 0 {
+        DEFAULT_MAX_DATAGRAM_SIZE
+    } else {
+        spec.limits.max_datagram_size
+    };
     UdpFlowTableConfig {
         idle_timeout,
-        max_datagram_size: DEFAULT_MAX_DATAGRAM_SIZE,
+        max_datagram_size,
         // `UdpForwardSpec.max_flows` is the config `max_connections` remapped by
         // the runner. `Some(n)` ⇒ that cap; `None` ⇒ the table's finite default
         // (never the old hard-coded 1024 channel cap).
@@ -2455,6 +2468,42 @@ mod tests {
             !table.admit_packet(),
             "pps cap must drop the 6th packet in the burst window"
         );
+    }
+
+    /// The configured `[[forwards]].max_datagram_size` (carried on
+    /// `spec.limits.max_datagram_size`) reaches the flow config's admission cap,
+    /// replacing the hard-coded default — and the built table actually enforces
+    /// it via `admit_size`.
+    #[test]
+    fn udp_flow_config_honors_configured_max_datagram_size() {
+        let mut spec = make_udp_spec(None, 0, 0);
+        spec.limits.max_datagram_size = 512;
+        let cfg = udp_flow_config(&spec);
+        assert_eq!(
+            cfg.max_datagram_size, 512,
+            "flow config must carry the configured cap, not the hard-coded default"
+        );
+        assert_ne!(cfg.max_datagram_size, DEFAULT_MAX_DATAGRAM_SIZE);
+
+        // The built table drops datagrams above the configured cap.
+        let table: UdpFlowTable<UdpFlowKey, ()> =
+            UdpFlowTable::with_pps(cfg, spec.limits.max_packets_per_sec);
+        assert!(table.admit_size(512));
+        assert!(!table.admit_size(513));
+        assert_eq!(table.oversized_count(), 1);
+    }
+
+    /// When `max_datagram_size` is unset (`0`) the flow config falls back to the
+    /// conservative transport default — behaviour-preserving.
+    #[test]
+    fn udp_flow_config_unset_max_datagram_size_uses_default() {
+        let spec = make_udp_spec(None, 0, 0);
+        assert_eq!(
+            spec.limits.max_datagram_size, 0,
+            "test fixture must be unset"
+        );
+        let cfg = udp_flow_config(&spec);
+        assert_eq!(cfg.max_datagram_size, DEFAULT_MAX_DATAGRAM_SIZE);
     }
 
     /// When `max_flows` is unset the table falls back to the finite default

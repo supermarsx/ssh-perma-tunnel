@@ -223,6 +223,7 @@ fn rate_limits_default_is_unlimited_and_extremes_round_trip() {
         burst_down: u64::MAX,
         max_new_conns_per_sec: u32::MAX,
         max_packets_per_sec: u32::MAX,
+        max_datagram_size: u32::MAX,
     };
     assert!(!l.is_unlimited());
     let de: ForwardRateLimits = serde_json::from_str(&serde_json::to_string(&l).unwrap()).unwrap();

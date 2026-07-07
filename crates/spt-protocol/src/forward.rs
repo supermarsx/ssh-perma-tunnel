@@ -38,6 +38,19 @@ pub struct ForwardRateLimits {
     /// Cap on forwarded packets per second (UDP/datagram). `0` = unlimited.
     #[serde(default)]
     pub max_packets_per_sec: u32,
+    /// Maximum admitted UDP datagram size in bytes (SSH3 UDP forwards only).
+    ///
+    /// `0` = "unset" → the UDP flow uses its transport default cap. A non-zero
+    /// value caps datagram admission: a datagram larger than this is dropped and
+    /// counted (see `spt_forward::UdpFlowTable::admit_size`). This is an
+    /// application-level admission gate; it does not raise QUIC's own
+    /// datagram-frame-size limit, so a value above what the QUIC peer negotiated
+    /// cannot make oversized datagrams *sendable*. A sibling of
+    /// `max_packets_per_sec` (also UDP-only); TCP forwards ignore it. It is
+    /// deliberately excluded from [`ForwardRateLimits::is_unlimited`], which
+    /// reports only throttling state.
+    #[serde(default)]
+    pub max_datagram_size: u32,
 }
 
 impl ForwardRateLimits {
@@ -341,6 +354,7 @@ mod tests {
             burst_down: 20,
             max_new_conns_per_sec: 5,
             max_packets_per_sec: 7,
+            max_datagram_size: 1400,
         };
         let json = serde_json::to_string(&l).unwrap();
         let back: ForwardRateLimits = serde_json::from_str(&json).unwrap();

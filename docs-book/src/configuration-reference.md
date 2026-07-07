@@ -1261,6 +1261,7 @@ enable_datagrams = true
 idle_timeout = "30s"
 keepalive = "10s"
 max_streams = 128
+post_quantum = true
 ```
 
 | Field | Type | Default | Notes |
@@ -1271,6 +1272,7 @@ max_streams = 128
 | `idle_timeout` | `duration` | absent | QUIC connection idle timeout |
 | `keepalive` | `duration` | absent | QUIC keepalive ping interval |
 | `max_streams` | `integer` | absent | Maximum concurrent QUIC bidirectional streams |
+| `post_quantum` | `bool` | absent (`true`) | Offer the hybrid post-quantum group `X25519MLKEM768` on the QUIC handshake. Absent keeps the PQ-by-default; `false` forces classical TLS key exchange (`validate` warns `ssh3_post_quantum_disabled`) |
 
 ### `[profiles.keepalive]`
 
@@ -1508,7 +1510,7 @@ an alias for `target`.
 | `allow_targets` | `[string]` | absent | Destination allow-list for dynamic forwards (host globs or CIDR/IP rules); absent = allow all |
 | `deny_targets` | `[string]` | absent | Destination deny-list for dynamic forwards; deny rules win over allow rules |
 | `udp_idle_timeout` | `duration` | `"30s"` | Per-flow idle timeout for UDP forwards |
-| `max_datagram_size` | `integer` | absent | Maximum UDP datagram size |
+| `max_datagram_size` | `integer` | absent | Maximum admitted UDP datagram size in bytes (SSH3 UDP forwards). Oversized datagrams are dropped and counted; absent uses the transport default (65535). Ignored on non-UDP forwards (`validate` warns `forward_max_datagram_size_ignored_non_udp`) |
 | `max_packets_per_second` | `integer` | absent | Maximum UDP packet rate |
 | `udp_mode` | `string` | `"tcp-framed"` | SSH2 UDP framing mode: `tcp-framed` (length-prefixed `direct-tcpip`) or `uds-bridge` (`direct-streamlocal`; russh only, Unix only) |
 | `kind` | `string` | absent | Link kind override: `tcp`, `local_uds`, or `remote_uds` |
