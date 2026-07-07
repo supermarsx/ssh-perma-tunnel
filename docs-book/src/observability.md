@@ -355,6 +355,105 @@ When `[mem_hygiene]` is enabled the snapshot includes a `memory_monitor` block s
 
 `spt status` renders this snapshot in a human-readable format by default; `spt status --json` emits the raw JSON. External monitors (Nagios, Datadog agents, custom scripts) can scrape `status.json` directly without spawning a subprocess.
 
+## Negotiated cryptography
+
+Both transports negotiate their algorithms at handshake time rather than using a fixed suite, and the resolved set can differ from the configured preference list (an endpoint may lack a preferred algorithm, or a rekey may re-run negotiation). `spt` surfaces the **actually negotiated** cryptographic parameters of every connection so operators can confirm what was used on the wire. This became especially relevant with the post-quantum `mlkem768x25519-sha256` key exchange now offered by default on the ssh2 (russh) transport: knowing whether a given session actually negotiated the PQ KEX — rather than assuming it from configuration — is the point of this surface.
+
+Only **algorithm names** are ever exposed. Keys, shared secrets, nonces, certificates, and any other handshake material are never captured or emitted.
+
+### Surfacing mechanisms
+
+The negotiated parameters are made available through four channels:
+
+1. **Structured tracing log** — target `spt::crypto_negotiated`, level `INFO`. Each transport emits one line at session establishment (immediately after the "session established" line), on both the persistent supervisor path and the CLI/direct-connect path. Filter it with an `EnvFilter` directive, e.g. `SPT_LOG=info,spt::crypto_negotiated=info`.
+2. **Canonical event** — `session.crypto_negotiated`, severity `Info`, published on the [event bus](#the-event-bus). It carries the same fields as the log line and can be routed to any event sink or binding. This event is emitted by `spt-bin` on the direct-connect / CLI path (where the binary holds a live `EventBus`).
+3. **Status API** — an additive `negotiated_crypto` object attached per session in `spt status` output (`GET /v1/sessions` and `GET /v1/status`), keyed by session id.
+4. **This documentation.**
+
+The log (mechanism 1) is always-on for both transports because it is emitted from inside `spt-ssh2` / `spt-ssh3` at the point where the negotiated data is owned. The bus event and the status-API object (mechanisms 2 and 3) are produced where `spt-bin` holds the event bus and the status registry — i.e. the CLI / direct-connect path. Sessions established purely through the persistent supervisor path are covered by the log line but may not carry the bus event or the status object.
+
+### Fields per transport
+
+The fields differ by transport, and the differences are deliberate — the surface reflects exactly what each stack exposes, and nothing is fabricated.
+
+**ssh2 (russh).** These are the real negotiated values, captured from russh's `kex_done` handshake callback:
+
+| Field | Meaning |
+|---|---|
+| `transport` | Always `ssh2`. |
+| `kex` | Negotiated key-exchange algorithm (e.g. `mlkem768x25519-sha256`). |
+| `hostkey` | Negotiated host-key / server host-key signature algorithm (e.g. `ssh-ed25519`). |
+| `cipher` | Negotiated symmetric cipher (e.g. `chacha20-poly1305@openssh.com`). |
+| `mac_c2s` | Client-to-server MAC algorithm. |
+| `mac_s2c` | Server-to-client MAC algorithm. |
+| `comp_c2s` | Client-to-server compression (e.g. `none`). |
+| `comp_s2c` | Server-to-client compression. |
+| `pq_offered` | `true` when a post-quantum KEX (an mlkem variant) was **offered** in the client's resolved preference list. |
+
+Two honest caveats on ssh2:
+
+- russh negotiates a **single cipher for both directions**, so there is one `cipher` field rather than separate `cipher_c2s` / `cipher_s2c`. MAC and compression *are* per-direction, hence the `_c2s` / `_s2c` pairs for those.
+- `pq_offered` reflects what was **offered**, not necessarily what was selected. To confirm the PQ KEX was actually used, check the `kex` field.
+
+**ssh3 (rustls over QUIC via quinn).**
+
+| Field | Meaning |
+|---|---|
+| `transport` | Always `ssh3`. |
+| `tls_version` | Always `TLS1.3` — QUIC mandates TLS 1.3 (RFC 9001), so this is a safe constant rather than a probed value. |
+| `alpn` | Negotiated ALPN protocol (e.g. `h3`). |
+| `sni` | The Server Name Indication used for the connection (the configured SNI / host). |
+
+Honest limitation on ssh3: the negotiated **cipher suite** and **key-exchange group** are **not** surfaced. quinn 0.11's public API does not expose the underlying rustls `Connection`; its `handshake_data()` only carries the ALPN protocol and server name. The rustls accessors that would return those values (`negotiated_cipher_suite()` / `negotiated_key_exchange_group()`) are therefore unreachable from `spt-ssh3`, and no crypto-provider change was made to work around this. These fields are intentionally absent for ssh3 sessions rather than guessed.
+
+### Wire format and the status overlay
+
+Internally the transports do not carry a struct across crate boundaries; instead each producer writes a canonical, parseable **`key=value` token string** onto the session's negotiated field (a space-separated list of tokens whose values are algorithm names, with absent parameters simply omitted, always prefixed with a `transport=` token). The status API parses this token string into the `negotiated_crypto` JSON object; the event and log producers emit the same key/value pairs directly as structured fields.
+
+The status-API `negotiated_crypto` object is an **additive overlay**, keyed by session id and merged into each session entry when a matching parsed record exists. It is not a field of the canonical session-status struct (which is owned outside the status-API crate), so sessions without a captured record simply omit the object rather than reporting a null or empty one.
+
+### Examples
+
+An ssh2 `spt::crypto_negotiated` log line carries fields equivalent to:
+
+```
+target=spt::crypto_negotiated level=INFO
+transport=ssh2 kex=mlkem768x25519-sha256 hostkey=ssh-ed25519
+cipher=chacha20-poly1305@openssh.com mac_c2s=hmac-sha2-256 mac_s2c=hmac-sha2-256
+comp_c2s=none comp_s2c=none pq_offered=true
+```
+
+The corresponding `negotiated_crypto` object under a session in `spt status --json` (`/v1/sessions`):
+
+```json
+{
+  "negotiated_crypto": {
+    "transport": "ssh2",
+    "kex": "mlkem768x25519-sha256",
+    "host_key_algo": "ssh-ed25519",
+    "cipher": "chacha20-poly1305@openssh.com",
+    "mac_c2s": "hmac-sha2-256",
+    "mac_s2c": "hmac-sha2-256",
+    "comp_c2s": "none",
+    "comp_s2c": "none",
+    "pq_offered": true
+  }
+}
+```
+
+An ssh3 session's `negotiated_crypto` object, showing the intentionally absent cipher-suite / kex-group fields:
+
+```json
+{
+  "negotiated_crypto": {
+    "transport": "ssh3",
+    "tls_version": "TLS1.3",
+    "alpn": "h3",
+    "sni": "gateway.example.com"
+  }
+}
+```
+
 ## Example: full observability stack
 
 The following is the `examples/observability.toml` configuration shipped with `spt`. It wires OTLP log export, syslog over TLS, a Prometheus metrics file, an email event sink, and an `mcp_notify` sink:

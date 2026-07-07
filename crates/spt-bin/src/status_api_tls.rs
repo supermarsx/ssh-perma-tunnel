@@ -41,8 +41,8 @@ use spt_config::{StatusApiAuthMode, StatusApiConfig};
 use spt_core::{Error, Result};
 use spt_secrets::Resolver;
 use spt_status_api::{
-    AppState, AuthContext, PeerIdentity, RateLimitConfig, RateLimiter, StateSnapshotSource,
-    StatusApiHandle, StatusApiServer,
+    AppState, AuthContext, NegotiatedCryptoRegistry, PeerIdentity, RateLimitConfig, RateLimiter,
+    StateSnapshotSource, StatusApiHandle, StatusApiServer,
 };
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
@@ -171,7 +171,18 @@ async fn launch_tls(
     // Auth + rate-limit machinery (mirrors `StatusApiServer::start`).
     let auth_ctx = Arc::new(AuthContext::from_config(&cfg.auth, resolver)?);
     let limiter = RateLimiter::new(RateLimitConfig::from_rps(cfg.rate_limit_rps));
-    let state = AppState::new(source, cfg.expose_metrics);
+    // t1-e5: attach the additive negotiated-crypto side-table to the
+    // status-api `AppState` so the `/v1/sessions` overlay can surface
+    // per-session negotiated algorithms. In the daemon, session establishment
+    // is owned by spt-supervisor (out of this crate's ownership), so there is
+    // no in-process emitter to populate this registry here — it stays empty and
+    // the overlay simply omits the field. The registry IS populated on the
+    // spt-bin-owned direct-connect path (`spt profile test`, see
+    // `crate::cli::profile_ops::record_negotiated_crypto`). Wiring it here keeps
+    // mechanism 3 ready for any future in-process emitter and is behaviorally
+    // inert (empty overlay) for existing deployments.
+    let crypto_registry = NegotiatedCryptoRegistry::new();
+    let state = AppState::new(source, cfg.expose_metrics).with_crypto_registry(crypto_registry);
     let router = StatusApiServer::router(state, auth_ctx, limiter);
 
     // Bind the TCP listener. Wave 6: when `[network.offload]` derived socket

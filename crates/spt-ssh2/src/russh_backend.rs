@@ -74,6 +74,16 @@ struct ClientHandler {
     trust_failure: Arc<parking_lot::Mutex<Option<String>>>,
     remote_forwards: RemoteForwardMap,
     remote_uds_forwards: RemoteUdsForwardMap,
+    /// Shared out-param carrying the canonical negotiated-crypto token string
+    /// captured by [`client::Handler::kex_done`] (mirrors `trust_failure`).
+    /// Read after connect to populate [`SessionInfo::negotiated`]. Contains
+    /// algorithm names only — NEVER any key material / shared secret.
+    negotiated: Arc<parking_lot::Mutex<Option<String>>>,
+    /// Whether the *offered* kex preference list included a post-quantum KEX
+    /// (derived from the resolved [`CryptoPolicy`] at construction). Emitted as
+    /// the `pq_offered=<bool>` token; reflects what was OFFERED, not necessarily
+    /// what the peer negotiated.
+    pq_offered: bool,
 }
 
 impl client::Handler for ClientHandler {
@@ -109,6 +119,22 @@ impl client::Handler for ClientHandler {
                 Ok(false)
             }
         }
+    }
+
+    async fn kex_done(
+        &mut self,
+        _shared_secret: Option<&[u8]>,
+        names: &russh::Names,
+        _session: &mut client::Session,
+    ) -> std::result::Result<(), Self::Error> {
+        // Capture the fully negotiated algorithm set as the canonical token
+        // string. `kex_done` fires on every (re)key; "last wins" is correct
+        // because the negotiated algorithms are stable across a rekey, and the
+        // initial kex precedes auth so the value is set before `session_info()`
+        // is read. NEVER record `_shared_secret` or any key material — only the
+        // algorithm names.
+        *self.negotiated.lock() = Some(format_negotiated(names, self.pq_offered));
+        Ok(())
     }
 
     async fn server_channel_open_forwarded_tcpip(
@@ -194,6 +220,70 @@ impl client::Handler for ClientHandler {
         }
         Ok(())
     }
+}
+
+/// Render a russh [`compression::Compression`](russh::compression::Compression)
+/// to its wire algorithm name. The enum carries no `Display`/name accessor, so
+/// we map the variants explicitly. (russh is built with `flate2`, so the
+/// zlib variants are present.)
+fn compression_name(c: &russh::compression::Compression) -> &'static str {
+    use russh::compression::Compression;
+    match c {
+        Compression::None => "none",
+        Compression::Zlib => "zlib",
+        Compression::ZlibOpenSSH => "zlib@openssh.com",
+    }
+}
+
+/// Format the negotiated algorithm set into the canonical space-separated
+/// `key=value` token string shared with the status/observability consumers.
+///
+/// The `transport=` token is always first. Values are algorithm names only
+/// (never key material). russh negotiates a SINGLE `cipher` for both
+/// directions, so only one `cipher=` token is emitted (MAC + compression are
+/// per-direction: `mac_c2s`/`mac_s2c`, `comp_c2s`/`comp_s2c`). `pq_offered`
+/// reflects whether the offered kex list contained a post-quantum KEX.
+fn format_negotiated(names: &russh::Names, pq_offered: bool) -> String {
+    format!(
+        "transport=ssh2 kex={} hostkey={} cipher={} mac_c2s={} mac_s2c={} \
+         comp_c2s={} comp_s2c={} pq_offered={}",
+        names.kex.as_ref(),
+        names.key,
+        names.cipher.as_ref(),
+        names.client_mac.as_ref(),
+        names.server_mac.as_ref(),
+        compression_name(&names.client_compression),
+        compression_name(&names.server_compression),
+        pq_offered,
+    )
+}
+
+/// Emit the always-on structured `spt::crypto_negotiated` info log for an
+/// established ssh2 session, next to the "session established" line. The
+/// algorithm names are recovered from the canonical `token` string this crate
+/// produced (so the log and the carrier can never drift); `pq_offered` is
+/// passed through as a bool.
+fn emit_crypto_negotiated_log(token: &str, pq_offered: bool) {
+    let mut fields: HashMap<&str, &str> = HashMap::new();
+    for kv in token.split(' ') {
+        if let Some((k, v)) = kv.split_once('=') {
+            fields.insert(k, v);
+        }
+    }
+    let get = |k: &str| fields.get(k).copied().unwrap_or("");
+    info!(
+        target: "spt::crypto_negotiated",
+        transport = "ssh2",
+        kex = get("kex"),
+        cipher = get("cipher"),
+        host_key = get("hostkey"),
+        mac_c2s = get("mac_c2s"),
+        mac_s2c = get("mac_s2c"),
+        comp_c2s = get("comp_c2s"),
+        comp_s2c = get("comp_s2c"),
+        pq_offered = pq_offered,
+        "negotiated ssh2 crypto"
+    );
 }
 
 /// One hop in the multi-hop chain. Constructed from `Ssh2Protocol::hops`.
@@ -724,6 +814,13 @@ async fn connect_inner(params: ReconnectParams) -> Result<RusshSsh2Session> {
     connection.apply_to_config(&mut config);
     let cfg = Arc::new(config);
 
+    // `pq_offered` reflects the OFFERED kex preference list (does it contain a
+    // post-quantum / ML-KEM KEX?), not necessarily what the peer negotiated.
+    // Threaded into every `ClientHandler` so `kex_done` can stamp the
+    // `pq_offered=<bool>` token. Computed once — the same `crypto`/`cfg` drives
+    // every hop.
+    let pq_offered = crypto.has_post_quantum_kex();
+
     // Multi-hop dispatch: walk `hops` end-to-end. Each hop opens a
     // `direct-tcpip` channel through the previous session and handshakes a
     // fresh russh session over the resulting `ChannelStream`. The final hop
@@ -744,6 +841,10 @@ async fn connect_inner(params: ReconnectParams) -> Result<RusshSsh2Session> {
             trust_failure: Arc::clone(&first_trust_failure),
             remote_forwards: RemoteForwardMap::default(),
             remote_uds_forwards: RemoteUdsForwardMap::default(),
+            // Only the final hop's negotiated crypto is surfaced on the
+            // session; intermediate hops capture into a throwaway carrier.
+            negotiated: Arc::new(parking_lot::Mutex::new(None)),
+            pq_offered,
         };
         // E3-F2: the obfuscation policy wraps the *outermost* transport only —
         // i.e. the plain-TCP dial to the first hop. Inner hops traverse
@@ -810,6 +911,8 @@ async fn connect_inner(params: ReconnectParams) -> Result<RusshSsh2Session> {
                 trust_failure: Arc::clone(&hop_trust_failure),
                 remote_forwards: RemoteForwardMap::default(),
                 remote_uds_forwards: RemoteUdsForwardMap::default(),
+                negotiated: Arc::new(parking_lot::Mutex::new(None)),
+                pq_offered,
             };
             let hop_handle = open_next_leg_timed(
                 Arc::clone(&prev_shared),
@@ -850,6 +953,7 @@ async fn connect_inner(params: ReconnectParams) -> Result<RusshSsh2Session> {
         let final_trust_failure = Arc::new(parking_lot::Mutex::new(None));
         let final_remote_forwards = RemoteForwardMap::default();
         let final_remote_uds_forwards = RemoteUdsForwardMap::default();
+        let final_negotiated = Arc::new(parking_lot::Mutex::new(None));
         let final_handler = ClientHandler {
             host: endpoint.host.clone(),
             port: endpoint.port,
@@ -857,6 +961,8 @@ async fn connect_inner(params: ReconnectParams) -> Result<RusshSsh2Session> {
             trust_failure: Arc::clone(&final_trust_failure),
             remote_forwards: Arc::clone(&final_remote_forwards),
             remote_uds_forwards: Arc::clone(&final_remote_uds_forwards),
+            negotiated: Arc::clone(&final_negotiated),
+            pq_offered,
         };
         let final_handle = open_next_leg_timed(
             Arc::clone(&prev_shared),
@@ -887,10 +993,26 @@ async fn connect_inner(params: ReconnectParams) -> Result<RusshSsh2Session> {
             connection.auth_timeout,
         )
         .await?;
+        // The canonical negotiated-crypto token captured by the final hop's
+        // `kex_done` (falls back to `None` if — unexpectedly — kex_done never
+        // fired). Emit the always-on structured crypto log next to the
+        // establishment of the final leg.
+        let negotiated = final_negotiated.lock().clone();
+        if let Some(token) = negotiated.as_deref() {
+            emit_crypto_negotiated_log(token, pq_offered);
+        }
+        info!(
+            target: "spt_ssh2::russh",
+            host = %endpoint.host,
+            port = endpoint.port,
+            backend = "ssh2-russh",
+            hops = hops.len(),
+            "SSH2 multi-hop session established and authenticated"
+        );
         let info = SessionInfo {
             backend: "ssh2-russh".into(),
             peer_version: None,
-            negotiated: Some("russh negotiated algorithms (multi-hop)".into()),
+            negotiated,
             established_at: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .map(|d| d.as_secs())
@@ -915,6 +1037,7 @@ async fn connect_inner(params: ReconnectParams) -> Result<RusshSsh2Session> {
     let trust_failure = Arc::new(parking_lot::Mutex::new(None));
     let remote_forwards = RemoteForwardMap::default();
     let remote_uds_forwards = RemoteUdsForwardMap::default();
+    let negotiated_carrier = Arc::new(parking_lot::Mutex::new(None));
     let handler = ClientHandler {
         host: endpoint.host.clone(),
         port: endpoint.port,
@@ -922,6 +1045,8 @@ async fn connect_inner(params: ReconnectParams) -> Result<RusshSsh2Session> {
         trust_failure: Arc::clone(&trust_failure),
         remote_forwards: Arc::clone(&remote_forwards),
         remote_uds_forwards: Arc::clone(&remote_uds_forwards),
+        negotiated: Arc::clone(&negotiated_carrier),
+        pq_offered,
     };
 
     // E3-F2: route the single direct endpoint through `dial_outer`, so a
@@ -983,10 +1108,17 @@ async fn connect_inner(params: ReconnectParams) -> Result<RusshSsh2Session> {
         backend = "ssh2-russh",
         "SSH2 session established and authenticated"
     );
+    // Canonical negotiated-crypto token captured by `kex_done` (falls back to
+    // `None` if kex_done somehow never fired). Emit the always-on structured
+    // crypto log next to the establishment line above.
+    let negotiated = negotiated_carrier.lock().clone();
+    if let Some(token) = negotiated.as_deref() {
+        emit_crypto_negotiated_log(token, pq_offered);
+    }
     let info = SessionInfo {
         backend: "ssh2-russh".into(),
         peer_version: None,
-        negotiated: Some("russh negotiated algorithms".into()),
+        negotiated,
         established_at: SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs())
@@ -3186,6 +3318,32 @@ mod tests {
     use super::*;
 
     #[test]
+    fn compression_name_maps_every_variant() {
+        use russh::compression::Compression;
+        assert_eq!(compression_name(&Compression::None), "none");
+        assert_eq!(compression_name(&Compression::Zlib), "zlib");
+        assert_eq!(
+            compression_name(&Compression::ZlibOpenSSH),
+            "zlib@openssh.com"
+        );
+    }
+
+    #[test]
+    fn emit_crypto_negotiated_log_parses_canonical_token() {
+        // The log helper must tolerate the exact token shape `format_negotiated`
+        // produces (and unknown/missing keys) without panicking. tracing is a
+        // no-op without a subscriber; we assert it does not panic on a
+        // well-formed line and on a degenerate one.
+        emit_crypto_negotiated_log(
+            "transport=ssh2 kex=curve25519-sha256 hostkey=ssh-ed25519 \
+             cipher=chacha20-poly1305@openssh.com mac_c2s=hmac-sha2-256-etm@openssh.com \
+             mac_s2c=hmac-sha2-256-etm@openssh.com comp_c2s=none comp_s2c=none pq_offered=true",
+            true,
+        );
+        emit_crypto_negotiated_log("transport=ssh2", false);
+    }
+
+    #[test]
     fn conn_limiter_caps_concurrency_and_releases_on_permit_drop() {
         // The reverse-forward admission gate: with `max_connections = 2` the
         // third concurrent admit is rejected while two permits are live, the
@@ -4041,6 +4199,8 @@ mod tests {
             trust_failure: Arc::new(parking_lot::Mutex::new(None)),
             remote_forwards: RemoteForwardMap::default(),
             remote_uds_forwards: RemoteUdsForwardMap::default(),
+            negotiated: Arc::new(parking_lot::Mutex::new(None)),
+            pq_offered: false,
         };
         let conn = ConnectionPolicy::default();
         let res = dial_outer_timed(cfg, "127.0.0.1", 1, handler, None, &conn).await;

@@ -1,0 +1,110 @@
+# =============================================================================
+# supply-chain — cargo-deny policy gate + CycloneDX SBOM
+# =============================================================================
+#
+# Complements the weekly, non-gating `audit` workflow (cargo-audit). Where
+# `audit` only opens a tracking issue, THIS workflow is a hard gate that runs
+# on every push to main and every PR:
+#
+#   * cargo-deny — advisories + licenses + bans + sources (config: deny.toml).
+#     A violation fails the check and blocks the merge. The RustSec advisory
+#     ignore list is documented in deny.toml and kept in sync with
+#     .cargo/audit.toml.
+#
+#   * SBOM — a CycloneDX (JSON) Software Bill of Materials for every workspace
+#     member, uploaded as a build artifact for downstream provenance / vuln
+#     correlation.
+#
+# MSRV note: the toolchain is pinned to 1.88 (the repo's single contract
+# toolchain) and neither job runs `cargo update` — both read the committed
+# Cargo.lock as-is, so results reflect exactly what spt ships.
+# =============================================================================
+
+name: supply-chain
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch: {}
+
+env:
+  CARGO_TERM_COLOR: always
+
+# Supersede an in-flight run on the same ref when a newer commit arrives, except
+# on main (mirrors ci.yml — a main run should always complete for a clean audit
+# trail). This workflow cuts no release, so cancelling a PR run is harmless.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+# Least privilege: both jobs only need to read the repo. The SBOM artifact is
+# uploaded via actions/upload-artifact, which requires no extra token scope.
+permissions:
+  contents: read
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # cargo-deny — advisories / licenses / bans / sources. Hard gate.
+  # ---------------------------------------------------------------------------
+  cargo-deny:
+    name: cargo-deny
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # Prebuilt binary via taiki-e/install-action — same pattern audit.yml uses
+      # for cargo-audit. Pinned: 0.19.x is required because 0.17 cannot parse
+      # CVSS v4.0 advisory entries now present in the RustSec DB.
+      - name: Install cargo-deny (prebuilt)
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny@0.19.9
+
+      # Runs all four checks against the committed Cargo.lock + deny.toml.
+      # Non-zero exit (any advisory/license/source violation) fails the job.
+      # Duplicate versions are configured as warnings in deny.toml and do not
+      # fail here.
+      - name: cargo deny check
+        run: cargo deny --all-features check --show-stats
+
+  # ---------------------------------------------------------------------------
+  # sbom — CycloneDX SBOM generation + artifact upload. Informational.
+  # ---------------------------------------------------------------------------
+  sbom:
+    name: sbom
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # Pin the contract toolchain (1.88); cargo-cyclonedx invokes cargo
+      # metadata under it.
+      - uses: dtolnay/rust-toolchain@1.88.0
+
+      # Pinned via `cargo install --locked` (cargo-cyclonedx is not in the
+      # taiki-e prebuilt manifest). --locked keeps the tool's own build
+      # reproducible.
+      - name: Install cargo-cyclonedx (pinned)
+        run: cargo install cargo-cyclonedx --version 0.5.7 --locked
+
+      # One CycloneDX JSON SBOM per workspace member (describe=crate, all
+      # features, all target platforms so the Windows/macOS/Linux dep sets are
+      # all captured). Files are written next to each member's Cargo.toml as
+      # <crate>.cdx.json; collect them into a single directory for upload.
+      - name: Generate SBOMs
+        run: |
+          cargo cyclonedx --format json --all --target all --all-features
+          mkdir -p sbom
+          find . -name '*.cdx.json' -not -path './target/*' -not -path './sbom/*' \
+            -exec cp --parents {} sbom/ \;
+          echo "Generated SBOM files:"
+          find sbom -name '*.cdx.json' | sort
+
+      - name: Upload SBOM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cyclonedx-sbom
+          path: sbom/**/*.cdx.json
+          if-no-files-found: error
+          retention-days: 90

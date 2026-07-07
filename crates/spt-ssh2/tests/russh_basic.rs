@@ -90,6 +90,83 @@ async fn connect_basic() {
     server.shutdown().await;
 }
 
+/// t1-e2: the established session must surface the negotiated crypto as the
+/// canonical `transport=ssh2 …` token string in `session_info().negotiated`,
+/// reporting the pinned kex/cipher. This exercises the `kex_done` capture path
+/// end-to-end against a real russh handshake.
+#[tokio::test]
+async fn negotiated_crypto_is_captured_and_canonical() {
+    let server = RusshTestServer::new()
+        .with_password("tester", "anything")
+        .with_algorithm_pinning(spt_ssh2::testing::wincng_libssh2_compatible_preferred())
+        .start()
+        .await
+        .expect("start russh server");
+
+    let proto = Ssh2Protocol::builder()
+        .crypto(spt_ssh2::CryptoPolicy {
+            // group14-sha256 leads the client preference, so negotiation is
+            // deterministic (client-preference-order wins).
+            kex: vec![
+                "diffie-hellman-group14-sha256".into(),
+                "diffie-hellman-group16-sha512".into(),
+            ],
+            ciphers: vec!["aes256-ctr".into()],
+            macs: vec!["hmac-sha2-256".into()],
+            host_keys: vec!["rsa-sha2-256".into(), "rsa-sha2-512".into()],
+            compression: vec![],
+        })
+        .trust(spt_ssh2::testing::tofu_trust_verifier())
+        .build();
+    let endpoint = Endpoint::new("127.0.0.1", server.addr.port());
+    let auth = AuthConfig::new(
+        "tester",
+        vec![AuthMethod::Password {
+            secret: spt_auth::SecretRef::Env("SPT_TEST_PW".into()),
+        }],
+    );
+    std::env::set_var("SPT_TEST_PW", "anything");
+    let session = match proto.connect(&endpoint, &auth).await {
+        Ok(session) => session,
+        Err(e) => panic!("connect failed: {e}"),
+    };
+
+    let info = session.session_info();
+    let negotiated = info
+        .negotiated
+        .expect("kex_done must populate SessionInfo.negotiated");
+    // Canonical token: transport-first, pinned kex/cipher present.
+    assert!(
+        negotiated.starts_with("transport=ssh2"),
+        "must start with transport=ssh2: {negotiated}"
+    );
+    assert!(
+        negotiated.contains("kex=diffie-hellman-group14-sha256"),
+        "must report the pinned kex: {negotiated}"
+    );
+    assert!(
+        negotiated.contains("cipher=aes256-ctr"),
+        "must report the pinned cipher: {negotiated}"
+    );
+    // The pinned kex list has no post-quantum entry.
+    assert!(
+        negotiated.contains("pq_offered=false"),
+        "pinned classical kex ⇒ pq_offered=false: {negotiated}"
+    );
+    // Per-direction MAC + compression tokens are present.
+    assert!(negotiated.contains("mac_c2s="), "{negotiated}");
+    assert!(negotiated.contains("mac_s2c="), "{negotiated}");
+    assert!(negotiated.contains("comp_c2s="), "{negotiated}");
+    assert!(negotiated.contains("comp_s2c="), "{negotiated}");
+    // No key material must ever leak into the carrier.
+    assert!(
+        !negotiated.contains("secret"),
+        "carrier must not contain key material: {negotiated}"
+    );
+
+    server.shutdown().await;
+}
+
 // -----------------------------------------------------------------------------
 // Bisection harness (kept as documentation): proves the precise failure
 // trigger. Each trial is `#[ignore]`'d. Run with

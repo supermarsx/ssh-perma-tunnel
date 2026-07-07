@@ -165,6 +165,70 @@ target triple:
 cross build --release -p spt-bin --target aarch64-unknown-linux-gnu
 ```
 
+## Performance / native builds
+
+The **default distributed binaries are fully portable**. They use the baseline
+instruction set for each architecture (generic `x86_64` / `aarch64`) and run on
+**any** CPU of that architecture, old or new. This is the artifact you get from
+the Releases page, every package manager, and the Docker image. Nothing about
+that changes.
+
+For modern desktops and servers, CI additionally publishes an **optional,
+CPU-optimized `-v3` artifact** built with a raised compile-time baseline. It is
+a *supplementary* download — never the default — produced by the separate
+[`build-native.yml`](https://github.com/supermarsx/ssh-perma-tunnel/blob/main/.github/workflows/build-native.yml)
+workflow (on release tags and on demand). Look for the `-v3` suffix:
+
+| Artifact | Baseline | Runs on |
+|----------|----------|---------|
+| `spt-x86_64-unknown-linux-gnu` (default) | generic `x86_64` | **any** x86_64 CPU |
+| `spt-x86_64-unknown-linux-gnu-v3` | `x86-64-v3` (AVX2 / FMA / BMI2) | x86_64 CPUs from **~2015 onward** (Intel Haswell+, AMD Excavator/Zen+) |
+| `spt-x86_64-pc-windows-msvc-v3` | `x86-64-v3` | same as above (Windows) |
+| `spt-aarch64-unknown-linux-gnu-v3` | `neoverse-n1` | modern ARM server cores (AWS Graviton2-class) |
+
+**The `-v3` binary requires an AVX2-capable CPU** (any x86_64 chip from roughly
+2015 on). On an older CPU it will fault with an illegal-instruction error — use
+the default portable binary there. If unsure, use the default; it is universal.
+
+### What the optimization actually buys
+
+- **X25519 key exchange (the main win).** `curve25519-dalek` selects its
+  AVX2/AVX512 SIMD field backend at **compile time** from the target feature
+  set. The portable build gets the serial backend; raising the baseline to
+  include AVX2 switches dalek to its SIMD backend automatically, speeding up
+  every SSH/TLS handshake's elliptic-curve math.
+- **General autovectorization / codegen** across the workspace.
+
+What the `-v3` artifact does **not** change, because it is already accelerated
+at runtime regardless of the compile baseline:
+
+- **Symmetric crypto** (AES-GCM, ChaCha20, SHA) — RustCrypto uses `cpufeatures`
+  to pick AES-NI / SHA-NI / AVX2 / NEON paths at **runtime**.
+- **TLS** — `ring` ships hand-written assembly with runtime CPU detection.
+
+So on the symmetric-crypto and TLS hot paths the default portable binary is
+already using your CPU's acceleration; the `-v3` artifact's edge is concentrated
+in the compile-time-selected X25519 path and general codegen.
+
+### Build a fully-native binary yourself
+
+To squeeze out the maximum for *your specific machine* (not portable — pins to
+the exact build host's microarchitecture), build with `target-cpu=native`:
+
+```sh
+RUSTFLAGS="-C target-cpu=native" cargo build --release -p spt-bin
+```
+
+```powershell
+# Windows PowerShell
+$env:RUSTFLAGS = "-C target-cpu=native"; cargo build --release -p spt-bin
+```
+
+The resulting binary is tuned for the CPU that compiled it and may crash with an
+illegal-instruction fault on a different (older) CPU — never redistribute it as
+a general artifact. To reproduce the CI `-v3` middle ground instead, substitute
+`x86-64-v3` (x86_64) or `neoverse-n1` (aarch64) for `native`.
+
 ## Verifying release artifacts
 
 Each release ships three integrity files: `SHA256SUMS`, `SHA512SUMS`, and

@@ -274,9 +274,23 @@ pub async fn test(global: &GlobalOpts, args: profile::ProfileTest) -> Result<()>
 
     let timeout = profile_connect_timeout(prof).unwrap_or(DEFAULT_TEST_TIMEOUT);
 
+    // `spt profile test` is a one-shot process: it does NOT run the events
+    // pipeline (no live `EventBus`) nor the status-api server (no shared
+    // `NegotiatedCryptoRegistry`), so mechanisms 2 & 3 have no in-process sink
+    // here. The negotiated crypto is still surfaced directly in the test report
+    // below (from the parsed carrier) and via the always-on
+    // `spt::crypto_negotiated` tracing log emitted inside spt-ssh2 / spt-ssh3.
     let mut results: Vec<EndpointResult> = Vec::with_capacity(endpoints.len());
     for ep in &endpoints {
-        let r = test_one_endpoint(Arc::clone(&bundle.protocol), ep, &bundle.auth, timeout).await;
+        let r = test_one_endpoint(
+            Arc::clone(&bundle.protocol),
+            ep,
+            &bundle.auth,
+            timeout,
+            None,
+            None,
+        )
+        .await;
         results.push(r);
     }
 
@@ -302,6 +316,56 @@ struct EndpointResult {
     port: u16,
     status: EndpointStatus,
     latency_ms: u128,
+    /// Negotiated cryptographic parameters, parsed from the session's
+    /// `SessionInfo.negotiated` carrier. `None` when the connection failed or
+    /// the carrier was absent/unparseable (e.g. mock transports).
+    negotiated: Option<spt_status_api::NegotiatedCrypto>,
+}
+
+/// Parse the canonical negotiated-crypto token string carried by a freshly
+/// established session's [`spt_protocol::session::SessionInfo`], then surface
+/// it through the two spt-bin-reachable observability mechanisms:
+///
+/// * **Mechanism 2 — bus event.** When a live [`spt_events::EventBus`] is in
+///   scope, emit the canonical [`spt_events::SESSION_CRYPTO_NEGOTIATED`] event
+///   with one field per [`NegotiatedCrypto::fields`] entry (+ the session id).
+/// * **Mechanism 3 — status registry.** When a
+///   [`spt_status_api::NegotiatedCryptoRegistry`] is in scope, record the
+///   parsed value keyed by session id so `spt status` can overlay it.
+///
+/// Only algorithm names are emitted — `NegotiatedCrypto::fields()` guarantees
+/// no secrets. The always-on `spt::crypto_negotiated` tracing log is emitted by
+/// spt-ssh2 / spt-ssh3 at establishment and is intentionally NOT duplicated
+/// here. Returns the parsed value (if any) so callers can also surface it in
+/// their own output. A no-op when `negotiated` is absent or does not parse.
+///
+/// [`NegotiatedCrypto::fields`]: spt_status_api::NegotiatedCrypto::fields
+pub(crate) fn record_negotiated_crypto(
+    negotiated: Option<&str>,
+    session_id: &str,
+    bus: Option<&spt_events::EventBus>,
+    registry: Option<&spt_status_api::NegotiatedCryptoRegistry>,
+) -> Option<spt_status_api::NegotiatedCrypto> {
+    let nc = spt_status_api::NegotiatedCrypto::parse(negotiated?)?;
+
+    // Mechanism 2: canonical bus event (algorithm names only, never secrets).
+    if let Some(bus) = bus {
+        let mut builder = spt_events::Event::crypto_negotiated();
+        if let Ok(sid) = spt_core::SessionId::new(session_id) {
+            builder = builder.session(sid);
+        }
+        for (key, value) in nc.fields() {
+            builder = builder.field(key, value);
+        }
+        bus.emit(builder.build());
+    }
+
+    // Mechanism 3: status-api crypto overlay, correlated by session id.
+    if let Some(registry) = registry {
+        registry.insert(session_id.to_owned(), nc.clone());
+    }
+
+    Some(nc)
 }
 
 #[derive(Debug)]
@@ -404,6 +468,8 @@ async fn test_one_endpoint(
     endpoint: &Endpoint,
     auth: &spt_auth::AuthConfig,
     timeout: Duration,
+    bus: Option<&spt_events::EventBus>,
+    registry: Option<&spt_status_api::NegotiatedCryptoRegistry>,
 ) -> EndpointResult {
     let id = format!("{}:{}", endpoint.host, endpoint.port);
     let start = Instant::now();
@@ -413,6 +479,11 @@ async fn test_one_endpoint(
     match outcome {
         Ok(Ok(session)) => {
             let info = session.session_info();
+            // Parse the negotiated-crypto carrier and fan it out to the bus
+            // (mechanism 2) + status registry (mechanism 3) when present; keep
+            // the parsed value for the test report.
+            let negotiated =
+                record_negotiated_crypto(info.negotiated.as_deref(), &id, bus, registry);
             // Drain the session cleanly. Errors here are non-fatal: connect
             // succeeded, which is what the test reports on.
             let _ = session.close().await;
@@ -424,6 +495,7 @@ async fn test_one_endpoint(
                     peer_version: info.peer_version,
                 },
                 latency_ms: elapsed,
+                negotiated,
             }
         }
         Ok(Err(e)) => EndpointResult {
@@ -432,6 +504,7 @@ async fn test_one_endpoint(
             port: endpoint.port,
             status: EndpointStatus::Failed(e.to_string()),
             latency_ms: elapsed,
+            negotiated: None,
         },
         Err(_) => EndpointResult {
             id,
@@ -439,6 +512,7 @@ async fn test_one_endpoint(
             port: endpoint.port,
             status: EndpointStatus::Failed(format!("timeout after {}ms", timeout.as_millis())),
             latency_ms: elapsed,
+            negotiated: None,
         },
     }
 }
@@ -507,14 +581,23 @@ fn emit_test_report(global: &GlobalOpts, profile: &str, results: &[EndpointResul
         let arr: Vec<_> = results
             .iter()
             .map(|r| match &r.status {
-                EndpointStatus::Connected { peer_version } => json!({
-                    "id": r.id,
-                    "host": r.host,
-                    "port": r.port,
-                    "status": "connected",
-                    "latency_ms": r.latency_ms,
-                    "peer_version": peer_version,
-                }),
+                EndpointStatus::Connected { peer_version } => {
+                    let mut obj = json!({
+                        "id": r.id,
+                        "host": r.host,
+                        "port": r.port,
+                        "status": "connected",
+                        "latency_ms": r.latency_ms,
+                        "peer_version": peer_version,
+                    });
+                    // Additive: negotiated algorithms (algorithm names only)
+                    // when the transport reported a parseable carrier.
+                    if let Some(nc) = &r.negotiated {
+                        obj["negotiated_crypto"] =
+                            serde_json::to_value(nc).unwrap_or(serde_json::Value::Null);
+                    }
+                    obj
+                }
                 EndpointStatus::Failed(err) => json!({
                     "id": r.id,
                     "host": r.host,
@@ -1203,7 +1286,7 @@ port = 0
             Arc::new(spt_forward::testing::MockTunnelProtocol::new());
         let ep = Endpoint::new("127.0.0.1", 22);
         let auth = spt_auth::AuthConfig::new("u".to_owned(), Vec::new());
-        let r = test_one_endpoint(proto, &ep, &auth, Duration::from_secs(5)).await;
+        let r = test_one_endpoint(proto, &ep, &auth, Duration::from_secs(5), None, None).await;
         assert!(matches!(r.status, EndpointStatus::Connected { .. }));
     }
 
@@ -1214,8 +1297,79 @@ port = 0
         let proto: Arc<dyn spt_protocol::TunnelProtocol> = Arc::new(mock);
         let ep = Endpoint::new("127.0.0.1", 22);
         let auth = spt_auth::AuthConfig::new("u".to_owned(), Vec::new());
-        let r = test_one_endpoint(proto, &ep, &auth, Duration::from_secs(5)).await;
+        let r = test_one_endpoint(proto, &ep, &auth, Duration::from_secs(5), None, None).await;
         assert!(matches!(r.status, EndpointStatus::Failed(_)));
+    }
+
+    // ---- negotiated-crypto emission (mechanisms 2 + 3) ---------------------
+
+    #[test]
+    fn record_negotiated_crypto_emits_event_and_populates_registry() {
+        use spt_status_api::NegotiatedCryptoRegistry;
+
+        // Approach (a): a real bus subscriber + a real registry, driving the
+        // testable helper directly with a representative ssh2 carrier. No global
+        // state — deterministic and parallel-safe.
+        let carrier = "transport=ssh2 kex=mlkem768x25519-sha256 hostkey=ssh-ed25519 \
+                       cipher=chacha20-poly1305@openssh.com mac_c2s=hmac-sha2-256 \
+                       mac_s2c=hmac-sha2-256 comp_c2s=none comp_s2c=none pq_offered=true";
+
+        let bus = spt_events::EventBus::new(&spt_events::EventBusConfig::default());
+        let mut rx = bus.subscribe();
+        let registry = NegotiatedCryptoRegistry::new();
+
+        let returned = record_negotiated_crypto(
+            Some(carrier),
+            "host.example:22",
+            Some(&bus),
+            Some(&registry),
+        )
+        .expect("canonical carrier parses");
+
+        // Mechanism 2: canonical bus event with the expected kind, severity,
+        // session id, and algorithm-name fields (never a secret).
+        let event = rx.try_recv().expect("event delivered to subscriber");
+        assert_eq!(event.kind.as_str(), spt_events::SESSION_CRYPTO_NEGOTIATED);
+        assert_eq!(event.severity, spt_events::Severity::Info);
+        assert_eq!(
+            event.session_id.as_ref().map(spt_core::SessionId::as_str),
+            Some("host.example:22")
+        );
+        assert_eq!(
+            event.fields.get("transport").and_then(|v| v.as_str()),
+            Some("ssh2")
+        );
+        assert_eq!(
+            event.fields.get("kex").and_then(|v| v.as_str()),
+            Some("mlkem768x25519-sha256")
+        );
+        assert_eq!(
+            event.fields.get("cipher").and_then(|v| v.as_str()),
+            Some("chacha20-poly1305@openssh.com")
+        );
+        // `host_key` is the field key parsed from the `hostkey=` token.
+        assert_eq!(
+            event.fields.get("host_key").and_then(|v| v.as_str()),
+            Some("ssh-ed25519")
+        );
+
+        // Mechanism 3: the registry received the parsed entry keyed by session id.
+        let snap = registry.snapshot();
+        let stored = snap.get("host.example:22").expect("registry entry present");
+        assert_eq!(stored, &returned);
+        assert_eq!(stored.transport.as_deref(), Some("ssh2"));
+        assert_eq!(stored.pq_offered, Some(true));
+
+        // A legacy free-text carrier (no `transport=` token) is a no-op: no
+        // event, no registry entry.
+        assert!(record_negotiated_crypto(
+            Some("russh negotiated algorithms"),
+            "host.example:22",
+            Some(&bus),
+            Some(&registry),
+        )
+        .is_none());
+        assert!(rx.try_recv().is_err(), "no second event emitted");
     }
 
     // ---- value_for / parse_override ---------------------------------------
@@ -1398,6 +1552,7 @@ user = "bob"
                 peer_version: Some("SSH-2.0-x\x1b[31m\r\nLEAK".into()),
             },
             latency_ms: 12,
+            negotiated: None,
         };
         let line = format_test_line(plain_styler(), &r);
         assert!(!line.contains('\x1b'), "ESC must be escaped: {line:?}");
@@ -1414,6 +1569,7 @@ user = "bob"
             port: 22,
             status: EndpointStatus::Failed("auth failed\x1b]0;pwned\x07".into()),
             latency_ms: 5,
+            negotiated: None,
         };
         let line = format_test_line(plain_styler(), &r);
         assert!(!line.contains('\x1b'), "ESC must be escaped: {line:?}");
@@ -1430,6 +1586,7 @@ user = "bob"
                 peer_version: Some("SSH-2.0-OpenSSH_9.6".into()),
             },
             latency_ms: 7,
+            negotiated: None,
         };
         assert_eq!(
             format_test_line(plain_styler(), &connected),
@@ -1442,6 +1599,7 @@ user = "bob"
             port: 22,
             status: EndpointStatus::Failed("connection refused".into()),
             latency_ms: 3,
+            negotiated: None,
         };
         assert_eq!(
             format_test_line(plain_styler(), &failed),
@@ -1457,6 +1615,7 @@ user = "bob"
             port: 22,
             status: EndpointStatus::Connected { peer_version: None },
             latency_ms: 1,
+            negotiated: None,
         };
         assert_eq!(
             format_test_line(plain_styler(), &r),

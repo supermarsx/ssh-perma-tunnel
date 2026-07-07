@@ -223,6 +223,34 @@ pub fn build_connect_request(
     Ok(req)
 }
 
+/// Format the canonical negotiated-crypto token string for an ssh3 session.
+///
+/// Contract (shared with the consumer-side parser in `spt-status-api`):
+/// space-separated `key=value` tokens, the `transport=` token first, absent
+/// params omitted, values contain no spaces.
+///
+/// ssh3 surfaces exactly: `transport=ssh3 tls_version=TLS1.3 alpn=<alpn> sni=<host>`.
+///
+/// `cipher_suite` and `kex_group` are INTENTIONALLY absent — they are NOT
+/// reachable through quinn 0.11's public API. quinn only surfaces
+/// [`quinn::Connection::handshake_data`] → [`quinn::crypto::rustls::HandshakeData`],
+/// whose only fields are `protocol` (ALPN) and `server_name`. The underlying
+/// rustls `Connection` — which *does* expose `negotiated_cipher_suite()` and
+/// `negotiated_key_exchange_group()` — is never handed out by quinn, so those
+/// values cannot be read here. They are left unset by design; this is a quinn
+/// API limitation, not a crypto-provider choice (no provider change is made).
+/// `tls_version=TLS1.3` is a safe constant: QUIC mandates TLS 1.3 (RFC 9001).
+fn format_ssh3_negotiated(alpn: Option<&str>, sni: &str) -> String {
+    let mut s = String::from("transport=ssh3 tls_version=TLS1.3");
+    if let Some(alpn) = alpn.filter(|a| !a.is_empty()) {
+        s.push_str(" alpn=");
+        s.push_str(alpn);
+    }
+    s.push_str(" sni=");
+    s.push_str(sni);
+    s
+}
+
 /// Establish a QUIC + HTTP/3 + Extended-CONNECT session against the SSH3 peer.
 ///
 /// On success, returns the bootstrapped session metadata. On failure, returns
@@ -247,6 +275,28 @@ pub async fn bootstrap(
         remote = %remote,
         server_name = %server_name,
         "ssh3 QUIC connection established"
+    );
+
+    // Read the reachable TLS parameters from quinn's handshake data. quinn 0.11
+    // only surfaces `HandshakeData { protocol (ALPN), server_name }` — the rustls
+    // `Connection` (and thus `negotiated_cipher_suite()` /
+    // `negotiated_key_exchange_group()`) is never exposed by quinn, so
+    // cipher_suite/kex_group are unavailable BY DESIGN (see
+    // `format_ssh3_negotiated`). `HandshakeData.server_name` is always `None` for
+    // outgoing connections, so we use the SNI/host computed above. No
+    // crypto-provider change is involved.
+    let alpn = connection
+        .handshake_data()
+        .and_then(|hd| hd.downcast::<quinn::crypto::rustls::HandshakeData>().ok())
+        .and_then(|hd| hd.protocol)
+        .map(|p| String::from_utf8_lossy(&p).into_owned());
+    info!(
+        target: "spt::crypto_negotiated",
+        transport = "ssh3",
+        tls_version = "TLS1.3",
+        alpn = %alpn.as_deref().unwrap_or(""),
+        sni = %server_name,
+        "negotiated ssh3 crypto"
     );
 
     // Spin up the h3 client driver on a clone of the QUIC connection. We do
@@ -329,7 +379,10 @@ pub async fn bootstrap(
             Error::RuntimeFailure(body)
         });
     }
-    let negotiated = Some("TLS1.3 + QUIC + h3 (raw bootstrap)".to_string());
+    // Canonical negotiated-crypto token string (consumed by spt-status-api's
+    // `NegotiatedCrypto::parse`). cipher_suite/kex_group are omitted: unavailable
+    // via quinn 0.11's public API (see `format_ssh3_negotiated`).
+    let negotiated = Some(format_ssh3_negotiated(alpn.as_deref(), &server_name));
 
     // Open the SSH3 control bidi stream and exchange `Settings` frames. We
     // run on a fresh raw QUIC stream (bypassing h3) — the spt↔spt
@@ -550,6 +603,33 @@ fn map_connection_error(e: quinn::ConnectionError) -> Error {
 mod tests {
     use super::*;
     use spt_auth::{AuthConfig, AuthMethod, SecretRef};
+
+    #[test]
+    fn format_ssh3_negotiated_includes_transport_and_tls_version() {
+        let s = format_ssh3_negotiated(Some("h3"), "example.com");
+        assert_eq!(
+            s,
+            "transport=ssh3 tls_version=TLS1.3 alpn=h3 sni=example.com"
+        );
+        // Canonical contract: `transport=` token first, `tls_version` constant.
+        assert!(s.starts_with("transport=ssh3 tls_version=TLS1.3"));
+    }
+
+    #[test]
+    fn format_ssh3_negotiated_omits_absent_alpn() {
+        let s = format_ssh3_negotiated(None, "h.example");
+        assert_eq!(s, "transport=ssh3 tls_version=TLS1.3 sni=h.example");
+        assert!(!s.contains("alpn="));
+        assert!(s.starts_with("transport=ssh3 tls_version=TLS1.3"));
+    }
+
+    #[test]
+    fn format_ssh3_negotiated_omits_empty_alpn() {
+        // An empty ALPN string is treated as absent (no `alpn=` token).
+        let s = format_ssh3_negotiated(Some(""), "h.example");
+        assert!(!s.contains("alpn="));
+        assert_eq!(s, "transport=ssh3 tls_version=TLS1.3 sni=h.example");
+    }
 
     #[test]
     fn build_connect_request_has_protocol_extension_and_bearer() {

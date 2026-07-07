@@ -1,0 +1,204 @@
+# =============================================================================
+# cargo-deny configuration for ssh-perma-tunnel (spt)
+# =============================================================================
+#
+# Supply-chain policy gate. Runs in .github/workflows/supply-chain.yml on every
+# push to main and every PR, and is meant to be run locally with:
+#
+#     cargo deny check            # all four checks
+#     cargo deny check advisories # just the RustSec advisory DB
+#     cargo deny check licenses   # just the license allow-list
+#     cargo deny check bans       # duplicate / banned crates
+#     cargo deny check sources    # registry / git source allow-list
+#
+# Scope: this file governs the MAIN workspace graph. The two excluded
+# sub-workspaces (tests/chaos, tests/property) carry their own Cargo.lock and
+# are not evaluated here.
+#
+# Relationship to cargo-audit: `.cargo/audit.toml` + the weekly `audit`
+# workflow already scan the RustSec DB non-gatingly. cargo-deny's [advisories]
+# section re-runs that scan as a *gate* on every push/PR (fail-fast) and adds
+# license / dependency-ban / source policy that cargo-audit does not cover.
+# The accepted-risk ignore list is kept in sync between the two (see below).
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# graph — what part of the dependency tree is evaluated.
+# -----------------------------------------------------------------------------
+# We deliberately do NOT restrict `targets`: spt ships on Linux, macOS and
+# Windows (x86_64 + aarch64), so every platform's deps (notably the several
+# `windows-sys` / `windows` generations pulled in on the Windows targets) must
+# be in scope for the license and advisory checks.
+[graph]
+all-features = true
+
+[output]
+feature-depth = 1
+
+# -----------------------------------------------------------------------------
+# advisories — RustSec vulnerability database. GATING.
+# -----------------------------------------------------------------------------
+# Unlike the weekly `audit` workflow (which only opens a tracking issue), this
+# section makes any *unignored* advisory fail `cargo deny check` and therefore
+# block the push / PR.
+[advisories]
+# Vulnerabilities are denied by default in cargo-deny >= 0.14; there is no
+# per-severity knob to relax that here — the only escape hatch is the explicit,
+# documented `ignore` list below.
+
+# Yanked crate versions in the lockfile are treated as a hard error: a yanked
+# release usually means "do not use this exact version".
+yanked = "deny"
+
+# ACCEPTED-RISK IGNORE LIST.
+# Each entry is a deliberate, documented decision, not a blanket silencer. The
+# first entry mirrors `.cargo/audit.toml`; the remaining three are advisories
+# that cargo-deny gates on but cargo-audit currently reports as non-gating
+# warnings. See .orchestration/logs/supply-chain.md for the full triage.
+ignore = [
+    # -------------------------------------------------------------------------
+    # RUSTSEC-2023-0071 — RSA "Marvin Attack" timing side-channel. [vuln]
+    # -------------------------------------------------------------------------
+    # WHY ACCEPTED (identical rationale to .cargo/audit.toml and
+    # security.md → "Accepted dependency advisories"):
+    #   * No fixed `rsa` release exists — both stable `rsa 0.9.x` and the
+    #     `rsa 0.10.0-rc.*` prereleases are flagged; there is nothing to
+    #     upgrade to.
+    #   * The Marvin attack is a timing oracle in RSA PKCS#1 v1.5 *DECRYPTION*,
+    #     exploitable only via an attacker-controlled decryption oracle.
+    #   * spt uses RSA for SSH cert/host-key *signing & verification* only; we
+    #     never expose an RSA decryption oracle, so the vulnerable path is
+    #     unreachable in our usage.
+    # REVISIT WHEN: a fixed `rsa` crate ships, or spt ever starts doing RSA
+    # PKCS#1 v1.5 decryption. Then bump the dep and delete this entry (here and
+    # in .cargo/audit.toml).
+    "RUSTSEC-2023-0071",
+
+    # -------------------------------------------------------------------------
+    # RUSTSEC-2025-0134 — rustls-pemfile is unmaintained. [unmaintained]
+    # -------------------------------------------------------------------------
+    # rustls-pemfile 2.2.0 is a thin, frozen compatibility shim: its parsing
+    # was folded into `rustls-pki-types` and the 2.2.0 release simply re-exports
+    # from there. It is "unmaintained" only because it is feature-complete, not
+    # because of an open defect. No vulnerability is associated.
+    # REVISIT WHEN: the TLS-using deps (hickory / reqwest stack) drop the
+    # rustls-pemfile shim in favour of rustls-pki-types directly.
+    "RUSTSEC-2025-0134",
+
+    # -------------------------------------------------------------------------
+    # RUSTSEC-2023-0037 — xsalsa20poly1305 renamed to crypto_secretbox. [unmaint]
+    # -------------------------------------------------------------------------
+    # xsalsa20poly1305 0.9.1 is a DIRECT dependency of spt-obfs. The advisory is
+    # a *rename* notice (the crate moved to `crypto_secretbox`), not a
+    # vulnerability, and RustSec explicitly notes "no safe upgrade is available"
+    # for the old name. The pinned 0.9.1 is a stable, audited RustCrypto NaCl
+    # secretbox impl.
+    # REVISIT WHEN: spt-obfs is migrated to the `crypto_secretbox` crate name
+    # (a mechanical rename with no API change).
+    "RUSTSEC-2023-0037",
+]
+
+# -----------------------------------------------------------------------------
+# licenses — SPDX license allow-list. GATING.
+# -----------------------------------------------------------------------------
+# Only the permissive licenses actually present in the current graph are
+# allowed. The list was derived from a full sweep of `cargo metadata` license
+# fields (see .orchestration/logs/supply-chain.md). Any crate whose license is
+# NOT satisfiable from this set fails the check — new copyleft/unknown licenses
+# surface immediately rather than being blanket-allowed.
+[licenses]
+# High confidence needed before a license text is auto-recognised.
+confidence-threshold = 0.9
+
+# Do NOT warn when an allowed license is absent from the single feature/target
+# resolution cargo-deny builds. A few allowed licenses (e.g. WTFPL from
+# `terminfo`, Unicode-DFS-2016 from `wezterm-bidi` / `finl_unicode`) live on
+# crates that are present in Cargo.lock but pruned from the resolved graph;
+# keeping them allow-listed makes the gate robust if a feature/platform later
+# pulls them in, so their transient absence is expected, not a problem.
+unused-allowed-license = "allow"
+
+allow = [
+    # --- The permissive core (99% of the graph) ---
+    "MIT",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "0BSD",
+    "Unlicense",
+
+    # --- Unicode data tables (unicode-ident, idna_mapping, finl_unicode,
+    #     wezterm-bidi). These appear only inside `... AND Unicode-*` clauses,
+    #     so the Unicode identifier MUST be allowed even though the code half
+    #     is MIT/Apache. ---
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+
+    # --- Boost Software License (clipboard-win, error-code, ryu-alt path).
+    #     OSI-approved, permissive, no copyleft. ---
+    "BSL-1.0",
+
+    # --- Public-domain-equivalent dedications ---
+    "CC0-1.0",   # tiny-keccak (sole license), blake3 (OR Apache) etc.
+    "WTFPL",     # terminfo (sole license) — effectively public domain.
+
+    # --- Community Data License Agreement, permissive variant.
+    #     webpki-roots ships the Mozilla CA set under CDLA-Permissive-2.0. ---
+    "CDLA-Permissive-2.0",
+
+    # --- MPL-2.0: FILE-LEVEL (weak) copyleft. Allowed with eyes open.
+    #     Present in exactly two leaf deps that we consume UNMODIFIED:
+    #       * option-ext 0.2.0  (pulled via `directories`)  — MPL-2.0
+    #       * smartstring 1.0.1                             — MPL-2.0+
+    #     MPL-2.0's copyleft attaches per-file to the upstream source; since we
+    #     neither modify nor redistribute those files as source, only link the
+    #     published crates, this imposes no obligation on spt's own code. If a
+    #     future MPL/EPL/*GPL crate appears it will (correctly) fail here for a
+    #     fresh review rather than sliding in under a blanket allow. ---
+    "MPL-2.0",
+]
+
+# Per-crate license overrides. Empty: every crate is covered by `allow` above.
+exceptions = []
+
+# -----------------------------------------------------------------------------
+# bans — duplicate versions and disallowed crates.
+# -----------------------------------------------------------------------------
+[bans]
+# Duplicate versions are a WARNING, not an error. The graph legitimately
+# carries many parallel versions because russh 0.61 pulls the RustCrypto
+# *pre-release* line (aead 0.6, aes-gcm 0.11-rc, ssh-key 0.7-rc, sha2 0.11,
+# der 0.8, rsa 0.10-rc, …) alongside the stable RustCrypto line used elsewhere,
+# and the several `windows` / `windows-sys` generations are pulled by different
+# transitive deps. These are unavoidable until russh's crypto stack stabilises,
+# so failing on them would block every release for no security benefit. CI
+# still surfaces the count so regressions are visible.
+multiple-versions = "warn"
+
+# Wildcard (`*`) version requirements are denied — a `*` dep is a supply-chain
+# blank cheque. Internal path crates in this workspace pin real versions, but
+# allow-wildcard-paths keeps intra-workspace path deps from tripping the rule.
+wildcards = "deny"
+allow-wildcard-paths = true
+
+# Prefer the lowest number of duplicate crates cargo can pick.
+deny = []
+
+# Crates explicitly allowed to appear multiple times without even a warning is
+# handled via `multiple-versions = "warn"`; no hard skips are needed today.
+skip = []
+skip-tree = []
+
+# -----------------------------------------------------------------------------
+# sources — where crates may be fetched from. GATING.
+# -----------------------------------------------------------------------------
+# The entire graph resolves from crates.io today (verified: zero git/path/
+# alternate-registry sources in Cargo.lock). Anything else — a git dependency
+# or a private registry — is denied so it cannot be introduced silently.
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

@@ -1153,18 +1153,23 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
 
-    /// Minimal `tracing::Subscriber` that records WARN-level messages. Built
-    /// with only the `tracing` crate (no `tracing-subscriber` dep), mirroring
-    /// `spt-obfs/tests/reject_logging.rs`.
-    #[derive(Clone, Default)]
-    struct WarnCapture {
-        warnings: Arc<Mutex<Vec<String>>>,
-    }
+    /// WARN-message capture that is robust under the multi-threaded test runner.
+    ///
+    /// A single process-global subscriber is installed exactly once and routes
+    /// captured WARN messages into a THREAD-LOCAL slot. Because the global
+    /// default never changes, `tracing`'s per-callsite interest cache resolves to
+    /// "enabled" once and stays stable. A per-test `tracing::subscriber::with_default`
+    /// (the previous approach) instead swaps the thread default, which races that
+    /// GLOBAL callsite cache against sibling dispatcher tests emitting the same
+    /// WARN callsites — so capture passed in isolation but flaked in the suite.
+    /// Sibling tests still run concurrently: their thread's slot is `None`, so
+    /// their warnings are ignored rather than clobbering the capturing test's.
+    /// Built with only the `tracing` crate (no `tracing-subscriber` dep).
+    type CapturedWarnings = Arc<Mutex<Vec<String>>>;
 
-    impl WarnCapture {
-        fn messages(&self) -> Vec<String> {
-            self.warnings.lock().clone()
-        }
+    thread_local! {
+        static WARN_SLOT: std::cell::RefCell<Option<CapturedWarnings>> =
+            const { std::cell::RefCell::new(None) };
     }
 
     struct MsgVisitor(String);
@@ -1177,7 +1182,8 @@ mod tests {
         }
     }
 
-    impl tracing::Subscriber for WarnCapture {
+    struct GlobalWarnCapture;
+    impl tracing::Subscriber for GlobalWarnCapture {
         fn enabled(&self, _meta: &tracing::Metadata<'_>) -> bool {
             true
         }
@@ -1187,14 +1193,35 @@ mod tests {
         fn record(&self, _id: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
         fn record_follows_from(&self, _id: &tracing::span::Id, _follows: &tracing::span::Id) {}
         fn event(&self, event: &tracing::Event<'_>) {
-            if *event.metadata().level() == tracing::Level::WARN {
-                let mut v = MsgVisitor(String::new());
-                event.record(&mut v);
-                self.warnings.lock().push(v.0);
+            if *event.metadata().level() != tracing::Level::WARN {
+                return;
             }
+            WARN_SLOT.with(|slot| {
+                if let Some(buf) = slot.borrow().as_ref() {
+                    let mut v = MsgVisitor(String::new());
+                    event.record(&mut v);
+                    buf.lock().push(v.0);
+                }
+            });
         }
         fn enter(&self, _id: &tracing::span::Id) {}
         fn exit(&self, _id: &tracing::span::Id) {}
+    }
+
+    /// Run `f`, capturing every WARN message emitted on the current thread while
+    /// it runs. Robust to the parallel test runner (see [`GlobalWarnCapture`]).
+    fn capture_warnings<R>(f: impl FnOnce() -> R) -> (R, Vec<String>) {
+        use std::sync::Once;
+        static INSTALL: Once = Once::new();
+        INSTALL.call_once(|| {
+            let _ = tracing::subscriber::set_global_default(GlobalWarnCapture);
+        });
+        let buf: CapturedWarnings = Arc::new(Mutex::new(Vec::new()));
+        WARN_SLOT.with(|slot| *slot.borrow_mut() = Some(buf.clone()));
+        let out = f();
+        WARN_SLOT.with(|slot| *slot.borrow_mut() = None);
+        let msgs = buf.lock().clone();
+        (out, msgs)
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1232,12 +1259,11 @@ mod tests {
         // audit-logging (dispatcher:270): a transient sink failure was spooled
         // with NO log. It must now emit a WARN naming the sink. Pre-fix: zero
         // WARNs on the transient path.
-        let cap = WarnCapture::default();
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .unwrap();
-        tracing::subscriber::with_default(cap.clone(), || {
+        let ((), msgs) = capture_warnings(|| {
             rt.block_on(async {
                 let tmp = tempdir().unwrap();
                 let cfg = DispatcherConfig {
@@ -1265,7 +1291,6 @@ mod tests {
                 assert_eq!(d.spool_len("alerts"), 1);
             });
         });
-        let msgs = cap.messages();
         assert!(
             msgs.iter().any(|m| m.contains("transiently")),
             "transient delivery failure must log a WARN; captured warnings: {msgs:?}"

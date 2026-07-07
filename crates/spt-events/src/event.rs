@@ -61,6 +61,21 @@ impl std::fmt::Display for Severity {
     }
 }
 
+/// Canonical kind string for the negotiated-cryptography event.
+///
+/// This is the well-known [`Severity::Info`] event emitted (by `spt-bin`)
+/// once a session's transport has finished its handshake. Its structured
+/// fields carry the *negotiated cryptographic parameters* of the session —
+/// algorithm names only (kex, host-key, cipher, MAC, compression, TLS
+/// version, ALPN, SNI, and a `pq_offered` flag), **never** secrets, keys, or
+/// shared material. The exact field set depends on the transport (ssh2 vs
+/// ssh3); consumers should treat unknown/absent fields as optional.
+///
+/// Because event kinds are free strings (there is no central registry),
+/// this const is the single canonical spelling that producers and pattern
+/// bindings (`on = ["session.*"]`) should reference.
+pub const SESSION_CRYPTO_NEGOTIATED: &str = "session.crypto_negotiated";
+
 /// Canonical event kind enumeration. We use a `String`-backed variant
 /// instead of an exhaustive enum because the binding language (`on = [...]`)
 /// has to support arbitrary user-defined kinds in addition to the well-known
@@ -145,6 +160,15 @@ impl Event {
     #[must_use]
     pub fn builder(kind: impl Into<EventKind>, severity: Severity) -> EventBuilder {
         EventBuilder::new(kind, severity)
+    }
+
+    /// Start a builder for the canonical [`SESSION_CRYPTO_NEGOTIATED`] event
+    /// ([`Severity::Info`]). Callers add the negotiated algorithm names via
+    /// [`EventBuilder::field`] (never secrets) and the session id via
+    /// [`EventBuilder::session`].
+    #[must_use]
+    pub fn crypto_negotiated() -> EventBuilder {
+        EventBuilder::new(SESSION_CRYPTO_NEGOTIATED, Severity::Info)
     }
 
     /// Convert to the simpler `spt_state::Event` for persistence in the
@@ -580,6 +604,25 @@ mod tests {
         assert!(!e.field_is_string("count"));
         assert!(!e.field_is_string("session_id")); // unset optional id
         assert!(!e.field_is_string("absent"));
+    }
+
+    #[test]
+    fn session_crypto_negotiated_const_and_pattern() {
+        assert_eq!(SESSION_CRYPTO_NEGOTIATED, "session.crypto_negotiated");
+        let k = EventKind::new(SESSION_CRYPTO_NEGOTIATED);
+        assert!(k.matches_pattern("session.*"));
+        assert!(k.matches_pattern(SESSION_CRYPTO_NEGOTIATED));
+        assert!(!k.matches_pattern("profile.*"));
+    }
+
+    #[test]
+    fn crypto_negotiated_builder_uses_canonical_kind_and_info() {
+        let e = Event::crypto_negotiated()
+            .field("kex", "mlkem768x25519-sha256")
+            .build();
+        assert_eq!(e.kind.as_str(), SESSION_CRYPTO_NEGOTIATED);
+        assert_eq!(e.severity, Severity::Info);
+        assert!(e.kind.matches_pattern("session.*"));
     }
 
     #[test]

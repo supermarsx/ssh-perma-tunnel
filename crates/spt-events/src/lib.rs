@@ -45,7 +45,7 @@ pub mod testing;
 pub use binding::{Binding, BindingMatch, Dedupe, SinkRef};
 pub use bus::{EventBus, EventBusConfig};
 pub use dispatcher::{Dispatcher, DispatcherConfig};
-pub use event::{Event, EventBuilder, EventKind, Severity};
+pub use event::{Event, EventBuilder, EventKind, Severity, SESSION_CRYPTO_NEGOTIATED};
 pub use mcp_notifier::{McpNotification, McpNotifier, NoopMcpNotifier};
 pub use sinks::{build_sink, resolve_secret, Sink, SinkDeps, SinkError};
 pub use template::render_template;

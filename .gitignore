@@ -42,3 +42,6 @@ FProjects*
 # stray placeholder-path artifact (LLM <memory> leak, NTFS-remapped brackets)
 crates/spt-tui/memory
 docs-book/book/
+
+# CycloneDX SBOM output (generated in CI, uploaded as artifact)
+*.cdx.json

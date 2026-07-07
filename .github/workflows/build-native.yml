@@ -1,0 +1,157 @@
+# =============================================================================
+# build-native — SUPPLEMENTARY CPU-optimized ("v3") artifacts for spt.
+# =============================================================================
+#
+# This workflow is DELIBERATELY separate from ci.yml and is NOT part of the
+# main CI / release gate. It never blocks a push, a PR, or the rolling release
+# path. Its sole job is to produce ONE ADDITIONAL, faster binary per mainstream
+# desktop/server target, built with a raised compile-time CPU baseline.
+#
+# The DEFAULT distributed binaries (produced by ci.yml) stay fully portable:
+# baseline x86_64 / aarch64, runnable on ANY CPU of that architecture. Nothing
+# here touches that path — no shared cache key, no shared profile, no edits to
+# Cargo.toml or .cargo/config.toml. The default `cargo build` is byte-for-byte
+# unchanged; the optimization here is expressed purely via RUSTFLAGS in this
+# workflow's environment.
+#
+# -----------------------------------------------------------------------------
+# What "v3" means
+# -----------------------------------------------------------------------------
+#   RUSTFLAGS="-C target-cpu=x86-64-v3"
+#
+# `x86-64-v3` is the microarchitecture level covering AVX2 / FMA / BMI2 /
+# MOVBE / etc. — every mainstream x86_64 desktop/server CPU from ~2015 onward
+# (Intel Haswell+, AMD Excavator/Zen+). It is a MODERN baseline, still far more
+# portable than `-C target-cpu=native` (which pins to the exact build host).
+#
+# Why it's worth a separate artifact:
+#   * curve25519-dalek 4.x selects its AVX2/AVX512 SIMD field backend at COMPILE
+#     time from `target_feature`. The portable default build gets the serial
+#     backend; raising the baseline to include AVX2 switches dalek to its SIMD
+#     backend automatically — a real win for X25519 handshakes.
+#   * General autovectorization / codegen improvements across the tree.
+#
+# NOT affected (already runtime-dispatched, identical in both artifacts):
+#   * Symmetric crypto (AES-GCM, ChaCha, SHA) via RustCrypto `cpufeatures`
+#     (AES-NI / SHA-NI / AVX2 / NEON chosen at RUNTIME).
+#   * TLS via `ring` hand-written assembly (runtime CPU detection).
+#
+# -----------------------------------------------------------------------------
+# aarch64 note
+# -----------------------------------------------------------------------------
+# dalek's SIMD backend is x86-only (AVX2/AVX512); aarch64 already gets NEON at
+# its portable baseline, so raising the aarch64 target-cpu yields little. An
+# aarch64-linux "neoverse-n1" variant is included as a low-risk supplementary
+# artifact for general codegen, but it is not the headline win. macOS
+# (aarch64-apple-darwin) is intentionally omitted: its portable baseline is
+# already `apple-m1`, so there is nothing to raise.
+#
+# -----------------------------------------------------------------------------
+# Triggers
+# -----------------------------------------------------------------------------
+#   * workflow_dispatch — on demand, any time.
+#   * push tags matching the rolling release tag shape (e.g. `26.9`, `26.49`) —
+#     so a v3 artifact is produced alongside each release WITHOUT being a
+#     dependency of the release job in ci.yml.
+# =============================================================================
+
+name: build-native
+
+on:
+  workflow_dispatch: {}
+  push:
+    tags:
+      # Rolling release tags are the bare `YY.N` form (`26.9`, `26.49`), i.e.
+      # they start with a digit. This is a supplementary trigger only; it does
+      # NOT gate or block the release job that creates the tag (that lives in
+      # ci.yml and runs independently).
+      - '[0-9]*'
+
+# Least privilege: this workflow only reads the repo and uploads build
+# artifacts. It never writes to the repo, publishes releases, or pushes images.
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  # The raised compile-time CPU baseline. Kept here (workflow env) rather than
+  # in Cargo.toml / .cargo/config.toml so the DEFAULT build is untouched.
+  RUSTFLAGS: -C target-cpu=x86-64-v3
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-native:
+    name: build-native (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Required mainstream targets — the AVX2 win lands here.
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+            target_cpu: x86-64-v3
+            bin: spt
+          - target: x86_64-pc-windows-msvc
+            runner: windows-2025-vs2026
+            target_cpu: x86-64-v3
+            bin: spt.exe
+          # Optional, low-risk aarch64 variant. dalek SIMD is x86-only, so this
+          # is a general-codegen artifact only; the raised baseline is a modern
+          # server core (AWS Graviton2-class). Native ARM runner, no cross/QEMU.
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
+            target_cpu: neoverse-n1
+            bin: spt
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.88.0
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # A DEDICATED cache namespace. Never shares with ci.yml's
+          # `workspace-<target>` key: the v3 RUSTFLAGS produce different object
+          # code, and mixing them into the portable build's cache could poison
+          # a default artifact. Keep them strictly separate.
+          key: native-v3-${{ matrix.target }}
+          cache-on-failure: true
+      - name: Install Linux system deps
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libssl-dev libdbus-1-dev libkrb5-dev clang libclang-dev
+      - name: Free disk space (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/boost || true
+          df -h /
+      - name: Build optimized release (per-target target-cpu)
+        shell: bash
+        env:
+          # Per-target override of the workflow-level RUSTFLAGS: x86 targets get
+          # x86-64-v3, aarch64 gets neoverse-n1. Only `spt-bin` is built — the
+          # shipped binary — not the whole workspace.
+          RUSTFLAGS: -C target-cpu=${{ matrix.target_cpu }}
+          # aarch64 free ARM runner (7 GB RAM) OOMs during release linking with
+          # full parallelism; cap rustc workers to 2 there, as ci.yml does.
+          # `default` is cargo's spelling for "use num_cpus".
+          CARGO_BUILD_JOBS: ${{ matrix.target == 'aarch64-unknown-linux-gnu' && '2' || 'default' }}
+        run: cargo build -p spt-bin --locked --release --target ${{ matrix.target }}
+      - name: Upload optimized binary
+        uses: actions/upload-artifact@v7
+        with:
+          # Clearly named so it is never confused with the portable default
+          # artifact (`binary-<target>` / `spt-<target>` from ci.yml).
+          name: spt-${{ matrix.target }}-v3
+          path: |
+            target/${{ matrix.target }}/release/${{ matrix.bin }}
+          retention-days: 30
+          if-no-files-found: error

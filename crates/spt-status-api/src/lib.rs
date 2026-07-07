@@ -76,6 +76,7 @@
 #![allow(missing_docs)]
 
 pub mod auth;
+pub mod crypto;
 pub mod error;
 pub mod handlers;
 pub mod rate_limit;
@@ -84,6 +85,7 @@ pub mod snapshot;
 pub mod tls;
 
 pub use auth::{AuthContext, AuthSubject, PeerIdentity};
+pub use crypto::{NegotiatedCrypto, NegotiatedCryptoRegistry};
 pub use error::StatusApiError;
 pub use handlers::AppState;
 pub use rate_limit::{RateLimitConfig, RateLimiter};

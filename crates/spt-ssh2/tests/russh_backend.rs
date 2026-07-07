@@ -817,14 +817,17 @@ async fn ssh2_protocol_connect_walks_two_hop_chain() {
         .expect("connect through 2-hop chain");
 
     assert_eq!(session.session_info().backend, "ssh2-russh");
+    // The multi-hop session now surfaces the canonical negotiated-crypto token
+    // captured from the final hop's `kex_done` (t1-e2), replacing the old
+    // free-text placeholder. It must be transport-prefixed and carry a kex.
+    let negotiated = session.session_info().negotiated.unwrap_or_default();
     assert!(
-        session
-            .session_info()
-            .negotiated
-            .as_deref()
-            .unwrap_or("")
-            .contains("multi-hop"),
-        "session_info should mark multi-hop"
+        negotiated.starts_with("transport=ssh2"),
+        "session_info should carry the canonical ssh2 crypto token: {negotiated}"
+    );
+    assert!(
+        negotiated.contains("kex="),
+        "multi-hop negotiated token should report a kex: {negotiated}"
     );
     assert!(bastion.connection_count() >= 1);
     assert!(endpoint_server.connection_count() >= 1);
