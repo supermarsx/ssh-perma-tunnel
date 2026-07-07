@@ -154,9 +154,6 @@ $ spt config validate --config /etc/spt/spt.toml
   W  remote_config_no_pin
      runtime.remote_config.fingerprint_sha256 is unset; unattended fetch
      will be refused
-
-  W  network_gateway_not_enforced
-     [network.gateway] is not enforced at runtime: ...
 ```
 
 **Errors** (`E`) block the process from starting. Examples:
@@ -174,8 +171,10 @@ $ spt config validate --config /etc/spt/spt.toml
 **Warnings** (`W`) allow startup but surface in the logs. Examples:
 - `dns_privileged_port` — DNS listener on a port below 1024
 - `firewall_platform_mismatch` — firewall planner set for a different OS
-- `network_gateway_not_enforced` — `[network.gateway]` has no runtime
-  consumer; `require_gateway_match` does not act as a routing safety gate
+- `network_gateway_default_not_ip` — `[network.gateway].default_gateway`
+  is not an IP literal, so it cannot be matched against the live route;
+  the gateway guard is otherwise enforced fail-closed at runtime (a
+  `require_gateway_match` mismatch refuses the connection)
 - `network_offload_flag_unsupported` — only `tcp_nodelay` and
   `socket_keepalive` take effect; other offload flags are inert
 - `round_robin_dns_round_robin_not_active` — DNS A/AAAA expansion of

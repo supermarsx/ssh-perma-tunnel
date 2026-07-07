@@ -19,6 +19,7 @@ mod config_watcher;
 mod controller;
 mod dns_health;
 mod firewall_runtime;
+mod gateway_runtime;
 mod mcp_client;
 mod mcp_listen;
 mod mcp_notifier;

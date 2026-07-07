@@ -397,16 +397,43 @@ bind_ipv6 = "auto"
 
 ### `[network.gateway]`
 
-> **Not wired at runtime.** This table is parsed and format-validated but
-> has no runtime consumer. `require_gateway_match = true` does not act as
-> a routing safety gate. Any set field emits **W** `network_gateway_not_enforced`.
+Network-safety guard: **only run the tunnel when the host is actually on the
+expected network.** Before any profile connects, spt resolves the host's live
+default gateway / egress interface (Linux: `/proc/net/route` +
+`/proc/net/ipv6_route`; Windows: `GetIpForwardTable2` / `GetBestRoute2`;
+macOS/BSD: `route -n get`) and compares it against the fields below.
+
+* `require_gateway_match = true` → **fail closed**: on a mismatch — or if the
+  live route cannot be determined — the run is refused before the state lock is
+  taken or any connection is attempted (terminal runtime error).
+* `require_gateway_match` absent / `false` → a mismatch is a **W**
+  `network_gateway_mismatch` and the run continues.
+
+`policy` selects which facts are checked:
+
+| `policy` | checks |
+|----------|--------|
+| `disabled` | enforcement skipped entirely |
+| `default_route` | `default_gateway` + `interface` vs the system default route |
+| `interface_only` | only `interface` vs the system default route |
+| `route_to_target` | `default_gateway` + `interface` vs the route to `route_check_target` |
+| _absent_ | auto: `route_to_target` when `route_check_target` is set, else `default_route` |
+
+```toml
+[network.gateway]
+default_gateway    = "192.168.1.1"   # expected next-hop, IP literal
+interface          = "eth0"          # expected egress interface (OS-native name)
+route_check_target = "8.8.8.8"       # optional: IP whose route must egress the above
+require_gateway_match = true         # fail closed when the host is off-network
+policy             = "default_route"
+```
 
 | Field | Type | Default | Notes |
 |-------|------|---------|-------|
-| `default_gateway` | `string` | absent | Default gateway address or route alias |
-| `interface` | `string` | absent | Interface expected to own the gateway |
-| `route_check_target` | `string` | absent | Target host used to verify route selection |
-| `require_gateway_match` | `bool` | `false` | (not wired) Require chosen route to match `interface`; requires `interface` to be set → **E** if `interface` absent |
+| `default_gateway` | `string` | absent | Expected default-gateway **IP**; a non-IP value emits **W** `network_gateway_default_not_ip` (only IP literals are matched — route aliases are not resolved) |
+| `interface` | `string` | absent | Expected egress interface name. **Platform caveat:** compared verbatim to the OS routing table's name — Windows adapter alias (`Ethernet`), macOS/BSD device (`en0`), Linux kernel name (`eth0`) |
+| `route_check_target` | `string` | absent | IP whose selected route must egress the expected gateway/interface; a non-IP value emits **W** `network_gateway_route_target_not_ip` (hostnames are not resolved) |
+| `require_gateway_match` | `bool` | `false` | Fail closed on mismatch/undetermined. Requires `interface` to be set → **E** `network_gateway_interface_required` if absent |
 | `policy` | `string` | absent | `disabled`, `default_route`, `interface_only`, or `route_to_target` → **E** on invalid |
 
 ### `[network.offload]`

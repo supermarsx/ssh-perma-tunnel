@@ -25,6 +25,7 @@
 pub mod bind;
 pub mod cidr;
 pub mod diag;
+pub mod gateway;
 pub mod interfaces;
 pub mod privileged;
 pub mod sockopts;
@@ -39,6 +40,7 @@ pub use diag::{
     classify_io_error, dns_failure, network_unreachable_from_io, network_unreachable_with,
     NetworkErrorKind,
 };
+pub use gateway::{GatewayResolver, RouteInfo, SystemGatewayResolver};
 pub use interfaces::{list as list_interfaces, Interface};
 pub use privileged::can_bind_privileged_port;
 pub use sockopts::{

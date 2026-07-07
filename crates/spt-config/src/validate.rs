@@ -1173,27 +1173,41 @@ fn check_network(d: &mut Diagnostics, c: &Config) {
     }
 
     if let Some(gateway) = network.gateway.as_ref() {
-        // The entire `[network.gateway]` table is parsed and format-checked but
-        // has NO runtime consumer this build — no gateway resolution or route
-        // checking is performed. `require_gateway_match = true` in particular
-        // reads like a hard routing safety gate but enforces nothing. WARN when
-        // any field is set so the table is never a silent no-op (the format
-        // checks below still run so an outright-invalid value is still an ERROR).
-        let gateway_configured = gateway.default_gateway.is_some()
-            || gateway.interface.is_some()
-            || gateway.route_check_target.is_some()
-            || gateway.require_gateway_match.is_some()
-            || gateway.policy.is_some();
-        if gateway_configured {
-            d.push(
-                Diagnostic::warning(
-                    "network_gateway_not_enforced",
-                    "[network.gateway] is not enforced at runtime: no gateway resolution or \
-                     route checking is performed, so require_gateway_match/policy/route_check_target \
-                     have no effect and do not act as a routing safety gate",
-                )
-                .at("network.gateway"),
-            );
+        // `[network.gateway]` IS enforced at runtime (spt-bin `gateway_runtime`):
+        // before profiles connect, the host's live default gateway / egress
+        // interface is resolved and compared against these fields;
+        // `require_gateway_match = true` fails closed. The only residual
+        // limitation is that comparison is by IP literal — a `default_gateway`
+        // or `route_check_target` that is not a parseable IP cannot be matched
+        // (route aliases / hostnames are not resolved), so WARN in that case so
+        // the field is never a silent no-op.
+        if let Some(dg) = gateway.default_gateway.as_deref() {
+            if !dg.is_empty() && dg.parse::<std::net::IpAddr>().is_err() {
+                d.push(
+                    Diagnostic::warning(
+                        "network_gateway_default_not_ip",
+                        format!(
+                            "network.gateway.default_gateway `{dg}` is not an IP literal; runtime \
+                             enforcement matches IP addresses only (route aliases are not resolved)"
+                        ),
+                    )
+                    .at("network.gateway.default_gateway"),
+                );
+            }
+        }
+        if let Some(rt) = gateway.route_check_target.as_deref() {
+            if !rt.is_empty() && rt.parse::<std::net::IpAddr>().is_err() {
+                d.push(
+                    Diagnostic::warning(
+                        "network_gateway_route_target_not_ip",
+                        format!(
+                            "network.gateway.route_check_target `{rt}` is not an IP literal; route \
+                             checking requires an IP address (hostnames are not resolved)"
+                        ),
+                    )
+                    .at("network.gateway.route_check_target"),
+                );
+            }
         }
         if let Some(policy) = gateway.policy.as_deref() {
             if !matches!(
@@ -7372,13 +7386,16 @@ mod tests {
     // ───────── hcfix-config: no-silent-no-op validate diagnostics ─────────
 
     #[test]
-    fn network_gateway_table_warns_not_enforced() {
-        // The whole `[network.gateway]` table has no runtime consumer; a set
-        // field must WARN so require_gateway_match doesn't read as a safety gate.
+    fn network_gateway_valid_table_is_clean() {
+        // `[network.gateway]` is now enforced at runtime, so a well-formed
+        // table (IP gateway, valid policy, interface present for a required
+        // match) must produce neither the retired "not enforced" WARN nor any
+        // spurious format ERROR/WARN.
         let raw = r#"
             version = 1
             [network.gateway]
             require_gateway_match = true
+            default_gateway = "192.168.1.1"
             interface = "eth0"
             policy = "default_route"
             [[profiles]]
@@ -7389,19 +7406,58 @@ mod tests {
         let (c, _) = load_str(raw, false).unwrap();
         let d = validate(&c);
         assert!(
-            d.warnings
+            !d.warnings
                 .iter()
                 .any(|w| w.code == "network_gateway_not_enforced"),
-            "warnings: {:?}",
+            "the `not enforced` WARN must be gone now that the table is wired: {:?}",
             d.warnings
         );
-        // The valid policy + interface coupling must not spuriously ERROR.
+        assert!(
+            !d.warnings
+                .iter()
+                .any(|w| w.code.starts_with("network_gateway")),
+            "a well-formed IP gateway table must not WARN: {:?}",
+            d.warnings
+        );
         assert!(
             !d.errors
                 .iter()
                 .any(|e| e.code.starts_with("network_gateway")),
             "valid gateway table must not ERROR: {:?}",
             d.errors
+        );
+    }
+
+    #[test]
+    fn network_gateway_non_ip_fields_warn() {
+        // Residual limitation: only IP literals are matched at runtime, so a
+        // non-IP default_gateway / route_check_target must WARN (never a silent
+        // no-op) rather than the old blanket "not enforced" WARN.
+        let raw = r#"
+            version = 1
+            [network.gateway]
+            default_gateway = "my-router.lan"
+            route_check_target = "example.com"
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(
+            d.warnings
+                .iter()
+                .any(|w| w.code == "network_gateway_default_not_ip"),
+            "warnings: {:?}",
+            d.warnings
+        );
+        assert!(
+            d.warnings
+                .iter()
+                .any(|w| w.code == "network_gateway_route_target_not_ip"),
+            "warnings: {:?}",
+            d.warnings
         );
     }
 
@@ -7419,7 +7475,7 @@ mod tests {
         assert!(
             !d.warnings
                 .iter()
-                .any(|w| w.code == "network_gateway_not_enforced"),
+                .any(|w| w.code.starts_with("network_gateway")),
             "warnings: {:?}",
             d.warnings
         );

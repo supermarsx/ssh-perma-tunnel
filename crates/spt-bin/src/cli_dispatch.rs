@@ -1018,6 +1018,13 @@ async fn tunnel_run(global: &GlobalOpts, args: groups::tunnel::TunnelRun) -> Res
             warning.message
         );
     }
+    // `[network.gateway]` network-safety guard: resolve the host's live default
+    // gateway / egress interface and compare it against the configured
+    // expectation BEFORE acquiring the state lock or spawning any subsystem, so
+    // a `require_gateway_match = true` mismatch fails closed with no side
+    // effects (no lock, no listeners, no connection). A mismatch without
+    // `require_gateway_match` only warns and continues. Absent table → no-op.
+    crate::gateway_runtime::enforce(&cfg)?;
     let state_lock = spt_state::StateLock::acquire(&state_dir)?;
     // OOM P1 (leak-oom.md §B-P1): a stale `spt.pid` that survived into this
     // successful lock acquisition marks a previous run that died without a

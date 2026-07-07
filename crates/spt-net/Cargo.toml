@@ -31,7 +31,15 @@ nix = { workspace = true }
 caps = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
-windows = { workspace = true }
+# `windows` is inherited from the workspace; spt-net additionally needs the
+# IP Helper routing-table APIs (GetIpForwardTable2 / GetBestRoute2) and the
+# WinSock/Ndis sockaddr + LUID types for `gateway.rs`. Cargo unions these
+# feature flags with the workspace-level set — no new dependency is added.
+windows = { workspace = true, features = [
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_NetworkManagement_Ndis",
+    "Win32_Networking_WinSock",
+] }
 
 [dev-dependencies]
 tempfile = { workspace = true }
