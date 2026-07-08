@@ -1,3 +1,15 @@
+## [26.52] - 2026-07-08
+
+# spt 26.52
+
+## Changes since 26.51
+
+- chore: remove accidentally-committed redirect artifacts; gitignore them (1059f74)
+- fix(tls): standardize on a single rustls provider (aws-lc-rs) — unbreak CI (308829d)
+- feat(net): enforce [network.gateway] as a fail-closed runtime guard (a3ce913)
+- feat: enforce forward.max_datagram_size; add ssh3 post_quantum TOML off-switch (24badb7)
+- feat(ssh3): post-quantum X25519MLKEM768 KEX by default (+ Windows stdout fix) (2219b4f)
+
 ## [26.51] - 2026-07-07
 
 # spt 26.51
