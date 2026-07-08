@@ -45,3 +45,4 @@ docs-book/book/
 
 # CycloneDX SBOM output (generated in CI, uploaded as artifact)
 *.cdx.json
+*orchestrationlogs*
