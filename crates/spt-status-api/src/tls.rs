@@ -169,7 +169,7 @@ mod tests {
     #[test]
     fn builds_server_only_config() {
         // Install ring crypto provider for rustls (idempotent).
-        let _ = rustls::crypto::ring::default_provider().install_default();
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
         let tmp = tempfile::tempdir().unwrap();
         let (cert, key) = write_self_signed(&tmp);
         let tls = StatusApiTlsConfig {
@@ -184,7 +184,7 @@ mod tests {
 
     #[test]
     fn rejects_missing_cert_file() {
-        let _ = rustls::crypto::ring::default_provider().install_default();
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
         let tls = StatusApiTlsConfig {
             enabled: true,
             cert_file: PathBuf::from("/no/such/cert.pem"),
@@ -196,7 +196,7 @@ mod tests {
 
     #[test]
     fn mtls_requires_ca_bundle() {
-        let _ = rustls::crypto::ring::default_provider().install_default();
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
         let tmp = tempfile::tempdir().unwrap();
         let (cert, key) = write_self_signed(&tmp);
         let ca_path = tmp.path().join("ca.pem");

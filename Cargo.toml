@@ -254,19 +254,19 @@ russh = "0.61"
 # t9-Bump: was `=2.1.2`. t-msrv-russh: 2.3.0 is API-compatible with russh 0.61.
 russh-sftp = "2.3"
 ssh-key = { version = "0.6", default-features = false, features = ["std", "alloc", "ed25519", "p256", "rsa", "encryption", "rand_core", "ecdsa", "getrandom"] }
-quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls", "ring"] }
-rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-aws-lc-rs"] }
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "std", "tls12"] }
 rustls-native-certs = "0.8"
 rustls-pemfile = "2"
 rustls-pki-types = "1"
-tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["aws_lc_rs", "tls12"] }
 webpki-roots = "1"
 x509-parser = "0.18"
 
 # Email + WebPush transports for spt-events sinks
 # t9-Bump: was `=0.11.19`; the edition2024 concern is moot under the current
 # MSRV (1.88). Bumped to 0.11.22 (latest stable).
-lettre = { version = "0.11.22", default-features = false, features = ["smtp-transport", "tokio1-rustls-tls", "builder", "ring", "webpki-roots"] }
+lettre = { version = "0.11.22", default-features = false, features = ["smtp-transport", "tokio1-rustls", "builder", "aws-lc-rs", "webpki-roots"] }
 # `web-push` 0.11 transitively pulls in `chumsky → stacker` (and lettre also
 # pulls `chumsky` independently — `psm` is hand-pinned to 0.1.27 in the
 # lockfile). For the WebPush sink we use `web-push-native` instead: it is a
@@ -294,7 +294,7 @@ superboring = ">=0.1.6, <0.1.9"
 blake2b_simd = "1.0.4"
 h3 = "0.0.6"
 h3-quinn = "0.0.7"
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream", "gzip"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-webpki-roots-no-provider", "json", "stream", "gzip"] }
 
 # DNS
 # t-msrv-russh Phase 3: bumped from 0.24 to 0.26 to clear RUSTSEC-2026-0119

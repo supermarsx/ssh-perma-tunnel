@@ -178,7 +178,7 @@ fn build_auth(env: &InteropEnv) -> Option<AuthConfig> {
 }
 
 fn install_ring() {
-    let _ = rustls::crypto::ring::default_provider().install_default();
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -586,9 +586,9 @@ mod tests {
         use tokio::net::TcpListener;
         use tokio_rustls::TlsAcceptor;
 
-        // Ambiguous default crypto provider with both ring and aws-lc-rs
-        // present (rcgen pulls aws-lc-rs in). Pick ring explicitly.
-        let _ = rustls::crypto::ring::default_provider().install_default();
+        // Install the process-global aws-lc-rs provider (the single
+        // workspace-wide rustls provider) before any provider-less builder.
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
 
         // 1. Self-signed cert covering the loopback IP we'll dial.
         let cert = rcgen::generate_simple_self_signed(vec!["127.0.0.1".into(), "localhost".into()])

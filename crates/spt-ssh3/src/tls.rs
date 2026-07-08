@@ -35,11 +35,12 @@ use crate::config::Ssh3TlsConfig;
 
 /// Build a [`rustls::ClientConfig`] from an [`Ssh3TlsConfig`].
 pub fn build_client_config(tls: &Ssh3TlsConfig) -> Result<ClientConfig> {
-    // Keep `ring` as the PROCESS-GLOBAL rustls provider (status-api / syslog /
-    // reqwest all rely on `install_default()` being `ring`). The ssh3 QUIC
-    // config built below carries its OWN provider (see `ssh3_crypto_provider`),
-    // so enabling the post-quantum aws-lc-rs group here never disturbs the
-    // global default. Idempotent — only installs if nothing is set yet.
+    // Install aws-lc-rs as the PROCESS-GLOBAL rustls provider (the single
+    // workspace-wide rustls provider — status-api / syslog / reqwest all use
+    // it). The ssh3 QUIC config built below carries its OWN per-config provider
+    // (see `ssh3_crypto_provider`), so the PQ-vs-classical kx choice never
+    // disturbs the global default. Idempotent — only installs if nothing is
+    // set yet.
     install_default_provider();
 
     // Resolve trust anchors, honoring `ca_file` and `system_roots`
@@ -107,8 +108,9 @@ pub fn build_client_config(tls: &Ssh3TlsConfig) -> Result<ClientConfig> {
         || !tls.pin.spki_sha256.is_empty()
         || !tls.max_cert_chain_depth.is_unlimited();
     // Per-config crypto provider: aws-lc-rs with `X25519MLKEM768` first when
-    // `post_quantum` is on, else the classical `ring` provider. QUIC is
-    // TLS-1.3-only (RFC 9001), so restrict to TLS 1.3 explicitly.
+    // `post_quantum` is on, else the same aws-lc-rs provider restricted to the
+    // classical groups. QUIC is TLS-1.3-only (RFC 9001), so restrict to TLS 1.3
+    // explicitly.
     let builder = ClientConfig::builder_with_provider(ssh3_crypto_provider(tls.post_quantum))
         .with_protocol_versions(&[&rustls::version::TLS13])
         .map_err(|e| {
@@ -139,7 +141,7 @@ pub fn build_client_config(tls: &Ssh3TlsConfig) -> Result<ClientConfig> {
 
 fn install_default_provider() {
     // Idempotent — only sets a provider if none has been installed yet.
-    let _ = rustls::crypto::ring::default_provider().install_default();
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
 }
 
 /// The *per-config* rustls crypto provider for an ssh3 QUIC handshake.
@@ -147,31 +149,41 @@ fn install_default_provider() {
 /// When `pq` is true, use the **aws-lc-rs** provider with the hybrid
 /// post-quantum group [`X25519MLKEM768`] listed FIRST, then classical
 /// fallbacks — a PQ-capable peer negotiates PQ while a classical peer still
-/// connects (hybrid ⇒ never weaker than X25519). When false, use the classical
-/// **ring** provider (no PQ group), reproducing the pre-PQ behaviour exactly.
+/// connects (hybrid ⇒ never weaker than X25519). When false, use the same
+/// **aws-lc-rs** provider restricted to the classical groups only (X25519,
+/// secp256r1, secp384r1) — no PQ group is offered.
 ///
 /// This provider rides on the returned `ClientConfig`/`ServerConfig` object;
 /// quinn 0.11 reads it off the config (`QuicClientConfig::try_from` /
 /// `QuicServerConfig::try_from` call `initial_suite_from_provider(cfg
-/// .crypto_provider())`). It therefore does NOT touch `install_default()`, so
-/// status-api / syslog / reqwest keep `ring`.
+/// .crypto_provider())`). It therefore does NOT touch `install_default()`; the
+/// process-global provider is aws-lc-rs (the single workspace-wide rustls
+/// provider) independent of this per-config choice.
 ///
 /// [`X25519MLKEM768`]: rustls::crypto::aws_lc_rs::kx_group::X25519MLKEM768
 fn ssh3_crypto_provider(pq: bool) -> Arc<rustls::crypto::CryptoProvider> {
-    use rustls::crypto::{aws_lc_rs, ring};
+    use rustls::crypto::aws_lc_rs;
 
-    if pq {
-        let mut provider = aws_lc_rs::default_provider();
-        provider.kx_groups = vec![
+    let mut provider = aws_lc_rs::default_provider();
+    provider.kx_groups = if pq {
+        vec![
             aws_lc_rs::kx_group::X25519MLKEM768, // hybrid PQ, offered first
             aws_lc_rs::kx_group::X25519,         // classical fallbacks
             aws_lc_rs::kx_group::SECP256R1,
             aws_lc_rs::kx_group::SECP384R1,
-        ];
-        Arc::new(provider)
+        ]
     } else {
-        Arc::new(ring::default_provider())
-    }
+        // Classical aws-lc-rs groups ONLY — no post-quantum group. Set
+        // explicitly because `aws_lc_rs::DEFAULT_KX_GROUPS` still lists
+        // `X25519MLKEM768` (placed last) even with `prefer-post-quantum` off,
+        // so a plain `default_provider()` would leak a PQ group here.
+        vec![
+            aws_lc_rs::kx_group::X25519,
+            aws_lc_rs::kx_group::SECP256R1,
+            aws_lc_rs::kx_group::SECP384R1,
+        ]
+    };
+    Arc::new(provider)
 }
 
 /// Custom server-cert verifier honoring [`TlsPin`], `allow_self_signed`,
@@ -343,8 +355,8 @@ pub type ServerTlsConfig = quinn::ServerConfig;
 /// private-key PEM files, advertising the SSH3 ALPN (`h3`).
 ///
 /// `cert_pem` may contain a full chain (leaf first); `key_pem` must hold a
-/// single PKCS#8, PKCS#1 (RSA), or SEC1 (EC) private key. The crypto provider
-/// (`ring`) is installed idempotently.
+/// single PKCS#8, PKCS#1 (RSA), or SEC1 (EC) private key. The process-global
+/// crypto provider (aws-lc-rs) is installed idempotently.
 ///
 /// Used by `spt ssh3-serve --cert <pem> --key <pem>`.
 #[cfg(feature = "server")]
@@ -474,8 +486,8 @@ mod tests {
 
     #[test]
     fn post_quantum_off_offers_no_pq_group() {
-        // The operator force-off switch: the classical ring provider must NOT
-        // offer any post-quantum group, reproducing the pre-PQ behaviour.
+        // The operator force-off switch: the classical aws-lc-rs provider must
+        // NOT offer any post-quantum group, reproducing the pre-PQ behaviour.
         let tls = Ssh3TlsConfig {
             post_quantum: false,
             ..Ssh3TlsConfig::default()

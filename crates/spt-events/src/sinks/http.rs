@@ -586,6 +586,8 @@ mod tests {
     #[cfg(feature = "transports")]
     #[tokio::test(flavor = "current_thread")]
     async fn reqwest_transport_from_client_constructs() {
+        // A raw `reqwest::Client` needs the process-global aws-lc-rs provider.
+        spt_trust::install_default_crypto_provider();
         let client = reqwest::Client::new();
         let _ = reqwest_transport::ReqwestTransport::from_client(client);
     }

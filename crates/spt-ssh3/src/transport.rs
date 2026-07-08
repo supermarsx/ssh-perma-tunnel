@@ -1263,7 +1263,7 @@ mod tests {
     /// Returns the bound port and the server `Endpoint`.
     #[cfg(feature = "testing")]
     fn fake_server_endpoint() -> (u16, quinn::Endpoint) {
-        let _ = rustls::crypto::ring::default_provider().install_default();
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
         let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
         let cert_pem = cert.cert.pem().into_bytes();
         let key_pem = cert.key_pair.serialize_pem().into_bytes();

@@ -28,6 +28,10 @@ fn sha256_hex(body: &[u8]) -> String {
 }
 
 fn permissive_fetcher() -> ReqwestFetcher {
+    // A raw `reqwest::Client` (no `use_preconfigured_tls`) needs the
+    // process-global aws-lc-rs provider installed, else reqwest's rustls
+    // backend panics "No provider set".
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
     let client = reqwest::Client::builder()
         .danger_accept_invalid_certs(true)
         .https_only(true)

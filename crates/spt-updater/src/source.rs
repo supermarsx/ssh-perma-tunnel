@@ -94,6 +94,10 @@ const MAX_REDIRECTS: usize = 5;
 /// bounded redirect policy. Used by every HTTP source backend so the security
 /// posture cannot drift between them.
 fn harden(builder: reqwest::ClientBuilder) -> reqwest::ClientBuilder {
+    // reqwest's rustls backend reads the process-global crypto provider and
+    // panics if none is installed; ensure aws-lc-rs (the single workspace-wide
+    // provider) is the default before the client is built.
+    spt_trust::install_default_crypto_provider();
     builder
         .connect_timeout(CONNECT_TIMEOUT)
         .timeout(REQUEST_TIMEOUT)

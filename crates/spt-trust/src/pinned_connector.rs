@@ -616,7 +616,7 @@ impl ServerCertVerifier for PinnedVerifier {
 
 fn install_default_provider() {
     // Idempotent — first caller wins, subsequent calls no-op.
-    let _ = rustls::crypto::ring::default_provider().install_default();
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
 }
 
 /// Lowercase hex-encode a byte slice (used to log a certificate serial — a

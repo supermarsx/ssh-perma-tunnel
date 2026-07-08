@@ -161,7 +161,7 @@ async fn launch_tls(
     // The supervisor may already have done this for other rustls users
     // (spt-ssh3, spt-remote-config). `install_default` returns `Err` if a
     // provider is already installed; we don't care which one wins.
-    let _ = rustls::crypto::ring::default_provider().install_default();
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
 
     // Build the rustls ServerConfig.
     let server_cfg =
@@ -451,7 +451,7 @@ mod tests {
     #[tokio::test]
     async fn anonymous_loopback_plain_allowed() {
         // auth = none on loopback is the supported anonymous deployment.
-        let _ = rustls::crypto::ring::default_provider().install_default();
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
         let cfg = cfg_with_auth(false, StatusApiAuthMode::None);
         assert!(cfg.bind.ip().is_loopback());
         let src: Arc<dyn StateSnapshotSource> = Arc::new(spt_status_api::InMemorySource::new());
@@ -551,7 +551,7 @@ mod tests {
 
     #[tokio::test]
     async fn bad_cert_file_cites_path() {
-        let _ = rustls::crypto::ring::default_provider().install_default();
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
         let cfg = StatusApiConfig {
             tls: StatusApiTlsConfig {
                 enabled: true,
@@ -711,7 +711,7 @@ mod tests {
     #[tokio::test]
     async fn plain_http_health_still_works() {
         // Regression: the non-TLS path must continue to function identically.
-        let _ = rustls::crypto::ring::default_provider().install_default();
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
         let cfg = cfg_with_auth(false, StatusApiAuthMode::None);
         let src: Arc<dyn StateSnapshotSource> = Arc::new(spt_status_api::InMemorySource::new());
         let handle = launch(&cfg, src, &empty_resolver(), None).await.unwrap();
@@ -732,7 +732,7 @@ mod tests {
 
     #[tokio::test]
     async fn tls_health_returns_200() {
-        let _ = rustls::crypto::ring::default_provider().install_default();
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
         let tmp = tempfile::tempdir().unwrap();
         let ca = TestCa::new();
         let (srv_cert, srv_key) = make_server_cert(&ca);
@@ -759,7 +759,7 @@ mod tests {
 
     #[tokio::test]
     async fn mtls_allowed_subject_returns_200() {
-        let _ = rustls::crypto::ring::default_provider().install_default();
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
         let tmp = tempfile::tempdir().unwrap();
         let ca = TestCa::new();
         let (srv_cert, srv_key) = make_server_cert(&ca);
@@ -805,7 +805,7 @@ mod tests {
 
     #[tokio::test]
     async fn mtls_unknown_subject_rejected() {
-        let _ = rustls::crypto::ring::default_provider().install_default();
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
         let tmp = tempfile::tempdir().unwrap();
         let ca = TestCa::new();
         let (srv_cert, srv_key) = make_server_cert(&ca);

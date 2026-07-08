@@ -83,6 +83,10 @@ fn safe_staging_name(name: &str) -> UpdaterResult<String> {
 /// connect + overall timeout, `https_only` (no HTTP / redirect-to-HTTP
 /// downgrade), and a bounded redirect policy.
 fn build_client() -> UpdaterResult<reqwest::Client> {
+    // reqwest's rustls backend reads the process-global crypto provider and
+    // panics if none is installed; ensure aws-lc-rs (the single workspace-wide
+    // provider) is the default before the client is built.
+    spt_trust::install_default_crypto_provider();
     reqwest::Client::builder()
         .user_agent(UA)
         .connect_timeout(CONNECT_TIMEOUT)

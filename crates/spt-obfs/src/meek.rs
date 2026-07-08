@@ -319,6 +319,10 @@ impl ObfsTransport for MeekHttpTransport {
                 .map_err(|e| ObfsError::Handshake(format!("sid: {e}")))?,
         );
 
+        // reqwest's rustls backend reads the process-global crypto provider and
+        // panics if none is installed; ensure aws-lc-rs (the single
+        // workspace-wide provider) is the default before the client is built.
+        spt_trust::install_default_crypto_provider();
         let mut builder = ClientBuilder::new()
             .default_headers(default_headers.clone())
             // M10: bound the TCP/TLS connect and the per-request round-trip so a

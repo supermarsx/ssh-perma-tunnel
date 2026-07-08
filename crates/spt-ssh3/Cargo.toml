@@ -60,13 +60,17 @@ dashmap = { workspace = true }
 # Real SSH3 transport (QUIC + HTTP/3 + rustls).
 quinn = { workspace = true }
 # The `aws_lc_rs` provider adds the TLS-1.3 hybrid post-quantum kx group
-# `X25519MLKEM768` (the `ring` provider has none). It is enabled ONLY for the
-# ssh3 QUIC handshake via a *per-config* provider (see `src/tls.rs`); `ring`
-# stays the process-global `install_default()` provider for status-api / syslog
-# / reqwest. rustls's `aws_lc_rs` feature pulls `aws-lc-rs/prebuilt-nasm`, so the
-# Windows x86_64 build needs no NASM install, and `aws-lc-sys` is ALREADY a
-# normal dependency of the release binary via russh/spt-ssh2 — so this only turns
-# on a rustls feature over an already-built crate (no new C toolchain cost).
+# `X25519MLKEM768` (a `ring` provider would have none). aws-lc-rs is the SINGLE
+# workspace-wide rustls provider (the root manifest sets it on rustls /
+# tokio-rustls / quinn / lettre; reqwest uses the no-provider variant) and is
+# the process-global `install_default()` provider for status-api / syslog /
+# reqwest; the ssh3 QUIC handshake selects PQ-vs-classical via a *per-config*
+# provider (see `src/tls.rs`). This feature line is redundant with the root
+# default now but kept explicit for clarity. rustls's `aws_lc_rs` feature pulls
+# `aws-lc-rs/prebuilt-nasm`, so the Windows x86_64 build needs no NASM install,
+# and `aws-lc-sys` is ALREADY a normal dependency of the release binary via
+# russh/spt-ssh2 — so this only turns on a rustls feature over an already-built
+# crate (no new C toolchain cost).
 rustls = { workspace = true, features = ["aws_lc_rs"] }
 rustls-native-certs = { workspace = true }
 rustls-pemfile = { workspace = true }

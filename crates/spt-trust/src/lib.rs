@@ -28,3 +28,19 @@ pub use known_hosts::{KnownHosts, KnownHostsResult};
 pub use pinned_connector::{PinnedTlsConnector, PinnedTlsConnectorBuilder};
 pub use sha256_pin::Sha256HostPin;
 pub use tls_pin::TlsPin;
+
+/// Install aws-lc-rs as the process-global rustls crypto provider, idempotently.
+///
+/// aws-lc-rs is the single workspace-wide rustls provider. Provider-*less*
+/// rustls builders (`ClientConfig::builder()` / `ServerConfig::builder()`)
+/// auto-install it from the crate features, but `reqwest`'s rustls backend
+/// resolves the provider via `CryptoProvider::get_default()` and PANICS
+/// ("No provider set") when none is installed. Call this before constructing a
+/// *raw* `reqwest::Client`. Clients built with `use_preconfigured_tls` (e.g. via
+/// [`PinnedTlsConnector`]) do not need it — the connector installs the provider
+/// while building its config.
+///
+/// First caller wins; subsequent calls are a no-op.
+pub fn install_default_crypto_provider() {
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+}

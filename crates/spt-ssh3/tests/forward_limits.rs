@@ -33,7 +33,7 @@ use spt_ssh3::{accept_control_stream, open_control_stream, Ssh3Session};
 use tokio::net::TcpListener;
 
 fn install_ring() {
-    let _ = rustls::crypto::ring::default_provider().install_default();
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
 }
 
 fn make_quic_pair() -> (ServerConfig, ClientConfig) {

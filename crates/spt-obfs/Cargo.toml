@@ -20,6 +20,10 @@ testing = []
 [dependencies]
 spt-core = { workspace = true }
 spt-secrets = { workspace = true }
+# Provides `install_default_crypto_provider()` — the meek transport builds a
+# raw `reqwest::Client`, whose rustls backend requires the process-global
+# aws-lc-rs provider be installed first (reqwest panics otherwise).
+spt-trust = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
@@ -58,4 +62,7 @@ tokio = { workspace = true }
 serde_json = { workspace = true }
 toml = { workspace = true }
 spt-config = { workspace = true }
+# Integration tests build a raw `reqwest::Client`; name spt-trust here so they
+# can install the process-global aws-lc-rs provider first.
+spt-trust = { workspace = true }
 spt-obfs = { path = ".", version = "0.26.1", features = ["testing"] }

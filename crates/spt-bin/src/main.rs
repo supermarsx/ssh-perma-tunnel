@@ -70,6 +70,14 @@ use spt_cli::{groups, Cli, ColorMode, Command, GlobalOpts, LogLevel};
 use spt_core::{Error, ExitCode, Result};
 
 fn main() -> ProcExitCode {
+    // Install the process-wide rustls crypto provider (aws-lc-rs) once, up front.
+    // The workspace compiles a single rustls provider, but raw `reqwest` clients
+    // (0.12's no-provider TLS feature) do NOT auto-install from crate features and
+    // panic "No provider set" on first use — so guarantee it here before any
+    // rustls/reqwest/quinn path runs, rather than relying on every call site. It
+    // is idempotent (a no-op if a provider is already installed).
+    spt_trust::install_default_crypto_provider();
+
     // ------------------------------------------------------------------
     // Pre-clap scan for the global `--portable` flag (t6-e8).
     //

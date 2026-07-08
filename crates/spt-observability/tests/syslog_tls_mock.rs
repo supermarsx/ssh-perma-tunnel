@@ -31,7 +31,7 @@ use tokio_rustls::TlsAcceptor;
 /// choice the default install is ambiguous and `ClientConfig::builder()`
 /// panics.
 fn install_provider() {
-    let _ = rustls::crypto::ring::default_provider().install_default();
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
 }
 
 /// Generate a self-signed cert and return (DER, PEM private key, acceptor).

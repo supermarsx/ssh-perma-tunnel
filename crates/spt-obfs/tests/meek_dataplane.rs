@@ -79,6 +79,8 @@ fn http_response(body: &[u8]) -> Vec<u8> {
 }
 
 fn meek_stream(url: String) -> MeekStream {
+    // A raw `reqwest::Client` needs the process-global aws-lc-rs provider.
+    spt_trust::install_default_crypto_provider();
     let client = Client::builder()
         .build()
         .expect("reqwest client for loopback http");
