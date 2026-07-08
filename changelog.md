@@ -1,3 +1,11 @@
+## [26.53] - 2026-07-08
+
+# spt 26.53
+
+## Changes since 26.52
+
+- chore: resync chaos + property locks to 0.26.52 (7d7f658)
+
 ## [26.52] - 2026-07-08
 
 # spt 26.52
