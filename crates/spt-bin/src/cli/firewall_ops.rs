@@ -859,6 +859,12 @@ pub(crate) fn compute_rules(
 }
 
 fn forward_to_rules(profile: &Profile, fwd: &Forward) -> Result<Vec<Rule>> {
+    // Remote forwards listen on the SSH server, not on this host. Do not
+    // translate their server-side listen address into a local inbound allow rule.
+    if fwd.kind.eq_ignore_ascii_case("remote") {
+        return Ok(Vec::new());
+    }
+
     // Accept either `bind` (canonical) or `listen` (alias).
     let Some(listen) = fwd.bind.as_deref().or(fwd.listen.as_deref()) else {
         return Ok(Vec::new());
@@ -1177,6 +1183,42 @@ target = "internal:3"
         let only_f3 = compute_rules(&cfg, None, Some("f3")).unwrap();
         assert_eq!(only_f3.len(), 1);
         assert_eq!(only_f3[0].id, "p2-f3-1");
+    }
+
+    #[test]
+    fn compute_rules_ignores_remote_forwards() {
+        let s = r#"
+version = 1
+[[profiles]]
+name = "edge"
+protocol = "ssh2"
+host = "ssh.example"
+port = 22
+[[profiles.forwards]]
+name = "local_db"
+type = "local"
+transport = "tcp"
+listen = "127.0.0.1:15432"
+target = "internal:5432"
+[[profiles.forwards]]
+name = "reverse_db"
+type = "remote"
+transport = "tcp"
+listen = "0.0.0.0:5432"
+target = "127.0.0.1:5432"
+"#;
+        let (cfg, _) = spt_config::load_str(s, false).unwrap();
+
+        let all = compute_rules(&cfg, None, None).unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].id, "edge-local_db-1");
+        assert_eq!(all[0].dest_port, Some(15432));
+
+        let remote_only = compute_rules(&cfg, None, Some("reverse_db")).unwrap();
+        assert!(
+            remote_only.is_empty(),
+            "remote forward listen addresses are server-side and must not open local firewall ports"
+        );
     }
 
     /// Security boundary: a profile/forward name that would produce an
