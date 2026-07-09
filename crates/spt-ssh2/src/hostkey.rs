@@ -134,46 +134,32 @@ impl TrustVerifier {
                 KnownHostsResult::NotFound => {}
             }
         }
-        // TOFU branch: configured + permitted + writable target. Only fires
-        // when every source returned `NotFound` (mismatches above already
-        // returned `Err`).
+        // TOFU branch: configured + permitted + successfully persisted. Only
+        // fires when every source returned `NotFound` (mismatches above
+        // already returned `Err`).
         if self.accept_new {
             if let Some(path) = &self.known_hosts_path {
                 let fp = key.fingerprint(HashAlg::Sha256);
-                // M-7: the trust DECISION (key accepted on first use) is separate
-                // from PERSISTING it. A transient known_hosts write failure
-                // (read-only fs, ENOSPC, EACCES, momentarily-absent dir — more
-                // likely under a hardened read-only Docker rootfs) must NOT be a
-                // terminal `TrustFailed`: the connection is genuinely trusted, we
-                // just couldn't cache it. Log a warning and proceed so the next
-                // connect retries the append rather than killing the profile
-                // forever. A real key MISMATCH/revocation is still terminal — it
-                // is handled above and never reaches this branch.
-                match append_known_hosts(path, host, port, key) {
-                    Ok(()) => {
-                        warn!(
-                            target: "spt_ssh2::trust",
-                            host = host,
-                            port = port,
-                            fingerprint = %fp,
-                            path = %path.display(),
-                            "TOFU: accepted new host key and persisted to known_hosts"
-                        );
-                    }
-                    Err(e) => {
-                        warn!(
-                            target: "spt_ssh2::trust",
-                            host = host,
-                            port = port,
-                            fingerprint = %fp,
-                            path = %path.display(),
-                            error = %e,
-                            "TOFU: accepted new host key but failed to persist it to \
-                             known_hosts; proceeding without caching (will retry on \
-                             next connect)"
-                        );
-                    }
-                }
+                append_known_hosts(path, host, port, key).map_err(|e| {
+                    warn!(
+                        target: "spt_ssh2::trust",
+                        host = host,
+                        port = port,
+                        fingerprint = %fp,
+                        path = %path.display(),
+                        error = %e,
+                        "TOFU: failed to persist new host key to known_hosts; rejecting"
+                    );
+                    e
+                })?;
+                warn!(
+                    target: "spt_ssh2::trust",
+                    host = host,
+                    port = port,
+                    fingerprint = %fp,
+                    path = %path.display(),
+                    "TOFU: accepted new host key and persisted to known_hosts"
+                );
                 return Ok(HostKeyOutcome::TofuAdded);
             }
         }
@@ -444,14 +430,11 @@ mod tests {
     }
 
     #[test]
-    fn tofu_persist_failure_is_not_terminal() {
-        // M-7 regression: a transient known_hosts WRITE failure (here: the
-        // parent directory does not exist, so the append/create `open` fails)
-        // must NOT yield a terminal `TrustFailed`. The trust DECISION (accept
-        // on first use) is separate from PERSISTING it — the connection is
-        // trusted, we just couldn't cache it, so `verify` returns Ok(TofuAdded)
-        // and the profile keeps running. Fails against the pre-fix code (which
-        // propagated the write error as `TrustFailed`); passes after the fix.
+    fn tofu_persist_failure_is_terminal() {
+        // TOFU is only safe when the accepted key is persisted. If persistence
+        // fails (here: the parent directory does not exist), accepting would
+        // turn every reconnect into a fresh first use and allow different
+        // unauthenticated keys to be accepted indefinitely. Fail closed instead.
         let key = fresh_pub();
         let dir = tempfile::tempdir().unwrap();
         // A path whose parent directory does not exist → `open(append|create)`
@@ -462,12 +445,15 @@ mod tests {
             known_hosts_path: Some(bad.clone()),
             ..Default::default()
         };
-        let outcome = v
-            .verify("new.example", 22, &key)
-            .expect("a known_hosts persist failure must be non-terminal");
-        assert_eq!(outcome, HostKeyOutcome::TofuAdded);
-        // The write genuinely failed: nothing was persisted.
+        let err = v.verify("new.example", 22, &key).unwrap_err();
+        assert!(matches!(err, Error::TrustFailed(_)));
+        // The write genuinely failed: nothing was persisted, and therefore the
+        // host key was not accepted as TOFU.
         assert!(!bad.exists());
+
+        let different_key = fresh_pub();
+        let err = v.verify("new.example", 22, &different_key).unwrap_err();
+        assert!(matches!(err, Error::TrustFailed(_)));
     }
 
     #[test]
