@@ -6,10 +6,12 @@
 //! The libssh2 `HostKeyType`-tagged blob path was removed alongside the
 //! `async-ssh2-lite` dispatch.
 
+use fs4::FileExt;
 use spt_core::{Error, Result};
 use spt_trust::known_hosts::KnownHostsResult;
 use spt_trust::{KnownHosts, Sha256HostPin};
 use ssh_key::{HashAlg, PublicKey};
+use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use tracing::warn;
@@ -206,11 +208,11 @@ fn fingerprint_diff(presented: &PublicKey, stored: &[PublicKey]) -> (String, Str
 ///
 /// Crash-safety: a raw `O_APPEND` + `write_all` is **not** crash-atomic — a
 /// crash or partial fs flush mid-append can leave a truncated final line and
-/// poison the file. Instead this reads the current file, appends the new
-/// entry, and rewrites the whole file via a temp-file + fsync + atomic rename
-/// (plus a directory fsync on unix). Readers therefore only ever observe the
-/// old complete file or the new complete file; a torn intermediate state is
-/// impossible. If the existing file's final line lacks a trailing newline
+/// poison the file. Instead this takes a sibling lock, reads the current file,
+/// appends the new entry, and rewrites the whole file via a temp-file + fsync
+/// + atomic rename (plus a directory fsync on unix). Readers therefore only
+/// ever observe the old complete file or the new complete file; a torn
+/// intermediate state is impossible. If the existing file's final line lacks a trailing newline
 /// (e.g. a pre-existing torn write), a separator is inserted first so the new
 /// entry always lands on its own parseable line — and the defensive parser in
 /// `spt-trust` skips the stale partial line rather than rejecting the file.
@@ -231,8 +233,11 @@ fn append_known_hosts(path: &Path, host: &str, port: u16, key: &PublicKey) -> Re
         .map_err(|e| Error::TrustFailed(format!("encode host key for TOFU append: {e}")))?;
     let line = format!("{host_prefix} {encoded}\n");
 
-    // Read the current contents, tolerating a missing file (first TOFU write
-    // creates it).
+    let _lock = KnownHostsAppendLock::acquire(path)?;
+
+    // Read the current contents while holding the sibling lock. The lock keeps
+    // concurrent TOFU writers from basing whole-file rewrites on the same stale
+    // snapshot and silently dropping each other's newly accepted host-key pins.
     let mut content = match std::fs::read(path) {
         Ok(b) => b,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
@@ -253,10 +258,54 @@ fn append_known_hosts(path: &Path, host: &str, port: u16, key: &PublicKey) -> Re
     write_atomic_known_hosts(path, &content)
 }
 
+struct KnownHostsAppendLock {
+    file: File,
+}
+
+impl KnownHostsAppendLock {
+    fn acquire(path: &Path) -> Result<Self> {
+        let lock_path = known_hosts_lock_path(path);
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&lock_path)
+            .map_err(|e| {
+                Error::TrustFailed(format!(
+                    "open known_hosts lock {}: {e}",
+                    lock_path.display()
+                ))
+            })?;
+        file.lock_exclusive().map_err(|e| {
+            Error::TrustFailed(format!(
+                "lock known_hosts {} via {}: {e}",
+                path.display(),
+                lock_path.display()
+            ))
+        })?;
+        Ok(Self { file })
+    }
+}
+
+impl Drop for KnownHostsAppendLock {
+    fn drop(&mut self) {
+        let _ = self.file.unlock();
+    }
+}
+
+fn known_hosts_lock_path(path: &Path) -> PathBuf {
+    let mut name = path.file_name().map_or_else(
+        || std::ffi::OsString::from("known_hosts"),
+        |n| n.to_os_string(),
+    );
+    name.push(".spt-tofu.lock");
+    path.with_file_name(name)
+}
+
 /// Rewrite `path` with `content` crash-atomically and durably: write to a
 /// sibling temp file (0600, born-restricted on unix), fsync it, atomically
-/// rename it over the target, then fsync the directory (unix). No new deps —
-/// uses the `tempfile` crate already in this crate's dependency graph.
+/// rename it over the target, then fsync the directory (unix).
 fn write_atomic_known_hosts(path: &Path, content: &[u8]) -> Result<()> {
     let dir = path
         .parent()
@@ -441,6 +490,45 @@ mod tests {
         v.verify("other.example", 22, &key2).unwrap();
         let body2 = std::fs::read_to_string(&path).unwrap();
         assert!(body2.lines().count() == 2);
+    }
+
+    #[test]
+    fn concurrent_tofu_appends_preserve_all_host_pins() {
+        // Regression for lost updates in the crash-safe whole-file rewrite: all
+        // writers must serialize their read/modify/rename cycle, otherwise the
+        // last atomic rename can drop host-key pins accepted by sibling TOFU
+        // connections.
+        let dir = tempfile::tempdir().unwrap();
+        let path = std::sync::Arc::new(dir.path().join("known_hosts"));
+        let writers = 24;
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(writers));
+        let mut threads = Vec::new();
+
+        for i in 0..writers {
+            let path = path.clone();
+            let barrier = barrier.clone();
+            threads.push(std::thread::spawn(move || {
+                let key = fresh_pub();
+                barrier.wait();
+                append_known_hosts(&path, &format!("host-{i}.example"), 22, &key).unwrap();
+            }));
+        }
+
+        for thread in threads {
+            thread.join().unwrap();
+        }
+
+        let body = std::fs::read_to_string(path.as_ref()).unwrap();
+        let mut hosts = body
+            .lines()
+            .map(|line| line.split_once(' ').unwrap().0.to_string())
+            .collect::<Vec<_>>();
+        hosts.sort();
+
+        let expected = (0..writers)
+            .map(|i| format!("host-{i}.example"))
+            .collect::<Vec<_>>();
+        assert_eq!(hosts, expected, "every concurrent TOFU pin must survive");
     }
 
     #[test]
