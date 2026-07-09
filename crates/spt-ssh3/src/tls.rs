@@ -201,6 +201,7 @@ pub(crate) struct SptVerifier {
     /// `true` and `inner` is unexpectedly absent, verification FAILS CLOSED.
     require_chain: bool,
     chain_depth_cap: ChainDepthCap,
+    signature_algorithms: crypto::WebPkiSupportedAlgorithms,
 }
 
 impl SptVerifier {
@@ -228,6 +229,7 @@ impl SptVerifier {
             allow_self_signed,
             require_chain,
             chain_depth_cap,
+            signature_algorithms: ssh3_crypto_provider(false).signature_verification_algorithms,
         }
     }
 }
