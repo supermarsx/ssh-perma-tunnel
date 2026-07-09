@@ -689,7 +689,7 @@ mod keepalive_tests {
         // Production echo responder: `serve_inbound_opens` now echoes AppPing
         // streams (F-R2). The `|_| None` resolver denies every TCP open — only
         // the keepalive path is exercised here.
-        let responder = tokio::spawn(serve_inbound_opens(server.clone(), |_| None));
+        let responder = tokio::spawn(serve_inbound_opens(server.clone(), |_| None, |_| false));
 
         for i in 0..(MAX_MISSED_KEEPALIVES * 3) {
             session

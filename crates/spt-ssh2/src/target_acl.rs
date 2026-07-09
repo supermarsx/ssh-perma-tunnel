@@ -10,10 +10,10 @@
 //! channel is opened. Patterns are matched against the requested target host:
 //!
 //! * A pattern that parses as an [`ipnet::IpNet`] or a bare [`std::net::IpAddr`]
-//!   is treated as a CIDR/IP rule and matched against the target host *only
-//!   when that host is an IP literal*. (Hostname targets — SOCKS5 domain /
-//!   SOCKS4A / HTTP CONNECT — are resolved on the SSH server, so we never see
-//!   their IP; CIDR rules therefore never match a hostname target.)
+//!   is treated as a CIDR/IP rule and matched against the target host when that
+//!   host is an IP literal or a legacy numeric IPv4 form accepted by common
+//!   resolvers (for example `2130706433` or `127.1`). Non-numeric hostname
+//!   targets are resolved on the SSH server, so CIDR rules cannot match them.
 //! * Any other pattern is a case-insensitive host glob supporting `*`
 //!   (matches any run of characters, including `.`). It is matched against the
 //!   target host string.
@@ -25,7 +25,7 @@
 //! 3. Else if any allow pattern matches → **Allow**.
 //! 4. Else → **Deny**.
 
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv4Addr};
 
 use ipnet::IpNet;
 
@@ -50,17 +50,20 @@ impl TargetRule {
         if let Ok(net) = pattern.parse::<IpNet>() {
             return Ok(Self::Net(net));
         }
-        if let Ok(ip) = pattern.parse::<IpAddr>() {
+        if let Some(ip) = parse_target_ip(pattern) {
             // A bare IP is a /32 (or /128) host rule. Canonicalize so an
             // IPv4-mapped IPv6 literal (`::ffff:10.0.0.1`) collapses to its v4
             // form and matches v4 targets symmetrically with the lookup side.
-            return Ok(Self::Net(IpNet::from(ip.to_canonical())));
+            // Also normalize legacy IPv4 numeric forms accepted by common
+            // resolvers (for example `2130706433`, `0x7f000001`, `127.1`) so
+            // operators can write either spelling and still get an IP rule.
+            return Ok(Self::Net(IpNet::from(ip)));
         }
         // Reject patterns that look like a malformed CIDR (contain `/`) so an
         // operator typo such as `10.0.0.0/33` fails closed at config load
         // instead of silently becoming a host glob that never matches an IP.
         if let Some((addr, _)) = pattern.split_once('/') {
-            if addr.parse::<IpAddr>().is_ok() {
+            if parse_target_ip(addr).is_some() {
                 return Err(TargetAclError::BadCidr(pattern.to_string()));
             }
         }
@@ -161,22 +164,13 @@ impl TargetAcl {
         //   against v4 CIDR/IP rules (closes the deny-list family-mismatch
         //   bypass). `to_canonical` is a no-op for plain v4 / non-mapped v6.
         //
-        // NUMERIC-ENCODING LIMITATION (documented, fail-closed via allow-list):
-        // Rust's `IpAddr` parser only accepts canonical dotted-quad / colon
-        // forms. The legacy `inet_aton`-style encodings — zero-padded
-        // (`127.000.000.001`), hex (`0x7f.0.0.1`), 32-bit decimal-dword
-        // (`2130706433`), and classful-short (`127.1`) — therefore do NOT parse
-        // here, so `host_ip` is `None` and no `Net` (CIDR/IP) rule can match
-        // them. They are passed through as opaque host strings and resolved on
-        // the SSH server. Consequence: a *deny-only* IP rule does not cover
-        // these forms (a server whose resolver accepts `inet_aton` could still
-        // be steered at the denied address), but an *allow-list* fails closed —
-        // an unrecognized form matches no allow rule and is denied. The
-        // allow-list is the safe mode; deny-by-IP is best-effort. Note the
-        // mapped-IPv6 hex-group form (`::ffff:7f00:1`) DOES parse and IS
-        // canonicalized to its v4 address, so it is not a bypass (see tests).
+        // * normalize legacy IPv4 numeric forms accepted by common resolvers
+        //   (`2130706433`, `0x7f000001`, `127.1`, `169.254.43518`, etc.) before
+        //   applying IP/CIDR rules. These arrive as SOCKS/CONNECT host strings
+        //   but may be resolved by the SSH server as IP addresses, so treating
+        //   them as ordinary hostnames would bypass deny-only IP policies.
         let host = host.strip_suffix('.').unwrap_or(host);
-        let host_ip = host.parse::<IpAddr>().ok().map(|ip| ip.to_canonical());
+        let host_ip = parse_target_ip(host);
         if self.deny.iter().any(|r| r.matches(host, host_ip)) {
             return false;
         }
@@ -185,6 +179,67 @@ impl TargetAcl {
         }
         self.allow.iter().any(|r| r.matches(host, host_ip))
     }
+}
+
+/// Parse target strings that common system resolvers may treat as IP addresses.
+///
+/// Rust's `IpAddr` intentionally accepts only standard IP literals. For ACL
+/// enforcement we also need the legacy IPv4 numeric forms accepted by
+/// `inet_aton`/`getaddrinfo`, because the SSH server may resolve a SOCKS domain
+/// or CONNECT host string such as `2130706433` to `127.0.0.1`.
+fn parse_target_ip(host: &str) -> Option<IpAddr> {
+    host.parse::<IpAddr>()
+        .ok()
+        .map(|ip| ip.to_canonical())
+        .or_else(|| parse_legacy_ipv4(host).map(IpAddr::V4))
+}
+
+fn parse_legacy_ipv4(host: &str) -> Option<Ipv4Addr> {
+    if host.is_empty() || host.contains(':') {
+        return None;
+    }
+
+    let mut parts = Vec::new();
+    for part in host.split('.') {
+        if part.is_empty() {
+            return None;
+        }
+        parts.push(parse_ipv4_number(part)?);
+        if parts.len() > 4 {
+            return None;
+        }
+    }
+
+    let addr = match parts.as_slice() {
+        // a (32 bits)
+        [a] => *a,
+        // a.b (8.24 bits)
+        [a, b] if *a <= 0xff && *b <= 0x00ff_ffff => (a << 24) | b,
+        // a.b.c (8.8.16 bits)
+        [a, b, c] if *a <= 0xff && *b <= 0xff && *c <= 0xffff => (a << 24) | (b << 16) | c,
+        // a.b.c.d (8.8.8.8 bits)
+        [a, b, c, d] if *a <= 0xff && *b <= 0xff && *c <= 0xff && *d <= 0xff => {
+            (a << 24) | (b << 16) | (c << 8) | d
+        }
+        _ => return None,
+    };
+
+    Some(Ipv4Addr::from(addr))
+}
+
+fn parse_ipv4_number(part: &str) -> Option<u32> {
+    let (digits, radix) =
+        if let Some(hex) = part.strip_prefix("0x").or_else(|| part.strip_prefix("0X")) {
+            (hex, 16)
+        } else if part.len() > 1 && part.starts_with('0') {
+            (&part[1..], 8)
+        } else {
+            (part, 10)
+        };
+    if digits.is_empty() {
+        return Some(0);
+    }
+    u32::from_str_radix(digits, radix).ok()
 }
 
 /// Minimal case-sensitive glob matcher supporting `*` (any run, incl. empty).
@@ -269,7 +324,7 @@ mod tests {
         let acl = TargetAcl::from_patterns(None, Some(&["10.0.0.0/8".to_string()])).unwrap();
         assert!(!acl.permits("10.1.2.3", 22));
         assert!(acl.permits("11.0.0.1", 22));
-        // CIDR never matches a hostname target (resolved server-side).
+        // CIDR cannot match a non-numeric hostname target (resolved server-side).
         assert!(acl.permits("internal.host", 22));
     }
 
@@ -419,34 +474,39 @@ mod tests {
     }
 
     #[test]
-    fn numeric_ip_encodings_are_not_parsed_as_ip() {
-        // Pin the actual behavior: Rust's `IpAddr` parser rejects the legacy
-        // `inet_aton`-style encodings, so none of these match a v4 CIDR/IP rule
-        // (host_ip is None → no Net match). Under a DENY-ONLY policy they pass
-        // through (documented limitation — server-side resolution may still
-        // resolve them, so deny-by-IP is best-effort).
-        let deny = TargetAcl::from_patterns(None, Some(&["127.0.0.0/8".to_string()])).unwrap();
+    fn numeric_ip_encodings_are_normalized_for_deny_rules() {
+        // Rust's `IpAddr` parser rejects legacy `inet_aton`-style encodings,
+        // but common resolvers may still map them to IP addresses on the SSH
+        // server. Normalize them here so deny-only IP policies cannot be
+        // bypassed by sending the alternate spelling as a SOCKS/CONNECT host.
+        let deny = TargetAcl::from_patterns(
+            None,
+            Some(&["127.0.0.0/8".to_string(), "169.254.169.254".to_string()]),
+        )
+        .unwrap();
         for form in [
-            "127.000.000.001", // zero-padded octets
+            "127.000.000.001", // octal zero-padded octets
             "0x7f.0.0.1",      // hex octet
-            "2130706433",      // 32-bit decimal dword
+            "0x7f000001",      // hex 32-bit dword
+            "2130706433",      // decimal 32-bit dword
             "127.1",           // classful short form
+            "0xa9fea9fe",      // metadata IP as hex dword
+            "169.254.43518",   // metadata IP with 16-bit final component
         ] {
             assert!(
-                deny.permits(form, 22),
-                "{form:?} does not parse as an IP, so the v4 deny rule cannot \
-                 match it; it is treated as a hostname (documented limitation)"
+                !deny.permits(form, 22),
+                "{form:?} must normalize to a denied IP address"
             );
         }
-        // The canonical loopback IS parsed and denied — the rule itself works.
         assert!(!deny.permits("127.0.0.1", 22));
+        assert!(deny.permits("8.8.8.8", 53));
+        assert!(deny.permits("example.com", 443));
     }
 
     #[test]
     fn numeric_ip_encodings_fail_closed_under_allow_list() {
-        // The SAFE mode: with an allow-list set, an unrecognized numeric form
-        // matches no allow rule and is denied. This is the fail-closed posture
-        // the docs recommend for SSRF-sensitive deployments.
+        // With an allow-list set, numeric forms either normalize outside the
+        // allowed range or match no allow rule and are denied.
         let allow =
             TargetAcl::from_patterns(Some(&["*.internal.example".to_string()]), None).unwrap();
         for form in [

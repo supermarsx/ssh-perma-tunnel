@@ -15,6 +15,7 @@ pub const EXAMPLES: &str = "EXAMPLES:
   spt ssh3-serve --listen 0.0.0.0:443 --cert server.pem --key server.key
   spt ssh3-serve --listen 127.0.0.1:8443 --self-signed
   spt ssh3-serve --cert chain.pem --key key.pem --allow-target db.internal:5432
+  spt ssh3-serve --cert chain.pem --key key.pem --fixed-target dns.internal:53 --require-authorization-file /run/credentials/spt.ssh3.authz
   spt ssh3-serve --cert chain.pem --key key.pem --protocol-token ssh3";
 
 /// `spt ssh3-serve` — bind and serve an SSH3 responder endpoint.
@@ -66,7 +67,17 @@ pub struct Ssh3ServeCmd {
 
     /// Require this bearer/authorization value on the CONNECT request. When
     /// set, a CONNECT whose `Authorization` header does not match is rejected
-    /// with HTTP 401.
-    #[arg(long, value_name = "TOKEN")]
+    /// with HTTP 401. Prefer `--require-authorization-file` for production so
+    /// secrets do not appear in process arguments.
+    #[arg(
+        long,
+        value_name = "TOKEN",
+        conflicts_with = "require_authorization_file"
+    )]
     pub require_authorization: Option<String>,
+
+    /// Read the required CONNECT `Authorization` header value from this file.
+    /// Trailing CR/LF is ignored so newline-terminated secret files work.
+    #[arg(long, value_name = "PATH")]
+    pub require_authorization_file: Option<std::path::PathBuf>,
 }

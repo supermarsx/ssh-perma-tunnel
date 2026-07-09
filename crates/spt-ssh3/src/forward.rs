@@ -1571,7 +1571,12 @@ async fn remote_uds_loop(
 /// [`crate::server::Ssh3Server`] dispatches inbound bidis by their first frame
 /// kind, routing `UdsForwardRequest` here.
 #[cfg(unix)]
-pub async fn serve_local_uds_open(mut send: SendStream, mut recv: RecvStream, payload: Bytes) {
+pub async fn serve_local_uds_open(
+    mut send: SendStream,
+    mut recv: RecvStream,
+    payload: Bytes,
+    uds_authorizer: &(dyn Fn(&str) -> bool + Send + Sync),
+) {
     let open = match UdsChannelOpenPayload::decode(payload) {
         Ok(o) => o,
         Err(e) => {
@@ -1579,6 +1584,20 @@ pub async fn serve_local_uds_open(mut send: SendStream, mut recv: RecvStream, pa
             return;
         }
     };
+    if !uds_authorizer(&open.path) {
+        let _ = Ssh3Frame::new(
+            Ssh3FrameKind::ForwardOpenResponse,
+            ForwardOpenResponse {
+                ok: false,
+                reason: "uds path denied by server policy".into(),
+            }
+            .encode(),
+        )
+        .write_async(&mut send)
+        .await;
+        return;
+    }
+
     let mut sock = match tokio::net::UnixStream::connect(&open.path).await {
         Ok(s) => s,
         Err(e) => {
@@ -1756,9 +1775,8 @@ pub async fn serve_local_tcp_acceptor(
 /// Server-side acceptor that handles BOTH local-TCP (`DirectTcpRequest`) and,
 /// on `cfg(unix)`, local-UDS (`UdsForwardRequest`) inbound bidi opens by
 /// reading the first frame and routing accordingly. TCP opens resolve their
-/// target via `target_resolver`; UDS opens `UnixStream::connect` the path the
-/// client supplied (path-based ACL is the caller's responsibility — the server
-/// only dials paths the client sent).
+/// target via `target_resolver`; UDS opens are first authorized with
+/// `uds_authorizer`, then denied or connected to the approved path.
 ///
 /// This is the superset of [`serve_local_tcp_acceptor`] the
 /// [`crate::server::Ssh3Server`] uses so a single accept loop serves both
@@ -1766,13 +1784,16 @@ pub async fn serve_local_tcp_acceptor(
 pub async fn serve_inbound_opens(
     conn: Connection,
     target_resolver: impl Fn(&ChannelOpenPayload) -> Option<TargetAddr> + Send + Sync + 'static,
+    uds_authorizer: impl Fn(&str) -> bool + Send + Sync + 'static,
 ) {
     let resolver = Arc::new(target_resolver);
+    let uds_authorizer = Arc::new(uds_authorizer);
     loop {
         let Ok((send, mut recv)) = conn.accept_bi().await else {
             break;
         };
         let resolver = resolver.clone();
+        let uds_authorizer = uds_authorizer.clone();
         tokio::spawn(async move {
             let Ok(frame) = Ssh3Frame::read_async(&mut recv).await else {
                 return;
@@ -1783,7 +1804,7 @@ pub async fn serve_inbound_opens(
                 }
                 #[cfg(unix)]
                 Ssh3FrameKind::UdsForwardRequest => {
-                    serve_local_uds_open(send, recv, frame.payload).await;
+                    serve_local_uds_open(send, recv, frame.payload, &*uds_authorizer).await;
                 }
                 // F-R2: echo keepalive pings so the client's liveness reader
                 // sees our application layer is still draining streams.
@@ -2051,7 +2072,9 @@ pub async fn serve_remote_udp_forwards(
     mut control_recv: RecvStream,
     control_send: Arc<AsyncMutex<SendStream>>,
     state: Arc<SessionState>,
+    remote_uds_authorizer: impl Fn(&str) -> bool + Send + Sync + 'static,
 ) {
+    let remote_uds_authorizer = Arc::new(remote_uds_authorizer);
     loop {
         let frame = match Ssh3Frame::read_async(&mut control_recv).await {
             Ok(f) => f,
@@ -2071,6 +2094,21 @@ pub async fn serve_remote_udp_forwards(
                     continue;
                 }
             };
+            if !remote_uds_authorizer(&path) {
+                warn!(target: "spt_ssh3::forward", path = %path, "remote-uds: path denied by server policy");
+                let mut g = control_send.lock().await;
+                let _ = Ssh3Frame::new(
+                    Ssh3FrameKind::ForwardOpenResponse,
+                    ForwardOpenResponse {
+                        ok: false,
+                        reason: "remote uds path denied by server policy".into(),
+                    }
+                    .encode(),
+                )
+                .write_async(&mut *g)
+                .await;
+                continue;
+            }
             // M5: gate remote-UDS forward listeners behind the same
             // `inbound_forward_limit` semaphore that bounds the matched-forward
             // TCP path, so a peer flooding RemoteUdsForwardRequest frames cannot
