@@ -274,6 +274,13 @@ mod tests {
     }
 
     #[test]
+    fn build_acl_denies_uds_paths_by_default() {
+        let args = base_args();
+        let acl = build_acl(&args).unwrap();
+        assert!(!(acl.authorize_uds_path)("/var/run/docker.sock"));
+    }
+
+    #[test]
     fn build_acl_protocol_token_applied() {
         let mut args = base_args();
         args.protocol_token = "custom".into();

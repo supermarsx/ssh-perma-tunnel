@@ -75,6 +75,10 @@ type TargetResolver = Arc<dyn Fn(&ChannelOpenPayload) -> Option<TargetAddr> + Se
 /// reject (HTTP 401).
 type ConnectAuthorizer = Arc<dyn Fn(&str, Option<&str>) -> bool + Send + Sync>;
 
+/// UDS path authorizer: returns `true` to allow a peer-requested unix socket
+/// path to be connected or bound by the server.
+type UdsPathAuthorizer = Arc<dyn Fn(&str) -> bool + Send + Sync>;
+
 /// Access-control + target-resolution policy for an [`Ssh3Server`].
 ///
 /// The resolver maps a peer-requested `direct-tcp` open ([`ChannelOpenPayload`])
@@ -91,6 +95,9 @@ pub struct Ssh3ServerAcl {
     /// Resolve (and authorize) a `direct-tcp` open to a dial target. `None`
     /// rejects the open.
     pub resolve_target: TargetResolver,
+    /// Authorize peer-requested Unix-domain socket paths. The default denies
+    /// all UDS paths so TCP target ACLs cannot be bypassed by UDS forwards.
+    pub authorize_uds_path: UdsPathAuthorizer,
     /// Optional CONNECT-time authorization check. Given the request's
     /// `:protocol` token and `Authorization` header value (if present), return
     /// `true` to accept (HTTP 200) or `false` to reject (HTTP 401). When
@@ -110,6 +117,7 @@ impl Ssh3ServerAcl {
     ) -> Self {
         Self {
             resolve_target: Arc::new(resolve_target),
+            authorize_uds_path: Arc::new(|_path| false),
             authorize_connect: None,
             protocol_token: crate::config::DEFAULT_PROTOCOL_TOKEN.to_string(),
         }
@@ -120,6 +128,16 @@ impl Ssh3ServerAcl {
     #[must_use]
     pub fn fixed_target(target: TargetAddr) -> Self {
         Self::new(move |_open| Some(target.clone()))
+    }
+
+    /// Set a UDS path authorization callback for local and remote UDS forwards.
+    #[must_use]
+    pub fn with_authorize_uds_path(
+        mut self,
+        f: impl Fn(&str) -> bool + Send + Sync + 'static,
+    ) -> Self {
+        self.authorize_uds_path = Arc::new(f);
+        self
     }
 
     /// Set a CONNECT-time authorization callback.
@@ -253,8 +271,12 @@ impl Ssh3Server {
         let ru_conn = connection.clone();
         let ru_state = state.clone();
         let ru_ctl = control_send.clone();
+        let acl_for_remote_uds = acl.clone();
         let remote_udp = tokio::spawn(async move {
-            serve_remote_udp_forwards(ru_conn, control_recv, ru_ctl, ru_state).await;
+            serve_remote_udp_forwards(ru_conn, control_recv, ru_ctl, ru_state, move |path| {
+                (acl_for_remote_uds.authorize_uds_path)(path)
+            })
+            .await;
         });
 
         // 3b. Datagram demux: routes inbound QUIC datagrams by flow-id into the
@@ -272,12 +294,15 @@ impl Ssh3Server {
 
         // 4. Inbound-open acceptor: every remaining inbound bidi is either a
         // `direct-tcp` open (resolved via the ACL and bridged to a TCP target)
-        // or, on `cfg(unix)`, a `uds` open (the server `UnixStream::connect`s
-        // the client-supplied path and bridges).
+        // or, on `cfg(unix)`, a `uds` open authorized by the ACL before the
+        // server connects to the requested socket path.
         let acl_for_tcp = acl.clone();
-        serve_inbound_opens(connection.clone(), move |open| {
-            (acl_for_tcp.resolve_target)(open)
-        })
+        let acl_for_uds = acl.clone();
+        serve_inbound_opens(
+            connection.clone(),
+            move |open| (acl_for_tcp.resolve_target)(open),
+            move |path| (acl_for_uds.authorize_uds_path)(path),
+        )
         .await;
 
         // The acceptor returns when the connection closes; tear the rest down.
