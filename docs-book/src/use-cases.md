@@ -743,10 +743,25 @@ required       = true
 The peer side is another `spt` running `spt ssh3-serve` (see
 [transports.md](transports.md) and [cli-reference.md](cli-reference.md)):
 
+Store the exact `Authorization` header value in a root-readable file on the
+responder (for a bearer-token profile this includes the `Bearer ` prefix), and
+pin the responder to the one service this recipe needs:
+
 ```bash
+install -m 0600 -o root -g root /dev/stdin /run/credentials/spt.ssh3.authz <<'EOF'
+Bearer replace-with-the-secret-value-from-ssh3/edge/token
+EOF
+
 spt ssh3-serve --listen 0.0.0.0:443 --cert chain.pem --key key.pem \
-    --require-authorization "$(spt secret get ssh3/edge/token --reveal)"
+    --fixed-target dns.internal:53 \
+    --require-authorization-file /run/credentials/spt.ssh3.authz
 ```
+
+Do not expand long-lived secrets into `spt ssh3-serve` command-line arguments:
+process arguments are commonly visible to other local users. Always pair a
+public responder with `--fixed-target` or one or more `--allow-target` entries;
+without either option, the server intentionally behaves as an open relay for
+any authorized peer.
 
 ### Config — obfuscated SSH2 (WebSocket / Shadowsocks)
 
