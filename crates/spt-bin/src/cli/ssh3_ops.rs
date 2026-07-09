@@ -51,6 +51,30 @@ fn parse_listen(s: &str) -> Result<SocketAddr> {
         })
 }
 
+/// Load the expected CONNECT `Authorization` header from CLI input.
+fn required_authorization(args: &Ssh3ServeCmd) -> Result<Option<String>> {
+    if let Some(path) = &args.require_authorization_file {
+        let mut value = std::fs::read_to_string(path).map_err(|e| {
+            Error::InvalidConfig(format!(
+                "ssh3-serve: read --require-authorization-file `{}`: {e}",
+                path.display()
+            ))
+        })?;
+        while value.ends_with('\r') || value.ends_with('\n') {
+            value.pop();
+        }
+        if value.is_empty() {
+            return Err(Error::InvalidConfig(format!(
+                "ssh3-serve: --require-authorization-file `{}` is empty",
+                path.display()
+            )));
+        }
+        Ok(Some(value))
+    } else {
+        Ok(args.require_authorization.clone())
+    }
+}
+
 /// Build the [`Ssh3ServerAcl`] from the parsed CLI surface.
 fn build_acl(args: &Ssh3ServeCmd) -> Result<Ssh3ServerAcl> {
     let mut acl = if let Some(fixed) = &args.fixed_target {
@@ -75,7 +99,8 @@ fn build_acl(args: &Ssh3ServeCmd) -> Result<Ssh3ServerAcl> {
 
     acl = acl.with_protocol_token(args.protocol_token.clone());
 
-    if let Some(expected) = args.require_authorization.clone() {
+    let expected_authorization = required_authorization(args)?;
+    if let Some(expected) = expected_authorization {
         acl = acl.with_authorize_connect(move |_protocol, authz| authz == Some(expected.as_str()));
     }
 
@@ -173,6 +198,7 @@ mod tests {
             allow_targets: Vec::new(),
             fixed_target: None,
             require_authorization: None,
+            require_authorization_file: None,
         }
     }
 
@@ -264,6 +290,26 @@ mod tests {
         assert!(check("ssh3", Some("Bearer xyz")));
         assert!(!check("ssh3", Some("Bearer wrong")));
         assert!(!check("ssh3", None));
+    }
+
+    #[test]
+    fn build_acl_require_authorization_file_checks_header_and_trims_newline() {
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "spt-ssh3-authz-{}-{}.txt",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        std::fs::write(&path, "Bearer from-file\n").unwrap();
+
+        let mut args = base_args();
+        args.require_authorization_file = Some(path.clone());
+        let acl = build_acl(&args).unwrap();
+        let check = acl.authorize_connect.as_ref().unwrap();
+        assert!(check("ssh3", Some("Bearer from-file")));
+        assert!(!check("ssh3", Some("Bearer from-file\n")));
+
+        std::fs::remove_file(path).unwrap();
     }
 
     #[cfg(not(feature = "ssh3-server-selfsigned"))]
