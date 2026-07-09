@@ -24,6 +24,7 @@
 use std::sync::Arc;
 
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
+use rustls::crypto;
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::{
     ClientConfig, DigitallySignedStruct, Error as TlsError, RootCertStore, SignatureScheme,
@@ -200,6 +201,7 @@ pub(crate) struct SptVerifier {
     /// `true` and `inner` is unexpectedly absent, verification FAILS CLOSED.
     require_chain: bool,
     chain_depth_cap: ChainDepthCap,
+    signature_algorithms: crypto::WebPkiSupportedAlgorithms,
 }
 
 impl SptVerifier {
@@ -227,6 +229,7 @@ impl SptVerifier {
             allow_self_signed,
             require_chain,
             chain_depth_cap,
+            signature_algorithms: ssh3_crypto_provider(false).signature_verification_algorithms,
         }
     }
 }
@@ -303,9 +306,10 @@ impl ServerCertVerifier for SptVerifier {
         if let Some(inner) = &self.inner {
             return inner.verify_tls12_signature(message, cert, dss);
         }
-        // allow_self_signed = inner is None: skip signature check (the QUIC
-        // handshake's signature still proves possession of the pinned key).
-        Ok(HandshakeSignatureValid::assertion())
+        // Chain verification can be intentionally skipped for pin-only or
+        // blind-accept modes, but the peer must still prove possession of the
+        // private key for the presented certificate.
+        crypto::verify_tls12_signature(message, cert, dss, &self.signature_algorithms)
     }
 
     fn verify_tls13_signature(
@@ -317,25 +321,17 @@ impl ServerCertVerifier for SptVerifier {
         if let Some(inner) = &self.inner {
             return inner.verify_tls13_signature(message, cert, dss);
         }
-        Ok(HandshakeSignatureValid::assertion())
+        // Chain verification can be intentionally skipped for pin-only or
+        // blind-accept modes, but the peer must still prove possession of the
+        // private key for the presented certificate.
+        crypto::verify_tls13_signature(message, cert, dss, &self.signature_algorithms)
     }
 
     fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
         if let Some(inner) = &self.inner {
             return inner.supported_verify_schemes();
         }
-        // Reasonable default super-set covering modern TLS 1.3.
-        vec![
-            SignatureScheme::ED25519,
-            SignatureScheme::ECDSA_NISTP256_SHA256,
-            SignatureScheme::ECDSA_NISTP384_SHA384,
-            SignatureScheme::RSA_PSS_SHA256,
-            SignatureScheme::RSA_PSS_SHA384,
-            SignatureScheme::RSA_PSS_SHA512,
-            SignatureScheme::RSA_PKCS1_SHA256,
-            SignatureScheme::RSA_PKCS1_SHA384,
-            SignatureScheme::RSA_PKCS1_SHA512,
-        ]
+        self.signature_algorithms.supported_schemes()
     }
 }
 
