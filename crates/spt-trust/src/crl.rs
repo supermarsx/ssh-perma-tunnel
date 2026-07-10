@@ -91,6 +91,10 @@ impl CrlPolicy {
 /// One parsed-and-cached CRL, keyed elsewhere by issuer DN.
 #[derive(Debug, Clone)]
 struct CachedCrl {
+    /// Original CRL DER. Kept so verifier-time checks can bind the
+    /// cached revocation data to the issuer certificate that WebPKI or
+    /// pinning just accepted.
+    der: Vec<u8>,
     /// Revoked serials (big-endian bytes, leading zeros stripped to
     /// match `x509_parser`'s `BigUint::to_bytes_be()` output).
     revoked_serials: Vec<Vec<u8>>,
@@ -174,6 +178,7 @@ impl CrlCache {
         let next_update = crl.next_update().and_then(asn1_to_system_time);
 
         let entry = CachedCrl {
+            der: der.to_vec(),
             revoked_serials,
             fetched_at: SystemTime::now(),
             next_update,
@@ -221,18 +226,37 @@ impl CrlCache {
         if !entry.is_fresh(SystemTime::now()) {
             return Ok(RevocationStatus::Stale);
         }
-        let normalized = normalize_serial(serial);
-        let needle = normalized.as_slice();
-        for s in &entry.revoked_serials {
-            // Constant-time per-serial to avoid leaking which serial
-            // matched (defensive — the entire revocation list is
-            // public, but constant-time bytewise compare is cheap and
-            // matches the rest of this crate's hygiene).
-            if s.len() == needle.len() && s.ct_eq(needle).into() {
-                return Ok(RevocationStatus::Revoked);
-            }
+        Ok(revocation_status_from_entry(entry, serial))
+    }
+
+    /// Like [`Self::is_revoked`], but first proves the cached CRL was
+    /// issued by `issuer_cert`: the CRL issuer DN must match the
+    /// certificate subject DN, the issuer certificate must carry the
+    /// RFC 5280 `cRLSign` key usage, and the CRL signature must verify
+    /// against the issuer public key.
+    pub fn is_revoked_by_issuer_cert(
+        &self,
+        issuer_cert: &X509Certificate<'_>,
+        serial: &[u8],
+    ) -> Result<RevocationStatus, CrlError> {
+        let issuer_dn = issuer_cert.subject().as_raw();
+        let entry = {
+            let guard = self
+                .entries
+                .lock()
+                .map_err(|_| CrlError::Parse("CrlCache mutex poisoned".into()))?;
+            let Some(entry) = guard.get(issuer_dn) else {
+                return Ok(RevocationStatus::NoCrl);
+            };
+            entry.clone()
+        };
+
+        if !entry.is_fresh(SystemTime::now()) {
+            return Ok(RevocationStatus::Stale);
         }
-        Ok(RevocationStatus::NotRevoked)
+
+        validate_crl_authority(&entry.der, issuer_cert)?;
+        Ok(revocation_status_from_entry(&entry, serial))
     }
 
     /// Number of issuers currently cached. Test helper.
@@ -241,6 +265,45 @@ impl CrlCache {
     pub fn issuer_count(&self) -> usize {
         self.entries.lock().map(|g| g.len()).unwrap_or(0)
     }
+}
+
+fn revocation_status_from_entry(entry: &CachedCrl, serial: &[u8]) -> RevocationStatus {
+    let normalized = normalize_serial(serial);
+    let needle = normalized.as_slice();
+    for s in &entry.revoked_serials {
+        // Constant-time per-serial to avoid leaking which serial
+        // matched (defensive — the entire revocation list is
+        // public, but constant-time bytewise compare is cheap and
+        // matches the rest of this crate's hygiene).
+        if s.len() == needle.len() && s.ct_eq(needle).into() {
+            return RevocationStatus::Revoked;
+        }
+    }
+    RevocationStatus::NotRevoked
+}
+
+fn validate_crl_authority(der: &[u8], issuer_cert: &X509Certificate<'_>) -> Result<(), CrlError> {
+    let (_, crl) = CertificateRevocationList::from_der(der)
+        .map_err(|e| CrlError::Parse(format!("from_der: {e}")))?;
+
+    if crl.issuer().as_raw() != issuer_cert.subject().as_raw() {
+        return Err(CrlError::Parse(
+            "CRL issuer does not match certificate issuer subject".into(),
+        ));
+    }
+
+    let key_usage = issuer_cert
+        .key_usage()
+        .map_err(|e| CrlError::Parse(format!("issuer key usage: {e}")))?
+        .ok_or_else(|| CrlError::Parse("issuer certificate lacks keyUsage cRLSign".into()))?;
+    if !key_usage.value.crl_sign() {
+        return Err(CrlError::Parse(
+            "issuer certificate is not authorized for cRLSign".into(),
+        ));
+    }
+
+    crl.verify_signature(&issuer_cert.tbs_certificate.subject_pki)
+        .map_err(|e| CrlError::Parse(format!("CRL signature verification failed: {e}")))
 }
 
 /// Outcome of a [`CrlCache::is_revoked`] lookup. The verifier in

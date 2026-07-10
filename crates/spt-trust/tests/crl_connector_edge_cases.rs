@@ -148,6 +148,35 @@ fn mint_crl(
     crl.der().to_vec()
 }
 
+fn mint_forged_crl_with_same_issuer_name() -> Vec<u8> {
+    let mut forged_params = CertificateParams::new(Vec::<String>::new()).unwrap();
+    forged_params
+        .distinguished_name
+        .push(DnType::CommonName, "spt-crl-edge-ca");
+    forged_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+    forged_params.key_usages = vec![
+        KeyUsagePurpose::KeyCertSign,
+        KeyUsagePurpose::DigitalSignature,
+        KeyUsagePurpose::CrlSign,
+    ];
+    let forged_kp = KeyPair::generate().unwrap();
+    let forged_cert = forged_params.self_signed(&forged_kp).unwrap();
+    let now = OffsetDateTime::now_utc();
+    let crl_params = CertificateRevocationListParams {
+        this_update: now,
+        next_update: now + ::time::Duration::days(7),
+        crl_number: SerialNumber::from(2u64),
+        issuing_distribution_point: None,
+        revoked_certs: Vec::new(),
+        key_identifier_method: KeyIdMethod::Sha256,
+    };
+    crl_params
+        .signed_by(&forged_cert, &forged_kp)
+        .unwrap()
+        .der()
+        .to_vec()
+}
+
 fn issuer_dn_of(ca_der: &[u8]) -> Vec<u8> {
     let (_, parsed) = X509Certificate::from_der(ca_der).unwrap();
     parsed.subject().as_raw().to_vec()
@@ -327,6 +356,30 @@ fn non_revoked_serial_accepted_under_hard_policy() {
     let name = ServerName::try_from("crl-edge-leaf.test").unwrap();
     v.verify_server_cert(&leaf, &[intermediate], &name, &[], UnixTime::now())
         .expect("fresh CRL not listing the leaf must accept under hard policy");
+}
+
+#[test]
+fn forged_crl_with_matching_issuer_name_rejected_under_hard_policy() {
+    install_provider();
+    let f = mint_ca_and_leaf("http://crl.spt-test/forged.crl", 0x8182);
+    let forged = mint_forged_crl_with_same_issuer_name();
+    let cache = Arc::new(CrlCache::new());
+    cache.insert_der(&forged).unwrap();
+
+    let v = build_pinned_verifier_for_test(
+        build_pin(&[f.leaf_spki]),
+        true,
+        ChainDepthCap::default(),
+        Some((cache, CrlPolicy::Hard)),
+    );
+    let leaf = CertificateDer::from(f.leaf_der.clone());
+    let intermediate = CertificateDer::from(f.ca_der.clone());
+    let name = ServerName::try_from("crl-edge-leaf.test").unwrap();
+    let err = v
+        .verify_server_cert(&leaf, &[intermediate], &name, &[], UnixTime::now())
+        .expect_err("forged CRL must not satisfy hard revocation policy");
+    let s = format!("{err}");
+    assert!(s.contains("CRL") || s.contains("signature"), "got {s}");
 }
 
 #[test]

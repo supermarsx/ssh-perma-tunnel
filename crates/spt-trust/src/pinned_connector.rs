@@ -477,24 +477,19 @@ impl PinnedVerifier {
             return Ok(());
         }
 
-        // Issuer DN to key the cache lookup. For a real chain the
-        // first intermediate is the issuer; for a pin-only chain with
-        // just the leaf, fall back to the leaf's own issuer DN (which
-        // also matches the cache key the parser populates when the
-        // CRL was minted by that same CA).
-        let issuer_dn_owned: Vec<u8> = if let Some(int) = intermediates.first() {
-            match X509Certificate::from_der(int.as_ref()) {
-                Ok((_, parsed)) => parsed.subject().as_raw().to_vec(),
-                Err(_) => leaf_parsed.issuer().as_raw().to_vec(),
-            }
-        } else {
-            leaf_parsed.issuer().as_raw().to_vec()
-        };
+        // Issuer certificate to bind the cached CRL to. For a real
+        // chain the first intermediate is the issuer; for a pin-only
+        // self-signed chain, the leaf is its own issuer.
+        let issuer_der = intermediates
+            .first()
+            .map_or(leaf.as_ref(), |int| int.as_ref());
+        let (_, issuer_parsed) = X509Certificate::from_der(issuer_der)
+            .map_err(|e| TlsError::General(format!("spt-trust CRL: parse issuer: {e}")))?;
 
         let serial_be = leaf_parsed.tbs_certificate.serial.to_bytes_be();
         let status = handle
             .cache
-            .is_revoked(&issuer_dn_owned, &serial_be)
+            .is_revoked_by_issuer_cert(&issuer_parsed, &serial_be)
             .map_err(|e| TlsError::General(format!("spt-trust CRL lookup: {e}")))?;
         match status {
             RevocationStatus::Revoked => {
