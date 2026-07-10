@@ -290,6 +290,7 @@ fn emit_crypto_negotiated_log(token: &str, pq_offered: bool) {
 #[derive(Clone)]
 pub(crate) struct HopSpec {
     pub host: String,
+    pub trust_host: String,
     pub port: u16,
     pub auth: Option<AuthConfig>,
     pub trust: Option<TrustVerifier>,
@@ -835,7 +836,7 @@ async fn connect_inner(params: ReconnectParams) -> Result<RusshSsh2Session> {
         let first_trust = first.trust.clone().unwrap_or_else(|| trust.clone());
         let first_trust_failure = Arc::new(parking_lot::Mutex::new(None));
         let first_handler = ClientHandler {
-            host: first.host.clone(),
+            host: first.trust_host.clone(),
             port: first.port,
             trust: first_trust,
             trust_failure: Arc::clone(&first_trust_failure),
@@ -905,7 +906,7 @@ async fn connect_inner(params: ReconnectParams) -> Result<RusshSsh2Session> {
             let hop_trust = hop.trust.clone().unwrap_or_else(|| trust.clone());
             let hop_trust_failure = Arc::new(parking_lot::Mutex::new(None));
             let hop_handler = ClientHandler {
-                host: hop.host.clone(),
+                host: hop.trust_host.clone(),
                 port: hop.port,
                 trust: hop_trust,
                 trust_failure: Arc::clone(&hop_trust_failure),
