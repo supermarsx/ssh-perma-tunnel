@@ -2532,7 +2532,9 @@ async fn bridge_dynamic(
     limits: &ForwardRateLimits,
     idle_timeout: Option<Duration>,
 ) -> Result<()> {
-    let request = crate::dynamic::read_request(&mut sock, protocols).await?;
+    let handshake_timeout = idle_timeout.unwrap_or(crate::dynamic::DEFAULT_HANDSHAKE_TIMEOUT);
+    let request =
+        crate::dynamic::read_request_with_timeout(&mut sock, protocols, handshake_timeout).await?;
     // SSRF mitigation: enforce the destination ACL BEFORE opening any channel.
     // A forbidden target is rejected at the SOCKS layer (code 0x02 for SOCKS5)
     // and the connection closed without ever asking the server to dial.
