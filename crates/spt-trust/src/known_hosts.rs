@@ -148,9 +148,10 @@ impl KnownHosts {
     pub fn verify(&self, host: &str, port: u16, key: &PublicKey) -> KnownHostsResult {
         let mut found_host = false;
         let mut stored = Vec::new();
+        let mut matched_key = false;
 
-        // Process one candidate entry. Returns `Some(result)` to short-circuit
-        // (Revoked/Match), or `None` to continue scanning.
+        // Process one candidate entry. Returns `Some(Revoked)` to short-circuit,
+        // records a key match for later, or returns `None` to continue scanning.
         let mut consider = |e: &Entry| -> Option<KnownHostsResult> {
             // Revoked entries take precedence: reject if the *key* matches.
             if matches!(e.marker, Some(Marker::Revoked)) {
@@ -167,7 +168,7 @@ impl KnownHosts {
             found_host = true;
             stored.push(e.key.clone());
             if keys_equal(&e.key, key) {
-                return Some(KnownHostsResult::Match);
+                matched_key = true;
             }
             None
         };
@@ -177,10 +178,9 @@ impl KnownHosts {
             // pass over hashed/wildcard/negated entries only. The two candidate
             // sets are disjoint by construction (an entry is either an exact
             // plaintext literal or it requires a scan), so no entry is
-            // double-processed and the visited set is identical to the naive
-            // full scan — only the iteration order differs, which does not
-            // change the outcome (Revoked dominates; any key match is a Match;
-            // Mismatch is order-independent over the stored-key set).
+            // double-processed. Do not return immediately on a key match: all
+            // matching candidate entries must be checked first so a wildcard,
+            // hashed, negated, or later exact @revoked entry cannot be bypassed.
             Some(idx) => {
                 for keyform in [host.to_owned(), format!("[{host}]:{port}")] {
                     if let Some(hits) = idx.exact.get(&keyform.to_ascii_lowercase()) {
@@ -215,7 +215,9 @@ impl KnownHosts {
             }
         }
 
-        if found_host {
+        if matched_key {
+            KnownHostsResult::Match
+        } else if found_host {
             KnownHostsResult::Mismatch { stored }
         } else {
             KnownHostsResult::NotFound
@@ -524,6 +526,39 @@ mod tests {
         let kh = KnownHosts::parse(&text).unwrap();
         let r = kh.verify("example.com", 22, &key);
         assert_eq!(r, KnownHostsResult::Revoked);
+    }
+
+    #[test]
+    fn wildcard_revocation_takes_precedence_over_exact_index_match() {
+        let key = one_key();
+        let text = format!(
+            "@revoked * {}\nvictim.example {}\n",
+            key.to_openssh().unwrap(),
+            key.to_openssh().unwrap()
+        );
+        let kh = KnownHosts::parse(&text).unwrap();
+
+        assert_eq!(
+            kh.verify("victim.example", 22, &key),
+            KnownHostsResult::Revoked
+        );
+    }
+
+    #[test]
+    fn hashed_revocation_takes_precedence_over_exact_index_match() {
+        let key = one_key();
+        let text = format!(
+            "@revoked {} {}\nvictim.example {}\n",
+            hash_host_random("victim.example"),
+            key.to_openssh().unwrap(),
+            key.to_openssh().unwrap()
+        );
+        let kh = KnownHosts::parse(&text).unwrap();
+
+        assert_eq!(
+            kh.verify("victim.example", 22, &key),
+            KnownHostsResult::Revoked
+        );
     }
 
     #[test]
