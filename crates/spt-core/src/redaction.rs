@@ -53,9 +53,10 @@ static KV_SECRET: LazyLock<Regex> = LazyLock::new(|| {
             (?:
                 "([^"]*)"        # double-quoted
               | '([^']*)'        # single-quoted
-              | ([^\s,;)\]}\[{]+) # bareword (excludes brackets/braces so
-                                  # `[REDACTED]`-style markers aren't re-matched
-                                  # — keeps `redact()` idempotent)
+              | ([^\s,;)]+) # bareword (includes brackets/braces so bracketed
+                              # secret values are fully redacted; already-redacted
+                              # markers remain fixed points because the whole
+                              # marker is consumed and re-emitted unchanged)
             )
         "#,
     )
@@ -424,10 +425,9 @@ mod tests {
     #[test]
     fn redact_is_idempotent_kv_bareword() {
         // Regression: previously `password="hunter2"` -> `password=[REDACTED]`
-        // on pass 1, then pass 2 would re-match the bareword arm (`[REDACTED`
-        // is itself a bareword) and emit `password=[REDACTED]]`. The bareword
-        // character class now excludes `[`/`]`/`{`/`}` so the marker is a
-        // fixed point.
+        // on pass 1, then pass 2 would re-match only part of the marker and
+        // emit `password=[REDACTED]]`. The bareword character class now
+        // consumes the whole marker, so replacing it is a fixed point.
         let input = "password=\"hunter2\"";
         let p1 = redact(input, RedactionMode::Standard).into_owned();
         let p2 = redact(&p1, RedactionMode::Standard).into_owned();
@@ -473,17 +473,37 @@ mod tests {
     }
 
     #[test]
-    fn kv_bareword_stops_at_open_bracket() {
-        // Documents the secondary effect of excluding brackets from the
-        // bareword class: `foo[bar]` is treated as the secret `foo` followed
-        // by literal `[bar]`. Real-world secret values don't contain `[`, so
-        // the trade-off favors idempotence; this test pins the behavior so a
-        // future reader knows it's intentional.
-        let out = redact("secret=foo[bar]", RedactionMode::Standard).into_owned();
-        assert_eq!(out, "secret=[REDACTED][bar]");
-        // And it's idempotent.
-        let twice = redact(&out, RedactionMode::Standard).into_owned();
-        assert_eq!(out, twice);
+    fn kv_bareword_redacts_bracketed_values_fully() {
+        let cases = [
+            "secret=foo[bar]",
+            "password=[hunter2]",
+            "secret={token}",
+            "api_key=foo{bar}[baz]",
+        ];
+
+        for input in cases {
+            for mode in [RedactionMode::Standard, RedactionMode::Strict] {
+                let out = redact(input, mode).into_owned();
+                assert_eq!(
+                    out,
+                    input.split_once('=').unwrap().0.to_owned() + "=[REDACTED]"
+                );
+                assert!(
+                    !out.contains("hunter2"),
+                    "input={input:?} mode={mode:?} out={out:?}"
+                );
+                assert!(
+                    !out.contains("token"),
+                    "input={input:?} mode={mode:?} out={out:?}"
+                );
+                assert!(
+                    !out.contains("bar"),
+                    "input={input:?} mode={mode:?} out={out:?}"
+                );
+                let twice = redact(&out, mode).into_owned();
+                assert_eq!(out, twice, "redaction must stay idempotent for {input:?}");
+            }
+        }
     }
 
     #[test]
