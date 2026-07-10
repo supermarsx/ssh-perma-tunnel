@@ -2601,6 +2601,7 @@ fn build_email_transport(
     resolver: &spt_secrets::Resolver,
 ) -> Result<std::sync::Arc<dyn spt_events::sinks::email::EmailTransport>> {
     use std::sync::Arc;
+    reject_unsupported_email_pinned_tls(sc)?;
     let endpoint = sc
         .smtp
         .as_deref()
@@ -2627,6 +2628,25 @@ fn build_email_transport(
     let transport = spt_events::sinks::email::smtp::SmtpTransport::build(&host, port, user_pass)
         .map_err(|e| Error::InvalidConfig(format!("email sink `{}` smtp: {e}", sc.name)))?;
     Ok(Arc::new(transport) as Arc<dyn spt_events::sinks::email::EmailTransport>)
+}
+
+/// SMTP delivery currently uses lettre's STARTTLS transport, which does not
+/// expose the per-sink pinned-TLS controls accepted for HTTPS sinks. Fail
+/// closed instead of silently downgrading a configured SMTP authenticity
+/// policy to ordinary CA validation.
+fn reject_unsupported_email_pinned_tls(sc: &spt_config::schema::EventSink) -> Result<()> {
+    if !sc.pin_spki_sha256.is_empty()
+        || sc.allow_self_signed.is_some()
+        || sc.max_cert_chain_depth.is_some()
+    {
+        return Err(Error::InvalidConfig(format!(
+            "email sink `{}` configures pinned TLS for SMTP, but SMTP pinning \
+             is not supported by this transport; remove pin_spki_sha256, \
+             allow_self_signed, and max_cert_chain_depth or use an HTTPS sink",
+            sc.name
+        )));
+    }
+    Ok(())
 }
 
 /// Map `[[events.bindings]]` onto dispatcher [`spt_events::Binding`]s, keeping
@@ -9411,6 +9431,28 @@ mod tests {
         // No `[[events.commands]]` entry matching the sink name ⇒ build error.
         let sinks = build_event_sinks(&configured, &[], &resolver, &notifier, None);
         assert!(!sinks.contains_key("runner"), "no allow-entry ⇒ skipped");
+    }
+
+    #[test]
+    fn build_event_sinks_skips_email_with_unsupported_smtp_pins() {
+        let resolver = spt_secrets::Resolver::new(vec![]);
+        let notifier = std::sync::Arc::new(crate::mcp_notifier::BroadcastMcpNotifier::new());
+        let configured = vec![spt_config::schema::EventSink {
+            name: "ops".into(),
+            kind: "email".into(),
+            smtp: Some("smtp.example.com:587".into()),
+            from: Some("spt@example.com".into()),
+            to: Some(vec!["sre@example.com".into()]),
+            pin_spki_sha256: vec!["SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".into()],
+            ..Default::default()
+        }];
+
+        let sinks = build_event_sinks(&configured, &[], &resolver, &notifier, None);
+
+        assert!(
+            !sinks.contains_key("ops"),
+            "SMTP pinning is unsupported and must fail closed"
+        );
     }
 
     // E6-F4: the metrics exporter spawns and writes the prom file to the
