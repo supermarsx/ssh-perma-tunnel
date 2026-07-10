@@ -748,9 +748,7 @@ fn resolve_mount_targets(
             read_only: args.read_only,
         });
     }
-    let path = require_config_path(global)?;
-    let (cfg, _warnings) = spt_config::load(&path, false)
-        .map_err(|e| Error::InvalidConfig(format!("load `{}`: {e}", path.display())))?;
+    let cfg = load_effective_config(global)?;
     let profile = find_profile(&cfg, profile_name)?;
     let mount = profile
         .sftp_mounts
@@ -797,9 +795,7 @@ pub async fn drive_plan(global: &GlobalOpts, args: SftpDrivePlanArgs) -> Result<
 }
 
 async fn open_client(global: &GlobalOpts, profile_name: &str) -> Result<spt_ssh2::SftpClient> {
-    let path = require_config_path(global)?;
-    let (cfg, _warnings) = spt_config::load(&path, false)
-        .map_err(|e| Error::InvalidConfig(format!("load `{}`: {e}", path.display())))?;
+    let cfg = load_effective_config(global)?;
     let profile = find_profile(&cfg, profile_name)?;
     let state_dir = resolve_state_dir(global, &cfg)?;
     let resolver = crate::secrets_bridge::build_resolver(cfg.secrets.as_ref(), &state_dir)?;
@@ -816,9 +812,7 @@ fn emit_mount_list(
     json_output: bool,
     kind: MountKind,
 ) -> Result<()> {
-    let path = require_config_path(global)?;
-    let (cfg, _warnings) = spt_config::load(&path, false)
-        .map_err(|e| Error::InvalidConfig(format!("load `{}`: {e}", path.display())))?;
+    let cfg = load_effective_config(global)?;
     let mut rows = Vec::new();
     for profile in &cfg.profiles {
         if profile_filter.is_some_and(|wanted| wanted != profile.name) {
@@ -889,9 +883,7 @@ fn resolve_mount_plan(
     read_only: bool,
     cache: Option<SftpCacheMode>,
 ) -> Result<(Config, String, SftpMount)> {
-    let path = require_config_path(global)?;
-    let (cfg, _warnings) = spt_config::load(&path, false)
-        .map_err(|e| Error::InvalidConfig(format!("load `{}`: {e}", path.display())))?;
+    let cfg = load_effective_config(global)?;
     let profile = find_profile(&cfg, profile_name)?;
     let profile_name = profile.name.clone();
     let mount = if let Some(mount_name) = mount_name {
@@ -1005,6 +997,15 @@ fn load_config(global: &GlobalOpts) -> Result<Config> {
     let path = require_config_path(global)?;
     let (cfg, _warnings) = spt_config::load(&path, false)
         .map_err(|e| Error::InvalidConfig(format!("load `{}`: {e}", path.display())))?;
+    Ok(cfg)
+}
+
+fn load_effective_config(global: &GlobalOpts) -> Result<Config> {
+    let mut cfg = load_config(global)?;
+    // Apply the same Group Policy registry overlay used by the long-running
+    // tunnel/SCM runtimes before any SFTP authorization or capability
+    // reporting. On non-Windows this is an inexpensive no-op.
+    let _overlay_report = crate::policy::overlay::apply(&mut cfg);
     Ok(cfg)
 }
 
