@@ -2,6 +2,7 @@
 
 use spt_core::{Error, Result};
 use spt_protocol::TargetAddr;
+use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
@@ -19,6 +20,9 @@ const SOCKS5_CONNECT: u8 = 0x01;
 const SOCKS5_ATYP_IPV4: u8 = 0x01;
 const SOCKS5_ATYP_DOMAIN: u8 = 0x03;
 const SOCKS5_ATYP_IPV6: u8 = 0x04;
+
+/// Default deadline for completing the client-side dynamic proxy handshake.
+pub(crate) const DEFAULT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Client proxy protocol detected on a dynamic forward listener.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -57,6 +61,20 @@ pub(crate) struct DynamicProxyRequest {
 
 /// Read and parse one SOCKS4, SOCKS4A, SOCKS5, or HTTP CONNECT request from
 /// `sock`.
+pub(crate) async fn read_request_with_timeout(
+    sock: &mut TcpStream,
+    protocols: DynamicProxyProtocolSet,
+    timeout: Duration,
+) -> Result<DynamicProxyRequest> {
+    tokio::time::timeout(timeout, read_request(sock, protocols))
+        .await
+        .map_err(|_| {
+            Error::RuntimeFailure(format!(
+                "dynamic proxy handshake timed out after {timeout:?}"
+            ))
+        })?
+}
+
 pub(crate) async fn read_request(
     sock: &mut TcpStream,
     protocols: DynamicProxyProtocolSet,
@@ -505,6 +523,18 @@ mod tests {
             socks5: true,
             http_connect: true,
         }
+    }
+
+    #[tokio::test]
+    async fn read_request_with_timeout_rejects_stalled_handshake() {
+        let (_client, mut server) = loopback_pair().await;
+
+        let err =
+            read_request_with_timeout(&mut server, all_protocols(), Duration::from_millis(25))
+                .await
+                .unwrap_err();
+
+        assert!(matches!(err, Error::RuntimeFailure(msg) if msg.contains("handshake timed out")));
     }
 
     #[tokio::test]
