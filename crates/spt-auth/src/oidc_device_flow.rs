@@ -236,6 +236,7 @@ impl OidcDeviceFlowClient {
     /// # Ok(()) }
     /// ```
     pub fn new(issuer: Url, client_id: String, audience: Option<String>) -> CoreResult<Self> {
+        validate_issuer_url(&issuer)?;
         Self::with_pin(issuer, client_id, audience, &[], false, None)
     }
 
@@ -251,6 +252,7 @@ impl OidcDeviceFlowClient {
         allow_self_signed: bool,
         max_cert_chain_depth: Option<u32>,
     ) -> CoreResult<Self> {
+        validate_issuer_url(&issuer)?;
         let rustls_cfg = spt_trust::PinnedTlsConnector::from_config_parts(
             pin_strings,
             allow_self_signed,
@@ -323,6 +325,7 @@ impl OidcDeviceFlowClient {
                     let doc: DiscoveryDocument = resp.json().await.map_err(|e| {
                         OidcError::Discovery(format!("decode body from {url}: {e}"))
                     })?;
+                    validate_discovery_document(&self.issuer, &doc)?;
                     Ok(doc)
                 })
                 .await?;
@@ -575,6 +578,91 @@ impl OidcDeviceFlowClient {
             })?;
         Ok(wire.into())
     }
+}
+
+fn validate_issuer_url(issuer: &Url) -> CoreResult<()> {
+    if !url_uses_trusted_scheme(issuer) {
+        return Err(CoreError::InvalidConfig(format!(
+            "oidc issuer must use https scheme: got `{}`",
+            issuer.scheme()
+        )));
+    }
+    if !issuer.has_host() {
+        return Err(CoreError::InvalidConfig(
+            "oidc issuer must include a host".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_discovery_document(issuer: &Url, doc: &DiscoveryDocument) -> OidcResult<()> {
+    let discovered_issuer = Url::parse(&doc.issuer)
+        .map_err(|e| OidcError::Discovery(format!("discovery issuer is not a valid URL: {e}")))?;
+    if discovered_issuer != *issuer {
+        return Err(OidcError::Discovery(format!(
+            "discovery issuer `{}` does not match configured issuer `{}`",
+            doc.issuer, issuer
+        )));
+    }
+    validate_discovered_endpoint(
+        issuer,
+        "device_authorization_endpoint",
+        &doc.device_authorization_endpoint,
+    )?;
+    validate_discovered_endpoint(issuer, "token_endpoint", &doc.token_endpoint)?;
+    Ok(())
+}
+
+fn validate_discovered_endpoint(issuer: &Url, field: &str, endpoint: &str) -> OidcResult<()> {
+    let url = Url::parse(endpoint)
+        .map_err(|e| OidcError::Discovery(format!("{field} is not a valid URL: {e}")))?;
+    if !url_uses_trusted_scheme(&url) {
+        return Err(OidcError::Discovery(format!(
+            "{field} must use https scheme: got `{}`",
+            url.scheme()
+        )));
+    }
+    if !url.has_host() {
+        return Err(OidcError::Discovery(format!("{field} must include a host")));
+    }
+    if !same_origin(issuer, &url) {
+        return Err(OidcError::Discovery(format!(
+            "{field} origin `{}` does not match issuer origin `{}`",
+            origin_string(&url),
+            origin_string(issuer)
+        )));
+    }
+    Ok(())
+}
+
+fn same_origin(a: &Url, b: &Url) -> bool {
+    a.scheme() == b.scheme()
+        && a.host() == b.host()
+        && a.port_or_known_default() == b.port_or_known_default()
+}
+
+fn origin_string(url: &Url) -> String {
+    match url.port_or_known_default() {
+        Some(port) => format!(
+            "{}://{}:{}",
+            url.scheme(),
+            url.host_str().unwrap_or(""),
+            port
+        ),
+        None => format!("{}://{}", url.scheme(), url.host_str().unwrap_or("")),
+    }
+}
+
+#[cfg(not(test))]
+fn url_uses_trusted_scheme(url: &Url) -> bool {
+    url.scheme() == "https"
+}
+
+#[cfg(test)]
+fn url_uses_trusted_scheme(url: &Url) -> bool {
+    url.scheme() == "https"
+        || (url.scheme() == "http"
+            && matches!(url.host(), Some(url::Host::Ipv4(ip)) if ip.is_loopback()))
 }
 
 enum PollError {
@@ -1099,6 +1187,20 @@ mod tests {
         assert_eq!(client.issuer().as_str(), "http://127.0.0.1:1/");
         assert_eq!(client.client_id(), "id");
         assert!(client.audience().is_none());
+    }
+
+    #[test]
+    fn new_rejects_non_https_non_loopback_issuer() {
+        let err = OidcDeviceFlowClient::new(
+            Url::parse("http://issuer.example.com").unwrap(),
+            "id".into(),
+            None,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, CoreError::InvalidConfig(ref m) if m.contains("https")),
+            "got: {err:?}"
+        );
     }
 
     #[test]
@@ -1844,6 +1946,55 @@ mod tests {
         let err = client.discover().await.unwrap_err();
         assert!(
             matches!(err, CoreError::NetworkUnreachable(_)),
+            "got: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn discover_rejects_mismatched_issuer() {
+        let port = spawn_fake_discovery(
+            200,
+            serde_json::json!({
+                "issuer":"https://issuer.example.com",
+                "device_authorization_endpoint":"https://issuer.example.com/device",
+                "token_endpoint":"https://issuer.example.com/token",
+            }),
+        )
+        .await;
+        let client = make_client(port);
+        let err = client.discover().await.unwrap_err();
+        assert!(
+            matches!(err, CoreError::NetworkUnreachable(ref m) if m.contains("does not match")),
+            "got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn discovery_validation_rejects_insecure_non_loopback_endpoints() {
+        let issuer = Url::parse("https://issuer.example.com").unwrap();
+        let doc = DiscoveryDocument {
+            issuer: issuer.to_string(),
+            device_authorization_endpoint: "https://issuer.example.com/device".into(),
+            token_endpoint: "http://issuer.example.com/token".into(),
+        };
+        let err = validate_discovery_document(&issuer, &doc).unwrap_err();
+        assert!(
+            matches!(err, OidcError::Discovery(ref m) if m.contains("token_endpoint must use https")),
+            "got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn discovery_validation_rejects_cross_origin_endpoints() {
+        let issuer = Url::parse("https://issuer.example.com").unwrap();
+        let doc = DiscoveryDocument {
+            issuer: issuer.to_string(),
+            device_authorization_endpoint: "https://issuer.example.com/device".into(),
+            token_endpoint: "https://attacker.example.com/token".into(),
+        };
+        let err = validate_discovery_document(&issuer, &doc).unwrap_err();
+        assert!(
+            matches!(err, OidcError::Discovery(ref m) if m.contains("origin")),
             "got: {err:?}"
         );
     }
