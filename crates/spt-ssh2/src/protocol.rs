@@ -53,6 +53,9 @@ pub type TrustPolicy = TrustVerifier;
 #[derive(Clone)]
 struct HopConfig {
     host: String,
+    /// Logical host name used for host-key trust verification. This may differ
+    /// from `host` when callers deliberately dial a pre-resolved IP literal.
+    trust_host: String,
     port: u16,
     auth: Option<AuthConfig>,
     trust: Option<TrustPolicy>,
@@ -179,8 +182,10 @@ impl Ssh2ProtocolBuilder {
     /// Add a hop traversed before reaching the final endpoint.
     #[must_use]
     pub fn hop(mut self, host: impl Into<String>, port: u16) -> Self {
+        let host = host.into();
         self.hops.push(HopConfig {
-            host: host.into(),
+            trust_host: host.clone(),
+            host,
             port,
             auth: None,
             trust: None,
@@ -193,14 +198,31 @@ impl Ssh2ProtocolBuilder {
     /// Add a hop with explicit hop-local auth and trust policy.
     #[must_use]
     pub fn hop_with_auth_trust(
+        self,
+        host: impl Into<String>,
+        port: u16,
+        auth: AuthConfig,
+        trust: TrustPolicy,
+    ) -> Self {
+        let host = host.into();
+        self.hop_with_auth_trust_name(host.clone(), host, port, auth, trust)
+    }
+
+    /// Add a hop with explicit dial host plus a separate logical host-key
+    /// verification name. Use this when the dial target is a resolved IP
+    /// literal but trust sources are keyed to the configured hostname.
+    #[must_use]
+    pub fn hop_with_auth_trust_name(
         mut self,
         host: impl Into<String>,
+        trust_host: impl Into<String>,
         port: u16,
         auth: AuthConfig,
         trust: TrustPolicy,
     ) -> Self {
         self.hops.push(HopConfig {
             host: host.into(),
+            trust_host: trust_host.into(),
             port,
             auth: Some(auth),
             trust: Some(trust),
@@ -228,8 +250,25 @@ impl Ssh2ProtocolBuilder {
     /// `kind` / `proxy_username` / `proxy_password_ref`.
     #[must_use]
     pub fn hop_with_kind(
+        self,
+        host: impl Into<String>,
+        port: u16,
+        kind: HopKind,
+        creds: Option<ProxyCredentials>,
+        auth: Option<AuthConfig>,
+        trust: Option<TrustPolicy>,
+    ) -> Self {
+        let host = host.into();
+        self.hop_with_kind_name(host.clone(), host, port, kind, creds, auth, trust)
+    }
+
+    /// Add a hop with explicit dispatch kind plus a separate logical host-key
+    /// verification name.
+    #[must_use]
+    pub fn hop_with_kind_name(
         mut self,
         host: impl Into<String>,
+        trust_host: impl Into<String>,
         port: u16,
         kind: HopKind,
         creds: Option<ProxyCredentials>,
@@ -238,6 +277,7 @@ impl Ssh2ProtocolBuilder {
     ) -> Self {
         self.hops.push(HopConfig {
             host: host.into(),
+            trust_host: trust_host.into(),
             port,
             auth,
             trust,
@@ -429,6 +469,7 @@ impl Ssh2Protocol {
             .iter()
             .map(|h| crate::russh_backend::HopSpec {
                 host: h.host.clone(),
+                trust_host: h.trust_host.clone(),
                 port: h.port,
                 auth: h.auth.clone(),
                 trust: h.trust.clone(),
@@ -695,5 +736,25 @@ mod tests {
         let c = specs[1].creds.as_ref().expect("creds carried");
         assert_eq!(c.username, "px");
         assert_eq!(c.password, "secret");
+    }
+    /// `hop_with_auth_trust_name` keeps the dial target separate from the
+    /// host-key verification identity so callers may dial a locally resolved
+    /// IP literal without bypassing hostname-keyed trust.
+    #[test]
+    fn hop_with_auth_trust_name_preserves_logical_trust_host() {
+        let trust = TrustVerifier::default();
+        let proto = Ssh2Protocol::builder()
+            .hop_with_auth_trust_name(
+                "127.0.0.1",
+                "bastion.example.com",
+                2222,
+                AuthConfig::default(),
+                trust,
+            )
+            .build();
+
+        let specs = proto.hop_specs();
+        assert_eq!(specs[0].host, "127.0.0.1");
+        assert_eq!(specs[0].trust_host, "bastion.example.com");
     }
 }

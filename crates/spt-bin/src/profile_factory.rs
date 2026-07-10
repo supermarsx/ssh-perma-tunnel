@@ -504,12 +504,14 @@ fn build_ssh2(
         // `hop_with_kind` so the proxy CONNECT runs before the SSH handshake.
         match hop.kind {
             SchemaHopKind::Ssh => {
-                builder = builder.hop_with_auth_trust(&hop_host, hop.port, hop_auth, hop_trust);
+                builder = builder
+                    .hop_with_auth_trust_name(&hop_host, &hop.host, hop.port, hop_auth, hop_trust);
             }
             SchemaHopKind::Socks5 | SchemaHopKind::HttpConnect => {
                 let creds = resolve_proxy_credentials(hop, resolver, &profile.name)?;
-                builder = builder.hop_with_kind(
+                builder = builder.hop_with_kind_name(
                     &hop_host,
+                    &hop.host,
                     hop.port,
                     map_hop_kind(hop.kind),
                     creds,
