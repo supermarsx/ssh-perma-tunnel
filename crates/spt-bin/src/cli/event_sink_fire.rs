@@ -11,9 +11,10 @@
 //! `cli_dispatch::build_event_sinks`: every kind is built through
 //! [`spt_events::build_sink`] with real transports (a pooled HTTPS transport
 //! honouring the sink's own TLS-pin posture, a per-sink SMTP transport for
-//! `email`, a child-process runner for `command`), and `secret://` references
-//! are resolved through the same [`spt_secrets::Resolver`] the rest of the
-//! binary uses. The MCP notifier is the inert [`spt_events::NoopMcpNotifier`]:
+//! `email` that rejects unsupported SMTP pinning config, a child-process
+//! runner for `command`), and `secret://` references are resolved through the
+//! same [`spt_secrets::Resolver`] the rest of the binary uses. The MCP notifier
+//! is the inert [`spt_events::NoopMcpNotifier`]:
 //! a one-shot CLI invocation has no live MCP broadcast channel, so a
 //! `mcp_notify` sink constructs and "delivers" without erroring (no frame is
 //! actually broadcast — there are no subscribers in a CLI context).
@@ -143,6 +144,7 @@ fn build_email_transport(
     resolver: &spt_secrets::Resolver,
 ) -> Result<Arc<dyn spt_events::sinks::email::EmailTransport>> {
     use spt_core::Error;
+    reject_unsupported_email_pinned_tls(sc)?;
     let endpoint = sc
         .smtp
         .as_deref()
@@ -169,6 +171,27 @@ fn build_email_transport(
     let transport = spt_events::sinks::email::smtp::SmtpTransport::build(&host, port, user_pass)
         .map_err(|e| Error::InvalidConfig(format!("email sink `{}` smtp: {e}", sc.name)))?;
     Ok(Arc::new(transport) as Arc<dyn spt_events::sinks::email::EmailTransport>)
+}
+
+/// SMTP delivery currently uses lettre's STARTTLS transport, which does not
+/// expose the per-sink pinned-TLS controls accepted for HTTPS sinks. Fail
+/// closed instead of silently downgrading a configured SMTP authenticity
+/// policy to ordinary CA validation.
+fn reject_unsupported_email_pinned_tls(sc: &EventSink) -> Result<()> {
+    use spt_core::Error;
+
+    if !sc.pin_spki_sha256.is_empty()
+        || sc.allow_self_signed.is_some()
+        || sc.max_cert_chain_depth.is_some()
+    {
+        return Err(Error::InvalidConfig(format!(
+            "email sink `{}` configures pinned TLS for SMTP, but SMTP pinning \
+             is not supported by this transport; remove pin_spki_sha256, \
+             allow_self_signed, and max_cert_chain_depth or use an HTTPS sink",
+            sc.name
+        )));
+    }
+    Ok(())
 }
 
 /// Build the canonical synthetic event used by `spt event test`.
@@ -276,6 +299,23 @@ mod tests {
         sc.to = Some(vec!["sre@example.com".into()]);
         let res = fire_event_through_sink(&g, &sc, &[], synthetic_event()).await;
         assert!(res.is_err());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn email_sink_with_smtp_pins_reports_error() {
+        let tmp = tempdir().unwrap();
+        let g = opts(tmp.path().to_path_buf());
+        let mut sc = sink("ops", "email");
+        sc.smtp = Some("smtp.example.com:587".into());
+        sc.from = Some("spt@example.com".into());
+        sc.to = Some(vec!["sre@example.com".into()]);
+        sc.pin_spki_sha256 = vec!["SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".into()];
+
+        let err = fire_event_through_sink(&g, &sc, &[], synthetic_event())
+            .await
+            .unwrap_err();
+
+        assert!(err.contains("SMTP pinning is not supported"), "{err}");
     }
 
     // `webpush` kind is normalised onto the push builder. Without
