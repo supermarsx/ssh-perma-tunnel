@@ -120,6 +120,63 @@ fn non_loopback_bind_without_expose_fires_and_clears() {
 }
 
 #[test]
+fn bind_mode_exposure_requires_expose_even_with_loopback_bind() {
+    // FIRE: bind_mode overrides the literal loopback bind at runtime. The
+    // effective listener may become wildcard or otherwise non-loopback, so it
+    // must require the same explicit acknowledgement as a broad literal bind.
+    for mode in ["all_interfaces", "auto_interface", "specific_interface"] {
+        let bind_interface = if mode == "specific_interface" {
+            r#"bind_interface = "eth0""#
+        } else {
+            ""
+        };
+        let bad = format!(
+            r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            [[profiles.forwards]]
+            name = "f"
+            type = "local"
+            transport = "tcp"
+            bind = "127.0.0.1:8080"
+            bind_mode = "{mode}"
+            {bind_interface}
+            target = "127.0.0.1:80"
+        "#
+        );
+        assert!(
+            has_error(&bad, "forward_bind_mode_without_expose"),
+            "effective bind_mode exposure gate must fire for {mode}: {:?}",
+            diags(&bad).errors
+        );
+
+        // NO-FIRE: same effective exposure with the explicit acknowledgement.
+        let ok = format!(
+            r#"
+            version = 1
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            [[profiles.forwards]]
+            name = "f"
+            type = "local"
+            transport = "tcp"
+            bind = "127.0.0.1:8080"
+            bind_mode = "{mode}"
+            {bind_interface}
+            target = "127.0.0.1:80"
+            expose = true
+        "#
+        );
+        assert!(!has_error(&ok, "forward_bind_mode_without_expose"));
+    }
+}
+
+#[test]
 fn mcp_non_loopback_requires_expose_fires_and_clears() {
     // FIRE: an MCP listener on a non-loopback address without `expose`.
     let bad = r#"

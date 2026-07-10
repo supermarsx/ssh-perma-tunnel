@@ -3486,6 +3486,21 @@ fn check_forward(
                 )
                 .at(format!("{prefix}.bind_mode")),
             );
+        } else if matches!(
+            mode,
+            "specific_interface" | "all_interfaces" | "auto_interface"
+        ) && !matches!(f.expose, Some(true))
+        {
+            d.push(
+                Diagnostic::error(
+                    "forward_bind_mode_without_expose",
+                    format!(
+                        "forward `{}` bind_mode `{mode}` can expose the listener beyond loopback; set `expose = true`",
+                        f.name
+                    ),
+                )
+                .at(format!("{prefix}.bind_mode")),
+            );
         }
     }
 
