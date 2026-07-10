@@ -59,6 +59,7 @@ use spt_protocol::handle::{ForwardHandle, ForwardId};
 use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio::sync::{mpsc, oneshot, watch, Mutex as AsyncMutex, Semaphore};
+use tokio::time::Instant;
 use tracing::{debug, error, info, warn};
 
 use crate::frame::{
@@ -78,11 +79,10 @@ const OPEN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 /// unbounded peer cannot flood us into unbounded task/socket growth (E3-F3).
 const DEFAULT_MAX_INBOUND_FORWARDS: u32 = 256;
 
-/// Cap on the number of in-flight remote-UDP per-datagram dial tasks across all
-/// flows on a session. The remote-UDP path spawns a short-lived task per
-/// inbound datagram (each binding a socket + a 64 KiB buffer); without a bound a
-/// datagram flood translates directly into unbounded socket/memory growth
-/// (E3-F3). Bounded fan-out drops excess datagrams instead.
+/// Cap on the number of in-flight remote-UDP target sockets across all flows on
+/// a session. Without a bound, a datagram flood could translate directly into
+/// unbounded socket/task growth (E3-F3). Bounded fan-out drops excess datagrams
+/// instead.
 const MAX_REMOTE_UDP_INFLIGHT: usize = 1024;
 
 /// Bound on each per-flow inbound UDP datagram queue (`udp_flows`).
@@ -2059,9 +2059,11 @@ pub async fn serve_datagram_demux(conn: Connection, state: Arc<SessionState>) {
 /// Server-side acceptor: drains the control stream, and for each
 /// [`Ssh3FrameKind::RemoteUdpForwardRequest`] the peer sends, binds a UDP
 /// listener on the requested address and pumps inbound datagrams as
-/// `[flow_id][bytes]` QUIC datagrams back toward the requester. Replies
-/// (received over `state.udp_flows[flow_id]`) are sent to the most recent
-/// external source.
+/// `[flow_id][bytes]` QUIC datagrams back toward the requester. Because the
+/// current remote-UDP wire format carries a single flow id for the listener
+/// (not a per-source id), replies (received over `state.udp_flows[flow_id]`) are
+/// sent only to the active external source; datagrams from other sources are
+/// dropped until that source has been idle long enough for ownership to expire.
 ///
 /// Used by the test harness "fake server" and by an spt instance running
 /// as the server end of an SSH3 tunnel. Pair with
@@ -2199,8 +2201,15 @@ async fn server_remote_udp_loop(
     _permit: tokio::sync::OwnedSemaphorePermit,
 ) {
     let socket = Arc::new(socket);
-    // Track the most recent external source so replies can be delivered.
-    let last_peer: Arc<AsyncMutex<Option<std::net::SocketAddr>>> = Arc::new(AsyncMutex::new(None));
+    // The remote-UDP wire format has only one flow_id for the whole listener,
+    // so replies cannot be correlated to multiple external peers at once. Do
+    // not keep a mutable "last sender" slot: an attacker could race a victim's
+    // request, overwrite the slot, and receive the victim's reply. Instead, pin
+    // the listener to one active peer at a time and ignore other peers until the
+    // active peer has been idle for this window.
+    let peer_idle = DEFAULT_UDP_IDLE;
+    let active_peer: Arc<AsyncMutex<Option<(std::net::SocketAddr, Instant)>>> =
+        Arc::new(AsyncMutex::new(None));
 
     // Register an inbound channel so the session-level datagram dispatch
     // can deliver replies (if the client sends back via the same flow_id).
@@ -2209,7 +2218,7 @@ async fn server_remote_udp_loop(
 
     // External → QUIC.
     let outbound_socket = socket.clone();
-    let outbound_peer = last_peer.clone();
+    let outbound_peer = active_peer.clone();
     let outbound_conn = conn.clone();
     let outbound = async move {
         let mut buf = vec![0u8; 64 * 1024];
@@ -2222,8 +2231,24 @@ async fn server_remote_udp_loop(
                 }
             };
             {
+                let now = Instant::now();
                 let mut g = outbound_peer.lock().await;
-                *g = Some(peer);
+                match *g {
+                    Some((active, last_seen))
+                        if active != peer && now.duration_since(last_seen) < peer_idle =>
+                    {
+                        debug!(
+                            target: "spt_ssh3::forward",
+                            active = %active,
+                            peer = %peer,
+                            "remote-udp: dropping datagram from non-active peer"
+                        );
+                        continue;
+                    }
+                    _ => {
+                        *g = Some((peer, now));
+                    }
+                }
             }
             let mut out = Vec::with_capacity(4 + n);
             out.extend_from_slice(&flow_id.to_be_bytes());
@@ -2235,13 +2260,13 @@ async fn server_remote_udp_loop(
     };
 
     // QUIC reply → external.
-    let inbound_peer = last_peer.clone();
+    let inbound_peer = active_peer.clone();
     let inbound_socket = socket.clone();
     let inbound = async move {
         while let Some(payload) = reply_rx.recv().await {
             let peer = {
                 let g = inbound_peer.lock().await;
-                *g
+                g.map(|(peer, _)| peer)
             };
             if let Some(peer) = peer {
                 if let Err(e) = inbound_socket.send_to(&payload, peer).await {
