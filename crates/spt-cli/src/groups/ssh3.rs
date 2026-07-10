@@ -12,18 +12,18 @@ use clap::Args;
 
 /// Example invocations shown in `--help`.
 pub const EXAMPLES: &str = "EXAMPLES:
-  spt ssh3-serve --listen 0.0.0.0:443 --cert server.pem --key server.key
+  spt ssh3-serve --listen 0.0.0.0:443 --cert server.pem --key server.key --allow-target db.internal:5432 --require-authorization-file /run/credentials/spt.ssh3.authz
   spt ssh3-serve --listen 127.0.0.1:8443 --self-signed
   spt ssh3-serve --cert chain.pem --key key.pem --allow-target db.internal:5432
   spt ssh3-serve --cert chain.pem --key key.pem --fixed-target dns.internal:53 --require-authorization-file /run/credentials/spt.ssh3.authz
-  spt ssh3-serve --cert chain.pem --key key.pem --protocol-token ssh3";
+  spt ssh3-serve --listen 127.0.0.1:8443 --cert chain.pem --key key.pem --allow-open-relay";
 
 /// `spt ssh3-serve` — bind and serve an SSH3 responder endpoint.
 #[derive(Args, Debug)]
 #[command(after_help = EXAMPLES)]
 pub struct Ssh3ServeCmd {
     /// Address and port to bind the QUIC/UDP listener on.
-    #[arg(long, value_name = "ADDR:PORT", default_value = "0.0.0.0:443")]
+    #[arg(long, value_name = "ADDR:PORT", default_value = "127.0.0.1:443")]
     pub listen: String,
 
     /// Path to the server's TLS certificate chain (PEM, leaf first).
@@ -54,8 +54,8 @@ pub struct Ssh3ServeCmd {
     pub protocol_token: String,
 
     /// Allow-list of `host:port` forward targets the server will dial. May be
-    /// repeated. When empty, every requested `direct-tcp` open is accepted and
-    /// dialed as requested (open relay — use with care).
+    /// repeated. Required unless `--fixed-target` or `--allow-open-relay` is
+    /// supplied.
     #[arg(long = "allow-target", value_name = "HOST:PORT")]
     pub allow_targets: Vec<String>,
 
@@ -64,6 +64,12 @@ pub struct Ssh3ServeCmd {
     /// single-service bastion.
     #[arg(long, value_name = "HOST:PORT", conflicts_with = "allow_targets")]
     pub fixed_target: Option<String>,
+
+    /// Explicitly allow peers to choose any `direct-tcp` target the server can
+    /// reach. This creates an open TCP relay; prefer `--allow-target` or
+    /// `--fixed-target` for production.
+    #[arg(long, conflicts_with_all = ["allow_targets", "fixed_target"])]
+    pub allow_open_relay: bool,
 
     /// Require this bearer/authorization value on the CONNECT request. When
     /// set, a CONNECT whose `Authorization` header does not match is rejected
