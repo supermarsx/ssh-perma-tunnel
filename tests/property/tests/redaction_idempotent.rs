@@ -37,10 +37,9 @@ fn arb_token(u: &mut Unstructured<'_>) -> arbitrary::Result<String> {
 
 /// Generator for inputs that satisfy the idempotence property.
 ///
-/// Now that the KV-bareword non-idempotence has been fixed in
-/// `crates/spt-core/src/redaction.rs` (the bareword character class excludes
-/// brackets/braces so `[REDACTED]`-style markers are fixed points), all KV
-/// shapes are safe to exercise here too.
+/// KV shapes are safe to exercise here: the core redactor consumes complete
+/// bareword values (including brackets/braces) so real bracketed secrets are
+/// fully scrubbed, and already-redacted markers are fixed points.
 fn arb_safe_input(u: &mut Unstructured<'_>) -> arbitrary::Result<String> {
     let shape = u.int_in_range(0u8..=6)?;
     Ok(match shape {
@@ -59,7 +58,11 @@ fn arb_safe_input(u: &mut Unstructured<'_>) -> arbitrary::Result<String> {
         ),
         4 => format!("user-{}@example.com", arb_token(u)?),
         5 => format!("password={}", arb_token(u)?),
-        _ => format!("api_key=\"{}\"", arb_token(u)?),
+        _ => match u.int_in_range(0u8..=2)? {
+            0 => format!("api_key=\"{}\"", arb_token(u)?),
+            1 => format!("secret=[{}]", arb_token(u)?),
+            _ => format!("token={{{}}}", arb_token(u)?),
+        },
     })
 }
 
@@ -195,9 +198,9 @@ fn idempotent_empty_string() {
 ///
 /// Before the fix in `crates/spt-core/src/redaction.rs`, this input
 /// produced `password=[REDACTED]]` on pass 2 because the bareword arm
-/// `[^\s,;)\]}]+` consumed `[REDACTED` and re-emitted the trailing `]`.
-/// The bareword class now excludes brackets/braces so the marker is a
-/// fixed point at pass 1.
+/// consumed only part of `[REDACTED]` and re-emitted the trailing `]`.
+/// The bareword arm now consumes the complete marker, making replacement a
+/// fixed point while still redacting bracketed bareword secrets.
 #[test]
 fn kv_bareword_is_idempotent() {
     let input = "password=\"hunter2\"";
