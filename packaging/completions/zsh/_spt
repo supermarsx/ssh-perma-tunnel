@@ -9711,8 +9711,9 @@ _arguments "${_arguments_options[@]}" : \
 '--key=[Path to the server'\''s TLS private key (PEM\: PKCS#8, PKCS#1, or SEC1). Required unless \`--self-signed\` is given]:PEM:_files' \
 '*--self-signed-san=[DNS name(s) / IP literal(s) to embed as SANs in the self-signed cert. Only meaningful with \`--self-signed\`. Repeat for multiple SANs]:NAME:_default' \
 '--protocol-token=[The \`\:protocol\` token the server requires on the HTTP/3 Extended-CONNECT (default \`ssh3\`). A mismatch is rejected with HTTP 421]:TOKEN:_default' \
-'*--allow-target=[Allow-list of \`host\:port\` forward targets the server will dial. May be repeated. When empty, every requested \`direct-tcp\` open is accepted and dialed as requested (open relay — use with care)]:HOST:PORT:_default' \
+'*--allow-target=[Allow-list of \`host\:port\` forward targets the server will dial. May be repeated. Required unless \`--fixed-target\` or \`--allow-open-relay\` is supplied]:HOST:PORT:_default' \
 '(--allow-target)--fixed-target=[Pin every accepted forward to this single \`host\:port\` target regardless of what the peer requests (overrides \`--allow-target\`). Useful for a single-service bastion]:HOST:PORT:_default' \
+'(--allow-target --fixed-target)--allow-open-relay[Explicitly allow peers to choose any \`direct-tcp\` target the server can reach. This creates an open TCP relay; prefer \`--allow-target\` or \`--fixed-target\` for production]' \
 '--require-authorization=[Require this bearer/authorization value on the CONNECT request. When set, a CONNECT whose \`Authorization\` header does not match is rejected with HTTP 401]:TOKEN:_default' \
 '--config=[Path to a single config file]:PATH:_files' \
 '--config-dir=[Path to a directory of \`*.toml\` configs (loaded in lexical order)]:PATH:_files' \
