@@ -527,17 +527,16 @@ jobs:
       # minutes per release because Chocolatey on ARM has to fetch +
       # install + reboot-prep the full MSI installer. Replace it with a
       # direct download of the WiX 3.14.1 binaries zip from upstream
-      # GitHub (the zip is ~30 MB, unzips in seconds) and cache it. After
-      # the first cache-miss run (~30s), every subsequent run resolves
-      # the WiX bin path from the cache in <2s.
+      # GitHub (the zip is ~30 MB) and cache the archive. Every run
+      # verifies the pinned SHA-256 before extracting the tools.
       - name: Cache WiX 3 binaries (windows-11-arm)
         id: wix-cache
         if: ${{ matrix.os == 'windows' && matrix.target == 'aarch64-pc-windows-msvc' }}
         uses: actions/cache@v6
         with:
-          path: ${{ runner.temp }}\wix314
-          # Bump the version suffix when WIX_VERSION below changes.
-          key: wix-3.14.1-${{ runner.os }}-${{ runner.arch }}-v1
+          path: ${{ runner.temp }}\wix314-binaries.zip
+          # Bump the version suffix when WIX_VERSION/WIX_SHA256 below changes.
+          key: wix-3.14.1-${{ runner.os }}-${{ runner.arch }}-v2
       - name: Download WiX 3 binaries (windows-11-arm, cache miss)
         if: >-
           ${{ matrix.os == 'windows'
@@ -546,23 +545,37 @@ jobs:
         shell: pwsh
         run: |
           $url = "https://github.com/wixtoolset/wix3/releases/download/wix3141rtm/wix314-binaries.zip"
-          $zip = Join-Path $env:RUNNER_TEMP "wix314.zip"
-          $dst = Join-Path $env:RUNNER_TEMP "wix314"
+          $zip = Join-Path $env:RUNNER_TEMP "wix314-binaries.zip"
           Write-Host "Downloading $url"
           Invoke-WebRequest -Uri $url -OutFile $zip
-          New-Item -ItemType Directory -Path $dst -Force | Out-Null
-          Expand-Archive -Path $zip -DestinationPath $dst -Force
-          Remove-Item $zip
-          Write-Host "Extracted WiX 3 to $dst"
+          Write-Host "Downloaded WiX 3 archive to $zip"
       - name: Add WiX 3 to PATH (windows-11-arm)
         if: ${{ matrix.os == 'windows' && matrix.target == 'aarch64-pc-windows-msvc' }}
         shell: pwsh
         run: |
-          # The bin/ subdir of the upstream zip carries candle.exe / light.exe /
-          # heat.exe — everything cargo-wix shells out to.
+          # Verify the cached/downloaded archive before trusting any WiX
+          # executable from it; this protects both first-fill downloads and
+          # restored cache contents.
+          $zip = Join-Path $env:RUNNER_TEMP "wix314-binaries.zip"
+          $expectedSha256 = "6ac824e1642d6f7277d0ed7ea09411a508f6116ba6fae0aa5f2c7daa2ff43d31"
+          if (-not (Test-Path $zip)) {
+            Write-Error "WiX archive not found at $zip"
+            exit 1
+          }
+          $actualSha256 = (Get-FileHash -Path $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actualSha256 -ne $expectedSha256) {
+            Write-Error "WiX archive SHA-256 mismatch: expected $expectedSha256, got $actualSha256"
+            exit 1
+          }
+
+          # The zip carries candle.exe / light.exe / heat.exe — everything
+          # cargo-wix shells out to. Extract only after the digest matches.
           $dst = Join-Path $env:RUNNER_TEMP "wix314"
+          Remove-Item $dst -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Path $dst -Force | Out-Null
+          Expand-Archive -Path $zip -DestinationPath $dst -Force
           $dst | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
-          # Sanity-check that candle.exe is reachable on the new PATH.
+          # Sanity-check that candle.exe is present in the verified archive.
           if (-not (Test-Path (Join-Path $dst "candle.exe"))) {
             Write-Error "candle.exe not found under $dst after WiX install"
             exit 1
