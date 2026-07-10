@@ -2201,10 +2201,11 @@ See [transports.md](transports.md) for the spt SSH3 transport architecture.
 spt ssh3-serve --listen 0.0.0.0:443 --cert server.pem --key server.key
 spt ssh3-serve --listen 127.0.0.1:8443 --self-signed
 spt ssh3-serve --cert chain.pem --key key.pem --allow-target db.internal:5432
+spt ssh3-serve --cert chain.pem --key key.pem --fixed-target dns.internal:53 --require-authorization-file /run/credentials/spt.ssh3.authz
 spt ssh3-serve --cert chain.pem --key key.pem --protocol-token ssh3
 ```
 
-**Synopsis:** `spt ssh3-serve [--listen ADDR:PORT] [--cert PEM --key PEM] [--self-signed] [--self-signed-san NAME] [--protocol-token TOKEN] [--allow-target HOST:PORT] [--fixed-target HOST:PORT] [--require-authorization TOKEN]`
+**Synopsis:** `spt ssh3-serve [--listen ADDR:PORT] [--cert PEM --key PEM] [--self-signed] [--self-signed-san NAME] [--protocol-token TOKEN] [--allow-target HOST:PORT] [--fixed-target HOST:PORT] [--require-authorization TOKEN | --require-authorization-file PATH]`
 
 | Flag | Argument | Default | Description |
 |------|----------|---------|-------------|
@@ -2216,7 +2217,8 @@ spt ssh3-serve --cert chain.pem --key key.pem --protocol-token ssh3
 | `--protocol-token` | `TOKEN` | `ssh3` | `:protocol` token required on the HTTP/3 Extended-CONNECT. Mismatches are rejected with HTTP 421. |
 | `--allow-target` | `HOST:PORT` | — | Allow-listed forward target. Repeat for multiple. Empty list = open relay (use with care). |
 | `--fixed-target` | `HOST:PORT` | — | Pin every forward to this single target regardless of what the peer requests. Mutually exclusive with `--allow-target`. |
-| `--require-authorization` | `TOKEN` | — | Require this bearer value in the `Authorization` header; mismatches rejected with HTTP 401. |
+| `--require-authorization` | `TOKEN` | — | Require this bearer value in the `Authorization` header; mismatches rejected with HTTP 401. Prefer `--require-authorization-file` for production so secrets do not appear in process arguments. |
+| `--require-authorization-file` | `PATH` | — | Read the required `Authorization` header value from a file. Trailing CR/LF is ignored. |
 
 ---
 

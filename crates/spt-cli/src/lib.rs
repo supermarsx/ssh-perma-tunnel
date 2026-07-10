@@ -500,7 +500,7 @@ mod tests {
         let cli = Cli::try_parse_from(["spt", "ssh3-serve", "--self-signed"]).unwrap();
         match cli.command {
             Command::Ssh3Serve(c) => {
-                assert_eq!(c.listen, "0.0.0.0:443");
+                assert_eq!(c.listen, "127.0.0.1:443");
                 assert!(c.self_signed);
                 assert!(c.cert.is_none());
                 assert_eq!(c.protocol_token, "ssh3");

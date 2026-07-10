@@ -51,13 +51,60 @@ fn parse_listen(s: &str) -> Result<SocketAddr> {
         })
 }
 
+/// Load the expected CONNECT `Authorization` header from CLI input.
+fn required_authorization(args: &Ssh3ServeCmd) -> Result<Option<String>> {
+    if let Some(path) = &args.require_authorization_file {
+        let mut value = std::fs::read_to_string(path).map_err(|e| {
+            Error::InvalidConfig(format!(
+                "ssh3-serve: read --require-authorization-file `{}`: {e}",
+                path.display()
+            ))
+        })?;
+        while value.ends_with('\r') || value.ends_with('\n') {
+            value.pop();
+        }
+        if value.is_empty() {
+            return Err(Error::InvalidConfig(format!(
+                "ssh3-serve: --require-authorization-file `{}` is empty",
+                path.display()
+            )));
+        }
+        Ok(Some(value))
+    } else {
+        Ok(args.require_authorization.clone())
+    }
+}
+
+fn validate_exposure(listen: SocketAddr, args: &Ssh3ServeCmd) -> Result<()> {
+    if args.allow_targets.is_empty() && args.fixed_target.is_none() && !args.allow_open_relay {
+        return Err(Error::InvalidArgs(
+            "ssh3-serve: refusing to start without a target restriction; pass \
+             --allow-target, --fixed-target, or the explicit --allow-open-relay escape hatch"
+                .into(),
+        ));
+    }
+
+    if !listen.ip().is_loopback()
+        && args.require_authorization.is_none()
+        && args.require_authorization_file.is_none()
+    {
+        return Err(Error::InvalidArgs(
+            "ssh3-serve: refusing non-loopback listen without authorization; pass \
+             --require-authorization or --require-authorization-file"
+                .into(),
+        ));
+    }
+
+    Ok(())
+}
+
 /// Build the [`Ssh3ServerAcl`] from the parsed CLI surface.
 fn build_acl(args: &Ssh3ServeCmd) -> Result<Ssh3ServerAcl> {
     let mut acl = if let Some(fixed) = &args.fixed_target {
         let target = parse_target(fixed)?;
         Ssh3ServerAcl::fixed_target(target)
-    } else if args.allow_targets.is_empty() {
-        // No allow-list: dial whatever the peer requests (open relay).
+    } else if args.allow_open_relay {
+        // Explicit escape hatch: dial whatever the peer requests (open relay).
         Ssh3ServerAcl::new(|open| Some(TargetAddr::new(open.host.clone(), open.port)))
     } else {
         // Allow-list: only resolve opens whose `host:port` is allow-listed.
@@ -75,7 +122,8 @@ fn build_acl(args: &Ssh3ServeCmd) -> Result<Ssh3ServerAcl> {
 
     acl = acl.with_protocol_token(args.protocol_token.clone());
 
-    if let Some(expected) = args.require_authorization.clone() {
+    let expected_authorization = required_authorization(args)?;
+    if let Some(expected) = expected_authorization {
         acl = acl.with_authorize_connect(move |_protocol, authz| authz == Some(expected.as_str()));
     }
 
@@ -139,6 +187,7 @@ use spt_ssh3::tls::ServerTlsConfig as spt_ssh3_server_config;
 pub async fn serve(global: &GlobalOpts, args: Ssh3ServeCmd) -> Result<()> {
     let _ = global;
     let listen = parse_listen(&args.listen)?;
+    validate_exposure(listen, &args)?;
     let server_cfg = build_server_config(&args)?;
     let acl = build_acl(&args)?;
 
@@ -172,7 +221,9 @@ mod tests {
             protocol_token: "ssh3".into(),
             allow_targets: Vec::new(),
             fixed_target: None,
+            allow_open_relay: false,
             require_authorization: None,
+            require_authorization_file: None,
         }
     }
 
@@ -235,8 +286,9 @@ mod tests {
     }
 
     #[test]
-    fn build_acl_empty_is_open_relay() {
-        let args = base_args();
+    fn build_acl_explicit_open_relay_resolves_requested_target() {
+        let mut args = base_args();
+        args.allow_open_relay = true;
         let acl = build_acl(&args).unwrap();
         let open = spt_ssh3::ChannelOpenPayload {
             host: "any".into(),
@@ -245,6 +297,28 @@ mod tests {
         let resolved = (acl.resolve_target)(&open).unwrap();
         assert_eq!(resolved.host, "any");
         assert_eq!(resolved.port, 1234);
+    }
+
+    #[test]
+    fn validate_exposure_requires_target_policy() {
+        let args = base_args();
+        let err = validate_exposure("127.0.0.1:8443".parse().unwrap(), &args).unwrap_err();
+        assert!(matches!(err, Error::InvalidArgs(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn validate_exposure_requires_auth_for_non_loopback() {
+        let mut args = base_args();
+        args.allow_targets = vec!["db:5432".into()];
+        let err = validate_exposure("0.0.0.0:8443".parse().unwrap(), &args).unwrap_err();
+        assert!(matches!(err, Error::InvalidArgs(_)), "got {err:?}");
+
+        args.require_authorization = Some("Bearer ok".into());
+        validate_exposure("0.0.0.0:8443".parse().unwrap(), &args).unwrap();
+    fn build_acl_denies_uds_paths_by_default() {
+        let args = base_args();
+        let acl = build_acl(&args).unwrap();
+        assert!(!(acl.authorize_uds_path)("/var/run/docker.sock"));
     }
 
     #[test]
@@ -264,6 +338,26 @@ mod tests {
         assert!(check("ssh3", Some("Bearer xyz")));
         assert!(!check("ssh3", Some("Bearer wrong")));
         assert!(!check("ssh3", None));
+    }
+
+    #[test]
+    fn build_acl_require_authorization_file_checks_header_and_trims_newline() {
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "spt-ssh3-authz-{}-{}.txt",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        std::fs::write(&path, "Bearer from-file\n").unwrap();
+
+        let mut args = base_args();
+        args.require_authorization_file = Some(path.clone());
+        let acl = build_acl(&args).unwrap();
+        let check = acl.authorize_connect.as_ref().unwrap();
+        assert!(check("ssh3", Some("Bearer from-file")));
+        assert!(!check("ssh3", Some("Bearer from-file\n")));
+
+        std::fs::remove_file(path).unwrap();
     }
 
     #[cfg(not(feature = "ssh3-server-selfsigned"))]
