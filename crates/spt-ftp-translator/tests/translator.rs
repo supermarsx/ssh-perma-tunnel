@@ -879,6 +879,61 @@ async fn auth_tls_in_place_upgrade_continues_session() {
 }
 
 // ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn auth_tls_handshake_timeout_releases_client_slot() {
+    let cert =
+        rcgen::generate_simple_self_signed(vec!["localhost".into()]).expect("rcgen self-signed");
+    let cert_dir = tempfile::tempdir().expect("tempdir");
+    let cert_path = cert_dir.path().join("cert.pem");
+    let key_path = cert_dir.path().join("key.pem");
+    std::fs::write(&cert_path, cert.cert.pem()).unwrap();
+    std::fs::write(&key_path, cert.key_pair.serialize_pem()).unwrap();
+
+    let dir = tempfile::tempdir().expect("sftp tempdir");
+    let factory = Arc::new(MockSftpFactory::new(dir.path().to_path_buf()));
+    let mut cfg =
+        TranslatorConfig::defaults_for(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0));
+    cfg.tls = Some(TlsConfig {
+        cert_file: cert_path,
+        key_file: key_path,
+        require_tls: false,
+    });
+    cfg.auth = AuthPolicy::Static {
+        username: "alice".into(),
+        password: "s3cret".into(),
+    };
+    cfg.max_clients = 2;
+    cfg.idle_timeout = Duration::from_millis(100);
+
+    let server = Server::new(cfg, factory);
+    let handle = server.start().await.expect("start tls server");
+
+    let mut stalled = Vec::new();
+    for _ in 0..2 {
+        let (mut rd, mut wr) = connect(handle.local_addr).await;
+        send(&mut wr, "AUTH TLS").await;
+        let mut reply = String::new();
+        rd.read_line(&mut reply).await.expect("auth tls reply");
+        assert!(reply.starts_with("234"), "AUTH TLS → `{reply}`");
+        stalled.push((rd, wr));
+    }
+
+    tokio::time::sleep(Duration::from_millis(250)).await;
+
+    let (mut rd, mut wr) = connect(handle.local_addr).await;
+    let mut noop = String::new();
+    send(&mut wr, "NOOP").await;
+    rd.read_line(&mut noop).await.expect("noop reply");
+    assert!(
+        noop.starts_with("200"),
+        "NOOP after timed-out handshakes → `{noop}`"
+    );
+
+    drop(stalled);
+    handle.shutdown();
+}
+
 // 14. PBSZ 0 + PROT P + PASV → data connection is TLS-wrapped end-to-end.
 //     The server accepts the data socket, performs a TLS handshake against
 //     the same self-signed cert, then sends the LIST body encrypted.
