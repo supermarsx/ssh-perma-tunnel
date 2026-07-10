@@ -315,6 +315,10 @@ mod tests {
 
         args.require_authorization = Some("Bearer ok".into());
         validate_exposure("0.0.0.0:8443".parse().unwrap(), &args).unwrap();
+    fn build_acl_denies_uds_paths_by_default() {
+        let args = base_args();
+        let acl = build_acl(&args).unwrap();
+        assert!(!(acl.authorize_uds_path)("/var/run/docker.sock"));
     }
 
     #[test]
