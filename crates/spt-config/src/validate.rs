@@ -30,7 +30,7 @@ use std::time::Duration;
 use spt_core::{address::BindAddr, duration::parse_duration, size::parse_size};
 
 use crate::diagnostic::{Diagnostic, Diagnostics};
-use crate::schema::{Auth, Capabilities, Config, Forward, Profile, SftpMount};
+use crate::schema::{Auth, Capabilities, Config, Forward, NetworkInterface, Profile, SftpMount};
 
 const POST_QUANTUM_KEX: &[&str] = &[
     "mlkem768x25519-sha256",
@@ -1909,11 +1909,25 @@ fn check_profiles(d: &mut Diagnostics, c: &Config) {
         } else {
             seen_names.push(&p.name);
         }
-        check_profile(d, i, p, c.capabilities.as_ref());
+        check_profile(
+            d,
+            i,
+            p,
+            c.capabilities.as_ref(),
+            c.network
+                .as_ref()
+                .and_then(|network| network.interface.as_ref()),
+        );
     }
 }
 
-fn check_profile(d: &mut Diagnostics, i: usize, p: &Profile, capabilities: Option<&Capabilities>) {
+fn check_profile(
+    d: &mut Diagnostics,
+    i: usize,
+    p: &Profile,
+    capabilities: Option<&Capabilities>,
+    network_interface: Option<&NetworkInterface>,
+) {
     let prefix = format!("profiles[{i}]");
 
     match p.protocol.as_str() {
@@ -2080,7 +2094,7 @@ fn check_profile(d: &mut Diagnostics, i: usize, p: &Profile, capabilities: Optio
         } else {
             fwd_names.push(&f.name);
         }
-        check_forward(d, &p.protocol, capabilities, f, i, j);
+        check_forward(d, &p.protocol, capabilities, network_interface, f, i, j);
     }
 
     // SFTP mount entries.
@@ -3198,6 +3212,7 @@ fn check_forward(
     d: &mut Diagnostics,
     protocol: &str,
     capabilities: Option<&Capabilities>,
+    network_interface: Option<&NetworkInterface>,
     f: &Forward,
     i: usize,
     j: usize,
@@ -3408,6 +3423,15 @@ fn check_forward(
                         .at(format!("{prefix}.bind")),
                     );
                 }
+
+                check_forward_network_interface_policy(
+                    d,
+                    network_interface,
+                    f,
+                    sock.ip().is_loopback(),
+                    sock.ip().is_unspecified(),
+                    &prefix,
+                );
             }
             Ok(_) => {}
             Err(e) => d.push(
@@ -3553,6 +3577,112 @@ fn check_forward(
             )
             .at(format!("{prefix}.sni_name")),
         );
+    }
+}
+
+/// Enforce `[network.interface]` policy against per-forward bind choices.
+fn check_forward_network_interface_policy(
+    d: &mut Diagnostics,
+    interface: Option<&NetworkInterface>,
+    f: &Forward,
+    is_loopback_bind: bool,
+    is_wildcard_bind: bool,
+    prefix: &str,
+) {
+    let Some(interface) = interface else {
+        return;
+    };
+
+    if is_wildcard_bind && interface.allow_all_interfaces == Some(false) {
+        d.push(
+            Diagnostic::error(
+                "wildcard_bind_disallowed_by_network_policy",
+                format!(
+                    "forward `{}` binds all interfaces, but network.interface.allow_all_interfaces = false",
+                    f.name
+                ),
+            )
+            .at(format!("{prefix}.bind")),
+        );
+    }
+
+    if !is_loopback_bind
+        && interface.require_explicit_interface == Some(true)
+        && f.bind_interface.as_deref().unwrap_or("").trim().is_empty()
+        && f.bind_interface_preference
+            .as_ref()
+            .is_none_or(|preference| preference.iter().all(|name| name.trim().is_empty()))
+    {
+        d.push(
+            Diagnostic::error(
+                "forward_requires_explicit_interface",
+                format!(
+                    "forward `{}` uses a non-loopback bind and must set bind_interface or bind_interface_preference because network.interface.require_explicit_interface = true",
+                    f.name
+                ),
+            )
+            .at(format!("{prefix}.bind_interface")),
+        );
+    }
+
+    if let Some(allowed) = interface.allowed_interfaces.as_ref() {
+        check_forward_interface_names_allowed(d, allowed, f.bind_interface.iter(), f, prefix);
+        if let Some(preference) = f.bind_interface_preference.as_ref() {
+            check_forward_interface_names_allowed(d, allowed, preference.iter(), f, prefix);
+        }
+    }
+
+    if let Some(denied) = interface.denied_interfaces.as_ref() {
+        check_forward_interface_names_denied(d, denied, f.bind_interface.iter(), f, prefix);
+        if let Some(preference) = f.bind_interface_preference.as_ref() {
+            check_forward_interface_names_denied(d, denied, preference.iter(), f, prefix);
+        }
+    }
+}
+
+fn check_forward_interface_names_allowed<'a>(
+    d: &mut Diagnostics,
+    allowed: &[String],
+    names: impl Iterator<Item = &'a String>,
+    f: &Forward,
+    prefix: &str,
+) {
+    for name in names {
+        if !name.trim().is_empty() && !allowed.iter().any(|allowed_name| allowed_name == name) {
+            d.push(
+                Diagnostic::error(
+                    "forward_interface_not_allowed",
+                    format!(
+                        "forward `{}` selects interface `{name}`, which is not listed in network.interface.allowed_interfaces",
+                        f.name
+                    ),
+                )
+                .at(format!("{prefix}.bind_interface")),
+            );
+        }
+    }
+}
+
+fn check_forward_interface_names_denied<'a>(
+    d: &mut Diagnostics,
+    denied: &[String],
+    names: impl Iterator<Item = &'a String>,
+    f: &Forward,
+    prefix: &str,
+) {
+    for name in names {
+        if denied.iter().any(|denied_name| denied_name == name) {
+            d.push(
+                Diagnostic::error(
+                    "forward_interface_denied",
+                    format!(
+                        "forward `{}` selects denied interface `{name}` from network.interface.denied_interfaces",
+                        f.name
+                    ),
+                )
+                .at(format!("{prefix}.bind_interface")),
+            );
+        }
     }
 }
 
@@ -5032,6 +5162,79 @@ mod tests {
         let (c, _) = load_str(raw, false).unwrap();
         let d = validate(&c);
         assert!(d.errors.is_empty(), "errors: {:?}", d.errors);
+    }
+
+    #[test]
+    fn network_interface_policy_rejects_exposed_wildcard_without_allow_all() {
+        let raw = r#"
+            version = 1
+            [network.interface]
+            allow_all_interfaces = false
+            require_explicit_interface = true
+            allowed_interfaces = ["lo"]
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            [[profiles.forwards]]
+            name = "db"
+            type = "local"
+            transport = "tcp"
+            bind = "0.0.0.0:15432"
+            target = "127.0.0.1:5432"
+            expose = true
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        for code in [
+            "wildcard_bind_disallowed_by_network_policy",
+            "forward_requires_explicit_interface",
+        ] {
+            assert!(
+                d.errors.iter().any(|e| e.code == code),
+                "missing {code}: {:?}",
+                d.errors
+            );
+        }
+    }
+
+    #[test]
+    fn network_interface_policy_rejects_disallowed_forward_interface() {
+        let raw = r#"
+            version = 1
+            [network.interface]
+            allowed_interfaces = ["lo"]
+            denied_interfaces = ["eth1"]
+            [[profiles]]
+            name = "p"
+            protocol = "ssh2"
+            host = "h"
+            [[profiles.forwards]]
+            name = "web"
+            type = "local"
+            transport = "tcp"
+            bind = "192.0.2.10:18080"
+            target = "127.0.0.1:8080"
+            expose = true
+            bind_interface = "eth0"
+            bind_interface_preference = ["lo", "eth1"]
+        "#;
+        let (c, _) = load_str(raw, false).unwrap();
+        let d = validate(&c);
+        assert!(
+            d.errors
+                .iter()
+                .any(|e| e.code == "forward_interface_not_allowed"),
+            "missing allow-list error: {:?}",
+            d.errors
+        );
+        assert!(
+            d.errors
+                .iter()
+                .any(|e| e.code == "forward_interface_denied"),
+            "missing deny-list error: {:?}",
+            d.errors
+        );
     }
 
     #[test]
