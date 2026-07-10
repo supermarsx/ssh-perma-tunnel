@@ -476,8 +476,8 @@ jobs:
   # ---------------------------------------------------------------------------
   # package — turn each built binary into distributable artifacts (tarball,
   # deb/rpm, pkg, zip/msi). Downstream of `build`; consumes the uploaded binary
-  # so it never recompiles. Packaging tools that don't build on MSRV 1.88
-  # (cargo-deb) are installed as prebuilt binaries.
+  # so it never recompiles. Linux packaging tools are installed from pinned
+  # crates.io versions instead of mutable prebuilt-tool installer tags.
   # ---------------------------------------------------------------------------
   package:
     name: package (${{ matrix.target }})
@@ -511,11 +511,12 @@ jobs:
         if: runner.os != 'Windows'
         shell: bash
         run: chmod +x "target/${{ matrix.target }}/release/spt"
-      - name: Install cargo-deb / cargo-generate-rpm (Linux GNU, prebuilt)
+      - name: Install cargo-deb / cargo-generate-rpm (Linux GNU, pinned)
         if: ${{ matrix.os == 'linux' && endsWith(matrix.target, '-linux-gnu') }}
-        uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-deb,cargo-generate-rpm
+        shell: bash
+        run: |
+          cargo install --locked cargo-deb --version 3.6.3
+          cargo install --locked cargo-generate-rpm --version 0.21.0
       - name: Install cargo-wix (prebuilt)
         if: ${{ matrix.os == 'windows' }}
         uses: taiki-e/install-action@v2
