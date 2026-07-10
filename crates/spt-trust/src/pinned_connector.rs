@@ -35,6 +35,7 @@ use std::sync::Arc;
 
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::client::WebPkiServerVerifier;
+use rustls::crypto::{verify_tls12_signature, verify_tls13_signature};
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::{
     ClientConfig, DigitallySignedStruct, Error as TlsError, RootCertStore, SignatureScheme,
@@ -578,10 +579,16 @@ impl ServerCertVerifier for PinnedVerifier {
         if let Some(inner) = &self.inner {
             return inner.verify_tls12_signature(message, cert, dss);
         }
-        // Pin-only mode: signature still travels through rustls' own
-        // crypto provider check before this is called; accepting here
-        // is consistent with `spt-ssh3`'s allow-self-signed verifier.
-        Ok(HandshakeSignatureValid::assertion())
+        // Pin-only/self-signed mode skips chain validation, but TLS
+        // CertificateVerify still must prove possession of the private key
+        // corresponding to the pinned certificate's public key.
+        let provider = rustls::crypto::aws_lc_rs::default_provider();
+        verify_tls12_signature(
+            message,
+            cert,
+            dss,
+            &provider.signature_verification_algorithms,
+        )
     }
 
     fn verify_tls13_signature(
@@ -593,24 +600,24 @@ impl ServerCertVerifier for PinnedVerifier {
         if let Some(inner) = &self.inner {
             return inner.verify_tls13_signature(message, cert, dss);
         }
-        Ok(HandshakeSignatureValid::assertion())
+        // See the TLS 1.2 path above: pin/self-signed certificate acceptance
+        // does not waive CertificateVerify authentication.
+        let provider = rustls::crypto::aws_lc_rs::default_provider();
+        verify_tls13_signature(
+            message,
+            cert,
+            dss,
+            &provider.signature_verification_algorithms,
+        )
     }
 
     fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
         if let Some(inner) = &self.inner {
             return inner.supported_verify_schemes();
         }
-        vec![
-            SignatureScheme::ED25519,
-            SignatureScheme::ECDSA_NISTP256_SHA256,
-            SignatureScheme::ECDSA_NISTP384_SHA384,
-            SignatureScheme::RSA_PSS_SHA256,
-            SignatureScheme::RSA_PSS_SHA384,
-            SignatureScheme::RSA_PSS_SHA512,
-            SignatureScheme::RSA_PKCS1_SHA256,
-            SignatureScheme::RSA_PKCS1_SHA384,
-            SignatureScheme::RSA_PKCS1_SHA512,
-        ]
+        rustls::crypto::aws_lc_rs::default_provider()
+            .signature_verification_algorithms
+            .supported_schemes()
     }
 }
 
@@ -785,6 +792,43 @@ mod tests {
         let name = ServerName::try_from("self-signed.test").unwrap();
         v.verify_server_cert(&leaf, &[], &name, &[], UnixTime::now())
             .expect("self-signed-plus-pin must accept");
+    }
+
+    #[test]
+    fn pin_only_rejects_invalid_certificate_verify_signature() {
+        use rustls::internal::msgs::codec::{Codec, Reader};
+
+        install_default_provider();
+        let c = gen_self_signed("self-signed.test");
+        let pin = TlsPin {
+            spki_sha256: vec![c.spki],
+        };
+        let v = make_verifier(pin, true, None);
+        let leaf = CertificateDer::from(c.der);
+        let name = ServerName::try_from("self-signed.test").unwrap();
+
+        v.verify_server_cert(&leaf, &[], &name, &[], UnixTime::now())
+            .expect("matching pin should still accept the certificate");
+
+        // 0x0403 = ECDSA_NISTP256_SHA256, followed by a 3-byte nonsense
+        // signature. Pin-only mode must still reject invalid
+        // CertificateVerify signatures so a copied pinned certificate alone
+        // cannot authenticate the peer.
+        let mut encoded_dss = vec![0x04, 0x03, 0x00, 0x03, 0xde, 0xad, 0xbe];
+        let dss = DigitallySignedStruct::read(&mut Reader::init(&encoded_dss)).unwrap();
+        assert!(
+            v.verify_tls13_signature(b"handshake transcript", &leaf, &dss)
+                .is_err(),
+            "pin-only TLS 1.3 must reject invalid CertificateVerify signatures"
+        );
+        assert!(
+            v.verify_tls12_signature(b"handshake transcript", &leaf, &dss)
+                .is_err(),
+            "pin-only TLS 1.2 must reject invalid CertificateVerify signatures"
+        );
+
+        // Keep the vector live until after read-derived fields are consumed.
+        encoded_dss.clear();
     }
 
     // -----------------------------------------------------------------
