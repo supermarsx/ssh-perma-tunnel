@@ -384,10 +384,18 @@ async fn wrap_data(
     sock: TcpStream,
     state: &SessionState,
     tls_acceptor: Option<&TlsAcceptor>,
+    handshake_timeout: Duration,
 ) -> std::io::Result<DataStream> {
     if state.prot_private && state.control == ControlState::Encrypted {
         if let Some(acceptor) = tls_acceptor {
-            let tls = acceptor.accept(sock).await?;
+            let tls = timeout(handshake_timeout, acceptor.accept(sock))
+                .await
+                .map_err(|_| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "data TLS handshake timed out",
+                    )
+                })??;
             return Ok(DataStream::Tls(tls));
         }
     }
@@ -501,11 +509,15 @@ async fn run_session(
                     return Ok(());
                 }
             };
-            let tls = match acceptor.accept(tcp).await {
-                Ok(t) => t,
-                Err(e) => {
+            let tls = match timeout(cfg.idle_timeout, acceptor.accept(tcp)).await {
+                Ok(Ok(t)) => t,
+                Ok(Err(e)) => {
                     debug!(error = %e, "AUTH TLS handshake failed");
                     return Err(TranslatorError::Tls(format!("auth tls handshake: {e}")));
+                }
+                Err(_) => {
+                    debug!(timeout = ?cfg.idle_timeout, "AUTH TLS handshake timed out");
+                    return Err(TranslatorError::IdleTimeout);
                 }
             };
             control = ControlStream::Tls(BufReader::new(tls));
@@ -1191,7 +1203,7 @@ async fn run_list_transfer(
         Ok(d) => d,
         Err(reply) => return (reply, false, false),
     };
-    let mut data = match wrap_data(data, state, tls_acceptor).await {
+    let mut data = match wrap_data(data, state, tls_acceptor, data_timeout).await {
         Ok(d) => d,
         Err(e) => {
             return (
@@ -1257,7 +1269,7 @@ async fn run_retr_transfer(
         Ok(d) => d,
         Err(reply) => return (reply, false, false),
     };
-    let mut data = match wrap_data(data, state, tls_acceptor).await {
+    let mut data = match wrap_data(data, state, tls_acceptor, data_timeout).await {
         Ok(d) => d,
         Err(e) => {
             return (
@@ -1317,7 +1329,7 @@ async fn run_stor_transfer(
         Ok(d) => d,
         Err(reply) => return (reply, false, false),
     };
-    let mut data = match wrap_data(data, state, tls_acceptor).await {
+    let mut data = match wrap_data(data, state, tls_acceptor, data_timeout).await {
         Ok(d) => d,
         Err(e) => {
             return (
