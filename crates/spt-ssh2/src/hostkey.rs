@@ -151,8 +151,9 @@ impl TrustVerifier {
                 // connect retries the append rather than killing the profile
                 // forever. A real key MISMATCH/revocation is still terminal — it
                 // is handled above and never reaches this branch.
-                match append_known_hosts(path, host, port, key) {
-                    Ok(()) => {
+                match tofu_verify_or_append(path, host, port, key) {
+                    Ok(TofuAppendOutcome::Match) => return Ok(HostKeyOutcome::Match),
+                    Ok(TofuAppendOutcome::Added) => {
                         warn!(
                             target: "spt_ssh2::trust",
                             host = host,
@@ -162,7 +163,7 @@ impl TrustVerifier {
                             "TOFU: accepted new host key and persisted to known_hosts"
                         );
                     }
-                    Err(e) => {
+                    Ok(TofuAppendOutcome::PersistFailed(e)) => {
                         warn!(
                             target: "spt_ssh2::trust",
                             host = host,
@@ -223,6 +224,24 @@ fn fingerprint_diff(presented: &PublicKey, stored: &[PublicKey]) -> (String, Str
 /// Only genuinely-new keys reach here (a mismatch is terminal and handled by
 /// the caller before this function is called).
 fn append_known_hosts(path: &Path, host: &str, port: u16, key: &PublicKey) -> Result<()> {
+    match tofu_verify_or_append(path, host, port, key)? {
+        TofuAppendOutcome::Added | TofuAppendOutcome::Match => Ok(()),
+        TofuAppendOutcome::PersistFailed(e) => Err(e),
+    }
+}
+
+enum TofuAppendOutcome {
+    Match,
+    Added,
+    PersistFailed(Error),
+}
+
+fn tofu_verify_or_append(
+    path: &Path,
+    host: &str,
+    port: u16,
+    key: &PublicKey,
+) -> Result<TofuAppendOutcome> {
     let host_prefix = if port == 22 {
         host.to_string()
     } else {
@@ -233,7 +252,10 @@ fn append_known_hosts(path: &Path, host: &str, port: u16, key: &PublicKey) -> Re
         .map_err(|e| Error::TrustFailed(format!("encode host key for TOFU append: {e}")))?;
     let line = format!("{host_prefix} {encoded}\n");
 
-    let _lock = KnownHostsAppendLock::acquire(path)?;
+    let _lock = match KnownHostsAppendLock::acquire(path) {
+        Ok(lock) => lock,
+        Err(e) => return Ok(TofuAppendOutcome::PersistFailed(e)),
+    };
 
     // Read the current contents while holding the sibling lock. The lock keeps
     // concurrent TOFU writers from basing whole-file rewrites on the same stale
@@ -242,12 +264,28 @@ fn append_known_hosts(path: &Path, host: &str, port: u16, key: &PublicKey) -> Re
         Ok(b) => b,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
         Err(e) => {
-            return Err(Error::TrustFailed(format!(
-                "read known_hosts {} for TOFU append: {e}",
-                path.display()
+            return Ok(TofuAppendOutcome::PersistFailed(Error::TrustFailed(
+                format!("read known_hosts {} for TOFU append: {e}", path.display()),
             )));
         }
     };
+    if !content.is_empty() {
+        let text = String::from_utf8_lossy(&content);
+        match KnownHosts::parse(&text)?.verify(host, port, key) {
+            KnownHostsResult::Match => return Ok(TofuAppendOutcome::Match),
+            KnownHostsResult::Mismatch { .. } => {
+                return Err(Error::TrustFailed(format!(
+                    "known_hosts mismatch for {host}:{port}"
+                )));
+            }
+            KnownHostsResult::Revoked => {
+                return Err(Error::TrustFailed(format!(
+                    "host key for {host}:{port} is @revoked in known_hosts"
+                )));
+            }
+            KnownHostsResult::NotFound => {}
+        }
+    }
     // Guard against a prior torn write: ensure the new entry begins on its own
     // line even if the file's final line was truncated without a newline.
     if !content.is_empty() && !content.ends_with(b"\n") {
@@ -255,7 +293,10 @@ fn append_known_hosts(path: &Path, host: &str, port: u16, key: &PublicKey) -> Re
     }
     content.extend_from_slice(line.as_bytes());
 
-    write_atomic_known_hosts(path, &content)
+    match write_atomic_known_hosts(path, &content) {
+        Ok(()) => Ok(TofuAppendOutcome::Added),
+        Err(e) => Ok(TofuAppendOutcome::PersistFailed(e)),
+    }
 }
 
 struct KnownHostsAppendLock {
@@ -490,6 +531,38 @@ mod tests {
         v.verify("other.example", 22, &key2).unwrap();
         let body2 = std::fs::read_to_string(&path).unwrap();
         assert!(body2.lines().count() == 2);
+    }
+
+    #[test]
+    fn tofu_rechecks_persisted_key_before_accepting_again() {
+        // A long-running daemon can start with no in-memory known_hosts
+        // snapshot, learn a key via TOFU, and then verify the same host again
+        // before restarting. The second verification must consult the
+        // persisted key and reject a changed key instead of treating the host as
+        // unknown and appending an attacker-controlled replacement.
+        let first = fresh_pub();
+        let changed = fresh_pub();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("known_hosts");
+        let v = TrustVerifier {
+            accept_new: true,
+            known_hosts_path: Some(path.clone()),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            v.verify("new.example", 22, &first).unwrap(),
+            HostKeyOutcome::TofuAdded
+        );
+        let err = v.verify("new.example", 22, &changed).unwrap_err();
+        assert!(matches!(err, Error::TrustFailed(_)));
+
+        let body = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            body.lines().count(),
+            1,
+            "changed key must not be appended after TOFU learning"
+        );
     }
 
     #[test]
