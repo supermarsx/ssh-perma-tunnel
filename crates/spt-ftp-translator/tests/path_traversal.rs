@@ -27,11 +27,14 @@
 #![allow(clippy::missing_panics_doc)]
 #![allow(clippy::uninlined_format_args)]
 
+mod support;
+
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 
 use spt_ftp_translator::{mock::MockSftpFactory, server::Server, AuthPolicy, TranslatorConfig};
+use support::passive_range;
 use tempfile::TempDir;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
@@ -48,7 +51,7 @@ async fn spawn_translator() -> (SocketAddr, spt_ftp_translator::ServerHandle, Te
         password: "s3cret".into(),
     };
     cfg.welcome_banner = "spt-ftp-translator t8-A6".into();
-    cfg.passive_port_range = (53_000, 53_100);
+    cfg.passive_port_range = passive_range(IpAddr::V4(Ipv4Addr::LOCALHOST), 32);
     cfg.idle_timeout = Duration::from_secs(60);
     let server = Server::new(cfg, factory);
     let handle = server.start().await.expect("start");

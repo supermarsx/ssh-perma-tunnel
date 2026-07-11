@@ -14,6 +14,8 @@
 #![allow(clippy::uninlined_format_args)]
 #![allow(clippy::missing_panics_doc)]
 
+mod support;
+
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
@@ -21,6 +23,7 @@ use std::time::Duration;
 use spt_ftp_translator::{
     mock::MockSftpFactory, server::Server, AuthPolicy, TlsConfig, TranslatorConfig,
 };
+use support::{passive_range, try_passive_range};
 use tempfile::TempDir;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
@@ -41,7 +44,7 @@ async fn spawn_translator(
         password: "s3cret".into(),
     };
     cfg.welcome_banner = "spt-ftp-translator test".into();
-    cfg.passive_port_range = (51_000, 51_100);
+    cfg.passive_port_range = passive_range(IpAddr::V4(Ipv4Addr::LOCALHOST), 32);
     cfg.idle_timeout = Duration::from_secs(60);
     cfg_fn(&mut cfg);
     let server = Server::new(cfg, factory);
@@ -188,8 +191,9 @@ async fn type_ascii_rejected_when_codepage_incompatible() {
 // ---------------------------------------------------------------------------
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn pasv_returned_port_in_range() {
+    let passive_ports = passive_range(IpAddr::V4(Ipv4Addr::LOCALHOST), 31);
     let (addr, handle, _dir) = spawn_translator(|c| {
-        c.passive_port_range = (51_500, 51_530);
+        c.passive_port_range = passive_ports;
     })
     .await;
     let (mut br, mut wr) = connect(addr).await;
@@ -197,7 +201,7 @@ async fn pasv_returned_port_in_range() {
 
     let port = pasv(&mut br, &mut wr).await;
     assert!(
-        (51_500..=51_530).contains(&port),
+        (passive_ports.0..=passive_ports.1).contains(&port),
         "PASV port {port} outside configured range",
     );
     handle.shutdown();
@@ -217,7 +221,11 @@ async fn epsv_ipv6_round_trip() {
         username: "alice".into(),
         password: "s3cret".into(),
     };
-    cfg.passive_port_range = (52_000, 52_050);
+    let Some(passive_ports) = try_passive_range(IpAddr::V6(Ipv6Addr::LOCALHOST), 51) else {
+        eprintln!("skipping: no bindable v6 passive port range available");
+        return;
+    };
+    cfg.passive_port_range = passive_ports;
     let server = Server::new(cfg, factory);
     let handle = match server.start().await {
         Ok(h) => h,
@@ -246,7 +254,7 @@ async fn epsv_ipv6_round_trip() {
     assert!(r.starts_with("229"), "EPSV → `{r}`");
     let port = parse_epsv_port(&r).expect("epsv port");
     assert!(
-        (52_000..=52_050).contains(&port),
+        (passive_ports.0..=passive_ports.1).contains(&port),
         "EPSV port {port} outside range",
     );
 
@@ -524,7 +532,7 @@ async fn auth_tls_reply_and_handshake() {
         username: "alice".into(),
         password: "s3cret".into(),
     };
-    cfg.passive_port_range = (53_000, 53_050);
+    cfg.passive_port_range = passive_range(IpAddr::V4(Ipv4Addr::LOCALHOST), 51);
     let server = Server::new(cfg, factory);
     let handle = server.start().await.expect("start tls server");
 
@@ -620,7 +628,7 @@ async fn passive_data_mismatched_source_ip_rejected_425() {
         username: "alice".into(),
         password: "s3cret".into(),
     };
-    cfg.passive_port_range = (55_000, 55_100);
+    cfg.passive_port_range = passive_range(IpAddr::V4(control_ip), 32);
     cfg.idle_timeout = Duration::from_secs(60);
     let server = Server::new(cfg, factory);
     let handle = server.start().await.expect("start");
@@ -791,7 +799,7 @@ async fn spawn_tls_translator() -> (
         username: "alice".into(),
         password: "s3cret".into(),
     };
-    cfg.passive_port_range = (54_000, 54_100);
+    cfg.passive_port_range = passive_range(IpAddr::V4(Ipv4Addr::LOCALHOST), 32);
     let server = Server::new(cfg, factory);
     let handle = server.start().await.expect("start tls server");
     // Move cert_dir's path into the returned tempdir so the cert files
