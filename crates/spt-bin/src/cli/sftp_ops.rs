@@ -1002,10 +1002,12 @@ fn load_config(global: &GlobalOpts) -> Result<Config> {
 
 fn load_effective_config(global: &GlobalOpts) -> Result<Config> {
     let mut cfg = load_config(global)?;
-    // Apply the same Group Policy registry overlay used by the long-running
-    // tunnel/SCM runtimes before any SFTP authorization or capability
-    // reporting. On non-Windows this is an inexpensive no-op.
-    let _overlay_report = crate::policy::overlay::apply(&mut cfg);
+    // Apply centrally managed machine policy before SFTP authorization and
+    // capability reporting, but intentionally ignore HKCU advisory policy.
+    // SFTP is default-deny when capabilities.allow_sftp is omitted; allowing a
+    // user-hive advisory value to fill that omission would let a local user
+    // opt themselves into SFTP. On non-Windows this is an inexpensive no-op.
+    let _overlay_report = crate::policy::overlay::apply_machine_only(&mut cfg);
     Ok(cfg)
 }
 
